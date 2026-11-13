@@ -20,6 +20,29 @@ logger = logging.getLogger(__name__)
 APPROVAL_CONVERSATION = "sharing-approvals"
 
 
+def _owner_web_request(record, session) -> bool:
+    """Only immutable host records establish the local owner's private audience."""
+    route = record.route_snapshot
+    if route is None:
+        return False
+    conversation = session.conversation
+    checks = (
+        record.namespace_id == "local",
+        record.access.principal_ref == "local",
+        getattr(record.access, "policy_revision", None) == "local",
+        getattr(session, "agent_id", None) == record.agent_id,
+        conversation.kind == "web_direct",
+        conversation.channel == "web",
+        record.request_input.kind == "direct_message",
+        getattr(record.request_input.source, "sender_id", None) == "local",
+        route.channel == "web",
+        not route.app_id,
+        route.target_id == conversation.key,
+        str(getattr(record, "source_ref", "")).startswith("web:"),
+    )
+    return all(checks)
+
+
 def _snapshot_content_types(result) -> list[str]:
     types = []
     if result.hits:
@@ -74,6 +97,18 @@ class GroupSharingService:
         self._verify_membership = verify_membership
         self._cli = cli
 
+    def is_owner_direct(self, execution) -> bool:
+        state = self.sessions.get_request(execution.namespace_id, execution.request_id)
+        record = state.record
+        if (record.agent_id, record.session_id, record.access.principal_ref) != (
+            execution.agent_id, execution.session_id, execution.principal_ref,
+        ):
+            return False
+        if getattr(record, "source_ref", None) != execution.source_ref:
+            return False
+        session = self.sessions.get_session(execution.namespace_id, execution.session_id)
+        return _owner_web_request(record, session)
+
     def scope(self, execution, query) -> tuple[dict[str, Any], str | None]:
         state = self.sessions.get_request(execution.namespace_id, execution.request_id)
         record = state.record
@@ -93,7 +128,7 @@ class GroupSharingService:
         if current_group is not None:
             target_name = self._groups.known_name_of(execution.namespace_id, current_group) or "群聊"
         source = record.request_input.source
-        return {
+        scope = {
             "namespace_id": execution.namespace_id, "agent_id": execution.agent_id,
             "config_id": config_id, "request_id": execution.request_id,
             "principal_ref": execution.principal_ref,
@@ -101,7 +136,10 @@ class GroupSharingService:
             "target": {"channel": route.channel, "app_id": route.app_id or "", "id": route.target_id,
                        "kind": "group" if current_group else "direct", "name": target_name},
             "query": query.model_dump(mode="json"),
-        }, current_group
+        }
+        if _owner_web_request(record, session) and getattr(record, "source_ref", None) == execution.source_ref:
+            scope["release_policy"] = "owner_direct"
+        return scope, current_group
 
     def notify_owner(self, scope: dict[str, Any], notification_key: str | None = None) -> None:
         """Create a durable owner-only conversation without making a model request."""
@@ -160,6 +198,10 @@ class GroupSharingService:
                     approval["requester_name"] = ""
 
     async def authorize(self, execution, query, result, source_groups):
+        if not await asyncio.to_thread(
+            self.repository.request_window_is_current, execution.namespace_id, execution.request_id,
+        ):
+            return _safe_result(execution, "Group access changed; submit a new request.", status="unavailable")
         if result.status not in {"found", "empty", "incomplete"}:
             return result
         try:
@@ -276,7 +318,10 @@ class GroupSharingService:
                     execution, "Source group access changed; submit a new request.", status="unavailable"
                 )
             if row["status"] == "pending":
-                await asyncio.to_thread(self.repository.authorize_from_grants, row["approval_id"], now=self.now())
+                try:
+                    await asyncio.to_thread(self.repository.authorize_from_grants, row["approval_id"], now=self.now())
+                except PersistentAgentError:
+                    return _safe_result(execution, "Group access changed; submit a new request.", status="unavailable")
                 row = await asyncio.to_thread(self.repository.get, row["approval_id"])
             if row["status"] == "pending":
                 pending_rows.append(row)
@@ -284,7 +329,9 @@ class GroupSharingService:
             if row["status"] in {"rejected", "expired"}:
                 denied_source = True
                 continue
-            if row["status"] not in {"approved_once", "approved_permanent"}:
+            if row["status"] == "owner_read" and scope.get("release_policy") != "owner_direct":
+                return _safe_result(execution, "Owner-only content cannot be shared to this destination.")
+            if row["status"] not in {"approved_once", "approved_permanent", "owner_read"}:
                 return _safe_result(execution, "Cross-group sharing decision is unavailable.", status="unavailable")
             frozen = core.GroupMessageSearchResult.model_validate(row["result"])
             required_types = _snapshot_content_types(frozen)
@@ -332,6 +379,10 @@ class GroupSharingService:
         except (OSError, PersistentAgentError):
             return _safe_result(execution, "An approved file is no longer available for this Session.",
                                 status="unavailable")
+        if not await asyncio.to_thread(
+            self.repository.request_window_is_current, execution.namespace_id, execution.request_id,
+        ):
+            return _safe_result(execution, "Group access changed; submit a new request.", status="unavailable")
         if denied_source:
             if not (released_hits or released_artifacts):
                 return _safe_result(
@@ -510,6 +561,10 @@ class GroupSharingService:
                 return False
         for row in rows:
             scope = row["scope"]
+            if row["status"] == "owner_read":
+                session = await asyncio.to_thread(self.sessions.get_session, namespace_id, record.session_id)
+                if not _owner_web_request(record, session) or scope.get("release_policy") != "owner_direct":
+                    return False
             target = scope["target"]
             # Public archive rows carry the immutable Request rather than all
             # send-job fields. Fill only absent fields from that trusted record.

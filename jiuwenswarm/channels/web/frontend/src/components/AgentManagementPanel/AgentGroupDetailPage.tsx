@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next';
+import { isEnterprise } from '../../edition';
 import { openAssetPublish } from '../../features/assetPublishEvents';
 import { canShowAssetPublish } from '../../features/assetPublishState';
 import type {
@@ -162,7 +163,7 @@ export function AgentGroupDetailPage({
             /* 收敛到共享类 .detail-actions/.detail-action（index.css，与 plugin/MCP/agent 模板
                详情页同款）。原 .agent-management-detail__actions 一套私有类已删除。 */
             <div className="detail-actions">
-              {canShowAssetPublish(detail.installed, detail.capabilities.canPublish) ? (
+              {canShowAssetPublish(detail.installed, detail.capabilities.canPublish) && !isEnterprise() ? (
                 <button
                   type="button"
                   className="detail-action"

@@ -55,7 +55,7 @@ _PUSH_MAX_CONNECT_FAILURES = 3
 _CANCELLED_RID_TTL_SECONDS = 2.0
 
 
-async def _assemble_with_allowlist(envelope: E2AEnvelope, api_root: str):
+async def _assemble_with_expert_packages(envelope: E2AEnvelope, api_root: str):
     """企业版按这只 bot 的模板槽组头。个人版直接组请求。"""
     from agent_gateway.enterprise.edition import is_enterprise
 
@@ -359,7 +359,7 @@ class HttpSseAgentServerClient(AgentServerClient):
         api_root = self._resolve_api_root(base_url)
         envelope.is_stream = False
         try:
-            assembled = await _assemble_with_allowlist(envelope, api_root)
+            assembled = await _assemble_with_expert_packages(envelope, api_root)
         except HttpMethodNotHandled as exc:
             logger.info(
                 "[E2A][out][http][unary] request_id=%s method=%s 没有 HTTP 处理",
@@ -426,7 +426,7 @@ class HttpSseAgentServerClient(AgentServerClient):
         api_root = self._resolve_api_root(base_url)
         envelope.is_stream = True
         try:
-            assembled = await _assemble_with_allowlist(envelope, api_root)
+            assembled = await _assemble_with_expert_packages(envelope, api_root)
         except HttpMethodNotHandled as exc:
             logger.info(
                 "[E2A][out][http][stream] request_id=%s method=%s 没有 HTTP 处理",

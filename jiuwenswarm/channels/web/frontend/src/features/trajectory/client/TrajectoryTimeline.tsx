@@ -444,8 +444,9 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
     )),
     [nowMilliseconds, turns],
   )
-  // Gap chrome follows user_turn. model.turnBoundaries keep every model turn.
-  // Shared-axis hosts pass leader/main ranges so member lanes share the same gaps.
+  // Numbered `turn` lines stay a single mark at the turn open. The blank,
+  // the start/end pair, and the axis clocks belong only to `user_turn`.
+  // Shared-axis hosts pass leader/main ranges so member lanes share those gaps.
   const userTurnGapEdges = useMemo(() => {
     if (model === null) return []
     const useUserTurnGaps = sharedDomain !== null || mode === 'actual' || mode === 'time'
@@ -453,22 +454,7 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
     if (userTurnGapRanges !== undefined) {
       ranges = userTurnGapRanges
     } else if (!useUserTurnGaps) {
-      return model.turnBoundaries.flatMap(boundary => ([
-        {
-          turn: boundary.turn,
-          edge: 'start' as const,
-          axisMs: boundary.start,
-          displayAxisMs: boundary.start,
-          wallMs: boundary.start,
-        },
-        {
-          turn: boundary.turn,
-          edge: 'end' as const,
-          axisMs: boundary.end,
-          displayAxisMs: boundary.end,
-          wallMs: boundary.end,
-        },
-      ]))
+      return []
     } else {
       const map = sharedDomain !== null && mapTime !== undefined
         ? mapTime
@@ -495,7 +481,24 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
     () => userTurnDisplayGaps(userTurnGapEdges),
     [userTurnGapEdges],
   )
-  const turnEdgeMarks = useMemo(() => (
+  const turnDividerMarks = useMemo(() => {
+    if (model === null) return []
+    return model.turnBoundaries.flatMap(boundary => {
+      if (!(boundary.start > model.start)) return []
+      // A user_turn junction already owns the blank. Do not drop another line
+      // into that gap; the turn mark stays on work that sits outside it.
+      const insideUserTurnGap = userTurnGaps.some(gap => (
+        boundary.start > gap.startMs && boundary.start < gap.endMs
+      ))
+      if (insideUserTurnGap) return []
+      return [{
+        key: `turn-${boundary.turn}-${boundary.start}`,
+        turn: boundary.turn,
+        time: boundary.start,
+      }]
+    })
+  }, [model, userTurnGaps])
+  const userTurnDividerMarks = useMemo(() => (
     userTurnGapEdges.map(edge => ({
       key: `user-turn-${edge.turn}-${edge.edge}-${edge.axisMs}`,
       turn: edge.turn,
@@ -1073,9 +1076,23 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
             className={css.turnBoundaries}
             data-animate-viewport={animateViewport || undefined}
           >
-            {turnEdgeMarks.map(mark => (
+            {turnDividerMarks.map(mark => (
               <span
                 className={css.turnBoundary}
+                data-divider="turn"
+                data-turn={mark.turn}
+                key={mark.key}
+                style={{
+                  '--trajectory-turn-left':
+                    `${Math.max(0, (mark.time - model.start) / fullDuration) * 100}%`,
+                  '--trajectory-turn-shift': '0px',
+                } as CSSProperties}
+              />
+            ))}
+            {userTurnDividerMarks.map(mark => (
+              <span
+                className={css.turnBoundary}
+                data-divider="user-turn"
                 data-turn={mark.turn}
                 data-edge={mark.edge}
                 key={mark.key}

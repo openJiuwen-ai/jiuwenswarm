@@ -77,6 +77,11 @@
   font-size: 14px;
 }
 
+.jiuwenmate-profile__settings-error {
+  color: var(--color-feedback-danger);
+  font-size: 13px;
+}
+
 .jiuwenmate-action-error {
   position: fixed;
   z-index: 40;
@@ -635,6 +640,8 @@
 }
 
 .jiuwenmate-menu__list {
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   position: absolute;
   z-index: 40;
   top: calc(100% + 4px);
@@ -993,7 +1000,8 @@
 }
 
 .jiuwenmate-field input,
-.jiuwenmate-field textarea {
+.jiuwenmate-field textarea,
+.jiuwenmate-schedule-dialog__executor {
   width: 100%;
   min-height: 32px;
   padding: 6px 10px;
@@ -1007,7 +1015,8 @@
 }
 
 .jiuwenmate-field input:focus,
-.jiuwenmate-field textarea:focus {
+.jiuwenmate-field textarea:focus,
+.jiuwenmate-schedule-dialog__executor:focus {
   border-color: var(--jm-text-2);
 }
 
@@ -2215,6 +2224,9 @@
 .jiuwenmate-chat-welcome__suggestions {
   display: grid;
   width: min(552px, 100%);
+  /* Reserve three rows so the avatar and intro keep their place with fewer prompts. */
+  min-height: calc(56px * 3 + 12px * 2);
+  align-content: start;
   gap: 12px;
 }
 
@@ -2357,8 +2369,48 @@
   cursor: pointer;
 }
 
-.jiuwenmate-composer__model {
-  cursor: default;
+.jiuwenmate-composer__toolbar .jiuwenmate-composer__model {
+  height: 34px;
+  max-width: 220px;
+  border-radius: 10px;
+  color: var(--color-text-primary);
+}
+
+.jiuwenmate-composer__toolbar .jiuwenmate-composer__model:hover:not(:disabled) {
+  background: rgba(var(--color-surface-panel-strong-rgb), 0.42);
+}
+
+.jiuwenmate-composer__toolbar .jiuwenmate-composer__model[data-state='open'] {
+  background: rgba(var(--color-surface-panel-strong-rgb), 0.55);
+}
+
+.jiuwenmate-composer__toolbar .jiuwenmate-composer__model .model-provider-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.jiuwenmate-composer__model .chat-mode-select__value {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.jiuwenmate-composer__model > svg,
+.jiuwenmate-composer__model small {
+  flex-shrink: 0;
+}
+
+.jiuwenmate-composer__model-menu .chat-mode-select__option .ui-dropdown-menu__item-label {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.jiuwenmate-composer__model-menu .model-select__add-btn .ui-dropdown-menu__item-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .jiuwenmate-composer__toolbar button:hover:not(:disabled) {
@@ -2934,6 +2986,28 @@
   width: min(560px, calc(100vw - 32px));
 }
 
+.jiuwenmate-schedule-dialog__executor {
+  resize: none;
+}
+
+.jiuwenmate-schedule-dialog input[aria-invalid='true'],
+.jiuwenmate-schedule-dialog textarea[aria-invalid='true'],
+.jiuwenmate-schedule-dialog select[aria-invalid='true'] {
+  border-color: var(--color-feedback-danger, var(--jm-danger));
+}
+
+.jiuwenmate-schedule-dialog input[aria-invalid='true']:focus,
+.jiuwenmate-schedule-dialog textarea[aria-invalid='true']:focus,
+.jiuwenmate-schedule-dialog select[aria-invalid='true']:focus {
+  outline: 2px solid var(--color-feedback-danger, var(--jm-danger));
+  outline-offset: 2px;
+}
+
+.jiuwenmate-schedule-dialog [role='alert'] {
+  color: var(--color-feedback-danger, var(--jm-danger));
+  font-size: 13px;
+}
+
 .jiuwenmate-schedule-board {
   display: grid;
   align-content: start;
@@ -3162,6 +3236,10 @@
 
 .jiuwenmate-schedule-board__status {
   gap: 6px;
+}
+
+.jiuwenmate-schedule-board__status[data-tone='expired'] i {
+  background: var(--jm-text-3);
 }
 
 .jiuwenmate-schedule-board__status[data-tone='completed'] i {
@@ -4130,6 +4208,11 @@
   cursor: pointer;
 }
 
+.jiuwenmate-collapsible__add-button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 .jiuwenmate-collapsible__add-button svg {
   width: 14px;
   height: 14px;
@@ -4162,6 +4245,12 @@
 
 .jiuwenmate-capability-chip:hover {
   background: var(--jm-muted);
+}
+
+.jiuwenmate-capability-chip[aria-pressed='true'] {
+  border-color: var(--jm-blue);
+  color: var(--jm-blue);
+  background: var(--jm-blue-soft);
 }
 
 .jiuwenmate-capability-chip > span {
@@ -4231,6 +4320,11 @@
   cursor: pointer;
 }
 
+.jiuwenmate-model-card button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 .jiuwenmate-model-card button svg {
   width: 14px;
   height: 14px;
@@ -4241,10 +4335,24 @@
   gap: 8px;
 }
 
-.jiuwenmate-starter-prompts > div {
+.jiuwenmate-starter-prompts__item {
+  display: grid;
+  gap: 4px;
+}
+
+.jiuwenmate-starter-prompts__item > div {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.jiuwenmate-starter-prompts input[aria-invalid='true'] {
+  border-color: var(--jm-warning);
+}
+
+.jiuwenmate-starter-prompts small {
+  color: var(--jm-warning);
+  font-size: 12px;
 }
 
 .jiuwenmate-starter-prompts input {
@@ -4508,12 +4616,16 @@
   padding-top: 12px;
 }
 
+.jiuwenmate-profile__content[data-variant='save-error']:not([data-section='overview']) {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
 .jiuwenmate-profile__content[data-section]:not([data-section='overview']) > .jiuwenmate-profile__header {
   display: none;
 }
 
 .jiuwenmate-profile__content[data-section='persona'] > .jiuwenmate-profile__block {
-  grid-template-rows: min-content minmax(0, 1fr) auto;
+  grid-template-rows: min-content minmax(min-content, 1fr) auto;
   align-content: stretch;
   min-height: 0;
 }
@@ -4715,6 +4827,12 @@
   gap: 8px;
 }
 
+.jiuwenmate-profile__im-notice {
+  color: var(--jm-success);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .jiuwenmate-profile__im-row strong {
   font-size: 13px;
   font-weight: 600;
@@ -4828,10 +4946,35 @@
   font-size: 12px;
 }
 
+.jiuwenmate-profile__persona-editor {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.jiuwenmate-profile__starter-prompts {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.jiuwenmate-profile__starter-prompts > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.jiuwenmate-profile__starter-prompts h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+}
+
 .jiuwenmate-profile__persona-editor textarea {
   display: block;
+  flex: 1 0 auto;
   width: 100%;
-  height: 100%;
+  height: auto;
   min-height: 500px;
   padding: 18px 20px;
   border: 1px solid var(--jm-border);
@@ -4852,6 +4995,18 @@
 .jiuwenmate-profile__model-list {
   display: grid;
   gap: 10px;
+}
+
+.jiuwenmate-profile__block--empty-model {
+  grid-template-rows: auto minmax(280px, 1fr);
+}
+
+.jiuwenmate-profile__model-empty-hint {
+  max-width: 360px;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: center;
 }
 
 .jiuwenmate-profile__model-option {
@@ -5059,7 +5214,9 @@
 
 .jiuwenmate-profile__resource-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: 12px;
 }
 
 .jiuwenmate-profile__resource-add {
@@ -5603,6 +5760,11 @@
   font-size: 12px;
 }
 
+.jiuwenmate-office__period-limit {
+  color: var(--jm-warning);
+  font-size: 12px;
+}
+
 .jiuwenmate-office__period input {
   height: 30px;
   padding: 0 8px;
@@ -5968,6 +6130,7 @@
   }
 
   .jiuwenmate-chat-welcome__suggestions {
+    min-height: calc(44px * 3 + 8px * 2);
     gap: 8px;
   }
 

@@ -68,9 +68,22 @@ def _name_looks_video_capable(name: str) -> bool:
     return any(h in n for h in _VIDEO_NAME_HINTS)
 
 
+_VISION_TRUE = {"1", "true", "yes", "on"}
+_VISION_KEY_PLACEHOLDERS = {"", "sk-xxxxxxxxx", "your-api-key"}
+_VISION_MODEL_PLACEHOLDERS = {"", "your-vision-model-name", "your-model-name"}
+
+
 def _vision_backend_configured() -> dict[str, Any]:
-    """Fast check: models.vision or VISION_*/API_KEY present (no network)."""
-    key = (os.environ.get("VISION_API_KEY") or os.environ.get("API_KEY") or "").strip()
+    """Fast check: dedicated vision slot switched on and configured (no network).
+
+    Aligned with jiuwenmate.vision_runtime.vision_config_from_env:
+    VISION_ENABLED must be explicitly true, a chat API key is never reused,
+    and .env-template placeholders count as unconfigured.
+    """
+    enabled = (os.environ.get("VISION_ENABLED") or "").strip().lower()
+    if enabled not in _VISION_TRUE:
+        return {"available": False, "model": None, "tool": None}
+    key = (os.environ.get("VISION_API_KEY") or "").strip()
     model = (os.environ.get("VISION_MODEL_NAME") or "").strip()
     cfg = get_config() or {}
     models = cfg.get("models") if isinstance(cfg.get("models"), dict) else {}
@@ -86,7 +99,10 @@ def _vision_backend_configured() -> dict[str, Any]:
                 key = resolve_env_vars(str(vision_mc.get("api_key") or "")).strip()
             if not model:
                 model = resolve_env_vars(str(vision_mc.get("model_name") or "")).strip()
-    ok = bool(key) and key.lower() not in {"sk-xxxxxxxxx", "your-api-key", ""}
+    ok = (
+        key.lower() not in _VISION_KEY_PLACEHOLDERS
+        and model.lower() not in _VISION_MODEL_PLACEHOLDERS
+    )
     return {
         "available": ok,
         "model": model or None,

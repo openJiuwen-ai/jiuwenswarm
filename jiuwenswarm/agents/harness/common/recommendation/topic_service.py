@@ -14,9 +14,6 @@ from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
-from jiuwenswarm.agents.harness.common.recommendation.topic_audit import (
-    load_external_invocation_audit_snapshot,
-)
 from jiuwenswarm.agents.harness.common.recommendation.topic_history import (
     load_latest_history_state,
 )
@@ -45,6 +42,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_pool import (
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
     ARK_REASONING_POLICY_VERSION,
+    DEFAULT_TOPIC_WORK_MODE,
     FIRST_SCREEN_CARD_TARGET,
     GENERATION_CONFIG_VERSION,
     GLOBAL_NEW_CHAT_SCOPE,
@@ -65,12 +63,15 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
     is_cold_start_card,
     is_cold_start_manifest,
     news_lead_card_id,
+    normalize_topic_work_mode,
     pool_inventory,
     project_id_for_scope,
     read_terminal_pool,
     record_terminal_exposure,
     retainable_pool,
     scope_for_project,
+    serving_compatibility_keys_match,
+    topic_slot_key,
     write_cold_start_pool,
     write_terminal_pool,
 )
@@ -99,10 +100,9 @@ ISSUED_SLATE_EVENT_TYPE = "v6_issued_slate"
 NEWS_CHECK_EVENT_TYPE = "v6_news_feed_check"
 NEWS_REFRESH_EVENT_TYPE = "v6_news_refresh"
 NEWS_CHECK_INTERVAL_SECONDS = 30 * 60
-# A new event swaps the news card of a pool that leads with one; a pool without
-# one to swap is regenerated whole. Each has its own daily allowance.
+# Legacy daily cap kept for older news_refresh receipts; new checks only
+# schedule a normal same-batch successor (hot news + personalized together).
 NEWS_REFRESH_DAILY_LIMIT = 12
-NEWS_CHECK_DAILY_REGENERATION_LIMIT = 2
 
 GenerateFn = Callable[
     [GenerationTrigger, ArkBackgroundConfig, str, str | None, str],
@@ -114,8 +114,8 @@ PrepareShortIntentFn = Callable[[str], Awaitable[str]]
 PrepareOutcomesFn = Callable[[], Awaitable[str]]
 ShortIntentVersionLoader = Callable[[str], int]
 ConfigLoader = Callable[[], ArkBackgroundConfig | None]
-InputRevisionLoader = Callable[[str], object]
-PendingRequestLoader = Callable[[str], bool]
+InputRevisionLoader = Callable[[str, str], object]
+PendingRequestLoader = Callable[[str, str], bool]
 
 
 # Merged requests keep the strongest origin: an explicit retry, a news check's
@@ -126,6 +126,24 @@ _CARRIED_CATEGORY = "profile_interest_continuation"
 # Outcomes of a request that found nothing to do; the page has nothing new to read.
 _QUIET_OUTCOMES = frozenset({"unchanged", "chat_request_inflight", "news_unchanged"})
 _WRITTEN_OUTCOMES = frozenset({"written", "already_written"})
+
+
+def _issued_slate_in_scope(
+    payload: Any,
+    *,
+    context_scope: str,
+    project_id: str | None,
+    work_mode: str,
+) -> bool:
+    """Whether an issued slate was written for the scope now being served."""
+
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("context_scope") != context_scope:
+        return False
+    if payload.get("project_id") != project_id:
+        return False
+    return normalize_topic_work_mode(payload.get("work_mode")) == work_mode
 
 
 class _RunRequest(NamedTuple):
@@ -178,7 +196,7 @@ class TopicService:
         self.store = store
         self._generate = generate
         self._refresh_news = refresh_news
-        self._pending_request_loader = pending_request_loader or (lambda _scope: False)
+        self._pending_request_loader = pending_request_loader or (lambda _scope, _mode: False)
         self._hot_list = hot_list if hot_list is not None else HotListFeed(store, now=now)
         self._news_check_task: asyncio.Task[str] | None = None
         self._news_refresh_task: asyncio.Task[BackgroundGenerationResult] | None = None
@@ -201,7 +219,7 @@ class TopicService:
             self._short_intent_version_loader = load_short_intent_version
         else:
             self._short_intent_version_loader = short_intent_version_loader
-        self._input_revision_loader = input_revision_loader or (lambda _scope: None)
+        self._input_revision_loader = input_revision_loader or (lambda _scope, _mode: None)
         self._config_loader = config_loader
         self._ark_config = config_loader()
         self._configuration_status = background_configuration_status(self._ark_config)
@@ -211,13 +229,6 @@ class TopicService:
             pool_writer=write_terminal_pool,
             policy_id=POLICY_ID,
             deadline_seconds=V6_BACKGROUND_GENERATION_DEADLINE_SECONDS,
-            terminal_external_audit_loader=lambda generation_attempt_id: (
-                load_external_invocation_audit_snapshot(
-                    store,
-                    policy_id=POLICY_ID,
-                    generation_attempt_id=generation_attempt_id,
-                )
-            ),
         )
         self._runs: dict[str, _ScopeRun] = {}
         self._kept_for_chat: dict[str, _RunRequest] = {}
@@ -225,7 +236,12 @@ class TopicService:
         self._accepting_work = enabled
         self._control_lock = asyncio.Lock()
         # The scope's preparation state, and whether a pool was just written for the page to read.
-        self.on_prepared: Callable[[str, str, bool], None] | None = None
+        self.on_prepared: Callable[..., None] | None = None
+
+
+    @staticmethod
+    def _slot_key(context_scope: str, work_mode: object) -> str:
+        return topic_slot_key(context_scope, work_mode)
 
     def configuration_status(self) -> dict[str, Any]:
         status = {**self._configuration_status, "search_provider_id": self._search_provider_id,
@@ -288,8 +304,8 @@ class TopicService:
         """Put a changed recommendation model in force without a restart.
 
         Work under the old model is cancelled and drained before the new one
-        takes over, so none of it writes afterwards; the scopes are then
-        prepared again with the new model.
+        takes over, so none of it writes afterwards. Existing topic pools keep
+        serving; the new model is used only on the next natural generation.
         """
         async with self._control_lock:
             config = self._config_loader()
@@ -299,8 +315,6 @@ class TopicService:
                 self._ark_config = config
                 self._configuration_status = background_configuration_status(config)
                 self._accepting_work = accepting
-                if accepting:
-                    self.schedule_seed("recommendation-model-changed")
             return self.configuration_status()
 
     async def delete_data(self) -> dict[str, Any]:
@@ -476,17 +490,23 @@ class TopicService:
             return None
         return failed
 
-    def preparation_state(self, context_scope: str) -> str:
+    def preparation_state(
+        self,
+        context_scope: str,
+        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
+    ) -> str:
+        normalized_work_mode = normalize_topic_work_mode(work_mode)
         if not self._accepting_work:
             return "disabled"
         if self._ark_config is None:
             return "missing_configuration"
-        slot = self._runs.get(context_scope)
+        slot = self._runs.get(self._slot_key(context_scope, normalized_work_mode))
         if slot is not None and slot.busy:
             return "preparing"
         # Attempts under another model belong to a setup that is no longer in force.
         failed = self._unsettled_attempt({
             "generation_trigger_key.context_scope": context_scope,
+            "generation_trigger_key.work_mode": normalized_work_mode,
             "generation_trigger_key.model": self._ark_config.expected_model or self._ark_config.model,
         }, context_scope=context_scope)
         if failed:
@@ -563,13 +583,13 @@ class TopicService:
         successor is a stock question, not an identity one.
         """
 
+        expected_serving = build_serving_compatibility_key(trigger_key)
+        # Match serving keys in Python so rows that still embed model id or
+        # generation_config_version remain successors after a connection change.
         rows = self.store.query_events(
             event_type="starter_slate_manifest",
             policy_id=POLICY_ID,
             payload_equals={
-                "serving_compatibility_key": build_serving_compatibility_key(
-                    trigger_key
-                ),
                 "context_scope": trigger_key["context_scope"],
                 "project_id": trigger_key["project_id"],
             },
@@ -578,12 +598,23 @@ class TopicService:
                 trigger_key["negative_preference_version"],
             ),
             order_by_payload_integer_desc="negative_preference_version",
-            limit=1,
+            limit=64,
             newest_first=True,
         )
-        if not rows or not isinstance(rows[0].get("payload"), dict):
+        manifest: dict[str, Any] | None = None
+        for row in rows:
+            payload = row.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            if not serving_compatibility_keys_match(
+                payload.get("serving_compatibility_key"),
+                expected_serving,
+            ):
+                continue
+            manifest = payload
+            break
+        if manifest is None:
             return None
-        manifest = rows[0]["payload"]
         # Preset cards are what the page shows while recommendation is off, or before the
         # first personalized pool exists. They must not answer a replenishment: turning
         # the switch on has to prepare a new pool instead of keeping the templates.
@@ -592,7 +623,12 @@ class TopicService:
         generation_trigger = manifest.get("generation_trigger_key")
         if not isinstance(generation_trigger, dict):
             return None
-        ignored = {"input_revision_receipt", "negative_preference_version"}
+        ignored = {
+            "input_revision_receipt",
+            "negative_preference_version",
+            "model",
+            "generation_config_version",
+        }
         accepted_trigger = {
             key: value
             for key, value in trigger_key.items()
@@ -641,6 +677,7 @@ class TopicService:
         *,
         context_scope: str,
         project_id: str | None,
+        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
         input_revision_receipt: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         profile_semantic_version, feedback = self._scope_state(
@@ -660,6 +697,7 @@ class TopicService:
             local_date=local_date,
             context_scope=context_scope,
             project_id=project_id,
+            work_mode=normalize_topic_work_mode(work_mode),
             profile_semantic_version=profile_semantic_version,
             short_intent_version=int(
                 self._short_intent_version_loader(context_scope)
@@ -713,16 +751,29 @@ class TopicService:
 
         self._outcome_task = self._track(asyncio.create_task(collect()))
 
-    def _held_for_chat(self, origin: str, context_scope: str) -> bool:
+    def _held_for_chat(
+        self,
+        origin: str,
+        context_scope: str,
+        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
+    ) -> bool:
         """A chat of the scope is still answering, and the request leaves its need to that chat.
 
         Only a retry the user asked for runs regardless; generating now would
         use the discussion before the chat.
         """
 
-        return origin != "manual_retry" and self._pending_request_loader(context_scope)
+        return origin != "manual_retry" and self._pending_request_loader(
+            context_scope, normalize_topic_work_mode(work_mode),
+        )
 
-    def _keep_for_chat(self, context_scope: str, request: _RunRequest) -> None:
+    def _keep_for_chat(
+        self,
+        context_scope: str,
+        request: _RunRequest,
+        *,
+        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
+    ) -> None:
         """Keep what a request held for a chat asks beyond an automatic run.
 
         The chat's completion boundary asks for an automatic run of the scope;
@@ -731,7 +782,7 @@ class TopicService:
         """
 
         if request.origin != "lazy_seed":
-            self._kept_for_chat[context_scope] = request
+            self._kept_for_chat[self._slot_key(context_scope, work_mode)] = request
 
     def _reason_not_to_run(
         self,
@@ -739,6 +790,7 @@ class TopicService:
         origin: str,
         context_scope: str,
         project_id: str | None,
+        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
         receipt: dict[str, str],
         prepared: bool,
     ) -> str | None:
@@ -754,12 +806,15 @@ class TopicService:
         one runs even after preparation.
         """
 
-        if self._held_for_chat(origin, context_scope):
+        if self._held_for_chat(origin, context_scope, work_mode):
             return "chat_request_inflight"
         if origin in {"manual_retry", "news_check"}:
             return None
         trigger_key = self._trigger_key(
-            context_scope=context_scope, project_id=project_id, input_revision_receipt=receipt,
+            context_scope=context_scope,
+            project_id=project_id,
+            work_mode=work_mode,
+            input_revision_receipt=receipt,
         )
         manifest_id = self._manifest_id_for_successor_state(trigger_key)
         if manifest_id is None:
@@ -827,12 +882,16 @@ class TopicService:
         origin: str,
         context_scope: str,
         project_id: str | None,
+        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
         visit_id: str,
         receipt: dict[str, str],
     ) -> str:
         config = self._ark_config
         previous = self._unsettled_attempt({"generation_trigger_key": self._trigger_key(
-            context_scope=context_scope, project_id=project_id, input_revision_receipt=receipt)},
+            context_scope=context_scope,
+            project_id=project_id,
+            work_mode=work_mode,
+            input_revision_receipt=receipt)},
             context_scope=context_scope)
         if previous is not None and origin != "manual_retry":
             return ("abstained" if previous["event_type"] == "background_generation_abstained"
@@ -846,6 +905,7 @@ class TopicService:
         trigger_key = self._trigger_key(
             context_scope=context_scope,
             project_id=project_id,
+            work_mode=work_mode,
             input_revision_receipt=receipt,
         )
         stable_manifest_id = self._manifest_id_for_successor_state(trigger_key)
@@ -855,7 +915,7 @@ class TopicService:
         if not reason:
             answer = self._reason_not_to_run(
                 origin=origin, context_scope=context_scope, project_id=project_id,
-                receipt=receipt, prepared=True,
+                work_mode=work_mode, receipt=receipt, prepared=True,
             )
         if answer is not None:
             if (
@@ -932,7 +992,9 @@ class TopicService:
                     receipt=receipt,
                 )
                 if self._accepting_work and self.on_prepared:
-                    self.on_prepared(context_scope, "ready", True)
+                    self.on_prepared(
+                        context_scope, "ready", True, work_mode=work_mode,
+                    )
         return status
 
     def _request(
@@ -941,6 +1003,7 @@ class TopicService:
         origin: str,
         context_scope: str,
         project_id: str | None,
+        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
         visit_id: str,
     ) -> asyncio.Task[str]:
         """Ask for a replenishment run of one scope.
@@ -955,16 +1018,22 @@ class TopicService:
             raise ValueError("visit_id is required")
         if not self._accepting_work:
             return asyncio.create_task(self._finished("disabled"))
+        normalized_work_mode = normalize_topic_work_mode(work_mode)
+        slot_key = self._slot_key(context_scope, normalized_work_mode)
         request = _RunRequest(origin, visit_id)
-        kept = self._kept_for_chat.pop(context_scope, None)
+        kept = self._kept_for_chat.pop(slot_key, None)
         if kept is not None and _ORIGIN_RANK[kept.origin] > _ORIGIN_RANK[origin]:
             request = kept
-        slot = self._runs.get(context_scope)
-        if (slot is None or not slot.busy) and self._held_for_chat(request.origin, context_scope):
+        slot = self._runs.get(slot_key)
+        if (slot is None or not slot.busy) and self._held_for_chat(
+            request.origin, context_scope, normalized_work_mode,
+        ):
             # Asked on arrival as well: a chat that is cancelled or fails announces
             # its end while the gateway still runs it, and only the host's
             # completion row that follows is the boundary.
-            self._keep_for_chat(context_scope, request)
+            self._keep_for_chat(
+                context_scope, request, work_mode=normalized_work_mode,
+            )
             return self._track(asyncio.create_task(self._finished("chat_request_inflight")))
         if slot is not None and slot.queued is not None and not slot.queued.done():
             if _ORIGIN_RANK[request.origin] >= _ORIGIN_RANK[slot.queued_request.origin]:
@@ -973,13 +1042,19 @@ class TopicService:
         if slot is not None and slot.current is not None and not slot.current.done():
             slot.queued_request = request
             slot.queued = self._launch(slot, self._run_after(
-                slot, slot.current, context_scope=context_scope, project_id=project_id,
-            ), context_scope=context_scope)
+                slot, slot.current,
+                context_scope=context_scope,
+                project_id=project_id,
+                work_mode=normalized_work_mode,
+            ), context_scope=context_scope, work_mode=normalized_work_mode)
             return slot.queued
-        slot = self._runs[context_scope] = _ScopeRun()
+        slot = self._runs[slot_key] = _ScopeRun()
         slot.current = self._launch(slot, self._run(
-            slot, request, context_scope=context_scope, project_id=project_id,
-        ), context_scope=context_scope)
+            slot, request,
+            context_scope=context_scope,
+            project_id=project_id,
+            work_mode=normalized_work_mode,
+        ), context_scope=context_scope, work_mode=normalized_work_mode)
         return slot.current
 
     def _launch(
@@ -988,18 +1063,20 @@ class TopicService:
         run: Coroutine[Any, Any, str],
         *,
         context_scope: str,
+        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
     ) -> asyncio.Task[str]:
         task = asyncio.create_task(run)
+        slot_key = self._slot_key(context_scope, work_mode)
 
         def report(done: asyncio.Task[str]) -> None:
             outcome = "failed" if done.cancelled() or done.exception() else done.result()
-            if self._runs.get(context_scope) is not slot:
+            if self._runs.get(slot_key) is not slot:
                 return
             if outcome not in _QUIET_OUTCOMES:
                 slot.outcome = outcome
             if slot.current is not done or slot.queued is not None:
                 return
-            del self._runs[context_scope]
+            del self._runs[slot_key]
             if not self._accepting_work:
                 return
             if done.cancelled():
@@ -1011,7 +1088,12 @@ class TopicService:
             if slot.outcome in _WRITTEN_OUTCOMES:
                 return
             # The chain wrote no pool: the page learns the state and keeps its cards.
-            self.on_prepared(context_scope, self.preparation_state(context_scope), False)
+            self.on_prepared(
+                context_scope,
+                self.preparation_state(context_scope, work_mode),
+                False,
+                work_mode=work_mode,
+            )
 
         task.add_done_callback(report)
         return self._track(task)
@@ -1023,6 +1105,7 @@ class TopicService:
         *,
         context_scope: str,
         project_id: str | None,
+        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
     ) -> str:
         """The queued run: once the scope's current run ends, serve the request merged into it."""
 
@@ -1035,7 +1118,12 @@ class TopicService:
         slot.current, slot.queued = asyncio.current_task(), None
         slot.feedback_changed_before_candidates = False
         return await self._run(
-            slot, slot.queued_request, context_scope=context_scope, project_id=project_id, answered=answered,
+            slot,
+            slot.queued_request,
+            context_scope=context_scope,
+            project_id=project_id,
+            work_mode=work_mode,
+            answered=answered,
         )
 
     async def _run(
@@ -1045,6 +1133,7 @@ class TopicService:
         *,
         context_scope: str,
         project_id: str | None,
+        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
         answered: str = "",
     ) -> str:
         """Serve one request within the total deadline; ``answered`` is the outcome of the run before it."""
@@ -1055,16 +1144,24 @@ class TopicService:
         try:
             async with asyncio.timeout(deadline):
                 return await self._serve_request(
-                    slot, request, context_scope=context_scope, project_id=project_id, answered=answered,
+                    slot,
+                    request,
+                    context_scope=context_scope,
+                    project_id=project_id,
+                    work_mode=work_mode,
+                    answered=answered,
                 )
         except TimeoutError:
             self._coordinator.record_generation_event(
                 "background_generation_deadline",
-                self._trigger_key(context_scope=context_scope, project_id=project_id,
-                                  input_revision_receipt=slot.receipt),
+                self._trigger_key(
+                    context_scope=context_scope,
+                    project_id=project_id,
+                    work_mode=work_mode,
+                    input_revision_receipt=slot.receipt,
+                ),
                 generation_attempt_id=attempt_id,
                 reason="total_deadline_exceeded",
-                external_invocation_audit=self._coordinator.terminal_external_audit(attempt_id),
             )
             return "background_generation_deadline"
         finally:
@@ -1077,9 +1174,13 @@ class TopicService:
         *,
         context_scope: str,
         project_id: str | None,
+        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
         answered: str,
     ) -> str:
-        input_revision = await asyncio.to_thread(self._input_revision_loader, context_scope)
+        normalized_work_mode = normalize_topic_work_mode(work_mode)
+        input_revision = await asyncio.to_thread(
+            self._input_revision_loader, context_scope, normalized_work_mode,
+        )
         receipt = self._input_revision_receipt(context_scope, input_revision)
         slot.receipt = receipt
         self._record_observed_input_revision(context_scope, receipt)
@@ -1089,8 +1190,11 @@ class TopicService:
         after_write = answered in _WRITTEN_OUTCOMES
         outcome = self._reason_not_to_run(
             origin="lazy_seed" if after_write else request.origin,
-            context_scope=context_scope, project_id=project_id,
-            receipt=receipt, prepared=False,
+            context_scope=context_scope,
+            project_id=project_id,
+            work_mode=normalized_work_mode,
+            receipt=receipt,
+            prepared=False,
         )
         if outcome == "unchanged" and after_write:
             return answered
@@ -1101,11 +1205,17 @@ class TopicService:
             with provider_invocation_context(visit_id=request.visit_id):
                 outcome = await self._prepare_then_generate(
                     slot=slot,
-                    origin=request.origin, context_scope=context_scope, project_id=project_id,
-                    visit_id=request.visit_id, receipt=receipt,
+                    origin=request.origin,
+                    context_scope=context_scope,
+                    project_id=project_id,
+                    work_mode=normalized_work_mode,
+                    visit_id=request.visit_id,
+                    receipt=receipt,
                 )
         if outcome == "chat_request_inflight" and not after_write:
-            self._keep_for_chat(context_scope, request)
+            self._keep_for_chat(
+                context_scope, request, work_mode=normalized_work_mode,
+            )
         return outcome
 
     async def _replace_news_card(self, *, receipt: dict[str, str], visit_id: str) -> str:
@@ -1117,7 +1227,10 @@ class TopicService:
 
         config = self._ark_config
         trigger_key = self._trigger_key(
-            context_scope=GLOBAL_NEW_CHAT_SCOPE, project_id=None, input_revision_receipt=receipt,
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+            work_mode=DEFAULT_TOPIC_WORK_MODE,
+            input_revision_receipt=receipt,
         )
         manifest_id = self._manifest_id_for_successor_state(trigger_key)
         if config is None:
@@ -1176,7 +1289,12 @@ class TopicService:
             context_scope=GLOBAL_NEW_CHAT_SCOPE, manifest_id=written_id, receipt=receipt,
         )
         if self._accepting_work and self.on_prepared:
-            self.on_prepared(GLOBAL_NEW_CHAT_SCOPE, "ready", True)
+            self.on_prepared(
+                GLOBAL_NEW_CHAT_SCOPE,
+                "ready",
+                True,
+                work_mode=DEFAULT_TOPIC_WORK_MODE,
+            )
         return "written"
 
     def _seen_news_events(self) -> set[str]:
@@ -1258,81 +1376,17 @@ class TopicService:
             }
         )
 
-    def schedule_news_check(self, visit_id: str) -> asyncio.Task[str] | None:
-        """Page entry or foreground: look for a new hot-list event at most every 30 minutes.
+    @staticmethod
+    def schedule_news_check(visit_id: str) -> asyncio.Task[str] | None:
+        """No-op: hot-news cards ride the ordinary personalized generation batch.
 
-        The check pulls the hot list with zero model calls. An event is its
-        term, as an event key; it is new when none of the recent matches read
-        it, and a dismissed event never is. A new event replaces the news card
-        of a global pool that leads with one, keeping its other cards (at most
-        twelve a local day); a pool with no news card to replace is regenerated
-        whole (at most twice a day). Nothing is scheduled while a global run is
-        in flight; a chat still answering holds the run for its completion.
+        Enable, chat successors, and manual retry already run the hot-news lane
+        beside interest cards. A separate homepage/foreground news check is not
+        scheduled.
         """
 
-        if not self._accepting_work or self._ark_config is None:
-            return None
-        existing = self._news_check_task
-        if existing is not None and not existing.done():
-            return existing
-        last = self.store.query_events(
-            event_type=NEWS_CHECK_EVENT_TYPE, policy_id=POLICY_ID, limit=1, newest_first=True,
-        )
-        if last and self._now() - float(last[0].get("created_at") or 0) < NEWS_CHECK_INTERVAL_SECONDS:
-            return None
-
-        async def check() -> str:
-            pull = await self._hot_list.pull()
-            if pull is None:
-                self._record_news_check({"hot_list_pull_receipt_id": None, "observed_events": [],
-                                         "unseen_events": [], "scheduled": False, "reason": "hot_list_unavailable"})
-                return "hot_list_unavailable"
-            _, feedback = self._scope_state(context_scope=GLOBAL_NEW_CHAT_SCOPE, project_id=None)
-            observed = list(dict.fromkeys(
-                hot_event_key(entry.word) for entry in pull.entries[:HOT_LIST_MATCH_LIMIT]
-            ))
-            seen = self._seen_news_events()
-            unseen = [event for event in observed if event not in seen and not feedback.blocks_news_event(event)]
-            kind = NEWS_ONLY_SUCCESSOR if self._news_led_pool() else "full"
-            successors = self._news_successors_today(kind)
-            inflight = self._runs.get(GLOBAL_NEW_CHAT_SCOPE)
-            if not unseen:
-                reason = "no_unseen_items"
-            elif successors >= (
-                NEWS_REFRESH_DAILY_LIMIT if kind == NEWS_ONLY_SUCCESSOR else NEWS_CHECK_DAILY_REGENERATION_LIMIT
-            ):
-                reason = "daily_limit_reached"
-            elif inflight is not None and inflight.busy:
-                reason = "global_request_inflight"
-            else:
-                reason = "unseen_items"
-            scheduled = reason == "unseen_items"
-            self._record_news_check({
-                "hot_list_pull_receipt_id": pull.receipt_id,
-                "observed_events": observed,
-                "unseen_events": unseen,
-                "successor_kind": kind,
-                "scheduled": scheduled,
-                "reason": reason,
-                "successors_today_before": successors,
-            })
-            if not scheduled:
-                return reason
-            await self._request(
-                origin="news_refresh" if kind == NEWS_ONLY_SUCCESSOR else "news_check",
-                context_scope=GLOBAL_NEW_CHAT_SCOPE,
-                project_id=None,
-                visit_id=visit_id,
-            )
-            return "scheduled"
-
-        task = asyncio.create_task(check())
-        self._news_check_task = task
-        return self._track(task)
-
-    def retry(self, *, context_scope: str, project_id: str | None, visit_id: str) -> asyncio.Task[str]:
-        return self._request(origin="manual_retry", context_scope=context_scope,
-                             project_id=project_id, visit_id=visit_id)
+        del visit_id
+        return None
 
     def schedule_seed(self, visit_id: str) -> asyncio.Task[str]:
         """Prepare global and historical project pools before the next visit."""
@@ -1341,30 +1395,49 @@ class TopicService:
                 return "disabled"
             project_ids = await asyncio.to_thread(self._history_project_ids_loader)
             tasks = [self.schedule_successor(
-                context_scope=GLOBAL_NEW_CHAT_SCOPE, project_id=None, visit_id=visit_id,
+                context_scope=GLOBAL_NEW_CHAT_SCOPE,
+                project_id=None,
+                work_mode=DEFAULT_TOPIC_WORK_MODE,
+                visit_id=visit_id,
             )]
             tasks.extend(self.schedule_successor(
-                context_scope=scope_for_project(pid), project_id=pid, visit_id=visit_id,
+                context_scope=scope_for_project(pid),
+                project_id=pid,
+                work_mode=DEFAULT_TOPIC_WORK_MODE,
+                visit_id=visit_id,
             ) for pid in project_ids)
             results = await asyncio.gather(*tasks)
             return results[0]
         return self._track(asyncio.create_task(prepare_history()))
 
-    def _candidate_input_changed(self, context_scope: str, slot: _ScopeRun) -> bool:
+    def _candidate_input_changed(
+        self,
+        context_scope: str,
+        slot: _ScopeRun,
+        *,
+        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
+    ) -> bool:
         if slot.queued is None:
             return False
         if slot.receipt is None:
             return False
-        if self._pending_request_loader(context_scope):
+        normalized_work_mode = normalize_topic_work_mode(work_mode)
+        if self._pending_request_loader(context_scope, normalized_work_mode):
             return False
         return self._input_revision_receipt(
-            context_scope, self._input_revision_loader(context_scope),
+            context_scope,
+            self._input_revision_loader(context_scope, normalized_work_mode),
         ) != slot.receipt
 
-    def candidate_generation_ready(self, context_scope: str) -> None:
+    def candidate_generation_ready(
+        self,
+        context_scope: str,
+        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
+    ) -> None:
         """Register candidate work after the scope's state and summaries are durable."""
 
-        slot = self._runs.get(context_scope)
+        normalized_work_mode = normalize_topic_work_mode(work_mode)
+        slot = self._runs.get(self._slot_key(context_scope, normalized_work_mode))
         if slot is None:
             return
         if slot.current is None:
@@ -1372,7 +1445,9 @@ class TopicService:
         if slot.current.done():
             return
         slot.candidate_task = asyncio.current_task()
-        if slot.feedback_changed_before_candidates or self._candidate_input_changed(context_scope, slot):
+        if slot.feedback_changed_before_candidates or self._candidate_input_changed(
+            context_scope, slot, work_mode=normalized_work_mode,
+        ):
             slot.feedback_changed_before_candidates = False
             slot.candidate_task = None
             raise asyncio.CancelledError
@@ -1382,6 +1457,7 @@ class TopicService:
         *,
         context_scope: str,
         project_id: str | None,
+        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
         visit_id: str,
     ) -> asyncio.Task[str]:
         """Request one scoped same-day successor after accepted state change.
@@ -1393,18 +1469,22 @@ class TopicService:
 
         if project_id_for_scope(context_scope) != project_id:
             raise ValueError("project mismatch")
+        normalized_work_mode = normalize_topic_work_mode(work_mode)
         task = self._request(
             origin="lazy_seed",
             context_scope=context_scope,
             project_id=project_id,
+            work_mode=normalized_work_mode,
             visit_id=visit_id,
         )
-        slot = self._runs.get(context_scope)
+        slot = self._runs.get(self._slot_key(context_scope, normalized_work_mode))
         _condition = (
             slot is not None and slot.candidate_task is not None
             and not slot.candidate_task.done()
             and not slot.candidate_task.cancelling()
-            and self._candidate_input_changed(context_scope, slot)
+            and self._candidate_input_changed(
+                context_scope, slot, work_mode=normalized_work_mode,
+            )
         )
         if (_condition):
             slot.candidate_task.cancel()
@@ -1432,6 +1512,7 @@ class TopicService:
                     "generation_batch_id": served["generation_batch_id"],
                     "context_scope": served["context_scope"],
                     "project_id": served["project_id"],
+                    "work_mode": normalize_topic_work_mode(served.get("work_mode")),
                     "profile_semantic_version": served.get(
                         "profile_semantic_version"
                     ),
@@ -1491,9 +1572,17 @@ class TopicService:
             "selection_mode": str(rows[0].get("selection_mode") or ""),
         }
 
-    def _opened_cold_start_card_filter(self) -> Callable[[dict[str, Any]], bool]:
-        """A preset card the user already opened stays out of a rebuilt pool."""
+    def _opened_cold_start_card_filter(
+        self,
+        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
+    ) -> Callable[[dict[str, Any]], bool]:
+        """A preset card the user already opened stays out of a rebuilt pool.
 
+        Suppression is scoped to the same work_mode so a work click does not
+        remove the corpus card from design/code rebuilds.
+        """
+
+        normalized_work_mode = normalize_topic_work_mode(work_mode)
         opened_cards: set[str] = set()
         opened_starters: set[str] = set()
         for row in self.store.query_events(
@@ -1503,6 +1592,13 @@ class TopicService:
             if not isinstance(payload, dict):
                 continue
             if payload.get("context_scope") not in (None, GLOBAL_NEW_CHAT_SCOPE):
+                continue
+            click_mode = payload.get("work_mode")
+            if click_mode in (None, ""):
+                # Legacy clicks without work_mode only suppress the work pool.
+                if normalized_work_mode != DEFAULT_TOPIC_WORK_MODE:
+                    continue
+            elif normalize_topic_work_mode(click_mode) != normalized_work_mode:
                 continue
             card_id = str(payload.get("card_id") or "")
             starter_id = str(payload.get("source_starter_id") or "")
@@ -1527,10 +1623,11 @@ class TopicService:
         issued_slate: dict[str, Any] | None,
         preset_only: bool = False,
     ) -> dict[str, Any]:
-        """Write packaged/hot-list cards so a scope visit has a slate to show.
+        """Write packaged preset cards so a scope visit has a slate to show.
 
         Global and project scopes share this stand-in: when recommendation is off
-        or the personalized pool is empty, the packaged corpus fills the page.
+        or the personalized pool is empty, only the packaged corpus fills the page.
+        Hot search stays on the personalized generation path, never mixed here.
         """
 
         context_scope = str(trigger_key["context_scope"])
@@ -1555,21 +1652,14 @@ class TopicService:
             # again instead of showing one card fewer.
             if existing_is_preset and len(empty["cards"]) >= FIRST_SCREEN_CARD_TARGET:
                 return empty
-        # Personalized pool miss (or provider refusal) still fills the page with
-        # packaged cards; never leave it blank when the corpus can serve.
-        provider_refused = (
-            not preset_only and bool(self.configuration_status().get("provider_refused"))
-        )
+        # Personalized pool miss still fills the page with packaged presets only.
         cards = build_cold_start_cards(
             trigger_key=trigger_key,
             now=self._now(),
-            hot_list_pull=(
-                None
-                if preset_only or provider_refused
-                else self._hot_list.cached_pull()
-            ),
             feedback=feedback,
-            exclude=self._opened_cold_start_card_filter(),
+            exclude=self._opened_cold_start_card_filter(
+                normalize_topic_work_mode(trigger_key.get("work_mode")),
+            ),
         )
         if not cards:
             return empty
@@ -1603,6 +1693,7 @@ class TopicService:
         *,
         context_scope: str,
         project_id: str | None,
+        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
         slate_id: str | None = None,
     ) -> dict[str, Any]:
         """Read the prepared pool without starting background work."""
@@ -1618,10 +1709,16 @@ class TopicService:
                 "policy_id": POLICY_ID,
             }
 
+        normalized_work_mode = normalize_topic_work_mode(work_mode)
+        try:
+            self.store.prune(now=self._now())
+        except Exception:  # noqa: BLE001 - serving must not fail on maintenance
+            logger.warning("[Topic] store prune failed", exc_info=True)
         _, feedback = self._scope_state(context_scope=context_scope, project_id=project_id)
         trigger_key = self._trigger_key(
             context_scope=context_scope,
             project_id=project_id,
+            work_mode=normalized_work_mode,
         )
         issued = None
         if slate_id:
@@ -1633,9 +1730,11 @@ class TopicService:
             )
             if len(rows) == 1 and rows[0].get("session_id") == session_id:
                 payload = rows[0].get("payload")
-                if isinstance(payload, dict) and (
-                    payload.get("context_scope") == context_scope
-                    and payload.get("project_id") == project_id
+                if _issued_slate_in_scope(
+                    payload,
+                    context_scope=context_scope,
+                    project_id=project_id,
+                    work_mode=normalized_work_mode,
                 ):
                     issued = payload
         preset_only = not self._accepting_work or self._ark_config is None
@@ -1668,11 +1767,14 @@ class TopicService:
             return {
                 "available": False,
                 "reason": "v6_pool_miss",
-                "preparation_state": self.preparation_state(context_scope),
+                "preparation_state": self.preparation_state(
+                    context_scope, normalized_work_mode,
+                ),
                 "session_id": session_id,
                 "policy_id": POLICY_ID,
                 "context_scope": context_scope,
                 "project_id": project_id,
+                "work_mode": normalized_work_mode,
             }
 
         slate_id = f"v6-slate-{uuid.uuid4().hex}"
@@ -1723,6 +1825,7 @@ class TopicService:
             "policy_id": POLICY_ID,
             "context_scope": context_scope,
             "project_id": project_id,
+            "work_mode": normalized_work_mode,
             "short_intent_version": served["short_intent_version"],
             "pool_card_count": served["pool_card_count"],
             "exposure_slice_id": served["exposure_slice_id"],
@@ -1734,18 +1837,14 @@ class TopicService:
             "served_card_ids": served["served_card_ids"],
         }
         # The cards stay usable while a refresh runs or after it fails.
-        state = self.preparation_state(context_scope)
+        state = self.preparation_state(context_scope, normalized_work_mode)
         # Preset cards are a stand-in when the personalized pool has nothing to
-        # show. While recommendation is on they stay on screen, but the page must
-        # say a personalized batch is coming (or that settings need attention) and
-        # a run must be in flight when the model can still be asked.
+        # show. Serving them must not itself start a run: enable seeds, chat /
+        # news successors, and manual retry own generation. Changing the
+        # recommendation model only reloads config; a welcome re-serve of the
+        # same presets must keep those cards and stay quiet.
         only_preset_cards = bool(served["cards"]) and all(
             is_cold_start_card(card) for card in served["cards"]
-        )
-        can_prepare_personalized = (
-            self._accepting_work
-            and self._ark_config is not None
-            and self._generate is not None
         )
         # Writing the stand-in pool settles a prior failed attempt, which would
         # otherwise clear provider_unavailable; keep the refusal visible.
@@ -1755,20 +1854,15 @@ class TopicService:
             and self.configuration_status().get("provider_refused")
         ):
             state = "provider_unavailable"
-        elif (
-            can_prepare_personalized
-            and only_preset_cards
-            and state in {
-                "ready",
-                "no_content",
-                "failed",
-                "waiting_for_input",
-            }
-        ):
-            slot = self._runs.get(context_scope)
-            if slot is None or not slot.busy:
-                self.schedule_seed(session_id)
-            state = "preparing"
+        elif only_preset_cards:
+            slot = self._runs.get(
+                self._slot_key(context_scope, normalized_work_mode)
+            )
+            # Only this scope × work_mode slot. Global _tasks include other
+            # scopes' successors and outcome collection, which must not paint
+            # an unrelated welcome page as preparing.
+            if slot is not None and slot.busy:
+                state = "preparing"
         if state in {
             "preparing",
             "failed",
@@ -1815,7 +1909,7 @@ class TopicService:
         outcome_queue: NewPageOutcomeQueue,
         created_at: float | None = None,
     ) -> dict[str, bool]:
-        """Record an exact shown card's outcome and request its scope's refill."""
+        """Record an exact shown card click. Refill waits for chat completion."""
 
         event_type = str(event.get("event_type") or "").strip()
         payload = event["payload"]
@@ -1864,7 +1958,7 @@ class TopicService:
         occurred_at = float(created_at if created_at is not None else self._now())
         exposure_id = str(event["slate_id"])
         status = outcome_queue.publish(NewPageOutcomeSignal(
-            outcome="accepted" if event_type == "topic_click" else event_type,
+            outcome="accepted",
             manifest_id=manifest_id,
             generation_batch_id=generation_batch_id,
             exposure_id=exposure_id,
@@ -1877,16 +1971,7 @@ class TopicService:
             occurred_at=occurred_at,
             host_written=is_cold_start_card(card),
         ))
-        reply = {"recorded": status == "recorded"}
-        if reply["recorded"]:
-            self.schedule_successor(
-                context_scope=context_scope,
-                project_id=project_id,
-                visit_id=exposure_id,
-            )
-            if context_scope == GLOBAL_NEW_CHAT_SCOPE and self._news_refresh_task is not None:
-                self._news_refresh_task.cancel()
-        return reply
+        return {"recorded": status == "recorded"}
 
     async def wait_for_background(self) -> None:
         tasks = [task for task in self._tasks if not task.done()]

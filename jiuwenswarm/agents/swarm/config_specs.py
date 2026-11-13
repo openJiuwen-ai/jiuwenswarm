@@ -65,7 +65,7 @@ from jiuwenswarm.common.config import (
     get_skill_evolution_enabled,
     get_symphony_evolution_enabled,
 )
-from jiuwenswarm.common.cua_config import is_cua_agent_enabled
+from jiuwenswarm.common.cua_config import is_cua_agent_enabled, is_cua_backend_available
 from jiuwenswarm.common.kv_cache_affinity_config import (
     build_kv_cache_affinity_config,
     get_kv_cache_control_model_client_config,
@@ -1011,7 +1011,7 @@ def build_member_subagent_specs(
     # so every mode uses the same release default and explicit user preference.
     if is_cua_agent_enabled(
         subagents_cfg.get("cua_agent") if isinstance(subagents_cfg, dict) else None
-    ):
+    ) and is_cua_backend_available():
         specs.append(
             _code_subagent_spec("cua_agent", registry.SWARM_CUA_AGENT, react, language)
         )

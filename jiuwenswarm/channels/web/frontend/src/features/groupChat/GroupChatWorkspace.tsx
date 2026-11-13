@@ -24,7 +24,7 @@ import { ExecutionCard } from './ExecutionCard';
 import { GroupFilePreviewPanel, GroupFileRow, groupFileTarget, type GroupFile } from './GroupFileRow';
 import { InteractionPrompt } from '../../components/InteractionSlot/InteractionPrompt';
 import '../../components/InteractionSlot/InteractionSlot.css';
-import { FINISHED_EXECUTIONS, groupModelLocked, groupSessionSentIds, executionResult, groupTimeline, mentionExecutionPhase, pendingMentionReplies, type PendingMentionReply, updateAttachments, isBackgroundRefreshTimeout, mergeExecutions, mergeMessages, selectedMentions } from './state';
+import { FINISHED_EXECUTIONS, filterGroupMembers, groupModelLocked, groupSessionSentIds, executionResult, groupTimeline, matchesMemberQuery, mentionExecutionPhase, pendingMentionReplies, type PendingMentionReply, renameAttachment, updateAttachments, isBackgroundRefreshTimeout, mergeExecutions, mergeMessages, selectedMentions } from './state';
 import './groupChat.css';
 
 function Attachment({ file, onPreview }: { file: GroupFile; onPreview: (file: GroupFile) => void }) {
@@ -66,6 +66,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   const [questions, setQuestions] = useState<GroupQuestion[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [fileError, setFileError] = useState('');
   const [refreshError, setRefreshError] = useState('');
   const [addingMembers, setAddingMembers] = useState(false);
   const [panel, setPanel] = useState<'members' | 'files' | null>('members');
@@ -406,27 +407,43 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   }
 
   function openFileAction(kind: 'rename' | 'delete', path: string, currentName: string) {
-    setError(''); setFileName(currentName); setFileAction({ kind, path, name: currentName });
+    setError(''); setFileError(''); setFileName(currentName); setFileAction({ kind, path, name: currentName });
   }
 
   async function submitFileAction() {
     if (!groupId || !fileAction || fileBusy) return;
     const nextName = fileAction.kind === 'rename' ? fileName.trim() : null;
-    if (fileAction.kind === 'rename' && (!nextName || nextName === fileAction.name)) {
+    const diskName = fileAction.path.split(/[\\/]/).pop();
+    const nameUnchanged = nextName === fileAction.name && nextName === diskName;
+    if (fileAction.kind === 'rename' && (!nextName || nameUnchanged)) {
       setFileAction(null);
       return;
     }
     setFileBusy(true);
+    setFileError('');
     try {
+      let nextPath = fileAction.path;
       if (nextName === null) await groupChatClient.deleteFile(groupId, fileAction.path);
-      else await groupChatClient.renameFile(groupId, fileAction.path, nextName);
+      else nextPath = (await groupChatClient.renameFile(groupId, fileAction.path, nextName)).path;
       if (!alive.current) return;
-      setMessages((current) => updateAttachments(current, fileAction.path, nextName));
-      setExecutions((current) => updateAttachments(current, fileAction.path, nextName));
+      setMessages((current) => updateAttachments(current, fileAction.path, nextName, nextPath));
+      setExecutions((current) => updateAttachments(current, fileAction.path, nextName, nextPath));
       setPreview((current) => current?.path !== fileAction.path ? current
-        : nextName === null ? null : { ...current, name: nextName });
+        : nextName === null ? null : renameAttachment(current, nextName, nextPath));
       setFileAction(null);
-    } catch (reason) { report(reason); }
+    } catch (reason) {
+      if (fileAction.kind === 'rename') {
+        const code = (reason as { code?: string })?.code;
+        const messages: Record<string, string> = {
+          FILE_EXISTS: t('groupChat.renameFileExists'),
+          NOT_FOUND: t('groupChat.renameFileMissing'),
+          PERMISSION_DENIED: t('groupChat.renameFilePermission'),
+          FILE_RENAME_FORBIDDEN: t('groupChat.renameFileForbidden'),
+        };
+        const detail = messages[code ?? ''] || (reason instanceof Error ? reason.message : String(reason));
+        if (alive.current) setFileError(t('groupChat.renameFileFailed', { reason: detail }));
+      } else report(reason);
+    }
     finally { if (alive.current) setFileBusy(false); }
   }
 
@@ -459,9 +476,8 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   }
   const timeline = groupTimeline(messages, executions);
 
-  const visibleMembers = group?.members.filter((member) => `${member.display_name ?? ''} ${member.member_name}`
-    .toLocaleLowerCase().includes(memberQuery.trim().toLocaleLowerCase())) ?? [];
-  const showSelf = !memberQuery.trim() || t('groupChat.you').includes(memberQuery.trim());
+  const visibleMembers = filterGroupMembers(group?.members ?? [], memberQuery);
+  const showSelf = matchesMemberQuery(t('groupChat.you'), memberQuery);
   const memberAvatar = (member: string) => <TeamMemberAvatar member={member} className="group-chat-assignee-avatar" alt="" />;
   const agentCount = group?.members.length ?? 0;
 
@@ -733,7 +749,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
     }} />}
     <Dialog open={fileAction?.kind === 'rename'} titleId="group-chat-file-rename-title" className="group-chat-small-dialog"
       closeDisabled={fileBusy} onCancel={() => setFileAction(null)}>
-      {error && <p role="alert" className="group-chat-error" data-testid="group-chat-file-rename-error">{error}</p>}
+      {fileError && <p role="alert" className="group-chat-error" data-testid="group-chat-file-rename-error">{fileError}</p>}
       <form data-testid="group-chat-file-rename-form" onSubmit={(event) => { event.preventDefault(); void submitFileAction(); }}>
         <h2 id="group-chat-file-rename-title">{t('groupChat.renameFile')}</h2>
         <label>{t('groupChat.fileName')}<input value={fileName} maxLength={255} disabled={fileBusy} autoFocus

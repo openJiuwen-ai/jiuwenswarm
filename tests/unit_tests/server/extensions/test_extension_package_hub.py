@@ -7,11 +7,12 @@ import json
 import zipfile
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from jiuwenswarm.server.runtime import extension_package_manager as catalog
-from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
+from jiuwenswarm.enterprise.capabilities.experts.request_packages import bind_request_subject
 from jiuwenswarm.server.runtime.marketplace.hub_asset_port import (
     HubAssetDetail,
     HubAssetSummary,
@@ -1609,3 +1610,221 @@ async def test_read_public_readme_prefers_package_root() -> None:
 
     # Nested READMEs describe sub-assets; the package-root file wins.
     assert text == "content:README.md"
+
+
+
+def _seed_replaceable_plugin() -> Path:
+    package = catalog.get_local_root("plugin_packages") / "sales-plugin"
+    package.mkdir(parents=True)
+    (package / "manifest.json").write_text(json.dumps({
+        "package_type": "plugin", "id": "sales-plugin", "version": "9.0.0",
+    }), encoding="utf-8")
+    (package / "local.txt").write_text("user changes", encoding="utf-8")
+    catalog.upsert_plugin_marketplace_entry("sales-plugin", installed=True, source="local")
+    return package
+
+
+async def _request_plugin_replacement(options: dict | None = None, **kwargs):
+    return await catalog.install_equipment_from_hub_gated(
+        "plugin_packages", {"id": "plugin-asset-uuid", **(options or {})},
+        hub_port=FakeHubAssetPort(_item("plugin-asset-uuid", "plugin", package_name="sales-plugin")),
+        downloader=kwargs.pop("downloader", FakeDownloader()), **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_local_plugin_replacement_requires_confirmation(extension_workspace):
+    package = _seed_replaceable_plugin()
+    downloader = FakeDownloader()
+    ok, payload = await _request_plugin_replacement(downloader=downloader)
+    assert not ok and payload["error_code"] == "PLUGIN_LOCAL_CONFLICT"
+    assert payload["conflict"]["local_version"] == "9.0.0"
+    assert payload["conflict"]["hub_version"] == "1.2.3"
+    assert downloader.calls == 0
+    assert (package / "local.txt").read_text() == "user changes"
+    assert not package.with_name("sales-plugin-2").exists()
+
+
+@pytest.mark.asyncio
+async def test_confirmed_replacement_keeps_identity_and_is_idempotent(extension_workspace):
+    package = _seed_replaceable_plugin()
+    bank = extension_workspace / ".ttse" / "code" / "bank.json"
+    bank.parent.mkdir(parents=True)
+    bank.write_text("experience", encoding="utf-8")
+    _, response = await _request_plugin_replacement()
+    options = {"replace_local": True, "local_fingerprint": response["conflict"]["local_fingerprint"]}
+    ok, payload = await _request_plugin_replacement(options)
+    assert ok and payload["replaced"]
+    assert not (package / "local.txt").exists()
+    assert json.loads((package / "manifest.json").read_text())["version"] == "1.2.3"
+    assert not package.with_name("sales-plugin-2").exists()
+    record = catalog.hub_install_state_store("plugin_packages").get("plugin-asset-uuid")
+    assert record.package_id == "sales-plugin"
+    assert catalog.is_plugin_allowed("sales-plugin")
+    assert bank.read_text() == "experience"
+    assert (await _request_plugin_replacement())[0]
+
+
+@pytest.mark.asyncio
+async def test_local_changes_require_new_confirmation(extension_workspace):
+    package = _seed_replaceable_plugin()
+    _, response = await _request_plugin_replacement()
+    (package / "local.txt").write_text("changed", encoding="utf-8")
+    ok, payload = await _request_plugin_replacement({
+        "replace_local": True, "local_fingerprint": response["conflict"]["local_fingerprint"],
+    })
+    assert not ok and payload["error_code"] == "PLUGIN_LOCAL_CONFLICT"
+    assert payload["conflict"]["local_fingerprint"] != response["conflict"]["local_fingerprint"]
+    assert (package / "local.txt").read_text() == "changed"
+
+
+@pytest.mark.asyncio
+async def test_active_plugin_blocks_replacement(extension_workspace):
+    from jiuwenswarm.server.runtime.plugin_package_lifecycle import use_plugins
+
+    package = _seed_replaceable_plugin()
+    _, response = await _request_plugin_replacement()
+    with use_plugins(["sales-plugin"]):
+        ok, payload = await _request_plugin_replacement({
+            "replace_local": True, "local_fingerprint": response["conflict"]["local_fingerprint"],
+        })
+    assert not ok and payload["error_code"] == "PLUGIN_REPLACEMENT_BUSY"
+    assert (package / "local.txt").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["download", "validation", "commit", "provenance"])
+async def test_plugin_replacement_failure_preserves_old_state(extension_workspace, monkeypatch, failure):
+    package = _seed_replaceable_plugin()
+    _, response = await _request_plugin_replacement()
+    marketplace = catalog.marketplace_path("plugin_packages")
+    original = marketplace.read_bytes()
+    async def fail_download(*args):
+        raise RuntimeError("download failed")
+    def fail(*args, **kwargs):
+        raise RuntimeError("injected failure")
+    downloader = FakeDownloader()
+    if failure == "download":
+        monkeypatch.setattr(downloader, "download_and_extract", fail_download)
+    elif failure == "validation":
+        monkeypatch.setattr(catalog, "_validate_package_manifest", fail)
+    elif failure == "commit":
+        monkeypatch.setattr(catalog, "install_equipment_gated", fail)
+    else:
+        original_upsert = HubInstallStateStore.upsert
+        def fail_live_upsert(self, record):
+            if self.path == catalog.hub_install_state_store("plugin_packages").path:
+                raise RuntimeError("provenance failed")
+            original_upsert(self, record)
+        monkeypatch.setattr(HubInstallStateStore, "upsert", fail_live_upsert)
+    with pytest.raises(RuntimeError):
+        await _request_plugin_replacement({
+            "replace_local": True, "local_fingerprint": response["conflict"]["local_fingerprint"],
+        }, downloader=downloader)
+    assert (package / "local.txt").read_text() == "user changes"
+    assert marketplace.read_bytes() == original
+    assert catalog.hub_install_state_store("plugin_packages").get("plugin-asset-uuid") is None
+
+
+def test_replacement_reservation_blocks_new_turn_and_releases():
+    from jiuwenswarm.server.runtime.plugin_package_lifecycle import (
+        PluginPackageBusy, replace_plugin, use_plugins,
+    )
+    with replace_plugin("replacement-test"):
+        with pytest.raises(PluginPackageBusy):
+            with use_plugins(["replacement-test"]):
+                pytest.fail("a replacement cannot admit a new turn")
+    with use_plugins(["replacement-test"]):
+        pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["local", "built_in", "resources"])
+async def test_existing_plugin_install_does_not_query_hub(extension_workspace, monkeypatch, tmp_path, source):
+    from tests.unit_tests.server.extensions.conftest import seed_package
+
+    _seed_replaceable_plugin()
+    if source == "resources":
+        root = tmp_path / "resources"
+        package = root / "offline-plugin"
+        package.mkdir(parents=True)
+        (package / "manifest.json").write_text(json.dumps({
+            "package_type": "plugin", "id": "offline-plugin", "version": "1.0.0",
+        }), encoding="utf-8")
+        monkeypatch.setattr(catalog, "get_equipment_resources_plugin_packages_dir", lambda: root)
+    else:
+        seed_package(extension_workspace, "plugin_packages", "offline-plugin", under=source,
+                     extra_manifest={"id": "offline-plugin", "version": "1.0.0"})
+    hub = FakeHubAssetPort()
+    hub.query_asset = AsyncMock(side_effect=TimeoutError("Hub unavailable"))
+
+    ok, payload = await catalog.install_equipment_from_hub_gated(
+        "plugin_packages", {"id": "offline-plugin"}, hub_port=hub,
+    )
+
+    assert (ok, payload) == (True, {})
+    hub.query_asset.assert_not_awaited()
+    assert catalog.is_plugin_allowed("offline-plugin")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["stale", "backup", "exchange", "commit", "provenance", "success"])
+async def test_replacement_restores_live_selection_after_failure(extension_workspace, monkeypatch, failure):
+    package = _seed_replaceable_plugin()
+    _, response = await _request_plugin_replacement()
+    live = ["old-plugin"]
+    restored = []
+    original_replace = Path.replace
+    marketplace = catalog.marketplace_path("plugin_packages")
+    original_marketplace = marketplace.read_bytes()
+
+    async def before_replace(package_id):
+        assert package_id == "sales-plugin"
+        live.clear()
+        if failure == "stale":
+            (package / "local.txt").write_text("edited during detach", encoding="utf-8")
+
+        async def restore():
+            restored.append((package / "local.txt").read_text(encoding="utf-8"))
+            live.append("old-plugin")
+        return restore
+
+    def replace(path, target):
+        should_fail = failure == "backup" and path == package
+        should_fail = should_fail or (
+            failure == "exchange" and target == package and path.parent.name.startswith(".plugin-replacement-")
+        )
+        if should_fail:
+            raise OSError("injected swap failure")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", replace)
+    if failure == "commit":
+        monkeypatch.setattr(catalog, "install_equipment_gated", lambda *args: (False, {}))
+    elif failure == "provenance":
+        original_upsert = HubInstallStateStore.upsert
+
+        def fail_live_upsert(store, record):
+            if store.path == catalog.hub_install_state_store("plugin_packages").path:
+                raise RuntimeError("injected provenance failure")
+            return original_upsert(store, record)
+
+        monkeypatch.setattr(HubInstallStateStore, "upsert", fail_live_upsert)
+    options = {"replace_local": True, "local_fingerprint": response["conflict"]["local_fingerprint"]}
+    if failure in {"stale", "success"}:
+        ok, payload = await _request_plugin_replacement(options, before_replace=before_replace)
+        assert ok is (failure == "success")
+        if not ok:
+            assert payload["error_code"] == "PLUGIN_REPLACEMENT_STALE"
+    else:
+        with pytest.raises((OSError, RuntimeError)):
+            await _request_plugin_replacement(options, before_replace=before_replace)
+    if failure == "success":
+        assert live == []
+        assert restored == []
+    else:
+        expected = "edited during detach" if failure == "stale" else "user changes"
+        assert restored == [expected]
+        assert live == ["old-plugin"]
+        assert marketplace.read_bytes() == original_marketplace
+        assert catalog.hub_install_state_store("plugin_packages").get("plugin-asset-uuid") is None

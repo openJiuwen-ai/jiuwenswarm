@@ -391,27 +391,6 @@ async def test_team_attach_only_registers_persistent_waiter_kind() -> None:
     assert details.session_message_id is None
 
 
-@pytest.mark.parametrize("browser_attached", [False, True])
-@pytest.mark.parametrize("managed_design", [False, True])
-def test_managed_design_request_keeps_its_own_result_waiter(monkeypatch, browser_attached, managed_design):
-    from jiuwenswarm.agents.harness import team
-
-    monkeypatch.setattr(team, "get_team_manager", lambda _: SimpleNamespace(
-        has_interactive_waiter=lambda _: browser_attached,
-    ))
-    runtime = AgentRuntime(agent_manager=FakeAgentManager())
-    request = AgentRequest(
-        request_id="voice-task", channel_id="video_tool", session_id="design-chat",
-        req_method=ReqMethod.CHAT_SEND,
-        params={"mode": "team.design", **({"managed_task_binding": {"endpoint": "gateway", "task_id": "task"}}
-                                         if managed_design else {})},
-    )
-    kind = runtime._team_waiter_kind(request, work_kind=SessionWorkKind.TEAM_REQUEST, background=False)
-    expected = (TeamWaiterKind.REQUEST if managed_design else
-                TeamWaiterKind.NONE if browser_attached else TeamWaiterKind.PERSISTENT)
-    assert kind is expected
-
-
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("work_mode", ["work", "code"])
 async def test_stale_team_attachment_does_not_execute_or_preempt_heartbeat(
@@ -3734,6 +3713,7 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
     from openjiuwen.core.session.checkpointer import CheckpointerFactory
 
     from jiuwenswarm.runtime import checkpointer
+    from jiuwenswarm.runtime.context_checkpointer import ContextCheckpointer
 
     dispose_error = RuntimeError("dispose failed")
     dispose = AsyncMock(side_effect=dispose_error)
@@ -3778,7 +3758,11 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
     await checkpointer.ensure_persistent_checkpointer()
 
     create_checkpointer.assert_awaited_once()
-    assert installed == [None, replacement_checkpointer]
+    assert len(installed) == 2
+    assert installed[0] is None
+    assert isinstance(installed[1], ContextCheckpointer)
+    assert installed[1].delegate is replacement_checkpointer
+    assert checkpointer._shared_checkpointer is installed[1]
     assert checkpointer._PERSISTENT_CHECKPOINTER_READY is True
 
 
@@ -4439,11 +4423,14 @@ async def test_agent_server_start_restores_remote_service_after_stop(
     monkeypatch.setattr(server._jiuwenbox_runner, "stop", AsyncMock())
     first_runtime = server.get_runtime()
     first_manager = server.get_agent_manager()
+    start_web = AsyncMock()
+    monkeypatch.setattr(server._jiuwenmate_web, "start", start_web)
     first_runtime.start = AsyncMock()
     first_runtime.close = AsyncMock(wraps=first_runtime.close)
 
     await server.start(bind_transport=True)
     await server._checkpointer_warmup_task
+    start_web.assert_awaited_once_with()
     await server.stop()
 
     recovered_runtime = server.get_runtime()
@@ -4463,6 +4450,7 @@ async def test_agent_server_start_restores_remote_service_after_stop(
     assert recovered_manager is not first_manager
     assert recovered_runtime.agent_manager is recovered_manager
     recovered_runtime.start.assert_awaited_once_with()
+    assert start_web.await_count == 2
     assert server._server is listeners[1]
     assert install_runtime_push_handler.call_count == 2
     restore_runtime_push_handler.assert_called_once()

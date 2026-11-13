@@ -236,7 +236,7 @@ datas += collect_data_files(
     include_py_files=True,
     includes=EXTENSION_DATA_FILE_PATTERNS,
 )
-# Office app packages (manifest.json, persona/, rails/, skills/, tools.json, profile.json), read at runtime;
+# Office app packages (manifest.json, persona/, rails/, skills/, tools.json, profile.json, review.md), read at runtime;
 # the template loads its rail from rails/*.py.
 datas += collect_data_files(
     "jiuwenswarm.office",

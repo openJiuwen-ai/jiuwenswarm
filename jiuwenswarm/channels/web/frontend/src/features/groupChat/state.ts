@@ -73,6 +73,21 @@ export function newMember(kind: GroupMember['kind'], id: string, displayName: st
   return { kind, id, display_name: displayName, member_name: `member-${crypto.randomUUID()}`, ...(description ? { description } : {}) };
 }
 
+/** Case-insensitive, trimmed match for one displayed member label; an empty query matches everything. */
+export function matchesMemberQuery(label: string, query: string): boolean {
+  const needle = query.trim().toLocaleLowerCase();
+  return !needle || label.toLocaleLowerCase().includes(needle);
+}
+
+/**
+ * Group member search only matches the display name shown to the user.
+ * member_name is an internal id (e.g. member-<uuid>) and must never produce a hit.
+ */
+export function filterGroupMembers(members: GroupMember[], query: string): GroupMember[] {
+  if (!query.trim()) return members;
+  return members.filter((member) => matchesMemberQuery(member.display_name ?? '', query));
+}
+
 export function selectedMentions(content: string, selected: string[], members: GroupMember[]): string[] {
   const mentions: string[] = [];
   for (const member of members) {
@@ -153,6 +168,7 @@ export interface PendingMentionReply {
  * 本页面发出的消息（sentIds）一发出就占位，覆盖执行尚未创建的窗口；其余消息只在被 @ 成员
  * 有未完成执行时占位，刷新/换设备后据服务端执行恢复。一个执行只归属创建前最近一条 @ 该成员
  * 的消息，旧提问不会因后来的执行重复占位；早已无执行的旧提问不占位。
+ * 占位跟随执行：执行未结束时，成员中途发的消息不撤销占位；没有执行时，成员回复即视为已答复。
  */
 export function pendingMentionReplies(
   messages: GroupMessage[],
@@ -173,16 +189,17 @@ export function pendingMentionReplies(
   const pending = new Map<string, PendingMentionReply[]>();
   for (const { message, mentioned } of asks) {
     const sentHere = sentIds.has(message.client_message_id);
-    const waiting = mentioned.flatMap((memberName) => {
-      if (messages.some((item) => item.timestamp > message.timestamp && item.sender === memberName)) return [];
+    const waiting = mentioned.flatMap<PendingMentionReply>((memberName) => {
       // executions 已按 created_at 升序（mergeExecutions），pop 取该成员消息之后最新一次执行。
       const execution = executions.filter((item) =>
         (item.member_name === memberName || item.owner_member === memberName
           || (item.execution_kind === 'organization' && organizationTrigger(item) === message.message_id))
         && item.created_at * 1000 >= message.timestamp).pop();
       if (execution && FINISHED_EXECUTIONS.has(execution.status)) return [];
-      if (sentHere) return [{ memberName, execution }];
-      if (!execution) return [];
+      if (!execution && messages.some((item) => item.timestamp > message.timestamp && item.sender === memberName)) {
+        return [];
+      }
+      if (!execution) return sentHere ? [{ memberName, execution }] : [];
       const owner = asks.filter((ask) => ask.mentioned.includes(memberName)
         && ask.message.timestamp <= execution.created_at * 1000).pop();
       return owner?.message.message_id === message.message_id ? [{ memberName, execution }] : [];
@@ -277,14 +294,23 @@ export function formatFileSize(bytes: number): string {
 }
 
 /** Apply a confirmed file rename or delete to attachments already loaded on the client. */
+export function renameAttachment(file: Record<string, unknown>, name: string, path: string): Record<string, unknown> {
+  const renamed: Record<string, unknown> = { ...file, name, path };
+  if (path !== file.path) {
+    for (const key of ['url', 'download_url', 'download_token']) delete renamed[key];
+    if ('file_path' in renamed) renamed.file_path = path;
+  }
+  return renamed;
+}
+
 export function updateAttachments<T extends { attachments?: Record<string, unknown>[] }>(
-  records: T[], path: string, name: string | null,
+  records: T[], path: string, name: string | null, newPath: string = path,
 ): T[] {
   return records.map((record) => {
     if (!record.attachments?.some((file) => file.path === path)) return record;
     const attachments = name === null
       ? record.attachments.filter((file) => file.path !== path)
-      : record.attachments.map((file) => file.path === path ? { ...file, name } : file);
+      : record.attachments.map((file) => file.path === path ? renameAttachment(file, name, newPath) : file);
     return { ...record, attachments };
   });
 }

@@ -65,3 +65,17 @@ async def test_finished_run_reports_once_and_refuses_reruns_until_the_user_repli
     spawner.report_pending = False
     await tool.invoke({"node_id": "n_clip"})
     assert len(leader.async_tool_runtime.launched) == 2
+
+
+@pytest.mark.parametrize("lang", ["cn", "en"])
+def test_prompt_names_only_the_registered_execution_tool(lang: str) -> None:
+    """The "@ = approval" rule must point the leader at the tool this rail registers."""
+    import re
+
+    from jiuwenswarm.agents.harness.design.rails import designer_execution_rail as rail
+
+    prompt = rail._PROMPT_CN if lang == "cn" else rail._PROMPT_EN
+    assert f"{rail.TOOL_NAME}(node_id=...)" in prompt
+    called = set(re.findall(r"`([a-z_]+)\(", prompt))
+    assert called == {rail.TOOL_NAME}, called
+    assert "designer_run_graph" not in prompt

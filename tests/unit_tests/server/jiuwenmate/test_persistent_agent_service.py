@@ -171,6 +171,97 @@ def test_model_refresh_preserves_drafts_and_reports_partial_application(tmp_path
     assert service.get_colleague(NS, draft.agent_id).has_unpublished_changes
 
 
+def test_model_pending_compares_only_the_selected_model_with_the_published_settings(tmp_path):
+    service = make_service(tmp_path)
+    colleague = service.create_colleague(NS, settings())
+    assert colleague.to_dict()["has_unpublished_model_changes"] is False
+
+    draft = service.update_settings(NS, colleague.agent_id, settings(persona="Unpublished persona"))
+    assert draft.has_unpublished_changes
+    assert draft.to_dict()["has_unpublished_model_changes"] is False
+
+    draft = service.update_settings(NS, colleague.agent_id, settings(capabilities=CapabilitySelection(model="deepseek#0")))
+    assert draft.has_unpublished_changes
+    assert draft.to_dict()["has_unpublished_model_changes"] is False
+
+    draft = service.update_settings(NS, colleague.agent_id, settings(capabilities=CapabilitySelection(model="kimi#1")))
+    assert draft.to_dict()["has_unpublished_model_changes"] is True
+    service.publish(NS, colleague.agent_id)
+    assert service.get_colleague(NS, colleague.agent_id).to_dict()["has_unpublished_model_changes"] is False
+
+    draft = service.update_settings(NS, colleague.agent_id, settings())
+    assert draft.to_dict()["has_unpublished_model_changes"] is True
+    draft = service.update_settings(NS, colleague.agent_id, settings(capabilities=CapabilitySelection(model="kimi#1")))
+    assert draft.has_unpublished_changes
+    assert draft.to_dict()["has_unpublished_model_changes"] is False
+
+
+def test_model_pending_handles_first_publication_and_legacy_views(tmp_path):
+    from dataclasses import replace
+
+    from jiuwenswarm.server.jiuwenmate.models import ColleagueView
+
+    service = make_service(tmp_path, FakeModels(selections=(), default=None))
+    colleague = service.ensure_default_colleague(NS)
+    definition = service._repository.get(NS, colleague.agent_id)
+    assert ColleagueView.from_definition(definition).has_unpublished_model_changes is False
+    selected = replace(definition, settings=settings())
+    assert ColleagueView.from_definition(selected).has_unpublished_model_changes is True
+    legacy = replace(selected, current_version="v1", published_revision=1, revision=2, published_settings=None)
+    assert ColleagueView.from_definition(legacy).has_unpublished_model_changes is False
+
+
+
+@pytest.mark.parametrize("state", ["published", "draft", "model-draft", "unconfigured"])
+def test_group_reply_mode_save_does_not_require_a_model_or_publish_other_edits(tmp_path, state):
+    from dataclasses import replace
+
+    models = FakeModels()
+    service = make_service(tmp_path, models)
+    colleague = service.create_colleague(NS, settings())
+    original = service.current_snapshot(NS, colleague.agent_id)
+    if state == "draft":
+        service.update_settings(NS, colleague.agent_id, settings(persona="Pending persona"))
+    elif state == "model-draft":
+        service.update_settings(NS, colleague.agent_id, settings(capabilities=CapabilitySelection(model="kimi#1")))
+    elif state == "unconfigured":
+        models = FakeModels(selections=(), default=None)
+        service = make_service(tmp_path / "unconfigured", models)
+        colleague = service.ensure_default_colleague(NS)
+    models.selections.clear()
+
+    for mode in ("passive", "adaptive"):
+        current = service.read_settings(NS, colleague.agent_id)
+        saved = service.update_settings(NS, colleague.agent_id, replace(current, group_reply_mode=mode))
+        assert service.read_settings(NS, colleague.agent_id).group_reply_mode == mode
+        assert saved.capabilities.model == current.capabilities.model
+        assert saved.has_unpublished_changes is (state != "published")
+        if state != "unconfigured":
+            snapshot = service.current_snapshot(NS, colleague.agent_id)
+            assert snapshot.config_version == original.config_version
+            assert snapshot.fingerprint == original.fingerprint
+            published = service._repository.get(NS, colleague.agent_id).published_settings
+            assert published.group_reply_mode == mode
+            assert published.persona != "Pending persona"
+            assert published.capabilities.model == "deepseek#0"
+        else:
+            assert saved.current_version is None
+
+
+def test_group_reply_mode_change_still_rejects_an_invalid_new_model(tmp_path):
+    from dataclasses import replace
+
+    service = make_service(tmp_path)
+    colleague = service.create_colleague(NS, settings())
+    current = service.read_settings(NS, colleague.agent_id)
+    with pytest.raises(PersistentAgentError) as caught:
+        service.update_settings(NS, colleague.agent_id, replace(
+            current, group_reply_mode="passive", capabilities=CapabilitySelection(model="missing#9"),
+        ))
+    assert caught.value.code == "MODEL_NOT_FOUND"
+    assert service.read_settings(NS, colleague.agent_id).group_reply_mode == "adaptive"
+
+
 def test_model_refresh_reports_a_missing_model_without_losing_other_updates(tmp_path):
     models = FakeModels(window=1048576)
     service = make_service(tmp_path, models)
@@ -323,7 +414,173 @@ def test_default_colleague_without_models_is_created_unpublished(tmp_path):
     assert default.current_version is None
     with pytest.raises(PersistentAgentError) as caught:
         service.current_snapshot(NS, default.agent_id)
-    assert caught.value.code == "NOT_PUBLISHED"
+    assert caught.value.code == "MODEL_NOT_CONFIGURED"
+
+
+@pytest.mark.parametrize("invalid", [
+    {"model_name": "your-model-name"},
+    {"api_base": "https://example.com/compatible-mode/v1"},
+    {"api_key": "sk-xxxxxxxxx"},
+    {"api_key": ""},
+    {"api_key": "", "api_mode": "responses"},
+    {"model_name": ""},
+    {"client_provider": ""},
+    {"api_base": ""},
+])
+def test_team_model_catalog_rejects_unconfigured_entries_without_reindexing(invalid):
+    client = {"model_name": "deepseek", "client_provider": "OpenAI", "api_key": SECRET,
+              "api_base": "https://example.invalid/v1"}
+    entries = [{"model_client_config": {**client, **invalid}, "is_default": True},
+               {"model_client_config": {**client, "model_name": "kimi"}}]
+    provider = ConfiguredModelProvider(lambda: entries)
+
+    assert provider.default_selection() == "kimi#1"
+    assert provider.resolve("kimi#1", client_id="test").model_request_config.model_name == "kimi"
+    with pytest.raises(PersistentAgentError):
+        provider.resolve(f"{entries[0]['model_client_config']['model_name']}#0", client_id="test")
+
+
+def test_team_model_catalog_keeps_explicit_keyless_authentication():
+    entries = [{"model_client_config": {"model_name": "local-model", "client_provider": "OpenAI",
+               "api_base": "http://localhost:11434/v1", "api_key": "", "auth_mode": "none"}}]
+    provider = ConfiguredModelProvider(lambda: entries)
+    assert provider.default_selection() == "local-model#0"
+    assert provider.resolve("local-model#0", client_id="test").model_request_config.model_name == "local-model"
+
+
+def test_placeholder_model_does_not_publish_the_default_colleague(tmp_path):
+    entries = [{"model_client_config": {"model_name": "your-model-name", "client_provider": "OpenAI",
+               "api_base": "https://example.com/compatible-mode/v1", "api_key": "sk-xxxxxxxxx"}}]
+    service = make_service(tmp_path, ConfiguredModelProvider(lambda: entries))
+    colleague = service.ensure_default_colleague(NS)
+
+    assert colleague.capabilities.model is None
+    assert colleague.current_version is None
+    assert service.refresh_published(NS) is False
+
+
+@pytest.mark.parametrize("trigger", ["refresh", "reenter"])
+def test_default_initialization_completes_when_a_model_becomes_available(tmp_path, trigger):
+    models = FakeModels(selections=(), default=None)
+    service = make_service(tmp_path, models)
+    colleague = service.ensure_default_colleague(NS)
+    models.selections.add("deepseek#0")
+    models.default = "deepseek#0"
+
+    if trigger == "refresh":
+        assert service.refresh_published(NS) is True
+    else:
+        service.ensure_default_colleague(NS)
+
+    current = service.get_colleague(NS, colleague.agent_id)
+    assert current.capabilities.model == "deepseek#0"
+    assert current.current_version == "v1"
+    assert not current.has_unpublished_changes
+    assert service.current_snapshot(NS, colleague.agent_id).load_spec().model.model_request_config.model_name == "deepseek"
+
+
+def test_legacy_placeholder_default_is_recovered_without_rewriting_old_snapshots(tmp_path):
+    models = FakeModels(selections=("your-model-name#0",), default="your-model-name#0")
+    service = make_service(tmp_path, models)
+    colleague = service.ensure_default_colleague(NS)
+    previous = service.current_snapshot(NS, colleague.agent_id)
+    models.selections = {"deepseek#0"}
+    models.default = "deepseek#0"
+
+    assert service.refresh_published(NS) is True
+
+    current = service.get_colleague(NS, colleague.agent_id)
+    assert current.capabilities.model == "deepseek#0"
+    assert current.current_version == "v2"
+    assert service.snapshot(NS, colleague.agent_id, previous.config_version).fingerprint == previous.fingerprint
+    assert previous.load_spec().model.model_request_config.model_name == "your-model-name"
+
+
+def test_failed_default_initialization_keeps_its_settings_and_can_retry(tmp_path, monkeypatch):
+    models = FakeModels(selections=(), default=None)
+    service = make_service(tmp_path, models)
+    colleague = service.ensure_default_colleague(NS)
+    models.selections.add("deepseek#0")
+    models.default = "deepseek#0"
+    prepare = service._prepare_version
+    monkeypatch.setattr(service, "_prepare_version", lambda *args: (_ for _ in ()).throw(RuntimeError("failed")))
+
+    assert service.refresh_published(NS) is False
+    assert service.get_colleague(NS, colleague.agent_id).capabilities.model is None
+    assert service.get_colleague(NS, colleague.agent_id).current_version is None
+    monkeypatch.setattr(service, "_prepare_version", prepare)
+    assert service.refresh_published(NS) is True
+    assert service.get_colleague(NS, colleague.agent_id).current_version == "v1"
+
+
+def test_model_refresh_does_not_initialize_a_user_edited_default(tmp_path):
+    models = FakeModels(selections=(), default=None)
+    service = make_service(tmp_path, models)
+    colleague = service.ensure_default_colleague(NS)
+    service.update_settings(NS, colleague.agent_id, ColleagueSettings(name="My assistant", persona="My draft"))
+    models.selections.add("deepseek#0")
+    models.default = "deepseek#0"
+
+    assert service.refresh_published(NS) is False
+    current = service.get_colleague(NS, colleague.agent_id)
+    assert current.name == "My assistant"
+    assert current.current_version is None
+    assert current.capabilities.model is None
+
+
+def test_missing_real_model_is_not_silently_replaced_by_the_new_default(tmp_path):
+    models = FakeModels()
+    service = make_service(tmp_path, models)
+    colleague = service.ensure_default_colleague(NS)
+    models.selections.remove("deepseek#0")
+    models.default = "kimi#1"
+
+    assert service.refresh_published(NS) is False
+    assert service.get_colleague(NS, colleague.agent_id).capabilities.model == "deepseek#0"
+    assert service.get_colleague(NS, colleague.agent_id).current_version == "v1"
+
+
+def test_initialization_does_not_overwrite_an_edit_made_during_publication(tmp_path, monkeypatch):
+    models = FakeModels(selections=(), default=None)
+    service = make_service(tmp_path, models)
+    colleague = service.ensure_default_colleague(NS)
+    models.selections.add("deepseek#0")
+    models.default = "deepseek#0"
+    prepare = service._prepare_version
+
+    def prepare_with_edit(*args):
+        snapshot = prepare(*args)
+        service.update_settings(NS, colleague.agent_id, ColleagueSettings(name="User edit", persona="Keep me"))
+        return snapshot
+
+    monkeypatch.setattr(service, "_prepare_version", prepare_with_edit)
+    assert service.refresh_published(NS) is False
+    current = service.get_colleague(NS, colleague.agent_id)
+    assert current.name == "User edit"
+    assert current.capabilities.model is None
+    assert current.current_version is None
+
+
+def test_initialization_rolls_back_the_model_if_the_version_commit_conflicts(tmp_path, monkeypatch):
+    models = FakeModels(selections=(), default=None)
+    service = make_service(tmp_path, models)
+    colleague = service.ensure_default_colleague(NS)
+    models.selections.add("deepseek#0")
+    models.default = "deepseek#0"
+    prepare = service._prepare_version
+
+    def prepare_with_version_conflict(*args):
+        snapshot = prepare(*args)
+        with service._repository._transaction() as conn:
+            conn.execute("UPDATE colleagues SET next_version = 99 WHERE agent_id = ?", (colleague.agent_id,))
+        return snapshot
+
+    monkeypatch.setattr(service, "_prepare_version", prepare_with_version_conflict)
+    assert service.refresh_published(NS) is False
+    current = service.get_colleague(NS, colleague.agent_id)
+    assert current.capabilities.model is None
+    assert current.current_version is None
+    assert service._repository.get(NS, colleague.agent_id).revision == 1
 
 
 def test_custom_colleague_gets_its_own_core_template_and_first_version(tmp_path):

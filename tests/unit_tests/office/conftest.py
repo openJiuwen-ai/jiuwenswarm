@@ -1,6 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Sessions in ``tmp_path``, task panes that attach a presentation, and conversations with the PowerPoint rail."""
+"""Sessions in ``tmp_path``, task panes that attach a presentation, conversations with the PowerPoint rail.
+
+And a local vision model for ``verify_slide_visual``'s reviews.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +14,7 @@ from functools import partial
 from pathlib import Path
 
 import pytest
+from aiohttp import web
 from openjiuwen.core.foundation.llm import (
     AssistantMessage, ModelClientConfig, ModelRequestConfig, ToolCall, UsageMetadata,
 )
@@ -23,12 +27,15 @@ from openjiuwen.harness.schema.interaction import SendInputRequest
 
 from jiuwenswarm.common import utils
 from jiuwenswarm.common.file_download_token import WebFileDownloadManager
-from jiuwenswarm.office import runtime
+from jiuwenswarm.office import review, runtime
 from jiuwenswarm.office.rails import OfficeToolsRail
 from jiuwenswarm.runtime.client_tools import client_tool_answers, client_tool_request_event
-from jiuwenswarm.server.client_attachments import attach, close_client_attachments, get_attachment_directory
+from jiuwenswarm.server.client_attachments import attach, close_client_attachments, get_attachment_directory, registry
 from jiuwenswarm.server.runtime.attachments import media_attachments
 from tests.unit_tests.agentserver.client_attachments_support import CLIENT_APP, isolated  # noqa: F401 - the fixture
+
+# The package JiuwenSwarm ships for the app, read before a test's ``isolated`` fixture replaces the apps.
+POWERPOINT_PACKAGE = registry.client_apps()[CLIENT_APP].package_dir
 
 
 @pytest.fixture(autouse=True)
@@ -66,15 +73,64 @@ def attach_pane():
 
 
 @pytest.fixture
+async def vision(monkeypatch):
+    """A local OpenAI-compatible vision model, configured as ``models.vision``."""
+    stub = VisionModel()
+    runner = web.AppRunner(stub.app())
+    await runner.setup()
+    await web.TCPSite(runner, "127.0.0.1", 0).start()
+    port = runner.addresses[0][1]
+    monkeypatch.delenv("VISION_ENABLED", raising=False)
+    stub.config = {"models": {"vision": {"enabled": True, "model_client_config": {
+        "api_base": f"http://127.0.0.1:{port}/v1", "api_key": "local-test", "model_name": "vision-test",
+        "client_provider": "OpenAI", "endpoint_profile": "openai_compatible", "verify_ssl": False}}}}
+    monkeypatch.setattr(review, "get_config", lambda: stub.config)
+    yield stub
+    await runner.cleanup()
+
+
+class VisionModel:
+    """Answers each chat completion with the next scripted reply; remembers each request."""
+
+    def __init__(self) -> None:
+        self.config: dict = {}
+        self.requests: list[dict] = []
+        self.replies: list[tuple[int, str, float]] = []
+
+    def reply(self, content: str) -> None:
+        self.replies.append((200, content, 0.0))
+
+    def app(self) -> web.Application:
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", self._complete)
+        return app
+
+    async def _complete(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        self.requests.append(body)
+        status, content, delay = self.replies.pop(0)
+        await asyncio.sleep(delay)
+        if status != 200:
+            return web.json_response({"error": {"message": "vision provider is down"}}, status=status)
+        return web.json_response({
+            "id": "review-1", "object": "chat.completion", "created": 0, "model": body["model"],
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
+
+
+@pytest.fixture
 def conversation(tmp_path):
     """``conversation(steps, native_images=...)``: a conversation's agent with the PowerPoint rail."""
     return partial(Conversation, tmp_path)
 
 
 class ScriptedModel:
-    """Makes the scripted calls, one step per model call, then answers ``done``; remembers what it saw."""
+    """Makes the scripted calls or says the scripted text, one step per model call, then answers ``done``.
 
-    def __init__(self, steps: list[list[ToolCall]]) -> None:
+    Remembers what it saw.
+    """
+
+    def __init__(self, steps: list[list[ToolCall] | str]) -> None:
         self.model_client_config = ModelClientConfig(
             client_provider="OpenAI", api_key="local-test", api_base="http://127.0.0.1:1")
         self.model_config = ModelRequestConfig(model_name="office-test")
@@ -84,6 +140,9 @@ class ScriptedModel:
     async def invoke(self, messages, tools=None, **kwargs):
         names = {getattr(tool, "name", None) or (tool.get("function") or tool).get("name") for tool in tools or ()}
         self.seen.append((copy.deepcopy(messages), names))
+        if self.steps and isinstance(self.steps[0], str):
+            usage = UsageMetadata(model_name="office-test", finish_reason="stop")
+            return AssistantMessage(content=self.steps.pop(0), usage_metadata=usage)
         usage = UsageMetadata(model_name="office-test", finish_reason="tool_calls" if self.steps else "stop")
         if self.steps:
             return AssistantMessage(content="", tool_calls=self.steps.pop(0), usage_metadata=usage)
@@ -112,7 +171,7 @@ class ScriptedModel:
 class Conversation:
     """One conversation's own agent with the PowerPoint rail, one turn at a time."""
 
-    def __init__(self, tmp_path: Path, steps: list[list[ToolCall]], *, native_images: bool = False,
+    def __init__(self, tmp_path: Path, steps: list[list[ToolCall] | str], *, native_images: bool = False,
                  session_id: str = "deck-a") -> None:
         self.model = ScriptedModel(steps)
         self.session_id = session_id
@@ -124,7 +183,7 @@ class Conversation:
     async def __aenter__(self) -> "Conversation":
         await Runner.start()
         await self.agent.ensure_initialized()
-        await self.agent.register_rail(OfficeToolsRail())
+        await self.agent.register_rail(OfficeToolsRail(POWERPOINT_PACKAGE))
         session = create_agent_session(session_id=self.session_id, card=self.agent.card)
         await session.pre_run(inputs={})
         await self.agent.start(session=session)

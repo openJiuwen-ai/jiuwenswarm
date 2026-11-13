@@ -89,8 +89,8 @@ def resolve_debug_trace_settings(*, mode: str, request_debug: bool) -> DebugTrac
         or mode_cfg.get("enabled")
     )
     dump_enabled = debug_enabled and (mode_cfg.get("dump_enabled", True) is not False)
-    # /debug-driven OTel: only force-enable agent_observability when this run is
-    # debugged AND the mode opted into OTel. (When agent_observability.enabled is
+    # /debug-driven OTel: only force-enable agent observability when this run is
+    # debugged AND the mode opted into OTel. (When observability.agent.enabled is
     # already true, OTel runs regardless — handled by sync_agent_observability.)
     otel_enabled = debug_enabled and bool(mode_cfg.get("otel_enabled", False))
 

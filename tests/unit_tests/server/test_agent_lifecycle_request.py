@@ -66,7 +66,7 @@ async def _lifecycle_payload(server, project_id):
 @pytest.mark.asyncio
 async def test_project_lifecycle_single_project_contract(tmp_path, monkeypatch):
     _redirect_agent_root(monkeypatch, tmp_path)
-    agent_root = tmp_path / "domain" / "agent"
+    agent_root = tmp_path / "agent"
     _write_projects(
         agent_root,
         [

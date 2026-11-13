@@ -307,13 +307,32 @@ def hot_list_board_url(provider_id: str, list_url: str = "") -> str:
     return fallback or list_url
 
 
-def hot_list_open_url(entry: HotListEntry, pull: HotListPull) -> str:
-    """Topic page from the list when present; otherwise the public hot-list board.
+def hot_list_topic_url(entry: HotListEntry) -> str:
+    """Browser URL for the listed term itself, not the ranking board.
 
-    Card links must not depend on free-search engines or Bing News search pages.
+    Weibo entries rarely ship an article URL; the topic search page is what a
+    tap on the term opens. Baidu usually publishes ``page_url``; without one the
+    term search is still better than the realtime board.
     """
 
-    return entry.page_url or hot_list_board_url(entry.provider_id, pull.list_url)
+    word = entry.word.strip()
+    if entry.provider_id == WEIBO_PROVIDER_ID:
+        return f"https://s.weibo.com/weibo?q=%23{quote(word)}%23"
+    if entry.provider_id == BAIDU_PROVIDER_ID:
+        return f"https://www.baidu.com/s?wd={quote(word)}"
+    return f"https://www.bing.com/search?q={quote(word)}"
+
+
+def hot_list_open_url(entry: HotListEntry, pull: HotListPull) -> str:
+    """Article/topic page from the list when present; never the ranking board.
+
+    Prefer an absolute page the list published (Baidu rawUrl, Weibo topic URL).
+    Otherwise open the term's topic/search page. Card links must not depend on
+    free-search engines configured for evidence retrieval.
+    """
+
+    del pull
+    return entry.page_url or hot_list_topic_url(entry)
 
 
 def load_hot_list_pull(store: TopicStarterStore, receipt_id: Any) -> HotListPull | None:
@@ -365,6 +384,9 @@ def parse_weibo_hot_band(text: str) -> list[HotListEntry]:
         if not word or not _plain_int(rank):
             continue
         onboard = item.get("onboard_time")
+        page_url = _http_page_url(item.get("url"), item.get("scheme"))
+        if page_url is None:
+            page_url = f"https://s.weibo.com/weibo?q=%23{quote(word)}%23"
         entries.append(
             HotListEntry(
                 entry_id=f"{WEIBO_PROVIDER_ID}:{rank}",
@@ -372,7 +394,7 @@ def parse_weibo_hot_band(text: str) -> list[HotListEntry]:
                 rank=rank,
                 word=word,
                 listed_at=float(onboard) if type(onboard) in (int, float) else None,
-                page_url=_http_page_url(item.get("url"), item.get("scheme")),
+                page_url=page_url,
             )
         )
     return entries

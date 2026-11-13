@@ -10,18 +10,15 @@ in this process, which is allowed to import agents.
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
-import threading
 import time
 from typing import Any, Awaitable, Callable, Iterable
 
 logger = logging.getLogger(__name__)
 
-# Lane identity used while no search provider is usable. Preset pools written under
-# it are incompatible with a later configured lane, so they are rebuilt once search
-# is set up.
-UNCONFIGURED_SEARCH_PROVIDER_ID = "search-unconfigured"
+from jiuwenswarm.agents.harness.common.recommendation.topic_search import (
+    UNCONFIGURED_SEARCH_PROVIDER_ID,
+)
 
 _ACTIVE_HOST: "RecommendationHost | None" = None
 
@@ -55,9 +52,6 @@ def _build_topic_starter_services(
 ) -> tuple[Any, Any | None, Any]:
     """Always build the prepare lane; leave a misconfigured product lane disabled."""
 
-    from jiuwenswarm.agents.harness.common.recommendation.topic_collector import (
-        TopicStarterOutcomeCollector,
-    )
     from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
         load_recommendation_controls,
         permitted_recommendation_history,
@@ -78,16 +72,12 @@ def _build_topic_starter_services(
         TopicPreparePipeline,
         TopicPrepareService,
     )
-    from jiuwenswarm.agents.harness.common.recommendation.topic_rid import (
-        build_ark_specific_interest_matcher,
-    )
     from jiuwenswarm.agents.harness.common.recommendation.topic_search import (
         OpenJiuwenNativeSearchContractError,
     )
     from jiuwenswarm.agents.harness.common.recommendation.topic_service import (
         TopicService,
     )
-    from jiuwenswarm.server.runtime.session.session_history import load_history_records
 
     def permitted_records():
         # One consent read per batch rather than one per session.
@@ -118,105 +108,15 @@ def _build_topic_starter_services(
     try:
         search_provider_id = topic_pipeline.search_provider_id
     except OpenJiuwenNativeSearchContractError as exc:
-        # The packaged preset corpus needs neither the model nor the search lane.
-        # Keep the product lane so the homepage can still serve it; a configured
-        # search lane writes a different compatibility key and rebuilds the pool.
+        # Web search is optional enrichment. Without it the product lane still
+        # writes personalized host-evidence and hot-list pools; a later configured
+        # lane changes the compatibility key and rebuilds.
         logger.warning(
-            "[Topic] search lane unavailable; serving preset cards only: %s",
+            "[Topic] web search enrichment unavailable; "
+            "personalized and hot-list pools still generate: %s",
             exc,
         )
         search_provider_id = UNCONFIGURED_SEARCH_PROVIDER_ID
-
-    # Bounds the cross-thread wait for one RID pair, so a stalled loop cannot wedge collection.
-    summary_pair_match_timeout_seconds = 60.0
-    outcome_collection_lock = asyncio.Lock()
-
-    async def prepare_topic_outcomes() -> str:
-        async with outcome_collection_lock:
-            # Pairs on the service's model; a switch cancels this round and the next one pairs anew.
-            ark_config = topic_service.ark_config
-            stop_collection = threading.Event()
-            matcher_tasks: set[asyncio.Task] = set()
-            matcher = None
-            if ark_config is not None:
-                try:
-                    matcher = build_ark_specific_interest_matcher(
-                        topic_starter_store,
-                        ark_config,
-                    )
-                except Exception as exc:  # noqa: BLE001 - fail-closed label exclusion
-                    logger.warning(
-                        "[Topic] RID summary-pair matcher unavailable: %s",
-                        exc,
-                    )
-            collector_kwargs: dict[str, Any] = {}
-            if matcher is not None:
-                loop = asyncio.get_running_loop()
-
-                async def match_if_running(earlier: Any, later: Any) -> bool:
-                    if stop_collection.is_set():
-                        raise asyncio.CancelledError()
-                    task = asyncio.current_task()
-                    matcher_tasks.add(task)
-                    try:
-                        return await matcher.match(earlier, later)
-                    finally:
-                        matcher_tasks.discard(task)
-
-                def match_summary_pair(earlier: Any, later: Any) -> bool:
-                    if stop_collection.is_set():
-                        raise asyncio.CancelledError()
-                    future = asyncio.run_coroutine_threadsafe(
-                        match_if_running(earlier, later),
-                        loop,
-                    )
-                    # This thread is not the loop: a loop that stops scheduling (shutdown,
-                    # saturated executor) would otherwise block it forever and keep
-                    # `asyncio.shield(worker)` from ever completing.
-                    try:
-                        result = future.result(
-                            timeout=summary_pair_match_timeout_seconds
-                        )
-                    except TimeoutError:
-                        future.cancel()
-                        raise
-                    if not isinstance(result, bool):
-                        raise ValueError("RID summary-pair matcher returned invalid output")
-                    return result
-
-                collector_kwargs = {
-                    "summary_pair_matcher": match_summary_pair,
-                    "summary_pair_matcher_id": matcher.matcher_id,
-                    "summary_pair_matcher_version": matcher.matcher_version,
-                }
-            topic_outcome_collector = TopicStarterOutcomeCollector(
-                topic_starter_store,
-                history_loader=lambda sid: permitted_recommendation_history(load_history_records(sid)),
-                cancel_event=stop_collection,
-                **collector_kwargs,
-            )
-            logger.info("[Topic] outcome collection started")
-            worker = asyncio.create_task(asyncio.to_thread(topic_outcome_collector.collect))
-            try:
-                await asyncio.shield(worker)
-            except asyncio.CancelledError:
-                stop_collection.set()
-                tasks = list(matcher_tasks)
-                for task in tasks:
-                    task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
-                await asyncio.gather(worker, return_exceptions=True)
-                logger.info("[Topic] outcome collection stopped")
-                raise
-            finally:
-                if matcher is not None:
-                    await matcher.aclose()
-            # A failed round propagates; the service logs it as failed.
-            logger.info(
-                "[Topic] outcome collection %s",
-                "stopped" if stop_collection.is_set() else "finished",
-            )
-        return ""
 
     def history_project_ids() -> list[str]:
         from jiuwenswarm.server.runtime.session.session_metadata import (
@@ -246,7 +146,9 @@ def _build_topic_starter_services(
         search_provider_id=search_provider_id,
         prepare_state=topic_pipeline.refresh_state,
         prepare_short_intent=topic_pipeline.refresh_short_intent,
-        prepare_outcomes=prepare_topic_outcomes,
+        # Training / outcome labels are not required for live pools; keep them
+        # out of recommendation.db and investigate generation via process logs.
+        prepare_outcomes=None,
         input_revision_loader=topic_pipeline.scope_input_revision,
         pending_request_loader=topic_pipeline.scope_has_pending_request,
         config_loader=recommendation_model_config,
@@ -258,44 +160,6 @@ def _build_topic_starter_services(
         topic_service,
         topic_outcome_queue,
     )
-
-
-def _seed_topic_starter_services(
-    topic_prepare_service: Any,
-    topic_service: Any | None,
-    run_id: str,
-) -> None:
-    if topic_service is not None:
-        topic_service.schedule_seed(run_id)
-
-
-async def _topic_starter_seed_loop(seed: Callable[[str], None]) -> None:
-    """Refresh topic pools on this process, without entering the cron job queue.
-
-    The first wake is shortly after AgentServer starts. Later wakes are the next
-    local midnight. A disabled recommendation switch returns immediately inside
-    ``seed``.
-    """
-
-    from datetime import datetime, timedelta, timezone
-
-    started = False
-    while True:
-        if not started:
-            await asyncio.sleep(5.0)
-        else:
-            now = datetime.now(timezone.utc).astimezone()
-            next_midnight = (now + timedelta(days=1)).replace(
-                hour=0, minute=0, second=0, microsecond=0,
-            )
-            await asyncio.sleep(max(0.0, (next_midnight - now).total_seconds()))
-        started = True
-        try:
-            outcome = seed(f"topic-starter-v6:{int(time.time())}")
-            if inspect.isawaitable(outcome):
-                await outcome
-        except Exception as exc:  # noqa: BLE001 - isolated scheduled wake
-            logger.warning("[Topic] starter seed wake failed: %s", exc)
 
 
 async def _shutdown_topic_starter_services(
@@ -319,7 +183,6 @@ class RecommendationHost:
         self.legacy_topic_service: Any = None
         self.legacy_tasks: set[asyncio.Task] = set()
         self._services_built = False
-        self._seed_task: asyncio.Task[None] | None = None
         self._active_request_ids: Callable[[], Iterable[str]] = _no_active_request_ids
         self._push: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
 
@@ -365,7 +228,13 @@ class RecommendationHost:
         self.topic_service = service
         self.topic_outcome_queue = queue
         if service is not None:
-            def _on_prepared(context_scope: str, state: str, pool_written: bool) -> None:
+            def _on_prepared(
+                context_scope: str,
+                state: str,
+                pool_written: bool,
+                *,
+                work_mode: str = "work",
+            ) -> None:
                 try:
                     loop = asyncio.get_running_loop()
                 except RuntimeError:
@@ -374,6 +243,7 @@ class RecommendationHost:
                     TOPIC_STARTERS_READY_EVENT,
                     {
                         "context_scope": context_scope,
+                        "work_mode": work_mode,
                         "state": state,
                         "pool_written": pool_written,
                     },
@@ -382,35 +252,12 @@ class RecommendationHost:
             service.on_prepared = _on_prepared
         self._services_built = True
 
-    async def _seed_with_prune(self, run_id: str) -> None:
-        """Age the local store before a seed; retention never blocks seeding."""
-
-        try:
-            await asyncio.to_thread(self.store.prune, now=time.time())
-        except Exception:  # noqa: BLE001 - a pruning failure must not stop the seed
-            logger.warning("[Topic] recommendation store prune failed", exc_info=True)
-        _seed_topic_starter_services(
-            self.topic_prepare_service,
-            self.topic_service,
-            run_id,
-        )
-
     async def start(self) -> None:
+        # Pools fill on enable / chat successor / click / manual retry — not on
+        # process boot or a midnight timer.
         self.ensure_services()
-        if self._seed_task is None:
-            self._seed_task = asyncio.create_task(
-                _topic_starter_seed_loop(self._seed_with_prune)
-            )
 
     async def shutdown(self) -> None:
-        task = self._seed_task
-        self._seed_task = None
-        if task is not None:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
         pending = tuple(self.legacy_tasks)
         for item in pending:
             item.cancel()
@@ -429,6 +276,7 @@ class RecommendationHost:
         if service is None:
             return
         from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+            normalize_topic_work_mode,
             scope_for_project,
         )
         from jiuwenswarm.server.runtime.session.session_metadata import (
@@ -439,40 +287,28 @@ class RecommendationHost:
             session_id, cache_bust=True, enable_writeback=False,
         ) or {}
         project_id = metadata.get("project_id")
-        service.schedule_successor(
-            context_scope="global_new_chat",
-            project_id=None,
-            visit_id=request_id,
-        )
+        work_mode = normalize_topic_work_mode(metadata.get("work_mode"))
+        # Global welcome only follows non-project chats; a project welcome only
+        # follows that project's chats. Never refresh both from one turn.
         if project_id not in (None, "", "default", "default_code"):
             service.schedule_successor(
                 context_scope=scope_for_project(str(project_id)),
                 project_id=project_id,
+                work_mode=work_mode,
                 visit_id=request_id,
             )
+            return
+        service.schedule_successor(
+            context_scope="global_new_chat",
+            project_id=None,
+            work_mode=work_mode,
+            visit_id=request_id,
+        )
 
     async def session_left_project(self, project_id: str, session_id: str) -> None:
-        if not project_id or project_id in {"default", "default_code"}:
-            return
-        self.ensure_services()
-        service = self.topic_service
-        if service is None or not service.configuration_status()["enabled"]:
-            return
-        from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
-            scope_for_project,
-        )
-        from jiuwenswarm.common.schema.message import TOPIC_STARTERS_READY_EVENT
+        """No-op: leaving a project must not auto-refresh topic pools."""
 
-        context_scope = scope_for_project(project_id)
-        await self.emit(
-            TOPIC_STARTERS_READY_EVENT,
-            {"context_scope": context_scope, "state": "ready"},
-        )
-        service.schedule_successor(
-            context_scope=context_scope,
-            project_id=project_id,
-            visit_id=f"session-left-project:{session_id}",
-        )
+        del project_id, session_id
 
     async def handle(
         self,

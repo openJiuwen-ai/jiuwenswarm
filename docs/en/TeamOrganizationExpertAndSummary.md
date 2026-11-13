@@ -87,6 +87,18 @@ Capability matching follows these rules:
 
 Manually created groups normally live under `.agent_teams/agent_groups/local/<package-id>/` in the user workspace; bundled marketplace groups install under `built_in/<package-id>/`. The generated package ID need not match the display name. Use the active `JIUWENSWARM_DATA_DIR` when configured. Existing Teams retain their assembled template snapshot; use a new session after editing a template or its source experts.
 
+### 1.4 Expert Team avatar loading
+
+Local avatars in Expert Team lists and details load separately through signed `/file-api/download`
+URLs rather than Base64 image data embedded in the list response. Group and member PNG, JPEG, GIF,
+and WebP files and matching Data URLs use this channel. Existing HTTP(S) image URLs are preserved.
+Missing, unsafe, or unsupported local images use the default avatar. Local SVG images are omitted
+to avoid exposing active documents on the application's origin.
+
+Content-addressed image copies live in `.cache/package-avatars/` under the current user or tenant's
+agent workspace. Identical images share a file and installed packages remain unchanged. Deployments
+must expose the existing `/file-api/download` channel; WebSocket message limits need no increase.
+
 ## 2. Expert Team configuration inheritance
 
 Expert Teams take Leader and member definitions, prompts, skills, and capabilities from the AgentGroup, while inheriting model routing, storage and shared `TeamDatabase`, transport, spawn mode, workspace, system-operation support, session, and Organization context from the current Team configuration. Multiple instances can use the same template. Read each unique runtime `team_id` from `org_view_organization`; a package name is not a runtime Team ID.

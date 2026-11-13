@@ -19,7 +19,6 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
 )
 from jiuwenswarm.common.auth.model_catalog import is_login_model
 from jiuwenswarm.common.config import (
-    get_available_models,
     get_config,
     get_default_models,
     update_config,
@@ -323,16 +322,37 @@ def _chosen_entry(config: dict[str, Any], entries: list[dict[str, Any]]) -> dict
 
 
 def recommendation_model_options(auth_session: str | None) -> dict[str, Any]:
-    """The chat models the topic model can be chosen from, each with why it cannot be when it cannot."""
-    config = get_config()
-    entries = [entry for entry in get_available_models(config, auth_session) if _model_name(entry)]
-    chosen = _chosen_entry(config, entries)
+    """Status fields for the active topic model only; do not list the chat catalog.
+
+    Dedicated ``model_config`` is the product path. A legacy ``recommendation.model``
+    binding reports its id only when that entry still exists in the chat catalog.
+    ``model_options`` stays empty so status no longer ships every configured chat
+    model to the UI.
+    """
+
+    del auth_session
+    dedicated = recommendation_model_configuration()
+    dedicated_name = str(dedicated.get("model") or "").strip()
+    if dedicated_name:
+        return {
+            "configured_model": dedicated_name,
+            "selected_model": dedicated_name,
+            "model_options": [],
+        }
+    section = get_config().get("recommendation") or {}
+    model_id = str(section.get("model") or "").strip() if isinstance(section, dict) else ""
+    if model_id in ("", FOLLOW_MAIN_MODEL):
+        model_id = ""
+    elif not any(
+        str(entry.get("model_id") or "") == model_id
+        for entry in get_default_models(get_config())
+    ):
+        # Stale binding: not selected and not inherited as a chat model.
+        model_id = ""
     return {
-        "configured_model": str((_chosen_entry(config, entries) or {}).get("model_id") or ""),
-        "selected_model": str(chosen["model_id"]) if chosen is not None and chosen.get("model_id") else "",
-        "model_options": [{"model_id": str(entry.get("model_id") or ""),
-                           "name": str(entry.get("alias") or "") or _model_name(entry),
-                           "disabled_reason": _unusable_reason(entry)} for entry in entries],
+        "configured_model": model_id,
+        "selected_model": model_id,
+        "model_options": [],
     }
 
 

@@ -3,7 +3,7 @@ name: deck-planning
 description: Read before building a new deck or restructuring an existing one, to work out the context, the story and the storyboard.
 ---
 
-For a new deck the sequence is: understand the context, find the story, storyboard it, post the plan, then build it one slide per mutation in the plan's order, verifying each slide as you go.
+For a new deck the sequence is: understand the context, find the story, storyboard it, post the plan, and once the user agrees, build it one slide per mutation in the plan's order, verifying each slide as you go.
 
 ## 1. Understand the context
 

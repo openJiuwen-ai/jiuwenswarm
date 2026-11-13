@@ -201,6 +201,23 @@ def _binding(app_id: str, agent_id: str, *, binding_id: str | None = None, enter
 
 
 @pytest.mark.asyncio
+async def test_group_dissolution_retires_all_agents_without_starting_requests(host):
+    first = host.connected("Planner", "app-plan")
+    second = host.connected("Budget", "app-budget")
+    group = host.groups.resolve(NS, "feishu", "oc_product", now=NOW)
+    for agent, app in ((first, "app-plan"), (second, "app-budget")):
+        host.groups.observe_access(NS, agent, group.group_chat_id, app, observed_at=NOW, source_ref="event:joined")
+    fanout = host.fanout([_binding("app-plan", first), _binding("app-budget", second)])
+    event = _event(receiving_app_id="app-plan", expected_agent_id=first, chat_id="oc_product", event_kind="dissolved",
+                   event_id="event-dissolved", changed_at=NOW + timedelta(seconds=1))
+    assert await fanout.handle(event) is InboundDisposition.HANDLED
+    assert host.groups.active_accesses(NS, first) == ()
+    assert host.groups.active_accesses(NS, second) == ()
+    assert host.groups.directory(NS, first)[0]["status"] == "dissolved"
+    assert host.row_counts() == (1, 0, 0)
+
+
+@pytest.mark.asyncio
 async def test_disabled_colleague_claims_a_feishu_message_without_starting_work(host):
     agent_id = host.connected("研发同事", "app-dev")
     host.service.set_enabled(NS, host.config_of(agent_id), enabled=False)
@@ -443,9 +460,9 @@ async def test_a_pure_greeting_is_accepted_only_for_one_daily_colleague(host):
     fanout = host.fanout([_binding("app-life", life), _binding("app-study", study)])
     group = host.groups.resolve(NS, "feishu", "oc_project", now=NOW)
     for agent_id, app_id in ((life, "app-life"), (study, "app-study")):
-        host.groups.update_membership(
+        host.groups.observe_access(
             NS, agent_id, group.group_chat_id, app_id,
-            status="active", observed_at=NOW, source_ref=f"test:{app_id}",
+            observed_at=NOW, message_time=NOW, source_ref=f"test:{app_id}",
         )
     life_event = _event(receiving_app_id="app-life", text="大家好", mention_ids=(), reply_to=None)
     study_event = _event(receiving_app_id="app-study", text="大家好", mention_ids=(), reply_to=None)

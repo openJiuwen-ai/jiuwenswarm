@@ -1,6 +1,8 @@
+import { isUserLoginRoute, userWebPaths } from './userWebPaths';
 import { resolveApiUrl } from '../../utils/env';
 
 const ACCESS_KEY = 'openjiuwen_access_token';
+const ACCESS_COOKIE = 'openjiuwen_user_access_token';
 const REFRESH_KEY = 'openjiuwen_refresh_token';
 
 interface TokenBundle {
@@ -19,9 +21,9 @@ function syncAccessCookie(accessToken: string | null): void {
   if (typeof document === 'undefined') return;
   const secure = typeof window !== 'undefined' && window.location.protocol === 'https:' ? '; Secure' : '';
   if (accessToken) {
-    document.cookie = `${ACCESS_KEY}=${encodeURIComponent(accessToken)}; Path=/; SameSite=Strict${secure}`;
+    document.cookie = `${ACCESS_COOKIE}=${encodeURIComponent(accessToken)}; Path=/; SameSite=Strict${secure}`;
   } else {
-    document.cookie = `${ACCESS_KEY}=; Path=/; Max-Age=0; SameSite=Strict${secure}`;
+    document.cookie = `${ACCESS_COOKIE}=; Path=/; Max-Age=0; SameSite=Strict${secure}`;
   }
 }
 
@@ -58,23 +60,20 @@ export function clearManagerTokens(): void {
   syncAccessCookie(null);
 }
 
+export async function clearActiveUserCluster(): Promise<void> {
+  await fetch(resolveApiUrl('/manager-api/v1/user-console/active-cluster'), {
+    method: 'DELETE', credentials: 'same-origin',
+  }).catch(() => undefined);
+}
+
 export function redirectToManagerLogin(): boolean {
   clearManagerTokens();
-  if (typeof window === 'undefined' || window.location.pathname.endsWith('/auth')) {
-    return false;
-  }
+  if (typeof window === 'undefined') return false;
+  const { login, route } = userWebPaths();
+  if (isUserLoginRoute(route)) return false;
   if (!redirectStarted) {
     redirectStarted = true;
-    const customUrl = (window as unknown as { __JIUWEN_LOGIN_ENTRY_URL__?: string }).__JIUWEN_LOGIN_ENTRY_URL__;
-    if (customUrl) {
-      window.location.replace(customUrl);
-    } else {
-      const pathname = window.location.pathname;
-      const chatIdx = pathname.indexOf('/chat');
-      const prefix = chatIdx !== -1 ? pathname.slice(0, chatIdx) : pathname.replace(/\/+$/, '');
-      const target = prefix ? `${prefix}/auth` : '/auth';
-      window.location.replace(target);
-    }
+    window.location.replace(window.__JIUWEN_LOGIN_ENTRY_URL__ || login);
   }
   return true;
 }
@@ -103,7 +102,7 @@ async function performRefresh(): Promise<boolean> {
   const accessBeforeRefresh = getManagerAccessToken();
   if (!refreshToken) return false;
   try {
-    const response = await fetch(resolveApiUrl('/idp/v1/auth/refresh'), {
+    const response = await fetch(resolveApiUrl('/idp/v1/auth/refresh?surface=user'), {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },

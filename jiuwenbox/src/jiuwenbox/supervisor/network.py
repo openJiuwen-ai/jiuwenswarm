@@ -6,6 +6,8 @@ This module configures iptables rules within a sandbox network namespace.
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 import ipaddress
 import logging
@@ -817,13 +819,86 @@ def resolve_host_egress_ipv4() -> str | None:
     return None
 
 
-def ensure_ip_forward() -> None:
-    path = "/proc/sys/net/ipv4/ip_forward"
+# runc bind-mounts /proc/sys read-only (readonlyPaths). Clearing that list
+# needs Docker's ``systempaths=unconfined``, which is absent before Docker 25.
+# A read-only proc sysctl still accepts the value set by ``docker run --sysctl``.
+_PROC_SYS = "/proc/sys"
+_IP_FORWARD = "/proc/sys/net/ipv4/ip_forward"
+_MS_REMOUNT = 32
+_MS_BIND = 4096
+_proc_sys_lock = threading.Lock()
+_proc_sys_writable = False
+
+
+def reset_proc_sys_mount_state() -> None:
+    """Forget a previous successful /proc/sys remount. Used by tests."""
+    global _proc_sys_writable
+    _proc_sys_writable = False
+
+
+def ip_forward_path() -> str:
+    """Path written when IPv4 forwarding is still off."""
+    return _IP_FORWARD
+
+
+def _ip_forward_enabled(path: str = _IP_FORWARD) -> bool:
     try:
-        with open(path, "w", encoding="ascii") as handle:
-            handle.write("1\n")
+        with open(path, encoding="ascii") as handle:
+            return handle.read().strip() == "1"
+    except OSError:
+        return False
+
+
+def _write_ip_forward(path: str = _IP_FORWARD) -> None:
+    with open(path, "w", encoding="ascii") as handle:
+        handle.write("1\n")
+
+
+def _remount_proc_sys_rw() -> None:
+    """Undo the runtime's read-only bind of /proc/sys. Once per process."""
+    global _proc_sys_writable
+    with _proc_sys_lock:
+        if _proc_sys_writable:
+            return
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        libc.mount.argtypes = [
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_ulong,
+            ctypes.c_void_p,
+        ]
+        libc.mount.restype = ctypes.c_int
+        target = _PROC_SYS.encode()
+        # MS_BIND|MS_REMOUNT clears the read-only flag on this bind mount only.
+        if libc.mount(target, target, None, _MS_REMOUNT | _MS_BIND, None) != 0:
+            err = ctypes.get_errno()
+            raise NetworkSetupError(
+                f"Failed to remount {_PROC_SYS} read-write: {os.strerror(err)}"
+            )
+        _proc_sys_writable = True
+
+
+def ensure_ip_forward() -> None:
+    """Turn on IPv4 forwarding in the current netns.
+
+    When ``--sysctl net.ipv4.ip_forward=1`` already set the value, this is a
+    single read. The write path only runs if forwarding is still off, and a
+    read-only ``/proc/sys`` is remounted once before that write.
+    """
+    if _ip_forward_enabled():
+        return
+    try:
+        _write_ip_forward()
+        return
     except OSError as exc:
-        raise NetworkSetupError(f"Failed to enable IPv4 forwarding at {path}") from exc
+        if exc.errno != errno.EROFS:
+            raise NetworkSetupError(f"Failed to enable IPv4 forwarding at {_IP_FORWARD}") from exc
+    _remount_proc_sys_rw()
+    try:
+        _write_ip_forward()
+    except OSError as exc:
+        raise NetworkSetupError(f"Failed to enable IPv4 forwarding at {_IP_FORWARD}") from exc
 
 
 def run_iptables_nat(

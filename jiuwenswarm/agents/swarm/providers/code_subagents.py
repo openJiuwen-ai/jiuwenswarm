@@ -129,6 +129,7 @@ def build_code_agent(factory_kwargs: dict[str, Any], ctx: SwarmBuildContext) -> 
         model,
         rails=rails,
         workspace=str(inp.workspace_root or "./"),
+        sys_operation=parent_sys_operation(ctx),
         language=inp.language,
         max_iterations=inp.max_iterations,
     )
@@ -233,6 +234,7 @@ def build_swarm_browser_agent(factory_kwargs: dict[str, Any], ctx: SwarmBuildCon
     spec = build_browser_agent_config(
         model,
         workspace=str(inp.workspace_root or "./"),
+        sys_operation=parent_sys_operation(ctx),
         language=inp.language,
         max_iterations=inp.max_iterations,
         browser_key=browser_key,
@@ -315,6 +317,8 @@ def build_swarm_cua_agent(factory_kwargs: dict[str, Any], ctx: SwarmBuildContext
         cua_snapshot_keep_last_k=inp.snapshot_keep_last_k,
         cua_pause_on_user_input=inp.pause_on_user_input,
     )
+    if spec is None:
+        return None
     # Preserve the cua_* factory kwargs baked in by agent-core; only add the
     # workspace flag.
     spec.factory_kwargs = {**(spec.factory_kwargs or {}), "auto_create_workspace": False}

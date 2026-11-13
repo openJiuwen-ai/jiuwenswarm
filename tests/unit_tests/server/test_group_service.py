@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -102,6 +103,48 @@ async def create(service, token="one", **params):
         request_id="request",
     )
     return info
+
+
+@pytest.mark.asyncio
+async def test_group_lock_releases_after_repeated_cancellation(tmp_path, monkeypatch):
+    monkeypatch.setattr(gs, "get_agent_sessions_dir", lambda: tmp_path / "sessions")
+    original_lock = gs.cross_process_file_lock
+    original_to_thread = asyncio.to_thread
+    guards = []
+
+    def retain_guard(path):
+        guard = original_lock(path, timeout=0.05)
+        guards.append(guard)
+        return guard
+
+    async def offload(func, *args):
+        if getattr(func, "__name__", None) == "__exit__":
+            await asyncio.sleep(0)
+        return await original_to_thread(func, *args)
+
+    monkeypatch.setattr(gs, "cross_process_file_lock", retain_guard)
+    monkeypatch.setattr(asyncio, "to_thread", offload)
+    entered = asyncio.Event()
+
+    async def hold_lock():
+        async with gs.group_lock("group-cancelled"):
+            entered.set()
+            try:
+                await asyncio.Future()
+            finally:
+                asyncio.get_running_loop().call_soon(task.cancel)
+
+    task = asyncio.create_task(hold_lock())
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        async with gs.group_lock("group-cancelled"):
+            pass
+    finally:
+        for guard in guards:
+            guard.__exit__(None, None, None)
 
 
 @pytest.mark.asyncio
@@ -760,18 +803,18 @@ async def test_create_and_add_members_without_count_limit(service):
     assert len(service.get(group["group_id"], user_id="owner", channel_id="web")["members"]) == 102
 
 
-def _publish_file(group, path, *, name="report.md"):
+def _publish_file(group, path, *, name="report.md", message_id="file-message", timestamp=1):
     log = GroupConversationLog(group["team_name"], group["group_id"])
     log.sync([
         ConversationMessage(
-            message_id="file-message",
+            message_id=message_id,
             team_name=group["team_name"],
             session_id=group["group_id"],
-            client_message_id="file-message",
+            client_message_id=message_id,
             sender="expert",
             sender_name="Expert",
             content=f"see {path}",
-            timestamp=1,
+            timestamp=timestamp,
             mentions=[],
             attachments=[{"name": name, "path": str(path)}],
         )
@@ -784,19 +827,218 @@ async def _attachments(service, group):
 
 
 @pytest.mark.asyncio
-async def test_file_rename_changes_display_name_without_touching_disk(service):
+async def test_file_rename_moves_file_and_updates_historical_attachments(service):
     group = await create(service)
     path = gs.group_files.team_home(group["team_name"]) / "outputs" / "report.md"
     path.parent.mkdir(parents=True)
     path.write_text("draft", encoding="utf-8")
     _publish_file(group, path)
+    legacy = gs.read_group(group["group_id"])
+    legacy["file_overrides"] = {str(path): {"name": "final.md"}}
+    gs._save(legacy)
     result = await service.file_rename(
         group["group_id"], {"path": str(path), "name": "  final.md "}, user_id="owner", channel_id="web"
     )
     assert result["name"] == "final.md"
-    assert await _attachments(service, group) == [{"name": "final.md", "path": str(path)}]
-    assert path.read_text(encoding="utf-8") == "draft"
+    target = path.with_name("final.md")
+    assert result["path"] == str(target)
+    assert result["old_path"] == str(path)
+    assert await _attachments(service, group) == [{"name": "final.md", "path": str(target)}]
+    assert not path.exists()
+    assert target.read_text(encoding="utf-8") == "draft"
     assert gs.read_group(group["group_id"])["file_overrides"][str(path)]["name"] == "final.md"
+
+
+@pytest.mark.asyncio
+async def test_repeated_rename_and_delete_follow_historical_aliases(service):
+    group = await create(service)
+    path = gs.group_files.team_home(group["team_name"]) / "outputs" / "report.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("draft", encoding="utf-8")
+    _publish_file(group, path)
+    current = str(path)
+    for name in ["one.md", "two.md", "report.md", "final.md"]:
+        renamed = await service.file_rename(
+            group["group_id"], {"path": current, "name": name}, user_id="owner", channel_id="web",
+        )
+        current = renamed["path"]
+        assert await _attachments(service, group) == [{"name": name, "path": current}]
+    deleted = await service.file_delete(
+        group["group_id"], {"path": current}, user_id="owner", channel_id="web",
+    )
+    assert deleted["file_removed"]
+    assert not Path(current).exists()
+    assert await _attachments(service, group) == []
+
+
+@pytest.mark.asyncio
+async def test_reused_path_keeps_both_attachment_generations(service, monkeypatch):
+    group = await create(service)
+    path = gs.group_files.team_home(group["team_name"]) / "report.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    clock = 1_800_000_000.0
+    monkeypatch.setattr(gs.group_files, "time", SimpleNamespace(time=lambda: clock))
+    path.write_text("first", encoding="utf-8")
+    _publish_file(group, path, timestamp=int((clock - 1) * 1000))
+    await service.file_rename(
+        group["group_id"], {"path": str(path), "name": "first.md"}, user_id="owner", channel_id="web",
+    )
+    clock += 10
+    path.write_text("second", encoding="utf-8")
+    _publish_file(group, path, message_id="second-file", timestamp=int((clock - 1) * 1000))
+    history = await service.history(group["group_id"], {}, user_id="owner", channel_id="web")
+    assert [m["attachments"][0]["path"] for m in history["messages"]] == [str(path.with_name("first.md")), str(path)]
+    assert gs.group_files.group_attachment_paths(history["messages"], []) == {
+        str(path.with_name("first.md")), str(path),
+    }
+    await service.file_rename(
+        group["group_id"], {"path": str(path), "name": "second.md"}, user_id="owner", channel_id="web",
+    )
+    clock += 10
+    await service.file_rename(
+        group["group_id"], {"path": str(path.with_name("first.md")), "name": "final.md"},
+        user_id="owner", channel_id="web",
+    )
+    history = await service.history(group["group_id"], {}, user_id="owner", channel_id="web")
+    paths = [m["attachments"][0]["path"] for m in history["messages"]]
+    assert paths == [str(path.with_name("final.md")), str(path.with_name("second.md"))]
+    assert [Path(value).read_text(encoding="utf-8") for value in paths] == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_deleted_attachment_stays_hidden_when_another_file_takes_its_path(service):
+    group = await create(service)
+    path = gs.group_files.team_home(group["team_name"]) / "report.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("deleted", encoding="utf-8")
+    _publish_file(group, path)
+    await service.file_delete(group["group_id"], {"path": str(path)}, user_id="owner", channel_id="web")
+    other = path.with_name("other.md")
+    other.write_text("survivor", encoding="utf-8")
+    _publish_file(group, other, name="other.md", message_id="other-file")
+    await service.file_rename(
+        group["group_id"], {"path": str(other), "name": path.name}, user_id="owner", channel_id="web",
+    )
+    history = await service.history(group["group_id"], {}, user_id="owner", channel_id="web")
+    assert history["messages"][0]["attachments"] == []
+    assert history["messages"][1]["attachments"] == [{"name": path.name, "path": str(path)}]
+    await service.file_rename(
+        group["group_id"], {"path": str(path), "name": "survivor.md"}, user_id="owner", channel_id="web",
+    )
+    history = await service.history(group["group_id"], {}, user_id="owner", channel_id="web")
+    assert history["messages"][0]["attachments"] == []
+    assert Path(history["messages"][1]["attachments"][0]["path"]).read_text(encoding="utf-8") == "survivor"
+
+
+@pytest.mark.asyncio
+async def test_rename_to_disk_name_persists_display_name_without_moving(service, monkeypatch):
+    group = await create(service)
+    path = gs.group_files.team_home(group["team_name"]) / "report.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("keep", encoding="utf-8")
+    _publish_file(group, path)
+    state = gs.read_group(group["group_id"])
+    state["file_overrides"] = {str(path): {"name": "display.md"}}
+    gs._save(state)
+    move = Mock(side_effect=AssertionError("self rename must not move the file"))
+    monkeypatch.setattr(gs.group_files, "move_file", move)
+    await service.file_rename(
+        group["group_id"], {"path": str(path), "name": path.name}, user_id="owner", channel_id="web",
+    )
+    move.assert_not_called()
+    assert await _attachments(service, group) == [{"name": path.name, "path": str(path)}]
+    assert path.read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.asyncio
+async def test_execution_attachment_generation_uses_publication_time(service, monkeypatch):
+    from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+
+    group = await create(service)
+    state = {"file_overrides": {"/report.md": {
+        "name": "final.md", "path": "/final.md", "applies_before": 1_800_000_000,
+    }}}
+    attachment = {"name": "report.md", "path": "/report.md"}
+    old_execution = {"attachments": [attachment], "attachments_published_at": 1_799_999_999,
+                     "created_at": 1_799_999_990, "updated_at": 1_800_000_010,
+                     "execution_id": "old", "execution_kind": "agent", "status": "completed"}
+    new_execution = {**old_execution, "execution_id": "new", "attachments_published_at": 1_800_000_001}
+    GroupExecutions(group["group_id"]).path.write_text(json.dumps({
+        "old": old_execution, "new": new_execution,
+    }), encoding="utf-8")
+    group_state = gs.read_group(group["group_id"])
+    group_state.update(state)
+    gs._save(group_state)
+    monkeypatch.setattr(GroupExecutions, "reconcile", AsyncMock())
+    listed = await service.execution_list(group["group_id"], {}, user_id="owner", channel_id="web")
+    attachments = {record["execution_id"]: record["attachments"] for record in listed["executions"]}
+    assert attachments["old"] == [
+        {"name": "final.md", "path": "/final.md"},
+    ]
+    assert attachments["new"] == [attachment]
+    assert gs.group_files.group_attachment_paths([], [old_execution, new_execution], state["file_overrides"]) == {
+        "/report.md", "/final.md",
+    }
+
+
+@pytest.mark.asyncio
+async def test_execution_status_update_preserves_attachment_publication_time(service, monkeypatch):
+    from jiuwenswarm.server.runtime import group_execution as ge
+
+    group = await create(service)
+    executions = ge.GroupExecutions(group["group_id"])
+    executions.path.write_text(json.dumps({"exec": {
+        "execution_id": "exec", "execution_kind": "agent", "status": "running", "revision": 1, "attachments": [],
+    }}), encoding="utf-8")
+    monkeypatch.setattr(ge.GroupExecutions, "publish", AsyncMock())
+    monkeypatch.setattr(ge, "time", SimpleNamespace(time=lambda: 100))
+    attachment = {"name": "report.md", "path": "/report.md"}
+    await executions.update("exec", attachments=[attachment])
+    monkeypatch.setattr(ge, "time", SimpleNamespace(time=lambda: 200))
+    result = await executions.update("exec", phase="publishing")
+    assert result["updated_at"] == 200
+    assert result["attachments_published_at"] == 100
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["collision", "missing", "permission", "outside", "symlink", "save"])
+async def test_file_rename_failure_preserves_files_and_metadata(service, tmp_path, monkeypatch, failure):
+    group = await create(service)
+    root = gs.group_files.team_home(group["team_name"]) / "outputs"
+    root.mkdir(parents=True)
+    source = (tmp_path if failure == "outside" else root) / "report.md"
+    source.write_text("original", encoding="utf-8")
+    target = source.with_name("final.md")
+    if failure == "collision":
+        target.write_text("existing", encoding="utf-8")
+    if failure == "symlink":
+        link = root / "linked.md"
+        link.symlink_to(source)
+        source = link
+    _publish_file(group, source)
+    before = gs.read_group(group["group_id"]).get("file_overrides")
+    if failure == "missing":
+        source.unlink()
+    elif failure == "permission":
+        monkeypatch.setattr(gs.group_files.os, "link", Mock(side_effect=PermissionError("denied")))
+    elif failure == "save":
+        monkeypatch.setattr(gs, "_save", Mock(side_effect=OSError("disk full")))
+    with pytest.raises(gs.GroupError) as caught:
+        await service.file_rename(
+            group["group_id"], {"path": str(source), "name": "final.md"}, user_id="owner", channel_id="web",
+        )
+    expected_code = {
+        "collision": "FILE_EXISTS", "missing": "NOT_FOUND", "permission": "PERMISSION_DENIED",
+        "outside": "FILE_RENAME_FORBIDDEN", "symlink": "FILE_RENAME_FORBIDDEN", "save": "FILE_RENAME_FAILED",
+    }
+    assert caught.value.code == expected_code[failure]
+    assert gs.read_group(group["group_id"]).get("file_overrides") == before
+    if failure != "missing":
+        assert source.read_text(encoding="utf-8") == "original"
+    if failure == "collision":
+        assert target.read_text(encoding="utf-8") == "existing"
+    else:
+        assert not target.exists()
 
 
 @pytest.mark.asyncio
@@ -910,6 +1152,8 @@ async def test_execution_snapshots_apply_file_overrides(service, monkeypatch):
     )
     assert listed["executions"][0]["attachments"][0]["name"] == "trip.md"
     assert fetched["attachments"][0]["name"] == "trip.md"
+    assert listed["executions"][0]["attachments"][0]["path"] == str(path.with_name("trip.md"))
+    assert fetched["attachments"][0]["path"] == str(path.with_name("trip.md"))
 
 
 @pytest.mark.asyncio

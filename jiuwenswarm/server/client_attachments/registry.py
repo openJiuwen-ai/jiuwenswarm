@@ -36,13 +36,14 @@ class Capability(StrEnum):
     MESSAGE_RULES = "message_rules"
 
 
+# An Office task pane's conversation: the document is the deliverable, the task pane renders no A2UI and the
+# persona sets the message rules.
+_TASK_PANE_LEAVES_OUT = frozenset({Capability.SUBAGENTS, Capability.FILE_DELIVERY, Capability.MESSAGE_RULES})
+
 # client_app: the app's package directory, ``<package>/<relative dir>`` inside an installed Python package so it
 # resolves the same from source and from a frozen bundle, and the capabilities its conversations leave out.
 APPS: dict[str, tuple[str, frozenset[Capability]]] = {
-    # The slides are the deliverable, the task pane renders no A2UI and the persona sets the message rules.
-    "office-powerpoint": ("jiuwenswarm/office/powerpoint", frozenset({
-        Capability.SUBAGENTS, Capability.FILE_DELIVERY, Capability.MESSAGE_RULES,
-    })),
+    "office-powerpoint": ("jiuwenswarm/office/powerpoint", _TASK_PANE_LEAVES_OUT),
 }
 
 

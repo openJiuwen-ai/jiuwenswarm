@@ -59,6 +59,7 @@ from jiuwenbox.server.workspace import SANDBOX_WORKSPACE
 from jiuwenbox.supervisor import cgroup as cgroup_module
 from jiuwenbox.supervisor import network as network_module
 from jiuwenbox.supervisor.bwrap import BwrapConfig
+from jiuwenbox.supervisor.visible_proc import ensure_visible_proc
 from jiuwenbox.supervisor.daemon_ipc import (
     LISTENER_FD_ENV,
     MAX_FILE_BYTES,
@@ -920,6 +921,7 @@ class ProcessRuntime(RuntimeAdapter):
         self._sandbox_host_firewall_rules: dict[str, list[tuple[int, int]]] = {}
         self._cgroup_handles: dict[str, cgroup_module.CgroupHandle] = {}
         self._warm_pool: Any | None = None
+        self._warm_pool_skip_reason = "pool was not started"
         self._mount_client: Any | None = None
         self._warm_commits: dict[str, int] = {}
         self._warm_logs: dict[str, Any] = {}
@@ -1229,6 +1231,12 @@ class ProcessRuntime(RuntimeAdapter):
         scripts, seccomp BPF, landlock payload) keep the per-call cost low.
         """
         config = BwrapConfig.from_policy(policy, list(command))
+        # Ubuntu 5.15 blocks bwrap's fresh proc mount when this container's
+        # /proc carries runtime masks. A child-free procfs in this mount
+        # namespace satisfies the kernel check without dropping user or pid
+        # namespaces. Kernels that already allow the mount are unaffected.
+        if config.unshare_user and config.unshare_pid:
+            ensure_visible_proc()
         process_uid = config.uid
         process_gid = config.gid
         if sandbox_env:
@@ -2276,14 +2284,27 @@ class ProcessRuntime(RuntimeAdapter):
 
     def start_warm_pool(self, template: SecurityPolicy) -> None:
         """Park sandboxes in the background. No-op when the pool size is 0."""
-        from jiuwenbox.server.runtime.warm_pool import WarmPool, warm_pool_size
+        from jiuwenbox.server.runtime.warm_pool import (
+            ENV_WARM_POOL,
+            WarmPool,
+            warm_pool_size,
+        )
 
+        if self._warm_pool is not None:
+            return
         size = warm_pool_size()
-        if size <= 0 or self._warm_pool is not None:
+        if size <= 0:
+            raw = os.environ.get(ENV_WARM_POOL, "")
+            self._warm_pool_skip_reason = f"disabled ({ENV_WARM_POOL}={raw.strip()!r})"
+            logger.info(
+                "Warm pool %s; sandbox create stays on the cold path",
+                self._warm_pool_skip_reason,
+            )
             return
         pool = WarmPool(self, template, size)
         self._warm_pool = pool
         pool.start()
+        self._warm_pool_skip_reason = ""
 
     def stop_warm_pool(self) -> None:
         pool = self._warm_pool
@@ -2349,6 +2370,20 @@ class ProcessRuntime(RuntimeAdapter):
         self._teardown_cgroup(slot_id)
         self._cleanup_sandbox_artifacts(slot_id, netns_name)
 
+    def attach_warm_pool(self, pool: Any) -> None:
+        """Install ``pool`` without parking real sandboxes. Tests use this."""
+        self._warm_pool = pool
+
+    async def claim_warm_sandbox(
+        self,
+        sandbox_id: str,
+        policy: SecurityPolicy,
+        policy_path: Path,
+        env: dict[str, str] | None = None,
+    ) -> int | None:
+        """Adopt a parked sandbox, or return None when create stays on the cold path."""
+        return await self._try_warm_adopt(sandbox_id, policy, policy_path, env)
+
     async def _try_warm_adopt(
         self,
         sandbox_id: str,
@@ -2358,12 +2393,28 @@ class ProcessRuntime(RuntimeAdapter):
     ) -> int | None:
         pool = self._warm_pool
         if pool is None:
+            logger.info(
+                "Warm pool not used for %s: %s",
+                sandbox_id,
+                self._warm_pool_skip_reason,
+            )
             return None
         matched, slot_id = pool.acquire(policy)
         if not matched:
+            reasons = pool.mismatch_reasons(policy)
+            logger.info(
+                "Warm pool not used for %s: policy incompatible: %s",
+                sandbox_id,
+                "; ".join(reasons) or "no differing field recorded",
+            )
             return None
         with perf_trace.span("pool.checkout", sandbox_id):
             if slot_id is None:
+                logger.info(
+                    "Warm pool not used for %s: no parked sandbox available (depth=%d)",
+                    sandbox_id,
+                    pool.depth,
+                )
                 return None
         try:
             return await asyncio.to_thread(

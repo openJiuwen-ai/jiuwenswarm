@@ -620,7 +620,7 @@ if ($FrontendOnly) {
     Write-Host "`n[4/6] Reusing existing PyInstaller backend: $BackendDist" -ForegroundColor Yellow
 } else {
     Write-Host "`n[4/6] Running PyInstaller (backend)..." -ForegroundColor Yellow
-    uv run --with-requirements scripts/computer-use-requirements.txt pyinstaller scripts\jiuwenswarm.spec --noconfirm
+    uv run pyinstaller scripts\jiuwenswarm.spec --noconfirm
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     if (-not (Test-Path (Join-Path $BackendDist $BuildExecutableNameWindows))) {
         throw "PyInstaller output not found: $BackendDist\$BuildExecutableNameWindows"

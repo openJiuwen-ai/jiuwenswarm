@@ -9,6 +9,7 @@ import json
 import logging
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +65,8 @@ _HEARTBEAT_TIMEOUT = 30.0
 _HELLO_TIMEOUT = 10.0
 _RECOVERY_BACKOFF_INITIAL = 30.0
 _RECOVERY_BACKOFF_MAX = 300.0
+_POST_READY_CRASH_WINDOW = 600.0
+_POST_READY_CRASH_LIMIT = 3
 _FINAL_SHUTDOWN_TIMEOUT = 30.0
 _SNAPSHOT_WAIT_SECONDS = 0.3
 _SNAPSHOT_WAIT_ATTEMPTS = 3
@@ -144,11 +147,11 @@ class RuntimeSupervisor:
         self._forwarder = forwarder
         self._ipc_mode = runtime_ipc_mode()
         if self._ipc_mode == FRONT_LOOPBACK and socket_path is None:
-            from jiuwenswarm.common.utils import get_infra_data_dir
+            from jiuwenswarm.common.utils import get_user_workspace_dir
 
             # A log location only; attached mode never resolves a resident
             # socket endpoint, creates socket files or takes its locks.
-            socket_path = str(get_infra_data_dir() / "run" / "runtime-attached")
+            socket_path = str(get_user_workspace_dir() / "run" / "runtime-attached")
         self._socket_path = socket_path or default_socket_path()
         self._launch_generation: int | None = None
         self._host = host
@@ -187,6 +190,9 @@ class RuntimeSupervisor:
         self._closing = False
         self._retryable_failure = False
         self._restart_count = 0
+        self._post_ready_crashes: deque[float] = deque()
+        self._worker_reached_ready = False
+        self._crash_retry_at = 0.0
         self._generation = 0
         self._peer_generation: int | None = None
         self._last_rx = 0.0
@@ -335,6 +341,7 @@ class RuntimeSupervisor:
                     return False
                 # Publish recovery only after retirement succeeded. Refused
                 # ownership or an unobserved exit must leave FAILED sticky.
+                self._worker_reached_ready = False
                 self._fatal = False
                 self._fatal_reason = ""
                 self._restart_count = 0
@@ -412,7 +419,8 @@ class RuntimeSupervisor:
         slot = self._registry.get(worker_id)
         if slot is None or self._conn is None:
             await self._emit_error(
-                ws, request, send_lock, "runtime worker is not connected"
+                ws, request, send_lock, self._fatal_reason or "runtime worker is not connected",
+                code="WORKER_UNSTABLE" if self._crash_retry_at > time.monotonic() else "WORKER_CLOSED",
             )
             return
         loop = asyncio.get_running_loop()
@@ -593,6 +601,17 @@ class RuntimeSupervisor:
                 unhealthy_reason = self._unhealthy_reason
                 self._unhealthy_reason = ""
                 reason = unhealthy_reason or "runtime worker closed"
+                exited = self._confirmed_worker_exit()
+                if self._worker_reached_ready and not exited and not unhealthy_reason:
+                    # Pipe EOF can precede the OS exit observation by a few ticks.
+                    # Confirm exit before classifying a resident disconnect as a crash.
+                    for _ in range(5):
+                        await asyncio.sleep(0.05)
+                        exited = self._confirmed_worker_exit()
+                        if exited:
+                            break
+                if unhealthy_reason or self._ipc_mode == FRONT_LOOPBACK or exited:
+                    self._record_post_ready_exit(reason)
                 if not self._fatal and self._restart_count >= self._max_restarts:
                     self._mark_restart_exhausted(reason)
                 if self._fatal:
@@ -602,10 +621,15 @@ class RuntimeSupervisor:
                     self._readiness.mark_runtime_warming()
                 # Complete requests only after publishing the recovery decision.
                 # Retirement can take seconds when a blocked loop ignores SIGTERM.
-                await self._fail_pending("runtime worker closed")
-                if self._ipc_mode == FRONT_LOOPBACK:
-                    if retired_conn is not None:
-                        await retired_conn.close()
+                await self._fail_pending(
+                    self._fatal_reason if self._fatal else "runtime worker closed",
+                    code="WORKER_UNSTABLE" if self._crash_retry_at > time.monotonic() else "WORKER_CLOSED",
+                )
+                # A failed session owns these tasks and this transport even when
+                # its resident Worker remains alive or the restart budget is gone.
+                await self._cancel_side_tasks()
+                if retired_conn is not None:
+                    await retired_conn.close()
                 if unhealthy_reason or self._ipc_mode == FRONT_LOOPBACK:
                     try:
                         await self._retire_unhealthy_worker()
@@ -670,6 +694,11 @@ class RuntimeSupervisor:
                             )
                             existing = conn
                         else:
+                            # EOF may precede process exit. Charge a lost ready
+                            # resident before replacing it, never for reattachment.
+                            self._record_post_ready_exit("resident worker replacement after disconnect")
+                            if self._fatal:
+                                raise RuntimeError(self._fatal_reason)
                             process = WorkerProcess(
                                 self._socket_path, host=self._host, port=self._port,
                                 stub=self._stub, stub_ready_delay=self._stub_ready_delay,
@@ -713,6 +742,7 @@ class RuntimeSupervisor:
                             if existing is None or attempt:
                                 raise RuntimeError("new Worker build identity did not match its parent")
                             logger.warning("[Supervisor] replacing resident Worker from a different code build")
+                            self._worker_reached_ready = False
                             try:
                                 await retire_worker(conn, hello, self._socket_path,
                                     deadline=time.monotonic() + _FINAL_SHUTDOWN_TIMEOUT, allow_legacy=True)
@@ -796,6 +826,10 @@ class RuntimeSupervisor:
                 await listener.close()
 
     async def _bring_up(self) -> None:
+        # Resident readiness belongs to the process, not its IPC connection.
+        # Keep it until exit is confirmed or a replacement is needed.
+        if self._ipc_mode == FRONT_LOOPBACK:
+            self._worker_reached_ready = False
         await self._cancel_side_tasks()
         if self._ipc_mode == FRONT_LOOPBACK:
             launch_identity = await self._connect_attached()
@@ -1017,6 +1051,7 @@ class RuntimeSupervisor:
 
     def _write_diagnostics(self, reason: str) -> None:
         now = time.monotonic()
+        stdout_path = getattr(self._process, "stdout_path", None)
         stderr_path = getattr(self._process, "stderr_path", None)
         snapshot = {
             "reason": reason,
@@ -1039,6 +1074,7 @@ class RuntimeSupervisor:
             if self._worker_last_beat
             else None,
             "worker_stall_context": self._worker_stall_context,
+            "worker_stdout": str(stdout_path) if stdout_path is not None else None,
             "worker_stderr": str(stderr_path) if stderr_path is not None else None,
         }
         logger.warning("[Supervisor] runtime diagnostics: %s", json.dumps(snapshot))
@@ -1046,12 +1082,14 @@ class RuntimeSupervisor:
             return
         self._last_dump_at = now
         try:
-            if stderr_path is not None:
+            if stdout_path is not None:
+                directory = stdout_path.parent
+            elif stderr_path is not None:
                 directory = stderr_path.parent
             else:
                 from jiuwenswarm.common.utils import get_logs_dir
 
-                directory = get_logs_dir() / "agent" / "runtime_diagnostics"
+                directory = get_logs_dir() / "runtime_diagnostics"
             self._last_dump_path = dump_runtime_state(directory, snapshot)
             self._observed_loop_lag = 0.0
             logger.warning(
@@ -1252,13 +1290,20 @@ class RuntimeSupervisor:
                 return
             self._fatal = False
             self._restart_count = 0
+            self._worker_reached_ready = True
             self._registry.mark_ready("primary", ready=True)
             self._readiness.mark_agent_ready()
             logger.info("[Supervisor] runtime worker agent_ready pid=%s", self._worker_pid)
         elif state == ReadinessState.DEGRADED.value:
-            if self._readiness.snapshot()["agent_ready"] or message.get("agent_ready") is True:
+            if message.get("agent_ready") is not False and (
+                self._readiness.snapshot()["agent_ready"] or message.get("agent_ready") is True
+            ):
+                # Optional failures do not make an execution-ready reconnect fail.
+                self._fatal = False
+                self._restart_count = 0
                 if not self._readiness.snapshot()["agent_ready"]:
                     self._readiness.mark_agent_ready()
+                self._worker_reached_ready = True
                 self._readiness.mark_degraded()
                 self._registry.mark_ready("primary", ready=True)
         elif state == ReadinessState.RUNTIME_WARMING.value:
@@ -1275,6 +1320,36 @@ class RuntimeSupervisor:
             runtime_phase=message.get("runtime_phase"),
             capability_readiness=message.get("capability_readiness"),
         )
+
+    def _confirmed_worker_exit(self) -> bool:
+        """A live resident's disconnected IPC is not a process crash."""
+        if self._process is not None:
+            return self._process.returncode is not None
+        if self._worker_pid is None or self._worker_create_time is None:
+            return False
+        import psutil
+
+        try:
+            process = psutil.Process(self._worker_pid)
+            return (process.create_time() != self._worker_create_time
+                    or process.status() in {psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD})
+        except psutil.NoSuchProcess:
+            return True
+        except psutil.AccessDenied:
+            return False
+
+    def _record_post_ready_exit(self, reason: str) -> None:
+        """Readiness does not forgive repeated exits in the same crash window."""
+        if not self._worker_reached_ready:
+            return
+        self._worker_reached_ready = False
+        now = time.monotonic()
+        while self._post_ready_crashes and self._post_ready_crashes[0] <= now - _POST_READY_CRASH_WINDOW:
+            self._post_ready_crashes.popleft()
+        self._post_ready_crashes.append(now)
+        if len(self._post_ready_crashes) >= _POST_READY_CRASH_LIMIT:
+            self._crash_retry_at = self._post_ready_crashes[0] + _POST_READY_CRASH_WINDOW
+            self._mark_restart_exhausted(f"runtime worker repeatedly exited after readiness: {reason}")
 
     def _mark_restart_exhausted(self, reason: str) -> None:
         """Publish a transient failure and retry after a bounded cooldown."""
@@ -1294,6 +1369,7 @@ class RuntimeSupervisor:
     async def _recover_after_backoff(self) -> None:
         delay = _RECOVERY_BACKOFF_INITIAL
         while not self._stopping and not self._closing:
+            delay = max(delay, self._crash_retry_at - time.monotonic())
             logger.warning("[Supervisor] restart budget exhausted; retrying in %.1fs", delay)
             await asyncio.sleep(delay)
             if self._stopping or self._closing or self._readiness.state is not ReadinessState.FAILED:
@@ -1336,12 +1412,12 @@ class RuntimeSupervisor:
         await asyncio.sleep(min(2.0, 0.2 * self._restart_count))
         return True
 
-    async def _fail_pending(self, error: str) -> None:
+    async def _fail_pending(self, error: str, *, code: str = "WORKER_CLOSED") -> None:
         pending = list(self._pending.items())
         self._pending.clear()
         for _request_id, future in pending:
             if not future.done():
-                future.set_result({"ok": False, "delivered": False, "error": error})
+                future.set_result({"ok": False, "delivered": False, "error": error, "code": code})
         self._routes.clear()
 
     async def _notify_gateway(self, *, attached: bool, remote: Any = None) -> None:
@@ -1369,10 +1445,12 @@ class RuntimeSupervisor:
             request_id=request.request_id,
             channel_id=request.channel_id,
             ok=False,
-            payload={"error": error, "code": code},
+            payload={"error": error, "code": code, "session_id": request.session_id},
             metadata=request.metadata,
+            agent_ref=request.agent_ref,
         )
         wire = encode_response(response, response_id=request.request_id)
+        wire["session_id"] = request.session_id
         if self._forwarder is None:
             return
         try:
@@ -1522,8 +1600,9 @@ class RuntimeSupervisor:
             if self._stopping or generation != self._generation:
                 return
             logger.warning(
-                "[Supervisor] runtime worker exited: code=%s stderr=%s",
+                "[Supervisor] runtime worker exited: code=%s stdout=%s stderr=%s",
                 code,
+                getattr(process, "stdout_path", None),
                 process.stderr_path,
             )
             conn = self._conn

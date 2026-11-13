@@ -109,7 +109,7 @@ def _plain_int(value: Any) -> bool:
 
 
 class ArkInterestRankingAdapter:
-    """I2-specific prompt adapter over the shared Ark stage invocation seam."""
+    """I2-specific prompt adapter over the shared recommendation stage invoker."""
 
     def __init__(self, invoke_stage: StageInvoker) -> None:
         self._invoke_stage = invoke_stage
@@ -123,7 +123,7 @@ class ArkInterestRankingAdapter:
 
 
 class ArkCandidateGenerationAdapter:
-    """I4-specific prompt adapter over the shared Ark stage invocation seam."""
+    """I4-specific prompt adapter over the shared recommendation stage invoker."""
 
     def __init__(self, invoke_stage: StageInvoker) -> None:
         self._invoke_stage = invoke_stage
@@ -137,7 +137,7 @@ class ArkCandidateGenerationAdapter:
 
 
 class ArkSlateSelectionAdapter:
-    """I5-specific prompt adapter over the shared Ark stage invocation seam."""
+    """I5-specific prompt adapter over the shared recommendation stage invoker."""
 
     def __init__(self, invoke_stage: StageInvoker) -> None:
         self._invoke_stage = invoke_stage

@@ -9,7 +9,7 @@ from jiuwenswarm.server.jiuwenmate.execution_models import ConversationRef
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.scheduled_requests import employee_conversation_id
 from jiuwenswarm.server.jiuwenmate.web_conversations import WebConversationStore
-from test_session_scheduler import NS, Host
+from test_session_scheduler import NS, Host, settle
 
 START = datetime(2026, 10, 14, 7, 30, tzinfo=timezone.utc)
 HOURLY = "0 * * * *"
@@ -45,6 +45,31 @@ def _requests(host: Host, plan_id: str):
     assert session is not None
     assert host.sessions.find_session(NS, "mate_dev", ConversationRef.web(f"schedule:{plan_id}")) is None
     return host.sessions.session_requests(NS, session.session_id)
+
+
+async def test_automatic_web_schedule_is_owned_by_web_manager_with_im_runtime_running(tmp_path):
+    clock = Clock()
+    web = Host(tmp_path, clock=clock)
+    im = Host(tmp_path, clock=clock, schedules_enabled=False)
+    plan = web.manager.schedules.create(NS, "mate_dev", name="早报", prompt="整理早报", cron_expr=HOURLY)
+    clock.now = START + timedelta(hours=1)
+    try:
+        await im.manager.start()
+        await web.manager.start()
+        await settle(lambda: bool(web.core.started or im.core.started))
+        assert im.core.started == []
+        assert web.core.started == ["整理早报"]
+        request = _requests(web, plan.plan_id)[0]
+        view = await web.manager.request_view(NS, request.record.request_id)
+        assert view.running
+        web.core.release("整理早报")
+        await web.scheduler.drain()
+        view = await web.manager.request_view(NS, request.record.request_id)
+        assert view.state.status == "ended"
+        assert view.state.outcome == "completed"
+    finally:
+        await im.manager.aclose()
+        await web.manager.aclose()
 
 
 async def test_each_due_occurrence_creates_one_request_and_a_restart_does_not_repeat_it(tmp_path):

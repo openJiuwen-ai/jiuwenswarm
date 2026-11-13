@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio as _asyncio
+import base64
 import importlib
 import json
 import shutil
@@ -80,7 +81,7 @@ async def test_agent_group_catalog_queries_only_group_hub_type(monkeypatch):
     monkeypatch.setattr(catalog, "list_agent_groups", lambda _params=None: [
         {"id": "built-in-group", "source": "builtin", "installed": False}
     ])
-    monkeypatch.setattr(catalog, "_hub_install_state_store", lambda _kind: type(
+    monkeypatch.setattr(catalog, "hub_install_state_store", lambda _kind: type(
         "Store", (), {"get_by_package_id": lambda _self, _id: None}
     )())
 
@@ -125,7 +126,7 @@ async def test_hub_agent_group_installs_and_uninstalls_by_asset_id(extension_wor
     assert detail["id"] == "group-asset-id" and detail["installed"]
     assert detail["source"] == "hub"
     catalog.uninstall_agent_group({"id": "group-asset-id"})
-    assert catalog._hub_install_state_store(AGENT_GROUPS).get("group-asset-id") is None
+    assert catalog.hub_install_state_store(AGENT_GROUPS).get("group-asset-id") is None
 
 
 def _seed_valid_agent_group(
@@ -206,6 +207,47 @@ def _seed_valid_agent_group(
     return package
 
 
+def test_group_list_externalizes_large_inline_avatars(
+    extension_workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from urllib.parse import parse_qs, urlsplit
+
+    from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+    from jiuwenswarm.common.file_download_token import WebFileDownloadManager
+    from jiuwenswarm.common.schema.agent import AgentResponse
+    from jiuwenswarm.server.ws_send import send_wire_payload
+
+    monkeypatch.setattr(WebFileDownloadManager, "_instance", WebFileDownloadManager(secret="avatar-test-secret"))
+    image = b"x" * (1024 * 1024)
+    inline = "data:image/png;base64," + base64.b64encode(image).decode("ascii")
+    for index in range(5):
+        package = _seed_valid_agent_group(extension_workspace, f"large-group-{index}", under="local")
+        manifest_path = package / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["avatar"] = inline
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    cards = _run(catalog.list_agent_groups_with_hub({"filter": "local"}))
+
+    assert len(cards) == 5
+    assert len(json.dumps(cards).encode("utf-8")) < 32 * 1024
+    for card in cards:
+        assert card["avatar"].startswith("/file-api/download?")
+        token = parse_qs(urlsplit(card["avatar"]).query)["token"][0]
+        claims = WebFileDownloadManager.get_instance().validate_token(token)
+        assert claims is not None
+        assert Path(claims["path"]).read_bytes() == image
+    assert len(list((extension_workspace / ".cache" / "package-avatars").iterdir())) == 1
+    wire = encode_agent_response_for_wire(
+        AgentResponse(request_id="large-groups", channel_id="web", ok=True, payload={"agentGroups": cards}),
+        response_id="large-groups",
+    )
+    socket = types.SimpleNamespace(send=AsyncMock())
+    assert _run(send_wire_payload(socket, wire)) is True
+    socket.send.assert_awaited_once()
+
+
 def test_uninstall_snapshot_survives_previously_queued_metadata(
     extension_workspace: Path,
 ) -> None:
@@ -241,20 +283,20 @@ class TestPrepareWorkspaceAndMarketplace:
     def test_prepare_creates_dirs_without_seeding(self, tmp_path: Path) -> None:
         result = utils.prepare_workspace(overwrite=True, workspace_dir=tmp_path)
         assert result is not None
-        plugins = tmp_path / "domain" / "agent" / "workspace" / "plugins"
+        plugins = tmp_path / "agent" / "workspace" / "plugins"
         for kind in _KINDS:
             assert (plugins / kind / "built_in").is_dir()
             assert (plugins / kind / "local").is_dir()
             assert not (plugins / kind / "marketplace.json").exists()
             assert not any((plugins / kind / "built_in").iterdir())
             assert not any((plugins / kind / "local").iterdir())
-        groups = tmp_path / "domain" / ".agent_teams" / AGENT_GROUPS
+        groups = tmp_path / ".agent_teams" / AGENT_GROUPS
         assert (groups / "built_in").is_dir()
         assert (groups / "local").is_dir()
 
     def test_prepare_overwrite_true_resets_false_keeps_built_in(self, tmp_path: Path) -> None:
         utils.prepare_workspace(overwrite=True, workspace_dir=tmp_path)
-        kind_root = tmp_path / "domain" / "agent" / "workspace" / "plugins" / AGENT_TEMPLATES
+        kind_root = tmp_path / "agent" / "workspace" / "plugins" / AGENT_TEMPLATES
         built_in = kind_root / "built_in" / "kept"
         built_in.mkdir(parents=True)
         (built_in / "manifest.json").write_text(
@@ -456,13 +498,13 @@ class TestAgentGroupResolution:
         card = catalog.show_agent_group("localized-review")
 
         assert card is not None
-        assert card["avatar"].startswith("data:image/png;base64,")
+        assert card["avatar"].startswith("/file-api/download?")
         reviewer = next(member for member in card["members"] if member["id"] == "reviewer")
         assert reviewer["displayName"] == {
             "zh": "质量复核专家",
             "en": "Quality Reviewer",
         }
-        assert reviewer["avatar"].startswith("data:image/png;base64,")
+        assert reviewer["avatar"].startswith("/file-api/download?")
 
     def test_show_agent_group_returns_none_when_missing(
         self,
@@ -2210,10 +2252,10 @@ def test_hub_package_id_resolver_reuses_record_and_skips_claimed_ids(
         HubInstallRecord,
     )
 
-    local_root = catalog._local_root(AGENT_TEMPLATES)
+    local_root = catalog.get_local_root(AGENT_TEMPLATES)
     (local_root / "sales-expert").mkdir(parents=True)
     (local_root / "sales-expert-2").mkdir(parents=True)
-    catalog._hub_install_state_store(AGENT_TEMPLATES).upsert(
+    catalog.hub_install_state_store(AGENT_TEMPLATES).upsert(
         HubInstallRecord(
             asset_id="asset-alpha",
             package_id="sales-expert-2",
@@ -2422,13 +2464,13 @@ async def test_hub_packages_sharing_a_package_name_install_as_siblings(
     for asset_id in ("asset-1.2.0", "asset-1.3.0", "asset-1.3.0"):
         await install(asset_id)
 
-    local_root = catalog._local_root(kind)
+    local_root = catalog.get_local_root(kind)
     assert (local_root / package_name).is_dir()
     assert (local_root / f"{package_name}-2").is_dir()
     assert not (local_root / f"{package_name}-3").exists()
     assert downloader.calls == 2
 
-    store = catalog._hub_install_state_store(kind)
+    store = catalog.hub_install_state_store(kind)
     assert store.get("asset-1.2.0").package_id == package_name
     assert store.get("asset-1.3.0").package_id == f"{package_name}-2"
 

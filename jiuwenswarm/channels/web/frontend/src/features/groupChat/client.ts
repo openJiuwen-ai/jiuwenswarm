@@ -122,7 +122,9 @@ export const groupChatClient = {
       group_id: groupId, query: '', source: 'ask_user_interrupt', request_id: requestId, answers,
     }),
   renameFile: (groupId: string, path: string, name: string) =>
-    webRequest<{ group_id: string; path: string; name: string }>('group.file.rename', { group_id: groupId, path, name }),
+    webRequest<{ group_id: string; path: string; old_path: string; name: string }>(
+      'group.file.rename', { group_id: groupId, path, name },
+    ),
   deleteFile: (groupId: string, path: string) =>
     webRequest<{ group_id: string; path: string; deleted: true; file_removed: boolean }>(
       'group.file.delete', { group_id: groupId, path },

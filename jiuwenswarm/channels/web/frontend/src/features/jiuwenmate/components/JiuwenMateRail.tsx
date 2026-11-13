@@ -1,4 +1,4 @@
-import { Box, House, Layers2, LayoutGrid, MessageCirclePlus, Puzzle, Settings2, Zap, type LucideIcon } from 'lucide-react';
+import { Box, House, LayoutGrid, MessageCirclePlus, Puzzle, Settings2, Zap, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import logo from '../../../assets/jiuwenmate/icons/logo.svg';
 import { JIUWENMATE_PUBLIC_PAGES } from '../publicNav';
@@ -25,7 +25,6 @@ const existingIcons: Record<string, LucideIcon> = {
   'jiuwenmate.nav.assets': Box,
   'jiuwenmate.nav.skills': Zap,
   'jiuwenmate.nav.extensions': Puzzle,
-  'jiuwenmate.nav.knowledge': Layers2,
   'jiuwenmate.nav.settings': Settings2,
 };
 

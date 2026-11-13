@@ -1,3 +1,4 @@
+import { isEnterprise } from '../../edition';
 import { InstallationFilterSelect, matchesInstallation, type InstallationFilter } from '../marketplace/InstallationFilterSelect';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
 import { catalogAwaitingItems, scheduleCatalogRefresh, catalogScope, withCatalogCache, catalogCacheOf } from '../../features/catalogCache';
@@ -52,6 +53,7 @@ import {
   mergeAgentDetailWithCatalog,
   mergeAgentGroupDetailWithCatalog,
 } from '../../features/agentManagement';
+import { agentAccessDeniedCopyKey } from '../../features/agentManagement/accessDenied';
 import { AGENT_TAG_OPTIONS } from '../../features/agentManagement/tagOptions';
 import { findDefaultDefinitionFile } from './DefinitionFilePreview';
 import './agentManagement.css';
@@ -157,6 +159,9 @@ function getFriendlyErrorMessage(
   if (code === 'agent_detail_empty') return translate('agentManagement.states.detailError');
   if (code === 'pod_start_timeout') return translate('experts.podStartTimeout');
   const normalizedMessage = message.trim();
+  if (agentAccessDeniedCopyKey(normalizedMessage)) {
+    return translate('agentManagement.states.agentAccessDenied');
+  }
   if (code === 'REQUEST_TIMEOUT') return translate('network.requestTimeout');
   if (code === 'WS_NOT_READY') return translate('network.connectionUnavailable');
   if (code === 'WS_DISCONNECTED') return translate('network.connectionClosed');
@@ -1451,7 +1456,7 @@ export function AgentManagementPanel({
                 }}
                 placeholder={t(view === 'teams' ? 'agentManagement.searchTeams' : isGroupView || isMine ? 'common.searchName' : 'agentManagement.searchCatalog')}
               />
-              {isMine ? (
+              {isMine && !isEnterprise() ? (
                 <div className="agent-management-create-menu" data-testid="agent-management-create-menu">
                   <button
                     type="button"

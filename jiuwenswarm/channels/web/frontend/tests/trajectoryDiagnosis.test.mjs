@@ -471,8 +471,71 @@ test('isTeamHarnessNoiseCell recognizes team envelopes and harness_internal orig
     isTeamHarnessNoiseCell({ kind: 'message', messageSource: { origin: 'harness_internal' } }),
     true,
   );
+  assert.equal(
+    isTeamHarnessNoiseCell({
+      kind: 'user',
+      text: '<team-clock now="2026-11-05 15:59:11"/>\n<team-event kind="task-board">刚完成</team-event>',
+      messageSource: { origin: 'external_user', sourceKind: 'query' },
+    }),
+    true,
+  );
+  assert.equal(
+    isTeamHarnessNoiseCell({
+      kind: 'user',
+      text: '<team-clock now="2026-11-05 16:16:43"/> 你收到一条消息\n{"origin_kind": "external_user_authored", "content": "身高186cm"}',
+      messageSource: { origin: 'external_user' },
+    }),
+    false,
+  );
   assert.equal(isTeamHarnessNoiseCell({ kind: 'user', text: 'please continue' }), false);
   assert.equal(isTeamHarnessNoiseCell({ kind: 'tool', startedAt: 1_000, timeSeconds: 1 }), false);
+});
+
+test('a page send opens a user_turn and a team-leader user row does not', () => {
+  assert.deepEqual(collectUserInteractionWallRanges([
+    {
+      turn: 1,
+      groups: [{ cells: [
+        {
+          kind: 'user',
+          text: '<team-clock now="2026-11-05 15:45:58"/> 你收到一条消息\n{"origin_kind": "external_user_authored"}',
+          messageSource: { origin: 'external_user' },
+          startedAt: 1_000,
+          timeSeconds: 0,
+        },
+        { kind: 'message', startedAt: 1_100, timeSeconds: 1 },
+      ] }],
+    },
+    {
+      turn: 2,
+      groups: [{ cells: [
+        {
+          kind: 'user',
+          text: '<team-clock now="2026-11-05 15:59:11"/>\n<team-event kind="task-board">刚完成</team-event>',
+          messageSource: { origin: 'external_user', sourceKind: 'query' },
+          startedAt: 3_000,
+          timeSeconds: 0,
+        },
+        { kind: 'message', startedAt: 3_100, timeSeconds: 1 },
+      ] }],
+    },
+    {
+      turn: 4,
+      groups: [{ cells: [
+        {
+          kind: 'user',
+          text: '<team-clock now="2026-11-05 16:16:43"/> 你收到一条消息\n{"origin_kind": "external_user_authored"}',
+          messageSource: { origin: 'external_user' },
+          startedAt: 20_000,
+          timeSeconds: 0,
+        },
+        { kind: 'message', startedAt: 21_000, timeSeconds: 1 },
+      ] }],
+    },
+  ]), [
+    { userTurn: 1, startWallMs: 1_000, endWallMs: 4_100 },
+    { userTurn: 2, startWallMs: 20_000, endWallMs: 22_000 },
+  ]);
 });
 
 test('team harness noise does not keep overnight idle on the shared axis', () => {
@@ -789,15 +852,36 @@ test('clipIntervalAgainstGaps splits spans that cross a forced user_turn blank',
     clipIntervalAgainstGaps(3_000, 5_000, gaps),
     [{ startMs: 3_000, endMs: 3_900 }, { startMs: 4_100, endMs: 5_000 }],
   );
-  assert.deepEqual(clipIntervalAgainstGaps(3_950, 4_050, gaps), []);
+  assert.deepEqual(
+    clipIntervalAgainstGaps(3_950, 4_050, gaps),
+    [{ startMs: 3_800, endMs: 3_900 }],
+  );
   assert.deepEqual(clipIntervalAgainstGaps(0, 3_000, gaps), [{ startMs: 0, endMs: 3_000 }]);
   assert.deepEqual(
     clipIntervalAgainstGaps(1_000, 1_000, gaps),
     [{ startMs: 1_000, endMs: 1_000 }],
   );
   assert.deepEqual(clipIntervalAgainstGaps(3_900, 3_900, gaps), [{ startMs: 3_900, endMs: 3_900 }]);
-  assert.deepEqual(clipIntervalAgainstGaps(4_000, 4_000, gaps), []);
+  // Compressed junction: the next user_turn starts on the midpoint and must
+  // stay visible on that turn's leading edge.
+  assert.deepEqual(clipIntervalAgainstGaps(4_000, 4_000, gaps), [{ startMs: 4_100, endMs: 4_100 }]);
+  assert.deepEqual(clipIntervalAgainstGaps(3_950, 3_950, gaps), [{ startMs: 3_900, endMs: 3_900 }]);
+  assert.deepEqual(
+    clipIntervalAgainstGaps(4_000, 4_050, gaps),
+    [{ startMs: 4_100, endMs: 4_150 }],
+  );
   assert.deepEqual(clipIntervalAgainstGaps(Number.NaN, 1_000, gaps), []);
+});
+
+test('clipIntervalAgainstGaps pins a swallowed span when the shoulder has no room', () => {
+  const gaps = [
+    { startMs: 3_900, endMs: 4_100 },
+    { startMs: 4_100, endMs: 4_300 },
+  ];
+  assert.deepEqual(
+    clipIntervalAgainstGaps(4_000, 4_050, gaps),
+    [{ startMs: 4_100, endMs: 4_100 }],
+  );
 });
 
 test('formatUserTurnClock puts month-day above the clock', () => {

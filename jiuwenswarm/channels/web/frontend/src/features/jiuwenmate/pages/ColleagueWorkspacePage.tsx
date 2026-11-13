@@ -28,14 +28,17 @@ import { mergeChatEntries } from '../chatEntries';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import { ConversationComposer } from '../components/ConversationComposer';
 import { GroupSharingInbox } from '../components/GroupSharingInbox';
+import { MAX_STARTER_PROMPTS } from '../components/StarterPromptsEditor';
 import { SHARING_CONVERSATION_ID } from '../groupSharingApi';
 import {
   chatPhase,
   errorMessage,
   formatSharedFileSize,
+  findModel,
   isPending,
   latestSharedFiles,
   sharedFileKey,
+  type JiuwenMateApi,
   type JiuwenMateChatRequest,
   type JiuwenMateConversation,
   type JiuwenMateModelCatalog,
@@ -57,6 +60,7 @@ import type {
 } from '../types';
 
 const CHANNEL_PLATFORM_ORDER = ['feishu', 'welink', 'dingtalk'];
+const CHANNEL_DIRECTORY_REFRESH_MS = 10_000;
 
 function channelGroups(channels: readonly JiuwenMateChannel[]): { platform: string; items: JiuwenMateChannel[] }[] {
   const buckets = new Map<string, JiuwenMateChannel[]>();
@@ -120,7 +124,7 @@ interface ColleagueWorkspacePageProps {
   colleagues: readonly JiuwenMateColleague[];
   selectedColleagueId: string;
   intent?: JiuwenMateWorkspaceIntent | null;
-  chat: JiuwenMateChatApi;
+  chat: JiuwenMateChatApi & Partial<Pick<JiuwenMateApi, 'listArtifacts'>>;
   /** Changes each time the connection to the server is restored. */
   connectionEpoch: number;
   onSelectColleague: (id: string) => void;
@@ -132,12 +136,16 @@ interface ColleagueWorkspacePageProps {
   onUpdateSchedule?: (planId: string, draft: ScheduleDraft) => void | Promise<void>;
   onSetScheduleEnabled?: (planId: string, enabled: boolean) => void | Promise<void>;
   onDeleteSchedule?: (planId: string) => void | Promise<void>;
+  onRunSchedule: (planId: string) => void | Promise<void>;
   onLoadScheduleHistory?: (planId: string) => Promise<{ plan: JiuwenMateSchedule; runs: ScheduleRun[] }>;
   channelApi?: JiuwenMateChannelApi;
   modelCatalog?: JiuwenMateModelCatalog;
   onRenameColleague: (agentId: string, name: string) => Promise<void>;
   onSavePermissionProfile?: (agentId: string, profile: 'default' | 'automatic' | 'full_access') => Promise<void>;
   savingPermissionProfile?: boolean;
+  onSaveModel?: (agentId: string, modelId: string) => Promise<void>;
+  savingModel?: boolean;
+  onOpenModelSettings?: () => void;
 }
 
 const EMPTY_MODEL_CATALOG: JiuwenMateModelCatalog = { models: [], defaultModelId: '', defaultModelLabel: '' };
@@ -177,12 +185,16 @@ export function ColleagueWorkspacePage({
   onUpdateSchedule,
   onSetScheduleEnabled,
   onDeleteSchedule,
+  onRunSchedule,
   onLoadScheduleHistory,
   channelApi,
   modelCatalog = EMPTY_MODEL_CATALOG,
   onRenameColleague,
   onSavePermissionProfile,
   savingPermissionProfile = false,
+  onSaveModel,
+  savingModel = false,
+  onOpenModelSettings,
   groupChat,
 }: ColleagueWorkspacePageProps) {
   const { t } = useTranslation();
@@ -259,6 +271,7 @@ export function ColleagueWorkspacePage({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [permissionActionId, setPermissionActionId] = useState<string | null>(null);
   const [permissionProfileError, setPermissionProfileError] = useState<string | null>(null);
+  const [modelError, setModelError] = useState<{ scope: string; message: string } | null>(null);
   const cancelRename = useRef(false);
   const agentId = workspace?.agentId ?? colleagueId;
   const conversationList = useConversations(chat, agentId, connectionEpoch);
@@ -269,14 +282,36 @@ export function ColleagueWorkspacePage({
     conversationList.loaded && !conversationList.error,
   );
   const activeConversationId =
-    picked?.agentId === agentId ? picked.conversationId : conversationList.loaded ? (records.find((item) => item.agentId === agentId)?.id ?? freshId) : '';
+    picked?.agentId === agentId ? picked.conversationId : conversationList.loaded ? (records.find((item) =>
+      item.agentId === agentId && item.id !== SHARING_CONVERSATION_ID)?.id ?? freshId) : '';
   const colleaguePlans = schedules.filter((plan) => plan.agentId === colleagueId);
+  const visibleManagementPlans = colleaguePlans.filter((plan) =>
+    plan.name.toLocaleLowerCase().includes(managementSearch.trim().toLocaleLowerCase()));
   const activePlan = colleaguePlans.find((plan) => plan.id === scheduleId) ?? colleaguePlans[0] ?? null;
   const chatConversationId = state.recordTab === 'schedules' && activePlan ? activePlan.conversationId : activeConversationId;
   const chatAgentId = state.recordTab === 'schedules' && activePlan ? colleagueId : agentId;
   const webWorkspace = agentId === colleagueId && (!workspace || workspace.channel === 'web');
   const sharingConversation = webWorkspace && chatConversationId === SHARING_CONVERSATION_ID;
   const privateChat = usePrivateChat(chat, sharingConversation ? '' : chatAgentId, chatConversationId, connectionEpoch);
+  const [employeeArtifacts, setEmployeeArtifacts] = useState<{ agentId: string; files: JiuwenMateSharedFile[] } | null>(null);
+  const [artifactsLoading, setArtifactsLoading] = useState(false);
+  const [artifactsError, setArtifactsError] = useState('');
+  const artifactRevision = privateChat.requests.map((item) => `${item.requestId}:${item.status}`).join('|');
+  useEffect(() => {
+    if (rightPanel !== 'artifacts' || !chat.listArtifacts || !colleagueId) return;
+    let cancelled = false;
+    setArtifactsLoading(true);
+    setArtifactsError('');
+    const ids = channelSourceAgentKey.split('\u0000').filter(Boolean);
+    Promise.all(ids.map((id) => chat.listArtifacts!(id))).then((files) => {
+      if (!cancelled) setEmployeeArtifacts({ agentId: colleagueId, files: files.flat() });
+    }).catch((error: unknown) => {
+      if (!cancelled) setArtifactsError(errorMessage(error) || 'failed');
+    }).finally(() => {
+      if (!cancelled) setArtifactsLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [chat, colleagueId, channelSourceAgentKey, rightPanel, artifactRevision, connectionEpoch]);
   const messageListRef = useRef<HTMLOListElement | null>(null);
   const followReplies = useRef(true);
   const boardRef = useRef(board);
@@ -297,6 +332,10 @@ export function ColleagueWorkspacePage({
   reloadListRef.current = conversationList.reload;
   scheduleEditorRef.current = scheduleEditor;
   const [channels, setChannels] = useState<readonly JiuwenMateChannel[]>([]);
+  const channelCacheRef = useRef({ sourceKey: '', byAgent: new Map<string, readonly JiuwenMateChannel[]>() });
+  const channelsVisible = !board && !activeGroupId && (
+    state.recordTab === 'channels' || (rightPanel === 'management' && managementTab === 'channels')
+  );
   const selectedChannel = channels.find((item) => item.id === channelId) ?? null;
   const channelAgentId = selectedChannel?.ownerAgentId ?? agentId;
   const [channelMessages, setChannelMessages] = useState<readonly JiuwenMateChannelMessage[]>([]);
@@ -352,6 +391,7 @@ export function ColleagueWorkspacePage({
         if (primed) {
           const newest = flat
             .filter((item) => {
+              if (item.id === SHARING_CONVERSATION_ID) return false;
               const previous = known.get(`${item.agentId}:${item.id}`);
               return previous === undefined || item.updatedAt > previous;
             })
@@ -426,38 +466,62 @@ export function ColleagueWorkspacePage({
   useEffect(() => {
     if (!channelApi || !colleagueId) return undefined;
     let cancelled = false;
-    setChannelNotice('');
+    let inFlight = false;
     const sourceAgentIds = channelSourceAgentKey.split('\u0000').filter(Boolean);
-    Promise.allSettled(sourceAgentIds.map(async (sourceAgentId) => ({
-      sourceAgentId,
-      items: await channelApi.listChannels(sourceAgentId),
-    }))).then((results) => {
-      if (cancelled) return;
-      const fulfilled = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
-      if (fulfilled.length === 0) {
-        const failure = results.find((result) => result.status === 'rejected');
-        setChannels([]);
-        setChannelNotice(failure?.status === 'rejected' ? errorMessage(failure.reason) || 'failed' : 'failed');
-        return;
-      }
-      const unique = new Map<string, JiuwenMateChannel>();
-      for (const { sourceAgentId, items } of fulfilled) {
-        for (const item of items) {
-          const key = `${item.platform}:${item.id}`;
-          if (!unique.has(key)) unique.set(key, { ...item, ownerAgentId: sourceAgentId });
+    if (channelCacheRef.current.sourceKey !== channelSourceAgentKey) {
+      channelCacheRef.current = { sourceKey: channelSourceAgentKey, byAgent: new Map() };
+      setChannels([]);
+      setChannelNotice('');
+    }
+    const refresh = async () => {
+      if (cancelled || inFlight || document.visibilityState === 'hidden') return;
+      inFlight = true;
+      try {
+        const results = await Promise.allSettled(sourceAgentIds.map(async (sourceAgentId) => ({
+          sourceAgentId,
+          items: await channelApi.listChannels(sourceAgentId),
+        })));
+        if (cancelled) return;
+        const fulfilled = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
+        if (fulfilled.length === 0) {
+          const failure = results.find((result) => result.status === 'rejected');
+          setChannelNotice(failure?.status === 'rejected' ? errorMessage(failure.reason) || 'failed' : 'failed');
+          return;
         }
+        for (const { sourceAgentId, items } of fulfilled) channelCacheRef.current.byAgent.set(sourceAgentId, items);
+        const unique = new Map<string, JiuwenMateChannel>();
+        for (const sourceAgentId of sourceAgentIds) {
+          for (const item of channelCacheRef.current.byAgent.get(sourceAgentId) ?? []) {
+            const key = `${item.platform}:${item.id}`;
+            if (!unique.has(key)) unique.set(key, { ...item, ownerAgentId: sourceAgentId });
+          }
+        }
+        const items = [...unique.values()];
+        setChannelNotice('');
+        setChannels(items);
+        setState((current) => {
+          if (current.selectedChannelId && items.some((item) => item.id === current.selectedChannelId)) return current;
+          if (!items.length && current.selectedChannelId === null) return current;
+          return { ...current, selectedChannelId: items[0]?.id ?? null };
+        });
+      } finally {
+        inFlight = false;
       }
-      const items = [...unique.values()];
-      setChannels(items);
-      setState((current) => {
-        if (current.selectedChannelId && items.some((item) => item.id === current.selectedChannelId)) return current;
-        return items[0] ? { ...current, selectedChannelId: items[0].id } : { ...current, selectedChannelId: null };
-      });
-    });
+    };
+    const catchUp = () => { void refresh(); };
+    catchUp();
+    const timer = channelsVisible ? window.setInterval(catchUp, CHANNEL_DIRECTORY_REFRESH_MS) : null;
+    if (channelsVisible) {
+      window.addEventListener('focus', catchUp);
+      document.addEventListener('visibilitychange', catchUp);
+    }
     return () => {
       cancelled = true;
+      if (timer !== null) window.clearInterval(timer);
+      window.removeEventListener('focus', catchUp);
+      document.removeEventListener('visibilitychange', catchUp);
     };
-  }, [channelApi, colleagueId, channelSourceAgentKey]);
+  }, [channelApi, colleagueId, channelSourceAgentKey, connectionEpoch, channelsVisible]);
 
   useEffect(() => {
     if (!channelApi || !channelAgentId || !channelId) {
@@ -507,7 +571,10 @@ export function ColleagueWorkspacePage({
 
   if (!colleague) return null;
 
-  const artifacts = latestSharedFiles(privateChat.requests);
+  const artifacts = latestSharedFiles([
+    ...privateChat.requests,
+    { files: employeeArtifacts?.agentId === colleagueId ? employeeArtifacts.files : [] },
+  ]);
 
   const loadOlderChannelMessages = async () => {
     if (!channelApi || !channelAgentId || !channelId || !channelNextCursor || loadingOlderChannelMessages) return;
@@ -595,9 +662,19 @@ export function ColleagueWorkspacePage({
     );
   };
 
+  const modelSetupNotice = modelCatalog.models.length === 0
+    ? t('jiuwenmate.chat.modelNotConfigured')
+    : colleague.currentVersion === null
+      ? t(colleague.capabilities.model ? 'jiuwenmate.chat.notPublished' : 'jiuwenmate.chat.modelNotConfigured')
+      : !findModel(modelCatalog, colleague.capabilities.model) ? t('jiuwenmate.chat.modelUnavailableHint') : null;
+  const requestSetupNotice = privateChat.errorCode === 'MODEL_NOT_CONFIGURED'
+    ? t('jiuwenmate.chat.modelNotConfigured')
+    : privateChat.errorCode === 'MODEL_NOT_FOUND' ? t('jiuwenmate.chat.modelUnavailableHint')
+      : privateChat.errorCode === 'NOT_PUBLISHED' ? t('jiuwenmate.chat.notPublished') : null;
+
   const sendDraft = async () => {
     const text = draft.trim();
-    if (!text || privateChat.sending || !activeConversationId || sharingConversation) return;
+    if (!text || modelSetupNotice || privateChat.sending || !activeConversationId || sharingConversation) return;
     followReplies.current = true;
     const conversation = await privateChat.send(text);
     if (!conversation) return;
@@ -607,6 +684,18 @@ export function ColleagueWorkspacePage({
       { ...conversation, agentId },
       ...items.filter((item) => item.agentId !== agentId || item.id !== conversation.id),
     ]);
+  };
+
+  const modelScope = JSON.stringify([colleague.id, colleague.currentVersion, colleague.capabilities.model]);
+  const visibleModelError = modelError?.scope === modelScope ? modelError.message : null;
+  const saveModel = async (modelId: string) => {
+    if (!onSaveModel || savingModel || (modelId === colleague.capabilities.model && !colleague.hasUnpublishedModelChanges)) return;
+    setModelError(null);
+    try {
+      await onSaveModel(colleague.id, modelId);
+    } catch (error) {
+      setModelError({ scope: modelScope, message: errorMessage(error) || t('jiuwenmate.chat.failed', { reason: '' }) });
+    }
   };
 
   const savePermissionProfile = async (profile: 'default' | 'automatic' | 'full_access') => {
@@ -639,20 +728,25 @@ export function ColleagueWorkspacePage({
 
   const composer = (
     <>
-      {privateChat.error || conversationList.error || allRecordsError || permissionProfileError ? (
+      {modelSetupNotice || privateChat.error || conversationList.error || allRecordsError || permissionProfileError || visibleModelError ? (
         <p className="jiuwenmate-chat-error" role="alert" data-testid="jiuwenmate-chat-error">
-          {permissionProfileError ?? t('jiuwenmate.chat.failed', { reason: privateChat.error ?? conversationList.error ?? allRecordsError })}
+          {modelSetupNotice ?? visibleModelError ?? permissionProfileError ?? requestSetupNotice ??
+            t('jiuwenmate.chat.failed', { reason: privateChat.error ?? conversationList.error ?? allRecordsError })}
         </p>
       ) : null}
       <ConversationComposer
         value={draft}
         onChange={setDraft}
-        onSend={() => void sendDraft()}
+        onSend={modelSetupNotice ? undefined : () => void sendDraft()}
         sending={privateChat.sending}
         onStop={running ? () => void privateChat.abort(running.requestId, 'stop') : undefined}
         stopping={running?.control?.status === 'accepted'}
         modelCatalog={modelCatalog}
         modelId={colleague?.capabilities.model ?? ''}
+        onModelChange={onSaveModel ? (modelId) => void saveModel(modelId) : undefined}
+        modelSaving={savingModel}
+        modelPending={colleague.hasUnpublishedModelChanges}
+        onOpenModelSettings={onOpenModelSettings}
         permissionProfile={colleague.permissionProfile ?? 'default'}
         onPermissionProfileChange={(profile) => void savePermissionProfile(profile)}
         permissionProfileSaving={savingPermissionProfile}
@@ -1058,10 +1152,7 @@ export function ColleagueWorkspacePage({
   };
 
   const renderWelcome = () => {
-    const prompts =
-      colleague.capabilities.starterPrompts.length > 0
-        ? colleague.capabilities.starterPrompts.slice(0, 3)
-        : [0, 1, 2].map((index) => t(`jiuwenmate.workspace.defaultPrompts.${index}`));
+    const prompts = colleague.capabilities.starterPrompts.slice(0, MAX_STARTER_PROMPTS);
     return (
       <section className="jiuwenmate-chat-welcome" data-testid="jiuwenmate-chat-welcome">
         <header className="jiuwenmate-main-header jiuwenmate-chat-welcome__header">
@@ -1076,7 +1167,7 @@ export function ColleagueWorkspacePage({
             <h2>{colleague.name}</h2>
             <p>{colleague.description}</p>
           </div>
-          <div className="jiuwenmate-chat-welcome__suggestions">
+          <div className="jiuwenmate-chat-welcome__suggestions" aria-hidden={prompts.length === 0 || undefined}>
             {prompts.map((prompt, index) => (
               <button type="button" key={`${prompt}-${index}`} onClick={() => setDraft(prompt)}>
                 <span>{prompt}</span>
@@ -1135,10 +1226,7 @@ export function ColleagueWorkspacePage({
             <ArrowLeft aria-hidden />
           </button>
         ) : null}
-        <strong>
-          {channel.name}
-          <ChevronDown aria-hidden />
-        </strong>
+        <strong>{channel.name}</strong>
         {!state.traceOpen ? (
           <button
             type="button"
@@ -1336,6 +1424,7 @@ export function ColleagueWorkspacePage({
             onUpdate={onUpdateSchedule}
             onSetEnabled={onSetScheduleEnabled}
             onDelete={onDeleteSchedule}
+            onRun={onRunSchedule}
             onLoadHistory={onLoadScheduleHistory}
           />
         ) : activeGroupId && groupChat ? (
@@ -1430,8 +1519,12 @@ export function ColleagueWorkspacePage({
                         <Plus aria-hidden />
                       </button>
                     </div>
-                    {colleaguePlans.length === 0 ? <p className="jiuwenmate-records__empty">{t('jiuwenmate.workspace.noSchedules')}</p> : null}
-                    {colleaguePlans.filter((plan) => plan.name.toLocaleLowerCase().includes(managementSearch.trim().toLocaleLowerCase())).map((plan) => (
+                    {visibleManagementPlans.length === 0 ? (
+                      <p className="jiuwenmate-records__empty" data-testid="jiuwenmate-management-schedule-empty">
+                        {t(colleaguePlans.length === 0 ? 'jiuwenmate.workspace.noSchedules' : 'jiuwenmate.schedule.noMatchingSchedules')}
+                      </p>
+                    ) : null}
+                    {visibleManagementPlans.map((plan) => (
                       <div key={plan.id} className="jiuwenmate-side-panel__schedule-item">
                         <span className="jiuwenmate-side-panel__schedule-name">{plan.name}</span>
                         <ActionMenu
@@ -1451,10 +1544,14 @@ export function ColleagueWorkspacePage({
               <div className={`jiuwenmate-side-panel__body${visibleArtifact ? ' jiuwenmate-side-panel__body--preview' : ''}`} data-testid="jiuwenmate-artifact-list">
               {visibleArtifact ? (
                 <FilePreview artifact={{ id: visibleArtifact.outputId, name: visibleArtifact.name, downloadUrl: visibleArtifact.downloadUrl ?? undefined, size: visibleArtifact.size }} />
+              ) : artifactsError ? (
+                <p className="jiuwenmate-records__empty" role="alert" data-testid="jiuwenmate-artifacts-error">{t('jiuwenmate.chat.failed', { reason: artifactsError })}</p>
+              ) : artifactsLoading && artifacts.length === 0 ? (
+                <p className="jiuwenmate-records__empty" data-testid="jiuwenmate-artifacts-loading">{t('common.loading')}</p>
               ) : artifacts.length === 0 ? (
                 <p className="jiuwenmate-records__empty">{t('jiuwenmate.workspace.noArtifacts')}</p>
               ) : artifacts.map((file) => (
-                <button key={file.outputId} type="button" className="jiuwenmate-side-panel__artifact" onClick={() => setSelectedArtifact(file)}>
+                <button key={file.outputId} type="button" className="jiuwenmate-side-panel__artifact" data-testid="jiuwenmate-artifact-item" onClick={() => setSelectedArtifact(file)}>
                   <FileText aria-hidden />
                   <span><strong>{file.name}</strong><small>{formatSharedFileSize(file.size)}</small></span>
                 </button>

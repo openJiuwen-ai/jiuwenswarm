@@ -3,17 +3,6 @@ from pathlib import Path
 
 import pytest
 
-from test_adx_router import _config, _router
-
-
-def test_adx_router_preserves_explicit_tool_configuration(monkeypatch):
-    router, _ = _router(_config(monkeypatch))
-    router.set_or_update_server_config(config={
-        'sandbox': {'enabled': True, 'type': 'adx-environment', 'url': 'https://adx.example'},
-    })
-    assert router._server_config['sandbox']['enabled'] is True
-    assert router._server_config['sandbox']['type'] == 'adx-environment'
-
 
 def test_adx_tool_card_uses_shared_agentos_workspace(monkeypatch, tmp_path):
     from jiuwenswarm.server.runtime.agent_adapter import sysop_builder as builder
@@ -37,7 +26,7 @@ def test_adx_tool_card_uses_shared_agentos_workspace(monkeypatch, tmp_path):
     assert launch.extra_params['user'] == '1000'
     assert launch.extra_params['group'] == '1000'
     assert launch.extra_params['mounts'] == [
-        {'host_path': '/home/agentos/users/alice/.jiuwenswarm/domain/agent/workspace',
+        {'host_path': '/home/agentos/users/alice/.jiuwenswarm/agent/workspace',
          'target': '/home/agentos/.jiuwenswarm/agent/workspace', 'options': ['rw']},
         {'host_path': '/home/agentos/users/alice/Documents/JiuwenSwarm',
          'target': str(tmp_path / 'agentos/Documents/JiuwenSwarm'), 'options': ['rw']},

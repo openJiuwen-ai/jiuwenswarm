@@ -9,7 +9,6 @@ import datetime as _dt
 import inspect
 import json
 import logging
-import math
 import os
 import shutil
 import sys
@@ -123,7 +122,6 @@ from jiuwenswarm.common.utils import (
     get_agent_root_dir,
     get_agent_sessions_dir,
     get_config_file,
-    get_domain_data_dir,
     get_user_workspace_dir,
     mask_sensitive,
 )
@@ -196,16 +194,15 @@ from jiuwenswarm.server.runtime.session.session_message_store import (
     SessionMessageRecord,
     SessionMessageStore,
 )
+from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
 from jiuwenswarm.server.runtime.session.session_history import (
     HistorySnapshotChanged,
     InvalidHistoryCursor,
     append_compact_history_records,
     append_history_record,
     enqueue_history_request_completion,
-    history_exists,
     is_valid_session_id,
     list_session_subagent_ids,
-    load_history_records,
     read_history_cursor_page,
     read_member_history_records,
     read_team_history_records,
@@ -244,7 +241,6 @@ from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported for tests / handlers
     _HISTORY_PAGE_SIZE,
     _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES,
-    history_assistant_event_is_restorable,
     _HISTORY_WIRE_DEPTH_LIMIT,
     _HISTORY_WIRE_LIST_LIMIT,
     _HISTORY_WIRE_METADATA_STRING_LIMIT,
@@ -957,7 +953,7 @@ def _is_restorable_history_record(record: Any) -> bool:
     event_type = record.get("event_type")
     if not event_type:
         return has_content
-    return history_assistant_event_is_restorable(record)
+    return event_type in _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES
 
 
 def _todo_snapshot_session_fields(session_id: str) -> dict[str, str | None]:
@@ -1278,7 +1274,6 @@ class AgentWebSocketServer:
     _runtime = _AppField("runtime")
     _agent_manager = _AppField("agent_manager")
     _session_message_service = _AppField("session_message_service")
-    _proactive_engine = _AppField("proactive_engine")
     _scheduler_service = _AppField("scheduler_service")
     _scheduler_agent = _AppField("scheduler_agent")
     _jiuwenbox_runner = _AppField("jiuwenbox_runner")
@@ -1367,7 +1362,14 @@ class AgentWebSocketServer:
         # Gateway user-business RPCs execute in the current AgentServer's
         # injected data directory. Register adapters once per server; request
         # dispatch occurs before the legacy handler chain below.
-        self._jiuwenmate_web = JiuwenMateWebAdapter(push=self.send_push)
+        self._jiuwenmate_web = JiuwenMateWebAdapter(
+            push=self.send_push,
+            inspect_feishu_group=self._inspect_feishu_group,
+            dingtalk_group_status=lambda ns, agent, app: (
+                self._dingtalk_group_poller.status(ns, agent, app) if self._dingtalk_group_poller is not None
+                else {'status': 'unavailable', 'group_count': 0}
+            ),
+        )
         self._adapter_registry = AdapterRegistry()
         for adapter in (
             VoiceTaskServerAdapter(self._agent_manager.session_has_pending_interrupt),
@@ -1409,13 +1411,12 @@ class AgentWebSocketServer:
         self._jiuwenbox_runner = JiuwenBoxRunner.instance()
         # AgentServer 内唯一持有的进程内 PersonalContext Host；Context Rail 使用同一固定目录。
         self._personal_context_host = PersonalContextHostAPI(
-            home=get_domain_data_dir() / ".personal_context",
+            home=get_user_workspace_dir() / ".personal_context",
         )
         self._personal_context_start_task: asyncio.Task[None] | None = None
         self._sandbox_start_task: asyncio.Task[None] | None = None
         # checkpointer 后台预热任务 (start() 里 fire-and-forget, stop() 时 cancel)
         self._checkpointer_warmup_task: Optional[asyncio.Task] = None
-        self._team_session_reconcile_task: Optional[asyncio.Task] = None
         # MCP 连接缓存预热任务 (同上, 建 Runner.resource_mgr 供首轮对话命中)
         self._mcp_prewarm_task: Optional[asyncio.Task] = None
         # 图像模态探针重探任务 (模型配置变更时拉起, stop() 时 cancel)
@@ -1423,8 +1424,6 @@ class AgentWebSocketServer:
         # Archive service for session/project lifecycle management
         self._archive_service = None
         self._login_credential_refresh_task: Optional[asyncio.Task] = None
-        # Proactive recommendation engine (set by app_agentserver for debug trigger)
-        self._proactive_engine: Any = None
         self._on_runtime_ready: Any = None
         self._on_runtime_warmup_retry: Any = None
         self._on_runtime_failed: Any = None
@@ -1433,7 +1432,6 @@ class AgentWebSocketServer:
         self._execution_minimum_observed = False
         self._preparation_registry: Any = None
         self._startup_preparation_tokens: set = set()
-        self.proactive_preparation_task: asyncio.Task | None = None
         get_acp_output_manager().set_send_push_callback(
             lambda msg: asyncio.create_task(self.send_push(msg))
         )
@@ -1470,10 +1468,6 @@ class AgentWebSocketServer:
             record.target_session_id,
             request_id=record.execution_request_id,
         )
-
-    def set_proactive_engine(self, engine: Any) -> None:
-        """Store the proactive engine instance for debug trigger interface."""
-        self._proactive_engine = engine
 
     def set_runtime_lifecycle_hooks(
         self,
@@ -1835,6 +1829,10 @@ class AgentWebSocketServer:
                     retry_delay = min(30.0, retry_delay * 2)
                     continue
                 try:
+                    await self._jiuwenmate_web.start()
+                except Exception:
+                    logger.exception("[AgentWebSocketServer] JiuwenMate Web runtime startup failed")
+                try:
                     await self._ensure_persistent_group_fanout()
                 except Exception:
                     # JM-08 is optional: a local JM binding must not prevent
@@ -1846,16 +1844,6 @@ class AgentWebSocketServer:
                 # Optional imports, downloads and recovery may start only after
                 # the required Runtime/Heartbeat initialization succeeded.
                 preparation.mark_minimum_ready()
-
-                from jiuwenswarm.enterprise.team.session_cleanup import (
-                    bind_startup_sweep,
-                    run_startup_sweep,
-                )
-
-                self._team_session_reconcile_task = asyncio.create_task(
-                    run_startup_sweep(), name="team-session-reconcile",
-                )
-                bind_startup_sweep(self._team_session_reconcile_task)
                 return
 
         self._checkpointer_warmup_task = asyncio.create_task(
@@ -2274,12 +2262,6 @@ class AgentWebSocketServer:
         if preparation is not None:
             await preparation.close()
             self._preparation_registry = None
-        proactive = getattr(self, "_proactive_engine", None)
-        if proactive is not None:
-            close = getattr(proactive, "close", None)
-            if callable(close):
-                await close()
-            self._proactive_engine = None
         sandbox_start = getattr(self, "_sandbox_start_task", None)
         self._sandbox_start_task = None
         if sandbox_start is not None:
@@ -2338,16 +2320,6 @@ class AgentWebSocketServer:
             await jiuwenmate_web.aclose()
         await self._heartbeat_runtime.stop()
         # 同理取消 MCP 连接缓存预热任务.
-        team_reconcile = self._team_session_reconcile_task
-        self._team_session_reconcile_task = None
-        if team_reconcile is not None and not team_reconcile.done():
-            team_reconcile.cancel()
-            try:
-                await team_reconcile
-            except asyncio.CancelledError:
-                pass
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[AgentWebSocketServer] team reconcile cancel failed: %s", exc)
         mcp_prewarm = self._mcp_prewarm_task
         self._mcp_prewarm_task = None
         if mcp_prewarm is not None and not mcp_prewarm.done():
@@ -2931,6 +2903,17 @@ class AgentWebSocketServer:
             return False
         try:
             response = await adapter.handle(request)
+            if (request.req_method in {
+                ReqMethod.JIUWENMATE_DINGTALK_AUTH_STATUS, ReqMethod.JIUWENMATE_DINGTALK_AUTH_POLL,
+                ReqMethod.JIUWENMATE_DINGTALK_AUTH_BEGIN,
+            } and response.ok and isinstance(response.payload, dict)):
+                auth = response.payload.get('dingtalk_auth') or response.payload.get('authorization')
+                if isinstance(auth, dict) and auth.get('status') == 'connected':
+                    try:
+                        # A first binding can be added after startup, before any bot callback exists.
+                        await self._ensure_persistent_group_fanout()
+                    except Exception as exc:
+                        logger.warning('DingTalk authorized group runtime startup failed (%s)', type(exc).__name__)
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "[AgentWebSocketServer] Gateway adapter failed: request_id=%s method=%s",
@@ -3048,6 +3031,22 @@ class AgentWebSocketServer:
                 )
             return
 
+        from jiuwenswarm.server.front.protocol import unsupported_method_wire
+
+        if isinstance(data, dict):
+            method = data.get("method")
+            if method is None:
+                method = data.get("req_method")
+            error_wire = unsupported_method_wire(
+                method,
+                request_id=data.get("request_id"),
+                channel_id=data.get("channel") or data.get("channel_id"),
+            )
+            if error_wire is not None:
+                async with send_lock:
+                    await send_wire_payload(ws, error_wire)
+                return
+
         try:
             env = E2AEnvelope.from_dict(data)
         except Exception as parse_err:
@@ -3066,6 +3065,15 @@ class AgentWebSocketServer:
                 )
                 if not isinstance(legacy, dict):
                     raise ValueError("legacy_agent_request missing or not a dict")
+                error_wire = unsupported_method_wire(
+                    legacy.get("req_method"),
+                    request_id=legacy.get("request_id"),
+                    channel_id=legacy.get("channel_id"),
+                )
+                if error_wire is not None:
+                    async with send_lock:
+                        await send_wire_payload(ws, error_wire)
+                    return
                 request = _payload_to_request(legacy)
             else:
                 logger.info(
@@ -3139,13 +3147,23 @@ class AgentWebSocketServer:
         disposition = InboundDisposition.REJECTED
         try:
             params = request.params if isinstance(request.params, dict) else {}
-            event = DingTalkInboundEvent.from_payload(params.get("event"))
+            raw_event = params.get("event")
+            lifecycle = isinstance(raw_event, dict) and raw_event.get("event_kind") == "group_lifecycle"
+            if lifecycle:
+                from jiuwenswarm.server.jiuwenmate.dingtalk_group_events import DingTalkGroupEvent
+
+                event = DingTalkGroupEvent.from_payload(raw_event)
+            else:
+                event = DingTalkInboundEvent.from_payload(raw_event)
             if not isinstance(event.expected_agent_id, str) or not event.expected_agent_id.strip():
                 disposition = InboundDisposition.REJECTED
             else:
                 fanout = await self._ensure_persistent_group_fanout()
                 if fanout is not None:
-                    disposition = await fanout.dingtalk_inbound.handle(event)
+                    if lifecycle:
+                        disposition = await fanout.dingtalk_inbound.handle_group_change(event)
+                    else:
+                        disposition = await fanout.dingtalk_inbound.handle(event)
         except Exception as exc:
             logger.warning(
                 "[AgentWebSocketServer] JM-21 inbound event rejected: error_type=%s",
@@ -3400,13 +3418,6 @@ class AgentWebSocketServer:
                         # /sandbox enable retry and the existing backend/error
                         # resolution available after a failed warm pass.
                         logger.warning("[AgentServer] Sandbox bootstrap unavailable")
-            if request.req_method is not None and request.req_method.value.startswith("proactive."):
-                preparation = getattr(self, "proactive_preparation_task", None)
-                if preparation is not None:
-                    if registry is not None:
-                        await registry.ensure("proactive")
-                    else:
-                        await asyncio.shield(preparation)
             from jiuwenswarm.server.runtime.group_requests import dispatch_group_request
 
             if await dispatch_group_request(self, ws, request, send_lock):
@@ -3947,10 +3958,6 @@ class AgentWebSocketServer:
                                 await send_wire_payload(ws, wire)
                 return
             await self._ensure_auto_team_binding_for_chat(request)
-            # chat.send 入口采集隐式反馈：用户在推荐后的文本回复关联到最近推荐。
-            # best-effort，失败绝不影响主 chat 流（见方法实现）。
-            if request.req_method == ReqMethod.CHAT_SEND:
-                await self._try_record_implicit_feedback(request)
             if request.is_stream:
                 await self._handle_stream(ws, request, send_lock)
             else:
@@ -4050,58 +4057,6 @@ class AgentWebSocketServer:
                 runtime, session_id, request_id = pending_chat_request
                 runtime.end_chat_request(session_id, request_id)
             _tenant_cm.__exit__(None, None, None)
-
-    async def _try_record_implicit_feedback(self, request: AgentRequest) -> None:
-        """Best-effort 采集隐式反馈：用户在收到推荐后的文本回复。
-
-        主动推荐送达后，用户若直接用文本回复（"简洁点""不需要"…）而不是点卡片
-        上的赞/踩按钮，这条回复就是隐式反馈。把它关联到该会话最近一条推荐，
-        交由 ``record_implicit_feedback`` 做情感分类后入 buffer，供下次 tick 梯度更新。
-
-        与 Runtime activity participant 同款 best-effort：任何异常只 log debug，
-        绝不阻断主 chat 流。只在 ``chat.send`` 且来源不是 proactive 自己触发的
-        推荐指令时才介入（``source=proactive_recommendation`` 是系统主动塞给主
-        agent 的指令，不是用户说的话，见 proactive_adapter 触发处）。
-        """
-        try:
-            params = request.params if isinstance(request.params, dict) else {}
-            # proactive 自己触发主 agent 的指令带 source=proactive_recommendation，
-            # 那不是用户输入，跳过
-            if str(params.get("source") or "").strip() == "proactive_recommendation":
-                return
-            session_id = str(request.session_id or params.get("session_id") or "").strip()
-            if not session_id:
-                return
-            query = _request_query_text(request)
-            if not query:
-                return
-
-            from jiuwenswarm.agents.harness.common.recommendation.feedback_collector import (
-                find_latest_recommendation,
-                record_implicit_feedback,
-            )
-
-            # max_age_seconds=0 砍掉时间窗：不靠时间硬挡"无关反馈"——是否相关、是否
-            # 产生梯度交给梯度更新器的模型判断（看 rec_content + user_reply 语义）。
-            # 配合 record_feedback 的"同 rec_id 只采紧跟第一条、后续不覆盖"逻辑，
-            # 每条推荐只关联它之后紧跟的第一条用户回复。
-            latest = find_latest_recommendation(session_id, max_age_seconds=0)
-            if latest is None:
-                return
-            rec_id = latest.get("id")
-            if not rec_id:
-                return
-
-            # 已对该 rec_id 给过显式反馈（赞/踩）的话，record_feedback 的去重逻辑
-            # 会自动丢弃隐式补充——无需在此预判。
-            record_implicit_feedback(rec_id, query)
-        except Exception as exc:
-            logger.debug(
-                "[AgentWebSocketServer] implicit feedback hook failed; preserving chat: "
-                "session_id=%s error=%s",
-                request.session_id,
-                exc,
-            )
 
     @staticmethod
     def _is_client_disconnect_cancel_request(request: AgentRequest) -> bool:
@@ -5657,7 +5612,9 @@ class AgentWebSocketServer:
                         error_value
                         if error_value is not None
                         else "Runtime execution failed"
-                    )
+                    ),
+                    **({"code": event.payload["code"]}
+                       if isinstance(event.payload, dict) and isinstance(event.payload.get("code"), str) else {}),
                 },
                 agent_ref=event.agent_ref,
                 metadata=event.metadata,
@@ -5666,6 +5623,7 @@ class AgentWebSocketServer:
                 message,
                 response_id=event.request_id,
             )
+            wire["session_id"] = event.session_id
         elif streaming:
             payload = dict(event.payload) if event.payload is not None else None
             if not event.ok:
@@ -7258,11 +7216,20 @@ class AgentWebSocketServer:
         session_id = params.get("session_id")
         page_idx = params.get("page_idx")
         subagent_id = params.get("subagent_id")
-        data = self.get_conversation_history(
-            session_id=session_id,
-            page_idx=page_idx,
-            subagent_id=subagent_id if isinstance(subagent_id, str) else None,
-        )
+        try:
+            data = await asyncio.to_thread(
+                self.get_conversation_history, session_id=session_id, page_idx=page_idx,
+                subagent_id=subagent_id if isinstance(subagent_id, str) else None,
+            )
+        except HistoryReplayError as exc:
+            resp = AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id, ok=False,
+                payload={"error": str(exc), "code": exc.code},
+            )
+            wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+            async with send_lock:
+                await send_wire_payload(ws, wire)
+            return
         if data is None:
             resp = AgentResponse(
                 request_id=request.request_id,
@@ -7401,100 +7368,25 @@ class AgentWebSocketServer:
 
 
     async def _handle_proactive_tick(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
-        """Handle proactive.tick request from CronScheduler.
-
-        This is called by Gateway's CronScheduler to trigger a recommendation tick.
-        Respects cooldown and daily limits.
-        """
-        if self._proactive_engine is None:
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={"error": "ProactiveEngine not initialized"},
-            )
-        else:
-            try:
-                # Extract target_channel from params
-                params = request.params or {}
-                target_channel = params.get("target_channel")
-
-                # Run the tick (respects cooldown and daily limits)
-                success = await self._proactive_engine.tick_now(target_channel=target_channel)
-
-                status = "tick_executed" if success else "no_recommendation"
-                last_tick = self._proactive_engine.last_tick_at
-                if last_tick > 0:
-                    status = f"{status} (last_tick_at={last_tick:.0f})"
-
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=True,
-                    payload={"status": status, "success": success},
-                )
-            except Exception as e:
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=False,
-                    payload={"error": str(e)},
-                )
-
+        """Soft no-op: proactive recommendation removed; keep gateway cron sync happy."""
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload={"status": "skipped", "success": False, "reason": "proactive_removed"},
+        )
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
 
     async def _handle_proactive_feedback(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
-        """Handle proactive.feedback request from frontend.
-
-        Receives user feedback (like/dislike) on proactive recommendations.
-        Stores feedback in buffer for next tick to update strategy gradients.
-        """
-        try:
-            params = request.params or {}
-            rec_id = params.get("rec_id")
-            feedback_type = params.get("feedback_type")
-            # 前端从 message 上带的推荐元数据，history 尚未写入时兜底填充反馈记录。
-            rec_type = str(params.get("rec_type") or params.get("proactive_type") or "")
-            rec_target = str(params.get("rec_target") or params.get("proactive_target") or "")
-
-            if not rec_id or feedback_type not in ("explicit_like", "explicit_dislike"):
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=False,
-                    payload={
-                        "error": (
-                            "Invalid params: rec_id and feedback_type "
-                            "(explicit_like|explicit_dislike) required"
-                        ),
-                    },
-                )
-            else:
-                from jiuwenswarm.agents.harness.common.recommendation.feedback_collector import (
-                    RecMeta,
-                    record_explicit_feedback,
-                )
-                record_explicit_feedback(
-                    rec_id, feedback_type,
-                    meta=RecMeta(rec_type=rec_type, rec_target=rec_target),
-                )
-
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=True,
-                    payload={"status": "feedback_recorded", "rec_id": rec_id},
-                )
-        except Exception as e:
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={"error": str(e)},
-            )
-
+        """Soft no-op: proactive recommendation feedback path removed."""
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload={"status": "skipped", "reason": "proactive_removed"},
+        )
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
@@ -9235,11 +9127,13 @@ class AgentWebSocketServer:
                     page_idx=page_idx,
                     subagent_id=subagent_id if isinstance(subagent_id, str) else None,
                 )
-        except (InvalidHistoryCursor, HistorySnapshotChanged) as exc:
+        except (InvalidHistoryCursor, HistorySnapshotChanged, HistoryReplayError) as exc:
             error_code = (
-                "HISTORY_SNAPSHOT_CHANGED"
-                if isinstance(exc, HistorySnapshotChanged)
-                else "INVALID_HISTORY_CURSOR"
+                exc.code if isinstance(exc, HistoryReplayError) else (
+                    "HISTORY_SNAPSHOT_CHANGED"
+                    if isinstance(exc, HistorySnapshotChanged)
+                    else "INVALID_HISTORY_CURSOR"
+                )
             )
             error_chunk = AgentResponseChunk(
                 request_id=request.request_id,
@@ -13452,13 +13346,6 @@ class AgentWebSocketServer:
         from jiuwenswarm.common.auth.login_credentials import apply_credential_update
 
         applied = apply_credential_update(request.params)
-        proactive = getattr(self, "_proactive_engine", None)
-        if applied and proactive is not None:
-            from jiuwenswarm.server.runtime.proactive_adapter import (
-                build_proactive_agent,
-            )
-
-            proactive.rebuild_proactive_agent(build_proactive_agent)
         resp = AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
@@ -13597,23 +13484,6 @@ class AgentWebSocketServer:
                         "[AgentWebSocketServer] failed to stop paused team runtimes after agent.reload_config: %s",
                         exc,
                     )
-
-            # Hot-reload ProactiveEngine config if available
-            should_reload_proactive = not reload_scopes or bool(reload_scopes & {"model", "proactive", "agent_runtime"})
-            if self._proactive_engine is not None and should_reload_proactive:
-                cfg = get_config()
-                proactive_cfg = cfg.get("proactive_recommendation", {})
-                self._proactive_engine.reload_config(proactive_cfg)
-                # 重建 proactive agent——它启动时建一次，模型配置固化在实例里。
-                # 用户改模型后主 agent 会热更新，但 proactive agent 不在主 agent
-                # 链路里，不重建会继续用旧模型（可能已失效/欠费）。
-                try:
-                    from jiuwenswarm.server.runtime.proactive_adapter import (
-                        build_proactive_agent,
-                    )
-                    self._proactive_engine.rebuild_proactive_agent(build_proactive_agent)
-                except Exception as exc:
-                    logger.warning("[AgentWebSocketServer] proactive agent rebuild failed: %s", exc)
 
             payload = {"reloaded": True}
             if should_warm_tokenizers:
@@ -14019,72 +13889,9 @@ class AgentWebSocketServer:
         *,
         subagent_id: str | None = None,
     ) -> dict[str, Any] | None:
-        # 按照 session_id 和分页消息获取历史记录
-        if not isinstance(session_id, str) or not session_id.strip():
-            return None
-        if not isinstance(page_idx, int) or page_idx <= 0:
-            return None
+        from jiuwenswarm.server.control.history_service import load_history_page
 
-        normalized_session_id = session_id.strip()
-        normalized_subagent_id = (
-            subagent_id.strip() if isinstance(subagent_id, str) and subagent_id.strip() else None
-        )
-        if normalized_subagent_id:
-            if not history_exists(normalized_session_id, subagent_id=normalized_subagent_id):
-                return {
-                    "messages": [],
-                    "total_pages": 1,
-                    "page_idx": page_idx,
-                    "subagent_id": normalized_subagent_id,
-                }
-        elif not history_exists(normalized_session_id):
-            return None
-        try:
-            raw = load_history_records(
-                normalized_session_id,
-                subagent_id=normalized_subagent_id,
-            )
-        except Exception:
-            return None
-        if not isinstance(raw, list):
-            return None
-
-        page_size = _HISTORY_PAGE_SIZE
-        restorable = [
-            item for item in raw
-            if _is_restorable_history_record(item)
-        ]
-        total = len(restorable)
-        total_pages = max(1, math.ceil(total / page_size))
-        if page_idx > total_pages:
-            return None
-
-        ordered = list(reversed(restorable))
-        start = (page_idx - 1) * page_size
-        end = start + page_size
-        # 不在此处 sanitize：split_history_record_for_stream（在 _handle_history_get_stream
-        # 里调）需要拿到原文 content 才能正确切片；先 sanitize 会把 content 砍到 16KB，
-        # 切片器拿到的就只剩 16KB，分片就失去意义。
-        page_messages = list(ordered[start:end])
-        logger.debug(
-            "[history.get] session_id=%s subagent_id=%s page_idx=%s "
-            "raw_total=%s restorable_total=%s total_pages=%s returned=%s",
-            normalized_session_id,
-            normalized_subagent_id or "",
-            page_idx,
-            len(raw),
-            total,
-            total_pages,
-            len(page_messages),
-        )
-        result = {
-            "messages": page_messages,
-            "total_pages": total_pages,
-            "page_idx": page_idx,
-        }
-        if normalized_subagent_id:
-            result["subagent_id"] = normalized_subagent_id
-        return result
+        return load_history_page(session_id, page_idx, subagent_id=subagent_id)
 
     @staticmethod
     def get_conversation_history_cursor(

@@ -282,3 +282,19 @@ test('share export and recovery share the same known-error mapping with a safe f
   assert.equal(keyFor(new Error('toString')), 'share.exportFailed');
   assert.equal(keyFor(null), 'share.exportFailed');
 });
+
+
+test('personal and cluster shells both mount the shared login dialog', () => {
+  const personalBranch = findNode(node => ts.isIfStatement(node)
+    && node.expression.getText(tree) === 'isJiuwenMate');
+  const shells = [personalBranch.thenStatement, tree];
+  for (const shell of shells) {
+    let dialogs = 0;
+    function visit(node) {
+      if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(tree) === 'LoginDialog') dialogs += 1;
+      ts.forEachChild(node, visit);
+    }
+    visit(shell);
+    assert.equal(dialogs, shell === tree ? 2 : 1);
+  }
+});

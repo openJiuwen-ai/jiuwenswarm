@@ -130,7 +130,7 @@ else
 fi
 
 printf '\n[4/9] Build macOS app bundle with PyInstaller...\n'
-uv run --with-requirements scripts/computer-use-requirements.txt pyinstaller scripts/jiuwenswarm.spec --noconfirm
+uv run pyinstaller scripts/jiuwenswarm.spec --noconfirm
 
 if [[ ! -d "$APP_PATH" ]]; then
   printf 'Error: app bundle not found: %s\n' "$APP_PATH" >&2

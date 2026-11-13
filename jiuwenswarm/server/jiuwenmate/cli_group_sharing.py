@@ -94,6 +94,19 @@ def _message(row: dict):
             content = body["text"]
     else:
         content = json.dumps(content, ensure_ascii=False)
+    mention_names, mention_ids = {}, []
+    for mention in row.get('mentions') or ():
+        if not isinstance(mention, dict):
+            raise UnsafeGroupRead('raw message mention metadata is invalid')
+        key = mention.get('key')
+        identity = mention.get('id')
+        identity = identity.get('open_id') if isinstance(identity, dict) else identity
+        name = mention.get('name')
+        if isinstance(key, str) and isinstance(identity, str) and isinstance(name, str):
+            if re.fullmatch(r'@_user_\d+', key):
+                mention_names[key] = '@' + name
+                mention_ids.append(identity)
+    content = re.sub(r'@_user_\d+\b', lambda match: mention_names.get(match[0], match[0]), str(content))
     if len(str(content)) > 32000:
         raise UnsafeGroupRead("CLI message preview is too large; narrow the request")
     attachments = tuple(dict.fromkeys(re.findall(r"(?:file|img)_[A-Za-z0-9_-]+", str(content))))
@@ -102,18 +115,22 @@ def _message(row: dict):
         sender_name=str(sender.get("name", row.get("sender_name", sender_id)) or "群成员")[:512],
         sender_kind="agent" if sender.get("sender_type") in {"app", "bot"} else "human",
         received_at=received, text=str(content), attachment_refs=attachments,
+        mention_ids=tuple(dict.fromkeys(mention_ids)),
     )
 
 
 async def verified_cli_rows(cli, namespace: str, agent: str, rows: list[dict], identity: str) -> list[dict]:
-    """CLI shortcuts format dates to minutes; fetch exact raw facts before authorization."""
+    """Rehydrate display dates and mention placeholders from exact platform facts."""
     verified = []
     for row in rows:
+        needs_raw = re.search(r'@_user_\d+\b', json.dumps(row.get('content', row.get('body', '')))) is not None
         try:
             _message(row)
         except UnsafeGroupRead as exc:
             if str(exc) != "CLI message time could not be verified":
                 raise
+            needs_raw = True
+        if needs_raw:
             message_id = row.get("message_id", "")
             if not re.fullmatch(r"om_[A-Za-z0-9_-]+", message_id):
                 raise UnsafeGroupRead("raw message identity is unavailable") from None
@@ -121,11 +138,11 @@ async def verified_cli_rows(cli, namespace: str, agent: str, rows: list[dict], i
                 "api", "GET", f"/open-apis/im/v1/messages/{message_id}", "--as", identity, "--format", "json",
             ])
             if payload.get("code", 0) != 0:
-                raise UnsafeGroupRead("raw source message is not readable") from exc
+                raise UnsafeGroupRead("raw source message is not readable")
             exact, _ = _messages(payload)
             different_message = len(exact) != 1 or exact[0].get("message_id") != message_id
             if different_message or (row.get("chat_id") and exact[0].get("chat_id") != row["chat_id"]):
-                raise UnsafeGroupRead("raw source message identity changed") from exc
+                raise UnsafeGroupRead("raw source message identity changed")
             row = exact[0]
             _message(row)
         verified.append(row)
@@ -179,7 +196,7 @@ async def verify_cli_snapshot(cli, snapshot: CliReadSnapshot) -> bool:
 
 
 class CliGroupSharing:
-    """Invocation-bound adapter; all candidates remain in the private host until consent is durable."""
+    """Invocation-bound adapter; candidates stay private until the host authorizes release."""
 
     def __init__(self, *, sharing, group_port, cli, session_workspace: Path):
         self.sharing, self.port, self.cli = sharing, group_port, cli
@@ -275,6 +292,10 @@ class CliGroupSharing:
     async def _execute(self, execution, command: str, plan: CliReadPlan) -> dict:
         from jiuwenswarm.server.jiuwenmate.group_sharing_service import _digest
 
+        if not await asyncio.to_thread(
+            self.sharing.repository.request_window_is_current, execution.namespace_id, execution.request_id,
+        ):
+            raise UnsafeGroupRead("group access changed; submit a new request")
         sources = await self._sources(execution)
         by_group = {item["group_id"]: item for item in sources}
         repo = self.sharing.repository
@@ -368,7 +389,9 @@ class CliGroupSharing:
                 row = await asyncio.to_thread(repo.get, row["approval_id"])
             if row["status"] == "pending":
                 pending.append(row)
-            elif row["status"] in {"approved_once", "approved_permanent"}:
+            elif row["status"] in {"approved_once", "approved_permanent", "owner_read"}:
+                if row["status"] == "owner_read" and scope.get("release_policy") != "owner_direct":
+                    raise UnsafeGroupRead("owner-only CLI content cannot be shared to this destination")
                 frozen = CliReadSnapshot.model_validate(row["result"])
                 if row["status"] == "approved_permanent" and not await asyncio.to_thread(
                     repo.has_grant, saved, group_id, list(frozen.content_types),
@@ -402,5 +425,7 @@ class CliGroupSharing:
                               "file_name": file.file_name, "file_size": file.file_size})
         if denied and not messages and not files:
             return {"ok": False, "error": "所有者拒绝或审批已过期，未返回跨群内容。"}
+        if not await asyncio.to_thread(repo.request_window_is_current, execution.namespace_id, execution.request_id):
+            raise UnsafeGroupRead("group access changed; submit a new request")
         return {"ok": True, "data": {"messages": messages, "files": files, "has_more": preview.has_more},
                 "incomplete": denied, "notice": "已返回宿主冻结并获准的 CLI 读取结果，未重跑原命令链。"}

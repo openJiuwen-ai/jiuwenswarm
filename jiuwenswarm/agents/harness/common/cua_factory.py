@@ -3,9 +3,18 @@
 from __future__ import annotations
 
 from importlib.resources import files
-import sys
+import logging
 
+from openjiuwen.harness.rails.multimodal_context_summarizer_rail import MultimodalContextSummarizerRail
+from openjiuwen.harness.schema.config import SubAgentConfig
 from openjiuwen.harness.subagents.cua_agent import build_cua_agent_config as build_core_cua_config
+from openjiuwen.harness.tools.cua.rails import CuaProgressRail
+
+from jiuwenswarm.common import cua_config
+
+from .prompt.cua_task_prompt import build_cua_repl_prompt
+
+_LOG = logging.getLogger(__name__)
 
 
 def build_cua_agent_config(
@@ -19,8 +28,13 @@ def build_cua_agent_config(
     cua_snapshot_keep_last_k=3,
     cua_pause_on_user_input=False,
     rails=None,
-):
-    """Preserve the core factory for source and wheel installations."""
+) -> SubAgentConfig | None:
+    """Build a desktop subagent only when a supported backend is installed."""
+    repl_available = cua_config.is_cua_repl_available()
+    legacy_available = cua_config.is_legacy_cua_available()
+    if not repl_available and not legacy_available:
+        return None
+
     spec = build_core_cua_config(
         model,
         card=card,
@@ -32,28 +46,28 @@ def build_cua_agent_config(
         cua_pause_on_user_input=cua_pause_on_user_input,
         rails=rails,
     )
-    if not getattr(sys, "frozen", False) or sys.platform not in ("darwin", "win32"):
+    if not repl_available:
         return spec
 
     from .rails.cua_extension_rail import CuaExtensionRail
 
-    spec.rails = [*(spec.rails or []), CuaExtensionRail(pause_on_user_input=cua_pause_on_user_input)]
-    api = files("computer_use").joinpath("__init__.pyi").read_text(encoding="utf-8")
-    spec.system_prompt += (
-        "\nUse the single-step tools for a simple observation or action. Prefer cua_repl for "
-        "multi-step workflows, loops and conditions. It executes Python with top-level await; "
-        "computer, print and print_image are preloaded. Await SDK operations sequentially. "
-        "Variables persist within this delegation; the host closes the session afterwards. "
-        "Reads present text automatically; use print_image for images. Read again to verify actions. "
-        "Keep its references and screenshot coordinates separate from the single-step tools. "
-        "After a timeout or cancellation, actions may already have executed; never replay them "
-        "automatically. This code runs with the host user's permissions.\n"
-        f"Public Computer Use SDK interface:\n```python\n{api}\n```"
-    )
-    if sys.platform == "darwin":
-        spec.system_prompt += (
-            "\nOn macOS, use cua_repl for desktop operations; "
-            "the legacy single-step backend is unavailable.\n"
-        )
+    try:
+        api = files("computer_use").joinpath("__init__.pyi").read_text(encoding="utf-8")
+    except (ImportError, OSError, TypeError, UnicodeError) as error:
+        _LOG.warning("Computer Use SDK interface is unavailable: %s", error)
+        api = None
+    prompt = build_cua_repl_prompt(language, legacy_available=legacy_available, api=api)
+
+    spec.rails = list(spec.rails or [])
+    if not legacy_available:
+        # The core factory always installs legacy tools and their preflight.
+        # Materialize a plain DeepAgent with the existing CUA progress reporting.
+        spec.factory_name = None
+        spec.factory_kwargs = {"enable_sys_operation": False}
+        spec.rails.extend([CuaProgressRail(""), MultimodalContextSummarizerRail(cua_snapshot_keep_last_k)])
+        spec.system_prompt = prompt
+    else:
+        spec.system_prompt += f"\n{prompt}"
+    spec.rails.append(CuaExtensionRail(pause_on_user_input=cua_pause_on_user_input))
     spec.parallel_tool_calls = False
     return spec

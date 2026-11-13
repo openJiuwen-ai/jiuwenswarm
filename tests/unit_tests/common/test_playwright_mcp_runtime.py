@@ -63,7 +63,7 @@ def test_materialize_verifies_extracts_and_reuses_cache(
     workspace = tmp_path / "user data with spaces"
     first_cli, first_manifest = runtime.materialize_bundled_runtime(
         resource_dir=resources,
-        install_root=workspace,
+        user_workspace_dir=workspace,
     )
     assert first_cli.read_text(encoding="utf-8") == "console.log('test');\n"
     assert first_manifest["version"] == "0.0.78"
@@ -76,7 +76,7 @@ def test_materialize_verifies_extracts_and_reuses_cache(
     )
     second_cli, _ = runtime.materialize_bundled_runtime(
         resource_dir=resources,
-        install_root=workspace,
+        user_workspace_dir=workspace,
     )
     assert second_cli == first_cli
 
@@ -86,7 +86,7 @@ def test_materialize_rejects_corrupt_and_traversing_archives(tmp_path: Path) -> 
     with pytest.raises(runtime.PlaywrightMcpRuntimeError, match="hash mismatch"):
         runtime.materialize_bundled_runtime(
             resource_dir=corrupt,
-            install_root=tmp_path / "corrupt-cache",
+            user_workspace_dir=tmp_path / "corrupt-cache",
         )
 
     traversing = _make_bundle(
@@ -99,7 +99,7 @@ def test_materialize_rejects_corrupt_and_traversing_archives(tmp_path: Path) -> 
     with pytest.raises(runtime.PlaywrightMcpRuntimeError, match="safe relative path"):
         runtime.materialize_bundled_runtime(
             resource_dir=traversing,
-            install_root=tmp_path / "traversing-cache",
+            user_workspace_dir=tmp_path / "traversing-cache",
         )
     assert not (tmp_path / "escape.js").exists()
 
@@ -111,7 +111,7 @@ def test_concurrent_materialization_never_exposes_partial_cache(tmp_path: Path) 
     def materialize() -> Path:
         return runtime.materialize_bundled_runtime(
             resource_dir=resources,
-            install_root=workspace,
+            user_workspace_dir=workspace,
         )[0]
 
     with ThreadPoolExecutor(max_workers=4) as executor:
@@ -158,7 +158,7 @@ def test_launch_precedence_override_bundle_and_exact_fallback(tmp_path: Path) ->
     bundled = runtime.resolve_playwright_mcp_launch(
         environ={},
         resource_dir=resources,
-        install_root=tmp_path / "workspace with spaces",
+        user_workspace_dir=tmp_path / "workspace with spaces",
         which=lambda _: str(tmp_path / "Node Runtime" / "node.exe"),
         run=_node_result(),
     )
@@ -170,7 +170,7 @@ def test_launch_precedence_override_bundle_and_exact_fallback(tmp_path: Path) ->
     fallback = runtime.resolve_playwright_mcp_launch(
         environ={},
         resource_dir=tmp_path / "missing",
-        install_root=tmp_path / "fallback-cache",
+        user_workspace_dir=tmp_path / "fallback-cache",
     )
     assert fallback.source == "pinned-npx-fallback"
     assert fallback.command == "npx"
@@ -196,7 +196,7 @@ def test_legacy_template_defaults_select_bundle_without_rewriting_env(
     launch = runtime.resolve_playwright_mcp_launch(
         environ=legacy_environment,
         resource_dir=resources,
-        install_root=tmp_path / "workspace",
+        user_workspace_dir=tmp_path / "workspace",
         which=lambda _: str(tmp_path / "Node Runtime" / "node.exe"),
         run=_node_result(),
     )

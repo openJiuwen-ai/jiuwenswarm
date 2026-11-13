@@ -312,19 +312,26 @@ def test_require_media_models_blocks_incomplete_video_only(
     assert "Image generation" not in message
 
 
-def test_require_media_models_blocks_openrouter_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_require_media_models_allows_openrouter_slots(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_slot(
         monkeypatch,
         "VIDEO_GEN",
         enabled="true",
         api_key="sk-or",
         api_base="https://openrouter.ai/api/v1",
-        model_name="google/veo-3",
-        protocol="openrouter",
+        model_name="bytedance/seedance-2.0-fast",
+        protocol="bytedance",
     )
-    with pytest.raises(DesignerLlmError) as excinfo:
-        _require_media_models(video=True)
-    assert "vLLM-Omni" in str(excinfo.value)
+    _set_slot(
+        monkeypatch,
+        "VISUAL_GEN",
+        enabled="true",
+        api_key="sk-or",
+        api_base="https://openrouter.ai/api/v1",
+        model_name="google/gemini-3.1-flash-image",
+        protocol="google",
+    )
+    _require_media_models(image=True, video=True)
 
 
 def test_require_media_models_allows_vllm_omni_without_key_and_model(

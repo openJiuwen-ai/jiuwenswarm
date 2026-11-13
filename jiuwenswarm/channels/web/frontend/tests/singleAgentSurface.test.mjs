@@ -724,6 +724,14 @@ test('the analysis page draws single-Agent sessions as lanes on the shared axis'
   );
   assert.match(
     readFileSync(new URL('../src/features/trajectory/client/TrajectoryTimeline.tsx', import.meta.url), 'utf8'),
+    /data-divider="turn"/,
+  );
+  assert.match(
+    readFileSync(new URL('../src/features/trajectory/client/TrajectoryTimeline.tsx', import.meta.url), 'utf8'),
+    /data-divider="user-turn"/,
+  );
+  assert.match(
+    readFileSync(new URL('../src/features/trajectory/client/TrajectoryTimeline.tsx', import.meta.url), 'utf8'),
     /clipIntervalAgainstGaps\(span\.start, span\.end, userTurnGaps\)/,
   );
   assert.match(
