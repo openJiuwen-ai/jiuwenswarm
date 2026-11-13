@@ -129,7 +129,10 @@ async def test_session_scan_and_projection_leave_front_loop_running(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_metadata_lifecycle_guard_leaves_front_loop_running(monkeypatch):
+@pytest.mark.parametrize("method", [
+    ReqMethod.SESSION_GET_METADATA, ReqMethod.SESSION_COLOR_SET, ReqMethod.SESSION_PREVIEW,
+])
+async def test_session_query_lifecycle_guard_leaves_front_loop_running(monkeypatch, method):
     from jiuwenswarm.server.runtime.session import lifecycle
 
     started = threading.Event()
@@ -143,7 +146,7 @@ async def test_metadata_lifecycle_guard_leaves_front_loop_running(monkeypatch):
         raise lifecycle.LifecycleError("OPERATION_IN_PROGRESS", "session is stopping")
 
     monkeypatch.setattr(lifecycle, "guard", guard)
-    request = _request(ReqMethod.SESSION_GET_METADATA)
+    request = _request(method)
     request.params = {"session_id": "one"}
     task = asyncio.create_task(session_repository.handle_session_request(request))
     try:
@@ -156,6 +159,69 @@ async def test_metadata_lifecycle_guard_leaves_front_loop_running(monkeypatch):
     assert not response.ok
     assert response.payload["code"] == "OPERATION_IN_PROGRESS"
     assert response.payload["error"] == "session is stopping"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method, reader", [
+    (ReqMethod.SESSION_COLOR_SET, "get_session_metadata"),
+    (ReqMethod.SESSION_PREVIEW, "load_history_records"),
+])
+async def test_session_color_and_preview_reads_leave_front_loop_running(monkeypatch, method, reader):
+    started = threading.Event()
+    release = threading.Event()
+    threads = []
+
+    def read(*_args, **_kwargs):
+        threads.append(threading.get_ident())
+        started.set()
+        release.wait(1)
+        if method == ReqMethod.SESSION_COLOR_SET:
+            return {"accent_color": "blue"}
+        return [{"role": "user", "content": "kept history"}]
+
+    monkeypatch.setattr(session_repository, reader, read)
+    request = _request(method)
+    request.params = {"session_id": "one"}
+    task = asyncio.create_task(session_repository.handle_session_request(request))
+    try:
+        await _until(started.is_set)
+        assert not task.done(), "A session read still occupied the Front loop"
+        assert threads[0] != threading.get_ident()
+    finally:
+        release.set()
+        response = await task
+    assert response.ok and response.payload["session_id"] == "one"
+    if method == ReqMethod.SESSION_COLOR_SET:
+        assert response.payload["accent_color"] == "blue"
+    else:
+        assert response.payload["preview_messages"] == [
+            {"role": "user", "content": "kept history", "event_type": ""},
+        ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("session_id", [None, " ", "../bad", 1])
+async def test_invalid_metadata_request_does_not_wait_for_query_capacity(session_id):
+    from jiuwenswarm.server.control.query_executor import _QUERY_CONCURRENCY, run_control_query
+
+    started = []
+    release = threading.Event()
+
+    def read():
+        started.append(True)
+        release.wait(3)
+
+    occupied = [asyncio.create_task(run_control_query(read)) for _ in range(_QUERY_CONCURRENCY)]
+    try:
+        await _until(lambda: len(started) == _QUERY_CONCURRENCY)
+        request = _request(ReqMethod.SESSION_GET_METADATA)
+        request.params = {"session_id": session_id}
+        response = await asyncio.wait_for(session_repository.handle_session_request(request), .25)
+        assert not response.ok and response.payload["code"] == "BAD_REQUEST"
+        assert all(not task.done() for task in occupied)
+    finally:
+        release.set()
+        await asyncio.gather(*occupied)
 
 
 @pytest.mark.asyncio
@@ -172,6 +238,7 @@ async def test_metadata_file_lock_leaves_front_loop_running(monkeypatch, tmp_pat
     }), encoding="utf-8")
     monkeypatch.setattr(session_metadata, "get_agent_sessions_dir", lambda: sessions)
     monkeypatch.setattr(lifecycle, "get_agent_sessions_dir", lambda: sessions)
+    assert lifecycle.resource_path("session", "one").is_relative_to(tmp_path)
     locked = threading.Event()
     reading = threading.Event()
     release = threading.Event()

@@ -79,3 +79,20 @@ Front async 查询调用同步元数据入口时，应将锁等待、磁盘读�
 续验在 develop `9f403d1c`、0.2.9 `61246126` 基线上发现入口 `guard` 的同步读盘缺口，
 新增回归在两个原候选上均失败，已将它纳入同一次后台工作。
 原现场具体阻塞阶段仍缺少 Front 堆栈；Worker ownership 的独立证据边界见上述退出属主记录。
+
+## UT 与评审续修（2026-11-13）
+
+- 采纳相邻查询建议：`session.color_set` 的读取分支与 `session.preview` 的生命周期检查、读盘和投影
+  同样纳入 `run_control_query`。pin/color 写入入口的 lifecycle guard 也在后台执行，保持原错误码。
+- 元数据的类型、空值与严格 ID 校验在占用查询名额前完成。四个查询名额被持有时，非法请求仍能立即返回
+  BAD_REQUEST；有效查询继续共享四个名额，保留取消后等待原生 I/O 完成才释放容量的既有约束。
+- 非布尔 `enable_writeback` 保留既有兼容默认，并新增固定文本的类型告警；不记录非法参数值。
+  JSON 布尔 False 的只读行为仍由消费者用例覆盖。
+- 隔离建议经核实：`lifecycle.get_agent_root_dir()` 本就返回 `get_agent_sessions_dir().parent`，
+  原 monkeypatch 确实生效。补充资源路径位于 tmp_path 的明确断言，并为 repository 单测显式绑定私有 lifecycle 目录。
+
+新增相邻读取/guard 的事件循环回归与满载时非法请求回归，在原候选上为 8 failed / 1 passed，
+失败均落在对应阻塞或容量等待断言。最终 Windows 定向选择 develop 502 passed / 1 skipped、
+0.2.9 500 passed / 1 skipped，覆盖 SessionAdapter 的 metadata/pin/color/preview 消费者及既有生命周期、
+Runtime 和真实 Worker 场景。Linux 对应查询/属主/完整 Worker 选择分别为 68、65 passed，无跳过。
+源码、依赖、命令与原始失败保存在 `artifacts/issue6563-ut-review-20261113/`。
