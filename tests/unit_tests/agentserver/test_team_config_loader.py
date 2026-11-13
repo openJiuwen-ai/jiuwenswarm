@@ -142,7 +142,7 @@ def test_effective_team_models_include_selected_login_without_configured_default
 
     assert len(entries) == 1
     assert entries[0]["model_client_config"]["model_name"] == "glm-5"
-    assert entries[0]["model_client_config"]["api_base"] == "https://apig.example.com/v1"
+    assert entries[0]["model_client_config"]["api_base"] == "https://apig.example-gw.test/v1"
 
 
 def test_effective_team_models_preserve_distinct_credentials():
@@ -326,7 +326,7 @@ def _login_model_entry():
     login_credentials.reset_for_test()
     params = {
         E2A_MODEL_AUTH_PARAM_KEY: {
-            "api_base": "https://apig.example.com/v1",
+            "api_base": "https://apig.example-gw.test/v1",
             "api_key": "real-id-token",
             "credential_ref": "abe633f3a47a2758174eabe9160daf36",
         }
@@ -351,7 +351,7 @@ def test_selected_login_model_drives_members_instead_of_the_first_configured_mod
     for member in ("leader", "teammate"):
         mcc = spec["agents"][member]["model"]["model_client_config"]
         assert mcc["model_name"] == "glm-5"
-        assert mcc["api_base"] == "https://apig.example.com/v1"
+        assert mcc["api_base"] == "https://apig.example-gw.test/v1"
         assert mcc["api_key"].startswith("jiuwen-login:")
 
 
@@ -378,7 +378,7 @@ def test_configured_model_wins_over_login_entry_with_the_same_name():
     login_entry = deepcopy(_CONFIGURED_ENTRY)
     login_entry["model_client_config"] = {
         **login_entry["model_client_config"],
-        "api_base": "https://apig.example.com/v1",
+        "api_base": "https://apig.example-gw.test/v1",
         "api_key": "jiuwen-login:placeholder",
     }
     spec = load_team_spec_dict(
@@ -405,7 +405,7 @@ def test_team_pool_carries_the_login_model_without_the_real_token(monkeypatch):
 
     pool = {entry.model_name: entry for entry in spec.model_pool}
     assert set(pool) == {"configured-model", "glm-5"}
-    assert pool["glm-5"].api_base_url == "https://apig.example.com/v1"
+    assert pool["glm-5"].api_base_url == "https://apig.example-gw.test/v1"
     assert pool["glm-5"].api_key.startswith("jiuwen-login:")
     assert "real-id-token" not in spec.model_dump_json()
 

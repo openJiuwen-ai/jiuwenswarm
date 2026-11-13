@@ -169,6 +169,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261112_1405_stop-btn-stuck-after-skip](bugfix/jiuwenswarm/B_20261112_1405_stop-btn-stuck-after-skip.md) | B | 集群模式跳过后停止按钮永久卡死：interrupt 收尾窗口护栏 | xiajing | jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/team | jiuwenswarm/channels/web/frontend/src/features/interruptSettleGuard.ts, jiuwenswarm/channels/web/frontend/src/stores/chatStore.ts, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/channels/web/frontend/src/App.tsx, jiuwenswarm/channels/web/frontend/tests/interruptSettleGuard.test.mjs, jiuwenswarm/channels/web/frontend/package.json, tests/unit_tests/agentserver/test_team_manager_registry.py | 无独立 D：依据现场日志与轨迹定位，无独立设计文档；修复范围限定前端状态机护栏，并补后端判据不变量测试。 |
+| [B_20261112_1814_pool-free-member-models](bugfix/jiuwenswarm/agents/harness/team/B_20261112_1814_pool-free-member-models.md) | B | 空共享模型池保留成员独立模型 | LaiYongqiang | jiuwenswarm/agents/harness/team | jiuwenswarm/agents/harness/team/team_manager.py, tests/unit_tests/test_model_routing_placeholder.py | 无独立 D：Issue 6496 与 MR 10012 的回归修复，依据既有成员模型回退契约，无独立设计。 |
 
 <a id="module-14"></a>
 
@@ -219,6 +220,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [F_20261111_1528_unified-observability-config](features/F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | jiuwenswarm/common, jiuwenswarm/agents/harness, jiuwenswarm/resources, deploy/yuanrong, scripts | jiuwenswarm/common/observability_config.py, jiuwenswarm/common/config.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/agents/harness/team/team_manager.py, jiuwenswarm/resources/config.yaml, deploy/yuanrong/conf/gateway-config-yuanrong.template.yaml, scripts/reset_trajectory_data.py, tests/unit_tests/common/test_observability_config.py, tests/unit_tests/agentserver/test_trajectory_runtime_wiring.py | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
 | [B_20261112_2025_permission-profile-refresh](bugfix/jiuwenswarm/server/B_20261112_2025_permission-profile-refresh.md) | B | 刷新后智能审批档位错误回显为默认权限 | nypdmax | jiuwenswarm/common, jiuwenswarm/server/control | jiuwenswarm/common/permission_mode.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, tests/unit_tests/agentserver/test_front_permission_profile.py | 无独立 D：补齐既有 config.get/config.set 权限档位回显契约，无独立设计；审批决策与持久化格式不变。 |
+| [B_20261112_2110_explicit-default-flag-leak](bugfix/jiuwenswarm/common/B_20261112_2110_explicit-default-flag-leak.md) | B | 显式默认标记泄漏到模型详情与配置写入 | LaiYongQiang | jiuwenswarm/common | jiuwenswarm/common/model_catalog.py, jiuwenswarm/common/config.py, tests/unit_tests/test_model_resource_fixes.py | 无独立 D：MR !10012 的补充修复，依据既有 models.get / models.upsert 契约，无独立设计。 |
 
 <a id="module-19"></a>
 

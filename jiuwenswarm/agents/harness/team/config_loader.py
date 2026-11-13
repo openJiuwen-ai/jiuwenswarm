@@ -17,6 +17,7 @@ from openjiuwen.harness.prompts import resolve_language
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.auth.login_credentials import bare_model_name
 from jiuwenswarm.common.config import coerce_subtask_depth, get_config, get_default_models
+from jiuwenswarm.common.model_config_validation import is_placeholder_model_entry
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.server.runtime.opencode_zen import get_zen_free_model_entries
 
@@ -136,6 +137,12 @@ def _entry_model_id(entry: dict[str, Any] | None) -> str:
     return str(entry.get("model_id") or entry.get("id") or "").strip()
 
 
+def _prefer_explicit_default(usable: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The operator's explicit default among usable entries, if any."""
+    explicit = [entry for entry in usable if entry.get("_explicit_default")]
+    return explicit[0] if explicit else None
+
+
 def _select_default_model_config(
     configured_entries: list[dict[str, Any]],
     *,
@@ -149,9 +156,18 @@ def _select_default_model_config(
     if wanted_id:
         # Duplicate custom models share model_name. The stable id is the only
         # way to keep the page-selected endpoint instead of the first row.
-        for item in configured_entries:
-            if _entry_model_id(item) == wanted_id:
-                return item
+        matched = next(
+            (item for item in configured_entries if _entry_model_id(item) == wanted_id),
+            None,
+        )
+        if matched is not None:
+            if not is_placeholder_model_entry(matched.get("model_client_config") or {}):
+                return matched
+            logger.warning(
+                "[TeamConfigLoader] requested model id %r resolves to a template placeholder; "
+                "using configured fallback",
+                wanted_id,
+            )
         if login_model_entry is not None and _entry_model_id(login_model_entry) == wanted_id:
             return login_model_entry
         for item in get_zen_free_model_entries():
@@ -168,14 +184,28 @@ def _select_default_model_config(
                 if 0 <= origin_index < len(configured_entries):
                     entry = configured_entries[origin_index]
                     if _entry_model_name(entry) == bare_name:
-                        return entry
+                        if is_placeholder_model_entry(entry.get("model_client_config") or {}):
+                            logger.warning(
+                                "[TeamConfigLoader] requested model %r resolves to a template placeholder; "
+                                "using configured fallback",
+                                requested,
+                            )
+                        else:
+                            return entry
         # When the caller (chat page) provides a requested model name, prefer
         # the entry whose ``model_client_config.model_name`` matches it so
         # team members without an explicit ``modes.team.agents.*.model`` fall
         # back to the page-selected model instead of the first list item.
         for item in configured_entries:
             if _entry_model_name(item) == requested or (agentos and item.get("alias") == requested):
-                return item
+                if is_placeholder_model_entry(item.get("model_client_config") or {}):
+                    logger.warning(
+                        "[TeamConfigLoader] requested model %r resolves to a template placeholder; "
+                        "using configured fallback",
+                        requested,
+                    )
+                else:
+                    return item
 
         # Login-granted models are request-scoped and never written into
         # ``models.defaults``. Match the forwarded entry by name so a
@@ -196,10 +226,20 @@ def _select_default_model_config(
         if agentos:
             logger.warning("[TeamConfigLoader] requested model %r not found; using configured fallback", requested)
 
-    if agentos:
-        # agent_os 5cc86e59b: an unresolved placeholder must not shadow a usable
-        # backup. Skip it only for fallback, without shifting origin_index.
-        return next((entry for entry in configured_entries if _entry_model_name(entry)), {})
+    usable = []
+    for entry in configured_entries:
+        if not _entry_model_name(entry):
+            continue
+        if is_placeholder_model_entry(entry.get("model_client_config") or {}):
+            continue
+        usable.append(entry)
+    selected = _prefer_explicit_default(usable)
+    if selected is not None:
+        return selected
+    if usable:
+        # An unresolved or placeholder default must not shadow a usable model.
+        # Skip it only for fallback, without shifting origin_index.
+        return usable[0]
     if configured_entries:
         return configured_entries[0]
 
@@ -271,25 +311,80 @@ def _model_entry_fingerprint(entry: dict[str, Any]) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
-def _merge_effective_model_entries(
-    configured_entries: list[dict[str, Any]],
+def _entry_model_config(entry: dict[str, Any]) -> dict[str, Any]:
+    """Return the entry's ``model_client_config``, or an empty mapping."""
+    model_client_config = entry.get("model_client_config") or {}
+    return model_client_config if isinstance(model_client_config, dict) else {}
+
+
+def _keep_selected_entry(
     selected_entry: dict[str, Any] | None,
-) -> list[dict[str, Any]]:
-    """Merge executable entries without collapsing distinct endpoints."""
-    candidates = list(configured_entries)
-    if selected_entry:
-        candidates.append(selected_entry)
-    merged: list[dict[str, Any]] = []
-    fingerprints: set[str] = set()
-    for entry in candidates:
-        model_client_config = entry.get("model_client_config") or {}
-        if not isinstance(model_client_config, dict) or not model_client_config.get("model_name"):
+    merged: list[dict[str, Any]],
+    fingerprints: set[str],
+    configured_fingerprints: set[str],
+) -> None:
+    """Prepend only request-scoped selections that are not configured entries."""
+    if not selected_entry:
+        return
+    model_client_config = _entry_model_config(selected_entry)
+    if not model_client_config.get("model_name"):
+        return
+    if is_placeholder_model_entry(model_client_config):
+        # A selected placeholder must not drive a resumed team; configured
+        # entries (or the placeholder-only fallback) decide the pool instead.
+        return
+    fingerprint = _model_entry_fingerprint(selected_entry)
+    if fingerprint in configured_fingerprints:
+        # Keep the configured position: agentos ``name#index`` resolves by
+        # position, so reordering would silently retarget member models.
+        return
+    fingerprints.add(fingerprint)
+    merged.append(deepcopy(selected_entry))
+
+
+def _split_configured_entries(
+    configured_entries: list[dict[str, Any]],
+    fingerprints: set[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split configured entries into usable and placeholder buckets."""
+    usable: list[dict[str, Any]] = []
+    placeholders: list[dict[str, Any]] = []
+    for entry in configured_entries:
+        model_client_config = _entry_model_config(entry)
+        if not model_client_config.get("model_name"):
             continue
         fingerprint = _model_entry_fingerprint(entry)
         if fingerprint in fingerprints:
             continue
         fingerprints.add(fingerprint)
-        merged.append(deepcopy(entry))
+        bucket = placeholders if is_placeholder_model_entry(model_client_config) else usable
+        bucket.append(deepcopy(entry))
+    return usable, placeholders
+
+
+def _merge_effective_model_entries(
+    configured_entries: list[dict[str, Any]],
+    selected_entry: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Merge executable entries without collapsing distinct endpoints.
+
+    ``.env`` placeholder entries are dropped from the configured entries
+    whenever a usable model exists. A page-selected entry that is already
+    configured keeps its position (agentos ``name#index`` resolves by
+    position); only request-scoped selections (login/Zen) are prepended.
+    """
+    merged: list[dict[str, Any]] = []
+    fingerprints: set[str] = set()
+    configured_fingerprints = {
+        _model_entry_fingerprint(entry)
+        for entry in configured_entries
+        if _entry_model_config(entry).get("model_name")
+    }
+    _keep_selected_entry(selected_entry, merged, fingerprints, configured_fingerprints)
+    usable, _ = _split_configured_entries(configured_entries, fingerprints)
+    merged.extend(usable)
+    # Placeholders never enter the executable pool: an empty pool is reported
+    # as "model not configured" instead of sending requests to example.com.
     return merged
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Callable
 
@@ -14,6 +15,7 @@ from agent_gateway.common.model_selection import (
 )
 
 from jiuwenswarm.common.model_catalog import ModelCatalog
+from jiuwenswarm.common.model_config_validation import is_placeholder_model_entry
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.common.model_errors import (
     MODEL_GROUP_INVALID,
@@ -22,6 +24,8 @@ from jiuwenswarm.common.model_errors import (
     MODEL_SELECTION_NOT_FOUND,
     ModelSelectionError,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -36,44 +40,100 @@ class ModelSelectionResolver:
     def __init__(self, catalog: ModelCatalog | None = None) -> None:
         self.catalog = catalog or ModelCatalog()
 
+    def _placeholder_model_id(self, model_id: str) -> bool:
+        """Whether ``model_id`` names a ``.env`` template placeholder entry."""
+        try:
+            entry = self.catalog.get_model(model_id)["entry"]
+        except ModelSelectionError:
+            return False
+        model_client_config = entry.get("model_client_config") or {}
+        return is_placeholder_model_entry(model_client_config)
+
+    def _usable_public_models(self) -> list[dict]:
+        """Configured models without template placeholders (or all as fallback)."""
+        models = self.catalog.list_public_models()
+        usable = [m for m in models if not self._placeholder_model_id(m["model_id"])]
+        return usable or models
+
+    def _default_selection(self) -> ModelSelection:
+        models = self._usable_public_models()
+        explicit = [m for m in models if m.get("is_explicit_default")]
+        defaults = [m for m in models if m["is_default"]]
+        if explicit:
+            chosen = explicit[0]
+        elif defaults:
+            chosen = defaults[0]
+        else:
+            chosen = models[0]
+        return ModelSelection(type="model", id=chosen["model_id"])
+
     def restore(self, selection: ModelSelection) -> ModelSelection:
-        """Restore a saved reference, falling back only if it was deleted."""
-        if self.catalog.has_selection(selection):
+        """Restore a saved reference, falling back if deleted or a placeholder."""
+        if self.catalog.has_selection(selection) and not self._placeholder_model_id(selection.id):
             return selection
+        logger.warning(
+            "saved model selection %s:%s was deleted or is a template placeholder; "
+            "falling back to the current default",
+            selection.type,
+            selection.id,
+        )
         return self.choose(None, ModelExecutionContext())
+
+    def _reject_placeholder_selection(self, selection: ModelSelection) -> None:
+        """Refuse an explicit selection that names a template placeholder."""
+        if selection.type == "model" and self._placeholder_model_id(selection.id):
+            raise ModelSelectionError(
+                MODEL_SELECTION_DISABLED,
+                f"model selection {selection.id!r} is a template placeholder",
+            )
+
+    def _legacy_model(self, name: str) -> ModelSelection | None:
+        """Resolve an unambiguous legacy name, ignoring placeholders."""
+        matches = []
+        for model in self.catalog.list_public_models():
+            if model["model_name"] != name and model["alias"] != name:
+                continue
+            if self._placeholder_model_id(model["model_id"]):
+                continue
+            matches.append(model)
+        if len(matches) != 1:
+            return None
+        return ModelSelection(type="model", id=matches[0]["model_id"])
+
+    def _default_group_selection(self) -> ModelSelection | None:
+        """The enabled default model group, if one is configured."""
+        for group in self.catalog.snapshot["groups"]:
+            if isinstance(group, dict) and group.get("enabled", True) and group.get("is_default"):
+                return ModelSelection(type="model_group", id=group["model_group_id"])
+        return None
 
     def choose(self, explicit: ModelSelection | None, context: ModelExecutionContext) -> ModelSelection:
         if explicit is not None:
+            self._reject_placeholder_selection(explicit)
             return explicit
         if context.session_selection is not None:
             return context.session_selection
         if context.spec_selection is not None:
             return context.spec_selection
-        for group in self.catalog.snapshot["groups"]:
-            if (
-                isinstance(group, dict)
-                and group.get("enabled", True)
-                and group.get("is_default")
-            ):
-                return ModelSelection(type="model_group", id=group["model_group_id"])
+        group = self._default_group_selection()
+        if group is not None:
+            return group
         if context.legacy_model_name:
-            matches = []
-            for model in self.catalog.list_public_models():
-                if (
-                    model["model_name"] == context.legacy_model_name
-                    or model["alias"] == context.legacy_model_name
-                ):
-                    matches.append(model)
-            if len(matches) == 1:
-                return ModelSelection(type="model", id=matches[0]["model_id"])
-        models = [m for m in self.catalog.list_public_models() if m["is_default"]]
-        if not models:
-            models = self.catalog.list_public_models()
+            matched = self._legacy_model(context.legacy_model_name)
+            if matched is not None:
+                return matched
+        models = self._usable_public_models()
         if not models:
             raise ModelSelectionError(MODEL_GROUP_INVALID, "no model is configured")
-        return ModelSelection(type="model", id=models[0]["model_id"])
+        return self._default_selection()
 
-    def _model(self, model_id: str, context: ModelExecutionContext) -> ResolvedModel:
+    def _model(
+        self,
+        model_id: str,
+        context: ModelExecutionContext,
+        *,
+        allow_placeholder: bool = False,
+    ) -> ResolvedModel:
         hit = self.catalog.get_model(model_id)
         if context.can_access and not context.can_access("model", model_id):
             raise ModelSelectionError(MODEL_SELECTION_FORBIDDEN, f"model {model_id!r} is forbidden")
@@ -82,6 +142,11 @@ class ModelSelectionResolver:
         model_detail = entry.get("model_detail") or {}
         if not mcc.get("model_name"):
             raise ModelSelectionError(MODEL_SELECTION_DISABLED, f"model {model_id!r} is disabled")
+        if is_placeholder_model_entry(mcc) and not allow_placeholder:
+            raise ModelSelectionError(
+                MODEL_SELECTION_DISABLED,
+                f"model {model_id!r} is a template placeholder",
+            )
         excluded_client_options = {"model_name", "client_provider", "api_base", "api_key"}
         options = {key: value for key, value in mcc.items() if key not in excluded_client_options}
         defaults = build_reasoning_model_request_kwargs(
@@ -137,7 +202,11 @@ class ModelSelectionResolver:
         routes = [
             ResolvedRoute(
                 route_id=route["route_id"],
-                model=self._model(route["model_id"], context),
+                model=self._model(
+                    route["model_id"],
+                    context,
+                    allow_placeholder=not route.get("enabled", True),
+                ),
                 enabled=route.get("enabled", True),
                 request_overrides=route.get("request_overrides") or {},
                 tpm=route.get("tpm"),

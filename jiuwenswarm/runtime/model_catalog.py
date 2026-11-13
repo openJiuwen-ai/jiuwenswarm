@@ -8,6 +8,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
+from jiuwenswarm.common.model_config_validation import is_placeholder_model_entry
+
 _RESERVED_MULTIMODAL_NAMES = frozenset({"video", "audio", "vision"})
 
 
@@ -38,6 +40,8 @@ class RuntimeModelDescriptor:
     reasoning_level: str = ""
     is_default: bool = False
     is_agentos: bool = False
+    is_placeholder: bool = False
+    is_explicit_default: bool = False
     is_current: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -50,6 +54,8 @@ class RuntimeModelDescriptor:
             "reasoning_level": self.reasoning_level,
             "is_default": self.is_default,
             "is_agentos": self.is_agentos,
+            "is_placeholder": self.is_placeholder,
+            "is_explicit_default": self.is_explicit_default,
             "is_current": self.is_current,
         }
 
@@ -119,6 +125,8 @@ def _descriptor(
         reasoning_level=_reasoning_level(model_config.get("reasoning_level")),
         is_default=bool(entry.get("is_default")) and not is_agentos,
         is_agentos=is_agentos,
+        is_placeholder=is_placeholder_model_entry(dict(client_config)),
+        is_explicit_default=bool(entry.get("_explicit_default")),
     )
 
 
@@ -142,6 +150,20 @@ def _resolve_from_catalog(
     return aliases[0] if len(aliases) == 1 else None
 
 
+def _current_descriptor(
+    models: Sequence[RuntimeModelDescriptor], requested: str
+) -> RuntimeModelDescriptor:
+    """Pick the requested entry, the explicit default, else the first usable one."""
+    current = _resolve_from_catalog(models, requested) if requested else None
+    if current is not None:
+        return current
+    usable = [item for item in models if not item.is_placeholder]
+    explicit = [item for item in usable if item.is_explicit_default]
+    if explicit:
+        return explicit[0]
+    return next((item for item in usable if item.is_default), (usable or models)[0])
+
+
 def build_model_catalog(
     entries: Iterable[Mapping[str, Any] | object],
     *,
@@ -163,10 +185,7 @@ def build_model_catalog(
     if not models:
         return ModelCatalogResult(models=())
 
-    requested = _safe_text(current_selection)
-    current = _resolve_from_catalog(models, requested) if requested else None
-    if current is None:
-        current = next((item for item in models if item.is_default), models[0])
+    current = _current_descriptor(models, _safe_text(current_selection))
     marked = tuple(
         replace(item, is_current=item.selection_key == current.selection_key)
         for item in models
