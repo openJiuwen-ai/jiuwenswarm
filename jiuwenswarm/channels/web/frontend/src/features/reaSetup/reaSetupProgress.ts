@@ -1,7 +1,7 @@
 import type { ReaSetupJob } from './types';
 
-export const ACTIVE_INSTALL_JOB_STORAGE_KEY = 'reaSetup.activeJob.v1';
-export const REMAINING_DISPLAY_INTERVAL_MS = 15000;
+export const ACTIVE_INSTALL_JOB_STORAGE_KEY = 'reaSetup.activeJob.v2';
+export const REMAINING_DISPLAY_INTERVAL_MS = 30000;
 
 type JobStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
@@ -70,6 +70,28 @@ export function estimateRemainingSeconds(
   return previousSeconds != null ? Math.max(1, Math.round(previousSeconds)) : null;
 }
 
+export function estimatePaceRemainingSeconds(
+  job: ReaSetupJob | null,
+  percent: number,
+  elapsedSeconds: number,
+): number | null {
+  if (!job || !isActiveStatus(job.status)) return null;
+  const boundedPercent = Math.max(0, Math.min(100, percent));
+  const estimatedMinimum = positiveNumber(job.estimated_seconds_min);
+  if (elapsedSeconds < 10 || boundedPercent < 3) {
+    return estimatedMinimum == null ? null : Math.max(1, Math.round(estimatedMinimum));
+  }
+
+  const pace = elapsedSeconds * (100 - boundedPercent) / Math.max(3, boundedPercent);
+  const estimatedMaximum = positiveNumber(job.estimated_seconds_max);
+  const minimumRemaining = Math.min(15, Math.max(5, pace * 0.15));
+  const maximumRemaining = Math.max(
+    minimumRemaining,
+    estimatedMaximum ?? (estimatedMinimum == null ? pace * 2 : estimatedMinimum * 1.5),
+  );
+  return Math.max(1, Math.round(Math.max(minimumRemaining, Math.min(pace, maximumRemaining))));
+}
+
 export function shouldDeferEnhancedDetection(
   job: ReaSetupJob | null,
   capabilityCardCount: number,
@@ -117,6 +139,14 @@ export function selectDisplayedRemainingSeconds(
     const relativeChange =
       Math.abs(candidateSeconds - previous.seconds) / Math.max(1, previous.seconds);
     if (elapsed < minimumIntervalMs && relativeChange < 0.25) {
+      return previous;
+    }
+    if (
+      previous.seconds >= 60
+      && candidateSeconds >= 60
+      && Math.ceil(previous.seconds / 60) === Math.ceil(candidateSeconds / 60)
+      && relativeChange < 0.35
+    ) {
       return previous;
     }
   }

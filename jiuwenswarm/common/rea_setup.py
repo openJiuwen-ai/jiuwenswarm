@@ -4416,6 +4416,10 @@ def install_enhanced_components(
         component_id: _manifest_components()[component_id]
         for component_id in auto_ids
     }
+    component_labels = {
+        str(item.get("id") or ""): str(item.get("label") or item.get("id") or "")
+        for item in plan
+    }
     while pending_auto:
         _raise_if_cancelled(cancel_check)
         ready_ids = [
@@ -4429,17 +4433,20 @@ def install_enhanced_components(
         if not ready_ids:
             for component_id, component in pending_auto.items():
                 reason = "缺少安装前置条件"
-                managed_results.append(
-                    {
-                        "id": component_id,
-                        "label": str(component.get("display_name") or component_id),
-                        "ok": False,
-                        "state": "needs_action",
-                        "verified": False,
-                        "error": reason,
-                        "reason": reason,
-                    }
-                )
+                result = {
+                    "id": component_id,
+                    "label": str(
+                        component_labels.get(component_id)
+                        or component.get("display_name")
+                        or component_id
+                    ),
+                    "ok": False,
+                    "state": "needs_action",
+                    "verified": False,
+                    "error": reason,
+                    "reason": reason,
+                }
+                managed_results.append(result)
                 _report_progress(
                     parallel_progress if progress_callback is not None else None,
                     f"component_{component_id}_skipped",
@@ -4449,6 +4456,7 @@ def install_enhanced_components(
                         "component_id": component_id,
                         "phase": "skipped",
                         "reason": reason,
+                        "component_result": result,
                     },
                 )
             pending_auto.clear()
@@ -4479,13 +4487,29 @@ def install_enhanced_components(
                 except InstallCancelled:
                     raise
                 except Exception as exc:  # noqa: BLE001
-                    results_by_id[component_id] = {
+                    result = {
                         "id": component_id,
+                        "label": component_labels.get(component_id, component_id),
                         "ok": False,
                         "state": "failed",
                         "path": None,
+                        "verified": False,
                         "error": str(exc),
                     }
+                    results_by_id[component_id] = result
+                    _report_progress(
+                        parallel_progress if progress_callback is not None else None,
+                        f"component_{component_id}_failed",
+                        92,
+                        f"{result['label']}：{exc}",
+                        {
+                            "component_id": component_id,
+                            "component_label": result["label"],
+                            "phase": "failed",
+                            "error": str(exc),
+                            "component_result": result,
+                        },
+                    )
                     continue
                 component_env = {
                     str(key): str(value)
@@ -4501,20 +4525,89 @@ def install_enhanced_components(
                     if isinstance(item, dict)
                 ]
                 if component_results:
-                    results_by_id[component_id] = component_results[0]
+                    managed_result = dict(component_results[0])
                 else:
-                    results_by_id[component_id] = {
+                    managed_result = {
                         "id": component_id,
                         "ok": False,
                         "state": "failed",
                         "path": None,
                         "error": "组件安装器没有返回结果",
                     }
+                managed_state = str(managed_result.get("state") or "")
+                label = str(
+                    component_labels.get(component_id)
+                    or managed_result.get("label")
+                    or component_id
+                )
+                if (
+                    managed_state in {"failed", "needs_action", "unsupported"}
+                    or not managed_result.get("ok")
+                ):
+                    result = {
+                        **managed_result,
+                        "id": component_id,
+                        "label": label,
+                        "verified": False,
+                    }
+                else:
+                    verification = _verify_component(
+                        component_id,
+                        runtime,
+                        record_env | managed_env,
+                    )
+                    _raise_if_cancelled(cancel_check)
+                    verified = bool(verification.get("ok"))
+                    result = {
+                        **managed_result,
+                        "id": component_id,
+                        "label": label,
+                        "state": "installed"
+                        if verified and managed_state != "reused"
+                        else "reused"
+                        if verified
+                        else "failed",
+                        "ok": verified,
+                        "verified": verified,
+                        "verification": verification,
+                        "version": managed_result.get("version")
+                        or verification.get("version"),
+                        "error": None if verified else verification.get("detail"),
+                        "reason": None if verified else verification.get("detail"),
+                    }
+                results_by_id[component_id] = result
+                result_state = str(result.get("state") or "")
+                _report_progress(
+                    parallel_progress if progress_callback is not None else None,
+                    f"component_{component_id}_verified"
+                    if result_state in {"installed", "reused"}
+                    else f"component_{component_id}_failed",
+                    90 if result_state in {"installed", "reused"} else 92,
+                    f"{label}："
+                    + (
+                        "REA 原生探测验证通过"
+                        if result_state in {"installed", "reused"}
+                        else str(result.get("reason") or result.get("error") or "安装未完成")
+                    ),
+                    {
+                        "component_id": component_id,
+                        "component_label": label,
+                        "phase": (
+                            "verified"
+                            if result_state in {"installed", "reused"}
+                            else "failed"
+                            if result_state == "failed"
+                            else "skipped"
+                        ),
+                        "verified": bool(result.get("verified")),
+                        "detail": result.get("reason") or result.get("error"),
+                        "component_result": result,
+                    },
+                )
         managed_results.extend(results_by_id.values())
         for component_id in ready_ids:
             pending_auto.pop(component_id, None)
         _raise_if_cancelled(cancel_check)
-    effective_env = record_env | managed_env
     results: list[dict[str, Any]] = []
     result_by_id = {
         str(item.get("id")): dict(item)
@@ -4524,7 +4617,6 @@ def install_enhanced_components(
 
     for item in plan:
         component_id = str(item["id"])
-        label = str(item["label"])
         planned_state = str(item["state"])
         managed_result = result_by_id.get(component_id)
         if planned_state != "planned":
@@ -4549,48 +4641,11 @@ def install_enhanced_components(
                 }
             )
             continue
-        state = str(managed_result.get("state") or "")
-        if state in {"failed", "needs_action", "unsupported"} or not managed_result.get("ok"):
-            results.append(
-                {
-                    **item,
-                    **managed_result,
-                    "verified": False,
-                }
-            )
-            continue
-        verification = _verify_component(component_id, runtime, effective_env)
-        _raise_if_cancelled(cancel_check)
-        verified = bool(verification.get("ok"))
         results.append(
             {
                 **item,
                 **managed_result,
-                "state": "installed"
-                if verified and state != "reused"
-                else "reused"
-                if verified
-                else "failed",
-                "ok": verified,
-                "verified": verified,
-                "verification": verification,
-                "version": managed_result.get("version") or verification.get("version"),
-                "error": None if verified else verification.get("detail"),
-                "reason": None if verified else verification.get("detail"),
             }
-        )
-        _report_progress(
-            parallel_progress if progress_callback is not None else None,
-            f"component_{component_id}_verified",
-            90 if verified else 92,
-            f"{label}：{'REA 原生探测验证通过' if verified else 'REA 原生探测验证失败'}",
-            {
-                "component_id": component_id,
-                "component_label": label,
-                "phase": "verified" if verified else "verification_failed",
-                "verified": verified,
-                "detail": verification.get("detail"),
-            },
         )
 
     installed_env = managed_env
@@ -4624,8 +4679,12 @@ def install_enhanced_components(
     }
 
 
-def scan_rea_setup(workspace: str | Path | None = None) -> dict[str, Any]:
-    """Return the current base and enhanced REA capability snapshot."""
+def scan_rea_setup(
+    workspace: str | Path | None = None,
+    *,
+    include_enhanced: bool = True,
+) -> dict[str, Any]:
+    """Return the current base and optionally enhanced REA capability snapshot."""
 
     record = rea_mcp_record(workspace)
     preferred_node = str(record.get("command") or "") if record else None
@@ -4671,8 +4730,12 @@ def scan_rea_setup(workspace: str | Path | None = None) -> dict[str, Any]:
         "platform_id": platform_id,
         "rea_version": REA_PACKAGE_VERSION,
         "base": base,
-        "enhanced": _scan_enhancements(runtime, _record_env(record), workspace) if ready else [],
-        "enhanced_plan": enhanced_component_plan() if ready else [],
+        "enhanced": (
+            _scan_enhancements(runtime, _record_env(record), workspace)
+            if ready and include_enhanced
+            else []
+        ),
+        "enhanced_plan": enhanced_component_plan() if ready and include_enhanced else [],
         "enhanced_blocked_by_base": not ready,
         "rea_skill": rea_skill,
         "generated_at": time.time(),

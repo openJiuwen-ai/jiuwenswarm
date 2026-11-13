@@ -307,6 +307,13 @@ def _update_progress(
         if job is None:
             return
         _transition_steps(job, stage, message, details)
+        component_result = (details or {}).get("component_result")
+        if isinstance(component_result, dict):
+            component_id = str(component_result.get("id") or "").strip()
+            if component_id:
+                component_results = job.setdefault("component_results", {})
+                if isinstance(component_results, dict):
+                    component_results[component_id] = dict(component_result)
         next_percent = max(
             float(job.get("percent") or 0),
             max(1.0, min(99.0, float(percent))),
@@ -388,6 +395,7 @@ def _create_job(
             "steps": steps,
             "current_step_id": None,
             "detail": {},
+            "component_results": {},
             "plan": plan or [],
             "estimated_seconds_min": minimum,
             "estimated_seconds_max": maximum,
@@ -660,12 +668,27 @@ def register_rea_setup_handlers(channel: Any) -> None:
     """Register status, base install, enhanced install, and assisted setup RPCs."""
 
     async def _rea_status_get(ws, req_id, params, session_id, user_id=None):
-        del params, session_id, user_id
+        del session_id, user_id
         try:
-            payload = await asyncio.to_thread(scan_rea_setup)
+            scope = str((params or {}).get("scope") or "all").strip().lower()
+            if scope not in {"all", "base", "enhanced"}:
+                scope = "all"
+            include_enhanced = scope != "base"
+            payload = await asyncio.to_thread(
+                scan_rea_setup,
+                include_enhanced=include_enhanced,
+            )
             if payload.get("ready"):
                 verification = await _verify_rea_mcp()
-                payload = await _attach_capability_cards(payload, verification)
+                if include_enhanced:
+                    payload = await _attach_capability_cards(payload, verification)
+                else:
+                    payload["capability_cards"] = []
+                    payload["rea_inventory_diagnostics"] = {
+                        "mcp_tool_count": verification["tool_count"],
+                        "mcp_verified": verification["ok"],
+                        "error": verification.get("error"),
+                    }
             else:
                 payload["capability_cards"] = []
                 payload["rea_inventory_diagnostics"] = {
