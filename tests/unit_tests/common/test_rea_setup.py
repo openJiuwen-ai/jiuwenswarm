@@ -10,6 +10,7 @@ import threading
 import time
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -36,6 +37,37 @@ def test_supports_rea_node_uses_published_range() -> None:
     assert not rea_setup.supports_rea_node("26.12.0")
     assert not rea_setup.supports_rea_node("23.9.0")
     assert not rea_setup.supports_rea_node("25.0.0")
+
+
+def test_run_preserves_windows_process_options(monkeypatch, mocker) -> None:
+    monkeypatch.setattr(rea_setup, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    run = mocker.patch.object(subprocess, "run")
+    argv = ["node.exe", "--version"]
+    env = {"PATH": "C:/node"}
+
+    rea_setup._run(argv, env=env, timeout=10)
+
+    run.assert_called_once_with(
+        argv,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=10,
+        env=env,
+        creationflags=0x08000000,
+    )
+
+
+def test_ghidra_skips_native_build_on_windows(tmp_path: Path, monkeypatch, mocker) -> None:
+    monkeypatch.setattr(rea_setup, "_platform_id", lambda: "windows-x64")
+    run = mocker.patch.object(subprocess, "run")
+
+    rea_setup._build_ghidra_macos_natives(tmp_path, {})
+
+    run.assert_not_called()
 
 
 def test_platform_id_uses_manifest_macos_names(monkeypatch) -> None:
@@ -382,7 +414,7 @@ def test_ghidra_builds_macos_native_decompiler_through_gradle(
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr(rea_setup, "_platform_id", lambda: "macos-arm64")
-    monkeypatch.setattr(rea_setup, "_run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
 
     rea_setup._build_ghidra_macos_natives(
         ghidra,
