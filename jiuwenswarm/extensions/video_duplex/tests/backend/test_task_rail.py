@@ -10,7 +10,9 @@ from jiuwenswarm.server.runtime.video_task.rail import (
     VoiceAgentTaskRail,
 )
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep
-from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import routed_task_fixture
+from jiuwenswarm.extensions.video_duplex.tests.backend import test_task_bridge
+
+routed_task_fixture = test_task_bridge.routed_task_fixture
 
 
 class TaskRailHost(interface_deep.JiuWenSwarmDeepAdapter):
