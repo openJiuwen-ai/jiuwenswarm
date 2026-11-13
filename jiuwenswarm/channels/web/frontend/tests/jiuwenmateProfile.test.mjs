@@ -14,6 +14,7 @@ globalThis.document = browser.window.document;
 const { createRoot } = await import('react-dom/client');
 
 const { ColleagueProfilePage } = await import('../node_modules/.cache/jiuwenmate-profile/pages/ColleagueProfilePage.js');
+const { OfficeDashboardPage } = await import('../node_modules/.cache/jiuwenmate-profile/pages/OfficeDashboardPage.js');
 const { ScheduleBoard } = await import('../node_modules/.cache/jiuwenmate-profile/schedules/ScheduleBoard.js');
 const { ColleagueDeleteDialog } = await import('../node_modules/.cache/jiuwenmate-profile/components/ColleagueDeleteDialog.js');
 const { ImAuthorizeDialog } = await import('../node_modules/.cache/jiuwenmate-profile/components/ImAuthorizeDialog.js');
@@ -203,12 +204,50 @@ test('the persona save button stays mounted after saving and permits retry after
     assert.deepEqual(saved, [{ persona: '更新后的人设' }]);
     assert.equal(view.container.querySelector('.jiuwenmate-profile__save-button'), button);
     assert.equal(button.disabled, true);
+    assert.equal(button.previousElementSibling?.dataset.testid, 'jiuwenmate-profile-saved-notice');
     fail = true;
     await changePersona('再次修改的人设');
     await act(async () => button.click());
+    assert.equal(view.container.querySelector('[data-testid="jiuwenmate-profile-saved-notice"]'), null);
     assert.equal(button.disabled, false);
     assert.match(view.find('settings-error').textContent, /Persona save failed/);
     assert.equal(view.container.querySelector('.jiuwenmate-profile__persona-editor textarea').value, '再次修改的人设');
+  } finally {
+    await view.close();
+  }
+});
+
+test('starter prompts are edited on the persona page with a limit of three and duplicate hints', async () => {
+  const saved = [];
+  const view = await mountProfile({
+    colleague: { ...colleague, capabilities: { ...colleague.capabilities, starterPrompts: ['写周报'] } },
+    initialSection: 'persona',
+    onSaveSettings: async (edit) => { saved.push(edit); },
+  });
+  const inputs = () => [...view.container.querySelectorAll('[data-testid="jiuwenmate-starter-prompt-input"]')];
+  const type = async (input, value) => {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, value);
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+  };
+  const add = () => view.container.querySelector('[data-testid="jiuwenmate-starter-prompts-add"]');
+  const save = () => view.container.querySelector('.jiuwenmate-profile__save-button');
+  try {
+    assert.deepEqual(inputs().map((input) => input.value), ['写周报']);
+    await act(async () => add().click());
+    await type(inputs()[1], ' 写周报 ');
+    assert.ok(view.container.querySelector('[data-testid="jiuwenmate-starter-prompt-duplicate"]'));
+    assert.equal(save().disabled, true, 'A duplicate that collapses to the saved list is not a change');
+
+    await type(inputs()[1], '写月报');
+    assert.equal(view.container.querySelector('[data-testid="jiuwenmate-starter-prompt-duplicate"]'), null);
+    await act(async () => add().click());
+    await type(inputs()[2], '总结会议');
+    assert.equal(add().disabled, true);
+    assert.equal(save().disabled, false);
+    await act(async () => save().click());
+    assert.deepEqual(saved.at(-1)?.starterPrompts, ['写周报', '写月报', '总结会议']);
   } finally {
     await view.close();
   }
@@ -233,6 +272,16 @@ test('the overview keeps DingTalk setup until DingTalk is also configured', () =
   assert.doesNotMatch(channels, /data-testid="jiuwenmate-profile-im-revoke"[^>]*data-variant="feishu"/);
   assert.match(channels, /data-testid="jiuwenmate-profile-im-revoke"[^>]*data-variant="welink"/);
   assert.match(channels, />取消授权</);
+
+  const withNotice = renderProfile({
+    initialSection: 'channels',
+    colleague: authorized,
+    imNotice: { platform: 'feishu', text: '解除连接成功' },
+  });
+  assert.match(
+    withNotice,
+    /data-testid="jiuwenmate-profile-im-notice"[^>]*data-variant="feishu"[^>]*>解除连接成功<\/small>\s*<button[^>]*data-testid="jiuwenmate-profile-im-authorize"/,
+  );
 
   const pendingDingTalk = renderProfile({ colleague: authorized });
   assert.match(pendingDingTalk, /data-testid="jiuwenmate-profile-quick-im"/);
@@ -1247,6 +1296,7 @@ test('schedule board keeps the executor avatar color selected for the colleague'
       onUpdate: noop,
       onSetEnabled: noop,
       onDelete: noop,
+      onRun: noop,
       onLoadHistory: async () => ({ plan: null, runs: [] }),
     }),
   );
@@ -1269,6 +1319,7 @@ test('schedule board keeps the default executor portrait unfiltered', () => {
       onUpdate: noop,
       onSetEnabled: noop,
       onDelete: noop,
+      onRun: noop,
       onLoadHistory: async () => ({ plan: null, runs: [] }),
     }),
   );
@@ -1321,6 +1372,8 @@ test('the pencil edits the current page and stays there', () => {
   assert.match(overview, /aria-label="编辑人设"/);
   assert.match(overview, /data-testid="jiuwenmate-profile-name-input"/);
   assert.doesNotMatch(overview, /data-testid="jiuwenmate-profile-detail"/);
+  assert.doesNotMatch(overview, /class="jiuwenmate-profile__description"/);
+  assert.match(renderProfile({ initialSection: 'overview' }), /class="jiuwenmate-profile__description"/);
 
   const model = renderProfile({
     initialSection: 'model',
@@ -1618,7 +1671,6 @@ test('WeLink mail reports load and disconnect errors without hiding the connecte
   } finally { await connected.close(); }
 });
 
-
 test('clicking the selected reply mode does not save it again', async () => {
   const edits = [];
   const view = await mountProfile({ initialSection: 'channels', onSaveSettings: async (edit) => edits.push(edit) });
@@ -1673,3 +1725,298 @@ test('removing an employee model drops the stale option and requires a valid rep
     assert.equal(view.container.querySelector('.jiuwenmate-profile__save-button'), null);
   } finally { await view.close(); }
 });
+
+const dashboardPlan = {
+  id: 'plan-run',
+  agentId: 'agent-1',
+  name: '晨报',
+  prompt: '汇总昨日事项',
+  cronExpr: '0 9 * * *',
+  timezone: 'Asia/Shanghai',
+  enabled: true,
+  nextFireAt: '2026-10-18T01:00:00+00:00',
+  scheduleKind: 'cron',
+  intervalSeconds: null,
+  runAt: null,
+  startsAt: null,
+  endsAt: null,
+  conversationId: 'schedule:plan-run',
+  runCount: 0,
+  lastStatus: 'completed',
+};
+
+const dashboardWeeklyPlan = {
+  ...dashboardPlan,
+  id: 'plan-weekly',
+  name: '周报',
+  conversationId: 'schedule:plan-weekly',
+};
+
+const dashboardProps = {
+  colleagues: [{
+    id: 'agent-1',
+    name: '小九',
+    description: '通用办公助理',
+    tags: [],
+    category: 'custom',
+    imConfigured: true,
+    disabled: false,
+  }],
+  schedules: [dashboardPlan, dashboardWeeklyPlan],
+  savingSchedule: false,
+  activity: null,
+  activityStatus: 'ready',
+  onCreate: noop,
+  onChat: noop,
+  onManage: noop,
+  onToggleDisabled: noop,
+  onDelete: noop,
+  onOpenTrace: noop,
+  onCreateSchedule: noop,
+  onUpdateSchedule: noop,
+  onSetScheduleEnabled: noop,
+  onDeleteSchedule: noop,
+  onRunSchedule: noop,
+  onLoadScheduleHistory: async () => ({ plan: dashboardPlan, runs: [] }),
+};
+
+async function mountDashboard(extra = {}) {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
+  const previous = {
+    window: globalThis.window,
+    document: globalThis.document,
+    actEnvironment: globalThis.IS_REACT_ACT_ENVIRONMENT,
+  };
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  const container = dom.window.document.getElementById('root');
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(React.createElement(OfficeDashboardPage, { ...dashboardProps, ...extra }));
+  });
+  return {
+    container,
+    find(selector) {
+      return container.querySelector(selector);
+    },
+    async click(element) {
+      assert.ok(element, 'Missing element to click');
+      await act(async () => { element.click(); });
+    },
+    async close() {
+      await act(async () => root.unmount());
+      dom.window.close();
+      if (previous.window === undefined) delete globalThis.window;
+      else globalThis.window = previous.window;
+      if (previous.document === undefined) delete globalThis.document;
+      else globalThis.document = previous.document;
+      if (previous.actEnvironment === undefined) delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+      else globalThis.IS_REACT_ACT_ENVIRONMENT = previous.actEnvironment;
+    },
+  };
+}
+
+for (const [language, message] of [
+  ['zh', '请选择执行此任务的员工'],
+  ['en', 'Select an AI employee to run this task.'],
+]) {
+  test(`a missing schedule executor shows a focused field error and clears after selection in ${language}`, async () => {
+    await i18n.changeLanguage(language);
+    const created = [];
+    const view = await mountDashboard({ onCreateSchedule: (...args) => { created.push(args); } });
+    try {
+      await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+      await view.click(view.find('.jiuwenmate-schedule-board .jiuwenmate-dark-button'));
+      const executor = view.find('[data-testid="jiuwenmate-schedule-executor"]');
+      assert.equal(executor.getAttribute('aria-invalid'), null);
+      await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+      assert.deepEqual(created, []);
+      const error = view.find('[data-testid="jiuwenmate-schedule-executor-error"]');
+      assert.ok(error, 'The missing executor error must be attached to its field');
+      assert.equal(error.textContent, message);
+      assert.equal(error.getAttribute('role'), 'alert');
+      assert.equal(error.parentElement, executor.parentElement);
+      assert.equal(executor.getAttribute('aria-invalid'), 'true');
+      assert.equal(executor.getAttribute('aria-describedby'), error.id);
+      assert.equal(executor.ownerDocument.activeElement, executor);
+      assert.equal(view.container.querySelectorAll('[role="alert"]').length, 1);
+      await act(async () => {
+        executor.value = 'agent-1';
+        executor.dispatchEvent(new window.Event('change', { bubbles: true }));
+      });
+      assert.equal(view.find('[data-testid="jiuwenmate-schedule-executor-error"]'), null);
+      assert.equal(executor.getAttribute('aria-invalid'), null);
+      assert.equal(executor.getAttribute('aria-describedby'), null);
+    } finally { await view.close(); await i18n.changeLanguage('zh'); }
+  });
+}
+
+test('the task center runs the scheduled task whose menu was opened', async () => {
+  const runs = [];
+  const view = await mountDashboard({ onRunSchedule: (planId) => { runs.push(planId); } });
+  try {
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+    assert.ok(view.find('[data-testid="jiuwenmate-schedule-board"]'));
+    // Locate the row by its task name, a locator that predates this fix, so a
+    // failure points at the missing menu item rather than a testid added here.
+    const row = [...view.container.querySelectorAll('tr')].find((item) => item.textContent.includes('周报'));
+    assert.ok(row, 'Missing the second scheduled task row');
+    await view.click(row.querySelector('.jiuwenmate-menu__trigger'));
+    const item = view.find('[role="menu"] [role="menuitem"][data-variant="run"]');
+    assert.ok(item, 'The task center does not offer run now');
+    // The table scrolls horizontally, so an in-flow list would be clipped to the table height.
+    assert.equal(view.find('[role="menu"]').style.position, 'fixed');
+    assert.equal(item.textContent, '立即执行');
+    await view.click(item);
+    assert.deepEqual(runs, ['plan-weekly']);
+  } finally { await view.close(); }
+});
+
+test('a floating schedule menu closes on resize without treating Window as a Node', async () => {
+  const view = await mountDashboard();
+  try {
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+    const row = [...view.container.querySelectorAll('tr')].find((item) => item.textContent.includes('周报'));
+    await view.click(row.querySelector('.jiuwenmate-menu__trigger'));
+    assert.ok(view.find('[role="menu"]'));
+    await act(async () => {
+      window.dispatchEvent(new window.Event('resize'));
+    });
+    assert.equal(view.find('[role="menu"]'), null);
+  } finally { await view.close(); }
+});
+
+
+async function changeScheduleField(view, selector, value) {
+  const field = view.find(selector);
+  assert.ok(field, `Missing schedule field ${selector}`);
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field), 'value').set.call(field, value);
+    const Event = field.ownerDocument.defaultView.Event;
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+
+for (const language of ['zh', 'en']) {
+  test(`schedule required fields highlight and independently clear on correction in ${language}`, async () => {
+    await i18n.changeLanguage(language);
+    const created = [];
+    const view = await mountDashboard({ onCreateSchedule: (...args) => { created.push(args); } });
+    try {
+      await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+      await view.click(view.find('.jiuwenmate-schedule-board .jiuwenmate-dark-button'));
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-executor"]', 'agent-1');
+      const name = view.find('[data-testid="jiuwenmate-schedule-name"]');
+      const prompt = view.find('[data-testid="jiuwenmate-schedule-prompt"]');
+      await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+      assert.equal(name.getAttribute('aria-invalid'), 'true');
+      assert.equal(prompt.getAttribute('aria-invalid'), 'true');
+      assert.equal(name.ownerDocument.activeElement, name);
+      const nameError = name.ownerDocument.getElementById(name.getAttribute('aria-describedby'));
+      const promptError = prompt.ownerDocument.getElementById(prompt.getAttribute('aria-describedby'));
+      assert.equal(nameError.textContent, language === 'zh' ? '请输入任务名称' : 'Enter a task name.');
+      assert.equal(promptError.textContent, language === 'zh' ? '请输入任务描述' : 'Enter a task description.');
+      assert.equal(nameError.parentElement, name.parentElement);
+      assert.equal(promptError.parentElement, prompt.parentElement);
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-name"]', '   ');
+      assert.equal(name.getAttribute('aria-invalid'), 'true');
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-name"]', 'Drink water');
+      assert.equal(name.getAttribute('aria-invalid'), null);
+      assert.equal(prompt.getAttribute('aria-invalid'), 'true');
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-prompt"]', 'Take a short break');
+      assert.equal(prompt.getAttribute('aria-invalid'), null);
+      assert.equal(view.find('[data-testid="jiuwenmate-schedule-dialog"] [role="alert"]'), null);
+      assert.deepEqual(created, []);
+      await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+      assert.equal(created.length, 1);
+      assert.equal(created[0][0], 'agent-1');
+    } finally { await view.close(); await i18n.changeLanguage('zh'); }
+  });
+
+  test(`schedule effective range stays highlighted until a valid or open-ended range is entered in ${language}`, async () => {
+    await i18n.changeLanguage(language);
+    const created = [];
+    const view = await mountDashboard({ onCreateSchedule: (...args) => { created.push(args); } });
+    try {
+      await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+      await view.click(view.find('.jiuwenmate-schedule-board .jiuwenmate-dark-button'));
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-executor"]', 'agent-1');
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-name"]', 'Drink water');
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-prompt"]', 'Take a short break');
+      const startSelector = 'input[aria-label="' + i18n.t('jiuwenmate.schedule.startsOn') + '"]';
+      const endSelector = 'input[aria-label="' + i18n.t('jiuwenmate.schedule.endsOn') + '"]';
+      const start = view.find(startSelector);
+      const end = view.find(endSelector);
+      await changeScheduleField(view, startSelector, '2030-02-02');
+      await changeScheduleField(view, endSelector, '2030-02-01');
+      await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+      assert.equal(start.getAttribute('aria-invalid'), 'true');
+      assert.equal(end.getAttribute('aria-invalid'), 'true');
+      assert.equal(end.ownerDocument.activeElement, end);
+      const error = end.ownerDocument.getElementById(end.getAttribute('aria-describedby'));
+      assert.equal(error.textContent, i18n.t('jiuwenmate.schedule.error.rangeInvalid'));
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-name"]', 'Updated reminder');
+      assert.equal(end.getAttribute('aria-invalid'), 'true', 'Unrelated edits must not hide an invalid range');
+      await changeScheduleField(view, startSelector, '2030-01-31');
+      assert.equal(start.getAttribute('aria-invalid'), null);
+      assert.equal(end.getAttribute('aria-invalid'), null);
+      assert.equal(view.find('[data-testid="jiuwenmate-schedule-dialog"] [role="alert"]'), null);
+      await changeScheduleField(view, endSelector, '2029-12-31');
+      assert.equal(end.getAttribute('aria-invalid'), 'true');
+      await changeScheduleField(view, endSelector, '');
+      assert.equal(end.getAttribute('aria-invalid'), null, 'An omitted optional end remains valid');
+      await changeScheduleField(view, endSelector, '2030-01-31');
+      assert.equal(end.getAttribute('aria-invalid'), null, 'The same calendar day ends at 23:59');
+      assert.deepEqual(created, []);
+      await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+      assert.equal(created.length, 1);
+    } finally { await view.close(); await i18n.changeLanguage('zh'); }
+  });
+}
+
+for (const [language, expected] of [['zh', '已过期'], ['en', 'Expired']]) {
+  test(`finished schedule plans are expired and successful history records remain completed in ${language}`, async () => {
+    await i18n.changeLanguage(language);
+    const view = await mountDashboard({ schedules: [
+      { ...dashboardPlan, id: 'once-done', name: 'One-off', scheduleKind: 'once', runCount: 1, enabled: false, nextFireAt: null },
+      { ...dashboardPlan, id: 'period-done', name: 'Periodic', runCount: 1, enabled: false, nextFireAt: null },
+      { ...dashboardPlan, id: 'interval-done', name: 'Interval', scheduleKind: 'interval', intervalSeconds: 60, runCount: 1, enabled: false, nextFireAt: null },
+      { ...dashboardPlan, id: 'period-active', name: 'Active periodic', lastStatus: 'running', runCount: 1 },
+      { ...dashboardPlan, id: 'interval-active', name: 'Active interval', scheduleKind: 'interval', intervalSeconds: 60, lastStatus: 'running', runCount: 1 },
+    ], onLoadScheduleHistory: async () => ({ plan: dashboardPlan, runs: [
+      { requestId: 'run-ok', scheduledFor: '2026-11-10T01:00:00Z', status: 'completed', description: '' },
+      { requestId: 'run-failed', scheduledFor: '2026-11-09T01:00:00Z', status: 'failed', description: '' },
+    ] }) });
+    try {
+      await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+      const row = view.find('[data-testid="jiuwenmate-schedule-board-row"][data-variant="once-done"]');
+      assert.equal(row.querySelector('.jiuwenmate-schedule-board__status').textContent, expected);
+      for (const id of ['period-done', 'interval-done']) {
+        assert.equal(view.find(`[data-variant="${id}"] .jiuwenmate-schedule-board__status`).textContent,
+          expected);
+      }
+      for (const id of ['period-active', 'interval-active']) {
+        assert.equal(view.find(`[data-variant="${id}"] .jiuwenmate-schedule-board__status`).textContent,
+          language === 'zh' ? '运行中' : 'Running');
+      }
+      const status = view.find('select[aria-label="' + i18n.t('jiuwenmate.schedule.runStatus') + '"]');
+      assert.ok(status.querySelector('option[value="expired"]'));
+      assert.equal(status.querySelector('option[value="completed"]'), null);
+      await act(async () => {
+        status.value = 'expired';
+        status.dispatchEvent(new window.Event('change', { bubbles: true }));
+      });
+      assert.deepEqual([...view.container.querySelectorAll('[data-testid="jiuwenmate-schedule-board-row"]')]
+        .map(item => item.dataset.variant), ['once-done', 'period-done', 'interval-done']);
+      await view.click(view.find('[data-variant="once-done"] .jiuwenmate-menu__trigger'));
+      await view.click(view.find('[role="menuitem"][data-variant="history"]'));
+      const history = view.find('[data-testid="jiuwenmate-schedule-history"]');
+      assert.ok(history);
+      assert.deepEqual([...history.querySelectorAll('.jiuwenmate-schedule-history__status')].map(item => item.textContent),
+        language === 'zh' ? ['已完成', '运行失败'] : ['Completed', 'Failed']);
+    } finally { await view.close(); await i18n.changeLanguage('zh'); }
+  });
+}

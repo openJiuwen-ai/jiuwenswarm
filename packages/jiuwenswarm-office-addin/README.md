@@ -10,8 +10,10 @@ So far the pane chats, switches between the document's conversations, answers
 the backend's approvals and questions, shows each turn's tool calls on a
 timeline, runs the read-only PowerPoint tools, and builds and edits slides as
 native PowerPoint objects (`presentation_apply_patch`), with an undo icon
-under the reply of each turn that wrote. The slide XML tools (charts, masters, imports,
-find and replace, connectors) follow in later changes.
+under the reply of each turn that wrote. It also runs the tools that work on
+a slide's XML: reading and replacing a shape's paragraphs, find and replace,
+duplicating and importing slides, copying a picture, and building native
+charts. Raw XML edits, masters and connectors follow in a later change.
 
 ## Support
 
@@ -41,10 +43,22 @@ A patch the host fails part way is rolled back on its own: before each patch
 the pane exports the slides it changes, and on the failure it puts them back
 and removes the slides the patch made, so the deck is never left half changed.
 
+A tool that edits a slide's XML exports the slide, edits the package, inserts
+the edited copy after the slide and deletes the slide: the copy has a new
+slide id and the same shape ids. The export it took first is the undo's
+snapshot, and in the undo the copy stands where the slide stood, so an undo
+puts the slide back once and deletes the copy. Such a write the host fails
+part way is rolled back the same way.
+
 Known limits: the undo lives in the pane's memory, so reloading the pane or
 reconnecting (which replays the transcript) loses it; the pane keeps the last
 10 turns or 64 MB of exports, whichever is less; changes to masters, the theme
-and notes are not undone.
+and notes are not undone; a change the user makes to a slide between a slide
+XML tool's export and its replacement is lost, as those tools take no
+fingerprint. A slide XML tool replaces the whole slide, and the copy has a new
+slide id and new parts: links from other slides to it, custom shows and zoom
+references to it, and comments on it may not survive. Whether a slide's notes
+survive the insert is not verified on the host yet.
 
 ## Modules
 
@@ -54,10 +68,12 @@ and notes are not undone.
 | `clientAttachment` | `client.attach` / `client.renew` of one document to one conversation, and the client tool calls of that conversation: each runs once, and the finished ones are answered in one `chat.send` (`source: "client_tool_interrupt"`) while the turn is not running. An answer goes only to the conversation that asked for it. A failed attach tries again; a window another window displaced answers its calls as run there. The renews run on `workerTimer`. |
 | `workerTimer` | A timer that keeps time while the pane is hidden: the wait runs in a dedicated Worker (`timerWorker`), as a hidden pane's own timers are throttled and could let the lease lapse. |
 | `documentIdentity` | The document's GUID (`jiuwenswarm.doc_id` in the document settings), which is the attach `resource.key`, and its display name. |
-| `presentationContract` | The attach declaration. Its `supported_tools` are the tools in the contract, implemented by the injected tool runtime, and supported by the running PowerPoint. |
+| `presentationContract` | The attach declaration, and `checkInput`: a call's input against its tool's `input_schema` (the JSON Schema keywords the contract uses; a keyword it does not check fails the call, so the contract tests catch it), with the path of the first problem. Its `supported_tools` are the tools in the contract, implemented by the injected tool runtime, and supported by the running PowerPoint. |
 | `powerPointToolDispatcher` | Runs a call in the injected tool runtime, writes through `hostWriteQueue`, and shapes the answer: text (and a PNG for renders) for the model, latency telemetry in `data`. A call the host has not finished in 280 s is answered with status `timeout`; a write keeps the queue until the host settles it, and a write that timed out while queued never runs. A host result that does not serialize is answered as an error. |
-| `powerPointReadTools` | The read-only tools on `PowerPoint.run`: `read_presentation_context`, `list_slide_shapes`, `read_slide_image` (960 wide by default), `verify_slides` and `verify_slide_visual`. Each call reads in a fixed number of batched syncs, however large the deck; when a shape's text cannot be read, the text is read one sync per shape. Theme palette, theme fonts and template body size are null until the OOXML reader lands. |
+| `powerPointReadTools` | The read-only tools on `PowerPoint.run`: `read_presentation_context`, `list_slide_shapes`, `read_slide_image` (960 wide by default), `verify_slides` and `verify_slide_visual`. Each call reads in a fixed number of batched syncs, however large the deck; when a shape's text cannot be read, the text is read one sync per shape. On a templated deck the theme palette, theme fonts and template body size come from the package of the first slide. |
 | `powerPointWriteTools` | `presentation_apply_patch` on `PowerPoint.run`: checks `base_structure_fingerprint` against the deck, fetches the patch's images, draws it, and answers with `structure_fingerprint_after`; a patch the host fails part way it rolls back (`rolled_back`). It keeps the design system the deck's last patch declared. Also the deck as the undo works it (export, insert, remove, order). |
+| `powerPointPackageTools` | The tools on a slide's XML: `read_slide_text`, `edit_slide_text`, `find_and_replace`, `duplicate_slide`, `import_slides`, `copy_image_between_slides`, `read_chart_style`, `create_slide_chart` and `edit_built_chart`. A write exports the slide, puts the edited copy in its place inside one `PowerPoint.run`, tells the turn's undo (`replaced`), fits again the frames of shapes whose text changed, and answers with `structure_fingerprint_after`; the mutation record maps each slide to its copy. |
+| `presentationPackage`, `presentationChart` | Pure functions over the single-slide package: paragraphs, find and replace, picture copies, chart parts and their style, the theme facts. A package that inflates past its limits or names an unsafe part is refused. For `import_slides`, the slide ids of an uploaded deck, refused when a chosen slide, or a layout or master it uses, links a file outside the deck other than by a hyperlink, or holds an OLE object, an ActiveX control or an embedded file. The chart builder draws a checked spec in the house chart standard. |
 | `presentationScenePatch` | Reads a patch (roles with their font floors, design-system tokens, exact fields) and draws it in one batch: every slide, shape, table and layout it names is checked before the first change; a failure after that says which slides landed. It tells the turn's undo what it is about to change before it changes it. `add_connector` is refused until the slide XML renderer lands. |
 | `presentationAssetClient` | Fetches a published file a call inserts from its signed `/file-api/download` link and takes it only if its size and SHA-256 are the descriptor's. |
 | `slideSnapshots` | The per-turn snapshots and the undo (see above). |
@@ -69,7 +85,7 @@ and notes are not undone.
 | `copy`, `styles.css` | Every UI text, and the design tokens (colors, spacing, radius, type) as CSS custom properties on `:root`: the web chat's light values, the pane's own dark values, and Windows high contrast (`forced-colors`). |
 | `officeTheme` | Follows the Office theme: dark on a dark Office background, light on a light one, and the system's color scheme when the host has no Office theme. |
 | `taskpane` | The entry point in PowerPoint: document identity, the tool runtime, the Gateway and the pane wired together. |
-| `scriptedGateway`, `fakePowerPoint` | The scripted backend the tests drive the pane through, and the deck the write tests write to. |
+| `scriptedGateway`, `fakePowerPoint` | The scripted backend the tests drive the pane through, and the deck the write tests write to; it exports a slide as a real single-slide package and inserts packages keeping their shape ids. |
 | `presentationSessionFacade` | `session.create` (`client_app: "office-powerpoint"`, on the server's active model from `models.list`), `client.conversations` (the conversations of this document), `client.conversation.messages` (a conversation's history), `client.list` (the user's attached documents), `chat.send` (messages and answers), `chat.interrupt`, `media.persist`. |
 | `clientToolOutcome`, `toolResultBudget` | Pure shaping of a write's mutation record and of the result size. |
 

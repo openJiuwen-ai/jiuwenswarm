@@ -11,11 +11,17 @@ export function designerModelLabel(
   models: ModelEntry[],
   selectedModelName: string | null,
   defaultModelName: string | null,
+  selectedModelId?: string | null,
 ): string {
   const usable = (Array.isArray(models) ? models : []).filter(
     (model) => String(model?.model_name ?? '').trim() !== '',
   );
   if (usable.length === 0) return '';
+  const wantedId = String(selectedModelId ?? '').trim();
+  if (wantedId) {
+    const byId = usable.find((model) => model.model_id === wantedId);
+    if (byId) return String(byId.alias || byId.model_name || '').trim();
+  }
   const wanted = selectedModelName || defaultModelName;
   const hit = usable.find((model) => model.alias === wanted || model.model_name === wanted)
     ?? usable.find((model) => (model.alias || model.model_name) === wanted)

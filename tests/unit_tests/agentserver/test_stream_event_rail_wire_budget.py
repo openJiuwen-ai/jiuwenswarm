@@ -1,6 +1,7 @@
 """tool_result events must fit the AgentServer WebSocket send budget (issue #9834)."""
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -25,6 +26,9 @@ class _StreamSession:
 
     async def write_stream(self, event: object) -> None:
         self.events.append(event)
+
+    def get_session_id(self) -> str:
+        return "wire-budget-artifact-test"
 
 
 class _WebSocket:
@@ -78,9 +82,12 @@ async def test_large_raw_output_is_cut_like_result_and_flagged() -> None:
     payload = (await _emit({"result": _LARGE_TEXT}, rendered_result=_LARGE_TEXT))["tool_result"]
 
     assert _wire_bytes(payload) < AGENT_WS_SEND_BUDGET_BYTES
-    assert payload["raw_output"] == {"result": _LARGE_TEXT[:_TEXT_LIMIT]}
+    assert payload["raw_output"] == {}
     assert payload["raw_output_truncated"] is True
-    assert payload["rendered_result"] == _LARGE_TEXT[:_TEXT_LIMIT]
+    refs = payload["payload_refs"]
+    assert json.loads(Path(refs["raw_output"]["path"]).read_text(encoding="utf-8")) == {"result": _LARGE_TEXT}
+    assert Path(refs["rendered_result"]["path"]).read_text(encoding="utf-8") == _LARGE_TEXT
+    assert len(payload["rendered_result"]) < _TEXT_LIMIT
 
 
 @pytest.mark.asyncio
@@ -96,7 +103,8 @@ async def test_mcp_app_block_is_kept_when_raw_output_is_trimmed() -> None:
     payload = (await _emit({"result": _LARGE_TEXT, "mcp_app": mcp_app}))["tool_result"]
 
     assert payload["raw_output"]["mcp_app"] == mcp_app
-    assert payload["raw_output"]["result"] == _LARGE_TEXT[:_TEXT_LIMIT]
+    ref = payload["payload_refs"]["raw_output"]
+    assert json.loads(Path(ref["path"]).read_text(encoding="utf-8"))["result"] == _LARGE_TEXT
     assert payload["raw_output_truncated"] is True
 
 
@@ -110,6 +118,8 @@ async def test_raw_output_of_many_small_items_falls_back_to_empty() -> None:
     assert payload["raw_output"] == {}
     assert payload["raw_output_truncated"] is True
     assert _wire_bytes(payload) < AGENT_WS_SEND_BUDGET_BYTES
+    ref = payload["payload_refs"]["raw_output"]
+    assert len(json.loads(Path(ref["path"]).read_text(encoding="utf-8"))["result"]) == len(rows)
 
 
 @pytest.mark.asyncio

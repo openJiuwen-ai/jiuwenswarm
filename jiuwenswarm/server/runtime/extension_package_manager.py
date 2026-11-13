@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 import aiofiles.os
 import yaml
 
+from jiuwenswarm.common.filesystem_paths import extended_path
 from jiuwenswarm.common.utils import (
     get_agent_skills_dir,
     get_agent_workspace_dir,
@@ -33,6 +34,7 @@ from jiuwenswarm.common.utils import (
     mask_sensitive,
 )
 from jiuwenswarm.server.runtime.mcp.state_store import get_mcp_record
+from jiuwenswarm.server.runtime.package_avatars import resolve_package_avatar_url
 from jiuwenswarm.server.runtime.marketplace.hub_asset_installer import (
     install_hub_asset_package,
 )
@@ -893,7 +895,10 @@ def _iter_resource_package_dirs(kind: str) -> list[Path]:
         root = get_equipment_resources_plugin_packages_dir()
     else:
         return []
-    if root is None or not root.is_dir():
+    if root is None:
+        return []
+    root = Path(extended_path(root))
+    if not root.is_dir():
         return []
     try:
         entries = sorted(root.iterdir(), key=lambda p: p.name)
@@ -912,6 +917,7 @@ def _iter_resource_package_dirs(kind: str) -> list[Path]:
 
 def _iter_local_package_dirs(local_root: Path) -> list[Path]:
     """Return package dirs under the user local/ root."""
+    local_root = Path(extended_path(local_root))
     if not local_root.is_dir():
         return []
     try:
@@ -933,6 +939,7 @@ def _equipment_package_dirs(
     built_in_root: Path,
 ) -> list[tuple[Path, str]]:
     """``(package dir, source)`` from resources shelf + local/; conflicts raise."""
+    built_in_root = Path(extended_path(built_in_root))
     resource_dirs = _iter_resource_package_dirs(kind)
     resource_ids = {pkg.name for pkg in resource_dirs}
     found = [(pkg_dir, "builtin") for pkg_dir in resource_dirs]
@@ -988,10 +995,10 @@ def _resolve_show_package_dir(
         safe_name = reject_package_name(name, kind_label)
     except ValueError:
         return None
-    local_dir = local_root / safe_name
-    built_in_dir = built_in_root / safe_name
+    local_dir = Path(extended_path(local_root / safe_name))
+    built_in_dir = Path(extended_path(built_in_root / safe_name))
     resource_dir = (
-        resources_root / safe_name if resources_root is not None else None
+        Path(extended_path(resources_root / safe_name)) if resources_root is not None else None
     )
     local_exists = local_dir.is_dir()
     built_in_exists = built_in_dir.is_dir()
@@ -1259,6 +1266,7 @@ def remove_agent_group_marketplace_entry(package_id: str) -> None:
 
 
 def _package_dir_if_present(root: Path, safe_name: str) -> Path | None:
+    root = Path(extended_path(root))
     if not root.is_dir():
         return None
     root_resolved = root.resolve()
@@ -1797,7 +1805,7 @@ def _require_skill_names(params: dict) -> list[str]:
     if not isinstance(skills, list):
         raise ValueError("missing or invalid skills")
     names: list[str] = []
-    skills_root = get_agent_skills_dir()
+    skills_root = Path(extended_path(get_agent_skills_dir()))
     for item in skills:
         if not isinstance(item, str) or not item.strip():
             raise ValueError("invalid skill name: empty")
@@ -1952,12 +1960,12 @@ def _assert_package_id_available(
 ) -> None:
     """Reject create when local/built_in/resources already has the same id."""
     for root, label in ((local_root, "local"), (built_in_root, "built_in")):
-        if (root / package_id).exists():
+        if Path(extended_path(root / package_id)).exists():
             message = f"{kind} package already exists in {label}: {package_id}"
             if kind == "agent_group":
                 raise AgentGroupPackageError(message, "AGENT_GROUP_DUPLICATE")
             raise ValueError(message)
-    if resources_root is not None and (resources_root / package_id).is_dir():
+    if resources_root is not None and Path(extended_path(resources_root / package_id)).is_dir():
         message = f"{kind} package already exists in resources: {package_id}"
         if kind == "agent_group":
             raise AgentGroupPackageError(message, "AGENT_GROUP_DUPLICATE")
@@ -2106,12 +2114,13 @@ def _copy_workspace_skills(pkg_dir: Path, skill_names: list[str]) -> None:
     失败时把临时目录保留为 ``.skills.bak`` 供排查，避免包处于无 skills 目录的
     半损坏状态。
     """
+    pkg_dir = Path(extended_path(pkg_dir))
     skills_dir = pkg_dir / "skills"
     if not skill_names:
         if skills_dir.exists():
             _rmtree(skills_dir)
         return
-    skills_root = get_agent_skills_dir()
+    skills_root = Path(extended_path(get_agent_skills_dir()))
     tmp_dir = pkg_dir / ".skills.tmp"
     if tmp_dir.exists():
         _rmtree(tmp_dir)
@@ -2148,6 +2157,7 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def assert_no_symlinks(src: Path) -> None:
     """Reject a package subtree containing any symbolic link."""
+    src = Path(extended_path(src))
     if src.is_symlink():
         raise ValueError(f"symbolic links are not allowed in package: {src.name}")
     try:
@@ -2161,7 +2171,7 @@ def assert_no_symlinks(src: Path) -> None:
 def _copytree_without_symlinks(src: Path, dst: Path) -> None:
     """Copy a package subtree after rejecting every symbolic link."""
     assert_no_symlinks(src)
-    shutil.copytree(src, dst)
+    shutil.copytree(extended_path(src), extended_path(dst))
 
 
 def lifecycle_package_id(params: dict, kind: str) -> str:
@@ -2591,7 +2601,7 @@ async def list_agent_groups_with_hub(
                 "displayName": _i18n(item.display_name, item.package_name or item.asset_id),
                 "displayDescription": _i18n(item.short_description),
                 "category": item.category_name or existing.get("category", ""),
-                "avatar": item.icon_uri,
+                "avatar": resolve_package_avatar_url(item.icon_uri),
                 "tags": [_i18n(tag, tag) for tag in item.tags],
                 "version": item.public_latest_version,
             }
@@ -2604,7 +2614,7 @@ async def list_agent_groups_with_hub(
             "category": item.category_name,
             "source": "hub",
             "installed": False,
-            "avatar": item.icon_uri,
+            "avatar": resolve_package_avatar_url(item.icon_uri),
             "tags": [_i18n(tag, tag) for tag in item.tags],
             "version": item.public_latest_version,
             "memberCount": 0,
@@ -2706,7 +2716,7 @@ def _build_agent_group_card(
                 "displayName": _i18n(raw_display_name, display_name_fallback),
                 "displayDescription": _i18n(template.agent_card.description),
                 "role": "leader" if member_id == "leader" else "member",
-                "avatar": _safe_avatar_reference(
+                "avatar": resolve_package_avatar_url(
                     member_card.avatar if member_card is not None else None,
                     package_dir=package_dir / "agents" / member_id,
                 ),
@@ -2746,7 +2756,7 @@ def _build_agent_group_card(
         "tags": tags if isinstance(tags, list) else [],
         "source": source,
         "installed": installed,
-        "avatar": _safe_avatar_reference(manifest.get("avatar"), package_dir=package_dir),
+        "avatar": resolve_package_avatar_url(manifest.get("avatar"), package_dir=package_dir),
         "memberCount": len(members),
         "members": members,
         "skills": skills,
@@ -2863,7 +2873,7 @@ async def show_agent_group_with_hub(
         "category": "",
         "source": "hub",
         "installed": False,
-        "avatar": detail.icon_uri,
+        "avatar": resolve_package_avatar_url(detail.icon_uri),
         "tags": [_i18n(tag, tag) for tag in detail.tags],
         "version": detail.version,
         "memberCount": 0,
@@ -3906,6 +3916,7 @@ def _write_agent_template_package(
     Overwrites persona + skills + manifest in place. Any failure leaves the
     caller to decide rollback; this helper does not touch the marketplace.
     """
+    pkg_dir = Path(extended_path(pkg_dir))
     persona_dir = pkg_dir / "persona"
     persona_dir.mkdir(parents=True, exist_ok=True)
     (persona_dir / f"{package_id}.md").write_text(persona, encoding="utf-8")
@@ -3955,6 +3966,7 @@ def create_agent_template(params: dict) -> None:
         resources_root=_resources_root(_AGENT_TEMPLATE_KIND),
     )
 
+    local_root = Path(extended_path(local_root))
     pkg_dir = local_root / package_id
     local_root.mkdir(parents=True, exist_ok=True)
     try:
@@ -4002,7 +4014,7 @@ def update_agent_template(params: dict) -> None:
     runtime = _require_form_runtime(params)
     tags, mcp_names = _apply_form_runtime(tags, mcp_names, runtime)
 
-    local_root = get_local_root(_AGENT_TEMPLATE_KIND)
+    local_root = Path(extended_path(get_local_root(_AGENT_TEMPLATE_KIND)))
     pkg_dir = local_root / package_id
     if not pkg_dir.is_dir():
         raise ValueError(f"agent_template not found: {package_id}")
@@ -4052,7 +4064,7 @@ def delete_agent_template(params: dict) -> None:
     clears the hub install state store).
     """
     package_id = lifecycle_package_id(params, "agent_template")
-    pkg_dir = get_local_root(_AGENT_TEMPLATE_KIND) / package_id
+    pkg_dir = Path(extended_path(get_local_root(_AGENT_TEMPLATE_KIND) / package_id))
     if not pkg_dir.is_dir():
         raise ValueError(f"agent_template not found: {package_id}")
     # 校验来源：只有 local 包可删除。hub/builtin 包走 uninstall_agent_template。
@@ -4110,6 +4122,7 @@ def _agent_template_source(package_id: str, *, role: str) -> Path:
     if resolved is None:
         raise AgentGroupPackageError(f"{role} agent_template not found: {package_id}", "AGENT_GROUP_MEMBER_NOT_FOUND")
     package_dir, _ = resolved
+    package_dir = Path(extended_path(package_dir))
     manifest = read_package_manifest(package_dir)
     if manifest is None or manifest.get("package_type") != "agent_template":
         raise AgentGroupPackageError(f"{role} agent_template is invalid: {package_id}", "AGENT_GROUP_TEMPLATE_INVALID")
@@ -4168,8 +4181,10 @@ def create_agent_group(params: dict) -> dict:
     )
     _assert_agent_group_name_available(name)
 
+    # Keep the prefix through validation, atomic commit and rollback, not just copytree.
+    local_root = Path(extended_path(local_root))
     local_root.mkdir(parents=True, exist_ok=True)
-    container = Path(tempfile.mkdtemp(prefix=".agent_group_create_", dir=local_root))
+    container = Path(tempfile.mkdtemp(prefix=".ag_", dir=local_root))
     stage = container / package_id
     destination = local_root / package_id
     try:
@@ -4614,12 +4629,12 @@ def _install_package(
     package_type: str,
     is_plugin: bool,
 ) -> None:
-    built_in_root = _built_in_root(kind)
-    local_root = get_local_root(kind)
+    built_in_root = Path(extended_path(_built_in_root(kind)))
+    local_root = Path(extended_path(get_local_root(kind)))
     built_in_dir = built_in_root / package_id
     local_dir = local_root / package_id
     resources_root = _resources_root(kind)
-    resource_dir = resources_root / package_id if resources_root is not None else None
+    resource_dir = Path(extended_path(resources_root / package_id)) if resources_root is not None else None
 
     if built_in_dir.is_dir() and local_dir.is_dir():
         raise ValueError(
@@ -4688,7 +4703,7 @@ def install_agent_group(params: dict) -> None:
         raise ValueError(f"agent_group package not found: {package_id}")
     package_dir, _ = resolved
     assert_no_symlinks(package_dir)
-    load_agent_group_package(package_dir)
+    load_agent_group_package(Path(extended_path(package_dir)))
     _install_package(
         package_id,
         kind=_AGENT_GROUP_KIND,
@@ -4812,8 +4827,8 @@ def install_plugin_package(params: dict) -> None:
 def _locate_user_package_dir(
     package_id: str, *, kind: str, kind_label: str
 ) -> Path:
-    local_dir = get_local_root(kind) / package_id
-    built_in_dir = _built_in_root(kind) / package_id
+    local_dir = Path(extended_path(get_local_root(kind) / package_id))
+    built_in_dir = Path(extended_path(_built_in_root(kind) / package_id))
     local_exists = local_dir.is_dir()
     built_in_exists = built_in_dir.is_dir()
     if local_exists and built_in_exists:
@@ -4829,6 +4844,7 @@ def _locate_user_package_dir(
 
 def _rmtree(path: Path, *, retries: int = 6, delay: float = 0.5) -> None:
     """Delete directory; retry on transient file lock."""
+    path = Path(extended_path(path))
     for attempt in range(retries):
         try:
             shutil.rmtree(path)

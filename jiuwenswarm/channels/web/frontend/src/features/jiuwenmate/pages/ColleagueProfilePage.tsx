@@ -41,6 +41,9 @@ import { JiuwenMateConfirmDialog } from '../components/JiuwenMateDialog';
 import { ActivityHeatmap, HeatmapLegend } from '../components/ActivityHeatmap';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import { GroupSharingPermissions } from '../components/GroupSharingPermissions';
+import {
+  StarterPromptsAddButton, StarterPromptsEditor, normalizeStarterPrompts,
+} from '../components/StarterPromptsEditor';
 import { EmptyState } from '../../../components/ui/EmptyState/EmptyState';
 import { errorMessage } from '../jiuwenmateApi';
 import type { GroupSharingApi } from '../groupSharingApi';
@@ -130,6 +133,7 @@ export interface ColleagueSettingsEdit {
   connectors?: string[];
   plugins?: string[];
   knowledge?: string[];
+  starterPrompts?: string[];
 }
 
 interface ColleagueProfilePageProps extends WelinkOfficeActions {
@@ -170,6 +174,7 @@ interface ColleagueProfilePageProps extends WelinkOfficeActions {
   onRemoveConnection?: (connection: JiuwenMateConnection) => void;
   onConfigureWelink: () => void;
   onRevokeChannel?: (platform: 'feishu' | 'welink') => void | Promise<void>;
+  imNotice?: { platform: 'feishu' | 'dingtalk' | 'welink'; text: string } | null;
   onToggleDisabled: () => void;
   onDelete: () => void;
 }
@@ -230,6 +235,7 @@ export function ColleagueProfilePage({
   onConfigureWelink,
   onRevokeChannel,
   onRemoveConnection,
+  imNotice = null,
   onToggleDisabled,
   onDelete,
 }: ColleagueProfilePageProps) {
@@ -240,6 +246,7 @@ export function ColleagueProfilePage({
   const [description, setDescription] = useState(colleague.description);
   const [persona, setPersona] = useState(colleague.persona ?? '');
   const [savedPersona, setSavedPersona] = useState(colleague.persona ?? '');
+  const [starterPrompts, setStarterPrompts] = useState<string[]>([...colleague.capabilities.starterPrompts]);
   const [tags, setTags] = useState(colleague.tags);
   const [model, setModel] = useState(colleague.capabilities.model);
   const [settingsError, setSettingsError] = useState<{ section: JiuwenMateProfileSection; message: string } | null>(null);
@@ -672,12 +679,21 @@ export function ColleagueProfilePage({
       return false;
     }
   };
+  const [savedNotice, setSavedNotice] = useState(false);
+  useEffect(() => {
+    if (!savedNotice) return undefined;
+    const timer = window.setTimeout(() => setSavedNotice(false), 3000);
+    return () => window.clearTimeout(timer);
+  }, [savedNotice]);
   const saveSettings = (edit: ColleagueSettingsEdit) => {
+    setSavedNotice(false);
     void persistSettings(edit)
       .then((saved) => {
         if (!saved) return;
         setEditing(false);
         if (edit.persona !== undefined) setSavedPersona(edit.persona);
+        if (edit.starterPrompts !== undefined) setStarterPrompts(edit.starterPrompts);
+        setSavedNotice(true);
       });
   };
   const changeGroupReplyMode = (mode: 'passive' | 'adaptive') => {
@@ -695,6 +711,7 @@ export function ColleagueProfilePage({
   };
   const openSection = (next: JiuwenMateProfileSection) => {
     setSettingsError(null);
+    setSavedNotice(false);
     setSection(next);
     setEditing(false);
   };
@@ -757,6 +774,7 @@ export function ColleagueProfilePage({
             ) : null}
             {colleague.disabled ? <em className="jiuwenmate-badge" data-tone="muted">{t('jiuwenmate.office.disabledBadge')}</em> : null}
             <span className="jiuwenmate-profile__header-actions">
+              <SavedNote visible={savedNotice && section === 'overview'} />
               <ActionMenu
                 label={t('jiuwenmate.workspace.more')}
                 items={[
@@ -792,13 +810,12 @@ export function ColleagueProfilePage({
                   onTagsChange={setTags}
                   onSave={() => saveSettings({ name: name.trim(), description: description.trim(), tags: [...tags] })}
                 />
-              ) : (
-                <p className="jiuwenmate-profile__description">{colleague.description}</p>
-              )}
+              ) : null}
               <ProfileOverview
                 colleague={colleague}
                 activity={activity}
                 today={today}
+                editing={editing}
                 onConfigureIm={(platform) => onConfigureIm(undefined, platform)}
                 onConfigureWelink={onConfigureWelink}
                 onRevokeChannel={setRevokePlatform}
@@ -817,6 +834,8 @@ export function ColleagueProfilePage({
               persona={persona}
               savedPersona={savedPersona}
               onPersonaChange={setPersona}
+              starterPrompts={starterPrompts}
+              onStarterPromptsChange={setStarterPrompts}
               model={model}
               skills={skills}
               connectors={connectors}
@@ -830,6 +849,7 @@ export function ColleagueProfilePage({
               onPluginsChange={setPlugins}
               onKnowledgeChange={setKnowledge}
               onSaveSettings={saveSettings}
+              savedNotice={savedNotice}
               onOpenModelSettings={onOpenModelSettings}
               onGroupReplyModeChange={changeGroupReplyMode}
               onPermissionProfileChange={changePermissionProfile}
@@ -838,6 +858,7 @@ export function ColleagueProfilePage({
               onRevokeChannel={setRevokePlatform}
               revoking={revoking}
               onRemoveConnection={onRemoveConnection}
+              imNotice={imNotice}
               schedules={schedules}
               savingSchedule={savingSchedule}
               onCreateSchedule={onCreateSchedule}
@@ -923,22 +944,33 @@ function ImBindingAction({
   platform,
   configured,
   revoking = false,
+  notice,
   onConfigure,
   onRevoke,
 }: {
   platform: 'feishu' | 'dingtalk' | 'welink';
   configured: boolean;
   revoking?: boolean;
+  notice?: string | null;
   onConfigure: () => void;
   onRevoke?: (platform: 'feishu' | 'welink') => void;
 }) {
   const { t } = useTranslation();
+  const noticeText = notice ? (
+    <small className="jiuwenmate-profile__im-notice" role="status" data-testid="jiuwenmate-profile-im-notice" data-variant={platform}>
+      {notice}
+    </small>
+  ) : null;
   return !configured ? (
-    <button type="button" className="jiuwenmate-link-button jiuwenmate-link-button--blue" onClick={onConfigure}>
-      {t('jiuwenmate.profile.authorize')}
-    </button>
+    <div className="jiuwenmate-profile__im-actions">
+      {noticeText}
+      <button type="button" className="jiuwenmate-link-button jiuwenmate-link-button--blue" onClick={onConfigure}>
+        {t('jiuwenmate.profile.authorize')}
+      </button>
+    </div>
   ) : (
     <div className="jiuwenmate-profile__im-actions">
+      {noticeText}
       <em className="jiuwenmate-badge" data-tone="success">{t('jiuwenmate.profile.authorized')}</em>
       <button
         type="button"
@@ -982,12 +1014,14 @@ function ProfileOverview({
   colleague,
   activity,
   today,
+  editing = false,
   onConfigureIm,
   onConfigureWelink,
 }: {
   colleague: JiuwenMateColleague;
   activity: JiuwenMateActivityMember | null;
   today: Date;
+  editing?: boolean;
   onConfigureIm: (platform: JiuwenMateImPlatform) => void;
   onConfigureWelink: () => void;
   onRevokeChannel?: (platform: 'feishu' | 'welink') => void;
@@ -1042,6 +1076,7 @@ function ProfileOverview({
 
   return (
     <>
+      {editing ? null : <p className="jiuwenmate-profile__description">{colleague.description}</p>}
       <p className="jiuwenmate-profile__joined">
         {t('jiuwenmate.profile.joinedAt', { time: formatJoinedAt(colleague.joinedAt) })}
       </p>
@@ -1275,6 +1310,15 @@ function sameNames(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
+function SavedNote({ visible }: { visible: boolean }) {
+  const { t } = useTranslation();
+  return visible ? (
+    <small className="jiuwenmate-profile__im-notice" role="status" data-testid="jiuwenmate-profile-saved-notice">
+      {t('jiuwenmate.profile.saveSuccess')}
+    </small>
+  ) : null;
+}
+
 function IdentityEditor({
   name,
   description,
@@ -1341,6 +1385,8 @@ function ProfileSectionDetail({
   section,
   persona,
   savedPersona,
+  starterPrompts,
+  onStarterPromptsChange,
   model,
   skills,
   connectors,
@@ -1355,6 +1401,7 @@ function ProfileSectionDetail({
   onPluginsChange,
   onKnowledgeChange,
   onSaveSettings,
+  savedNotice = false,
   onOpenModelSettings,
   onGroupReplyModeChange,
   onPermissionProfileChange,
@@ -1363,6 +1410,7 @@ function ProfileSectionDetail({
   onConfigureWelink,
   onRevokeChannel,
   revoking = false,
+  imNotice = null,
   schedules,
   savingSchedule,
   onCreateSchedule,
@@ -1395,6 +1443,8 @@ function ProfileSectionDetail({
   section: Exclude<JiuwenMateProfileSection, 'overview'>;
   persona: string;
   savedPersona: string;
+  starterPrompts: readonly string[];
+  onStarterPromptsChange: (prompts: string[]) => void;
   model: string;
   skills: readonly string[];
   connectors: readonly string[];
@@ -1409,6 +1459,7 @@ function ProfileSectionDetail({
   onPluginsChange: (items: string[]) => void;
   onKnowledgeChange: (items: string[]) => void;
   onSaveSettings?: (edit: ColleagueSettingsEdit) => void | Promise<void>;
+  savedNotice?: boolean;
   onOpenModelSettings?: () => void;
   onGroupReplyModeChange: (mode: 'passive' | 'adaptive') => void;
   onPermissionProfileChange: (profile: 'default' | 'automatic' | 'full_access') => void;
@@ -1417,6 +1468,7 @@ function ProfileSectionDetail({
   onConfigureWelink: () => void;
   onRevokeChannel?: (platform: 'feishu' | 'welink') => void;
   revoking?: boolean;
+  imNotice?: { platform: 'feishu' | 'dingtalk' | 'welink'; text: string } | null;
   schedules: readonly JiuwenMateSchedule[];
   savingSchedule: boolean;
   onCreateSchedule?: (draft: ScheduleDraft) => void | Promise<void>;
@@ -1463,7 +1515,9 @@ function ProfileSectionDetail({
   }, [section]);
 
   if (section === 'persona') {
-    const dirty = persona !== savedPersona;
+    const normalizedPrompts = normalizeStarterPrompts(starterPrompts);
+    const promptsDirty = normalizedPrompts.join('\n') !== colleague.capabilities.starterPrompts.join('\n');
+    const dirty = persona !== savedPersona || promptsDirty;
     return (
       <section className="jiuwenmate-profile__block" data-testid="jiuwenmate-profile-detail" data-variant={section}>
         <h2>{title}</h2>
@@ -1475,12 +1529,23 @@ function ProfileSectionDetail({
             data-testid="jiuwenmate-profile-persona-input"
           />
         </label>
+        <div className="jiuwenmate-profile__starter-prompts" data-testid="jiuwenmate-profile-starter-prompts">
+          <header>
+            <h3>{t('jiuwenmate.create.sections.starterPrompts')}</h3>
+            <StarterPromptsAddButton prompts={starterPrompts} onChange={onStarterPromptsChange} />
+          </header>
+          <StarterPromptsEditor prompts={starterPrompts} onChange={onStarterPromptsChange} />
+        </div>
         <div className="jiuwenmate-profile__resource-actions" data-testid="jiuwenmate-profile-persona-actions">
+          <SavedNote visible={savedNotice} />
           <button
             type="button"
             className="jiuwenmate-dark-button jiuwenmate-profile__save-button"
             disabled={!dirty || savingResources}
-            onClick={() => onSaveSettings?.({ persona: persona.trim() })}
+            onClick={() => onSaveSettings?.({
+              persona: persona.trim(),
+              ...(promptsDirty ? { starterPrompts: normalizedPrompts } : {}),
+            })}
             data-testid="jiuwenmate-profile-persona-save"
           >
             {savingResources ? t('jiuwenmate.profile.savingResources') : t('jiuwenmate.profile.saveResources')}
@@ -1559,6 +1624,7 @@ function ProfileSectionDetail({
           ))}
         </div>
         <div className="jiuwenmate-profile__resource-actions">
+          <SavedNote visible={savedNotice} />
           <button
             type="button"
             className="jiuwenmate-dark-button jiuwenmate-profile__save-button"
@@ -1625,14 +1691,21 @@ function ProfileSectionDetail({
                     <img src={platform === 'dingtalk' ? dingtalkIcon : feishuIcon} alt="" aria-hidden />
                     <strong>{t(`jiuwenmate.im.${platform}`)}</strong>
                   </span>
-                  <button
-                    type="button"
-                    className="jiuwenmate-link-button jiuwenmate-link-button--blue"
-                    onClick={() => onConfigureIm(undefined, platform)}
-                    data-testid={platformConnections.length ? 'jiuwenmate-profile-im-add' : 'jiuwenmate-profile-im-authorize'}
-                  >
-                    {t(platformConnections.length ? 'jiuwenmate.profile.addConnection' : 'jiuwenmate.profile.authorize')}
-                  </button>
+                  <div className="jiuwenmate-profile__im-actions">
+                    {imNotice?.platform === platform ? (
+                      <small className="jiuwenmate-profile__im-notice" role="status" data-testid="jiuwenmate-profile-im-notice" data-variant={platform}>
+                        {imNotice.text}
+                      </small>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="jiuwenmate-link-button jiuwenmate-link-button--blue"
+                      onClick={() => onConfigureIm(undefined, platform)}
+                      data-testid={platformConnections.length ? 'jiuwenmate-profile-im-add' : 'jiuwenmate-profile-im-authorize'}
+                    >
+                      {t(platformConnections.length ? 'jiuwenmate.profile.addConnection' : 'jiuwenmate.profile.authorize')}
+                    </button>
+                  </div>
                 </header>
                 {platformConnections.length > 0 ? (
                   <ul className="jiuwenmate-profile__connections" data-testid="jiuwenmate-profile-connections">
@@ -1748,6 +1821,7 @@ function ProfileSectionDetail({
             platform="welink"
             configured={colleague.welinkConfigured === true}
             revoking={revoking}
+            notice={imNotice?.platform === 'welink' ? imNotice.text : null}
             onConfigure={onConfigureWelink}
             onRevoke={onRevokeChannel}
           />
@@ -1991,6 +2065,7 @@ function ProfileSectionDetail({
           </div>
         ) : null}
         <div className="jiuwenmate-profile__resource-actions">
+          <SavedNote visible={savedNotice} />
           <button
             type="button"
             className="jiuwenmate-dark-button jiuwenmate-profile__save-button"

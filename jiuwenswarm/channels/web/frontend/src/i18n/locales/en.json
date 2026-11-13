@@ -7,6 +7,18 @@
     "stale": "The local plugin has changed. Start installation again and confirm replacement.",
     "unknownVersion": "unknown"
   },
+  "userLogin": {
+    "language": "Interface language",
+    "title": "JiuwenSwarm Sign In",
+    "username": "Username",
+    "password": "Password",
+    "signIn": "Sign in",
+    "signingIn": "Signing in…",
+    "enterprise": "Or use an enterprise account",
+    "signInWith": "Sign in with {{name}}",
+    "failed": "Sign-in failed. Please retry.",
+    "back": "Back to sign in"
+  },
   "enterpriseEntry": {
     "invalidIdentity": "Identity returned no user ID.",
     "noContext": "No Agent is available for this account. Ask an administrator to grant access.",
@@ -145,6 +157,7 @@
       "send": "Send",
       "running": "The design leader is working…",
       "stop": "Stop",
+      "stopping": "Stopping…",
       "stopError": "Could not stop. Please try again.",
       "attach": "Add reference media",
       "removeAttachment": "Remove reference",
@@ -872,10 +885,6 @@
       "teamOrganization": "Team Organization",
       "teamScheduledDispatch": "Scheduled dispatch",
       "skillPack": "Skill Packs",
-      "proactive": "Proactive recommendations",
-      "proactiveLimits": "Recommendation limits",
-      "proactiveLimitsDescription": "Up to {{daily}} per day and {{rounds}} conversation rounds per check.",
-      "proactiveLimitsDisabledDescription": "Enable proactive recommendations to configure these limits. Saved values: up to {{daily}} per day and {{rounds}} conversation rounds per check.",
       "multiModelCollaboration": "Multi-model collaboration",
       "toolOptimize": "Tool retrieval optimization",
       "designMode": "Design Mode",
@@ -1153,7 +1162,13 @@
       },
       "cua_agent_enabled": {
         "title": "Enable computer control",
-        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions."
+        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions.",
+        "unavailableDescription": "Computer control is unavailable in this environment.",
+        "unavailableReasons": {
+          "native_build_failed": "Computer control is unavailable because the computer-use driver failed to build during installation.",
+          "backend_missing": "No usable computer control driver was found.",
+          "unsupported_platform": "Computer control is unavailable on this operating system or version."
+        }
       },
       "trajectory_ui_diagnosis_enabled": {
         "title": "Enable trajectory diagnosis",
@@ -1221,20 +1236,6 @@
       "external_cli_agent_codex_cli_path": {
         "title": "Codex CLI path"
       },
-      "proactive_recommendation_enabled": {
-        "title": "Enable proactive recommendations",
-        "description": "Allow recommendations to be sent when their conditions are met."
-      },
-      "proactive_recommendation_max_recommend_per_day": {
-        "title": "Daily recommendation limit",
-        "description": "Maximum proactive recommendations per user per day to avoid excessive interruption. Default: 10.",
-        "placeholder": "Enter an integer from 1 to 50"
-      },
-      "proactive_recommendation_max_rounds_per_tick": {
-        "title": "Conversation rounds per check",
-        "description": "Maximum recent conversation rounds read on each check to infer recommendation context. Default: 20.",
-        "placeholder": "Enter an integer from 1 to 50"
-      },
       "multi_model_collaboration_enabled": {
         "title": "Multi-model collaboration",
         "description": "In a single-agent conversation, select a model group to let its default model combine suggestions from the other members."
@@ -1261,11 +1262,6 @@
         "title": "API Key",
         "description": "The JEV service credential.",
         "placeholder": "Enter API Key"
-      },
-      "cua_agent_enabled": {
-        "title": "Enable computer control",
-        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions.",
-        "unavailableDescription": "Computer control is unavailable in this environment."
       }
     },
     "validation": {
@@ -2211,7 +2207,10 @@
       "readFileFailed": "Failed to read file: {{name}}",
       "readImageFailed": "Failed to read image: {{name}}",
       "filePickerUnsupported": "Cannot open local file picker in this environment (please ensure jiuwenswarm is running locally and restarted with the latest backend)",
-      "filePickerFailed": "Failed to open file picker"
+      "filePickerFailed": "Failed to open file picker",
+      "preparingFiles": "Preparing files…",
+      "preparingFilesHint": "Please wait while files are read",
+      "cancelPreparing": "Cancel waiting"
     },
     "uploading": "Uploading...",
     "uploadFailed": "Upload failed",
@@ -2391,7 +2390,6 @@
       "apply": "Apply",
       "switching": "Switching...",
       "logout": "Log out",
-      "switchToManager": "Open manager",
       "customRequired": "bot_id, group_id, user_id and jiuwenclaw_id are required",
       "noMatch": "No matches",
       "pleaseSelect": "Select"
@@ -2723,13 +2721,6 @@
         "failed": "Installation failed",
         "running": "Installing"
       }
-    },
-    "proactive": {
-      "typeLabel": {
-        "skill_recommend": "Skill Recommend",
-        "task_reminder": "Task Reminder",
-        "need_exploration": "Explore"
-      }
     }
   },
   "cron": {
@@ -2754,9 +2745,7 @@
     "disable": "Disable",
     "loading": "Loading scheduled tasks...",
     "deleteConfirm": "Are you sure you want to delete this task?",
-    "autoManaged": "Auto-managed",
-    "autoManagedHint": "This task is auto-created/deleted by the proactive recommendation toggle (Settings → Proactive Recommendation). Only the cron expression and timezone can be edited here; other fields (name/status/description/offset/channel) are read-only. To remove it, turn off the toggle in Settings.",
-    "autoManagedToggleDisabled": "The toggle of an auto-managed task is controlled by Settings → Proactive Recommendation and cannot be switched here.",
+    "autoManagedToggleDisabled": "This field cannot be edited right now.",
     "pageTitle": "Scheduled Tasks",
     "pageSubtitle": "Configure automated tasks that run on schedule.",
     "actions": {
@@ -2995,8 +2984,7 @@
       "updated": "Task updated successfully",
       "deleted": "Task deleted successfully",
       "statusUpdated": "Task status updated successfully",
-      "runNow": "Task triggered successfully",
-      "proactiveRunNow": "Recommendation check started in the background. It will decide whether to recommend anything and notify you of the result."
+      "runNow": "Task triggered successfully"
     },
     "preview": {
       "loading": "Loading next runs...",
@@ -4152,7 +4140,15 @@
       "Engineering": "Engineering",
       "Life": "Life",
       "Custom": "Custom",
-      "Other": "Other"
+      "Other": "Other",
+      "Office Productivity": "Office Productivity",
+      "Software Development": "Software Development",
+      "Data Science & Research": "Data Science & Research",
+      "Multimodal & Media": "Multimodal & Media",
+      "Content Creation": "Content Creation",
+      "Lifestyle & Health": "Lifestyle & Health",
+      "Finance & Wealth Management": "Finance & Wealth Management",
+      "Compliance & Legal": "Compliance & Legal"
     },
     "actions": {
       "working": "Working",
@@ -4190,6 +4186,7 @@
       "detailError": "Unable to load Expert details. Try again.",
       "hubAssetChanged": "This expert has changed or been removed on Hub. The catalog is refreshing; go back and select it again.",
       "actionError": "The action could not be completed. Try again in a moment.",
+      "agentAccessDenied": "You are outside the authorized scope. The action was denied.",
       "duplicateName": "An Expert with this name already exists. Choose a different name and try again.",
       "agentUnavailable": "This Expert is no longer available. Refresh the list and try again.",
       "agentDefinitionUnavailable": "This Expert definition is incomplete and cannot be used right now.",
@@ -5142,7 +5139,15 @@
       "communication": "Communication",
       "Engineering": "Engineering",
       "Design": "Design",
-      "other": "Other"
+      "other": "Other",
+      "Office Productivity": "Office Productivity",
+      "Software Development": "Software Development",
+      "Data Science & Research": "Data Science & Research",
+      "Multimodal & Media": "Multimodal & Media",
+      "Content Creation": "Content Creation",
+      "Lifestyle & Health": "Lifestyle & Health",
+      "Finance & Wealth Management": "Finance & Wealth Management",
+      "Compliance & Legal": "Compliance & Legal"
     },
     "search": {
       "plugin": "Search plugins",
@@ -5816,6 +5821,8 @@
     "clickToViewDetail": "Click to view details",
     "runIdTooltip": "Run ID: {{id}}",
     "executorTooltip": "currently hosted by {{name}}",
+    "forkFromSession": "Forked from session {{name}}",
+    "forkChildSession": "Forked child session",
     "executorOrchestration": "[{{name}}'s orchestration · {{workflow}}]",
     "runFoldDivider": "In progress {{active}} · Finished {{ended}}"
   },
@@ -6094,6 +6101,8 @@
         "knowledge": "Add knowledge",
         "starterPrompts": "Add quick prompt"
       },
+      "starterPromptsLimit": "Up to {{count}} prompts",
+      "starterPromptDuplicate": "Duplicates an earlier prompt; only one is kept when saved",
       "empty": {
         "skills": "No skills",
         "connectors": "No connectors",
@@ -6204,6 +6213,7 @@
       "editResources": "Edit skills and connectors",
       "resourcesHint": "Choose from skills installed on this machine and connectors that are already connected. A new task uses the selection after it is saved and published.",
       "saveResources": "Save and publish",
+      "saveSuccess": "Saved",
       "savingResources": "Saving",
       "saveSettingsFailed": "Could not save or publish the configuration. Please try again.",
       "modelEmptyHint": "Add a model in Settings → Models.",
@@ -6314,10 +6324,12 @@
       "cancelAuthorizationTitle": "Revoke channel authorization",
       "cancelAuthorizationWarning": "After revoking, this colleague stops receiving and replying on this channel.",
       "cancelAuthorizationMessage": "Revoke the “{{channel}}” authorization? It can be authorized again later.",
+      "cancelAuthorizationSuccess": "Authorization revoked",
       "addConnection": "Add connection",
       "removeConnection": "Disconnect",
       "removeConnectionWarning": "Messages to this app no longer reach the employee. The connection's workspace and history stay and return when the same app is bound again.",
       "removeConnectionConfirm": "Disconnect {{platform}} app {{app}} from the AI employee: ",
+      "removeConnectionSuccess": "Disconnected",
       "workLog": "Work log",
       "periods": {
         "7d": "Last 7 days",
@@ -6436,11 +6448,6 @@
       "webConnection": "Web",
       "connectionHint": "Files shared here can also be read by {{platform}} users.",
       "webResult": "New result in the Web workspace. View it",
-      "defaultPrompts": [
-        "Summarize today's hot questions",
-        "Review group reply quality",
-        "Export today's conversation summary"
-      ],
       "featuresTitle": "Features",
       "features": {
         "chat": {
@@ -6525,10 +6532,11 @@
         "paused": "Paused",
         "failed": "Failed",
         "completed": "Completed",
-        "queued": "Queued"
+        "queued": "Queued",
+        "expired": "Expired"
       },
       "run": {
-        "success": "Succeeded",
+        "success": "Completed",
         "failed": "Failed",
         "stopped": "Stopped",
         "running": "Running"
@@ -6540,8 +6548,10 @@
         "running": "Running"
       },
       "error": {
+        "nameRequired": "Enter a task name.",
+        "promptRequired": "Enter a task description.",
         "required": "Enter a name and a description",
-        "executorRequired": "Choose an executor",
+        "executorRequired": "Select an AI employee to run this task.",
         "intervalInvalid": "The interval must be a positive integer",
         "futureRequired": "A one-time run must be in the future",
         "rangeInvalid": "The effective end must be after the start"
@@ -6608,6 +6618,7 @@
       "periodStart": "Start date",
       "periodEnd": "End date",
       "periodTo": "to",
+      "periodLimit": "Up to {{count}} days can be shown; the start date was adjusted",
       "metrics": {
         "members": "Members",
         "activeDays": "Active days",

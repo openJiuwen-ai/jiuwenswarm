@@ -178,11 +178,6 @@ export function EnterpriseContextSwitcher() {
             <div className="enterprise-context-popover__status">{t('sessionSidebar.enterpriseContext.switching')}</div>
           )}
           {enterprise.contextError && <div className="enterprise-context-popover__error">{enterprise.contextError}</div>}
-          {enterprise.managerAccess && (
-            <button type="button" className="enterprise-context-popover__switch" onClick={enterprise.onSwitchToManager}>
-              {t('sessionSidebar.enterpriseContext.switchToManager')}
-            </button>
-          )}
           <button type="button" className="enterprise-context-popover__logout" onClick={enterprise.onLogout}>
             {t('sessionSidebar.enterpriseContext.logout')}
           </button>

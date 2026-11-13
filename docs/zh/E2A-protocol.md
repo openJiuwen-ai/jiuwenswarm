@@ -434,3 +434,37 @@ Server 自己的 `TEAM_SKILLS_HUB_BASE_URL` 决定查询哪个 Hub。WebSocket �
 结构；Server 不可用、传输失败或 Hub 查询失败时，返回空 `items` 与错误说明。
 不回退到 Gateway 本地查询。缓存冷启动与后台刷新语义沿用 Server 现有实现。
 `hub.expert_packages.catalog` 由锁定版本的 `openjiuwen-protocol` 正式定义，无需应用侧临时注册。
+
+## 历史原文引用与分块读取
+
+大型工具结果保留短预览，并可携带 `payload_refs`。主智能体的 `chat.llm_call_start` 只携带调用前预览；Core 完成系统提示词注入和上下文处理后的完整模型输入（messages 和 tools），在 `chat.llm_call_end.payload_refs.prompt` 中引用。子代理在模型输入回调中采集的完整输入仍可随 `chat.llm_call_start` 引用。每个引用包含 `sha256`、`bytes`、`media_type` 和宿主路径；路径供宿主使用，客户端通过会话和摘要读取原文。
+
+`text/plain` 表示原始字符串，`application/json` 表示完整结构化值。`raw_output_truncated=true` 表示内联预览已缩减，对应的 `payload_refs` 引用用于读取完整工件。工件存储失败时，模型/工具事件仍发送有界预览，不携带不可用的引用，并记录失败日志。已有小结果和内联历史保持原语义。
+
+使用非流式 `history.get` 请求，传入以下 `params`：
+
+```json
+{"session_id":"web_example","artifact_sha256":"<64 位小写 SHA-256>","offset":0,"max_bytes":65536}
+```
+
+响应 payload 包含 `content`、`offset`、`next_offset`、`eof`、`bytes` 和 `sha256`。会话优先取 `params.session_id`，缺失时使用请求 envelope 的 `session_id`。offset 为 UTF-8 字节位置，必须落在字符边界；每次最多 64 KiB。客户端使用返回的 `next_offset` 继续读取，直到 `eof=true`。摘要限定在该会话目录内，接口不接受任意文件路径。无效摘要、范围、编码边界或缺失工件返回 `HISTORY_ARTIFACT_FAILED`。
+
+省略 `artifact_sha256` 时仍使用原历史分页/流式读取行为；E2A envelope 和协议版本不变。
+
+旧 `page_idx` 分页按块扫描历史，只保留请求页，保持最新到最旧的顺序及准确的 `total_pages`；旧 JSON 数组也使用流式读取。单次扫描最多 8 GiB / 120 秒，请求页保留内容最多 16 MiB；超大诊断字段不会整体加载。预算或内存分配失败返回明确的 `HISTORY_RESTORE_LIMIT`，源文件被替换或截断返回 `HISTORY_RESTORE_CHANGED`，不返回空历史成功。
+
+旧历史的上下文恢复仍使用扫描预算；分批恢复之间等待模型压缩的时间不计入扫描耗时，实际磁盘读取和解析仍受时间限制。
+
+旧历史分页保留 `event_payload`、`usage` 和 `session_usage`，用于恢复工具详情与用量摘要；这些字段仍受语义字段和页面预算限制。上下文恢复继续使用独立的诊断字段过滤规则。
+
+每页使用已提交历史的字节长度边界，并发追加的记录在后续分页请求中可见；文件替换或截断返回历史变更错误。页面扫描期间允许继续写入历史，普通与流式历史查询均保持 Front 事件循环响应。
+
+每次模型调用的 `chat.usage_metadata.metadata.usage_metadata.payload_refs.prompt` 携带同次 `llm_call_end` 产生的 prompt 引用。SDK 先发 usage 时，适配器最多暂存一条用量事件，等待同次调用结束；缺少结束事件时，在下一次调用、回答或流结束时正常输出。新的 `llm_call_start` 清空上一次调用的引用。
+
+输出消费者取消或关闭时，尚未发出的 usage 保存到会话审计，不向已关闭的流继续 yield。正常发出的 usage 仍由既有历史写入路径保存；在发送 end 标记期间取消，也保留同次调用已经产生的工件引用。
+
+大型工具结果工件化后，在既有 1 MiB raw_output 预算内保留 `skill_tree`、`beam_search`、`planned_graph`、`graph_status` 和 `graph_build` 等展示字段；MCP Apps 保持既有投影。完整原文仍由 `payload_refs` 引用。实时消息和历史回放均保留引用，并按当前产品会话读取，fork 后使用目标会话范围。
+
+对于已转发历史游标的 Gateway 路由，可使用 `history.get`，传入 `cursor: "history-artifact:v1:<sha256>:<offset>"` 和 `limit: 1`。响应包含一条 `history.artifact` 记录，字段与普通工件分块读取一致，随后发送既有历史 done 帧。每次最多读取 8 KiB，并保持 UTF-8 字符边界；非法或缺失工件返回 `HISTORY_ARTIFACT_FAILED`，不接受任意文件路径。普通历史订阅忽略这些工件游标；原 `artifact_sha256` 普通接口继续保留。
+
+Web 仅在用户查看原文时读取内容，本地只保留最多 64 KiB 的当前阅读窗口，支持上一段与下一段。关闭视图或切换会话、引用时取消读取并释放原文，不把完整工件回填到全局聊天状态。

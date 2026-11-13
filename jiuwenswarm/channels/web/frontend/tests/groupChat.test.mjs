@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { groupTimeline, groupMemberCandidates, groupMessageContent, executionResult, isBackgroundRefreshTimeout, mergeMessages, mergeExecutions, newMember, selectedMentions, safeAttachmentUrl, updateAttachments, formatFileSize } from '../node_modules/.cache/group-chat/features/groupChat/state.js';
+import { filterGroupMembers, matchesMemberQuery, groupTimeline, groupMemberCandidates, groupMessageContent, executionResult, isBackgroundRefreshTimeout, mergeMessages, mergeExecutions, newMember, selectedMentions, safeAttachmentUrl, updateAttachments, formatFileSize } from '../node_modules/.cache/group-chat/features/groupChat/state.js';
 import { parseChatRoute, chatRoutePath } from '../node_modules/.cache/group-chat/multi-session/routing/route.js';
 
 const message = (id, timestamp, content = id) => ({ message_id: id, timestamp, content });
@@ -74,6 +74,23 @@ test('display names are never used as core member identities', () => {
   assert.deepEqual(selectedMentions('@小九', [], [a, b]), []);
   assert.deepEqual(selectedMentions('@小九2', [a.member_name], [a]), []);
   assert.deepEqual(selectedMentions('@小九，请分析', [a.member_name], [a]), [a.member_name]);
+});
+
+test('group member search never matches internal member ids', () => {
+  const members = [
+    { kind: 'agent_group', id: 'team-ad', member_name: 'member-3ad9f1c2-77b4-4d0e-9f5a-1c2b3d4e5f60', display_name: '商业策划专家团' },
+    { kind: 'agent_group', id: 'team-ad-2', member_name: 'member-8b7fad21-5c6d-4e3f-a0b1-c2d3e4f5a6b7', display_name: '小红书爆款打造专家团' },
+    { kind: 'agent_template', id: 'expert-grace', member_name: 'member-11c3d5e7-9f20-4a6b-8c1d-2e3f4a5b6c7d', display_name: 'Grace' },
+  ];
+  // Regression for #6318: a query that only occurs inside member_name must not return any row.
+  assert.deepEqual(filterGroupMembers(members, 'ad'), []);
+  assert.deepEqual(filterGroupMembers(members, 'GRACE').map((member) => member.display_name), ['Grace']);
+  assert.deepEqual(filterGroupMembers(members, '专家团').map((member) => member.display_name),
+    ['商业策划专家团', '小红书爆款打造专家团']);
+  assert.deepEqual(filterGroupMembers(members, '   '), members);
+  assert.equal(matchesMemberQuery('Me', 'me'), true);
+  assert.equal(matchesMemberQuery('我', '  '), true);
+  assert.equal(matchesMemberQuery('Me', 'ad'), false);
 });
 
 test('group routes support refresh, IDs and existing chat routes', () => {
@@ -356,8 +373,9 @@ test('no child data does not create fake subtasks or show raw task text', () => 
   const html = renderToStaticMarkup(createElement(ExecutionCard, { execution: {
     ...execution('one', 1), task: '简短标题。PRIVATE_TASK_CONTENT', tasks: {},
   } }));
-  assert.match(html, /groupChat.noSubtasks/);
-  assert.doesNotMatch(html, /PRIVATE_TASK_CONTENT|data-testid="group-chat-subtask"/);
+  assert.match(html, /data-testid="group-chat-execution-summary"/);
+  assert.match(html, /data-testid="group-chat-execution-task" title="简短标题">简短标题</);
+  assert.doesNotMatch(html, /PRIVATE_TASK_CONTENT|data-testid="group-chat-subtask"|groupChat.noSubtasks/);
 });
 
 
@@ -393,18 +411,41 @@ test('single expert cards show execution status without subtask statistics', () 
   }
 });
 
-test('team and organization cards preserve subtask statistics and empty state', () => {
-  for (const execution_kind of ['team', 'organization']) {
-    const record = { ...execution('team', 1), execution_kind };
-    const empty = renderToStaticMarkup(createElement(ExecutionCard, { execution: record }));
-    assert.match(empty, /group-chat-task-counts/);
-    assert.match(empty, /groupChat.noSubtasks/);
-    const populated = renderToStaticMarkup(createElement(ExecutionCard, {
-      execution: { ...record, tasks: { research: 'completed' }, task_details: { research: { title: 'Research' } } },
-    }));
-    assert.match(populated, /data-testid="group-chat-subtask" data-variant="research"/);
-    assert.doesNotMatch(populated, /groupChat.noSubtasks/);
+test('a team without subtasks uses the single-row layout until its first subtask arrives', () => {
+  const brief = '杭州有哪些合适年轻人玩的地方。这是一个简单问答场景，不需要完整旅行规划链路';
+  const render = (status, tasks = {}) => renderToStaticMarkup(createElement(ExecutionCard, {
+    execution: { ...execution('team', 1, status), execution_kind: 'team', display_name: '旅行规划专家团',
+      task: brief, tasks, task_details: { research: { title: 'Research' } } },
+    result: status === 'completed' ? { message_id: 'final' } : undefined,
+  }));
+  for (const status of ['queued', 'running', 'completed', 'failed', 'cancelled']) {
+    const empty = render(status);
+    assert.match(empty, /data-testid="group-chat-execution-summary"/);
+    assert.match(empty, /旅行规划专家团/);
+    assert.match(empty, new RegExp(`data-testid="group-chat-execution-status" data-variant="${status}"`));
+    assert.doesNotMatch(empty, /group-chat-task-counts|group-chat-no-subtasks|groupChat.noSubtasks|groupChat.generatingTasks/);
+    // The delegation brief after the first sentence stays hidden, including on hover.
+    assert.doesNotMatch(empty, /简单问答场景/);
   }
+  assert.match(render('completed'), /href="#group-chat-message-final"/);
+  const populated = render('running', { research: 'in_progress' });
+  assert.match(populated, /group-chat-task-counts/);
+  assert.match(populated, /data-testid="group-chat-subtask" data-variant="research"/);
+  assert.doesNotMatch(populated, /group-chat-execution-summary|groupChat.noSubtasks/);
+});
+
+test('organization cards keep subtask statistics and their empty state', () => {
+  const record = { ...execution('org', 1), execution_kind: 'organization' };
+  const empty = renderToStaticMarkup(createElement(ExecutionCard, { execution: record }));
+  assert.match(empty, /group-chat-task-counts/);
+  assert.match(empty, /groupChat.noSubtasks/);
+  assert.match(empty, /groupChat.generatingTasks/);
+  assert.doesNotMatch(empty, /group-chat-execution-summary/);
+  const populated = renderToStaticMarkup(createElement(ExecutionCard, {
+    execution: { ...record, tasks: { research: 'completed' }, task_details: { research: { title: 'Research' } } },
+  }));
+  assert.match(populated, /data-testid="group-chat-subtask" data-variant="research"/);
+  assert.doesNotMatch(populated, /groupChat.noSubtasks/);
 });
 
 
@@ -421,16 +462,17 @@ test('pasted mentions resolve unique experts and teams without a picker selectio
 });
 
 
-test('new team cards show task generation and expose the full parent task name on hover', () => {
+test('new team cards expose the full parent task name on hover while waiting for subtasks', () => {
   const title = '按照已冻结的需求开发完整的房屋搭建装修小游戏';
   const render = (status, tasks = {}) => renderToStaticMarkup(createElement(ExecutionCard, {
     execution: { ...execution('new-team', 1, status), execution_kind: 'team', title, tasks },
   }));
   const initial = render('running');
-  assert.match(initial, /groupChat.generatingTasks/);
   assert.ok(initial.includes(`data-testid="group-chat-execution-title" title="${title}"`));
-  assert.doesNotMatch(render('completed'), /groupChat.generatingTasks/);
-  assert.doesNotMatch(render('failed'), /groupChat.generatingTasks/);
+  assert.match(initial, /data-testid="group-chat-execution-status" data-variant="running"/);
+  for (const status of ['running', 'completed', 'failed']) {
+    assert.doesNotMatch(render(status), /groupChat.generatingTasks/);
+  }
   assert.doesNotMatch(render('running', { child: 'in_progress' }), /groupChat.generatingTasks/);
 });
 

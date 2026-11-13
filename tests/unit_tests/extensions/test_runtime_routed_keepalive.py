@@ -256,3 +256,199 @@ async def test_interrupt_fanout_continues_when_primary_is_noop(monkeypatch):
     assert right in http.send_bases
     # 主返回仍是第一枪（route 结果）；多播是副作用杀进程
     assert resp.payload.get("killed") == 0
+
+
+class _DeferredHttp(_FakeHttp):
+    async def send_request_stream(self, envelope: E2AEnvelope, *, base_url: str):
+        self.stream_bases.append(base_url)
+        rid = str(envelope.request_id or "req")
+        yield AgentResponseChunk(
+            request_id=rid,
+            channel_id="web",
+            payload={
+                "event_type": "chat.processing_status_deferred",
+                "session_id": str(envelope.session_id or ""),
+            },
+            is_complete=False,
+        )
+        yield AgentResponseChunk(
+            request_id=rid,
+            channel_id="web",
+            payload=None,
+            is_complete=True,
+        )
+
+
+def _push_wire(
+    session_id: str,
+    *,
+    event_type: str = "chat.processing_status",
+    is_processing: bool = False,
+    idle: bool | None = None,
+) -> dict[str, Any]:
+    from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+
+    payload: dict[str, Any] = {
+        "event_type": event_type,
+        "session_id": session_id,
+        "is_processing": is_processing,
+        "is_complete": not is_processing,
+    }
+    if idle is not None:
+        payload["idle"] = idle
+    return build_server_push_wire(
+        {
+            "request_id": f"team-session-live:{session_id}",
+            "channel_id": "web",
+            "session_id": session_id,
+            "payload": payload,
+            "is_complete": False,
+        }
+    )
+
+
+def _patch_authorize(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.runtime_management_extension.runtime_routed_client.authorize_agent",
+        AsyncMock(return_value=("g1", "b1", "u1")),
+    )
+
+
+async def _drain(client: RuntimeRoutedAgentClient, env: E2AEnvelope) -> None:
+    async for _ in client.send_request_stream(env):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_deferred_keeps_touching_without_reroute(monkeypatch):
+    """短请求结束后仍 touch，且不再 route。disconnect 之后停止。"""
+    _patch_authorize(monkeypatch)
+    route = _FakeRoute()
+    client = RuntimeRoutedAgentClient(
+        route_client=route,
+        http_client=_DeferredHttp(),
+        touch_interval_seconds=0.05,
+    )
+    await client.connect("http://unused")
+    monkeypatch.setattr(client, "_ensure_pod_push", AsyncMock())
+
+    await _drain(client, _envelope(method="chat.send"))
+    before = len(route.touch_calls)
+    await asyncio.sleep(0.16)
+
+    assert len(route.touch_calls) >= before + 2
+    assert all(sid == "sess-cron-1" for sid, _ in route.touch_calls)
+    assert len(route.route_calls) == 1
+    assert "sess-cron-1" in client._session_keepalives
+    await client.disconnect()
+    stopped = len(route.touch_calls)
+    await asyncio.sleep(0.16)
+    assert len(route.touch_calls) == stopped
+    assert client._session_keepalives == {}
+
+
+@pytest.mark.asyncio
+async def test_deferred_stops_when_touch_misses_or_transport_fails(monkeypatch):
+    """touch 返回 false 后停止且不重新 route；传输失败则下一轮再试。"""
+    _patch_authorize(monkeypatch)
+    route = _FakeRoute(touch_results=[True, False, True, True])
+    client = RuntimeRoutedAgentClient(
+        route_client=route,
+        http_client=_DeferredHttp(),
+        touch_interval_seconds=0.05,
+    )
+    await client.connect("http://unused")
+    monkeypatch.setattr(client, "_ensure_pod_push", AsyncMock())
+    await _drain(client, _envelope(method="chat.send"))
+    await asyncio.sleep(0.25)
+    assert len(route.touch_calls) == 2
+    assert len(route.route_calls) == 1
+    assert "sess-cron-1" not in client._session_keepalives
+
+    route_retry = _FakeRoute(touch_results=[True, None, True])
+    retry_client = RuntimeRoutedAgentClient(
+        route_client=route_retry,
+        http_client=_DeferredHttp(),
+        touch_interval_seconds=0.05,
+    )
+    await retry_client.connect("http://unused")
+    monkeypatch.setattr(retry_client, "_ensure_pod_push", AsyncMock())
+    await _drain(retry_client, _envelope(method="chat.send"))
+    await asyncio.sleep(0.18)
+    assert len(route_retry.touch_calls) >= 3
+    assert len(route_retry.route_calls) == 1
+    await retry_client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_deferred_stops_on_round_end_frame(monkeypatch):
+    """没有 idle 的收口帧停掉后续期。带 idle 的灯帧、team.idle 和 is_processing true 不停。"""
+    _patch_authorize(monkeypatch)
+    route = _FakeRoute()
+    client = RuntimeRoutedAgentClient(
+        route_client=route,
+        http_client=_DeferredHttp(),
+        touch_interval_seconds=0.2,
+    )
+    await client.connect("http://unused")
+    monkeypatch.setattr(client, "_ensure_pod_push", AsyncMock())
+    await _drain(client, _envelope(method="chat.send"))
+    assert "sess-cron-1" in client._session_keepalives
+
+    await client._handle_pod_push(
+        "http://pod",
+        _push_wire("sess-cron-1", event_type="team.idle", is_processing=False),
+    )
+    await client._handle_pod_push(
+        "http://pod",
+        _push_wire("sess-cron-1", is_processing=True),
+    )
+    assert "sess-cron-1" in client._session_keepalives
+
+    await client._handle_pod_push(
+        "http://pod",
+        _push_wire("sess-cron-1", is_processing=False, idle=True),
+    )
+    assert "sess-cron-1" in client._session_keepalives
+
+    await client._handle_pod_push(
+        "http://pod",
+        _push_wire("sess-cron-1", is_processing=False),
+    )
+    assert "sess-cron-1" not in client._session_keepalives
+    await asyncio.sleep(0.25)
+    assert len(route.touch_calls) == 1
+    assert len(route.route_calls) == 1
+
+    await _drain(client, _envelope(method="chat.send", request_id="req-again"))
+    assert "sess-cron-1" in client._session_keepalives
+    forwarded: list[dict[str, Any]] = []
+
+    async def _on_push(wire: dict[str, Any]) -> None:
+        forwarded.append(wire)
+
+    client.set_server_push_handler(_on_push)
+    done = _push_wire("sess-cron-1", is_processing=False)
+    await client._handle_pod_push("http://pod", done)
+    assert forwarded == [done]
+    assert "sess-cron-1" not in client._session_keepalives
+    await client.disconnect()
+    assert client._session_keepalives == {}
+
+
+@pytest.mark.asyncio
+async def test_open_stream_still_restores_affinity(monkeypatch):
+    """非 deferred 的流仍按原来的方式 touch，失败后重新 route。"""
+    _patch_authorize(monkeypatch)
+    route = _FakeRoute(touch_results=[False, True, True, True, True, True])
+    client = RuntimeRoutedAgentClient(
+        route_client=route,
+        http_client=_FakeHttp(stream_delay=0.12),
+        touch_interval_seconds=0.04,
+    )
+    await client.connect("http://unused")
+    monkeypatch.setattr(client, "_ensure_pod_push", AsyncMock())
+    await _drain(client, _envelope(method="chat.send", request_id="req-restore"))
+    assert len(route.route_calls) >= 2
+    assert client._session_keepalives == {}
+    await client.disconnect()

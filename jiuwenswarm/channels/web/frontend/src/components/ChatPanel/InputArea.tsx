@@ -838,6 +838,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   // 才会重置成目标会话的草稿。切会话瞬间两者短暂不一致，谁依赖 attachments 做跨会话操作
   // （比如把它们注册成任务素材）都要先核对这个 ref，否则会把上一个会话的草稿误登记到新会话。
   const attachmentSessionIdRef = useRef(activeSessionId);
+  // 系统文件选择器把文件交给浏览器之前不会触发 change；先展示准备态，
+  // 避免选择确认后输入框长时间没有任何反馈（issue #6493）。
+  const [isPreparingFiles, setIsPreparingFiles] = useState(false);
   const [attachmentAlerts, setAttachmentAlerts] = useState<AttachmentAlert[]>([]);
   const attachmentAlertTimersRef = useRef<Map<string, number>>(new Map());
   const [attachmentMenuId, setAttachmentMenuId] = useState<string | null>(null);
@@ -1728,6 +1731,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     };
   }, []);
 
+  // 取消选择时现代浏览器会派发 cancel；老版本浏览器由准备卡片上的关闭按钮兜底。
+  useEffect(() => {
+    const input = fileInputRef.current;
+    if (!input) return;
+    const handleCancel = () => setIsPreparingFiles(false);
+    input.addEventListener('cancel', handleCancel);
+    return () => input.removeEventListener('cancel', handleCancel);
+  }, []);
+
   const pushAttachmentAlert = useCallback((message: string) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const timers = attachmentAlertTimersRef.current;
@@ -2387,6 +2399,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     // Web 直接选择访问者电脑上的文件；桌面端通过原生桥接保留本机路径引用。
     if (!isDesktopBridgeReady && !isDesktopLocalFilePicker()) {
       if (fileInputRef.current) {
+        setIsPreparingFiles(true);
         fileInputRef.current.click();
       } else {
         pushAttachmentAlert(t('chat.inputAttachment.filePickerFailed'));
@@ -2397,7 +2410,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       pushAttachmentAlert(t('chat.inputAttachment.filePickerFailed'));
       return;
     }
+    setIsPreparingFiles(true);
     const result = await selectLocalFiles(true);
+    setIsPreparingFiles(false);
     if (result.ok) {
       appendLocalFilePicks(result.files);
       return;
@@ -2874,7 +2889,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     const hasReadyMedia = readyMediaItems.length > 0;
     // Block only when there is neither text, a ready attachment, nor a
     // selected skill to send.
-    if ((!trimmedBase && !hasReadyMedia && selectedSkills.length === 0) || hasUploadingAttachments || hasAttachmentErrors) return;
+    if ((!trimmedBase && !hasReadyMedia && selectedSkills.length === 0) || hasUploadingAttachments || hasAttachmentErrors || isPreparingFiles) return;
     // In agent mode attachments queue with the task (taskQueue carries mediaItems).
     // Other non-team modes still go through the text-only onInterrupt channel where
     // attachments would be lost, so keep blocking there.
@@ -2966,6 +2981,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     readyMediaItems,
     hasUploadingAttachments,
     hasAttachmentErrors,
+    isPreparingFiles,
     composerDisabled,
     isListening,
     isTranscribing,
@@ -3007,7 +3023,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       !isLoadingHistory &&
       !isImageInterruptBlocked &&
       !hasUploadingAttachments &&
-      !hasAttachmentErrors);
+      !hasAttachmentErrors &&
+      !isPreparingFiles);
 
   const handleSendButtonClick = useCallback(() => {
     if (designLandingSubmitting) return;
@@ -3511,6 +3528,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
   const handleFileInputChange = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
+      setIsPreparingFiles(false);
       const files = event.target.files;
       if (files) {
         void appendAttachmentFiles(files);
@@ -4102,7 +4120,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             enterprise && 'chat-input-container--enterprise',
             showWorkContextRow && 'chat-input-container--work-home',
             (isModeMenuOpen || workMenuOpen) && 'chat-input-container--menu-open',
-            composerSuggestion && !showSlashSuggestionBelow && 'chat-input-container--suggestion-open',
+            composerSuggestion && 'chat-input-container--suggestion-open',
             isListening && 'chat-input-container--recording',
             isCompactRunning && 'chat-input-container--command-pending',
           )}
@@ -4124,7 +4142,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           )}
 
           <div className="chat-input-body" data-testid="chat-panel-input-body">
-            {(attachments.length > 0 || referencedAssetCards.length > 0) && (
+            {(attachments.length > 0 || referencedAssetCards.length > 0 || isPreparingFiles) && (
               <div className="chat-input-attachment-panel" data-testid="chat-panel-input-attachment-panel">
                 <div
                   className={cx(
@@ -4133,6 +4151,51 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                   )}
                   data-testid="chat-panel-input-attachment-grid"
                 >
+                  {isPreparingFiles && (
+                    <div
+                      className="chat-input-attachment-card chat-input-attachment-card--uploading"
+                      data-testid="chat-panel-input-attachment-preparing"
+                      role="status"
+                      aria-live="polite"
+                    >
+                      <div
+                        className="chat-input-attachment-preview"
+                        aria-hidden="true"
+                        data-testid="chat-panel-input-attachment-preparing-preview"
+                      >
+                        <Loader2 className="chat-input-attachment-spin" size={20} strokeWidth={2} />
+                      </div>
+                      <div
+                        className="chat-input-attachment-main"
+                        data-testid="chat-panel-input-attachment-preparing-main"
+                      >
+                        <div
+                          className="chat-input-attachment-name"
+                          data-testid="chat-panel-input-attachment-preparing-name"
+                        >
+                          <span className="chat-input-attachment-name-text">
+                            {t('chat.inputAttachment.preparingFiles')}
+                          </span>
+                        </div>
+                        <div
+                          className="chat-input-attachment-meta"
+                          data-testid="chat-panel-input-attachment-preparing-meta"
+                        >
+                          <span>{t('chat.inputAttachment.preparingFilesHint')}</span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="chat-input-attachment-remove"
+                        data-testid="chat-panel-input-attachment-preparing-dismiss"
+                        title={t('chat.inputAttachment.cancelPreparing')}
+                        aria-label={t('chat.inputAttachment.cancelPreparing')}
+                        onClick={() => setIsPreparingFiles(false)}
+                      >
+                        <X size={12} strokeWidth={2} />
+                      </button>
+                    </div>
+                  )}
                   {attachments.map((attachment) => (
                     <div
                       className={cx(

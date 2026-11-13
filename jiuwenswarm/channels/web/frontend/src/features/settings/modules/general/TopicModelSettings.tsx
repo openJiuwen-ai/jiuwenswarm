@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Check } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button, Loading } from '../../../../components/ui';
 import { settingsActionIcons } from '../../../../assets/settings';
@@ -7,9 +8,11 @@ import type { SettingsCustomItemProps } from '../../registry/types';
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
 import { useSettingsSource } from '../../services/SettingsSourceProvider';
 import { MediaModelConfigDialog } from '../agent/MediaModelConfigDialog';
+import { buildSavedTopicModelValidationPayload } from '../agent/mediaModelConfig';
 import '../agent/AgentSettings.css';
 
 type TopicModelConfig = Record<string, string | boolean>;
+type ValidationToast = { success: boolean; message: string };
 
 function useTopicModel(revision?: unknown, includeApiKey = false) {
   const { t } = useTranslation();
@@ -95,11 +98,59 @@ export function TopicModelSummary({ disabled, onEditingChange }: SettingsCustomI
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
   const [saveError, setSaveError] = useState('');
+  const [validationToast, setValidationToast] = useState<ValidationToast | null>(null);
+  const validationRequestId = useRef(0);
+  const toastTimer = useRef<number | null>(null);
   useEffect(() => {
     onEditingChange?.(editing || deleting);
     return () => onEditingChange?.(false);
   }, [editing, deleting, onEditingChange]);
+  useEffect(() => () => {
+    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
+  }, []);
+  const showValidationToast = useCallback((toast: ValidationToast) => {
+    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
+    setValidationToast(toast);
+    toastTimer.current = window.setTimeout(() => setValidationToast(null), 4000);
+  }, []);
+  const testConnection = async () => {
+    const requestId = ++validationRequestId.current;
+    setTesting(true);
+    try {
+      const status = await request<{ model_config?: TopicModelConfig }>(
+        'topic_starters.status',
+        { include_api_key: true },
+      );
+      if (requestId !== validationRequestId.current) return;
+      const payload = buildSavedTopicModelValidationPayload(status.model_config ?? {});
+      if (!payload) {
+        showValidationToast({
+          success: false,
+          message: t('settingsPanel.models.validationFailed'),
+        });
+        return;
+      }
+      await request('config.validate_model', payload, { timeoutMs: 60_000 });
+      if (requestId !== validationRequestId.current) return;
+      showValidationToast({
+        success: true,
+        message: t('settingsPanel.models.validationOk'),
+      });
+    } catch (failure) {
+      if (requestId !== validationRequestId.current) return;
+      const detail = failure instanceof Error ? failure.message.trim() : '';
+      showValidationToast({
+        success: false,
+        message: detail
+          ? t('settingsPanel.models.validationFailedWithDetail', { detail })
+          : t('settingsPanel.models.validationFailed'),
+      });
+    } finally {
+      if (requestId === validationRequestId.current) setTesting(false);
+    }
+  };
   const remove = async () => {
     setBusy(true);
     setSaveError('');
@@ -122,20 +173,43 @@ export function TopicModelSummary({ disabled, onEditingChange }: SettingsCustomI
           data-testid="settings-topic-model-summary">
           <strong className="settings-agent-media__model-name" data-testid="settings-topic-model-name">{config.model}</strong>
           <div className="settings-agent-media__actions" data-testid="settings-topic-model-actions">
+            <Button variant="quiet" size="sm" icon={<settingsActionIcons.test aria-hidden />}
+              title={t('settingsPanel.models.testConnection')}
+              aria-label={t('settingsPanel.models.testConnection')}
+              loading={testing}
+              disabled={disabled || !isConnected || busy || testing}
+              onClick={() => void testConnection()}
+              data-testid="settings-topic-model-test-btn" />
             <Button variant="quiet" size="sm" icon={<settingsActionIcons.edit aria-hidden />}
-              title={t('common.modify')} aria-label={t('common.modify')} disabled={disabled || !isConnected || busy}
+              title={t('common.modify')} aria-label={t('common.modify')}
+              disabled={disabled || !isConnected || busy || testing}
               onClick={() => setEditing(true)} data-testid="settings-topic-model-edit" />
             <Button variant="quiet" size="sm" icon={<settingsActionIcons.delete aria-hidden />}
-              title={t('common.delete')} aria-label={t('common.delete')} disabled={disabled || !isConnected || busy}
+              title={t('common.delete')} aria-label={t('common.delete')}
+              disabled={disabled || !isConnected || busy || testing}
               onClick={() => { setSaveError(''); setDeleting(true); }} data-testid="settings-topic-model-delete" />
           </div>
         </div>
       ) : null}
       {error ? <p role="alert" data-testid="settings-topic-model-error">{error}</p> : null}
       {editing ? <TopicModelConfiguration enableOnSave={false} onSave={load} onClose={() => setEditing(false)} /> : null}
-      <SettingsConfirmDialog open={deleting} title={t('common.delete')}
-        message={t('settingsPanel.general.topicModelDelete')} confirming={busy} error={saveError}
-        onCancel={() => setDeleting(false)} onConfirm={() => void remove()} />
+      {deleting ? (
+        <SettingsConfirmDialog open={deleting} title={t('common.delete')}
+          message={t('settingsPanel.general.topicModelDelete')} confirming={busy} error={saveError}
+          onCancel={() => setDeleting(false)} onConfirm={() => void remove()} />
+      ) : null}
+      {validationToast ? (
+        <div
+          className={`settings-models__toast settings-models__toast--${validationToast.success ? 'success' : 'error'}`}
+          role={validationToast.success ? 'status' : 'alert'}
+          aria-live="polite"
+          data-testid="settings-topic-model-toast"
+          data-variant={validationToast.success ? 'success' : 'error'}
+        >
+          {validationToast.success ? <Check aria-hidden /> : null}
+          <span>{validationToast.message}</span>
+        </div>
+      ) : null}
     </>
   );
 }
