@@ -787,6 +787,7 @@ from jiuwenswarm.common.mcp_config import (
     extract_enabled_mcp_server_entries,
     extract_office_claw_mcp,
     extract_request_mcp_servers,
+    filter_request_mcp_servers_by_template,
     is_asyncio_outer_cancellation,
     is_request_scoped_mcp_tool_id,
     list_office_claw_mcp_tools,
@@ -3572,6 +3573,48 @@ class JiuWenSwarmDeepAdapter:
             request, generation, server_names, office_claw_config, leftover_servers,
         )
 
+    def _filter_request_mcp_servers_by_enterprise_template(
+        self,
+        request: AgentRequest,
+        request_mcp_servers: dict[str, dict[str, Any]] | None,
+        buffers: _RequestMcpToolBuffers,
+        *,
+        skip_office_claw: bool,
+    ) -> dict[str, dict[str, Any]] | None:
+        """企业版：丢弃与管理端 MCP 模板不一致的请求级连接器。
+
+        模板快照取自 ``_startup_config_base.mcp.servers``（企业配置加载时整表
+        替换）。不一致的连接器不建连、不注册，并记入 unavailable_connectors
+        供目录工具提示；模板为空时全部拒绝（fail-closed）。个人版不进入本路径。
+        """
+        if not request_mcp_servers:
+            return request_mcp_servers
+        candidates = {
+            name: config
+            for name, config in request_mcp_servers.items()
+            if not (skip_office_claw and name == "office-claw")
+        }
+        config_base = getattr(self, "_startup_config_base", None)
+        kept, rejected = filter_request_mcp_servers_by_template(
+            candidates,
+            extract_enabled_mcp_server_entries(
+                config_base if isinstance(config_base, dict) else {}
+            ),
+        )
+        if rejected:
+            resource_id = _enterprise_resource_id_from_request(request)
+            for name, reason in rejected.items():
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] enterprise request MCP connector rejected: "
+                    "request_id=%s session_id=%s enterprise_resource_id=%s name=%s reason=%s",
+                    request.request_id, request.session_id, resource_id, name, reason,
+                )
+                buffers.unavailable_connectors[name] = reason
+        result = dict(kept or {})
+        if skip_office_claw and "office-claw" in request_mcp_servers:
+            result["office-claw"] = request_mcp_servers["office-claw"]
+        return result or None
+
     async def _register_request_mcp_tools(
         self,
         request: AgentRequest,
@@ -3598,6 +3641,11 @@ class JiuWenSwarmDeepAdapter:
             )
 
         try:
+            if is_enterprise():
+                request_mcp_servers = self._filter_request_mcp_servers_by_enterprise_template(
+                    request, request_mcp_servers, buffers,
+                    skip_office_claw=office_claw_config is not None,
+                )
             if server_names:
                 snapshots = await get_mcp_server_registry().snapshot_for_chat(server_names)
                 for name, tool_defs, params in snapshots:
