@@ -153,6 +153,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261112_2025_permission-profile-refresh](jiuwenswarm/server/B_20261112_2025_permission-profile-refresh.md) | B | 刷新后智能审批档位错误回显为默认权限 | nypdmax | jiuwenswarm/common, jiuwenswarm/server/control | jiuwenswarm/common/permission_mode.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, tests/unit_tests/agentserver/test_front_permission_profile.py | 无独立 D：补齐既有 config.get/config.set 权限档位回显契约，无独立设计；审批决策与持久化格式不变。 |
+| [B_20261113_1051_single-session-metadata-io](jiuwenswarm/server/control/B_20261113_1051_single-session-metadata-io.md) | B | 单项会话元数据查询阻塞 Front 的 IPC 消费 | 刘瑜 | jiuwenswarm/server/control | jiuwenswarm/server/control/repositories/session_repository.py, tests/unit_tests/server/test_control_query_execution.py, tests/unit_tests/server/test_session_repository.py, tests/unit_tests/agentserver/test_ipc_backpressure.py | 无独立 D：在既有 Front 有界查询执行边界内补齐单项查询，无独立设计；公开响应与持久化语义不变。 |
 
 <a id="module-14"></a>
 

@@ -118,6 +118,11 @@ def _load_list(request: AgentRequest) -> AgentResponse:
 
 
 async def handle_get_metadata(request: AgentRequest) -> AgentResponse:
+    """Keep metadata file locks, disk reads and inference off the Front loop."""
+    return await run_control_query(partial(_load_metadata, request))
+
+
+def _load_metadata(request: AgentRequest) -> AgentResponse:
     params = request.params if isinstance(request.params, dict) else {}
     sid = params.get("session_id")
     if not isinstance(sid, str) or not sid.strip():
