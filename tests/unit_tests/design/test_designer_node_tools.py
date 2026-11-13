@@ -244,6 +244,54 @@ async def test_unresolvable_generate_ticket_is_logged(node_tools, run_env, caplo
     assert "brief generate rejected: error=ticket_run_mismatch" in caplog.text
 
 
+_CLIP_TOOLS = _GROUP / "agents" / "clip" / "tools"
+
+
+@pytest.fixture
+def clip_tools(monkeypatch) -> ModuleType:
+    monkeypatch.syspath_prepend(str(_CLIP_TOOLS))
+    for name in ("support", "designer_node_tools"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    spec = importlib.util.spec_from_file_location(
+        "generate_clip_under_test", _CLIP_TOOLS / "generate_shot_video.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    yield module
+    for name in ("support", "designer_node_tools"):
+        sys.modules.pop(name, None)
+
+
+async def test_a_failed_clip_call_does_not_spend_the_one_shot(clip_tools, monkeypatch):
+    generate_clip = clip_tools.GenerateShotVideo()
+    calls = {"n": 0}
+
+    async def flaky(*args, **kwargs):
+        calls["n"] += 1
+        ok = calls["n"] > 1
+        return {
+            "success": ok,
+            "video_uri": "file:///v.mp4" if ok else None,
+            "error": None if ok else "generation_failed",
+        }
+
+    monkeypatch.setattr(
+        clip_tools,
+        "node_tools",
+        lambda: SimpleNamespace(
+            generate_node_output=flaky, note_rejection=lambda *a, **k: None
+        ),
+    )
+
+    first = await generate_clip.invoke({"shot_ticket": _ticket("n_clip"), "prompt": "???"})
+    assert first["success"] is False
+    second = await generate_clip.invoke({"shot_ticket": _ticket("n_clip"), "prompt": "???"})
+    assert second["success"] is True
+    third = await generate_clip.invoke({"shot_ticket": _ticket("n_clip"), "prompt": "???"})
+    assert third["error"] == "generate_already_called"
+    assert calls["n"] == 2
+
+
 @pytest.fixture
 def generate_brief(monkeypatch) -> Any:
     monkeypatch.syspath_prepend(str(_BRIEF_TOOLS))
