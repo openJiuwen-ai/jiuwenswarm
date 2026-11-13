@@ -50,6 +50,14 @@ export interface CommandContext {
     skills?: string[],
   ) => string | null;
   sessionId: string;
+  /** Resolve an existing startup/draft creation before pinning a command to it. */
+  resolveModeSessionId?: () => Promise<string>;
+  /** Read the live Session ID after an asynchronous command request. */
+  getCurrentSessionId?: () => string;
+  /** Read the mode after startup has resolved the Session. */
+  getCurrentMode?: () => ClientMode;
+  /** Read draft state after resolving any pending Session creation. */
+  isCurrentSessionDraft?: () => boolean;
   preferredLanguage: PreferredLanguage;
   entries: HistoryItem[];
   /** Sidechain / team messages (not part of main conversation entries) */
@@ -57,6 +65,10 @@ export interface CommandContext {
   themeName: ThemeName;
   accentColor: AccentColorName;
   updateSession: (id: string) => void;
+  enterDraftSession: () => string;
+  previousSessionId?: string;
+  isDraftSession?: boolean;
+  restoreDraftSession?: (id: string, previousId: string, mode: ClientMode) => void;
   addItem: (item: HistoryItem) => void;
   /** 设置 /btw 侧问题覆盖层（独立于 transcript 渲染，不受滚动影响） */
   setBtwOverlay?: (question: string, answer: string) => void;
@@ -79,6 +91,8 @@ export interface CommandContext {
   connectionStatus: ConnectionStatus;
   mode: ClientMode;
   setMode: (mode: ClientMode) => void;
+  markModeUnconfirmed?: () => void;
+  markModeConfirmed?: () => void;
   markPlanEntryFromSlashCommand?: () => void;
   setModel: (name: string) => void;
   /** 全局选中 agentos 备份模型（请求级注入）；传 null 清空，恢复启动默认。

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { CliPiAppState } from "../dist/app-state.js";
+import { WsClient } from "../dist/core/ws-client.js";
 
 import {
   AppScreen,
@@ -16,10 +18,11 @@ import {
 } from "../dist/ui/app-screen.js";
 import { CheckboxList } from "../dist/ui/components/checkbox-list.js";
 import { visibleWidth } from "@mariozechner/pi-tui";
-import { planSwarmflowToggle } from "../dist/core/commands/builtins/swarmflow.js";
+import { createSwarmflowCommand, planSwarmflowToggle } from "../dist/core/commands/builtins/swarmflow.js";
 import {
   buildModeAutocompleteItems,
   resolveModeTarget,
+  switchMode,
 } from "../dist/core/commands/builtins/mode.js";
 import { resolvePlanTarget, resolveNormalTarget } from "../dist/core/commands/builtins/plan.js";
 import { buildAppScreenLines } from "../dist/ui/screen-layout.js";
@@ -85,6 +88,562 @@ assert.equal(resolveModeTarget("agent.plan"), "agent.work.plan");
 assert.equal(resolveModeTarget("code.normal"), "agent.code.normal");
 assert.equal(resolveModeTarget("code.plan"), "agent.code.plan");
 assert.equal(resolveModeTarget("team.normal"), "team.work.normal");
+
+const modeSwitchRequests = [];
+const modeSwitchEvents = [];
+let visibleMode = "agent.code.normal";
+const modeSwitchContext = {
+  sessionId: "same-session",
+  mode: visibleMode,
+  addItem: (item) => modeSwitchEvents.push(item),
+  setMode: (mode) => {
+    visibleMode = mode;
+    modeSwitchContext.mode = mode;
+  },
+  sendEventOnly: () => {
+    throw new Error("mode switch must not interrupt active work");
+  },
+  request: async (method, params) => {
+    modeSwitchRequests.push({ method, params });
+    return { mode: params.mode, changed: true };
+  },
+};
+assert.equal(await switchMode(modeSwitchContext, "agent.work.normal"), true);
+assert.equal(visibleMode, "agent.work.normal");
+assert.deepEqual(modeSwitchRequests[0], {
+  method: "mode.set",
+  params: { session_id: "same-session", mode: "agent.work.normal", expected_mode: "agent.code.normal" },
+});
+
+modeSwitchContext.request = async () => {
+  throw new Error("SESSION_BUSY");
+};
+assert.equal(await switchMode(modeSwitchContext, "team.work.normal"), false);
+assert.equal(visibleMode, "agent.work.normal");
+assert.ok(modeSwitchEvents.some((item) => /SESSION_BUSY/.test(item.content)));
+
+// A busy refusal of the retry settles both attempts: guide the user instead of reading the old mode.
+const busyRetryMethods = [];
+modeSwitchContext.request = async (method) => {
+  busyRetryMethods.push(method);
+  if (busyRetryMethods.length === 1) throw new Error("request timeout: mode.set");
+  throw Object.assign(new Error("session is busy"), { code: "SESSION_BUSY" });
+};
+assert.equal(await switchMode(modeSwitchContext, "team.work.normal"), false);
+assert.deepEqual(busyRetryMethods, ["mode.set", "mode.set"]);
+assert.equal(visibleMode, "agent.work.normal");
+assert.ok(modeSwitchEvents.some((item) => /Stop the current work/.test(item.content)));
+
+let timeoutAttempts = 0;
+modeSwitchContext.request = async (method, params) => {
+  timeoutAttempts += 1;
+  if (timeoutAttempts === 1) throw new Error("request timeout: mode.set");
+  return { mode: params.mode, changed: false };
+};
+assert.equal(await switchMode(modeSwitchContext, "agent.code.normal"), true);
+assert.equal(timeoutAttempts, 2);
+assert.equal(visibleMode, "agent.code.normal");
+
+let modeGetReads = 0;
+let unconfirmedSwitches = 0;
+modeSwitchContext.markModeUnconfirmed = () => { unconfirmedSwitches += 1; };
+modeSwitchContext.request = async (method) => {
+  if (method === "mode.set") throw new Error("request timeout: mode.set");
+  modeGetReads += 1;
+  return { mode: "team.work.normal" };
+};
+assert.equal(await switchMode(modeSwitchContext, "team.work.normal"), true);
+assert.equal(modeGetReads, 1);
+assert.equal(visibleMode, "team.work.normal");
+
+modeSwitchContext.request = async (method) => {
+  if (method === "mode.set") throw new Error("request timeout: mode.set");
+  return { mode: "team.work.normal" };
+};
+assert.equal(await switchMode(modeSwitchContext, "agent.code.normal"), false);
+assert.equal(visibleMode, "team.work.normal");
+
+modeSwitchContext.request = async (method) => {
+  throw new Error(method === "mode.set" ? "request timeout: mode.set" : "request timeout: mode.get");
+};
+assert.equal(await switchMode(modeSwitchContext, "agent.code.normal"), false);
+assert.equal(unconfirmedSwitches, 1);
+assert.equal(visibleMode, "team.work.normal");
+
+for (const [error, mode] of [
+  [new Error("AgentServer request timed out"), "agent.code.normal"],
+  [new Error("AgentServer WebSocket connection closed"), "team.work.normal"],
+  [Object.assign(new Error("agent server request failed: AgentServer WebSocket connection closed"),
+    { code: "BAD_REQUEST" }), "team.code.normal"],
+]) {
+  let attempts = 0;
+  modeSwitchContext.request = async (method) => {
+    if (method === "mode.set") {
+      attempts += 1;
+      throw error;
+    }
+    assert.equal(method, "mode.get");
+    return { mode };
+  };
+  assert.equal(await switchMode(modeSwitchContext, mode), true);
+  assert.equal(attempts, 2);
+  assert.equal(visibleMode, mode);
+  assert.equal(unconfirmedSwitches, 1);
+}
+
+let disconnectedAttempts = 0;
+modeSwitchContext.request = async (method, params) => {
+  assert.equal(method, "mode.set");
+  disconnectedAttempts += 1;
+  if (disconnectedAttempts === 1) throw new Error("disconnected");
+  return { mode: params.mode, changed: false };
+};
+assert.equal(await switchMode(modeSwitchContext, "agent.work.normal"), true);
+assert.equal(disconnectedAttempts, 2);
+assert.equal(visibleMode, "agent.work.normal");
+
+const responseClient = Object.create(WsClient.prototype);
+responseClient.pending = new Map();
+responseClient.handlers = [];
+const responseError = new Promise((resolve) => {
+  responseClient.pending.set("conflict", {
+    resolve: () => { throw new Error("unexpected success"); },
+    reject: resolve,
+    timer: setTimeout(() => { throw new Error("response was not received"); }, 1000),
+  });
+});
+responseClient.dispatchFrame({
+  type: "res", id: "conflict", ok: false, payload: {},
+  code: "MODE_CONFLICT", error: "session mode changed",
+});
+const capturedResponseError = await responseError;
+assert.equal(capturedResponseError.code, "MODE_CONFLICT");
+assert.equal(capturedResponseError.message, "session mode changed");
+
+const timeoutClient = Object.create(WsClient.prototype);
+timeoutClient.pending = new Map();
+timeoutClient.ws = { readyState: 1, send: () => {} };
+await assert.rejects(timeoutClient.request("timed", "mode.set", {}, 1), (error) => {
+  assert.equal(error.code, "REQUEST_TIMEOUT");
+  return true;
+});
+
+let codedAttempts = 0;
+modeSwitchContext.request = async (method, params) => {
+  assert.equal(method, "mode.set");
+  codedAttempts += 1;
+  if (codedAttempts === 1) throw Object.assign(new Error("changed transport wording"), { code: "REQUEST_TIMEOUT" });
+  return { mode: params.mode, changed: true };
+};
+assert.equal(await switchMode(modeSwitchContext, "agent.work.normal"), true);
+assert.equal(codedAttempts, 2);
+
+modeSwitchContext.request = async (method) => {
+  throw new Error(method === "mode.set" ? "AgentServer WebSocket connection closed" : "disconnected");
+};
+assert.equal(await switchMode(modeSwitchContext, "agent.code.normal"), false);
+assert.equal(unconfirmedSwitches, 2);
+assert.equal(visibleMode, "agent.work.normal");
+
+const conflictRequests = [];
+modeSwitchContext.request = async (method) => {
+  conflictRequests.push(method);
+  if (method === "mode.set") {
+    throw Object.assign(new Error("session mode changed"), { code: "MODE_CONFLICT" });
+  }
+  return { mode: "team.code.normal" };
+};
+assert.equal(await switchMode(modeSwitchContext, "agent.code.normal"), false);
+assert.deepEqual(conflictRequests, ["mode.set", "mode.get"]);
+assert.equal(visibleMode, "team.code.normal");
+assert.ok(modeSwitchEvents.some((item) => /current mode is team.code/.test(item.content)));
+
+for (const [wireMode, canonical] of [["team", "team.work.normal"], ["code.team", "team.code.normal"]]) {
+  let mode = canonical;
+  let confirmed = 0;
+  const ctx = {
+    sessionId: "legacy-mode", mode: canonical,
+    request: async () => ({ mode: wireMode, changed: false }),
+    setMode: (value) => { mode = value; },
+    markModeConfirmed: () => { confirmed += 1; },
+    addItem: () => {},
+  };
+  assert.equal(await switchMode(ctx, canonical), true);
+  assert.equal(mode, canonical);
+  assert.equal(confirmed, 1);
+}
+
+for (const payload of [{}, null, { mode: null }, { mode: "unknown" }, { mode: 1 },
+  { mode: "team.design" }, { mode: "toString" }, { mode: "constructor" }]) {
+  let unconfirmed = false;
+  const errors = [];
+  const ctx = {
+    sessionId: "invalid-mode", mode: "agent.code.normal",
+    request: async () => payload,
+    setMode: () => assert.fail("Invalid mode must not reach UI state"),
+    markModeConfirmed: () => assert.fail("Invalid mode must not confirm a switch"),
+    markModeUnconfirmed: () => { unconfirmed = true; },
+    addItem: (item) => errors.push(item),
+  };
+  assert.equal(await switchMode(ctx, "team.work.normal"), false);
+  assert.equal(unconfirmed, true);
+  assert.ok(errors.some((item) => /mode.set returned an unsupported mode/.test(item.content)));
+  // The user can explicitly retry /mode after a malformed response.
+  ctx.request = async () => ({ mode: "team.work.normal", changed: true });
+  let repairedMode;
+  ctx.setMode = (value) => { repairedMode = value; };
+  ctx.markModeConfirmed = () => { unconfirmed = false; };
+  assert.equal(await switchMode(ctx, "team.work.normal"), true);
+  assert.equal(repairedMode, "team.work.normal");
+  assert.equal(unconfirmed, false);
+}
+
+modeSwitchContext.request = async (method) => {
+  if (method === "mode.set") {
+    throw Object.assign(new Error("session mode changed"), { code: "MODE_CONFLICT" });
+  }
+  throw new Error("request timeout: mode.get");
+};
+assert.equal(await switchMode(modeSwitchContext, "agent.code.normal"), false);
+assert.equal(unconfirmedSwitches, 3);
+assert.equal(visibleMode, "team.code.normal");
+
+let activeSessionId = "session-a";
+let activeMode = "team.code.normal";
+let resolveOriginalSet;
+const originalSetResponse = new Promise((resolve) => { resolveOriginalSet = resolve; });
+const switchedSessionRequests = [];
+const switchedSessionItems = [];
+let switchedSessionMarks = 0;
+const switchedSessionContext = {
+  sessionId: "session-a",
+  getCurrentSessionId: () => activeSessionId,
+  mode: "agent.code.normal",
+  request: async (method, params) => {
+    switchedSessionRequests.push({ method, params });
+    return originalSetResponse;
+  },
+  setMode: (mode) => { activeMode = mode; },
+  markModeConfirmed: () => { switchedSessionMarks += 1; },
+  markModeUnconfirmed: () => { switchedSessionMarks += 1; },
+  addItem: (item) => switchedSessionItems.push(item),
+};
+const pendingOriginalSet = switchMode(switchedSessionContext, "agent.work.normal");
+activeSessionId = "session-b";
+resolveOriginalSet({ mode: "agent.work.normal", changed: true });
+assert.equal(await pendingOriginalSet, false);
+assert.deepEqual(switchedSessionRequests, [{
+  method: "mode.set",
+  params: { session_id: "session-a", mode: "agent.work.normal", expected_mode: "agent.code.normal" },
+}]);
+assert.equal(activeMode, "team.code.normal");
+assert.equal(switchedSessionMarks, 0);
+assert.equal(switchedSessionItems.length, 0);
+
+activeSessionId = "session-a";
+let rejectOriginalSet;
+const timedOutOriginalSet = new Promise((_resolve, reject) => { rejectOriginalSet = reject; });
+const retryRequests = [];
+switchedSessionContext.request = async (method, params) => {
+  retryRequests.push({ method, params });
+  if (retryRequests.length === 1) return timedOutOriginalSet;
+  throw new Error(`request timeout: ${method}`);
+};
+const pendingRetry = switchMode(switchedSessionContext, "team.work.normal");
+activeSessionId = "session-b";
+rejectOriginalSet(new Error("request timeout: mode.set"));
+assert.equal(await pendingRetry, false);
+assert.deepEqual(retryRequests.map(({ method, params }) => [method, params.session_id]), [
+  ["mode.set", "session-a"],
+  ["mode.set", "session-a"],
+  ["mode.get", "session-a"],
+]);
+assert.equal(activeMode, "team.code.normal");
+assert.equal(switchedSessionMarks, 0);
+assert.equal(switchedSessionItems.length, 0);
+assert.equal(await switchMode(switchedSessionContext, "team.code.normal"), false);
+assert.equal(retryRequests.length, 3);
+
+let resolveBootSession;
+const bootSessionReady = new Promise((resolve) => { resolveBootSession = resolve; });
+let bootActiveSessionId = "placeholder";
+let bootVisibleMode = "agent.code.normal";
+const bootModeRequests = [];
+const bootModeContext = {
+  sessionId: "placeholder",
+  resolveModeSessionId: () => bootSessionReady,
+  getCurrentSessionId: () => bootActiveSessionId,
+  getCurrentMode: () => "team.code.normal",
+  mode: "agent.code.normal",
+  request: async (method, params) => {
+    bootModeRequests.push({ method, params });
+    return { mode: params.mode, changed: true };
+  },
+  setMode: (mode) => { bootVisibleMode = mode; },
+  addItem: () => {},
+};
+const pendingBootMode = switchMode(bootModeContext, "team.work.normal");
+bootActiveSessionId = "created-session";
+resolveBootSession("created-session");
+assert.equal(await pendingBootMode, true);
+assert.deepEqual(bootModeRequests, [{
+  method: "mode.set",
+  params: { session_id: "created-session", mode: "team.work.normal", expected_mode: "team.code.normal" },
+}]);
+assert.equal(bootVisibleMode, "team.work.normal");
+
+const pinnedFrames = [];
+const routedState = new CliPiAppState({
+  send: () => {},
+  disconnect: () => {},
+  request: async (_id, method, params) => {
+    pinnedFrames.push({ method, params });
+    return { payload: { mode: "agent.work.normal" } };
+  },
+}, "session-a");
+routedState.bootSessionCreation = null;
+const routedContext = routedState.getCommandContext();
+routedState.updateSession("session-b");
+await routedContext.request("mode.get", { session_id: routedContext.sessionId });
+assert.equal(routedContext.sessionId, "session-a");
+assert.equal(routedContext.getCurrentSessionId(), "session-b");
+assert.equal(pinnedFrames[0].params.session_id, "session-a");
+
+const sentAfterUnconfirmedSwitch = [];
+const appState = new CliPiAppState({
+  send: (frame) => sentAfterUnconfirmedSwitch.push(frame),
+  disconnect: () => {},
+}, "mode-sync-session");
+appState.connectionStatus = "connected";
+appState.bootSessionCreation = null;
+appState.request = async (method) => {
+  throw new Error(method === "mode.set" ? "agent server request failed: AgentServer WebSocket connection closed" : "socket not connected: mode.get");
+};
+assert.equal(await switchMode(appState, "team.work.normal"), false);
+assert.equal(appState.isModeUnconfirmed(), true);
+assert.equal(appState.sendMessage("blocked after connection loss"), null);
+await appState.modeSyncInFlight;
+assert.equal(sentAfterUnconfirmedSwitch.length, 0);
+appState.request = async (method) => {
+  assert.equal(method, "mode.get");
+  return { mode: "team.work.normal" };
+};
+assert.equal(appState.sendMessage("first attempt"), null);
+assert.equal(sentAfterUnconfirmedSwitch.length, 0);
+await appState.modeSyncInFlight;
+assert.equal(appState.mode, "team.work.normal");
+assert.ok(appState.sendMessage("resend after sync"));
+assert.equal(sentAfterUnconfirmedSwitch[0].method, "chat.send");
+assert.equal(sentAfterUnconfirmedSwitch[0].params.mode, "team.work.normal");
+appState.request = async () => { throw new Error("request timeout: mode.get"); };
+appState.markModeUnconfirmed();
+assert.equal(appState.sendMessage("blocked while offline"), null);
+await appState.modeSyncInFlight;
+assert.equal(appState.sendMessage("still blocked"), null);
+assert.equal(sentAfterUnconfirmedSwitch.length, 1);
+assert.equal(appState.supplement("also blocked"), null);
+assert.equal(sentAfterUnconfirmedSwitch.length, 1);
+await appState.modeSyncInFlight;
+appState.stop();
+routedState.stop();
+
+const attachmentPreview = { type: "image", path: "/tmp/screenshot.png", content: "cached-preview" };
+const unsentEvents = [];
+const unsentHistory = [];
+let restoredInput = "";
+let unsentAttachments = [];
+const unsentScreen = Object.create(AppScreen.prototype);
+Object.assign(unsentScreen, {
+  configEditorState: null,
+  modelList: null,
+  composerAttachments: [attachmentPreview],
+  pastedTextClearTimer: null,
+  expandPastedText: (value) => value,
+  buildOutgoingMessage: (value) => ({ content: value, attachments: [attachmentPreview] }),
+  extractSkillsFromContent: () => [],
+  editor: {
+    setText: (value) => { restoredInput = value; },
+    addToHistory: (value) => unsentHistory.push(value),
+  },
+  tui: { requestRender: () => undefined },
+  state: {
+    recordActivity: () => undefined,
+    getSnapshot: () => ({ sessionId: "mode-sync-session", mode: "agent.code.normal", connectionStatus: "connected", entries: [] }),
+    sendMessage: (_content, attachments) => {
+      unsentAttachments = attachments;
+      return null;
+    },
+    isModeUnconfirmed: () => true,
+    addItem: (item) => unsentEvents.push(item),
+  },
+});
+const unsentRaw = 'Explain @"/tmp/screenshot.png"';
+await unsentScreen.handleSubmit(unsentRaw);
+assert.equal(restoredInput, unsentRaw);
+assert.deepEqual(unsentScreen.composerAttachments, [attachmentPreview]);
+assert.deepEqual(unsentAttachments, [attachmentPreview]);
+assert.equal(unsentHistory.length, 0);
+assert.equal(unsentEvents.some((item) => /offline/.test(item.content)), false);
+unsentScreen.state.getSnapshot = () => ({ sessionId: "mode-sync-session", mode: "agent.code.normal", connectionStatus: "disconnected", entries: [] });
+unsentScreen.state.isModeUnconfirmed = () => false;
+restoredInput = "";
+await unsentScreen.handleSubmit(unsentRaw);
+assert.equal(restoredInput, unsentRaw);
+assert.ok(unsentEvents.some((item) => /offline: waiting for reconnect/.test(item.content)));
+
+const busyModeEvents = [];
+const busyModeRequests = [];
+const busyModeContext = {
+  sessionId: "busy-mode-session",
+  mode: "agent.code.normal",
+  request: async (method, params) => {
+    busyModeRequests.push({ method, params });
+    throw Object.assign(new Error("session is busy"), { code: "SESSION_BUSY" });
+  },
+  setMode: () => assert.fail("A busy Session must keep its current mode"),
+  addItem: (item) => busyModeEvents.push(item),
+};
+const busyModeScreen = Object.create(AppScreen.prototype);
+Object.assign(busyModeScreen, {
+  configEditorState: null,
+  modelList: null,
+  pastedTextClearTimer: null,
+  expandPastedText: (value) => value,
+  buildOutgoingMessage: (value) => ({ content: value, attachments: [] }),
+  editor: { setText: () => {}, addToHistory: () => {} },
+  tui: { requestRender: () => {} },
+  commands: {
+    getInstalledSkills: () => [],
+    resolve: () => ({ name: "mode" }),
+    execute: (_text, ctx) => switchMode(ctx, "team.work.normal"),
+  },
+  state: {
+    recordActivity: () => {},
+    getSnapshot: () => ({ sessionId: "busy-mode-session", mode: "agent.code.normal", entries: [], cancellableWork: true }),
+    getCommandContext: () => busyModeContext,
+    addItem: (item) => busyModeEvents.push(item),
+    askQuestions: () => assert.fail("/mode must not offer automatic cancellation"),
+    sendEventOnly: () => assert.fail("/mode must not interrupt active work"),
+  },
+});
+await busyModeScreen.handleSubmit("/mode team.work");
+assert.equal(busyModeRequests.length, 1);
+assert.equal(busyModeRequests[0].method, "mode.set");
+assert.ok(busyModeEvents.some((item) => /session is busy/.test(item.content)));
+assert.ok(busyModeEvents.some((item) => /Ctrl\+C.*retry \/mode/.test(item.content)));
+
+const swarmflowRequests = [];
+const swarmflowEvents = [];
+const swarmflowContext = {
+  sessionId: "swarmflow-session",
+  mode: "agent.work.normal",
+  addItem: (item) => swarmflowEvents.push(item),
+  setMode: (mode) => { swarmflowContext.mode = mode; },
+  request: async (method, params) => {
+    swarmflowRequests.push(method);
+    if (method === "config.get") return { enable_swarmflow: false };
+    if (method === "mode.set") return { mode: params.mode, changed: true };
+    if (method === "config.set") throw new Error("write failed");
+    throw new Error(`unexpected method: ${method}`);
+  },
+};
+await createSwarmflowCommand().action(swarmflowContext, "on");
+assert.deepEqual(swarmflowRequests, ["config.get", "mode.set", "config.set", "mode.set"]);
+assert.equal(swarmflowContext.mode, "agent.work.normal");
+assert.ok(swarmflowEvents.some((item) => /config.set failed/.test(item.content)));
+
+swarmflowRequests.length = 0;
+swarmflowEvents.length = 0;
+swarmflowContext.request = async (method, params) => {
+  swarmflowRequests.push(method);
+  if (method === "config.get") return { enable_swarmflow: false };
+  if (method === "mode.set" && params.mode === "team.work.normal") {
+    return { mode: params.mode, changed: true };
+  }
+  throw new Error(method === "config.set" ? "write failed" : "MODE_CONFLICT");
+};
+await createSwarmflowCommand().action(swarmflowContext, "on");
+assert.equal(swarmflowContext.mode, "team.work.normal");
+assert.ok(swarmflowEvents.some((item) => /Mode rollback was not confirmed/.test(item.content)));
+
+let resolveRestoredConfig;
+const restoredConfig = new Promise((resolve) => { resolveRestoredConfig = resolve; });
+let restoredSessionId = "boot-placeholder";
+let restoredMode = "agent.code.normal";
+const restoredRequests = [];
+const restoredEvents = [];
+const restoredContext = {
+  sessionId: "boot-placeholder",
+  mode: "agent.code.normal",
+  resolveModeSessionId: async () => "restored-session",
+  getCurrentSessionId: () => restoredSessionId,
+  getCurrentMode: () => restoredMode,
+  setMode: () => { throw new Error("already-team session must not switch mode"); },
+  addItem: (item) => restoredEvents.push(item),
+  request: async (method) => {
+    restoredRequests.push(method);
+    if (method === "config.get") return restoredConfig;
+    if (method === "config.set") throw new Error("write failed");
+    throw new Error(`unexpected mode request: ${method}`);
+  },
+};
+const pendingRestoredToggle = createSwarmflowCommand().action(restoredContext, "on");
+restoredSessionId = "restored-session";
+restoredMode = "team.code.normal";
+resolveRestoredConfig({ enable_swarmflow: false });
+await pendingRestoredToggle;
+assert.deepEqual(restoredRequests, ["config.get", "config.set"]);
+assert.equal(restoredMode, "team.code.normal");
+assert.ok(restoredEvents.some((item) => item.sessionId === "restored-session" && /config.set failed/.test(item.content)));
+restoredEvents.length = 0;
+await createSwarmflowCommand().action(restoredContext, "");
+assert.ok(restoredEvents.some((item) => /mode: team.code/.test(item.content)));
+
+let rollbackLiveMode = "agent.work.normal";
+const liveRollbackRequests = [];
+const liveRollbackContext = {
+  sessionId: "rollback-session",
+  mode: "agent.code.normal",
+  getCurrentSessionId: () => "rollback-session",
+  getCurrentMode: () => rollbackLiveMode,
+  setMode: (mode) => { rollbackLiveMode = mode; },
+  addItem: () => {},
+  request: async (method, params) => {
+    liveRollbackRequests.push({ method, params });
+    if (method === "config.get") return { enable_swarmflow: false };
+    if (method === "mode.set") return { mode: params.mode, changed: true };
+    if (method === "config.set") throw new Error("write failed");
+    throw new Error(`unexpected method: ${method}`);
+  },
+};
+await createSwarmflowCommand().action(liveRollbackContext, "on");
+assert.deepEqual(
+  liveRollbackRequests.filter(({ method }) => method === "mode.set").map(({ params }) => params.mode),
+  ["team.work.normal", "agent.work.normal"],
+);
+assert.equal(rollbackLiveMode, "agent.work.normal");
+
+let resolveStaleConfig;
+const staleConfig = new Promise((resolve) => { resolveStaleConfig = resolve; });
+let staleActiveSessionId = "session-a";
+const staleSwarmflowRequests = [];
+const staleSwarmflowContext = {
+  sessionId: "session-a",
+  mode: "agent.code.normal",
+  getCurrentSessionId: () => staleActiveSessionId,
+  getCurrentMode: () => "team.code.normal",
+  addItem: () => { throw new Error("old session must not update the new view"); },
+  request: async (method) => {
+    staleSwarmflowRequests.push(method);
+    if (method === "config.get") return staleConfig;
+    throw new Error(`unexpected request after session switch: ${method}`);
+  },
+};
+const pendingStaleSwarmflow = createSwarmflowCommand().action(staleSwarmflowContext, "on");
+staleActiveSessionId = "session-b";
+resolveStaleConfig({ enable_swarmflow: false });
+await pendingStaleSwarmflow;
+assert.deepEqual(staleSwarmflowRequests, ["config.get"]);
 
 // formatModeForDisplay：小写 + 去掉 .normal 段；.plan 保留
 assert.equal(formatModeForDisplay("agent.work.normal"), "agent.work");
@@ -638,7 +1197,10 @@ const expandedTeamLines = buildAppScreenLines(teamSnapshot, {
   ...teamLayoutOptions,
   showTeamPanel: true,
 });
-assert.equal(expandedTeamLines.some((line) => line.includes("teammate")), true);
+assert.equal(
+  expandedTeamLines.some((line) => line.includes("teammate")),
+  true,
+);
 
 const btwMarkdownLines = buildAppScreenLines(
   {
@@ -1504,7 +2066,7 @@ await projectInitCommand.action(
     },
     request: async (method, params) => {
       projectInitRequests.push({ method, params });
-      if (method === "mode.set") return {};
+      if (method === "mode.set") return { mode: params.mode, changed: true };
       if (method === "harmonyos.project_init") {
         return {
           ok: true,

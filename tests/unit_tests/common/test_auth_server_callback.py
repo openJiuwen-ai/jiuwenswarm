@@ -131,10 +131,10 @@ def test_authorize_url_points_at_the_exchange_and_state_carries_the_fingerprint(
 
 
 def test_claimed_code_completes_the_login(service, exchange):
-    exchange.claim_responses = [(202, {"pending": True}), (200, {"code": "auth-code-1"})]
     request = service.create_authorization_request()
 
     assert service.claim(request["state"], request["claimToken"]) is None
+    exchange.claim_responses = [(200, {"code": "auth-code-1"})]
     _wait_for(lambda: (service.flow.pending.get(request["state"]) or SimpleNamespace(session_id=None)).session_id)
     session = service.claim(request["state"], request["claimToken"])
     assert session is not None and session.user_id == "openid-1"

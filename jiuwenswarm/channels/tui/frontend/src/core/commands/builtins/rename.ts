@@ -18,6 +18,15 @@ export function createRenameCommand(): SlashCommand {
     action: async (ctx, args) => {
       const value = args.trim();
       try {
+        if (ctx.isDraftSession) {
+          if (value) ctx.setSessionTitle(value);
+          ctx.addItem(addInfo(
+            ctx.sessionId,
+            value ? `Draft title set to "${value}"` : `Current draft title: ${ctx.sessionTitle || "(untitled)"}`,
+            "r",
+          ));
+          return;
+        }
         if (value === "") {
           const payload = await ctx.request<{ session_id: string; title: string }>(
             "session.rename",

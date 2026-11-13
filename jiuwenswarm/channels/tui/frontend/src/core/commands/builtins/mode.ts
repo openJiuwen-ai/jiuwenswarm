@@ -1,59 +1,120 @@
 import type { AutocompleteItem } from "@mariozechner/pi-tui";
 import type { ClientMode } from "../../modes.js";
-import { formatModeForDisplay, isTeamMode } from "../../modes.js";
-import { makeItem } from "../helpers.js";
+import { formatModeForDisplay, normalizeToClientMode } from "../../modes.js";
+import { isUncertainRequestError, requestErrorCode } from "../../request-errors.js";
+import { makeItem, resolveCommandSession } from "../helpers.js";
 import { CommandKind, type CommandContext, type SlashCommand } from "../types.js";
 
-/** Switch mode while preserving the team-task interruption confirmation. */
+interface ModeSetResult {
+  mode?: unknown;
+  changed: boolean;
+}
+
+async function readAuthoritativeMode(
+  ctx: CommandContext,
+  sessionId: string,
+  isCurrentSession: () => boolean,
+): Promise<ModeSetResult | null> {
+  try {
+    const state = await ctx.request<{ mode: string }>("mode.get", { session_id: sessionId });
+    const resolved = normalizeToClientMode(state.mode);
+    if (!resolved) throw new Error("mode.get returned an unsupported mode");
+    return { mode: resolved, changed: false };
+  } catch (readError) {
+    if (!isCurrentSession()) return null;
+    ctx.markModeUnconfirmed?.();
+    const message = readError instanceof Error ? readError.message : String(readError);
+    ctx.addItem(
+      makeItem(sessionId, "error", `Mode switch unconfirmed: ${message}. Chat will wait for mode sync.`, "m"),
+    );
+    return null;
+  }
+}
+
+/** Select a draft's mode locally; commit a saved Session before updating its mode. */
 export async function switchMode(
   ctx: CommandContext,
   nextMode: ClientMode,
   options: { announce?: boolean } = {},
 ): Promise<boolean> {
-  const currentMode = ctx.mode;
-  if (currentMode !== nextMode && isTeamMode(currentMode) && ctx.hasRunningTeamTasks?.()) {
-    const displayNextMode = formatModeForDisplay(nextMode);
-    const answers = await ctx.askQuestions(
-      [
-        {
-          header: "模式切换",
-          question: `当前有 team 任务正在运行，切换到 ${displayNextMode} 模式会中断这些任务。`,
-          options: [
-            { label: "中断任务并切换", description: "停止当前任务，切换到新模式" },
-            { label: "取消切换", description: "继续执行当前任务" },
-          ],
-        },
-      ],
-      "mode_switch_confirm",
-    );
-
-    const selected = answers[0]?.selected_options?.[0];
-    if (selected !== "中断任务并切换") {
-      ctx.addItem(makeItem(ctx.sessionId, "info", "模式切换已取消", "m"));
-      return false;
+  const sessionId = await resolveCommandSession(ctx, "Mode switch failed");
+  if (sessionId === null) return false;
+  // Context values are snapshots, but UI setters affect the live Session.
+  const isCurrentSession = (): boolean => (ctx.getCurrentSessionId?.() ?? ctx.sessionId) === sessionId;
+  if (ctx.isCurrentSessionDraft?.()) {
+    ctx.setMode(nextMode);
+    ctx.markModeConfirmed?.();
+    if (nextMode.endsWith(".plan")) ctx.markPlanEntryFromSlashCommand?.();
+    if (options.announce !== false) {
+      ctx.addItem(makeItem(sessionId, "info", `Mode set to ${formatModeForDisplay(nextMode)}`, "m"));
     }
-    ctx.sendEventOnly("chat.interrupt", { intent: "cancel", mode: currentMode });
+    return true;
   }
-
-  // Update locally before the async round-trip so an immediately following
-  // message is dispatched with the new mode. The backend call remains
-  // best-effort because chat.send also carries the active mode.
-  ctx.setMode(nextMode);
-  // 进入 plan 态时标记显式入口（与 /plan 命令一致）。这样随后 chat.send 会携带
-  // plan_entry_source=slash_command，放行后端防重入闸门；否则 /mode plan 在
-  // plan 已退出过的会话上会被静默拦截回 normal（plan.mode_exited / plan_slug）。
+  const currentMode = ctx.getCurrentMode?.() ?? ctx.mode;
+  let committedMode: ClientMode = currentMode;
+  try {
+    let result: ModeSetResult;
+    try {
+      result = await ctx.request<ModeSetResult>("mode.set", {
+        session_id: sessionId,
+        mode: nextMode,
+        expected_mode: currentMode,
+      });
+    } catch (error) {
+      if (requestErrorCode(error) === "MODE_CONFLICT") {
+        const state = await readAuthoritativeMode(ctx, sessionId, isCurrentSession);
+        if (!state) return false;
+        result = state;
+      } else {
+        if (!isUncertainRequestError(error, "mode.set")) {
+          throw error;
+        }
+        // The first commit may have succeeded even when its response was lost.
+        try {
+          result = await ctx.request<ModeSetResult>("mode.set", {
+            session_id: sessionId,
+            mode: nextMode,
+            expected_mode: currentMode,
+          });
+        } catch (retryError) {
+          // Busy is decided before any commit, so this refusal settles both attempts.
+          if (requestErrorCode(retryError) === "SESSION_BUSY") throw retryError;
+          const state = await readAuthoritativeMode(ctx, sessionId, isCurrentSession);
+          if (!state) return false;
+          result = state;
+        }
+      }
+    }
+    const resolved = typeof result?.mode === "string" ? normalizeToClientMode(result.mode) : undefined;
+    if (!resolved) {
+      if (!isCurrentSession()) return false;
+      ctx.markModeUnconfirmed?.();
+      throw new Error("mode.set returned an unsupported mode; retry /mode or sync before chat");
+    }
+    committedMode = resolved;
+  } catch (error) {
+    if (!isCurrentSession()) return false;
+    const message = error instanceof Error ? error.message : String(error);
+    const guidance = requestErrorCode(error) === "SESSION_BUSY"
+      ? " Stop the current work (Ctrl+C), then retry /mode."
+      : "";
+    ctx.addItem(makeItem(sessionId, "error", `Mode switch failed: ${message}.${guidance}`, "m"));
+    return false;
+  }
+  if (!isCurrentSession()) return false;
+  ctx.setMode(committedMode);
+  ctx.markModeConfirmed?.();
+  if (committedMode !== nextMode) {
+    ctx.addItem(
+      makeItem(sessionId, "error", `Mode switch not applied; current mode is ${formatModeForDisplay(committedMode)}`, "m"),
+    );
+    return false;
+  }
   if (nextMode.endsWith(".plan")) {
     ctx.markPlanEntryFromSlashCommand?.();
   }
   if (options.announce !== false) {
-    ctx.addItem(
-      makeItem(ctx.sessionId, "info", `Mode set to ${formatModeForDisplay(nextMode)}`, "m"),
-    );
-  }
-  try {
-    await ctx.request("mode.set", { mode: nextMode });
-  } catch {
-    // Some backends still accept mode only on chat.send.
+    ctx.addItem(makeItem(sessionId, "info", `Mode set to ${formatModeForDisplay(nextMode)}`, "m"));
   }
   return true;
 }

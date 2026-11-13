@@ -3331,6 +3331,9 @@ export class AppScreen implements Component, Focusable {
     const editorText = raw.trim();
     const text = this.expandPastedText(editorText).trim();
     if (!text) return;
+    // Editor clears before onSubmit and schedules paste-marker cleanup. Keep
+    // those markers available until the submit succeeds or its draft returns.
+    this.cancelPastedTextStateClear();
 
     // 更新用户活动时间戳（用于 auto-recap 空闲检测）
     this.state.recordActivity();
@@ -3534,14 +3537,7 @@ export class AppScreen implements Component, Focusable {
             extractedSkills,
           );
           if (!requestId) {
-            this.clearPendingSubmittedInput();
-            this.state.addItem({
-              kind: "error",
-              id: `offline-${Date.now()}`,
-              sessionId: snapshot.sessionId,
-              content: "offline: waiting for reconnect",
-              at: new Date().toISOString(),
-            });
+            this.restoreUnsentChatInput(raw, snapshot.sessionId);
             return;
           }
           this.editor.addToHistory(text);
@@ -3549,11 +3545,11 @@ export class AppScreen implements Component, Focusable {
           return;
         }
       }
-      // Check for mode switch when there's ongoing work
-      if (/^\/(?:mode|switch)\s/.test(text) && snapshot.cancellableWork) {
+      // /mode delegates busy admission to the server without cancelling work.
+      if (/^\/switch\s/.test(text) && snapshot.cancellableWork) {
         const currentMode = snapshot.mode;
         // Parse the target mode from the command
-        const modeMatch = text.match(/^\/(?:mode|switch)\s+(\S+)/);
+        const modeMatch = text.match(/^\/switch\s+(\S+)/);
         const targetMode = modeMatch?.[1] ?? "";
         if (currentMode !== targetMode) {
           const answers = await this.state.askQuestions(
@@ -3716,14 +3712,7 @@ export class AppScreen implements Component, Focusable {
       this.beginPendingSubmittedInput(text, snapshot);
       const requestId = this.state.supplement(content, attachments);
       if (!requestId) {
-        this.clearPendingSubmittedInput();
-        this.state.addItem({
-          kind: "error",
-          id: `offline-${Date.now()}`,
-          sessionId: snapshot.sessionId,
-          content: "offline: waiting for reconnect",
-          at: new Date().toISOString(),
-        });
+        this.restoreUnsentChatInput(raw, snapshot.sessionId);
         return;
       }
       this.editor.addToHistory(text);
@@ -3735,14 +3724,7 @@ export class AppScreen implements Component, Focusable {
     const extractedSkills = this.extractSkillsFromContent(content);
     const requestId = this.state.sendMessage(content, attachments, undefined, undefined, extractedSkills);
     if (!requestId) {
-      this.clearPendingSubmittedInput();
-      this.state.addItem({
-        kind: "error",
-        id: `offline-${Date.now()}`,
-        sessionId: snapshot.sessionId,
-        content: "offline: waiting for reconnect",
-        at: new Date().toISOString(),
-      });
+      this.restoreUnsentChatInput(raw, snapshot.sessionId);
       return;
     }
 
@@ -4021,6 +4003,24 @@ export class AppScreen implements Component, Focusable {
     }
   }
 
+  private restoreUnsentChatInput(raw: string, sessionId: string): void {
+    this.clearPendingSubmittedInput(false);
+    this.cancelPastedTextStateClear();
+    // Editor clears its text before onSubmit. The original @mentions keep
+    // attachments available, and the sidecar image previews remain intact.
+    this.editor.setText(raw);
+    if (this.state.getSnapshot().connectionStatus !== "connected") {
+      this.state.addItem({
+        kind: "error",
+        id: `offline-${Date.now()}`,
+        sessionId,
+        content: "offline: waiting for reconnect",
+        at: new Date().toISOString(),
+      });
+    }
+    this.tui.requestRender();
+  }
+
   private syncTeamPanelSelection(snapshot: ReturnType<CliPiAppState["getSnapshot"]>): void {
     const memberIds = orderedMemberIds(snapshot.teamMemberEvents, snapshot.teamMessageEvents);
     if (memberIds.length === 0) {
@@ -4232,7 +4232,7 @@ export class AppScreen implements Component, Focusable {
     try {
       await this.state.request("session.switch", {
         session_id: nextSessionId,
-        previous_session_id: previousSessionId,
+        previous_session_id: this.state.getCommandContext().previousSessionId ?? previousSessionId,
         previous_mode: snapshot.mode,
         mode: targetMode,
       });
