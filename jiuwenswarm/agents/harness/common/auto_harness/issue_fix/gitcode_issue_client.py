@@ -4,9 +4,11 @@
 
 from __future__ import annotations
 
+from base64 import b64decode
 from dataclasses import dataclass
 import logging
 from typing import Any, Optional
+from urllib.parse import quote
 
 import httpx
 
@@ -60,6 +62,7 @@ class GitCodeIssueClient:
         *,
         params: Optional[dict[str, Any]] = None,
         json_body: Optional[dict[str, Any]] = None,
+        include_error_details: bool = True,
     ) -> Any:
         url = f"{self._base_url}{path}"
         with httpx.Client(
@@ -71,6 +74,8 @@ class GitCodeIssueClient:
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            if not include_error_details:
+                raise
             detail = response.text[:500]
             logger.warning("[GitCodeIssueClient] %s %s failed: %s", method, path, detail)
             raise RuntimeError(
@@ -216,6 +221,42 @@ class GitCodeIssueClient:
         if isinstance(data, list):
             return [item for item in data if isinstance(item, dict)]
         return []
+
+    def get_repository_file(self, *, owner: str, repo: str, path: str) -> str:
+        """Read a file from the repository's default branch."""
+        data = self._request(
+            "GET", f"/repos/{owner}/{repo}/contents/{quote(path)}", include_error_details=False,
+        )
+        content = data.get("content") if isinstance(data, dict) else None
+        if not isinstance(content, str):
+            raise ValueError("GitCode did not return repository file content.")
+        return b64decode("".join(content.split()), validate=True).decode("utf-8-sig")
+
+    def create_issue(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        title: str,
+        body: str,
+        labels: tuple[str, ...] = (),
+    ) -> GitCodeIssue:
+        """Create a new issue and return its repository-scoped number."""
+        payload = {"repo": repo, "title": title, "body": body}
+        if labels:
+            payload["labels"] = ",".join(labels)
+        data = self._request(
+            "POST",
+            f"/repos/{owner}/issues",
+            json_body=payload,
+            include_error_details=False,
+        )
+        if not isinstance(data, dict) or not data.get("number"):
+            raise ValueError("GitCode did not return an issue number.")
+        issue = self._normalize_issue(data)
+        if issue.number <= 0:
+            raise ValueError("GitCode returned an invalid issue number.")
+        return issue
 
     def create_issue_comment(self, *, owner: str, repo: str, number: int, body: str) -> dict[str, Any]:
         data = self._request(

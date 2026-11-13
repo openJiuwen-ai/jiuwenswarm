@@ -49,6 +49,8 @@ Submit on [GitCode Issues](https://gitcode.com/openJiuwen/jiuwenswarm/issues) wi
 4. Expected behavior vs actual behavior
 5. Relevant logs (`~/.jiuwenswarm/logs/` and `~/.jiuwenswarm/agent/.logs`)
 
+In a personal Web chat, connect GitCode with a personal access token that can create issues. Ask JiuwenSwarm to report the bug and provide any missing details from the Bug Report form. Expand the confirmation card to review the public draft, then select **Allow once** to publish it or **Reject** to cancel. To revise the report, reject the draft and ask for changes in chat. JiuwenSwarm returns the GitCode issue link after publication.
+
 ### Submitting Pull Requests
 
 1. **Fork the repo**: Fork [openJiuwen/jiuwenswarm](https://gitcode.com/openJiuwen/jiuwenswarm) on GitCode

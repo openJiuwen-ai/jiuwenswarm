@@ -523,7 +523,7 @@ from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.stage_timer import StageTimer
-from jiuwenswarm.common.tool_ownership import mark_stateless, register_tool, unregister_tool
+from jiuwenswarm.common.tool_ownership import mark_stateless, qualify_tool_id, register_tool, unregister_tool
 from jiuwenswarm.observability.turn import SessionTurnTracker, TurnIdentity
 from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
 from jiuwenswarm.server.utils.utils import is_team_params  # noqa: E402
@@ -14649,6 +14649,42 @@ class JiuWenSwarmDeepAdapter:
             self._instance.ability_manager.add(tool.card)
             registered_names.add(tool.card.name)
 
+    def _update_report_issue_tool(self, session_id: str | None, channel_id: str | None) -> None:
+        from jiuwenswarm.agents.harness.common.tools.report_issue import (
+            ISSUE_REPORT_TOOL_NAMES,
+            build_issue_report_tools,
+        )
+        from jiuwenswarm.enterprise import is_enterprise
+
+        manager = self._instance.ability_manager
+        registered = [
+            card for card in (manager.list() or [])
+            if isinstance(card, ToolCard) and card.name in ISSUE_REPORT_TOOL_NAMES
+        ]
+        eligible = (
+            channel_id == "web"
+            and session_id
+            and not session_id.startswith(("heartbeat", "health_check"))
+            and not is_enterprise()
+            and not is_team_mode(deprecate_mode(self._last_mode))
+            and not self._is_cron_execution_session(session_id)
+        )
+        if not eligible:
+            if registered:
+                owner_id = self._tool_owner_id()
+                remove = getattr(manager, "remove_ability", None) or manager.remove
+                for card in registered:
+                    if card.id == qualify_tool_id(card, owner_id):
+                        remove(card.name)
+            return
+        missing = set(ISSUE_REPORT_TOOL_NAMES) - {card.name for card in registered}
+        if missing:
+            owner_id = self._tool_owner_id()
+            for tool in build_issue_report_tools(session_id, self._resolve_runtime_language()):
+                if tool.card.name in missing:
+                    self._register_agent_owned_tool(tool, owner_id)
+                    manager.add(tool.card)
+
     async def _update_session_tools(
         self,
         session_id: str | None,
@@ -14662,6 +14698,7 @@ class JiuWenSwarmDeepAdapter:
         这里每次请求只做幂等检查和运行时上下文更新。
         """
         self._ensure_session_messaging_tools_registered(session_id, channel_id)
+        self._update_report_issue_tool(session_id, channel_id)
 
         # send_file 工具：由 channels.<channel>.send_file_allowed 控制。工具实例只建一次，
         # 之后每次请求只用 update_runtime_context 刷新 request_id/session_id/channel 等
