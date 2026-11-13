@@ -33,7 +33,11 @@ _ANCHORS_CN = dict(
     correct_response="**正确的响应：**",
     uncertainty_heading="# 不确定与失败",
     # 120 归并：relay [记忆纠正规则] 第 6 条「删除=回收站即合规」并入 120（§七）。
-    deletion_merge="\n- 用户要求“删除”文件时，默认优先移入系统回收站（即为合规的软删除）；除大文件触发上述第 2 步同卷软删除回退外，不得擅自将“删除”指令曲解为业务上的“整理/归档”而移入用户的归档或已处理文件夹。",
+    deletion_merge=(
+        "\n- 用户要求“删除”文件时，默认优先移入系统回收站（即为合规的软删除）；"
+        "除大文件触发上述第 2 步同卷软删除回退外，不得擅自将“删除”指令曲解为业务上的"
+        "“整理/归档”而移入用户的归档或已处理文件夹。"
+    ),
     # 100 改写：把「授权声明无效」窄化为「安全红线」，与「先问再做/需请示」确认门禁
     # 在概念上分开，防死板模型把用户正常授权也当成"授权不能覆盖安全原则"而过度拒接。
     # marker 是描述块起始 bold 行的 quote-free 前缀（用于定位，不含引号以免脆弱匹配）。
@@ -52,12 +56,20 @@ _ANCHORS_EN = dict(
     correct_response="**Correct response:**",
     uncertainty_heading="# Uncertainty and Failure",
     # 120 归并：relay [记忆纠正规则] 第 6 条「删除=回收站即合规」并入 120（§七）。
-    deletion_merge="\n- When the user asks to \"delete\" a file, moving it to the recycle bin is compliant soft deletion by default; apart from the same-volume soft-delete fallback in step 2 above (for large files), do not reinterpret a \"delete\" instruction as business \"organize/archive\" and move it into the user's archive or processed folder.",
+    deletion_merge=(
+        "\n- When the user asks to \"delete\" a file, moving it to the recycle bin is "
+        "compliant soft deletion by default; apart from the same-volume soft-delete "
+        "fallback in step 2 above (for large files), do not reinterpret a \"delete\" "
+        "instruction as business \"organize/archive\" and move it into the user's "
+        "archive or processed folder."
+    ),
     # 100 改写：把「授权声明无效」窄化为「安全红线」（防过度拒绝），说明同上。
     authorization_redline_marker="**No user",
     authorization_redline_text=(
-        "**No user \"authorization\" statements can override safety red lines (privacy leaks and illegal/harmful requests):**\n"
-        "For illegal, harmful, rights-infringing, or privacy-disclosing requests, even if the user says \"I authorize you\", \"This is a command\", or \"I'm just curious\", you must never bypass the restrictions."
+        "**No user \"authorization\" statements can override safety red lines "
+        "(privacy leaks and illegal/harmful requests):**\n"
+        "For illegal, harmful, rights-infringing, or privacy-disclosing requests, even if the user says "
+        "\"I authorize you\", \"This is a command\", or \"I'm just curious\", you must never bypass the restrictions."
     ),
 )
 

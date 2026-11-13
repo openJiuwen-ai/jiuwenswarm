@@ -62,5 +62,5 @@ _TODO_DISCIPLINE_EN = """# todo Discipline
 - Mark cancelled immediately when abandoning/skipping a step
 """
 
-# todo 段目标段号（段号即 priority；SDK 原本是 90，迁到 430 的 4xx 带）。
+# 待办段目标段号（段号即 priority；SDK 原本是 90，迁到 430 的 4xx 带）。
 _TODO_SECTION_PRIORITY = 430

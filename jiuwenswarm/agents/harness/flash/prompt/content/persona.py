@@ -37,7 +37,7 @@ _IDENTITY_BLOCKS_EN: list[tuple[str, str, int]] = [
 
 # ── 2xx 内容改写目标正文（06-目标提示词-完整版.md §200/§220，CN/EN）。────────
 # 210 路径与权限（新段，详见下方 _PATH_PERMISSION_*）；运行环境事实（identity 拆出
-# 的 runtime_environment 块）由 FlashSectionOrderRail 收口到 1001。
+# 的 runtime_environment 块）由 FlashSectionOrderRail 并入 env@1000（并集）后删除。
 _DIRECTORY_MODEL_CN = """# 目录模型
 
 四个固定术语及其定义：
@@ -246,6 +246,54 @@ def _promote_heading(text: str) -> str:
     return text
 
 
+# ── 1001 Python 库与权限（identity 残留「运行环境」块一次性裁剪出的独立实体）─────────
+_PRIO_ENV_RESIDUAL = 1001
+_ENV_RESIDUAL_TITLE_CN = "# Python 库与权限"
+_ENV_RESIDUAL_TITLE_EN = "# Python Libraries & Permissions"
+
+# (Python 库块起点, 库块终点锚点) 与 沙箱权限块起点。缺失即兜底保留原块（不丢内容）。
+_ENV_RESIDUAL_ANCHORS: dict[str, dict[str, str]] = {
+    "cn": {
+        "py_start": "Python 库",
+        "py_end": "**重要提示**",
+        "sandbox_start": "## 命令执行环境与权限",
+    },
+    "en": {
+        "py_start": "Python libraries",
+        "py_end": "**Important**",
+        "sandbox_start": "## Command Execution Environment and Permissions",
+    },
+}
+
+
+def _build_env_residual_entity(block: str, language: str) -> str:
+    """把 identity 残留「运行环境」块裁剪成独立实体：Python 库清单 + 命令执行权限（沙箱）。
+
+    丢弃与 env@1000 重复的平台/Shell/命令差异表。两个锚点都缺失时**原样返回 block**
+    （兜底不丢内容，只会在极端改文案时出现重复）。用一次性的确定性裁剪，无跨轮状态。
+    """
+    if not block:
+        return block
+    anchor_lang = "cn" if language in ("cn", "zh") else "en"
+    anchors = _ENV_RESIDUAL_ANCHORS[anchor_lang]
+    title = _ENV_RESIDUAL_TITLE_CN if anchor_lang == "cn" else _ENV_RESIDUAL_TITLE_EN
+
+    parts: list[str] = []
+    py_start = block.find(anchors["py_start"])
+    if py_start >= 0:
+        py_end = block.find(anchors["py_end"], py_start)
+        py_block = block[py_start: py_end if py_end >= 0 else len(block)].rstrip()
+        if py_block:
+            parts.append(py_block)
+    sandbox_start = block.find(anchors["sandbox_start"])
+    if sandbox_start >= 0:
+        parts.append(block[sandbox_start:].rstrip())
+
+    if not parts:
+        return block  # 兜底：锚点全缺 → 原样（不丢内容）
+    return title + "\n\n" + "\n\n".join(parts) + "\n"
+
+
 def _split_identity(content: str, blocks: list[tuple[str, str, int]]) -> list[tuple[str, int, str]] | None:
     """按块表切分源内容；标题缺失/乱序返回 None（触发整体回退）。
 
@@ -271,8 +319,7 @@ def _split_identity(content: str, blocks: list[tuple[str, str, int]]) -> list[tu
     intro = content[: positions[0]]
     if intro.strip():
         chunks.append((_INTRO_NAME, _INTRO_PRIORITY, intro))
-    for i in range(len(positions)):
-        start = positions[i]
+    for i, start in enumerate(positions):
         end = positions[i + 1] if i + 1 < len(positions) else len(content)
         _header, name, prio = blocks[i]
         chunks.append((name, prio, content[start:end]))

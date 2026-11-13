@@ -46,15 +46,15 @@ from typing import Any
 # 域 → 段位区间（三位数，百位=域，域内 10 步进）
 # ─────────────────────────────────────────────────────────────
 FLASH_SECTION_BANDS: dict[str, range] = {
-    "identity":    range(0, 40),      # 0xx 身份与总则（020/030 存疑）
-    "security":    range(100, 130),   # 1xx 安全与边界
-    "workspace":   range(200, 230),   # 2xx 工作空间（230/240 已迁 4xx，留空号）
-    "tools":       range(300, 360),   # 3xx 工具（320 存疑；350 渐进式工具导航，tool_nav 大块静态驻留）
-    "execution":   range(400, 470),   # 4xx 任务执行（400–460 连续段）
-    "interaction": range(500, 550),   # 5xx 交互与输出（530 空号，已迁 410）
-    "memory":      range(600, 660),   # 6xx 记忆（内容回退 deep 原样巨石段，仅占 600 一号）
-    "skills":      range(700, 760),   # 7xx 技能（总则/加载/选择/执行规范/清单/加速，700–750）
-    "facts":       range(1000, 1090), # 10xx 运行事实 + 动态规则（原 8xx 整体上移 1000 基础；8xx 留空号不复用）
+    "identity": range(0, 40),  # 0xx 身份与总则（020/030 存疑）
+    "security": range(100, 130),  # 1xx 安全与边界
+    "workspace": range(200, 230),  # 2xx 工作空间（230/240 已迁 4xx，留空号）
+    "tools": range(300, 360),  # 3xx 工具（320 存疑；350 渐进式工具导航，tool_nav 大块静态驻留）
+    "execution": range(400, 470),  # 4xx 任务执行（400–460 连续段）
+    "interaction": range(500, 550),  # 5xx 交互与输出（530 空号，已迁 410）
+    "memory": range(600, 660),  # 6xx 记忆（内容回退 deep 原样巨石段，仅占 600 一号）
+    "skills": range(700, 760),  # 7xx 技能（总则/加载/选择/执行规范/清单/加速，700–750）
+    "facts": range(1000, 1090),  # 10xx 运行事实 + 动态规则（原 8xx 整体上移 1000 基础；8xx 留空号不复用）
 }
 
 
@@ -95,18 +95,18 @@ class SectionSpec:
 # ─────────────────────────────────────────────────────────────
 FLASH_SECTION_REGISTRY: dict[int, SectionSpec] = {
     # ═══ 0xx 身份与总则 ═══
-    0:   SectionSpec("身份", "system", "merged",
+    0: SectionSpec("身份", "system", "merged",
                      source="prompt_builder.py:571（:280 人设句）",
                      current=[("identity", 10, "构造期 build_agent_identity_prompt")],
                      plan="FlashPersonaRail 拆出；固定写死不加占位"),
-    10:  SectionSpec("人格（性格值 → 1030；受众 → 1070）", "system", "merged",
+    10: SectionSpec("人格（性格值 → 1030；受众 → 1070）", "system", "merged",
                      source=":851-852 Personality Override",
                      current=[("identity", 10, "构造期")],
                      plan="FlashPersonaRail；只留读取方式与优先级，性格值占位由 1030 动态填充"),
-    20:  SectionSpec("执行优先级（唯一裁决）", "system", "active",
+    20: SectionSpec("执行优先级（唯一裁决）", "system", "active",
                      current=[("execution_priority", 20, "FlashPersonaRail")],
                      plan="已落地：六级裁决表（外部门禁清单由 1080 注入，此处仅引用）；§七 方向定稿"),
-    30:  SectionSpec("不确定与失败", "system", "active",
+    30: SectionSpec("不确定与失败", "system", "active",
                      source=":167-168",
                      current=[("uncertainty_failure", 30, "FlashSafetyRail")],
                      plan="已从安全段拆出独立小段（末两条：任务失败 / 不确定）"),
@@ -123,7 +123,9 @@ FLASH_SECTION_REGISTRY: dict[int, SectionSpec] = {
     120: SectionSpec("删除规范", "system", "active",
                      source=":170-186",
                      current=[("deletion_protocol", 120, "FlashSafetyRail")],
-                     plan="已落地：拆分 + relay 记忆纠正「删除=回收站即合规」并入（§七 120 归并，FlashSafetyRail 段尾追加）", relay="relay 记忆纠正「删除=回收站即合规」并入（flash 侧，不改 relay TS）"),
+                     plan=("已落地：拆分 + relay 记忆纠正「删除=回收站即合规」并入"
+                           "（§七 120 归并，FlashSafetyRail 段尾追加）"),
+                     relay="relay 记忆纠正「删除=回收站即合规」并入（flash 侧，不改 relay TS）"),
 
     # ═══ 2xx 工作空间与文件（230/240 空号 → 迁 460/420）═══
     200: SectionSpec("目录模型（四术语表）", "system", "active",
@@ -132,12 +134,15 @@ FLASH_SECTION_REGISTRY: dict[int, SectionSpec] = {
                      plan="已落地：四处重复合一为四术语表（绝对路径引 1010 不硬编码）"),
     210: SectionSpec("路径与权限", "system", "merged",
                      source=":319-342 沙箱",
-                     current=[("runtime_environment", 210, "FlashPersonaRail"), ("trusted_dirs_policy", 90, "RuntimePromptRail")],
+                     current=[("runtime_environment", 210, "FlashPersonaRail"),
+                              ("trusted_dirs_policy", 90, "RuntimePromptRail")],
                      plan="只留规则（workdir/cd 不跨调用/工作区外确认/权限拒停重试）；路径值剥到 1010；本期延期（依赖 durable 1000/1010，运行环境暂留 210）"),
     220: SectionSpec("写入位置", "system", "active",
                      source=":364-372",
                      current=[("output_placement", 220, "FlashPersonaRail")],
-                     plan="已落地：五级优先级链（用户指定>项目>cwd>内部>系统禁止）；relay [文件输出约束] 重复表述已由 FlashRelayMergeRail 剥除", relay="relay [文件输出约束] 重复表述删（FlashRelayMergeRail 剥 request_system_prompt 末尾块，不改 relay TS）"),
+                     plan=("已落地：五级优先级链（用户指定>项目>cwd>内部>系统禁止）；"
+                           "relay [文件输出约束] 重复表述已由 FlashRelayMergeRail 剥除"),
+                     relay="relay [文件输出约束] 重复表述删（FlashRelayMergeRail 剥 request_system_prompt 末尾块，不改 relay TS）"),
 
     # ═══ 3xx 工具（320 存疑；350 渐进式工具导航）═══
     300: SectionSpec("工具选择总则", "system", "merged",
@@ -145,7 +150,8 @@ FLASH_SECTION_REGISTRY: dict[int, SectionSpec] = {
                      plan="FlashToolGuideRail 拆出；删「一个问题只用一个工具」绝对禁"),
     310: SectionSpec("可用工具", "system", "active",
                      current=[("tools", 30, "ContextAssembleRail build_tools_section")],
-                     plan="SDK tools 段（# 可用工具 目录 + ## task_tool 使用原则）迁号 310；300/330 已拆出，工具发现规则（tools_search/invoke_tool）归 350 渐进式工具导航"),
+                     plan=("SDK tools 段（# 可用工具 目录 + ## task_tool 使用原则）迁号 310；"
+                           "300/330 已拆出，工具发现规则（tools_search/invoke_tool）归 350 渐进式工具导航")),
     320: SectionSpec("call_goal 约定", "system", "adjudicate",
                      source="stream_event_rail.py:1195",
                      current=[("tool_call_goal", 40, "StreamEventRail")],
@@ -216,30 +222,37 @@ FLASH_SECTION_REGISTRY: dict[int, SectionSpec] = {
     700: SectionSpec("技能总则", "system", "merged",
                      current=[("skills", 40, "SkillUseRail 开头总则")],
                      plan="独立段 700"),
-    710: SectionSpec("技能加载规则（原 720 前移）", "system", "merged",
-                     current=[("skills", 40, ":241/:307-311/:254/:279")],
-                     plan="加载入口统一 skill_tool；协议段「经验查询前置 + 加载 SKILL.md」两块并入（flash 710）"),
-    720: SectionSpec("技能选择与互斥（原 730 前移）", "system", "merged",
+    710: SectionSpec("技能选择与互斥", "system", "merged",
                      current=[("skills", 40, ":244-246/:289-290")],
-                     plan="互斥组裁决"),
+                     plan="互斥组裁决；v1.2 起前置于加载（先选后加载）"),
+    720: SectionSpec("技能加载规则", "system", "merged",
+                     current=[("skills", 40, ":241/:307-311/:254/:279")],
+                     plan="加载入口统一 skill_tool；协议段「经验查询前置 + 加载 SKILL.md」两块并入（flash 720）"),
     730: SectionSpec("技能执行规范", "system", "merged",
                      current=[("skill_protocol", 45, "SkillProtocolPromptRail 执行规范 9 条")],
-                     plan="执行纪律 9 条（声明步骤/必须建 todo/严格顺序/闸门/忠实/错误/降级/打断；⚠️消息语义并入第 9 条）；用户拍板放 730，原 730 清单/740 加速顺延——FlashSkillRail 注入 730，flash 侧接管"),
+                     plan=("执行纪律 9 条（声明步骤/必须建 todo/严格顺序/闸门/忠实/错误/降级/打断；"
+                           "⚠️消息语义并入第 9 条）；用户拍板放 730，原 730 清单/740 加速顺延"
+                           "——FlashSkillRail 注入 730，flash 侧接管")),
     740: SectionSpec("技能清单（原 730 顺延）", "system", "merged",
                      current=[("skills", 40, ":244-311 技能段")],
-                     plan="常驻清单 = 唯一技能索引；数据源 manifest.yaml（启用集 ~5k，非旧全量 10,772）", relay="relay 技能仓 relay_claw/office-claw-skills/manifest.yaml（部署侧 /opt/officeace/office-claw-skills/）——只读数据源，不改 relay"),
+                     plan=("常驻清单 = 唯一技能索引；数据源 manifest.yaml"
+                           "（启用集 ~5k，非旧全量 10,772）"),
+                     relay=("relay 技能仓 relay_claw/office-claw-skills/manifest.yaml"
+                            "（部署侧 /opt/officeace/office-claw-skills/）——只读数据源，不改 relay")),
     750: SectionSpec("技能加速通道（原 740 顺延）", "system", "merged",
                      current=[("skill_turbo_guide", 45, "FlashTurboPromptRail / skill_acceleration_exec")],
                      plan="触发/排除/降级/暂停定型；终态归 750；shared skill_protocol 段在被 730 接管后剥除"),
 
     # ═══ 10xx 运行事实 + 动态规则（原 8xx 上移 1000 基础；② 动态 6 段 + ③ 运行时 3 段）═══
     1000: SectionSpec("环境与 Shell", "durable", "dynamic",
-                      source="RuntimePromptRail:639（两份重复）",
+                      source="RuntimePromptRail:639",
                       current=[("env", 89, "RuntimePromptRail")],
-                      plan="一份保留（RuntimePromptRail，含平台/Shell/命令差异），另一份 identity 残留 runtime_environment 暂迁 1001（含 Python 库探测，无丢失），durable 基建轮合并为一"),
-    1001: SectionSpec("环境与 Shell（identity 残留）", "durable", "dynamic",
-                      current=[("runtime_environment", 210, "FlashPersonaRail identity 拆分")],
-                      plan="identity 巨石拆分残存的一份环境事实（os_type + Shell + Python 库探测，env@1000 无 Python 库段）——暂存 1001 保零损失，durable 基建轮与 1000 合并"),
+                      plan="平台/Shell/OS + shell 规则 + 4 行命令差异表 + mkdir；每轮重建，独立实体"),
+    1001: SectionSpec("Python 库与权限", "durable", "dynamic",
+                      current=[("runtime_environment", 210, "FlashPersonaRail identity 拆分（一次性裁剪）")],
+                      plan=("从 identity 残留「运行环境」块一次性裁剪出独立实体："
+                            "Python 库清单 + 命令执行权限（沙箱）；丢弃与 env 重复的"
+                            "平台/Shell/6 行命令表。两实体各自生命周期，无跨轮合并")),
     1010: SectionSpec("路径事实", "durable", "dynamic",
                       current=[("tui_project", 99, "RuntimePromptRail"), ("trusted_dirs", 90, "事实半")],
                       plan="绝对路径收拢；本期保持现状（durable 延期），后续迁 durable 快照"),
@@ -259,7 +272,8 @@ FLASH_SECTION_REGISTRY: dict[int, SectionSpec] = {
                       plan="会话内 skills 增删/替换/启停 diff；变化才追加 supersede（「以最新为准」）；本期延期（durable 基建不构建），生成源后续协同补齐"),
     1070: SectionSpec("用户身份", "durable", "dynamic",
                       current=[("USER.md" + "/Personality", 0, "记忆文件")],
-                      plan="快照生成源与刷新时机待定；本期延期（durable 基建不构建）；受众画像静态半迁入同步推迟", relay="relay workspace USER.md + Personality 记忆文件"),
+                      plan="快照生成源与刷新时机待定；本期延期（durable 基建不构建）；受众画像静态半迁入同步推迟",
+                      relay="relay workspace USER.md + Personality 记忆文件"),
     1080: SectionSpec("动态规则", "attachment", "dynamic",
                       current=[("安全段" + "rail 注入", 0, "散落")],
                       plan="统一到动态规则附件生成源（对标 DSH CONTEXT 沙箱/审批策略段）；020 只引用、正文不入静态提示词"),
@@ -281,11 +295,14 @@ _SAME_ORDER_GROUPS: list[dict[str, Any]] = [
 # 01 表未收录、归属待裁决的现存段（audit 打点补齐后归位）
 # ─────────────────────────────────────────────────────────────
 PENDING_ADJUDICATION: dict[str, dict[str, Any]] = {
-    "a2ui":                dict(priority=61,  note="01 表无对应——建议 5xx 交互域（工具面化）"),
-    "a2ui_boost":          dict(priority=117, note="01 表无对应——建议 5xx 交互域（工具面化）"),
-    "dr_brief_refresh":    dict(priority=121, note="deepresearch 附属——待裁决"),
-    "request_system_prompt": dict(priority=999, note="relay 产品内容包（TS 层）——静态区末尾 999（拍板：撞号修复挪出 110，不沉动态 1000+，对位 1080 动态规则语义）；FlashRelayMergeRail 每轮收口；会话级稳定，不能剥"),
-    "turn2_scene_pack":    dict(priority="sticky", note="③ 运行时区；sticky 永不清，不占号"),
+    "a2ui": dict(priority=61, note="01 表无对应——建议 5xx 交互域（工具面化）"),
+    "a2ui_boost": dict(priority=117, note="01 表无对应——建议 5xx 交互域（工具面化）"),
+    "dr_brief_refresh": dict(priority=121, note="deepresearch 附属——待裁决"),
+    "request_system_prompt": dict(priority=999, note=(
+        "relay 产品内容包（TS 层）——静态区末尾 999（拍板：撞号修复挪出 110，不沉动态 1000+，"
+        "对位 1080 动态规则语义）；FlashRelayMergeRail 每轮收口；会话级稳定，不能剥"
+    )),
+    "turn2_scene_pack": dict(priority="sticky", note="③ 运行时区；sticky 永不清，不占号"),
 }
 
 

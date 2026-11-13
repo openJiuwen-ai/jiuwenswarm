@@ -8,7 +8,7 @@ available_agents 文案；``FlashSubagentRail`` 从本模块 re-import，零行�
 
 from __future__ import annotations
 
-FLASH_TASK_SECTION_CN = """# task_tool — 子代理委派：隔离上下文执行重活
+FLASH_TASK_SECTION_CN = """# 子代理委派（task_tool）
 
 子代理在独立上下文中运行：其全部中间工具调用结果不进入你的主上下文，仅最终摘要返回。\
 这是长任务保持主上下文清晰、避免能力随上下文膨胀而下降的关键手段。
@@ -30,7 +30,7 @@ FLASH_TASK_SECTION_CN = """# task_tool — 子代理委派：隔离上下文执�
 - 子代理结果对用户不可见；需要向用户展示时，另行发送文字总结
 """
 
-FLASH_TASK_SECTION_EN = """# task_tool — delegate heavy work to isolated subagent contexts
+FLASH_TASK_SECTION_EN = """# Subagent Delegation (task_tool)
 
 Subagents run in an isolated context: none of their intermediate tool results \
 enter your main context; only the final summary returns. This is the key lever \
