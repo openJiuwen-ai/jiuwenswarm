@@ -136,7 +136,7 @@ async def generate_visual(
     if not prompt:
         return "[ERROR]: prompt is required."
 
-    # MiniMax (own /v1/image_generation), BytePlus ModelArk (Seedream), DashScope
+    # MiniMax (H3 /v1/images/generations or /edits), BytePlus ModelArk (Seedream), DashScope
     # (Qwen-Image) and vLLM-Omni are not OpenAI-compatible, so they have their own backends.
     backend = gen_toolkits.detect_backend("VISUAL_GEN_PROTOCOL", api_base)
     if backend:
