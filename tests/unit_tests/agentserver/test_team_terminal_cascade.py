@@ -16,6 +16,34 @@ import asyncio
 import pytest
 
 from jiuwenswarm.server.runtime.agent_adapter import team_helpers, team_stall_watchdog
+from jiuwenswarm.server.runtime.agent_adapter.round_terminal_arbiter import (
+    RoundTerminalArbiter,
+)
+
+
+async def _unused_settled_check():
+    return None
+
+
+def _build_arbiter(
+        broadcasted: list[dict], cascades: list[str]
+) -> RoundTerminalArbiter:
+    """最小裁决器：广播与级联记录，探针/看门狗判死提案链路验证用。"""
+
+    async def _rec(payload: dict) -> None:
+        broadcasted.append(payload)
+
+    return RoundTerminalArbiter(
+        session_id="s1",
+        round_id=1,
+        broadcast=_rec,
+        settled_check=_unused_settled_check,
+        has_stream_task=lambda: True,
+        is_pause_in_progress=lambda: False,
+        mark_round_terminal=lambda: None,
+        clear_round_terminal=lambda: None,
+        cascade=cascades.append,
+    )
 
 
 class _CascadeFakeManager:
@@ -71,12 +99,9 @@ async def test_death_probe_triggers_terminal_cascade(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(
         team_helpers, "_broadcast_event", lambda *a, **k: asyncio.sleep(0)
     )
-    cascade_calls: list[tuple] = []
-    monkeypatch.setattr(
-        team_helpers,
-        "_cascade_park_runtime_after_terminal",
-        lambda *a, **k: cascade_calls.append((a, k)),
-    )
+    broadcasted: list[dict] = []
+    cascades: list[str] = []
+    arbiter = _build_arbiter(broadcasted, cascades)
 
     task = team_helpers._schedule_leader_round_death_probe(
         "desktop",
@@ -86,17 +111,19 @@ async def test_death_probe_triggers_terminal_cascade(monkeypatch: pytest.MonkeyP
         liveness=lambda: 10,
         completion_signals=lambda: 0,
         previous=None,
+        propose=arbiter.propose,
     )
     await task
-    assert len(cascade_calls) == 1
-    args, kwargs = cascade_calls[0]
-    assert args[:3] == ("desktop", "s1", 1)
-    assert kwargs["source"] == "leader-death-probe"
+    # 判死提案经裁决器发帧 + 级联（source 与现行一致）
+    assert cascades == ["leader-death-probe"]
+    assert len(broadcasted) == 1
+    assert broadcasted[0]["is_complete"] is True
+    assert broadcasted[0]["error"].startswith("[181001]")
 
 
 @pytest.mark.asyncio
 async def test_stall_watchdog_invokes_on_terminal_hook(monkeypatch: pytest.MonkeyPatch) -> None:
-    """停摆看门狗判死：广播失败终态后必须调注入的 on_terminal。"""
+    """停摆看门狗判死：提案裁决器后发失败终态并级联收流（source=stall-watchdog）。"""
     monkeypatch.setattr(team_stall_watchdog, "TEAM_STALL_WATCHDOG_SEC", 0.02)
     monkeypatch.setattr(team_stall_watchdog, "TEAM_STALL_CONFIRM_WINDOWS", 1)
     monkeypatch.setattr(
@@ -119,11 +146,8 @@ async def test_stall_watchdog_invokes_on_terminal_hook(monkeypatch: pytest.Monke
     monkeypatch.setattr(team_stall_watchdog, "team_progress_snapshot_db", _db_progress)
 
     broadcasted: list[dict] = []
-
-    async def _broadcast(_cid, _sid, event):
-        broadcasted.append(event)
-
-    terminal_calls: list[str] = []
+    cascades: list[str] = []
+    arbiter = _build_arbiter(broadcasted, cascades)
 
     task = team_stall_watchdog.schedule_team_stall_watchdog(
         "desktop",
@@ -131,15 +155,14 @@ async def test_stall_watchdog_invokes_on_terminal_hook(monkeypatch: pytest.Monke
         1,
         liveness=lambda: 5,
         completion_signals=lambda: 0,
-        broadcast=_broadcast,
-        on_terminal=lambda: terminal_calls.append("fired"),
+        propose=arbiter.propose,
     )
     await task
     assert len(broadcasted) == 1
     assert broadcasted[0]["event_type"] == "chat.processing_status"
     assert broadcasted[0]["is_complete"] is True
     assert "停摆" in broadcasted[0]["error"]
-    assert terminal_calls == ["fired"]
+    assert cascades == ["stall-watchdog"]
 
 
 @pytest.mark.asyncio
@@ -160,7 +183,7 @@ async def test_cascade_pauses_runtime_and_ends_stream(monkeypatch: pytest.Monkey
 
 @pytest.mark.asyncio
 async def test_cascade_falls_back_to_stop_when_pause_hangs(
-    monkeypatch: pytest.MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """pause 挂死（A3）超时时降级 stop，保证流一定被收掉。"""
     monkeypatch.setattr(team_helpers, "_TERMINAL_CASCADE_PAUSE_TIMEOUT_SEC", 0.02)
@@ -178,7 +201,7 @@ async def test_cascade_falls_back_to_stop_when_pause_hangs(
 
 @pytest.mark.asyncio
 async def test_cascade_noop_when_stream_already_gone(
-    monkeypatch: pytest.MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """流已不在（正常收尾竞态）→ 级联空转，不 pause 不 stop。"""
     manager = _CascadeFakeManager(stream_alive=False)
@@ -277,7 +300,7 @@ async def test_no_fresh_start_for_interactive_input() -> None:
 
 @pytest.mark.asyncio
 async def test_stall_watchdog_not_established_falls_back_and_still_kills(
-    monkeypatch: pytest.MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """DB 对照抛 TeamNotEstablishedError（live 视图仍有 pending 的滞后形态）：
     退回 live-only 判定并保留击杀能力——不得静默停守（静默停守=零收口，
@@ -311,23 +334,101 @@ async def test_stall_watchdog_not_established_falls_back_and_still_kills(
     )
 
     broadcasted: list[dict] = []
-
-    async def _broadcast(_cid, _sid, event):
-        broadcasted.append(event)
-
-    terminal_calls: list[str] = []
+    cascades: list[str] = []
+    arbiter = _build_arbiter(broadcasted, cascades)
     task = team_stall_watchdog.schedule_team_stall_watchdog(
         "desktop",
         "s1",
         1,
         liveness=lambda: 5,
         completion_signals=lambda: 0,
-        broadcast=_broadcast,
-        on_terminal=lambda: terminal_calls.append("fired"),
+        propose=arbiter.propose,
     )
     await task
-    # 退回 live-only 后按既有路径击杀：广播失败终态 + on_terminal 级联
+    # 退回 live-only 后按既有路径击杀：裁决器发失败终态 + 级联
     assert len(broadcasted) == 1
     assert broadcasted[0]["event_type"] == "chat.processing_status"
     assert broadcasted[0].get("error")
-    assert terminal_calls == ["fired"]
+    assert cascades == ["stall-watchdog"]
+
+
+@pytest.mark.asyncio
+async def test_stall_watchdog_retries_when_proposal_suppressed_without_closure(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """判死提案被瞬时占位否决且回合未收口（信号仍 0）：看门狗不得
+    退出——重置计数继续守，后续窗口重试直至收口（防零收口）。"""
+    monkeypatch.setattr(team_stall_watchdog, "TEAM_STALL_WATCHDOG_SEC", 0.02)
+    monkeypatch.setattr(team_stall_watchdog, "TEAM_STALL_CONFIRM_WINDOWS", 1)
+    monkeypatch.setattr(
+        team_stall_watchdog,
+        "get_team_manager",
+        lambda _cid: _ProbeFakeManager(),
+    )
+
+    async def _progress(_cid, _sid):
+        return (0, 1, False)
+
+    async def _liveness(_cid, _sid):
+        return False
+
+    async def _db_progress(_cid, _sid):
+        return None
+
+    monkeypatch.setattr(team_stall_watchdog, "team_progress_snapshot", _progress)
+    monkeypatch.setattr(team_stall_watchdog, "team_runtime_liveness", _liveness)
+    monkeypatch.setattr(team_stall_watchdog, "team_progress_snapshot_db", _db_progress)
+
+    proposals: list[dict] = []
+    outcomes = iter(["suppressed", "emitted_error"])
+
+    async def _propose(payload: dict) -> str:
+        proposals.append(payload)
+        return next(outcomes)
+
+    task = team_stall_watchdog.schedule_team_stall_watchdog(
+        "desktop",
+        "s1",
+        1,
+        liveness=lambda: 5,
+        completion_signals=lambda: 0,
+        propose=_propose,
+    )
+    await task
+    # 修复前第一次 SUPPRESSED 即退出（零收口）；修复后重试至收口
+    assert len(proposals) == 2
+
+
+@pytest.mark.asyncio
+async def test_death_probe_retries_when_proposal_suppressed_without_closure(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """死亡探针同口径：提案被否决但未收口（信号仍 0）时继续守下一
+    探测窗口重试，不得直接退出。"""
+    monkeypatch.setattr(team_helpers, "_LEADER_ROUND_DEATH_PROBE_SEC", 0.02)
+    monkeypatch.setattr(
+        team_helpers, "get_team_manager", lambda _cid: _ProbeFakeManager()
+    )
+    monkeypatch.setattr(
+        team_helpers, "_broadcast_event", lambda *a, **k: asyncio.sleep(0)
+    )
+
+    proposals: list[dict] = []
+    outcomes = iter(["suppressed", "emitted_error"])
+
+    async def _propose(payload: dict) -> str:
+        proposals.append(payload)
+        return next(outcomes)
+
+    task = team_helpers._schedule_leader_round_death_probe(
+        "desktop",
+        "s1",
+        1,
+        error_text="[181001] model call failed",
+        liveness=lambda: 10,
+        completion_signals=lambda: 0,
+        previous=None,
+        propose=_propose,
+    )
+    await task
+    assert len(proposals) == 2

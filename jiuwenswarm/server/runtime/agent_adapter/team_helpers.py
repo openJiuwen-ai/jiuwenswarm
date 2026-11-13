@@ -67,6 +67,11 @@ from jiuwenswarm.server.runtime.agent_adapter.team_stall_watchdog import (
     MEMBER_IN_FLIGHT_STATUSES,
     schedule_team_stall_watchdog,
 )
+from jiuwenswarm.server.runtime.agent_adapter.round_terminal_arbiter import (
+    Outcome,
+    ProposalSource,
+    RoundTerminalArbiter,
+)
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     EvolutionProgressStatus,
     EvolutionPushContext,
@@ -2432,12 +2437,13 @@ def _schedule_leader_round_death_probe(
         liveness: Any,
         completion_signals: Any,
         previous: asyncio.Task | None,
-        on_fired: Any = None,
+        propose: Any,
 ) -> asyncio.Task:
     """（重新）调度 leader 轮死亡探针，返回新任务供调用方持有/取消。
 
     团队模式下 chat.error 是非终态警告（流继续），但 leader 重试耗尽转 IDLE 时
-    回合实际死亡且无任何终态帧——探针在这个窗口补发 processing_status 终态。
+    回合实际死亡且无任何终态帧——探针在这个窗口向裁决器提交判死提案
+    （去重/发帧/级联收流由裁决器收口，探针只管检测）。
     三个保险：流已终结则不补（正常收尾路径负责）；窗口内有产出则不补（已恢复）；
     窗口内已有回合收尾信号则不补（防误杀已完成回合）。
     第四个判定：探针醒来时仍有成员在途工作（busy/执行中）则不补——成员回报
@@ -2448,8 +2454,9 @@ def _schedule_leader_round_death_probe(
 
     liveness / completion_signals: 零参数可调用，分别返回主流已消费 chunk 数与
     已广播的回合收尾信号数（每次错误以最新值为基线）。
-    on_fired: 探针实际补发终态后的零参数回调（清除本轮错误史标记，
-    防长寿命流的后续轮次误带前一轮的陈旧错误）。
+    propose: 裁决器提案入口（RoundTerminalArbiter.propose）——判死提案携带
+    error 文本；终态发射、错误史复位（防长寿命流后续轮次误带陈旧错误）、
+    级联收流均由裁决器单点完成。
     """
     if previous is not None and not previous.done():
         previous.cancel()
@@ -2509,27 +2516,25 @@ def _schedule_leader_round_death_probe(
                     round_id,
                     _LEADER_ROUND_DEATH_PROBE_SEC,
                 )
-                await _broadcast_event(
-                    channel_id,
-                    session_id,
+                # 判死提案：终态发帧/打标/错误史复位/级联收流（追问按新首
+                # 请求走 RESUME_FROM_PAUSE，帧带新 request_id，前端归属链
+                # 不断）全部在裁决器单点完成
+                outcome = await propose(
                     {
-                        "event_type": "chat.processing_status",
-                        "session_id": session_id,
-                        "rid": round_id,
-                        "is_processing": False,
-                        "is_complete": True,
-                        "error": error_text.strip() or "Leader round did not recover after model error",
-                    },
+                        "source": ProposalSource.DEATH_PROBE,
+                        "error": (
+                            error_text.strip()
+                            or "Leader round did not recover after model error"
+                        ),
+                    }
                 )
-                if callable(on_fired):
-                    on_fired()
-                # 判死级联收流 + park 运行时——否则追问被判
-                # follow-up，真产出走旧流（帧带旧 request_id），前端新 run
-                # 归属断链（先「本轮无响应」再永久「正在思考」）
-                _cascade_park_runtime_after_terminal(
-                    channel_id, session_id, round_id, source="leader-death-probe"
-                )
-                return
+                # 提案被否决 ≠ 已收口：去重命中（终态帧已发出、信号已递增）
+                # 才可退出；若只是另一终态源瞬时占位后广播失败回滚
+                # （completion_signals 仍为 0），退出即零收口——继续守
+                # 下一探测窗口重试（与看门狗同口径）。
+                if outcome != Outcome.SUPPRESSED or completion_signals() > 0:
+                    return
+                continue
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -2652,92 +2657,6 @@ async def _team_round_settled(channel_id: str | None, session_id: str) -> bool |
             exc_info=True,
         )
         return None
-
-
-async def _emit_forced_terminal_at_stream_end(
-        channel_id: str | None,
-        session_id: str,
-        round_id: Any,
-        *,
-        unrecovered_error: str | None,
-        round_produced_content: bool = True,
-        saw_team_activity: bool = False,
-        build_attempted: bool = True,
-) -> None:
-    """流末零终态强制补发。
-
-    调用方负责判定"该补"（零终态信号 + 无挂起交互 + 非取消）；本函数负责
-    "怎么补"：settle 复核 True（确证落定只是帧丢了）补干净终态；False/None
-    （回合真实状态不明）补带 error 终态，不粉饰——error 优先复用本轮
-    未恢复的 leader 模型错误史，其次通用不明状态文案。
-
-    ``round_produced_content``：本轮 leader 是否产出过实质正文——降级/解散
-    的 soft 收口（settle_verdict 视为 True）下，零产出空回合不得记为已完成
-    （降级告警详情作 error 文案）。
-    ``saw_team_activity``：本轮是否见过团队活动帧（与 _emit_settle_terminal
-    的 dissolved 判定同口径；默认 False——未知上下文保守按「从未建立」
-    带 error 收口，生产调用点（流末 finally）总是传真实值）。
-    ``build_attempted``：本轮是否调过 build_team——False 时「未建立」是纯
-    单干轮的正常形态，按 soft 收口（与 _emit_settle_terminal 同口径）；
-    默认 True 保守（未知上下文维持判死语义）。
-    """
-    from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
-        TeamNotEstablishedError,
-    )
-
-    soft_not_established = False
-    try:
-        settle_verdict = await _team_round_settled(channel_id, session_id)
-    except TeamNotEstablishedError as e:
-        # 确定性终结（团队从未建立）——按"未确证"补带 error 终态，
-        # 但 error 用具体原因而非通用不明文案；绝不能让异常逃出 finally。
-        # 例外（与 _emit_settle_terminal 同口径）：降级会话（build_team 熔断
-        # 降级）或团队被主动解散（clean_team 删行，本轮见过团队活动帧）时
-        # 行缺席是预期形态——按确证落定补干净终态，不污名化已完成回合；
-        # 仍携带未恢复错误史（若有）。
-        tm = get_team_manager(channel_id)
-        if (
-            tm.has_session_degraded(session_id)
-            or saw_team_activity
-            or not build_attempted
-        ):
-            settle_verdict = True
-            soft_not_established = True
-        else:
-            settle_verdict = None
-            if not unrecovered_error:
-                unrecovered_error = str(e)
-    forced_terminal: dict[str, Any] = {
-        "event_type": "chat.processing_status",
-        "session_id": session_id,
-        "rid": round_id,
-        "is_processing": False,
-        "is_complete": True,
-    }
-    if settle_verdict is not True:
-        forced_terminal["error"] = (
-                unrecovered_error or "Team round ended with unconfirmed final state"
-        )
-    elif soft_not_established:
-        # soft 收口（降级/解散）：错误史优先；零产出空回合不得记已完成——
-        # error 文案复用本会话降级告警详情（解散轮无详情时用通用文案）
-        _soft_error = unrecovered_error
-        if not _soft_error and not round_produced_content:
-            _soft_error = (
-                get_team_manager(channel_id).session_degraded_detail(session_id)
-                or "Team round ended with no deliverable content"
-            )
-        if _soft_error:
-            forced_terminal["error"] = _soft_error
-    await _broadcast_event(channel_id, session_id, forced_terminal)
-    logger.info(
-        "[TeamHelpers] forced terminal emitted at stream end: "
-        "channel_id=%s session_id=%s round_id=%s settle=%s",
-        _resolve_channel_id(channel_id),
-        session_id,
-        round_id,
-        settle_verdict,
-    )
 
 
 async def _team_has_unread_messages(channel_id: str | None, session_id: str) -> bool | None:
@@ -2913,10 +2832,6 @@ async def _consume_stream_with_query(
     envs: dict[str, Any] | None = None,
 ) -> None:
     """Consume the team stream in the background and broadcast parsed events."""
-    from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
-        TeamNotEstablishedError,
-    )
-
     _envs = envs or {}
     hide_dm: bool = bool(_envs.get("hide_dm", False))
     received_chunks = 0
@@ -2961,90 +2876,18 @@ async def _consume_stream_with_query(
     # leader 正常收尾但任务已下发、零成员在途（重试断片未派发/成员未启动），
     # 回合无人推进且 team.completed 永不成立。回合开始广播后启动，随流回收
     stall_watchdog_task: asyncio.Task | None = None
-    # settle 补判终态的静默窗任务：settle 是瞬时快照（leader 发言当口任务板
-    # 恰空即误判落定），终态延迟 _SETTLE_TERMINAL_QUIET_SEC 发出；窗口内有
-    # 新内容帧即作废；读数未就绪（None）续窗重试；流先结束则 finally 立即补发
-    settle_terminal_task: asyncio.Task | None = None
-    settle_terminal_fired = False
-    # settle False（确未落定）后的事件驱动重评标记：final 当口的
-    # False 多为 leader 收尾迁移落库前的毫秒级时序差——置标后，消费循环内
-    # 后续 team.member/team.task/workflow.updated 帧到达即重评，True 进静默
-    # 窗收口；定时器（_delayed 内 False 续窗）兜底事件链静默死亡形态。
-    # 生命周期：终态发射（_reset_round_terminal_marks）或新一轮 leader 内容
-    # 帧到达（再武装点）时清除——不得跨轮残留（新轮起跑间隙的空板快照会把
-    # 旧轮的重评误判 True，对新轮发抢跑终态）。
-    settle_pending_recheck = False
-    settle_last_recheck_at = 0.0
-    # trailing 补评任务：去抖（leading-edge）跳过的帧簇尾帧若携带决定性迁移
-    # （如 task.completed 与 member.idle 同批到达——事件循环饱和时监控事件
-    # 队列积压成批 drain 属常态），跳过即丢、之后零帧则永挂再现；跳过时调度
-    # 一次性延迟重评兜底。标记清除后其 fire 时空转返回，无需随重置点取消。
-    settle_trailing_recheck_task: asyncio.Task | None = None
-    # 挂起交互守卫：本流广播过 leader 的
-    # chat.ask_user_question（HITL 等用户输入）时，流末不强制补终态——
-    # 回合是"暂停待恢复"而非"终结"。
-    saw_pending_interaction = False
-    # 挂起标记置位时的用户轮次号快照：清除点只允许「作答后」（当前轮次号
-    # 已推进）的恢复产出清标记——同一暂停轮 ask 之后晚到的带正文 final
-    # （leader 先输出正文再调提问工具时，原生/合成 final 可能晚于 ask 到达）
-    # 若误清，流末强制兜底会给挂起待作答的回合补带 error 的终态帧。
+    # 挂起标记置位时的用户轮次号快照（epoch 门输入，裁决器只存布尔——
+    # 清除点只允许「作答后」（当前轮次号已推进）的恢复产出清标记——同一暂停轮
+    # ask 之后晚到的带正文 final（leader 先输出正文再调提问工具时，原生/合成
+    # final 可能晚于 ask 到达）若误清，流末强制兜底会给挂起待作答的回合补
+    # 带 error 的终态帧。
     pending_interaction_turn = -1
-    # 内容帧计数（delta/reasoning/tool_call）：静默窗作废判据——不用
-    # received_chunks（usage/状态尾随帧会把窗口误作废）
-    content_chunks = 0
-    # 本流已广播的回合收尾信号数（processing_status is_complete=true 等）：
-    # 探针据此判断"错误之后回合已正常收尾"，避免迟到误杀已完成回合
-    completion_signals = 0
-    # 本轮未恢复的 leader 模型错误史：team.completed 的收尾转换
-    # 对错误无感知（零成员/零任务时 is_team_completed 空虚成立，leader 重试
-    # 耗尽后立刻触发），不带 error 的 processing_status 会让前端把失败回合
-    # 记成"已完成"（还反过来抑制死亡探针）。leader chat.error 时记录；
-    # leader 产出实质正文（delta/final 非空）视为恢复并清除；收尾帧转换时
-    # 仍挂着则携带 error 字段，让回合以失败收场。
-    round_unrecovered_error: str | None = None
-    # 本轮 leader 是否产出过实质正文（delta/final 非空）：降级/解散轮的
-    # 「干净收口」判据——零正文产出的降级轮是主理人单干静默失败（空回合），
-    # 不得记为已完成。注意不能用
-    # leader_round_text（final 落定即重置，收口时点恒为空）。
-    round_had_answer_content = False
-    # 本轮是否见过团队活动帧（team.member/team.task/workflow.updated/
-    # runtime_ready）：dissolved（团队曾建立后被解散）判定用。不复用
-    # tm_.has_seen_team_events——该标记文档承诺按轮重置、实际只在流启动时
-    # 重置（流级残留会把前轮 True 带进 dissolve 判定）。
-    round_saw_team_activity = False
-    # 本轮是否调用过 build_team：settle 撞「团队未建立」时区分「主理人尝试
-    # 建团失败」（判死+级联）与「主理人从未尝试建团的纯单干
-    # 轮」（团队本来就不必要——干净收口不收流）。
-    round_saw_build_attempt = False
     # 降级轮标记已上移到 TeamManager（会话级，tm_.has_session_degraded）——
     # 熔断开后团队在本会话永远建不起来，且追问轮走 fresh-start 起新流实例，
     # 流内局部标记会随旧实例销毁。
     # 消费方：settle 撞 TeamNotEstablishedError 时——见过降级告警 = 主理人已
     # 单干交付，按「完成+告警」干净收口；没见过则带 error 判死+级联收流。
 
-    def _clear_round_unrecovered_error() -> None:
-        # 探针补发终态后的回调：清错误史 + 复位本轮判据（终态发射点之一）
-        nonlocal round_unrecovered_error
-        round_unrecovered_error = None
-        _reset_round_terminal_marks()
-
-    def _reset_round_terminal_marks() -> None:
-        """回合终态发出后复位本轮判据（内容/团队活动/建团尝试/挂起交互/重评标记）。
-
-        回合边界按「终态发射」定义而非「下轮内容帧到达」——零产出的新回合
-        没有内容帧可触发复位，残留 True 会让它被误记已完成。
-        所有终态发射点（settle 三分支/team.completed/即时收尾/探针补发）
-        都必须过这里。settle 重评标记一并拆除：回合已收口，
-        旧轮不得再驱动重评。
-        """
-        nonlocal round_had_answer_content, round_saw_team_activity
-        nonlocal round_saw_build_attempt, saw_pending_interaction
-        nonlocal settle_pending_recheck
-        round_had_answer_content = False
-        round_saw_team_activity = False
-        round_saw_build_attempt = False
-        saw_pending_interaction = False
-        settle_pending_recheck = False
     # Reset the team-events flag at the start of a new round so chat.final
     # can correctly determine whether the team is active.
     tm_ = get_team_manager(channel_id)
@@ -3053,309 +2896,34 @@ async def _consume_stream_with_query(
     lg: TeamStreamLogger | None = None
     stream_cancelled = False
 
-    async def _emit_settle_terminal() -> bool:
-        """补发 settle 终态（带复核与去重）：静默窗到点与流末兜底共用。"""
-        nonlocal completion_signals, settle_terminal_fired, round_unrecovered_error
-        nonlocal round_had_answer_content, round_saw_team_activity
-        if settle_terminal_fired or not tm_.has_stream_task(session_id):
-            return False
-        # pause/HITL 守卫（与流末强制兜底同口径）：pause 进行中
-        # = 用户已停止、回合挂起待续——补终态会把「已停止」翻成「失败/完成」；
-        # 有挂起交互（HITL 等用户输入）= 回合是暂停待恢复而非终结。锁库下
-        # 静默窗实测 30-50s，用户在此期间点停止是常态，必须有这道守卫。
-        if saw_pending_interaction:
-            return False
-        _pause_check = getattr(tm_, "is_pause_in_progress", None)
-        if callable(_pause_check) and _pause_check(session_id):
-            logger.info(
-                "[TeamHelpers] settle terminal skipped (pause in progress): "
-                "channel_id=%s session_id=%s round_id=%s",
-                _resolve_channel_id(channel_id),
-                session_id,
-                round_id,
-            )
-            return False
-        # 统一去重：本流已发过任何回合终态（team.completed 转换/即时收尾/探针）即跳过——settle
-        # 补发的定位是"零终态时才补"。_delayed 的 baseline 对账只能盖住
-        # 窗口路径，盖不住流末 finally 兜底路径，必须在入口拦截。
-        if completion_signals > 0:
-            logger.info(
-                "[TeamHelpers] settle terminal skipped (terminal already emitted): "
-                "channel_id=%s session_id=%s round_id=%s",
-                _resolve_channel_id(channel_id),
-                session_id,
-                round_id,
-            )
-            return False
-        # 仅"确证落定"才发；False（确未落定）与 None（未知）都不发。
-        # 三态必须用 not（True 才通过）
-        from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
-            TeamNotEstablishedError,
-        )
+    def _pause_in_progress() -> bool:
+        _check = getattr(tm_, "is_pause_in_progress", None)
+        return bool(_check(session_id)) if callable(_check) else False
 
-        try:
-            settled = await _team_round_settled(channel_id, session_id)
-        except TeamNotEstablishedError as e:
-            degraded = tm_.has_session_degraded(session_id)
-            #「团队曾建立后被主动解散」（clean_team 删行）与「从未建立」
-            # 都报 team_info 行缺席：本轮见过团队活动帧（team.member/team.task/
-            # workflow.updated/runtime_ready）= 团队真实存在过 → 行缺席是解散
-            # 而非建团失败，按解散干净收口（不带 error、不级联——leader 运行时
-            # 存活可追问）；本轮没见过团队活动才维持判死（目标形态：建团彻底
-            # 失败）。判据必须用本轮 scope 的 round_saw_team_activity，不能用
-            # tm_.has_seen_team_events（其重置点实为流级，跨轮残留）。
-            dissolved = not degraded and round_saw_team_activity
-            # 纯单干轮：本轮从未调 build_team——团队本来就不必要，「未建立」
-            # 是正常形态而非失败（如主理人判断任务无需团队直接作答）。若误
-            # 判死+级联收流，有产出的正常单干轮会被标红失败、健康运行时被
-            # 误收。
-            solo_no_build = not degraded and not dissolved and not round_saw_build_attempt
-            if degraded or dissolved or solo_no_build:
-                # 降级轮/解散轮：按「完成」干净收口——不收流（运行时还活着，
-                # 追问可用）；degraded 告警横幅已由 chat.error 分支广播+落盘。
-                # 例外：本轮仍挂着 leader 未恢复错误史（如错误后只产出空
-                # final）——终态必须携带 error，否则实际失败的
-                # 轮次被记成「已完成」（与 team.completed 分支同口径）。
-                completion_event = {
-                    "event_type": "chat.processing_status",
-                    "session_id": session_id,
-                    "rid": round_id,
-                    "is_processing": False,
-                    "is_complete": True,
-                }
-                if round_unrecovered_error:
-                    completion_event["error"] = round_unrecovered_error
-                elif not round_had_answer_content:
-                    # 零正文产出的降级/解散轮不是「完成」——主理人单干静默
-                    # 失败（如错误后只产空 final，或降级告警后零产出即转
-                    # IDLE）——空回合不得记为已完成；error 文案复用本会话
-                    # 降级告警详情（解散轮无详情时用通用文案）。
-                    completion_event["error"] = (
-                        tm_.session_degraded_detail(session_id)
-                        or "Team round ended with no deliverable content"
-                    )
-                round_unrecovered_error = None
-                await _broadcast_event(channel_id, session_id, completion_event)
-                completion_signals += 1
-                settle_terminal_fired = True
-                tm_.mark_stream_round_terminal(session_id)
-                _reset_round_terminal_marks()
-                logger.info(
-                    "[TeamHelpers] settle terminal emitted (%s, team "
-                    "not established): channel_id=%s session_id=%s round_id=%s",
-                    "degraded round" if degraded else (
-                        "team dissolved" if dissolved else "solo round"
-                    ),
-                    _resolve_channel_id(channel_id),
-                    session_id,
-                    round_id,
-                )
-                return True
-            # 确定性终结（建团尝试过但彻底失败）——带 error 收口（不粉饰），
-            # 并级联 park 运行时收流，否则流永挂、keepalive 不止。
-            # 到达前提：无降级标记 + 本轮无团队活动 + 本轮调过 build_team。
-            await _broadcast_event(
-                channel_id,
-                session_id,
-                {
-                    "event_type": "chat.processing_status",
-                    "session_id": session_id,
-                    "rid": round_id,
-                    "is_processing": False,
-                    "is_complete": True,
-                    "error": str(e),
-                },
-            )
-            completion_signals += 1
-            settle_terminal_fired = True
-            tm_.mark_stream_round_terminal(session_id)
-            _reset_round_terminal_marks()
-            logger.warning(
-                "[TeamHelpers] settle terminal emitted (team not established): "
-                "channel_id=%s session_id=%s round_id=%s error=%s",
-                _resolve_channel_id(channel_id),
-                session_id,
-                round_id,
-                e,
-            )
-            _cascade_park_runtime_after_terminal(
-                channel_id, session_id, round_id, source="settle-team-not-established"
-            )
-            return True
-        if not settled:
-            return False
-        await _broadcast_event(
-            channel_id,
-            session_id,
-            {
-                "event_type": "chat.processing_status",
-                "session_id": session_id,
-                "rid": round_id,
-                "is_processing": False,
-                "is_complete": True,
-            },
-        )
-        completion_signals += 1
-        settle_terminal_fired = True
-        tm_.mark_stream_round_terminal(session_id)
-        _reset_round_terminal_marks()
-        logger.info(
-            "[TeamHelpers] settle terminal emitted: channel_id=%s session_id=%s round_id=%s",
-            _resolve_channel_id(channel_id),
-            session_id,
-            round_id,
-        )
-        return True
-
-    def _schedule_settle_terminal() -> None:
-        """settle 终态延迟静默窗确认：窗口内有新内容帧（团队还在干活）即作废；
-        读数未就绪（None）续窗重试 _SETTLE_TERMINAL_MAX_ATTEMPTS 次；
-        确未落定（False）按 _SETTLE_FALSE 预算续窗重评（不再裸赌
-        team.completed）——持续 False 耗尽后退回旧行为，不强制收口。"""
-        nonlocal settle_terminal_task
-        if settle_terminal_task is not None and not settle_terminal_task.done():
-            settle_terminal_task.cancel()
-        baseline_content = content_chunks
-        baseline_signals = completion_signals
-
-        async def _delayed() -> None:
-            from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
-                TeamNotEstablishedError,
-            )
-
-            none_attempts = 0
-            false_attempts = 0
-            while True:
-                try:
-                    await asyncio.sleep(_SETTLE_TERMINAL_QUIET_SEC)
-                except asyncio.CancelledError:
-                    return
-                if content_chunks != baseline_content:
-                    return
-                if completion_signals != baseline_signals:
-                    return
-                if not tm_.has_stream_task(session_id):
-                    return
-                try:
-                    result = await _team_round_settled(channel_id, session_id)
-                except TeamNotEstablishedError:
-                    # 确定性终结（团队从未建立）：续窗重试永不收口，
-                    # 立即带 error 判死（_emit_settle_terminal 内置同判定+
-                    # 级联收流）。
-                    await _emit_settle_terminal()
-                    return
-                logger.info(
-                    "[TeamHelpers] settle window check: session_id=%s round_id=%s "
-                    "result=%s none_attempts=%s false_attempts=%s",
-                    session_id,
-                    round_id,
-                    result,
-                    none_attempts,
-                    false_attempts,
-                )
-                if result is True:
-                    await _emit_settle_terminal()
-                    return
-                if result is None:
-                    # None（读数未就绪）→ 续窗重试（原语义）
-                    none_attempts += 1
-                    if none_attempts >= _SETTLE_TERMINAL_MAX_ATTEMPTS:
-                        logger.info(
-                            "[TeamHelpers] settle terminal abandoned after retries: "
-                            "session_id=%s round_id=%s",
-                            session_id,
-                            round_id,
-                        )
-                        return
-                    continue
-                # result is False —— 确未落定不等于永不落定：final 当口的
-                # False 多为 leader 收尾迁移落库前的毫秒级时序差或成员排空途中，
-                # 续窗重评变 True 即收口；持续 False = 确有在途工作，耗尽预算后
-                # 退回等 team.completed 旧行为（不会更糟）——不强制收口，防误杀
-                # 成员长模型调用中的合法静默。
-                false_attempts += 1
-                if false_attempts >= _SETTLE_FALSE_MAX_ATTEMPTS:
-                    logger.warning(
-                        "[TeamHelpers] settle still false after %s rechecks, "
-                        "falling back to waiting for team.completed: "
-                        "session_id=%s round_id=%s",
-                        false_attempts,
-                        session_id,
-                        round_id,
-                    )
-                    return
-                try:
-                    await asyncio.sleep(_SETTLE_FALSE_RECHECK_SEC)
-                except asyncio.CancelledError:
-                    return
-
-        settle_terminal_task = asyncio.create_task(
-            _delayed(), name=f"settle-terminal-{session_id}"
-        )
-
-    async def _settle_recheck(trigger: str) -> None:
-        """事件驱动重评单份实现：leading（帧到达即评）与 trailing（去抖跳过后
-        延迟补评）共用。True 进静默窗收口（窗在排队则交给窗内复核）；False/None
-        保持标记等下一帧/定时器；TeamNotEstablishedError 立即收口不再重评。"""
-        nonlocal settle_last_recheck_at, settle_pending_recheck
-        settle_last_recheck_at = time.monotonic()
-        from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
-            TeamNotEstablishedError,
-        )
-
-        try:
-            recheck_result = await _team_round_settled(channel_id, session_id)
-        except TeamNotEstablishedError:
-            # 确定性终结（团队从未建立）：与静默窗同口径——
-            # 立即收口（_emit 内置 degraded/dissolved/solo
-            # 三分支与级联收流），不再重评
-            settle_pending_recheck = False
-            await _emit_settle_terminal()
-            return
-        except Exception as exc:
-            # 瞬时读失败：事件驱动重评跑在
-            # 后台 task 里，异常绝不能外抛成 task never-retrieved 雷；
-            # 保持标记，下一帧/定时器续窗会再评。
-            logger.warning(
-                "[TeamHelpers] settle event-driven recheck failed: "
-                "session_id=%s round_id=%s trigger=%s error=%s",
-                session_id,
-                round_id,
-                trigger,
-                exc,
-            )
-            return
-        logger.info(
-            "[TeamHelpers] settle event-driven recheck: "
-            "session_id=%s round_id=%s trigger=%s result=%s",
-            session_id,
-            round_id,
-            trigger,
-            recheck_result,
-        )
-        if recheck_result is True:
-            # 静默窗已在排队则交给它（窗内自会复核后发
-            # 终态），否则补调度；标记保留至终态发射——
-            # 窗口若被新内容帧作废，后续状态帧仍可重评
-            if settle_terminal_task is None or settle_terminal_task.done():
-                _schedule_settle_terminal()
-        # False（确有在途）/None（读数未就绪）：保持标记等
-        # 下一帧；定时器兜底（_delayed False 续窗）并行守
-
-    async def _settle_trailing_recheck(trigger: str) -> None:
-        """去抖跳过的补评：睡满一个去抖窗后重评。fire 时标记已清（终态已发/
-        新轮起跑）、流已不在、或刚被别人评过（leading 抢跑），均空转返回。"""
-        try:
-            await asyncio.sleep(_SETTLE_RECHECK_DEBOUNCE_SEC)
-        except asyncio.CancelledError:
-            return
-        if not settle_pending_recheck:
-            return
-        if not tm_.has_stream_task(session_id):
-            return
-        if time.monotonic() - settle_last_recheck_at < _SETTLE_RECHECK_DEBOUNCE_SEC:
-            return
-        await _settle_recheck(f"trailing:{trigger}")
+    # 回合终态裁决器：七条收尾路径的判定与发帧单点——
+    # 去重/豁免/形态/时机/级联全在裁决器内，本循环只提交提案与喂账本
+    #（note_*）。终态相关轮级状态（completion_signals/错误史/产出标记/
+    # 团队活动/建团尝试/挂起交互/重评标记/静默窗与补评任务）全部收编进裁决器账本。
+    arbiter = RoundTerminalArbiter(
+        session_id=session_id,
+        round_id=round_id,
+        broadcast=lambda payload: _broadcast_event(channel_id, session_id, payload),
+        settled_check=lambda: _team_round_settled(channel_id, session_id),
+        has_stream_task=lambda: tm_.has_stream_task(session_id),
+        is_pause_in_progress=_pause_in_progress,
+        mark_round_terminal=lambda: tm_.mark_stream_round_terminal(session_id),
+        clear_round_terminal=lambda: tm_.clear_stream_round_terminal(session_id),
+        cascade=lambda source: _cascade_park_runtime_after_terminal(
+            channel_id, session_id, round_id, source=source
+        ),
+        has_session_degraded=lambda: tm_.has_session_degraded(session_id),
+        session_degraded_detail=lambda: tm_.session_degraded_detail(session_id),
+        settle_quiet_sec=_SETTLE_TERMINAL_QUIET_SEC,
+        settle_none_max_attempts=_SETTLE_TERMINAL_MAX_ATTEMPTS,
+        settle_false_recheck_sec=_SETTLE_FALSE_RECHECK_SEC,
+        settle_false_max_attempts=_SETTLE_FALSE_MAX_ATTEMPTS,
+        settle_recheck_debounce_sec=_SETTLE_RECHECK_DEBOUNCE_SEC,
+    )
 
     def _is_clean_text_round() -> bool:
         """本地可证的干净纯文本轮：本轮无团队事件、无工具调用、无成员产出，
@@ -3396,15 +2964,9 @@ async def _consume_stream_with_query(
             # 活性口径用全量流帧（received_chunks，含成员/团队事件）——停摆语义是
             # "无人干事"，与死亡探针的"leader 是否活着"（只数 leader 帧）不同
             liveness=lambda: received_chunks,
-            completion_signals=lambda: completion_signals,
-            # 广播函数注入（本模块的广播有 team.error 改名/建团事件标记/cron 收尾
-            # 副作用）；看门狗模块不反向 import 本文件，防循环依赖
-            broadcast=_broadcast_event,
-            # 判死级联收流 + park 运行时：追问按新首请求走
-            # RESUME_FROM_PAUSE，帧带新 request_id，前端归属链不断
-            on_terminal=lambda: _cascade_park_runtime_after_terminal(
-                channel_id, session_id, round_id, source="stall-watchdog"
-            ),
+            completion_signals=lambda: arbiter.completion_signals,
+            # 判死终态改提案裁决器（去重/发帧/级联收流单点）
+            propose=arbiter.propose,
         )
         stream_trace_enabled = bool(
             _envs.get(_STREAM_TRACE_ENV_KEY) or os.environ.get(_STREAM_TRACE_ENV_KEY)
@@ -3540,33 +3102,10 @@ async def _consume_stream_with_query(
                 # 收尾尾随帧不清除（它们紧跟着 terminal 到达，会误清刚打的标记）。
                 _parsed_event_type = parsed.get("event_type")
                 if _parsed_event_type in ("chat.delta", "chat.reasoning", "chat.tool_call"):
-                    content_chunks += 1
-                    if tm_.is_stream_round_terminal(session_id):
-                        tm_.clear_stream_round_terminal(session_id)
-                        # 发射层再武装只认 leader 内容帧：「leader 先答、成员
-                        # 后报」的常态形态下，成员迟到 delta/tool_call 若也复位
-                        # completion_signals，流末零终态兜底会对这个已收
-                        # 到干净终态的回合再发一条带 error 的终态帧（settle 复核
-                        # 因成员在途/未读非 True），前端「已完成」翻「失败」。
-                        # leader 帧才证明「新一轮 leader 回合在跑」，其 final 的
-                        # settle 需要再发终态的资格；成员尾随产出本身不产生终态
-                        # 需求（settle 复核对成员在途本就 False）。
-                        # 复位同时天然拆除在途的延迟终态窗（窗口 abort 判据是
-                        # completion_signals != baseline）。chat.final 不在
-                        # 复位面——同轮晚到 final 不得清刚发的终态。
-                        if is_leader:
-                            completion_signals = 0
-                            settle_terminal_fired = False
-                            # 新一轮 leader 回合起跑 = 旧轮 settle 上下文
-                            # 已死——重评标记一并清除（防旧轮 False 的待重评标记
-                            # 跨轮残留：新轮起跑间隙的空板快照会误判 True，
-                            # 对新轮发抢跑终态）
-                            settle_pending_recheck = False
-                            logger.info(
-                                "[TeamHelpers] settle terminal re-armed: new leader "
-                                "content after terminal, session_id=%s",
-                                session_id,
-                            )
+                    # 内容帧：计数 + 终态标记清除（认所有内容帧）+ 再武装
+                    #（只认 leader——成员迟到产出复位会让流末兜底给已干净
+                    # 终态的回合再补带 error 帧）全部收编在裁决器
+                    arbiter.note_content_frame(is_leader=is_leader)
                 # HITL 答案到达后的恢复产出 = 挂起已解除——清除本轮挂起
                 # 标记（它是轮级语义：本轮暂停待恢复；流级粘性会把一次
                 # HITL 拦死同流后续所有轮的 settle 补终态）。
@@ -3585,7 +3124,7 @@ async def _consume_stream_with_query(
                     and is_leader
                     and tm_.user_turn_epoch(session_id) != pending_interaction_turn
                 ):
-                    saw_pending_interaction = False
+                    arbiter.clear_pending_interaction()
                 # 本轮团队活动置位（dissolved 判定的本轮 scope 判据；复位在
                 # 终态发射点统一做——零产出新回合没有内容帧，不能靠帧到达复位）。
                 # 判据只认 team.member/team.task/workflow.updated（成员/任务真实
@@ -3593,7 +3132,7 @@ async def _consume_stream_with_query(
                 # 即发、先于 build_team，建团失败轮也有，证明不了"团队建成"
                 # （含它则 dissolved 恒成立、判死分支死亡）
                 if parsed.get("event_type") in _TEAM_BUILDING_EVENT_TYPES:
-                    round_saw_team_activity = True
+                    arbiter.note_team_activity()
                     # 团队真建成（有成员/任务活动）→ 降级语义在本会话终结：
                     # 清除会话级降级标记，避免残留详情被后续轮次误用
                     tm_.clear_session_degraded(session_id)
@@ -3624,8 +3163,8 @@ async def _consume_stream_with_query(
                 if parsed.get("event_type") == "chat.ask_user_question":
                     # leader 向用户发问 = 回合挂起等输入（HITL），
                     # 流末零终态兜底不得补终态（暂停待恢复，不是终结）
-                    saw_pending_interaction = True
                     pending_interaction_turn = tm_.user_turn_epoch(session_id)
+                    arbiter.set_pending_interaction(pending_interaction_turn)
                     logger.info(
                         "[TeamHelpers] pending interaction flagged: "
                         "channel_id=%s session_id=%s round_id=%s",
@@ -3663,10 +3202,9 @@ async def _consume_stream_with_query(
                         parsed.get("event_type") in ("chat.delta", "chat.final")
                         and str(parsed.get("content") or "").strip()
                     ):
-                        round_unrecovered_error = None
-                        round_had_answer_content = True
+                        arbiter.note_leader_output(str(parsed.get("content") or ""))
                         if tm_.user_turn_epoch(session_id) != pending_interaction_turn:
-                            saw_pending_interaction = False
+                            arbiter.clear_pending_interaction()
                     # 多气泡：leader 的 reasoning 打当轮泡序号——
                     # 思考先于发言到达，前端按 seq 把思考归到"紧接着的发言卡"
                     if parsed.get("event_type") == "chat.reasoning":
@@ -3684,7 +3222,7 @@ async def _consume_stream_with_query(
                         or _tc.get("name") or _tc.get("tool_name") or ""
                     )
                     if _tool_name == "build_team":
-                        round_saw_build_attempt = True
+                        arbiter.note_build_attempt()
                 parsed = _truncate_team_tool_result_event(parsed)
                 if parsed.get("event_type") == "team.runtime_ready":
                     ready_team_name = str(parsed.get("team_name") or team_spec.team_name)
@@ -3759,51 +3297,27 @@ async def _consume_stream_with_query(
                             "rid": round_id,
                         },
                     )
-                    await _broadcast_event(
-                        channel_id,
-                        session_id,
-                        {
-                            "event_type": "chat.processing_status",
-                            "session_id": session_id,
-                            "rid": round_id,
-                            "is_processing": False,
-                            "is_complete": True,
-                            # 投递失败已广播 chat.error，收尾帧必须
-                            # 带 error，否则前端把失败回合记成"已完成"
-                            "error": error_msg,
-                        },
+                    # 投递失败已广播 chat.error，收尾帧必须带 error——
+                    # 由裁决器发（去重/打标/账本复位单点）
+                    await arbiter.propose(
+                        {"source": ProposalSource.INTERACT_FAILED, "error": error_msg}
                     )
-                    round_unrecovered_error = None
-                    completion_signals += 1
-                    _reset_round_terminal_marks()
                     continue
                 elif parsed.get("event_type") == "team.completed":
-                    # Team completed this round — broadcast a single
-                    # round-complete signal that also carries team stats.
-                    completion_event = {
-                        "event_type": "chat.processing_status",
-                        "session_id": session_id,
-                        "rid": round_id,
-                        "is_processing": False,
-                        "is_complete": True,
-                        "member_count": parsed.get("member_count"),
-                        "task_count": parsed.get("task_count"),
-                    }
-                    # 收尾帧携带本轮错误史——leader 重试耗尽后
-                    # （零成员/零任务时 team.completed 空虚成立）不把失败回合
-                    # 标成正常完成；leader 恢复产出后该标记已清除，不受影响
-                    if round_unrecovered_error:
-                        completion_event["error"] = round_unrecovered_error
-                    round_unrecovered_error = None
-                    await _broadcast_event(channel_id, session_id, completion_event)
-                    completion_signals += 1
+                    # Team completed this round——SDK 三条件即真值（R6），
+                    # 统计键恒在（值可 None）；错误史携带（R13）、去重、
+                    # 打标、账本复位由裁决器收口
+                    await arbiter.propose(
+                        {
+                            "source": ProposalSource.TEAM_COMPLETED,
+                            "member_count": parsed.get("member_count"),
+                            "task_count": parsed.get("task_count"),
+                        }
+                    )
                     # 回合终态发出后复位流级轮次标记，
                     # 让后续纯文本追问轮仍有 finish_after_final 即时收尾资格
                     saw_tool_call = False
                     saw_teammate_output = False
-                    # 回合已终态：下一条用户消息应按新流首请求处理
-                    tm_.mark_stream_round_terminal(session_id)
-                    _reset_round_terminal_marks()
                     continue
                 elif parsed.get("event_type") == "chat.error":
                     await _broadcast_event(channel_id, session_id, parsed)
@@ -3851,7 +3365,7 @@ async def _consume_stream_with_query(
                         # 终态同理。广播与 warning 落盘在上方已照常完成。
                         # 记录本轮未恢复的 leader 模型错误史，
                         # 供 team.completed 等收尾帧携带（根治"重试耗尽却记已完成"）
-                        round_unrecovered_error = str(parsed.get("error") or "")
+                        arbiter.note_leader_error(str(parsed.get("error") or ""))
                         await _broadcast_event(
                             channel_id,
                             session_id,
@@ -3864,16 +3378,16 @@ async def _consume_stream_with_query(
                         )
                         # chat.error 在团队模式是非终态警告（前端只挂横幅不收尾），
                         # 但 leader 重试耗尽转 IDLE 时回合实际死亡且再无终态帧——
-                        # 挂死亡探针：窗口内零产出且无收尾信号则补发终态
+                        # 挂死亡探针：窗口内零产出且无收尾信号则提案裁决器判死
                         death_probe_task = _schedule_leader_round_death_probe(
                             channel_id,
                             session_id,
                             round_id,
                             error_text=str(parsed.get("error") or ""),
                             liveness=lambda: leader_activity_chunks,
-                            completion_signals=lambda: completion_signals,
+                            completion_signals=lambda: arbiter.completion_signals,
                             previous=death_probe_task,
-                            on_fired=_clear_round_unrecovered_error,
+                            propose=arbiter.propose,
                         )
                     continue
                 # chat.final 的终态判定改用状态真值而非事件历史：
@@ -3915,75 +3429,17 @@ async def _consume_stream_with_query(
                     # round is complete. Clients may stop consuming the stream
                     # as soon as processing_status(False) arrives.
                     await _broadcast_event(channel_id, session_id, parsed)
-                    settle_evaluated = False
-                    settle_decision = None
                     if not should_finish_round and is_leader:
                         # 零任务问答轮补判——team.completed 门禁
                         # 要求任务行存在（is_team_completed 条件①），消息制委派/
                         # 纯问答团从不建任务行，seen_team_events 又被成员状态帧
-                        # 置位 → 没有任何终态帧、流永挂。settle 三态补判：
-                        # True=落定、False=确未落定（置事件驱动重评标记+静默窗
-                        # 续评，不再裸赌 team.completed）、
-                        # None=读数未就绪（续窗重试，不得一次性放弃）。
-                        settle_evaluated = True
-                        try:
-                            settle_decision = await _team_round_settled(
-                                channel_id, session_id
-                            )
-                        except TeamNotEstablishedError as e:
-                            # 团队从未建立=确定性终结，续窗重试永不收口——
-                            # 但不立即判死：降级轮（熔断后主理人单干）
-                            # 的 degraded 告警帧在运行时 IDLE 时才发出，可能
-                            # 晚于 final 到达。进静默窗等一等——窗内若见过
-                            # degraded 告警则按「完成+告警」干净收口
-                            # （_emit_settle_terminal 内置两分支判定）。
-                            logger.info(
-                                "[TeamHelpers] settle decision at final: session_id=%s "
-                                "round_id=%s team not established: %s",
-                                session_id,
-                                round_id,
-                                e,
-                            )
-                            _schedule_settle_terminal()
-                            continue
-                    if settle_evaluated:
-                        # 长流协作防误杀：settle 是瞬时快照，即发会把"leader 先发言、
-                        # 团队随后继续干活"的回合误判收尾——True 与 None 都进静默窗
-                        # （窗内有新内容帧作废；None 续窗重试）后发终态
-                        logger.info(
-                            "[TeamHelpers] settle decision at final: session_id=%s "
-                            "round_id=%s decision=%s",
-                            session_id,
-                            round_id,
-                            settle_decision,
-                        )
-                        if settle_decision is not False:
-                            _schedule_settle_terminal()
-                        else:
-                            # False（确未落定）是瞬时快照——leader 收尾迁移
-                            # 常在 final 广播后毫秒级才落库、
-                            # 成员排空亦可能晚于 final。裸赌
-                            # team.completed 会把「边沿未触发/门槛泄漏/零任务
-                            # 门禁」的接续轮永久挂死：置事件驱动重评标记（后续
-                            # team.member/team.task/workflow.updated 帧到达即
-                            # 重评），静默窗兜底事件链静默死亡形态——两层重评，
-                            # 不再放弃。
-                            settle_pending_recheck = True
-                            _schedule_settle_terminal()
+                        # 置位 → 没有任何终态帧、流永挂。settle 提案交裁决器。
+                        await arbiter.propose({"source": ProposalSource.SETTLE})
                         continue
                     if should_finish_round:
-                        await _broadcast_event(
-                            channel_id,
-                            session_id,
-                            {
-                                "event_type": "chat.processing_status",
-                                "session_id": session_id,
-                                "rid": round_id,
-                                "is_processing": False,
-                                "is_complete": True,
-                            },
-                        )
-                        completion_signals += 1
+                        # 即时收尾（纯文本轮/workflow 完成）——提案裁决器
+                        #（去重/打标/账本复位/错误史携带单点）
+                        await arbiter.propose({"source": ProposalSource.INSTANT_FINAL})
                         # 即时收尾只限「纯文本回合」：本轮无团队事件、无工具调用、
                         # 无成员产出，且收尾信号来自 task_completion（leader 任务真实
                         # 完成）——运行时暂停，下次发送 resume_from_pause 热恢复，不再
@@ -3998,10 +3454,6 @@ async def _consume_stream_with_query(
                         # 前端归属断链）。回合终态发出后即复位，下一轮重新评估。
                         saw_tool_call = False
                         saw_teammate_output = False
-                        _reset_round_terminal_marks()
-                        # 回合已终态：下一条用户消息应按新流首请求处理
-                        #（process_team_message_stream 的判定依据）
-                        tm_.mark_stream_round_terminal(session_id)
                     continue
                 # 团队压缩事件落盘——boundary 记录是收尾分隔条的唯一来源，
                 # 修复前团队链路只广播不落盘，重进会话/重启后压缩痕迹全丢。
@@ -4019,27 +3471,11 @@ async def _consume_stream_with_query(
                         ),
                     )
                 await _broadcast_event(channel_id, session_id, parsed)
-                # 事件驱动重评：settle False 置标后，团队状态帧（成员/任务/
-                # 工作流迁移）到达即重评——final 当口的 False 多为 leader 收尾
-                # 迁移落库前的毫秒级时序差，下一帧到达时读数已净。去抖防落定
-                # 过程密集状态帧打爆 DB 点查；去抖跳过的帧调度 trailing 补评——
-                # 帧簇尾帧可能携带决定性迁移（饱和 drain 同批到达），丢尾帧后
-                # 零帧即永挂。标记由终态发射点/新一轮 leader 内容帧清除，跨轮
-                # 不残留。**重评绝不内联 await 在帧消费循环里**（读数含 DB 点查，
-                # 锁竞争/读池饱和下可阻塞数秒）：leading 同样只调度后台
-                # trailing 位，0.5s 后补评，其内部新鲜度检查保证去抖语义不变。
-                if (
-                    settle_pending_recheck
-                    and _parsed_event_type in _TEAM_BUILDING_EVENT_TYPES
-                ):
-                    if (
-                        settle_trailing_recheck_task is None
-                        or settle_trailing_recheck_task.done()
-                    ):
-                        settle_trailing_recheck_task = asyncio.create_task(
-                            _settle_trailing_recheck(_parsed_event_type),
-                            name=f"settle-trailing-recheck-{session_id}",
-                        )
+                # 事件驱动重评：团队状态帧到达即通知裁决器——
+                # 重评标记判定、0.5s 去抖（trailing 补评不丢尾帧）、
+                # 后台调度（不内联堵流）全在裁决器内
+                if _parsed_event_type in _TEAM_BUILDING_EVENT_TYPES:
+                    await arbiter.note_state_frame()
 
         # If stream ended without any chunks, broadcast an error event
         if received_chunks == 0:
@@ -4055,17 +3491,14 @@ async def _consume_stream_with_query(
             # （intent=pause）或 HITL 挂起时，池条目是「挂起可热恢复」的凭据
             # 而非失同步残留——拆了会丢暂停语义（resume_from_pause 上下文断链）。
             if await _runner_pool_has_running_team(session_id):
-                _pause_check = getattr(tm_, "is_pause_in_progress", None)
-                _pause_in_progress = (
-                    bool(_pause_check(session_id)) if callable(_pause_check) else False
-                )
-                if saw_pending_interaction or _pause_in_progress:
+                _pause_in_progress_now = _pause_in_progress()
+                if arbiter.has_pending_interaction or _pause_in_progress_now:
                     logger.info(
                         "[TeamHelpers] stale-entry teardown skipped "
                         "(pending_interaction=%s pause_in_progress=%s): "
                         "channel_id=%s session_id=%s",
-                        saw_pending_interaction,
-                        _pause_in_progress,
+                        arbiter.has_pending_interaction,
+                        _pause_in_progress_now,
                         _resolve_channel_id(channel_id),
                         session_id,
                     )
@@ -4096,6 +3529,7 @@ async def _consume_stream_with_query(
             )
     except asyncio.CancelledError:
         stream_cancelled = True
+        arbiter.note_stream_cancelled()
         logger.info(
             "[TeamHelpers] stream cancelled: channel_id=%s session_id=%s",
             _resolve_channel_id(channel_id),
@@ -4124,13 +3558,13 @@ async def _consume_stream_with_query(
             stream_cancelled = True
             raise
     finally:
-        # 回合死亡探针/停摆看门狗随流回收（流结束=回合已有定论，不再需要补终态）
+        # 回合死亡探针/停摆看门狗随流回收（流结束=回合已有定论，不再需要补终态）；
+        # 裁决器回收其静默窗/补评任务
         if death_probe_task is not None and not death_probe_task.done():
             death_probe_task.cancel()
         if stall_watchdog_task is not None and not stall_watchdog_task.done():
             stall_watchdog_task.cancel()
-        if settle_terminal_task is not None and not settle_terminal_task.done():
-            settle_terminal_task.cancel()
+        arbiter.close()
         # Flush & close the stream trace logger if one was opened.
         if lg is not None:
             try:
@@ -4139,72 +3573,24 @@ async def _consume_stream_with_query(
                 logger.warning(f"TeamStreamLogger flush failed, error is {e}")
         try:
             if not stream_cancelled:
-                # 流先结束且 settle 静默窗已挂起未发：流尽=回合已了，立即补发
-                #（仅限 settle 补判已命中的回合；从未评估过 settle 的流不在此列。
-                #  _emit 内部复核三件套 + 去重，已发过则幂等跳过）
-                if settle_terminal_task is not None and not settle_terminal_fired:
-                    try:
-                        await _emit_settle_terminal()
-                    except Exception:
-                        # finally 内的补发失败不得遮蔽原异常、不得跳过后续
-                        # 快照/team.completed 广播（cron watcher 收尾依赖）
-                        logger.warning(
-                            "[TeamHelpers] settle terminal fallback failed: "
-                            "channel_id=%s session_id=%s round_id=%s",
-                            _resolve_channel_id(channel_id),
-                            session_id,
-                            round_id,
-                            exc_info=True,
-                        )
-                # 流末零终态兜底：team.completed 门禁未达标 + settle 放弃时回合可能没有任何
-                # 终态帧，流尽是最后机会。流被取消（stream_cancelled）不补——外层 if 已拦；
-                # 有挂起交互时回合是暂停待恢复，不补。
-                # pause 进行中（用户主动停止 intent=pause / 判死级联 park）同样不补：
-                # 回合是挂起待续而非终结，且 settle 复核在 pause 执行中必然非 True，
-                # 补了必是带 error 的误伤帧（前端「已停止」被翻成「失败」）。
-                if completion_signals == 0 and not saw_pending_interaction:
-                    _pause_check = getattr(tm_, "is_pause_in_progress", None)
-                    _pause_in_progress = (
-                        bool(_pause_check(session_id)) if callable(_pause_check) else False
-                    )
-                    if _pause_in_progress:
-                        logger.info(
-                            "[TeamHelpers] forced terminal skipped (pause in progress): "
-                            "channel_id=%s session_id=%s round_id=%s",
-                            _resolve_channel_id(channel_id),
-                            session_id,
-                            round_id,
-                        )
-                    else:
-                        try:
-                            await _emit_forced_terminal_at_stream_end(
-                                channel_id, session_id, round_id,
-                                unrecovered_error=round_unrecovered_error,
-                                round_produced_content=round_had_answer_content,
-                                saw_team_activity=round_saw_team_activity,
-                                build_attempted=round_saw_build_attempt,
-                            )
-                            completion_signals += 1
-                            tm_.mark_stream_round_terminal(session_id)
-                        except Exception as e:
-                            # 补发失败仅记日志不传播（CancelledError 不捕，取消语义不吞）；
-                            # 异常本体由 exc_info 的 traceback 携带，模板不再重复拼 e
-                            logger.warning(
-                                "[TeamHelpers] forced terminal emission failed: "
-                                "channel_id=%s session_id=%s round_id=%s: %s",
-                                _resolve_channel_id(channel_id),
-                                session_id,
-                                round_id,
-                                e,
-                                exc_info=True,
-                            )
-                elif completion_signals == 0:
-                    logger.info(
-                        "[TeamHelpers] forced terminal skipped (pending interaction): "
+                # 流末收口提案（stream_end）：裁决器内部依序处理——去重（本轮
+                # 已终态即否决）、挂起交互/pause 豁免、本流评估过 settle 则先试
+                # settle 补发（发帧点四闸复查+复核+四岔）、否则强制补发
+                #（复核 True 补干净、False/None 补带 error 不粉饰、撞未建立
+                # 软岔干净收口/第四岔带 error 不级联——流已尽）。
+                try:
+                    await arbiter.propose({"source": ProposalSource.STREAM_END})
+                except Exception:
+                    # finally 内的补发失败不得遮蔽原异常、不得跳过后续
+                    # 快照/team.completed 广播（cron watcher 收尾依赖）；
+                    # CancelledError 不捕，取消语义不吞
+                    logger.warning(
+                        "[TeamHelpers] stream-end terminal proposal failed: "
                         "channel_id=%s session_id=%s round_id=%s",
                         _resolve_channel_id(channel_id),
                         session_id,
                         round_id,
+                        exc_info=True,
                     )
                 # Broadcast team.completed so cron round watchers (both the
                 # agent adapter's _wait_for_cron_team_round_events and the cron
