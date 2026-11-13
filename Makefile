@@ -24,7 +24,7 @@ else
 endif
 
 # Target that is not a file -> always considered out of date.
-.PHONY: help install sync lock update-deps update-agent-gateway test test-unit test-integration \
+.PHONY: help install sync lock update-deps update-openjiuwen update-agent-gateway test test-unit test-integration \
 		test-cov lint lint-fix format typecheck clean build \
 		init start-debug start-debug-rebuild restart-debug restart-debug-fast stop \
 		genai-semconv check-genai-semconv openjiuwen-semconv check-openjiuwen-semconv
@@ -59,15 +59,18 @@ update-deps: ## Upgrade all locked dependencies to their latest allowed version
 	$(UV) sync
 
 # ----------------------------------------------------------------------
-# openjiuwen (agent-core) — arrives transitively via agent-gateway; advancing
-# core means re-pinning agent-gateway in pyproject.toml (project.dependencies
-# + tool.uv.sources) to a gateway commit that pins the target agent-core rev.
+# Re-pin openjiuwen in the direct dependencies, overrides and sources before
+# re-locking. The mother repository controls the core revision.
 # ----------------------------------------------------------------------
 
-update-agent-gateway: ## Re-lock after re-pinning agent-gateway (carries openjiuwen)
+update-openjiuwen: ## Re-lock after re-pinning openjiuwen in pyproject.toml
+	$(UV) lock --upgrade-package openjiuwen
+	$(UV) sync
+
+update-agent-gateway: ## Re-lock after re-pinning agent-gateway
 	$(UV) lock --upgrade-package agent-gateway
 	$(UV) sync
-	@printf "$(C_OK)openjiuwen now resolved via agent-gateway:$(C_RESET)\n"
+	@printf "$(C_OK)openjiuwen now resolved from the root pin:$(C_RESET)\n"
 	@awk '/^name = "openjiuwen"/{f=1} f && /^source = /{sub(/.*#/,""); sub(/".*/,""); print "  commit " $$0; f=0}' uv.lock
 
 # ----------------------------------------------------------------------
