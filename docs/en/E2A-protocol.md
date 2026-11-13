@@ -498,9 +498,9 @@ enum registration is required.
 
 ## History payload references and chunk retrieval
 
-Large tool results retain a short preview and may include `payload_refs`. For the main agent, `chat.llm_call_start` carries a pre-call preview; `chat.llm_call_end.payload_refs.prompt` references the complete model input (messages and tools) after Core finalizes prompt injection and context processing. Subagents captured by model-input callbacks may still reference their complete input in `chat.llm_call_start`. Each reference contains `sha256`, `bytes`, `media_type`, and a host path. Clients retrieve content by session and digest rather than opening the host path.
+Large tool results retain a short preview and may include `payload_refs`. Each reference contains `sha256`, `bytes`, `media_type`, and a host path. Clients retrieve content by session and digest. Previously stored prompt references remain readable through the same interface.
 
-`text/plain` identifies an original string; `application/json` identifies the complete structured value. `raw_output_truncated=true` means the inline preview was reduced; a corresponding `payload_refs` entry provides the complete artifact. If artifact storage fails, model/tool events still carry bounded previews without unavailable references, and the failure is logged. Existing small results and inline history keep their semantics.
+`text/plain` identifies an original string; `application/json` identifies the complete structured value. `raw_output_truncated=true` means the inline preview was reduced; a corresponding `payload_refs` entry provides the complete artifact. If artifact storage fails, tool events still carry bounded previews without unavailable references, and the failure is logged. Existing small results and inline history keep their semantics.
 
 Use a unary `history.get` request with these `params`:
 
@@ -520,12 +520,28 @@ Legacy page reads preserve `event_payload`, `usage`, and `session_usage` for too
 
 Each page uses a committed byte-length boundary. Concurrent appends become visible to later page requests; file replacement or truncation returns a history-change error. Page scans allow history writes to continue, and both unary and streamed history queries keep the Front event loop responsive.
 
-For each model call, `chat.usage_metadata.metadata.usage_metadata.payload_refs.prompt` carries the prompt reference emitted by that call's `llm_call_end`. When the SDK emits usage first, the adapter retains at most one usage event until call-end. Missing call-end events drain at the next call, answer, or stream completion. A new `llm_call_start` clears references from the previous call.
+When the SDK emits usage first, the adapter retains at most one usage event until call-end. Missing call-end events drain at the next call, answer, or stream completion.
 
-When an output consumer is cancelled or closed, pending usage is saved to the session audit without yielding into the closed stream. Normally delivered usage still follows the existing history writer. Call-end references remain available if cancellation occurs while the end marker is being delivered.
+When an output consumer is cancelled or closed, pending usage is saved to the session audit. Normally delivered usage follows the existing history writer.
 
 Externalized tool results retain known rich-display fields (`skill_tree`, `beam_search`, `planned_graph`, `graph_status`, and `graph_build`) within the existing 1 MiB raw-output budget; MCP Apps keep their existing projection. Complete originals remain in `payload_refs`. Live delivery and history replay preserve these references in the current product session, including forked sessions.
 
 For Gateway routes that forward history cursors, clients may request `history.get` with `cursor: "history-artifact:v1:<sha256>:<offset>"` and `limit: 1`. The response contains one `history.artifact` record with the same chunk fields as unary artifact retrieval, followed by the normal history done frame. Each cursor request reads at most 8 KiB on a UTF-8 boundary. Invalid or missing artifacts return `HISTORY_ARTIFACT_FAILED`; no arbitrary file path is accepted. Ordinary history subscribers ignore these artifact cursors. The unary `artifact_sha256` interface remains available.
 
 Web loads originals only on request, retains one window of at most 64 KiB locally, and offers previous/next parts. Closing the view or changing its session/reference aborts pending reads and releases the displayed original; full originals are not copied into the chat store.
+
+## Model call status and incremental history
+
+`chat.llm_call_start` and `chat.llm_call_end` record the model call lifecycle with
+member and role attribution. Start events are durable even with empty content.
+Each call start assigns `llm_start_ts` to associate its start and usage events.
+
+Session history appends new messages and events. Main-agent and sub-agent call
+events omit the input prompt and its artifact reference. User messages, tool calls,
+tool results and replies are persisted through their respective events. Clients must
+accept an absent `prompt` and degrade the full-input details view accordingly.
+
+`chat.usage_metadata` continues to report input, output and cache tokens, costs and
+latencies. Context occupancy uses `context.usage`, and cumulative usage uses the
+existing session usage snapshot. Readers continue to accept older records with
+`prompt` fields.
