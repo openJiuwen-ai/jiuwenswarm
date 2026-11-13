@@ -7,6 +7,7 @@ import { isComfyuiNodeConfig } from './comfyuiWorkflow';
 import { generatesTimedVideo } from './designerMediaSettings';
 import { isUploadedMediaNode } from './mediaNodeConfig';
 import type { GenerationKind } from './designGenerationReadiness';
+import type { DesignGenerationSelection } from './designerModelConfiguration';
 import type { DesignerExecutionGraph } from './executionGraphTypes';
 
 export type MaybeNode = {
@@ -27,4 +28,25 @@ export function nodeGenerationKind(
   if (isComfyuiNodeConfig(node.config)) return null;
   if (type === 'video' && graph && node.id && !generatesTimedVideo(graph, node.id)) return null;
   return type;
+}
+
+const GENERATION_SLOT = {
+  image: 'visual_gen',
+  video: 'video_gen',
+} as const;
+
+/**
+ * The node's own modality has no catalogue model, so its send button stays disabled.
+ * Nodes that do not call a generation model stay enabled. A catalogue that has not
+ * loaded yet (`selection` null) stays enabled until the list is known.
+ */
+export function nodeSendBlockedByMissingModel(
+  node: MaybeNode,
+  graph: DesignerExecutionGraph | null | undefined,
+  selection: DesignGenerationSelection | null,
+): boolean {
+  if (!selection) return false;
+  const kind = nodeGenerationKind(node, graph);
+  if (!kind) return false;
+  return !selection[GENERATION_SLOT[kind]];
 }

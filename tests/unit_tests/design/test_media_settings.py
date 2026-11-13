@@ -86,7 +86,7 @@ def test_stored_settings_snap_onto_the_active_model(monkeypatch: pytest.MonkeyPa
     assert image_settings(stills).resolution == "1K"
     _use_image_model(monkeypatch, "seedream-4-5-251128", MODELARK)
     assert image_settings(stills).resolution == "2K"
-    _use_image_model(monkeypatch, "image-01", "minimax")
+    _use_image_model(monkeypatch, "MiniMax-H3-Image", "minimax")
     assert image_settings(stills).size == "1792x1344"
     _use_image_model(monkeypatch, "Qwen/Qwen-Image-2512", VLLM_OMNI)
     assert image_settings(_graph()).resolution == "1K"

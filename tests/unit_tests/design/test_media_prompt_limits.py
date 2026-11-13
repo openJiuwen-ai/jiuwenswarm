@@ -6,16 +6,16 @@ from __future__ import annotations
 import os
 
 
-def test_resolves_minimax_image_1500(monkeypatch) -> None:
+def test_resolves_minimax_h3_image_32000(monkeypatch) -> None:
     from jiuwenswarm.server.runtime.designer.pipeline.media_prompt_limits import (
         resolve_prompt_limit,
     )
 
     monkeypatch.delenv("VISUAL_GEN_PROMPT_MAX_CHARS", raising=False)
-    lim = resolve_prompt_limit("image", model="image-01", provider="minimax")
+    lim = resolve_prompt_limit("image", model="MiniMax-H3-Image", provider="minimax")
     assert lim.known
-    assert lim.max_chars == 1500
-    assert "1500" in lim.guidance()
+    assert lim.max_chars == 32000
+    assert "32000" in lim.guidance()
 
 
 def test_resolves_qwen_image_3(monkeypatch) -> None:
@@ -112,7 +112,7 @@ def test_prompts_are_never_truncated() -> None:
 
     hard = PromptLimit(
         kind="image",
-        model="image-01",
+        model="MiniMax-H3-Image",
         provider="minimax",
         max_chars=20,
         unit="chars",

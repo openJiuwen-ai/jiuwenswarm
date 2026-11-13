@@ -102,7 +102,8 @@
   "designer": {
     "modelConfiguration": {
       "title": "模型配置",
-      "help": "选择对话模型，以及任务中可调用的生成模型。",
+      "help": "选择本次设计使用的对话模型、视频生成模型和图片生成模型。生成模型对所有设计画布生效。",
+      "addModel": "添加自定义模型",
       "bindingHint": "使用「设置 → 智能体 → 工具」当前绑定的模型。此处仅展示，更换请前往该设置。",
       "bindingModel": "当前绑定的模型",
       "chat": "对话",
@@ -117,6 +118,7 @@
       "enable": "去开启",
       "retry": "重新读取",
       "loading": "正在读取模型配置…",
+      "notConfigured": "生成模型尚未配置",
       "loadFailed": "生成模型配置读取失败，请重试。"
     },
     "loading": "正在加载设计工作流…",
@@ -128,9 +130,9 @@
     "models": {
       "chatMissing": "对话模型未配置，请先在「设置」中配置模型后再使用设计。",
       "videoOff": "视频生成已在「设置 > Agent」中关闭。",
-      "videoMissing": "视频生成未配置：请在「设置 > Agent」中填写 API 地址、API 密钥和模型名称。",
+      "videoMissing": "还没有视频生成模型。请在「设置 → 模型 → 多模态」中添加后再使用设计。",
       "imageOff": "图像生成已在「设置 > Agent」中关闭。",
-      "imageMissing": "图像生成未配置：请在「设置 > Agent」中填写 API 地址、API 密钥和模型名称。",
+      "imageMissing": "还没有图片生成模型。请在「设置 → 模型 → 多模态」中添加后再使用设计。",
       "lockedHint": "本次设计使用创建时选定的模型，画布上不提供切换模型。",
       "notSelected": "未选择模型",
       "openModelSettings": "去设置"
@@ -498,6 +500,7 @@
         "MM_MODEL_REQUIRED": "请先添加对应能力的模型。",
         "MM_STORAGE_FAILED": "配置保存失败，请重试。",
         "MM_RECOVERY_REQUIRED": "配置事务无法恢复，请检查配置文件后重试。",
+        "MM_NOT_CONFIGURED": "尚未配置多模态模型。",
         "MM_CONFIG_READ_FAILED": "模型配置读取失败，请检查配置文件及凭据。",
         "MM_UNSUPPORTED_SCHEMA": "当前组件不支持此配置版本，请更新组件。",
         "MM_LEGACY_WRITE_UNSUPPORTED": "请通过多模态模型设置修改这些配置。",

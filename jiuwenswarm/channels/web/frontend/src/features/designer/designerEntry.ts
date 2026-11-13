@@ -193,8 +193,8 @@ export async function submitDesignComposer(params: {
     throw new Error('empty');
   }
   // Design landing gate (frontend-only): fail on the prompt itself when the
-  // chat / video / image models are missing or switched off, before any
-  // session or graph is created.
+  // chat model is missing or either generation modality has no multimodal
+  // model, before any session or graph is created.
   const modelProblem = await findDesignModelsProblem();
   if (modelProblem) {
     throw new Error(modelProblem);

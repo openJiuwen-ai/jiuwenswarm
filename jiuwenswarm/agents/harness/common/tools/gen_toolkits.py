@@ -15,12 +15,14 @@ backend name returned by ``detect_backend``:
 - ``submit_video(backend, ...)``    (submit, then poll for a while)
 - ``check_video(backend, ...)``     (poll a submitted job, download when ready)
 
-MiniMax (https://platform.minimax.io/docs/api-reference/image-generation-t2i and
-.../video-generation-v2-create):
+MiniMax (https://platform.minimax.cn/docs/api-reference/image-generation-h3-generations,
+.../image-generation-h3-edits, and .../video-generation-v2-create):
 
-- image-01: ``POST {root}/v1/image_generation`` returning ``data.image_base64``
-  plus a ``base_resp`` status.
-- MiniMax-H3: ``POST {root}/v2/video_generation`` with a ``content`` array
+- MiniMax-H3-Image: ``POST {root}/v1/images/generations`` (text-to-image) or
+  ``POST {root}/v1/images/edits`` (1-16 reference images), returning
+  ``data[].b64_json`` / ``data[].url``. image-01 is retired; there is no
+  forward-compatible payload for it.
+- MiniMax-H3 video: ``POST {root}/v2/video_generation`` with a ``content`` array
   (returns a ``task_id``), then ``GET {root}/v2/query/video_generation/{id}``
   until ``task.status`` is ``succeeded`` (``task.content.url``) or ``failed``.
 - The configured "API URL" is the OpenAI-style base (``https://api.minimax.io/v1``
@@ -111,11 +113,12 @@ _TRANSIENT_HTTP_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.Remo
 _TRANSIENT_REQUESTS_ERRORS = (requests.ConnectionError, requests.Timeout)
 
 _MINIMAX_IMAGE_ASPECT_RATIOS = {"1:1", "16:9", "4:3", "3:2", "2:3", "3:4", "9:16", "21:9"}
-_MINIMAX_IMAGE_MIN_SIDE = 512
-_MINIMAX_IMAGE_MAX_SIDE = 2048
+_MINIMAX_H3_IMAGE_MIN_PIXELS = 655_360
+_MINIMAX_H3_IMAGE_MAX_PIXELS = 20_000_000
+_MINIMAX_H3_IMAGE_AREAS = ("1K", "2K", "4K")
+_MINIMAX_H3_IMAGE_TIMEOUT = 600
 _MINIMAX_VIDEO_RATIOS = {"16:9", "21:9", "4:3", "1:1", "3:4", "9:16"}
 _MINIMAX_MAX_POLL_SECONDS = 120
-_MINIMAX_IMAGE_PROMPT_LIMIT = 1500
 _MINIMAX_VIDEO_PROMPT_LIMIT = 7000
 _MINIMAX_HOST = re.compile(r"(^|\.)minimax(i)?\.(io|com)$", re.IGNORECASE)
 
@@ -235,16 +238,15 @@ def _host_of(api_base: str) -> str:
     return re.sub(r"^https?://", "", api_base.strip(), flags=re.IGNORECASE).split("/", 1)[0].split(":", 1)[0]
 
 
-def detect_backend(protocol_env: str, api_base: str) -> str | None:
-    """Return the vendor-native backend for the configured slot, or None.
+def backend_from_protocol(protocol: str, api_base: str) -> str | None:
+    """Return the vendor-native backend for a saved protocol and API URL, or None.
 
-    None means the OpenRouter-style path. The backend is named by the saved 协议
-    (read from ``protocol_env``), or implied by the API URL being one of the
-    vendor's hosts.
+    None means the OpenRouter-style path. A known protocol wins; otherwise the
+    API host can still identify MiniMax, ModelArk or DashScope.
     """
-    protocol = os.environ.get(protocol_env, "").strip().lower()
-    if protocol in NATIVE_BACKENDS:
-        return protocol
+    saved = (protocol or "").strip().lower()
+    if saved in NATIVE_BACKENDS:
+        return saved
     host = _host_of(api_base)
     if _MINIMAX_HOST.search(host):
         return MINIMAX
@@ -253,6 +255,16 @@ def detect_backend(protocol_env: str, api_base: str) -> str | None:
     if _DASHSCOPE_HOST.match(host):
         return DASHSCOPE
     return None
+
+
+def detect_backend(protocol_env: str, api_base: str) -> str | None:
+    """Return the vendor-native backend for the configured slot, or None.
+
+    None means the OpenRouter-style path. The backend is named by the saved 协议
+    (read from ``protocol_env``), or implied by the API URL being one of the
+    vendor's hosts.
+    """
+    return backend_from_protocol(os.environ.get(protocol_env, ""), api_base)
 
 
 async def generate_image(
@@ -264,9 +276,6 @@ async def generate_image(
 ) -> str:
     opts = options or ImageOptions()
     if target.backend == MINIMAX:
-        if opts.reference_image_uris:
-            logger.warning("[generate_visual] MiniMax image-01 ignores %d reference image(s)",
-                           len(opts.reference_image_uris))
         return await _minimax_generate_image(target, prompt, aspect_ratio, save_dir, opts)
     if target.backend == MODELARK:
         return await _modelark_generate_image(target, prompt, aspect_ratio, save_dir, opts)
@@ -464,33 +473,141 @@ def _minimax_base_error(payload: Any) -> str | None:
     return None
 
 
+def _minimax_image_aspect_ratio(aspect_ratio: str) -> str:
+    return aspect_ratio if aspect_ratio in _MINIMAX_IMAGE_ASPECT_RATIOS else "1:1"
+
+
+def _minimax_h3_image_area_tier(size: str | None) -> str:
+    token = str(size or "").strip().upper()
+    if token in _MINIMAX_H3_IMAGE_AREAS:
+        return token
+    parsed = parse_size(size)
+    if parsed is None:
+        return "1K"
+    pixels = parsed[0] * parsed[1]
+    # Map the requested pixel area onto the closest official H3-Image area tier.
+    targets = {"1K": 1024 * 1024, "2K": 2048 * 2048, "4K": 4096 * 4096}
+    return min(targets, key=lambda tier: abs(targets[tier] - pixels))
+
+
+def _minimax_h3_image_size_fields(options: ImageOptions, aspect_ratio: str) -> dict[str, str]:
+    """H3-Image size payload: explicit ``宽x高``, or ``auto`` + aspect_ratio + area."""
+    aspect = _minimax_image_aspect_ratio(aspect_ratio)
+    parsed = parse_size(options.size)
+    if parsed:
+        width, height = parsed
+        pixels = width * height
+        ratio = width / height
+        if (
+            _MINIMAX_H3_IMAGE_MIN_PIXELS <= pixels <= _MINIMAX_H3_IMAGE_MAX_PIXELS
+            and 1 / 3 <= ratio <= 3
+        ):
+            return {"size": f"{width}x{height}"}
+    return {"size": "auto", "aspect_ratio": aspect, "area": _minimax_h3_image_area_tier(options.size)}
+
+
+def _minimax_image_url(value: str) -> str | None:
+    """A public URL, data URI, or a local file encoded as a data URI."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.startswith(("http://", "https://", "data:", "mm_file://")):
+        return raw
+    path = Path(raw)
+    if not path.is_file():
+        return None
+    suffix = path.suffix.lower().lstrip(".")
+    if suffix == "jpg":
+        suffix = "jpeg"
+    if suffix not in {"jpeg", "png", "webp", "heic", "heif"}:
+        suffix = "jpeg"
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:image/{suffix};base64,{encoded}"
+
+
+def _minimax_reference_images(uris: tuple[str, ...] | list[str]) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+    for item in uris:
+        url = _minimax_image_url(item)
+        if url:
+            refs.append({"image_url": url})
+        if len(refs) >= 16:
+            break
+    return refs
+
+
+async def _minimax_save_image_items(payload: Any, save_dir: str | None) -> str:
+    data = payload.get("data") if isinstance(payload, dict) else None
+    items = data if isinstance(data, list) else []
+    saved: list[str] = []
+    errors: list[str] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        err = item.get("error")
+        if isinstance(err, dict):
+            errors.append(f"{err.get('code', '')} {err.get('message', '')}".strip())
+            continue
+        encoded = str(item.get("b64_json") or "").strip()
+        raw: bytes | None = None
+        if encoded:
+            try:
+                raw = base64.b64decode(encoded)
+            except ValueError as exc:
+                return f"[ERROR]: failed to save MiniMax image: {exc!r}"
+        else:
+            url = str(item.get("url") or "").strip()
+            if url:
+                try:
+                    async with httpx.AsyncClient(timeout=120, verify=get_requests_verify()) as client:
+                        download = await client.get(url, follow_redirects=True)
+                    if download.status_code != 200:
+                        errors.append(f"download failed: {download.status_code}")
+                        continue
+                    raw = download.content
+                except httpx.HTTPError as exc:
+                    return f"[ERROR]: failed to save MiniMax image: {exc!r}"
+        if not raw:
+            continue
+        try:
+            dest = _save_path(save_dir, "generated_images", _image_filename(index, raw))
+            dest.write_bytes(raw)
+        except OSError as exc:
+            return f"[ERROR]: failed to save MiniMax image: {exc!r}"
+        saved.append(str(dest))
+    if saved:
+        return "Image generated successfully!\nSaved to: " + ", ".join(saved)
+    detail = "; ".join(errors) if errors else str(payload)[:300]
+    return f"[ERROR]: MiniMax returned no images. Response: {detail}"
+
+
 async def _minimax_generate_image(
     target: GenerationTarget, prompt: str, aspect_ratio: str, save_dir: str | None, options: ImageOptions
 ) -> str:
     api_key, api_base, model = target.api_key, target.api_base, target.model
-    aspect = aspect_ratio if aspect_ratio in _MINIMAX_IMAGE_ASPECT_RATIOS else "1:1"
     body: dict[str, Any] = {
         "model": model,
-        "prompt": prompt[:_MINIMAX_IMAGE_PROMPT_LIMIT],
-        "response_format": "base64",
+        "prompt": prompt,
         "n": 1,
+        "response_format": "b64_json",
+        "output_format": "jpeg",
+        **_minimax_h3_image_size_fields(options, aspect_ratio),
     }
-    parsed = parse_size(options.size)
-    if parsed:
-        # image-01 takes width/height in place of aspect_ratio: 512-2048 px, multiples of 8.
-        body["width"], body["height"] = (
-            min(_MINIMAX_IMAGE_MAX_SIDE, max(_MINIMAX_IMAGE_MIN_SIDE, side // 8 * 8)) for side in parsed
-        )
-    else:
-        body["aspect_ratio"] = aspect
+    references = _minimax_reference_images(options.reference_image_uris)
+    path = "/v1/images/edits" if references else "/v1/images/generations"
+    if references:
+        body["images"] = references
     roots = _minimax_candidate_roots(api_base)
     payload: Any = None
     try:
-        async with httpx.AsyncClient(timeout=120, verify=get_requests_verify()) as client:
+        async with httpx.AsyncClient(timeout=_MINIMAX_H3_IMAGE_TIMEOUT, verify=get_requests_verify()) as client:
             for index, root in enumerate(roots):
-                logger.info("[generate_visual] MiniMax model: %s (root: %s, aspect_ratio: %s)", model, root, aspect)
+                logger.info(
+                    "[generate_visual] MiniMax model: %s (root: %s, path: %s, size: %s)",
+                    model, root, path, body.get("size") or body.get("aspect_ratio"),
+                )
                 resp = await client.post(
-                    f"{root}/v1/image_generation", headers={"Authorization": f"Bearer {api_key}"}, json=body
+                    f"{root}{path}", headers={"Authorization": f"Bearer {api_key}"}, json=body
                 )
                 try:
                     payload = resp.json()
@@ -511,20 +628,7 @@ async def _minimax_generate_image(
         return f"[ERROR]: MiniMax image generation request failed: {exc!r}"
     if resp.status_code != 200 or _minimax_base_error(payload):
         return f"[ERROR]: MiniMax image generation failed: {_minimax_base_error(payload) or resp.status_code}"
-
-    images = ((payload.get("data") or {}).get("image_base64")) or []
-    if not images:
-        return f"[ERROR]: MiniMax returned no images. Response: {str(payload)[:300]}"
-    saved: list[str] = []
-    for index, encoded in enumerate(images):
-        try:
-            data = base64.b64decode(encoded)
-            dest = _save_path(save_dir, "generated_images", _image_filename(index, data))
-            dest.write_bytes(data)
-        except (OSError, ValueError) as exc:
-            return f"[ERROR]: failed to save MiniMax image: {exc!r}"
-        saved.append(str(dest))
-    return "Image generated successfully!\nSaved to: " + ", ".join(saved)
+    return await _minimax_save_image_items(payload, save_dir)
 
 
 def _minimax_video_resolution(resolution: str, model: str) -> str:

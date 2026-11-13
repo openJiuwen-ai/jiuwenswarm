@@ -1,17 +1,16 @@
-// Design landing gate (frontend-only): before the first prompt creates a
-// session / graph, both generation slots (video / image) and the chat model
-// must be configured and switched on in Settings. Reuses the Settings
-// contract (`config.get` + generation-slot helpers) so the check reports
-// exactly what the Settings page shows. Called from the design-mode entry
-// points only — other modes are untouched.
+// Design gate (frontend-only): a design prompt needs a chat model plus at
+// least one video model and one image model in the multimodal catalogue.
+// The agent tool switch is ignored. Called from the design-mode entry points,
+// the canvas chat send and single-node regenerate — other modes are untouched.
 
 import i18n from '../../i18n';
 import { webRequest } from '../../services/webClient';
 import { useSessionStore } from '../../stores/sessionStore';
 import { designChatModelReady } from './designChatModelState';
-import { generationProblemFromConfig, type GenerationKind } from './designGenerationReadiness';
+import { generationCatalogProblem, type GenerationKind } from './designGenerationReadiness';
 import { nodeGenerationKind, type MaybeNode } from './designerNodeGenerationKind';
 import type { DesignerExecutionGraph } from './executionGraphTypes';
+import type { PublicMultimodalModel } from '../settings/services/multimodalSettings';
 import type { ModelEntry } from '../../types';
 
 /**
@@ -42,10 +41,32 @@ export async function findDesignChatModelProblem(): Promise<string | null> {
   return i18n.t('designer.models.chatMissing');
 }
 
+async function loadGenerationModels(): Promise<PublicMultimodalModel[] | null> {
+  try {
+    const snapshot = await webRequest<{ models?: PublicMultimodalModel[] }>(
+      'multimodal.models.list',
+      {},
+      { timeoutMs: 30_000 },
+    );
+    return Array.isArray(snapshot?.models) ? snapshot.models : [];
+  } catch {
+    return null;
+  }
+}
+
+function problemsForKinds(models: readonly PublicMultimodalModel[], kinds: Iterable<GenerationKind>): string[] {
+  const problems: string[] = [];
+  for (const kind of kinds) {
+    const problem = generationCatalogProblem(models, kind);
+    if (problem) problems.push(problem);
+  }
+  return problems;
+}
+
 /**
  * Problems blocking a run of `nodes` (a whole workflow, or one node), or null.
  * Only the media kinds those nodes actually generate with are checked, so a
- * text-only graph is not blocked by an image slot it would never call, and the
+ * text-only graph is not blocked by an image model it would never call, and the
  * chat model keeps its existing handling (see `findDesignModelsProblem`).
  */
 export async function findDesignRunProblem(nodes: readonly MaybeNode[], graph?: DesignerExecutionGraph | null): Promise<string | null> {
@@ -55,42 +76,25 @@ export async function findDesignRunProblem(nodes: readonly MaybeNode[], graph?: 
     if (kind) kinds.add(kind);
   }
   if (kinds.size === 0) return null;
-  let config: Record<string, unknown> | null = null;
-  try {
-    config = (await webRequest<Record<string, unknown>>('config.get')) ?? {};
-  } catch {
-    config = null;
-  }
-  if (!config) return null;
-  const problems: string[] = [];
-  for (const kind of kinds) {
-    const problem = generationProblemFromConfig(config, kind);
-    if (problem) problems.push(problem);
-  }
+  const models = await loadGenerationModels();
+  if (!models) return null;
+  const problems = problemsForKinds(models, kinds);
   return problems.length > 0 ? problems.join(' ') : null;
 }
 
 /**
- * User-facing problems blocking a design prompt, or null when everything the
- * design pipeline drives (chat / video / image) is configured and switched on.
- * Never throws: a failed config read must not block entry.
+ * User-facing problems blocking a design prompt, or null when a chat model
+ * and at least one video model and one image model are available.
+ * Never throws: a failed catalogue read must not block entry.
  */
 export async function findDesignModelsProblem(): Promise<string | null> {
   const problems: string[] = [];
-  // Chat readiness needs no config read, so it must not be skipped when
-  // `config.get` times out while the runtime is warming up.
+  // Chat readiness needs no catalogue read, so it must not be skipped when
+  // the multimodal list times out while the runtime is warming up.
   const chatProblem = await findDesignChatModelProblem();
   if (chatProblem) problems.push(chatProblem);
-  let config: Record<string, unknown> | null = null;
-  try {
-    config = (await webRequest<Record<string, unknown>>('config.get')) ?? {};
-  } catch {
-    config = null;
-  }
-  if (!config) return problems.length > 0 ? problems.join(' ') : null;
-  for (const kind of ['video', 'image'] as const) {
-    const problem = generationProblemFromConfig(config, kind);
-    if (problem) problems.push(problem);
-  }
+  const models = await loadGenerationModels();
+  if (!models) return problems.length > 0 ? problems.join(' ') : null;
+  problems.push(...problemsForKinds(models, ['video', 'image']));
   return problems.length > 0 ? problems.join(' ') : null;
 }

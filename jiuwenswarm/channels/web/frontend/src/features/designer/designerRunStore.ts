@@ -273,11 +273,11 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
 
   rerunNode: async (graph, nodeId) => {
     if (get().isRunning || !nodeId) return;
-    // No model, no run: regenerating an image / video node with its Settings
-    // slot off or incomplete can only fail, so report the same reason the
-    // landing page uses instead of dispatching a doomed job (#5266).
+    // Same kind-scoped gate as the node send button: only this node's
+    // modality is required. A catalogue deleted after the canvas was
+    // created fails here instead of dispatching a doomed job (#5266).
     const node = graph.nodes.find((item) => item.id === nodeId);
-    const problem = await findDesignRunProblem([node], graph);
+    const problem = await findDesignRunProblem(node ? [node] : [], graph);
     if (problem) {
       set({ runError: problem, runWarning: null });
       return;

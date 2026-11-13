@@ -102,7 +102,8 @@
   "designer": {
     "modelConfiguration": {
       "title": "Model configuration",
-      "help": "Choose a chat model and view the generation models available to tasks.",
+      "help": "Choose the chat, video and image models for Design. Generation models apply to every design canvas.",
+      "addModel": "Add custom model",
       "bindingHint": "Uses the model bound in Settings → Agent → Tools. View only; change it there.",
       "bindingModel": "Currently bound model",
       "chat": "Chat",
@@ -117,6 +118,7 @@
       "enable": "Enable",
       "retry": "Reload",
       "loading": "Loading model configuration…",
+      "notConfigured": "Generation models are not configured yet.",
       "loadFailed": "Could not load generation model configuration. Please retry."
     },
     "loading": "Loading design workflow…",
@@ -128,9 +130,9 @@
     "models": {
       "chatMissing": "Chat model is not configured. Configure a model in Settings before using Design.",
       "videoOff": "Video generation is switched off in Settings > Agent.",
-      "videoMissing": "Video generation is not configured: set the API URL, API key and model in Settings > Agent.",
+      "videoMissing": "No video generation model yet. Add one in Settings → Models → Multimodal before using Design.",
       "imageOff": "Image generation is switched off in Settings > Agent.",
-      "imageMissing": "Image generation is not configured: set the API URL, API key and model in Settings > Agent.",
+      "imageMissing": "No image generation model yet. Add one in Settings → Models → Multimodal before using Design.",
       "lockedHint": "This design runs on the model it was started with. Switching the model is not available on the canvas.",
       "notSelected": "No model",
       "openModelSettings": "Open Settings"
@@ -498,6 +500,7 @@
         "MM_MODEL_REQUIRED": "Add a model with the required capability first.",
         "MM_STORAGE_FAILED": "Could not save the configuration. Please retry.",
         "MM_RECOVERY_REQUIRED": "The configuration transaction could not be recovered. Check the configuration files before retrying.",
+        "MM_NOT_CONFIGURED": "Multimodal models are not configured yet.",
         "MM_CONFIG_READ_FAILED": "Could not read the model configuration. Check the files and credentials.",
         "MM_UNSUPPORTED_SCHEMA": "This configuration version is unsupported. Update the components.",
         "MM_LEGACY_WRITE_UNSUPPORTED": "Use Multimodal models to change this configuration.",
