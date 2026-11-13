@@ -20,6 +20,15 @@ from pathlib import Path
 import pytest
 import websockets
 
+from tests.system_tests.proc_harness import (
+    _pick_free_port,
+    _recv_until_response,
+    _start_process,
+    _stop_process,
+    _wait_for_log,
+    _wait_for_websocket_ready,
+)
+
 pytestmark = [pytest.mark.integration, pytest.mark.system]
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -41,16 +50,8 @@ _INHERITED_CONFIG_ENV_KEYS = (
 
 
 # =============================================================================
-# Process helpers (identical pattern to test_cli_channel_ws.py)
+# Process helpers (shared from tests/system_tests/proc_harness.py)
 # =============================================================================
-
-
-def _pick_free_port() -> int:
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.close()
-    return port
 
 
 def _isolated_service_env(temp_home: Path) -> dict[str, str]:
@@ -63,93 +64,6 @@ def _isolated_service_env(temp_home: Path) -> dict[str, str]:
     # Preserve the per-test ports when service startup loads runtime dotenv.
     env["JIUWENSWARM_CLI_PORTS"] = "1"
     return env
-
-
-def _start_process(
-    cmd: list[str], *, env: dict[str, str], log_path: Path
-) -> subprocess.Popen:
-    log_file = log_path.open("w", encoding="utf-8")
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(REPO_ROOT),
-        env=env,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    log_file.close()
-    return proc
-
-
-def _stop_process(proc: subprocess.Popen | None) -> None:
-    if proc is None:
-        return
-    if proc.poll() is not None:
-        try:
-            proc.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            pass
-        return
-
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-        return
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            pass
-
-
-async def _wait_for_log(
-    log_path: Path, needle: str, timeout: float = 30.0
-) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < deadline:
-        if log_path.exists():
-            text = log_path.read_text(encoding="utf-8", errors="ignore")
-            if needle in text:
-                return
-        await asyncio.sleep(0.2)
-    log_text = (
-        log_path.read_text(encoding="utf-8", errors="ignore")
-        if log_path.exists()
-        else ""
-    )
-    raise AssertionError(
-        f"Timed out waiting for log line: {needle}\nlog={log_text}"
-    )
-
-
-async def _wait_for_websocket_ready(url: str, timeout: float = 30.0) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
-    last_error: Exception | None = None
-    while asyncio.get_running_loop().time() < deadline:
-        try:
-            async with websockets.connect(url):
-                return
-        except Exception as exc:  # noqa: BLE001
-            last_error = exc
-            await asyncio.sleep(0.2)
-    raise AssertionError(
-        f"Timed out waiting for websocket: {url} last_error={last_error}"
-    )
-
-
-async def _recv_until_response(
-    ws, req_id: str, timeout: float = 10.0
-) -> dict:
-    deadline = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < deadline:
-        remaining = max(0.1, deadline - asyncio.get_running_loop().time())
-        frame = json.loads(
-            await asyncio.wait_for(ws.recv(), timeout=remaining)
-        )
-        if frame.get("type") == "res" and frame.get("id") == req_id:
-            return frame
-    raise AssertionError(f"Timed out waiting for response id={req_id}")
 
 
 # =============================================================================

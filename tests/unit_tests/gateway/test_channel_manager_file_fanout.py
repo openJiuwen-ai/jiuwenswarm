@@ -120,34 +120,40 @@ async def test_inject_auto_web_origin_defaults_to_godview_only():
     assert msg.metadata["fan_out_targets"] == result
 
 
-async def test_inject_respects_explicit_send_file_targets_by_channel():
+@pytest.mark.parametrize(
+    "send_file_targets",
+    [
+        pytest.param(["feishu"], id="by-channel"),
+        pytest.param(["reviewer-1"], id="by-member-name"),
+    ],
+)
+async def test_inject_respects_explicit_send_file_targets(send_file_targets):
     reg = SessionSharingRegistry()
     await _make_subscription(reg, "s1", SubRole.GODVIEW, "web")
     await _make_subscription(reg, "s1", "reviewer-1", "feishu")
     cm, _ = _make_channel_manager(reg)
-    msg = _make_file_msg("s1", channel_id="web", metadata={"send_file_targets": ["feishu"]})
+    msg = _make_file_msg("s1", channel_id="web", metadata={"send_file_targets": send_file_targets})
     result = await cm._inject_file_delivery_fanout(msg, "chat.file")
     assert result and result[0]["intent"] == "mention"
     assert "reviewer-1" in result[0]["member_names"]
 
 
-async def test_inject_respects_explicit_send_file_targets_by_member_name():
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        pytest.param({"send_file_targets": ["dingtalk"]}, id="explicit-target-no-match"),
+        pytest.param(None, id="auto-origin-without-join"),
+    ],
+)
+async def test_inject_no_matching_target_falls_back_to_godview(metadata):
+    # Explicit target matching nothing, or auto web origin without a
+    # last-originator (no /join): fall back to godview only, never misroute
+    # to the feishu app.
     reg = SessionSharingRegistry()
     await _make_subscription(reg, "s1", SubRole.GODVIEW, "web")
     await _make_subscription(reg, "s1", "reviewer-1", "feishu")
     cm, _ = _make_channel_manager(reg)
-    msg = _make_file_msg("s1", channel_id="web", metadata={"send_file_targets": ["reviewer-1"]})
-    result = await cm._inject_file_delivery_fanout(msg, "chat.file")
-    assert result and result[0]["intent"] == "mention"
-    assert "reviewer-1" in result[0]["member_names"]
-
-
-async def test_inject_explicit_target_no_match_falls_back_to_godview():
-    reg = SessionSharingRegistry()
-    await _make_subscription(reg, "s1", SubRole.GODVIEW, "web")
-    await _make_subscription(reg, "s1", "reviewer-1", "feishu")
-    cm, _ = _make_channel_manager(reg)
-    msg = _make_file_msg("s1", channel_id="web", metadata={"send_file_targets": ["dingtalk"]})
+    msg = _make_file_msg("s1", channel_id="web", metadata=metadata)
     result = await cm._inject_file_delivery_fanout(msg, "chat.file")
     assert result == [{"intent": "godview", "mention_all": False, "member_names": [], "speaker": None}]
 
@@ -182,17 +188,6 @@ async def test_inject_auto_feishu_origin_routes_to_originator_only():
     result = await cm._inject_file_delivery_fanout(msg, "chat.file")
     assert result and result[0]["intent"] == "mention"
     assert result[0]["member_names"] == ("reviewer-1",)
-
-
-async def test_inject_auto_feishu_origin_without_join_falls_back_to_godview():
-    # 无 member_name 且无 last-originator（web 发起 / 无人 /join）→ 仅 godview，不误投 feishu app。
-    reg = SessionSharingRegistry()
-    await _make_subscription(reg, "s1", SubRole.GODVIEW, "web")
-    await _make_subscription(reg, "s1", "reviewer-1", "feishu")
-    cm, _ = _make_channel_manager(reg)
-    msg = _make_file_msg("s1", channel_id="web")  # 无 member_name、无 last-originator
-    result = await cm._inject_file_delivery_fanout(msg, "chat.file")
-    assert result == [{"intent": "godview", "mention_all": False, "member_names": [], "speaker": None}]
 
 
 async def test_inject_auto_web_after_feishu_does_not_leak_to_feishu():

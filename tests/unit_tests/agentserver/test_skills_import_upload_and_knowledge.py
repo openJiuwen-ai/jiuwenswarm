@@ -73,49 +73,6 @@ def _multipart(fields: dict[str, Any], *, boundary: str = "----SkillBoundary") -
     return content_type, body
 
 
-@pytest.fixture
-def manager(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SkillManager:
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
-    state_file = skills_dir / "skills_state.json"
-    state_file.write_text(
-        json.dumps(
-            {
-                "marketplaces": [],
-                "installed_plugins": [],
-                "local_skills": [],
-                "skill_configs": {},
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager.get_agent_skills_dir",
-        lambda: skills_dir,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager.get_builtin_skills_dir",
-        lambda: tmp_path / "builtin_missing",
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager._get_agent_root_dir",
-        lambda: tmp_path,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager._get_marketplace_dir",
-        lambda: skills_dir / "_marketplace",
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager._get_state_file",
-        lambda: state_file,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skilldev.state_utils.get_state_file",
-        lambda: state_file,
-    )
-    return SkillManager()
-
-
 @pytest.mark.asyncio
 async def test_import_upload_zip_success(manager: SkillManager, tmp_path: Path) -> None:
     zip_path = tmp_path / "document-review.zip"
