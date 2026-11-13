@@ -537,7 +537,7 @@ def _get_state_file() -> "Path":
 
 
 def _knowledge_skill_language() -> str:
-    """Return ``"en"`` or ``"zh"`` for Knowledge-to-Skill prompts and errors.
+    """Return ``"en"`` or ``"zh"`` for Skill display, Knowledge-to-Skill prompts and errors.
 
     Follows the top-level ``preferred_language`` in config.yaml; anything that
     is not English (or an unreadable config) keeps the historical Chinese text.
@@ -1317,11 +1317,12 @@ class SkillManager:
             await asyncio.to_thread(self._register_unmanaged_local_skills)
         else:
             self._register_unmanaged_local_skills()
-        local = self._scan_local_skills()
+        language = _knowledge_skill_language()
+        local = self._scan_local_skills(language=language)
         # 企业版：白名单内置已在启动时装进租户工作区，由 local 扫描带出；
         # 不再把未安装的包内目录技能直接挂到列表（与可执行集一致）。
-        builtin = [] if is_enterprise() else self._scan_builtin_skills()
-        marketplace = [] if is_enterprise() else self._scan_marketplace_skills()
+        builtin = [] if is_enterprise() else self._scan_builtin_skills(language=language)
+        marketplace = [] if is_enterprise() else self._scan_marketplace_skills(language=language)
         out: dict[str, Any] = {"skills": local + builtin + marketplace}
         if bool(params.get("with_installed", False)):
             installed = await self.handle_skills_installed(params)
@@ -7013,7 +7014,9 @@ class SkillManager:
         return out
 
     @staticmethod
-    def _apply_skill_display(meta: dict, skill_dir: Path) -> None:
+    def _apply_skill_display(
+        meta: dict, skill_dir: Path, *, language: str | None = None,
+    ) -> None:
         """Apply UI metadata in the configured preferred language, in place.
 
         Keep both language variants in the response. Missing selected-language
@@ -7050,15 +7053,8 @@ class SkillManager:
         if not display:
             return
 
-        try:
-            from jiuwenswarm.common.config import get_config
-
-            config = get_config() or {}
-            language = str(config.get("preferred_language") or "en").strip().lower()
-        except Exception:
-            logger.debug("Unable to read skill display language; using English", exc_info=True)
-            language = "en"
-        language = "zh" if language.startswith("zh") or language == "cn" else "en"
+        if language is None:
+            language = _knowledge_skill_language()
         display_name = display.get(f"display_name_{language}", "")
         description = display.get(f"description_{language}", "")
         if display_name:
@@ -7133,7 +7129,7 @@ class SkillManager:
     # 目录扫描
     # -----------------------------------------------------------------------
 
-    def _scan_local_skills(self) -> list[dict]:
+    def _scan_local_skills(self, *, language: str | None = None) -> list[dict]:
         """扫描 agent/skills/ 下的本地 skill（跳过 _marketplace）.
 
         Also scans connected MCPs' bundled skills (under
@@ -7142,12 +7138,15 @@ class SkillManager:
         """
         results: list[dict] = []
 
+        if language is None:
+            language = _knowledge_skill_language()
+
         # 1) user skills under <workspace>/skills/
         if _exists_long(self._skills_dir):
             for child in self._skills_dir.iterdir():
                 if not _is_dir_long(child) or child.name.startswith("_"):
                     continue
-                meta = self._scan_one_skill_dir(child)
+                meta = self._scan_one_skill_dir(child, language=language)
                 if meta is not None:
                     results.append(meta)
 
@@ -7161,14 +7160,14 @@ class SkillManager:
             for child in cdir.iterdir():
                 if not _is_dir_long(child) or child.name.startswith("_"):
                     continue
-                meta = self._scan_one_skill_dir(child, source_default="mcp")
+                meta = self._scan_one_skill_dir(child, source_default="mcp", language=language)
                 if meta is not None:
                     results.append(meta)
 
         return results
 
     def _scan_one_skill_dir(
-        self, child: Path, *, source_default: str = "project"
+        self, child: Path, *, source_default: str = "project", language: str | None = None,
     ) -> dict[str, Any] | None:
         """Scan a single skill directory -> meta dict, or None if not a skill."""
         md = self._try_find_skill_file(child)
@@ -7279,7 +7278,7 @@ class SkillManager:
                 )
                 return None
             meta["has_evolutions"] = False
-        self._apply_skill_display(meta, child)
+        self._apply_skill_display(meta, child, language=language)
         # 不在列表中返回 body
         meta.pop("body", None)
         return meta
@@ -7334,7 +7333,7 @@ class SkillManager:
             }
         return meta
 
-    def _scan_builtin_skills(self) -> list[dict]:
+    def _scan_builtin_skills(self, *, language: str | None = None) -> list[dict]:
         """扫描内置技能目录中尚未安装到用户目录的技能.
 
         返回的技能列表仅包含那些存在于内置目录但尚未在用户目录中的技能。
@@ -7346,6 +7345,9 @@ class SkillManager:
 
         if not _is_dir_long(builtin_dir):
             return results
+
+        if language is None:
+            language = _knowledge_skill_language()
 
         for child in builtin_dir.iterdir():
             if not _is_dir_long(child) or child.name.startswith("_"):
@@ -7377,7 +7379,7 @@ class SkillManager:
             meta["has_evolutions"] = False
             self._apply_enabled_config(meta, meta.get("name", ""))
             self.apply_archive_version_and_type(meta, child)
-            self._apply_skill_display(meta, child)
+            self._apply_skill_display(meta, child, language=language)
             # 不在列表中返回 body
             meta.pop("body", None)
             results.append(meta)
@@ -7956,7 +7958,7 @@ class SkillManager:
             return None
         return skill_dir / _EVOLUTION_FILENAME
 
-    def _scan_marketplace_skills(self) -> list[dict]:
+    def _scan_marketplace_skills(self, *, language: str | None = None) -> list[dict]:
         """扫描 _marketplace/ 下已 clone 的仓库中未安装的 skill.
 
         扫描路径：_marketplace/{marketplace_name}/skills/{plugin_name}
@@ -7965,6 +7967,8 @@ class SkillManager:
         if not _exists_long(self._marketplace_dir):
             return results
 
+        if language is None:
+            language = _knowledge_skill_language()
         installed_names = {p.get("name") for p in self._get_installed_plugins()}
 
         enabled_marketplaces = {
@@ -8014,7 +8018,7 @@ class SkillManager:
                 meta["has_evolutions"] = False
                 self._apply_enabled_config(meta, meta.get("name", ""))
                 self.apply_archive_version_and_type(meta, plugin_dir)
-                self._apply_skill_display(meta, plugin_dir)
+                self._apply_skill_display(meta, plugin_dir, language=language)
                 meta.pop("body", None)
                 results.append(meta)
 
