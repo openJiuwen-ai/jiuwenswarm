@@ -41,6 +41,7 @@ _LOAD_HISTORY_SESSION_USAGE = None
 _STREAM_HISTORY_RECORDS = None
 _INVALID_HISTORY_CURSOR = None
 _HISTORY_SNAPSHOT_CHANGED = None
+_HISTORY_REPLAY_ERROR = None
 
 
 def _load_session_service() -> None:
@@ -74,10 +75,12 @@ def _load_history_service() -> None:
     global _HANDLE_HISTORY, _LOAD_HISTORY_QUERY, _LOAD_HISTORY_TODO_SNAPSHOT
     global _LOAD_HISTORY_SESSION_USAGE
     global _STREAM_HISTORY_RECORDS, _INVALID_HISTORY_CURSOR, _HISTORY_SNAPSHOT_CHANGED
+    global _HISTORY_REPLAY_ERROR
     if _HANDLE_HISTORY is not None:
         return
     from jiuwenswarm.server.control.history_service import (
         HistorySnapshotChanged,
+        HistoryReplayError,
         InvalidHistoryCursor,
         handle_history_request,
         load_history_query,
@@ -93,6 +96,7 @@ def _load_history_service() -> None:
     _STREAM_HISTORY_RECORDS = stream_history_records
     _INVALID_HISTORY_CURSOR = InvalidHistoryCursor
     _HISTORY_SNAPSHOT_CHANGED = HistorySnapshotChanged
+    _HISTORY_REPLAY_ERROR = HistoryReplayError
 
 
 def _load_control_services() -> None:
@@ -246,11 +250,13 @@ class MethodRouter:
 
         try:
             data = await asyncio.to_thread(_load_history_page)
-        except (_INVALID_HISTORY_CURSOR, _HISTORY_SNAPSHOT_CHANGED) as exc:
+        except (_INVALID_HISTORY_CURSOR, _HISTORY_SNAPSHOT_CHANGED, _HISTORY_REPLAY_ERROR) as exc:
             error_code = (
-                "HISTORY_SNAPSHOT_CHANGED"
-                if isinstance(exc, _HISTORY_SNAPSHOT_CHANGED)
-                else "INVALID_HISTORY_CURSOR"
+                exc.code if isinstance(exc, _HISTORY_REPLAY_ERROR) else (
+                    "HISTORY_SNAPSHOT_CHANGED"
+                    if isinstance(exc, _HISTORY_SNAPSHOT_CHANGED)
+                    else "INVALID_HISTORY_CURSOR"
+                )
             )
             err = AgentResponseChunk(
                 request_id=request.request_id,

@@ -212,6 +212,79 @@ def test_giant_prompt_is_skipped_with_bounded_allocations(stored):
     assert peak < 2 * 1024 * 1024
 
 
+@pytest.mark.parametrize("source_format", ["json", "jsonl"])
+def test_context_projection_keeps_diagnostic_omission_bounded(stored, source_format):
+    path = stored.path.with_suffix("." + source_format)
+    record = {"role": "assistant", "event_type": "chat.tool_result", "rendered_result": "context result",
+              "event_payload": {"duplicate_audit": "x" * (5 * 1024 * 1024)},
+              "usage": {"total_tokens": 168}, "session_usage": {"total_tokens": 336}}
+    path.write_text(json.dumps([record] if source_format == "json" else record), encoding="utf-8")
+    tracemalloc.start()
+    try:
+        rows = list(streaming.iter_history_rows(path, session_id=stored.sid))
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert [row.record for row in rows] == [
+        {"role": "assistant", "event_type": "chat.tool_result", "rendered_result": "context result"},
+    ]
+    assert peak < 2 * 1024 * 1024
+
+
+@pytest.mark.parametrize("source_format", ["json", "jsonl"])
+def test_streaming_scan_budget_pauses_for_consumer(stored, monkeypatch, source_format):
+    rows = [user("first", "first question"), user("second", "second question")]
+    path = stored.path.with_suffix("." + source_format)
+    text = json.dumps(rows) if source_format == "json" else "".join(json.dumps(row) + "\n" for row in rows)
+    path.write_text(text, encoding="utf-8")
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(streaming, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    iterator = streaming.iter_history_rows(path, session_id=stored.sid, max_seconds=1)
+    first = next(iterator)
+    clock.now += 10
+    remaining = list(iterator)
+    assert [first.record["content"], *[row.record["content"] for row in remaining]] == [
+        "first question", "second question",
+    ]
+
+
+@pytest.mark.parametrize("source_format", ["json", "jsonl"])
+def test_streaming_scan_budget_still_limits_active_io(stored, monkeypatch, source_format):
+    rows = [user("first", "question")]
+    path = stored.path.with_suffix("." + source_format)
+    text = json.dumps(rows) if source_format == "json" else json.dumps(rows[0]) + "\n"
+    path.write_text(text, encoding="utf-8")
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(streaming, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    original_open = Path.open
+
+    class TimedFile:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+        def read(self, size=-1):
+            clock.now += .6
+            return self.stream.read(size)
+
+    def timed_open(opened_path, mode="r", *args, **kwargs):
+        stream = original_open(opened_path, mode, *args, **kwargs)
+        return TimedFile(stream) if opened_path == path and mode == "rb" else stream
+
+    monkeypatch.setattr(Path, "open", timed_open)
+    with pytest.raises(HistoryReplayError, match="time budget exceeded") as error:
+        list(streaming.iter_history_rows(path, session_id=stored.sid, max_seconds=1))
+    assert error.value.code == "HISTORY_RESTORE_LIMIT"
+
+
 @pytest.mark.parametrize("payload", [b'[{"role":"user"},]', b'{"role":"user","x":"bad\\q"}',
                                     b'{"role":"user","x": [1,]}', b'{"role":"user","role":"assistant"}',
                                     b'{"x":"\\uZZZZ"}', b'{"x":"unterminated'])
