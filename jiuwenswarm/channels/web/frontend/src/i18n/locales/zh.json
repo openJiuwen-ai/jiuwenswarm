@@ -1898,6 +1898,7 @@
     "previewFailed": "文件预览加载失败",
     "docxPreviewFailed": "Word 文档预览加载失败",
     "presentationPreviewFailed": "PowerPoint 演示文稿预览加载失败",
+    "presentationLoadFailed": "PowerPoint 演示文稿获取失败，请稍后重试",
     "presentationResourceLimitExceeded": "PowerPoint 演示文稿内容规模超过浏览器预览上限，请下载后查看",
     "presentationTooLarge": "超过 {{size}} 的 PowerPoint 演示文稿无法在浏览器中预览，请下载后查看",
     "presentationSlides": "幻灯片",
