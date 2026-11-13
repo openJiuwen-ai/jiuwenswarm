@@ -718,7 +718,9 @@ def runtime_owner_alive(owner: dict) -> bool:
                 if owner_start_ticks is None:
                     raise
         if owner_start_ticks is not None or owner_started_at is not None:
-            return True
+            # An unreaped child retains its PID and start time after exiting.
+            # Match resident Worker retirement: it can no longer own writers.
+            return process.status() not in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD)
         raise LifecycleError(
             "OPERATION_IN_PROGRESS", "cannot verify the previous runtime owner"
         )

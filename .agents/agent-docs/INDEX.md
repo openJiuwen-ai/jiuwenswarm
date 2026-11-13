@@ -40,6 +40,7 @@ generated: true
 | [jiuwenswarm/server](#module-23) |
 | [jiuwenswarm/server/control](#module-24) |
 | [jiuwenswarm/server/ipc](#module-25) |
+| [jiuwenswarm/server/runtime](#module-37) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-26) |
 | [jiuwenswarm/server/runtime/skill](#module-27) |
 | [jiuwenswarm/server/supervisor](#module-28) |
@@ -276,6 +277,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261110_1042_issue6191-ipc-recovery](bugfix/jiuwenswarm/server/ipc/B_20261110_1042_issue6191-ipc-recovery.md) | B | IPC 突发积压与降级就绪重连导致 Runtime 失败 | 刘瑜 | jiuwenswarm/server/ipc, jiuwenswarm/server/supervisor | jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, tests/unit_tests/agentserver/test_ipc_receive_recovery.py | 无独立 D：对现有有界 IPC 和 Runtime 恢复状态机的小范围修复，无独立设计。 |
+
+<a id="module-37"></a>
+
+## jiuwenswarm/server/runtime
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [B_20261113_1153_exited-runtime-owner](bugfix/jiuwenswarm/server/runtime/session/B_20261113_1153_exited-runtime-owner.md) | B | Worker 退出未回收时存量会话无法重新认领 | 刘瑜 | jiuwenswarm/server/runtime | jiuwenswarm/server/runtime/session/lifecycle.py, tests/unit_tests/server/test_runtime_owner_identity.py, tests/unit_tests/agentserver/test_worker_session_owner_recovery.py, tests/unit_tests/agentserver/fixtures/session_owner_worker.py | 无独立 D：修复既有存活属主保护与 Worker 退出判定的不一致，不新增持久化格式或接管协议，无独立设计。 |
 
 <a id="module-26"></a>
 
