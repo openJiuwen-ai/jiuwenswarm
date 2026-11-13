@@ -759,6 +759,34 @@ async function mountAction() {
   )));
 }
 
+test('free-model selection keeps full duplex available and does not hang up an active call', async () => {
+  const previous = useSessionStore.getState();
+  await mountAction();
+  const button = () => document.querySelector('[data-testid="chat-panel-input-full-duplex"]');
+  await act(async () => button().click());
+  const stops = harness.stops;
+  try {
+    await act(async () => useSessionStore.setState({
+      chatAvailableModels: [{ model_name: 'free-model', is_free: true }],
+      defaultModelName: 'free-model',
+      runtimes: { ...previous.runtimes, [props.sessionId]: {
+        ...previous.runtimes[props.sessionId], selectedModelName: 'free-model', selectedModelSelection: null,
+      } },
+    }));
+    assert.equal(button().getAttribute('aria-pressed'), 'true');
+    assert.equal(harness.stops, stops);
+    await act(async () => stopTaskFullDuplex());
+    await act(async () => button().click());
+    assert.equal(button().getAttribute('aria-pressed'), 'true');
+    assert.equal(harness.starts.length, 2);
+  } finally {
+    await act(async () => useSessionStore.setState({
+      chatAvailableModels: previous.chatAvailableModels, defaultModelName: previous.defaultModelName,
+      runtimes: previous.runtimes,
+    }));
+  }
+});
+
 test('a failed start does not leave its error on the button in another conversation', async () => {
   harness.startError = 'Not supported';
   await mountAction();

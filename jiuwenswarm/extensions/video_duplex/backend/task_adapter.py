@@ -6,6 +6,7 @@ import logging
 import time
 from typing import Any
 
+from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskModification
 from jiuwenswarm.extensions.video_duplex.backend.tasks.store import task_database
@@ -59,6 +60,25 @@ def task_identity(ws, scope):
     return owner, scope
 
 
+async def task_login_credential_ref(ws: Any, target: dict[str, Any]) -> str:
+    """Bind a login model to this caller without persisting its session or token."""
+    from agent_gateway.auth.passthrough import expired_login_session, normalize_model_auth
+    from agent_gateway.auth.service import get_auth_service
+
+    auth_session = getattr(ws, "_jiuwen_auth_session", None)
+    if not isinstance(auth_session, str) or not auth_session or not target.get("model_name"):
+        return ""
+    params = {"model_name": target["model_name"]}
+    expired = expired_login_session(params, auth_session)
+    if expired is not None:
+        try:
+            await asyncio.to_thread(get_auth_service().try_refresh, expired)
+        except Exception as exc:
+            logger.debug("Task login credential refresh failed: %s", type(exc).__name__)
+    normalize_model_auth(params, session_id=auth_session)
+    return (params.get(E2A_MODEL_AUTH_PARAM_KEY) or {}).get("credential_ref", "")
+
+
 async def task_agent_query(client, method, params, session, owner):
     """Read from the routed AgentServer, never from Gateway's local session tree."""
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
@@ -96,6 +116,20 @@ class AgentTaskExecutor:
             await asyncio.gather(self._readiness_check, return_exceptions=True)
         self.endpoint.close()
         self.reconciliation_outcomes.clear()
+
+    @staticmethod
+    async def _model_auth(task: dict[str, Any]) -> dict[str, Any] | None:
+        """Resolve the bound account through Gateway's existing refresh path."""
+        from agent_gateway.auth.login_credentials import bare_model_name
+        from agent_gateway.auth.session_owners import SessionOwner, login_auth_for_owner
+
+        ref = task["request"].get("login_credential_ref")
+        model_name = task["request"].get("execution_target", {}).get("model_name")
+        if not ref or not model_name:
+            return None
+        return await asyncio.to_thread(
+            login_auth_for_owner, SessionOwner(ref, bare_model_name(model_name)),
+        )
 
     def prune_reconciliation(self, active_requests):
         """Retain one-shot outcomes only while their execution is unresolved."""
@@ -252,17 +286,25 @@ class AgentTaskExecutor:
         client = (
             self.client.get("value") if isinstance(self.client, dict) else self.client
         )
+        params = {
+            **request.params,
+            "managed_task_request": task["request_id"],
+            "managed_task_binding": self.endpoint.binding(task),
+        }
+        target = task["request"].get("execution_target", {})
+        for key in ("model_name", "model_selection"):
+            if target.get(key) is not None:
+                params[key] = target[key]
+        model_auth = await self._model_auth(task)
+        if model_auth is not None:
+            params[E2A_MODEL_AUTH_PARAM_KEY] = model_auth
         response = await client.send_request(
             e2a_from_agent_fields(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 session_id=request.session_id,
                 req_method=request.req_method,
-                params={
-                    **request.params,
-                    "managed_task_request": task["request_id"],
-                    "managed_task_binding": self.endpoint.binding(task),
-                },
+                params=params,
                 is_stream=False,
                 timestamp=time.time(),
                 user_id=task["owner"] or None,
@@ -298,6 +340,7 @@ class AgentTaskExecutor:
             else None,
             managed_task_binding=self.endpoint.binding(task),
             execution_target=target,
+            model_auth=await self._model_auth(task),
         )
 
     async def reconciliation_ready(self) -> bool:
@@ -846,6 +889,7 @@ class VideoSearchManager:
         from .mode_routing import resolve_execution_target
 
         target = await resolve_execution_target(self.client, owner, scope)
+        credential_ref = await task_login_credential_ref(ws, target)
         request = dict(
             title=title,
             query=query,
@@ -858,6 +902,9 @@ class VideoSearchManager:
         )
         request.update(scheduling or {})
         request["execution_target"] = target
+        request.pop("login_credential_ref", None)
+        if credential_ref:
+            request["login_credential_ref"] = credential_ref
         task = self.service.submit(
             owner, scope, command_id or tool_call_id, question or query, request
         )
