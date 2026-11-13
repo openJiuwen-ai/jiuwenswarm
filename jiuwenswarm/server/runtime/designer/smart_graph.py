@@ -1077,6 +1077,23 @@ def build_smart_video_graph(
     setting_num = {sid: i + 1 for i, sid in enumerate(setting_order)}
     shot_ord_by_setting: dict[str, int] = {sid: 0 for sid in setting_order}
 
+    # One arrangement per setting, gathered from every shot that declares blocking, so
+    # no single shot can re-invent who stands where.
+    from jiuwenswarm.server.runtime.designer.pipeline.positioning_lock import (
+        merged_positions,
+    )
+
+    for _sid in setting_order:
+        _sid_shots = [
+            _s
+            for _s in shots
+            if isinstance(_s, dict)
+            and (str(_s.get("setting_id") or "set_1").strip() or "set_1") == _sid
+        ]
+        _merged = merged_positions(_sid_shots)
+        if _merged:
+            spatial_by_setting.setdefault(_sid, dict(spatial_lock))["positions"] = _merged
+
     scene_by_id: dict[str, dict[str, Any]] = {}
     for sc in scenes:
         if not isinstance(sc, dict):

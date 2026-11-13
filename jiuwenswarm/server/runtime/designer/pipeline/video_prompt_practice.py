@@ -785,7 +785,7 @@ def _staging_lines(
         token: (_name_for_id(token, graph) or str(token)) for token in tokens
     }
     lock = str(cfg.get("positioning_lock_text") or "").strip() or stamp_lock(
-        cfg, names=token_names, lang=lang
+        cfg, names=token_names, lang=lang, visible=list(tokens)
     )
     if lock and not _BAD_DIRECTIVE.search(lock):
         held = strip_phrase(_scrub_lock_phrase(lock)).rstrip(".;\u3002\uff1b")

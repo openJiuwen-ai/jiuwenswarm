@@ -42,11 +42,43 @@ def _seat_parts(anchor: dict[str, Any], geo: str, lang: str) -> list[str]:
         bits.append(str(anchor["seat"]).strip())
     landmark = str(anchor.get("landmark") or geo or "").strip()
     if landmark:
-        bits.append(f"near the {landmark}" if lang == "en" else f"\u9760\u8fd1{landmark}")
+        bits.append(
+            f"near the {landmark}" if lang == "en" else f"\u9760\u8fd1{landmark}"
+        )
     facing = str(anchor.get("facing") or "").strip()
     if facing:
         bits.append(f"facing {facing}" if lang == "en" else f"\u9762\u5411{facing}")
     return bits
+
+
+def merged_positions(shots: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """One arrangement for a setting, taken from every shot's declared blocking.
+
+    The place has one layout; the individual shots only ever see part of it. Walking
+    the shots in film order and keeping the first statement per character gives a
+    complete map that no single shot can drift away from.
+    """
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for shot in shots or []:
+        if not isinstance(shot, dict):
+            continue
+        blocking = (
+            shot.get("blocking") if isinstance(shot.get("blocking"), dict) else {}
+        )
+        landmark = str(blocking.get("landmark") or "").strip()
+        for pos in blocking.get("positions") or []:
+            if not isinstance(pos, dict):
+                continue
+            token = str(pos.get("character_id") or "").strip()
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            entry = dict(pos)
+            if landmark and not str(entry.get("landmark") or "").strip():
+                entry["landmark"] = landmark
+            merged.append(entry)
+    return merged
 
 
 def build_lock(
@@ -54,14 +86,29 @@ def build_lock(
     cfg: dict[str, Any] | None,
     names: dict[str, str] | None = None,
     lang: str = "en",
+    visible: list[str] | None = None,
 ) -> str:
     """One positive sentence fixing each visible character's place in this setting."""
     cfg = cfg if isinstance(cfg, dict) else {}
     names = names or {}
     blocking = cfg.get("blocking") if isinstance(cfg.get("blocking"), dict) else {}
-    spatial = cfg.get("spatial_lock") if isinstance(cfg.get("spatial_lock"), dict) else {}
+    spatial = (
+        cfg.get("spatial_lock") if isinstance(cfg.get("spatial_lock"), dict) else {}
+    )
     geo = str(spatial.get("landmark") or blocking.get("landmark") or "").strip()
-    positions = [p for p in (blocking.get("positions") or []) if isinstance(p, dict)]
+    setting_positions = [
+        p for p in (spatial.get("positions") or []) if isinstance(p, dict)
+    ]
+    positions = setting_positions or [
+        p for p in (blocking.get("positions") or []) if isinstance(p, dict)
+    ]
+    if visible:
+        wanted = {str(v).strip() for v in visible if str(v).strip()}
+        narrowed = [
+            p for p in positions if str(p.get("character_id") or "").strip() in wanted
+        ]
+        if narrowed:
+            positions = narrowed
     sentences: list[str] = []
     for pos in positions:
         token = str(pos.get("character_id") or "").strip()
@@ -90,10 +137,16 @@ def build_lock(
     return ""
 
 
-def stamp_lock(cfg: dict[str, Any] | None, *, names: dict[str, str] | None = None, lang: str = "en") -> str:
+def stamp_lock(
+    cfg: dict[str, Any] | None,
+    *,
+    names: dict[str, str] | None = None,
+    lang: str = "en",
+    visible: list[str] | None = None,
+) -> str:
     """Compute and store the lock on the config; returns the sentence."""
     cfg = cfg if isinstance(cfg, dict) else {}
-    lock = build_lock(cfg=cfg, names=names, lang=lang)
+    lock = build_lock(cfg=cfg, names=names, lang=lang, visible=visible)
     if lock:
         cfg["positioning_lock_text"] = lock
     return lock
