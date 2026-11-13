@@ -62,7 +62,12 @@ export function JevKeySettings({ disabled }: SettingsCustomItemProps) {
   const providerName = draft.provider === 'custom'
     ? t('settingsPanel.browser.providerCustom')
     : JEV_PRESETS[draft.provider].label;
-  const configured = values.jev_key_configured === true;
+  // path.get's jev_key_configured is answered from the Gateway process env,
+  // which is frozen at its startup: credentials saved afterwards through
+  // config.save_all (Runtime process) stay invisible until a Gateway restart
+  // (#6542). The config panel reads the persisted .env first and stays fresh,
+  // so derive the configured state from the credential value itself.
+  const configured = draft.api_key.trim() !== '';
   const actionsDisabled = disabled || !isConnected || loading || Boolean(error) || clearingBusy;
   const metadata = `${providerName} · ${draft.model}`;
   return (
