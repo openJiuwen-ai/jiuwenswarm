@@ -44,3 +44,63 @@ async def test_session_create_is_rejected_by_repository() -> None:
     response = await handle_session_request(_request(ReqMethod.SESSION_CREATE))
     assert response.ok is False
     assert response.payload["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("params, writeback", [
+    ({"session_id": "sess-1"}, True),
+    ({"session_id": "sess-1", "enable_writeback": False}, False),
+    ({"session_id": "sess-1", "enable_writeback": True}, True),
+    ({"session_id": "sess-1", "enable_writeback": "false"}, True),
+])
+async def test_get_metadata_preserves_read_options_and_payload(monkeypatch, params, writeback):
+    calls = []
+    payload = {"session_id": "sess-1", "status": "processing", "message_count": 3}
+
+    def read(session_id, *, cache_bust, enable_writeback):
+        calls.append((session_id, cache_bust, enable_writeback))
+        return payload
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.control.repositories.session_repository.get_session_metadata", read,
+    )
+    response = await handle_session_request(_request(ReqMethod.SESSION_GET_METADATA, params))
+    assert response.ok and response.payload == payload
+    assert calls == [("sess-1", True, writeback)]
+    assert response.request_id == "req-1" and response.channel_id == "web"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result, code, message", [
+    ({}, "NOT_FOUND", "session not found"),
+    (OSError("disk unavailable"), "INTERNAL_ERROR", "disk unavailable"),
+])
+async def test_get_metadata_preserves_read_errors(monkeypatch, result, code, message):
+    def read(*_args, **_kwargs):
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.control.repositories.session_repository.get_session_metadata", read,
+    )
+    response = await handle_session_request(
+        _request(ReqMethod.SESSION_GET_METADATA, {"session_id": "sess-1"}),
+    )
+    assert not response.ok
+    assert response.payload["code"] == code and response.payload["error"] == message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("session_id", [None, " ", 1])
+async def test_get_metadata_rejects_invalid_session_without_reading(monkeypatch, session_id):
+    def unexpected_read(*_args, **_kwargs):
+        pytest.fail("Invalid session metadata query must not access the store")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.control.repositories.session_repository.get_session_metadata", unexpected_read,
+    )
+    response = await handle_session_request(
+        _request(ReqMethod.SESSION_GET_METADATA, {"session_id": session_id}),
+    )
+    assert not response.ok and response.payload["code"] == "BAD_REQUEST"

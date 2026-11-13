@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 from contextvars import ContextVar
 import gc
+import json
 import threading
 import time
 
@@ -128,21 +129,79 @@ async def test_session_scan_and_projection_leave_front_loop_running(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_parallel_queries_keep_tenant_and_request_context(monkeypatch):
+async def test_metadata_file_lock_leaves_front_loop_running(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.session import lifecycle, session_metadata
+
+    sessions = tmp_path / "agent" / "sessions"
+    session = sessions / "one"
+    session.mkdir(parents=True)
+    (session / "metadata.json").write_text(json.dumps({
+        "session_id": "one", "title": "visible", "project_id": "project",
+        "work_mode": "code", "mode": "agent.code.normal", "channel_id": "web",
+        "last_user_message_at": 1,
+    }), encoding="utf-8")
+    monkeypatch.setattr(session_metadata, "get_agent_sessions_dir", lambda: sessions)
+    monkeypatch.setattr(lifecycle, "get_agent_sessions_dir", lambda: sessions)
+    locked = threading.Event()
+    reading = threading.Event()
+    release = threading.Event()
+    threads = []
+    read = session_repository.get_session_metadata
+
+    def hold_lock():
+        with session_metadata._FILE_LOCK:
+            locked.set()
+            release.wait(5)
+
+    def query_metadata(*args, **kwargs):
+        threads.append(threading.get_ident())
+        reading.set()
+        return read(*args, **kwargs)
+
+    monkeypatch.setattr(session_repository, "get_session_metadata", query_metadata)
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    task = None
+    try:
+        await _until(locked.is_set)
+        request = _request(ReqMethod.SESSION_GET_METADATA)
+        request.params = {"session_id": "one", "enable_writeback": False}
+        task = asyncio.create_task(session_repository.handle_session_request(request))
+        await _until(reading.is_set)
+        assert not task.done(), "The metadata file lock blocked the Front event loop"
+        assert threads == [threads[0]] and threads[0] != threading.get_ident()
+    finally:
+        release.set()
+        holder.join(timeout=5)
+        response = await task if task is not None else None
+    assert not holder.is_alive()
+    assert response.ok and response.payload["session_id"] == "one"
+    assert response.payload["title"] == "visible"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", [ReqMethod.PROJECT_LIST, ReqMethod.SESSION_GET_METADATA])
+async def test_parallel_queries_keep_tenant_and_request_context(monkeypatch, method):
     context = ContextVar("front-query-test", default="unbound")
     previous_tenant = TenantContext.current_tenant_key()
 
-    def scan(_params):
+    def scan(*_args, **_kwargs):
         time.sleep(0.02)
-        return {"tenant": TenantContext.current_tenant_key(), "request": context.get()}, None, None
+        payload = {"tenant": TenantContext.current_tenant_key(), "request": context.get()}
+        return payload if method == ReqMethod.SESSION_GET_METADATA else (payload, None, None)
 
     monkeypatch.setattr(project_repository, "load_project_list", scan)
+    monkeypatch.setattr(session_repository, "get_session_metadata", scan)
 
     async def query(tenant):
         with TenantContext.scoped(tenant):
             token = context.set(tenant + "-request")
             try:
-                return await project_repository.handle_project_request(_request(ReqMethod.PROJECT_LIST))
+                request = _request(method)
+                if method == ReqMethod.SESSION_GET_METADATA:
+                    request.params = {"session_id": "one"}
+                    return await session_repository.handle_session_request(request)
+                return await project_repository.handle_project_request(request)
             finally:
                 context.reset(token)
 
@@ -156,7 +215,9 @@ async def test_parallel_queries_keep_tenant_and_request_context(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", [ReqMethod.PROJECT_LIST, ReqMethod.SESSION_LIST])
+@pytest.mark.parametrize("method", [
+    ReqMethod.PROJECT_LIST, ReqMethod.SESSION_LIST, ReqMethod.SESSION_GET_METADATA,
+])
 async def test_router_queries_keep_enterprise_workspace_in_background(monkeypatch, tmp_path, method):
     from jiuwenswarm.common import utils
     from jiuwenswarm.enterprise import plane
@@ -184,10 +245,13 @@ async def test_router_queries_keep_enterprise_workspace_in_background(monkeypatc
         assert plane._PLANE is not None
         tenant = TenantContext.current_tenant_key()
         seen[tenant] = (utils.get_agent_sessions_dir(), threading.get_ident())
+        if method == ReqMethod.SESSION_GET_METADATA:
+            return {"session_id": "one"}
         return ({"projects": []}, None, None) if method == ReqMethod.PROJECT_LIST else ([], 0)
 
     monkeypatch.setattr(project_repository, "load_project_list", scan)
     monkeypatch.setattr(session_repository, "get_all_sessions_metadata", scan)
+    monkeypatch.setattr(session_repository, "get_session_metadata", scan)
     sent = []
 
     async def send(_ws, payload):
@@ -203,6 +267,7 @@ async def test_router_queries_keep_enterprise_workspace_in_background(monkeypatc
         request.request_id = user
         request.user_id = user
         request.metadata = {"routing": {"group_id": "group", "bot_id": "bot"}}
+        request.params["session_id"] = "one"
         await router.dispatch(object(), request, asyncio.Lock())
 
     await asyncio.gather(query("alice"), query("bob"))
