@@ -767,6 +767,7 @@
       "externalCliAgentsDescription": "For Team mode only.",
       "a2ui": "A2UI generation",
       "rsi": "RSI · Recursive self-improvement",
+      "rea": "Reverse engineering",
       "trajectoryUi": "Trajectory diagnosis",
       "kvCacheAffinity": "Compute affinity",
       "teamOrganization": "Team Organization",
@@ -951,6 +952,10 @@
       "rsi_enabled": {
         "title": "Enable RSI",
         "description": "Show the RSI entry in the sidebar to create and view RSI tasks for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry."
+      },
+      "rea_enabled": {
+        "title": "Enable reverse engineering",
+        "description": "Show the Reverse Engineering entry in the sidebar to install and configure REA capabilities. Turn it off to hide the entry."
       },
       "cua_agent_enabled": {
         "title": "Enable computer control",
@@ -5367,6 +5372,7 @@
     "visualState": {
       "available": "Available",
       "installing": "Installing",
+      "detecting": "Detecting",
       "needsAction": "Needs setup",
       "detected": "Detected",
       "unsupported": "Not supported",
@@ -5426,6 +5432,7 @@
     "capabilityHint": {
       "available": "This capability is ready to use.",
       "installing": "This capability is being prepared.",
+      "detecting": "This capability will be detected after the base environment is ready.",
       "needsAction": "Some external software or account details are still needed.",
       "detected": "The required software was found, but setup is not finished.",
       "unsupported": "This capability is not supported on the current system.",
@@ -5437,6 +5444,7 @@
     "memberState": {
       "available": "Available",
       "installing": "Installing",
+      "detecting": "Waiting for detection",
       "needsAction": "Setup required",
       "detected": "Found, not configured",
       "unsupported": "Not supported on this system",

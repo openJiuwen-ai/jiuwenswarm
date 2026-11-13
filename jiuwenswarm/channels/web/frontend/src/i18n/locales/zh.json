@@ -760,6 +760,7 @@
       "externalCliAgentsDescription": "仅用于集群模式。",
       "a2ui": "A2UI 界面生成",
       "rsi": "RSI 递归自我改进",
+      "rea": "逆向工程",
       "trajectoryUi": "轨迹诊断",
       "kvCacheAffinity": "算力亲和",
       "teamOrganization": "Team Organization",
@@ -935,6 +936,10 @@
       "rsi_enabled": {
         "title": "启用 RSI",
         "description": "显示侧边栏「RSI」入口，可创建并查看 Harness 优化和产物优化（论文、程序）的 RSI 任务；关闭后隐藏该入口。"
+      },
+      "rea_enabled": {
+        "title": "启用逆向",
+        "description": "显示侧边栏「逆向」入口，可安装并配置 REA 逆向工程能力；关闭后隐藏该入口。"
       },
       "cua_agent_enabled": {
         "title": "启用电脑操控",
@@ -5339,6 +5344,7 @@
     "visualState": {
       "available": "可用",
       "installing": "安装中",
+      "detecting": "检测中",
       "needsAction": "需配置",
       "detected": "已检测",
       "unsupported": "当前不适用",
@@ -5398,6 +5404,7 @@
     "capabilityHint": {
       "available": "这个能力已经准备好，可以直接使用。",
       "installing": "正在准备这个能力。",
+      "detecting": "基础环境完成后会自动检测这个能力。",
       "needsAction": "还需要补充外部软件或账号信息。",
       "detected": "已经找到所需软件，还需要完成配置。",
       "unsupported": "当前系统不支持这个能力。",
@@ -5409,6 +5416,7 @@
     "memberState": {
       "available": "可用",
       "installing": "安装中",
+      "detecting": "等待检测",
       "needsAction": "需要配置",
       "detected": "已找到，尚未配置",
       "unsupported": "当前系统不支持",

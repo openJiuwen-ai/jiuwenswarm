@@ -1058,6 +1058,20 @@ def update_rsi_enabled_in_config(value: bool) -> None:
     update_config(mutator)
 
 
+def update_rea_enabled_in_config(value: bool) -> None:
+    """原子更新 rea.enabled（Web REA 逆向入口开关）。"""
+
+    def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        section = data.get("rea")
+        if not isinstance(section, dict):
+            section = {}
+            data["rea"] = section
+        section["enabled"] = value
+        return data
+
+    update_config(mutator)
+
+
 def update_cua_agent_enabled_in_config(value: bool | None) -> None:
     """Persist an explicit desktop preference, or null to follow the release default."""
     if value is not None and not isinstance(value, bool):

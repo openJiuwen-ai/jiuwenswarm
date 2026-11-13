@@ -677,9 +677,55 @@ button.rea-step-card:hover img {
 }
 
 .rea-status.is-installing i {
-  border: 1.5px solid #3c86ef;
-  border-top-color: transparent;
-  animation: rea-spin 1s linear infinite;
+  border: 0;
+  border-radius: 0;
+}
+
+.rea-status.is-installing i::before,
+.rea-status.is-installing i::after {
+  position: absolute;
+  left: 3px;
+  width: 10px;
+  height: 4px;
+  border-radius: 2px;
+  background: #0bb8b2;
+  content: "";
+}
+
+.rea-status.is-installing i::before {
+  top: 3px;
+}
+
+.rea-status.is-installing i::after {
+  bottom: 3px;
+}
+
+.rea-status.is-detecting {
+  color: #595959;
+}
+
+.rea-status.is-detecting i {
+  border: 0;
+  border-radius: 0;
+}
+
+.rea-status.is-detecting i::before,
+.rea-status.is-detecting i::after {
+  position: absolute;
+  left: 3px;
+  width: 10px;
+  height: 4px;
+  border-radius: 2px;
+  background: #3c86ef;
+  content: "";
+}
+
+.rea-status.is-detecting i::before {
+  top: 3px;
+}
+
+.rea-status.is-detecting i::after {
+  bottom: 3px;
 }
 
 .rea-status.is-needsAction {

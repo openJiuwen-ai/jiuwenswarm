@@ -34,6 +34,10 @@ a2ui:
 rsi:
   enabled: true
 
+# REA 逆向工程入口；默认开启
+rea:
+  enabled: true
+
 a4p:
   enabled: false
 

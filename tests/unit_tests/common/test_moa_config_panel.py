@@ -176,6 +176,7 @@ async def test_write_failures_are_reported_without_secret(panel_config, fields, 
 def test_moa_fields_do_not_add_execution_reload_scopes():
     assert handlers.ConfigChangeSet({}, ["moa_verifier_interval"], force=True).reload_scopes == {"web_ui"}
     assert handlers.ConfigChangeSet({}, ["moa_verifier_interval", "rsi_enabled"]).reload_scopes == {"agent_runtime", "web_ui"}
+    assert handlers.ConfigChangeSet({}, ["rea_enabled"]).reload_scopes == {"web_ui"}
 
 
 @pytest.mark.asyncio

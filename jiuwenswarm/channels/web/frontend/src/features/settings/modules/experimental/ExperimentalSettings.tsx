@@ -7,6 +7,7 @@ import { Button, Switch } from '../../../../components/ui';
 import { Form, FormDialog, useForm } from '../../../../components/form';
 import { setA2UIFeatureEnabled } from '../../../../features/a2ui/featureConfig';
 import { normalizeRSIEnabled, setRSIFeatureEnabled } from '../../../../features/rsi/featureConfig';
+import { normalizeREAEnabled, setREAFeatureEnabled } from '../../../../features/reaSetup/featureConfig';
 import { setTrajectoryDiagnosisEnabled } from '../../../../features/trajectory/diagnosis/diagnosisFeatureConfig';
 import { setTaskFullDuplexEnabled } from '../../../../features/taskFullDuplex/featureFlag';
 import { setTaskAsrEnabled } from '../../../../features/taskAsr/featureFlag';
@@ -156,6 +157,32 @@ export function RSISetting({ disabled }: SettingsCustomItemProps) {
         checked={rsi}
         disabled={disabled || !isConnected || source.savingKeys.has('rsi_enabled')}
         onChange={(next) => void updateRSI(next).catch(() => undefined)}
+      />
+    </SettingRow>
+  );
+}
+
+export function REASetting({ disabled }: SettingsCustomItemProps) {
+  const { t } = useTranslation();
+  const { isConnected } = useSettingsServices();
+  const source = useSettingsSource();
+  const rea = normalizeREAEnabled(source.values.rea_enabled);
+
+  async function updateREA(next: boolean): Promise<void> {
+    await source.save({ rea_enabled: next }, 'rea-enabled');
+    setREAFeatureEnabled(next);
+  }
+
+  return (
+    <SettingRow
+      title={t('settingsPanel.fields.rea_enabled.title')}
+      description={t('settingsPanel.fields.rea_enabled.description')}
+    >
+      <Switch
+        aria-label={t('settingsPanel.fields.rea_enabled.title')}
+        checked={rea}
+        disabled={disabled || !isConnected || source.savingKeys.has('rea_enabled')}
+        onChange={(next) => void updateREA(next).catch(() => undefined)}
       />
     </SettingRow>
   );
