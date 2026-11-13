@@ -16,6 +16,7 @@ import { isA2UIClientEventContent } from './a2ui/a2uiContent';
 import { buildQaSummaryContent } from '../components/InteractionSlot/qaSummary';
 import i18n from '../i18n';
 import { normalizeToolCallPayload, normalizeToolResultPayload } from './tool-events/toolEventNormalizer';
+import { HISTORY_ARTIFACT_CURSOR_PREFIX } from './tool-events/historyArtifactReader';
 import {
   buildGoalCompletedContent,
   isGoalCompletedContent,
@@ -1369,7 +1370,7 @@ function parseSessionHistoryTimelineEntry(
     if (typeof record.role === 'string' && payload.role == null) {
       payload.role = record.role;
     }
-    return { kind: 'tool_result', at, payload };
+    return { kind: 'tool_result', at, payload: { ...payload, session_id: sessionId } };
   }
 
   if (eventType === 'chat.usage_summary') {
@@ -2185,6 +2186,7 @@ function buildToolExecutionsFromReplay(toolReplay: HistoryToolReplayItem[]): Too
       ...(n.timedOut ? { timedOut: true as const } : {}),
       ...(n.beamSearch ? { beamSearch: n.beamSearch } : {}),
       reviewer: n.reviewer,
+      ...(n.payloadRefs ? { payloadRefs: n.payloadRefs, artifactSessionId: n.artifactSessionId } : {}),
     };
     const resultStatus: ToolExecution['status'] = n.pending
       ? 'pending'
@@ -2276,6 +2278,8 @@ export function shouldProcessHistoryPayload(
   expectedSubagentId?: string,
   expectedCursor?: string | null,
 ): boolean {
+  if (typeof payload.cursor === 'string' && payload.cursor.startsWith(HISTORY_ARTIFACT_CURSOR_PREFIX)
+    && payload.cursor !== expectedCursor) return false;
   if (hasMismatchedHistoryBoundary(payload, expectedSessionId)) return false;
   const sid = pickFirstString(payload, ['session_id', 'sessionId']) ?? '';
   if (sid && sid !== expectedSessionId) {
