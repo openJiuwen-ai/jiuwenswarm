@@ -1598,19 +1598,14 @@ async def _record_group_organization_plan(session_id: str, group_input: dict) ->
     """Record coordination state without changing the message or its mentions."""
     plan = None
     try:
-        from jiuwenswarm.agents.swarm.group_org_bootstrap import (
-            publish_pending_organization_card,
-            record_organization_plan,
-        )
+        from jiuwenswarm.agents.swarm.group_route import record_candidate
 
-        plan = record_organization_plan(
+        plan = await record_candidate(
             session_id,
             mentions=list(group_input["mentions"]),
             body=str(group_input.get("body") or ""),
             plan_id=str(group_input["client_message_id"]),
         )
-        if plan is not None:
-            await publish_pending_organization_card(session_id, plan)
         logger.info(
             "[TeamHelpers] group organization plan candidate session_id=%s "
             "mentions=%s recorded=%s",
