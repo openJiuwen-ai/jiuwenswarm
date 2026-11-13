@@ -1097,3 +1097,104 @@ async def test_management_budgets_are_bounded(monkeypatch, proposal, decisions, 
     assert error in result["error"]
     assert step.await_count == decisions
     assert operate.await_count == queries
+
+
+@pytest.mark.parametrize(
+    "model_name,login",
+    [("glm-5#3", "login-session"), ("glm-5#3", None),
+     ("configured", "login-session"), ("glm-5#3", "expired-session"),
+     ("glm-5#3", "revoked-session")],
+)
+async def test_duplex_login_auth_is_bound_to_caller_and_sent_on_each_model_request(
+    monkeypatch, tmp_path, model_name, login,
+):
+    from agent_gateway.auth import apig, login_credentials, model_catalog, passthrough, service
+    from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.extensions.video_duplex.backend.task_adapter import VideoSearchManager
+    from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import RecordingChannel
+
+    monkeypatch.setattr(login_credentials, "_ref_key_cache", b"k" * 32)
+    monkeypatch.setattr(model_catalog, "get_models", lambda *args, **kwargs: [
+        model_catalog.LoginModel("glm-5", "GLM-5"),
+    ])
+    monkeypatch.setattr(apig, "resolve_apig_config", lambda **kwargs: SimpleNamespace(
+        invoke_base_url="https://apig.example/v1",
+    ))
+    live_session = Mock(return_value=SimpleNamespace(
+        user_id="account-alice", credential=SimpleNamespace(id_token="id-initial"),
+    ))
+    monkeypatch.setattr(service, "live_session", live_session)
+    expired, refresh = object(), Mock()
+    monkeypatch.setattr(passthrough, "expired_login_session", lambda params, session: (
+        expired if session == "expired-session" else None
+    ))
+    monkeypatch.setattr(service, "get_auth_service", lambda: SimpleNamespace(try_refresh=refresh))
+    monkeypatch.setattr(passthrough, "refreshed_credential_for_ref", lambda ref: (
+        {"credential_ref": ref, "revoked": True} if login == "revoked-session" else
+        {"credential_ref": ref, "api_key": "id-fresh"}
+    ))
+    sent = []
+
+    async def send_request(envelope):
+        payload = {}
+        if envelope.method == ReqMethod.SESSION_GET_METADATA.value:
+            payload = {
+                "user_id": "alice", "mode": "agent", "model_name": model_name,
+                "model_selection": {"type": "model", "id": "selected-login-model"},
+            }
+        elif envelope.method == ReqMethod.CHAT_SEND.value:
+            sent.append(envelope)
+            payload = {"content": "任务已完成"}
+        return SimpleNamespace(ok=True, payload=payload)
+
+    manager = VideoSearchManager(
+        RecordingChannel(), SimpleNamespace(send_request=send_request),
+        log_event=lambda event: None, qwen_active=lambda: True, path=tmp_path / "tasks.sqlite",
+    )
+    try:
+        public = await manager.start(
+            SimpleNamespace(_web_connection_user_id="alice", _jiuwen_auth_session=login),
+            question="执行任务", query="执行任务", search_session_id="task-duplex:saved",
+            command_id="task-call", scheduling={"login_credential_ref": "forged"},
+        )
+        await until(lambda: manager.service.store.read(public["id"])["status"] == "completed")
+        task = manager.service.store.read(public["id"])
+        bound = model_name.startswith("glm-5") and login is not None
+        authenticated = bound and login != "revoked-session"
+        ref = login_credentials.credential_ref_for_user("account-alice")
+        assert task["request"].get("login_credential_ref") == (ref if bound else None)
+        persisted = json.dumps(task)
+        assert all(secret not in persisted for secret in ("id-initial", "id-fresh", "login-session", "expired-session"))
+        assert "login_credential_ref" not in json.dumps(public)
+
+        task["interaction"] = {
+            "request_id": "question", "operation_id": "answer-op", "source": "ask_user_interrupt",
+            "answers": [{"question": "预算？", "answer": "100"}],
+        }
+        await manager.service.executor.answer(task)
+        task["resume_answer"] = True
+        await manager.service.executor._run(task, AsyncMock(), [])
+        assert len(sent) == 3
+        for envelope in sent:
+            auth = envelope.params.get(E2A_MODEL_AUTH_PARAM_KEY)
+            if authenticated:
+                assert auth == {
+                    "api_base": "https://apig.example/v1", "api_key": "id-fresh", "credential_ref": ref,
+                }
+                assert envelope.params["model_name"] == model_name
+            else:
+                assert auth is None
+            assert envelope.params.get("model_selection") == {
+                "type": "model", "id": "selected-login-model",
+            }
+        if bound:
+            live_session.assert_called_once_with(login, allow_refresh=False)
+        else:
+            live_session.assert_not_called()
+        if login == "expired-session":
+            refresh.assert_called_once_with(expired)
+        else:
+            refresh.assert_not_called()
+    finally:
+        await manager.close()

@@ -168,3 +168,7 @@ flowchart LR
 | 后端编排 | `backend/video_live.py` |
 | ASR/TTS | `backend/video_voice.py` |
 | 搜索 | `backend/video_search.py` |
+
+### 登录免费模型
+
+全双工支持当前聊天选择的登录免费模型，切换至免费模型不会自动挂断。任务入队时从服务端登录会话绑定账号凭据引用；执行与交互续答前取当前凭据并随内部模型请求发送。任务数据库不保存登录会话或模型令牌。
