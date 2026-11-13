@@ -9,7 +9,7 @@ import { ScheduleDialog } from './ScheduleDialog';
 import { ScheduleHistory } from './ScheduleHistory';
 import type { Schedule, ScheduleDraft, ScheduleRun } from './types';
 
-const STATUSES = ['', 'running', 'paused', 'failed', 'completed', 'expired'] as const;
+const STATUSES = ['', 'running', 'paused', 'failed', 'expired'] as const;
 const TIME_RANGES = ['7d', '30d', ''] as const;
 
 type BoardColleague = {
@@ -185,7 +185,7 @@ export function ScheduleBoard({
                     </span>
                   </td>
                   <td>
-                    <span className="jiuwenmate-schedule-board__status" data-tone={statusLabel}>
+                    <span className="jiuwenmate-schedule-board__status" data-tone={statusLabel} data-testid="jiuwenmate-schedule-board-status">
                       <i aria-hidden />
                       {t(`jiuwenmate.schedule.status.${statusLabel}`, { defaultValue: statusLabel })}
                     </span>

@@ -26,6 +26,7 @@ from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
     multimodal_model_enabled,
 )
 from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.reasoning_config import minimal_reasoning
 
 # One review gets 60 seconds, then its request is cancelled.
 REVIEW_TIMEOUT_SECONDS = 60.0
@@ -98,7 +99,9 @@ async def review_slide(checklist: str, session_model: Model | None, render: str,
     try:
         model = session_model or Model(model_client_config=ModelClientConfig(**client),
                                        model_config=ModelRequestConfig(model=model_name))
-        review = await asyncio.wait_for(_first_answer(model, messages), REVIEW_TIMEOUT_SECONDS)
+        # A reviewing model left to think took 20 to 50 seconds on one slide and half the time used every token on it.
+        reasoning = minimal_reasoning(model.model_client_config.model_dump(mode="json"), model_name)
+        review = await asyncio.wait_for(_first_answer(model, messages, reasoning), REVIEW_TIMEOUT_SECONDS)
     except asyncio.TimeoutError as exc:
         raise ReviewFailed(f"{reviewer} did not answer within {REVIEW_TIMEOUT_SECONDS:.0f}s") from exc
     except Exception as exc:  # noqa: BLE001 - whatever the provider raises, the review has no verdict
@@ -166,10 +169,11 @@ def geometry_summary(geometry: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-async def _first_answer(model: Model, messages: list[dict[str, Any]]) -> str:
+async def _first_answer(model: Model, messages: list[dict[str, Any]], reasoning: dict[str, str] | None) -> str:
     """The first non-empty answer, or ``""``; a reasoning model sometimes spends its tokens and answers nothing."""
     for _attempt in range(REVIEW_ATTEMPTS):
-        response = await model.invoke(messages, max_tokens=REVIEW_MAX_TOKENS, timeout=REVIEW_TIMEOUT_SECONDS)
+        extra = {} if reasoning is None else {"reasoning": reasoning}
+        response = await model.invoke(messages, max_tokens=REVIEW_MAX_TOKENS, timeout=REVIEW_TIMEOUT_SECONDS, **extra)
         content = response.content if isinstance(response.content, str) else ""
         if content.strip():
             return content

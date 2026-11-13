@@ -62,24 +62,29 @@ export function validateDraft(draft: ScheduleDraft, executorId: string): string 
   return null;
 }
 
-export function scheduleResumeBlocked(plan: Schedule, now: number): boolean {
+type ScheduleTiming = Pick<Schedule, 'endsAt' | 'scheduleKind' | 'nextFireAt'>;
+
+export function scheduleResumeBlocked(plan: ScheduleTiming, now: number): boolean {
   return (plan.endsAt !== null && Date.parse(plan.endsAt) <= now)
     || (plan.scheduleKind === 'once' && (plan.nextFireAt === null || Date.parse(plan.nextFireAt) <= now));
 }
 
-export function scheduleDisplayStatus(plan: Schedule, now: number): string {
-  if (plan.lastStatus !== 'completed' && plan.lastStatus !== 'paused') return plan.lastStatus;
-  const completedOnce = plan.scheduleKind === 'once' && plan.nextFireAt === null && plan.runCount > 0;
-  return !completedOnce && scheduleResumeBlocked(plan, now) ? 'expired' : plan.lastStatus;
+type ScheduleStatusSource = ScheduleTiming & Pick<Schedule, 'lastStatus'>;
+
+export function scheduleDisplayStatus(plan: ScheduleStatusSource, now = Date.now()): string {
+  if (plan.lastStatus === 'completed' || (plan.lastStatus === 'paused' && scheduleResumeBlocked(plan, now))) {
+    return 'expired';
+  }
+  return plan.lastStatus;
 }
 
-export function filterSchedules(
-  plans: readonly Schedule[],
+export function filterSchedules<T extends ScheduleStatusSource & { name: string; agentId: string }>(
+  plans: readonly T[],
   query: string,
   agentId: string,
   status: string,
   now = Date.now(),
-): Schedule[] {
+): T[] {
   const keyword = query.trim().toLowerCase();
   return plans.filter((plan) => {
     if (keyword && !plan.name.toLowerCase().includes(keyword)) return false;
