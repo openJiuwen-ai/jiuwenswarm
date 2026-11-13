@@ -1259,6 +1259,19 @@ def compose_practice_prompt(
     else:
         # No place name in the storyboard: point at the image without inventing one.
         sentences.append(phrase(_PHRASES, lang, "scene_as_in_unnamed", scene_word=scene_word))
+    # The camera decides what the shot can see, so it is stated before the action:
+    # a model that reads the framing last re-composes the room to fit the action.
+    cam = strip_phrase(camera or cfg.get("camera") or "")
+    if cam and not _BAD_DIRECTIVE.search(cam):
+        if zh:
+            sentences.append(phrase(_PHRASES, lang, "camera", cam=cam))
+        elif cam.lower().startswith("the camera"):
+            sentences.append(cam + ".")
+        else:
+            sentences.append(
+                f"The camera {cam[0].lower() + cam[1:] if cam[:1].isupper() else cam}."
+            )
+
     bible = cfg.get("scene_specs") if isinstance(cfg.get("scene_specs"), dict) else {}
     objects = bible.get("objects") if isinstance(bible.get("objects"), list) else []
     props = [
@@ -1356,16 +1369,6 @@ def compose_practice_prompt(
             phrase(_PHRASES, lang, "offscreen_heard", who=who, wearing=wearing, scene_word=scene_word)
         )
 
-    cam = strip_phrase(camera or cfg.get("camera") or "")
-    if cam and not _BAD_DIRECTIVE.search(cam):
-        if zh:
-            sentences.append(phrase(_PHRASES, lang, "camera", cam=cam))
-        elif cam.lower().startswith("the camera"):
-            sentences.append(cam + ".")
-        else:
-            sentences.append(
-                f"The camera {cam[0].lower() + cam[1:] if cam[:1].isupper() else cam}."
-            )
 
     sentences.extend(_speech_lines(cfg, graph, names, lang))
     lang_sent = _language_sentence(cfg, lang)
