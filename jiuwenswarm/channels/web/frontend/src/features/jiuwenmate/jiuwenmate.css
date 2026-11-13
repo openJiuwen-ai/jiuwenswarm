@@ -639,11 +639,11 @@
   height: 16px;
 }
 
+/* Fixed and placed from the trigger rect by ActionMenu, so scroll containers
+   (schedule board table, colleague list, side panel body) cannot crop it. */
 .jiuwenmate-menu__list {
-  position: absolute;
+  position: fixed;
   z-index: 40;
-  top: calc(100% + 4px);
-  right: 0;
   display: grid;
   min-width: 128px;
   padding: 4px;
@@ -651,11 +651,6 @@
   border-radius: 10px;
   background: #fff;
   box-shadow: 0 8px 24px rgb(0 0 0 / 10%);
-}
-
-.jiuwenmate-menu[data-align='start'] .jiuwenmate-menu__list {
-  right: auto;
-  left: 0;
 }
 
 .jiuwenmate-menu__list button {
@@ -1492,11 +1487,6 @@
 .jiuwenmate-colleague-list__actions img {
   width: 16px;
   height: 16px;
-}
-
-.jiuwenmate-colleague-list__new .jiuwenmate-menu__list {
-  right: 0;
-  left: 0;
 }
 
 .jiuwenmate-colleague-list__label {

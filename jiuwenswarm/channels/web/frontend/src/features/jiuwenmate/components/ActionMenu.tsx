@@ -1,5 +1,6 @@
 import { Ellipsis, type LucideIcon } from 'lucide-react';
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { computeMenuPosition, type MenuAlign } from './menuPosition';
 
 export interface JiuwenMateMenuItem {
   key: string;
@@ -17,7 +18,7 @@ interface ActionMenuProps {
   emptyLabel?: string;
   trigger?: ReactNode;
   className?: string;
-  align?: 'start' | 'end';
+  align?: MenuAlign;
   testId?: string;
   /** Anchor the list to the viewport so a scrolling container cannot clip it. */
   floating?: boolean;
@@ -34,9 +35,55 @@ export function ActionMenu({
   floating = false,
 }: ActionMenuProps) {
   const [open, setOpen] = useState(false);
-  const [listStyle, setListStyle] = useState<CSSProperties>();
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  // The panel is fixed-positioned from the trigger rect, so a scroll container
+  // ancestor (schedule board table, colleague list, side panel body) can no
+  // longer crop it. Measuring happens in a layout-free effect with the panel
+  // rendered hidden, so the first visible frame is already at its final spot.
+  // The placement also flips above the trigger and clamps into the viewport
+  // when a plain fixed offset would push the panel past an edge.
+  useEffect(() => {
+    if (!open || !floating) {
+      setPosition(null);
+      return undefined;
+    }
+    const place = () => {
+      const anchor = triggerRef.current?.getBoundingClientRect();
+      const list = listRef.current;
+      if (!anchor || !list) return;
+      const next = computeMenuPosition(
+        anchor,
+        { width: list.offsetWidth, height: list.offsetHeight },
+        { width: window.innerWidth, height: window.innerHeight },
+        align,
+      );
+      setPosition((current) =>
+        current && current.left === next.left && current.top === next.top
+          ? current
+          : { left: next.left, top: next.top },
+      );
+    };
+    place();
+    // Capture phase: the trigger also moves when a nested pane scrolls.
+    window.addEventListener('scroll', place, true);
+    window.addEventListener('resize', place);
+    // Layout changes that fire neither event (a sidebar or column resizing the
+    // trigger) still need a re-place; the trigger is what they move.
+    const observer =
+      typeof ResizeObserver === 'undefined' || !triggerRef.current
+        ? null
+        : new ResizeObserver(place);
+    observer?.observe(triggerRef.current as HTMLButtonElement);
+    return () => {
+      window.removeEventListener('scroll', place, true);
+      window.removeEventListener('resize', place);
+      observer?.disconnect();
+    };
+  }, [open, align, floating]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -57,32 +104,21 @@ export function ActionMenu({
     };
     document.addEventListener('mousedown', close);
     document.addEventListener('keydown', escape);
-    // A viewport-anchored list would drift away from its trigger once anything scrolls or resizes.
-    if (floating) {
-      window.addEventListener('scroll', close, true);
-      window.addEventListener('resize', close);
-    }
     return () => {
       document.removeEventListener('mousedown', close);
       document.removeEventListener('keydown', escape);
-      window.removeEventListener('scroll', close, true);
-      window.removeEventListener('resize', close);
     };
-  }, [open, floating]);
+  }, [open]);
 
   const toggle = () => {
-    if (!open && floating && triggerRef.current) {
-      const rect = triggerRef.current.getBoundingClientRect();
-      setListStyle({
-        position: 'fixed',
-        top: rect.bottom + 4,
-        ...(align === 'start'
-          ? { left: rect.left, right: 'auto' }
-          : { left: 'auto', right: window.innerWidth - rect.right }),
-      });
-    }
     setOpen((current) => !current);
   };
+
+  const listStyle: CSSProperties | undefined = !floating
+    ? undefined
+    : position
+      ? { position: 'fixed', left: `${position.left}px`, top: `${position.top}px` }
+      : { position: 'fixed', left: 0, top: 0, visibility: 'hidden' };
 
   return (
     <div
@@ -106,7 +142,13 @@ export function ActionMenu({
         {trigger ?? <Ellipsis aria-hidden />}
       </button>
       {open ? (
-        <div className="jiuwenmate-menu__list" role="menu" style={floating ? listStyle : undefined}>
+        <div
+          ref={listRef}
+          className="jiuwenmate-menu__list"
+          role="menu"
+          style={listStyle}
+          data-testid="jiuwenmate-menu-list"
+        >
           {items.length === 0 ? <p className="jiuwenmate-menu__empty">{emptyLabel}</p> : null}
           {items.map((item) => {
             const Icon = item.icon;
