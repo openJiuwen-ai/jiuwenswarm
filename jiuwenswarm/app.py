@@ -17,9 +17,6 @@ parse_dotenv_early("jiuwenswarm-app")
 
 # --- Now safe to import jiuwenswarm modules ---
 from jiuwenswarm.common.debug_dump import install_async_dump_handler
-from jiuwenswarm.common.media_capability_config import (
-    migrate_media_capability_switches,
-)
 from jiuwenswarm.common.process_supervision import SUPERVISOR_PID_ENV, supervise
 from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
@@ -37,7 +34,6 @@ prepare_runtime_workspace(cleanup_stale_descs=False)
 
 _env_file = get_env_file()
 load_dotenv_runtime(dotenv_path=_env_file, override=True)
-migrate_media_capability_switches(_env_file)
 apply_free_search_runtime_defaults()
 
 

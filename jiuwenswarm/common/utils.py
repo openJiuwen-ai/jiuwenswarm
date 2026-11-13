@@ -1861,6 +1861,11 @@ def get_agent_root_dir(tenant_key: str | None = None) -> Path:
     return get_multi_tenant_user_workspace_dir(tenant_key) / "agent"
 
 
+def get_package_avatar_cache_dir() -> Path:
+    """Return the tenant-scoped cache for HTTP-served package avatars."""
+    return get_agent_workspace_dir() / ".cache" / "package-avatars"
+
+
 def get_agent_home_dir() -> Path:
     return get_agent_root_dir() / "home"
 

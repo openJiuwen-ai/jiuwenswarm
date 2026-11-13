@@ -180,16 +180,28 @@ def _mm_video_handler(statuses: list[str], *, error: Any = None) -> Handler:
 
 
 @pytest.mark.asyncio
-async def test_minimax_video_submit_poll_download(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("model", "requested", "expected"),
+    [
+        ("MiniMax-H3", "1080p", "2K"),
+        ("MiniMax-H3-Highspeed", "1080p", "768P"),
+        ("MiniMax-H3-Lite", "480p", "480P"),
+        ("MiniMax-H3-Max", "2K", "768P"),
+        ("minimax/MiniMax-H3-Highspeed-01", "2K", "768P"),
+        ("MiniMax H3 Lite", "1080p", "768P"),
+    ],
+)
+async def test_minimax_video_submit_poll_download(monkeypatch, tmp_path, model, requested, expected):
     seen = _patch_client(monkeypatch, _mm_video_handler(["queued", "running", "succeeded"]))
     result = await _submit(
-        "minimax", "k", _MM_GLOBAL, "MiniMax-H3", "fox", "9:16", "1080p", 15, True,
+        "minimax", "k", _MM_GLOBAL, model, "fox", "9:16", requested, 15, True,
         "data:image/png;base64,AAA", str(tmp_path),
     )
     assert result.startswith("Video generated successfully!")
     assert (tmp_path / "video_T1.mp4").read_bytes() == _MP4
     body = _body(seen[0])
-    assert body["resolution"] == "2K" and body["duration"] == 15 and body["ratio"] == "9:16"
+    assert body["model"] == model
+    assert body["resolution"] == expected and body["duration"] == 15 and body["ratio"] == "9:16"
     assert body["content"][1]["role"] == "first_frame"
     assert "authorization" not in seen[-1].headers  # the pre-signed download must not carry the key
 

@@ -46,7 +46,7 @@ symphony:
 
   fingerprint:
     scan:
-      max_depth:
+      max_depth: 1
     extraction:
       workers: 4
       batch_size: 2
@@ -331,11 +331,6 @@ memory:
         # 可选覆盖（缺省复用顶层 embed 配置）
         embedder_dim: ${JIUWEN_EMBEDDER_DIM:-1024}     # 须与向量库 dim 一致
 
-proactive_recommendation:
-  enabled: false                # 总开关
-  max_recommend_per_day: 10               # 每天最多推荐次数
-  max_rounds_per_tick: 20                # 每次 Tick 读取最近几轮对话
-
 # 自建网关方言覆盖表：api_base 的 host -> agent-core endpoint_profile。
 # 自建推理服务（如 vLLM/SGLang 起的 DashScope 风格服务，思考开关认
 # enable_thinking / thinking_budget、忽略官方 thinking.type）无法从域名
@@ -345,6 +340,8 @@ proactive_recommendation:
 #   "10.0.0.1": "vllm"
 # 留空表示不做任何推断；模型条目里显式配置的 endpoint_profile 始终优先。
 endpoint_profile_overrides:
+
+multimodal: null
 
 models:
   defaults:
@@ -1580,7 +1577,7 @@ updater:
   # Fallback for whichever platform pattern above is left empty.
   asset_name_pattern: ""
   timeout_seconds: 20
-  pypi_mirror: "https://mirrors.aliyun.com/pypi"
+  pypi_mirror: "https://mirrors.aliyun.com/pypi/simple/"
 
 extensions:
   # 扩展包搜索目录（字符串），用 ';' 分割多个目录：

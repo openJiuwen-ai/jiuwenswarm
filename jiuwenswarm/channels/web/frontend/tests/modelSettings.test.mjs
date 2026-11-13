@@ -718,7 +718,9 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
   const operations = source('src/features/settings/modules/models/modelListOperations.ts');
   assert.match(page, /request<ModelResourceResult>\(\s*'models\.upsert'/);
   assert.match(page, /request\('models\.get', \{ model_id: nextDialog\.model\.model_id \}\)/);
-  assert.doesNotMatch(page, /models\.references|MODEL_SELECTION_REFERENCED/);
+  // References come back with a rejected delete; no separate references RPC.
+  assert.doesNotMatch(page, /models\.references/);
+  assert.match(page, /MODEL_SELECTION_REFERENCED/);
   assert.match(page, /formatModelSelectionReferenceScopes|extractModelSelectionReferences/);
   assert.match(page, /request\('models\.delete', \{ model_id: confirmation\.model\.model_id \}/);
   assert.doesNotMatch(page, /models\.replace_all/);
@@ -737,7 +739,7 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
   assert.match(page, /activeTab === 'jev'/);
   assert.match(page, /<JevSettings disabled=\{disabled\}/);
   assert.match(definition, /defaultModelSettingsTab: ModelSettingsTabId = 'models'/);
-  assert.match(tabLayout, /const \[activeTab, setActiveTab\] = useState<TabId>\(defaultTab\)/);
+  assert.match(tabLayout, /const \[activeTab, setActiveTab\] = useState<TabId>\(\(\) =>[\s\S]*?\?\? defaultTab,/);
   assert.match(tabLayout, /value: tab\.id,[\s\S]*label: t\(tab\.labelKey\)/);
   assert.match(tabLayout, /suffix: tab\.helpKey \? <HelpTips content=\{t\(tab\.helpKey\)\} size="large" \/> : undefined/);
   assert.match(page, /void loadCatalog\(\);[\s\S]{0,180}setDialog\(nextDialog\)/);

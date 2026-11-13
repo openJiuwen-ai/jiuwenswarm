@@ -1974,6 +1974,8 @@ async def test_config_save_handlers_respond_before_agent_reload_finishes(monkeyp
         ({"api_base": "https://example.com/one"}, {"API_BASE"}, ["model"]),
         ({"bocha_api_key": "test-key"}, {"BOCHA_API_KEY"}, ["search"]),
         ({"serper_api_key": ""}, {"SERPER_API_KEY"}, ["search"]),
+        ({"free_search_ddg_enabled": "true"}, {"FREE_SEARCH_DDG_ENABLED"}, ["search"]),
+        ({"free_search_bing_enabled": "true"}, {"FREE_SEARCH_BING_ENABLED"}, ["search"]),
         (
             {"bocha_api_key": "test-key", "vision_api_key": "test-vision-key"},
             {"BOCHA_API_KEY", "VISION_API_KEY"},
@@ -2418,8 +2420,9 @@ def test_task_chat_uses_general_asr_config_independent_from_joyai():
 async def test_task_asr_rpc_returns_transcript(monkeypatch):
     channel = FakeWebChannel()
 
-    async def fake_transcribe(params):
+    async def fake_transcribe(params, *, environ):
         assert params == {"audio_base64": "YXVkaW8=", "mime_type": "audio/webm"}
+        assert set(environ) == {"ASR_API_BASE", "ASR_API_KEY", "ASR_MODEL_NAME"}
         return "transcribed speech"
 
     monkeypatch.setattr(app_web_handlers, "transcribe_task_audio", fake_transcribe)

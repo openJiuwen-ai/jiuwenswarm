@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
 import { build } from 'esbuild';
+import { createInstance } from 'i18next';
 import { JSDOM } from 'jsdom';
 
 // Initialize the browser before ReactDOM loads so controlled input events use its browser path.
@@ -42,6 +43,7 @@ await build({
   platform: 'node',
   format: 'esm',
   packages: 'external',
+  define: { 'import.meta.env.DEV': 'false' },
   loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl' },
   plugins: [
     {
@@ -79,7 +81,6 @@ await build({
           './ExperimentalSettings': [
             'A2UISetting',
             'ExternalCliCustomAgentsItem',
-            'ProactiveLimitsSetting',
             'RSISetting',
             'TaskAsrSetting',
             'TaskFullDuplexSetting',
@@ -89,8 +90,10 @@ await build({
             .join('\n'),
           './A4PSettings': 'export const A4PSettings = () => null;',
           '../../../../assets/settings': 'export const settingsNavigationIcons = {experimental: () => null};',
-          'react-i18next':
-            'export const useTranslation = () => ({ t: (key) => key, i18n:{resolvedLanguage:"zh",language:"zh"} });',
+          'react-i18next': [
+            'export const initReactI18next = { type: "3rdParty", init() {} };',
+            'export const useTranslation = () => ({ t: (key, options) => globalThis.collaborationFixture?.translate?.(key, options) ?? key, i18n:{resolvedLanguage:"zh",language:"zh"} });',
+          ].join('\n'),
         };
         builder.onResolve({ filter: /.*/ }, (args) =>
           mocks[args.path] ? { path: args.path, namespace: 'mock' } : undefined,
@@ -165,7 +168,9 @@ async function mount(options, run) {
       throw new Error(`Unexpected RPC: ${method}`);
     },
   };
-  globalThis.collaborationFixture = { services, disabled: options.disabled ?? false, section: options.section };
+  globalThis.collaborationFixture = {
+    services, disabled: options.disabled ?? false, section: options.section, translate: options.translate,
+  };
   setMultiModelCollaborationEnabled(false);
   const root = createRoot(document.getElementById('root'));
   const render = () => act(async () => root.render(createElement(options.probe ? ConfigFixture : SettingsFixture)));
@@ -232,19 +237,33 @@ const configured = {
 for (const available of [undefined, 'false', false, 'true', true]) {
   test(`computer control remains visible and respects backend availability: ${available}`, async () => {
     await mount(
-      { section: 'computer-control', config: { cua_backend_available: available, cua_agent_enabled: 'true' } },
-      async ({ get, saves, click }) => {
+      {
+        section: 'computer-control',
+        config: {
+          cua_backend_available: available,
+          cua_backend_unavailable_reason: 'native_build_failed',
+          cua_agent_enabled: 'true',
+        },
+      },
+      async ({ get, saves, click, config }) => {
         const toggle = get('settings-switch', 'cua-agent-enabled');
-        assert.equal(toggle.getAttribute('aria-checked'), 'true');
-        await click('settings-switch', 'cua-agent-enabled');
-        assert.equal(toggle.getAttribute('aria-checked'), 'false');
         if (available !== true && available !== 'true') {
+          assert.equal(toggle.getAttribute('aria-checked'), 'true');
           assert.equal(toggle.disabled, true);
           assert.match(document.body.textContent, /cua_agent_enabled\.unavailableDescription/);
-          assert.deepEqual(saves, [{ cua_agent_enabled: 'false' }]);
+          assert.match(
+            get('settings-unavailable-switch').getAttribute('data-tooltip'),
+            /cua_agent_enabled\.unavailableReasons\.native_build_failed/,
+          );
+          await click('settings-switch', 'cua-agent-enabled');
+          assert.deepEqual(saves, []);
+          assert.equal(config().cua_agent_enabled, 'true');
           return;
         }
         assert.equal(toggle.disabled, false);
+        assert.equal(toggle.getAttribute('aria-checked'), 'true');
+        await click('settings-switch', 'cua-agent-enabled');
+        assert.equal(toggle.getAttribute('aria-checked'), 'false');
         await click('settings-switch', 'cua-agent-enabled');
         assert.equal(toggle.getAttribute('aria-checked'), 'true');
         assert.deepEqual(saves, [{ cua_agent_enabled: 'false' }, { cua_agent_enabled: 'true' }]);
@@ -252,6 +271,27 @@ for (const available of [undefined, 'false', false, 'true', true]) {
     );
   });
 }
+
+test('computer control localizes platform errors and falls back for unknown reasons', async () => {
+  for (const language of ['en', 'zh']) {
+    const translation = JSON.parse(fs.readFileSync(`src/i18n/locales/${language}.json`, 'utf8'));
+    const messages = translation.settingsPanel.fields.cua_agent_enabled;
+    const i18n = createInstance();
+    await i18n.init({ lng: language, resources: { [language]: { translation } } });
+    for (const [reason, expected] of [
+      ['unsupported_platform', messages.unavailableReasons.unsupported_platform],
+      ['future_reason', messages.unavailableDescription],
+    ]) {
+      await mount({
+        section: 'computer-control',
+        config: { cua_backend_available: 'false', cua_backend_unavailable_reason: reason },
+        translate: i18n.getFixedT(language),
+      }, async ({ get }) => {
+        assert.equal(get('settings-unavailable-switch').getAttribute('data-tooltip'), expected);
+      });
+    }
+  }
+});
 
 test('feature flag defaults off and accepts backend booleans', () => {
   setMultiModelCollaborationEnabled(undefined);
@@ -275,7 +315,6 @@ test('experimental sections retain their order with a single computer control se
     'kv-cache-affinity',
     'team-organization',
     'team-scheduled-dispatch',
-    'proactive-recommendation',
     'multi-model-collaboration',
     'tool-optimize',
     'computer-control',

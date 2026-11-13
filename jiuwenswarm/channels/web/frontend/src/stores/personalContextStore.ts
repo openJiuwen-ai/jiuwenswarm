@@ -27,6 +27,7 @@ const UNCONFIGURED: PersonalContextConfig = {
   collection_enabled: false,
   agent_use_enabled: false,
   strategy_profile: 'agent',
+  max_context_size_mb: 50,
   model_index: null,
   model_id: null,
   fetch_services: [],
@@ -54,6 +55,8 @@ interface PersonalContextState {
   statusReadGeneration: number;
   configAppliedGeneration: number;
   statusAppliedGeneration: number;
+  /** Successful capacity saves protect this field from older full-config replies. */
+  capacityWriteGeneration: number;
   /** 按字段记录正在提交中的写操作，用于禁用对应控件。 */
   pendingWrites: Record<string, boolean>;
 
@@ -75,6 +78,7 @@ interface PersonalContextState {
   /** 总开关（独立持久化）：开启=两个子开关都开，关闭=两个子开关都关；子开关切换不影响它。 */
   setMasterEnabled: (enabled: boolean) => Promise<void>;
   setStrategyProfile: (profile: PersonalContextConfig['strategy_profile']) => Promise<void>;
+  setMaxContextSize: (sizeMb: number) => Promise<void>;
   selectModel: (modelIndex: number) => Promise<void>;
 
   createService: (service: FetchServiceConfig) => Promise<void>;
@@ -98,6 +102,16 @@ interface PersonalContextState {
   isProviderAuthorized: (provider: FetchProvider) => boolean;
 }
 
+function preserveSavedCapacity(
+  config: PersonalContextConfig,
+  generationAtStart: number,
+  state: PersonalContextState,
+): PersonalContextConfig {
+  return state.capacityWriteGeneration === generationAtStart
+    ? config
+    : { ...config, max_context_size_mb: state.config.max_context_size_mb };
+}
+
 export const usePersonalContextStore = create<PersonalContextState>((set, get) => ({
   config: UNCONFIGURED,
   status: null,
@@ -116,11 +130,13 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
   statusReadGeneration: 0,
   configAppliedGeneration: 0,
   statusAppliedGeneration: 0,
+  capacityWriteGeneration: 0,
   pendingWrites: {},
 
   setInfoTab: (tab) => set({ infoTab: tab }),
 
   loadConfig: async () => {
+    const capacityGenerationAtStart = get().capacityWriteGeneration;
     const generationAtStart = get().switchWriteGeneration;
     const reconcile = get().configNeedsReconciliation;
     const configReadGeneration = get().configReadGeneration + 1;
@@ -142,10 +158,11 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
         const newerStatus = statusReadGeneration > state.statusAppliedGeneration;
         const confirmedStatus = newerStatus ? status : state.status;
         return {
-          config,
+          config: preserveSavedCapacity(config, capacityGenerationAtStart, state),
           configAppliedGeneration: configReadGeneration,
           ...(status && newerStatus ? { status, statusAppliedGeneration: statusReadGeneration } : {}),
           configNeedsReconciliation: state.configNeedsReconciliation && (
+            state.capacityWriteGeneration !== capacityGenerationAtStart ||
             !confirmedStatus || confirmedStatus.state === 'STOPPING'
           ),
         };
@@ -220,6 +237,7 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
 
   batchRefresh: async () => {
     // 开关请求结果不明时额外读取 Host 配置；正常轮询不增加配置请求。
+    const capacityGenerationAtStart = get().capacityWriteGeneration;
     const generationAtStart = get().switchWriteGeneration;
     const reconcile = get().configNeedsReconciliation;
     const configReadGeneration = get().configReadGeneration + (reconcile ? 1 : 0);
@@ -242,9 +260,13 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
         !state.pendingWrites.collection_enabled &&
         !state.pendingWrites.agent_use_enabled
           ? {
-              config: { ...config, fetch_services: services?.services ?? config.fetch_services },
+              config: {
+                ...preserveSavedCapacity(config, capacityGenerationAtStart, state),
+                fetch_services: services?.services ?? config.fetch_services,
+              },
               configAppliedGeneration: configReadGeneration,
-              configNeedsReconciliation: !confirmedStatus || confirmedStatus.state === 'STOPPING',
+              configNeedsReconciliation: state.capacityWriteGeneration !== capacityGenerationAtStart ||
+                !confirmedStatus || confirmedStatus.state === 'STOPPING',
             }
           : services
             ? { config: { ...state.config, fetch_services: services.services } }
@@ -262,6 +284,7 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
   },
 
   setEnabled: async (enabled) => {
+    const capacityGenerationAtStart = get().capacityWriteGeneration;
     set((state) => ({
       switchWriteGeneration: state.switchWriteGeneration + 1,
       pendingWrites: { ...state.pendingWrites, collection_enabled: true },
@@ -270,11 +293,13 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
     set({ config: { ...prev, collection_enabled: enabled } });
     try {
       const next = enabled ? await pcApi.startRuntime() : await pcApi.stopRuntime();
-      set({
-        config: next,
-        configNeedsReconciliation: false,
-        status: await pcApi.getStatus().catch(() => get().status),
-      });
+      const status = await pcApi.getStatus().catch(() => get().status);
+      set((state) => ({
+        config: preserveSavedCapacity(next, capacityGenerationAtStart, state),
+        configNeedsReconciliation: state.configNeedsReconciliation &&
+          state.capacityWriteGeneration !== capacityGenerationAtStart,
+        status,
+      }));
     } catch (e) {
       get().reconcileConfig();
       throw e;
@@ -287,6 +312,7 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
     // 总开关联动两个子开关，由后端一次 RPC 原子持久化，避免中间状态落盘不一致。前端仍做
     // 乐观更新 + pendingWrites（对齐 setEnabled/setAgentUseEnabled）：切换期间主/子开关都进入
     // 禁用态，失败回滚乐观翻转。
+    const capacityGenerationAtStart = get().capacityWriteGeneration;
     set((state) => ({
       switchWriteGeneration: state.switchWriteGeneration + 1,
       pendingWrites: {
@@ -306,11 +332,13 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
     });
     try {
       const next = await pcApi.setMasterEnabled(enabled);
-      set({
-        config: next,
-        configNeedsReconciliation: false,
-        status: await pcApi.getStatus().catch(() => get().status),
-      });
+      const status = await pcApi.getStatus().catch(() => get().status);
+      set((state) => ({
+        config: preserveSavedCapacity(next, capacityGenerationAtStart, state),
+        configNeedsReconciliation: state.configNeedsReconciliation &&
+          state.capacityWriteGeneration !== capacityGenerationAtStart,
+        status,
+      }));
     } catch (e) {
       get().reconcileConfig();
       throw e;
@@ -326,14 +354,16 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
   },
 
   setAgentUseEnabled: async (enabled) => {
+    const capacityGenerationAtStart = get().capacityWriteGeneration;
     set({ pendingWrites: { ...get().pendingWrites, agent_use_enabled: true } });
     const prev = get().config;
     set({ config: { ...prev, agent_use_enabled: enabled } });
     try {
       const next = enabled ? await pcApi.startAgentUse() : await pcApi.stopAgentUse();
-      set({ config: next, status: await pcApi.getStatus().catch(() => get().status) });
+      const status = await pcApi.getStatus().catch(() => get().status);
+      set((state) => ({ config: preserveSavedCapacity(next, capacityGenerationAtStart, state), status }));
     } catch (e) {
-      set({ config: prev });
+      set((state) => ({ config: preserveSavedCapacity(prev, capacityGenerationAtStart, state) }));
       throw e;
     } finally {
       set({ pendingWrites: { ...get().pendingWrites, agent_use_enabled: false } });
@@ -341,29 +371,49 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
   },
 
   setStrategyProfile: async (profile) => {
+    const capacityGenerationAtStart = get().capacityWriteGeneration;
     set({ pendingWrites: { ...get().pendingWrites, strategy_profile: true } });
     const prev = get().config;
     set({ config: { ...prev, strategy_profile: profile } });
     try {
       const next = await pcApi.patchConfig({ strategy_profile: profile });
-      set({ config: next });
+      set((state) => ({ config: preserveSavedCapacity(next, capacityGenerationAtStart, state) }));
     } catch (e) {
-      set({ config: prev });
+      set((state) => ({ config: preserveSavedCapacity(prev, capacityGenerationAtStart, state) }));
       throw e;
     } finally {
       set({ pendingWrites: { ...get().pendingWrites, strategy_profile: false } });
     }
   },
 
+  setMaxContextSize: async (sizeMb) => {
+    set({ pendingWrites: { ...get().pendingWrites, max_context_size_mb: true } });
+    try {
+      const next = await pcApi.patchConfig({ max_context_size_mb: sizeMb });
+      set((state) => ({
+        config: { ...state.config, max_context_size_mb: next.max_context_size_mb },
+        capacityWriteGeneration: state.capacityWriteGeneration + 1,
+      }));
+    } catch (e) {
+      // The Host may have committed even when its response was lost.
+      set((state) => ({ capacityWriteGeneration: state.capacityWriteGeneration + 1 }));
+      get().reconcileConfig();
+      throw e;
+    } finally {
+      set({ pendingWrites: { ...get().pendingWrites, max_context_size_mb: false } });
+    }
+  },
+
   selectModel: async (modelIndex) => {
+    const capacityGenerationAtStart = get().capacityWriteGeneration;
     set({ pendingWrites: { ...get().pendingWrites, model_index: true } });
     const prev = get().config;
     set({ config: { ...prev, model_index: modelIndex } });
     try {
       const next = await pcApi.selectModel(modelIndex);
-      set({ config: next });
+      set((state) => ({ config: preserveSavedCapacity(next, capacityGenerationAtStart, state) }));
     } catch (e) {
-      set({ config: prev });
+      set((state) => ({ config: preserveSavedCapacity(prev, capacityGenerationAtStart, state) }));
       throw e;
     } finally {
       set({ pendingWrites: { ...get().pendingWrites, model_index: false } });
@@ -418,6 +468,7 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
   },
 
   setServiceEnabled: async (serviceId, enabled) => {
+    const capacityGenerationAtStart = get().capacityWriteGeneration;
     set({ pendingWrites: { ...get().pendingWrites, [`svc:${serviceId}`]: true } });
     const prev = get().config;
     // 乐观翻转单个服务 enabled
@@ -434,7 +485,7 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
       else await pcApi.stopService(serviceId);
       await get().loadServices();
     } catch (e) {
-      set({ config: prev });
+      set((state) => ({ config: preserveSavedCapacity(prev, capacityGenerationAtStart, state) }));
       throw e;
     } finally {
       const next = { ...get().pendingWrites };

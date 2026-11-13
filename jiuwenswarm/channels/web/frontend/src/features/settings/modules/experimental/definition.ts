@@ -3,7 +3,6 @@ import type { SettingsModuleDefinition } from '../../registry/types';
 import {
   A2UISetting,
   ExternalCliCustomAgentsItem,
-  ProactiveLimitsSetting,
   RSISetting,
   TaskAsrSetting,
   TaskFullDuplexSetting,
@@ -105,22 +104,6 @@ export const experimentalModule: SettingsModuleDefinition = {
       ],
     },
     {
-      id: 'proactive-recommendation',
-      titleKey: 'settingsPanel.experimental.proactive',
-      items: [
-        {
-          id: 'proactive-recommendation',
-          component: 'switch',
-          key: 'proactive_recommendation_enabled',
-          subItems: {
-            show: 'always',
-            disabled: 'when-parent-unchecked',
-            items: [{ id: 'proactive-limits', component: 'custom', render: ProactiveLimitsSetting }],
-          },
-        },
-      ],
-    },
-    {
       id: 'multi-model-collaboration',
       titleKey: 'settingsPanel.experimental.multiModelCollaboration',
       items: [
@@ -159,6 +142,7 @@ export const experimentalModule: SettingsModuleDefinition = {
           component: 'switch',
           key: 'cua_agent_enabled',
           availableWhen: 'cua_backend_available',
+          unavailableReasonKey: 'cua_backend_unavailable_reason',
         },
       ],
     },

@@ -6,12 +6,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, NamedTuple
+
+logger = logging.getLogger(__name__)
 
 from jiuwenswarm.agents.harness.common.recommendation.topic_history import (
     apply_negative_preferences,
@@ -867,13 +870,21 @@ class BackgroundGenerationCoordinator:
             )
             if not write_result:
                 writer_reason = str(getattr(write_result, "reason", "") or "")
+                reject_reason = result.failure_reason or writer_reason
+                # Events alone are easy to miss in full.log when diagnosing
+                # "homepage stuck on cold corpus" — surface the write gate too.
+                logger.warning(
+                    "[Topic] background pool write rejected attempt=%s reason=%s",
+                    generation_attempt_id,
+                    reject_reason or "unknown",
+                )
                 # With no pool written, what RID let through is recorded here.
                 rid_result = result.manifest.get("rid_result")
                 self.record_generation_event(
                     "background_generation_rejected",
                     trigger_key,
                     generation_attempt_id=generation_attempt_id,
-                    reason=result.failure_reason or writer_reason,
+                    reason=reject_reason,
                     grounding_decision_receipt=grounding_decision_receipt,
                     grounding_evidence_receipt=grounding_evidence_receipt,
                     external_invocation_audit=external_invocation_audit,

@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 import aiofiles.os
 import yaml
 
+from jiuwenswarm.common.filesystem_paths import extended_path
 from jiuwenswarm.common.utils import (
     get_agent_skills_dir,
     get_agent_workspace_dir,
@@ -33,6 +34,7 @@ from jiuwenswarm.common.utils import (
     mask_sensitive,
 )
 from jiuwenswarm.server.runtime.mcp.state_store import get_mcp_record
+from jiuwenswarm.server.runtime.package_avatars import resolve_package_avatar_url
 from jiuwenswarm.server.runtime.marketplace.hub_asset_installer import (
     install_hub_asset_package,
 )
@@ -2099,6 +2101,7 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def _assert_no_symlinks(src: Path) -> None:
     """Reject a package subtree containing any symbolic link."""
+    src = Path(extended_path(src))
     if src.is_symlink():
         raise ValueError(f"symbolic links are not allowed in package: {src.name}")
     try:
@@ -2112,7 +2115,7 @@ def _assert_no_symlinks(src: Path) -> None:
 def _copytree_without_symlinks(src: Path, dst: Path) -> None:
     """Copy a package subtree after rejecting every symbolic link."""
     _assert_no_symlinks(src)
-    shutil.copytree(src, dst)
+    shutil.copytree(extended_path(src), extended_path(dst))
 
 
 def _lifecycle_package_id(params: dict, kind: str) -> str:
@@ -2537,7 +2540,7 @@ async def list_agent_groups_with_hub(
                 "displayName": _i18n(item.display_name, item.package_name or item.asset_id),
                 "displayDescription": _i18n(item.short_description),
                 "category": item.category_name or existing.get("category", ""),
-                "avatar": item.icon_uri,
+                "avatar": resolve_package_avatar_url(item.icon_uri),
                 "tags": [_i18n(tag, tag) for tag in item.tags],
                 "version": item.public_latest_version,
             }
@@ -2550,7 +2553,7 @@ async def list_agent_groups_with_hub(
             "category": item.category_name,
             "source": "hub",
             "installed": False,
-            "avatar": item.icon_uri,
+            "avatar": resolve_package_avatar_url(item.icon_uri),
             "tags": [_i18n(tag, tag) for tag in item.tags],
             "version": item.public_latest_version,
             "memberCount": 0,
@@ -2652,7 +2655,7 @@ def _build_agent_group_card(
                 "displayName": _i18n(raw_display_name, display_name_fallback),
                 "displayDescription": _i18n(template.agent_card.description),
                 "role": "leader" if member_id == "leader" else "member",
-                "avatar": _safe_avatar_reference(
+                "avatar": resolve_package_avatar_url(
                     member_card.avatar if member_card is not None else None,
                     package_dir=package_dir / "agents" / member_id,
                 ),
@@ -2692,7 +2695,7 @@ def _build_agent_group_card(
         "tags": tags if isinstance(tags, list) else [],
         "source": source,
         "installed": installed,
-        "avatar": _safe_avatar_reference(manifest.get("avatar"), package_dir=package_dir),
+        "avatar": resolve_package_avatar_url(manifest.get("avatar"), package_dir=package_dir),
         "memberCount": len(members),
         "members": members,
         "skills": skills,
@@ -2809,7 +2812,7 @@ async def show_agent_group_with_hub(
         "category": "",
         "source": "hub",
         "installed": False,
-        "avatar": detail.icon_uri,
+        "avatar": resolve_package_avatar_url(detail.icon_uri),
         "tags": [_i18n(tag, tag) for tag in detail.tags],
         "version": detail.version,
         "memberCount": 0,
@@ -4043,6 +4046,7 @@ def _agent_template_source(package_id: str, *, role: str) -> Path:
     if resolved is None:
         raise AgentGroupPackageError(f"{role} agent_template not found: {package_id}", "AGENT_GROUP_MEMBER_NOT_FOUND")
     package_dir, _ = resolved
+    package_dir = Path(extended_path(package_dir))
     manifest = _read_package_manifest(package_dir)
     if manifest is None or manifest.get("package_type") != "agent_template":
         raise AgentGroupPackageError(f"{role} agent_template is invalid: {package_id}", "AGENT_GROUP_TEMPLATE_INVALID")
@@ -4101,8 +4105,10 @@ def create_agent_group(params: dict) -> dict:
     )
     _assert_agent_group_name_available(name)
 
+    # Keep the prefix through validation, atomic commit and rollback, not just copytree.
+    local_root = Path(extended_path(local_root))
     local_root.mkdir(parents=True, exist_ok=True)
-    container = Path(tempfile.mkdtemp(prefix=".agent_group_create_", dir=local_root))
+    container = Path(tempfile.mkdtemp(prefix=".ag_", dir=local_root))
     stage = container / package_id
     destination = local_root / package_id
     try:
@@ -4621,7 +4627,7 @@ def install_agent_group(params: dict) -> None:
         raise ValueError(f"agent_group package not found: {package_id}")
     package_dir, _ = resolved
     _assert_no_symlinks(package_dir)
-    load_agent_group_package(package_dir)
+    load_agent_group_package(Path(extended_path(package_dir)))
     _install_package(
         package_id,
         kind=_AGENT_GROUP_KIND,
@@ -4758,6 +4764,7 @@ def _locate_user_package_dir(
 
 def _rmtree(path: Path, *, retries: int = 6, delay: float = 0.5) -> None:
     """Delete directory; retry on transient file lock."""
+    path = Path(extended_path(path))
     for attempt in range(retries):
         try:
             shutil.rmtree(path)

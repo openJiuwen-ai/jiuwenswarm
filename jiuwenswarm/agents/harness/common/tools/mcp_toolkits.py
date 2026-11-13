@@ -27,18 +27,21 @@ def track_mcp_search_tools(ability_manager) -> None:
 
 
 def refresh_mcp_paid_search_tools() -> None:
-    """Refresh provider choices and reconcile registration in live subagents."""
+    """Refresh paid and free search registration; retain the legacy reload entry."""
     refresh_paid_search_metadata()
-    enabled = _has_paid_search_api_key()
     managers = list(_SEARCH_ABILITY_MANAGERS)
-    if enabled and managers:
-        Runner.resource_mgr.add_tool(mcp_paid_search, skip_if_exists=True)
-    for manager in managers:
-        current = manager.get(mcp_paid_search.card.name)
-        if enabled and current is None:
-            manager.add(mcp_paid_search.card)
-        elif not enabled and current is not None:
-            manager.remove(mcp_paid_search.card.name)
+    for tool, enabled in (
+        (mcp_paid_search, _has_paid_search_api_key()),
+        (mcp_free_search, _is_free_search_enabled()),
+    ):
+        if enabled and managers:
+            Runner.resource_mgr.add_tool(tool, skip_if_exists=True)
+        for manager in managers:
+            current = manager.get(tool.card.name)
+            if enabled and current is None:
+                manager.add(tool.card)
+            elif not enabled and current is not None:
+                manager.remove(tool.card.name)
 
 
 def _has_paid_search_api_key() -> bool:

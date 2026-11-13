@@ -1177,3 +1177,74 @@ async def test_real_websocket_send_backpressure_reports_send_timeout(
                     ),
                     encoding="utf-8",
                 )
+
+
+@pytest.mark.asyncio
+@pytest.mark.slow
+@pytest.mark.parametrize("method", ["project.list", "project.get_cron_sessions", "session.list"])
+async def test_slow_front_query_keeps_real_worker_stream_consuming(tmp_path, monkeypatch, method):
+    import psutil
+    from websockets.asyncio.client import connect
+
+    from jiuwenswarm.server.control.repositories import project_repository, session_repository
+    from jiuwenswarm.server.front.admission import ExecutionAdmission
+    from jiuwenswarm.server.front.router import MethodRouter
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_project(*_args):
+        started.set()
+        release.wait(20)
+        return {"projects": [], "sessions": [], "total": 0}, None, None
+
+    def slow_sessions(limit=20, offset=0):
+        started.set()
+        release.wait(20)
+        return [], 0
+
+    monkeypatch.setattr(project_repository, "load_project_list", slow_project)
+    monkeypatch.setattr(project_repository, "load_project_cron_sessions", slow_project)
+    monkeypatch.setattr(session_repository, "get_all_sessions_metadata", slow_sessions)
+    async with _worker("normal", tmp_path, monkeypatch) as (supervisor, process):
+        pid = supervisor.worker_pid
+        created = psutil.Process(pid).create_time()
+        router = MethodRouter(supervisor._readiness, ExecutionAdmission(supervisor._readiness))
+
+        class QuerySocket:
+            async def send(self, _value):
+                pass
+
+        request = AgentRequest(request_id="slow-list", channel_id="web",
+            req_method=ReqMethod(method), params={"project_id": "default"})
+        query = None
+        async with _gateway(supervisor) as (url, gateway, attached):
+            async with connect(url, max_size=None) as client:
+                await asyncio.wait_for(attached.wait(), 2)
+                traffic = asyncio.create_task(_traffic(supervisor, gateway, client, 320))
+                try:
+                    await asyncio.sleep(0.05)
+                    query = asyncio.create_task(router.dispatch(QuerySocket(), request, asyncio.Lock()))
+                    async with asyncio.timeout(2):
+                        while not started.is_set():
+                            await asyncio.sleep(0.005)
+                    assert not query.done(), "The Front query blocked its own event loop"
+                    await traffic
+                    assert not query.done(), "Streaming must finish while the query is still pending"
+                    assert supervisor.worker_pid == pid
+                    assert psutil.Process(pid).create_time() == created
+                    assert supervisor._restart_count == 0
+                    assert not supervisor._fatal
+                finally:
+                    release.set()
+                    traffic.cancel()
+                    await asyncio.gather(traffic, return_exceptions=True)
+                    if query is not None:
+                        await query
+    assert process.returncode == 0
+    (tmp_path / "acceptance.json").write_text(json.dumps({
+        "method": method, "worker_pid": pid, "worker_created": created,
+        "same_worker": True, "ordered_frames_while_query_pending": 320,
+        "worker_restarts": 0, "worker_exit_code": process.returncode,
+    }, indent=2), encoding="utf-8")
+

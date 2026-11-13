@@ -48,12 +48,14 @@ await build({
         `,
           ],
         ]);
+        builder.onResolve({ filter: /\.svg\?react$/ }, () => ({ path: 'icon', namespace: 'pc-run-state-test' }));
         builder.onResolve({ filter: /\.(svg|png)$/ }, () => ({ path: 'asset', namespace: 'pc-run-state-test' }));
         builder.onResolve({ filter: /.*/ }, (args) =>
           dependencies.has(args.path) ? { path: args.path, namespace: 'pc-run-state-test' } : null,
         );
         builder.onLoad({ filter: /.*/, namespace: 'pc-run-state-test' }, (args) => ({
-          contents: args.path === 'asset' ? 'export default "";' : dependencies.get(args.path),
+          contents: args.path === 'icon' ? 'export default function Icon() { return null; }' :
+            args.path === 'asset' ? 'export default "";' : dependencies.get(args.path),
           loader: 'js',
         }));
       },
@@ -166,6 +168,21 @@ test('a new request does not display the previous completed run', async () => {
 
 test('a genuinely completed empty run still displays completion', async () => {
   assert.equal((await renderStatus({ runState: 'succeeded' })).card, 'personalContext.services.stateCompleted');
+});
+
+test('capacity results remain visible for unchanged collection and do not overwrite collection status', async () => {
+  const result = {
+    no_new_content: true,
+    capacity_maintenance: { status: 'succeeded', removed_count: 3 },
+  };
+  const card = await renderStatus({ runState: 'succeeded', result });
+  assert.equal(card.card, 'personalContext.services.stateCompleted');
+  assert.equal(card.result, 'personalContext.services.noNewContent · personalContext.services.capacityRemoved:3');
+  for (const status of ['failed', 'over_limit']) {
+    const incomplete = await renderStatus({ runState: 'succeeded', result: { capacity_maintenance: { status } } });
+    assert.equal(incomplete.card, 'personalContext.services.stateCompleted');
+    assert.equal(incomplete.result, 'personalContext.services.capacityIncomplete');
+  }
 });
 
 test('a partial run reports completed and failed item counts', async () => {

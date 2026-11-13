@@ -36,6 +36,7 @@ UNCONFIGURED_PROJECTION = {
     "collection_enabled": False,
     "agent_use_enabled": False,
     "strategy_profile": "rules",
+    "max_context_size_mb": 50,
     "max_pages_per_directory": 20,
     "max_subdirectories_per_directory": 20,
     "model_index": None,
@@ -485,6 +486,13 @@ def fake_host(
     return host, fake
 
 
+@pytest.fixture(autouse=True)
+def _isolate_host_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Model-specific tests override this fixture with their own explicit entries.
+    # Host unit tests must not read a developer's credentials or provider registry.
+    _pin_models(monkeypatch, [])
+
+
 def test_host_module_imports_only_personal_context_from_core() -> None:
     tree = ast.parse(HOST_API_PATH.read_text(encoding="utf-8"))
     imported: list[str] = []
@@ -537,6 +545,57 @@ def test_constructor_does_not_read_or_write_yaml(tmp_path: Path) -> None:
     assert not home.exists()
     assert not (home / "personal_context.yaml").exists()
     assert host._config is None
+
+
+@pytest.mark.asyncio
+async def test_capacity_patch_is_persistent_hot_update_during_fetch(fake_host, tmp_path):
+    host, core = fake_host
+    await host.configure(_config(enabled=True, root_dir=tmp_path))
+    core.snapshot_result = SimpleNamespace(
+        state="RUNNING", fetch_service_states={"local-notes": "RUNNING"},
+        fetch_run_progress={"local-notes": {"run_state": "running"}},
+    )
+    root = host._home / "workspace/context"
+    root.mkdir(parents=True)
+    page = root / "keep.md"
+    page.write_text("Keep until the next completed collection", encoding="utf-8")
+    core.calls.clear()
+    result = await host.patch_runtime_config({"max_context_size_mb": 10})
+    assert result["max_context_size_mb"] == 10
+    assert [call[0] for call in core.calls] == ["snapshot", "set_configuration"]
+    assert core.configured.max_context_size_mb == 10
+    stored = yaml.safe_load(host._config_path.read_text(encoding="utf-8"))
+    assert stored["max_context_size_mb"] == 10
+    assert host_module._prepare_stored_config(stored)[1].max_context_size_mb == 10
+    assert page.read_text(encoding="utf-8") == "Keep until the next completed collection"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [9, 10001, 10.5, "50", True, None])
+async def test_invalid_capacity_patch_preserves_yaml_and_runtime(fake_host, tmp_path, value):
+    host, core = fake_host
+    await host.configure(_config(enabled=False, root_dir=tmp_path))
+    original = host._config_path.read_bytes()
+    core.calls.clear()
+    with pytest.raises(PersonalContext.Error):
+        await host.patch_runtime_config({"max_context_size_mb": value})
+    assert core.calls == []
+    assert host._config_path.read_bytes() == original
+
+
+@pytest.mark.asyncio
+async def test_capacity_hot_update_rolls_back_on_yaml_failure(fake_host, tmp_path, monkeypatch):
+    host, core = fake_host
+    await host.configure(_config(enabled=False, root_dir=tmp_path))
+    original = host._config_path.read_bytes()
+    def fail_replace(*_args):
+        raise OSError("simulated replace failure")
+    monkeypatch.setattr(host_module, "_replace_yaml", fail_replace)
+    with pytest.raises(PersonalContext.Error):
+        await host.patch_runtime_config({"max_context_size_mb": 10})
+    assert core.configured.max_context_size_mb == 50
+    assert host._config.max_context_size_mb == 50
+    assert host._config_path.read_bytes() == original
 
 
 @pytest.mark.parametrize(
@@ -1427,6 +1486,7 @@ async def test_repository_pat_first_authorization_creates_minimal_stopped_config
         "model_index": None,
         "model_id": None,
         "provider_credentials": {"github": {"token": "first-token"}},
+        "max_context_size_mb": 50,
     }
     assert "provider_credentials" not in await host.get_runtime_config()
 

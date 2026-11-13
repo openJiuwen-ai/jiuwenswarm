@@ -795,32 +795,23 @@ async def test_graph_stream_is_bounded_ordered_and_final(
 
     assert host.calls == [("get_graph", (None, 3))]
     assert [frame["sequence"] for frame in ws.sent] == list(range(7))
-    assert [frame["is_final"] for frame in ws.sent] == [
-        False,
-        False,
-        False,
-        False,
-        False,
-        False,
-        True,
-    ]
+    assert [frame["is_final"] for frame in ws.sent] == [False] * 6 + [True]
     events = [
         frame["body"]["result"] if frame["is_final"] else frame["body"]["delta"]
         for frame in ws.sent
     ]
-    assert [event["event_type"] for event in events] == [
-        "personal_context.context.start",
-        "personal_context.context.nodes",
-        "personal_context.context.nodes",
-        "personal_context.context.nodes",
-        "personal_context.context.edges",
-        "personal_context.context.edges",
-        "personal_context.context.end",
-    ]
+    assert [event["event_type"] for event in events] == (
+        ["personal_context.context.start"]
+        + ["personal_context.context.nodes"] * 3
+        + ["personal_context.context.edges"] * 2
+        + ["personal_context.context.end"]
+    )
     assert events[0]["root_id"] is None
     assert events[0]["depth"] == 3
     assert all(len(event.get("nodes", [])) <= 200 for event in events)
     assert all(len(event.get("edges", [])) <= 200 for event in events)
+    assert [node for event in events for node in event.get("nodes", [])] == host.graph["nodes"]
+    assert [edge for event in events for edge in event.get("edges", [])] == host.graph["edges"]
     assert events[-1]["node_count"] == 450
     assert events[-1]["edge_count"] == 250
 

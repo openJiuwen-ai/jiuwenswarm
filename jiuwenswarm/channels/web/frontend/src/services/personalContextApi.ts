@@ -59,6 +59,15 @@ export type FetchRunProgress = {
   created_node_count?: number;
   updated_node_count?: number;
   no_new_content?: boolean;
+  capacity_maintenance?: {
+    status: 'succeeded' | 'over_limit' | 'failed';
+    limit_bytes?: number;
+    before_bytes?: number;
+    after_bytes?: number;
+    removed_count?: number;
+    oversized_count?: number;
+    reason?: string;
+  };
 };
 
 /** get_fetch_run_status 返回的单次运行记录；终端记录会保留 run_id 和起止时间。 */
@@ -183,6 +192,7 @@ export type PersonalContextConfig = {
   collection_enabled: boolean;
   agent_use_enabled: boolean;
   strategy_profile: StrategyProfile;
+  max_context_size_mb: number;
   model_index: number | null;
   model_id: string | null;
   fetch_services: FetchServiceConfig[];
@@ -324,7 +334,7 @@ export const pcApi = {
   getConfig: () =>
     webRequest<PersonalContextConfig>('personal_context.runtime.get_config'),
 
-  patchConfig: (patch: { strategy_profile?: StrategyProfile }) =>
+  patchConfig: (patch: { strategy_profile?: StrategyProfile; max_context_size_mb?: number }) =>
     webRequest<PersonalContextConfig>(
       'personal_context.runtime.patch_config',
       { patch },

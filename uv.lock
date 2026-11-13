@@ -16,12 +16,12 @@ resolution-markers = [
 
 [manifest]
 overrides = [
-    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2f4bedb9c5d85ab70d7c79d36183e6a98799e94e" },
-    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2f4bedb9c5d85ab70d7c79d36183e6a98799e94e" },
-    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2f4bedb9c5d85ab70d7c79d36183e6a98799e94e" },
-    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2f4bedb9c5d85ab70d7c79d36183e6a98799e94e" },
-    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2f4bedb9c5d85ab70d7c79d36183e6a98799e94e" },
-    { name = "openjiuwen-protocol", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=cbbadde9101db6e3d75e4ef2b9bdb6029fd92088" },
+    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=93b86fb823d578bb1df565762e7228edd154b9ea" },
+    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=93b86fb823d578bb1df565762e7228edd154b9ea" },
+    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=93b86fb823d578bb1df565762e7228edd154b9ea" },
+    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=93b86fb823d578bb1df565762e7228edd154b9ea" },
+    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=93b86fb823d578bb1df565762e7228edd154b9ea" },
+    { name = "openjiuwen-protocol", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=267c077fa832b25f7f64a913461c2124353bc911" },
 ]
 
 [[package]]
@@ -67,18 +67,22 @@ wheels = [
 
 [[package]]
 name = "a4p"
-version = "0.2.0"
-source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=A4P&rev=agent-protocol-V0.2.0#1699ea352a08430731c6dddac0fc46a1b1a385f2" }
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
     { name = "tzdata" },
     { name = "webauthn" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/dd/56/990aadd530a090214672383f12ed19ecc1bdba8fa5d9b0dfcfdb7f478f2e/a4p-0.1.0.tar.gz", hash = "sha256:be31abf1d6a2ccb1df01c4e06e1751901484b73d55d349ef9cbc08b670df016c", size = 165412, upload-time = "2026-11-02T03:43:05.09Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e3/a4/4d6e72e03c10d4aa0ffbbe4ef540b73855161ad5aaad87aaa85e31cf026f/a4p-0.1.0-py3-none-any.whl", hash = "sha256:14301d161a7626754f905cbccb519f4138bf2cfd1313182f6d3501c311b8bde6", size = 50090, upload-time = "2026-11-02T03:43:02.982Z" },
+]
 
 [[package]]
 name = "agent-gateway"
 version = "0.0.1"
-source = { git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=c58015934303d11b17c5eec9c3c24b7c71fc9614#c58015934303d11b17c5eec9c3c24b7c71fc9614" }
+source = { git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=ae0b8c085d61f35542b411196f1246701b7e4e78#ae0b8c085d61f35542b411196f1246701b7e4e78" }
 dependencies = [
     { name = "aiohttp" },
     { name = "aiosqlite" },
@@ -3158,6 +3162,19 @@ wheels = [
 ]
 
 [[package]]
+name = "markdownify"
+version = "1.2.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "beautifulsoup4" },
+    { name = "six" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/92/ab/d1297139c0e2ceb151ae564c8c4f57ac0155d8f1f8b4cbd5d6523c82ea36/markdownify-1.2.3.tar.gz", hash = "sha256:1a176f05522c8a2cb1dd3ab9d307dcdadbed5c26ae717855bfc42b3b6d38d937", size = 18852, upload-time = "2026-06-30T20:27:39.06Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/04/10/fa543d484e8b1199243fe20eedd02cc5af050edebce98a7293a5773df592/markdownify-1.2.3-py3-none-any.whl", hash = "sha256:a189a0bedfd14009030fde5f85bb6f77c56897cb839b5c25315dd7d4e3e290ba", size = 15732, upload-time = "2026-06-30T20:27:38.094Z" },
+]
+
+[[package]]
 name = "markupsafe"
 version = "3.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -3851,7 +3868,7 @@ wheels = [
 [[package]]
 name = "openjiuwen"
 version = "0.1.20"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2f4bedb9c5d85ab70d7c79d36183e6a98799e94e#2f4bedb9c5d85ab70d7c79d36183e6a98799e94e" }
+source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=93b86fb823d578bb1df565762e7228edd154b9ea#93b86fb823d578bb1df565762e7228edd154b9ea" }
 dependencies = [
     { name = "agentdescent" },
     { name = "aiofiles" },
@@ -3871,6 +3888,7 @@ dependencies = [
     { name = "json-repair" },
     { name = "loguru" },
     { name = "markdown-it-py" },
+    { name = "markdownify" },
     { name = "matplotlib" },
     { name = "mcp" },
     { name = "mermaid-py" },
@@ -3892,6 +3910,8 @@ dependencies = [
     { name = "python-dateutil" },
     { name = "python-docx" },
     { name = "python-dotenv" },
+    { name = "python-pptx" },
+    { name = "pyxlsb" },
     { name = "pyyaml" },
     { name = "requests" },
     { name = "sqlalchemy", extra = ["asyncio"] },
@@ -3900,6 +3920,7 @@ dependencies = [
     { name = "tiktoken" },
     { name = "trafilatura" },
     { name = "transformers" },
+    { name = "xlrd" },
 ]
 
 [package.optional-dependencies]
@@ -3926,7 +3947,7 @@ zmq = [
 [[package]]
 name = "openjiuwen-computeruse"
 version = "0.0.1"
-source = { git = "https://gitcode.com/openJiuwen/computer-use.git?rev=dd2cd5317bbe4cfaaa3bdfb2c3ba91c083136790#dd2cd5317bbe4cfaaa3bdfb2c3ba91c083136790" }
+source = { git = "https://gitcode.com/openJiuwen/computer-use.git?rev=2c8171fb6783dba589dd396263b3161186c5f3e4#2c8171fb6783dba589dd396263b3161186c5f3e4" }
 dependencies = [
     { name = "pillow" },
     { name = "regex" },
@@ -3935,7 +3956,7 @@ dependencies = [
 [[package]]
 name = "openjiuwen-protocol"
 version = "0.1.0"
-source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=cbbadde9101db6e3d75e4ef2b9bdb6029fd92088#cbbadde9101db6e3d75e4ef2b9bdb6029fd92088" }
+source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=267c077fa832b25f7f64a913461c2124353bc911#267c077fa832b25f7f64a913461c2124353bc911" }
 
 [[package]]
 name = "openjiuwen-runtime-foundation"
@@ -5776,6 +5797,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pyxlsb"
+version = "1.0.10"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/3f/13/eebaeb7a40b062d1c6f7f91d09e73d30a69e33e4baa7cbe4b7658548b1cd/pyxlsb-1.0.10.tar.gz", hash = "sha256:8062d1ea8626d3f1980e8b1cfe91a4483747449242ecb61013bc2df85435f685", size = 22424, upload-time = "2022-10-14T19:17:47.308Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7e/92/345823838ae367c59b63e03aef9c331f485370f9df6d049256a61a28f06d/pyxlsb-1.0.10-py2.py3-none-any.whl", hash = "sha256:87c122a9a622e35ca5e741d2e541201d28af00fb46bec492cfa9586890b120b4", size = 23849, upload-time = "2022-10-14T19:17:46.079Z" },
+]
+
+[[package]]
 name = "pyyaml"
 version = "6.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -7144,6 +7174,18 @@ wheels = [
 ]
 
 [[package]]
+name = "wheel"
+version = "0.48.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d0/20/50ed6bdf27dec98b568a8ae25dc599f35baa3d9709f9e83fd1edb56b9a90/wheel-0.48.0.tar.gz", hash = "sha256:94800765601e9171bf5d58d066e640662842bcedcbab982b2c90787a2c987322", size = 66471, upload-time = "2026-08-11T22:02:27.327Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2e/29/69cfbb602cd91690c55d38ba9fe53e6a7e76a6fa647bf38f19c138d25449/wheel-0.48.0-py3-none-any.whl", hash = "sha256:3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab", size = 33320, upload-time = "2026-08-11T22:02:26.1Z" },
+]
+
+[[package]]
 name = "win32-setctime"
 version = "1.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -7241,6 +7283,7 @@ desktop = [
     { name = "pywebview" },
 ]
 dev = [
+    { name = "packaging" },
     { name = "pyinstaller" },
     { name = "pywebview" },
 ]
@@ -7293,6 +7336,7 @@ test = [
     { name = "asyncssh" },
     { name = "coverage" },
     { name = "cryptography" },
+    { name = "packaging" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -7300,6 +7344,8 @@ test = [
     { name = "pytest-mock" },
     { name = "pytest-timeout" },
     { name = "pyyaml" },
+    { name = "setuptools" },
+    { name = "wheel" },
 ]
 tui = [
     { name = "workswarm-tui" },
@@ -7314,6 +7360,7 @@ dev = [
     { name = "cryptography" },
     { name = "httpx", extra = ["socks"] },
     { name = "mypy" },
+    { name = "packaging" },
     { name = "pylint" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -7323,6 +7370,8 @@ dev = [
     { name = "pytest-timeout" },
     { name = "pyyaml" },
     { name = "ruff" },
+    { name = "setuptools" },
+    { name = "wheel" },
 ]
 lint = [
     { name = "codespell" },
@@ -7336,6 +7385,7 @@ test = [
     { name = "asyncssh" },
     { name = "coverage" },
     { name = "cryptography" },
+    { name = "packaging" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -7343,6 +7393,8 @@ test = [
     { name = "pytest-mock" },
     { name = "pytest-timeout" },
     { name = "pyyaml" },
+    { name = "setuptools" },
+    { name = "wheel" },
 ]
 
 [package.metadata]
@@ -7351,8 +7403,8 @@ requires-dist = [
     { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'test'", specifier = "==1.0.0" },
     { name = "a2ui-agent-sdk", specifier = "==0.2.1" },
     { name = "a2ui-agent-sdk", marker = "extra == 'harmony'", specifier = "==0.2.1" },
-    { name = "a4p", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=A4P&rev=agent-protocol-V0.2.0" },
-    { name = "agent-gateway", git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=c58015934303d11b17c5eec9c3c24b7c71fc9614" },
+    { name = "a4p", specifier = "==0.1.0" },
+    { name = "agent-gateway", git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=ae0b8c085d61f35542b411196f1246701b7e4e78" },
     { name = "aiosqlite", specifier = ">=0.22.1,<0.23" },
     { name = "aiosqlite", marker = "extra == 'harmony'", specifier = ">=0.22.1" },
     { name = "anthropic", specifier = ">=0.40.0,<1.0.0" },
@@ -7404,14 +7456,14 @@ requires-dist = [
     { name = "mutagen", specifier = ">=1.47.0,<2" },
     { name = "mutagen", marker = "extra == 'harmony'", specifier = ">=1.47.0" },
     { name = "numpy", specifier = ">=1.24.0,<3" },
-    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2f4bedb9c5d85ab70d7c79d36183e6a98799e94e" },
-    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2f4bedb9c5d85ab70d7c79d36183e6a98799e94e" },
+    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=93b86fb823d578bb1df565762e7228edd154b9ea" },
+    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=93b86fb823d578bb1df565762e7228edd154b9ea" },
     { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'" },
     { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'" },
     { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'" },
     { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'" },
-    { name = "openjiuwen-computeruse", git = "https://gitcode.com/openJiuwen/computer-use.git?rev=dd2cd5317bbe4cfaaa3bdfb2c3ba91c083136790" },
-    { name = "openjiuwen-protocol", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=cbbadde9101db6e3d75e4ef2b9bdb6029fd92088" },
+    { name = "openjiuwen-computeruse", git = "https://gitcode.com/openJiuwen/computer-use.git?rev=2c8171fb6783dba589dd396263b3161186c5f3e4" },
+    { name = "openjiuwen-protocol", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=267c077fa832b25f7f64a913461c2124353bc911" },
     { name = "openjiuwen-runtime-foundation", git = "https://gitcode.com/openJiuwen/agent-runtime.git?subdirectory=foundation&branch=develop" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<1.42" },
     { name = "opentelemetry-api", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
@@ -7421,6 +7473,8 @@ requires-dist = [
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
     { name = "opentelemetry-sdk", specifier = ">=1.28.0,<1.42" },
     { name = "opentelemetry-sdk", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
+    { name = "packaging", marker = "extra == 'dev'", specifier = ">=23.0" },
+    { name = "packaging", marker = "extra == 'test'", specifier = ">=23.0" },
     { name = "pgvector", specifier = ">=0.4.2,<0.5" },
     { name = "pgvector", marker = "extra == 'harmony'", specifier = ">=0.4.2" },
     { name = "pillow", specifier = ">=12.2.0,<13" },
@@ -7453,6 +7507,7 @@ requires-dist = [
     { name = "pyyaml", marker = "extra == 'test'", specifier = ">=6.0" },
     { name = "ruamel-yaml", specifier = ">=0.18.0,<0.20" },
     { name = "ruamel-yaml", marker = "extra == 'harmony'", specifier = ">=0.18.0" },
+    { name = "setuptools", marker = "extra == 'test'", specifier = ">=70.1.0" },
     { name = "skillnet-ai", specifier = "==0.0.16" },
     { name = "skillnet-ai", marker = "extra == 'harmony'", specifier = "==0.0.16" },
     { name = "slack-bolt", specifier = ">=1.30.0,<2" },
@@ -7468,6 +7523,7 @@ requires-dist = [
     { name = "websockets", specifier = ">=12.0,<16" },
     { name = "wecom-aibot-sdk", specifier = ">=1.0.5,<2" },
     { name = "wecom-aibot-sdk", marker = "extra == 'harmony'", specifier = ">=1.0.5" },
+    { name = "wheel", marker = "extra == 'test'", specifier = ">=0.46.3" },
     { name = "workswarm-tui", marker = "extra == 'tui'", directory = "packages/jiuwenswarm-tui" },
 ]
 provides-extras = ["harmony", "a2a", "ssh", "desktop", "dev", "tui", "distribute", "claude", "codex", "cua", "shell-ast", "test"]
@@ -7481,6 +7537,7 @@ dev = [
     { name = "cryptography", specifier = ">=44.0.0" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.28.1" },
     { name = "mypy", specifier = ">=1.12.0" },
+    { name = "packaging", specifier = ">=23.0" },
     { name = "pylint", specifier = ">=3.0.0" },
     { name = "pytest", specifier = ">=8.3.5" },
     { name = "pytest-asyncio", specifier = ">=1.0.0" },
@@ -7490,6 +7547,8 @@ dev = [
     { name = "pytest-timeout", specifier = ">=2.3" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", specifier = ">=0.11.2" },
+    { name = "setuptools", specifier = ">=70.1.0" },
+    { name = "wheel", specifier = ">=0.46.3" },
 ]
 lint = [
     { name = "codespell", specifier = ">=2.2.4" },
@@ -7503,6 +7562,7 @@ test = [
     { name = "asyncssh", specifier = ">=2.14.0,<2.24" },
     { name = "coverage", specifier = ">=7.7.1" },
     { name = "cryptography", specifier = ">=44.0.0" },
+    { name = "packaging", specifier = ">=23.0" },
     { name = "pytest", specifier = ">=8.3.5" },
     { name = "pytest-asyncio", specifier = ">=1.0.0" },
     { name = "pytest-cov", specifier = ">=7.0.0" },
@@ -7510,6 +7570,8 @@ test = [
     { name = "pytest-mock", specifier = ">=3.14.0" },
     { name = "pytest-timeout", specifier = ">=2.3" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "setuptools", specifier = ">=70.1.0" },
+    { name = "wheel", specifier = ">=0.46.3" },
 ]
 
 [[package]]
@@ -7590,6 +7652,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/82/dd/e5176e4b241c9f528402cebb238a36785a628179d7d8b71091154b3e4c9e/wrapt-2.1.2-cp314-cp314t-win_amd64.whl", hash = "sha256:08ffa54146a7559f5b8df4b289b46d963a8e74ed16ba3687f99896101a3990c5", size = 63969, upload-time = "2026-03-06T02:54:39Z" },
     { url = "https://files.pythonhosted.org/packages/5c/99/79f17046cf67e4a95b9987ea129632ba8bcec0bc81f3fb3d19bdb0bd60cd/wrapt-2.1.2-cp314-cp314t-win_arm64.whl", hash = "sha256:72aaa9d0d8e4ed0e2e98019cea47a21f823c9dd4b43c7b77bba6679ffcca6a00", size = 60554, upload-time = "2026-03-06T02:53:14.132Z" },
     { url = "https://files.pythonhosted.org/packages/1a/c7/8528ac2dfa2c1e6708f647df7ae144ead13f0a31146f43c7264b4942bf12/wrapt-2.1.2-py3-none-any.whl", hash = "sha256:b8fd6fa2b2c4e7621808f8c62e8317f4aae56e59721ad933bac5239d913cf0e8", size = 43993, upload-time = "2026-03-06T02:53:12.905Z" },
+]
+
+[[package]]
+name = "xlrd"
+version = "2.0.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/07/5a/377161c2d3538d1990d7af382c79f3b2372e880b65de21b01b1a2b78691e/xlrd-2.0.2.tar.gz", hash = "sha256:08b5e25de58f21ce71dc7db3b3b8106c1fa776f3024c54e45b45b374e89234c9", size = 100167, upload-time = "2025-06-14T08:46:39.039Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1a/62/c8d562e7766786ba6587d09c5a8ba9f718ed3fa8af7f4553e8f91c36f302/xlrd-2.0.2-py2.py3-none-any.whl", hash = "sha256:ea762c3d29f4cca48d82df517b6d89fbce4db3107f9d78713e48cd321d5c9aa9", size = 96555, upload-time = "2025-06-14T08:46:37.766Z" },
 ]
 
 [[package]]

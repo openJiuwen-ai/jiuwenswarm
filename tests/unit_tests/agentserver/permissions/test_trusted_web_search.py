@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, Mock
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from openjiuwen.core.foundation.llm import ToolCall
@@ -61,8 +64,31 @@ from tests.unit_tests.agentserver.permissions.auto_permission_test_support impor
 
 
 @pytest.fixture(autouse=True)
-def _clear_producer_lease() -> None:
+def _clear_producer_lease(monkeypatch) -> None:
+    monkeypatch.delenv("FREE_SEARCH_BING_MARKET", raising=False)
+    monkeypatch.delenv("FREE_SEARCH_BING_FALLBACK_MARKET", raising=False)
     clear_trusted_search_producer()
+
+    from openjiuwen.harness.tools.web import free_search
+
+    labels = {
+        "Remote desktop support": "rejected",
+        "Unrelated device manual": "rejected",
+        "What is artificial intelligence (AI)?": "rejected",
+        "AI agents take the next step": "uncertain",
+    }
+
+    async def scripted_invoke(**kwargs):
+        # These are fixed replies for adapter plumbing, not a semantic evaluator.
+        payload = json.loads(kwargs["messages"][1]["content"])
+        return SimpleNamespace(content=json.dumps({"results": [
+            {"id": row["id"], "relevance": labels.get(row["title"], "relevant"), "reason": "scripted judgment"}
+            for row in payload["candidates"]
+        ]}))
+
+    resolve = free_search.resolve_search_model
+    scripted = SimpleNamespace(invoke=scripted_invoke)
+    monkeypatch.setattr(free_search, "resolve_search_model", lambda context, fallback=None: resolve(context, fallback or scripted))
     yield
     clear_trusted_search_producer()
 
@@ -493,3 +519,340 @@ def test_adapter_owns_only_provenance_and_all_registrations_use_it() -> None:
         source = (repository_root / relative_path).read_text(encoding="utf-8")
         assert "TrustedWebFreeSearchTool" in source
         assert re.search(r"(?<!Trusted)WebFreeSearchTool\(", source) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("relevant", [True, False])
+async def test_real_sdk_quality_gate_controls_rendered_result_and_provenance(monkeypatch, relevant):
+    from openjiuwen.harness.tools.web import _http
+
+    url = "https://source.invalid/weather"
+    title = "Hangzhou weather forecast" if relevant else "Remote desktop support"
+
+    async def request(session, method, target, **kwargs):
+        page = f'<li class="b_algo"><h2><a href="{url}">{title}</a></h2></li>'
+        return 200, {"Content-Type": "text/html"}, page.encode(), target, False
+
+    monkeypatch.setenv("FREE_SEARCH_DEBUG", "false")
+    monkeypatch.setattr(_http, "request", request)
+    ledger = SessionTrustedSearchUrls("session-1")
+    _bind(ledger)
+    result = await TrustedWebFreeSearchTool(enabled_engines=("bing",)).invoke({
+        "query": "Hangzhou weather", "provider": "bing",
+    })
+    assert ledger.contains(root_session_id="session-1", url=url) is relevant
+    assert (url in result) is relevant
+    assert ("Content status: ok" if relevant else "Content status: low_relevance") in result
+
+
+@pytest.mark.asyncio
+async def test_adapter_passes_callback_budget_and_does_not_record_over_budget_result(monkeypatch):
+    from openjiuwen.harness.rails.web_research_rail import WebResearchBudgetRail
+    from openjiuwen.harness.tools.web import _http
+    from openjiuwen.harness.tools.web._budget import WEB_RESEARCH_BUDGET_KEY
+
+    requests = []
+
+    async def request(session, method, target, **kwargs):
+        requests.append(target)
+        page = '<li class="b_algo"><h2><a href="https://source.invalid/weather">Hangzhou weather</a></h2></li>'
+        return 200, {"Content-Type": "text/html"}, page.encode(), target, False
+
+    monkeypatch.setenv("FREE_SEARCH_DEBUG", "false")
+    monkeypatch.setenv("WEB_RESEARCH_SEARCHES_PER_ENGINE", "2")
+    monkeypatch.setattr(_http, "request", request)
+    ctx = AgentCallbackContext(agent=None)
+    rail = WebResearchBudgetRail()
+    await rail.before_model_call(ctx)
+    tool = TrustedWebFreeSearchTool(enabled_engines=("bing",))
+    for attempt in range(3):
+        ledger = SessionTrustedSearchUrls("session-1")
+        _bind(ledger)
+        result = await tool.invoke({"query": "Hangzhou weather"}, _tool_callback_context=ctx)
+        assert len(ledger) == (1 if attempt < 2 else 0)
+    assert "Content status: budget_exhausted" in result
+    assert len(requests) == 2 and ctx.extra[WEB_RESEARCH_BUDGET_KEY].searches == {"bing": 2}
+
+
+@pytest.mark.asyncio
+async def test_provisional_search_candidate_keeps_sdk_warning_and_source_provenance(monkeypatch):
+    from openjiuwen.harness.tools.web import _http
+
+    url = "https://source.invalid/agents"
+
+    async def request(session, method, target, **kwargs):
+        page = f'<li class="b_algo"><h2><a href="{url}">AI agents take the next step</a></h2><p>Capabilities</p></li>'
+        return 200, {"Content-Type": "text/html"}, page.encode(), target, False
+
+    monkeypatch.setenv("FREE_SEARCH_DEBUG", "false")
+    monkeypatch.setattr(_http, "request", request)
+    inputs = {"query": "AI Agent news", "provider": "bing"}
+    expected = await WebFreeSearchTool(enabled_engines=("bing",)).invoke(inputs)
+    ledger = SessionTrustedSearchUrls("session-1")
+    _bind(ledger)
+    result = await TrustedWebFreeSearchTool(enabled_engines=("bing",)).invoke(inputs)
+    assert result == expected
+    assert "Content status: uncertain" in result
+    assert "Relevance: uncertain (scripted judgment)" in result
+    assert ledger.contains(root_session_id="session-1", url=url)
+
+
+@pytest.mark.asyncio
+async def test_actual_dispatch_reuses_active_model_and_records_only_selected_urls(monkeypatch):
+    from openjiuwen.core.runner import Runner
+    from openjiuwen.core.single_agent.rail.base import InvokeInputs
+    from openjiuwen.harness.rails.web_research_rail import WebResearchBudgetRail
+    from openjiuwen.harness.tools.web import _http
+
+    selected_url = "https://source.invalid/selected"
+    rejected_url = "https://source.invalid/rejected"
+
+    async def request(session, method, target, **kwargs):
+        page = (f'<li class="b_algo"><h2><a href="{selected_url}">A</a></h2></li>'
+                f'<li class="b_algo"><h2><a href="{rejected_url}">B</a></h2></li>')
+        return 200, {}, page.encode(), target, False
+
+    monkeypatch.setattr(_http, "request", request)
+    monkeypatch.setenv("FREE_SEARCH_DEBUG", "false")
+    model = SimpleNamespace(invoke=AsyncMock(return_value=SimpleNamespace(content=json.dumps({"results": [
+        {"id": 0, "relevance": "relevant", "reason": "Supports the requested subquestion"},
+        {"id": 1, "relevance": "rejected", "reason": "Different subject"},
+    ]}))))
+    tool = TrustedWebFreeSearchTool(enabled_engines=("bing",))
+    manager = AbilityManager()
+    manager.add([tool.card])
+    monkeypatch.setattr(Runner.resource_mgr, "get_tool", lambda tool_id, **kwargs: tool)
+    ctx = AgentCallbackContext(agent=SimpleNamespace(
+        get_llm=lambda: model, agent_callback_manager=SimpleNamespace(execute=AsyncMock()), ability_manager=manager,
+    ), inputs=InvokeInputs(query="Original user task"))
+    await WebResearchBudgetRail().before_invoke(ctx)
+    ledger = SessionTrustedSearchUrls("session-1")
+    _bind(ledger)
+    result = await manager.execute(
+        ctx, ToolCall(id="call-1", type="function", name="free_search", arguments='{"query":"Subquestion"}'),
+        session=SimpleNamespace(session_id="session-1"),
+    )
+    assert selected_url in result[0][0] and rejected_url not in result[0][0]
+    assert ledger.contains(root_session_id="session-1", url=selected_url)
+    assert not ledger.contains(root_session_id="session-1", url=rejected_url)
+    model.invoke.assert_awaited_once()
+    sent = json.loads(model.invoke.call_args.kwargs["messages"][1]["content"])
+    assert sent["original_task"] == "Original user task" and sent["search_query"] == "Subquestion"
+
+
+@pytest.mark.asyncio
+async def test_truncated_assessment_preserves_later_discovered_sources_through_dispatch(monkeypatch):
+    from openjiuwen.core.runner import Runner
+    from openjiuwen.core.single_agent.rail.base import InvokeInputs
+    from openjiuwen.harness.rails.web_research_rail import WebResearchBudgetRail
+    from openjiuwen.harness.tools.web import _http
+    from openjiuwen.harness.tools.web._budget import WEB_RESEARCH_BUDGET_KEY
+
+    urls = [f"https://source.invalid/document-{index}" for index in range(5)]
+    page = "".join(f'<li class="b_algo"><h2><a href="{url}">Document {index}</a></h2></li>'
+                   for index, url in enumerate(urls))
+    request = AsyncMock(return_value=(200, {"Content-Type": "text/html"}, page.encode(), "https://bing.com/search", False))
+    monkeypatch.setattr(_http, "request", request)
+    monkeypatch.setenv("FREE_SEARCH_DEBUG", "false")
+    model = SimpleNamespace(invoke=AsyncMock(return_value=SimpleNamespace(content="", finish_reason="length")))
+    tool = TrustedWebFreeSearchTool(enabled_engines=("bing",))
+    manager = AbilityManager()
+    manager.add([tool.card])
+    monkeypatch.setattr(Runner.resource_mgr, "get_tool", lambda tool_id, **kwargs: tool)
+    ctx = AgentCallbackContext(agent=SimpleNamespace(
+        get_llm=lambda: model, agent_callback_manager=SimpleNamespace(execute=AsyncMock()), ability_manager=manager,
+    ), inputs=InvokeInputs(query="Find the original publication"))
+    await WebResearchBudgetRail().before_invoke(ctx)
+    ledger = SessionTrustedSearchUrls("session-1")
+    _bind(ledger)
+    result = await manager.execute(
+        ctx, ToolCall(id="call-unassessed", type="function", name="free_search",
+                      arguments='{"query":"Original publication","max_results":4}'),
+        session=SimpleNamespace(session_id="session-1"),
+    )
+    text = result[0][0]
+    assert "Assessment status: unavailable" in text and "assessment_output_truncated" in text
+    assert "Content status: uncertain" in text and "Content status: ok" not in text
+    assert "Recommended fetch targets" not in text
+    for url in urls[:4]:
+        assert url in text and ledger.contains(root_session_id="session-1", url=url)
+    assert urls[4] not in text and not ledger.contains(root_session_id="session-1", url=urls[4])
+    assert ctx.extra[WEB_RESEARCH_BUDGET_KEY].searches == {"bing": 1}
+    assert model.invoke.call_args.kwargs["reasoning"].mode == "disabled"
+    request.assert_awaited_once()
+    model.invoke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fallback_relevant", [True, False])
+async def test_generic_ai_is_not_trusted_and_fallback_preserves_source_budget(monkeypatch, fallback_relevant):
+    from openjiuwen.harness.tools.web import _http
+    from openjiuwen.harness.tools.web._budget import WEB_RESEARCH_BUDGET_KEY, WebResearchBudget
+
+    calls = []
+    generic_url = "https://source.invalid/generic-ai"
+    agent_url = "https://source.invalid/agent-research"
+
+    async def request(session, method, target, **kwargs):
+        market = parse_qs(urlsplit(target).query)["mkt"][0]
+        calls.append(market)
+        relevant = market == "zh-CN" and fallback_relevant
+        title = "Agentic AI research trends report" if relevant else "What is artificial intelligence (AI)?"
+        url = agent_url if relevant else generic_url
+        page = f'<li class="b_algo"><h2><a href="{url}">{title}</a></h2><p>AI research report</p></li>'
+        return 200, {"Content-Type": "text/html"}, page.encode(), target, False
+
+    monkeypatch.setenv("FREE_SEARCH_DEBUG", "false")
+    monkeypatch.setattr(_http, "request", request)
+    ledger = SessionTrustedSearchUrls("session-1")
+    _bind(ledger)
+    budget = WebResearchBudget()
+    ctx = SimpleNamespace(extra={WEB_RESEARCH_BUDGET_KEY: budget})
+    result = await TrustedWebFreeSearchTool(enabled_engines=("bing",)).invoke(
+        {"query": "AI Agent research trends", "provider": "bing"}, _tool_callback_context=ctx,
+    )
+    assert calls == ["en-US", "zh-CN"] and budget.searches == {"bing": 1}
+    assert not ledger.contains(root_session_id="session-1", url=generic_url)
+    assert generic_url not in result
+    assert ledger.contains(root_session_id="session-1", url=agent_url) is fallback_relevant
+    assert ("Content status: ok" if fallback_relevant else "Content status: low_relevance") in result
+
+
+@pytest.mark.asyncio
+async def test_traditional_finance_source_reaches_swarm_output_and_provenance(monkeypatch):
+    from openjiuwen.harness.tools.web import _http
+
+    url = "https://finance.invalid/quote/IXIC"
+    calls = []
+
+    async def request(session, method, target, **kwargs):
+        calls.append(target)
+        title = "\u7d0d\u65af\u9054\u514b\u6307\u6578 (^IXIC) \u5716\u8868\u3001\u6578\u64da\u548c\u65b0\u805e"
+        page = f'<li class="b_algo"><h2><a href="{url}">{title}</a></h2><p>Market quote</p></li>'
+        return 200, {"Content-Type": "text/html; charset=utf-8"}, page.encode(), target, False
+
+    monkeypatch.setenv("FREE_SEARCH_DEBUG", "false")
+    monkeypatch.setattr(_http, "request", request)
+    ledger = SessionTrustedSearchUrls("session-1")
+    _bind(ledger)
+    result = await TrustedWebFreeSearchTool(enabled_engines=("bing",)).invoke({
+        "query": "\u7eb3\u65af\u8fbe\u514b\u6307\u6570 \u6700\u65b0\u70b9\u4f4d", "provider": "bing",
+    })
+    assert "Content status: ok" in result and len(calls) == 1
+    assert url in result and ledger.contains(root_session_id="session-1", url=url)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fallback_relevant", [True, False])
+async def test_market_fallback_preserves_sdk_budget_and_trusted_provenance(monkeypatch, fallback_relevant):
+    from openjiuwen.harness.rails.web_research_rail import WebResearchBudgetRail
+    from openjiuwen.harness.tools.web import _http
+    from openjiuwen.harness.tools.web._budget import WEB_RESEARCH_BUDGET_KEY
+
+    calls = []
+    queries = []
+    accepted_url = "https://source.invalid/weather"
+    rejected_url = "https://source.invalid/devices"
+
+    async def request(session, method, target, **kwargs):
+        params = parse_qs(urlsplit(target).query)
+        market = params["mkt"][0]
+        calls.append(market)
+        queries.append(params["q"][0])
+        relevant = market == "en-US" and fallback_relevant
+        title = "Hangzhou weather forecast" if relevant else "Unrelated device manual"
+        url = accepted_url if relevant else rejected_url
+        page = f'<li class="b_algo"><h2><a href="{url}">{title}</a></h2></li>'
+        return 200, {"Content-Type": "text/html"}, page.encode(), target, False
+
+    monkeypatch.setenv("FREE_SEARCH_DEBUG", "false")
+    monkeypatch.setenv("FREE_SEARCH_BING_MARKET", "zh-CN")
+    monkeypatch.setenv("FREE_SEARCH_BING_FALLBACK_MARKET", "en-US")
+    monkeypatch.setenv("WEB_RESEARCH_SEARCHES_PER_ENGINE", "2")
+    monkeypatch.setattr(_http, "request", request)
+    ctx = AgentCallbackContext(agent=None)
+    await WebResearchBudgetRail().before_model_call(ctx)
+    tool = TrustedWebFreeSearchTool(enabled_engines=("bing",))
+    ledger = SessionTrustedSearchUrls("session-1")
+    _bind(ledger)
+    result = await tool.invoke({"query": "Hangzhou weather"}, _tool_callback_context=ctx)
+    assert calls == ["zh-CN", "en-US"]
+    assert ctx.extra[WEB_RESEARCH_BUDGET_KEY].searches == {"bing": 1}
+    assert ledger.contains(root_session_id="session-1", url=accepted_url) is fallback_relevant
+    assert not ledger.contains(root_session_id="session-1", url=rejected_url)
+    assert rejected_url not in result
+    assert ("Content status: ok" if fallback_relevant else "Content status: low_relevance") in result
+
+    ledger = SessionTrustedSearchUrls("session-1")
+    _bind(ledger)
+    result = await tool.invoke({"query": "Hangzhou weather forecast"}, _tool_callback_context=ctx)
+    assert ("Content status: ok" if fallback_relevant else "Content status: low_relevance") in result
+    assert calls == ["zh-CN", "en-US", "zh-CN", "en-US"]
+    assert queries == [
+        "Hangzhou weather", "Hangzhou weather", "Hangzhou weather forecast", "Hangzhou weather forecast",
+    ]
+    assert ctx.extra[WEB_RESEARCH_BUDGET_KEY].searches == {"bing": 2}
+    assert ledger.contains(root_session_id="session-1", url=accepted_url) is fallback_relevant
+    assert not ledger.contains(root_session_id="session-1", url=rejected_url)
+
+    ledger = SessionTrustedSearchUrls("session-1")
+    _bind(ledger)
+    result = await tool.invoke({"query": "Hangzhou weather tomorrow"}, _tool_callback_context=ctx)
+    assert "Content status: budget_exhausted" in result and len(calls) == 4 and len(ledger) == 0
+
+
+@pytest.mark.asyncio
+async def test_old_sdk_contract_fails_closed_without_losing_producer_cleanup(monkeypatch):
+    monkeypatch.delattr(WebFreeSearchTool, "_on_search_results")
+    ledger = SessionTrustedSearchUrls("session-1")
+    _bind(ledger)
+    result = await TrustedWebFreeSearchTool().invoke({"query": "weather"})
+    assert "matching agent-core version" in result and len(ledger) == 0
+
+
+@pytest.mark.parametrize("mode", ["agent", "code"])
+def test_work_and_code_assembly_include_one_sdk_budget_rail(monkeypatch, mode):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
+    from openjiuwen.harness.rails.web_research_rail import WebResearchBudgetRail
+
+    adapter = JiuWenSwarmDeepAdapter() if mode == "agent" else JiuwenSwarmCodeAdapter()
+    original_instantiate = adapter._instantiate_rails
+
+    def instantiate_selected(infos, config):
+        selected = [info for info in infos if info.attr_name == "_web_research_budget_rail"]
+        assert len(selected) == 1
+        return original_instantiate(selected, config)
+
+    monkeypatch.setattr(adapter, "_instantiate_rails", instantiate_selected)
+    rails = adapter._build_agent_rails({}, {"permissions": {"enabled": False}}, mode=mode)
+    budget_rails = [rail for rail in rails if isinstance(rail, WebResearchBudgetRail)]
+    assert len(budget_rails) == 1
+    assert adapter._web_research_budget_rail is budget_rails[0]
+
+
+@pytest.mark.parametrize("mode", ["agent", "code"])
+@pytest.mark.parametrize("failure", ["missing_module", "constructor"])
+def test_optional_search_budget_failure_does_not_abort_agent_assembly(monkeypatch, caplog, mode, failure):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
+    from openjiuwen.harness.rails import web_research_rail
+
+    adapter = JiuWenSwarmDeepAdapter() if mode == "agent" else JiuwenSwarmCodeAdapter()
+    original_instantiate = adapter._instantiate_rails
+
+    def instantiate_selected(infos, config):
+        selected = [info for info in infos if info.attr_name == "_web_research_budget_rail"]
+        assert len(selected) == 1
+        return original_instantiate(selected, config)
+
+    monkeypatch.setattr(adapter, "_instantiate_rails", instantiate_selected)
+    if failure == "missing_module":
+        monkeypatch.setitem(sys.modules, "openjiuwen.harness.rails.web_research_rail", None)
+    else:
+        monkeypatch.setattr(web_research_rail, "WebResearchBudgetRail", Mock(side_effect=RuntimeError("invalid budget")))
+
+    rails = adapter._build_agent_rails({}, {"permissions": {"enabled": False}}, mode=mode)
+    assert all(type(rail).__name__ != "WebResearchBudgetRail" for rail in rails)
+    assert any(type(rail).__name__ == "PromptSuggestionForkRail" for rail in rails)
+    assert "WebResearchBudgetRail create failed" in caplog.text

@@ -49,7 +49,10 @@ try {
 Write-Host "[build] 正在构建 wheel 包..." -ForegroundColor Yellow
 Push-Location $ProjectRoot
 try {
-    python -m pip install --upgrade build wheel 2>$null
+    python -m pip install --upgrade build 'wheel>=0.46.3' 'setuptools>=70.1.0' 'packaging>=23.0'
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to install Python build requirements"
+    }
     python -m build --wheel --no-isolation
     if ($LASTEXITCODE -ne 0) {
         throw "wheel 构建失败"

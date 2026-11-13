@@ -229,19 +229,6 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   ),
   yamlField('topic_recommendation_enabled', 'recommendation', 'boolean', 'recommendation.topic_enabled'),
   yamlField('prompt_suggestion_enabled', 'recommendation', 'boolean', 'recommendation.prompt_enabled'),
-  yamlField('proactive_recommendation_enabled', 'experimental', 'boolean', 'proactive_recommendation.enabled'),
-  yamlField(
-    'proactive_recommendation_max_recommend_per_day',
-    'experimental',
-    'integer',
-    'proactive_recommendation.max_recommend_per_day',
-  ),
-  yamlField(
-    'proactive_recommendation_max_rounds_per_tick',
-    'experimental',
-    'integer',
-    'proactive_recommendation.max_rounds_per_tick',
-  ),
 ] as const;
 
 export const SETTINGS_CONFIG_FIELD_BY_KEY = new Map(SETTINGS_CONFIG_FIELDS.map((field) => [field.key, field] as const));
@@ -273,6 +260,12 @@ export const OPENAI_ACCOUNT_RPC = {
 } as const;
 
 export const OPEN_SOURCE_SETTINGS_REQUEST_METHODS = [
+  'multimodal.models.list',
+  'multimodal.models.get',
+  'multimodal.models.upsert',
+  'multimodal.models.delete',
+  'multimodal.tools.update',
+  'multimodal.config.apply',
   'config.get',
   'config.save_all',
   'config.validate_model',

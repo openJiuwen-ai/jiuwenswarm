@@ -340,14 +340,22 @@ def _engine_display_name(engine: str) -> str:
 def render_free_search_result(
     *, query: str, engine_used: str, rows: list[dict[str, str]]
 ) -> str:
-    """Render structured free-search rows using the develop branch format."""
+    """Render search rows without dropping SDK assessment warnings."""
 
     lines = [f"Free search results ({_engine_display_name(engine_used)}) for: {query}"]
+    if any(row.get("assessment_status") == "unavailable" for row in rows):
+        lines.append(
+            "Assessment status: unavailable. Relevance was not assessed; these are unverified leads."
+        )
+    if rows and all(row.get("relevance") == "uncertain" for row in rows):
+        lines.append("Content status: uncertain. Verify these leads before using them as evidence.")
     for idx, row in enumerate(rows, 1):
         lines.append(f"{idx}. {row['title']}")
         lines.append(f"   URL: {row['url']}")
         if row.get("snippet"):
             lines.append(f"   Snippet: {row['snippet']}")
+        if row.get("relevance") == "uncertain":
+            lines.append(f"   Relevance: uncertain ({row.get('relevance_reason', 'insufficient_evidence')})")
     return "\n".join(lines)
 
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio as _asyncio
+import base64
 import importlib
 import json
 import shutil
@@ -204,6 +205,47 @@ def _seed_valid_agent_group(
         encoding="utf-8",
     )
     return package
+
+
+def test_group_list_externalizes_large_inline_avatars(
+    extension_workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from urllib.parse import parse_qs, urlsplit
+
+    from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+    from jiuwenswarm.common.file_download_token import WebFileDownloadManager
+    from jiuwenswarm.common.schema.agent import AgentResponse
+    from jiuwenswarm.server.ws_send import send_wire_payload
+
+    monkeypatch.setattr(WebFileDownloadManager, "_instance", WebFileDownloadManager(secret="avatar-test-secret"))
+    image = b"x" * (1024 * 1024)
+    inline = "data:image/png;base64," + base64.b64encode(image).decode("ascii")
+    for index in range(5):
+        package = _seed_valid_agent_group(extension_workspace, f"large-group-{index}", under="local")
+        manifest_path = package / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["avatar"] = inline
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    cards = _run(catalog.list_agent_groups_with_hub({"filter": "local"}))
+
+    assert len(cards) == 5
+    assert len(json.dumps(cards).encode("utf-8")) < 32 * 1024
+    for card in cards:
+        assert card["avatar"].startswith("/file-api/download?")
+        token = parse_qs(urlsplit(card["avatar"]).query)["token"][0]
+        claims = WebFileDownloadManager.get_instance().validate_token(token)
+        assert claims is not None
+        assert Path(claims["path"]).read_bytes() == image
+    assert len(list((extension_workspace / ".cache" / "package-avatars").iterdir())) == 1
+    wire = encode_agent_response_for_wire(
+        AgentResponse(request_id="large-groups", channel_id="web", ok=True, payload={"agentGroups": cards}),
+        response_id="large-groups",
+    )
+    socket = types.SimpleNamespace(send=AsyncMock())
+    assert _run(send_wire_payload(socket, wire)) is True
+    socket.send.assert_awaited_once()
 
 
 def test_uninstall_snapshot_survives_previously_queued_metadata(
@@ -456,13 +498,13 @@ class TestAgentGroupResolution:
         card = catalog.show_agent_group("localized-review")
 
         assert card is not None
-        assert card["avatar"].startswith("data:image/png;base64,")
+        assert card["avatar"].startswith("/file-api/download?")
         reviewer = next(member for member in card["members"] if member["id"] == "reviewer")
         assert reviewer["displayName"] == {
             "zh": "质量复核专家",
             "en": "Quality Reviewer",
         }
-        assert reviewer["avatar"].startswith("data:image/png;base64,")
+        assert reviewer["avatar"].startswith("/file-api/download?")
 
     def test_show_agent_group_returns_none_when_missing(
         self,

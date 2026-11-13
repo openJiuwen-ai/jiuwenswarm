@@ -595,7 +595,7 @@ const ServiceCard = memo(function ServiceCard({
   const terminalRun = !isCollecting && !isStopping && resultRun &&
     ['succeeded', 'partial_succeeded', 'failed', 'cancelled'].includes(resultRun.run_state) &&
     (!lastRunFailed || resultRun.run_state === 'failed');
-  const resultText = terminalRun
+  const collectionResultText = terminalRun
     ? lastRunCompleted && resultRun.no_new_content === true
       ? t('personalContext.services.noNewContent')
       : [
@@ -610,6 +610,12 @@ const ServiceCard = memo(function ServiceCard({
             : null,
         ].filter(Boolean).join(' · ')
     : '';
+  const capacity = terminalRun ? resultRun.capacity_maintenance : undefined;
+  const resultText = [
+    collectionResultText,
+    capacity?.removed_count ? t('personalContext.services.capacityRemoved', { count: capacity.removed_count }) : '',
+    capacity && capacity.status !== 'succeeded' ? t('personalContext.services.capacityIncomplete') : '',
+  ].filter(Boolean).join(' · ');
 
   const percent = progress?.progress_percent;
   // 采集中即展示进度条（含 0%），避免后端尚未上报总量时进度条消失，让用户看到"采集中"进度占位。

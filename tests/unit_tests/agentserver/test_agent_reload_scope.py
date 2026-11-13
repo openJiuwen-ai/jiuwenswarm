@@ -705,51 +705,6 @@ async def test_agent_reload_config_handler_skips_agent_manager_for_web_ui_scope(
 
 
 @pytest.mark.asyncio
-async def test_agent_reload_config_handler_applies_proactive_scope_without_agent_reload(monkeypatch):
-    server = agent_ws_server_module.AgentWebSocketServer()
-    reload_agents = AsyncMock()
-    proactive_engine = MagicMock()
-    server._proactive_engine = proactive_engine
-
-    monkeypatch.setattr(server._agent_manager, "reload_agents_config", reload_agents)
-    monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_config",
-        lambda: {"proactive_recommendation": {"enabled": True}},
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.transports.ws_sink.encode_agent_response_for_wire",
-        lambda resp, response_id: {
-            "response_id": response_id,
-            "ok": resp.ok,
-            "payload": resp.payload,
-        },
-    )
-
-    request = AgentRequest(
-        request_id="reload-proactive",
-        channel_id="web",
-        req_method=ReqMethod.AGENT_RELOAD_CONFIG,
-        params={
-            "config": {"proactive_recommendation": {"enabled": True}},
-            "env": {},
-            "reload_scopes": ["proactive"],
-        },
-    )
-
-    ws = FakeWebSocket()
-    from jiuwenswarm.server.context import build_ws_request_context
-    from jiuwenswarm.server.handlers.ops import handle_agent_reload_config
-
-    await handle_agent_reload_config(
-        build_ws_request_context(server, ws, request, asyncio.Lock())
-    )
-
-    reload_agents.assert_not_awaited()
-    proactive_engine.reload_config.assert_called_once_with({"enabled": True})
-    assert json.loads(ws.sent[-1])["ok"] is True
-
-
-@pytest.mark.asyncio
 async def test_agent_reload_config_handler_warms_zen_cache_on_model_scope(monkeypatch):
     """model scope（或全量 reload）须调度本进程 Zen 免费模型缓存 warm。
 

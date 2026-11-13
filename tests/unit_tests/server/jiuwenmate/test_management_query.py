@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -269,6 +269,45 @@ def test_subminute_execution_keeps_its_hourly_activity_and_tokens():
     )
 
     assert report["members"][0]["hours"] == [{"date": "2026-10-16", "hour": 10, "minutes": 0, "tasks": 1, "tokens": 42}]
+
+
+def test_activity_buckets_follow_the_viewer_clock_zone():
+    report = assemble_activity(
+        colleagues=[{"agent_id": "mate_a", "created_at": "2026-10-15T00:00:00+00:00"}],
+        requests=[
+            {
+                "request_id": "req_a",
+                "agent_id": "mate_a",
+                "session_id": "sess_a",
+                "status": "ended",
+                "outcome": "completed",
+                "updated_at": "2026-10-15T22:00:30+00:00",
+            }
+        ],
+        executions=[{"execution_id": "exe_a", "request_id": "req_a", "started_at": "2026-10-15T22:00:00+00:00"}],
+        sessions=[{"session_id": "sess_a", "agent_id": "mate_a", "kind": "web_direct", "channel": "web", "conversation_key": "c"}],
+        calls=[{"status": "settled", "charged_tokens": 7, "ref": {"execution_id": "exe_a"}}],
+        deliveries=[],
+        groups=[],
+        now=NOW.astimezone(timezone(timedelta(hours=8))),
+    )
+
+    member = report["members"][0]
+    assert member["hours"] == [{"date": "2026-10-16", "hour": 6, "minutes": 0, "tasks": 1, "tokens": 7}]
+    assert [day["date"] for day in member["days"]] == ["2026-10-16"]
+    assert member["companion_days"] == 2
+    assert member["history"][0]["started_at"] == "2026-10-15T22:00:00+00:00"
+
+
+def test_viewer_zone_prefers_the_named_zone_and_falls_back_to_offset_then_utc():
+    from jiuwenswarm.server.jiuwenmate.web_adapter import _viewer_zone
+
+    shanghai = NOW.astimezone(_viewer_zone({"timezone": "Asia/Shanghai", "utc_offset_minutes": 0}))
+    assert shanghai.utcoffset() == timedelta(hours=8)
+    assert _viewer_zone({"timezone": "Not/AZone", "utc_offset_minutes": 480}) == timezone(timedelta(hours=8))
+    assert _viewer_zone({"utc_offset_minutes": 100_000}) == timezone.utc
+    assert _viewer_zone({"utc_offset_minutes": True}) == timezone.utc
+    assert _viewer_zone({}) == timezone.utc
 
 
 def test_history_falls_back_to_plan_and_conversation_titles_when_request_text_is_missing():

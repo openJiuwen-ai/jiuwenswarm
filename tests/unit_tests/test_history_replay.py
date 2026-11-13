@@ -128,6 +128,74 @@ def test_external_append_is_not_hidden_by_the_voice_head_cache(stored):
     assert batch.bytes_read > 0
 
 
+def test_windows_fstat_ctime_mismatch_does_not_void_restore(stored, monkeypatch):
+    """Windows fstat/path.stat disagree on st_ctime_ns for an unchanged file."""
+
+    sid, path, write = stored
+    write([user(), {"role": "assistant", "event_type": "chat.final", "content": "ok"}])
+    real_fstat = replay.os.fstat
+
+    def skewed_fstat(fd: int):
+        result = real_fstat(fd)
+        return SimpleNamespace(
+            st_dev=result.st_dev,
+            st_ino=result.st_ino,
+            st_size=result.st_size,
+            st_mtime_ns=result.st_mtime_ns,
+            # Skew creation-time like Windows fstat vs Path.stat.
+            st_ctime_ns=result.st_ctime_ns + 10_000_000,
+        )
+
+    monkeypatch.setattr(replay.os, "fstat", skewed_fstat)
+    batch = replay.read_history_replay(sid)
+    assert [row.get("content") for row in batch.records] == ["question", "ok"]
+
+
+def test_append_during_restore_still_rejected(stored, monkeypatch):
+    sid, path, write = stored
+    write([user()])
+    real_readline = None
+
+    class _MutatingHandle:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def __enter__(self):
+            self._handle.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._handle.__exit__(*args)
+
+        def seek(self, *args, **kwargs):
+            return self._handle.seek(*args, **kwargs)
+
+        def tell(self):
+            return self._handle.tell()
+
+        def fileno(self):
+            return self._handle.fileno()
+
+        def readline(self, *args, **kwargs):
+            line = self._handle.readline(*args, **kwargs)
+            if line:
+                with path.open("a", encoding="utf-8") as out:
+                    out.write(json.dumps(user("racer", "race")) + "\n")
+            return line
+
+    original_open = Path.open
+
+    def open_and_race(target, *args, **kwargs):
+        handle = original_open(target, *args, **kwargs)
+        if target == path and "b" in (args[0] if args else kwargs.get("mode", "r")):
+            return _MutatingHandle(handle)
+        return handle
+
+    monkeypatch.setattr(Path, "open", open_and_race)
+    with pytest.raises(replay.HistoryReplayError, match="HISTORY_RESTORE_CHANGED"):
+        replay.read_history_replay(sid)
+
+
 @pytest.mark.parametrize("change", ["rewrite", "generation"])
 def test_changed_history_rejects_a_stale_cursor(stored, change):
     sid, path, write = stored

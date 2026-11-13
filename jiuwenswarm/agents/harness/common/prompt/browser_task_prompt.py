@@ -108,10 +108,52 @@ _BROWSER_TASK_PROMPT = {
 }
 
 
-def build_browser_task_prompt(language: str = "cn") -> str:
+_BROWSER_SEARCH_FALLBACK_PROMPT = {
+    "cn": (
+        "## 未配置搜索引擎时的浏览器检索\n\n"
+        "- 当前未配置内置付费搜索 API，DuckDuckGo 和 Bing 也都未启用。"
+        "对于需要发现网络来源的一般资料检索，若用户未指定搜索引擎或方式，"
+        "上述搜索/抓取优先规则改为优先使用同步 `task_tool`："
+        '`subagent_type="browser_agent"`，`task_description` 保留完整检索目标与约束。'
+        "不要先试调用未配置的付费搜索或已关闭的免费引擎。\n"
+        "- 已有明确 URL、只需读取正文时，仍可使用 `fetch_webpage`，无需为了检索启动浏览器。"
+        "用户明确指定的引擎、方式、站点及禁止浏览器/联网等限制优先；指定方式不可用时说明原因，"
+        "不要擅自替换。浏览器工具不可用时也须如实说明。\n"
+        "- 此兜底只针对搜索配置缺失，不因超时、验证码、访问限制、低相关或预算耗尽而触发。"
+        "不得通过浏览器绕过检索预算、访问限制或权限检查；有充分证据时直接回答，不重复检索。"
+    ),
+    "en": (
+        "## Browser Search When No Search Engine Is Configured\n\n"
+        "- No built-in paid search API is configured, and DuckDuckGo and Bing are both disabled. "
+        "For general research that needs to discover web sources, when the user has not specified "
+        "an engine or method, replace the search/fetch preference above with the synchronous "
+        '`task_tool`: use `subagent_type="browser_agent"` and preserve the complete research '
+        "goal and constraints in `task_description`. Do not probe unconfigured paid search "
+        "or disabled free engines first.\n"
+        "- If a URL is already known and only its text is needed, `fetch_webpage` remains available; "
+        "a browser search is unnecessary. Explicit user constraints on engines, methods, sites, "
+        "or no-browser/no-network use take precedence. Explain an unavailable requested method "
+        "instead of silently substituting it. Also report unavailable browser tools honestly.\n"
+        "- This fallback is for missing search configuration, not timeouts, CAPTCHAs, access "
+        "restrictions, low relevance, or exhausted budgets. Do not use it to bypass retrieval "
+        "budgets, access restrictions, or permission checks. Answer directly when evidence is "
+        "sufficient instead of repeating research."
+    ),
+}
+
+
+def build_browser_task_prompt(
+    language: str = "cn",
+    *,
+    search_fallback_enabled: bool = False,
+) -> str:
     """Return localized browser guidance for the subagent tool section."""
 
-    return _BROWSER_TASK_PROMPT.get(language, _BROWSER_TASK_PROMPT["cn"])
+    prompt = _BROWSER_TASK_PROMPT.get(language, _BROWSER_TASK_PROMPT["cn"])
+    if search_fallback_enabled:
+        fallback = _BROWSER_SEARCH_FALLBACK_PROMPT.get(language, _BROWSER_SEARCH_FALLBACK_PROMPT["cn"])
+        return f"{prompt}\n\n{fallback}"
+    return prompt
 
 
 __all__ = ["build_browser_task_prompt"]

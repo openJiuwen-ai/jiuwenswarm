@@ -89,6 +89,7 @@ import requests
 from agent_gateway.common.volcengine_endpoints import normalize_ark_api_base
 from jiuwenswarm.agents.harness.common.tools import vllm_omni_gen
 from jiuwenswarm.agents.harness.common.tools.ssl_config import get_requests_verify
+from jiuwenswarm.common.minimax_video_models import minimax_h3_variant
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 from jiuwenswarm.common.volcengine_endpoints import normalize_ark_api_base
 
@@ -526,9 +527,11 @@ async def _minimax_generate_image(
     return "Image generated successfully!\nSaved to: " + ", ".join(saved)
 
 
-def _minimax_video_resolution(resolution: str) -> str:
-    """Map the tool's resolution ("480p"/"720p"/"1080p") to H3's "768P" / "2K"."""
+def _minimax_video_resolution(resolution: str, model: str) -> str:
+    """Map the requested resolution to a tier the selected MiniMax model supports."""
     text = (resolution or "").strip().upper()
+    if minimax_h3_variant(model) is not None:
+        return "480P" if text == "480P" else "768P"
     if text == "2K":
         return "2K"
     digits = re.sub(r"\D", "", text)
@@ -544,7 +547,7 @@ async def _minimax_submit_video(target: GenerationTarget, request: VideoRequest,
     body = {
         "model": model,
         "content": content,
-        "resolution": _minimax_video_resolution(resolution),
+        "resolution": _minimax_video_resolution(resolution, model),
         "duration": int(duration_seconds),
         "ratio": aspect_ratio if aspect_ratio in _MINIMAX_VIDEO_RATIOS else "16:9",
     }
