@@ -21,7 +21,10 @@
   },
   "enterpriseEntry": {
     "invalidIdentity": "Identity 未返回用户标识。",
-    "noContext": "当前账号没有可用的 Agent，请先在管理面完成授权。",
+    "emptyTitle": "暂无可用 Agent",
+    "backToLogin": "返回登录页",
+    "language": "界面语言",
+    "noContext": "当前账号没有可用的Agent，请先在管理面完成授权。",
     "loadFailed": "加载 Agent 上下文失败。",
     "switchFailed": "切换身份失败。",
     "errorTitle": "无法进入工作空间",
