@@ -527,6 +527,7 @@ def test_a_seated_setting_repeats_its_layout_in_every_shot() -> None:
 
     assert layout in prompt
     assert "people stay in frame together: 1, 2." in prompt
+    assert "Positions held for this setting" in prompt
 
 
 def test_structured_seats_do_not_repeat_the_layout_essay() -> None:

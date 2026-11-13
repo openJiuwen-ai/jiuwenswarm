@@ -777,6 +777,20 @@ def _staging_lines(
     if seats:
         # Per-cast seat clauses already carry the placement.
         return out
+    from jiuwenswarm.server.runtime.designer.pipeline.positioning_lock import (
+        stamp_lock,
+    )
+
+    token_names = {
+        token: (_name_for_id(token, graph) or str(token)) for token in tokens
+    }
+    lock = str(cfg.get("positioning_lock_text") or "").strip() or stamp_lock(
+        cfg, names=token_names, lang=lang
+    )
+    if lock and not _BAD_DIRECTIVE.search(lock):
+        held = strip_phrase(_scrub_lock_phrase(lock)).rstrip(".;\u3002\uff1b")
+        out.append(held + ("." if lang == "en" else "\u3002"))
+        return out
     spatial = cfg.get("spatial_lock") if isinstance(cfg.get("spatial_lock"), dict) else {}
     layout = strip_phrase(_scrub_lock_phrase(str(spatial.get("layout") or "").strip()))
     if layout and not _BAD_DIRECTIVE.search(layout):
