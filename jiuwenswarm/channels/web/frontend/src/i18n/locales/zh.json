@@ -4582,6 +4582,18 @@
       }
     },
     "toolResult": {
+      "originalOpen": "查看原文",
+      "originalClose": "收起原文",
+      "originalSource": "原文内容",
+      "originalText": "结果正文",
+      "originalData": "结构化原文",
+      "originalReturn": "工具原始返回",
+      "originalLoading": "正在读取原文…",
+      "originalFailed": "原文读取失败，请重试。",
+      "originalProgress": "已阅读至 {{percent}}%",
+      "originalPrevious": "上一段",
+      "originalNext": "下一段",
+      "originalRetry": "重试",
       "answersInSummary": "请查看问题澄清卡片中的回答，敏感输入已隐藏。",
       "success": "完成",
       "failed": "失败",

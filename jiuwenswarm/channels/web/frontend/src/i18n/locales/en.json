@@ -4585,6 +4585,18 @@
       }
     },
     "toolResult": {
+      "originalOpen": "View original",
+      "originalClose": "Hide original",
+      "originalSource": "Original content",
+      "originalText": "Result text",
+      "originalData": "Structured original",
+      "originalReturn": "Original tool return",
+      "originalLoading": "Loading original…",
+      "originalFailed": "Could not read the original. Please retry.",
+      "originalProgress": "Read to {{percent}}%",
+      "originalPrevious": "Previous part",
+      "originalNext": "Next part",
+      "originalRetry": "Retry",
       "answersInSummary": "See the answers in the clarification card. Sensitive input is hidden.",
       "success": "done",
       "failed": "failed",
