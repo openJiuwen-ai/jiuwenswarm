@@ -89,6 +89,23 @@ class SkillCallCounter:
                 self._persist_unlocked()
                 return previous
 
+    def consume(self, skill_name: str, amount: int) -> int:
+        """Subtract *amount* from *skill_name* (floor 0) and persist. Returns new count."""
+        name = str(skill_name or "").strip()
+        take = max(int(amount), 0)
+        if not name:
+            return 0
+        with self._lock:
+            with self._file_lock():
+                self._reload_unlocked()
+                current = int(self._counts.get(name, 0))
+                if take <= 0:
+                    return current
+                value = max(0, current - take)
+                self._counts[name] = value
+                self._persist_unlocked()
+                return value
+
     def snapshot(self) -> dict[str, int]:
         with self._lock:
             with self._file_lock():
