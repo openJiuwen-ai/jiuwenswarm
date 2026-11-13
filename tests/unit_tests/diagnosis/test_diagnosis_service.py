@@ -86,6 +86,45 @@ class _GatedEngine:
         return EngineResult()
 
 
+@pytest.mark.asyncio
+async def test_summary_checkpoint_survives_a_later_stage_failure(tmp_path: Path) -> None:
+    import json
+
+    tree = {"trajectory_summary": "Complete selected work", "status": "degraded", "turns": {},
+            "agent_summaries": {}, "problems": [], "warnings": []}
+
+    class SummaryThenFailure:
+        def __init__(self):
+            self.reported = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def run(self, inputs, emit):
+            await emit(EngineEvent("trajectory_summary", "stage_started", title="Summary"))
+            await emit(EngineEvent("trajectory_summary", "trajectory_summary", summary_tree=tree))
+            await emit(EngineEvent("trajectory_summary", "stage_finished", status="degraded"))
+            self.reported.set()
+            await self.release.wait()
+            raise EngineError("MODEL_CALL_FAILED", "later task parse failed")
+
+    engine = SummaryThenFailure()
+    service, push = _service(tmp_path, engine=engine)
+    started = await service.start(SESSION_ID, _full_request())
+    try:
+        await asyncio.wait_for(engine.reported.wait(), _ENGINE_DONE_TIMEOUT)
+        saved = DiagnosisStore(tmp_path).load(SESSION_ID, started.diagnosis_id)
+        assert saved.status is DiagnosisStatus.RUNNING
+        assert saved.summary_tree == tree
+        assert saved.stages[0].status.value == "degraded"
+        path = tmp_path / SESSION_ID / "diagnosis" / "summaries" / f"{started.diagnosis_id}.json"
+        assert json.loads(path.read_text(encoding="utf-8"))["summary_tree"] == tree
+        assert any(event.get("summary_tree") == tree for event in push.of(PROGRESS_EVENT))
+    finally:
+        engine.release.set()
+        final = await _wait_finished(service, started.diagnosis_id)
+    assert final.status is DiagnosisStatus.FAILED
+    assert final.summary_tree == tree
+
+
 def _ref(index: int, *, subject: str = "main", node: bool = True) -> StepRef:
     return StepRef(
         trace_id=TRACE_A,

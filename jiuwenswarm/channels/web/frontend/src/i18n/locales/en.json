@@ -1467,6 +1467,7 @@
       "outletsPending": "Suggestions appear here once the diagnosis finishes",
       "detailsPending": "The evaluation and findings show up here",
       "stageStatus": {
+        "degraded": "Degraded",
         "pending": "Waiting",
         "running": "Running",
         "completed": "Done",
@@ -1500,6 +1501,7 @@
       "emptyHint": "No diagnosis yet. Select \"Diagnose trajectory\" at the top right to start.",
       "loadingRecord": "Loading diagnosis…",
       "plannedStage": {
+        "trajectory_summary": "Summarize trajectory",
         "task_parse": "Parse task",
         "diagnose": "Diagnose",
         "attribute": "Attribute causes"
@@ -1557,6 +1559,16 @@
       "objectExcludedRunning": "{{count}} steps were still running when the diagnosis started and are not included",
       "objectTask": "Task",
       "objectSummary": "Trajectory summary",
+      "summaryTree": {
+        "root": "Overall trajectory summary",
+        "agentsHint": "Agent summaries (team leader and members)",
+        "coverage": "Completed segments {{completed}} / {{total}}",
+        "download": "Download full summary JSON",
+        "warnings": "Warnings ({{count}})",
+        "unavailable": "Summary unavailable. See the downloaded file for trajectory details and evidence locations.",
+        "unmerged": "The overall summary could not be merged. Read the agent summaries below; the complete hierarchy remains in the download.",
+        "agentUnmerged": "This agent account could not be merged. All local turn summaries remain available in the full download."
+      },
       "sectionExpand": "Expand",
       "sectionCollapse": "Collapse",
       "findingCauses": "{{count}} artifact finding(s)",

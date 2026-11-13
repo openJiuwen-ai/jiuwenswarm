@@ -35,6 +35,7 @@ EngineEventKind = Literal[
     "reward",
     "reward_failure_causes",
     "evolution_judge",
+    "trajectory_summary",
 ]
 
 
@@ -53,12 +54,13 @@ class EngineEvent:
     kind: EngineEventKind
     title: str | None = None
     text_delta: str | None = None
-    status: Literal["completed", "failed", "skipped"] | None = None
+    status: Literal["completed", "degraded", "failed", "skipped"] | None = None
     summary: str | None = None
     skip_reason: str | None = None
     reward: dict[str, Any] | None = None
     reward_failure_causes: list[RewardFailureCause] | None = None
     evolution_judge: list[EvolutionJudge] | None = None
+    summary_tree: dict[str, Any] | None = None
 
 
 EmitFn = Callable[[EngineEvent], Awaitable[None]]
@@ -116,6 +118,7 @@ class EngineResult:
     artifact_improvement: str | None = None
     error: DiagnosisError | None = None
     reward: dict[str, Any] | None = None
+    summary_tree: dict[str, Any] | None = None
 
 
 class DiagnosisEngine(Protocol):

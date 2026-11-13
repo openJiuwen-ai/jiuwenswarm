@@ -18,6 +18,25 @@ from jiuwenswarm.diagnosis.store import (
 from tests.unit_tests.diagnosis.diagnosis_fixtures import SESSION_ID, make_record
 
 
+def test_nanosecond_timestamps_are_exact_strings_in_files_and_progress(tmp_path: Path) -> None:
+    import json
+    from jiuwenswarm.diagnosis.models import DiagnosisProgressEvent
+
+    record = make_record()
+    stamp = 1793762642519864800
+    record.summary_tree = {"agent_summaries": {"A": {"start_ts_ns": stamp}},
+                           "turns": {"A": [{"triggers": [{"time_ns": stamp, "sent_ts_ns": stamp}]}]}}
+    store = DiagnosisStore(tmp_path)
+    store.save(record)
+    loaded = store.load(SESSION_ID, record.diagnosis_id)
+    assert loaded.summary_tree["agent_summaries"]["A"]["start_ts_ns"] == str(stamp)
+    path = tmp_path / SESSION_ID / "diagnosis" / "summaries" / f"{record.diagnosis_id}.json"
+    assert json.loads(path.read_text(encoding="utf-8"))["summary_tree"] == loaded.summary_tree
+    event = DiagnosisProgressEvent(session_id=SESSION_ID, diagnosis_id=record.diagnosis_id, seq=1,
+                                   stage_id="trajectory_summary", kind="trajectory_summary", summary_tree=record.summary_tree)
+    assert event.model_dump(mode="json")["summary_tree"] == loaded.summary_tree
+
+
 def test_new_diagnosis_id_is_filename_safe() -> None:
     value = new_diagnosis_id()
 
@@ -30,12 +49,25 @@ def test_save_and_load_round_trip(tmp_path: Path) -> None:
     store = DiagnosisStore(tmp_path)
     record = make_record()
 
+    record.summary_tree = {"trajectory_summary": "Detailed summary", "display_summary": "Readable outcome",
+        "turns": {"A": [{"start_time": "2026-11-04 11:33:47.628 +08:00", "inputs": [
+            {"node_id": "A:1", "source": "agent", "sender_name": "leader", "text": "Check the result"}]}]}, "problems": [
+        {"problem_id": "p1", "locations": [{"agent_id": "A", "turn_id": "t1",
+                                              "segment_id": "s1", "node_ids": ["A:1"]}],
+         "state": "resolved", "resolution_node_ids": ["A:2"]}]}
+
     store.save(record)
     loaded = store.load(SESSION_ID, record.diagnosis_id)
 
     assert loaded is not None
     assert loaded.diagnosis_id == record.diagnosis_id
     assert loaded.input.mode_profile == record.input.mode_profile
+    assert loaded.summary_tree == record.summary_tree
+    import json
+    summary_path = tmp_path / SESSION_ID / "diagnosis" / "summaries" / f"{record.diagnosis_id}.json"
+    assert json.loads(summary_path.read_text(encoding="utf-8"))["summary_tree"] == record.summary_tree
+    assert len(store.list_summaries(SESSION_ID)) == 1
+    assert "summary_tree" not in loaded.to_summary().model_dump()
     assert not list((tmp_path / SESSION_ID / "diagnosis").glob("*.tmp"))
 
 
