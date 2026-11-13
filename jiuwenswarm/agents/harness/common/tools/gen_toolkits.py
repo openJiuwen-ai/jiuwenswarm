@@ -536,7 +536,7 @@ def _minimax_reference_images(uris: tuple[str, ...] | list[str]) -> list[dict[st
     return refs
 
 
-def _minimax_save_image_items(payload: Any, save_dir: str | None) -> str:
+async def _minimax_save_image_items(payload: Any, save_dir: str | None) -> str:
     data = payload.get("data") if isinstance(payload, dict) else None
     items = data if isinstance(data, list) else []
     saved: list[str] = []
@@ -559,8 +559,8 @@ def _minimax_save_image_items(payload: Any, save_dir: str | None) -> str:
             url = str(item.get("url") or "").strip()
             if url:
                 try:
-                    with httpx.Client(timeout=120, verify=get_requests_verify()) as client:
-                        download = client.get(url, follow_redirects=True)
+                    async with httpx.AsyncClient(timeout=120, verify=get_requests_verify()) as client:
+                        download = await client.get(url, follow_redirects=True)
                     if download.status_code != 200:
                         errors.append(f"download failed: {download.status_code}")
                         continue
@@ -628,7 +628,7 @@ async def _minimax_generate_image(
         return f"[ERROR]: MiniMax image generation request failed: {exc!r}"
     if resp.status_code != 200 or _minimax_base_error(payload):
         return f"[ERROR]: MiniMax image generation failed: {_minimax_base_error(payload) or resp.status_code}"
-    return _minimax_save_image_items(payload, save_dir)
+    return await _minimax_save_image_items(payload, save_dir)
 
 
 def _minimax_video_resolution(resolution: str, model: str) -> str:
