@@ -129,6 +129,36 @@ async def test_session_scan_and_projection_leave_front_loop_running(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_metadata_lifecycle_guard_leaves_front_loop_running(monkeypatch):
+    from jiuwenswarm.server.runtime.session import lifecycle
+
+    started = threading.Event()
+    release = threading.Event()
+    threads = []
+
+    def guard(_sid):
+        threads.append(threading.get_ident())
+        started.set()
+        release.wait(1)
+        raise lifecycle.LifecycleError("OPERATION_IN_PROGRESS", "session is stopping")
+
+    monkeypatch.setattr(lifecycle, "guard", guard)
+    request = _request(ReqMethod.SESSION_GET_METADATA)
+    request.params = {"session_id": "one"}
+    task = asyncio.create_task(session_repository.handle_session_request(request))
+    try:
+        await _until(started.is_set)
+        assert not task.done(), "Lifecycle file access still blocked the Front loop"
+        assert threads[0] != threading.get_ident()
+    finally:
+        release.set()
+        response = await task
+    assert not response.ok
+    assert response.payload["code"] == "OPERATION_IN_PROGRESS"
+    assert response.payload["error"] == "session is stopping"
+
+
+@pytest.mark.asyncio
 async def test_metadata_file_lock_leaves_front_loop_running(monkeypatch, tmp_path):
     from jiuwenswarm.server.runtime.session import lifecycle, session_metadata
 

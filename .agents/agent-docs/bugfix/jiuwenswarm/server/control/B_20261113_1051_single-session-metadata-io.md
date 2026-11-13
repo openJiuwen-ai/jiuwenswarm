@@ -31,11 +31,13 @@ Front 事件循环；独立 IPC 线程继续接收流式帧，256 条队列满�
 附件在 2026-11-12 23:41:32.421 记录该查询，23:41:32.922 报接收超限，
 256 条共 425571 字节。时间相关与受控复现支持该代码缺口，但缺少现场 Front 堆栈，
 不能认定现场一定卡在 `_FILE_LOCK`。Worker 替换后的 ownership 冲突属于另一恢复环节，
-不因本修复宣称已经解决。
+后续独立验证与修复见 [退出属主记录](../runtime/session/B_20261113_1153_exited-runtime-owner.md)。
 
 ## 修复决策与保持的契约
 
 - handler 将完整同步读取与响应构造交给既有 `run_control_query`，不新建线程池或查询框架。
+- 单项查询的入口生命周期 `guard` 同样在该有界后台工作中执行，并保留原错误码；
+  避免读取 lifecycle JSON 及共享冲突重试仍占用 Front。其他控制方法的路由边界不变。
 - 保留调用者 ContextVars、租户目录绑定、每循环最多四个后台查询及取消后的容量保留。
   请求取消不终止原生 I/O；原生工作真正完成才释放名额。
 - `cache_bust=True`、`enable_writeback` 默认与非布尔值回退、请求身份、响应载荷及错误码保持原行为。
@@ -74,4 +76,6 @@ File-lock waits, disk reads and inference no longer occupy the Front event loop;
 Front async 查询调用同步元数据入口时，应将锁等待、磁盘读取和推断整体纳入受限后台工作，
 不能仅凭 async 声明或“单个 JSON”判断不会阻塞。实际文件锁、上下文与消息消费回归锁定该边界。
 公开协议未变化，不另建接口 spec；当前契约由原 E2A 类型、路由与行为测试维护。
-现场具体阻塞阶段及 Worker ownership 冲突仍需各自的证据和修复。
+续验在 develop `9f403d1c`、0.2.9 `61246126` 基线上发现入口 `guard` 的同步读盘缺口，
+新增回归在两个原候选上均失败，已将它纳入同一次后台工作。
+原现场具体阻塞阶段仍缺少 Front 堆栈；Worker ownership 的独立证据边界见上述退出属主记录。

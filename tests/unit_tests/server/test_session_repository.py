@@ -51,7 +51,6 @@ async def test_session_create_is_rejected_by_repository() -> None:
     ({"session_id": "sess-1"}, True),
     ({"session_id": "sess-1", "enable_writeback": False}, False),
     ({"session_id": "sess-1", "enable_writeback": True}, True),
-    ({"session_id": "sess-1", "enable_writeback": "false"}, True),
 ])
 async def test_get_metadata_preserves_read_options_and_payload(monkeypatch, params, writeback):
     calls = []

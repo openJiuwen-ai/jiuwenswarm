@@ -123,7 +123,13 @@ async def handle_get_metadata(request: AgentRequest) -> AgentResponse:
 
 
 def _load_metadata(request: AgentRequest) -> AgentResponse:
+    from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError, guard
+
     params = request.params if isinstance(request.params, dict) else {}
+    try:
+        guard(str(params.get("session_id") or request.session_id or ""))
+    except LifecycleError as exc:
+        return build_error_response(request, str(exc), code=exc.code)
     sid = params.get("session_id")
     if not isinstance(sid, str) or not sid.strip():
         return build_error_response(request, "session_id is required", code="BAD_REQUEST")
@@ -216,6 +222,8 @@ async def handle_session_request(request: AgentRequest) -> AgentResponse:
         return build_error_response(
             request, f"unsupported control session method: {method}", code="BAD_REQUEST"
         )
+    if request.req_method == ReqMethod.SESSION_GET_METADATA:
+        return await handle_get_metadata(request)
     if request.req_method != ReqMethod.SESSION_LIST:
         from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError, guard
 
@@ -224,8 +232,6 @@ async def handle_session_request(request: AgentRequest) -> AgentResponse:
             guard(str(params.get("session_id") or request.session_id or ""))
         except LifecycleError as exc:
             return build_error_response(request, str(exc), code=exc.code)
-    if request.req_method == ReqMethod.SESSION_GET_METADATA:
-        return await handle_get_metadata(request)
     if request.req_method == ReqMethod.SESSION_PIN:
         return await handle_pin(request)
     if request.req_method == ReqMethod.SESSION_COLOR_SET:

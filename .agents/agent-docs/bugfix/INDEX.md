@@ -162,6 +162,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261110_1849_group-lock-cancellation](jiuwenswarm/server/runtime/B_20261110_1849_group-lock-cancellation.md) | B | 群任务取消期间等待文件锁清理完成 | ShowHsiang | jiuwenswarm/server/runtime, tests/unit_tests/server | jiuwenswarm/server/runtime/group_service.py, tests/unit_tests/server/test_group_lock.py, tests/conftest.py | 无独立 D：修复现有群锁的取消清理契约，不新增管理器或调整任务并发策略。 |
+| [B_20261113_1153_exited-runtime-owner](jiuwenswarm/server/runtime/session/B_20261113_1153_exited-runtime-owner.md) | B | Worker 退出未回收时存量会话无法重新认领 | 刘瑜 | jiuwenswarm/server/runtime | jiuwenswarm/server/runtime/session/lifecycle.py, tests/unit_tests/server/test_runtime_owner_identity.py, tests/unit_tests/agentserver/test_worker_session_owner_recovery.py, tests/unit_tests/agentserver/fixtures/session_owner_worker.py | 无独立 D：修复既有存活属主保护与 Worker 退出判定的不一致，不新增持久化格式或接管协议，无独立设计。 |
 
 <a id="module-15"></a>
 
