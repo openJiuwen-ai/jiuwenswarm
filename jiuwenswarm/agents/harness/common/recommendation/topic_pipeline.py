@@ -912,7 +912,8 @@ def _output_budget_for_stage(stage: str, context_window_tokens: int) -> int:
     """Completion tokens reserved when fitting prompts into ``context_window_tokens``.
 
     Must match the ``max_tokens`` the stage invoker will actually send after the
-    context-window clamp, so ``prompt + max_tokens`` cannot exceed the window.
+    context-window clamp (at most half the window), so fit leaves real prompt
+    room and ``prompt + max_tokens`` cannot exceed the window.
     """
 
     return _clamp_topic_max_tokens(

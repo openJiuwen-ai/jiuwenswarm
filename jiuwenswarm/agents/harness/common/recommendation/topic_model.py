@@ -274,6 +274,10 @@ def _clamp_topic_max_tokens(
     Stage budgets are Designer-sized (16k–65k). Without a context-window cap,
     small models get ``max_tokens`` larger than the remaining window and many
     OpenAI-compatible / vLLM gateways reject with HTTP 400 instead of truncating.
+
+    Cap completion at half the window (not ``window - 1``): prompt fit reserves the
+    same budget, and ``window - 1`` would leave only one token for the prompt on
+    small windows, making every non-empty summarizer/RID fit fail closed.
     """
 
     try:
@@ -289,9 +293,7 @@ def _clamp_topic_max_tokens(
         window = 0
     if window <= 0:
         return capped
-    # Leave at least one token for the prompt; never ask for more completion
-    # tokens than the configured window can hold.
-    room = max(1, window - 1)
+    room = max(1, window // 2)
     return max(1, min(capped, room))
 
 

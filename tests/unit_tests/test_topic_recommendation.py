@@ -3592,9 +3592,10 @@ def test_clamp_topic_max_tokens_respects_context_window() -> None:
         _v6_max_tokens,
     )
 
-    assert _clamp_topic_max_tokens(32768, context_window_tokens=8192) == 8191
+    # Half-window room keeps prompt fit from collapsing on small windows.
+    assert _clamp_topic_max_tokens(32768, context_window_tokens=8192) == 4096
     assert _clamp_topic_max_tokens(16384, context_window_tokens=131072) == 16384
-    assert _output_budget_for_stage("rid_interest_distiller", 32768) == 32767
+    assert _output_budget_for_stage("rid_interest_distiller", 32768) == 16384
     assert _output_budget_for_stage(
         "v6_session_summarizer", 262144,
     ) == _v6_max_tokens("v6_session_summarizer")
