@@ -90,7 +90,8 @@ class WorkerGatewayBridge:
         from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 
         stream = bool(payload.get("is_stream") or payload.get("is_complete") is not None)
-        critical = bool(dispatch_id) and not stream and not metadata.get(E2A_WIRE_SERVER_PUSH_KEY)
+        replayable = stream or bool(metadata.get(E2A_WIRE_SERVER_PUSH_KEY))
+        critical = bool(dispatch_id) and not replayable
         wire_id = uuid.uuid4().hex
         future = asyncio.get_running_loop().create_future() if critical else None
         try:
@@ -98,8 +99,14 @@ class WorkerGatewayBridge:
                 generation = self._holder.generation
                 if critical and _REQUEST_GENERATION.get() not in {None, generation}:
                     raise ConnectionError("response delivery connection was replaced")
-                if stream or metadata.get(E2A_WIRE_SERVER_PUSH_KEY):
+                if replayable:
                     frame = self.events.append(payload, dispatch_id)
+                    record = self.events.records.get(frame["dispatch_id"])
+                    if (record is not None and record.request.is_stream
+                            and record.delivery_generation not in {None, generation}):
+                        # Keep replayable output behind this dispatch's journal
+                        # cursor. Critical replies must retain delivery ACKs.
+                        return
                 else:
                     frame = {"request_id": request_id, "dispatch_id": dispatch_id, "payload": payload}
                 conn = self._holder.conn

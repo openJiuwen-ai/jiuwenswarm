@@ -15,7 +15,7 @@ import pytest
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front.request_registry import DuplicateRequestError, RequestRegistry
-from jiuwenswarm.server.ipc.protocol import KIND_DELIVERY_ACK, KIND_REQUEST, dump_agent_request
+from jiuwenswarm.server.ipc.protocol import KIND_DELIVERY_ACK, KIND_REQUEST, KIND_SUBSCRIBE, dump_agent_request
 from jiuwenswarm.server.worker.dispatcher import WorkerDispatcher
 from jiuwenswarm.server.worker.event_store import WorkerEventStore
 from jiuwenswarm.server.worker.gateway_bridge import (
@@ -315,7 +315,7 @@ async def test_critical_reply_aborts_on_transport_detach():
 
 
 @pytest.mark.asyncio
-async def test_accepted_execution_survives_detach_and_publishes_on_new_connection():
+async def test_accepted_execution_survives_detach_and_replays_before_live_delivery():
     holder = ConnHolder()
     first = Connection()
     generation = holder.open_session(first)
@@ -349,6 +349,14 @@ async def test_accepted_execution_survives_detach_and_publishes_on_new_connectio
     second = Connection()
     new_generation = holder.open_session(second)
     release.set()
+    async with asyncio.timeout(1):
+        while bridge.events.records["original-dispatch"].completion is None:
+            await asyncio.sleep(0)
+    assert second.frames == []
+    await dispatcher.handle({"kind": KIND_SUBSCRIBE, "generation": new_generation,
+                             "query_id": "resume", "dispatch_id": "original-dispatch",
+                             "payload": dump_agent_request(request()), "after": 0,
+                             "worker_instance": bridge.events.instance}, second)
     await asyncio.wait_for(second.sent.wait(), 1)
     assert cancellations == []
     assert second.frames[0]["generation"] == new_generation
