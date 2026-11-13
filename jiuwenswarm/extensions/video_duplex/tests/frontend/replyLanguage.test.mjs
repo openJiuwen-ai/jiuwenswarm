@@ -18,7 +18,14 @@ test('Qwen forwards the full queue management instruction to the text manager', 
   }), null);
   const update = createQwenOmniSessionUpdate({ inputRate: 16000, outputRate: 24000 });
   assert.match(update.session.instructions, /call jiuwen_queue_manage/);
-  assert.match(update.session.instructions, /Call the tool before acknowledging/);
+  assert.match(update.session.instructions, /Respond naturally to every user speech turn/);
+  assert.match(update.session.instructions, /brief spoken acknowledgement/);
+  assert.match(update.session.instructions, /must include one brief spoken acknowledgement in the same response turn as the required tool call/);
+  assert.match(update.session.instructions, /A tool call alone is not a complete response/);
+  assert.match(update.session.instructions, /Acknowledge once per user request, not once per tool call/);
+  assert.match(update.session.instructions, /Never claim success before the tool receipt confirms it/);
+  assert.doesNotMatch(update.session.instructions, /Call the tool before acknowledging/);
+  assert.doesNotMatch(update.session.instructions, /Successful task acceptance is a silent context update/);
 });
 
 for (const [language, expected, announcement] of [

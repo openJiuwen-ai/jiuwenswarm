@@ -218,7 +218,6 @@ export class RealtimeDuplexSession {
     streamedText?: string;
     audio: Array<{ event: Record<string, unknown>; encoded: string }>;
   }>();
-  private silentToolResponses = new Set<string>();
   private messageOutputItems = new Map<string, Set<string>>();
   private finishedOutputResponses = new Set<string>();
   private activeUserTurnId: string | null = null;
@@ -406,7 +405,6 @@ export class RealtimeDuplexSession {
     this.interruptedResponseIds.clear();
     for (const responseId of this.heldOutput.keys()) this.closeStreamedText(responseId);
     this.heldOutput.clear();
-    this.silentToolResponses.clear();
     this.messageOutputItems.clear();
     this.finishedOutputResponses.clear();
     this.qwenMedia.reset();
@@ -919,16 +917,6 @@ export class RealtimeDuplexSession {
       });
       this.callbacks.onToolResultDispatched?.(toolResult.jobId);
 
-      if (toolResult.brief.status === 'completed') {
-        this.send({ type: 'conversation.item.create', item: {
-          type: 'message', role: 'user', content: [{ type: 'input_text',
-            text: `Background task result for future context only; do not announce or execute: ${JSON.stringify({
-              job_id: toolResult.jobId, question: toolResult.question, ...toolResult.brief,
-            })}` }],
-        } });
-        this.dispatchQueuedToolResult();
-        return;
-      }
       this.pendingToolResponseJobId = toolResult.jobId;
       this.notificationConflicts = 0;
       this.responseActive = true;
@@ -968,10 +956,8 @@ export class RealtimeDuplexSession {
     // Keep message text and audio together even when the response also calls a tool.
     if (type === 'response.output_item.added') {
       const item = event.item as Record<string, unknown> | undefined;
-      if (item?.type === 'function_call') this.suppressUnclassifiedToolOutput(outputResponseId);
-      else if (item?.type === 'message' &&
+      if (item?.type === 'message' &&
         !this.finishedOutputResponses.has(outputResponseId) && !this.interruptedResponseIds.has(outputResponseId)) {
-        this.silentToolResponses.delete(outputResponseId);
         const items = this.messageOutputItems.get(outputResponseId) || new Set<string>();
         items.add(String(item.id || ''));
         this.messageOutputItems.set(outputResponseId, items);
@@ -987,15 +973,8 @@ export class RealtimeDuplexSession {
         }
       }
     }
-    if (type === 'response.function_call_arguments.done') {
-      this.suppressUnclassifiedToolOutput(outputResponseId);
-    }
     if (this.holdResponseOutput(type, event, outputResponseId)) return;
     if (type === 'response.done') {
-      const output = response?.output;
-      if (Array.isArray(output) && output.some(item => item?.type === 'function_call')) {
-        this.suppressUnclassifiedToolOutput(outputResponseId);
-      }
       this.releaseResponseOutput(outputResponseId, String(response?.status || 'completed'));
     }
     if (type === 'response.function_call_arguments.done' && eventResponseId && this.interruptedResponseIds.has(eventResponseId)) {
@@ -1240,7 +1219,7 @@ export class RealtimeDuplexSession {
 
   private holdResponseOutput(type: string, event: Record<string, unknown>, responseId: string): boolean {
     if (!/^response\.(?:text\.(?:delta|done)|(?:output_)?audio(?:_transcript)?\.(?:delta|done))$/.test(type)) return false;
-    if (this.silentToolResponses.has(responseId) || this.finishedOutputResponses.has(responseId) || this.interruptedResponseIds.has(responseId)) return true;
+    if (this.finishedOutputResponses.has(responseId) || this.interruptedResponseIds.has(responseId)) return true;
     if (/^response\.(?:output_)?audio\.(?:delta|done)$/.test(type) && this.isMessageOutput(event, responseId)) {
       if (type.endsWith('.done')) return false;
       const encoded = String(event.delta || event.audio || '');
@@ -1291,34 +1270,17 @@ export class RealtimeDuplexSession {
     return itemId ? items.has(itemId) || items.has('') : items.size > 0;
   }
 
-  private suppressUnclassifiedToolOutput(responseId: string): void {
-    if (!this.messageOutputItems.has(responseId)) {
-      this.silentToolResponses.add(responseId);
-      this.heldOutput.delete(responseId);
-    }
-    // A separate tool response must also preserve an earlier message's audio.
-    const inputId = this.responseInputs.get(responseId);
-    if (!inputId) return;
-    for (const heldId of this.heldOutput.keys()) {
-      if (this.responseInputs.get(heldId) !== inputId) continue;
-      if (this.messageOutputItems.has(heldId)) continue;
-      this.silentToolResponses.add(heldId);
-      this.heldOutput.delete(heldId);
-    }
-  }
-
   private releaseResponseOutput(responseId: string, status: string): void {
     this.messageOutputItems.delete(responseId);
     if (this.finishedOutputResponses.has(responseId)) return;
     const output = this.heldOutput.get(responseId);
     if (status !== 'completed') this.closeStreamedText(responseId);
     this.heldOutput.delete(responseId);
-    const silent = this.silentToolResponses.delete(responseId);
     this.finishedOutputResponses.add(responseId);
     if (this.finishedOutputResponses.size > 64) {
       this.finishedOutputResponses.delete(this.finishedOutputResponses.values().next().value!);
     }
-    if (!output || silent || status !== 'completed' || this.interruptedResponseIds.has(responseId)) return;
+    if (!output || status !== 'completed' || this.interruptedResponseIds.has(responseId)) return;
     this.finishAssistantText(output.transcript || output.text, responseId || null);
     for (const { event, encoded } of output.audio) this.enqueueAudioDelta(event, encoded, responseId || null);
   }
