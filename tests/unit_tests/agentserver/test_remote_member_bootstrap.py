@@ -1295,7 +1295,24 @@ async def test_release_a2x_reservations_notifies_remote_teammate_and_does_not_re
 
 
 @pytest.mark.asyncio
-async def test_shutdown_member_wrapper_schedules_cleanup_when_all_teammates_closed(monkeypatch):
+@pytest.mark.parametrize(
+    ("teammate_status_names", "expected_scheduled"),
+    [
+        pytest.param(
+            ["SHUTDOWN_REQUESTED", "SHUTDOWN"],
+            [("sid-1", "web")],
+            id="schedules-cleanup-when-all-teammates-closed",
+        ),
+        pytest.param(
+            ["SHUTDOWN_REQUESTED", "READY"],
+            [],
+            id="waits-until-every-teammate-is-closed",
+        ),
+    ],
+)
+async def test_shutdown_member_wrapper_schedules_cleanup_only_after_every_teammate_is_closed(
+    monkeypatch, teammate_status_names, expected_scheduled
+):
     from openjiuwen.agent_teams.schema.status import MemberStatus
     from openjiuwen.agent_teams.schema.team import TeamRole
     from openjiuwen.core.runner import Runner
@@ -1324,6 +1341,7 @@ async def test_shutdown_member_wrapper_schedules_cleanup_when_all_teammates_clos
         lambda session_id, channel_id: scheduled.append((session_id, channel_id)),
     )
 
+    teammate_statuses = [MemberStatus[name].value for name in teammate_status_names]
     team_agent = SimpleNamespace(
         role=TeamRole.LEADER,
         spec=SimpleNamespace(lifecycle="persistent"),
@@ -1336,8 +1354,8 @@ async def test_shutdown_member_wrapper_schedules_cleanup_when_all_teammates_clos
         team_backend=SimpleNamespace(
             list_members=AsyncMock(
                 return_value=[
-                    SimpleNamespace(member_name="teammate-1", status=MemberStatus.SHUTDOWN_REQUESTED.value),
-                    SimpleNamespace(member_name="teammate-2", status=MemberStatus.SHUTDOWN.value),
+                    SimpleNamespace(member_name=f"teammate-{i + 1}", status=status)
+                    for i, status in enumerate(teammate_statuses)
                 ]
             )
         ),
@@ -1346,7 +1364,7 @@ async def test_shutdown_member_wrapper_schedules_cleanup_when_all_teammates_clos
     attach_shutdown_member_remote_cleanup_wrapper(team_agent, session_id="sid-1", channel_id="web")
     await tool.invoke({"member_name": "teammate-1"})
 
-    assert scheduled == [("sid-1", "web")]
+    assert scheduled == expected_scheduled
 
 
 @pytest.mark.asyncio
@@ -1400,61 +1418,6 @@ async def test_shutdown_member_wrapper_skips_delete_for_temporary_lifecycle(monk
     )
 
     attach_shutdown_member_remote_cleanup_wrapper(team_agent, session_id="sid-temp", channel_id="web")
-    await tool.invoke({"member_name": "teammate-1"})
-
-    assert scheduled == []
-
-
-@pytest.mark.asyncio
-async def test_shutdown_member_wrapper_waits_until_every_teammate_is_closed(monkeypatch):
-    from openjiuwen.agent_teams.schema.status import MemberStatus
-    from openjiuwen.agent_teams.schema.team import TeamRole
-    from openjiuwen.core.runner import Runner
-
-    monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_config",
-        lambda: {"team": {"runtime": {"mode": "distributed", "role": "leader"}}},
-    )
-
-    class _Result:
-        success = True
-
-    class _ShutdownMemberTool:
-        async def invoke(self, inputs, **kwargs):
-            return _Result()
-
-    tool = _ShutdownMemberTool()
-    resource_mgr = MagicMock()
-    resource_mgr.get_tool = MagicMock(return_value=tool)
-    monkeypatch.setattr(Runner, "resource_mgr", resource_mgr)
-
-    scheduled = []
-    monkeypatch.setattr(
-        _mod,
-        "".join(["_schedule", "_shutdown_cleanup"]),
-        lambda session_id, channel_id: scheduled.append((session_id, channel_id)),
-    )
-
-    team_agent = SimpleNamespace(
-        role=TeamRole.LEADER,
-        spec=SimpleNamespace(lifecycle="persistent"),
-        deep_agent=SimpleNamespace(
-            ability_manager=SimpleNamespace(
-                list=lambda: [SimpleNamespace(id="team.shutdown_member", name="shutdown_member")]
-            ),
-            card=SimpleNamespace(id="leader-card"),
-        ),
-        team_backend=SimpleNamespace(
-            list_members=AsyncMock(
-                return_value=[
-                    SimpleNamespace(member_name="teammate-1", status=MemberStatus.SHUTDOWN_REQUESTED.value),
-                    SimpleNamespace(member_name="teammate-2", status=MemberStatus.READY.value),
-                ]
-            )
-        ),
-    )
-
-    attach_shutdown_member_remote_cleanup_wrapper(team_agent, session_id="sid-1", channel_id="web")
     await tool.invoke({"member_name": "teammate-1"})
 
     assert scheduled == []

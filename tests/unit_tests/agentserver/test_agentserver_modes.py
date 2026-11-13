@@ -286,7 +286,8 @@ def test_team_plan_mode_sets_spec_field_without_metadata_package():
     assert "team_plan" not in spec.metadata
 
 
-def test_team_mode_does_not_enable_team_plan():
+@pytest.mark.parametrize("mode", ["team", "code.team"])
+def test_non_plan_team_modes_do_not_enable_team_plan(mode):
     from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
     from jiuwenswarm.agents.harness.team.team_manager import TeamManager
 
@@ -296,22 +297,7 @@ def test_team_mode_does_not_enable_team_plan():
         enable_team_plan=False,
     )
 
-    TeamManager.apply_team_plan_mode(spec, request_metadata={"mode": "team"})
-
-    assert spec.enable_team_plan is False
-
-
-def test_code_team_mode_does_not_enable_team_plan():
-    from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
-    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
-
-    spec = TeamAgentSpec.model_construct(
-        team_name="demo_team",
-        agents={},
-        enable_team_plan=False,
-    )
-
-    TeamManager.apply_team_plan_mode(spec, request_metadata={"mode": "code.team"})
+    TeamManager.apply_team_plan_mode(spec, request_metadata={"mode": mode})
 
     assert spec.enable_team_plan is False
 
@@ -1116,144 +1102,104 @@ async def test_process_message_stream_persists_team_ask_user_answer_with_origina
     assert any(chunk.payload.get("event_type") == "chat.final" for chunk in chunks)
 
 
-@pytest.mark.asyncio
-async def test_process_message_stream_routes_web_evolution_interrupt_without_user_history(
-    monkeypatch,
-):
-    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
-    from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
-
-    class FakeSessionManager:
-        @staticmethod
-        def get_session_id(session_id=None):
-            return session_id or "default"
-
-        @staticmethod
-        async def submit_task(_session_id, task_factory):
-            await task_factory()
-
-    class FakeAdapter:
-        seen_inputs = None
-
-        @staticmethod
-        async def process_message_stream_impl(*_args, **_kwargs):
-            _request, inputs = _args
-            FakeAdapter.seen_inputs = inputs
-            yield AgentResponseChunk(
-                request_id="req-stream-answer",
-                channel_id="web",
-                payload={"event_type": "chat.done"},
-                is_complete=True,
-            )
-
-    history_records = []
-
-    monkeypatch.setattr(interface_module, "SessionManager", FakeSessionManager)
-    monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
-    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
-    monkeypatch.setattr(
-        interface_module.JiuWenSwarm,
-        "_ensure_adapter",
-        lambda self, mode="agent": FakeAdapter(),
-    )
-    monkeypatch.setattr(
-        interface_module,
-        "append_history_record",
-        lambda **kwargs: history_records.append(kwargs),
-    )
-
-    request = AgentRequest(
-        request_id="req-stream-answer",
-        channel_id="web",
-        session_id="web-session",
-        params={
-            "query": "",
-            "mode": "agent.plan",
-            "request_id": "call_evolve_1",
-            "answers": [{"selected_options": ["allow_always"], "custom_input": ""}],
-            "source": "evolution_interrupt",
-            "approval_kind": "evolve",
-        },
-        is_stream=True,
-    )
-
-    async def collect_chunks():
-        return [chunk async for chunk in interface_module.JiuWenSwarm().process_message_stream(request)]
-
-    chunks = await collect_chunks()
-
-    assert isinstance(FakeAdapter.seen_inputs["query"], InteractiveInput)
-    assert FakeAdapter.seen_inputs["query"].user_inputs == {
-        "call_evolve_1": {"action": "allow_always"}
-    }
-    assert [record for record in history_records if record["role"] == "user"] == []
-    assert chunks[0].payload == {"event_type": "chat.done"}
-    assert chunks[-1].is_complete is True
-
-
-@pytest.mark.asyncio
-async def test_process_message_stream_keeps_passive_evolution_approval_as_user_history(
-    monkeypatch,
-):
-    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
-    from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
-
-    class FakeSessionManager:
-        @staticmethod
-        def get_session_id(session_id=None):
-            return session_id or "default"
-
-        @staticmethod
-        async def submit_task(_session_id, task_factory):
-            await task_factory()
-
-    class FakeAdapter:
-        seen_inputs = None
-
-        @staticmethod
-        async def process_message_stream_impl(*_args, **_kwargs):
-            _request, inputs = _args
-            FakeAdapter.seen_inputs = inputs
-            yield AgentResponseChunk(
-                request_id="req-stream-answer",
-                channel_id="web",
-                payload={"event_type": "chat.done"},
-                is_complete=True,
-            )
-
-    history_records = []
-
-    monkeypatch.setattr(interface_module, "SessionManager", FakeSessionManager)
-    monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
-    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
-    monkeypatch.setattr(
-        interface_module.JiuWenSwarm,
-        "_ensure_adapter",
-        lambda self, mode="agent": FakeAdapter(),
-    )
-    monkeypatch.setattr(
-        interface_module,
-        "append_history_record",
-        lambda **kwargs: history_records.append(kwargs),
-    )
-
-    request = AgentRequest(
-        request_id="req-stream-answer",
-        channel_id="web",
-        session_id="web-session",
-        params={
-            "query": "",
-            "mode": "agent.plan",
-            "request_id": "regular_evolve_1",
-            "answers": [{"selected_options": ["allow_always"], "custom_input": ""}],
-            "source": "skill_evolution_approval",
-            "approval_schema": "openjiuwen.skill_evolution_approval.v1",
-            "evolution_meta": {
-                "event_kind": "approval",
-                "rail_kind": "regular",
+@pytest.mark.parametrize(
+    ("params", "expected_user_inputs", "expected_first_payload", "expects_user_history"),
+    [
+        pytest.param(
+            {
+                "query": "",
+                "mode": "agent.plan",
+                "request_id": "call_evolve_1",
+                "answers": [{"selected_options": ["allow_always"], "custom_input": ""}],
+                "source": "evolution_interrupt",
                 "approval_kind": "evolve",
             },
-        },
+            {"call_evolve_1": {"action": "allow_always"}},
+            {"event_type": "chat.done"},
+            False,
+            id="interrupt_resume",
+        ),
+        pytest.param(
+            {
+                "query": "",
+                "mode": "agent.plan",
+                "request_id": "regular_evolve_1",
+                "answers": [{"selected_options": ["allow_always"], "custom_input": ""}],
+                "source": "skill_evolution_approval",
+                "approval_schema": "openjiuwen.skill_evolution_approval.v1",
+                "evolution_meta": {
+                    "event_kind": "approval",
+                    "rail_kind": "regular",
+                    "approval_kind": "evolve",
+                },
+            },
+            None,
+            None,
+            True,
+            id="passive_approval",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_process_message_stream_routes_evolution_approval_answers_by_source(
+    monkeypatch,
+    params,
+    expected_user_inputs,
+    expected_first_payload,
+    expects_user_history,
+):
+    """Route evolution approval answers by source.
+
+    Interrupt-resume answers reach the adapter without user history, while
+    passive skill evolution approvals are persisted as user history.
+    """
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+    from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
+
+    class FakeSessionManager:
+        @staticmethod
+        def get_session_id(session_id=None):
+            return session_id or "default"
+
+        @staticmethod
+        async def submit_task(_session_id, task_factory):
+            await task_factory()
+
+    class FakeAdapter:
+        seen_inputs = None
+
+        @staticmethod
+        async def process_message_stream_impl(*_args, **_kwargs):
+            _request, inputs = _args
+            FakeAdapter.seen_inputs = inputs
+            yield AgentResponseChunk(
+                request_id="req-stream-answer",
+                channel_id="web",
+                payload={"event_type": "chat.done"},
+                is_complete=True,
+            )
+
+    history_records = []
+
+    monkeypatch.setattr(interface_module, "SessionManager", FakeSessionManager)
+    monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
+    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
+    monkeypatch.setattr(
+        interface_module.JiuWenSwarm,
+        "_ensure_adapter",
+        lambda self, mode="agent": FakeAdapter(),
+    )
+    monkeypatch.setattr(
+        interface_module,
+        "append_history_record",
+        lambda **kwargs: history_records.append(kwargs),
+    )
+
+    request = AgentRequest(
+        request_id="req-stream-answer",
+        channel_id="web",
+        session_id="web-session",
+        params=params,
         is_stream=True,
     )
 
@@ -1263,7 +1209,15 @@ async def test_process_message_stream_keeps_passive_evolution_approval_as_user_h
     chunks = await collect_chunks()
 
     assert isinstance(FakeAdapter.seen_inputs["query"], InteractiveInput)
-    assert [record for record in history_records if record["role"] == "user"]
+    if expected_user_inputs is not None:
+        assert FakeAdapter.seen_inputs["query"].user_inputs == expected_user_inputs
+    user_history = [record for record in history_records if record["role"] == "user"]
+    if expects_user_history:
+        assert user_history
+    else:
+        assert user_history == []
+    if expected_first_payload is not None:
+        assert chunks[0].payload == expected_first_payload
     assert chunks[-1].is_complete is True
 
 

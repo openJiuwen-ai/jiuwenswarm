@@ -672,7 +672,8 @@ class TestFinalizePendingRunsDisposition:
     prefix survives cold start; only an explicit user stop stamps ``stopped``.
     """
 
-    def test_paused_run_stays_paused_under_stop_disposition(self, monkeypatch) -> None:
+    @pytest.mark.parametrize("disposition", ["stop", "pause"])
+    def test_paused_run_stays_paused_under_stop_or_pause_disposition(self, monkeypatch, disposition) -> None:
         from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
         monitor = _FakeTeamMonitor()
         handler = WorkflowMonitorHandler(
@@ -680,18 +681,7 @@ class TestFinalizePendingRunsDisposition:
             initial_runs={"wf_paused": WorkflowRunState(id="wf_paused", name="flow", status="paused")},
         )
         monkeypatch.setattr(handler, "_persist", lambda: None)
-        handler.finalize_pending_runs(disposition="stop")
-        assert handler.get_run_states()["wf_paused"].status == "paused"
-
-    def test_paused_run_stays_paused_under_pause_disposition(self, monkeypatch) -> None:
-        from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
-        monitor = _FakeTeamMonitor()
-        handler = WorkflowMonitorHandler(
-            monitor=monitor, session_id="sess-1",
-            initial_runs={"wf_paused": WorkflowRunState(id="wf_paused", name="flow", status="paused")},
-        )
-        monkeypatch.setattr(handler, "_persist", lambda: None)
-        handler.finalize_pending_runs(disposition="pause")
+        handler.finalize_pending_runs(disposition=disposition)
         assert handler.get_run_states()["wf_paused"].status == "paused"
 
     def test_running_run_stopped_under_stop_disposition(self, monkeypatch) -> None:

@@ -114,38 +114,29 @@ def test_find_seed_none_when_absent(seed_dir: Path) -> None:
     assert _find_mcp_builtins_seed(seed_dir) is None
 
 
-def test_seed_update_needed_when_installed_version_is_stale(
+@pytest.mark.parametrize(
+    ("installed_version", "expected"),
+    [
+        pytest.param("v0.2", True, id="stale"),
+        pytest.param("v0.2.1", False, id="matches-seed"),
+    ],
+)
+def test_seed_update_needed_depends_on_installed_version(
     seed_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    installed_version: str, expected: bool,
 ) -> None:
     seed_zip = seed_dir / "mcp_builtins_v0.2.zip"
     _make_seed_zip(seed_zip, "v0.2.1")
     workspace = tmp_path / "runtime"
     installed = workspace / "agent" / "workspace" / "mcp" / "mcp_builtins"
     installed.mkdir(parents=True)
-    (installed / ".mcp_builtins_version").write_text("v0.2", encoding="utf-8")
+    (installed / ".mcp_builtins_version").write_text(installed_version, encoding="utf-8")
     monkeypatch.setattr("jiuwenswarm.common.utils._find_package_root", lambda: tmp_path)
     monkeypatch.setattr(
         "jiuwenswarm.common.utils._find_mcp_builtins_seed", lambda _path: seed_zip
     )
 
-    assert mcp_builtins_seed_update_needed(workspace) is True
-
-
-def test_seed_update_not_needed_when_installed_version_matches(
-    seed_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    seed_zip = seed_dir / "mcp_builtins_v0.2.zip"
-    _make_seed_zip(seed_zip, "v0.2.1")
-    workspace = tmp_path / "runtime"
-    installed = workspace / "agent" / "workspace" / "mcp" / "mcp_builtins"
-    installed.mkdir(parents=True)
-    (installed / ".mcp_builtins_version").write_text("v0.2.1", encoding="utf-8")
-    monkeypatch.setattr("jiuwenswarm.common.utils._find_package_root", lambda: tmp_path)
-    monkeypatch.setattr(
-        "jiuwenswarm.common.utils._find_mcp_builtins_seed", lambda _path: seed_zip
-    )
-
-    assert mcp_builtins_seed_update_needed(workspace) is False
+    assert mcp_builtins_seed_update_needed(workspace) is expected
 
 
 def test_runtime_workspace_prepares_when_mcp_seed_is_stale(

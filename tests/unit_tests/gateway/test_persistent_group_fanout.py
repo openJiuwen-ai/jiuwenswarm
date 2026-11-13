@@ -838,7 +838,25 @@ async def test_delivery_feishu_result_only_contains_the_answer():
 
 
 @pytest.mark.asyncio
-async def test_delivery_feishu_result_renders_a_native_bot_mention_for_group_handoff():
+@pytest.mark.parametrize(
+    ("mention_targets", "expected_content"),
+    [
+        pytest.param(
+            [{"agent_id": "agent-target", "name": "研究同事", "open_id": "ou_target"}],
+            "请继续 <at id=ou_target></at>",
+            id="native-bot-mention",
+        ),
+        pytest.param(
+            [{"agent_id": "agent-target", "name": "研究同事"}],
+            "请继续 @研究同事",
+            id="readable-name-fallback",
+        ),
+    ],
+)
+async def test_delivery_feishu_result_renders_mention_for_group_handoff(
+    mention_targets,
+    expected_content,
+):
     channel = _feishu_channel(agent_id="agent-sender")
     response = SimpleNamespace(
         success=lambda: True,
@@ -854,35 +872,11 @@ async def test_delivery_feishu_result_renders_a_native_bot_mention_for_group_han
         text="请继续 [[agent:agent-target]]",
         source_message_id="om_source",
         idempotency_key="delivery-key",
-        mention_targets=[{"agent_id": "agent-target", "name": "研究同事", "open_id": "ou_target"}],
+        mention_targets=mention_targets,
     )
 
     content = json.loads(api_method.call_args.args[0].request_body.content)
-    assert content["elements"][0]["text"]["content"] == "请继续 <at id=ou_target></at>"
-
-
-@pytest.mark.asyncio
-async def test_delivery_feishu_result_keeps_a_readable_name_when_target_bot_is_unavailable():
-    channel = _feishu_channel(agent_id="agent-sender")
-    response = SimpleNamespace(
-        success=lambda: True,
-        data=SimpleNamespace(message=SimpleNamespace(message_id="om_sent")),
-    )
-    api_method = MagicMock(return_value=response)
-    channel._api_client = SimpleNamespace(
-        im=SimpleNamespace(v1=SimpleNamespace(message=SimpleNamespace(reply=api_method)))
-    )
-
-    await channel.send_persistent_result(
-        chat_id="oc_project",
-        text="请继续 [[agent:agent-target]]",
-        source_message_id="om_source",
-        idempotency_key="delivery-key",
-        mention_targets=[{"agent_id": "agent-target", "name": "研究同事"}],
-    )
-
-    content = json.loads(api_method.call_args.args[0].request_body.content)
-    assert content["elements"][0]["text"]["content"] == "请继续 @研究同事"
+    assert content["elements"][0]["text"]["content"] == expected_content
 
 
 @pytest.mark.asyncio
