@@ -6,7 +6,8 @@
  * turn's first write, and an export of each existing slide from before the
  * turn first changed it. A slide that is only moved needs no export; a new one
  * needs only its id. At the end of the turn the pane hashes the slides the turn
- * left, so an undo can tell whether one was changed since.
+ * left, so an undo can tell whether one was changed since. The hash leaves out
+ * ``docProps/core.xml``: PowerPoint writes the time of the export into it.
  *
  * Undoing turn T undoes T and every later turn, the last first. It runs in the
  * host write queue, so no tool write lands half way through. A call the host
@@ -14,9 +15,23 @@
  * in the pane's memory only: a reload loses them, and the pane keeps the last
  * ``turns`` turns or ``bytes`` of exports, whichever is less.
  */
+import { strToU8, unzipSync } from 'fflate';
+
 import type { HostWriteQueue } from './hostWriteQueue';
 import { sha256Hex } from './presentationAssetClient';
 import type { SlideJournal } from './presentationScenePatch';
+
+/**
+ * A call's journal, which also follows a slide the call replaced by an edited copy of it. Its ``rollback`` names
+ * each slide put back by the id the call was given, not by a copy's.
+ */
+export interface CallJournal extends SlideJournal {
+  /**
+   * The call deleted slide ``oldId`` after it made ``newId`` (``created``), an edited copy of it: from here on
+   * ``newId`` stands wherever ``oldId`` stood, so an undo puts the slide back once and deletes the copy.
+   */
+  replaced(oldId: string, newId: string): void;
+}
 
 /** The deck as an undo works it, one host round trip per call. */
 export interface SlideDeck {
@@ -74,10 +89,12 @@ export class SlideSnapshots {
   ) {}
 
   /** What the call ``callId`` tells the open turn about the slides it changes; used inside its write. */
-  journal(callId: string): SlideJournal {
+  journal(callId: string): CallJournal {
     const call: Restorable = { order: [], exports: new Map(), created: new Set() };
     /** What the call added to its turn's record, taken out again when the call is rolled back. */
     const added = { exports: new Set<string>(), moved: new Set<string>() };
+    /** The id the call was given for each copy it made of a slide (``replaced``), which it alone has seen. */
+    const origin = new Map<string, string>();
     return {
       before: async (order, slides, exportSlides) => {
         const turn = this.openTurn(callId, order);
@@ -110,7 +127,18 @@ export class SlideSnapshots {
           call.created.forEach(id => turn.created.delete(id));
         }
         await this.rename(renamed);
-        return renamed;
+        return new Map([...renamed].map(([id, restored]) => [origin.get(id) ?? id, restored]));
+      },
+      replaced: (oldId, newId) => {
+        origin.set(newId, origin.get(oldId) ?? oldId);
+        origin.delete(oldId);
+        const renamed = new Map([[oldId, newId]]);
+        for (const record of [call, ...this.turns]) {
+          record.created.delete(newId);
+          renameIds(record, renamed);
+        }
+        added.exports = new Set([...added.exports].map(id => renamed.get(id) ?? id));
+        added.moved = new Set([...added.moved].map(id => renamed.get(id) ?? id));
       },
     };
   }
@@ -201,14 +229,7 @@ export class SlideSnapshots {
   /** The turns left refer to the slides an undo put back by their new ids, which now look as those turns left them. */
   private async rename(renamed: Map<string, string>): Promise<void> {
     if (!renamed.size) return;
-    const to = (id: string) => renamed.get(id) ?? id;
-    for (const turn of this.turns) {
-      turn.order = turn.order.map(to);
-      turn.exports = new Map([...turn.exports].map(([id, exported]) => [to(id), exported]));
-      turn.moved = new Set([...turn.moved].map(to));
-      turn.created = new Set([...turn.created].map(to));
-      if (turn.after) turn.after = new Map([...turn.after].map(([id, hash]) => [to(id), hash]));
-    }
+    for (const turn of this.turns) renameIds(turn, renamed);
     const fresh = await this.hashes([...renamed.values()]);
     for (const turn of this.turns) {
       for (const [id, hash] of fresh) if (turn.after?.has(id)) turn.after.set(id, hash);
@@ -218,7 +239,7 @@ export class SlideSnapshots {
   private async hashes(ids: readonly string[]): Promise<Map<string, string>> {
     const exports = await this.deck.exportSlides(ids);
     return new Map(await Promise.all([...exports].map(async ([id, exported]) => (
-      [id, await sha256Hex(new TextEncoder().encode(exported))] as const))));
+      [id, await contentHash(exported)] as const))));
   }
 
   /** Drop the oldest turns past the limits; the last turn stays, open or not. */
@@ -229,6 +250,26 @@ export class SlideSnapshots {
       this.turns.shift();
     }
   }
+}
+
+/** The hash of an exported slide's parts, without ``docProps/core.xml`` and the zip's own times. */
+async function contentHash(exported: string): Promise<string> {
+  const parts = unzipSync(Uint8Array.from(atob(exported), char => char.charCodeAt(0)),
+    { filter: file => file.name !== 'docProps/core.xml' });
+  const digests = await Promise.all(Object.keys(parts).sort()
+    .map(async name => `${name} ${await sha256Hex(new Uint8Array(parts[name]))}`));
+  return sha256Hex(strToU8(digests.join('\n')));
+}
+
+/** The record names each slide of ``renamed`` by its new id. */
+function renameIds(record: Restorable & { moved?: Set<string>; after?: Map<string, string> },
+  renamed: Map<string, string>): void {
+  const to = (id: string) => renamed.get(id) ?? id;
+  record.order = record.order.map(to);
+  record.exports = new Map([...record.exports].map(([id, exported]) => [to(id), exported]));
+  record.created = new Set([...record.created].map(to));
+  if (record.moved) record.moved = new Set([...record.moved].map(to));
+  if (record.after) record.after = new Map([...record.after].map(([id, hash]) => [to(id), hash]));
 }
 
 /** The slides an undo of the turn puts back. */
