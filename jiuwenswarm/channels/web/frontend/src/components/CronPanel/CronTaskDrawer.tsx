@@ -1,6 +1,7 @@
 import { useRef, useState, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Pencil } from 'lucide-react';
+import { deriveDrawerCanSubmit } from './drawerSubmitGuard';
 import ScheduleEditor from './ScheduleEditor';
 import ModelPicker from '../ModelPicker';
 import ModeSelector from './ModeSelector';
@@ -257,7 +258,7 @@ export default function CronTaskDrawer({
   // 单独提示（而不是塞进"还需要填写"的缺失字段列表里，语义对不上）
   const parsedSchedule = form.cronExpr.trim() ? cronExprToSchedule(form.cronExpr) : null;
   const scheduleAlreadyExpired = parsedSchedule ? isOnceScheduleExpired(parsedSchedule, form.timezone) : false;
-  const canSubmit = missingFieldLabels.length === 0 && !scheduleAlreadyExpired && !submitting;
+  const canSubmit = deriveDrawerCanSubmit(missingFieldLabels, scheduleAlreadyExpired, submitting);
   const missingFieldsHint =
     missingFieldLabels.length > 0
       ? t('cron.drawer.missingFieldsHint', { fields: missingFieldLabels.join(t('cron.schedule.listSeparator')) })
