@@ -316,6 +316,38 @@ def _valid_manifest(manifest: dict[str, Any], cards: list[dict[str, Any]]) -> bo
     )
 
 
+def drop_expired_pool_cards(
+    cards: list[dict[str, Any]],
+    manifest: dict[str, Any],
+    *,
+    now: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Drop cards whose retained/native expire_time is already past write time.
+
+    Without a generation wall-clock deadline, a multi-stage run can outlive the
+    plan-time retained margin. Writing those cards fails ``effective < expire``
+    (or would be filtered on serve). Drop them and renumber ranks so remaining
+    live cards can still form a pool.
+    """
+
+    live = [
+        card
+        for card in cards
+        if isinstance(card, dict) and now < float(card.get("expire_time") or 0.0)
+    ]
+    if len(live) == len(cards):
+        return cards, manifest
+    renumbered = [
+        {**card, "selector_rank": rank}
+        for rank, card in enumerate(live, start=1)
+    ]
+    updated_manifest = {
+        **manifest,
+        "card_revision_ids": [card["card_revision_id"] for card in renumbered],
+    }
+    return renumbered, updated_manifest
+
+
 def write_starter_pool(
     store: TopicStarterStore,
     cards: list[dict[str, Any]],
@@ -856,8 +888,31 @@ class BackgroundGenerationCoordinator:
                     external_invocation_audit=external_invocation_audit,
                 )
                 return "abstained"
+            write_started_at = time.time()
+            live_cards, live_manifest = drop_expired_pool_cards(
+                list(result.cards),
+                dict(result.manifest) if isinstance(result.manifest, dict) else {},
+                now=write_started_at,
+            )
+            if len(live_cards) != len(result.cards):
+                logger.info(
+                    "[Topic] dropped %s expired card(s) before pool write attempt=%s",
+                    len(result.cards) - len(live_cards),
+                    generation_attempt_id,
+                )
+            if not live_cards:
+                self.record_generation_event(
+                    "background_generation_rejected",
+                    trigger_key,
+                    generation_attempt_id=generation_attempt_id,
+                    reason="cards_expired_before_write",
+                    grounding_decision_receipt=grounding_decision_receipt,
+                    grounding_evidence_receipt=grounding_evidence_receipt,
+                    external_invocation_audit=external_invocation_audit,
+                )
+                return "background_generation_rejected"
             writer_kwargs = {
-                "created_at": time.time(),
+                "created_at": write_started_at,
                 "corpus_text_by_id": result.corpus_text_by_id,
             }
             if bind_pool_writer_model:
@@ -868,8 +923,8 @@ class BackgroundGenerationCoordinator:
                 )
             write_result = self._pool_writer(
                 self.store,
-                result.cards,
-                result.manifest,
+                live_cards,
+                live_manifest,
                 **writer_kwargs,
             )
             if not write_result:

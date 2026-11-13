@@ -28,6 +28,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_audit import (
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
     ArkBackgroundConfig,
+    _clamp_topic_max_tokens,
     build_ark_stage_invoker,
     invoke_stage_with_shape_repair,
     persist_provider_invocation,
@@ -219,11 +220,11 @@ _TOPIC_ARK_STAGE_CONCURRENCY = 3
 SHORT_INTENT_SNAPSHOT_PREFIX = "v6-short"
 MAX_FROZEN_DOCUMENT_CHARS = 8_000
 _PROFILE_INTEREST_CATEGORY = "profile_interest_continuation"
-# A retained card is republished when the run that carries it finishes. A card
-# with less life left than this window would expire inside its own pool write
-# and take the whole pool with it, so it stays in the pool it already has.
-# Independent of the (removed) total generation wall-clock deadline.
-_RETAINED_MINIMUM_REMAINING_SECONDS = 300.0
+# A retained card is republished when the run that carries it finishes. Plan-time
+# selection keeps a margin at least as large as one long provider call (topic
+# client timeout is 1200s). Write-time still re-checks expire_time so a slow
+# multi-stage run cannot poison the pool with already-expired retained cards.
+_RETAINED_MINIMUM_REMAINING_SECONDS = 1200.0
 # The project domain, global recent and hot-news lanes add cards a pool can do
 # without (D10, D22). Once the mandatory lane is ready they get this much longer,
 # generation and web evidence included; they normally finish within 45 seconds.
@@ -259,6 +260,8 @@ _SUMMARY_MAX_USER_CHARS = 1_500
 _SUMMARY_MAX_ANSWER_CHARS = 1_500
 _SUMMARY_MAX_SESSION_CHARS = 8_000
 _SUMMARY_TRUNCATION_MARKER = "…"
+# Legacy per-session summary padding kept only for call sites that still pass an
+# explicit reserved_output; new fits use ``_output_budget_for_stage``.
 _SUMMARY_RESERVED_OUTPUT_TOKENS = 256
 _SUMMARY_BASE_RESERVED_OUTPUT_TOKENS = 512
 # Batches are independent calls; a first preparation of a long history would
@@ -272,6 +275,7 @@ _SUMMARY_SESSION_LIMIT = 50
 # RID reads a bounded slice of the summaries; the short-delta sessions are always kept.
 _RID_SESSION_SUMMARY_LIMIT = 30
 _RID_FEEDBACK_MESSAGE_CHARS = 800
+# Fallback only; RID fit prefers ``_output_budget_for_stage("rid_interest_distiller", …)``.
 _RID_RESERVED_OUTPUT_TOKENS = 2_048
 
 
@@ -902,6 +906,19 @@ def _v6_max_tokens(stage: str) -> int:
     }:
         return 32768
     return 16384
+
+
+def _output_budget_for_stage(stage: str, context_window_tokens: int) -> int:
+    """Completion tokens reserved when fitting prompts into ``context_window_tokens``.
+
+    Must match the ``max_tokens`` the stage invoker will actually send after the
+    context-window clamp, so ``prompt + max_tokens`` cannot exceed the window.
+    """
+
+    return _clamp_topic_max_tokens(
+        _v6_max_tokens(stage),
+        context_window_tokens=context_window_tokens,
+    )
 
 
 _V6_PROMPT_VERSIONS = {
@@ -3615,15 +3632,13 @@ def _fit_summary_session(
 ) -> dict[str, Any] | None:
     """Drop the oldest turns until one session fits the context window."""
 
+    reserved_output = _output_budget_for_stage("v6_session_summarizer", limit)
     while True:
         estimate = _summary_batch_estimate(
             counter,
             snapshot,
             [payload],
-            reserved_output=(
-                _SUMMARY_BASE_RESERVED_OUTPUT_TOKENS
-                + _SUMMARY_RESERVED_OUTPUT_TOKENS
-            ),
+            reserved_output=reserved_output,
         )
         if estimate <= limit:
             return payload
@@ -3660,16 +3675,14 @@ def _plan_summary_batches(
 
     batches: list[list[int]] = []
     current: list[int] = []
+    reserved_output = _output_budget_for_stage("v6_session_summarizer", limit)
     for position in range(len(payloads)):
         candidate = current + [position]
         estimate = _summary_batch_estimate(
             counter,
             snapshot,
             [payloads[index] for index in candidate],
-            reserved_output=(
-                _SUMMARY_BASE_RESERVED_OUTPUT_TOKENS
-                + _SUMMARY_RESERVED_OUTPUT_TOKENS * len(candidate)
-            ),
+            reserved_output=reserved_output,
         )
         if estimate <= limit:
             current = candidate
@@ -3786,7 +3799,7 @@ def _fit_rid_inputs_to_budget(
         return counter.estimate_stage_tokens(
             _RID_API_SYSTEM_PROMPT,
             _rid_request_estimate_payload(rid_inputs),
-            _RID_RESERVED_OUTPUT_TOKENS,
+            _output_budget_for_stage("rid_interest_distiller", limit),
         )
 
     while True:
@@ -8399,13 +8412,17 @@ class TopicPipeline:
             raise TerminalGenerationRejection("recent_finalization_context_limit")
         try:
             counter = history.StageTokenCounter(config.model)
+            window = int(config.context_window_tokens)
             fitted_candidates = _fit_recent_finalizer_candidates(
                 candidates,
                 counter=counter,
-                limit=int(config.context_window_tokens),
+                limit=window,
                 input_snapshot_id=snapshot.input_snapshot_id,
                 discussion_coverage=plans[0].get("discussion_coverage", []),
                 previously_offered=plans[0].get("previously_offered", []),
+                reserved_output=_output_budget_for_stage(
+                    "v6_recent_finalizer", window,
+                ),
             )
         except history.ContextCountingUnverified as exc:
             raise TerminalGenerationRejection(
