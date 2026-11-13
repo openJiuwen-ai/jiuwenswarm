@@ -30,9 +30,9 @@ _ZONE_WORDS = {
 }
 
 # Screen sides belong to one camera, not to the room. A layout sentence copied into a
-# shot that looks from the other side reads as "the stove is on the left", and the
-# model then keeps the framing instead of moving the camera (or mirrors the people to
-# satisfy it). Only room-relative words survive into the per-setting lock.
+# shot that looks from the other side still reads as a frame-side claim, and the model
+# then keeps the framing instead of moving the camera (or mirrors the people to satisfy
+# it). Only room-relative words survive into the per-setting lock.
 _SCREEN_SIDE = (
     "\u753b\u9762\u5de6",
     "\u753b\u9762\u53f3",
@@ -228,8 +228,8 @@ def build_lock(
 
     Three things travel with every shot: the arrangement, the fixed anchors of the
     room, and the fact that frame sides follow the camera while the room does not
-    move. A close-up also learns who is still in the room behind it, so a sofa does
-    not empty out just because the shot looks at the dog.
+    move. A close-up also learns who is still in the room behind it, so the room does
+    not empty out just because the shot looks at one detail of it.
     """
     cfg = cfg if isinstance(cfg, dict) else {}
     names = names or {}
@@ -321,20 +321,28 @@ def build_lock(
         who = _SEPARATOR[lang].join(entities)
         clauses.append(
             f"All {len(entities)} of them - {who} - stay in frame from the first frame to "
-            "the last; nobody else walks in and nobody walks out."
+            "the last, and the frame holds exactly this group."
             if lang == "en"
             else f"\u8fd9{len(entities)}\u4eba\uff08{who}\uff09\u4ece\u7b2c\u4e00\u5e27\u5230\u6700\u540e\u4e00\u5e27\u90fd\u5728\u753b\u9762\u5185\uff0c"
-            f"\u671f\u95f4\u65e0\u4eba\u8fdb\u5165\u3001\u65e0\u4eba\u79bb\u5f00"
+            f"\u753b\u9762\u59cb\u7ec8\u53ea\u6709\u8fd9\u4e00\u7ec4\u4eba"
         )
+    clauses.append(
+        "Everyone keeps the posture and seat they have when the shot opens, through the "
+        "last frame; a reach, a turn or a gesture stays inside that posture."
+        if lang == "en"
+        else "\u6bcf\u4eba\u4ece\u955c\u5934\u5f00\u59cb\u5230\u6700\u540e\u4e00\u5e27\u4fdd\u6301"
+        "\u8d77\u59cb\u7684\u59ff\u6001\u4e0e\u5ea7\u4f4d\uff1b\u4f38\u624b\u3001\u8f6c\u8eab\u6216\u624b\u52bf"
+        "\u90fd\u5728\u8fd9\u4e2a\u59ff\u6001\u4e4b\u5185"
+    )
     if clauses:
         clauses.append(
-            "Frame sides follow the camera; walls, furniture and people stay where they "
-            "are. When the camera looks the other way the same chairs appear on the other "
-            "side of frame, and nobody swaps places to fit the frame."
+            "Frame sides follow the camera while the walls, the furniture and the people "
+            "keep their places; when the camera looks the other way the same chairs appear "
+            "on the other side of frame and the same people sit in them."
             if lang == "en"
-            else "\u753b\u9762\u5de6\u53f3\u968f\u955c\u5934\u6539\u53d8\uff0c\u5899\u9762\u3001\u9648\u8bbe\u4e0e\u4eba\u7269\u4f4d\u7f6e\u4e0d\u53d8\u3002"
+            else "\u753b\u9762\u5de6\u53f3\u968f\u955c\u5934\u6539\u53d8\uff0c\u5899\u9762\u3001\u9648\u8bbe\u4e0e\u4eba\u7269\u5404\u5b88\u5176\u4f4d\uff1b"
             "\u955c\u5934\u53cd\u6253\u65f6\uff0c\u540c\u4e00\u6279\u6905\u5b50\u51fa\u73b0\u5728\u753b\u9762\u53e6\u4e00\u4fa7\uff0c"
-            "\u4eba\u7269\u4e0d\u4f1a\u4e3a\u4e86\u6784\u56fe\u4e92\u6362\u5ea7\u4f4d\u3002"
+            "\u5750\u5728\u4e0a\u9762\u7684\u8fd8\u662f\u540c\u4e00\u6279\u4eba"
         )
     return "\n".join(clauses)
 

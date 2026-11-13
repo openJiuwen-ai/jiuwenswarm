@@ -324,11 +324,26 @@ def test_the_shot_holds_its_cast_from_first_frame_to_last() -> None:
     lock = build_lock(cfg=cfg, names=NAMES, lang="en")
 
     assert "stay in frame from the first frame to the last" in lock
-    assert "nobody else walks in and nobody walks out" in lock
+    assert "the frame holds exactly this group" in lock
 
 
 def test_a_shot_with_a_declared_exit_does_not_claim_everyone_stays() -> None:
     cfg = _cfg(exiting_character_ids=["char_2"])
     lock = build_lock(cfg=cfg, names=NAMES, lang="en")
 
-    assert "nobody walks out" not in lock
+    assert "the frame holds exactly this group" not in lock
+
+
+def test_the_opening_posture_holds_to_the_last_frame() -> None:
+    cfg = _cfg()
+    lock = build_lock(cfg=cfg, names=NAMES, lang="en")
+
+    assert "keeps the posture and seat they have when the shot opens" in lock
+    assert "stays inside that posture" in lock
+
+
+def test_the_posture_rule_survives_a_shot_with_an_exit() -> None:
+    cfg = _cfg(exiting_character_ids=["char_2"])
+    lock = build_lock(cfg=cfg, names=NAMES, lang="en")
+
+    assert "keeps the posture and seat they have when the shot opens" in lock
