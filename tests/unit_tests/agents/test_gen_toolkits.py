@@ -211,6 +211,25 @@ async def test_minimax_image_references_use_edits_endpoint(monkeypatch, tmp_path
     assert body["images"][0]["image_url"].startswith("data:image/png;base64,")
 
 
+@pytest.mark.asyncio
+async def test_minimax_image_url_result_is_downloaded_asynchronously(monkeypatch, tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/images/generations":
+            return httpx.Response(200, json={"data": [{"url": "https://cdn.example/img.png"}]})
+        if str(request.url) == "https://cdn.example/img.png":
+            return httpx.Response(200, content=_PNG)
+        return httpx.Response(404)
+
+    seen = _patch_client(monkeypatch, handler)
+    result = await _image("minimax", "k", _MM_GLOBAL, "MiniMax-H3-Image", "a fox", "16:9", str(tmp_path))
+    saved = _saved_path(result)
+    assert saved.read_bytes() == _PNG
+    assert [str(r.url) for r in seen] == [
+        "https://api.minimax.io/v1/images/generations",
+        "https://cdn.example/img.png",
+    ]
+
+
 def _mm_video_handler(statuses: list[str], *, error: Any = None) -> Handler:
     remaining = list(statuses)
 
