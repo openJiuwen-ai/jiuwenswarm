@@ -214,6 +214,7 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.SESSION_LIST: handle_session_list,
     ReqMethod.SESSION_RENAME: handle_session_rename,
     ReqMethod.SESSION_DELETE: handle_session_delete,
+    # session.assets.remove 暂不提供 HTTP。 gateway中 DELETE 一条因协议枚举缺失不可达
     ReqMethod.SESSION_ASSETS_LIST: handle_session_assets_request,
     ReqMethod.SESSION_ASSETS_REGISTER: handle_session_assets_request,
     ReqMethod.SESSION_ASSETS_RENAME: handle_session_assets_request,

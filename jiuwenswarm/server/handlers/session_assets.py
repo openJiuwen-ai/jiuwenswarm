@@ -20,7 +20,6 @@ async def handle_session_assets_request(ctx: RequestContext) -> None:
     """交给当前进程的 Agent 门面，和 WebSocket 使用同一份素材处理。"""
     request = ctx.request
     manager = ctx.services.agent_manager
-    method = request.req_method.value if request.req_method is not None else "session.assets"
     if manager is None:
         await ctx.sink.send_response(
             AgentResponse(
@@ -29,7 +28,10 @@ async def handle_session_assets_request(ctx: RequestContext) -> None:
                 ok=False,
                 payload={
                     "code": "HTTP_METHOD_NOT_HANDLED",
-                    "error": f"这个方法还没有 HTTP 处理: {method}",
+                    "error": (
+                        "这个方法还没有 HTTP 处理: "
+                        f"{getattr(request.req_method, 'value', 'session.assets')}"
+                    ),
                 },
                 metadata=request.metadata,
             )
