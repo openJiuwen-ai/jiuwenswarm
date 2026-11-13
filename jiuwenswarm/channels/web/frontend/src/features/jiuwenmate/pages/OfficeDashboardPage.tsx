@@ -337,9 +337,10 @@ function ActivityAllTab({
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
   const [periodLimited, setPeriodLimited] = useState(false);
+  // Clearing a date leaves an incomplete range on purpose: the empty field must stay empty,
+  // so the period grid shows its empty state until both dates are picked again.
   const changePeriod = (periodStart: string, periodEnd: string) => {
-    if (!periodStart || !periodEnd) return;
-    setPeriodLimited(exceedsActivityPeriod(periodStart, periodEnd));
+    setPeriodLimited(Boolean(periodStart) && Boolean(periodEnd) && exceedsActivityPeriod(periodStart, periodEnd));
     setState((current) => setActivityPeriod(current, periodStart, periodEnd));
   };
   const daily = useMemo(() => mergeDailyActivity(members), [members]);
@@ -467,25 +468,33 @@ function ActivityAllTab({
           />
         ) : (
           <div className="jiuwenmate-period-grid" data-testid="jiuwenmate-period-heatmap">
-            {periodRows.map((row) => (
-              <div key={row.date} className="jiuwenmate-period-grid__row">
-                <span className="jiuwenmate-period-grid__label">
-                  <strong>{row.relative ? t(`jiuwenmate.office.${row.relative}`) : formatMonthDay(row.date)}</strong>
-                  <small>{t('jiuwenmate.office.periodEntries', { count: row.entries, hours: row.hours })}</small>
-                </span>
-                {row.cells.map((cell) => (
-                  <span key={cell.id} className="jiuwenmate-period-grid__cell" data-level={cell.level}>
-                    {cell.value > 0 ? cell.value : ''}
-                  </span>
+            {periodRows.length === 0 ? (
+              <p className="jiuwenmate-table__empty" role="status" data-testid="jiuwenmate-period-empty">
+                {t('jiuwenmate.common.noData')}
+              </p>
+            ) : (
+              <>
+                {periodRows.map((row) => (
+                  <div key={row.date} className="jiuwenmate-period-grid__row">
+                    <span className="jiuwenmate-period-grid__label">
+                      <strong>{row.relative ? t(`jiuwenmate.office.${row.relative}`) : formatMonthDay(row.date)}</strong>
+                      <small>{t('jiuwenmate.office.periodEntries', { count: row.entries, hours: row.hours })}</small>
+                    </span>
+                    {row.cells.map((cell) => (
+                      <span key={cell.id} className="jiuwenmate-period-grid__cell" data-level={cell.level}>
+                        {cell.value > 0 ? cell.value : ''}
+                      </span>
+                    ))}
+                  </div>
                 ))}
-              </div>
-            ))}
-            <div className="jiuwenmate-period-grid__axis" aria-hidden>
-              <span />
-              {Array.from({ length: 24 }, (_, hour) => (
-                <span key={hour}>{PERIOD_AXIS_HOURS.includes(hour) ? `${hour}:00` : ''}</span>
-              ))}
-            </div>
+                <div className="jiuwenmate-period-grid__axis" aria-hidden>
+                  <span />
+                  {Array.from({ length: 24 }, (_, hour) => (
+                    <span key={hour}>{PERIOD_AXIS_HOURS.includes(hour) ? `${hour}:00` : ''}</span>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         )}
       </section>
