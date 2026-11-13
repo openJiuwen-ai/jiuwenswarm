@@ -81,11 +81,18 @@ class HubAssetDetail:
     icon_uri: str
     tags: tuple[str, ...]
     package_name: str = ""
+<<<<<<< HEAD
     preview_url: str = ""
     # Published package profile from the version endpoint; renders detail cards without
     # downloading the package archive.
     package_profile: dict[str, Any] | None = None
     versions: tuple[str, ...] = ()
+||||||| e487e9a30
+=======
+    # Published package profile from the version endpoint; renders detail cards without
+    # downloading the package archive.
+    package_profile: dict[str, Any] | None = None
+>>>>>>> origin/develop
 
 
 @dataclass(frozen=True, slots=True)

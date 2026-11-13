@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Compile the host driver and collect the frozen Computer Use runtime."""
 
@@ -60,3 +61,71 @@ def finalize_macos_bundle(project_root: Path, collection_root: Path, app_bundle:
     subprocess.run(["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app_bundle)], check=True)
 
 
+||||||| e487e9a30
+=======
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+"""Build external Computer Use resources for desktop installers only."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+
+RESOURCE_DESTINATION = Path("computer_use/_resources")
+
+
+def bundle_data(project_root: Path) -> list[tuple[str, str]]:
+    """Ship the external SDK's native runtime, without its build inputs."""
+    if sys.platform not in ("darwin", "win32"):
+        return []
+
+    from computer_use.paths import repository_root
+    from computer_use_native_tools.native import build_native
+
+    root = repository_root()
+    executable = build_native(root=root)
+    stage = project_root / "build/computer-use/resources"
+    if stage.exists():
+        shutil.rmtree(stage)
+    stage.mkdir(parents=True)
+    if sys.platform == "darwin":
+        source = executable.parents[2]
+        destination = stage / source.relative_to(root)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, destination, symlinks=True)
+    else:
+        for source in (executable, executable.with_name("computer-use-capture.exe"),
+                       executable.with_name("Interop.NativeUIA.dll")):
+            destination = stage / source.relative_to(root)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+    assets = root / "os_adapter/assets"
+    shutil.copytree(assets, stage / "os_adapter/assets")
+    # The external SDK materializes these immutable resources by manifest hash.
+    # Include native binaries in the identity so upgrades cannot reuse an old driver.
+    manifest = {path.relative_to(stage).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in sorted(stage.rglob("*")) if path.is_file()}
+    (stage / "manifest.json").write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+    return [(str(path), str(RESOURCE_DESTINATION / path.relative_to(stage).parent))
+            for path in sorted(stage.rglob("*")) if path.is_file()]
+
+
+def finalize_macos_bundle(project_root: Path, collection_root: Path, app_bundle: Path) -> None:
+    """Preserve the signed helper bundle after PyInstaller resource relocation."""
+    relative = Path("os_adapter/macos/.build/ComputerUseDriver.app")
+    source = project_root / "build/computer-use/resources" / relative
+    for runtime_root in (collection_root, app_bundle / "Contents/Resources"):
+        destination = runtime_root / RESOURCE_DESTINATION / relative
+        if destination.is_symlink():
+            destination.unlink()
+        elif destination.exists():
+            shutil.rmtree(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, destination, symlinks=True)
+    subprocess.run(["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app_bundle)], check=True)
+>>>>>>> origin/develop

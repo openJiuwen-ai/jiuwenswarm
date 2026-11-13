@@ -117,6 +117,7 @@ def make_chain(tmp_path, monkeypatch):
             pin_agent=Mock(),
             unpin_agent=Mock(),
             get_agent_for_session_nowait=Mock(return_value=agent),
+            borrow_agent_nowait=lambda candidate: candidate,
         )
         plan = SimpleNamespace(
             ensure_state=AsyncMock(return_value=PlanStateResult()),
@@ -630,7 +631,7 @@ async def test_live_heartbeat_keeps_new_question_emitted_during_answer(
             if item.work_kind is SessionWorkKind.HEARTBEAT
         )
         assert heartbeat.state.value == "running"
-        assert heartbeat.waiting_control_id == "question-2"
+        assert heartbeat.waiting_control_ids == {"question-2"}
         assert not await chain.heartbeat.admission.try_begin_heartbeat(
             SESSION, "next-run"
         )
@@ -811,7 +812,7 @@ async def test_followup_question_is_not_retained_when_answer_fails(
             SESSION, "question-2"
         )
         heartbeat = await _wait_heartbeat_state(chain, "waiting_for_control")
-        assert heartbeat.waiting_control_id == "question-1"
+        assert heartbeat.waiting_control_ids == {"question-1"}
 
         async def complete(request):
             yield chain.agent._chunk(
@@ -1342,7 +1343,7 @@ async def test_question_after_followup_parks_heartbeat_is_dropped_loudly(
         # The follow-up answer parked the Heartbeat in waiting_for_control, so
         # no RUNNING execution is left to own a further question.
         heartbeat = await _wait_heartbeat_state(chain, "waiting_for_control")
-        assert heartbeat.waiting_control_id == "question-2"
+        assert heartbeat.waiting_control_ids == {"question-2"}
 
         with _service_logs() as logged:
             chain.agent.answered.set()
@@ -1357,7 +1358,7 @@ async def test_question_after_followup_parks_heartbeat_is_dropped_loudly(
             for item in _executions(chain)
             if item.work_kind is SessionWorkKind.HEARTBEAT
         )
-        assert parked.waiting_control_id == "question-2"
+        assert parked.waiting_control_ids == {"question-2"}
     finally:
         release_heartbeat.set()
         await _finish(chain)
@@ -1608,6 +1609,7 @@ async def test_stop_fences_queue_handoff_already_in_finalization(make_chain):
             await stop_task
         chain.heartbeat.store.finish_run = finish_run
         await _finish(chain)
+<<<<<<< HEAD
 
 @pytest.fixture
 def delete_chain(make_chain, tmp_path, monkeypatch):
@@ -1895,3 +1897,370 @@ async def test_failed_heartbeat_prepare_stays_suspended_until_delete_retry(delet
         assert SESSION not in chain.heartbeat.scheduler._suspended_sessions
     finally:
         await _finish(chain)
+||||||| e487e9a30
+=======
+
+@pytest.fixture
+def delete_chain(make_chain, tmp_path, monkeypatch):
+    """Exercise the product delete entry point with a real heartbeat runtime."""
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    from jiuwenswarm.server.runtime.session import session_metadata as sm
+    from jiuwenswarm.server.runtime.session import session_history as sh
+    from jiuwenswarm.server.runtime.session import project_store
+    from jiuwenswarm.server.runtime.session import session_archive
+
+    root = tmp_path / "agent"
+    active = root / "sessions"
+    active.mkdir(parents=True)
+    for module in (lc, project_store):
+        monkeypatch.setattr(module, "get_agent_root_dir", lambda: root)
+    for module in (lc, sm, session_archive):
+        monkeypatch.setattr(module, "get_agent_sessions_dir", lambda: active)
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: active)
+    # This fixture owns metadata synchronously; legacy read migrations must
+    # not enqueue background writes racing the direct Runtime delete tests.
+    monkeypatch.setattr(
+        sm, "get_session_metadata",
+        lambda sid, cache_bust=False, *, enable_writeback=True: lc.raw_metadata(sid),
+    )
+    monkeypatch.setattr(sm, "flush_pending_writes", lambda *args: True)
+    monkeypatch.setattr(sh, "flush_pending_writes", lambda *args: True)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.ensure_persistent_checkpointer",
+        AsyncMock(),
+    )
+    for name in ("begin", "abort", "commit"):
+        monkeypatch.setattr(
+            f"jiuwenswarm.observability.session_delete.{name}_trajectory_session_delete",
+            lambda sid: None,
+        )
+    monkeypatch.setattr("openjiuwen.core.runner.Runner.release", AsyncMock())
+    sm._METADATA_CACHE.clear()
+    project_store.invalidate_cache()
+
+    async def make(state="idle"):
+        chain = await make_chain(behavior="block")
+        directory = active / SESSION
+        directory.mkdir()
+        lc.atomic_json(directory / "metadata.json", {
+            "session_id": SESSION, "channel_id": "web", "project_id": "default",
+            "work_mode": "work", "mode": "agent.work.normal",
+        })
+        chain.manager.cancel_session_tasks = AsyncMock()
+        chain.manager.release_subagent_runtime_for_session = AsyncMock()
+        chain.runtime._stop_team_runtime_for_delete = AsyncMock()
+        chain.heartbeat.begin_session_delete = AsyncMock(
+            wraps=chain.heartbeat.begin_session_delete
+        )
+
+        async def strict_cleanup(**kwargs):
+            if await chain.heartbeat.should_retain_session(kwargs["session_id"]):
+                raise RuntimeError("session runtime remains after cleanup")
+            return True
+
+        chain.manager.cleanup_session_runtime = AsyncMock(side_effect=strict_cleanup)
+        chain.service = session_archive.SessionArchiveService(chain.runtime)
+        chain.service.poke_recovery = Mock()
+
+        async def _drain_finalizers() -> None:
+            for _ in range(50):
+                tasks = [
+                    task
+                    for task in chain.service._finalizing.values()
+                    if task is not None and not task.done()
+                ]
+                if not tasks:
+                    return
+                await asyncio.gather(*tasks, return_exceptions=True)
+                await asyncio.sleep(0)
+
+        original_session = chain.service.session
+        original_batch = chain.service.project_batch
+
+        async def session_and_drain(*args, **kwargs):
+            result = await original_session(*args, **kwargs)
+            await _drain_finalizers()
+            return result
+
+        async def batch_and_drain(*args, **kwargs):
+            result = await original_batch(*args, **kwargs)
+            await _drain_finalizers()
+            return result
+
+        chain.service.session = session_and_drain
+        chain.service.project_batch = batch_and_drain
+        chain.directory = directory
+        if state == "running":
+            await chain.heartbeat.scheduler._tick_once()
+            await asyncio.wait_for(chain.agent.entered.wait(), 2)
+        elif state == "disabled":
+            await chain.heartbeat.store.toggle_job(chain.job.id, False)
+        elif state == "none":
+            await chain.heartbeat.store.delete_job(chain.job.id)
+        return chain
+
+    yield make
+    sm._METADATA_CACHE.clear()
+    project_store.invalidate_cache()
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+async def test_strict_stop_without_delete_does_not_fence_heartbeat(delete_chain, cleanup_fails):
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+
+    chain = await delete_chain()
+    chain.manager.cleanup_session_runtime.side_effect = (
+        RuntimeError("cleanup failed") if cleanup_fails else None
+    )
+    chain.manager.cleanup_session_runtime.return_value = True
+    try:
+        if cleanup_fails:
+            with pytest.raises(lc.LifecycleError):
+                await chain.service.stop(SESSION, "web")
+        else:
+            await chain.service.stop(SESSION, "web")
+        chain.heartbeat.begin_session_delete.assert_not_awaited()
+        assert not chain.runtime._session_provisioner._prepared_session_deletes
+        assert SESSION not in chain.heartbeat.scheduler._suspended_sessions
+        assert not lc.state("session", SESSION).get("blocked")
+        assert (await chain.heartbeat.scheduler.trigger_run_now(chain.job.id))["accepted"]
+    finally:
+        await _finish(chain)
+
+
+@pytest.mark.parametrize("prepare_fails", [False, True])
+async def test_archived_session_delete_abort_releases_heartbeat_fence(delete_chain, prepare_fails):
+    chain = await delete_chain()
+    try:
+        assert (await chain.service.session(SESSION, "archive", "web"))["ok"]
+        provisioner = chain.runtime._session_provisioner
+        if prepare_fails:
+            block = chain.heartbeat.admission.block_heartbeats
+            chain.heartbeat.admission.block_heartbeats = AsyncMock(
+                side_effect=RuntimeError("prepare failed")
+            )
+            with pytest.raises(RuntimeError, match="prepare failed"):
+                await provisioner.prepare_session_delete(SESSION)
+            chain.heartbeat.admission.block_heartbeats = block
+        else:
+            chain.runtime._quiesce_agent_session_for_delete = AsyncMock(
+                side_effect=RuntimeError("quiesce failed")
+            )
+            result = await chain.runtime.delete_session(channel_id="web", session_id=SESSION)
+            assert not result.ok and not result.recovery_required
+        assert not provisioner._prepared_session_deletes
+        assert SESSION not in chain.heartbeat._deleting_sessions
+        assert SESSION not in chain.heartbeat.scheduler._suspended_sessions
+        assert (await chain.service.session(SESSION, "unarchive", "web"))["ok"]
+        assert (await chain.heartbeat.scheduler.trigger_run_now(chain.job.id))["accepted"]
+    finally:
+        await _finish(chain)
+
+
+@pytest.mark.parametrize("failure", ["policy", "admission", "cancel"])
+async def test_direct_delete_commit_failure_retries_after_directory_removed(delete_chain, failure):
+    chain = await delete_chain()
+    owner = chain.heartbeat.scheduler if failure != "admission" else chain.heartbeat.admission
+    method = "on_session_deleted" if failure != "admission" else "clear_interaction_pending"
+    original = getattr(owner, method)
+    setattr(owner, method, AsyncMock(
+        side_effect=asyncio.CancelledError if failure == "cancel" else RuntimeError("commit failed")
+    ))
+    try:
+        if failure == "cancel":
+            with pytest.raises(asyncio.CancelledError):
+                await chain.runtime.delete_session(channel_id="web", session_id=SESSION)
+        else:
+            result = await chain.runtime.delete_session(channel_id="web", session_id=SESSION)
+            assert result.error_code == "DELETE_COMMIT_PENDING" and result.recovery_required
+        assert not chain.directory.exists()
+        assert SESSION not in chain.heartbeat._pinned_agents
+        assert SESSION in chain.heartbeat.scheduler._suspended_sessions
+        assert not await chain.heartbeat.should_retain_session(SESSION)
+        setattr(owner, method, original)
+        result = await chain.runtime.delete_session(channel_id="web", session_id=SESSION)
+        assert result.ok and result.deleted
+        chain.heartbeat.begin_session_delete.assert_awaited_once_with(SESSION)
+        assert not chain.runtime._session_provisioner._pending_session_delete_metadata
+        assert not chain.runtime._session_provisioner._prepared_session_deletes
+        assert SESSION not in chain.heartbeat._deleting_sessions
+        assert SESSION not in chain.heartbeat.scheduler._suspended_sessions
+    finally:
+        setattr(owner, method, original)
+        await _finish(chain)
+
+
+@pytest.mark.parametrize("state", ["idle", "running", "disabled", "none"])
+async def test_product_delete_prepares_heartbeat_before_strict_cleanup(delete_chain, state):
+    chain = await delete_chain(state)
+    try:
+        result = await chain.service.session(SESSION, "delete", "web")
+        assert result["ok"] and not chain.directory.exists()
+        chain.heartbeat.begin_session_delete.assert_awaited_once_with(SESSION)
+        assert not await chain.heartbeat.should_retain_session(SESSION)
+        assert SESSION not in chain.heartbeat.scheduler._suspended_sessions
+        if state == "running":
+            assert chain.agent.closed.is_set()
+    finally:
+        await _finish(chain)
+
+
+@pytest.mark.parametrize("failure", ["cleanup", "cancel", "dispose", "policy", "policy_cancel"])
+async def test_product_delete_retry_keeps_one_preparation(delete_chain, failure):
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+
+    chain = await delete_chain()
+    cleanup = chain.manager.cleanup_session_runtime.side_effect
+    policy = chain.heartbeat.scheduler.on_session_deleted
+    if failure in {"policy", "policy_cancel"}:
+        chain.heartbeat.scheduler.on_session_deleted = AsyncMock(
+            side_effect=asyncio.CancelledError if failure == "policy_cancel" else RuntimeError("policy unavailable")
+        )
+    elif failure == "dispose":
+        calls = 0
+
+        async def fail_dispose(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("dispose failed")
+            return await cleanup(**kwargs)
+
+        chain.manager.cleanup_session_runtime.side_effect = fail_dispose
+    else:
+        chain.manager.cleanup_session_runtime.side_effect = (
+            asyncio.CancelledError if failure == "cancel" else RuntimeError("cleanup failed")
+        )
+    try:
+        result = await chain.service.session(SESSION, "delete", "web")
+        # Delete is accepted immediately; the preparation failure is recorded
+        # on the durable operation instead of surfacing to the caller.
+        assert result["ok"] is True
+        assert lc.state("session", SESSION)["operation"]["status"] == "failed"
+        assert lc.state("session", SESSION)["blocked"]
+        assert SESSION in chain.heartbeat.scheduler._suspended_sessions
+        assert not await chain.heartbeat.should_retain_session(SESSION)
+        assert not (await chain.heartbeat.scheduler.trigger_run_now(chain.job.id))["accepted"]
+        chain.manager.cleanup_session_runtime.side_effect = cleanup
+        chain.heartbeat.scheduler.on_session_deleted = policy
+        result = await chain.service.session(SESSION, "delete", "web")
+        assert result["ok"] and not chain.directory.exists()
+        chain.heartbeat.begin_session_delete.assert_awaited_once_with(SESSION)
+        assert SESSION not in chain.runtime._session_provisioner._prepared_session_deletes
+    finally:
+        await _finish(chain)
+
+
+async def test_project_batch_deletes_archived_session_with_enabled_heartbeat(delete_chain):
+    chain = await delete_chain()
+    try:
+        assert (await chain.service.session(SESSION, "archive", "web"))["ok"]
+        result = await chain.service.project_batch("default", "delete_archived", "web")
+        assert result["failed_count"] == 0 and result["succeeded_count"] == 1
+        chain.heartbeat.begin_session_delete.assert_awaited_once_with(SESSION)
+        assert not await chain.heartbeat.should_retain_session(SESSION)
+    finally:
+        await _finish(chain)
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_failed_heartbeat_prepare_stays_suspended_until_delete_retry(delete_chain, cancel):
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+
+    chain = await delete_chain()
+    block = chain.heartbeat.admission.block_heartbeats
+    chain.heartbeat.admission.block_heartbeats = AsyncMock(
+        side_effect=asyncio.CancelledError if cancel else RuntimeError("prepare failed")
+    )
+    try:
+        result = await chain.service.session(SESSION, "delete", "web")
+        assert result["ok"] is True
+        assert lc.state("session", SESSION)["operation"]["status"] == "failed"
+        assert lc.state("session", SESSION)["blocked"]
+        assert SESSION in chain.heartbeat.scheduler._suspended_sessions
+        assert SESSION not in chain.runtime._session_provisioner._prepared_session_deletes
+        assert not (await chain.heartbeat.scheduler.trigger_run_now(chain.job.id))["accepted"]
+        chain.heartbeat.admission.block_heartbeats = block
+        assert (await chain.service.session(SESSION, "delete", "web"))["ok"]
+        assert chain.heartbeat.begin_session_delete.await_count == 2
+        assert SESSION not in chain.heartbeat.scheduler._suspended_sessions
+    finally:
+        await _finish(chain)
+
+
+@pytest.mark.parametrize("mode", SINGLE_AGENT_MODES)
+@pytest.mark.parametrize("behavior", ["ask_live", "ask_ended"])
+async def test_worker_recovers_real_heartbeat_root_and_followup_questions(make_chain, mode, behavior):
+    from jiuwenswarm.server.ipc.protocol import dump_agent_request
+    from jiuwenswarm.server.worker.dispatcher import WorkerDispatcher
+    from jiuwenswarm.server.worker.gateway_bridge import ConnHolder, WorkerGatewayBridge
+
+    chain = await make_chain(mode, behavior=behavior)
+    frames = []
+
+    class Connection:
+        async def send(self, frame):
+            frames.append(frame)
+
+    conn = Connection()
+    holder = ConnHolder()
+    generation = holder.open_session(conn)
+    bridge = WorkerGatewayBridge(holder)
+    dispatcher = WorkerDispatcher(bridge)
+    dispatcher._runtime = chain.runtime
+
+    def accepted(rid):
+        return AgentRequest(request_id=rid, channel_id="web", session_id=SESSION,
+                            req_method=ReqMethod.CHAT_SEND, params={"session_id": SESSION}, is_stream=True)
+
+    async def push(message):
+        rid = message["request_id"]
+        if rid not in bridge.events.records:
+            bridge.events.register(accepted(rid), rid)
+        bridge.events.append({"request_id": rid, "is_stream": True, "body": message["payload"]}, rid)
+        if message["payload"].get("event_type") == "chat.ask_user_question":
+            chain.agent.question_seen.set()
+        return True
+
+    chain.server.send_push.side_effect = push
+
+    async def recover():
+        frames.clear()
+        query = accepted("metadata")
+        await dispatcher._subscribe({"payload": dump_agent_request(query), "subscribe": True,
+                                      "after": 0}, conn, generation)
+        return [item["payload"]["body"] for item in frames if item.get("replayed")
+                and item["payload"].get("body", {}).get("event_type") == "chat.ask_user_question"]
+
+    async def deliver(request):
+        yield chain.agent._chunk(request, {"event_type": "chat.ask_user_question", "request_id": "question-2"})
+
+    chain.agent.deliver_control_input = deliver
+    try:
+        await chain.heartbeat.scheduler._tick_once()
+        await asyncio.wait_for(chain.agent.question_seen.wait(), 2)
+        if behavior == "ask_ended":
+            await _wait_heartbeat_state(chain, "waiting_for_control")
+        root = next(item for item in _executions(chain) if item.work_kind is SessionWorkKind.HEARTBEAT)
+        initial = await recover()
+        assert [item["request_id"] for item in initial] == ["question-1"]
+        assert initial[0]["execution_id"] == root.execution_id  # Actual Runtime background output.
+
+        events = await _user_turn(chain, query="", request_id="question-1", source="ask_user_interrupt",
+                                  answers=[{"question": "continue", "selected_options": ["yes"]}])
+        bridge.events.register(accepted("answer"), "answer")
+        for event in events:
+            bridge.events.append({"request_id": "answer", "is_stream": True, "body": event.payload}, "answer")
+        child = next(item for item in _executions(chain) if item.work_kind is SessionWorkKind.CONTROL_INPUT)
+        assert child.state.terminal
+        # A past control child is not proof that a frame belongs to its live root.
+        bridge.events.append({"request_id": "answer", "is_stream": True,
+                              "body": {"event_type": "chat.ask_user_question", "request_id": "question-2",
+                                       "execution_id": child.execution_id}}, "answer")
+        recovered = await recover()
+        assert [item["request_id"] for item in recovered] == ["question-2"]
+        assert recovered[0]["execution_id"] == root.execution_id
+        assert not chain.coordinator.has_control_target(SESSION, "question-1")
+    finally:
+        await _finish(chain)
+>>>>>>> origin/develop

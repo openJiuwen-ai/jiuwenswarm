@@ -12,6 +12,7 @@ import errno
 import hmac
 import http.client
 import ipaddress
+import io
 import json
 import logging
 import mimetypes
@@ -55,9 +56,6 @@ if TYPE_CHECKING:
         ShareImageRenderAuth,
     )
 
-_share_image_export_manager: ShareImageExportManager | None = None
-_share_image_export_manager_lock = threading.Lock()
-
 
 class _BadRequestError(ValueError):
     """Client-supplied input the web handler cannot process.
@@ -79,17 +77,12 @@ def _is_loopback_address(value: object) -> bool:
 
 
 def _get_share_image_export_manager() -> ShareImageExportManager:
-    """Create the share-image job registry on first use to keep startup lazy."""
-    global _share_image_export_manager
-    if _share_image_export_manager is None:
-        with _share_image_export_manager_lock:
-            if _share_image_export_manager is None:
-                from jiuwenswarm.channels.web.share_image_export import (
-                    ShareImageExportManager,
-                )
+    """Forward to the gateway-owned singleton (shared job registry)."""
+    from agent_gateway.channel_manager.web.share_image_export import (
+        get_share_image_export_manager,
+    )
 
-                _share_image_export_manager = ShareImageExportManager()
-    return _share_image_export_manager
+    return get_share_image_export_manager()
 
 
 def _get_user_workspace_dir() -> Path:
@@ -152,13 +145,13 @@ def _format_ws_diagnostics(
     *parts: Mapping[str, Any] | None,
     **fields: Any,
 ) -> str:
-    from jiuwenswarm.common.ws_diagnostics import format_ws_diagnostics
+    from agent_gateway.common.ws_diagnostics import format_ws_diagnostics
 
     return format_ws_diagnostics(*parts, **fields)
 
 
 def _describe_ws_exception(exc: BaseException) -> dict[str, Any]:
-    from jiuwenswarm.common.ws_diagnostics import describe_ws_exception
+    from agent_gateway.common.ws_diagnostics import describe_ws_exception
 
     return describe_ws_exception(exc)
 
@@ -320,6 +313,32 @@ def _uses_agentos_routing() -> bool:
         return False
 
 
+def _runtime_web_transport() -> str:
+    """WEB_TRANSPORT 优先；没写时企业版 http，个人版 websocket。"""
+    from jiuwenswarm.enterprise import is_enterprise
+
+    value = (os.getenv("WEB_TRANSPORT") or "").strip().lower()
+    if value in {"http", "a2"}:
+        return "http"
+    if value in {"websocket", "ws"}:
+        return "websocket"
+    return "http" if is_enterprise() else "websocket"
+
+
+def _inject_user_web_runtime_config(document: str) -> str:
+    from jiuwenswarm.enterprise import is_enterprise
+
+    edition = "enterprise" if is_enterprise() else "personal"
+    login_auth_simulate = (os.getenv("LOGIN_AUTH_SIMULATE") or "").strip().lower() or "true"
+    if login_auth_simulate not in {"true", "false"}:
+        raise ValueError("LOGIN_AUTH_SIMULATE must be true or false")
+    return (
+        document.replace("__JIUWENSWARM_EDITION_VALUE__", edition)
+        .replace("__JIUWEN_WEB_TRANSPORT_VALUE__", _runtime_web_transport())
+        .replace("__JIUWEN_LOGIN_AUTH_SIMULATE_VALUE__", login_auth_simulate)
+    )
+
+
 class _SpaStaticHandler(SimpleHTTPRequestHandler):
     """Static file handler with SPA fallback to index.html."""
 
@@ -353,6 +372,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     agent_teams_root = _get_agent_teams_root(project_root)
     logs_root = _get_logs_dir()
     auto_harness_root = project_root / "auto-harness"
+    # Team-organization summaries live under <home>/.organizations, outside
+    # .agent_teams. Without this root, a delivered group attachment 403s and
+    # the chat card labels the existing file expired.
+    organizations_root = project_root / ".organizations"
     # Projectless tasks (no bound project_dir) write their generated media under
     # <Documents>/JiuwenSwarm/<date>/chat-<n>/outputs/, outside workspace_root —
     # without this, any @-referenced or inline-rendered media from a projectless
@@ -379,8 +402,13 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     }
     _WS_LOG_MAX_CHARS = 2000
     _HTTP_PROXY_TIMEOUT = 30
+<<<<<<< HEAD
     _SHARE_IMAGE_UPLOAD_IDLE_TIMEOUT = 60 * 60
     _HTTP_PROXY_CHUNK_BYTES = 64 * 1024
+||||||| e487e9a30
+=======
+    _SHARE_IMAGE_UPLOAD_IDLE_TIMEOUT = 60 * 60
+>>>>>>> origin/develop
     _WS_CONNECT_TIMEOUT = 10
     _WS_HANDSHAKE_TIMEOUT = 10
     _WS_SELECT_TIMEOUT = 60
@@ -651,12 +679,21 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(data)
 
+<<<<<<< HEAD
     def _proxy_http(self, *, stream_body: bool = False) -> None:
+||||||| e487e9a30
+    def _proxy_http(self) -> None:
+=======
+    def _proxy_http(
+        self, *, target: str | None = None, path: str | None = None,
+        stream_sse: bool = False, login_surface: str | None = None,
+    ) -> None:
+>>>>>>> origin/develop
         outer_host = self._clean_outer_host()
         if outer_host is None:
             self._write_proxy_error(400, "invalid Host header")
             return
-        parsed = urlparse(self.api_target)
+        parsed = urlparse(target or self.api_target)
         if parsed.scheme == "https":
             ssl_ctx = None if _get_ssl_verify() else _get_insecure_ssl_context()
             conn: http.client.HTTPConnection = http.client.HTTPSConnection(
@@ -688,11 +725,14 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     continue
                 if normalized_key == "host":
                     continue
+                if login_surface and normalized_key == "x-jiuwen-web-surface":
+                    continue
                 if normalized_key in self._UNTRUSTED_FORWARDED_HOST_HEADERS:
                     continue
                 forward_headers[key] = value
             forward_headers["Host"] = outer_host
 
+<<<<<<< HEAD
             if stream_body:
                 # Large imports go through in chunks instead of being held in memory.
                 conn.putrequest(self.command, self.path, skip_host=True, skip_accept_encoding=True)
@@ -708,14 +748,36 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     remaining -= len(chunk)
             else:
                 conn.request(self.command, self.path, body=body, headers=forward_headers)
+||||||| e487e9a30
+            conn.request(self.command, self.path, body=body, headers=forward_headers)
+=======
+            if login_surface:
+                forward_headers["X-Jiuwen-Web-Surface"] = login_surface
+            conn.request(self.command, path or self.path, body=body, headers=forward_headers)
+>>>>>>> origin/develop
             resp = conn.getresponse()
+<<<<<<< HEAD
+||||||| e487e9a30
+            resp_body = resp.read()
+=======
+            streaming = (
+                stream_sse
+                and self.command != "HEAD"
+                and resp.getheader("Content-Type", "").startswith("text/event-stream")
+            )
+            resp_body = b"" if streaming else resp.read()
+>>>>>>> origin/develop
 
             self.send_response(resp.status, resp.reason)
             for key, value in resp.getheaders():
                 if key.lower() in self._HOP_BY_HOP_HEADERS:
                     continue
                 self.send_header(key, value)
+            if streaming:
+                self.close_connection = True
+                self.send_header("Connection", "close")
             self.end_headers()
+<<<<<<< HEAD
             headers_sent = True
             if self.command != "HEAD":
                 # Stream the body so large media starts playing before it is fully read.
@@ -724,6 +786,22 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     if not chunk:
                         break
                     self.wfile.write(chunk)
+||||||| e487e9a30
+            if self.command != "HEAD":
+                self.wfile.write(resp_body)
+=======
+            if streaming:
+                try:
+                    chunk = resp.read1(65536)
+                    while chunk:
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+                        chunk = resp.read1(65536)
+                except (OSError, http.client.HTTPException):
+                    return
+            elif self.command != "HEAD":
+                self.wfile.write(resp_body)
+>>>>>>> origin/develop
         except Exception as exc:  # noqa: BLE001
             self.log_error("proxy http error: %s", exc)
             if not headers_sent:
@@ -731,8 +809,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
-    def _proxy_websocket_tunnel(self) -> None:
-        parsed = urlparse(self.ws_target)
+    def _proxy_websocket_tunnel(self, *, target: str | None = None) -> None:
+        parsed = urlparse(target or self.ws_target)
         if parsed.scheme not in ("ws", "wss", "http", "https"):
             self.send_error(500, "ws proxy target must be ws/wss/http/https")
             return
@@ -1038,6 +1116,89 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         self._send_desktop_forbidden()
         return True
 
+    def _resolve_enterprise_upstream(self) -> tuple[str, str] | None:
+        target = os.getenv("USER_WEB_MANAGER_TARGET", "").rstrip("/")
+        if not target:
+            self._write_proxy_error(503, "user authorization is unavailable")
+            return None
+        authorization = self.headers.get("Authorization")
+        if not authorization:
+            token = self._get_auth_cookie("openjiuwen_user_access_token")
+            if not token:
+                self._write_proxy_error(401, "not authenticated")
+                return None
+            authorization = f"Bearer {token}"
+
+        import httpx
+
+        try:
+            response = httpx.get(
+                f"{target}/api/v1/user-console/user-face-upstream",
+                headers={
+                    "Authorization": authorization,
+                    "Cookie": self.headers.get("Cookie", ""),
+                },
+                timeout=5,
+                trust_env=False,
+            )
+        except httpx.HTTPError:
+            self._write_proxy_error(503, "user authorization is unavailable")
+            return None
+        if response.status_code in (401, 403):
+            self._write_proxy_error(response.status_code, "user access denied")
+            return None
+        if response.status_code != 200:
+            self._write_proxy_error(503, "user authorization is unavailable")
+            return None
+        http_target = response.headers.get("X-Gateway-Http-Upstream")
+        ws_target = response.headers.get("X-Gateway-Ws-Upstream")
+        if not http_target or not ws_target:
+            self._write_proxy_error(502, "incomplete user upstream")
+            return None
+        return http_target, ws_target
+
+    def _dispatch_enterprise(self) -> bool:
+        from jiuwenswarm.enterprise import is_enterprise
+
+        if not is_enterprise():
+            return False
+        path = urlparse(self.path).path
+        if path.startswith("/idp/"):
+            target = os.getenv("USER_WEB_IDP_TARGET", "")
+            if target:
+                self._proxy_http(target=target, path=self.path.removeprefix("/idp"), login_surface="user")
+            else:
+                self._write_proxy_error(503, "identity service is unavailable")
+            return True
+        if path == "/manager-api" or path.startswith("/manager-api/"):
+            if not path.startswith("/manager-api/v1/user-console/"):
+                self._write_proxy_error(404, "not found")
+                return True
+            target = os.getenv("USER_WEB_MANAGER_TARGET", "")
+            if target:
+                self._proxy_http(target=target, path=self.path.replace("/manager-api", "/api", 1))
+            else:
+                self._write_proxy_error(503, "manager service is unavailable")
+            return True
+        gateway_api = path == "/gateway-api" or path.startswith("/gateway-api/")
+        ws = self._is_ws_route()
+        if not (gateway_api or ws or self._is_api_route() or self._is_file_api_route()
+                or self._is_share_api_route()):
+            return False
+        upstream = self._resolve_enterprise_upstream()
+        if upstream is None:
+            return True
+        http_target, ws_target = upstream
+        if ws:
+            if self._is_websocket_upgrade():
+                self._proxy_websocket_tunnel(target=ws_target)
+            else:
+                self.send_error(400, "expected websocket upgrade")
+        else:
+            forward_path = self.path.replace("/gateway-api", "/api", 1) if gateway_api else self.path
+            self._proxy_http(target=http_target, path=forward_path, stream_sse=True)
+        return True
+
     def _dispatch_proxy(self) -> bool:
         if self._is_api_route() or self._is_extension_asset_route():
             self._proxy_http()
@@ -1125,6 +1286,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             or cls._is_path_under(Path(cls.agent_teams_root), target_resolved)
             or cls._is_path_under(Path(cls.logs_root), target_resolved)
             or cls._is_path_under(Path(cls.auto_harness_root), target_resolved)
+            or cls._is_path_under(Path(cls.organizations_root), target_resolved)
             or cls._is_path_under(Path(cls.projectless_tasks_root), target_resolved)
             or any(cls._is_path_under(root, target_resolved) for root in cls._registered_project_dirs())
         )
@@ -1565,19 +1727,45 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self._write_json(404, {"error": "file_not_found"})
                 return
 
+            file_size = full_path.stat().st_size
             mime_type, _ = mimetypes.guess_type(full_path.name)
-            self.send_response(200)
+            # Browsers cannot seek media (e.g. the designer video preview
+            # timeline) unless the endpoint honors Range requests; answer
+            # 206/416 like the gateway ``serve_file_chunks`` implementation.
+            range_header = str(self.headers.get("Range") or "").strip()
+            byte_range = (
+                _parse_single_byte_range(range_header, file_size)
+                if range_header
+                else None
+            )
+            if range_header and byte_range is None:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{file_size}")
+                self.send_header("Content-Length", "0")
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
+            start, end = byte_range or (0, max(file_size - 1, 0))
+            content_length = 0 if file_size == 0 else end - start + 1
+            self.send_response(206 if byte_range is not None else 200)
             self.send_header("Content-Type", mime_type or "application/octet-stream")
-            self.send_header("Content-Length", str(full_path.stat().st_size))
+            self.send_header("Content-Length", str(content_length))
+            self.send_header("Accept-Ranges", "bytes")
             self.send_header("Cache-Control", "no-store")
+            if byte_range is not None:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
             self.end_headers()
-            if self.command != "HEAD":
+            if self.command != "HEAD" and content_length > 0:
+                remaining = content_length
                 with full_path.open("rb") as file_obj:
-                    while True:
-                        chunk = file_obj.read(65536)
+                    file_obj.seek(start)
+                    while remaining > 0:
+                        chunk = file_obj.read(min(65536, remaining))
                         if not chunk:
                             break
                         self.wfile.write(chunk)
+                        remaining -= len(chunk)
             return
 
         if path == "/file-api/file-content":
@@ -2110,6 +2298,24 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self.wfile.write(chunk)
 
     def _handle_file_api_post(self, parsed) -> None:
+        # Browsers always send Sec-Fetch-Site on navigations/fetches. Reject
+        # cross-site POSTs before any mutating /file-api route runs so a
+        # foreign HTML form cannot drive localhost skills/upload/import/etc.
+        # Missing header (curl, native clients) is left alone.
+        fetch_site = str(
+            self.headers.get("Sec-Fetch-Site")
+            or self.headers.get("sec-fetch-site")
+            or ""
+        ).strip().lower()
+        if fetch_site == "cross-site":
+            logger = getattr(self, "logger", None)
+            if logger is not None:
+                logger.warning(
+                    "file-api cross-site request rejected: path=%s",
+                    parsed.path,
+                )
+            self._write_json(403, {"error": "forbidden_origin"})
+            return
         if parsed.path == "/file-api/skills/upload-temp":
             self._handle_skills_upload_temp()
             return
@@ -2331,6 +2537,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         self._write_json(status, payload)
 
     def do_GET(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         parsed = urlparse(self.path)
         if parsed.path == "/system-plugin-recovery/endpoint":
             self._handle_system_plugin_recovery_endpoint()
@@ -2379,6 +2587,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         parsed = urlparse(self.path)
         if parsed.path in {"/marketplace-oauth/hub/start", "/marketplace-oauth/hub/result"}:
             from jiuwenswarm.channels.web.hub_oauth import result, start
@@ -2424,26 +2634,36 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         self.send_error(405, "method not allowed")
 
     def do_PUT(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         if self._dispatch_proxy():
             return
         self.send_error(405, "method not allowed")
 
     def do_PATCH(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         if self._dispatch_proxy():
             return
         self.send_error(405, "method not allowed")
 
     def do_DELETE(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         if self._dispatch_proxy():
             return
         self.send_error(405, "method not allowed")
 
     def do_OPTIONS(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         if self._dispatch_proxy():
             return
         self.send_error(405, "method not allowed")
 
     def do_HEAD(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         parsed = urlparse(self.path)
         if parsed.path == "/system-plugin-recovery/endpoint":
             self._handle_system_plugin_recovery_endpoint()
@@ -2481,6 +2701,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     _IMMUTABLE_ASSET_RE = re.compile(r"^assets/.+-[A-Za-z0-9_-]{8,}\.[A-Za-z0-9]+$")
     _IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
     _REVALIDATE_CACHE_CONTROL = "no-cache"
+    _STATIC_EXTENSIONS = frozenset({
+        ".js", ".mjs", ".css", ".map", ".svg", ".png", ".jpg", ".jpeg",
+        ".ico", ".webp", ".gif", ".woff", ".woff2", ".ttf", ".eot",
+        ".json", ".webmanifest",
+    })
 
     @classmethod
     def _cache_control_for_static(cls, rel_path: str) -> str:
@@ -2542,9 +2767,49 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             base_dir = Path(self.directory or os.getcwd()).resolve()
             target = (base_dir / rel_path).resolve()
             in_base = os.path.commonpath([str(base_dir), str(target)]) == str(base_dir)
+
+            # Relative Vite URLs on nested SPA routes resolve to /chat/assets/...
+            # (or deeper prefixes). Match the nginx deployment's assets alias.
+            asset_request = "/assets/" in req_path
+            if in_base and not target.exists() and asset_request:
+                asset_rel_path = "assets/" + req_path.split("/assets/", 1)[1]
+                asset_root = (base_dir / "assets").resolve()
+                asset_target = (base_dir / asset_rel_path).resolve()
+                in_assets = os.path.commonpath([str(asset_root), str(asset_target)]) == str(asset_root)
+                asset_in_base = os.path.commonpath([str(base_dir), str(asset_target)]) == str(base_dir)
+                if in_assets and asset_in_base and asset_target.is_file():
+                    rel_path = asset_rel_path
+                    target = asset_target
+                    self.path = quote("/" + rel_path, safe="/")
+                    if parsed.query:
+                        self.path += "?" + parsed.query
+            # Reuse dev-stable's static-prefix fallback for named public files.
+            # Asset requests stay confined to assets/ and never fall back to public files.
+            missing_public_path = in_base and not target.exists() and not asset_request
+            if missing_public_path and Path(req_path).suffix.lower() in self._STATIC_EXTENSIONS:
+                parts = rel_path.split('/')
+                for index in range(1, len(parts)):
+                    candidate_rel = '/'.join(parts[index:])
+                    candidate = (base_dir / candidate_rel).resolve()
+                    candidate_in_base = os.path.commonpath([str(base_dir), str(candidate)]) == str(base_dir)
+                    if candidate_in_base and candidate.is_file():
+                        rel_path = candidate_rel
+                        target = candidate
+                        self.path = quote('/' + rel_path, safe='/')
+                        if parsed.query:
+                            self.path += '?' + parsed.query
+                        break
         except (OSError, ValueError):
             self._static_cache_control = None
             self._write_json(400, {"error": "invalid_path"})
+            return None
+
+        # Missing assets must never receive an HTML document with status 200.
+        if (asset_request or Path(req_path).suffix.lower() in self._STATIC_EXTENSIONS) and not (
+            in_base and target.is_file()
+        ):
+            self._static_cache_control = None
+            self.send_error(404, "File not found")
             return None
 
         # 使用实际静态解析结果判定 SPA 入口, 覆盖 /、index.html 及路由回退。
@@ -2557,6 +2822,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return None
 
         if in_base and target.exists():
+            index_file = target / "index.html" if target.is_dir() else target
+            if index_file.is_file() and index_file.resolve() == spa_index:
+                return self._injected_index(index_file)
             self._static_cache_control = self._cache_control_for_static(rel_path)
             return super().send_head()
 
@@ -2568,7 +2836,20 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self.path = "/" + route_rel_path
             return super().send_head()
         self.path = "/index.html"
+        if spa_index.is_file():
+            return self._injected_index(spa_index)
         return super().send_head()
+
+    def _injected_index(self, file_path: Path):
+        body = _inject_user_web_runtime_config(
+            file_path.read_text(encoding="utf-8")
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self._static_cache_control = self._REVALIDATE_CACHE_CONTROL
+        self.end_headers()
+        return io.BytesIO(body)
 
 
 def _normalize_api_target(value: str) -> str:

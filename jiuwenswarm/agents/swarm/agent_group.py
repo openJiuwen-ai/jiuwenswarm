@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """Strict loader for Team AgentGroup packages."""
@@ -350,3 +351,5 @@ __all__ = [
     "load_agent_group_package",
     "load_agent_group_package_bundle",
 ]
+=======
+>>>>>>> origin/develop

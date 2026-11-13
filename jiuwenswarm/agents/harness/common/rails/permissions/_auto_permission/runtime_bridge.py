@@ -9,11 +9,10 @@ from typing import Any
 from openjiuwen.core.foundation.llm import ToolMessage
 from openjiuwen.core.runner.callback import AbortError
 from openjiuwen.core.single_agent.interrupt.exception import ToolInterruptException
-from openjiuwen.core.single_agent.interrupt.response import InterruptRequest
+from openjiuwen.core.single_agent.interrupt.response import InterruptKind, InterruptRequest
 from openjiuwen.harness.rails.interrupt.confirm_rail import ConfirmPayload
 
 from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.models import (
-    PermissionInterruptRequest,
     ToolInvocation,
     logger,
 )
@@ -249,24 +248,26 @@ class AutoPermissionRuntimeBridgeMixin:
         extra_fields = _permission_interrupt_extra_fields(result)
         auto_manual = extra_fields.pop("auto_permission_manual", False) is True
         invocation_key = extra_fields.get("tool_invocation_key")
-        request_metadata = (
-            {
-                "resume_user_input_key": ROOT_PERMISSION_QUEUE_USER_INPUT_KEY,
-                "tool_invocation_key": dict(invocation_key),
-            }
-            if isinstance(invocation_key, Mapping)
-            else {}
-        )
+        request_metadata = dict(extra_fields)
+        request_metadata["resume_user_input_key"] = ROOT_PERMISSION_QUEUE_USER_INPUT_KEY
+        if isinstance(invocation_key, Mapping):
+            request_metadata["tool_invocation_key"] = dict(invocation_key)
         if auto_manual:
             request_metadata["auto_permission_manual"] = True
+<<<<<<< HEAD
         request = PermissionInterruptRequest(
+||||||| e487e9a30
+        return PermissionInterruptRequest(
+=======
+        request = InterruptRequest(
+            interrupt_kind=InterruptKind.PERMISSION,
+>>>>>>> origin/develop
             message=_permission_interrupt_message(result),
             payload_schema=ConfirmPayload.to_schema(),
             auto_confirm_key=(
                 "" if auto_manual else self._runtime_auto_confirm_key(invocation)
             ),
             metadata=request_metadata,
-            **extra_fields,
         )
 
         bind_request = getattr(self.base_rail, "bind_approval_request", None)

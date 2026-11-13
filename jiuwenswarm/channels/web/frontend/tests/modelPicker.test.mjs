@@ -9,6 +9,14 @@ import { JSDOM } from 'jsdom';
 import { createServer } from 'vite';
 import svgr from 'vite-plugin-svgr';
 
+// Transport selection reads the browser environment while modules are imported.
+const moduleDom = new JSDOM('<!doctype html>', { url: 'http://localhost/' });
+const moduleGlobals = new Map();
+for (const [name, value] of Object.entries({ window: moduleDom.window, document: moduleDom.window.document })) {
+  moduleGlobals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+  Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+}
+
 // Use the production transform for the provider catalog's import.meta.glob and assets.
 const vite = await createServer({
   configFile: false,
@@ -39,6 +47,11 @@ try {
   ]);
 } finally {
   await vite.close();
+  for (const [name, descriptor] of moduleGlobals) {
+    if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+    else delete globalThis[name];
+  }
+  moduleDom.window.close();
 }
 const [
   { default: ModelPicker },
@@ -81,6 +94,7 @@ const initialForm = {
   name: 'Existing scheduled task',
   description: 'Draft description',
   modelName: 'configured-a',
+  modelSelection: null,
   mode: 'agent',
   cronExpr: '0 0 2 * * ? *',
   timezone: 'Asia/Shanghai',
@@ -107,6 +121,7 @@ async function withFixture(run, language = 'en') {
     };
   }
   const previousGlobals = new Map();
+  dom.window.__JIUWENSWARM_EDITION__ = 'personal';
   for (const [name, value] of Object.entries({
     window: dom.window,
     document: dom.window.document,
@@ -181,6 +196,20 @@ function cronDrawer(overrides = {}) {
     ...overrides,
   });
 }
+
+test('enterprise chat model stays visible but cannot open its menu or show a dropdown arrow', async () => {
+  await withFixture(async ({ mount, click, byId }) => {
+    window.__JIUWENSWARM_EDITION__ = 'enterprise';
+    await mount(createElement(ChatModelSelector));
+    const trigger = byId('chat-panel-model-selector-trigger');
+    assert.equal(trigger.disabled, true);
+    assert.match(trigger.textContent, /Configured A/);
+    assert.equal(trigger.querySelector('.chat-mode-select__chevron'), null);
+    await click(trigger);
+    assert.equal(byId('chat-panel-model-selector-menu'), null);
+    assert.equal(useSessionStore.getState().getRuntime(sessionId).selectedModelName, 'configured-a');
+  });
+});
 
 test('Team conversations keep model-group selection enabled', () => {
   const selectorSource = readFileSync(
@@ -270,6 +299,9 @@ test('限时免费模型：活动没在跑时，这一栏整个不出现', async
 
 test('selecting a scheduled-task model submits its ID and leaves the active chat unchanged', async () => {
   await withFixture(async ({ mount, click, byId }) => {
+    useSessionStore.setState({ modelGroups: [{
+      model_group_id: 'cron-hidden-group', display_name: 'Cron hidden group', enabled: true, routes: [],
+    }] });
     let submitted;
     await mount(
       createElement(ChatModelSelector),
@@ -280,13 +312,47 @@ test('selecting a scheduled-task model submits its ID and leaves the active chat
       }),
     );
     await click(byId('cron-model-picker-trigger'));
+    assert.equal(byId('cron-model-picker-menu').textContent.includes('Cron hidden group'), false);
     await click(byId('cron-model-picker-menu').querySelector('[data-variant="configured-b"]'));
     assert.equal(byId('cron-model-picker-menu'), null);
     assert.equal(byId('cron-model-picker-trigger').textContent, 'Configured B');
     assert.equal(byId('chat-panel-model-selector-trigger').textContent, 'Configured A');
     assert.equal(useSessionStore.getState().getEffectiveModelName(sessionId), 'configured-a');
     await click(byId('cron-drawer-submit-btn'));
+    // 目录条目没有 model_id 时退回名称契约：modelSelection 字段保留但为空
     assert.deepEqual(submitted, { ...initialForm, modelName: 'configured-b' });
+    assert.equal(submitted.modelSelection, null);
+  });
+});
+
+test('a scheduled-task model with a stable ID submits its model_selection', async () => {
+  await withFixture(async ({ mount, click, byId }) => {
+    // 回归：目录里两条同名配置只能按 model_id 区分；若提交只带 model_name，
+    // cron 执行会话按名字反查命中多条，报 "ambiguous legacy model name" 秒败。
+    const stableCatalog = [
+      { model_id: 'mdl-flash-1', model_name: 'deepseek-flash', alias: 'Flash One', is_default: true },
+      { model_id: 'mdl-flash-2', model_name: 'deepseek-flash', alias: 'Flash Two', is_free: false },
+      { model_id: 'mdl-glm', model_name: 'GLM-5.3', alias: 'GLM', is_free: false },
+    ];
+    await act(async () => useSessionStore.getState().setAvailableModels(stableCatalog, 'deepseek-flash'));
+    let submitted;
+    await mount(
+      cronDrawer({
+        initial: { ...initialForm, modelName: 'deepseek-flash' },
+        onSubmit(value) {
+          submitted = value;
+        },
+      }),
+    );
+    await click(byId('cron-model-picker-trigger'));
+    await click(byId('cron-model-picker-menu').querySelector('[data-variant="mdl-flash-2"]'));
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'Flash Two');
+    await click(byId('cron-drawer-submit-btn'));
+    assert.deepEqual(submitted, {
+      ...initialForm,
+      modelName: 'deepseek-flash',
+      modelSelection: { type: 'model', id: 'mdl-flash-2' },
+    });
   });
 });
 
@@ -308,6 +374,41 @@ test('selecting a chat model preserves the scheduled-task draft and canonical re
     assert.equal(byId('cron-model-picker-trigger').textContent, 'Configured A');
     await click(byId('cron-drawer-submit-btn'));
     assert.deepEqual(submitted, initialForm);
+  });
+});
+
+test('run now waits for navigation and reports a session restore failure', async (t) => {
+  const job = {
+    id: 'run-now-job', name: 'Run now', description: 'Run now', mode: 'agent',
+    cron_expr: '0 0 2 * * ? *', timezone: 'Asia/Shanghai', targets: 'web',
+    enabled: true, expired: false, project_id: 'default', wake_offset_seconds: 0,
+  };
+  t.mock.method(webClient, 'request', async (method) => {
+    if (method === 'cron.job.list') return { jobs: [job] };
+    if (method === 'project.list') return { projects: [] };
+    if (method === 'channel.get') return { channels: [{ channel_id: 'web' }] };
+    if (method === 'channel.xiaoyi.get_conf') return { config: {} };
+    if (method === 'cron.job.run_now') return { accepted: true, run_id: 'run', session_id: 'cron-session' };
+    throw new Error(`Unexpected request: ${method}`);
+  });
+  let releaseNavigation;
+  const navigation = new Promise((resolve) => { releaseNavigation = resolve; });
+  await withFixture(async ({ mount, click, byId }) => {
+    await mount(createElement(CronPanel, {
+      sessionId, onCreateViaChat() {},
+      async onSelectSession(id) {
+        assert.equal(id, 'cron-session');
+        await navigation;
+        throw new Error('metadata missing');
+      },
+    }));
+    await click(byId('cron-job-run-now-btn'));
+    await click(byId('cron-confirm-submit-btn'));
+    assert.equal(byId('cron-confirm-submit-btn').disabled, true);
+    await act(async () => { releaseNavigation(); });
+    assert.equal(byId('cron-confirm-dialog'), null);
+    assert.match(byId('cron-error-toast').textContent, /task was triggered.*session list/);
+    assert.equal(byId('cron-success-toast'), null);
   });
 });
 
@@ -363,24 +464,83 @@ test('opening a stored team task from the list preserves its mode and model', as
   });
 });
 
-test('an unavailable saved task model stays visible and is not replaced during catalog refresh', async () => {
+for (const language of ['zh', 'en']) {
+  test(`an unavailable saved task model is explained in ${language} without replacing its value`, async () => {
+    await withFixture(async ({ mount, click, byId }) => {
+      let submitted;
+      await mount(
+        cronDrawer({
+          initial: { ...initialForm, modelName: 'removed-model' },
+          onSubmit(value) {
+            submitted = value;
+          },
+        }),
+      );
+      await act(async () => useSessionStore.getState().setAvailableModels(catalog, 'configured-b'));
+      assert.equal(byId('cron-model-picker-trigger').textContent, 'removed-model');
+      const hint = byId('cron-drawer-model-unavailable-hint');
+      assert.ok(hint);
+      assert.equal(hint.getAttribute('role'), 'status');
+      assert.equal(
+        hint.textContent,
+        resources[language].translation.cron.drawer.modelUnavailable.replace('{{model}}', 'removed-model'),
+      );
+      await click(byId('cron-model-picker-trigger'));
+      assert.equal(document.querySelector('[aria-checked="true"]'), null);
+      await click(document.body);
+      await click(byId('cron-drawer-submit-btn'));
+      assert.equal(submitted.modelName, 'removed-model');
+    }, language);
+  });
+}
+
+test('task model availability waits for a successful catalog load, including an empty result', async () => {
+  await withFixture(async ({ mount, byId }) => {
+    useSessionStore.setState({ modelsLoaded: false, availableModels: [], chatAvailableModels: [] });
+    await mount(cronDrawer());
+    assert.equal(byId('cron-drawer-model-unavailable-hint'), null);
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'configured-a');
+
+    await act(async () => useSessionStore.getState().setAvailableModels([]));
+    assert.ok(byId('cron-drawer-model-unavailable-hint'));
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'configured-a');
+  });
+});
+
+test('deleting the last task model shows a warning until the user selects an available model', async () => {
   await withFixture(async ({ mount, click, byId }) => {
     let submitted;
+    useSessionStore.getState().setAvailableModels([catalog[1]]);
     await mount(
       cronDrawer({
-        initial: { ...initialForm, modelName: 'removed-model' },
         onSubmit(value) {
           submitted = value;
         },
       }),
     );
-    await act(async () => useSessionStore.getState().setAvailableModels(catalog, 'configured-b'));
-    assert.equal(byId('cron-model-picker-trigger').textContent, 'removed-model');
+    assert.equal(byId('cron-drawer-model-unavailable-hint'), null);
+    await act(async () => useSessionStore.getState().setAvailableModels([]));
+    assert.ok(byId('cron-drawer-model-unavailable-hint'));
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'configured-a');
+
+    await act(async () => useSessionStore.getState().setAvailableModels([catalog[3]]));
+    assert.ok(byId('cron-drawer-model-unavailable-hint'));
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'configured-a');
     await click(byId('cron-model-picker-trigger'));
-    assert.equal(document.querySelector('[aria-checked="true"]'), null);
-    await click(document.body);
+    await click(byId('cron-model-picker-menu').querySelector('[data-variant="configured-b"]'));
+    assert.equal(byId('cron-drawer-model-unavailable-hint'), null);
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'Configured B');
     await click(byId('cron-drawer-submit-btn'));
-    assert.equal(submitted.modelName, 'removed-model');
+    assert.equal(submitted.modelName, 'configured-b');
+  });
+});
+
+test('a task model remains available when only a same-name non-default connection survives', async () => {
+  await withFixture(async ({ mount, byId }) => {
+    await mount(cronDrawer());
+    await act(async () => useSessionStore.getState().setAvailableModels([catalog[2]]));
+    assert.equal(byId('cron-drawer-model-unavailable-hint'), null);
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'Secondary connection');
   });
 });
 
@@ -397,17 +557,71 @@ test('a new task keeps an unselected model instead of borrowing the active chat 
       }),
     );
     assert.equal(byId('cron-model-picker-trigger').textContent, 'Select Model');
+    await act(async () => useSessionStore.getState().setAvailableModels([]));
+    assert.equal(byId('cron-drawer-model-unavailable-hint'), null);
     await click(byId('cron-drawer-submit-btn'));
     assert.equal(submitted.modelName, null);
   });
 });
 
-test('locked task models cannot be changed; disabling an open picker closes it', async () => {
+test('create drawer shows the default model hint without borrowing the default into the submitted task', async () => {
   await withFixture(async ({ mount, click, byId }) => {
-    await mount(cronDrawer({ proactiveLocked: true }));
-    assert.equal(byId('cron-model-picker-trigger').disabled, true);
+    let submitted;
+    await mount(
+      cronDrawer({
+        mode: 'create',
+        initial: { ...initialForm, modelName: null },
+        onSubmit(value) {
+          submitted = value;
+        },
+      }),
+    );
+    const hint = byId('cron-drawer-model-default-hint');
+    assert.ok(hint, 'hint renders when no model is selected in create mode');
+    assert.equal(hint.dataset.kind, 'named');
+    assert.equal(
+      hint.textContent,
+      resources.en.translation.cron.drawer.modelDefaultHintNamed.replace('{{model}}', 'Configured A'),
+    );
+    // 提示仅展示：提交值保持不带任何模型字段，!5666 契约不回退
+    await click(byId('cron-drawer-submit-btn'));
+    assert.equal(submitted.modelName, null);
+    assert.equal(submitted.modelSelection, null);
+  });
+});
+
+test('default model hint tracks catalog state, hides once a model is picked, and stays off in edit mode', async () => {
+  await withFixture(async ({ mount, click, byId }) => {
+    // 模板创建与新建同样展示
+    await mount(cronDrawer({ mode: 'template', initial: { ...initialForm, modelName: null } }));
+    assert.equal(byId('cron-drawer-model-default-hint')?.dataset.kind, 'named');
+    // 目录清空 → 警示态（创建时即可预见到点失败，而不是静默提交）
+    await act(async () => useSessionStore.getState().setAvailableModels([]));
+    assert.equal(byId('cron-drawer-model-default-hint')?.dataset.kind, 'empty');
+    // 用户选中模型后提示消失
+    await act(async () => useSessionStore.getState().setAvailableModels(catalog, 'configured-a'));
     await click(byId('cron-model-picker-trigger'));
-    assert.equal(byId('cron-model-picker-menu'), null);
+    await click(byId('cron-model-picker-menu').querySelector('[data-variant="configured-b"]'));
+    assert.equal(byId('cron-drawer-model-default-hint'), null);
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'Configured B');
+    // 编辑一个本就未存模型的任务：与创建时同样展示（提示只取决于任务是否存了模型）。
+    // 先空挂载一次卸载上个抽屉实例：同 root 连续 render 会复用组件实例，
+    // useState(initial) 不重新执行，form 会残留上个抽屉的选择
+    await mount();
+    await mount(cronDrawer({
+      mode: 'edit',
+      initial: { ...initialForm, modelName: null, modelSelection: null },
+    }));
+    assert.equal(byId('cron-drawer-model-default-hint')?.dataset.kind, 'named');
+    // 编辑存了模型的任务：不展示
+    await mount();
+    await mount(cronDrawer({ mode: 'edit', initial: initialForm }));
+    assert.equal(byId('cron-drawer-model-default-hint'), null);
+  });
+});
+
+test('disabling an open picker closes it', async () => {
+  await withFixture(async ({ mount, click, byId }) => {
     const picker = (disabled) => createElement(ModelPicker, { value: null, onChange() {}, disabled });
     await mount(picker(false));
     await click(byId('model-picker-trigger'));
@@ -543,7 +757,7 @@ for (const language of ['zh', 'en']) {
 }
 
 for (const source of ['current', 'list']) {
-  test(`scheduled ${source} metadata and team selections retain upstream groups with the feature off`, async () => {
+  test(`scheduled ${source} metadata hides groups while ordinary team sessions retain groups`, async () => {
     await withFixture(async ({ mount, click, byId }) => {
       setupStableCatalog();
       const session = { session_id: sessionId, title: 'Scheduled', mode: 'agent', cron_id: 'job',
@@ -552,7 +766,7 @@ for (const source of ['current', 'list']) {
       else useSessionStore.getState().setSessions([session]);
       await mount(createElement(ChatModelSelector));
       await click(byId('chat-panel-model-selector-trigger'));
-      assert.ok(byId('chat-panel-model-selector-group-option'));
+      assert.equal(byId('chat-panel-model-selector-group-option'), null);
       assert.equal(byId('chat-panel-model-selector-moa-option'), null);
       await click(document.body);
       await act(async () => useSessionStore.getState().setCurrentSession({ ...session, mode: 'team', cron_id: null }));
@@ -724,6 +938,7 @@ test('single-agent collaboration displays the group default while retaining a le
     });
   });
 });
+<<<<<<< HEAD
 
 test('model delete reference warnings prefer display names over mgp_/mdl_ ids', () => {
   const groups = [
@@ -968,3 +1183,290 @@ test('design selectors hide model groups and persist an ordinary model fallback'
     assert.equal(byId('chat-panel-model-selector-moa-option'), null);
   });
 });
+||||||| e487e9a30
+=======
+
+test('model delete reference warnings prefer display names over mgp_/mdl_ ids', () => {
+  const groups = [
+    {
+      model_group_id: 'mgp_hidden',
+      display_name: '编码模型池',
+      routes: [{ route_id: 'rte_a', model_id: 'mdl_a' }],
+    },
+  ];
+  const models = [{ model_id: 'mdl_a', alias: '主模型', model_name: 'gpt-test' }];
+  const refs = findModelGroupReferencesForModel('mdl_a', groups);
+  assert.deepEqual(refs, [{ scope: 'model_group', scope_id: 'mgp_hidden', label: '编码模型池' }]);
+  assert.equal(formatModelSelectionReferenceScopes(refs, models, groups), '编码模型池');
+  assert.equal(
+    formatModelSelectionReferenceScopes(
+      extractModelSelectionReferences({
+        payload: { references: [{ scope: 'model_group', scope_id: 'mgp_hidden', label: '编码模型池' }] },
+      }),
+      models,
+      groups,
+    ),
+    '编码模型池',
+  );
+});
+
+test('deleted model groups fall back to a default model instead of showing model_group_id', async (t) => {
+  const persisted = [];
+  t.mock.method(webClient, 'request', async (method, params) => {
+    assert.equal(method, 'session.selection.set');
+    persisted.push(params);
+    return { success: true };
+  });
+  await withFixture(async ({ mount, byId }) => {
+    setupStableCatalog();
+    setMultiModelCollaborationEnabled(true);
+    useSessionStore.getState().setSelectedModelSelection(sessionId, { type: 'model_group', id: 'mgp-deleted' });
+    await act(async () => useSessionStore.getState().setAvailableModelGroups([]));
+    await mount(createElement(ChatModelSelector));
+    await act(async () => {});
+    assert.doesNotMatch(byId('chat-panel-model-selector-label').textContent, /mgp-deleted/);
+    assert.equal(byId('chat-panel-model-selector-label').textContent, 'Primary connection');
+    assert.deepEqual(useSessionStore.getState().getRuntime(sessionId).selectedModelSelection, {
+      type: 'model',
+      id: 'mdl-a',
+    });
+    assert.deepEqual(persisted.at(-1), {
+      session_id: sessionId,
+      model_selection: { type: 'model', id: 'mdl-a' },
+    });
+  });
+});
+
+test('a locked selector keeps its model and shows why it cannot be changed', async () => {
+  await withFixture(async ({ mount, click, byId }) => {
+    setupStableCatalog();
+    await mount(createElement(ChatModelSelector, { locked: true, lockedTitle: 'Locked after start' }));
+    const trigger = byId('chat-panel-model-selector-trigger');
+    assert.equal(trigger.disabled, true);
+    assert.equal(byId('chat-panel-model-selector-wrap').title, 'Locked after start');
+    await click(trigger);
+    assert.equal(byId('chat-panel-model-selector-menu'), null);
+    assert.deepEqual(useSessionStore.getState().getRuntime(sessionId).selectedModelSelection, {
+      type: 'model',
+      id: 'mdl-a',
+    });
+  });
+});
+
+test('a locked selector still replaces a deleted model and writes the fallback back', async (t) => {
+  const persisted = [];
+  t.mock.method(webClient, 'request', async (method, params) => {
+    assert.equal(method, 'session.selection.set');
+    persisted.push(params);
+    return { success: true };
+  });
+  await withFixture(async ({ mount }) => {
+    setupStableCatalog();
+    useSessionStore.getState().setSelectedModelSelection(sessionId, { type: 'model', id: 'mdl-deleted' });
+    await mount(createElement(ChatModelSelector, { locked: true, lockedTitle: 'Locked after start' }));
+    await act(async () => {});
+    // The deleted-model fallback runs even while locked and is written back.
+    assert.deepEqual(persisted.at(-1), {
+      session_id: sessionId,
+      model_selection: { type: 'model', id: 'mdl-a' },
+    });
+    assert.deepEqual(useSessionStore.getState().getRuntime(sessionId).selectedModelSelection, {
+      type: 'model',
+      id: 'mdl-a',
+    });
+  });
+});
+
+function groupEditor(models, routes, onSave, groupOverrides = {}) {
+  return createElement(
+    SettingsServicesProvider,
+    { isConnected: true, connectionState: 'connected', request: async () => ({}) },
+    createElement(ModelGroupDialog, {
+      models,
+      group: { display_name: 'Test group', routes, ...groupOverrides },
+      onClose() {},
+      onSave,
+    }),
+  );
+}
+
+function groupElement(action, variant) {
+  return document.querySelector(`[data-testid="settings-model-group-dialog-${action}"]${
+    variant ? `[data-variant="${variant}"]` : ''
+  }`);
+}
+
+test('model group dialog adds each configured model ID once, including identical display names', async () => {
+  await withFixture(async ({ mount, click }) => {
+    const saved = [];
+    const models = stableCatalog.map((model) => ({ ...model, alias: '' }));
+    await mount(groupEditor([
+      { model_id: 'free', model_name: 'free', is_free: true },
+      ...models,
+    ], [], async (payload) => saved.push(payload)));
+    await click(groupElement('add-route-btn'));
+    await click(groupElement('add-route-btn'));
+    assert.equal(groupElement('add-route-btn').disabled, true);
+    await click(groupElement('add-route-btn'));
+    assert.equal(document.querySelectorAll('[data-testid="settings-model-group-dialog-route-row"]').length, 2);
+    await click(groupElement('save-btn'));
+    assert.deepEqual(saved[0].routes.map((route) => route.model_id), ['mdl-a', 'mdl-b']);
+  });
+});
+
+test('model group dialog prevents flat-menu duplicates and releases a replaced model', async () => {
+  await withFixture(async ({ mount, click }) => {
+    const saved = [];
+    await mount(groupEditor([
+      ...stableCatalog, { model_id: 'mdl-c', model_name: 'Third connection' },
+    ], stableGroup.routes, async (payload) => saved.push(payload)));
+    await click(groupElement('route-row', 'rte-a').querySelector('button'));
+    assert.equal(groupElement('model-option', 'mdl-a').disabled, false);
+    assert.equal(groupElement('model-option', 'mdl-b').disabled, true);
+    await click(groupElement('model-option', 'mdl-c'));
+    await click(groupElement('route-row', 'rte-b').querySelector('button'));
+    assert.equal(groupElement('model-option', 'mdl-a').disabled, false);
+    assert.equal(groupElement('model-option', 'mdl-b').disabled, false);
+    assert.equal(groupElement('model-option', 'mdl-c').disabled, true);
+    await click(groupElement('save-btn'));
+    assert.deepEqual(saved[0].routes.map((route) => route.model_id), ['mdl-c', 'mdl-b']);
+  });
+});
+
+for (const plan of ['coding_plan', 'token_plan']) {
+  test(`model group dialog prevents duplicate selection in the ${plan} submenu`, async () => {
+    await withFixture(async ({ mount, click }) => {
+      const saved = [];
+      const models = ['a', 'b', 'c'].map((suffix) => ({
+        model_id: `mdl-${suffix}`, model_name: `Model ${suffix}`, vendor_key: 'zhipu', plan,
+      }));
+      await mount(groupEditor(models, stableGroup.routes, async (payload) => saved.push(payload)));
+      await click(groupElement('route-row', 'rte-a').querySelector('button'));
+      await click(groupElement('plan-option', `${plan}:zhipu`));
+      assert.equal(groupElement('plan-model-option', 'mdl-a').disabled, false);
+      assert.equal(groupElement('plan-model-option', 'mdl-b').disabled, true);
+      assert.equal(groupElement('plan-model-option', 'mdl-c').disabled, false);
+      await click(groupElement('plan-model-option', 'mdl-b'));
+      assert.equal(groupElement('plan-model-option', 'mdl-a').getAttribute('aria-checked'), 'true');
+      await click(groupElement('plan-model-option', 'mdl-c'));
+      await click(groupElement('save-btn'));
+      assert.deepEqual(saved[0].routes.map((route) => route.model_id), ['mdl-c', 'mdl-b']);
+    });
+  });
+}
+
+test('model group dialog only allows re-adding a legacy duplicate after its last route is deleted', async () => {
+  await withFixture(async ({ mount, click }) => {
+    const saved = [];
+    await mount(groupEditor(stableCatalog, [
+      ...stableGroup.routes,
+      { route_id: 'rte-a-second', model_id: 'mdl-a' },
+    ], async (payload) => saved.push(payload)));
+    assert.equal(groupElement('add-route-btn').disabled, true);
+    await click(groupElement('route-delete', 'rte-a'));
+    assert.equal(groupElement('add-route-btn').disabled, true);
+    await click(groupElement('route-row', 'rte-b').querySelector('button'));
+    assert.equal(groupElement('model-option', 'mdl-a').disabled, true);
+    await click(groupElement('route-delete', 'rte-a-second'));
+    assert.equal(groupElement('model-option', 'mdl-a').disabled, false);
+    assert.equal(groupElement('add-route-btn').disabled, false);
+    await click(groupElement('add-route-btn'));
+    assert.equal(groupElement('add-route-btn').disabled, true);
+    await click(groupElement('save-btn'));
+    assert.deepEqual(saved[0].routes.map((route) => route.model_id), ['mdl-b', 'mdl-a']);
+  });
+});
+
+test('model group dialog preserves existing duplicate route identities and overrides when saving', async () => {
+  await withFixture(async ({ mount, click }) => {
+    const saved = [];
+    const routes = [
+      ...stableGroup.routes,
+      { route_id: 'rte-a-second', model_id: 'mdl-a', enabled: false,
+        request_overrides: { temperature: 0.9 }, tpm: 1200, rpm: 10, timeout: 40 },
+    ];
+    await mount(groupEditor(stableCatalog, routes, async (payload) => saved.push(payload), {
+      model_group_id: 'mgp-stable', request_config: { temperature: 0.5 },
+    }));
+    await click(groupElement('route-row', 'rte-a-second').querySelector('button'));
+    assert.equal(groupElement('model-option', 'mdl-a').disabled, false);
+    assert.equal(groupElement('model-option', 'mdl-a').getAttribute('aria-checked'), 'true');
+    assert.equal(groupElement('model-option', 'mdl-b').disabled, true);
+    await click(groupElement('model-option', 'mdl-a'));
+    await click(groupElement('save-btn'));
+    assert.deepEqual(saved[0].routes, routes);
+    assert.equal(saved[0].model_group_id, 'mgp-stable');
+    assert.deepEqual(saved[0].request_config, { temperature: 0.5 });
+  });
+});
+
+for (const explicitSession of [false, true]) {
+  test(`organization child model preserves owner selection with explicit session: ${explicitSession}`, async () => {
+    const previousTeams = useTeamSelectorStore.getState();
+    const previousEnabled = isTeamOrganizationUiEnabled();
+    try {
+      await withFixture(async ({ mount, byId }) => {
+        setTeamOrganizationUiEnabled(true);
+        useSessionStore.getState().setAvailableModels([
+          { model_id: 'glm', model_name: 'GLM-5.3', is_default: true },
+          { model_id: 'deepseek', model_name: 'deepseek-flash' },
+        ], 'GLM-5.3');
+        useSessionStore.getState().setMode(sessionId, 'team');
+        useSessionStore.getState().setSelectedModelName(sessionId, 'GLM-5.3');
+        useSessionStore.getState().setSelectedModelSelection(sessionId, { type: 'model', id: 'glm' });
+        const teams = [
+          { team_id: 'owner', team_name: 'owner', organization_id: 'org', is_owner: true },
+          {
+            team_id: 'expert', team_name: 'expert', organization_id: 'org', is_owner: false,
+            execution_model_name: 'deepseek-flash', execution_model_selection: { type: 'model', id: 'deepseek' },
+          },
+        ];
+        const runtime = { teams, selectedTeamId: 'expert', defaultTeamId: 'owner', loaded: true };
+        useTeamSelectorStore.setState({ runtimes: { [sessionId]: runtime } });
+
+        if (explicitSession) useChatStore.setState({ activeSessionId: 'another-session' });
+        await mount(createElement(ChatModelSelector, explicitSession ? { sessionId } : {}));
+
+        assert.match(byId('chat-panel-model-selector-trigger').textContent, /deepseek-flash/);
+        assert.equal(byId('chat-panel-model-selector-trigger').disabled, true);
+        assert.equal(useSessionStore.getState().runtimes[sessionId].selectedModelName, 'GLM-5.3');
+        await act(async () => {
+          useTeamSelectorStore.setState({ runtimes: { [sessionId]: { ...runtime, selectedTeamId: 'owner' } } });
+        });
+        assert.match(byId('chat-panel-model-selector-trigger').textContent, /GLM-5.3/);
+        assert.equal(byId('chat-panel-model-selector-trigger').disabled, false);
+        await act(async () => {
+          useTeamSelectorStore.setState({ runtimes: { [sessionId]: runtime } });
+          setTeamOrganizationUiEnabled(false);
+        });
+        assert.match(byId('chat-panel-model-selector-trigger').textContent, /GLM-5.3/);
+      });
+    } finally {
+      useTeamSelectorStore.setState(previousTeams, true);
+      setTeamOrganizationUiEnabled(previousEnabled);
+    }
+  });
+}
+
+
+test('design selectors hide model groups and persist an ordinary model fallback', async (t) => {
+  const persisted = [];
+  t.mock.method(webClient, 'request', async (method, params) => {
+    assert.equal(method, 'session.selection.set');
+    persisted.push(params);
+    return { success: true };
+  });
+  await withFixture(async ({ mount, click, byId }) => {
+    setupStableCatalog();
+    useSessionStore.getState().setSelectedModelSelection(sessionId, { type: 'model_group', id: 'mgp-stable' });
+    await mount(createElement(ChatModelSelector, { sessionId, allowModelGroups: false }));
+    await act(async () => {});
+    assert.deepEqual(useSessionStore.getState().getRuntime(sessionId).selectedModelSelection,
+      { type: 'model', id: 'mdl-a' });
+    assert.deepEqual(persisted.at(-1), { session_id: sessionId, model_selection: { type: 'model', id: 'mdl-a' } });
+    await click(byId('chat-panel-model-selector-trigger'));
+    assert.equal(byId('chat-panel-model-selector-group-option'), null);
+    assert.equal(byId('chat-panel-model-selector-moa-option'), null);
+  });
+});
+>>>>>>> origin/develop

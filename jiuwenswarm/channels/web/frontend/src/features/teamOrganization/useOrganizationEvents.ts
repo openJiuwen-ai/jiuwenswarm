@@ -7,6 +7,7 @@ import { normalizeToolCallPayload, normalizeToolResultPayload } from '../tool-ev
 import { expertTeamId, ownerTeamId } from './conversation';
 import { useTeamOrganizationUiEnabled } from './featureConfig';
 import { generateUuidV4 } from '../../utils/uuid';
+<<<<<<< HEAD
 import { MemberToolEventProjector } from './memberToolEvents';
 import { clearOrganizationRequests, setOrganizationOwnerStopped } from './processing';
 import { expertProcessingSnapshot, finishExpertRequest, organizationProcessingRevision, reconcileOrganizationRequests, replaceExpertRequests, startExpertRequest, type OrganizationRequest } from './processing';
@@ -17,6 +18,24 @@ interface OrganizationRequestSnapshot {
   organization_requests?: OrganizationRequest[];
   teams?: { team_id: string; is_owner?: boolean }[];
 }
+||||||| e487e9a30
+=======
+import { MemberToolEventProjector } from './memberToolEvents';
+import { useSessionStore } from '../../stores/sessionStore';
+import { toTaskTimelineEntry } from '../../components/teamArea/groupChatTimeline';
+import { normalizeTaskEvent } from '../../stores/teamTaskNormalize';
+import { toOwnerTeamMessage } from '../../components/ChatPanel/teamEventUtils';
+import type { Message } from '../../types';
+import { clearOrganizationRequests, setOrganizationOwnerStopped } from './processing';
+import { expertProcessingSnapshot, finishExpertRequest, organizationProcessingRevision, reconcileOrganizationRequests, replaceExpertRequests, startExpertRequest, type OrganizationRequest } from './processing';
+
+interface OrganizationRequestSnapshot {
+  organization_owner_stopped?: boolean;
+  expert_requests?: { team_id: string; request_id: string }[];
+  organization_requests?: OrganizationRequest[];
+  teams?: { team_id: string; is_owner?: boolean }[];
+}
+>>>>>>> origin/develop
 
 /** Organization streams are isolated from the existing foreground Session lifecycle. */
 export function useOrganizationEvents(): void {
@@ -107,6 +126,7 @@ export function useOrganizationEvents(): void {
       'chat.tool_result',
       'team.task',
       'team.member',
+      'team.message',
     ];
     const unsubs = events.map((event) =>
       webClient.on(event, ({ payload }) => {
@@ -154,7 +174,38 @@ export function useOrganizationEvents(): void {
         if (!teamId) return;
         const chat = useChatStore.getState();
         chat.ensureTeamRuntime(sessionId, teamId);
+        if (event === 'team.message') {
+          const inner = (payload.event ?? (payload.payload as Record<string, unknown> | undefined)?.event) as Record<string, unknown> | undefined;
+          if (!inner || typeof inner !== 'object') return;
+          const id = typeof inner.message_id === 'string' && inner.message_id
+            ? `team-message-${teamId}-${inner.message_id}` : `team-message-${generateUuidV4()}`;
+          const message: Message = {
+            id, role: 'system', content: `team.event:${JSON.stringify(payload)}`,
+            timestamp: new Date().toISOString(), teamId,
+          };
+          if (!chat.getRuntime(key)?.messages.some((item) => item.id === id)) chat.addMessage(key, message);
+          const ownerMessage = toOwnerTeamMessage(message);
+          if (ownerMessage) {
+            chat.ensureRuntime(sessionId);
+            if (!chat.getRuntime(sessionId)?.messages.some((item) => item.id === ownerMessage.id)) {
+              chat.addMessage(sessionId, ownerMessage);
+            }
+          }
+          return;
+        }
         if (event === 'team.task' || event === 'team.member') {
+          if (event === 'team.task') {
+            const inner = (payload.event ?? (payload.payload as Record<string, unknown> | undefined)?.event) as Record<string, unknown> | undefined;
+            if (inner && typeof inner === 'object') {
+              const store = useSessionStore.getState();
+              store.ensureRuntime(key);
+              const timestamp = typeof inner.timestamp === 'number' ? inner.timestamp : Date.now();
+              const entry = toTaskTimelineEntry(inner, timestamp);
+              if (entry) store.appendTeamTaskTimeline(key, [entry]);
+              const task = normalizeTaskEvent(inner);
+              if (task) store.upsertTeamTask(key, task);
+            }
+          }
           if (useTeamSelectorStore.getState().runtimes[sessionId]?.selectedTeamId === teamId) {
             void useTeamSelectorStore.getState().selectTeam(sessionId, teamId);
           }
@@ -233,6 +284,14 @@ export function useOrganizationEvents(): void {
             timestamp: new Date().toISOString(),
             teamId,
           });
+<<<<<<< HEAD
+||||||| e487e9a30
+          chat.setProcessing(key, false);
+          chat.setThinking(key, false);
+=======
+          // Request bookkeeping above owns busy state; a stale error must not
+          // clear another active request for the same expert.
+>>>>>>> origin/develop
         }
       }),
     );

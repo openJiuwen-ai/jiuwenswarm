@@ -229,6 +229,7 @@ async def test_director_does_not_rebuild_a_reference_led_graph() -> None:
     assert _clips(graph)
 
 
+<<<<<<< HEAD
 def test_reference_led_canvas_is_titled_by_the_story_not_the_prompt() -> None:
     prompt = "生成一段15秒的奶娃舞蹈动画。要求：可爱的小奶娃在明亮的舞台上跳舞，动作活泼有节奏感"
 
@@ -243,6 +244,37 @@ def test_reference_led_canvas_is_titled_by_the_story_not_the_prompt() -> None:
     assert build(prompt)["title"] == "设计项目"
 
 
+||||||| e487e9a30
+=======
+def test_reference_led_canvas_is_titled_by_the_story_not_the_prompt() -> None:
+    prompt = "生成一段15秒的奶娃舞蹈动画。要求：可爱的小奶娃在明亮的舞台上跳舞，动作活泼有节奏感"
+
+    def build(story_name: str) -> dict:
+        analysis = _base_analysis([_slot([ROLE_PRODUCT], binding="verbatim")], characters=[], scenes=[])
+        analysis["story_name"] = story_name
+        return build_smart_video_graph(project_id="proj_title", prompt=prompt, analysis=analysis)
+
+    graph = build("奶娃律动秀")
+    assert graph["metadata"]["bootstrap"] == "designer.graph.reference_led.v1"
+    assert graph["title"] == "奶娃律动秀"
+    assert build(prompt)["title"] == "设计项目"
+
+
+def test_reference_led_graph_gets_a_bgm_node_when_music_is_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.designer.capabilities.detect_audio_backends",
+        lambda: {"can_speech": False, "can_music": True, "can_video_audio": False, "video_audio_model": ""},
+    )
+    analysis = _base_analysis([_slot([ROLE_PRODUCT], binding="verbatim")], characters=[], scenes=[])
+    analysis["audio"] = {"policy": "optional_music", "include_music": True}
+    graph = build_smart_video_graph(project_id="proj_bgm", prompt="product spot", analysis=analysis)
+    assert _pipeline(_node(graph, "n_music")) == "music"
+    edges = {(edge["source"], edge["target"]) for edge in graph["edges"]}
+    assert {("n_brief", "n_music"), ("n_music", "n_compose")} <= edges
+    assert "n_music" in _node(graph, "n_compose")["config"]["inputs"]
+
+
+>>>>>>> origin/develop
 
 
 # --- Fix 1: character verbatim skips the character specs ---------------------

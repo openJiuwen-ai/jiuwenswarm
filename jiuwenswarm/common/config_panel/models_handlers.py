@@ -50,7 +50,14 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
 )
 from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.model_config_validation import probe_model_connection, raise_if_invalid
+<<<<<<< HEAD
 from jiuwenswarm.common.model_errors import ModelSelectionError
+||||||| e487e9a30
+from jiuwenswarm.common.model_errors import MODEL_SELECTION_REFERENCED, ModelSelectionError
+=======
+from jiuwenswarm.common.model_error_messages import user_facing_model_error
+from jiuwenswarm.common.model_errors import ModelSelectionError
+>>>>>>> origin/develop
 from jiuwenswarm.common.reasoning_config import (
     effective_endpoint_profile,
     validate_reasoning_level_for_model,
@@ -207,6 +214,133 @@ def resolve_model_config_obj_for_validate(
     return model_config_obj
 
 
+def resolve_persisted_mcc_for_validate(model_name: str) -> dict[str, Any]:
+    """从热更新后的配置中查找对应模型的 ``model_client_config``。
+
+    与 :func:`resolve_model_config_obj_for_validate` 同一查找口径
+    （``model_name`` 或 ``alias`` 匹配 ``models.defaults``，返回深拷贝），
+    但取条目的 mcc 段。``custom_headers`` / ``ssl_cert`` 等配置页未暴露的
+    write-only 字段只在持久化条目中存在，探测（「测试连接」）以它们为基线
+    才能与保存后的对话路径走同一份配置；找不到或读取失败时返回空 dict，
+    探测退化为仅表单字段（历史行为）。
+    """
+    import copy as _copy
+
+    try:
+        _cfg = get_config()
+        _models = get_default_models(_cfg)
+        for entry in _models:
+            if not isinstance(entry, dict):
+                continue
+            mcc = entry.get("model_client_config")
+            if not isinstance(mcc, dict):
+                continue
+            entry_model_name = str(mcc.get("model_name", "")).strip()
+            entry_alias = str(entry.get("alias", "")).strip()
+            if entry_model_name == model_name or entry_alias == model_name:
+                logger.info(
+                    "[config.validate_model] loaded persisted model_client_config "
+                    "for '%s' (matched_by=%s)",
+                    model_name,
+                    "model_name" if entry_model_name == model_name else "alias",
+                )
+                return _copy.deepcopy(mcc)
+        logger.info(
+            "[config.validate_model] no persisted model_client_config found for '%s'",
+            model_name,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[config.validate_model] failed to read persisted model_client_config, "
+            "using draft fields only. %s",
+            exc,
+        )
+    return {}
+
+
+def resolve_validate_endpoint_profile(
+    params: dict[str, Any],
+    persisted_mcc: dict[str, Any],
+    api_base: str,
+) -> str | None:
+    """解析「测试连接」的端点方言：草稿 → host 推断 → 持久化条目兜底。
+
+    持久化兜底与保存合并（``_merge_models_for_replace_all``）同口径：
+    条目切到 Anthropic 协议或换用其他供应商预设时，保存会丢弃旧方言，
+    探测也不得回退；其余情况表单未携带方言即视为保留持久化值（编辑表单
+    不暴露该字段，缺失不代表清空）。``vendor_key`` 由前端透传；旧版
+    payload 不带该字段时按"未变更"处理会误用旧方言，因此优先信任
+    payload 与持久化的显式比较。
+    """
+    explicit = params.get("endpoint_profile")
+    profile = effective_endpoint_profile(api_base, explicit)
+    if profile:
+        return profile
+    if normalize_provider_value(str(params.get("model_provider") or "")) == "Anthropic":
+        return None
+    if (params.get("vendor_key") or "") != (persisted_mcc.get("vendor_key") or ""):
+        return None
+    return str(persisted_mcc.get("endpoint_profile") or "") or None
+
+
+def build_probe_model_client_config(
+    model_provider: str,
+    api_key: str,
+    api_base: str,
+    *,
+    endpoint_profile: str = "",
+    verify_ssl: bool | None = None,
+    persisted_mcc: dict[str, Any] | None = None,
+) -> ModelClientConfig:
+    """构造探测用 ``ModelClientConfig``：持久化条目为基线，表单草稿值覆盖。
+
+    对话路径（``interface_deep.build_model_from_entry``）把持久化 mcc 整包传给
+    core，``custom_headers`` 等字段自然生效；探测此前只拼表单可见字段，导致
+    依赖请求头鉴权的网关「对话正常、测试 401」。此函数让探测与对话共享
+    同一份持久化配置：表单字段（用户正在编辑的草稿）始终权威覆盖，探测
+    预算（client_id / timeout / max_retries）最后固定，不被条目的
+    ``timeout: 1800`` 等运行值污染。
+
+    ``verify_ssl`` 为 None 表示表单未提交该项：保留基线值，基线也没有时
+    用 False（探测历史默认，而非 core 的 True——自签证书网关的探测结论
+    不因本次修复翻转）。基线含非法字段类型时构造失败，退化为仅表单字段
+    （历史行为）并告警，不让脏配置打断探测。
+    """
+
+    def _assemble(persisted: dict[str, Any] | None) -> ModelClientConfig:
+        probe_fields: dict[str, Any] = dict(persisted or {})
+        probe_fields.pop("model_name", None)
+        probe_fields.update(
+            {
+                "client_id": "config-validate",
+                "client_provider": model_provider,
+                "api_key": api_key,
+                "api_base": api_base,
+                "timeout": 25.0,
+                "max_retries": 0,
+            }
+        )
+        if endpoint_profile:
+            probe_fields["endpoint_profile"] = endpoint_profile
+        elif "endpoint_profile" in probe_fields:
+            del probe_fields["endpoint_profile"]
+        if verify_ssl is not None:
+            probe_fields["verify_ssl"] = verify_ssl
+        elif "verify_ssl" not in probe_fields:
+            probe_fields["verify_ssl"] = False
+        return ModelClientConfig(**probe_fields)
+
+    try:
+        return _assemble(persisted_mcc)
+    except Exception:
+        logger.warning(
+            "[config.validate_model] persisted model_client_config rejected by "
+            "ModelClientConfig (invalid field types); probing with draft fields only",
+            exc_info=True,
+        )
+        return _assemble(None)
+
+
 def _merge_models_for_replace_all(
     parsed: list[dict[str, Any]],
     raw_defaults: list[dict[str, Any]],
@@ -285,6 +419,7 @@ def _merge_models_for_replace_all(
                 new_entry["alias"] = item["alias"]
             # vendor_key + plan: persist the exact provider selection identity
             # into model_client_config (or clear it).
+            previous_vendor = str(new_mcc.get("vendor_key") or "")
             if item.get("vendor_key"):
                 new_mcc["vendor_key"] = item["vendor_key"]
             else:
@@ -294,10 +429,16 @@ def _merge_models_for_replace_all(
             else:
                 new_mcc.pop("plan", None)
             # endpoint_profile: OpenAI 协议端点方言(deepseek/openrouter/dashscope/...)。
-            # 前端透传则落库；不传则清掉(避免残留旧方言)。Anthropic 协议时此字段被 core 忽略。
+            # 编辑表单不暴露该字段(Anthropic 协议下 core 忽略)，payload 缺失不等于
+            # 用户要求清空：仅当切到 Anthropic 协议或换用其他供应商预设时丢弃持久化
+            # 值，否则保留(与 TUI 保存路径同口径)，避免静默刷掉手写 YAML 的方言。
+            # payload 显式值/保存时 host 推断值始终优先落库。
             if item.get("endpoint_profile"):
                 new_mcc["endpoint_profile"] = item["endpoint_profile"]
-            else:
+            elif (
+                normalize_provider_value(str(item.get("model_provider") or "")) == "Anthropic"
+                or (item.get("vendor_key") or "") != previous_vendor
+            ):
                 new_mcc.pop("endpoint_profile", None)
             new_entry["is_default"] = item["is_default"]
             # api_key: resolved holds the decrypted plaintext shown to the frontend.
@@ -439,7 +580,7 @@ def build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]
         vendor_key = str(item.get("vendor_key") or "").strip() or None
         plan = str(item.get("plan") or "").strip() or None
         if plan:
-            from jiuwenswarm.common.model_vendor_registry import PlanKind
+            from agent_gateway.common.model_vendor_registry import PlanKind
 
             try:
                 plan = PlanKind(plan).value
@@ -487,7 +628,7 @@ def build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]
             "origin_index": origin_index,
             # vendor_key is an opaque hint
             # selector; not validated (the selector only ever emits keys
-            # present in jiuwenswarm.common.model_vendor_registry). It is
+            # present in gateway.common.model_vendor_registry). It is
             # persisted so the UI can match a configured entry back to its
             # preset for icon display / re-selection. Not required.
             "vendor_key": vendor_key,
@@ -582,10 +723,16 @@ async def config_validate_model_handler(
         return
     api_base = api_base.rstrip("/")
 
-    verify_ssl = bool(params.get("verify_ssl", False))
-    # 未显式传方言时按 api_base host 推断已知自建网关(如 vllm)，
-    # 保证"测试连接"与保存后的真实运行走同一条 core 路由。
-    endpoint_profile = effective_endpoint_profile(api_base, params.get("endpoint_profile"))
+    verify_ssl: bool | None = None
+    if "verify_ssl" in params:
+        verify_ssl = bool(params.get("verify_ssl"))
+    # 探测以持久化条目为基线：custom_headers / ssl_cert 等配置页未暴露的
+    # write-only 字段随条目进入探测请求，与保存后的对话路径同口径。
+    persisted_mcc = resolve_persisted_mcc_for_validate(model)
+    # 方言解析：草稿优先；未显式传时按 api_base host 推断已知自建网关(如
+    # vllm)；仍未命中且保存会保留持久化值时回退条目方言——保证"测试连接"
+    # 与保存后的真实运行走同一条 core 路由。
+    endpoint_profile = resolve_validate_endpoint_profile(params, persisted_mcc, api_base)
 
     model_config_obj = resolve_model_config_obj_for_validate(model, params)
 
@@ -606,15 +753,13 @@ async def config_validate_model_handler(
         model,
         model_request_config.model_dump(),
     )
-    model_client_config = ModelClientConfig(
-        client_id="config-validate",
-        client_provider=model_provider,
+    model_client_config = build_probe_model_client_config(
+        model_provider,
+        api_key,
+        api_base,
         endpoint_profile=endpoint_profile,
-        api_key=api_key,
-        api_base=api_base,
-        timeout=25.0,
-        max_retries=0,
         verify_ssl=verify_ssl,
+        persisted_mcc=persisted_mcc,
     )
     # Anthropic-compatible endpoints that send thinking.budget_tokens
     # require max_tokens > budget. Use the actual budget core would emit
@@ -648,10 +793,12 @@ async def config_validate_model_handler(
             log_context="config.validate_model",
         )
     except Exception as exc:  # noqa: BLE001
+        # 原始异常（[181001] ... APIStatusError ...）只留在日志里；回给用户的是
+        # 能直接照做的提示，例如账户欠费时明确提示去充值，而不是一串内部报错。
         logger.warning("[config.validate_model] LLM probe failed: %s", exc)
         await channel.send_response(
             ws, req_id, ok=False,
-            error=str(exc).strip() or "LLM request failed",
+            error=user_facing_model_error(exc, api_base=api_base),
             code="LLM_ERROR",
         )
         return

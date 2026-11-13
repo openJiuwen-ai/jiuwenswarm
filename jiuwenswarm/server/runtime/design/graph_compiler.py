@@ -38,6 +38,7 @@ from typing import Any
 
 from jiuwenswarm.common.schema.designer_graph import (
     NODE_TYPE_TEXT,
+    PIPELINE_MUSIC,
     DesignerExecutionGraph,
     node_agent_template,
     node_pipeline,
@@ -299,6 +300,7 @@ class GraphScriptCompiler:
                 scope = set(targets)
                 for target in targets:
                     scope.update(_ancestors(graph, target))
+<<<<<<< HEAD
             # Old-executor fail-fast, shared by single and cascade: the
             # trigger inlines its out-of-scope ancestors' outputs into the
             # prompts ("upstream is never re-executed"); an ancestor without
@@ -317,6 +319,29 @@ class GraphScriptCompiler:
                 raise ValueError(
                     "upstream not ready: " + ", ".join(not_ready)
                 )
+||||||| e487e9a30
+=======
+            # Old-executor fail-fast, shared by single and cascade: the
+            # trigger inlines its out-of-scope ancestors' outputs into the
+            # prompts ("upstream is never re-executed"); an ancestor without
+            # a produced output has nothing to inline, so refuse instead of
+            # silently rerunning the ancestor chain. Uploaded handler nodes
+            # are always inline-able literals.
+            not_ready: list[str] = []
+            for nid in scope.difference(forced):
+                node = nodes_by_id[nid]
+                generates = (
+                    node_uses_agent_runtime(node)
+                    or node_pipeline(node) == PIPELINE_MUSIC
+                )
+                if generates and _frozen_text(run_outputs.get(nid)) is None:
+                    not_ready.append(nid)
+            not_ready.sort()
+            if not_ready:
+                raise ValueError(
+                    "upstream not ready: " + ", ".join(not_ready)
+                )
+>>>>>>> origin/develop
         lines: list[str] = [
             "META = "
             + json.dumps(

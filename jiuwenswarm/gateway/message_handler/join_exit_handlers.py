@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 """团队成员 /join /exit 处理逻辑。
 
 从 message_handler.py 拆出的独立维护单元，涵盖：
@@ -672,3 +673,5 @@ class JoinExitHandlers:
                 user_infos, channel_id, msg.session_id,
                 f"退出失败：{exc}",
             )
+=======
+>>>>>>> origin/develop

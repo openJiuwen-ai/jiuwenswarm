@@ -11,6 +11,33 @@ import {
   normalizeAgentGroupListItem,
 } from '../node_modules/.cache/agent-management/adapter.js';
 
+test('keeps signed avatar URLs for group and member images', () => {
+  const avatar = '/file-api/download?token=signed&inline=1';
+  const item = normalizeAgentGroupListItem({
+    id: 'group', avatar, members: [{ id: 'leader', avatar }],
+  }, 'en');
+  assert.equal(item.avatarUrl, avatar);
+  assert.equal(item.members[0].avatarUrl, avatar);
+});
+
+test('routes signed avatar requests through the desktop API with the current user', () => {
+  const originalWindow = globalThis.window;
+  globalThis.window = {
+    jiuwenDesktop: { apiBase: 'http://127.0.0.1:5173' },
+    location: { search: '?user_id=user%2B1' },
+  };
+  try {
+    const item = normalizeAgentGroupListItem({
+      id: 'group', avatar: '/file-api/download?token=signed&inline=1',
+    }, 'en');
+    assert.equal(item.avatarUrl,
+      'http://127.0.0.1:5173/file-api/download?token=signed&inline=1&user_id=user%2B1');
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
 test('keeps Hub Expert Teams distinct from local groups', () => {
   const item = normalizeAgentGroupListItem({
     id: 'group-asset-id', name: 'runtime-group', source: 'hub', installed: false,
@@ -48,6 +75,7 @@ import {
 import {
   buildCatalogViewModel,
   buildGroupCatalogViewModel,
+  collectCategories,
   findFirstPreviewableFile,
   mergeAgentDetailWithCatalog,
 } from '../node_modules/.cache/agent-management/viewModel.js';
@@ -56,7 +84,13 @@ import {
   createPendingInstallQueue,
   enqueuePendingInstall,
 } from '../node_modules/.cache/agent-management/pendingInstallQueue.js';
+<<<<<<< HEAD
 import { isUncertainInstallError } from '../node_modules/.cache/agent-management/installOutcome.js';
+||||||| e487e9a30
+=======
+import { isUncertainInstallError } from '../node_modules/.cache/agent-management/installOutcome.js';
+import { agentAccessDeniedCopyKey } from '../node_modules/.cache/agent-management/accessDenied.js';
+>>>>>>> origin/develop
 
 test('pending Expert installs keep target identity while connector flows run serially', () => {
   const first = {
@@ -537,13 +571,65 @@ test('catalog view model filters mine/search and returns the full filtered list'
 
   const productCatalog = buildCatalogViewModel(catalog, {
     scope: 'catalog',
-    category: 'ProductDevelopment',
+    category: 'Engineering',
     query: '',
   });
   assert.deepEqual(
     productCatalog.items.map((item) => item.id),
     ['b', 'hub-c'],
   );
+
+  // 分类页签改由已加载数据动态统计（#5902）：市场有几个分类出几个页签，
+  // 按频次排序但不截断（超过 6 个也全保留），也不再自建 "Other" 聚合类型。
+  assert.deepEqual(
+    collectCategories(['Design', 'Engineering', 'Engineering', '']),
+    ['Engineering', 'Design'],
+  );
+  assert.equal(
+    collectCategories(['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8']).length,
+    8,
+  );
+  // category 直接与后端自由字符串精确比对，不再有"其他"兜底分组。
+  const unmatchedCatalog = buildCatalogViewModel(catalog, {
+    scope: 'catalog',
+    category: 'Research',
+    query: '',
+  });
+  assert.deepEqual(unmatchedCatalog.items.map((item) => item.id), []);
+});
+
+test('My Experts keeps its own capability descriptions across catalog refreshes', () => {
+  for (const locale of ['zh', 'en']) {
+    const catalog = [normalizeAgentTemplateListItem({
+      id: 'hub-expert',
+      source: 'hub',
+      installed: false,
+      displayDescription: { zh: '广场介绍', en: 'Marketplace capability' },
+    }, locale)];
+    let state = createInitialAgentManagementState();
+    for (const displayDescription of [
+      { zh: '本地介绍', en: 'Installed capability' },
+      {},
+      undefined,
+    ]) {
+      const mineCatalog = [normalizeAgentTemplateListItem({
+        id: 'hub-expert',
+        source: 'hub',
+        installed: true,
+        displayDescription,
+      }, locale)];
+      state = agentManagementReducer(state, { type: 'catalog.loaded', catalog, mineCatalog });
+      const mine = buildCatalogViewModel(state.mineCatalog, { scope: 'mine', category: '', query: '' });
+      const marketplace = buildCatalogViewModel(state.catalog, { scope: 'catalog', category: '', query: '' });
+      assert.equal(mine.items.length, 1);
+      assert.equal(mine.items[0].description, displayDescription?.[locale] || '');
+      assert.equal(mine.items[0].installed, true);
+      assert.equal(marketplace.items[0].description, catalog[0].description);
+    }
+    state = agentManagementReducer(state, { type: 'catalog.loaded', catalog, mineCatalog: [] });
+    assert.deepEqual(state.mineCatalog, []);
+    assert.equal(state.catalog.length, 1);
+  }
 });
 
 test('My Experts keeps its own capability descriptions across catalog refreshes', () => {
@@ -700,6 +786,7 @@ test('mine experts match visible names and exclude hidden names, description, ta
     tags: [{ zh: 'hidden-tag' }],
   }, 'zh');
   const search = query => buildCatalogViewModel([item], { scope: 'mine', category: '', query }).totalItems;
+<<<<<<< HEAD
   for (const q of ['工程', ' 工程 ']) assert.equal(search(q), 1, q);
   for (const q of ['生成', 'hidden', '6', ' QUALITY ', 'ＱＵＡＬＩＴＹ']) assert.equal(search(q), 0, q);
 });
@@ -786,4 +873,101 @@ test('backend verdicts without a code stay definite so the upload rollback fires
   assert.equal(isUncertainInstallError({ code: '' }), false);
   assert.equal(isUncertainInstallError(null), false);
   assert.equal(isUncertainInstallError('backend exploded'), false);
+||||||| e487e9a30
+  for (const q of ['工程', ' QUALITY ', 'ＱＵＡＬＩＴＹ']) assert.equal(search(q), 1, q);
+  for (const q of ['生成', 'hidden', '6']) assert.equal(search(q), 0, q);
+=======
+  for (const q of ['工程', ' 工程 ']) assert.equal(search(q), 1, q);
+  for (const q of ['生成', 'hidden', '6', ' QUALITY ', 'ＱＵＡＬＩＴＹ']) assert.equal(search(q), 0, q);
+});
+
+// Different display names can lose the same characters during slug conversion (#5498).
+test('group package IDs stay distinct after lossy name normalization', () => {
+  const names = ['test', '专家团_test', '测试_test', 'TEST', 'test!!!', `${'a'.repeat(50)}b`, `${'a'.repeat(50)}c`];
+  const ids = names.map(deriveAgentGroupId);
+  assert.equal(new Set(ids).size, names.length);
+  for (const id of ids) {
+    assert.match(id, /^[a-z0-9][a-z0-9-]*$/);
+    assert.ok(id.length <= 50);
+  }
+});
+
+test('group package IDs stay distinct for non-Latin names created in the same millisecond', t => {
+  t.mock.method(Date, 'now', () => 0);
+  const ids = ['专家团', '测试团队', '专家团'].map(deriveAgentGroupId);
+  assert.equal(new Set(ids).size, ids.length);
+});
+
+// Expert creation must not collide when different names normalize to one slug.
+test('expert package IDs stay distinct after lossy name normalization', () => {
+  const names = ['test', '专家_test', '测试_test', 'TEST', 'test!!!', `${'a'.repeat(50)}b`, `${'a'.repeat(50)}c`];
+  const ids = names.map(deriveAgentId);
+  assert.equal(new Set(ids).size, names.length);
+  for (const id of ids) {
+    assert.match(id, /^[a-z0-9][a-z0-9-]*$/);
+    assert.ok(id.length <= 50);
+  }
+});
+
+test('expert package IDs stay distinct for non-Latin names created in the same millisecond', t => {
+  t.mock.method(Date, 'now', () => 0);
+  const ids = ['专家', '测试', '专家'].map(deriveAgentId);
+  assert.equal(new Set(ids).size, ids.length);
+  for (const id of ids) assert.match(id, /^agent-/);
+});
+
+test('mine search excludes hidden English names from Chinese cards (#4473)', () => {
+  const raw = {
+    id: 'hidden-s-6', source: 'local', installed: true,
+    displayName: { zh: '案件整理顾问', en: 'Casework Organizer' },
+    displayDescription: { zh: 'description-only' },
+    tags: [{ zh: 'tag-only' }], category: 'category-only',
+  };
+  const search = (locale, query) => buildCatalogViewModel(
+    [normalizeAgentTemplateListItem(raw, locale)], { scope: 'mine', category: '', query },
+  ).items.length;
+  for (const query of ['s', 'Casework', 'hidden', '6', 'description-only', 'tag-only']) {
+    assert.equal(search('zh', query), 0, query);
+  }
+  assert.equal(search('zh', '案件'), 1);
+  assert.equal(search('en', '案件'), 0);
+  for (const query of ['s', ' CASEWORK ', 'ＣＡＳＥＷＯＲＫ']) assert.equal(search('en', query), 1);
+  const fallback = normalizeAgentTemplateListItem({ ...raw, displayName: { en: 'Casework Organizer' } }, 'zh');
+  assert.equal(buildCatalogViewModel([fallback], { scope: 'mine', category: '', query: 'Casework' }).items.length, 1);
+});
+test('in-flight transport deaths are the only uncertain install outcomes', () => {
+  // webClient raises these codes itself when a request dies before the
+  // backend could answer (timeout, dropped socket — including WS_CLOSED,
+  // which disconnect() uses to reject in-flight requests). The backend may
+  // still complete the install, so the just-imported package must be kept.
+  for (const code of ['REQUEST_TIMEOUT', 'WS_DISCONNECTED', 'WS_CLOSED', 'WS_ERROR', 'REQUEST_ABORTED']) {
+    assert.equal(isUncertainInstallError({ code }), true, code);
+  }
+  assert.equal(isUncertainInstallError({ code: 'WS_NOT_READY' }), false);
+});
+
+test('backend verdicts without a code stay definite so the upload rollback fires', () => {
+  // webClient leaves `code` undefined only on backend rejection responses
+  // (resolvePending / resolveRuntimeAcceptedPending), and rethrowAgentError
+  // maps that shape onto the agent_management_request_failed fallback. The
+  // backend answered, so this is a verdict: the install must count as
+  // failed and handleUpload must roll back the just-imported package
+  // instead of leaving a half-imported expert behind (issue #5677 shape).
+  assert.equal(isUncertainInstallError({ code: 'agent_management_request_failed' }), false);
+  // A rejection that carries a backend code stays definite as well.
+  assert.equal(isUncertainInstallError({ code: 'HUB_ASSET_NOT_FOUND' }), false);
+  // Codeless plain Error throws on this path are definite too — handleInstall
+  // raises one itself for the backend's auth_required answer.
+  assert.equal(isUncertainInstallError(new Error('auth required')), false);
+  assert.equal(isUncertainInstallError({ code: '' }), false);
+  assert.equal(isUncertainInstallError(null), false);
+  assert.equal(isUncertainInstallError('backend exploded'), false);
+});
+
+test('Agent admission denial maps to the plaza copy key', () => {
+  assert.equal(agentAccessDeniedCopyKey('Agent access denied'), 'agentManagement.states.agentAccessDenied');
+  assert.equal(agentAccessDeniedCopyKey('  Agent access denied  '), 'agentManagement.states.agentAccessDenied');
+  assert.equal(agentAccessDeniedCopyKey('Agent routing identity is required'), null);
+  assert.equal(agentAccessDeniedCopyKey('agent_template package not found: demo'), null);
+>>>>>>> origin/develop
 });

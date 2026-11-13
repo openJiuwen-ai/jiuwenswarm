@@ -17,19 +17,33 @@ from openjiuwen.symphony import (
     SymphonyRuntime,
 )
 
-from jiuwenswarm.symphony.adapter import (
+from jiuwenswarm.runtime.symphony.adapter import (
     FingerprintArtifactCapabilityProvider,
-    FingerprintLLMAdapter,
+    model_from_config,
+    model_response_observer_from_config,
     ScanResultCapabilityProvider,
     fingerprint_settings_from_swarm,
     graph_build_orchestration_config_from_swarm,
     graph_config_from_swarm,
 )
+<<<<<<< HEAD
 from jiuwenswarm.symphony.config import symphony_config_from_dict
 from jiuwenswarm.symphony.build import build_graph, graph_status
 from jiuwenswarm.symphony.graph_storage import resolve_graph_artifact_dir
 from jiuwenswarm.symphony.llm import LLMConfig, thinking_disabled_request_overrides
 from jiuwenswarm.symphony.service import SwarmSymphonyService
+||||||| e487e9a30
+from jiuwenswarm.symphony.config import symphony_config_from_dict
+from jiuwenswarm.symphony.build import build_graph, graph_status
+from jiuwenswarm.symphony.graph_storage import resolve_graph_artifact_dir
+from jiuwenswarm.symphony.llm import LLMConfig
+=======
+from jiuwenswarm.common.symphony_config import symphony_config_from_dict
+from jiuwenswarm.runtime.symphony.build import GraphBuildRuntimeFactory, build_graph, graph_status
+from jiuwenswarm.runtime.symphony.graph_storage import resolve_graph_artifact_dir
+from jiuwenswarm.runtime.symphony.llm import LLMConfig, thinking_disabled_request_overrides
+from jiuwenswarm.runtime.symphony.service import SwarmSymphonyService
+>>>>>>> origin/develop
 
 
 @pytest.mark.asyncio
@@ -118,31 +132,78 @@ def test_swarm_settings_map_only_supported_core_controls(tmp_path):
 
 
 @pytest.mark.asyncio
+<<<<<<< HEAD
 @pytest.mark.parametrize("finish_reason", ["stop", "length"])
 async def test_fingerprint_adapter_removes_symphony_completion_token_override(
+||||||| e487e9a30
+async def test_fingerprint_adapter_removes_symphony_completion_token_override(
+=======
+@pytest.mark.parametrize("finish_reason", ["stop", "length"])
+async def test_fingerprint_factory_wires_native_model_and_usage_observer(
+>>>>>>> origin/develop
     monkeypatch,
+<<<<<<< HEAD
     finish_reason,
+||||||| e487e9a30
+=======
+    tmp_path,
+    finish_reason,
+>>>>>>> origin/develop
 ):
+<<<<<<< HEAD
     model = _CapturingFingerprintModel(finish_reason=finish_reason)
+||||||| e487e9a30
+    model = _CapturingFingerprintModel(finish_reason="stop")
+=======
+    skill_dir = tmp_path / "skills" / "writer"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: Writer\ndescription: Write text.\n---\nWrite the supplied text.",
+        encoding="utf-8",
+    )
+    model = _CapturingFingerprintModel(finish_reason=finish_reason)
+>>>>>>> origin/develop
     captured_configs = []
     observed_responses = []
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.adapter.model_from_config",
+        "jiuwenswarm.runtime.symphony.build.model_from_config",
         lambda config: captured_configs.append(config) or model,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.adapter.model_response_observer_from_config",
+        "jiuwenswarm.runtime.symphony.build.model_response_observer_from_config",
         lambda _config: (
+<<<<<<< HEAD
             lambda response, _stage, _operation: observed_responses.append(
                 (response, is_disabled_thinking_fallback_allowed())
             )
+||||||| e487e9a30
+            lambda response, _stage, _operation: observed_responses.append(response)
+=======
+            lambda response, stage, operation: observed_responses.append(
+                (response, stage, operation, is_disabled_thinking_fallback_allowed())
+            )
+>>>>>>> origin/develop
         ),
     )
     config = LLMConfig(
         model="thinking-model",
         model_config_obj={"max_tokens": 99, "extra_body": {"custom": True}},
     )
+    runtime_config = symphony_config_from_dict({})
+    service = GraphBuildRuntimeFactory.fingerprint_service(
+        SkillFolderScanner(tmp_path / "skills").scan(),
+        tmp_path / "artifacts",
+        llm_config=config,
+        runtime_config=runtime_config,
+    )
+    if finish_reason == "length":
+        with pytest.raises(BaseError, match="finish_reason=length"):
+            await service.build()
+        assert not (tmp_path / "artifacts" / FINGERPRINT_ARTIFACT_FILENAME).exists()
+    else:
+        await service.build()
 
+<<<<<<< HEAD
     adapter = FingerprintLLMAdapter(config)
     if finish_reason == "length":
         with pytest.raises(BaseError, match="increase max_tokens"):
@@ -154,14 +215,42 @@ async def test_fingerprint_adapter_removes_symphony_completion_token_override(
     assert captured_configs[0].model_config_obj == {
         "max_tokens": 99,
         "extra_body": {"custom": True},
+||||||| e487e9a30
+    adapter = FingerprintLLMAdapter(config)
+    response = await adapter.invoke([], max_tokens=2048, timeout=30)
+
+    assert captured_configs[0].model_config_obj == {
+        "max_tokens": 99,
+        "extra_body": {"custom": True},
+=======
+    assert captured_configs == [config]
+    assert config.model_config_obj == {
+        "max_tokens": 99, "extra_body": {"custom": True},
+>>>>>>> origin/develop
     }
+<<<<<<< HEAD
     assert model.calls == [{"timeout": 30}]
     assert observed_responses == [(response, False)]
     settings = fingerprint_settings_from_swarm(
         symphony_config_from_dict({}),
         config,
+||||||| e487e9a30
+    assert model.calls == [{"timeout": 30}]
+    assert observed_responses == [response]
+    settings = fingerprint_settings_from_swarm(
+        symphony_config_from_dict({}),
+        config,
+=======
+    settings = fingerprint_settings_from_swarm(runtime_config, config)
+    assert settings.llm_max_tokens is None
+    assert len(model.calls) == 1
+    assert "max_tokens" not in model.calls[0]
+    assert model.calls[0]["timeout"] == settings.llm_timeout
+    assert len(observed_responses) == 1
+    assert observed_responses[0][1:] == (
+        "fingerprint_extraction", "capability_extraction", False,
+>>>>>>> origin/develop
     )
-    assert adapter.cache_signature == settings.configuration_signature
 
 
 @pytest.mark.asyncio
@@ -237,6 +326,7 @@ async def test_swarm_graph_build_consumes_canonical_core_artifact(
     monkeypatch.setattr(
         "openai.resources.chat.completions.AsyncCompletions.create", create,
     )
+<<<<<<< HEAD
     llm_config = LLMConfig(
         model="offline-test",
         model_client_config={
@@ -265,6 +355,37 @@ async def test_swarm_graph_build_consumes_canonical_core_artifact(
         assert is_disabled_thinking_fallback_allowed() is False
         return
     assert first["success"] is True, first
+||||||| e487e9a30
+=======
+    llm_config = LLMConfig(
+        model="offline-test",
+        model_client_config={
+            "client_provider": "openai", "api_key": "key",
+            "api_base": "https://model.test/v1",
+        },
+        model_config_obj=thinking_disabled_request_overrides(),
+    )
+    llm_config.model_config_obj["max_tokens"] = 99
+    monkeypatch.setattr(LLMConfig, "from_default_model", lambda: llm_config)
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config)
+
+    first = await SwarmSymphonyService().refresh_graph()
+    assert all(request["max_tokens"] == 99 for request in fingerprint_requests)
+    assert fingerprint_requests[0]["extra_body"]["thinking"]["type"] == "disabled"
+    assert "thinking" not in fingerprint_requests[1].get("extra_body", {})
+    if truncated_content is not None:
+        assert first["success"] is False
+        assert "finish_reason=length" in first["detail"]
+        assert first["build_progress"]["status"] == "error"
+        assert first["build_log"][-1]["stage"] == "update.failed"
+        assert rejected_phases == ["probe", "fingerprint"]
+        assert not (graph_dir / ".fingerprint-cache.json").exists()
+        assert not (graph_dir / FINGERPRINT_ARTIFACT_FILENAME).exists()
+        assert not (graph_dir / "current.json").exists()
+        assert is_disabled_thinking_fallback_allowed() is False
+        return
+    assert first["success"] is True, first
+>>>>>>> origin/develop
     second = await build_graph(
         skills_root,
         graph_dir,
@@ -337,11 +458,11 @@ Summarize the source faithfully.
     )
     model = _FingerprintAndGraphModel()
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.adapter.model_from_config",
+        "jiuwenswarm.runtime.symphony.llm.LLMConfig.create_model",
         lambda _config: model,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.build.model_from_config",
+        "jiuwenswarm.runtime.symphony.build.model_from_config",
         lambda _config: model,
     )
     llm_config = LLMConfig(model="offline-test")
@@ -379,7 +500,8 @@ Translate the source faithfully.
     target_artifact = await FingerprintService(
         ScanResultCapabilityProvider(target_scan),
         tmp_path / "target-fingerprints",
-        llm=FingerprintLLMAdapter(llm_config),
+        llm=model_from_config(llm_config),
+        model_response_observer=model_response_observer_from_config(llm_config),
         settings=fingerprint_settings_from_swarm(config, llm_config),
     ).build(force=True)
     runtime = SymphonyRuntime(

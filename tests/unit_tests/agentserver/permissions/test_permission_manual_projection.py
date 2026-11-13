@@ -1,5 +1,8 @@
 """Public permission questions must round-trip through real SDK continuation."""
 
+# Imported pytest fixtures intentionally share test parameter names.
+# ruff: noqa: F811
+
 from __future__ import annotations
 
 import asyncio
@@ -13,6 +16,7 @@ from openjiuwen.core.session.interaction.interactive_input import InteractiveInp
 from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall
 from openjiuwen.core.session.stream import OutputSchema
 from openjiuwen.core.single_agent.interrupt.response import ToolCallInterruptRequest
+from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
 
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     convert_interactions_to_ask_user_question,
@@ -81,6 +85,31 @@ async def _start(h, monkeypatch, *, mode="manual", kind="permission", count=1):
     monkeypatch.setattr(agent_observability, "sync_agent_observability", lambda **_kwargs: None)
     h.verified_projection = Mock(wraps=stream_producers.build_verified_permission_ask_user_question)
     monkeypatch.setattr(stream_producers, "build_verified_permission_ask_user_question", h.verified_projection)
+<<<<<<< HEAD
+||||||| e487e9a30
+    monkeypatch.setattr(stream_producers, "_ask_user_question_payload_from_interrupt", h.ask_projection)
+    h.projection_diagnostics = []
+    original_parser = h.adapter._parse_stream_chunk
+
+    def parse(chunk, **kwargs):
+        parsed = original_parser(chunk, **kwargs)
+        if getattr(chunk, "type", None) in ("__interaction__", "controller_output", "answer"):
+            h.projection_diagnostics.append((chunk.type, repr(chunk.payload), parsed))
+        return parsed
+
+    monkeypatch.setattr(h.adapter, "_parse_stream_chunk", parse)
+=======
+    h.projection_diagnostics = []
+    original_parser = h.adapter._parse_stream_chunk
+
+    def parse(chunk, **kwargs):
+        parsed = original_parser(chunk, **kwargs)
+        if getattr(chunk, "type", None) in ("__interaction__", "controller_output", "answer"):
+            h.projection_diagnostics.append((chunk.type, repr(chunk.payload), parsed))
+        return parsed
+
+    monkeypatch.setattr(h.adapter, "_parse_stream_chunk", parse)
+>>>>>>> origin/develop
     monkeypatch.setattr(continuation, "_request", _stream_request)
     # The existing helper also inspects SDK state for its own assertions. Its
     # state-derived answer is deliberately discarded: only public output below
@@ -100,7 +129,7 @@ async def test_public_permission_question_resumes_exactly_once(answer_host, monk
     assert bool(h.verified_projection.call_count) is (mode == "auto")
     if mode == "auto":
         verified_card = h.verified_projection.call_args.args[1]
-        assert question["questions"][0]["card_id"] == verified_card.key.invocation_id
+        assert question["questions"][0]["card_id"] == verified_card.key.tool_call_id
         assert question["request_id"] == verified_card.key.tool_call_id
     await _stream_request(h, **_answer(question, action))
     _questions_once(h, 0)
@@ -139,6 +168,33 @@ async def test_public_ask_question_keeps_independent_continuation(answer_host, m
                           answers=[{"question": item["question"], "custom_input": "blue"}])
     _questions_once(h, 0)
     assert len(h.script.calls) == 2 and len(h.dispatches) == 2
+    assert "blue" in repr(h.script.calls[-1]) and h.executions == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+@pytest.mark.parametrize("kind", ["permission", "ask"])
+async def test_public_question_names_the_interrupt_it_answers(answer_host, monkeypatch, mode, kind):
+    h = answer_host
+    question = await _start(h, monkeypatch, mode=mode, kind=kind)
+    state = h.adapter._instance.loop_session.get_state(INTERRUPTION_KEY)
+    pending = [request for entry in state.interrupted_tools.values() for request in entry.interrupt_requests.values()]
+    assert question["interrupt_id"]
+    assert [question["interrupt_id"]] == [request.interrupt_id for request in pending]
+    assert question["kind"] == ("ask_user" if kind == "ask" else "permission")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+async def test_public_ask_question_is_answered_by_the_interrupt_id_it_names(answer_host, monkeypatch, mode):
+    h = answer_host
+    question = await _start(h, monkeypatch, mode=mode, kind="ask")
+    item = question["questions"][0]
+    await _stream_request(h, source=question["source"], request_id=question["request_id"],
+                          interrupt_id=question["interrupt_id"],
+                          answers=[{"question": item["question"], "custom_input": "blue"}])
+    _questions_once(h, 0)
+    assert list(h.dispatches[-1].inputs["query"].interrupt_answers) == [question["interrupt_id"]]
     assert "blue" in repr(h.script.calls[-1]) and h.executions == []
 
 
@@ -196,7 +252,7 @@ def test_live_smart_locator_is_not_downgraded_to_manual(producer):
     queue, card, interaction = _smart_interaction()
     question = _project(producer, [interaction], queue)
     assert question["request_id"] == card.key.tool_call_id
-    assert question["questions"][0]["card_id"] == card.key.invocation_id
+    assert question["questions"][0]["card_id"] == card.key.tool_call_id
     assert question["source"] == "permission_interrupt"
     assert queue.get(card.key) == card
 
@@ -244,6 +300,7 @@ def test_permission_presentation_identity_separates_smart_manual_and_invalid(que
     original = deepcopy(payload)
     assert JiuWenSwarmDeepAdapter._ask_user_event_identity(payload) == expected
     assert payload == original
+<<<<<<< HEAD
 
 
 async def _connect_runtime(h, harness):
@@ -412,3 +469,174 @@ def test_complete_sdk_schemas_reuse_existing_question_converter(serialized):
     # Standalone callers still receive raw SDK questions without a projector.
     if not serialized:
         assert _project("deep", [interaction])["request_id"] == "first"
+||||||| e487e9a30
+=======
+
+
+async def _connect_runtime(h, harness):
+    h.runtime = harness.runtime
+    sid = h.adapter._parent_session_id
+    await harness.coordinator.register_session(sid, "web")
+
+    async def stream(request):
+        inputs, _, _ = h.facade.build_inputs(request)
+        async for chunk in h.adapter.process_message_stream_impl(request, inputs):
+            yield chunk
+
+    harness.agent.process_message_stream = stream
+    harness.agent.deliver_control_input = stream
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [1, 2, 3])
+@pytest.mark.parametrize("action", ["allow_once", "session_allow", "always_allow", "reject"])
+async def test_runtime_resumes_each_manual_batch_head(answer_host, harness, monkeypatch, count, action):
+    """Use public questions, real SDK continuation and Runtime target matching."""
+    h = answer_host
+    await _connect_runtime(h, harness)
+    sid = h.adapter._parent_session_id
+    first = await _start(h, monkeypatch, count=count)
+    question = first
+    answered = set()
+    while question is not None:
+        request_id = question["request_id"]
+        assert request_id not in answered
+        assert harness.coordinator.has_control_target(sid, request_id)
+        waiting = [control_id for item in harness.coordinator.snapshot_session(sid).executions
+                   if not item.state.terminal for control_id in item.waiting_control_ids]
+        assert waiting == [request_id]
+        answered.add(request_id)
+        await _stream_request(h, **_answer(question, action))
+        assert len(h.projected) <= 1
+        question = h.projected[0] if h.projected else None
+    expected = [] if action == "reject" else [
+        {"value": "once" if count == 1 else f"once-{index}"} for index in range(count)
+    ]
+    assert h.executions == expected
+    assert len(h.script.calls) == 2
+    assert all(item.state.terminal for item in harness.coordinator.snapshot_session(sid).executions)
+    assert not harness.coordinator.has_control_target(sid, first["request_id"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ask_first", [False, True])
+async def test_manual_and_ask_batch_uses_one_current_question(answer_host, harness, monkeypatch, ask_first):
+    h = answer_host
+    await _connect_runtime(h, harness)
+    await _start(h, monkeypatch)
+    # Finish the initial probe, then issue a fresh mixed SDK tool-call batch.
+    await _stream_request(h, **_answer(h.projected[0], "allow_once"))
+    h.executions.clear()
+    calls = [
+        ToolCall(id="mixed-permission", type="function", name=h.tool.card.name,
+                 arguments=json.dumps({"value": "mixed"})),
+        ToolCall(id="mixed-ask", type="function", name="ask_user",
+                 arguments=json.dumps({"query": "Which colour?"})),
+    ]
+    if ask_first:
+        calls.reverse()
+    h.script.responses = [AssistantMessage(content="", tool_calls=calls), AssistantMessage(content="done")]
+    await _stream_request(h, query="Run mixed tools")
+    ask = _questions_once(h, 1)[0]
+    assert ask["request_id"] == "mixed-ask" and ask["source"] == "ask_user_interrupt"
+    assert harness.coordinator.has_control_target(h.adapter._parent_session_id, ask["request_id"])
+    assert h.executions == []
+    await _stream_request(h, source=ask["source"], request_id=ask["request_id"],
+                          answers=[{"question": "Which colour?", "custom_input": "blue"}])
+    permission = _questions_once(h, 1)[0]
+    assert permission["request_id"] == "mixed-permission"
+    assert harness.coordinator.has_control_target(h.adapter._parent_session_id, permission["request_id"])
+    assert h.executions == []
+    await _stream_request(h, **_answer(permission, "allow_once"))
+    _questions_once(h, 0)
+    assert h.executions == [{"value": "mixed"}]
+
+
+@pytest.mark.asyncio
+async def test_smart_to_manual_keeps_runtime_batch_projection(answer_host, harness, monkeypatch):
+    h = answer_host
+    await _connect_runtime(h, harness)
+    smart = await _start(h, monkeypatch, mode="auto")
+    await _stream_request(h, **_answer(smart, "allow_once"))
+    _questions_once(h, 0)
+    old_rail = h.adapter._stream_event_rail
+    h.raw["permissions"]["mode"] = "manual"
+    h.change()
+    h.executions.clear()
+    h.script.responses = [AssistantMessage(content="", tool_calls=[
+        ToolCall(id=f"after-switch-{index}", type="function", name=h.tool.card.name,
+                 arguments=json.dumps({"value": str(index)})) for index in range(2)
+    ]), AssistantMessage(content="done")]
+    await _stream_request(h, query="Run a new manual batch")
+    assert h.adapter._stream_event_rail is not old_rail
+    assert h.adapter._stream_event_rail.project_interruption_snapshots
+    sid = h.adapter._parent_session_id
+    for index in range(2):
+        question = _questions_once(h, 1)[0]
+        assert question["request_id"] == f"after-switch-{index}"
+        assert harness.coordinator.has_control_target(sid, question["request_id"])
+        assert "card_id" not in question["questions"][0]
+        await _stream_request(h, **_answer(question, "allow_once"))
+    _questions_once(h, 0)
+    assert h.executions == [{"value": "0"}, {"value": "1"}]
+    assert len(h.script.calls) == 4
+    assert all(item.state.terminal for item in harness.coordinator.snapshot_session(sid).executions)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state,interrupt_ids", [
+    ([], []),
+    ([_manual_interaction("pending")], ["different"]),
+])
+async def test_snapshot_projection_reports_unusable_snapshot(state, interrupt_ids):
+    rail = stream_producers.JiuSwarmStreamEventRail(project_interruption_snapshots=True)
+    session = SimpleNamespace(write_stream=AsyncMock())
+    ctx = SimpleNamespace(inputs=SimpleNamespace(result={
+        "result_type": "interrupt", "state": state, "interrupt_ids": interrupt_ids,
+    }), session=session)
+    await rail._project_ordinary_interruption(ctx)
+    emitted = session.write_stream.call_args.args[0]
+    assert emitted.type == "error" and emitted.payload["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confirm_first", [False, True])
+async def test_complete_snapshot_preserves_mixed_confirmation_order(confirm_first):
+    rail = stream_producers.JiuSwarmStreamEventRail(project_interruption_snapshots=True)
+    pending = [
+        _manual_interaction("permission"),
+        {"id": "confirm", "value": ToolCallInterruptRequest(
+            tool_call_id="confirm", tool_name="switch_mode", message="Please approve or reject?",
+        )},
+    ]
+    if confirm_first:
+        pending.reverse()
+    for expected_source in (
+        ["confirm_interrupt", "permission_interrupt"] if confirm_first
+        else ["permission_interrupt", "confirm_interrupt"]
+    ):
+        session = SimpleNamespace(write_stream=AsyncMock())
+        ctx = SimpleNamespace(inputs=SimpleNamespace(result={
+            "result_type": "interrupt",
+            "state": [OutputSchema(type="__interaction__", index=0, payload=pending)],
+            "interrupt_ids": [item["id"] for item in pending],
+        }), session=session, extra={})
+        await rail._project_complete_interruption(ctx)
+        session.write_stream.assert_awaited_once()
+        question = session.write_stream.call_args.args[0].payload
+        assert question["source"] == expected_source
+        assert question["request_id"] == pending.pop(0)["id"]
+
+
+@pytest.mark.parametrize("serialized", [False, True])
+def test_complete_sdk_schemas_reuse_existing_question_converter(serialized):
+    interaction = _manual_interaction("first")
+    schema = {"type": "__interaction__", "payload": interaction} if serialized else OutputSchema(
+        type="__interaction__", index=0, payload=interaction,
+    )
+    question = convert_interactions_to_ask_user_question([schema, _manual_interaction("second")])
+    assert question["request_id"] == "first"
+    # Standalone callers still receive raw SDK questions without a projector.
+    if not serialized:
+        assert _project("deep", [interaction])["request_id"] == "first"
+>>>>>>> origin/develop

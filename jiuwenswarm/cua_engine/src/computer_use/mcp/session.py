@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 """Supervise one persistent Python worker and its inherited native lifetimes."""
 import asyncio
 from collections.abc import Callable
@@ -387,3 +388,5 @@ class ExecutionSession:
     def close(self):
         self._closed = True
         return self.reset("MCP connection closed.")
+=======
+>>>>>>> origin/develop

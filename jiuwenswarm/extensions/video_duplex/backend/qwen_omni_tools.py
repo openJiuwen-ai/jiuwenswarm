@@ -68,7 +68,14 @@ def qwen_omni_tools(*, queue_manager: bool = False) -> list[dict[str, Any]]:
                     "Delegate any request that cannot be completed directly from the current "
                     "audio, video, and conversation to the full Jiuwen Core Agent. Jiuwen may "
                     "use all of its available capabilities, including research, files, document "
+<<<<<<< HEAD
                     "processing, calculation, code execution, and computer or browser tools. Prior results can still be acted on after their creation invocation completed."
+||||||| e487e9a30
+                    "processing, calculation, code execution, and computer or browser tools."
+=======
+                    "processing, calculation, code execution, and computer or browser tools. "
+                    "Prior results can still be acted on after their creation invocation completed."
+>>>>>>> origin/develop
                     " Call this when the user explicitly requests background Agent work. If the Agent must "
                     "ask about budget or other information first, include asking and waiting in task and "
                     "delegate immediately; do not substitute your own question for task creation."
@@ -76,10 +83,22 @@ def qwen_omni_tools(*, queue_manager: bool = False) -> list[dict[str, Any]]:
                 "parameters": {
                     "type": "object",
                     "properties": {
+<<<<<<< HEAD
                         "title": {
                             "type": "string", "maxLength": 80,
                             "description": "Short action-and-object task name, usually 8-20 Chinese characters. Resolve references from context; do not invent goals or claim success. Display only; task must retain all requirements.",
                         },
+||||||| e487e9a30
+=======
+                        "title": {
+                            "type": "string", "maxLength": 80,
+                            "description": (
+                                "Short action-and-object task name, usually 8-20 Chinese characters. "
+                                "Resolve references from context; do not invent goals or claim success. "
+                                "Display only; task must retain all requirements."
+                            ),
+                        },
+>>>>>>> origin/develop
                         "independent": {
                             "type": "boolean",
                             "description": (
@@ -122,6 +141,15 @@ def qwen_omni_tools(*, queue_manager: bool = False) -> list[dict[str, Any]]:
     ]
 
 
+def _canonical_queue_version(value: Any) -> bool:
+    """Recognize decimal queue tokens without coercing other JSON values."""
+    if not isinstance(value, str) or len(value) > 16:
+        return False
+    if value == "0":
+        return True
+    return value.isascii() and value.isdecimal() and not value.startswith("0")
+
+
 def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
     """Validate the current delegation tool and legacy research calls."""
     if not isinstance(value, dict):
@@ -151,6 +179,7 @@ def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
         raise ValueError("arguments must be a JSON object")
     if not isinstance(arguments, dict):
         raise ValueError("arguments must be a JSON object")
+<<<<<<< HEAD
     if name == "jiuwen_queue_manage":
         instruction = arguments.get("instruction")
         if set(arguments) != {"instruction"} or not isinstance(instruction, str) or not 1 <= len(instruction.strip()) <= 16000:
@@ -161,7 +190,25 @@ def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
         if not isinstance(title, str) or not title.strip() or len(title) > 80 or "\n" in title or "\r" in title:
             raise ValueError("Invalid title")
         arguments["title"] = title.strip()
+||||||| e487e9a30
+=======
+    if name == "jiuwen_queue_manage":
+        instruction = arguments.get("instruction")
+        if set(arguments) != {"instruction"} or not isinstance(instruction, str):
+            raise ValueError("Queue management requires a nonempty instruction")
+        if not 1 <= len(instruction.strip()) <= 16000:
+            raise ValueError("Queue management requires a nonempty instruction")
+        return QwenOmniToolCall(name, call_id, {"instruction": instruction.strip()}, instruction.strip())
+    if "title" in arguments:
+        title = arguments["title"]
+        if not isinstance(title, str) or not title.strip() or len(title) > 80:
+            raise ValueError("Invalid title")
+        if "\n" in title or "\r" in title:
+            raise ValueError("Invalid title")
+        arguments["title"] = title.strip()
+>>>>>>> origin/develop
     if name in _TASK_TOOLS:
+<<<<<<< HEAD
         if name == "jiuwen_task_reorder" and "queue_version" in arguments:
             version = arguments["queue_version"]
             if isinstance(version, str) and (
@@ -172,6 +219,17 @@ def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
                 # The model may miscopy this large internal token. Let the
                 # server read the current version instead of rejecting the action.
                 arguments.pop("queue_version")
+||||||| e487e9a30
+=======
+        if name == "jiuwen_task_reorder" and "queue_version" in arguments:
+            version = arguments["queue_version"]
+            if _canonical_queue_version(version):
+                version = int(version)
+            if type(version) is not int or not 0 <= version <= 2**53 - 1:
+                # The model may miscopy this large internal token. Let the
+                # server read the current version instead of rejecting the action.
+                arguments.pop("queue_version")
+>>>>>>> origin/develop
         schema = next(
             t["function"]["parameters"]
             for t in task_management_tools()
@@ -186,6 +244,7 @@ def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
                 if not isinstance(item, list) or not 1 <= len(item) <= 32:
                     raise ValueError("Invalid answers")
             elif key in {"revision", "offset", "queue_version"}:
+<<<<<<< HEAD
                 # Some providers quote JSON integers despite the integer schema.
                 # Normalize only canonical decimal queue tokens; never coerce
                 # booleans, fractions, signs, exponents or arbitrary text.
@@ -194,6 +253,15 @@ def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
                 ) and len(item) <= 16:
                     item = int(item)
                     arguments[key] = item
+||||||| e487e9a30
+=======
+                # Some providers quote JSON integers despite the integer schema.
+                # Normalize only canonical decimal queue tokens; never coerce
+                # booleans, fractions, signs, exponents or arbitrary text.
+                if key == "queue_version" and _canonical_queue_version(item):
+                    item = int(item)
+                    arguments[key] = item
+>>>>>>> origin/develop
                 if type(item) is not int or item < (1 if key == "revision" else 0):
                     raise ValueError(f"Invalid {key}")
                 if key == "queue_version" and item > 2**53 - 1:
@@ -289,8 +357,18 @@ def task_management_tools():
             ),
             {
                 "job_id": {"type": "string"},
+<<<<<<< HEAD
                 "queue_version": {"type": "integer", "minimum": 0,
                                   "description": "Optional legacy concurrency token. Omit it; the server reads the current queue version."},
+||||||| e487e9a30
+                "queue_version": {"type": "integer", "minimum": 0},
+=======
+                "queue_version": {"type": "integer", "minimum": 0,
+                                  "description": (
+                                      "Optional legacy concurrency token. "
+                                      "Omit it; the server reads the current queue version."
+                                  )},
+>>>>>>> origin/develop
                 "action": {"type": "string", "enum": ["next", "before"]},
                 "before_job_id": {"type": "string"},
             },
@@ -299,6 +377,7 @@ def task_management_tools():
         (
             "jiuwen_task_answer",
             (
+<<<<<<< HEAD
                 "Answer an observed pending Agent information question or approval card so the original task "
                 "continues. Query exact job_id, interaction.id and questions first; pass interaction.id as "
                 "interaction_id. Clarify which task if ambiguous. Never create a new task for an answer, and "
@@ -307,6 +386,24 @@ def task_management_tools():
                 "拒绝/不要/取消这个操作, the session option (会话内记住) only for 本会话保持同意/本会话同意/这个会话都允许; the permanent option (永久记住) only for an explicit 永久同意/永久允许/以后都允许; "
                 "if unclear or several cards are pending, ask first and do not submit. Say 已批准 only after "
                 "the receipt or a later query shows the task resumed. answers is an array of plain text "
+||||||| e487e9a30
+                "Answer an observed pending Agent information question so the original task continues."
+                " Query exact job_id, interaction.id and questions first; pass interaction.id as "
+                "interaction_id. Clarify which task if ambiguous. Never use this for permission "
+                "approvals or create a new task for an answer. answers is an array of plain text "
+=======
+                "Permission requests (permission_interrupt) require a manual click and cannot be answered "
+                "by this tool. Answer an observed pending Agent information question or approval card "
+                "so the original task "
+                "continues. Query exact job_id, interaction.id and questions first; pass interaction.id as "
+                "interaction_id. Clarify which task if ambiguous. Never create a new task for an answer, and "
+                "never use a new request (e.g. 打开微信) as an answer. Approval cards: choose the allow option "
+                "only when the user clearly says 同意/允许/可以/批准, the reject option when they clearly say "
+                "拒绝/不要/取消这个操作, the session option (会话内记住) only for 本会话保持同意/本会话同意/这个会话都允许; "
+                "the permanent option (永久记住) only for an explicit 永久同意/永久允许/以后都允许; "
+                "if unclear or several cards are pending, ask first and do not submit. Say 已批准 only after "
+                "the receipt or a later query shows the task resumed. answers is an array of plain text "
+>>>>>>> origin/develop
                 "strings, one per observed question in the SAME order, e.g. [\"5000元\", \"2人\"]. "
                 "Use only explicit user answers; ask for missing answers instead of inventing them. "
                 "Accepted is not completed."
@@ -330,8 +427,14 @@ def task_management_tools():
         (
             "jiuwen_task_query",
             (
+<<<<<<< HEAD
                 "Find Core invocations and their results in this conversation, plus the user's scheduled "
                 "tasks (定时任务) from all conversations in scheduled_jobs. Query before selecting an "
+||||||| e487e9a30
+                "Find tasks and their results in this conversation. Query before selecting an "
+=======
+                "Find Core invocations and their results in this conversation. Query before selecting an "
+>>>>>>> origin/develop
                 "ambiguous task; use exact returned job_id and revision for controls. "
                 "query is a literal substring of the task title or original task text, not a question or "
                 "a list of keywords. Prefer a known job_id. If no task matches, shorten query "
@@ -353,7 +456,18 @@ def task_management_tools():
         ),
         (
             "jiuwen_task_cancel",
+<<<<<<< HEAD
             "Request cancellation of the exact Core invocation, not reversal of its completed effects. Completed invocations cannot be stopped. To remove, disable or undo resulting effects requested by the user, use task_modify or delegate that full action to Core; completion is not grounds to refuse. Accepted does not mean stopped. Query for the final state.",
+||||||| e487e9a30
+            "Request cancellation of the exact task. Accepted does not mean stopped. Query for the final state.",
+=======
+            (
+                "Request cancellation of the exact Core invocation, not reversal of its completed effects. "
+                "Completed invocations cannot be stopped. To remove, disable or undo resulting effects requested "
+                "by the user, use task_modify or delegate that full action to Core; completion is not grounds "
+                "to refuse. Accepted does not mean stopped. Query for the final state."
+            ),
+>>>>>>> origin/develop
             {"job_id": {"type": "string"}},
             ["job_id"],
         ),
@@ -361,14 +475,29 @@ def task_management_tools():
             "jiuwen_task_modify",
             (
                 "Change the exact task's requirements. Queued input is updated; running changes wait "
+<<<<<<< HEAD
                 "for a model checkpoint; completed work creates a linked Core revision carrying the original result. Receipt never proves"
+||||||| e487e9a30
+                "for a model checkpoint; finished work creates a linked revision. Receipt never proves"
+=======
+                "for a model checkpoint; completed work creates a linked Core revision carrying the original result. "
+                "Receipt never proves"
+>>>>>>> origin/develop
                 " the requirement is satisfied."
             ),
             {
                 "job_id": {"type": "string"},
                 "revision": {"type": "integer", "minimum": 1},
                 "instruction": {"type": "string", "maxLength": 4000},
+<<<<<<< HEAD
                 "title": {"type": "string", "maxLength": 80, "description": "Updated short action-and-object title when the requested goal changes. Omit to retain the existing title."},
+||||||| e487e9a30
+=======
+                "title": {"type": "string", "maxLength": 80, "description": (
+                    "Updated short action-and-object title when the requested goal changes. "
+                    "Omit to retain the existing title."
+                )},
+>>>>>>> origin/develop
             },
             ["job_id", "revision", "instruction"],
         ),

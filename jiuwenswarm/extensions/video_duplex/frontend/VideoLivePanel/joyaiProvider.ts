@@ -208,6 +208,7 @@ export class JoyAIProvider {
     return pendingResult;
   }
 
+<<<<<<< HEAD
   /** A managed task's card (its job_id) or a typed-chat card (job_id ""); information forms stay on screen. */
   enqueueQuestion(jobId: string, interaction: ApprovalInteraction): void {
     if (interaction.state !== 'pending') {
@@ -226,6 +227,31 @@ export class JoyAIProvider {
     for (const key of [...this.pendingApprovals.keys()]) if (key.startsWith(prefix)) this.pendingApprovals.delete(key);
   }
 
+||||||| e487e9a30
+=======
+  /** A managed task's card (its job_id) or a typed-chat card (job_id ""); information forms stay on screen. */
+  enqueueQuestion(jobId: string, interaction: ApprovalInteraction): void {
+    if (interaction.state !== 'pending') {
+      this.closeApprovals(jobId, interaction.id || interaction.request_id);
+      return;
+    }
+    if (!interaction.source || !APPROVAL_SOURCES.has(interaction.source)) return;
+    const key = `question:${jobId}:${interaction.id || interaction.request_id}`;
+    if (this.pendingApprovals.has(key)) return;
+    this.pendingApprovals.set(key, approvalCardHeader(jobId, interaction));
+    this.callbacks.report('joyai_approval_card_pending', { job_id: jobId, pending: this.pendingApprovals.size });
+  }
+
+  private closeApprovals(jobId: string, interactionId?: string): void {
+    // Chat cards share an empty job ID; only the named interaction may close.
+    for (const [key, card] of this.pendingApprovals) {
+      if (jobId ? card.job_id === jobId : Boolean(interactionId) && key === `question::${interactionId}`) {
+        this.pendingApprovals.delete(key);
+      }
+    }
+  }
+
+>>>>>>> origin/develop
   handleCompletedSearch(payload: SearchJobPayload, brief: RealtimeBrief, existing?: SearchJobState): boolean {
     const jobId = payload.job_id?.trim() || '';
     if (jobId) this.closeApprovals(jobId);
@@ -443,7 +469,13 @@ export class JoyAIProvider {
             ...(approvalContext ? { approval_context: approvalContext } : {}),
             ...(requestKind === 'user' && this.restoreToken ? { restore_token: this.restoreToken } : {}),
           },
+<<<<<<< HEAD
           { timeoutMs: requestKind === 'user' ? 0 : 60_000 },
+||||||| e487e9a30
+          { timeoutMs: 60_000 },
+=======
+          { timeoutMs: requestKind === 'user' ? 90_000 : 60_000 },
+>>>>>>> origin/develop
         );
         if (frameDataUrl) this.lastFrameRequestAt = Date.now();
         try {

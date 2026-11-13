@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 import Foundation
 
 /// Only the original pointer intent is accepted. Preparation cannot replace
@@ -75,3 +76,5 @@ struct NativePointerIntent {
         if kind == .drag, end == start { throw DriverError("drag endpoints must differ", code: .invalidRequest) }
     }
 }
+=======
+>>>>>>> origin/develop

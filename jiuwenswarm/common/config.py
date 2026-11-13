@@ -27,6 +27,7 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
     set_default_model_provider_in_entries,
     validate_affinity_invariant,
 )
+from jiuwenswarm.common.observability_config import migrate_legacy_observability_config
 from jiuwenswarm.common.security.base_crypto import get_crypto_provider
 from jiuwenswarm.common.runtime_model_config import apply_runtime_model_config
 from jiuwenswarm.common.utils import (
@@ -45,8 +46,13 @@ DEFAULT_SWARMFLOW_WORKTREE_ENABLED = False
 DEFAULT_SWARMFLOW_ENABLED = False
 TEAM_DISPATCH_MODE_CONFIG_PATH = ("modes", "team", "jiuwen_team", "dispatch_mode")
 TEAM_TASK_VERIFICATION_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_task_verification")
+TEAM_MEMBER_MESSAGING_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_member_messaging")
+TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH = ("modes", "team", "jiuwen_team", "max_subtask_depth")
 DEFAULT_TEAM_DISPATCH_MODE = "autonomous"
 DEFAULT_TEAM_TASK_VERIFICATION_ENABLED = False
+DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED = False
+# Depth written when the member-subtask switch is turned on with no depth yet.
+DEFAULT_TEAM_MEMBER_SUBTASK_DEPTH = 2
 EXTERNAL_CLI_PUBLISH_URL_FRONT_KEY = "external_cli_publish_url"
 EXTERNAL_CLI_AGENTS_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_agents")
 EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_path_histories")
@@ -333,10 +339,9 @@ def get_skill_evolution_enabled(config: dict[str, Any] | None) -> bool:
 
 
 def get_symphony_evolution_enabled(config: dict[str, Any] | None) -> bool:
-    """Return whether both Symphony and its evolution switch are enabled."""
+    """Read the persisted Discover SkillPack setting without deployment overrides."""
 
-    from jiuwenswarm.symphony.config import (
-        resolve_symphony_enabled,
+    from jiuwenswarm.common.symphony_config import (
         resolve_symphony_evolution_enabled,
     )
 
@@ -353,10 +358,7 @@ def get_symphony_evolution_enabled(config: dict[str, Any] | None) -> bool:
     flow_enabled = flow.get("enabled") if isinstance(flow, dict) else None
     if flow_enabled is None:
         flow_enabled = evolution.get("enabled")
-    return (
-        resolve_symphony_enabled(symphony.get("enabled"))
-        and resolve_symphony_evolution_enabled(flow_enabled)
-    )
+    return resolve_symphony_evolution_enabled(flow_enabled)
 
 
 def coerce_config_bool(value: Any, default: bool) -> bool:
@@ -1089,13 +1091,8 @@ def update_enable_free_models_in_config(value: bool) -> None:
 
 
 def update_proactive_recommendation_in_config(updates: dict[str, Any]) -> None:
-    """更新 proactive_recommendation 配置段并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "proactive_recommendation" not in data or data["proactive_recommendation"] is None:
-        data["proactive_recommendation"] = {}
-    section = data["proactive_recommendation"]
-    _merge_config_dict(section, updates)
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    """No-op: proactive recommendation settings removed."""
+    _ = updates
 
 
 def update_trajectory_ui_in_config(enabled: bool) -> None:
@@ -1945,6 +1942,60 @@ def _merge_model_update(current: dict[str, Any], update: dict[str, Any]) -> dict
     return merged
 
 
+def _remove_initial_model_placeholder(models: dict[str, Any], saved: dict[str, Any]) -> None:
+    """Remove the shipped example when a real model is added."""
+    from jiuwenswarm.common.model_config_validation import (
+        PLACEHOLDER_API_BASES,
+        PLACEHOLDER_API_KEYS,
+        PLACEHOLDER_MODEL_NAMES,
+        is_placeholder_model_entry,
+    )
+
+    client = resolve_env_vars(saved.get("model_client_config") or {})
+    if not str(client.get("model_name") or "").strip() or is_placeholder_model_entry(client):
+        return
+
+    referenced_ids = set()
+    for group in models.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        for route in group.get("routes") or []:
+            if isinstance(route, dict):
+                referenced_ids.add(str(route.get("model_id") or "").strip())
+
+    remaining = []
+    removed_default = False
+    # Unset template variables resolve to empty strings.
+    placeholder_api_bases = PLACEHOLDER_API_BASES | {""}
+    placeholder_api_keys = PLACEHOLDER_API_KEYS | {""}
+    for current in models["defaults"]:
+        # Preserve existing model group routes, even if they point at the example.
+        if current is saved or current.get("model_id") in referenced_ids:
+            remaining.append(current)
+            continue
+        raw_client = current.get("model_client_config")
+        if not isinstance(raw_client, dict):
+            remaining.append(current)
+            continue
+        config = resolve_env_vars(raw_client)
+        model_name = str(config.get("model_name") or "").strip()
+        api_base = str(config.get("api_base") or "").strip()
+        api_key = str(config.get("api_key") or "").strip()
+        if (
+            model_name in PLACEHOLDER_MODEL_NAMES
+            and api_base in placeholder_api_bases
+            and api_key in placeholder_api_keys
+        ):
+            removed_default = removed_default or current.get("is_default") is True
+        else:
+            remaining.append(current)
+
+    if len(remaining) != len(models["defaults"]):
+        models["defaults"] = remaining
+        if removed_default and not any(current.get("is_default") is True for current in remaining):
+            saved["is_default"] = True
+
+
 def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
     saved = _normalize_model_entry(entry)
     model_config = saved.get("model_config_obj")
@@ -1971,10 +2022,11 @@ def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
                 defaults[index] = saved
                 break
         else:
-            _protect_model_key(saved, {})
             defaults.append(saved)
+            _remove_initial_model_placeholder(candidate, saved)
+            _protect_model_key(saved, {})
         if entry.get("is_default") is True:
-            for current in defaults:
+            for current in candidate["defaults"]:
                 current["is_default"] = current["model_id"] == saved["model_id"]
         _validate_model_candidate(candidate)
         return data
@@ -2577,7 +2629,7 @@ def _normalize_builtin_models(value: Any, field_name: str) -> list[dict[str, Any
 
     The catalog lists the models a CLI offers on its own login (a
     subscription), which the team leader may pick per member through
-    ``spawn_external_cli(builtin_model=...)`` / ``set_member_model``. It is
+    ``spawn_teammate(external_cli={"builtin_model": ...})`` / ``set_member_model``. It is
     carried through verbatim to ``ExternalCliAgentSpec.builtin_models``, so
     dropping unknown keys here would silently disable the capability.
 
@@ -2864,6 +2916,39 @@ def update_team_task_verification_in_config(enabled: bool) -> None:
     _set_config_path(TEAM_TASK_VERIFICATION_CONFIG_PATH, bool(enabled))
 
 
+def update_team_member_messaging_in_config(enabled: bool) -> None:
+    """Update ``modes.team.jiuwen_team.enable_member_messaging`` in config.yaml."""
+    _set_config_path(TEAM_MEMBER_MESSAGING_CONFIG_PATH, bool(enabled))
+
+
+def coerce_subtask_depth(value: Any) -> int:
+    """Read ``max_subtask_depth`` leniently: a non-negative int, anything else is 0 (off)."""
+    if isinstance(value, bool):
+        return 0
+    try:
+        depth = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(depth, 0)
+
+
+def update_team_member_subtasks_in_config(enabled: bool) -> None:
+    """Switch member subtasks via ``modes.team.jiuwen_team.max_subtask_depth``.
+
+    The depth doubles as the switch (core F_128: ``0`` = off). Turning it on
+    keeps a depth the user already configured and writes
+    ``DEFAULT_TEAM_MEMBER_SUBTASK_DEPTH`` otherwise; turning it off writes 0.
+    """
+    if not enabled:
+        _set_config_path(TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH, 0)
+        return
+    current: Any = get_config_raw()
+    for segment in TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH:
+        current = current.get(segment) if isinstance(current, dict) else None
+    depth = coerce_subtask_depth(current) or DEFAULT_TEAM_MEMBER_SUBTASK_DEPTH
+    _set_config_path(TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH, depth)
+
+
 def _carry_over_builtin_models(agents: list[dict[str, Any]], existing: Any) -> None:
     """Keep the configured built-in model catalog of each CLI kind.
 
@@ -3076,18 +3161,14 @@ def get_mcp_servers() -> list[dict[str, Any]]:
     # B. mcp/state.json — 已连接 MCP（state==connected）.
     state_mcps: list[dict[str, Any]] = []
     try:
-        from jiuwenswarm.server.runtime.mcp.state_store import (
-            list_connected_mcps,
-            record_to_mcp_entry,
-        )
-        from jiuwenswarm.server.runtime.mcp.registry import (
-            is_stale_marketplace_record,
-        )
-        for rec in list_connected_mcps():
+        from jiuwenswarm.common.external_providers import provider
+        mcp_state = provider("mcp_state")
+        mcp_registry = provider("mcp_registry")
+        for rec in mcp_state.list_connected_mcps():
             name = rec.get("name", "")
-            if not name or is_stale_marketplace_record(name, rec):
+            if not name or mcp_registry.is_stale_marketplace_record(name, rec):
                 continue
-            entry = record_to_mcp_entry(name, rec)
+            entry = mcp_state.record_to_mcp_entry(name, rec)
             # skill-only MCPs return None
             if entry is not None:
                 state_mcps.append(entry)
@@ -3199,8 +3280,8 @@ def remove_mcp_server_in_config(name: str) -> dict[str, Any]:
 def _mcp_name_in_state(name: str) -> bool:
     """Whether state.json has a record for ``name`` (any state)."""
     try:
-        from jiuwenswarm.server.runtime.mcp.state_store import get_mcp_record
-        return get_mcp_record(name) is not None
+        from jiuwenswarm.common.external_providers import provider
+        return provider("mcp_state").get_mcp_record(name) is not None
     except Exception:  # noqa: BLE001
         return False
 
@@ -3230,10 +3311,11 @@ def upsert_mcp_server(
     if _mcp_name_in_config_yaml(name):
         return upsert_mcp_server_in_config(server)
     # Else state.json is the creation/update home for TUI MCPs.
-    from jiuwenswarm.server.runtime.mcp.state_store import upsert_mcp_record
+    from jiuwenswarm.common.external_providers import provider
+    mcp_state = provider("mcp_state")
     prior = _mcp_name_in_state(name)
     enabled = bool(server.get("enabled", True)) if "enabled" in server else None
-    rec = upsert_mcp_record(name, server, state=state,
+    rec = mcp_state.upsert_mcp_record(name, server, state=state,
                             integration_type=_integration_type_for(server),
                             enabled=enabled)
     # Shape a config-like entry for the response (carries enabled through).
@@ -3255,11 +3337,10 @@ def set_mcp_server_enabled(name: str, enabled: bool) -> dict[str, Any]:
     if not target:
         raise ValueError("MCP server name is required")
     if _mcp_name_in_state(target):
-        from jiuwenswarm.server.runtime.mcp.state_store import (
-            get_mcp_record, set_mcp_enabled,
-        )
-        set_mcp_enabled(target, enabled=enabled)
-        rec = get_mcp_record(target) or {}
+        from jiuwenswarm.common.external_providers import provider
+        mcp_state = provider("mcp_state")
+        mcp_state.set_mcp_enabled(target, enabled=enabled)
+        rec = mcp_state.get_mcp_record(target) or {}
         entry = dict(rec)
         entry["name"] = target
         return entry
@@ -3276,8 +3357,8 @@ def remove_mcp_server(name: str) -> dict[str, Any]:
     if not target:
         raise ValueError("MCP server name is required")
     if _mcp_name_in_state(target):
-        from jiuwenswarm.server.runtime.mcp.state_store import remove_mcp_record
-        removed = remove_mcp_record(target) or {}
+        from jiuwenswarm.common.external_providers import provider
+        removed = provider("mcp_state").remove_mcp_record(target) or {}
         entry = dict(removed)
         entry["name"] = target
         return entry
@@ -3540,6 +3621,18 @@ def _migrate_legacy_kv_cache_affinity_config(user_data: dict[str, Any]) -> None:
         user_data[APPLICATION_KV_CACHE_CONFIG_KEY] = deepcopy(legacy)
 
 
+def _has_local_team_config(config: dict[str, Any]) -> bool:
+    """Check that the instance uses local team defaults or explicit local settings."""
+    team = config.get("team", {})
+    if not isinstance(team, dict):
+        return False
+    for section, key, local_value in (("runtime", "mode", "local"), ("transport", "type", "inprocess")):
+        settings = team.get(section, {})
+        if not isinstance(settings, dict) or str(settings.get(key, local_value)).strip().lower() != local_value:
+            return False
+    return True
+
+
 def migrate_config_from_template(
     template_path: Path,
     user_config_path: Path,
@@ -3596,11 +3689,28 @@ def migrate_config_from_template(
         if user_data is None:
             user_data = {}
 
+<<<<<<< HEAD
         # 结构性迁移：plan/fast 子模式 memory 配置 -> 合并后的 modes.agent.memory
         # 必须在 _deep_merge 之前执行，否则旧子节点会被静默丢弃而非迁移。
         _migrate_legacy_agent_submode_memory(user_data)
         _migrate_legacy_kv_cache_affinity_config(user_data)
+||||||| e487e9a30
+    # 结构性迁移：plan/fast 子模式 memory 配置 -> 合并后的 modes.agent.memory
+    # 必须在 _deep_merge 之前执行，否则旧子节点会被静默丢弃而非迁移。
+    _migrate_legacy_agent_submode_memory(user_data)
+    _migrate_legacy_kv_cache_affinity_config(user_data)
+=======
+        # 结构性迁移：plan/fast 子模式 memory 配置 -> 合并后的 modes.agent.memory
+        # 必须在 _deep_merge 之前执行，否则旧子节点会被静默丢弃而非迁移。
+        _migrate_legacy_agent_submode_memory(user_data)
+        _migrate_legacy_kv_cache_affinity_config(user_data)
+        # team_observability / agent_observability -> observability.{team,agent}
+        # 必须在 _deep_merge 之前执行：合并会先按模板塞入默认的 observability 段，
+        # 旧段里用户改过的 exporter / endpoint 等就会被模板默认值挡住。
+        legacy_observability_migrated = migrate_legacy_observability_config(user_data)
+>>>>>>> origin/develop
 
+<<<<<<< HEAD
         # Deep merge: template provides defaults, user values preserved.
         # user_data is updated in place, which keeps comments and formatting.
         changes = _deep_merge(template_data, user_data, prune=prune)
@@ -3621,6 +3731,43 @@ def migrate_config_from_template(
         if changes:
             dump_yaml_round_trip(user_config_path, user_data)
             return True
+||||||| e487e9a30
+    # Deep merge: template provides defaults, user values preserved.
+    # user_data is updated in place, which keeps comments and formatting.
+    changes = _deep_merge(template_data, user_data, prune=prune)
+=======
+        # Deep merge: template provides defaults, user values preserved.
+        # user_data is updated in place, which keeps comments and formatting.
+        if "extensions" in user_data and user_data["extensions"] is None:
+            template_extensions = template_data.get("extensions")
+            if (
+                isinstance(template_extensions, dict)
+                and template_extensions.get("extension_dirs") == "${EXTENSION_DIRS:-jiuwenswarm/extensions}"
+                and _has_local_team_config(user_data)
+            ):
+                # Environment-driven markers can resolve differently after a child reloads its dotenv files.
+                user_data["extensions"] = {}
+        changes = _deep_merge(template_data, user_data, prune=prune)
+        if legacy_observability_migrated:
+            changes += 1
+
+        # Guard against an empty result overwriting a valid user config
+        if not user_data:
+            return False
+
+        # This diagnostic label does not control whether template migration runs.
+        from jiuwenswarm.common.version import get_runtime_version_label
+
+        version_label = get_runtime_version_label()
+        if user_data.get("config_version") != version_label:
+            user_data["config_version"] = version_label
+            changes += 1
+
+        # Only write if there are actual changes
+        if changes:
+            dump_yaml_round_trip(user_config_path, user_data)
+            return True
+>>>>>>> origin/develop
 
         return False
 
@@ -3874,6 +4021,37 @@ def get_sandbox_runtime() -> dict[str, Any]:
     return _ensure_sandbox_runtime_shape(raw)
 
 
+def get_sandbox_team_fail_closed() -> bool:
+    """Read ``sandbox.team_fail_closed`` (default False).
+
+    When True, a distributed teammate whose local sandbox is unavailable is
+    rejected at bootstrap instead of degrading to LOCAL execution (design
+    D-20261105-1041 KD7): security-sensitive deployments refuse unsandboxed
+    remote members rather than warning.
+    """
+    cfg = get_config() or {}
+    sandbox = cfg.get("sandbox")
+    if not isinstance(sandbox, dict):
+        return False
+    return coerce_config_bool(sandbox.get("team_fail_closed"), False)
+
+
+def get_sandbox_network_mode() -> str:
+    """Read ``sandbox.network_mode`` (default empty = do not forward).
+
+    When set (e.g. ``host``), the sandbox card's client policy fragment
+    carries ``network.mode`` explicitly: jiuwenbox's append-merge only keeps
+    fields present in the fragment, so a root-policy-only network mode is
+    lost after merge and creation falls back to isolated networking — which
+    needs ``ip netns`` privileges the host may not have.
+    """
+    cfg = get_config() or {}
+    sandbox = cfg.get("sandbox")
+    if not isinstance(sandbox, dict):
+        return ""
+    return str(sandbox.get("network_mode") or "").strip().lower()
+
+
 # ``preserve_file_sharing_mode`` 当前合法取值集合 = ``{"mount"}``; 空值表示
 # "未配置, 按默认走"。
 _VALID_PRESERVE_FILE_SHARING_MODES = ("mount",)
@@ -3907,7 +4085,7 @@ _DEFAULT_SANDBOX_POLICY_FILE = "code-agent-policy.yaml"
 # YuanRong sandbox knobs under flat ``sandbox:`` (see get_sandbox_endpoint).
 _VALID_YUANRONG_EXECUTORS = ("default", "docker", "conch")
 _DEFAULT_YUANRONG_EXECUTOR = "docker"
-_DEFAULT_YUANRONG_URL = "http://yuanrong.local"
+_DEFAULT_YUANRONG_URL = "http://127.0.0.1:18093"
 _YUANRONG_ENDPOINT_OPTIONAL_KEYS: tuple[str, ...] = (
     "image",
     "workdir",
@@ -4182,7 +4360,7 @@ def get_sandbox_endpoint() -> dict[str, Any]:
     - 若 yaml 中存在: ``image`` / ``workdir`` / ``mounts`` / ``cpu`` /
       ``cpu_limit`` / ``memory`` / ``mem_limit`` / ``rootfs`` /
       ``user`` / ``group``
-    - ``url`` 为空时回落占位 ``http://yuanrong.local`` (仅作 cache key)
+    - ``url`` 为空时回落 ``http://127.0.0.1:18093``
 
     Raises:
         ValueError: yaml 里 ``preserve_file_sharing_mode`` 写了非法值时, 直接
@@ -4205,6 +4383,12 @@ def get_sandbox_endpoint() -> dict[str, Any]:
         result["url"] = url or _DEFAULT_YUANRONG_URL
         result["executor"] = _normalize_yuanrong_executor(sandbox.get("executor"))
         for key in _YUANRONG_ENDPOINT_OPTIONAL_KEYS:
+            if key in sandbox:
+                result[key] = sandbox[key]
+    if sandbox_type == "adx-environment":
+        for key in ("image", "runtime", "workdir", "mounts", "cpu", "cpu_limit", "memory", "mem_limit",
+                    "idle_timeout", "user", "group", "network", "connection", "env", "create_timeout",
+                    "schedule_timeout"):
             if key in sandbox:
                 result[key] = sandbox[key]
     if sandbox_type == "jiuwenbox-conch":

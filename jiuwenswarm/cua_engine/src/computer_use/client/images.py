@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 import hashlib
 
 from .._identity import WeakIdentityMap
@@ -89,3 +90,5 @@ def image_label(png, context_already_shown=False, coordinates=None):
         facts["stopReasons"] = known["metadata"].get("stopReasons", ())
     caption = render_image_caption(size["width"], size["height"], facts)
     return caption + ("\nUse this displayed image's pixels for coordinates." if coordinates is not None else "")
+=======
+>>>>>>> origin/develop

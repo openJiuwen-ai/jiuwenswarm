@@ -19,7 +19,7 @@ from jiuwenswarm.server.runtime.session.session_archive import SessionArchiveSer
 
 
 def test_gateway_recovery_owners_survive_empty_cron_store(tmp_path):
-    from jiuwenswarm.gateway.cron.lifecycle_owners import LifecycleOwners
+    from agent_gateway.cron.lifecycle_owners import LifecycleOwners
 
     path = tmp_path / "cron_jobs.json"
     first = LifecycleOwners(path)
@@ -32,7 +32,7 @@ def test_gateway_recovery_owners_survive_empty_cron_store(tmp_path):
 
 @pytest.mark.asyncio
 async def test_gateway_session_events_carry_project_id(archive, monkeypatch):
-    from jiuwenswarm.gateway.channel_manager.web import lifecycle_handlers
+    from agent_gateway.channel_manager.web import lifecycle_handlers
 
     service, create, root, _ = archive
     create()
@@ -87,6 +87,43 @@ async def test_gateway_session_events_carry_project_id(archive, monkeypatch):
     assert event == "session.deleted"
     assert payload["session_id"] == "sess_a"
     assert payload["project_id"] == "default"
+
+
+@pytest.mark.asyncio
+async def test_session_delete_forwards_group_and_bot(monkeypatch):
+    """删除会话时把网页上的群、机器人交给执行端，否则企业版会去默认目录里找。"""
+    from agent_gateway.channel_manager.web import lifecycle_handlers
+
+    seen: dict = {}
+
+    async def fetch(**kwargs):
+        seen["metadata"] = kwargs.get("metadata")
+        return True, {"session_id": "sess_a", "project_id": "default"}
+
+    monkeypatch.setattr(lifecycle_handlers, "fetch_agent_unary", fetch)
+    methods = {}
+    channel = SimpleNamespace(
+        channel_id="web",
+        clients=[],
+        register_method=lambda name, fn: methods.update({name: fn}),
+        send_response=AsyncMock(),
+        send_event=AsyncMock(),
+    )
+    lifecycle_handlers.register_lifecycle_handlers(
+        channel, lambda: object(), lambda: None
+    )
+    ws = SimpleNamespace(
+        _web_routing={
+            "user_id": "zxy",
+            "group_id": "group-1",
+            "bot_id": "bot-1",
+        }
+    )
+    await methods["session.delete"](
+        ws, "req", {"session_id": "sess_a"}, None, "zxy"
+    )
+    assert seen["metadata"]["user_id"] == "zxy"
+    assert seen["metadata"]["routing"] == {"group_id": "group-1", "bot_id": "bot-1"}
 
 
 @pytest.fixture
@@ -1196,6 +1233,9 @@ async def test_cancelled_restore_marks_failed_and_recovers_promptly(archive):
     await _wait_until(
         lambda: lc.state("session", "sess_a")["operation"]["status"] == "completed"
     )
+    # The durable completion row can precede finalizer lock release. Wait for
+    # that background operation before issuing the next lifecycle request.
+    await asyncio.gather(*list(service._finalizer_tasks))
     assert (root / "sessions/sess_a").exists()
     lc.guard("sess_a")
     await service.close()
@@ -1214,12 +1254,31 @@ async def test_interrupted_archive_is_finalized_by_recovery(archive):
     await _wait_until(
         lambda: lc.state("session", "sess_a")["operation"]["status"] == "completed"
     )
+<<<<<<< HEAD
     assert not (root / "sessions/sess_a").exists()
     assert (root / "sessions_archived/sess_a").exists()
     with pytest.raises(lc.LifecycleError) as error:
         lc.guard("sess_a")
     assert error.value.code == "SESSION_ARCHIVED"
     assert (await service.session("sess_a", "unarchive", "web"))["ok"] is True
+||||||| e487e9a30
+    assert (root / "sessions/sess_a").exists()
+    assert not (root / "sessions_archived/sess_a").exists()
+    lc.guard("sess_a")
+    # The former kind-mismatch deadlock is gone: the opposite action is
+    # admissible again.
+    assert (await service.session("sess_a", "unarchive", "web"))["restored"] is False
+=======
+    # The durable completion row can precede finalizer lock release. Wait for
+    # that background operation before issuing the next lifecycle request.
+    await asyncio.gather(*list(service._finalizer_tasks))
+    assert not (root / "sessions/sess_a").exists()
+    assert (root / "sessions_archived/sess_a").exists()
+    with pytest.raises(lc.LifecycleError) as error:
+        lc.guard("sess_a")
+    assert error.value.code == "SESSION_ARCHIVED"
+    assert (await service.session("sess_a", "unarchive", "web"))["ok"] is True
+>>>>>>> origin/develop
     await service.close()
 
 
@@ -1239,6 +1298,9 @@ async def test_abandoned_archive_with_moved_directory_finalizes_archived(archive
     await _wait_until(
         lambda: lc.state("session", "sess_a")["operation"]["status"] == "completed"
     )
+    # The durable completion row can precede finalizer lock release. Wait for
+    # that background operation before issuing the next lifecycle request.
+    await asyncio.gather(*list(service._finalizer_tasks))
     assert lc.state("session", "sess_a")["blocked"] is True
     with pytest.raises(lc.LifecycleError) as error:
         lc.guard("sess_a")
@@ -1446,6 +1508,84 @@ async def test_non_terminal_without_waiters_skips_server_push(monkeypatch):
     )
 
     push.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_terminal_team_task_without_waiters_uses_session_live(monkeypatch):
+    """队长流的等待者走了之后，终态子任务仍进团队直播。"""
+    from jiuwenswarm.agents.harness.team import team_manager
+    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+
+    manager = team_manager.TeamManager()
+    monkeypatch.setattr(team_manager, "_team_manager", manager)
+    server_push = AsyncMock()
+    monkeypatch.setattr(manager, "_push_event_without_waiter", server_push)
+    published: list[dict] = []
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.team.push_fanout.publish",
+        published.append,
+    )
+    manager.begin_round("sess_a", "req_1", terminal_armed=True)
+
+    await manager.broadcast_event(
+        "sess_a",
+        {"event_type": "team.task", "event": {
+            "type": "team.task.created", "task_id": "task_1", "status": "pending",
+        }},
+        channel_id="web",
+    )
+    await manager.broadcast_event(
+        "sess_a", {"event_type": "chat.delta", "content": "hi"}, channel_id="web",
+    )
+    completed = {
+        "event_type": "team.task",
+        "event": {
+            "type": "team.task.completed",
+            "task_id": "task_1",
+            "status": "completed",
+        },
+    }
+    await manager.broadcast_event("sess_a", completed, channel_id="web")
+
+    server_push.assert_not_awaited()
+    assert len(published) == 1
+    wire = published[0]
+    assert wire["metadata"]["delivery_scope"] == "session_live"
+    assert wire["session_id"] == "sess_a"
+    chunk = parse_agent_server_wire_chunk(wire)
+    assert chunk.request_id == "team-session-live:sess_a"
+    assert chunk.payload["event_type"] == "team.task"
+    assert chunk.payload["event"]["status"] == "completed"
+    assert chunk.payload["session_id"] == "sess_a"
+
+
+@pytest.mark.asyncio
+async def test_terminal_team_task_with_waiters_stays_on_the_queue(monkeypatch):
+    from jiuwenswarm.agents.harness.team import team_manager
+
+    manager = team_manager.TeamManager()
+    monkeypatch.setattr(team_manager, "_team_manager", manager)
+    published: list[dict] = []
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.team.push_fanout.publish",
+        published.append,
+    )
+    manager.begin_round("sess_a", "req_1", terminal_armed=True)
+    queue = asyncio.Queue()
+    manager.add_waiter("sess_a", "req_1", queue)
+
+    completed = {
+        "event_type": "team.task",
+        "event": {
+            "type": "team.task.completed",
+            "task_id": "task_1",
+            "status": "completed",
+        },
+    }
+    await manager.broadcast_event("sess_a", completed, channel_id="web")
+
+    assert published == []
+    assert queue.get_nowait()["event"]["status"] == "completed"
 
 
 @pytest.mark.asyncio
@@ -1800,6 +1940,7 @@ async def test_archive_releases_subagents_through_the_session_own_channel(archiv
     # Agents are cached per channel, so the release has to reach the Session's
     # own channel rather than the one serving this request.
     assert seen == ["cli"]
+<<<<<<< HEAD
 
 
 @pytest.mark.asyncio
@@ -2281,3 +2422,534 @@ async def test_stuck_mailbox_consumers_release_finalizer_slots(
         await asyncio.gather(*consumers, return_exceptions=True)
         await service.close()
         await mailbox.stop()
+||||||| e487e9a30
+=======
+
+
+@pytest.mark.asyncio
+async def test_archive_finalizing_is_hidden_from_active_and_listed_in_archive(archive):
+    service, create, _, _ = archive
+    create()
+    # Simulate the window between accepting the archive and moving the
+    # directory: the operation is durable but the bytes are still active.
+    lc.begin("session", "sess_a", "archive", block_execution=True)
+    lc.mark_finalizing("session", "sess_a")
+
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        collect_all_sessions_metadata,
+    )
+
+    assert [item["session_id"] for item in collect_all_sessions_metadata()] == []
+    listing = service.list_sessions({})
+    item = next(
+        entry for entry in listing["sessions"] if entry["session_id"] == "sess_a"
+    )
+    assert item["archived"] is True
+    assert item["finalizing"] is True
+    assert item["stop_pending"] is True
+
+
+@pytest.mark.asyncio
+async def test_repeated_archive_reports_completed_acceptance(archive):
+    service, create, _, runtime = archive
+    create()
+    await service.session("sess_a", "archive", "web")
+    previous = lc.state("session", "sess_a")["operation"]
+    runtime.stop_session_for_archive.reset_mock()
+
+    result = await service.session("sess_a", "archive", "web")
+
+    assert result["accepted"] is True
+    assert result["finalizing"] is False
+    assert result["stop_pending"] is False
+    assert lc.state("session", "sess_a")["operation"]["operation_id"] == previous["operation_id"]
+    runtime.stop_session_for_archive.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attempts", [1, 5])
+async def test_cleanup_failure_lock_wait_keeps_event_loop_responsive(
+    archive, monkeypatch: pytest.MonkeyPatch, attempts: int,
+) -> None:
+    service, create, _, _ = archive
+    create()
+    operation = lc.begin("session", "sess_a", "archive")
+    entered = threading.Event()
+    release = threading.Event()
+    monkeypatch.setattr(project_store, "_LOCK_TIMEOUT_SEC", 0.2)
+
+    def hold_resource() -> None:
+        with lc.resource_lock("session", "sess_a"):
+            entered.set()
+            release.wait(2)
+
+    holder = asyncio.create_task(asyncio.to_thread(hold_resource))
+    timer = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        # Only the event loop can release the competing lock. A synchronous
+        # acquisition here would block this callback until the lock timed out.
+        timer = asyncio.get_running_loop().call_later(0.01, release.set)
+        await asyncio.wait_for(service._record_finalize_failure(
+            "sess_a", "archive", attempts, RuntimeError("retry"), operation["operation_id"],
+        ), 1)
+        current = lc.state("session", "sess_a")["operation"]
+        assert current["status"] == ("abandoned" if attempts == 5 else "failed")
+    finally:
+        release.set()
+        if timer is not None:
+            timer.cancel()
+        await holder
+
+
+@pytest.mark.asyncio
+async def test_cancelled_lease_release_keeps_owner_until_write_finishes(
+    archive, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, create, _, runtime = archive
+    create()
+    entered = threading.Event()
+    allow_release = threading.Event()
+    acquired = asyncio.Event()
+    renew = lc.renew_operation
+
+    def slow_release(kind, resource_id, owner_id, *, release=False):
+        if release and owner_id == service._owner_id:
+            entered.set()
+            allow_release.wait(2)
+        return renew(kind, resource_id, owner_id, release=release)
+
+    monkeypatch.setattr(lc, "renew_operation", slow_release)
+
+    async def finish_owner() -> None:
+        async with service.lock("session", "sess_a"):
+            pass
+
+    contender = SessionArchiveService(runtime)
+
+    async def next_owner() -> None:
+        async with contender.lock("session", "sess_a"):
+            acquired.set()
+
+    owner_task = asyncio.create_task(finish_owner())
+    contender_task = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        owner_task.cancel()
+        contender_task = asyncio.create_task(next_owner())
+        await asyncio.sleep(0.02)
+        assert not acquired.is_set()
+        allow_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await owner_task
+        await asyncio.wait_for(contender_task, 3)
+        assert acquired.is_set()
+    finally:
+        allow_release.set()
+        await asyncio.gather(owner_task, return_exceptions=True)
+        if contender_task is not None:
+            await asyncio.gather(contender_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry_mode", ["recovery", "manual", "exhausted"])
+async def test_deleted_session_retries_mailbox_cleanup_without_repeating_delete(
+    archive, retry_mode: str,
+) -> None:
+    service, create, _, runtime = archive
+    directory = create()
+    mailbox = SimpleNamespace(
+        block_target_delete=Mock(),
+        begin_target_delete=AsyncMock(),
+        on_target_deleted=AsyncMock(side_effect=lc.LifecycleError("STOP_TIMEOUT", "mailbox busy")),
+        abort_target_delete=AsyncMock(),
+    )
+    runtime.session_message_service = mailbox
+
+    async def delete_session(*, channel_id: str, session_id: str):
+        (directory / "metadata.json").unlink()
+        (directory / "history.json").unlink()
+        directory.rmdir()
+        return SimpleNamespace(ok=True)
+
+    runtime.delete_session.side_effect = delete_session
+    await service.session("sess_a", "delete", "web")
+    operation = lc.state("session", "sess_a")["operation"]
+    assert operation["status"] == "failed"
+    assert operation["phase"] == "cleanup_mailbox"
+    assert operation["runtime_deleted"] is True
+    assert operation["retryable"] is True
+    assert not directory.exists()
+
+    restarted = SessionArchiveService(runtime)
+    if retry_mode != "exhausted":
+        mailbox.on_target_deleted.side_effect = None
+        if retry_mode == "manual":
+            await restarted.session("sess_a", "delete", "web")
+            await asyncio.gather(*restarted._finalizer_tasks)
+        else:
+            await restarted._finalize_session("sess_a", "delete", "web", "default", None)
+        assert lc.state("session", "sess_a")["operation"]["status"] == "completed"
+    else:
+        for _ in range(4):
+            await restarted._finalize_session("sess_a", "delete", "web", "default", None)
+        operation = lc.state("session", "sess_a")["operation"]
+        assert operation["status"] == "abandoned"
+        assert operation["cleanup_attempts"] == 5
+    runtime.delete_session.assert_awaited_once()
+    mailbox.abort_target_delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_attempts_are_bounded(archive):
+    service, create, _, runtime = archive
+    create()
+    runtime.delete_session = AsyncMock(
+        return_value=SimpleNamespace(
+            ok=False, error_code="DELETE_FAILED", error_message="nope"
+        )
+    )
+    lc.begin("session", "sess_a", "delete", block_execution=True)
+    lc.mark_finalizing("session", "sess_a", deleted=True)
+
+    for _ in range(5):
+        await service._finalize_session("sess_a", "delete", "web", "default", None)
+
+    operation = lc.state("session", "sess_a")["operation"]
+    assert operation["status"] == "abandoned"
+    assert operation["cleanup_attempts"] == 5
+    assert operation["cleanup_exhausted"] is True
+    assert operation["retryable"] is False
+    assert runtime.delete_session.await_count == 5
+
+    # Once abandoned, neither recovery nor a manual re-entry may retry it.
+    await service._finalize_session("sess_a", "delete", "web", "default", None)
+    assert runtime.delete_session.await_count == 5
+
+
+@pytest.mark.asyncio
+async def test_busy_lock_path_consumes_the_cleanup_budget(archive):
+    """拿不到锁也是失败：`cleanup_attempts` 必须随失败落盘，否则预算永不消耗（#5845）。
+
+    `_finalize_session_locked` 是唯一写 `cleanup_attempts` 的地方，而占用路径（跨进程
+    flock 被另一进程长期持有）永远进不到它。只在局部变量里 +1 时，每次重新 spawn 的
+    finalizer 读到的 attempts 恒为 0：`_MAX_CLEANUP_ATTEMPTS` 永不达成、`_abandon_cleanup`
+    不可达，同一个会话被无限重试并持续占用收尾槽位。
+    """
+    service, create, _, _runtime = archive
+    create()
+    lc.begin("session", "sess_a", "archive", block_execution=True)
+    lc.mark_finalizing("session", "sess_a")
+    operation_id = lc.state("session", "sess_a")["operation"]["operation_id"]
+
+    class _BusyLock:
+        """模拟 `self.lock(...)` 始终被另一进程占住。"""
+
+        async def __aenter__(self):
+            raise lc.LifecycleError("OPERATION_IN_PROGRESS", "held by another process")
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+    service.lock = lambda *args, **kwargs: _BusyLock()  # type: ignore[method-assign]
+
+    await service._finalize_session("sess_a", "archive", "web", "default", None)
+    operation = lc.state("session", "sess_a")["operation"]
+    assert operation["cleanup_attempts"] == 1, "占用路径的 attempts 没有落盘"
+    assert operation["status"] == "failed"
+    assert operation["retryable"] is True
+    assert operation["cleanup_next_at"] > 0, "占用路径没有写退避时间"
+
+    # 后续每轮 recovery 重新 spawn：attempts 必须继续累加，直到预算耗尽转 abandoned。
+    busy = lc.LifecycleError("OPERATION_IN_PROGRESS", "held by another process")
+    for attempts in (2, 3, 4, 5):
+        await service._record_finalize_failure(
+            "sess_a", "archive", attempts, busy, operation_id
+        )
+
+    operation = lc.state("session", "sess_a")["operation"]
+    assert operation["cleanup_attempts"] == 5
+    assert operation["status"] == "abandoned"
+    assert operation["cleanup_exhausted"] is True
+    assert operation["retryable"] is False
+
+
+@pytest.mark.asyncio
+async def test_unarchive_restores_active_listing(archive):
+    service, create, _, _ = archive
+    create()
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        collect_all_sessions_metadata,
+    )
+
+    await service.session("sess_a", "archive", "web")
+    assert [item["session_id"] for item in collect_all_sessions_metadata()] == []
+    await service.session("sess_a", "unarchive", "web")
+    assert [item["session_id"] for item in collect_all_sessions_metadata()] == ["sess_a"]
+
+
+@pytest.mark.asyncio
+async def test_unarchive_after_failed_archive_restores_active_listing(
+    archive, monkeypatch
+):
+    service, create, _, _ = archive
+    create()
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        collect_all_sessions_metadata,
+    )
+
+    original = SessionArchiveService.__dict__["_move_session_directory"]
+
+    def fail_move(*args, **kwargs):
+        raise OSError("move failed")
+
+    monkeypatch.setattr(
+        SessionArchiveService, "_move_session_directory", staticmethod(fail_move)
+    )
+    result = await service.session("sess_a", "archive", "web")
+    assert result["ok"] is True
+    # The failed archive is logically archived: hidden from the active list.
+    assert [item["session_id"] for item in collect_all_sessions_metadata()] == []
+
+    monkeypatch.setattr(
+        SessionArchiveService, "_move_session_directory", original
+    )
+    result = await service.session("sess_a", "unarchive", "web")
+    assert result["restored"] is True
+    assert [item["session_id"] for item in collect_all_sessions_metadata()] == ["sess_a"]
+
+
+@pytest.mark.asyncio
+async def test_unarchive_after_moved_but_failed_archive_restores_listing(
+    archive, monkeypatch
+):
+    service, create, root, _ = archive
+    create(pinned=True)
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        collect_all_sessions_metadata,
+    )
+
+    def fail_reindex():
+        raise OSError("reindex failed")
+
+    monkeypatch.setattr(
+        SessionArchiveService, "reindex_pins", staticmethod(fail_reindex)
+    )
+    result = await service.session("sess_a", "archive", "web")
+    assert result["ok"] is True
+    # Move succeeded, reindex failed: logically archived, directory archived.
+    assert (root / "sessions_archived/sess_a").exists()
+    assert [item["session_id"] for item in collect_all_sessions_metadata()] == []
+
+    monkeypatch.setattr(
+        SessionArchiveService, "reindex_pins", staticmethod(lambda **kwargs: None)
+    )
+    await service.session("sess_a", "unarchive", "web")
+    assert (root / "sessions/sess_a").exists()
+    assert [item["session_id"] for item in collect_all_sessions_metadata()] == ["sess_a"]
+
+
+@pytest.mark.asyncio
+async def test_delete_archived_includes_failed_archive(archive, monkeypatch):
+    service, create, root, runtime = archive
+    project = project_store.create_project("p", str(root / "work"))
+    path = create("sess_a")
+    meta = lc.raw_metadata("sess_a")
+    meta["project_id"] = project.project_id
+    lc.atomic_json(path / "metadata.json", meta)
+
+    original = SessionArchiveService.__dict__["_move_session_directory"]
+
+    def fail_move(*args, **kwargs):
+        raise OSError("move failed")
+
+    monkeypatch.setattr(
+        SessionArchiveService, "_move_session_directory", staticmethod(fail_move)
+    )
+    result = await service.session("sess_a", "archive", "web")
+    assert result["ok"] is True
+    assert lc.state("session", "sess_a")["operation"]["status"] == "failed"
+    # Logically archived even though the directory never moved.
+    assert "sess_a" in [
+        item["session_id"] for item in service.list_sessions({})["sessions"]
+    ]
+
+    monkeypatch.setattr(SessionArchiveService, "_move_session_directory", original)
+    result = await service.project_batch(project.project_id, "delete_archived", "web")
+    assert result["succeeded_count"] == 1
+    assert result["failed_count"] == 0
+    # The delete intent is persisted; physical removal stays best-effort.
+    assert lc.state("session", "sess_a")["deleted"] is True
+    assert "sess_a" not in [
+        item["session_id"] for item in service.list_sessions({})["sessions"]
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unarchive_after_failed_archive_restores_hidden_project(
+    archive, monkeypatch
+):
+    service, create, root, _ = archive
+    project = project_store.create_project("hidden", str(root / "work"))
+    path = create("sess_a")
+    meta = lc.raw_metadata("sess_a")
+    meta["project_id"] = project.project_id
+    lc.atomic_json(path / "metadata.json", meta)
+    project_store.hide_project(project.project_id)
+
+    original = SessionArchiveService.__dict__["_move_session_directory"]
+
+    def fail_move(*args, **kwargs):
+        raise OSError("move failed")
+
+    monkeypatch.setattr(
+        SessionArchiveService, "_move_session_directory", staticmethod(fail_move)
+    )
+    result = await service.session("sess_a", "archive", "web")
+    assert result["ok"] is True
+    assert lc.state("session", "sess_a")["operation"]["status"] == "failed"
+    assert (
+        project_store.get_project_by_id(
+            project.project_id, cache_bust=True
+        ).hidden
+        is True
+    )
+
+    monkeypatch.setattr(SessionArchiveService, "_move_session_directory", original)
+    result = await service.session("sess_a", "unarchive", "web")
+    assert result["ok"] is True
+    assert result["restored"] is True
+    # Undo restores the project even though the directory never moved.
+    assert (
+        project_store.get_project_by_id(
+            project.project_id, cache_bust=True
+        ).hidden
+        is False
+    )
+    assert "sess_a" in service.project_sessions(project.project_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tracked_retry", [False, True])
+async def test_queued_archive_retry_cannot_take_over_new_operation(
+    archive, tracked_retry: bool,
+) -> None:
+    service, create, root, runtime = archive
+    create()
+    runtime._session_coordinator = SimpleNamespace(
+        snapshot_session=lambda sid: SimpleNamespace(generation=2)
+    )
+    runtime.is_session_running = Mock(return_value=True)
+    runtime.stop_session_for_lifecycle = AsyncMock()
+    old_operation = lc.begin("session", "sess_a", "archive")
+    lc.mark_finalizing("session", "sess_a")
+    lc.update("session", "sess_a", status="failed", stop_generation=1)
+    service._finalize_semaphore = asyncio.Semaphore(0)
+    if tracked_retry:
+        old_task = service._spawn_finalizer("sess_a", "archive", "web", "default", 1)
+    else:
+        old_task = asyncio.create_task(service._finalize_session(
+            "sess_a", "archive", "web", "default", 1,
+            operation_id=old_operation["operation_id"],
+        ))
+    await asyncio.sleep(0)
+    try:
+        # Bypass the fixture's synchronous drain while both tasks are queued.
+        await SessionArchiveService.session(service, "sess_a", "unarchive", "web")
+        await SessionArchiveService.session(service, "sess_a", "archive", "web")
+        operation = lc.state("session", "sess_a")["operation"]
+        assert operation["operation_id"] != old_operation["operation_id"]
+        assert operation["stop_generation"] == 2
+        new_task = service._finalizing["sess_a"]
+        assert new_task is not old_task
+
+        service._finalize_semaphore.release()
+        service._finalize_semaphore.release()
+        await asyncio.wait_for(new_task, 2)
+        await asyncio.gather(old_task, return_exceptions=True)
+
+        runtime.stop_session_for_lifecycle.assert_awaited_once_with(
+            channel_id="web", session_id="sess_a", generation=2, stop_runner=True
+        )
+        assert (root / "sessions_archived/sess_a").exists()
+        current = lc.state("session", "sess_a")["operation"]
+        assert current["operation_id"] == operation["operation_id"]
+        assert current["status"] == "completed"
+        assert current["errors"] == []
+    finally:
+        old_task.cancel()
+        await asyncio.gather(old_task, return_exceptions=True)
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_stuck_mailbox_consumers_release_finalizer_slots(
+    archive, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.server.runtime.session import session_message_service as mailbox_module
+    from jiuwenswarm.server.runtime.session.session_message_service import SessionMessageService
+    from jiuwenswarm.server.runtime.session.session_message_store import SessionMessageStore
+
+    service, create, root, runtime = archive
+    monkeypatch.setattr(mailbox_module, "_TARGET_DELETE_STOP_TIMEOUT_SECONDS", 0.01)
+    mailbox = SessionMessageService(
+        store=SessionMessageStore(root / "messages.sqlite3"),
+        admission=SimpleNamespace(),
+        execute=AsyncMock(),
+    )
+    runtime.session_message_service = mailbox
+    release = asyncio.Event()
+
+    async def resistant_consumer() -> None:
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            await release.wait()
+            raise
+
+    consumers = []
+    for index in range(4):
+        sid = f"delete_{index}"
+        create(sid)
+        task = asyncio.create_task(resistant_consumer())
+        consumers.append(task)
+        mailbox._workers[(sid, "")] = task
+        task.add_done_callback(
+            lambda done, target=sid: mailbox._worker_finished(target, done)
+        )
+    create("unrelated_archive")
+    await asyncio.sleep(0)
+    try:
+        for index in range(4):
+            await SessionArchiveService.session(service, f"delete_{index}", "delete", "web")
+        await SessionArchiveService.session(service, "unrelated_archive", "archive", "web")
+        await asyncio.wait_for(
+            asyncio.gather(*list(service._finalizing.values())), 2
+        )
+
+        assert (root / "sessions_archived/unrelated_archive").exists()
+        runtime.delete_session.assert_not_awaited()
+        for index, task in enumerate(consumers):
+            sid = f"delete_{index}"
+            operation = lc.state("session", sid)["operation"]
+            assert operation["status"] == "failed"
+            assert operation["cleanup_attempts"] == 1
+            assert not task.done()
+            assert mailbox._workers[(sid, "")] is task
+
+        # A retry still sees the original consumer and cannot delete its data.
+        await service._finalize_session("delete_0", "delete", "web", "default", None)
+        runtime.delete_session.assert_not_awaited()
+        assert lc.state("session", "delete_0")["operation"]["cleanup_attempts"] == 2
+
+        release.set()
+        await asyncio.gather(*consumers, return_exceptions=True)
+        await service._finalize_session("delete_0", "delete", "web", "default", None)
+        runtime.delete_session.assert_awaited_once()
+        assert lc.state("session", "delete_0")["operation"]["status"] == "completed"
+    finally:
+        release.set()
+        await asyncio.gather(*consumers, return_exceptions=True)
+        await service.close()
+        await mailbox.stop()
+>>>>>>> origin/develop

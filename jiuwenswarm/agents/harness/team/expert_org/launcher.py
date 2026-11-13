@@ -37,6 +37,25 @@ class LaunchedExpertTeam:
         return data
 
 
+def _is_group_organization_owner(session_id: str, team_id: str) -> bool:
+    if not str(team_id or "").strip():
+        return False
+    try:
+        from jiuwenswarm.server.runtime.group_service import (
+            group_organization_owner_team_ids,
+        )
+
+        return team_id in group_organization_owner_team_ids(session_id)
+    except Exception:
+        logger.debug(
+            "[ExpertTeamLauncher] group owner lookup failed session=%s team=%s",
+            session_id,
+            team_id,
+            exc_info=True,
+        )
+        return False
+
+
 def _leader_id_from_agent(agent: Any, team_id: str) -> str:
     backend = getattr(agent, "team_backend", None)
     for attr in ("leader_member_name", "member_name"):
@@ -289,12 +308,32 @@ class JiuwenExpertTeamLauncher:
             return False
         spec = getattr(getattr(entry, "agent", None), "spec", None)
         spec_metadata = getattr(spec, "metadata", None)
+<<<<<<< HEAD
         from jiuwenswarm.server.runtime.organization_packages import team_package_availability
 
         group_name = str((spec_metadata or {}).get("agent_group_name") or "")
         if team_package_availability(team_id, group_name).get("available") is False:
             logger.warning("[ExpertTeamLauncher] package unavailable team=%s group=%s", team_id, group_name)
             return False
+||||||| e487e9a30
+=======
+        from jiuwenswarm.server.runtime.organization_packages import team_package_availability
+
+        group_name = str((spec_metadata or {}).get("agent_group_name") or "")
+        if team_package_availability(team_id, group_name).get("available") is False:
+            logger.warning("[ExpertTeamLauncher] package unavailable team=%s group=%s", team_id, group_name)
+            return False
+        if group_name:
+            from jiuwenswarm.enterprise.capabilities.experts.request_packages import allows
+
+            if not allows("agent_group", group_name):
+                logger.warning(
+                    "[ExpertTeamLauncher] package not in current expansion team=%s group=%s",
+                    team_id,
+                    group_name,
+                )
+                return False
+>>>>>>> origin/develop
         is_relayed_team = isinstance(spec_metadata, dict) and (
             spec_metadata.get("expert_team") is True
             or (source == "org_summary_background" and spec_metadata.get("summary_team") is True)
@@ -673,13 +712,18 @@ class JiuwenExpertTeamLauncher:
             _tag_team_output_origin,
         )
 
-        parsed = dict(payload)
+        from jiuwenswarm.server.runtime.group_execution import project_group_stream_event
+
+        parsed = await project_group_stream_event(session_id, dict(payload))
+        if parsed is None:
+            return True
         parsed["rid"] = round_id
         # WebGateway preserves request_id, not rid. Keep the browser turn
         # stable while the outer push ID remains unique for each frame.
         parsed["request_id"] = round_id
         parsed["source"] = source
         parsed = _tag_team_output_origin(parsed, team_id)
+<<<<<<< HEAD
         # Lifecycle frames are outside the model-output tagger's allowlist.
         # They still need the same team identity as the corresponding output.
         parsed["team_id"] = team_id
@@ -691,6 +735,23 @@ class JiuwenExpertTeamLauncher:
             channel_id=channel_id,
             round_id=round_id,
         )
+||||||| e487e9a30
+        event_type = str(parsed.get("event_type") or "")
+=======
+        # Lifecycle frames are outside the model-output tagger's allowlist.
+        # They still need the same team identity as the corresponding output.
+        parsed["team_id"] = team_id
+        parsed["team_name"] = team_id
+        if _is_group_organization_owner(session_id, team_id):
+            parsed["swarm_group_owner"] = True
+        await self._persist_expert_history(
+            parsed,
+            team_id=team_id,
+            session_id=session_id,
+            channel_id=channel_id,
+            round_id=round_id,
+        )
+>>>>>>> origin/develop
 
         try:
             delivered = await self._get_push_transport().send_push(
@@ -722,6 +783,7 @@ class JiuwenExpertTeamLauncher:
                 raise RuntimeError("failed to deliver direct expert output")
             return False
 
+<<<<<<< HEAD
         return True
 
     async def _persist_expert_history(
@@ -772,6 +834,63 @@ class JiuwenExpertTeamLauncher:
             logger.warning(
                 "[ExpertTeamLauncher] history persist failed team=%s session=%s round=%s",
                 team_id, session_id, round_id, exc_info=True,
+||||||| e487e9a30
+        if source == "org_expert_direct" and event_type in {"chat.final", "chat.error"}:
+            from jiuwenswarm.server.runtime.session.session_history import (
+                append_history_record,
+=======
+        return True
+
+    async def _persist_expert_history(
+        self,
+        payload: dict[str, Any],
+        *,
+        team_id: str,
+        session_id: str,
+        channel_id: str,
+        round_id: str,
+    ) -> None:
+        """Persist organization output independently of Web delivery."""
+        from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+            _TEAM_ATTRIBUTED_EVENT_TYPES,
+            _UnattendedTeamRoundHistoryWriter,
+        )
+
+        event_type = str(payload.get("event_type") or "")
+        if event_type == "org.turn_completed":
+            await self._flush_expert_history(session_id, team_id, round_id)
+            return
+        if event_type not in _TEAM_ATTRIBUTED_EVENT_TYPES:
+            return
+        role = str(payload.get("role") or "leader")
+        member_name = str(payload.get("member_name") or "team_leader")
+        key = (session_id, team_id, round_id, role, member_name)
+        writer = self._history_writers.get(key)
+        if writer is None:
+            writer = _UnattendedTeamRoundHistoryWriter(
+                channel_id=channel_id,
+                session_id=session_id,
+                request_id=f"{round_id}:{team_id}:{role}:{member_name}",
+                cross_session_marker=None,
+                event_metadata={
+                    "team_id": team_id,
+                    "team_name": team_id,
+                    "source": payload.get("source"),
+                    "role": role,
+                    "member_name": member_name,
+                    "request_id": round_id,
+                    "rid": round_id,
+                    **({"swarm_group_owner": True} if payload.get("swarm_group_owner") else {}),
+                },
+            )
+            self._history_writers[key] = writer
+        try:
+            await writer.observe(payload)
+        except Exception:
+            logger.warning(
+                "[ExpertTeamLauncher] history persist failed team=%s session=%s round=%s",
+                team_id, session_id, round_id, exc_info=True,
+>>>>>>> origin/develop
             )
 
     async def _flush_expert_history(self, session_id: str, team_id: str, round_id: str) -> None:
@@ -832,6 +951,11 @@ class JiuwenExpertTeamLauncher:
         display_name: str | None,
         channel_id: str | None = None,
         shared_db: Any | None = None,
+        enable_organization: bool | None = None,
+        leader_tools: list[Any] | None = None,
+        leader_rails: list[Any] | None = None,
+        leader_prompt_suffix: str = "",
+        extra_capabilities: list[str] | None = None,
     ) -> Any:
         """Base Team Spec from config, then AgentGroup overlay via assembly."""
         from jiuwenswarm.agents.harness.team.team_manager import TeamManager
@@ -857,6 +981,14 @@ class JiuwenExpertTeamLauncher:
         updates["metadata"] = metadata
         spec = spec.model_copy(update=updates)
 
+        # NOTE (D-20261105-1041 KD3, documented semantics): this launch path
+        # carries no project_dir concept, so expert-org member sandboxes mount
+        # no project directory — the policy builder's project-dir slot stays
+        # unset here (NOT the agent-server cwd: no project_dir is threaded and
+        # the injection itself passes None, which skips the cwd fallback only
+        # when the request carried none; see _build_member_sandbox_specs).
+        # Members still see team mounts. Threading project_dir through the
+        # expert-org launch chain is tracked as a follow-up.
         enrich_team_spec_for_swarm(
             spec,
             session_id=session_id,
@@ -866,8 +998,37 @@ class JiuwenExpertTeamLauncher:
             agent_group_name=agent_group_name,
             agent_group_package=agent_group_package,
         )
+        metadata = dict(getattr(spec, "metadata", None) or {})
+        metadata["capabilities"] = list(
+            dict.fromkeys(
+                [
+                    *metadata.get("capabilities", []),
+                    *(extra_capabilities or []),
+                ]
+            )
+        )
+        spec.metadata = metadata
         if shared_db is not None:
             _align_spec_storage(spec, shared_db)
+        if (
+            enable_organization is not None
+            and "enable_organization" in type(spec).model_fields
+        ):
+            spec.enable_organization = enable_organization
+        if leader_tools:
+            leader_agent = spec.agents["leader"]
+            leader_agent.tools = [*(leader_agent.tools or []), *leader_tools]
+        if leader_rails:
+            leader_agent = spec.agents["leader"]
+            leader_agent.rails = [*(leader_agent.rails or []), *leader_rails]
+        if leader_prompt_suffix:
+            spec.leader = spec.leader.model_copy(
+                update={
+                    "prompt": (spec.leader.prompt or "")
+                    + "\n"
+                    + leader_prompt_suffix
+                }
+            )
         return spec
 
     async def _materialize_expert_team_in_db(
@@ -929,6 +1090,7 @@ class JiuwenExpertTeamLauncher:
                 "expert team message_manager must use the shared TeamDatabase instance"
             )
 
+<<<<<<< HEAD
     async def restore(
         self, *, team_id: str, session_id: str, organization: Any, db: Any,
         channel_id: str | None = None,
@@ -1021,6 +1183,101 @@ class JiuwenExpertTeamLauncher:
                 await self.stop(team_id=team_id, session_id=session_id)
                 raise
 
+||||||| e487e9a30
+=======
+    async def restore(
+        self, *, team_id: str, session_id: str, organization: Any, db: Any,
+        channel_id: str | None = None,
+    ) -> Any:
+        """Cold-recover an invited Team under its original ID, without an LLM turn."""
+        from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
+        from jiuwenswarm.server.runtime.team_organization_identity_store import load_organization_team_identity
+        from openjiuwen.agent_teams.experts import load_agent_group_package_bundle
+        from jiuwenswarm.server.runtime.extension_package_manager import resolve_agent_group_dir
+
+        if not organization_enabled():
+            raise ValueError("Team Organization is disabled")
+        if team_id == organization.owner_team_id or not any(
+            leader.team_id == team_id for leader in organization.leaders
+        ):
+            raise ValueError("target is not an invited expert in this organization")
+        lock = _recovery_locks.setdefault(team_id, asyncio.Lock())
+        async with lock:
+            if not organization_enabled():
+                raise ValueError("Team Organization is disabled")
+            runtime = self._get_runtime()
+            from jiuwenswarm.server.runtime.organization_packages import team_package_availability
+            from jiuwenswarm.server.runtime.extension_package_manager import AgentGroupPackageError
+
+            availability = team_package_availability(team_id)
+            if availability.get("available") is False:
+                raise AgentGroupPackageError(
+                    "The expert AgentGroup is not installed or unavailable; reinstall it to resume this Team.",
+                    availability["unavailable_reason"],
+                )
+            entry = await runtime.pool.get(team_id)
+            if entry is not None:
+                if entry.current_session_id != session_id:
+                    raise ValueError("target expert team is bound to another session")
+                metadata = getattr(getattr(entry.agent, "spec", None), "metadata", None) or {}
+                status = team_package_availability(team_id, str(metadata.get("agent_group_name") or ""))
+                if status.get("available") is False:
+                    raise AgentGroupPackageError(
+                        "Expert package is not installed; reinstall it first.",
+                        status["unavailable_reason"],
+                    )
+                backend = getattr(entry.agent, "team_backend", None)
+                if (
+                    backend is None or backend.db is not db
+                    or getattr(getattr(backend, "org_task_manager", None), "organization_id", None)
+                    != organization.organization_id
+                ):
+                    raise ValueError("existing expert has an incompatible organization binding")
+                return backend
+            team = await db.team.get_team(team_id)
+            if team is None:
+                raise ValueError("persisted expert team is missing")
+            identity = load_organization_team_identity(team_id)
+            group_name = identity.get("agent_group_name", "")
+            if not group_name:
+                from jiuwenswarm.agents.harness.team.expert_org.catalog import JiuwenExpertGroupCatalog
+
+                label = str(getattr(team, "display_name", "") or "").strip()
+                candidates = [group for group in JiuwenExpertGroupCatalog.list()
+                              if label and label in (group.agent_group_name, group.display_name)]
+                if len(candidates) != 1:
+                    raise ValueError("historical expert package identity is missing or ambiguous")
+                group_name = candidates[0].agent_group_name
+            package = load_agent_group_package_bundle(resolve_agent_group_dir(group_name))
+            channel = _resolve_launch_channel_id(channel_id, session_id)
+            spec = await self._build_enriched_spec(
+                team_id=team_id, session_id=session_id, agent_group_name=group_name,
+                agent_group_package=package, display_name=getattr(team, "display_name", None),
+                channel_id=channel, shared_db=db,
+            )
+            self.ensure_turn_runner_installed()
+            if not organization_enabled():
+                raise ValueError("Team Organization is disabled")
+            try:
+                activation = await runtime.activate(spec, session_id)
+                resolve_agent_group_dir(group_name)
+                agent = getattr(activation, "agent", None)
+                backend = getattr(agent, "team_backend", None)
+                if (
+                    backend is None or backend.db is not db
+                    or getattr(getattr(backend, "org_task_manager", None), "organization_id", None)
+                    != organization.organization_id
+                ):
+                    raise ValueError("recovered expert has an incompatible organization binding")
+                if not await runtime.pause(team_name=team_id, session_id=session_id):
+                    raise ValueError("recovered expert could not enter the paused state")
+                self._team_channels[(session_id, team_id)] = channel
+                return backend
+            except Exception:
+                await self.stop(team_id=team_id, session_id=session_id)
+                raise
+
+>>>>>>> origin/develop
     async def launch(
         self,
         *,
@@ -1030,6 +1287,12 @@ class JiuwenExpertTeamLauncher:
         display_name: str | None = None,
         channel_id: str | None = None,
         share_db_from_team_id: str | None = None,
+        team_id: str | None = None,
+        enable_organization: bool | None = None,
+        leader_tools: list[Any] | None = None,
+        leader_rails: list[Any] | None = None,
+        leader_prompt_suffix: str = "",
+        extra_capabilities: list[str] | None = None,
     ) -> LaunchedExpertTeam:
         group_name = str(agent_group_name or "").strip()
         if not group_name:
@@ -1038,9 +1301,12 @@ class JiuwenExpertTeamLauncher:
             raise ValueError("organization_id is required")
         if not str(session_id or "").strip():
             raise ValueError("session_id is required")
+        from jiuwenswarm.enterprise.capabilities.experts.request_packages import require_allowed
+
+        require_allowed("agent_group", group_name)
         self.ensure_turn_runner_installed()
 
-        from jiuwenswarm.agents.swarm.agent_group import (
+        from openjiuwen.agent_teams.experts import (
             load_agent_group_package_bundle,
         )
         from jiuwenswarm.server.runtime.extension_package_manager import (
@@ -1050,7 +1316,7 @@ class JiuwenExpertTeamLauncher:
         agent_group_package = load_agent_group_package_bundle(
             resolve_agent_group_dir(group_name)
         )
-        team_id = await self._allocate_team_id()
+        team_id = str(team_id or "").strip() or await self._allocate_team_id()
         runtime = self._get_runtime()
         resolved_channel = _resolve_launch_channel_id(channel_id, session_id)
         logger.info(
@@ -1078,6 +1344,11 @@ class JiuwenExpertTeamLauncher:
                 display_name=display_name,
                 channel_id=resolved_channel,
                 shared_db=shared_db,
+                enable_organization=enable_organization,
+                leader_tools=leader_tools,
+                leader_rails=leader_rails,
+                leader_prompt_suffix=leader_prompt_suffix,
+                extra_capabilities=extra_capabilities,
             )
             activation_attempted = True
             activation = await runtime.activate(spec, session_id)

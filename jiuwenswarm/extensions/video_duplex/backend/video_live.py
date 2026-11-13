@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 import uuid
 
+from jiuwenswarm.extensions.video_duplex.backend.error_details import duplex_failure
 from jiuwenswarm.extensions.video_duplex.backend import (
     joyai_action_helper,
     joyai_provider,
@@ -33,6 +34,21 @@ from jiuwenswarm.server.runtime.session.session_metadata import (
 )
 _ALLOWED_IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
 _LOG_WRITE_LOCK = threading.Lock()
+
+
+def _parse_joyai_task_operation(delegation: str, call_id: str):
+    """Validate an explicit control before any operation is executed."""
+    from .qwen_omni_tools import parse_qwen_omni_tool_call
+
+    value = json.loads(delegation)
+    if not isinstance(value, dict) or set(value) != {"name", "arguments"}:
+        raise ValueError("Invalid task operation")
+    if value.get("name") not in {
+        "jiuwen_delegate", "jiuwen_queue_manage", "jiuwen_task_query",
+        "jiuwen_task_modify", "jiuwen_task_cancel", "jiuwen_task_answer",
+    }:
+        raise ValueError("Unsupported task operation")
+    return parse_qwen_omni_tool_call({**value, "call_id": call_id})
 
 _CONVERSATION_EVENT_KINDS = {
     "user",
@@ -216,6 +232,7 @@ def register_video_live_handler(
     context_restorer = RealtimeContextRestorer(search_manager)
 
     async def _realtime_config(ws, req_id, params, session_id):
+<<<<<<< HEAD
         del session_id
         try:
             restored = await context_restorer.prepare(ws, str((params or {}).get("search_session_id") or "").strip())
@@ -223,6 +240,21 @@ def register_video_live_handler(
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CONTEXT_RESTORE_FAILED")
             return
         context_payload = {"context_restore": restored} if restored else {}
+||||||| e487e9a30
+        del params, session_id
+=======
+        del session_id
+        try:
+            restored = await context_restorer.prepare(ws, str((params or {}).get("search_session_id") or "").strip())
+        except Exception as exc:
+            await channel.send_response(
+                ws, req_id, ok=False,
+                error=duplex_failure(exc, stage="会话上下文恢复", request_id=req_id),
+                code="CONTEXT_RESTORE_FAILED",
+            )
+            return
+        context_payload = {"context_restore": restored} if restored else {}
+>>>>>>> origin/develop
         if _video_live_mode() == "joyai":
             api_base, _, model = joyai_provider.model_config()
             if not api_base or not model:
@@ -279,9 +311,19 @@ def register_video_live_handler(
             params.get("reply_language", settings.reply_language())
         )
         request_kind = str(params.get("request_kind") or "frame").strip().casefold()
+<<<<<<< HEAD
         if (frame_data_url and not _is_allowed_image_data_url(frame_data_url)) or (
             not frame_data_url and request_kind != "user"
         ):
+||||||| e487e9a30
+        if not _is_allowed_image_data_url(frame_data_url):
+=======
+        if frame_data_url:
+            invalid_frame = not _is_allowed_image_data_url(frame_data_url)
+        else:
+            invalid_frame = request_kind != "user"
+        if invalid_frame:
+>>>>>>> origin/develop
             await channel.send_response(
                 ws, req_id, ok=False,
                 error="frame_data_url must be a base64 JPEG, PNG, or WebP data URL",
@@ -359,6 +401,7 @@ def register_video_live_handler(
             return
         upstream_session_id = requested_session_id or str(session_id or f"joyai-{uuid.uuid4().hex}")
         search_session_id = search_session_id or upstream_session_id
+<<<<<<< HEAD
         restore_instructions = ""
         restore_token = params.get("restore_token")
         if restore_token:
@@ -372,6 +415,26 @@ def register_video_live_handler(
             except Exception as exc:
                 await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CONTEXT_RESTORE_FAILED")
                 return
+||||||| e487e9a30
+=======
+        restore_instructions = ""
+        restore_token = params.get("restore_token")
+        if restore_token:
+            try:
+                if request_kind != "user":
+                    raise ValueError("Restored context is allowed only for user requests")
+                restore_instructions = await context_restorer.instructions(ws, search_session_id, restore_token)
+            except ContextRestoreExpired as exc:
+                await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CONTEXT_RESTORE_EXPIRED")
+                return
+            except Exception as exc:
+                await channel.send_response(
+                    ws, req_id, ok=False,
+                    error=duplex_failure(exc, stage="会话上下文恢复", request_id=req_id),
+                    code="CONTEXT_RESTORE_FAILED",
+                )
+                return
+>>>>>>> origin/develop
         request_log = {
             "request_id": str(req_id),
             "joyai_session_id": upstream_session_id,
@@ -396,6 +459,7 @@ def register_video_live_handler(
             request_args = [frame_data_url, model_instruction, upstream_session_id]
             if frame_time_range:
                 request_args.append(frame_time_range)
+<<<<<<< HEAD
             protocol_invalid = False
             try:
                 result = await joyai_provider.request_frame(*request_args)
@@ -439,9 +503,67 @@ def register_video_live_handler(
                         code="JOYAI_ACTION_HELPER_ERROR",
                     )
                     return
+||||||| e487e9a30
+            result = await joyai_provider.request_frame(*request_args)
+=======
+            protocol_invalid = False
+            try:
+                result = await joyai_provider.request_frame(*request_args)
+            except joyai_provider.JoyAIActionProtocolError as exc:
+                if request_kind != "user":
+                    raise
+                protocol_invalid = True
+                result = {**exc.completion, "decision": "response", "response": "", "delegation": ""}
+            if request_kind == "user" and result.get("decision") == "delegation":
+                delegation = str(result.get("delegation") or "").strip()
+                # Plain-text delegation remains a supported legacy format.
+                # Structured controls must pass the same parser used for execution.
+                if delegation.startswith(("{", "[", "```")):
+                    try:
+                        _parse_joyai_task_operation(delegation, str(params.get("command_id") or req_id) + ":0")
+                    except (ValueError, TypeError):
+                        protocol_invalid = True
+            if request_kind == "user" and (protocol_invalid or result.get("decision") != "delegation"):
+                try:
+                    owner, scope = await search_manager.scope(ws, {"search_session_id": search_session_id})
+                    snapshot = search_manager.snapshot(owner, scope)
+                    jobs = snapshot["jobs"]
+                    active = [job for job in jobs if job["status"] not in {"completed", "failed", "cancelled"}]
+                    recent = active[:8] + [job for job in jobs[-8:] if job not in active[:8]]
+                    task_fields = (
+                        "job_id", "title", "question", "status", "revision", "parent_id", "successor_id",
+                    )
+                    task_context = [{key: job.get(key) for key in task_fields} for job in recent]
+                    for task in task_context:
+                        task["question"] = str(task.get("question") or "")[:1000]
+                    result = await joyai_action_helper.review_action(
+                        instruction=instruction,
+                        result=result,
+                        context=json.dumps({"restored_history": restore_instructions,
+                                            "confirmed_tool_results": tool_context}, ensure_ascii=False),
+                        current_tasks=task_context,
+                        reply_language=reply_language,
+                        command_id=str(params.get("command_id") or req_id),
+                        protocol_invalid=protocol_invalid,
+                    )
+                except Exception as exc:
+                    # The original answer may promise an action that was never
+                    # submitted. Withhold it if review cannot establish a result.
+                    error = duplex_failure(exc, stage="JoyAI 辅助模型复核", request_id=req_id)
+                    await asyncio.to_thread(_append_joyai_log, {
+                        **request_log, "stage": "failed", "error_code": "JOYAI_ACTION_HELPER_ERROR",
+                        "error_type": type(exc).__name__, "error": error,
+                    })
+                    await channel.send_response(
+                        ws, req_id, ok=False,
+                        error=f"{error}; no new task was submitted. Retry or check the task list.",
+                        code="JOYAI_ACTION_HELPER_ERROR",
+                    )
+                    return
+>>>>>>> origin/develop
             _validate_joyai_result(result)
         except Exception as exc:  # noqa: BLE001
-            error = str(exc) or "JoyAI frame request failed"
+            error = duplex_failure(exc, stage="JoyAI 模型请求", request_id=req_id)
             error_code = (
                 "JOYAI_RATE_LIMIT"
                 if isinstance(exc, joyai_provider.JoyAIRateLimitError)
@@ -454,6 +576,7 @@ def register_video_live_handler(
                     "stage": "failed",
                     "error": error,
                     "error_code": error_code,
+                    "error_type": type(exc).__name__,
                 },
             )
             await channel.send_response(
@@ -475,6 +598,7 @@ def register_video_live_handler(
             if result.get("decision") != "delegation" or not delegation.startswith("{"):
                 break
             try:
+<<<<<<< HEAD
                 from .qwen_omni_tools import parse_qwen_omni_tool_call
 
                 value = json.loads(delegation)
@@ -490,9 +614,28 @@ def register_video_live_handler(
                     "jiuwen_task_answer",
                 }:
                     raise ValueError("Unsupported task operation")
+||||||| e487e9a30
+                from .qwen_omni_tools import parse_qwen_omni_tool_call
+
+                value = json.loads(delegation)
+                if not isinstance(value, dict) or set(value) != {"name", "arguments"}:
+                    raise ValueError("Invalid task operation")
+                if value.get("name") not in {
+                    "jiuwen_delegate",
+                    "jiuwen_task_query",
+                    "jiuwen_task_modify",
+                    "jiuwen_task_cancel",
+                }:
+                    raise ValueError("Unsupported task operation")
+=======
+                call = _parse_joyai_task_operation(
+                    delegation, f"{params.get('command_id') or req_id}:{operation_count}",
+                )
+>>>>>>> origin/develop
                 owner, scope = await search_manager.scope(
                     ws, {"search_session_id": search_session_id}
                 )
+<<<<<<< HEAD
                 call = parse_qwen_omni_tool_call(
                     {
                         **value,
@@ -523,6 +666,38 @@ def register_video_live_handler(
                     # to issue another operation for the same request.
                     result = {**result, "decision": "response", "response": response_text, "delegation": ""}
                     break
+||||||| e487e9a30
+                call = parse_qwen_omni_tool_call(
+                    {
+                        **value,
+                        "call_id": f"{params.get('command_id') or req_id}:{operation_index}",
+                    }
+                )
+=======
+                if call.name == "jiuwen_queue_manage":
+                    if request_kind != "user":
+                        raise ValueError("Queue management requires an explicit user request")
+                    management_instruction = question or instruction
+                    queue_management = await search_manager.manage_queue_call(
+                        owner, scope, call, management_instruction,
+                        allow_answers=False, reply_language=reply_language,
+                    )
+                    tools_used.append(call.name)
+                    response_text = queue_management.get("response", "")
+                    if queue_management.get("state") == "incomplete":
+                        response_text = (
+                            "Queue management did not finish. "
+                            "Check the task list and scheduled jobs for any changes already applied."
+                            if reply_language == "en" or (
+                                reply_language == "match" and not re.search(r"[\u4e00-\u9fff]", question or instruction)
+                            ) else "队列管理未全部完成，请查看任务列表和定时任务确认已执行的操作。"
+                        )
+                    # Only the manager's receipt-based answer reaches chat/TTS.
+                    # Never speak JoyAI's unconfirmed acknowledgement or ask it
+                    # to issue another operation for the same request.
+                    result = {**result, "decision": "response", "response": response_text, "delegation": ""}
+                    break
+>>>>>>> origin/develop
                 if call.name == "jiuwen_delegate":
                     task_title = call.arguments.get("title", "")
                     scheduling = {
@@ -544,8 +719,14 @@ def register_video_live_handler(
                 )
                 _validate_joyai_result(result)
             except Exception as exc:
+                error = duplex_failure(exc, stage="JoyAI 队列操作", request_id=req_id)
+                error += f" [completed_operations={operation_count}]; 请核对任务列表，部分操作可能已执行"
+                await asyncio.to_thread(_append_joyai_log, {
+                    **request_log, "stage": "task_operation_failed", "error": error,
+                    "error_type": type(exc).__name__, "operation_count": operation_count,
+                })
                 await channel.send_response(
-                    ws, req_id, ok=False, error=str(exc), code="TASK_REQUEST_REJECTED"
+                    ws, req_id, ok=False, error=error, code="TASK_REQUEST_REJECTED"
                 )
                 return
         if operation_count == 3 and result.get("decision") == "delegation":
@@ -572,7 +753,9 @@ def register_video_live_handler(
                 )
             except ValueError as exc:
                 await channel.send_response(
-                    ws, req_id, ok=False, error=str(exc), code="TASK_REQUEST_REJECTED"
+                    ws, req_id, ok=False,
+                    error=duplex_failure(exc, stage="JoyAI 任务提交", request_id=req_id),
+                    code="TASK_REQUEST_REJECTED",
                 )
                 return
             tools_used.append("jiuwen_delegate")
@@ -632,6 +815,7 @@ def register_video_live_handler(
         for key in ("result", "realtime_answer"):
             if isinstance(allowed.get(key), str):
                 allowed[key] = allowed[key][:50_000]
+<<<<<<< HEAD
         if event_name.startswith(("task_trace_", "qwen_tool_")) or event_name in {
             "qwen_realtime_error", "qwen_text_input_dispatched",
         }:
@@ -645,6 +829,25 @@ def register_video_live_handler(
                     for job in params["jobs"][:100] if isinstance(job, dict)
                 ]
             trace_task(event_name, **{key: value for key, value in allowed.items() if key != "event"})
+||||||| e487e9a30
+=======
+        if event_name.startswith(("task_trace_", "qwen_tool_")) or event_name in {
+            "qwen_realtime_error", "qwen_text_input_dispatched",
+        }:
+            from .tasks.diagnostics import trace_task
+
+            if event_name.startswith("task_trace_") and isinstance(params.get("jobs"), list):
+                allowed["jobs"] = []
+                task_fields = ("job_id", "status", "sequence", "queue_position", "queue_version")
+                for job in params["jobs"][:100]:
+                    if not isinstance(job, dict):
+                        continue
+                    allowed["jobs"].append({
+                        key: job.get(key) for key in task_fields
+                        if isinstance(job.get(key), (str, int, float, bool))
+                    })
+            trace_task(event_name, **{key: value for key, value in allowed.items() if key != "event"})
+>>>>>>> origin/develop
         if event_name in {
             "realtime_answer_final",
             "search_result_received",
@@ -817,6 +1020,7 @@ def register_video_live_handler(
             payload={"persisted": True, "event_id": event_id},
         )
 
+<<<<<<< HEAD
     async def _core_receipts(ws, req_id, params, session_id):
         from .task_adapter import task_identity, task_agent_query
         from jiuwenswarm.common.schema.message import ReqMethod
@@ -832,6 +1036,28 @@ def register_video_live_handler(
         except Exception as exc:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CORE_RECEIPT_REJECTED")
 
+||||||| e487e9a30
+=======
+    async def _core_receipts(ws, req_id, params, session_id):
+        from .task_adapter import task_identity, task_agent_query
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        try:
+            owner, scope = task_identity(ws, str((params or {}).get("search_session_id") or ""))
+            if not scope.startswith("task-duplex:"):
+                raise ValueError("Core receipts require a saved conversation")
+            payload = await task_agent_query(agent_client, ReqMethod.VOICE_SESSION_RECEIPTS,
+                {"token": params.get("token"), "action": params.get("action")},
+                scope.removeprefix("task-duplex:"), owner)
+            await channel.send_response(ws, req_id, ok=True, payload=payload)
+        except Exception as exc:
+            await channel.send_response(
+                ws, req_id, ok=False,
+                error=duplex_failure(exc, stage="Core 回执", request_id=req_id),
+                code="CORE_RECEIPT_REJECTED",
+            )
+
+>>>>>>> origin/develop
     handlers = {
         "video.realtime.config": _realtime_config,
         "video.core.subscribe": _core_receipts,

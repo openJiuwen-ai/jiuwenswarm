@@ -8,6 +8,7 @@ import type {
   TrajectoryRequest, TrajectorySnapshot, TrajectoryTurnModel,
 } from '../trajectory/model.ts'
 import { trajectoryRecordId } from '../trajectory/record.ts'
+import type { SharedTurnAxisRange } from '../diagnosis/diagnosisTimeSelection.ts'
 import {
   resolveTimelineMode,
   trajectoryTimelineFocusIndexes,
@@ -83,6 +84,7 @@ export interface TrajectoryExplorerProps {
   viewState?: TrajectoryViewState
   /** Expand an overview-only host after a timeline record is activated. */
   onOverviewActivate?: () => void
+<<<<<<< HEAD
   /**
    * JiuwenSwarm extension: `traceId:spanId` anchors to emphasise on the timeline
    * (diagnosis evidence). The ledger is never filtered by this set.
@@ -122,6 +124,57 @@ export interface TrajectoryExplorerProps {
   sharedViewportRef?: RefObject<TrajectoryTimeRange | null>
   /** How a controlled brush is drawn. Diagnosis uses a light-blue region. */
   timelineRangeAppearance?: 'focus' | 'region'
+||||||| e487e9a30
+=======
+  /**
+   * JiuwenSwarm extension: `traceId:spanId` anchors to emphasise on the timeline
+   * (diagnosis evidence). The ledger is never filtered by this set.
+   */
+  highlightStepKeys?: ReadonlySet<string>
+  /**
+   * JiuwenSwarm extension: reports the wall-clock hull (Unix ms) of the records
+   * covered by the current timeline drag selection, or `null` when it is cleared.
+   */
+  onTimelineSelectionChange?: (selection: TrajectoryWallClockSelection | null) => void
+  /** JiuwenSwarm extension: bump to clear this explorer's own timeline selection. */
+  clearSelectionToken?: number
+  /**
+   * Controlled timeline brush, in the active projection's domain. When
+   * `onTimelineRangeChange` is set, this replaces the explorer's own range.
+   */
+  timelineRange?: TrajectoryTimeRange | null
+  /** Reports a drag on this lane, including a clear. */
+  onTimelineRangeChange?: (range: TrajectoryTimeRange | null) => void
+  /** Shared wall-clock domain so this lane lines up with the diagnosis axis. */
+  sharedTimeDomain?: TrajectoryTimeRange | null
+  /** Maps this lane's span times onto `sharedTimeDomain`. */
+  mapSharedTime?: (time: number) => number
+  /**
+   * Shared `user_turn` ranges from the leader / main agent, already on the
+   * shared axis. Every diagnosis lane reuses these so member swimlanes pad the
+   * same junctions as the shared time axis.
+   */
+  userTurnGapRanges?: readonly SharedTurnAxisRange[]
+  /**
+   * When true, left-drag paints a brush instead of panning. Wheel zoom still
+   * works if `onSharedViewportChange` controls the shared window.
+   */
+  lockTimelineViewport?: boolean
+  /** With a locked viewport, clicking an Input block still selects its range. */
+  spanSelectsRange?: boolean
+  /**
+   * A short press on the overview selects that block's ledger row. Diagnosis
+   * leaves this off so the press still paints the shared brush.
+   */
+  clickSelectsRecord?: boolean
+  /** Visible window shared with the diagnosis axis and the other lanes. */
+  sharedViewport?: TrajectoryTimeRange | null
+  onSharedViewportChange?: (viewport: TrajectoryTimeRange | null) => void
+  /** Latest shared window for a wheel burst. */
+  sharedViewportRef?: RefObject<TrajectoryTimeRange | null>
+  /** How a controlled brush is drawn. Diagnosis uses a light-blue region. */
+  timelineRangeAppearance?: 'focus' | 'region'
+>>>>>>> origin/develop
   className?: string
 }
 
@@ -228,6 +281,7 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
   toolbarAddon,
   viewState,
   onOverviewActivate,
+<<<<<<< HEAD
   highlightStepKeys,
   onTimelineSelectionChange,
   clearSelectionToken = 0,
@@ -242,6 +296,24 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
   onSharedViewportChange,
   sharedViewportRef,
   timelineRangeAppearance = 'focus',
+||||||| e487e9a30
+=======
+  highlightStepKeys,
+  onTimelineSelectionChange,
+  clearSelectionToken = 0,
+  timelineRange: controlledTimelineRange,
+  onTimelineRangeChange,
+  sharedTimeDomain = null,
+  mapSharedTime,
+  userTurnGapRanges,
+  lockTimelineViewport = false,
+  spanSelectsRange = false,
+  clickSelectsRecord = false,
+  sharedViewport = null,
+  onSharedViewportChange,
+  sharedViewportRef,
+  timelineRangeAppearance = 'focus',
+>>>>>>> origin/develop
   className,
 }: TrajectoryExplorerProps) {
   const turns = snapshot?.turns ?? staticTurns
@@ -534,6 +606,7 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
             searchMatchIndexes={timelineEmphasis}
             pinnedIndexes={highlightIndexes}
             onRangeChange={setTimelineRange}
+<<<<<<< HEAD
             sharedDomain={sharedTimeDomain}
             {...(mapSharedTime === undefined ? {} : { mapTime: mapSharedTime })}
             lockViewport={lockTimelineViewport}
@@ -543,6 +616,19 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
             {...(onSharedViewportChange === undefined ? {} : { onViewportChange: onSharedViewportChange })}
             {...(sharedViewportRef === undefined ? {} : { sharedViewportRef })}
             rangeAppearance={timelineRangeAppearance}
+||||||| e487e9a30
+=======
+            sharedDomain={sharedTimeDomain}
+            {...(mapSharedTime === undefined ? {} : { mapTime: mapSharedTime })}
+            {...(userTurnGapRanges === undefined ? {} : { userTurnGapRanges })}
+            lockViewport={lockTimelineViewport}
+            spanSelectsRange={spanSelectsRange}
+            clickSelectsRecord={clickSelectsRecord}
+            sharedViewport={sharedViewport}
+            {...(onSharedViewportChange === undefined ? {} : { onViewportChange: onSharedViewportChange })}
+            {...(sharedViewportRef === undefined ? {} : { sharedViewportRef })}
+            rangeAppearance={timelineRangeAppearance}
+>>>>>>> origin/develop
             onRecordSelect={(index) => {
               preferRecordScrollRef.current = true
               if (!lockTimelineViewport) setTimelineRange(null)

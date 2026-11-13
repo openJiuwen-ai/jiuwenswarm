@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 """WebChannel RPC handlers and shared constants (used by app gateway; single source with app.py)."""
 
@@ -6251,3 +6252,5 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         channel.container_file_client = None
     # The diagnosis HTTP proxy reaches the AgentServer service through this client.
     channel.diagnosis_agent_client = real_agent_client
+=======
+>>>>>>> origin/develop

@@ -20,7 +20,8 @@ import {
   Volume2,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { contextCompressionRunningText } from '../../utils/contextCompression';
+import { contextCompressionElapsedText, contextCompressionInterruptedText, contextCompressionRunningText } from '../../utils/contextCompression';
+import { useContextCompressionElapsed } from '../../hooks/useCompressionElapsed';
 import {
   Message,
   FileDownloadItem,
@@ -49,7 +50,6 @@ import { memberNameFromMessageId } from '../../features/teamLeaderMessages';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { isTeamLeaderMember } from '../../utils/teamMemberAvatar';
 import { AgentAvatar } from '../AgentAvatar';
-import { ProactiveRecommendationCard } from './ProactiveRecommendationCard';
 import { fileArtifactId } from '../ArtifactsPanel';
 import { openArtifactPanel } from '../../features/teamPanelState';
 import { openSingleAgentPanel } from '../../features/singleAgentPanelState';
@@ -57,9 +57,14 @@ import { WebUIHost } from '../../features/webui';
 import { openFileInDesktopBrowser } from '../../features/desktopBrowserFile';
 import { executeDesktopSave, type DesktopSaveApiResult } from '../../utils/desktopSave';
 import { FileIcon } from '../FileIcon';
+import { isEnterprise } from '../../edition';
+import { fileDownloadHead, prepareFileDownload } from '../../services/fileDownload';
+import { useAgentCatalogStore } from '../../stores/agentCatalogStore';
 import skillPackageIcon from '../../assets/skill.svg';
 import { webRequest } from '../../services/webClient';
-import { useChatStore } from '../../stores/chatStore';
+import { conversationKey, useChatStore } from '../../stores/chatStore';
+import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
+import { resolveOrganizationTeamIdentity, resolveOrganizationTeamLabel } from '../../features/teamOrganization/teamIdentity';
 import {
   findReferencedAssets,
   normalizePath,
@@ -138,6 +143,7 @@ export function TeamMemberMessageFrame({
   contentClassName,
   teamLeaderIdentity,
   teamGroupIdentity,
+  sourceTeamId,
 }: {
   member?: string;
   showAvatar?: boolean;
@@ -145,9 +151,12 @@ export function TeamMemberMessageFrame({
   contentClassName?: string;
   teamLeaderIdentity?: TeamLeaderIdentity | null;
   teamGroupIdentity?: AgentGroupIdentity | null;
+  sourceTeamId?: string;
 }) {
   const { i18n } = useTranslation();
-  const activeSessionId = useOrganizationConversationKey(useChatStore((s) => s.activeSessionId));
+  const sessionId = useChatStore((s) => s.activeSessionId);
+  const selectedConversation = useOrganizationConversationKey(sessionId);
+  const activeSessionId = sourceTeamId ? conversationKey(sessionId ?? '', sourceTeamId) : selectedConversation;
   const teamMembers = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamMembers);
   // 头像旁的成员名：leader 使用显式 session identity，否则固定 Jiuwen；其他成员
   // 使用名册 display name，查不到退回 member_id。
@@ -206,6 +215,7 @@ function TeamLeaderPlainTextMessage({
   disableA2UIInteraction = false,
   teamLeaderIdentity,
   teamGroupIdentity,
+  sourceTeamId,
 }: {
   member?: string;
   content: string;
@@ -218,6 +228,7 @@ function TeamLeaderPlainTextMessage({
   disableA2UIInteraction?: boolean;
   teamLeaderIdentity?: TeamLeaderIdentity | null;
   teamGroupIdentity?: AgentGroupIdentity | null;
+  sourceTeamId?: string;
 }) {
   return (
     <TeamMemberMessageFrame
@@ -225,6 +236,7 @@ function TeamLeaderPlainTextMessage({
       showAvatar={showAvatar}
       teamLeaderIdentity={teamLeaderIdentity}
       teamGroupIdentity={teamGroupIdentity}
+      sourceTeamId={sourceTeamId}
     >
       {fileItems && fileItems.length > 0 && (
         <FileDownloadList
@@ -266,12 +278,16 @@ export function ContextCompressionLines({
   showSummary?: boolean;
 }) {
   const { t } = useTranslation();
+  const runningElapsedSeconds = useContextCompressionElapsed(runtime);
   const showRuntime = Boolean(runtime?.summary);
   const finalSummary = !runtime && showSummary && summary && summary.count > 0 ? summary : null;
   if (!showRuntime && !finalSummary) return null;
 
   const isRunning = runtime?.status === 'running';
   const isFailed = runtime?.status === 'failed';
+  // 用户暂停/取消的压缩：SDK 发 cancelled/paused（reason=user_cancel/user_pause），
+  // 按中断呈现中性文案，不进 failed 红色态。
+  const interruptedText = contextCompressionInterruptedText(t, runtime?.status);
   const summaryItems = (finalSummary?.summaries ?? []).filter(Boolean);
   const detailText = summaryItems
     .map((item, index) => `${index + 1}. ${item}`)
@@ -286,13 +302,21 @@ export function ContextCompressionLines({
             isFailed ? 'text-danger' : 'text-text-muted'
           )}
           data-testid="chat-panel-context-compression-runtime"
-          data-variant={isRunning ? 'running' : isFailed ? 'failed' : 'done'}
+          data-variant={isRunning ? 'running' : isFailed ? 'failed' : interruptedText ? 'cancelled' : 'done'}
         >
           <span className={clsx(isRunning && 'context-compression-running-text')}>
             {isRunning
               ? contextCompressionRunningText(t, runtime?.processor, runtime?.summary ?? '')
-              : runtime?.summary}
+              : interruptedText ?? runtime?.summary}
           </span>
+          {isRunning && runningElapsedSeconds !== undefined && (
+            <span
+              className="context-compression-elapsed"
+              data-testid="chat-panel-context-compression-elapsed"
+            >
+              {contextCompressionElapsedText(t, runningElapsedSeconds)}
+            </span>
+          )}
         </div>
       )}
       {finalSummary && (
@@ -311,8 +335,86 @@ export function ContextCompressionLines({
   );
 }
 
-/** 解析 content 里的 {{skill:名称}} 标记，返回 chip 与文字交织的节点数组 */
-function renderRichContent(content: string): ReactNode[] {
+/** @成员 提及匹配器：名册成员按 显示名 与 member_id 双轨匹配（输入框 @ 候选的
+ * label 就是 name || member_id），名字长的优先，避免「架构师」吃掉「系统架构师」。 */
+interface TeamMentionMatcher {
+  regex: RegExp;
+  labelToMemberId: Map<string, string>;
+}
+
+interface MentionRosterMember {
+  member_id?: string | null;
+  name?: string | null;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildTeamMentionMatcher(
+  teamMembers: MentionRosterMember[] | undefined | null,
+): TeamMentionMatcher | null {
+  if (!teamMembers?.length) return null;
+  const labelToMemberId = new Map<string, string>();
+  const labels: string[] = [];
+  for (const member of teamMembers) {
+    const memberId = member.member_id?.trim();
+    if (!memberId || memberId === 'user') continue;
+    const memberLabels = [member.name?.trim() ?? '', memberId].filter(Boolean);
+    for (const label of memberLabels) {
+      if (!labelToMemberId.has(label)) {
+        labelToMemberId.set(label, memberId);
+        labels.push(label);
+      }
+    }
+  }
+  if (!labels.length) return null;
+  labels.sort((a, b) => b.length - a.length);
+  const alternation = labels.map(escapeRegExp).join('|');
+  return { regex: new RegExp(`@(${alternation})`, 'g'), labelToMemberId };
+}
+
+/** 把纯文本段里的 @成员 渲染成提及 chip；没有匹配器时原样返回文本。 */
+function renderMentionChips(
+  text: string,
+  matcher: TeamMentionMatcher | null | undefined,
+  keyBase: string,
+): ReactNode[] {
+  if (!text) return [];
+  if (!matcher) return [text];
+  const parts: ReactNode[] = [];
+  matcher.regex.lastIndex = 0;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let seq = 0;
+  while ((match = matcher.regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+    const label = match[1];
+    parts.push(
+      <span
+        key={`${keyBase}-${seq++}`}
+        className="chat-message-mention-chip"
+        data-testid="chat-panel-message-mention-chip"
+        data-variant={label}
+      >
+        <span className="chat-message-mention-chip__label">@{label}</span>
+      </span>
+    );
+    lastIndex = matcher.regex.lastIndex;
+  }
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+  return parts;
+}
+
+/** 解析 content 里的 {{skill:名称}} 与 @成员 标记，返回 chip 与文字交织的节点数组 */
+function renderRichContent(
+  content: string,
+  mentionMatcher?: TeamMentionMatcher | null,
+): ReactNode[] {
   const parts: ReactNode[] = [];
   const regex = /\{\{skill:([^}]+)\}\}/g;
   let lastIndex = 0;
@@ -320,7 +422,9 @@ function renderRichContent(content: string): ReactNode[] {
   let key = 0;
   while ((match = regex.exec(content)) !== null) {
     if (match.index > lastIndex) {
-      parts.push(content.slice(lastIndex, match.index));
+      parts.push(
+        ...renderMentionChips(content.slice(lastIndex, match.index), mentionMatcher, `mention-${key}`),
+      );
     }
     parts.push(
       <span
@@ -336,9 +440,110 @@ function renderRichContent(content: string): ReactNode[] {
     lastIndex = regex.lastIndex;
   }
   if (lastIndex < content.length) {
-    parts.push(content.slice(lastIndex));
+    parts.push(...renderMentionChips(content.slice(lastIndex), mentionMatcher, `mention-${key}`));
   }
   return parts;
+}
+
+/** 提取 content 里被 @ 的成员 member_id（按首次出现顺序去重）。 */
+function extractMentionedMembers(content: string, matcher: TeamMentionMatcher | null): string[] {
+  if (!matcher) return [];
+  const memberIds: string[] = [];
+  const seen = new Set<string>();
+  matcher.regex.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = matcher.regex.exec(content)) !== null) {
+    const memberId = matcher.labelToMemberId.get(match[1]);
+    if (memberId && !seen.has(memberId)) {
+      seen.add(memberId);
+      memberIds.push(memberId);
+    }
+  }
+  return memberIds;
+}
+
+/** 取消息的发言成员 id：team-leader / team-member 气泡取自消息 id，team.event 取自 payload。 */
+function messageActorMemberId(message: Message): string {
+  const id = message.id ?? '';
+  if (id.startsWith('team-leader-')) return 'team_leader';
+  const memberName = memberNameFromMessageId(id);
+  if (memberName) return memberName;
+  const event = parseTeamEventMessage(message);
+  return event?.fromMember || '';
+}
+
+/**
+ * @成员「已接收待回复」占位气泡：用户消息被服务端确认（runtime.accepted 清掉
+ * isAcceptedPending）后，给被 @ 且尚未发声的成员挂一枚弹动三点的占位气泡；该成员的
+ * 第一条输出（team-member 气泡 / team.event）到达即消失。只挂在最后一条用户消息上，
+ * 新一轮发出后旧占位自然退场；会话不在处理中（历史恢复、本轮已结束）也不显示。
+ */
+function MentionReplyPending({ messageId, content }: { messageId: string; content: string }) {
+  const { t } = useTranslation();
+  const conversationId = useOrganizationConversationKey(useChatStore((s) => s.activeSessionId));
+  const teamMembers = useSessionStore((s) => s.runtimes[conversationId ?? '']?.teamMembers);
+  const messages = useChatStore((s) => s.runtimes[conversationId ?? '']?.messages);
+  const isProcessing = useChatStore((s) => Boolean(s.runtimes[conversationId ?? '']?.isProcessing));
+
+  const matcher = useMemo(() => buildTeamMentionMatcher(teamMembers), [teamMembers]);
+  const pendingMembers = useMemo(() => {
+    if (!messages || !matcher || !isProcessing) return [];
+    let index = -1;
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i].id === messageId) {
+        index = i;
+        break;
+      }
+    }
+    if (index < 0) return [];
+    // 仅最后一条用户消息挂占位：新一轮发出后，上一轮的占位自然退场。
+    for (let i = messages.length - 1; i > index; i -= 1) {
+      if (messages[i].role === 'user') return [];
+    }
+    // 服务端确认（runtime.accepted 回填 isAcceptedPending）后才出现，乐观渲染阶段不弹。
+    if (messages[index].isAcceptedPending) return [];
+    const mentioned = extractMentionedMembers(content, matcher);
+    if (!mentioned.length) return [];
+    const replied = new Set<string>();
+    for (let i = index + 1; i < messages.length; i += 1) {
+      const actor = messageActorMemberId(messages[i]);
+      if (actor) replied.add(actor);
+    }
+    return mentioned.filter((memberId) => !replied.has(memberId));
+  }, [content, isProcessing, matcher, messageId, messages]);
+
+  if (!pendingMembers.length) return null;
+
+  return (
+    <div
+      className="mention-reply-pending animate-fade-in"
+      data-testid="chat-panel-mention-reply-pending"
+    >
+      {pendingMembers.map((memberId) => (
+        <div
+          key={memberId}
+          className="mention-reply-pending__item"
+          data-testid="chat-panel-mention-reply-pending-item"
+          data-variant={memberId}
+        >
+          <TeamMemberAvatar member={memberId} />
+          <div className="mention-reply-pending__stack">
+            <span className="chat-avatar-name">
+              {teamMembers?.find((item) => item.member_id === memberId)?.name?.trim() || memberId}
+            </span>
+            <span className="mention-reply-pending__bubble">
+              <span className="mention-reply-pending__dots" aria-hidden="true">
+                <i />
+                <i />
+                <i />
+              </span>
+              <span className="mention-reply-pending__text">{t('chatUi.processing')}</span>
+            </span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export function getMessageActor(message: Message): string | null {
@@ -391,6 +596,7 @@ export const MessageItem = memo(function MessageItem({
   onForkFromMessage,
 }: MessageItemProps) {
   const { t } = useTranslation();
+  const agentCatalog = useAgentCatalogStore((state) => state.catalog);
   const {
     id,
     role,
@@ -419,11 +625,30 @@ export const MessageItem = memo(function MessageItem({
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const { tooltip, handlers: tooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
   const activeSessionId = useChatStore((state) => state.activeSessionId);
+  const sourceTeam = useTeamSelectorStore((state) => state.runtimes[activeSessionId ?? '']?.teams
+    .find((team) => team.team_id === message.sourceTeamId));
+  const sourceGroupSnapshot = useSessionStore((state) => message.sourceTeamId
+    ? state.runtimes[conversationKey(activeSessionId ?? '', message.sourceTeamId)]?.teamGroupIdentity : null);
+  const sourceGroupIdentity = message.sourceTeamId
+    ? resolveOrganizationTeamIdentity(sourceTeam, [], sourceGroupSnapshot) : null;
+  const sourceTeamLabel = message.sourceTeamId
+    ? resolveOrganizationTeamLabel(sourceTeam, [], message.sourceTeamId) : '';
   // 任务素材（@名称 引用）：素材存在后端，历史消息里只有 @名称 文本。
   // 渲染用户气泡时按名称解析成缩略图，这样刷新/重进会话依然能看到素材。
   const sessionAssets = useSessionAssetsStore(selectSessionAssets(activeSessionId));
   const sessionTeamLeaderIdentity = useConversationLeaderIdentity(activeSessionId);
   const teamLeaderIdentity = teamLeaderIdentityOverride ?? sessionTeamLeaderIdentity;
+  // @成员提及：用户气泡内高亮 chip 与「待回复」占位气泡共用一份名册匹配器
+  // （成员名按 显示名/member_id 双轨、最长优先匹配，见 buildTeamMentionMatcher）。
+  const mentionConversationId = useOrganizationConversationKey(activeSessionId);
+  const teamMembers = useSessionStore((s) => s.runtimes[mentionConversationId ?? '']?.teamMembers);
+  const mentionMatcher = useMemo(
+    () =>
+      role === 'user' && content?.includes('@')
+        ? buildTeamMentionMatcher(teamMembers)
+        : null,
+    [content, role, teamMembers],
+  );
 
   // TTS
   const { isSpeaking, speak, stop, isSupported: ttsSupported } = useSpeechSynthesis({
@@ -541,25 +766,6 @@ export const MessageItem = memo(function MessageItem({
       stop();
     });
   }, [stopGeneratedAudio, stop]);
-
-  // 主动推荐消息 - 使用特殊卡片样式。外层沿用正常 agent 回复的布局（avatar 占位
-  // + gap + chat-bubble-wrapper），使卡片左右边缘与回复正文气泡对齐，避免卡片
-  // 左缘超出回复列。
-  if (message.isProactiveRecommendation) {
-    const withAssistantAvatar = enableAssistantAvatar;
-    return (
-      <div className={clsx('flex animate-rise justify-start', withAssistantAvatar && 'assistant-row')} data-testid="chat-panel-proactive-row">
-        {withAssistantAvatar && (
-          <div className="assistant-row__avatar" aria-hidden={!showAvatar} data-testid="chat-panel-proactive-avatar">
-            {showAvatar ? <TeamMemberAvatar member="team_leader" /> : null}
-          </div>
-        )}
-        <div className="chat-bubble-wrapper  min-w-0 flex-1" data-testid="chat-panel-proactive-bubble-wrapper">
-          <ProactiveRecommendationCard message={message} />
-        </div>
-      </div>
-    );
-  }
 
   // 工具调用/结果消息
   if (role === 'tool') {
@@ -699,6 +905,13 @@ export const MessageItem = memo(function MessageItem({
 	           // 面向用户的团队消息直接展示在主会话
 	           if (event.isLeaderToUser || isTeamP2PMessageToUser(event)) {
 	             return (
+	               <div data-testid="chat-panel-user-directed-team-message" data-variant={message.sourceTeamId}>
+                     {message.sourceTeamId && (
+                       <div className="mb-1 text-xs font-medium text-text-muted"
+                         data-testid="chat-panel-message-source-team" data-variant={message.sourceTeamId}>
+                         {sourceTeamLabel}
+                       </div>
+                     )}
 	               <TeamLeaderPlainTextMessage
 	                 member={event.fromMember}
 	                 content={event.content}
@@ -707,9 +920,12 @@ export const MessageItem = memo(function MessageItem({
 	                 isStreaming={isStreaming}
 	                 hideMeta={hideMeta}
 	                 showAvatar={showAvatar}
-	                 teamLeaderIdentity={teamLeaderIdentity}
-	                 teamGroupIdentity={teamGroupIdentityOverride}
+	                 teamLeaderIdentity={message.sourceTeamId
+                       ? { agentTemplateId: '', displayName: sourceTeamLabel } : teamLeaderIdentity}
+	                 teamGroupIdentity={message.sourceTeamId ? sourceGroupIdentity : teamGroupIdentityOverride}
+                     sourceTeamId={message.sourceTeamId}
 	               />
+	               </div>
 	             );
 	           }
 	           
@@ -856,7 +1072,8 @@ export const MessageItem = memo(function MessageItem({
     ? hasDisplayText || isStreaming
     : Boolean(content) || Boolean(visibleMediaItems) || Boolean(visibleFileItems);
   const showFork = Boolean(
-    onForkFromMessage &&
+    !isEnterprise() &&
+      onForkFromMessage &&
       !isStreaming &&
       (role === 'user' || role === 'assistant') &&
       hasBubbleContent
@@ -890,6 +1107,13 @@ export const MessageItem = memo(function MessageItem({
         )}
         data-testid="chat-panel-bubble-wrapper"
       >
+        {!isUser && message.agentTemplateName && (
+          <div className="chat-message-expert">
+            {agentCatalog?.find(
+              (item) => item.id === message.agentTemplateName || item.runtimePackageName === message.agentTemplateName,
+            )?.displayName || message.agentTemplateName}
+          </div>
+        )}
         {!isUser && (
           <div className="hidden" data-testid="chat-panel-thinking-summary" aria-hidden="true" />
         )}
@@ -931,7 +1155,7 @@ export const MessageItem = memo(function MessageItem({
                 {isUser ? (
                   hasDisplayText ? (
                     <div className="chat-text" data-testid="chat-panel-message-text">
-                      <span className="whitespace-pre-wrap">{renderRichContent(displayContent)}</span>
+                      <span className="whitespace-pre-wrap">{renderRichContent(displayContent, mentionMatcher)}</span>
                     </div>
                   ) : null
                 ) : (
@@ -1084,6 +1308,11 @@ export const MessageItem = memo(function MessageItem({
             ) : null}
           </div>
         )}
+
+        {/* @成员「已接收待回复」占位：仅在用户消息命中名册成员时渲染，内部自订阅消息流。 */}
+        {isUser && mentionMatcher && !isStreaming && (
+          <MentionReplyPending messageId={id} content={displayContent} />
+        )}
       </div>
     </div>
   );
@@ -1127,7 +1356,7 @@ function getSavedSkillTokens(): Set<string> {
   } catch { return new Set<string>(); }
 }
 
-function FileDownloadList({
+export function FileDownloadList({
   files,
   className,
   onPreview,
@@ -1148,14 +1377,25 @@ function FileDownloadList({
     let cancelled = false;
     files.forEach((file, index) => {
       if (!file.download_url) return;
+<<<<<<< HEAD
       gatewayFetch(file.download_url, { method: 'HEAD' })
+||||||| e487e9a30
+      fetch(file.download_url, { method: 'HEAD' })
+=======
+      fileDownloadHead(file.download_url)
+>>>>>>> origin/develop
         .then((res) => {
-          if (!cancelled && !res.ok) {
-            setExpiredSet((prev) => new Set(prev).add(index));
+          if (!cancelled) {
+            setExpiredSet((prev) => {
+              const next = new Set(prev);
+              if (res.ok && isEnterprise()) next.delete(index);
+              else if (!res.ok && (!isEnterprise() || [403, 404, 410].includes(res.status))) next.add(index);
+              return next;
+            });
           }
         })
         .catch(() => {
-          if (!cancelled) {
+          if (!cancelled && !isEnterprise()) {
             setExpiredSet((prev) => new Set(prev).add(index));
           }
         });
@@ -1177,11 +1417,19 @@ function FileDownloadList({
 
   const handleDownload = async (file: FileDownloadItem, index: number) => {
     if (expiredSet.has(index) || !file.download_url) return;
+<<<<<<< HEAD
     if (needsGatewayResource(file.download_url)) {
       try { await downloadGatewayResource(file.download_url, file.name || 'download'); }
       catch { window.alert(t('artifacts.downloadFailed', { name: file.name })); }
       return;
     }
+||||||| e487e9a30
+=======
+    if (isEnterprise() && !(await prepareFileDownload(file.download_url))) {
+      window.alert(t('artifacts.downloadFailed', { name: file.name }));
+      return;
+    }
+>>>>>>> origin/develop
 
     const pywebviewApi = (window as Window & { pywebview?: { api?: { download_file?: (url: string, filename: string) => DesktopSaveApiResult } } }).pywebview?.api;
     if (pywebviewApi?.download_file) {
@@ -1206,7 +1454,7 @@ function FileDownloadList({
     const downloadToken = resolveFileDownloadToken(file);
     if (!downloadToken) return;
     if (!sessionId) {
-      window.alert('当前无活跃会话，无法保存 Skill');
+      window.alert(t('chatUi.saveSkillNoSession'));
       return;
     }
 
@@ -1226,7 +1474,7 @@ function FileDownloadList({
     } catch (error) {
       if (isImportOverwriteRequired(error)) {
         const errorMsg = error instanceof Error ? error.message : String(error);
-        const overwrite = window.confirm(`${errorMsg}\n是否覆盖保存？`);
+        const overwrite = window.confirm(t('chatUi.saveSkillOverwriteConfirm', { message: errorMsg }));
         if (!overwrite) return;
         try {
           await webRequest('skills.import_local', importParams(true));
@@ -1322,7 +1570,7 @@ function FileDownloadList({
             {isSkill ? (
               <div className="flex-shrink-0 flex items-center gap-2">
                 {saveSuccessIndex === index && (
-                  <span className="text-xs font-medium text-green-600 whitespace-nowrap">保存成功</span>
+                  <span className="text-xs font-medium text-green-600 whitespace-nowrap">{t('chatUi.saveSkillSuccess')}</span>
                 )}
                 <button
                   type="button"
@@ -1339,9 +1587,9 @@ function FileDownloadList({
                     event.stopPropagation();
                     void handleSaveSkill(file, index);
                   }}
-                  title={isSaved ? '已保存' : '保存'}
+                  title={isSaved ? t('chatUi.saveSkillSaved') : t('chatUi.saveSkill')}
                 >
-                  {isSaving ? '保存中...' : isSaved ? '已保存' : '保存'}
+                  {isSaving ? t('chatUi.saveSkillSaving') : isSaved ? t('chatUi.saveSkillSaved') : t('chatUi.saveSkill')}
                 </button>
               </div>
             ) : (

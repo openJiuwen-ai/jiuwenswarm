@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 """Pure, platform-independent route selection. No application-name exceptions."""
 from dataclasses import dataclass, field, replace
 from typing import NoReturn
@@ -215,3 +216,5 @@ def choose(facts: Facts, intent: Intent, policy: HostPolicy, attempts: Attempts,
         detail += " " + " ".join(reasons)
     refuse("input_unavailable", facts, detail,
            "read the current target; foreground assistance or an independent desktop may be required")
+=======
+>>>>>>> origin/develop

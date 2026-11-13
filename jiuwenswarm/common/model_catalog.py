@@ -9,9 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from agent_gateway.common.model_selection import ModelSelection
+
 from jiuwenswarm.common.config import get_config, load_models_config
 from jiuwenswarm.common.model_errors import MODEL_RUNTIME_UNAVAILABLE, MODEL_SELECTION_NOT_FOUND, ModelSelectionError
-from jiuwenswarm.common.model_selection import ModelSelection
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,7 @@ class ModelCatalog:
                 return group
         raise ModelSelectionError(MODEL_SELECTION_NOT_FOUND, f"unknown model_group_id {group_id!r}")
 
+<<<<<<< HEAD
     def has_selection(self, selection: ModelSelection) -> bool:
         """Whether a saved selection still names a model, group, and route."""
         if selection.type == "model":
@@ -111,6 +113,32 @@ class ModelCatalog:
             )
         return False
 
+||||||| e487e9a30
+=======
+    def group_display_name(self, group_id: str) -> str:
+        """A model group's display name, falling back to its id.
+
+        The single naming source for every surface that names a model group
+        (runtime state file, team pool metadata, runtime prompt): falling
+        back to the id keeps a catalog miss from ever failing the caller.
+        """
+        group = self.get_group(group_id)
+        return str(group.get("display_name") or "").strip() or group_id
+
+    def has_selection(self, selection: ModelSelection) -> bool:
+        """Whether a saved selection still names a model, group, and route."""
+        if selection.type == "model":
+            return selection.id in self.snapshot["by_id"]
+        for group in self.snapshot["groups"]:
+            if not isinstance(group, dict) or group.get("model_group_id") != selection.id:
+                continue
+            return selection.route_id is None or any(
+                isinstance(route, dict) and route.get("route_id") == selection.route_id
+                for route in group.get("routes") or []
+            )
+        return False
+
+>>>>>>> origin/develop
     @staticmethod
     def _safe_model(entry: dict[str, Any], source: str) -> dict[str, Any]:
         mcc = entry.get("model_client_config") or {}
@@ -141,6 +169,7 @@ class ModelCatalog:
 
         hit = self.get_model(model_id)
         entry = deepcopy(hit["entry"])
+<<<<<<< HEAD
         expose_api_key = include_api_key and hit["source"] == "defaults" and not is_login_model(entry)
         model_config = entry.get("model_config_obj")
         if isinstance(model_config, dict) and isinstance(model_config.get("reasoning_level"), bool):
@@ -151,6 +180,20 @@ class ModelCatalog:
         client["model_name"] = str(client.get("model_name") or "")
         client["api_base"] = str(client.get("api_base") or "")
         entry["model_client_config"] = client
+||||||| e487e9a30
+        client = entry.get("model_client_config")
+=======
+        model_config = entry.get("model_config_obj")
+        if isinstance(model_config, dict) and isinstance(model_config.get("reasoning_level"), bool):
+            model_config["reasoning_level"] = "on" if model_config["reasoning_level"] else "off"
+        expose_api_key = include_api_key and hit["source"] == "defaults" and not is_login_model(entry)
+        client = entry.get("model_client_config") or {}
+        # The edit dialog requires these strings even for an empty YAML model.
+        # Normalize only the response; retain the original persisted values.
+        client["model_name"] = str(client.get("model_name") or "")
+        client["api_base"] = str(client.get("api_base") or "")
+        entry["model_client_config"] = client
+>>>>>>> origin/develop
         write_only_fields: list[str] = []
         if isinstance(client, dict):
             if "api_key" in client and not expose_api_key:

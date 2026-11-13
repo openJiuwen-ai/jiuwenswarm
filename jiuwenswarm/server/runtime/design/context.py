@@ -107,7 +107,13 @@ class StoreNodeSpawner:
         graph = self._store.get_graph(self._graph_id)
         result = await coordinator.start(graph, node_ids=[node_id])
         state = (result.get("node_states") or {}).get(node_id) or {}
+<<<<<<< HEAD
         return str(state.get("text") or state.get("error") or "")
+||||||| e487e9a30
+        return str(state.get("candidate_text") or state.get("text") or state.get("error") or "")
+=======
+        return str(state.get("text") or state.get("error") or result.get("error") or "")
+>>>>>>> origin/develop
 
     async def run_graph(
         self,
@@ -162,6 +168,7 @@ class StoreNodeSpawner:
         )
 
         updated = apply_graph_patch(graph, patch)
+<<<<<<< HEAD
         mark_story_prompt_edits(graph, updated)
         mark_clip_prompt_edits(graph, updated)
         return self._save_and_push(graph_id, updated)
@@ -198,6 +205,47 @@ class StoreNodeSpawner:
         self, graph_id: str, graph: DesignerExecutionGraph
     ) -> DesignerExecutionGraph:
         saved = self._store.save_graph(graph)
+||||||| e487e9a30
+        saved = self._store.save_graph(updated)
+=======
+        mark_story_prompt_edits(graph, updated)
+        mark_clip_prompt_edits(graph, updated)
+        return self._save_and_push(graph_id, updated)
+
+    async def apply_story_edit(self, edit: str) -> tuple[DesignerExecutionGraph, list[str]]:
+        """Revise the approved brief / cast / storyboard to follow a story-wide edit."""
+        from jiuwenswarm.server.runtime.designer.model_tools import (
+            preferred_designer_model_ref,
+            use_preferred_designer_model,
+        )
+        from jiuwenswarm.server.runtime.designer.story_edit import (
+            apply_story_edit,
+            has_approved_story,
+        )
+
+        if self._coordinator_provider().is_active():
+            raise RuntimeError(
+                "a trigger is executing on this graph: wait for it to finish "
+                "before editing the story"
+            )
+        graph = self._store.get_graph(self._graph_id)
+        if graph is None:
+            raise ValueError(f"designer graph not found: {self._graph_id!r}")
+        if not has_approved_story(graph):
+            raise ValueError(
+                "this graph has no Director-approved brief or storyboard; "
+                "edit the node prompts with designer_graph_patch instead"
+            )
+        preferred_model = preferred_designer_model_ref(graph)
+        with use_preferred_designer_model(preferred_model):
+            changed = await apply_story_edit(graph, edit)
+        return self._save_and_push(self._graph_id, graph), changed
+
+    def _save_and_push(
+        self, graph_id: str, graph: DesignerExecutionGraph
+    ) -> DesignerExecutionGraph:
+        saved = self._store.save_graph(graph)
+>>>>>>> origin/develop
         if self._on_graph_update is not None:
             try:
                 self._on_graph_update(dict(saved))

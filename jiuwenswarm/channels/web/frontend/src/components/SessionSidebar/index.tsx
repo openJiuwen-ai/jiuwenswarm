@@ -16,8 +16,19 @@ import SkillDesignIcon from '../../assets/agent-management/agent-skill.svg?react
 import AgentDesignIcon from '../../assets/智能体.svg?react';
 import PluginIcon from '../../assets/agent-management/extension.svg?react';
 import type { SidebarNavKey } from '../../utils/frontendPlatform';
+<<<<<<< HEAD
 import type { ApplicationPluginContribution, ApplicationPluginNavKey } from '../../applicationPlugins/types';
 import { WebUIHost, WebUINavigationHost, type WebUIStyleOverrides } from '../../features/webui';
+||||||| e487e9a30
+import type { ApplicationPluginContribution, ApplicationPluginNavKey } from '../../applicationPlugins/types';
+=======
+import type {
+  ApplicationPluginContribution,
+  ApplicationPluginNavKey,
+} from '../../applicationPlugins/types';
+import { EnterpriseContextSwitcher } from './EnterpriseContextSwitcher';
+import { JiuwenMateModeSwitch } from '../../features/jiuwenmate/components/JiuwenMateModeSwitch';
+>>>>>>> origin/develop
 
 const pluginNavigationStyles: WebUIStyleOverrides = {
   Button: {
@@ -43,7 +54,13 @@ interface SessionSidebarProps {
   applicationPlugins?: ApplicationPluginContribution[];
   /** 导航图标 hover 变化：进入传 key、移出传 null（multi-session 侧栏收起态的 hover 预览用） */
   onNavItemHover?: (key: MainNavKey | null) => void;
+<<<<<<< HEAD
   onNavItemPointerDownCapture?: (key: MainNavKey) => void;
+||||||| e487e9a30
+=======
+  onNavItemPointerDownCapture?: (key: MainNavKey) => void;
+  onToggleJiuwenMate?: () => void;
+>>>>>>> origin/develop
 }
 
 interface NavItem {
@@ -117,7 +134,13 @@ export function SessionSidebar({
   hiddenNavItems = [],
   applicationPlugins = [],
   onNavItemHover,
+<<<<<<< HEAD
   onNavItemPointerDownCapture,
+||||||| e487e9a30
+=======
+  onNavItemPointerDownCapture,
+  onToggleJiuwenMate,
+>>>>>>> origin/develop
 }: SessionSidebarProps) {
   const { t } = useTranslation();
   const footerMountOptions = useMemo(() => ({ notifyReady: webUIReady }), [webUIReady]);
@@ -197,10 +220,22 @@ export function SessionSidebar({
         styles={pluginNavigationStyles}
       />
       <div className="icon-rail-spacer" />
+<<<<<<< HEAD
       <WebUIHost slotId="application.sidebar.footer" sessionId=""
         mountOptions={footerMountOptions}
         className="w-full shrink-0 items-center pb-3" instanceClassName="flex justify-center"
       />
+||||||| e487e9a30
+=======
+      {onToggleJiuwenMate ? (
+        <JiuwenMateModeSwitch
+          active={false}
+          label={t('jiuwenmate.mode.enter')}
+          onToggle={onToggleJiuwenMate}
+        />
+      ) : null}
+      <EnterpriseContextSwitcher />
+>>>>>>> origin/develop
     </aside>
   );
 }

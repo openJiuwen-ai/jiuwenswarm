@@ -41,6 +41,7 @@ def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+<<<<<<< HEAD
 @pytest.mark.parametrize("backend", ["server.runtime", "gateway.embedded.runtime"])
 @pytest.mark.parametrize("identity", [{}, {"session_id": None}, {"session_id": ""}])
 @pytest.mark.parametrize("reader", ["single", "paged", "aggregate"])
@@ -78,6 +79,46 @@ def test_partial_metadata_readers_restore_identity_without_writing(tmp_path, mon
     assert path.read_text(encoding="utf-8") == original
 
 
+||||||| e487e9a30
+=======
+@pytest.mark.parametrize("backend", ["server.runtime"])
+@pytest.mark.parametrize("identity", [{}, {"session_id": None}, {"session_id": ""}])
+@pytest.mark.parametrize("reader", ["single", "paged", "aggregate"])
+def test_partial_metadata_readers_restore_identity_without_writing(tmp_path, monkeypatch, backend, identity, reader):
+    metadata = import_module(f"jiuwenswarm.{backend}.session.session_metadata")
+    lifecycle = import_module(f"jiuwenswarm.{backend}.session.lifecycle")
+    monkeypatch.setattr(metadata, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(lifecycle, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(metadata, "_build_project_lookup", lambda: ({}, {}))
+    session_dir = tmp_path / "partial-session"
+    session_dir.mkdir()
+    original = json.dumps({
+        **identity,
+        "title": "Partial session",
+        "project_id": "default",
+        "work_mode": "work",
+        "last_user_message_at": 1,
+    })
+    path = session_dir / "metadata.json"
+    path.write_text(original, encoding="utf-8")
+
+    if reader == "single":
+        loaded = metadata.get_session_metadata("partial-session", cache_bust=True, enable_writeback=False)
+    elif reader == "paged":
+        sessions, total = metadata.get_all_sessions_metadata()
+        assert total == 1
+        loaded = sessions[0]
+    else:
+        sessions = metadata._collect_all_sessions_metadata()
+        assert len(sessions) == 1
+        loaded = sessions[0]
+
+    assert loaded["session_id"] == "partial-session"
+    assert loaded["title"] == "Partial session"
+    assert path.read_text(encoding="utf-8") == original
+
+
+>>>>>>> origin/develop
 # ===========================================================================
 # _auto_title
 # ===========================================================================
@@ -109,6 +150,49 @@ class TestAutoTitle:
 
         assert _auto_title("") == ""
         assert _auto_title("   ") == ""
+
+
+@pytest.mark.parametrize("initialized", [True, False], ids=["existing-session", "implicit-create"])
+@pytest.mark.parametrize(
+    ("user_content", "expected_title"),
+    [
+        ("/debug 帮我写一个排序算法", "帮我写一个排序算法"),
+        (" \t/debug\nhello\nworld  ", "hello world"),
+        (
+            '<system-reminder>plan guidance</system-reminder>\n'
+            '<file-content path="notes.txt">context</file-content>\n/debug hello',
+            "hello",
+        ),
+        ("/debug " + "a" * 60, "a" * 50 + "..."),
+        ("explain /debug flag", "explain /debug flag"),
+        ("/debugfoo hello", "/debugfoo hello"),
+        ("/debug", "/debug"),
+        ("/debug   ", "/debug"),
+        ("ordinary message", "ordinary message"),
+    ],
+    ids=[
+        "debug", "whitespace", "injected-tags", "truncate", "literal",
+        "lookalike", "bare", "bare-spaces", "ordinary",
+    ],
+)
+def test_auto_title_strips_only_debug_directive(sessions_dir, initialized, user_content, expected_title):
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        init_session_metadata,
+        update_session_metadata,
+    )
+
+    session_id = "sess_debug_title"
+    if initialized:
+        init_session_metadata(session_id=session_id)
+
+    update_session_metadata(
+        session_id=session_id,
+        user_content=user_content,
+        sync_write=True,
+    )
+
+    data = json.loads((sessions_dir / session_id / "metadata.json").read_text(encoding="utf-8"))
+    assert data["title"] == expected_title
 
 
 # ===========================================================================
@@ -1994,7 +2078,7 @@ class _FakeWebChannel:
         self.methods: dict[str, object] = {}
         self.responses: list[dict] = []
 
-    def register_method(self, name, handler):
+    def register_method(self, name, handler, **kwargs):
         self.methods[name] = handler
 
     def on_connect(self, handler):
@@ -2015,7 +2099,7 @@ class _FakeWebChannel:
 @pytest.fixture()
 def registered_channel(sessions_dir):
     """注册所有 web handler，返回 _FakeWebChannel（含 session.get_metadata）"""
-    from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+    from agent_gateway.channel_manager.web.app_web_handlers import (
         WebHandlersBindParams,
         _register_web_handlers,
     )
@@ -3030,7 +3114,8 @@ class TestRebindSessionProjectConcurrency:
         item_sid, _meta, options = captured[0]
         assert item_sid == sid
         assert options.rebind_gen_at_enqueue == 0
-        assert options.merge_fields is None
+        # A no-op update owns no fields; it must not replace a cross-process snapshot.
+        assert options.merge_fields == frozenset()
 
         # rebind: bump gen
         _bump_rebind_gen(sid)
@@ -3286,6 +3371,7 @@ class TestCanonicalModeBoundary:
         meta = get_session_metadata("s_code_team")
         assert meta["mode"] == "team.code.normal"
         assert "wire_mode" not in meta
+<<<<<<< HEAD
 
 
 class TestGetAllSessionsMetadataLifecycleVisibility:
@@ -3355,3 +3441,145 @@ def test_owner_stop_persists_without_changing_session_activity_or_other_metadata
     set_owner_stopped("owner-stop", False)
     assert not owner_is_stopped("owner-stop", "owner")
 
+||||||| e487e9a30
+=======
+
+
+class TestGetAllSessionsMetadataLifecycleVisibility:
+    """Archive/delete are accepted before their directory changes, so the flat
+    active list must already hide them (otherwise a slow or abandoned cleanup
+    keeps a deleted Session visible forever)."""
+
+    @staticmethod
+    def test_hides_logically_deleted_and_archived(sessions_dir, monkeypatch):
+        from jiuwenswarm.server.runtime.session import lifecycle as lc
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_all_sessions_metadata,
+            init_session_metadata,
+        )
+
+        for sid in ("live", "gone", "archived", "archiving"):
+            init_session_metadata(session_id=sid, channel_id="web")
+
+        def fake_state(kind, resource_id):
+            if kind != "session":
+                return {}
+            if resource_id == "gone":
+                return {"deleted": True}
+            if resource_id == "archived":
+                return {
+                    "operation": {"kind": "archive", "status": "completed"},
+                }
+            if resource_id == "archiving":
+                return {
+                    "operation": {"kind": "archive", "status": "running"},
+                }
+            return {}
+
+        monkeypatch.setattr(lc, "state", fake_state)
+        # A completed archive lives in sessions_archived; the existing path
+        # check hides it.  Keep the pending one only in the active area.
+        (sessions_dir.parent / "sessions_archived" / "archived").mkdir(parents=True)
+        monkeypatch.setattr(
+            lc,
+            "session_paths",
+            lambda sid, sessions_root=None: (
+                sessions_dir / sid,
+                sessions_dir.parent / "sessions_archived" / sid,
+            ),
+        )
+
+        sessions, total = get_all_sessions_metadata()
+        assert total == 1
+        assert [item["session_id"] for item in sessions] == ["live"]
+
+
+def test_group_conversation_type_is_persistent_and_independent_of_mode(sessions_dir):
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        init_session_metadata, update_session_metadata, get_session_metadata,
+    )
+    from jiuwenswarm.server.runtime.session.session_info import to_session_info
+
+    init_session_metadata(session_id="group-type", mode="team.work.normal")
+    assert get_session_metadata("group-type")["type"] == "chat"
+    update_session_metadata(
+        session_id="group-type", conversation_type="group_chat", group_members=[], sync_write=True,
+    )
+    update_session_metadata(session_id="group-type", user_content="hello", sync_write=True)
+    raw = _read_json(sessions_dir / "group-type" / "metadata.json")
+    assert raw["type"] == "group_chat" and raw["mode"] == "team.work.normal"
+    assert to_session_info(raw)["type"] == "group_chat"
+    with pytest.raises(ValueError, match="cannot be changed"):
+        update_session_metadata(session_id="group-type", conversation_type="chat", sync_write=True)
+
+
+@pytest.mark.parametrize("marker", ["roster", "manifest"])
+def test_legacy_group_type_is_inferred_for_single_and_list_reads(sessions_dir, marker):
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        init_session_metadata, get_session_metadata, get_all_sessions_metadata, remove_session_metadata_cache,
+    )
+
+    session_id = f"legacy-group-{marker}"
+    init_session_metadata(session_id=session_id, channel_id="web", mode="team.work.normal")
+    directory = sessions_dir / session_id
+    path = directory / "metadata.json"
+    raw = _read_json(path)
+    raw.pop("type", None)
+    if marker == "roster":
+        raw["group_members"] = []
+    else:
+        (directory / "group.json").write_text("{}", encoding="utf-8")
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    remove_session_metadata_cache(session_id)
+    assert get_session_metadata(session_id, enable_writeback=False)["type"] == "group_chat"
+    assert "type" not in _read_json(path)
+    listed, _ = get_all_sessions_metadata(limit=50, offset=0)
+    assert next(item for item in listed if item["session_id"] == session_id)["type"] == "group_chat"
+
+
+def test_stale_ordinary_metadata_write_cannot_downgrade_group(sessions_dir, monkeypatch):
+    from jiuwenswarm.server.runtime.session import session_metadata as metadata
+
+    metadata.init_session_metadata(session_id="stale-group")
+    stale = _read_json(sessions_dir / "stale-group" / "metadata.json")
+    metadata.update_session_metadata(session_id="stale-group", conversation_type="group_chat", sync_write=True)
+    monkeypatch.setattr(metadata, "_read_metadata", lambda *args, **kwargs: dict(stale))
+    metadata.update_session_metadata(session_id="stale-group", title="New title", sync_write=True)
+    raw = _read_json(sessions_dir / "stale-group" / "metadata.json")
+    assert raw["type"] == "group_chat" and raw["title"] == "New title"
+
+
+def test_session_info_does_not_confuse_team_mode_with_group_type():
+    from jiuwenswarm.server.runtime.session.session_info import to_session_info
+
+    assert to_session_info({"mode": "team.work.normal"})["type"] == "chat"
+    assert to_session_info({"mode": "agent.work.normal"})["type"] == "chat"
+    assert to_session_info({"group_members": []})["type"] == "group_chat"
+
+
+def test_session_equipment_survives_full_metadata_write(sessions_dir):
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        _enqueue_write,
+        get_session_equipment,
+        get_session_metadata,
+        init_session_metadata,
+        save_session_equipment,
+    )
+
+    init_session_metadata(
+        session_id="sess_expert",
+        channel_id="web",
+        user_id="user_1",
+        title="expert",
+    )
+    save_session_equipment("sess_expert", agent_template_name="pkg-a")
+    assert get_session_equipment("sess_expert")["agent_template_name"] == "pkg-a"
+
+    current = dict(get_session_metadata("sess_expert", cache_bust=True, enable_writeback=False))
+    current.pop("session_equipment", None)
+    current["title"] = "renamed"
+    _enqueue_write("sess_expert", current, sync_write=True, preserve_equipment=True)
+
+    assert get_session_equipment("sess_expert", cache_bust=True)["agent_template_name"] == "pkg-a"
+    assert _read_json(sessions_dir / "sess_expert" / "metadata.json")["title"] == "renamed"
+>>>>>>> origin/develop

@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
 """BaseWsChannel —— WebSocket 类 Channel 共享基类。
@@ -445,3 +446,5 @@ class BaseWsChannel(BaseWebChannel):
             await asyncio.wait_for(ws.send(data), timeout=5.0)
         except Exception as e:
             logger.debug("safe_send ignored ws.send error: %s", e)
+=======
+>>>>>>> origin/develop

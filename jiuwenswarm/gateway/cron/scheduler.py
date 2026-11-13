@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 from __future__ import annotations
 
 import asyncio
@@ -2541,3 +2542,5 @@ class CronSchedulerService:
             app_id=_msg_app_id,
         )
         await self._message_handler.publish_robot_messages(msg)
+=======
+>>>>>>> origin/develop

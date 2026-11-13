@@ -123,18 +123,41 @@ def parse_action(raw_content: str) -> dict[str, str]:
     delegation_match = _DELEGATION_MARKER.search(raw)
     response_match = _RESPONSE_MARKER.search(raw)
     if (
+<<<<<<< HEAD
         response_match is None
         or response_match.start() != 0
         or len(_RESPONSE_MARKER.findall(raw)) != 1
         or len(_DELEGATION_MARKER.findall(raw)) > 1
         or _SILENCE_MARKER.search(raw)
+||||||| e487e9a30
+        delegation_match
+        and response_match
+        and _markers_on_same_line(raw, response_match, delegation_match)
+=======
+        response_match is None
+        or response_match.start() != 0
+        or len(_RESPONSE_MARKER.findall(raw)) != 1
+>>>>>>> origin/develop
     ):
+<<<<<<< HEAD
         raise ValueError("JoyAI returned an invalid action protocol")
     response_end = delegation_match.start() if delegation_match else len(raw)
     response = raw[response_match.end():response_end].strip()
     if not response or _TASK_CALL_MARKER.search(response):
         raise ValueError("JoyAI returned an empty response or tool JSON outside delegation")
     if delegation_match:
+||||||| e487e9a30
+        response = _RESPONSE_MARKER.sub("", raw[:delegation_match.start()], count=1).strip()
+=======
+        raise ValueError("JoyAI returned an invalid action protocol")
+    if len(_DELEGATION_MARKER.findall(raw)) > 1 or _SILENCE_MARKER.search(raw):
+        raise ValueError("JoyAI returned an invalid action protocol")
+    response_end = delegation_match.start() if delegation_match else len(raw)
+    response = raw[response_match.end():response_end].strip()
+    if not response or _TASK_CALL_MARKER.search(response):
+        raise ValueError("JoyAI returned an empty response or tool JSON outside delegation")
+    if delegation_match:
+>>>>>>> origin/develop
         delegation = raw[delegation_match.end():].strip()
         if not delegation:
             raise ValueError("JoyAI returned an empty delegation")

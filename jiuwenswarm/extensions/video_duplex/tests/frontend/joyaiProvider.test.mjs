@@ -78,6 +78,7 @@ test('voice-only turns reach JoyAI before and after screen sharing without idle 
 });
 
 const brief = { status: 'completed', summary: '代码已生成，详情见界面。', source: 'core_agent' };
+<<<<<<< HEAD
 
 test('queue manager receipt text reaches both chat and speech without creating a task', async (t) => {
   const answers = [];
@@ -263,6 +264,194 @@ test('a late rate limit from a stopped session cannot throttle its replacement',
   assert.equal(h.requests.length, 3);
 });
 
+||||||| e487e9a30
+=======
+
+test('queue manager receipt text reaches both chat and speech without creating a task', async (t) => {
+  const answers = [];
+  const speech = [];
+  const requests = [];
+  let tick;
+  t.mock.method(globalThis, 'setInterval', callback => { tick = callback; return 123; });
+  t.mock.method(globalThis, 'clearInterval', () => {});
+  globalThis.joyaiTestRequest = async (method, params, options) => {
+    requests.push({ method, params, options });
+    return { response: '已将飞书排在微信前面。', search_job: null,
+      queue_management: { managed_by: 'text_queue_manager', receipts: [] } };
+  };
+  t.after(() => { delete globalThis.joyaiTestRequest; });
+  const provider = new JoyAIProvider({
+    getSearchSessionId: () => 'scope', getLatestFrameDataUrl: () => '', getFrameCount: () => 0,
+    rememberSearchJob(job) { assert.equal(job, null, 'management must not create a new task'); },
+    report() {}, commitAssistantAnswer: text => answers.push(text),
+  });
+  provider.sessionId = 'manage';
+  provider.speakText = text => speech.push(text);
+  provider.startFramePolling();
+  const pending = provider.submitUserInstruction('先打开飞书，再打开微信。');
+  tick();
+  await pending;
+  assert.deepEqual(answers, ['已将飞书排在微信前面。']);
+  assert.deepEqual(speech, answers);
+  assert.equal(requests[0].options.timeoutMs, 90_000);
+  provider.stop();
+});
+
+function pollingHarness(t) {
+  let now = 10_000;
+  let tick;
+  let frame = 'data:image/jpeg;base64,ZmFrZQ==';
+  let outcome = { response: '', search_job: null };
+  const requests = [], reports = [], errors = [], statuses = [];
+  t.mock.method(Date, 'now', () => now);
+  t.mock.method(globalThis, 'setInterval', (callback) => { tick = callback; return 123; });
+  t.mock.method(globalThis, 'clearInterval', () => {});
+  globalThis.joyaiTestRequest = async (method, params) => {
+    requests.push({ at: now, method, ...params });
+    if (outcome instanceof Error) throw outcome;
+    if (typeof outcome === 'function') return outcome();
+    return outcome;
+  };
+  const provider = new JoyAIProvider({
+    getSearchSessionId: () => 'scope', getLatestFrameDataUrl: () => frame, getFrameCount: () => 1,
+    rememberSearchJob() {}, commitAssistantAnswer() {},
+    report: (event, details) => reports.push({ event, ...details }),
+    setError: message => errors.push(message), setStatus: message => statuses.push(message),
+  });
+  provider.sessionId = 'adaptive-media';
+  provider.startFramePolling();
+  t.after(() => { provider.stop(); delete globalThis.joyaiTestRequest; });
+  return {
+    provider, requests, reports, errors, statuses,
+    setOutcome(value) { outcome = value; },
+    setFrame(value) { frame = value; },
+    async pollAt(time) {
+      now = time;
+      tick();
+      await new Promise(resolve => setImmediate(resolve));
+    },
+  };
+}
+
+const rateLimitError = () => Object.assign(new Error('Too many requests'), { code: 'JOYAI_RATE_LIMIT' });
+
+test('JoyAI keeps a lower image rate after success and reduces it again on later limits', async (t) => {
+  const h = pollingHarness(t);
+  h.setOutcome(rateLimitError());
+  await h.pollAt(10_000);
+  await h.pollAt(69_999);
+  assert.equal(h.requests.length, 1, 'cooldown sends no extra images');
+  h.setFrame('data:image/jpeg;base64,bmV3');
+  h.setOutcome({ response: '', search_job: null });
+  await h.pollAt(70_000);
+  assert.equal(h.requests[1].frame_data_url, 'data:image/jpeg;base64,bmV3', 'retry uses the latest image');
+  assert.equal(h.errors.at(-1), '');
+  assert.equal(h.statuses.at(-1), '');
+  await h.pollAt(71_000);
+  assert.equal(h.requests.length, 2, 'success must not restore one image per second');
+  await h.pollAt(72_000);
+  assert.equal(h.requests.length, 3);
+  h.setOutcome(rateLimitError());
+  await h.pollAt(74_000);
+  h.setOutcome({ response: '', search_job: null });
+  await h.pollAt(134_000);
+  await h.pollAt(137_999);
+  assert.equal(h.requests.length, 5);
+  await h.pollAt(138_000);
+  assert.equal(h.requests.length, 6);
+  assert.deepEqual(h.reports.filter(r => r.event === 'joyai_rate_limited').map(r => r.frame_interval_ms), [2_000, 4_000]);
+});
+
+test('rate-limited user instructions wait for cooldown and retry once with a fresh image', async (t) => {
+  const h = pollingHarness(t);
+  await h.pollAt(10_000);
+  h.setOutcome(rateLimitError());
+  let settled = false;
+  const instruction = h.provider.submitUserInstruction('查看这个页面').then(result => { settled = true; return result; });
+  await h.pollAt(11_000);
+  assert.equal(settled, false);
+  await h.pollAt(70_999);
+  assert.equal(h.requests.length, 2);
+  h.setFrame('data:image/jpeg;base64,bGF0ZXN0');
+  const result = { response: '', search_job: null };
+  h.setOutcome(result);
+  await h.pollAt(71_000);
+  assert.equal(await instruction, result);
+  assert.equal(h.requests[2].instruction, '查看这个页面');
+  assert.equal(h.requests[2].frame_data_url, 'data:image/jpeg;base64,bGF0ZXN0');
+  await h.pollAt(72_000);
+  assert.equal(h.requests.length, 3, 'no duplicate instruction or image between adaptive ticks');
+});
+
+test('repeated limits cap backoff and stop resets the next session to the default image rate', async (t) => {
+  const h = pollingHarness(t);
+  h.setOutcome(rateLimitError());
+  for (let i = 0; i < 11; i += 1) await h.pollAt(10_000 + i * 300_000);
+  const limits = h.reports.filter(r => r.event === 'joyai_rate_limited');
+  assert.equal(limits.length, 11);
+  assert.equal(limits.at(-1).frame_interval_ms, 300_000);
+  assert.equal(limits.at(-1).cooldown_ms, 300_000);
+  h.provider.stop();
+  h.provider.sessionId = 'new-media';
+  h.provider.startFramePolling();
+  h.setOutcome({ response: '', search_job: null });
+  await h.pollAt(3_310_000);
+  const count = h.requests.length;
+  await h.pollAt(3_311_000);
+  assert.equal(h.requests.length, count + 1, 'new session starts at one image per second');
+});
+
+test('lower image rate does not slow voice-only turns after quota cooldown', async (t) => {
+  const h = pollingHarness(t);
+  h.setOutcome(rateLimitError());
+  for (let i = 0; i < 4; i += 1) await h.pollAt(10_000 + i * 300_000);
+  h.setOutcome({ response: '', search_job: null });
+  await h.pollAt(1_210_000);
+  h.setFrame('');
+  const pending = h.provider.submitUserInstruction('停止共享后继续说话');
+  await h.pollAt(1_211_000);
+  await pending;
+  assert.equal(h.requests.at(-1).frame_data_url, '');
+  assert.equal(h.requests.at(-1).request_kind, 'user');
+  const count = h.requests.length;
+  await h.pollAt(1_212_000);
+  assert.equal(h.requests.length, count, 'no idle inference without sharing or a prompt');
+});
+
+test('ordinary failures do not reduce image rate or replay user instructions', async (t) => {
+  const h = pollingHarness(t);
+  await h.pollAt(10_000);
+  h.setOutcome(new Error('Network disconnected'));
+  const pending = h.provider.submitUserInstruction('检查页面');
+  const rejected = assert.rejects(pending, /Network disconnected/);
+  await h.pollAt(11_000);
+  await rejected;
+  h.setOutcome({ response: '', search_job: null });
+  await h.pollAt(12_000);
+  assert.equal(h.requests.length, 3);
+  assert.equal(h.requests.at(-1).request_kind, 'frame');
+  assert.equal(h.reports.some(r => r.event === 'joyai_rate_limited'), false);
+});
+
+test('a late rate limit from a stopped session cannot throttle its replacement', async (t) => {
+  const h = pollingHarness(t);
+  let reject;
+  h.setOutcome(() => new Promise((resolve, fail) => { reject = fail; }));
+  await h.pollAt(10_000);
+  h.provider.stop();
+  h.provider.sessionId = 'replacement';
+  reject(rateLimitError());
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.reports.some(r => r.event === 'joyai_rate_limited'), false);
+  assert.deepEqual(h.errors, []);
+  h.setOutcome({ response: '', search_job: null });
+  h.provider.startFramePolling();
+  await h.pollAt(11_000);
+  await h.pollAt(12_000);
+  assert.equal(h.requests.length, 3);
+});
+
+>>>>>>> origin/develop
 test('long user instructions and their final constraints reach the RPC intact', async (t) => {
   const calls = [];
   globalThis.joyaiTestRequest = async (...args) => {
@@ -421,6 +610,7 @@ test('tool receipts wait for playback and do not leak into a restarted media ses
   await delivery;
   assert.deepEqual(speech, []);
 });
+<<<<<<< HEAD
 
 const PERMISSION_OPTIONS = ['本次允许', '会话内记住', '永久记住', '拒绝'].map(label => ({ label }));
 
@@ -494,3 +684,95 @@ test('JoyAI reads managed and typed-chat approval cards last on every user turn,
   provider.stop();
   assert.equal(provider.pendingApprovals.size, 0, 'stop clears cards');
 });
+||||||| e487e9a30
+=======
+
+const PERMISSION_OPTIONS = ['本次允许', '会话内记住', '永久记住', '拒绝'].map(label => ({ label }));
+
+test('JoyAI reads managed and typed-chat approval cards last on every user turn, with IDs and the four answers', async (t) => {
+  const requests = [];
+  let tick;
+  t.mock.method(globalThis, 'setInterval', (callback) => { tick = callback; return 123; });
+  t.mock.method(globalThis, 'clearInterval', () => {});
+  globalThis.joyaiTestRequest = async (method, params) => { requests.push(params); return { response: '', search_job: null }; };
+  t.after(() => { delete globalThis.joyaiTestRequest; });
+  let frame = '';
+  const provider = new JoyAIProvider({
+    getSearchSessionId: () => 'task-duplex:chat', getLatestFrameDataUrl: () => frame, getFrameCount: () => 0,
+    rememberSearchJob() {}, report() {}, commitAssistantAnswer() {},
+  });
+  provider.sessionId = 'cards';
+  provider.speakText = () => {};
+  provider.startFramePolling();
+
+  provider.enqueueQuestion('cua', { id: 'card-a', request_id: 'core-approval', state: 'pending', source: 'confirm_interrupt',
+    questions: [{ header: '操作确认: cua_agent', question: '打开计算器', options: PERMISSION_OPTIONS }] });
+  provider.enqueueQuestion('', { id: 'typed-approval', request_id: 'typed-approval', state: 'pending', source: 'confirm_interrupt',
+    questions: [{ header: '权限审批: bash', question: '允许执行 rm？', options: PERMISSION_OPTIONS }] });
+  // Information forms stay on screen for JoyAI.
+  provider.enqueueQuestion('trip', { id: 'form', request_id: 'f', state: 'pending', source: 'ask_user_interrupt',
+    questions: [{ question: '预算是多少？' }] });
+
+  for (const spoken of ['同意', '本会话保持同意', '打开微信']) {
+    const pending = provider.submitUserInstruction(spoken);
+    tick();
+    await pending;
+  }
+  assert.equal(requests.length, 3);
+  for (const request of requests) {
+    const status = request.approval_context;
+    assert.match(status, /^\[Approval card status\]/);
+    const cards = JSON.parse(status.slice(status.indexOf('[', 1), status.indexOf(' is still waiting')));
+    assert.deepEqual(cards.map(c => [c.job_id, c.interaction_id]), [['cua', 'card-a'], ['', 'typed-approval']]);
+    for (const card of cards) {
+      assert.equal(card.questions[0].question, card.job_id ? '打开计算器' : '允许执行 rm？');
+      assert.deepEqual([card.questions[0].allow_answer, card.questions[0].session_answer,
+        card.questions[0].permanent_answer, card.questions[0].reject_answer], ['本次允许', '会话内记住', '永久记住', '拒绝']);
+    }
+    assert.match(status, /同意\/允许\/可以\/批准 answers with allow_answer/);
+    assert.match(status, /本会话保持同意\/本会话同意\/这个会话都允许 answers with session_answer/);
+    assert.match(status, /打开微信\), delegate it as a new task .*never use it as a card answer/);
+    assert.doesNotMatch(status, /预算/);
+  }
+
+  // A frame-only request carries no card status (the backend only accepts it on user turns).
+  frame = 'data:image/jpeg;base64,ZmFrZQ==';
+  tick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.at(-1).request_kind, 'frame');
+  assert.equal(requests.at(-1).approval_context, undefined);
+  frame = '';
+
+  // Typed card answered on screen, then the task finishes: the status is gone.
+  provider.enqueueQuestion('', { id: 'typed-second', request_id: 'typed-second', state: 'pending', source: 'confirm_interrupt',
+    questions: [{ question: '另一张确认卡', options: PERMISSION_OPTIONS }] });
+  provider.enqueueQuestion('cua:child', { id: 'child-card', request_id: 'child-card', state: 'pending', source: 'confirm_interrupt',
+    questions: [{ question: '另一个任务', options: PERMISSION_OPTIONS }] });
+  provider.enqueueQuestion('', { request_id: 'typed-approval', state: 'answered' });
+  provider.enqueueQuestion('', { request_id: '', state: 'answered' });
+  let pending = provider.submitUserInstruction('还有卡吗');
+  tick();
+  await pending;
+  assert.doesNotMatch(requests.at(-1).approval_context, /typed-approval/);
+  assert.match(requests.at(-1).approval_context, /typed-second/);
+  assert.match(requests.at(-1).approval_context, /card-a/);
+  assert.match(requests.at(-1).approval_context, /child-card/);
+  provider.handleCompletedSearch({ job_id: 'cua' }, { status: 'completed', summary: 'x' });
+  pending = provider.submitUserInstruction('好了吗');
+  tick();
+  await pending;
+  assert.doesNotMatch(requests.at(-1).approval_context, /card-a/);
+  assert.match(requests.at(-1).approval_context, /typed-second/);
+  assert.match(requests.at(-1).approval_context, /child-card/);
+  provider.enqueueQuestion('', { request_id: 'typed-second', state: 'answered' });
+  provider.handleCompletedSearch({ job_id: 'cua:child' }, { status: 'completed', summary: 'x' });
+  pending = provider.submitUserInstruction('全部处理了吗');
+  tick();
+  await pending;
+  assert.equal(requests.at(-1).approval_context, undefined);
+
+  provider.enqueueQuestion('cua2', { id: 'c', request_id: 'c', state: 'pending', source: 'confirm_interrupt', questions: [] });
+  provider.stop();
+  assert.equal(provider.pendingApprovals.size, 0, 'stop clears cards');
+});
+>>>>>>> origin/develop

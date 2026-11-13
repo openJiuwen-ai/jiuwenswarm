@@ -6,8 +6,15 @@ import { collectDesignerMaterials } from '../designerMaterials';
 import { useDesignerChatStore } from '../designerChatStore';
 import { seedDesignerChatHistory } from '../designerEntry';
 import { bindDesignerRuntime, useDesignerRunStore } from '../designerRunStore';
+<<<<<<< HEAD
 import { isDesignerModerationError } from '../designerRunView';
+||||||| e487e9a30
+=======
+import { isDesignerModerationError } from '../designerRunView';
+import { DESIGNER_UPLOAD_TOO_LARGE } from '../designerAssetUrl';
+>>>>>>> origin/develop
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
+<<<<<<< HEAD
 import { DESIGNER_UPLOAD_TOO_LARGE } from '../designerNodeUpload';
 import {
   ArrangeNodesIcon,
@@ -16,6 +23,16 @@ import {
   ShowEdgesIcon,
 } from '../designerIcons';
 import { bindDesignerExclusivePlayback } from '../designerMediaPlayback';
+||||||| e487e9a30
+=======
+import {
+  ArrangeNodesIcon,
+  HideEdgesIcon,
+  MinimapIcon,
+  ShowEdgesIcon,
+} from '../designerIcons';
+import { bindDesignerExclusivePlayback } from '../designerMediaPlayback';
+>>>>>>> origin/develop
 import { useDesignerGraphEditingLocked } from '../useDesignerGraphEditingLocked';
 import { useDesignerStore } from '../designerStore';
 import { useDesignerUiStore } from '../designerUiStore';

@@ -764,6 +764,99 @@ def _director_pipeline_decisions(
     }
 
 
+def _normalize_shot_crowd(raw: Any) -> dict[str, Any]:
+    """Carry the agent's per-shot crowd decision, preserving the tri-state.
+
+    The storyboard agent decides crowd presence from meaning, in whatever
+    language the shot was written. Python only normalizes; it never inspects
+    the prose. ``present`` stays ``None`` when the agent declared nothing so
+    downstream emits no crowd sentence instead of asserting the set is empty.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, Any] = {}
+    present = raw.get("present")
+    if isinstance(present, bool):
+        out["present"] = present
+    else:
+        text = str(present).strip().lower()
+        if text in {"", "none", "null", "unknown", "unspecified"}:
+            out["present"] = None
+        elif text in {"true", "yes", "present", "1"}:
+            out["present"] = True
+        elif text in {"false", "no", "absent", "0"}:
+            out["present"] = False
+        else:
+            out["present"] = None
+    for key in ("density", "disposition", "placement", "note", "hold"):
+        value = str(raw.get(key) or "").strip()
+        if value:
+            out[key] = value[:240]
+    return out
+
+
+_BLOCKING_ZONES = frozenset({"left", "center", "right", "foreground", "background"})
+
+
+def _normalize_shot_blocking(
+    raw: Any,
+    *,
+    valid_ids: set[str],
+    by_name: dict[str, str],
+) -> dict[str, Any]:
+    """Carry the director's declared staging; Python never invents geometry.
+
+    Positions keep the declared zone/facing/pose/adjacency/gaze with cast
+    refs resolved to ids. Unknown refs are dropped, and an empty result
+    means "nothing declared" — downstream then leaves staging unstated
+    instead of fabricating zones or a default facing.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    positions: list[dict[str, Any]] = []
+    for pos in raw.get("positions") or []:
+        if not isinstance(pos, dict):
+            continue
+        cid = resolve_cast_token(
+            pos.get("character_id") or pos.get("id") or pos.get("name") or "",
+            valid_ids=valid_ids,
+            by_name=by_name,
+        )
+        if not cid:
+            continue
+        entry: dict[str, Any] = {"character_id": cid}
+        zone = str(pos.get("zone") or "").strip().lower()
+        if zone in _BLOCKING_ZONES:
+            entry["zone"] = zone
+        for key in ("facing", "pose"):
+            text = str(pos.get(key) or "").strip()
+            if text:
+                entry[key] = text[:160]
+        for key in ("next_to", "looks_at", "talks_to"):
+            ref = resolve_cast_token(pos.get(key) or "", valid_ids=valid_ids, by_name=by_name)
+            if ref and ref != cid:
+                entry[key] = ref
+        positions.append(entry)
+    if not positions:
+        return {}
+    out: dict[str, Any] = {"positions": positions[:12]}
+    landmark = str(raw.get("landmark") or "").strip()
+    if landmark:
+        out["landmark"] = landmark[:120]
+    return out
+
+
+def _scene_name_is_placeholder(name: str, scene_id: str) -> bool:
+    """True when a scene "name" is just its id (``set_1``, ``scene_2``)."""
+    value = str(name or "").strip().casefold()
+    sid = str(scene_id or "").strip().casefold()
+    if not value:
+        return True
+    if value == sid:
+        return True
+    return value.startswith("set_") and value[4:].isdigit()
+
+
 def _heuristic_lean_shot(
     prompt: str,
     characters: list[dict[str, Any]],
@@ -1065,6 +1158,114 @@ def _reference_reads(parsed: dict[str, Any]) -> list[dict[str, Any]]:
     return reads
 
 
+# A cast entry is either one individual or a shared-look group (a team, a pack,
+# a crowd of residents). ``cast_kind`` already means human/brand_mascot/prop, so
+# the group/one split is tracked separately as ``cast_form``.
+_CAST_SINGLE_RE = re.compile(
+    r"(?i)(\bone\s+(?:man|woman|person|individual|adult|figure|hero|girl|boy)\b"
+    r"|\ba\s+single\s+(?:person|individual|man|woman|figure|hero)\b"
+    r"|\bonly\s+one\b|\bthe only\b|\bsolo\b|\balone\b"
+    r"|独自|单独|一名|一位|一个人|孤身|孤零零|唯一)"
+)
+
+_CAST_PLURAL_PERSON_RE = re.compile(
+    r"(?i)\b(?:adults|men|women|children|kids|people|folks|residents|citizens"
+    r"|commuters|shoppers|students|runners|joggers|players|guests|fans|tourists"
+    r"|passers-?by|bystanders|onlookers|spectators|pedestrians|workers"
+    r"|villagers|monks|soldiers|dancers|musicians|singers|pilgrims|worshippers"
+    r"|vendors|teens|teenagers|colleagues|visitors|travellers|travelers"
+    r"|neighbours|neighbors|strangers|relatives|elders|seniors|athletes"
+    r"|exercisers|swimmers|cyclists|volunteers|performers|members)\b"
+)
+
+# Collectives that are groups by definition, in either authoring language.
+# Chinese is matched by whole compound words only: a bare 群/队/组/班/帮/众
+# would also match inside 排队, 组织, 上班, 帮忙 and 观众-shaped words that are
+# not a group, so each cue carries its own disambiguating characters.
+_CAST_GROUP_NOUN_RE = re.compile(
+    r"(?i)(\bcrowd\b|\bgroup\b|\bteam\b|\bensemble\b|\bpack\b|\bflock\b|\bherd\b"
+    r"|\baudience\b|\bcongregation\b|\bfamily\b|\bcouple\b|\bduo\b|\btrio\b|\btwins?\b"
+    r"|\bcrew\b|\bextras\b|\btownsfolk\b|\bprocession\b"
+    r"|团队|群体|人群|群众|群众演员|众人|大家|家族|家族成员|同事|工人们|孩子们"
+    r"|市民|居民|观众|听众|路人|行人|游客|旅客|乘客|顾客|旁观者|围观者|看客"
+    r"|队伍|小队|大队|车队|球队|乐队|舞队|合唱团|仪仗队|方阵|列队"
+    r"|上班族|学生|学生们|年轻人|老人们|老年人|居民们|顾客们|朋友们"
+    r"|晨练者|运动员|志愿者|表演者|晨练市民"
+    r"|一族|一伙|一帮|一班|一批|成群)"
+)
+
+# Chinese headcount: number + classifier. A classifier on its own is not a
+# headcount - "三个货架" counts shelves and "三组数据" counts datasets - so the
+# match only stands when the counted noun is a person, like the English tail check.
+_CAST_CN_COUNT_RE = re.compile(
+    r"([两二三四五六七八九十百千数几]+)"
+    r"\s*([个位名人群队组批伙帮])"
+)
+# "位" and "名" only ever count people; the other classifiers need a person noun.
+_CAST_CN_PERSON_CLASSIFIERS = "位名"
+_CAST_CN_PERSON_RE = re.compile(
+    r"(人|们|男|女|老年|孩子|孩童|学生|工人|农民|士兵"
+    r"|警察|医生|护士|顾客|客人|游客|旅客|路人|行人|观众|听众"
+    r"|记者|演员|歌手|舞者|乐手|队员|成员|员工|同事|朋友|家人"
+    r"|居民|市民|村民|运动员|志愿者|表演者|骑士|侍卫|侍女|仆人|掌柜|店小二)"
+)
+
+_CAST_OF_RE = re.compile(r"(?i)\bof\s+$")
+
+_CAST_COUNT_WORD_RE = re.compile(
+    r"(?i)(a\s+dozen|dozens|a\s+few|several|many|numerous|scores"
+    r"|\b(?:two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty"
+    r"|thirty|fifty|hundred)\b)"
+)
+
+
+def _cast_group_size(text: str) -> str:
+    """Headcount cue, ignoring ages (``aged fifty to seventy-five``)."""
+    for cn in _CAST_CN_COUNT_RE.finditer(text):
+        tail = text[cn.end():cn.end() + 4]
+        if cn.group(2) in _CAST_CN_PERSON_CLASSIFIERS or _CAST_CN_PERSON_RE.match(tail):
+            return re.sub(r"\s+", "", cn.group(0))
+    for match in _CAST_COUNT_WORD_RE.finditer(text):
+        # A bare number is only a headcount when people follow it, or when it
+        # counts the collective just named ("a family of four").
+        tail = text[match.end():match.end() + 48]
+        head = text[max(0, match.start() - 8):match.start()]
+        if _CAST_PLURAL_PERSON_RE.search(tail) or _CAST_OF_RE.search(head):
+            return re.sub(r"\s+", " ", match.group(0)).strip()
+    return ""
+
+
+def detect_cast_form(name: Any, description: Any = "", role: Any = "") -> tuple[str, str]:
+    """Return ``(cast_form, group_size)`` for one cast entry.
+
+    ``group`` when the entry is a shared-look crowd; the sheet then draws the
+    whole group instead of one stand-in, which every shot asking for a seated
+    team or a running pack would otherwise contradict. Cues are read from any
+    authoring language, and a collective name outranks a one-person plate; with
+    no cue the entry stays ``single`` so nothing about a one-person character
+    changes.
+    """
+    text = " ".join(str(v or "").strip() for v in (name, description, role)).strip()
+    if not text:
+        return "", ""
+    name_text = str(name or "").strip()
+    # A collective subject names the group, so a plate that describes one
+    # stand-in member does not shrink it: "路人" with "one adult passer-by"
+    # still draws a small shared-look group of passers-by.
+    named_group = bool(name_text) and bool(
+        _CAST_GROUP_NOUN_RE.search(name_text) or _CAST_PLURAL_PERSON_RE.search(name_text)
+    )
+    if not named_group and _CAST_SINGLE_RE.search(text):
+        return "single", ""
+    size = _cast_group_size(text)
+    # A plural person noun already means more than one person, so it is a group
+    # even without a count or a collective noun ("seniors in the park").
+    group_cue = named_group or _CAST_GROUP_NOUN_RE.search(text) or _CAST_PLURAL_PERSON_RE.search(text)
+    if size or group_cue:
+        return "group", size
+    return "single", ""
+
+
 def _normalize_llm_analysis(
     parsed: dict[str, Any],
     base: dict[str, Any],
@@ -1096,6 +1297,11 @@ def _normalize_llm_analysis(
             "description": desc,
             "match_terms": _match_terms_for_character(name, desc),
         }
+        cast_form, group_size = detect_cast_form(name, desc, ch.get("role"))
+        if cast_form:
+            entry["cast_form"] = cast_form
+        if group_size:
+            entry["cast_group_size"] = group_size[:40]
         norm_chars.append(entry)
     if not norm_chars and not allow_empty_cast:
         return None
@@ -1104,11 +1310,18 @@ def _normalize_llm_analysis(
     for i, sc in enumerate(scenes[:_MAX_SCENES], start=1):
         if not isinstance(sc, dict):
             continue
+        sid = str(sc.get("id") or f"scene_{i}")
+        name = str(sc.get("name") or "").strip()
+        desc = str(sc.get("description") or "").strip()
+        if not name or _scene_name_is_placeholder(name, sid):
+            # A name equal to the id carries no place information; the video
+            # prompt quotes it, so prefer the description over the bare id.
+            name = desc or ""
         norm_scenes.append(
             {
-                "id": str(sc.get("id") or f"scene_{i}"),
-                "name": str(sc.get("name") or f"Scene {i}"),
-                "description": str(sc.get("description") or ""),
+                "id": sid,
+                "name": name,
+                "description": desc,
             }
         )
     if not norm_scenes:
@@ -1168,6 +1381,9 @@ def _normalize_llm_analysis(
                 if cid and str(v or "").strip():
                     cast_actions[cid] = str(v).strip()[:240]
         strategy = str(sh.get("clip_strategy") or "").strip()
+        crowd = _normalize_shot_crowd(
+            sh.get("crowd_spec") if isinstance(sh.get("crowd_spec"), dict) else sh.get("crowd_lock")
+        )
         setting_id = str(sh.get("setting_id") or sh.get("scene_id") or f"set_{i}").strip()
         # Prefer on_screen as the drawn cast for this shot.
         cids = list(on_screen) or cids
@@ -1204,19 +1420,30 @@ def _normalize_llm_analysis(
             entry["cast_states"] = sh["cast_states"]
         if strategy in {"compose_from_character_specs", "edit_prior_image"}:
             entry["clip_strategy"] = strategy
+        if crowd:
+            entry["crowd_spec"] = crowd
+        blocking = _normalize_shot_blocking(
+            sh.get("blocking"),
+            valid_ids=valid_ids,
+            by_name=by_name,
+        )
+        if blocking:
+            entry["blocking"] = blocking
         from jiuwenswarm.common.schema.designer_node_labels import derive_clip_name
 
         entry["title"] = derive_clip_name(entry, fallback_index=i)
         norm_shots.append(entry)
     if not norm_scenes and norm_shots:
-        seen: dict[str, str] = {}
+        seen: dict[str, dict[str, Any]] = {}
         for sh in norm_shots:
             sid = str(sh.get("setting_id") or "").strip() or "set_1"
-            if sid not in seen:
-                seen[sid] = sid
-        norm_scenes = [
-            {"id": sid, "name": sid, "description": ""} for sid in seen
-        ]
+            seen.setdefault(sid, sh)
+        norm_scenes = []
+        for sid, first in seen.items():
+            # The shot carries its setting text under these keys; the older
+            # name was never part of a shot entry, so the fallback was always "".
+            place = str(first.get("setting_description") or first.get("setting") or "").strip()
+            norm_scenes.append({"id": sid, "name": place, "description": place})
     if not norm_shots:
         return None
     audio = parsed.get("audio") if isinstance(parsed.get("audio"), dict) else base.get("audio")
@@ -1406,7 +1633,7 @@ async def analyze_creative_brief(
             "duplicate actions, or same-moment camera coverage presented as new content. "
             "Use one emotion curve and exactly one climax. Each shot needs emotion "
             "(setup, rise, climax, or release) and irreversible (what is newly true at the end). "
-            "The next shot starts from the previous end. cast_states may change wardrobe or "
+            "The next shot starts from the previous end. cast_states may change clothing or "
             "emotion for that shot; face identity stays the character description. "
         )
         shot_count_rule = (
@@ -1414,8 +1641,8 @@ async def analyze_creative_brief(
             "Each shot.action describes ONLY that window — do not paste the user prompt "
             "into actions and do not restage the whole story from a new camera "
             "(angle coverage only if the user asked for multi-cam / same-moment angles). "
-            "New setting_id / hard cut / wardrobe / on-screen cast change → new shot. "
-            "Qwen image: lock identity+wardrobe; first setting clip = compose_from_character_specs, "
+            "New setting_id / hard cut / clothing / on-screen cast change → new shot. "
+            "Qwen image: lock identity+clothing; first setting clip = compose_from_character_specs, "
             "later same setting = edit_prior_image; prefer ≤2–3 people with refs. "
             "Clip prompt = this shot's motion and camera only. "
             "Explicit user N-shot / N分镜 is the only shot ceiling. "
@@ -1434,14 +1661,56 @@ async def analyze_creative_brief(
             + story_enrichment_rule
             + "Do not alter explicit people, places, brand facts, claims, or requested events. "
             "Extract every on-screen human into characters[], including unnamed people and groups. "
+<<<<<<< HEAD
             "A group that shares one look (villagers, soldiers, children, elders) is one character "
             "with a locked face, age, hair, and costume. Put that id in on_screen on every shot "
             "where they are visible so later shots keep the same people. Do not leave them only "
             "in the action prose. "
             + CLOTHING_PARTS_RULE
             + "Per shot also lock staging: cast_actions (posture/doing), blocking positions "
+||||||| e487e9a30
+            "A group that shares one look (villagers, soldiers, children, elders) is one character "
+            "with a locked face, age, hair, and costume. Put that id in on_screen on every shot "
+            "where they are visible so later shots keep the same people. Do not leave them only "
+            "in the action prose. "
+            "Each character description MUST lock wardrobe garments: shirt/top style+color, "
+            "trousers/skirt/bottom style+color, footwear, outerwear/accessories if any "
+            "(example: 'light blue short-sleeve shirt; dark charcoal trousers; black sneakers'). "
+            "Per shot also lock staging: cast_actions (posture/doing), blocking positions "
+=======
+            "Group members who carry their own part of the story — a named person, a "
+            "distinct role, or an individual the camera singles out (two chess elders, "
+            "a lead dancer and her partner) — are SEPARATE characters, one id each, so "
+            "each gets their own plate and shots can stage them individually. A "
+            "background group that shares one look (villagers, soldiers, passers-by) "
+            "is ONE character id for the whole group: describe the group as several "
+            "distinct people with varied faces, ages, and postures inside one shared "
+            "costume family — never one locked face copied onto many bodies. Put that "
+            "id in on_screen on every shot where they are visible so later shots keep "
+            "the same people. Do not leave them only in the action prose. "
+            + CLOTHING_PARTS_RULE
+            + "Per shot also lock staging: cast_actions (posture/doing), blocking positions "
+>>>>>>> origin/develop
             "(zone/facing), who looks_at whom, who talks_to whom, adjacency (next_to). "
             "Shots grouped by setting_id (different places = different setting_id). "
+            "Crowd state belongs to the SETTING, not the shot. It covers unnamed "
+            "extras, congregations, passers-by, audiences, and any group sharing one "
+            "look, whether or not you also gave them a character id. Declare a "
+            "crowd_spec object ONLY on the first shot of a setting_id to establish "
+            "that setting's crowd — decide it in any language, from the shot's "
+            "meaning, never by spot-checking keywords: "
+            '"present": true when unnamed people are visible, false only when you are confident '
+            'the setting is empty of them, null only when the shot genuinely does not establish one '
+            'either way. "density" is a short free-text count such as "sparse", "a dozen", '
+            '"dense". "placement" is "in_frame", "background", or "off_camera". "disposition" '
+            'may override placement with "in_frame", "background_hold", "off_camera", "exited", '
+            '"empty", or "unspecified". Later shots in the same setting omit '
+            "crowd_spec and inherit the setting's crowd; declare it again only when "
+            "the story itself changes the crowd (they gather, leave, or return), and "
+            "that new declaration becomes the setting's state. Never invent a new "
+            "crowd mid-setting and never clear one without showing them leave. "
+            "scenes[]: one per setting_id; name is a real 2-6 word place label (never "
+            "the id, never empty). "
             "Infer one film-wide visual style from the user's exact wording. Preserve "
             "non-English style cues verbatim. If no style can be inferred, use cartoonish "
             "animation with flat shapes, soft rendering, and rounded forms. "
@@ -1462,15 +1731,31 @@ async def analyze_creative_brief(
             + " Output ONLY one JSON object (no markdown). "
             '{"story_name":"short film title any language",'
             '"style_lock":{"look":"...","medium":"..."},'
+<<<<<<< HEAD
             '"characters":[{"id":"char_1","name":"...","description":"...",'
                 '"clothing_parts":{"top":"...","bottom":"...","outerwear":"","footwear":"...",'
                 '"accessories":"","outfit":""}}],'
             '"clips":[{"clip_index":1,"title":"2-4 word beat name NEVER Shot N",'
+||||||| e487e9a30
+            '"characters":[{"id":"char_1","name":"...","description":"..."}],'
+            '"clips":[{"clip_index":1,"title":"2-4 word beat name NEVER Shot N",'
+=======
+            '"characters":[{"id":"char_1","name":"...","description":"...",'
+                '"clothing_parts":{"top":"...","bottom":"...","outerwear":"","footwear":"...",'
+                '"accessories":"","outfit":""}}],'
+            '"clips":[{"clip_index":1,"title":"2-4 word clip name NEVER Shot N",'
+>>>>>>> origin/develop
             '"action":"...","camera":"...","on_screen":["char_1"],'
-            '"offscreen":[],"cast_actions":{"char_1":"..."},"featured_cast_ids":["char_1"],'
+            '"offscreen":[],"cast_actions":{"char_1":"..."},'
+            '"blocking":{"landmark":"...","positions":[{"character_id":"char_1",'
+            '"zone":"left|center|right|foreground|background","facing":"...",'
+            '"next_to":"char_2","looks_at":"char_2","talks_to":"char_2"}]},'
+            '"featured_cast_ids":["char_1"],'
             '"ensemble_cast_ids":["char_1"],"setting_id":"set_1","clip_prompt":"...","timeline":"0-5s",'
+            '"crowd_spec":{"present":true,"density":"sparse","placement":"background","note":"..."},'
             '"emotion":"setup","irreversible":"what is newly true at the end",'
             '"cast_states":{"char_1":{"wardrobe":"","emotion":"","presence":"on_screen"}}}],'
+            '"scenes":[{"id":"set_1","name":"2-6 word place label","description":"..."}],'
             '"target_clip_count":N'
             + (f',"target_duration_sec":{duration_sec}' if duration_sec else "")
             + (
@@ -1502,7 +1787,10 @@ async def analyze_creative_brief(
                     '"clips":[{"clip_index":1,"action":"...","camera":"...",'
                     '"character_ids":["char_1"],"ensemble_cast_ids":["char_1"],'
                     '"featured_cast_ids":["char_1"],"setting_id":"set_1",'
-                    '"clip_prompt":"...","timeline":"0-5s"}]}'
+                    '"blocking":{"landmark":"...","positions":[{"character_id":"char_1",'
+                    '"zone":"center","facing":"...","looks_at":"char_2"}]},'
+                    '"clip_prompt":"...","timeline":"0-5s",'
+                    '"crowd_spec":{"present":true,"density":"sparse","placement":"background"}}]}'
                 )
                 payload["retry"] = True
             sys_msg = sys_msg + language_rules
@@ -1569,6 +1857,7 @@ async def analyze_creative_brief(
         # Prefer LLM; one reinforce if first reply empty/non-JSON (max 2 attempts).
         # Billing / credential failures raise immediately (no second attempt).
         first = await asyncio.wait_for(_call(), timeout=max(3.0, float(timeout_sec)))
+        analysis = None
         if isinstance(first, dict) and first.get("source") == "llm":
             return first
         remaining = max(8.0, float(timeout_sec) * 0.4)

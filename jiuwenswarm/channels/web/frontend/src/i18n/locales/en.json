@@ -1,4 +1,5 @@
 {
+<<<<<<< HEAD
   "extensionCommand": {
     "invalidArgs": "Invalid command arguments. Usage:",
     "singleLineOnly": "Enter one extension command per line. Run /extension for usage.",
@@ -36,6 +37,56 @@
     "currentState": "Current state at reconciliation time; this does not confirm the original operation succeeded:",
     "queryFailed": "State reconciliation failed: {{reason}}"
   },
+||||||| e487e9a30
+=======
+  "pluginReplacement": {
+    "title": "Plugin already exists",
+    "message": "Local plugin {{id}} (version {{localVersion}}) already exists. Replace it with marketplace version {{hubVersion}}? Local changes will be overwritten.",
+    "confirm": "Replace local version",
+    "busy": "The previous plugin is executing or closing resources. Retry replacement when it is idle.",
+    "stale": "The local plugin has changed. Start installation again and confirm replacement.",
+    "unknownVersion": "unknown"
+  },
+  "userLogin": {
+    "language": "Interface language",
+    "title": "JiuwenSwarm Sign In",
+    "username": "Username",
+    "password": "Password",
+    "signIn": "Sign in",
+    "signingIn": "Signing in…",
+    "enterprise": "Or use an enterprise account",
+    "signInWith": "Sign in with {{name}}",
+    "failed": "Sign-in failed. Please retry.",
+    "back": "Back to sign in"
+  },
+  "enterpriseEntry": {
+    "invalidIdentity": "Identity returned no user ID.",
+    "noContext": "No Agent is available for this account. Ask an administrator to grant access.",
+    "loadFailed": "Failed to load Agent contexts.",
+    "switchFailed": "Failed to switch context.",
+    "errorTitle": "Unable to enter workspace",
+    "loadingTitle": "Loading workspace",
+    "loading": "Loading the Agents available to this account.",
+    "retry": "Retry",
+    "login": "Go to login"
+  },
+  "skillPackInstall": {
+    "title": "Review SkillPack installation",
+    "summary": "Review the Pack and its locked member versions. Matching local Skills will be reused; missing members will be downloaded from this Hub. Nothing is installed until you confirm.",
+    "actions": {
+      "reuse": "Reuse local",
+      "download": "Download",
+      "blocked": "Blocked"
+    },
+    "blocked": "Resolve the listed conflicts before installing. Existing Skills will not be overwritten.",
+    "cancel": "Cancel",
+    "confirm": "Confirm installation",
+    "invalidPlan": "The installation plan is incomplete. Refresh the marketplace and try again.",
+    "changed": "The installation plan changed. Select the SkillPack again to review the latest plan.",
+    "refreshed": "The installation plan has changed. Review the members and confirm again.",
+    "validationFailed": "SkillPack validation failed. Download it again and check its members."
+  },
+>>>>>>> origin/develop
   "common": {
     "searchName": "Search names",
     "noData": "No data",
@@ -103,6 +154,10 @@
     "update": "Updates",
     "personalContext": "Knowledge"
   },
+  "experts": {
+    "podStarting": "Starting the expert runtime, please wait",
+    "podStartTimeout": "The expert runtime did not start in time. Try again later"
+  },
   "applicationPlugins": {
     "title": "Application plugins",
     "description": "Manage application plugins with dedicated pages and runtime capabilities.",
@@ -120,6 +175,7 @@
     "loadErrorTitle": "Failed to load",
     "loadErrorFallback": "Could not load the design workflow. Please try again later.",
     "attachmentsBlocked": "Design mode does not support attachments yet. Remove attachments and try again.",
+<<<<<<< HEAD
     "models": {
       "chatMissing": "Chat model is not configured. Configure a model in Settings before using Design.",
       "chatAnthropicUnsupported": "Design does not support a chat model on the Anthropic protocol. In Settings, configure a model that uses the OpenAI protocol and try again.",
@@ -131,6 +187,19 @@
       "notSelected": "No model",
       "openModelSettings": "Open Settings"
     },
+||||||| e487e9a30
+=======
+    "models": {
+      "chatMissing": "Chat model is not configured. Configure a model in Settings before using Design.",
+      "videoOff": "Video generation is switched off in Settings > Agent.",
+      "videoMissing": "Video generation is not configured: set the API URL, API key and model in Settings > Agent.",
+      "imageOff": "Image generation is switched off in Settings > Agent.",
+      "imageMissing": "Image generation is not configured: set the API URL, API key and model in Settings > Agent.",
+      "lockedHint": "This design runs on the model it was started with. Switching the model is not available on the canvas.",
+      "notSelected": "No model",
+      "openModelSettings": "Open Settings"
+    },
+>>>>>>> origin/develop
     "activity": {
       "thinking": "Thinking",
       "toolCall": "Using {{tool}}",
@@ -150,12 +219,21 @@
       "bootstrapError": "Failed to build the workflow. Please try again later.",
       "notImplemented": "Not implemented",
       "send": "Send",
+<<<<<<< HEAD
       "stop": "Stop",
       "stopError": "Could not stop. Please try again.",
+||||||| e487e9a30
+=======
+      "running": "The design leader is working…",
+      "stop": "Stop",
+      "stopping": "Stopping…",
+      "stopError": "Could not stop. Please try again.",
+>>>>>>> origin/develop
       "attach": "Add reference media",
       "removeAttachment": "Remove reference",
       "attachHint": "Images, video, or audio. Up to 5 images, 1 video, and 1 audio file.",
       "limitImages": "You can attach at most 5 reference images.",
+      "multipleMentions": "Referencing several nodes with @ in one message is not supported yet. Reference one node at a time.",
       "limitVideo": "You can attach at most 1 reference video.",
       "limitAudio": "You can attach at most 1 reference audio file.",
       "tooLarge": "File is larger than 6MB. Use a smaller file or a local path.",
@@ -196,7 +274,14 @@
       "editPlaceholder": "Edit text content…",
       "aspectRatio": "Aspect ratio",
       "resolution": "Resolution",
+<<<<<<< HEAD
       "duration": "Video duration",
+||||||| e487e9a30
+      "duration": "Duration",
+=======
+      "duration": "Video duration",
+      "audioDuration": "Audio duration",
+>>>>>>> origin/develop
       "count": "Count",
       "browseFiles": "Browse files",
       "dropHint": "Or drag into this area",
@@ -213,8 +298,20 @@
     "mediaSettings": {
       "videoTitle": "Video settings",
       "imageTitle": "Image settings",
+      "audioTitle": "Audio settings",
       "durationValue": "{{seconds}}s",
+<<<<<<< HEAD
       "durationUnit": "s",
+||||||| e487e9a30
+=======
+      "durationUnit": "s",
+      "minuteUnit": "min",
+      "secondUnit": "sec",
+      "audioDurationDefault": "Film default duration",
+      "audioDurationMinutes": "{{count}} min",
+      "audioDurationSeconds": "{{count}} sec",
+      "audioDurationBoth": "{{minutes}} min {{seconds}} sec",
+>>>>>>> origin/develop
       "loading": "Loading generation settings…",
       "loadError": "Could not load generation settings: {{message}}",
       "saveError": "Settings not saved: {{message}}"
@@ -260,7 +357,12 @@
       "assetsHint": "Toggle the current-canvas asset list.",
       "upload": "Upload",
       "uploadHint": "Upload an image, video, or audio file as a new canvas node.",
+<<<<<<< HEAD
       "uploadTooLarge": "File too large: videos can be up to 1 GB, images and audio up to 32 MB.",
+||||||| e487e9a30
+=======
+      "uploadTooLarge": "File too large: images, videos, and audio can be up to 32 MB.",
+>>>>>>> origin/develop
       "comfyuiHint": "Import a ComfyUI workflow (.json). Only vLLM-Omni Generate Image / Generate Video nodes are added.",
       "group": {
         "image": "Image",
@@ -294,7 +396,9 @@
       "deleteConfirmCancel": "Cancel",
       "deleteConfirmOk": "Confirm",
       "resize": "Resize",
-      "resizeHint": "Drag the bottom-right corner to resize this node"
+      "resizeHint": "Drag the bottom-right corner to resize this node",
+      "playAudio": "Play audio",
+      "pauseAudio": "Pause audio"
     },
     "edge": {
       "delete": "Delete connection"
@@ -379,7 +483,20 @@
     }
   },
   "videoLive": {
+<<<<<<< HEAD
     "qwenOnly": "Only Qwen full-duplex is currently supported. Configure Qwen Omni Realtime in Settings.",
+||||||| e487e9a30
+=======
+    "screenCapture": {
+      "failed": "Screen sharing failed: {{reason}} [{{errorType}}]; native error: {{nativeMessage}}; stage: {{stage}}; elapsed: {{elapsedMs}} ms; diagnostic ID: {{captureId}}",
+      "permissionOrCancel": "Sharing was not authorized: selection may have been cancelled, or browser/system screen-recording permission denied; the exception alone does not identify which",
+      "aborted": "Capture was aborted: the picker may have been cancelled, a previous request may still be pending, or system capture may have failed",
+      "unreadable": "The system could not read the selected screen; check screen-recording permission and capture/system state",
+      "invalidState": "The page state does not allow sharing; check window focus and whether the request followed a user click",
+      "security": "The current security policy blocks screen sharing",
+      "unknown": "Screen capture or frame initialization failed; check the native error and diagnostic ID in the logs"
+    },
+>>>>>>> origin/develop
     "modelFallback": "Video model",
     "subtitle": "Real-time multi-screen audio and video Q&A",
     "status": {
@@ -435,7 +552,8 @@
       "activePlaceholder": "You can also type in this session…",
       "inactivePlaceholder": "Start Full-duplex first…",
       "send": "Send question"
-    }
+    },
+    "qwenOnly": "Only Qwen full-duplex is currently supported. Configure Qwen Omni Realtime in Settings."
   },
   "settingsPanel": {
     "voice": {
@@ -475,8 +593,45 @@
       "channels": "Channels",
       "personalContext": "Knowledge",
       "archivedTasks": "Archived Tasks",
+<<<<<<< HEAD
       "experimental": "Experimental",
       "systemPluginRecovery": "System plugin recovery"
+||||||| e487e9a30
+      "experimental": "Experimental"
+=======
+      "experimental": "Experimental",
+      "appearance": "Appearance"
+    },
+    "appearance": {
+      "uiFont": "Interface font",
+      "uiFontDescription": "Font used for chat, settings and other interface text. Stored on this device only.",
+      "uiFontDefault": "Follow default",
+      "uiFontZhHei": "Chinese sans (Microsoft YaHei / PingFang)",
+      "uiFontZhSong": "Chinese serif (SimSun / Source Han Serif)",
+      "uiFontZhKai": "Chinese Kai (KaiTi / LXGW WenKai)",
+      "uiFontCustom": "Custom",
+      "customFontPlaceholder": "Font names, separated by commas",
+      "customFontHint": "Fonts are matched in order against locally installed fonts. Generic families such as sans-serif and monospace are also allowed.",
+      "fontSize": "Interface font size",
+      "fontSizeDescription": "Scales interface text proportionally. 100% matches the current default.",
+      "fontSizeSmaller": "Smaller (90%)",
+      "fontSizeDefault": "Default (100%)",
+      "fontSizeLarger": "Larger (110%)",
+      "fontSizeLarge": "Large (125%)",
+      "fontSizeXLarge": "Extra large (140%)",
+      "codeFont": "Code font",
+      "codeFontDescription": "Font for monospace content such as code blocks, commands and traces.",
+      "codeFontDefault": "Follow default",
+      "codeFontJetbrainsFira": "JetBrains Mono / Fira Code",
+      "codeFontCascadia": "Cascadia Code",
+      "codeFontCustom": "Custom",
+      "preview": "Preview",
+      "previewBody": "Interface text preview: organizing today's task summary for you.",
+      "previewCodeSample": "npm run build",
+      "resetTitle": "Restore default appearance",
+      "resetDescription": "Clears appearance preferences saved on this device and restores theme defaults.",
+      "resetButton": "Restore defaults"
+>>>>>>> origin/develop
     },
     "feedback": {
       "loadFailed": "Failed to load settings",
@@ -523,7 +678,8 @@
         "requestFailed": "The operation failed. Please try again later.",
         "sessionRestoreFailed": "Failed to restore the conversation. Refresh and try again.",
         "projectNameConflict": "Another project already uses this name, so the project cannot be restored. Rename that project first."
-      }
+      },
+      "designModeNote": "Design mode doesn't support archiving yet."
     },
     "systemPluginRecovery": {
       "description": "View the latest 50 system plugin state records. Every application startup and each successful install, uninstall, enable, disable, and restore operation is recorded.",
@@ -545,7 +701,16 @@
       "hideValue": "Hide value"
     },
     "general": {
+<<<<<<< HEAD
       "display": "Display",
+||||||| e487e9a30
+=======
+      "topicModelTitle": "Configure topic recommendation model",
+      "topicModelDisconnected": "Disconnected. Reconnect and try again.",
+      "topicModelSave": "Save and enable",
+      "topicModelProtocol": "Topic recommendations require an OpenAI-compatible model.",
+      "topicModelDelete": "Delete the topic recommendation model configuration and turn off topic recommendations.",
+>>>>>>> origin/develop
       "preferences": "Interface and connection",
       "language": "Language",
       "languageDescription": "Set the display language for the application interface.",
@@ -731,6 +896,12 @@
       "saveResponseInvalid": "The model-save response is invalid. Reload to verify the server state.",
       "savedApplied": "Saved and applied",
       "savedRestartRequired": "Saved; takes effect after restart",
+      "refreshTitle": "Background model refresh",
+      "refreshPending": "Configuration saved. Models are refreshing in the background; you can continue using settings.",
+      "refreshApplied": "Background model configuration is ready.",
+      "refreshFailed": "Saved configuration is retained, but the background model refresh failed. Check unpublished colleague edits and model settings, then publish or save again to retry.",
+      "refreshUnavailable": "Background refresh status is unavailable. Check the status again to confirm completion.",
+      "refreshCheckStatus": "Check status",
       "validationOk": "Connection test passed",
       "validationFailed": "Connection test failed",
       "validationFailedWithDetail": "Connection test failed: {{detail}}",
@@ -773,6 +944,7 @@
       "videoConfigTitle": "Configure video understanding model",
       "videoGenConfigTitle": "Configure video generation model",
       "visualGenConfigTitle": "Configure visual generation model",
+      "musicGenConfigTitle": "Configure audio generation model",
       "toggleCapability": "Toggle {{name}} capability",
       "saveAndEnable": "Save and enable",
       "savedRestartRequired": "Saved; takes effect after restart.",
@@ -823,6 +995,7 @@
       "teamOrganization": "Team Organization",
       "teamScheduledDispatch": "Scheduled dispatch",
       "skillPack": "Skill Packs",
+<<<<<<< HEAD
       "proactive": "Proactive recommendations",
       "proactiveLimits": "Recommendation limits",
       "proactiveLimitsDescription": "Up to {{daily}} per day and {{rounds}} conversation rounds per check.",
@@ -830,6 +1003,18 @@
       "multiModelCollaboration": "Multi-model collaboration",
       "toolOptimize": "Tool retrieval optimization",
       "designMode": "Design Mode"
+||||||| e487e9a30
+      "proactive": "Proactive recommendations",
+      "proactiveLimits": "Recommendation limits",
+      "proactiveLimitsDescription": "Up to {{daily}} per day and {{rounds}} conversation rounds per check.",
+      "proactiveLimitsDisabledDescription": "Enable proactive recommendations to configure these limits. Saved values: up to {{daily}} per day and {{rounds}} conversation rounds per check.",
+      "multiModelCollaboration": "Multi-model collaboration"
+=======
+      "multiModelCollaboration": "Multi-model collaboration",
+      "toolOptimize": "Tool retrieval optimization",
+      "designMode": "Design Mode",
+      "computerControl": "Computer control"
+>>>>>>> origin/develop
     },
     "taskAsr": {
       "dialogTitle": "Configure speech transcription model",
@@ -848,6 +1033,8 @@
       "videoSectionTitle": "Video model",
       "saveSettings": "Save settings",
       "loadError": "Unable to load full-duplex model settings",
+      "extensionUnavailable": "The full-duplex extension is unavailable. Check the extension search directories in the instance configuration.",
+      "httpRouteUnavailable": "The current HTTP connection does not support reading full-duplex settings.",
       "saveError": "Unable to save full-duplex model settings",
       "notConfigured": "Full-duplex model is not configured",
       "requiredFields": "Fields marked * are required. Complete them to save. Saved API keys do not need to be entered again.",
@@ -870,7 +1057,8 @@
       "replyLanguageZhCN": "Simplified Chinese",
       "replyLanguageEn": "English",
       "deleteTitle": "Delete full-duplex model settings",
-      "deleteConfirm": "This clears the saved full-duplex endpoint, model, and API key."
+      "deleteConfirm": "This clears the saved full-duplex endpoint, model, and API key.",
+      "requiredFields": "Fields marked * are required. Complete them to save. Saved API keys do not need to be entered again."
     },
     "fields": {
       "preferred_language": {
@@ -903,6 +1091,7 @@
       "jev_typesafe_api_key": {
         "title": "TypeSafe API key"
       },
+<<<<<<< HEAD
       "jev_custom_api_key": {
         "title": "Custom Jev API key"
       },
@@ -915,6 +1104,52 @@
       "embed_api_base": { "title": "API URL" },
       "embed_api_key": { "title": "API key" },
       "embed_model": { "title": "Model name" },
+||||||| e487e9a30
+      "model_name": { "title": "Model name", "placeholder": "e.g. glm-4.7" },
+      "alias": { "title": "Custom alias", "placeholder": "e.g. GLM-4.7 Production" },
+      "api_base": { "title": "API URL", "placeholder": "e.g. https://api.openai.com/v1" },
+      "api_key": { "title": "API key", "placeholder": "e.g. sk-..." },
+      "model_provider": { "title": "Model provider" },
+      "reasoning_level": { "title": "Reasoning" },
+      "embed_api_base": { "title": "API URL" },
+      "embed_api_key": { "title": "API key" },
+      "embed_model": { "title": "Model name" },
+=======
+      "jev_custom_api_key": {
+        "title": "Custom Jev API key"
+      },
+      "model_name": {
+        "title": "Model name",
+        "placeholder": "e.g. glm-4.7"
+      },
+      "alias": {
+        "title": "Custom alias",
+        "placeholder": "e.g. GLM-4.7 Production"
+      },
+      "api_base": {
+        "title": "API URL",
+        "placeholder": "e.g. https://api.openai.com/v1"
+      },
+      "api_key": {
+        "title": "API key",
+        "placeholder": "e.g. sk-..."
+      },
+      "model_provider": {
+        "title": "Model provider"
+      },
+      "reasoning_level": {
+        "title": "Reasoning"
+      },
+      "embed_api_base": {
+        "title": "API URL"
+      },
+      "embed_api_key": {
+        "title": "API key"
+      },
+      "embed_model": {
+        "title": "Model name"
+      },
+>>>>>>> origin/develop
       "asr_api_base": {
         "title": "Speech transcription API URL",
         "description": "Enter an OpenAI-compatible base URL or the full /audio/transcriptions URL.",
@@ -946,6 +1181,14 @@
         "title": "Automatic Skill Retrieval",
         "description": "Dynamically select the agent's skill discovery strategy based on the number of installed Skills."
       },
+      "topic_recommendation_enabled": {
+        "title": "Topic recommendations",
+        "description": "Prepare home-screen topic cards from conversation interests."
+      },
+      "prompt_suggestion_enabled": {
+        "title": "Prompt suggestions",
+        "description": "Show tappable next-input chips after a reply. Unset follows the code default."
+      },
       "ttse_enabled": {
         "title": "Local environment facts and task experience auto-evolution",
         "description": "Control the agent's learning of environment facts and task experience"
@@ -958,38 +1201,101 @@
         "title": "DuckDuckGo search",
         "description": "Enable the free DuckDuckGo search source."
       },
-      "free_search_bing_enabled": { "title": "Bing search", "description": "Enable the free Bing search source." },
-      "jina_api_key": { "title": "Jina API key" },
-      "bocha_api_key": { "title": "Bocha API key" },
-      "perplexity_api_key": { "title": "Perplexity API key" },
-      "serper_api_key": { "title": "Serper API key" },
-      "github_token": { "title": "GitHub access token" },
-      "vision_api_base": { "title": "API URL" },
-      "vision_api_key": { "title": "API key" },
-      "vision_model": { "title": "Model name" },
-      "vision_provider": { "title": "Model provider" },
-      "audio_api_base": { "title": "API URL" },
-      "audio_api_key": { "title": "API key" },
-      "audio_model": { "title": "Model name" },
-      "audio_provider": { "title": "Model provider" },
-      "video_api_base": { "title": "API URL" },
-      "video_api_key": { "title": "API key" },
-      "video_model": { "title": "Model name" },
-      "video_provider": { "title": "Model provider" },
-      "video_gen_provider": { "title": "Model provider" },
-      "video_gen_protocol": { "title": "Protocol" },
-      "video_gen_api_base": { "title": "API URL", "placeholder": "e.g. https://openrouter.ai/api/v1" },
-      "video_gen_api_key": { "title": "API key", "placeholder": "e.g. sk-..." },
-      "video_gen_model": { "title": "Model name", "placeholder": "e.g. bytedance/seedance-2.0-fast" },
+      "free_search_bing_enabled": {
+        "title": "Bing search",
+        "description": "Enable the free Bing search source."
+      },
+      "jina_api_key": {
+        "title": "Jina API key"
+      },
+      "bocha_api_key": {
+        "title": "Bocha API key"
+      },
+      "perplexity_api_key": {
+        "title": "Perplexity API key"
+      },
+      "serper_api_key": {
+        "title": "Serper API key"
+      },
+      "github_token": {
+        "title": "GitHub access token"
+      },
+      "vision_api_base": {
+        "title": "API URL"
+      },
+      "vision_api_key": {
+        "title": "API key"
+      },
+      "vision_model": {
+        "title": "Model name"
+      },
+      "vision_provider": {
+        "title": "Model provider"
+      },
+      "audio_api_base": {
+        "title": "API URL"
+      },
+      "audio_api_key": {
+        "title": "API key"
+      },
+      "audio_model": {
+        "title": "Model name"
+      },
+      "audio_provider": {
+        "title": "Model provider"
+      },
+      "video_api_base": {
+        "title": "API URL"
+      },
+      "video_api_key": {
+        "title": "API key"
+      },
+      "video_model": {
+        "title": "Model name"
+      },
+      "video_provider": {
+        "title": "Model provider"
+      },
+      "video_gen_provider": {
+        "title": "Model provider"
+      },
+      "video_gen_protocol": {
+        "title": "Protocol"
+      },
+      "video_gen_api_base": {
+        "title": "API URL",
+        "placeholder": "e.g. https://openrouter.ai/api/v1"
+      },
+      "video_gen_api_key": {
+        "title": "API key",
+        "placeholder": "e.g. sk-..."
+      },
+      "video_gen_model": {
+        "title": "Model name",
+        "placeholder": "e.g. bytedance/seedance-2.0-fast"
+      },
       "video_gen_enabled": {
         "title": "Video generation",
         "description": "Enable video generation tools (text-to-video); disabling it keeps the saved model configuration."
       },
-      "visual_gen_provider": { "title": "Model provider" },
-      "visual_gen_protocol": { "title": "Protocol" },
-      "visual_gen_api_base": { "title": "API URL", "placeholder": "e.g. https://openrouter.ai/api/v1" },
-      "visual_gen_api_key": { "title": "API key", "placeholder": "e.g. sk-..." },
-      "visual_gen_model": { "title": "Model name", "placeholder": "e.g. google/gemini-3.1-flash-image" },
+      "visual_gen_provider": {
+        "title": "Model provider"
+      },
+      "visual_gen_protocol": {
+        "title": "Protocol"
+      },
+      "visual_gen_api_base": {
+        "title": "API URL",
+        "placeholder": "e.g. https://openrouter.ai/api/v1"
+      },
+      "visual_gen_api_key": {
+        "title": "API key",
+        "placeholder": "e.g. sk-..."
+      },
+      "visual_gen_model": {
+        "title": "Model name",
+        "placeholder": "e.g. google/gemini-3.1-flash-image"
+      },
       "visual_gen_enabled": {
         "title": "Visual generation",
         "description": "Enable image generation tools (text-to-image); disabling it keeps the saved model configuration."
@@ -998,11 +1304,15 @@
         "title": "Global permission mode",
         "description": "Choose the shared guardrail mode for ordinary Agents and Teams."
       },
-      "a2ui_enabled": { "title": "Enable A2UI", "description": "Render supported results as interactive interfaces." },
+      "a2ui_enabled": {
+        "title": "Enable A2UI",
+        "description": "Render supported results as interactive interfaces."
+      },
       "rsi_enabled": {
         "title": "Enable RSI",
         "description": "Show the RSI entry in the sidebar to create and view RSI tasks for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry."
       },
+<<<<<<< HEAD
       "cua_agent_enabled": {
         "title": "Enable computer control",
         "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions."
@@ -1010,10 +1320,41 @@
       "trajectory_ui_diagnosis_enabled": {
         "title": "Enable trajectory diagnosis",
         "description": "Show the Diagnosis and Attribution view in a session to find why a run failed and get optimization suggestions. Turning it on records trajectory data automatically; only data recorded after it is turned on can be diagnosed. When off, trajectory pages are hidden."
+||||||| e487e9a30
+      "trajectory_ui_enabled": {
+        "title": "Enable trajectory UI",
+        "description": "Show Chat and Trajectory switching in Agent and Team modes and enable the trajectory observability data path."
+=======
+      "cua_agent_enabled": {
+        "title": "Enable computer control",
+        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions.",
+        "unavailableDescription": "Computer control is unavailable in this environment.",
+        "unavailableReasons": {
+          "native_build_failed": "Computer control is unavailable because the computer-use driver failed to build during installation.",
+          "backend_missing": "No usable computer control driver was found.",
+          "unsupported_platform": "Computer control is unavailable on this operating system or version."
+        }
+      },
+      "trajectory_ui_diagnosis_enabled": {
+        "title": "Enable trajectory diagnosis",
+        "description": "Show the Diagnosis and Attribution view in a session to find why a run failed and get optimization suggestions. Turning it on records trajectory data automatically; only data recorded after it is turned on can be diagnosed. When off, trajectory pages are hidden."
+>>>>>>> origin/develop
       },
       "team_organization_ui_enabled": {
-        "title": "Enable Team Organization",
-        "description": "Enable organization views and backend organization tools. Fully restart the backend and create a new session after changing this setting; existing organization tasks are not stopped immediately."
+        "title": "Enable Team Organization UI",
+        "description": "Show experimental multi-Team views and the organization task pool. This switch does not disable backend organization capabilities."
+      },
+      "comfyui_workflow_enabled": {
+        "title": "ComfyUI workflow integration",
+        "description": "Currently supports importing ComfyUI vLLM-Omni nodes and workflows into the design canvas."
+      },
+      "music_gen_enabled": {
+        "title": "Audio generation",
+        "description": "Generate background music (BGM) for the design canvas: planning adds a BGM node and compose mixes it in; disabling it keeps the saved model configuration."
+      },
+      "progressive_tool_optimize": {
+        "title": "Enable tool retrieval optimization",
+        "description": "When enabled, the model discovers tools on demand via the tool_search catalogue."
       },
       "comfyui_workflow_enabled": {
         "title": "ComfyUI workflow integration",
@@ -1030,6 +1371,14 @@
       "team_task_verification_enabled": {
         "title": "Enable reviewers",
         "description": "Completed tasks are reviewed by verifiers. Tasks that fail review are returned for rework."
+      },
+      "team_member_messaging_enabled": {
+        "title": "Enable member-to-member messaging",
+        "description": "Members can message each other directly (point-to-point, multicast, broadcast) instead of routing through the Leader. Task assignment and handoffs stay with the Leader and the scheduler."
+      },
+      "team_member_subtasks_enabled": {
+        "title": "Allow members to split tasks",
+        "description": "Members can split the task they are working on into subtasks for themselves or other existing members. The task pauses until its subtasks finish, then resumes with their results. Subtasks can nest up to 2 levels."
       },
       "task_full_duplex_enabled": {
         "title": "Enable Full-duplex in task chat",
@@ -1060,20 +1409,6 @@
       },
       "external_cli_agent_codex_cli_path": {
         "title": "Codex CLI path"
-      },
-      "proactive_recommendation_enabled": {
-        "title": "Enable proactive recommendations",
-        "description": "Allow recommendations to be sent when their conditions are met."
-      },
-      "proactive_recommendation_max_recommend_per_day": {
-        "title": "Daily recommendation limit",
-        "description": "Maximum proactive recommendations per user per day to avoid excessive interruption. Default: 10.",
-        "placeholder": "Enter an integer from 1 to 50"
-      },
-      "proactive_recommendation_max_rounds_per_tick": {
-        "title": "Conversation rounds per check",
-        "description": "Maximum recent conversation rounds read on each check to infer recommendation context. Default: 20.",
-        "placeholder": "Enter an integer from 1 to 50"
       },
       "multi_model_collaboration_enabled": {
         "title": "Multi-model collaboration",
@@ -1126,7 +1461,274 @@
     },
     "team": {
       "memberLanes": "Member trajectory lanes",
-      "members": "Members"
+      "members": "Members",
+      "workflowGroupAria": "Workflow {{name}}, {{count}} operators",
+      "workflowGroupOperators": "{{count}} operators",
+      "schedule": {
+        "title": "Dispatch control",
+        "collapse": "Collapse dispatch control",
+        "expand": "Expand dispatch control",
+        "summary": "{{tasks}} tasks · {{completed}} completed · {{reviews}} reviews · {{reworks}} reworks",
+        "anomalies": "{{count}} dispatch anomalies",
+        "blockedLegend": "Light gray: waiting on dependencies",
+        "blockedLegendHint": "A light gray segment means the task is waiting for prerequisite tasks and will continue when its dependencies clear.",
+        "assignee": "Assignee",
+        "assigneeValue": "Assignee: {{name}}",
+        "unassigned": "Unassigned",
+        "unknownMember": "Unknown member",
+        "closeTask": "Close task details",
+        "reviewRecords": "Review records",
+        "expandReviews": "Expand review records",
+        "collapseReviews": "Collapse review records",
+        "noReviews": "No reviews yet",
+        "reviewCount_one": "{{count}} Review",
+        "reviewCount_other": "{{count}} Reviews",
+        "phase": {
+          "pending": "Pending",
+          "blocked": "Waiting on dependencies",
+          "running": "Running",
+          "in_review": "In review",
+          "rework": "Rework",
+          "completed": "Completed",
+          "escalated": "Escalated",
+          "cancelled": "Cancelled",
+          "unknown": "Unknown"
+        },
+        "decision": {
+          "pass": "Pass",
+          "fail": "Fail",
+          "score": "Score {{value}}",
+          "pending": "Pending",
+          "pendingScore": "Pending score"
+        },
+        "event": {
+          "created": "Task created",
+          "updated": "Task updated",
+          "unblocked": "Dependencies unblocked",
+          "started": "Task started",
+          "submitted": "Submitted for review",
+          "vote": "Review vote",
+          "revision": "Rework requested",
+          "verified": "Review passed",
+          "completed": "Task completed",
+          "cancelled": "Task cancelled",
+          "escalated": "Review escalated",
+          "anomaly": "Dispatch anomaly",
+          "team_completed": "Team completed"
+        }
+      }
+    },
+    "analysis": {
+      "back": "Back to chat",
+      "diagnose": "Diagnose trajectory",
+      "selection": {
+        "fullScope": "Entire trajectory",
+        "selectAll": "Select all",
+        "clearSelectAll": "Clear selection",
+        "selectAllAgent": "Select all of {{name}}'s trajectory",
+        "clearSelectAllAgent": "Clear all of {{name}}'s trajectory",
+        "notePlaceholder": "Describe issues in the selected range (optional). e.g. answer missed the point; tool failure not retried; expected file missing",
+        "cancel": "Cancel",
+        "start": "Start",
+        "starting": "Starting…",
+        "summary": "{{count}} Agent(s) selected · {{spans}} node(s)",
+        "emptyNodes": "The selection has no complete trajectory record to diagnose. Records that are not fully covered (start and end) were left out.",
+        "lastTurn": "The selection includes the main agent's last response. Artifact evaluation and process-anomaly diagnosis will be attempted.",
+        "nodeLimit": "The selection contains {{count}} trajectory records, over the limit of {{limit}}. Narrow the range.",
+        "running": "A diagnosis is already in progress",
+        "noData": "There is no trajectory to diagnose yet",
+        "replay": "Read-only replay cannot be diagnosed; exit replay first"
+      },
+      "summary": "{{agents}} Agents · {{spans}} OTel spans · {{nodes}} node(s)",
+      "teamSummary": "{{members}} members · {{completed}}/{{tasks}} tasks completed · {{reviews}} reviews · {{spans}} OTel spans · {{nodes}} node(s)",
+      "toolbar": {
+        "scale": "Trajectory scale",
+        "time": "Time",
+        "equal": "Equal width",
+        "tokens": "Tokens",
+        "duration": "Duration",
+        "turns": "Turns",
+        "tools": "Tools",
+        "folds": "Turns/Tools",
+        "expandTurns": "Expand all turns",
+        "collapseTurns": "Collapse all turns",
+        "expandTools": "Expand all tool calls",
+        "collapseTools": "Collapse all tool calls",
+        "import": "Import",
+        "export": "Export",
+        "attribution": "Open-source attribution",
+        "search": "Search trajectory",
+        "searchPlaceholder": "Search by keyword"
+      },
+      "tabs": {
+        "aria": "Trajectory analysis sub-pages",
+        "trajectory": "Trajectory",
+        "diagnosis": "Diagnosis"
+      }
+    },
+    "diagnosis": {
+      "entry": "Trajectory analysis",
+      "noteLabel": "User feedback: describe issues in the selected range (optional)",
+      "fullScopeBusy": "The session is running; the full trajectory cannot be diagnosed",
+      "cancel": "Cancel diagnosis",
+      "selectionHint": "Drag a range on the time axis, or use Select all for one agent's whole lane. When selected, uncheck the box to clear that agent's pick.",
+      "includeAgent": "Selected: {{name}}",
+      "includeAgentHint": "Uncheck to clear {{name}}'s current selection",
+      "timeAxis": "Time axis",
+      "turnMarker": "Turn {{turn}}",
+      "records": "Diagnosis records",
+      "noRecords": "No diagnosis yet",
+      "delete": "Delete",
+      "deleteConfirm": "Delete this diagnosis record?",
+      "scopeKind": {
+        "full": "Full trajectory",
+        "selection": "Selected range"
+      },
+      "status": {
+        "running": "Running",
+        "completed": "Completed",
+        "failed": "Failed",
+        "cancelled": "Cancelled",
+        "interrupted": "Interrupted"
+      },
+      "outletsPending": "Suggestions appear here once the diagnosis finishes",
+      "detailsPending": "The evaluation and findings show up here",
+      "stageStatus": {
+        "pending": "Waiting",
+        "running": "Running",
+        "completed": "Done",
+        "failed": "Failed",
+        "skipped": "Skipped"
+      },
+      "rootCauses": "Findings",
+      "category": {
+        "skill_defect": "Skill defect",
+        "ttse_success": "Experience (succeeded)",
+        "ttse_partial": "Experience (partly done)",
+        "ttse_fail": "Experience (failed)",
+        "tool_or_env": "Tool or environment",
+        "model_capability": "Model capability",
+        "requirement_unclear": "Unclear requirement",
+        "other": "Other"
+      },
+      "confidence": "Confidence {{value}}%",
+      "highlight": "Highlight in trajectory",
+      "suggestions": "Diagnosis suggestions",
+      "noSuggestions": "This diagnosis has no actionable suggestions",
+      "details": "Diagnosis details",
+      "resultTabs": "Diagnosis details and suggestions",
+      "suggestionsReady": "Suggestions ready",
+      "dismiss": "Dismiss",
+      "note": "User feedback",
+      "object": "Diagnosis target",
+      "objectAgents": "Agents",
+      "objectFull": "Entire trajectory",
+      "objectTime": "Time",
+      "emptyHint": "No diagnosis yet. Select \"Diagnose trajectory\" at the top right to start.",
+      "loadingRecord": "Loading diagnosis…",
+      "plannedStage": {
+        "task_parse": "Parse task",
+        "diagnose": "Diagnose",
+        "attribute": "Attribute causes"
+      },
+      "recordSelect": {
+        "aria": "Diagnosis records",
+        "history": "Diagnosis history",
+        "placeholder": "Select a diagnosis",
+        "search": "Search by time or keyword",
+        "noMatch": "No matching diagnosis",
+        "confirmDelete": "Confirm delete",
+        "cancelDelete": "Cancel",
+        "deleteRunning": "A diagnosis in progress cannot be deleted"
+      },
+      "rewardResult": "Artifact evaluation",
+      "rewardDimensions": "{{count}} scored dimensions, {{perfect}} of them need no improvement; select a category to see its dimensions, the rest are broken down in the findings",
+      "rewardTotal": "Total {{score}}",
+      "artifactFix": "Artifact fix",
+      "skills": "Skill evolution",
+      "ttse": "Experience",
+      "fillInput": "Fill into composer",
+      "filled": "Filled into the composer",
+      "expandAll": "Show all",
+      "collapse": "Show less",
+      "signalTier": {
+        "perfect": "Met",
+        "fair": "Needs work",
+        "weak": "Not met"
+      },
+      "signalSource": {
+        "keyword_tool": "Tool output",
+        "keyword_user": "User message",
+        "reward": "Reward",
+        "user": "User note"
+      },
+      "signalSourceLabel": "Source: {{source}}",
+      "attributionLabel": "{{kind}}",
+      "causeTopic": "{{category}}: {{dimension}}",
+      "findingDimension": "Dimension",
+      "findingProblem": "Problem",
+      "findingReason": "Cause",
+      "attributionKind": {
+        "artifact": "Artifact",
+        "skill": "Skill",
+        "experience": "Experience"
+      },
+      "signalScore": "Score {{score}}",
+      "signalSurfacedAt": "Surfaced at {{nodes}}",
+      "causeAt": "At {{nodes}}",
+      "evidence": "Based on",
+      "dimension": "Dimension",
+      "requestCount": "{{count}} model requests",
+      "objectSteps": "Scope",
+      "objectStepsCount": "{{count}} node(s)",
+      "objectExcludedRunning": "{{count}} steps were still running when the diagnosis started and are not included",
+      "objectTask": "Task",
+      "objectSummary": "Trajectory summary",
+      "sectionExpand": "Expand",
+      "sectionCollapse": "Collapse",
+      "findingCauses": "{{count}} artifact finding(s)",
+      "findingSkill": "{{count}} skill finding(s)",
+      "findingExperience": "{{count}} experience finding(s)",
+      "findingJoin": ", ",
+      "findingWithEvolution": "{{causes}}, plus {{evolution}}",
+      "findingLegacyCauses": "{{count}} legacy finding(s)",
+      "relatedSignals": "Related signals",
+      "suggestionsUnfinished": "The diagnosis did not finish, so there are no suggestions",
+      "process": "Diagnosis process",
+      "processSteps": "{{count}} steps",
+      "triggerTtse": "Trigger experience generation",
+      "triggeringTtse": "Triggering…",
+      "ttseOutcome": {
+        "success": "Task completed",
+        "fail": "Task not completed",
+        "partial": "Task partly completed"
+      },
+      "ttseHint": "Extract reusable experience from this trajectory; TTSE generates and saves it in the background",
+      "ttseTriggeredNotice": "TTSE has been triggered and will finish generating and saving the experience in the background",
+      "ttseReady": "Experience available",
+      "skillFillPrefix": "Evolve the relevant skill according to the following suggestions:",
+      "skillSelectAll": "Select all",
+      "skillSelectOne": "Select {{name}}",
+      "skillFillSelected": "Fill selected ({{count}})",
+      "artifactFillPrefix": "Optimize according to the following suggestions:",
+      "ttseResult": {
+        "triggered": "Triggered",
+        "failed": "Trigger failed"
+      },
+      "blocked": "Unavailable: {{reason}}",
+      "errors": {
+        "FEATURE_DISABLED": "Trajectory diagnosis is turned off",
+        "UNSUPPORTED_SESSION_MODE": "This session mode does not support diagnosis",
+        "SESSION_NOT_FOUND": "Session not found",
+        "DIAGNOSIS_ALREADY_RUNNING": "A diagnosis is already running",
+        "FULL_SCOPE_WHILE_BUSY": "The session is running; the full trajectory cannot be diagnosed",
+        "EMPTY_SCOPE": "No diagnosable steps in the selected range",
+        "MODEL_UNAVAILABLE": "Diagnosis model unavailable; configure a model first",
+        "AGENT_UNAVAILABLE": "Agent is unavailable",
+        "TTSE_NOT_SUPPORTED": "This session does not support TTSE experience generation",
+        "TTSE_UNAVAILABLE": "TTSE is not enabled for this session",
+        "default": "Operation failed"
+      }
     },
     "analysis": {
       "back": "Back to chat",
@@ -1385,6 +1987,36 @@
     "groupChat": "Group Chat",
     "allMembers": "all",
     "noGroupMessages": "No group messages",
+    "groupChatTimeline": {
+      "scheduler": "Scheduler",
+      "taskFallback": "Task {{id}}",
+      "handoff": {
+        "task_start": "Start",
+        "task_start_plan": "Start (plan first)",
+        "review_request": "Review requested",
+        "review_renudge": "Review reminder",
+        "rework": "Rework",
+        "rework_with_limit": "Rework (up to {{max}} rounds)",
+        "rework_summary": "Rework summary requested",
+        "task_assigned": "Task assigned",
+        "other": "Scheduler message"
+      },
+      "taskEvents": {
+        "created": "created a task",
+        "createdMany": "created {{count}} tasks",
+        "claimed": "claimed the task",
+        "claimedPassive": "Task claimed",
+        "submitted_for_review": "submitted the task for review",
+        "submitted_for_reviewPassive": "Task submitted for review",
+        "verified": "Task passed review",
+        "revision_requested": "Review failed, task sent back for rework",
+        "completed": "completed the task",
+        "completedPassive": "Task completed",
+        "cancelled": "Task cancelled",
+        "released": "Task released, waiting to be claimed again",
+        "revoked": "Task revoked"
+      }
+    },
     "memberTasksTitle": "Tasks executed by {{member}}",
     "memberTasks": "Their tasks",
     "noProcessData": "No execution process data for this member",
@@ -1427,6 +2059,8 @@
       "running": "Compressing context",
       "completed": "Context compression completed {{count}} time(s)",
       "failed": "Context compression failed",
+      "cancelled": "Context compression cancelled",
+      "paused": "Context compression paused",
       "close": "Close context compression notice"
     },
     "elapsed": {
@@ -1503,13 +2137,52 @@
     },
     "org": {
       "tab": "Organization",
-      "title": "Task Pool & Organization",
+      "title": "Organization",
+      "details": "Details",
+      "taskTree": "Organization tasks",
+      "treeProgress": "Completed {{completed}} / {{total}}",
+      "descriptionExcerpt": "Task description (excerpt)",
+      "requiredCapabilities": "Required capabilities",
+      "capabilities": "Team capabilities",
+      "assignedBy": "Assigned by",
+      "updatedAt": "Last updated",
+      "aggregationMode": "Aggregation",
+      "executionModel": "Execution model",
+      "failureReason": "Failure reason",
+      "rootTask": "Root task",
+      "recreatedFrom": "Recreated from",
+      "requiredChanges": "Required changes",
+      "aggregation": {
+        "HIERARCHICAL": "Hierarchical",
+        "SUMMARY_TEAM": "Summary Team"
+      },
+      "failure": {
+        "EXECUTION_FAILED": "Execution failed",
+        "SOURCE_FAILED": "Source task failed",
+        "SUMMARY_PROVISION_FAILED": "Summary Team provisioning failed",
+        "CANCELLED": "Cancelled",
+        "EXPIRED": "Expired"
+      },
+      "ownerLabel": "Owner",
+      "stateRunning": "Running",
+      "stateIdle": "Standby",
+      "status": {
+        "CANCELLED": "Cancelled",
+        "EXPIRED": "Expired",
+        "OPEN": "Unclaimed",
+        "DELEGATED": "Delegated",
+        "WAITING_SOURCES": "Awaiting results",
+        "CLAIMED": "Claimed",
+        "IN_PROGRESS": "In progress",
+        "COMPLETED": "Completed",
+        "FAILED": "Failed"
+      },
       "refresh": "Refresh",
       "loading": "Loading…",
-      "empty": "This Team is not bound to an organization",
+      "empty": "No organization yet",
       "noOrganization": "No organization bound",
       "noTeam": "No Team is available in this session",
-      "loadFailed": "Failed to load organization information",
+      "loadFailed": "Failed to load organization",
       "organizationId": "Organization ID",
       "displayName": "Name",
       "description": "Description",
@@ -1518,7 +2191,7 @@
       "leadTeam": "Team",
       "leadMember": "Leader",
       "metadata": "Metadata",
-      "taskPool": "Task Pool",
+      "taskPool": "Tasks",
       "taskPoolEmpty": "Task pool is empty",
       "taskId": "Task ID",
       "taskTitle": "Title",
@@ -1623,7 +2296,8 @@
       "stopSharing": "Stop screen sharing",
       "listening": "Listening",
       "connecting": "Connecting",
-      "exit": "Exit full-duplex voice"
+      "exit": "Exit full-duplex voice",
+      "startSharing": "Share screen"
     },
     "slashPicker": {
       "commands": "Commands",
@@ -1636,6 +2310,7 @@
     "placeholder": "What can I do for you? Type \"/\" to quickly reference skills and commands",
     "placeholderCompacting": "Context compression in progress. Messages are temporarily disabled",
     "modelNotConfigured": "No model is configured yet. Configure one in Settings → Models, or sign in to get the limited-time free models.",
+    "modelNameAmbiguousHint": "Multiple model entries share this name, so the target model cannot be determined. For a conversation, re-select a specific model in the model picker. For a scheduled task, edit the task and re-pick its model, or delete and recreate the task (changing the model inside the run session does not update the task).",
     "sessionArchived": "This session has been archived. Restore it or start a new session to continue.",
     "sessionDeleted": "This session has been deleted and can no longer be used.",
     "sessionOperationInProgress": "An archive or delete operation is in progress for this session. Please try again later.",
@@ -1665,7 +2340,40 @@
     },
     "welcomeSuggestions": {
       "journey": "Let's begin a brand-new journey!",
-      "skills": "Can you tell me what skills you have?"
+      "skills": "Can you tell me what skills you have?",
+      "explore": "What would be useful to explore today?",
+      "nextStep": "Help me turn an idea into a practical next step."
+    },
+    "topicStarter": {
+      "statusMissingConfiguration": "Topic recommendations are unavailable. Check Settings.",
+      "recommendedForYou": "Recommended for you",
+      "heading": "What would you like to explore today?",
+      "notInterested": "Skip for now",
+      "dateAndVersion": "See this day",
+      "openDateAndVersion": "Open the background for this day",
+      "weiboHotList": "Weibo hot searches",
+      "baiduHotList": "Baidu hot searches",
+      "hotListRank": "No. {{rank}}",
+      "hotListListedAt": "Listed at {{time}}",
+      "viewHotListEntry": "See this trending item: {{source}}",
+      "hotListEntry": "Trending",
+      "openNewsSearch": "Open related coverage for this hot search",
+      "searchRelatedNews": "View related coverage",
+      "statusPreparing": "Getting topics ready. You can start chatting now.",
+      "statusPreparingWithCards": "Getting topics ready. You can start chatting now.",
+      "statusUpdateIncomplete": "Getting topics ready. You can start chatting now.",
+      "statusNeedsSettings": "Topic recommendations are unavailable. Check Settings.",
+      "statusNoCards": "Getting topics ready. You can start chatting now.",
+      "providerRefusal": "Topic recommendations are unavailable. Check Settings.",
+      "openSettings": "Check settings",
+      "trySettings": "Try it",
+      "disabledHintWithCards": "Want topics that understand you better? Turn on topic recommendations in Settings - General."
+    },
+    "promptSuggestionBox": {
+      "label": "Next: ",
+      "sendHint": "Click to send this suggestion",
+      "dismiss": "Dismiss suggestion “{{text}}”",
+      "placeholder": "{{text}} (Tab to fill)"
     },
     "newSession": "New Session",
     "sessionCreated": "Session created",
@@ -1798,6 +2506,7 @@
     "extension": "Extensions",
     "extensionSearchPlaceholder": "Search by keyword",
     "extensionEmpty": "No results",
+    "ttseWorkModeNotice": "TTSE experience learning is built into Work mode. To enable it, turn on “<strong>Local environment facts and task experience auto-evolution</strong>” in Settings.",
     "extensionConnect": "Connect",
     "extensionManagePlugins": "Manage My Plugins",
     "extensionManageMcps": "Manage My Connectors",
@@ -1835,6 +2544,13 @@
       "currentRound": "Compacting current round…",
       "roundLevel": "Full compaction…"
     },
+    "contextCompressionElapsed": {
+      "seconds": "{{seconds}}s elapsed",
+      "minutesSeconds": "{{minutes}}m {{seconds}}s elapsed",
+      "hoursMinutes": "{{hours}}h {{minutes}}m elapsed"
+    },
+    "contextCompressionCancelled": "Context compression cancelled; it will be re-evaluated on the next request",
+    "contextCompressionPaused": "Context compression paused; it will be re-evaluated when the task resumes",
     "historyPager": {
       "loadedOfTotal": "Loaded {{loaded}} / {{total}} pages",
       "loadingMore": "Loading...",
@@ -1883,17 +2599,25 @@
       "readFileFailed": "Failed to read file: {{name}}",
       "readImageFailed": "Failed to read image: {{name}}",
       "filePickerUnsupported": "Cannot open local file picker in this environment (please ensure jiuwenswarm is running locally and restarted with the latest backend)",
-      "filePickerFailed": "Failed to open file picker"
+      "filePickerFailed": "Failed to open file picker",
+      "preparingFiles": "Preparing files…",
+      "preparingFilesHint": "Please wait while files are read",
+      "cancelPreparing": "Cancel waiting"
     },
     "uploading": "Uploading...",
     "uploadFailed": "Upload failed",
+    "steerImagesOnly": "Immediate input supports uploaded images only. Wait for image uploads to finish; other files must remain queued.",
+    "steerImageUnavailable": "This Agent cannot read images yet. Enable image input for the main model or configure an image understanding tool, then try again.",
+    "steerDeliveryFailed": "Could not combine the original task and supplemental input into a complete answer. Please try again.",
     "retry": "Retry",
     "deleteLongPress": "Delete, long press for more actions",
     "deleteAttachment": "Delete attachment",
     "delete": "Delete",
     "clearAttachments": "Clear attachments",
     "selectTeamMembers": "Select team members",
-    "noTeamMembersAvailable": "No team members available"
+    "noTeamMembersAvailable": "No team members available",
+    "moaReferenceRunning": "Running reference models…",
+    "moaVerifying": "Evaluating task progress…"
   },
   "autoHarness": {
     "busy": "An Auto-Harness task is already running",
@@ -1975,7 +2699,7 @@
       "active": "Active",
       "paused": "Paused",
       "completed": "Completed",
-      "blocked": "Blocked",
+      "blocked": "Waiting",
       "disconnected": "Disconnected",
       "unknown": "Status unknown"
     },
@@ -2043,7 +2767,25 @@
     }
   },
   "sessionSidebar": {
-    "newSession": "New session"
+    "newSession": "New session",
+    "enterpriseContext": {
+      "user": "User",
+      "userContext": "User context",
+      "modeAria": "Context mode",
+      "selectAgent": "Select agent",
+      "custom": "Custom",
+      "agentOrgLabel": "Agent | organization | cluster",
+      "botId": "bot_id",
+      "groupId": "group_id",
+      "userId": "user_id",
+      "jiuwenclawId": "jiuwenclaw_id",
+      "apply": "Apply",
+      "switching": "Switching...",
+      "logout": "Log out",
+      "customRequired": "bot_id, group_id, user_id and jiuwenclaw_id are required",
+      "noMatch": "No matches",
+      "pleaseSelect": "Select"
+    }
   },
   "offloadFiles": {
     "title": "Offload Files",
@@ -2211,6 +2953,21 @@
       "appNameTemplate": "Lark App {{index}}",
       "appNameLabel": "App name",
       "appNamePlaceholder": "App name"
+    },
+    "dingtalkApps": {
+      "defaultAppName": "Default DingTalk App",
+      "unnamedAppName": "Unnamed DingTalk App",
+      "appNameTemplate": "DingTalk App {{index}}",
+      "appNameLabel": "App name",
+      "appNamePlaceholder": "App name",
+      "robotCodePlaceholder": "Leave empty to use client_id",
+      "boundTag": "Bound to a colleague",
+      "ordinaryHint": "An app without a colleague goes to the ordinary assistant; keep at most one. Bind colleagues from their profile page.",
+      "boundHint": "This app is bound to a colleague. You can change the secret, allowlist and enabled state; deleting it only removes this connection and keeps the colleague's history and workspace.",
+      "boundClientIdHint": "A bound app cannot change its client_id; rebind from the colleague's profile to use another app.",
+      "invalidAllowFrom": "The saved allowlist is malformed, so this app does not start. Enter the allowlist again (one staff ID per line) and save; the stored value is kept until you do.",
+      "invalidAllowFromTag": "Allowlist needs fixing",
+      "invalidAllowFromClientIdHint": "Fix the allowlist before changing the client_id."
     }
   },
   "modelSetupGuide": {
@@ -2356,16 +3113,17 @@
         "failed": "Installation failed",
         "running": "Installing"
       }
-    },
-    "proactive": {
-      "typeLabel": {
-        "skill_recommend": "Skill Recommend",
-        "task_reminder": "Task Reminder",
-        "need_exploration": "Explore"
-      }
     }
   },
   "cron": {
+    "execution": {
+      "pending": "Waiting to run",
+      "running": "Executing",
+      "awaiting_approval": "Awaiting approval",
+      "succeeded": "Last run completed",
+      "failed": "Last run failed",
+      "startFailed": "Scheduled task “{{name}}” could not start: {{reason}}"
+    },
     "title": "Scheduled Task Management",
     "subtitle": "Manage scheduled tasks with cron expressions, including creating, enabling, and deleting tasks",
     "create": "Create",
@@ -2379,9 +3137,7 @@
     "disable": "Disable",
     "loading": "Loading scheduled tasks...",
     "deleteConfirm": "Are you sure you want to delete this task?",
-    "autoManaged": "Auto-managed",
-    "autoManagedHint": "This task is auto-created/deleted by the proactive recommendation toggle (Settings → Proactive Recommendation). Only the cron expression and timezone can be edited here; other fields (name/status/description/offset/channel) are read-only. To remove it, turn off the toggle in Settings.",
-    "autoManagedToggleDisabled": "The toggle of an auto-managed task is controlled by Settings → Proactive Recommendation and cannot be switched here.",
+    "autoManagedToggleDisabled": "This field cannot be edited right now.",
     "pageTitle": "Scheduled Tasks",
     "pageSubtitle": "Configure automated tasks that run on schedule.",
     "actions": {
@@ -2431,7 +3187,8 @@
       "more": "More",
       "history": "Run history",
       "triggeredSessions": "Run history",
-      "noTriggeredSessions": "No trigger records"
+      "noTriggeredSessions": "No trigger records",
+      "viewMore": "View more ({{count}} remaining)"
     },
     "empty": {
       "createButton": "Create scheduled task",
@@ -2469,6 +3226,10 @@
       "placeholderProject": "-",
       "placeholderEffectiveDate": "Select effective date",
       "missingFieldsHint": "Still needed: {{fields}}",
+      "modelUnavailable": "The selected model “{{model}}” is unavailable. Check the model configuration.",
+      "modelDefaultHintNamed": "No model selected. The task will use the default model {{model}} when it fires.",
+      "modelDefaultHintGeneric": "No model selected. The task will run with the system default model when it fires.",
+      "modelDefaultHintEmpty": "No available model detected. The task may fail when it fires.",
       "scheduleAlreadyExpiredHint": "The selected run time is already in the past, please choose another",
       "charCount": "{{count}}/{{max}}",
       "maxLengthReachedHint": "Maximum length reached ({{max}} characters)"
@@ -2615,8 +3376,7 @@
       "updated": "Task updated successfully",
       "deleted": "Task deleted successfully",
       "statusUpdated": "Task status updated successfully",
-      "runNow": "Task triggered successfully",
-      "proactiveRunNow": "Recommendation check started in the background. It will decide whether to recommend anything and notify you of the result."
+      "runNow": "Task triggered successfully"
     },
     "preview": {
       "loading": "Loading next runs...",
@@ -2634,6 +3394,7 @@
       "toggleFailed": "Failed to update task status",
       "previewFailed": "Failed to preview next runs",
       "runNowFailed": "Failed to trigger the task immediately",
+      "sessionOpenFailed": "The task was triggered, but its session could not be opened. Open it from the task's session list.",
       "expiredCannotRunNow": "Task has expired and cannot be run",
       "disabledCannotRunNow": "Task is stopped and cannot be run",
       "expiredCannotEnable": "Task has expired and cannot be enabled",
@@ -3024,11 +3785,13 @@
     }
   },
   "skills": {
+    "inventoryBusy": "The skill library is busy. Please try again shortly.",
     "title": "Skills",
     "subtitle": "Manage and install skills available to the agent.",
     "tabs": {
       "mySkills": "My Skills",
       "marketplace": "Marketplace",
+      "enterpriseSources": "Enterprise sources",
       "skillRetrieval": "Skill Retrieval",
       "skillGraph": "Skill Graph"
     },
@@ -3036,13 +3799,42 @@
       "all": "All",
       "enabled": "Enabled",
       "disabled": "Disabled",
-      "builtin": "Builtin"
+      "builtin": "Builtin",
+      "prebuilt": "Prebuilt",
+      "user": "User-installed",
+      "local": "Local"
     },
     "mySkillsGroups": {
       "added": "Added Skills",
+      "prebuilt": "Prebuilt Skills",
       "builtin": "Built-in Skills",
+      "local": "Local Skills",
       "skillPack": "Skill Packs"
     },
+<<<<<<< HEAD
+||||||| e487e9a30
+    "publishFilter": {
+      "all": "All",
+      "published": "Published",
+      "unpublished": "Unpublished"
+    },
+=======
+    "mySkillsKindTabs": {
+      "skill": "Skills",
+      "team": "Team Skills",
+      "multimodal": "Multimodal",
+      "packs": "Skill Packs"
+    },
+    "mySkillsKindEmpty": {
+      "skill": "No skills yet",
+      "team": "No team skills yet",
+      "multimodal": "No multimodal skills yet",
+      "packs": "No skill packs yet"
+    },
+    "noPrebuiltSkills": "No prebuilt skills",
+    "noUserSkills": "No user-installed skills",
+    "noLocalSkills": "No local skills",
+>>>>>>> origin/develop
     "skillTypes": {
       "skill": "Skill Pack",
       "skillpack": "Skill Pack",
@@ -3107,6 +3899,7 @@
       "installing": "Installing...",
       "uninstall": "Uninstall",
       "uninstalling": "Uninstalling...",
+      "update": "Update",
       "importLocal": "Import Local Skill",
       "sourceManager": "Source Manager",
       "create": "Create",
@@ -3202,6 +3995,7 @@
       "cancel": "Cancel"
     },
     "builtIn": "Built-in",
+    "enterprisePrebuilt": "Prebuilt",
     "status": {
       "installed": "Installed",
       "notInstalled": "Not installed",
@@ -3214,7 +4008,31 @@
       "clawhub": "ClawHub",
       "skillnet": "SkillNet",
       "teamskillshub": "TeamSkillsHub",
-      "unknown": "Unknown"
+      "unknown": "Unknown",
+      "swarmskillhub": "SwarmSkillHub",
+      "author": "Author",
+      "rating": "Rating",
+      "downloads": "Downloads",
+      "localVersion": "Local version",
+      "updatedAt": "Updated",
+      "searchPlaceholder": "Search skills",
+      "noResults": "No matching skills",
+      "noSources": "No skill sources available. Contact your administrator.",
+      "checkUpdates": "Check updates",
+      "prev": "Previous",
+      "next": "Next",
+      "replaceConfirm": "Skill {{name}} is already installed. Overwrite?",
+      "replaceConfirmTitle": "Confirm overwrite",
+      "errors": {
+        "loadFailed": "Failed to load skill sources",
+        "searchFailed": "Search failed",
+        "installFailed": "Install failed",
+        "updateFailed": "Update failed"
+      },
+      "messages": {
+        "installed": "Installed: {{name}}",
+        "updated": "Updated: {{name}}"
+      }
     },
     "sourceLabel": "Source",
     "statusLabel": "Status",
@@ -3250,6 +4068,7 @@
     "detailError": "Failed to load details",
     "detail": {
       "basicInfo": "Basic Info",
+      "version": "Version",
       "versionManage": "Version Management",
       "versionsLoadFailed": "Failed to load versions",
       "noVersions": "No version records",
@@ -3691,7 +4510,11 @@
       "mineGroup": "Expert Teams",
       "mineLabel": "My asset type"
     },
-    "source": { "builtin": "Official", "local": "Mine", "hub": "Hub" },
+    "source": {
+      "builtin": "Official",
+      "local": "Mine",
+      "hub": "Hub"
+    },
     "categoryLabel": "Expert categories",
     "categoryAll": "All",
     "loadMore": "Load more content",
@@ -3718,7 +4541,15 @@
       "Engineering": "Engineering",
       "Life": "Life",
       "Custom": "Custom",
-      "Other": "Other"
+      "Other": "Other",
+      "Office Productivity": "Office Productivity",
+      "Software Development": "Software Development",
+      "Data Science & Research": "Data Science & Research",
+      "Multimodal & Media": "Multimodal & Media",
+      "Content Creation": "Content Creation",
+      "Lifestyle & Health": "Lifestyle & Health",
+      "Finance & Wealth Management": "Finance & Wealth Management",
+      "Compliance & Legal": "Compliance & Legal"
     },
     "actions": {
       "working": "Working",
@@ -3756,6 +4587,7 @@
       "detailError": "Unable to load Expert details. Try again.",
       "hubAssetChanged": "This expert has changed or been removed on Hub. The catalog is refreshing; go back and select it again.",
       "actionError": "The action could not be completed. Try again in a moment.",
+      "agentAccessDenied": "You are outside the authorized scope. The action was denied.",
       "duplicateName": "An Expert with this name already exists. Choose a different name and try again.",
       "agentUnavailable": "This Expert is no longer available. Refresh the list and try again.",
       "agentDefinitionUnavailable": "This Expert definition is incomplete and cannot be used right now.",
@@ -3921,7 +4753,10 @@
         "delete": "Delete",
         "saving": "Saving…"
       },
-      "card": { "open": "Open {{name}} details", "actions": "Actions for {{name}}" },
+      "card": {
+        "open": "Open {{name}} details",
+        "actions": "Actions for {{name}}"
+      },
       "states": {
         "loadError": "Unable to load the Expert Team list. Try again.",
         "detailError": "Unable to load Expert Team details. Try again.",
@@ -3938,7 +4773,8 @@
         "uploadError": "Unable to import the Expert Team package. Check the file and try again.",
         "catalogEmpty": "No Expert Teams to show",
         "mineEmpty": "You do not have any Expert Teams yet",
-        "noMatch": "No matching Expert Teams found"
+        "noMatch": "No matching Expert Teams found",
+        "uploadImportedInstallFailed": "Expert Team package {{id}} was imported, but installation failed. Retry installation in My Expert Teams."
       },
       "detail": {
         "membersTitle": "Expert Team members",
@@ -4021,6 +4857,8 @@
     "notPreviewable": "This file cannot be previewed. Only Markdown/JSON (.md/.mdx/.json) files are supported."
   },
   "chatUi": {
+    "toggleOverview": "Overview",
+    "expandDetails": "Details panel",
     "copyMessage": "Copy message",
     "copied": "Copied",
     "usageInput": "Input",
@@ -4031,6 +4869,12 @@
     "forkFromMessage": "Create a conversation branch from this message",
     "forkFromMessageFailed": "Failed to create a conversation branch. Try again.",
     "fileExpired": "Expired",
+    "saveSkill": "Save",
+    "saveSkillSaving": "Saving...",
+    "saveSkillSaved": "Saved",
+    "saveSkillSuccess": "Saved successfully",
+    "saveSkillNoSession": "No active conversation. The Skill cannot be saved.",
+    "saveSkillOverwriteConfirm": "{{message}}\nOverwrite the existing Skill?",
     "fileTypeDocument": "Document",
     "fileTypeSpreadsheet": "Spreadsheet",
     "fileTypePresentation": "Presentation",
@@ -4173,7 +5017,7 @@
         "userRejected": "User rejected",
         "manual": "Manual review required",
         "denied": "Denied",
-        "blocked": "Blocked",
+        "blocked": "Waiting",
         "hostRevalidationFailed": "Host validation failed",
         "inProgress": "Reviewing",
         "timedOut": "Review timed out",
@@ -4302,6 +5146,7 @@
     "wsError": "WebSocket connection error",
     "connectionClosedWithCode": "Connection closed ({{code}})",
     "connectionClosed": "Connection closed",
+    "workerExecutionInterrupted": "The runtime restarted and interrupted this task. Check its results before starting another run.",
     "connectionUnavailable": "Connection unavailable",
     "requestTimeout": "Request timed out",
     "requestAborted": "Request aborted",
@@ -4311,6 +5156,7 @@
     "pauseFailed": "Pause failed",
     "cancelFailed": "Cancel failed",
     "supplementFailed": "Supplement failed",
+    "supplementAttachmentsUnsupported": "Messages with attachments cannot be sent immediately. Click \"Edit\" to remove the attachments, then send again.",
     "resumeFailed": "Resume failed",
     "submitAnswerFailed": "Failed to submit answer",
     "unknownError": "Unknown error",
@@ -4348,7 +5194,15 @@
     "pipRestart": "Restart now",
     "restoreDefaults": "Restore Default Source",
     "currentVersion": "Current version",
+<<<<<<< HEAD
     "builtOn": "Built on",
+||||||| e487e9a30
+=======
+    "builtOn": "Built on",
+    "buildSource": "Current build source",
+    "branch": "Branch",
+    "packageVersion": "Package version",
+>>>>>>> origin/develop
     "latestVersion": "Latest version",
     "state": "Update state",
     "publishedAt": "Published at",
@@ -4635,7 +5489,9 @@
   },
   "authPrompt": {
     "title": "Authorization",
+    "matchedRule": "Matched rule",
     "titleConfirm": "Confirm action",
+    "unavailable": "This option can't be applied to this request",
     "allowOnce": "Allow once",
     "allowAlways": "Always allow",
     "skip": "Skip",
@@ -4692,7 +5548,15 @@
       "communication": "Communication",
       "Engineering": "Engineering",
       "Design": "Design",
-      "other": "Other"
+      "other": "Other",
+      "Office Productivity": "Office Productivity",
+      "Software Development": "Software Development",
+      "Data Science & Research": "Data Science & Research",
+      "Multimodal & Media": "Multimodal & Media",
+      "Content Creation": "Content Creation",
+      "Lifestyle & Health": "Lifestyle & Health",
+      "Finance & Wealth Management": "Finance & Wealth Management",
+      "Compliance & Legal": "Compliance & Legal"
     },
     "search": {
       "plugin": "Search plugins",
@@ -4882,6 +5746,7 @@
       "invalidType": "Only .zip files are supported",
       "importSuccess": "Plugin imported successfully",
       "missingManifest": "The plugin package is missing manifest.json, or the file is corrupt.",
+<<<<<<< HEAD
       "missingReadme": "The plugin package is missing README.md.",
       "skillPathNotRelative": "Skill paths in the package must be relative to the package root (e.g. ./skills/xxx), not absolute host paths."
     },
@@ -4923,6 +5788,12 @@
       "uninstallConfirm": "Choose how to uninstall: \"Uninstall v{{version}}\" removes only the active version and keeps other installed versions (inactive); \"Uninstall all\" deletes every version of \"{{name}}\" from the workspace and cannot be undone.",
       "uninstallVersion": "Uninstall v{{version}}",
       "uninstallAll": "Uninstall all"
+||||||| e487e9a30
+      "missingReadme": "The plugin package is missing README.md."
+=======
+      "missingReadme": "The plugin package is missing README.md.",
+      "skillPathNotRelative": "Skill paths in the package must be relative to the package root (e.g. ./skills/xxx), not absolute host paths."
+>>>>>>> origin/develop
     },
     "common": {
       "back": "Back",
@@ -5000,8 +5871,15 @@
       "expired": "Expired"
     },
     "schedule": {
-      "tab": { "interval": "Interval", "cron": "Cron expression", "once": "Once" },
-      "interval": { "label": "Every", "unit": "minutes, return to this session" },
+      "tab": {
+        "interval": "Interval",
+        "cron": "Cron expression",
+        "once": "Once"
+      },
+      "interval": {
+        "label": "Every",
+        "unit": "minutes, return to this session"
+      },
       "cron": {
         "hint": "Supports 5 fields (minute hour day month weekday) or the same 7-field format used by Cron tasks (second minute hour day month weekday year)."
       },
@@ -5206,6 +6084,7 @@
       "readonly": "Read-only"
     },
     "artifact": {
+      "noHarnessSnapshot": "No Harness package has been generated for this node yet",
       "empty": "No artifact files",
       "loadFailed": "Failed to load artifacts",
       "selectFile": "Select a file",
@@ -5317,11 +6196,16 @@
       "candidateError": "Candidate {{index}}/{{total}} generation failed",
       "scoreSuffix": " · {{score}}"
     }
-    },
+  },
   "teamDispatch": {
     "toggleLabel": "Scheduled Dispatch",
     "toggleHint": "When on, the leader assigns every task to a named member; when off, members claim tasks on their own",
     "readonlyHint": "The team has started; dispatch mode can no longer be changed"
+  },
+  "teamBootstrap": {
+    "toggleLabel": "Pre-built Team",
+    "toggleHint": "When on, the system builds a general-purpose team as the session starts; the leader creates members per task without a build_team step",
+    "readonlyHint": "The team has started; the bootstrap mode can no longer be changed"
   },
   "swarmflow": {
     "statusPlanned": "Planned",
@@ -5370,6 +6254,7 @@
     "verifyReviewingShort": "Reviewing",
     "verifyPass": "✓ Pass",
     "expertIdentity": "Expert: {{name}} ({{template}})",
+    "turnDetailHint": "Click to view this turn's input / output",
     "verifyFail": "✗ Fail",
     "verifyUndecided": "? Undecided",
     "verifyThreshold": "Threshold {{count}}",
@@ -5389,7 +6274,12 @@
     "sectionError": "Error",
     "charUnit": "chars",
     "clickToViewDetail": "Click to view details",
-    "runIdTooltip": "Run ID: {{id}}"
+    "runIdTooltip": "Run ID: {{id}}",
+    "executorTooltip": "currently hosted by {{name}}",
+    "forkFromSession": "Forked from session {{name}}",
+    "forkChildSession": "Forked child session",
+    "executorOrchestration": "[{{name}}'s orchestration · {{workflow}}]",
+    "runFoldDivider": "In progress {{active}} · Finished {{ended}}"
   },
   "a4pSettings": {
     "title": "A4P pre-authorization",
@@ -5417,6 +6307,7 @@
     "reject": "Reject",
     "approve": "Authorize",
     "waiting": "Processing..."
+<<<<<<< HEAD
   },
   "webuiFileImport": {
     "uploading": "Uploading {{percent}}%",
@@ -5482,5 +6373,982 @@
       "unavailable": "File preview is unavailable for this session",
       "error": "Unable to read this file. Select it again to retry."
     }
+||||||| e487e9a30
+=======
+  },
+  "mcpApp": {
+    "loading": "Loading app…",
+    "loadFailed": "Could not load app",
+    "approvalPrompt": "The app wants to run",
+    "messagePrompt": "{{app}} wants to send this message to the Agent",
+    "sendMessage": "Send",
+    "cancelMessage": "Cancel",
+    "allow": "Allow",
+    "deny": "Deny",
+    "allowAlways": "Always allow in this app",
+    "readOnlyHint": "The server marks this tool as read-only (not verified)."
+  },
+  "jiuwenmate": {
+    "sharing": {
+      "unread": "Unread cross-group sharing approval",
+      "title": "Cross-group sharing approvals",
+      "open": "Open sharing approvals",
+      "pending": "Sharing requests awaiting your decision: {{count}}",
+      "privateNote": "This conversation is only for cross-group sharing approvals. Your choice is recorded here without starting an Agent turn or expanding platform access.",
+      "loadError": "Unable to refresh sharing requests. Refresh or reconnect to retry; actions remain disabled until current status is available.",
+      "actionError": "The action could not be confirmed. Current status is being checked; review it before retrying.",
+      "empty": "No sharing requests.",
+      "source": "Source groups",
+      "requester": "Requester",
+      "unknownRequester": "Conversation member (name unavailable)",
+      "target": "Destination conversation",
+      "query": "Search query",
+      "queryScope": {
+        "platforms": "Source platforms: {{value}}",
+        "keyword": "Keywords: {{value}}",
+        "contentTypes": "Content types: {{value}}",
+        "since": "From: {{value}}",
+        "until": "Until: {{value}}",
+        "sender": "Sender: {{value}}",
+        "cursor": "Page cursor: {{value}}",
+        "groupIds": "Group IDs: {{value}}",
+        "groupNames": "Group names: {{value}}",
+        "limit": "Result limit: {{value}}"
+      },
+      "contentTypes": "Content types",
+      "contentType": {
+        "messages": "Group messages",
+        "files": "Final Session files",
+        "online_docs": "Online document links"
+      },
+      "noMessageText": "No text content is available for this message.",
+      "summary": "Summary to be shared",
+      "groupAudience": "The shared content may be visible to all members of the destination group.",
+      "audience": "The shared content may be visible to everyone in the destination conversation.",
+      "exactMessages": "Review exact messages ({{count}})",
+      "collapseExactMessages": "Hide exact messages ({{count}})",
+      "exactArtifacts": "Review exact files and documents ({{count}})",
+      "collapseExactArtifacts": "Hide exact files and documents ({{count}})",
+      "fileSize": "File size: {{size}} bytes",
+      "created": "Created: {{time}}",
+      "createdAt": "Created",
+      "expires": "Expires: {{time}}",
+      "decided": "Decision recorded: {{time}}",
+      "unknownTime": "Unavailable",
+      "cannotDecide": "This request cannot currently be decided.",
+      "once": "Approve once",
+      "permanent": "Approve permanently",
+      "reject": "Reject",
+      "decisionMessage": {
+        "approved_once": "I approved this cross-group share once.",
+        "approved_permanent": "I permanently approved sharing from this source group to this destination conversation.",
+        "rejected": "I rejected this cross-group sharing request."
+      },
+      "grantsTitle": "Long-term cross-group sharing authorizations",
+      "grantsNote": "Each authorization applies to one source group → one destination conversation (channel, application and conversation ID) and explicit content types. Revocation blocks future sharing under that authorization.",
+      "noGrants": "No long-term cross-group sharing authorizations.",
+      "statusLabel": "Status",
+      "actionsLabel": "Actions",
+      "revoke": "Revoke",
+      "status": {
+        "pending": "Awaiting your decision",
+        "approved_once": "Approved once",
+        "approved_permanent": "Approved permanently",
+        "rejected": "Rejected",
+        "expired": "Expired",
+        "active": "Active",
+        "revoked": "Revoked"
+      }
+    },
+    "title": "JiuwenMate",
+    "mode": {
+      "enter": "Team edition",
+      "exit": "Switch to personal edition",
+      "personal": "Personal"
+    },
+    "nav": {
+      "messages": "Chat",
+      "office": "Employee Center",
+      "plaza": "Plaza",
+      "assets": "Assets",
+      "skills": "Skills",
+      "extensions": "Extensions",
+      "knowledge": "Knowledge",
+      "settings": "Settings"
+    },
+    "common": {
+      "confirm": "OK",
+      "cancel": "Cancel",
+      "create": "Create",
+      "skip": "Skip",
+      "noData": "No data",
+      "searchPlaceholder": "Search"
+    },
+    "load": {
+      "loading": "Loading employees…",
+      "failed": "Failed to load employees: {{reason}}",
+      "retry": "Reload",
+      "createFailed": "Failed to create the employee: {{reason}}",
+      "deleteFailed": "Failed to delete the employee: {{reason}}",
+      "toggleFailed": "Failed to update the employee status: {{reason}}"
+    },
+    "chat": {
+      "title": "Private chat",
+      "failed": "Message failed: {{reason}}",
+      "modelNotConfigured": "Configure a usable model in Settings → Models before chatting with this employee.",
+      "modelPending": "Pending",
+      "modelUnavailable": "Select a model",
+      "modelUnavailableHint": "The previous model was removed or is unavailable. Select and save an available model for this employee before sending messages.",
+      "notPublished": "Save and publish the employee configuration in employee management before chatting.",
+      "noReply": "The employee sent no reply",
+      "file": {
+        "download": "Download",
+        "preview": "Preview",
+        "unavailable": "File is not available to download"
+      },
+      "status": {
+        "queued": "Queued",
+        "running": "Working",
+        "interrupted": "Interrupted by a server restart",
+        "completed": "Completed",
+        "ignored": "No reply needed",
+        "paused": "Paused",
+        "stopped": "Stopped",
+        "cancelled": "Cancelled",
+        "failed": "Failed"
+      },
+      "recovery": {
+        "awaiting": "Interrupted by a server restart; waiting to continue",
+        "awaitingUnverified": "Interrupted by a server restart; waiting to continue. {{count}} tool call results are unconfirmed"
+      },
+      "approval": {
+        "title": "The employee requests permission for these tool calls",
+        "expires": "Approve before {{time}}. The request is denied after it expires.",
+        "truncated": "Arguments are truncated. Approval still applies only to this complete call.",
+        "approveOne": "Allow this call once",
+        "rejectAll": "Reject all calls",
+        "status": {
+          "approved": "Approved; resuming",
+          "rejected": "Rejected",
+          "expired": "Expired and rejected",
+          "consumed": "Finished"
+        }
+      },
+      "control": {
+        "stopping": "Stopping…",
+        "cancelling": "Cancelling…",
+        "cancel": "Cancel",
+        "failed": "Could not stop: {{reason}}"
+      }
+    },
+    "intro": {
+      "title": "Employee Center",
+      "subtitle": "Create and manage AI employees, then send them to IM groups to work on their own",
+      "create": "Create employee",
+      "goCreate": "Start creating",
+      "heroTitle": "You have no AI employees yet. Let's create one!",
+      "steps": {
+        "create": {
+          "title": "Step 1: Create an AI employee",
+          "description": "Build an agent employee from a template and customize its abilities and settings."
+        },
+        "connect": {
+          "title": "Step 2: Complete the configuration",
+          "description": "Configure skills, knowledge and other abilities so it can complete tasks well."
+        },
+        "collaborate": {
+          "title": "Step 3: Authorize IM channels",
+          "description": "Send the employee to work channels so it can join group chats and run tasks."
+        }
+      }
+    },
+    "colleagueEmpty": {
+      "title": "AI employees",
+      "subtitle": "Debug employee abilities in conversations, monitor channel activity and configure scheduled tasks.",
+      "create": "Create employee",
+      "emptyTitle": "You have no AI employees yet. Let's create one!",
+      "goCreate": "Start creating"
+    },
+    "create": {
+      "crumb": "Create",
+      "crumbLabel": "Page path",
+      "title": "Choose an employee",
+      "customEntry": "Custom create",
+      "customTitle": "Custom create",
+      "refineCrumb": "Complete details",
+      "viewDetail": "View details",
+      "choose": "Choose",
+      "basicInfo": "Basic information",
+      "name": "Employee name",
+      "namePlaceholder": "For example: After-sales assistant",
+      "description": "Abilities",
+      "descriptionPlaceholder": "Describe what this employee is good at, what it owns and how it should work",
+      "role": "Work domains",
+      "preview": "Card preview",
+      "previewName": "New employee",
+      "previewDescription": "The employee introduction appears here after you fill in its abilities.",
+      "capabilities": "Capability configuration",
+      "switchModel": "Switch model",
+      "unavailableCapabilitiesTitle": "Some template capabilities are not ready on this host",
+      "unavailableCapabilitiesHint": "Missing or disconnected capabilities will not block creation. Choose skills from the recommendations below.",
+      "capabilityNotLoaded": "Unavailable here; you can still create the employee",
+      "skillInstallErrorTitle": "Skill search or installation failed",
+      "skillInstallFailed": "Skill installation failed. Please try again later.",
+      "skillInstallTimeout": "Skill installation timed out. Refresh the skill list and try again.",
+      "skillRecommendationsTitle": "Skills for this template",
+      "skillRecommendationsHint": "Add installed skills directly; Skills Plaza skills are added after installation.",
+      "localSkillRecommendations": "Installed locally",
+      "plazaSkillRecommendations": "Skills Plaza",
+      "skillRecommendationsLoading": "Finding skills for this template…",
+      "skillSearchFailed": "Skills Plaza search failed. Please try again later.",
+      "skillSearchNoResults": "No matching skills were found in Skills Plaza.",
+      "employeeExists": "This employee already exists",
+      "addRecommendedSkill": "Add",
+      "skillAdded": "Added",
+      "installRecommendedSkill": "Install and add",
+      "installingRecommendedSkill": "Installing…",
+      "defaultModel": "Default model",
+      "remove": "Remove",
+      "sections": {
+        "model": "Model",
+        "skills": "Skills (optional)",
+        "connectors": "Connectors (optional)",
+        "plugins": "Plugins (optional)",
+        "knowledge": "Knowledge (optional)",
+        "starterPrompts": "Try asking me (optional)"
+      },
+      "add": {
+        "skills": "Add skill",
+        "connectors": "Add connector",
+        "plugins": "Add plugin",
+        "knowledge": "Add knowledge",
+        "starterPrompts": "Add quick prompt"
+      },
+      "starterPromptsLimit": "Up to {{count}} prompts",
+      "starterPromptDuplicate": "Duplicates an earlier prompt; only one is kept when saved",
+      "empty": {
+        "skills": "No skills",
+        "connectors": "No connectors",
+        "plugins": "No plugins",
+        "knowledge": "No knowledge"
+      },
+      "detail": {
+        "coreAbilities": "Core abilities",
+        "skills": "Skills ({{count}})",
+        "connectors": "Connectors ({{count}})",
+        "plugins": "Plugins ({{count}})"
+      },
+      "dialogName": "Name",
+      "dialogNamePlaceholder": "For example: Support assistant, After-sales group assistant",
+      "dialogDuty": "Responsibilities",
+      "dialogDutyPlaceholder": "What should it handle? For example:\nYou are the group's support assistant. Answer business questions, look up information, collect feedback and reply concisely without off-topic chat.",
+      "goPlaza": "Need ideas? Visit the plaza"
+    },
+    "im": {
+      "success": "Your AI employee is ready. Send it to work in an IM channel!",
+      "title": "Configure IM channel",
+      "hint": "Connect the employee to a channel and assign tasks with @",
+      "updateHint": "Replace the bound API ID and Secret. The Secret is not shown again and must be entered before saving.",
+      "feishu": "Feishu",
+      "welink": "WeLink",
+      "dingtalk": "DingTalk",
+      "platform": "Channel",
+      "channels": "Feishu / DingTalk",
+      "clientId": "Client ID",
+      "dingtalkHint": "Assign tasks through DingTalk direct messages. Text messages are supported.",
+      "isolationHint": "Web, Feishu and DingTalk share one colleague and workspace. Sessions stay separate; cross-group sharing requires authorization.",
+      "channelAlreadyBound": "This channel is already bound to another employee. Remove the existing binding first.",
+      "robotCode": "Robot Code (optional)",
+      "robotCodePlaceholder": "Use the app robot code; defaults to Client ID",
+      "welinkTitle": "Bind WeLink",
+      "welinkHint": "Scan with your phone",
+      "welinkAssistantTitle": "Set up the assistant",
+      "welinkAssistantHint": "Scan to create one, or enter an existing AK/SK",
+      "welinkSaveTitle": "Save the assistant credential",
+      "welinkSaveReminder": "Save it now. It will not be shown again.",
+      "welinkAk": "AK",
+      "welinkSk": "SK",
+      "welinkCopy": "Copy",
+      "welinkCopied": "Copied",
+      "welinkCredentialDone": "Done",
+      "welinkShowAssistantQr": "Show assistant code",
+      "welinkRetry": "Retry",
+      "welinkScanReminder": "This page will advance automatically once binding succeeds. Please keep it open and do not select Cancel.",
+      "welinkAssistantWaiting": "Scan the assistant code and confirm",
+      "welinkAssistantScan": "Create by scanning",
+      "welinkAssistantExisting": "Enter an existing AK/SK",
+      "welinkAssistantCredentialId": "AK",
+      "welinkAssistantCredentialPlaceholder": "AK of the existing assistant",
+      "welinkAssistantSecret": "SK",
+      "welinkAssistantSecretPlaceholder": "SK of the existing assistant",
+      "welinkSaveCredential": "Save",
+      "welinkSavingCredential": "Saving",
+      "welinkGenerating": "Generating the authorization code",
+      "welinkBoundAccount": "Bound account {{account}}",
+      "welinkSwitchAccount": "Switch account",
+      "welinkAccountMissing": "No WeLink account yet. Finish the first scan first.",
+      "welinkQr": "WeLink login QR code",
+      "welinkRedEditionHint": "WeLink setup is unavailable in this environment. Please switch to the red edition of WeLink.",
+      "welinkFailed": "WeLink login failed",
+      "appId": "API ID",
+      "appIdPlaceholder": "Enter API ID",
+      "secret": "API Secret",
+      "secretPlaceholder": "Enter API Secret",
+      "showSecret": "Show API Secret",
+      "hideSecret": "Hide API Secret"
+    },
+    "profile": {
+      "welinkOffice": {
+        "title": "WeLink Mail & Calendar",
+        "description": "Enter and verify your work email to let this colleague use WeLink mail and calendar.",
+        "email": "Work email",
+        "emailPlaceholder": "Enter your work email address",
+        "account": "WeLink account",
+        "loginHint": "Sign in and bind WeLink for this colleague before connecting mail and calendar.",
+        "login": "Sign in to WeLink",
+        "connect": "Connect and verify",
+        "disconnect": "Disconnect",
+        "working": "Working…",
+        "failed": "The operation failed. Please try again.",
+        "status": {
+          "loading": "Loading connection status…",
+          "connected": "Mail and calendar connected",
+          "not_connected": "Mail and calendar not connected",
+          "unavailable": "Mail and calendar unavailable"
+        }
+      },
+      "sectionsLabel": "Employee configuration",
+      "sections": {
+        "overview": "Overview",
+        "persona": "Persona",
+        "model": "Model",
+        "skills": "Skills",
+        "connectors": "Connectors",
+        "plugins": "Plugins",
+        "knowledge": "Knowledge",
+        "mail": "Email",
+        "channels": "Channels",
+        "permissions": "Permissions",
+        "schedules": "Scheduled tasks"
+      },
+      "edit": "Edit persona",
+      "editModel": "Edit model",
+      "editResources": "Edit skills and connectors",
+      "resourcesHint": "Choose from skills installed on this machine and connectors that are already connected. A new task uses the selection after it is saved and published.",
+      "saveResources": "Save and publish",
+      "saveSuccess": "Saved",
+      "savingResources": "Saving",
+      "saveSettingsFailed": "Could not save or publish the configuration. Please try again.",
+      "modelEmptyHint": "Add a model in Settings → Models.",
+      "modelUnavailableHint": "The previously configured model was removed or is unavailable. Select a model and save.",
+      "catalogLoading": "Loading installed resources",
+      "catalogFailed": "Installed resources could not be loaded. Current selections can still be removed.",
+      "catalogEmptySkills": "No installed skill can be assigned",
+      "catalogEmptyConnectors": "No connected connector can be assigned",
+      "catalogEmptyPlugins": "No installed plugin can be assigned",
+      "catalogEmptyKnowledge": "No published knowledge page can be assigned. Add and publish pages from Assets first.",
+      "modelSelection": "Choose a model",
+      "knowledgeSource": "Source",
+      "knowledgeUpdatedAt": "Updated",
+      "knowledgeHint": "Choose published personal-context pages. After saving and publishing, copies are placed in this employee's office and later tasks can read them. Pages that are not selected stay out.",
+      "joinedAt": "Joined: {{time}}",
+      "mail": {
+        "title": "Agent Mail",
+        "description": "Connect a mailbox for this employee so later conversations can use it.",
+        "mailboxAddress": "Connected mailbox:",
+        "isolationHint": "Node.js npx is unavailable on this machine, so Agent Mail CLI cannot start.",
+        "start": "Connect Mailbox",
+        "authorizing": "Waiting for authorization…",
+        "disconnect": "Disconnect mailbox",
+        "cancel": "Cancel authorization",
+        "popupBlocked": "Allow pop-ups and try mailbox authorization again.",
+        "preparing": "Preparing mailbox authorization…",
+        "status": {
+          "loading": "Checking mailbox connection…",
+          "unavailable": "Node.js npx is unavailable on this machine, so Agent Mail CLI cannot start.",
+          "not_connected": "No mailbox is connected.",
+          "authorizing": "Complete authorization in the newly opened page.",
+          "connected": "The mailbox is connected to this employee.",
+          "error": "The mailbox service could not start. Try again shortly."
+        }
+      },
+      "dingtalkAuth": {
+        "title": "DingTalk user account authorization",
+        "description": "Start account authorization through the DingTalk CLI. Authorization information is stored separately for each employee. Once authorized, the employee can read connected group messages, work with online documents, and manage calendar events within the permissions granted by the account and organization.",
+        "prerequisite": "Before first authorization, ask an organization administrator to enable CLI access in the DingTalk developer platform's CLI settings, add this employee's bound application, and allow the authorizing account to use it. Creating and publishing a bot application does not enable CLI access.",
+        "begin": "Authorize DingTalk account",
+        "beginPending": "Starting authorization…",
+        "popupBlocked": "The authorization page did not open or was closed. Continue with the link below without starting again.",
+        "waitDescription": "Connecting to DingTalk. This page will redirect automatically. First use may need to prepare the DingTalk CLI; please avoid starting again.",
+        "cancel": "Cancel authorization",
+        "disconnect": "Disconnect account",
+        "open": "Reopen authorization page",
+        "help": "Authorization page did not open?",
+        "code": "Device code:",
+        "account": "DingTalk account",
+        "accountUnavailable": "Account name is temporarily unavailable",
+        "organizationUnavailable": "Organization name is temporarily unavailable",
+        "organization": "Organization",
+        "groupMonitor": {
+          "discovering": "Discovering groups containing this employee's bot and starting observation…",
+          "listening": "Observing ordinary messages in {{count}} groups. No initial @mention is required.",
+          "no_groups": "No groups shared by this account and the employee's bot were found. Add the bot to a work group.",
+          "error": "Group discovery or message reading temporarily failed. Retrying…",
+          "disabled": "The employee is disabled. Ordinary group message observation is paused.",
+          "mentions_only": "Passive reply mode is enabled. Only group messages mentioning the employee are handled.",
+          "unavailable": "Waiting for the group message observation service to start."
+        },
+        "openAdmin": "Open DingTalk developer platform (CLI settings)",
+        "failures": {
+          "org_access_denied": "Your DingTalk account was confirmed, but the selected organization has not allowed this account to access data through the CLI. Ask an organization administrator to grant access, then authorize again, or select an organization where you already have access.",
+          "authorization_expired": "This device authorization expired. Select Authorize DingTalk account to get a new link and code.",
+          "authorization_failed": "Authorization did not complete or its process ended. Start again instead of reusing the old device code."
+        },
+        "status": {
+          "loading": "Checking authorization…",
+          "unavailable": "DingTalk CLI is unavailable.",
+          "not_connected": "No DingTalk user account is connected.",
+          "authorizing": "Complete authorization in DingTalk. Your account and organization will appear automatically.",
+          "connected": "A DingTalk user account is connected to this employee.",
+          "error": "Could not check DingTalk authorization. Try again shortly."
+        }
+      },
+      "quickIm": "Quick IM channel setup",
+      "goConfigure": "Configure",
+      "groupReplyMode": "Group reply mode",
+      "groupReplyModes": {
+        "passive": "Passive",
+        "passiveHint": "Reply only when the bot is mentioned in a group.",
+        "adaptive": "Adaptive",
+        "adaptiveHint": "Reply when mentioned; otherwise assess group messages by role. After user authorization, DingTalk periodically checks new text without @ in known groups."
+      },
+      "permissions": {
+        "title": "Employee permissions",
+        "description": "Permissions are stored per employee and apply to new tasks after publishing.",
+        "profiles": {
+          "default": "Default",
+          "automatic": "Smart approval",
+          "full_access": "Full access"
+        },
+        "profileHints": {
+          "default": "Restricted workspace access. The task initiator confirms requests for additional access.",
+          "automatic": "Evaluates each tool call; low confidence or evaluation failures require human approval.",
+          "full_access": "Can access files available to the host account and run network commands."
+        },
+        "approvalTimeout": "Manual approval applies to the current tool calls only and is denied after 15 minutes.",
+        "fullAccessWarning": "Full access opens all files available to the host OS account and permits network commands. Enable only for trusted employees.",
+        "fullAccessConfirm": "Full access opens all files available to the host OS account and permits network commands. Enable it for this employee?"
+      },
+      "feishuHint": "Authorize the agent and monitor its activity.",
+      "welinkHint": "Connect WeLink to assign tasks by mentioning this colleague in a group chat.",
+      "authorize": "Authorize",
+      "authorized": "Authorized",
+      "cancelAuthorization": "Revoke",
+      "cancelAuthorizationTitle": "Revoke channel authorization",
+      "cancelAuthorizationWarning": "After revoking, this colleague stops receiving and replying on this channel.",
+      "cancelAuthorizationMessage": "Revoke the “{{channel}}” authorization? It can be authorized again later.",
+      "cancelAuthorizationSuccess": "Authorization revoked",
+      "addConnection": "Add connection",
+      "removeConnection": "Disconnect",
+      "removeConnectionWarning": "Messages to this app no longer reach the employee. The connection's workspace and history stay and return when the same app is bound again.",
+      "removeConnectionConfirm": "Disconnect {{platform}} app {{app}} from the AI employee: ",
+      "removeConnectionSuccess": "Disconnected",
+      "workLog": "Work log",
+      "periods": {
+        "7d": "Last 7 days",
+        "1m": "Last month",
+        "3m": "Last 3 months",
+        "all": "All"
+      },
+      "metrics": {
+        "weeklyUsage": "Usage vs last week",
+        "resources": "Resources used",
+        "joinedDays": "Days since joining",
+        "channels": "Channels",
+        "groupChats": "Group chats"
+      },
+      "periodRecord": "Activity record",
+      "firstHalf": "First half of {{year}}",
+      "secondHalf": "Second half of {{year}}",
+      "taskCount": "Tasks",
+      "taskTypes": "Task types",
+      "taskKinds": {
+        "conversation": "Conversation tasks",
+        "channel": "Channel tasks",
+        "schedule": "Scheduled tasks"
+      },
+      "history": "Execution history",
+      "allChannels": "All channels",
+      "allStatus": "All statuses",
+      "historyColumns": {
+        "task": "Task",
+        "channel": "Channel",
+        "status": "Status",
+        "tokens": "Tokens spent",
+        "lastResponse": "Last response",
+        "actions": "Actions"
+      },
+      "historyEmpty": "No execution records",
+      "historyStatus": {
+        "completed": "Completed",
+        "failed": "Failed",
+        "paused": "Paused",
+        "stopped": "Stopped",
+        "queued": "Queued",
+        "running": "Running",
+        "dispatched": "Running"
+      },
+      "workspaceDir": "Office directory",
+      "workspaceDirHint": "The employee can list and read the files placed in this directory, but cannot change them."
+    },
+    "workspace": {
+      "colleagues": "Employees",
+      "colleagueList": "Employee list",
+      "noColleagues": "No employees",
+      "newColleague": "New employee",
+      "newFromPlaza": "Add from plaza",
+      "newCustom": "Custom create",
+      "newFromLocal": "Connect from local",
+      "more": "More",
+      "records": "Work records",
+      "searchKeyword": "Search by keyword",
+      "tabs": {
+        "conversations": "Conversations",
+        "channels": "Channel messages",
+        "schedules": "Scheduled tasks"
+      },
+      "collapseRecords": "Collapse records",
+      "expandRecords": "Expand records",
+      "sessionsCount": "Conversations ({{count}})",
+      "channelsCount": "Channels ({{count}})",
+      "noSessions": "No conversations",
+      "loadingHistory": "Loading conversation…",
+      "recentConversations": "Recent",
+      "management": "Management",
+      "artifacts": "All artifacts",
+      "closePanel": "Close panel",
+      "backToArtifacts": "Back to artifacts",
+      "backToChannels": "Back to channels",
+      "noArtifacts": "No artifacts",
+      "noChannels": "No channels",
+      "noChannelsHint": "After an IM channel is configured, the employee's group chat records appear here",
+      "loadingChannelMessages": "Loading group record…",
+      "noChannelMessages": "This group has no public record to show",
+      "dingtalkHistoryCoverage": "Only DingTalk messages received and saved by WorkSwarm are shown here. This may not be the complete group history.",
+      "loadOlderChannelMessages": "Load older group messages",
+      "loadingOlderChannelMessages": "Loading…",
+      "messageRecalled": "This message was recalled",
+      "attachment": "Attachments ({{count}})",
+      "attachmentKind": "File",
+      "noSchedules": "No scheduled tasks",
+      "newSchedule": "New scheduled task",
+      "scheduleName": "Plan name",
+      "schedulePrompt": "What to do when it is due",
+      "scheduleCron": "Cron expression",
+      "scheduleCronHint": "Five fields: minute hour day month weekday. For example, 0 9 * * * runs at 09:00 every day",
+      "scheduleSave": "Save plan",
+      "scheduleEnabled": "Enabled",
+      "scheduleDisabled": "Paused",
+      "schedulePause": "Pause",
+      "scheduleResume": "Enable",
+      "scheduleDelete": "Delete",
+      "scheduleNext": "Next run {{time}}",
+      "newSession": "New conversation",
+      "pinned": "Pinned",
+      "pinConversation": "Pin conversation",
+      "unpinConversation": "Unpin conversation",
+      "deleteConversation": "Delete conversation",
+      "rename": "Rename",
+      "viewTrace": "View trace",
+      "composerPlaceholder": "What can I help with?",
+      "defaultPermission": "Default permission",
+      "autoMode": "Auto",
+      "attach": "Add attachment",
+      "send": "Send",
+      "stop": "Stop",
+      "aiDisclaimer": "AI-generated content is for reference only",
+      "connection": "Workspace",
+      "webConnection": "Web",
+      "connectionHint": "Files shared here can also be read by {{platform}} users.",
+      "webResult": "New result in the Web workspace. View it",
+      "featuresTitle": "Features",
+      "features": {
+        "chat": {
+          "title": "Online conversation",
+          "description": "Talk to the employee in real time to debug its behavior and check its work."
+        },
+        "channel": {
+          "title": "Channel monitoring",
+          "description": "Review the employee's group chats in each channel with a traceable work path."
+        },
+        "schedule": {
+          "title": "Automated tasks",
+          "description": "Configure scheduled tasks so the employee runs daily work automatically."
+        }
+      }
+    },
+    "schedule": {
+      "add": "Add",
+      "createTitle": "New scheduled task",
+      "editTitle": "Edit scheduled task",
+      "editTask": "Edit scheduled task",
+      "name": "Task name",
+      "prompt": "Description",
+      "placeholder": "Enter",
+      "plan": "Schedule",
+      "frequency": "Repeat",
+      "daily": "Every day",
+      "weekly": "Every week",
+      "monthly": "Every month",
+      "weekday": "Weekday",
+      "monthDay": "Day",
+      "time": "Time",
+      "interval": "Interval",
+      "intervalUnit": "Interval unit",
+      "minutes": "Minutes",
+      "hours": "Hours",
+      "onceDate": "Date",
+      "effective": "Effective period (optional)",
+      "startsOn": "Start date",
+      "endsOn": "End date",
+      "cancel": "Cancel",
+      "confirm": "Confirm",
+      "executor": "Executor",
+      "chooseExecutor": "Choose an executor",
+      "runNow": "Run now",
+      "history": "Run history",
+      "edit": "Edit",
+      "delete": "Delete",
+      "pause": "Stop",
+      "resume": "Enable",
+      "more": "More",
+      "basic": "Details",
+      "back": "Back",
+      "historyExecutor": "Executor",
+      "historyTitle": "Run history ({{count}})",
+      "historyHeading": "Run history ({{count}})",
+      "runAt": "Run time",
+      "runStatus": "Status",
+      "description": "Description",
+      "planned": "Planned",
+      "nextExecution": "Next run",
+      "runCount": "Runs",
+      "actions": "Actions",
+      "taskList": "Tasks",
+      "search": "Search",
+      "noMatchingSchedules": "No scheduled tasks match these filters",
+      "allStatuses": "All statuses",
+      "timeRange": "Planned time",
+      "timeRanges": {
+        "all": "All time",
+        "7d": "Last 7 days",
+        "30d": "Last 30 days"
+      },
+      "boardHint": "Configure automated tasks. Jiuwen runs them on schedule.",
+      "mode": {
+        "period": "Recurring",
+        "interval": "Interval",
+        "once": "Once"
+      },
+      "status": {
+        "running": "Running",
+        "paused": "Paused",
+        "failed": "Failed",
+        "completed": "Completed",
+        "queued": "Queued",
+        "expired": "Expired"
+      },
+      "run": {
+        "success": "Completed",
+        "failed": "Failed",
+        "stopped": "Stopped",
+        "running": "Running"
+      },
+      "runDetail": {
+        "success": "Succeeded",
+        "failed": "Failed",
+        "stopped": "Stopped by the user",
+        "running": "Running"
+      },
+      "error": {
+        "nameRequired": "Enter a task name.",
+        "promptRequired": "Enter a task description.",
+        "required": "Enter a name and a description",
+        "executorRequired": "Select an AI employee to run this task.",
+        "intervalInvalid": "The interval must be a positive integer",
+        "futureRequired": "A one-time run must be in the future",
+        "rangeInvalid": "The effective end must be after the start"
+      }
+    },
+    "trace": {
+      "title": "Trace",
+      "traceCount": "{{count}} traces",
+      "spanCount": "{{count}} OTel spans",
+      "export": "Export",
+      "metric": "Trace metric",
+      "duration": "Duration",
+      "tokens": "Token",
+      "filters": {
+        "turn": "Turns only",
+        "tool": "Tool calls"
+      },
+      "startedAt": "Started",
+      "consumed": "Used",
+      "step": "{{count}} step",
+      "steps": "{{count}} steps",
+      "toolCall": "{{count}} tool call",
+      "toolCalls": "{{count}} tool calls",
+      "rawRecord": "Raw OTel records ({{count}})",
+      "rawSpan": "Select OTel span"
+    },
+    "office": {
+      "title": "Employee Center",
+      "activityLoading": "Loading activity…",
+      "activityFailed": "Could not load activity: {{reason}}",
+      "noResponse": "No response yet",
+      "tabs": {
+        "members": "Employees",
+        "activity": "Activity",
+        "tasks": "Task center"
+      },
+      "createTile": "New AI employee",
+      "imMissing": "IM not configured",
+      "disabledBadge": "Disabled",
+      "chat": "Chat",
+      "manage": "Manage",
+      "disable": "Disable",
+      "enable": "Enable",
+      "delete": "Delete",
+      "deleteWarning": "Deleting an AI employee also deletes its memories and tasks.",
+      "deleteConfirm": "Delete AI employee: ",
+      "deleteModes": {
+        "unbind": "Disconnect only",
+        "unbindHint": "Removes the Feishu and DingTalk apps bound to this employee and takes it off the list. Each connection's workspace and history stay on this machine and cannot be restored from the page.",
+        "purge": "Delete everything",
+        "purgeHint": "Removes the bound apps and deletes the office folders, conversation lists, configuration versions, schedules and authorizations of all this employee's connections. Execution records are not deleted."
+      },
+      "disableWarning": "A disabled employee still supports conversations but no longer responds in IM channels.",
+      "disableConfirm": "Disable AI employee: ",
+      "scope": "Scope",
+      "scopeAll": "All",
+      "scopeIndividual": "Individual",
+      "currentColleague": "Employee",
+      "dataOverview": "Overview",
+      "range": "Range",
+      "rangeYear": "Year",
+      "rangePeriod": "Period",
+      "year": "Year",
+      "periodStart": "Start date",
+      "periodEnd": "End date",
+      "periodTo": "to",
+      "periodLimit": "Up to {{count}} days can be shown; the start date was adjusted",
+      "metrics": {
+        "members": "Members",
+        "activeDays": "Active days",
+        "tasks": "Tasks handled",
+        "tokens": "Usage"
+      },
+      "yearRecord": "{{year}} activity",
+      "periodRecord": "Period activity",
+      "legendLow": "Less",
+      "legendHigh": "More",
+      "monthLabel": "{{month}}",
+      "weekdays": {
+        "mon": "Mon",
+        "wed": "Wed",
+        "fri": "Fri"
+      },
+      "tooltipTasks": "Tasks: {{count}}",
+      "tooltipHours": "Work time: {{hours}}h",
+      "today": "Today",
+      "yesterday": "Yesterday",
+      "periodEntries": "{{count}} · {{hours}}h",
+      "leaderboard": "Leaderboard {{count}}",
+      "columns": {
+        "member": "Member",
+        "tokens": "Token usage",
+        "companionDays": "Days together",
+        "chats": "Chats",
+        "lastResponse": "Last response",
+        "actions": "Actions"
+      },
+      "minutesAgo": "{{count}} min ago",
+      "hoursAgo": "{{count}} hr ago",
+      "daysAgo": "{{count}} day ago",
+      "next": "Next",
+      "workRecord": "Work record",
+      "groupChats": "Group chats {{count}}",
+      "channelColumns": {
+        "group": "Group chat",
+        "channel": "Channel",
+        "artifacts": "Artifacts",
+        "tokens": "Tokens spent",
+        "lastResponse": "Last response",
+        "actions": "Actions"
+      },
+      "taskOverview": "Task overview",
+      "taskFilters": {
+        "group": "Group",
+        "colleague": "Employee",
+        "period": "Period",
+        "all": "All"
+      },
+      "taskMetrics": {
+        "total": "Total tasks / New today",
+        "running": "Running / Near timeout",
+        "duration": "Average handling time",
+        "failure": "Failure rate",
+        "nearTimeoutHint": "Running for at least twice the average handling time in this period"
+      },
+      "taskList": "Task list",
+      "taskStatus": {
+        "waiting": "Waiting",
+        "running": "Running",
+        "done": "Done",
+        "failed": "Failed"
+      },
+      "taskEmpty": {
+        "waiting": "No waiting tasks",
+        "running": "No running tasks",
+        "done": "No completed tasks",
+        "failed": "No failed tasks"
+      },
+      "moduleProgress": "Module progress",
+      "taskUsage": "Time {{duration}}  Used {{tokens}} tokens",
+      "locate": "Locate source"
+    }
+  },
+  "groupChat": {
+    "externalRuntimeDisabled": "{{agents}} is not enabled. Enable it in Settings → Agents → External Agents, then add the member again.",
+    "useTeam": "Use this team",
+    "teamMembers": "Team members ({{count}})",
+    "questionFrom": "{{name}} needs your input",
+    "taskTitle": "Task",
+    "unnamedTask": "Untitled subtask",
+    "noSubtasks": "No subtask records",
+    "generatingTasks": "Generating tasks",
+    "organizationStage": {
+      "starting": "Starting expert teams",
+      "processing": "Processing",
+      "executing": "Experts working",
+      "summarizing": "Summarizing"
+    },
+    "counts": {
+      "total": "Total",
+      "running": "In progress",
+      "completed": "Completed",
+      "stopped": "Stopped",
+      "failed": "Failed"
+    },
+    "pinned": "Pinned",
+    "conversations": "Conversations",
+    "pin": "Pin conversation",
+    "unpin": "Unpin conversation",
+    "noConversations": "No conversations yet. Start a group chat.",
+    "viewResult": "View task result",
+    "sendFailed": "Unable to process this message. Please retry.",
+    "sending": "Sending…",
+    "modelLocked": "The model cannot be changed after the group chat starts",
+    "processing": "Processing…",
+    "mentionPhase": {
+      "dispatching": "Received, processing…",
+      "planning": "Planning tasks…",
+      "generating": "Generating task plan…",
+      "executing": "Executing tasks…",
+      "executingProgress": "Running subtasks ({{completed}}/{{total}})…",
+      "reviewing": "Reviewing results…",
+      "processing": "Processing…"
+    },
+    "open": "Chat",
+    "create": "New group chat",
+    "defaultName": "New group",
+    "name": "Group name",
+    "description": "Description",
+    "addMembers": "Add members",
+    "experts": "Experts",
+    "teams": "Expert teams",
+    "team": "Team",
+    "search": "Search experts",
+    "selected": "Selected ({{count}})",
+    "removeSelection": "Remove selection",
+    "details": "View details",
+    "back": "Back to list",
+    "skills": "Team skills",
+    "members": "Members",
+    "loading": "Loading…",
+    "saving": "Saving…",
+    "noExperts": "No available experts. Install experts from the Experts page first.",
+    "noMembers": "Add members first.",
+    "welcome": "Work together with your experts",
+    "welcomeHint": "Invite experts and teams. Use @ to bring the right people into the conversation.",
+    "start": "Welcome to your group",
+    "startHint": "We are always online. Leave professional work to the professionals.",
+    "humanCount": "{{count}} people",
+    "agentCount": "{{count}} agents",
+    "searchMembers": "Search members",
+    "moreActions": "More actions",
+    "rename": "Rename",
+    "deleteShort": "Delete",
+    "download": "Download",
+    "quoteToChat": "Quote in chat",
+    "renameFile": "Rename file",
+    "renameFileFailed": "Rename failed: {{reason}}",
+    "renameFileExists": "A file with that name already exists in this folder. Choose another name.",
+    "renameFileMissing": "The original file is missing. It may have been moved or deleted.",
+    "renameFilePermission": "Permission denied, or the file is in use by another application.",
+    "renameFileForbidden": "Only regular files in this group's workspace can be renamed, not symlinks or external files.",
+    "fileName": "File name",
+    "deleteFile": "Delete file",
+    "deleteFileWarning": "The file will be removed from group messages and the file list. Files inside this group's workspace are also deleted from disk. This cannot be undone.",
+    "backToPanel": "Back",
+    "clearHistory": "Clear chat history",
+    "clearHistoryConfirm": "Clear",
+    "clearHistoryWarning": "Earlier messages, finished task cards and their files will no longer be shown. Running tasks are not affected, and member agents keep their existing context. This cannot be undone.",
+    "deleteConversation": "Delete conversation",
+    "groupTag": "Group",
+    "noMemberMatch": "No matching members",
+    "aiNotice": "AI-generated content. For reference only.",
+    "mentionHint": "Use @ to select recipients. Messages without mentions are saved without triggering expert replies.",
+    "placeholder": "Write a message, use @ to invite experts",
+    "message": "Group message",
+    "mention": "Mention members",
+    "intent": "Message type",
+    "chat": "Discuss",
+    "assignTask": "Assign task",
+    "taskNeedsMention": "Use @ to select a task recipient first.",
+    "send": "Send message",
+    "sendHint": "Enter to send · Shift+Enter for a new line",
+    "files": "All files",
+    "settings": "Group settings",
+    "edit": "Edit group",
+    "you": "Me",
+    "noFiles": "Files submitted by experts will appear here.",
+    "attachment": "Attachment",
+    "progress": "Subtask completion",
+    "delete": "Delete group",
+    "deleteWarning": "This stops running tasks and deletes this conversation and its private team resources. This cannot be undone.",
+    "offline": "Connection lost. Messages and task status will sync when reconnected.",
+    "retry": "Reload",
+    "more": "Load more",
+    "older": "Load earlier messages",
+    "olderFiles": "Load files from earlier messages",
+    "groupSize": "{{count}} members",
+    "unavailable": "Unable to load this group. Retry or return to the list.",
+    "status": {
+      "planning": "Planning",
+      "in_review": "In review",
+      "queued": "Queued",
+      "running": "Running",
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled",
+      "interrupted": "Interrupted",
+      "timed_out": "Timed out",
+      "pending": "Pending",
+      "in_progress": "In progress",
+      "blocked": "Waiting",
+      "stopped": "Stopped"
+    }
+>>>>>>> origin/develop
   }
 }

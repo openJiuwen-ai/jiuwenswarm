@@ -193,8 +193,9 @@ function getVisibleCount(state: WorkspaceState, projectId: string): number {
 }
 
 function normalizeActivityTime(value: number | undefined): number | null {
-  if (typeof value !== 'number') return null;
-  return value < 1e11 ? value * 1000 : value;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
+  const milliseconds = value < 1e11 ? value * 1000 : value;
+  return Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : null;
 }
 
 function getSessionActivityAt(session: Pick<Session, 'last_user_message_at' | 'last_message_at' | 'updated_at' | 'created_at'>): number {
@@ -314,8 +315,22 @@ function getProjectSessionListsAfterPin(
 
 /** 工作区全量刷新代数：新刷新开始时递增，过期请求在写回前丢弃，避免归档/撤销竞态导致列表闪烁。 */
 let workspaceRefreshEpoch = 0;
+<<<<<<< HEAD
 let projectListRequestId = 0;
 let appliedProjectListRequestId = 0;
+||||||| e487e9a30
+=======
+let projectListRequestId = 0;
+let appliedProjectListRequestId = 0;
+let workspaceModeRevision = 0;
+let projectSessionsRequestId = 0;
+let pinnedSessionsRequestId = 0;
+const pendingProjectSessionRequests = new Map<string, number>();
+
+export function getWorkspaceModeRevision(): number {
+  return workspaceModeRevision;
+}
+>>>>>>> origin/develop
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   workMode: readStoredWorkMode(),
@@ -331,8 +346,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   setWorkMode: async (workMode) => {
     if (get().workMode === workMode) return;
+<<<<<<< HEAD
     // Invalidate pending lists even when switching back to a previously used mode.
     appliedProjectListRequestId = ++projectListRequestId;
+||||||| e487e9a30
+=======
+    workspaceModeRevision += 1;
+    // Invalidate pending lists even when switching back to a previously used mode.
+    appliedProjectListRequestId = ++projectListRequestId;
+>>>>>>> origin/develop
     persistWorkMode(workMode);
     set({
       workMode,
@@ -345,6 +367,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       expandedProjectIds: {},
       error: null,
     });
+    const activeSessionId = useChatStore.getState().activeSessionId;
+    if (workMode === 'work' && activeSessionId) {
+      useSessionStore.getState().removeEnabledPlugin(activeSessionId, 'ttse');
+    }
     await get().loadProjects();
   },
 
@@ -396,11 +422,24 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   loadProjectSessions: async (projectId, limit, refreshEpoch) => {
+    const requestedRefreshEpoch = refreshEpoch ?? workspaceRefreshEpoch;
+    if (requestedRefreshEpoch !== workspaceRefreshEpoch) return;
     const requestedLimit = limit ?? getVisibleCount(get(), projectId);
+    const mode = get().workMode;
+    const modeRevision = getWorkspaceModeRevision();
+    const requestId = ++projectSessionsRequestId;
+    pendingProjectSessionRequests.set(projectId, requestId);
+    const isCurrent = () => pendingProjectSessionRequests.get(projectId) === requestId
+      && get().workMode === mode
+      && getWorkspaceModeRevision() === modeRevision
+      && requestedRefreshEpoch === workspaceRefreshEpoch;
+    // Keep pagination intent while this read is pending so refreshes use it too.
+    set((state) => ({
+      sessionVisibility: { ...state.sessionVisibility, [projectId]: { visibleCount: requestedLimit } },
+    }));
     try {
-      const mode = get().workMode;
       const payload = await projectRegistryClient.getSessions(projectId, requestedLimit, mode);
-      if (refreshEpoch !== undefined && refreshEpoch !== workspaceRefreshEpoch) return;
+      if (!isCurrent()) return;
       const sessions = reconcileVisibleProjectSessions(
         (payload.sessions || []).filter((session) => (session.work_mode || 'work') === mode),
         get().projectSessions[projectId] || [],
@@ -421,6 +460,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         },
       }));
     } catch (error) {
+      if (!isCurrent()) return;
       console.error('Failed to load project sessions', error);
       set((state) => ({
         error: error instanceof Error ? error.message : String(error),
@@ -428,6 +468,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
           ? state.projectSessions
           : { ...state.projectSessions, [projectId]: [] },
       }));
+    } finally {
+      if (pendingProjectSessionRequests.get(projectId) === requestId) {
+        pendingProjectSessionRequests.delete(projectId);
+      }
     }
   },
 
@@ -443,9 +487,18 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   loadPinnedSessions: async (refreshEpoch) => {
+    const requestedRefreshEpoch = refreshEpoch ?? workspaceRefreshEpoch;
+    if (requestedRefreshEpoch !== workspaceRefreshEpoch) return;
+    const requestId = ++pinnedSessionsRequestId;
+    const requestedWorkMode = get().workMode;
+    const modeRevision = getWorkspaceModeRevision();
+    const isCurrent = () => requestId === pinnedSessionsRequestId
+      && get().workMode === requestedWorkMode
+      && getWorkspaceModeRevision() === modeRevision
+      && requestedRefreshEpoch === workspaceRefreshEpoch;
     try {
       const payload = await projectRegistryClient.pinnedSessions();
-      if (refreshEpoch !== undefined && refreshEpoch !== workspaceRefreshEpoch) return;
+      if (!isCurrent()) return;
       const { workMode, projects } = get();
       const visibleProjectIds = new Set(projects.map((project) => project.project_id));
       set({
@@ -457,6 +510,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
           }),
       });
     } catch (error) {
+      if (!isCurrent()) return;
       console.error('Failed to load pinned sessions', error);
       set({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -507,12 +561,16 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   removeProject: async (projectId) => {
     const result = await projectRegistryClient.remove(projectId);
     get().hideProjectLocally(projectId);
-    await get().refreshWorkspaceAndCron();
     // 隐藏的项目不能再作为新建会话的默认归属：后端会拒绝它的会话绑定。
     if (get().selectedProject?.project_id === projectId) {
       const fallback = findProject(get().projects, findDefaultProjectId(get().projects));
       set({ selectedProject: fallback });
     }
+    // The mutation is complete. Slow list reconciliation must not keep the
+    // confirmation dialog busy or turn a successful removal into an error.
+    void get().refreshWorkspaceAndCron().catch((error) => {
+      console.warn('Failed to refresh workspace after project removal', error);
+    });
     return result;
   },
 

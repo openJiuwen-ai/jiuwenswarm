@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 """CardKit primitives for one Feishu streaming response card."""
 
 import asyncio
@@ -270,3 +271,5 @@ def _merge_streamed_and_final(streamed: str, final: str) -> str:
     if streamed.startswith(final):
         return streamed
     return final if len(final) >= len(streamed) else streamed
+=======
+>>>>>>> origin/develop

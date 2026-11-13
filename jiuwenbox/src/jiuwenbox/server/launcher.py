@@ -29,6 +29,7 @@ ENV_UDS_MODE = "JIUWENBOX_UDS_MODE"
 # the launcher independent of the FastAPI app module (``main`` runs before
 # anything imports ``jiuwenbox.server.app`` lazily inside ``uvicorn.run``).
 ENV_SAVE_LOGS_DIR = "JIUWENBOX_SAVE_LOGS_DIR"
+ENV_PERF_LOG = "JIUWENBOX_PERF_LOG"
 _ENV_API_TOKEN_NAME = "JIUWENBOX_API_TOKEN"
 DEFAULT_LISTEN = "http://0.0.0.0:8321"
 # Parent supervisor waits on the server child and deletes leftover veths when
@@ -195,6 +196,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "env; unset means authentication is disabled."
         ),
     )
+<<<<<<< HEAD
     parser.add_argument(
         "--cleanup-orphans",
         action="store_true",
@@ -204,6 +206,29 @@ def _build_parser() -> argparse.ArgumentParser:
             "(SIGKILL / OOM / stop timeout) and by systemd ExecStopPost."
         ),
     )
+||||||| e487e9a30
+=======
+    parser.add_argument(
+        "--perf",
+        metavar="PERF_LOG",
+        default=None,
+        help=(
+            "Append per-step sandbox create timings to PERF_LOG. "
+            "Each line is 'start_ms<TAB>elapsed_ms<TAB>sandbox_id<TAB>step'. "
+            f"Falls back to ${ENV_PERF_LOG}; unset means no timings are "
+            "sampled or written."
+        ),
+    )
+    parser.add_argument(
+        "--cleanup-orphans",
+        action="store_true",
+        help=(
+            "Delete leftover jiuwenbox veth interfaces (jwbH*/jwbS*) and "
+            "named netns (jbx-*) then exit. Used after an ungraceful stop "
+            "(SIGKILL / OOM / stop timeout) and by systemd ExecStopPost."
+        ),
+    )
+>>>>>>> origin/develop
     return parser
 
 
@@ -237,6 +262,129 @@ def _resolve_save_logs_dir(cli_value: str | None) -> str | None:
     if not raw:
         return None
     return str(Path(raw).expanduser().resolve())
+
+
+<<<<<<< HEAD
+def _cleanup_orphans_best_effort(reason: str) -> None:
+    try:
+        from jiuwenbox.supervisor.network import cleanup_orphaned_uplinks
+
+        cleanup_orphaned_uplinks(reason=reason)
+    except Exception:  # noqa: BLE001
+        logger.exception("[launcher] orphan network cleanup (%s) failed", reason)
+
+
+def _set_parent_death_signal(signum: int, parent_pid: int) -> None:
+    """Ask the kernel to SIGTERM this process if the supervisor parent dies.
+
+    ``PR_SET_PDEATHSIG`` fires even when the parent is SIGKILL'd, which is the
+    case we cannot handle with a Python ``try/finally`` in the parent.
+
+    ``parent_pid`` is the ppid sampled immediately after ``fork``. In a
+    container the supervisor itself is often PID 1, so ``getppid() == 1`` is
+    the steady state and must not be treated as "parent already exited".
+    """
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        ret = libc.prctl(_PR_SET_PDEATHSIG, int(signum), 0, 0, 0)
+    except Exception:  # noqa: BLE001
+        logger.warning("[launcher] PR_SET_PDEATHSIG failed", exc_info=True)
+        return
+    if ret != 0:
+        logger.warning(
+            "[launcher] PR_SET_PDEATHSIG returned %d (errno=%d)",
+            ret,
+            ctypes.get_errno(),
+        )
+        return
+    # Race: parent died between fork() and prctl(), and this process was
+    # reparented. Compare against the pid captured at fork, not against 1.
+    if os.getppid() != parent_pid:
+        logger.warning(
+            "[launcher] supervisor parent %s already gone (ppid=%s); sending %s to self",
+            parent_pid,
+            os.getppid(),
+            signum,
+        )
+        os.kill(os.getpid(), signum)
+
+
+def _child_exit_code(status: int) -> int:
+    if os.WIFEXITED(status):
+        return os.WEXITSTATUS(status)
+    if os.WIFSIGNALED(status):
+        return 128 + os.WTERMSIG(status)
+    return 1
+
+
+def _supervise_child(child_pid: int) -> int:
+    """Wait for the server child; delete host veths as soon as it dies or we are asked to stop."""
+    logger.info("[launcher] supervisor watching server pid=%d", child_pid)
+    stop_requested = False
+
+    def _on_stop(signum: int, _frame: object) -> None:
+        nonlocal stop_requested
+        stop_requested = True
+        try:
+            os.kill(child_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+
+    signal.signal(signal.SIGTERM, _on_stop)
+    signal.signal(signal.SIGINT, _on_stop)
+
+    nics_dropped = False
+    status = 0
+    while True:
+        if stop_requested and not nics_dropped:
+            # Do this on the supervisor thread, not in the signal handler:
+            # cleanup runs subprocesses and is not async-signal-safe.
+            _cleanup_orphans_best_effort("supervisor-signal")
+            nics_dropped = True
+        try:
+            waited, status = os.waitpid(child_pid, os.WNOHANG)
+        except ChildProcessError:
+            status = 0
+            break
+        if waited == child_pid:
+            break
+        time.sleep(_SUPERVISOR_POLL_SECONDS)
+
+    _cleanup_orphans_best_effort("supervisor")
+    code = _child_exit_code(status)
+    logger.info("[launcher] server pid=%d exited status=%d; host uplinks reaped", child_pid, code)
+    return code
+
+
+def _should_supervise() -> bool:
+    if os.environ.get(ENV_NO_SUPERVISOR, "").strip():
+        return False
+    if os.environ.get(ENV_SUPERVISOR_CHILD, "").strip():
+        return False
+    if not hasattr(os, "fork"):
+        return False
+    return True
+
+
+def _run_server(uvicorn_kwargs: dict) -> int:
+    import uvicorn
+
+    uvicorn.run("jiuwenbox.server.app:app", **uvicorn_kwargs)
+    return 0
+
+
+||||||| e487e9a30
+=======
+def _resolve_perf_log(cli_value: str | None) -> str | None:
+    """Pick ``--perf`` over ``JIUWENBOX_PERF_LOG``; unset means no collection."""
+    raw = cli_value if cli_value else os.environ.get(ENV_PERF_LOG)
+    if not raw or not raw.strip():
+        return None
+    return str(Path(raw.strip()).expanduser().resolve())
 
 
 def _cleanup_orphans_best_effort(reason: str) -> None:
@@ -351,6 +499,7 @@ def _run_server(uvicorn_kwargs: dict) -> int:
     return 0
 
 
+>>>>>>> origin/develop
 def main(argv: list[str] | None = None) -> int:
     """jiuwenbox-server CLI 入口.
 
@@ -393,6 +542,13 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("[launcher] sandbox logs will be saved under %s", save_logs_dir)
     else:
         os.environ.pop(ENV_SAVE_LOGS_DIR, None)
+
+    perf_log = _resolve_perf_log(args.perf)
+    if perf_log:
+        os.environ[ENV_PERF_LOG] = perf_log
+        logger.info("[launcher] per-step create timings will be appended to %s", perf_log)
+    else:
+        os.environ.pop(ENV_PERF_LOG, None)
 
     api_token = _resolve_api_token(args.api_token)
     if api_token:

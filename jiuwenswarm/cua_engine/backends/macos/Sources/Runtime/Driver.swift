@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 import AppKit
 @preconcurrency import ApplicationServices
 import CoreGraphics
@@ -196,3 +197,5 @@ final class Driver {
     }
 
 }
+=======
+>>>>>>> origin/develop

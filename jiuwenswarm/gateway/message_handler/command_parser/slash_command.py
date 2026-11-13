@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
 """Gateway 受控通道 slash 指令：单一解析与注册表（无 IO）.
@@ -739,3 +740,5 @@ VALID_MODE_LINES: frozenset[str] = _VALID_MODE_LINES
 VALID_MODE_SUBCOMMANDS: tuple[str, ...] = tuple(sub.value for sub in ModeSubcommand)
 VALID_SWITCH_LINES: frozenset[str] = _VALID_SWITCH_LINES
 VALID_SWITCH_SUBCOMMANDS: tuple[str, ...] = tuple(sub.value for sub in SwitchSubcommand)
+=======
+>>>>>>> origin/develop

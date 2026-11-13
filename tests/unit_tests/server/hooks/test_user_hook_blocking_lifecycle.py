@@ -157,6 +157,7 @@ async def test_parallel_hook_allow_cannot_override_another_tools_block(monkeypat
     ("replaced", "blocked"), ("resumed", "blocked"), ("unrelated", "blocked"),
 ])
 async def test_goal_approval_resume_stops_only_its_blocked_original_goal(monkeypatch, goal_change, resume_mode):
+<<<<<<< HEAD
     inner = ReActAgent(AgentCard(id=uuid4().hex, name="goal-resume", description="goal-resume"))
     inner._config.parallel_tool_calls = False
     outer = DeepAgent(AgentCard(
@@ -165,6 +166,17 @@ async def test_goal_approval_resume_stops_only_its_blocked_original_goal(monkeyp
         description="outer-goal-resume",
     )).configure(DeepAgentConfig(auto_create_workspace=False))
     outer._react_agent = inner
+||||||| e487e9a30
+    inner = ReActAgent(AgentCard(id=uuid4().hex, name="goal-resume", description="goal-resume"))
+    inner._config.parallel_tool_calls = False
+    outer = DeepAgent(AgentCard(id=uuid4().hex, name="outer-goal-resume", description="outer-goal-resume"))
+    outer._react_agent = inner
+=======
+    outer = DeepAgent(AgentCard(id=uuid4().hex, name="outer-goal-resume", description="outer-goal-resume"))
+    outer.configure(DeepAgentConfig(rails=[]))
+    inner = outer._react_agent
+    inner._config.parallel_tool_calls = False
+>>>>>>> origin/develop
     outer._loop_coordinator = LoopCoordinator()
     outer.loop_coordinator.reset()
     record = GoalRecord.create(session_id=uuid4().hex, objective="original goal")

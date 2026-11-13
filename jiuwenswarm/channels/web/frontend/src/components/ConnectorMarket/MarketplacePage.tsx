@@ -400,7 +400,23 @@ export function MarketplacePage({
         : packages;
     return base.filter((pkg) => {
       if (!matchesInstallation(!!installed[pkg.id], installationFilter)) return false;
+<<<<<<< HEAD
       if (topTab === 'my' && !matchesAssetName(query, [localizedText(pkg.displayName, i18n.language) ?? ''])) return false;
+||||||| e487e9a30
+      if (topTab !== 'my' && pluginCategory !== 'all') {
+        const cat = pkg.category.trim();
+        if (pluginCategory === 'other' ? pluginTopCategorySet.has(cat) : cat !== pluginCategory) return false;
+      }
+
+      if (topTab === 'my' && !matchesAssetName(query, assetSearchNames(pkg.displayName))) return false;
+=======
+      if (topTab !== 'my' && pluginCategory !== 'all') {
+        const cat = pkg.category.trim();
+        if (pluginCategory === 'other' ? pluginTopCategorySet.has(cat) : cat !== pluginCategory) return false;
+      }
+
+      if (topTab === 'my' && !matchesAssetName(query, [localizedText(pkg.displayName, i18n.language)])) return false;
+>>>>>>> origin/develop
       return true;
     });
   }, [

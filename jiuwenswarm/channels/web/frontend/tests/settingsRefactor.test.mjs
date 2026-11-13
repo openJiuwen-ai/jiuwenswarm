@@ -271,7 +271,13 @@ function translationAt(locale, key) {
   return key.split('.').reduce((value, part) => value?.[part], locale);
 }
 
+<<<<<<< HEAD
 test('registry definition preserves the module order and fails invalid registrations', () => {
+||||||| e487e9a30
+test('registry definition preserves the nine-module order and fails invalid registrations', () => {
+=======
+test('registry definition preserves module order and fails invalid registrations', () => {
+>>>>>>> origin/develop
   const definition = source('src/features/settings/registry/openSourceDefinition.ts');
   assert.match(
     definition,
@@ -479,7 +485,7 @@ test('simple Settings definitions reject unknown sources and derive required i18
               {
                 id: 'enabled',
                 component: 'switch',
-                key: 'proactive_recommendation_enabled',
+                key: 'topic_recommendation_enabled',
                 subItems: {
                   show: 'sometimes',
                   disabled: 'never',
@@ -528,6 +534,21 @@ test('simple Settings definitions reject unknown sources and derive required i18
     () => validateSettingsI18n(definition, (key) => requiredKeys.has(key)),
     /Missing settings i18n key: settingsPanel\.fields\.chrome_path\.placeholder/,
   );
+});
+
+test('settings items can explicitly override a module source without bypassing field validation', () => {
+  const create = (item) => createSettingsPageDefinition({
+    id: 'mixed-source-settings', compositionMode: 'base',
+    accessPolicy: { evaluate: () => ({ level: 'editable' }) },
+    modules: [{ id: 'general', titleKey: 'settings.general', icon: () => null, source: 'locale',
+      sections: [{ id: 'general', items: [item] }],
+    }],
+  });
+  const item = { id: 'topics', component: 'switch', key: 'topic_recommendation_enabled', source: 'config' };
+  assert.equal(create(item).modules[0].sections[0].items[0].source, 'config');
+  assert.throws(() => create({ ...item, source: 'locale' }), /does not belong to source locale/);
+  assert.throws(() => create({ ...item, source: 'unknown' }), /unsupported settings source/);
+  assert.throws(() => create({ ...item, key: 'unregistered_field' }), /does not belong to source config/);
 });
 
 test('open-source Settings composition preserves the registered modules and editable policy', () => {
@@ -885,7 +906,8 @@ test('simple Settings controls are declared per module and enforced by the share
 test('shared Settings extension model remains product-neutral', () => {
   const forbiddenProductName = ['enter', 'prise'].join('');
   const files = [
-    ...sourceFilesUnder('src/features/settings'),
+    ...['components', 'services'].flatMap((directory) => sourceFilesUnder(`src/features/settings/${directory}`)),
+    ...sourceFilesUnder('src/features/settings/registry').filter((file) => !file.pathname.endsWith('/enterpriseDefinition.ts')),
     ...sourceFilesUnder('tests/fixtures/settings-extension'),
   ];
   for (const file of files) {
@@ -1019,12 +1041,12 @@ test('settings contract rejects unknown keys and normalizes supported values', (
   assert.deepEqual(
     normalizeSettingsConfigUpdates({
       external_cli_agent_claude_cli_path: '  /usr/bin/claude  ',
-      proactive_recommendation_max_recommend_per_day: ' 10 ',
+      moa_verifier_interval: ' 7 ',
       permissions_enabled: 'true',
     }),
     {
       external_cli_agent_claude_cli_path: '/usr/bin/claude',
-      proactive_recommendation_max_recommend_per_day: '10',
+      moa_verifier_interval: '7',
       permissions_enabled: 'true',
     },
   );
@@ -1144,8 +1166,16 @@ test('every visible Settings control maps to an exact persistence field or RPC',
       'team_organization_ui_enabled',
       'team_scheduled_dispatch_enabled',
       'team_task_verification_enabled',
+<<<<<<< HEAD
       'proactive_recommendation_enabled',
       'progressive_tool_optimize',
+||||||| e487e9a30
+      'proactive_recommendation_enabled',
+=======
+      'team_member_messaging_enabled',
+      'team_member_subtasks_enabled',
+      'progressive_tool_optimize',
+>>>>>>> origin/develop
     ].sort(),
   );
   assert.deepEqual([...contractByCategory('experimental')].sort(), [
@@ -1167,18 +1197,41 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'moa_jev_enabled',
     'moa_verifier_interval',
     'multi_model_collaboration_enabled',
+<<<<<<< HEAD
     'proactive_recommendation_enabled',
     'proactive_recommendation_max_recommend_per_day',
     'proactive_recommendation_max_rounds_per_tick',
     'progressive_tool_optimize',
+||||||| e487e9a30
+    'proactive_recommendation_enabled',
+    'proactive_recommendation_max_recommend_per_day',
+    'proactive_recommendation_max_rounds_per_tick',
+=======
+    'music_gen_api_base',
+    'music_gen_api_key',
+    'music_gen_enabled',
+    'music_gen_model',
+    'music_gen_protocol',
+    'music_gen_provider',
+    'progressive_tool_optimize',
+>>>>>>> origin/develop
     'rsi_enabled',
     'symphony_evolution_enabled',
     'task_asr_enabled',
     'task_full_duplex_enabled',
+    'team_member_messaging_enabled',
+    'team_member_subtasks_enabled',
     'team_organization_ui_enabled',
     'team_scheduled_dispatch_enabled',
     'team_task_verification_enabled',
+<<<<<<< HEAD
     'trajectory_ui_diagnosis_enabled',
+||||||| e487e9a30
+    'trajectory_ui_enabled',
+=======
+    'trajectory_ui_diagnosis_enabled',
+    'trajectory_ui_enabled',
+>>>>>>> origin/develop
   ]);
 
   const channelCatalogFile = parseTsx('src/features/settings/modules/channels/channelCatalog.ts');
@@ -1209,7 +1262,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
       'name',
       'is_default',
     ],
-    buildDingtalkFormPayload: ['enabled', 'client_id', 'client_secret', 'allow_from'],
+    buildDingtalkApp: ['name', 'enabled', 'client_id', 'client_secret', 'robot_code', 'allow_from'],
     buildTelegramFormPayload: ['enabled', 'bot_token', 'allow_from', 'parse_mode', 'group_chat_mode'],
     buildDiscordFormPayload: [
       'enabled',
@@ -1281,7 +1334,6 @@ test('Settings form dialogs share the same dirty-close contract without disablin
 
   for (const { path, id } of [
     { path: 'src/features/settings/modules/agent/AgentSettings.tsx', id: 'agent-config-dialog' },
-    { path: 'src/features/settings/modules/experimental/ExperimentalSettings.tsx', id: 'proactive-limits-dialog' },
     { path: 'src/features/settings/modules/models/ModelDialog.tsx', id: 'model-dialog' },
   ]) {
     const module = source(path);
@@ -1399,9 +1451,10 @@ test('search credential fields are optional so keys can be cleared', () => {
   assert.match(agentSettings, /<Form form=\{form\} items=\{items\}/);
 });
 
-test('multimodal dialogs reuse provider-first model configuration without model testing or account login', () => {
+test('multimodal dialogs reuse provider-first model configuration; topic probes like chat models', () => {
   const agentSettings = source('src/features/settings/modules/agent/AgentSettings.tsx');
   const dialog = source('src/features/settings/modules/agent/MediaModelConfigDialog.tsx');
+  const mediaConfig = source('src/features/settings/modules/agent/mediaModelConfig.ts');
   assert.match(agentSettings, /<MediaModelConfigDialog/);
   assert.match(dialog, /<ModelProviderSelect/);
   assert.match(dialog, /includeOpenAIAccount=\{false\}/);
@@ -1409,7 +1462,12 @@ test('multimodal dialogs reuse provider-first model configuration without model 
   assert.match(dialog, /'vendors\.list'/);
   assert.match(dialog, /'vendors\.fetch_models'/);
   assert.match(dialog, /showOptional=\{false\}/);
-  assert.doesNotMatch(dialog, /config\.validate_model|OpenAIAccountSettings|reasoning_level|settingsActionIcons\.delete/);
+  // Vision/audio/video stay form-only; topic chat LLMs reuse config.validate_model.
+  assert.match(dialog, /probeBeforeSave = modality === 'topic'/);
+  assert.match(dialog, /'config\.validate_model'/);
+  assert.match(mediaConfig, /buildMediaModelValidationPayload/);
+  assert.match(mediaConfig, /buildSavedTopicModelValidationPayload/);
+  assert.doesNotMatch(dialog, /OpenAIAccountSettings|reasoning_level|settingsActionIcons\.delete/);
 });
 
 test('legacy multimodal configuration remains custom while provider selections persist exact catalog identity', () => {
@@ -1662,7 +1720,7 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
   assert.doesNotMatch(generalDefinition, /groupedRows|separatedRows/);
   assert.match(modelsDefinition, /id: 'model-manager',[\s\S]{0,80}separatedRows: true/);
   assert.doesNotMatch(modelsDefinition, /id: 'limited-free-models'|id: 'free-models'/);
-  assert.match(modelsSettings, /<FreeModelsSettings\s*\/>/);
+  assert.match(modelsSettings, /<FreeModelsSettings\b/);
   assert.match(modelsSettings, /settingsPanel\.models\.customModels/);
   assert.ok(
     modelsSettings.indexOf('<FreeModelsSettings') < modelsSettings.indexOf("settingsPanel.models.customModels"),
@@ -1710,11 +1768,11 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
   );
   assert.match(
     settingsPageCss,
-    /\.settings-models__toast--success\s*\{[^}]*border-color:\s*var\(--color-feedback-success\)[^}]*background:\s*var\(--color-feedback-success-toast\)/s,
+    /\.settings-models__toast--success,\s*\.settings-external-cli__toast--success\s*\{[^}]*border-color:\s*var\(--color-feedback-success\)[^}]*background:\s*var\(--color-feedback-success-toast\)/s,
   );
   assert.match(
     settingsPageCss,
-    /\.settings-models__toast--error\s*\{[^}]*border-color:\s*var\(--color-feedback-danger\)[^}]*background:\s*var\(--color-feedback-danger-toast\)/s,
+    /\.settings-models__toast--error,\s*\.settings-external-cli__toast--error\s*\{[^}]*border-color:\s*var\(--color-feedback-danger\)[^}]*background:\s*var\(--color-feedback-danger-toast\)/s,
   );
   assert.doesNotMatch(settingsPageCss, /\.settings-model-group\s*\{/);
   assert.doesNotMatch(settingsPageCss, /\.settings-model-group__items/);
@@ -1984,7 +2042,8 @@ test('legacy channel and More surfaces are removed while Settings owns their rep
   assert.doesNotMatch(app, /ConfigPanel|BrowserPanel|ChannelsPanel|ExtensionsHubPanel/);
   assert.match(settingsChannelsModule, /import \{ SettingsChannelsPanel \} from '\.\/SettingsChannelsPanel'/);
   assert.doesNotMatch(settingsChannelsModule, /components\/ChannelsPanel/);
-  assert.match(settingsNavigation, /export type SettingsModuleTarget = 'models' \| 'agent'/);
+  assert.match(settingsNavigation, /export type SettingsModuleTarget = 'general' \| 'models' \| 'agent'/);
+  assert.doesNotMatch(settingsNavigation, /'recommendation'/);
   assert.match(settingsNavigation, /SETTINGS_MODULE_NAVIGATION_EVENT = 'jiuwen:settings-module'/);
   assert.equal(existsSync(new URL('src/components/ConfigPanel/index.tsx', root)), false);
   assert.equal(existsSync(new URL('src/components/BrowserPanel/index.tsx', root)), false);
@@ -2022,9 +2081,19 @@ test('Jev browser settings preserve mode, independent provider credentials and r
   assert.match(provider, /jev_key_configured: value\?\.jev_key_configured === true/);
   assert.match(keySettings, /createJevDraft\(\{ decision_provider: provider \}, config\)/);
   assert.match(keySettings, /decision_mode: 'llm'/);
+<<<<<<< HEAD
   assert.match(keySettings, /await saveConfigFields\([\s\S]*await save\(/);
   assert.doesNotMatch(keySettings, /name: '(?:protocol|context_window_tokens|alias)'/);
   assert.match(keySettings, /patchLocal\(await request<Record<string, unknown>>\('path\.get'\)\)/);
+||||||| e487e9a30
+  assert.match(keySettings, /request\('config\.save_all', buildConfigSavePayload\(updates\)/);
+=======
+  assert.match(keySettings, /decision_display_name: ''/);
+  assert.match(keySettings, /moa_jev_enabled: 'false'/);
+  assert.match(keySettings, /await saveConfigFields\([\s\S]*await save\(/);
+  assert.doesNotMatch(keySettings, /name: '(?:protocol|context_window_tokens|alias)'/);
+  assert.match(keySettings, /patchLocal\(await request<Record<string, unknown>>\('path\.get'\)\)/);
+>>>>>>> origin/develop
 });
 
 test('legacy page translations and Harness package state are removed without deleting shared Settings keys', () => {
@@ -2036,11 +2105,10 @@ test('legacy page translations and Harness package state are removed without del
     'keyHelp',
     'modelList',
     'openaiAccount',
-    'proactive',
   ];
 
   for (const locale of [zh, en]) {
-    assert.deepEqual(Object.keys(locale.browser).sort(), ['errors', 'pane']);
+    assert.deepEqual(Object.keys(locale.browser).sort(), ['downloads', 'errors', 'pane']);
     assert.deepEqual(Object.keys(locale.channels.labels).sort(), supportedChannelIds);
     assert.deepEqual(Object.keys(locale.config).sort(), expectedConfigSections);
     assert.equal(locale.extensions, undefined);

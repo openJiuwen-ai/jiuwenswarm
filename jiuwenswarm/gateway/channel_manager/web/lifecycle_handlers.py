@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 """Gateway lifecycle orchestration: archive checks state; deletion stops work."""
 
 from __future__ import annotations
@@ -221,3 +222,5 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
         "project.sessions.delete_archived",
     ):
         channel.register_method(method, handler(method))
+=======
+>>>>>>> origin/develop

@@ -20,15 +20,22 @@ from typing import Any
 import yaml
 from dotenv import dotenv_values
 
+<<<<<<< HEAD
 from jiuwenswarm.common.browser_settings import project_browser_decision
 from jiuwenswarm.common.cua_config import is_cua_agent_enabled, is_cua_backend_available
+||||||| e487e9a30
+=======
+from jiuwenswarm.common.browser_settings import project_browser_decision
+from jiuwenswarm.common.cua_config import cua_backend_settings, is_cua_agent_enabled
+from jiuwenswarm.common.permission_mode import canonical_permission_facade, permission_profile
+>>>>>>> origin/develop
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_config_file, get_env_file
 from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.server.control.a2ui_config import get_a2ui_config
 from jiuwenswarm.server.control.responses import build_error_response
-from jiuwenswarm.symphony.config import (
+from jiuwenswarm.common.symphony_config import (
     resolve_symphony_enabled,
     resolve_symphony_evolution_enabled,
 )
@@ -64,6 +71,12 @@ _CONFIG_SET_ENV_MAP = {
     "visual_gen_provider": "VISUAL_GEN_PROVIDER",
     "visual_gen_protocol": "VISUAL_GEN_PROTOCOL",
     "visual_gen_enabled": "VISUAL_GEN_ENABLED",
+    "music_gen_api_base": "MUSIC_GEN_API_BASE",
+    "music_gen_api_key": "MUSIC_GEN_API_KEY",
+    "music_gen_model": "MUSIC_GEN_MODEL_NAME",
+    "music_gen_provider": "MUSIC_GEN_PROVIDER",
+    "music_gen_protocol": "MUSIC_GEN_PROTOCOL",
+    "music_gen_enabled": "MUSIC_GEN_ENABLED",
     "audio_api_base": "AUDIO_API_BASE",
     "audio_api_key": "AUDIO_API_KEY",
     "audio_model": "AUDIO_MODEL_NAME",
@@ -116,6 +129,8 @@ _SWARMFLOW_ENABLED_PATH = ("modes", "team", "jiuwen_team", "enable_swarmflow")
 _SWARMFLOW_BUDGET_PATH = ("modes", "team", "jiuwen_team", "swarmflow_budget")
 _TEAM_DISPATCH_MODE_PATH = ("modes", "team", "jiuwen_team", "dispatch_mode")
 _TEAM_TASK_VERIFICATION_PATH = ("modes", "team", "jiuwen_team", "enable_task_verification")
+_TEAM_MEMBER_MESSAGING_PATH = ("modes", "team", "jiuwen_team", "enable_member_messaging")
+_TEAM_MEMBER_SUBTASK_DEPTH_PATH = ("modes", "team", "jiuwen_team", "max_subtask_depth")
 _KV_CACHE_CONFIG_KEY = "kv_cache_affinity_config"
 _KV_CACHE_ENABLED_KEY = "enable_kv_cache_affinity"
 
@@ -140,6 +155,16 @@ def _nested(raw: dict[str, Any], path: tuple[str, ...], default: Any = None) -> 
             return default
         current = current.get(segment)
     return default if current is None else current
+
+
+def _depth_switch_text(value: Any) -> str:
+    """Render ``max_subtask_depth`` as the member-subtask switch: on iff a depth > 0 (core F_128)."""
+    if isinstance(value, bool):
+        return "false"
+    try:
+        return "true" if int(value) > 0 else "false"
+    except (TypeError, ValueError):
+        return "false"
 
 
 def _bool_text(value: Any, default: bool = False) -> str:
@@ -200,8 +225,22 @@ def _flatten_symphony(raw: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _flatten_recommendation(raw: dict[str, Any]) -> dict[str, str]:
+    """The two switches as resolved, from the one implementation the rest of the app uses.
+
+    ``raw`` is passed in, so the import stays lazy and this module still never loads
+    ``jiuwenswarm.common.config`` (see the module docstring).
+    """
+
+    from jiuwenswarm.common.recommendation_switches import (
+        flatten_recommendation_for_config_panel,
+    )
+
+    return flatten_recommendation_for_config_panel(raw)
+
+
 def _flatten_external_cli(raw: dict[str, Any]) -> dict[str, str]:
-    from jiuwenswarm.common.config_panel.config_set_handlers import (
+    from jiuwenswarm.common.config_panel.external_cli_read import (
         EXTERNAL_CLI_CUSTOM_AGENTS_KEY,
         custom_agents_config_value,
         flatten_external_cli_agents_for_config_panel,
@@ -391,7 +430,12 @@ def get_panel() -> dict[str, Any]:
     )
     payload["runtime_platform"] = runtime_platform
     payload["external_cli_agents_supported"] = "false" if runtime_platform == "harmony" else "true"
+<<<<<<< HEAD
     payload["cua_backend_available"] = "true" if is_cua_backend_available() else "false"
+||||||| e487e9a30
+=======
+    payload.update(cua_backend_settings())
+>>>>>>> origin/develop
     try:
         raw = _read_raw_config()
         setup_guide_cfg = raw.get("setup_guide") or {}
@@ -408,11 +452,13 @@ def get_panel() -> dict[str, Any]:
             "true" if _affinity_enabled(raw) else "false"
         )
         perm_cfg = raw.get("permissions") or {}
-        payload["permissions_enabled"] = _bool_text(perm_cfg.get("enabled"), False)
+        payload.update(canonical_permission_facade(permission_profile(perm_cfg)))
         evolution_cfg = (raw.get("react") or {}).get("evolution") or {}
         payload["skill_evolution"] = _bool_text(
             evolution_cfg.get("skill_evolution"), False
         )
+        ttse_cfg = react_cfg.get("ttse") or {}
+        payload["ttse_enabled"] = _bool_text(ttse_cfg.get("enabled"), False)
         memory_cfg = (raw.get("memory") or {}).get("forbidden_memory_definition") or {}
         payload["memory_forbidden_enabled"] = _bool_text(memory_cfg.get("enabled"), False)
         payload["memory_forbidden_description"] = memory_cfg.get("description") or {}
@@ -428,6 +474,12 @@ def get_panel() -> dict[str, Any]:
             trajectory_cfg.get("diagnosis_enabled"), False
         )
         experimental_cfg = raw.get("experimental") or {}
+        payload["task_full_duplex_enabled"] = _bool_text(
+            experimental_cfg.get("task_full_duplex_enabled"), False
+        )
+        payload["task_asr_enabled"] = _bool_text(
+            experimental_cfg.get("task_asr_enabled"), False
+        )
         payload["team_organization_ui_enabled"] = _bool_text(
             experimental_cfg.get("team_organization_ui_enabled"), False
         )
@@ -446,26 +498,23 @@ def get_panel() -> dict[str, Any]:
         payload["team_task_verification_enabled"] = _bool_text(
             _nested(raw, _TEAM_TASK_VERIFICATION_PATH, False)
         )
+        payload["team_member_messaging_enabled"] = _bool_text(
+            _nested(raw, _TEAM_MEMBER_MESSAGING_PATH, False)
+        )
+        payload["team_member_subtasks_enabled"] = _depth_switch_text(
+            _nested(raw, _TEAM_MEMBER_SUBTASK_DEPTH_PATH, 0)
+        )
         budget = _nested(raw, _SWARMFLOW_BUDGET_PATH)
         if budget is not None:
             payload["swarmflow_budget"] = str(budget)
         payload.update(_flatten_external_cli(raw))
         payload.update(_flatten_symphony(raw))
+        payload.update(_flatten_recommendation(raw))
         if not payload.get("free_search_ddg_enabled"):
             payload["free_search_ddg_enabled"] = "false"
         if not payload.get("free_search_bing_enabled"):
             payload["free_search_bing_enabled"] = "false"
         payload.update(_flatten_modes_team(raw))
-        proactive_cfg = raw.get("proactive_recommendation") or {}
-        payload["proactive_recommendation_enabled"] = _bool_text(
-            proactive_cfg.get("enabled"), False
-        )
-        payload["proactive_recommendation_max_recommend_per_day"] = str(
-            proactive_cfg.get("max_recommend_per_day", 10)
-        )
-        payload["proactive_recommendation_max_rounds_per_tick"] = str(
-            proactive_cfg.get("max_rounds_per_tick", 20)
-        )
         models_cfg = raw.get("models") or {}
         payload["enable_free_models"] = _bool_text(
             models_cfg.get("enable_free_models", True), True
@@ -476,24 +525,35 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("cua_agent_enabled", "true" if is_cua_agent_enabled(None) else "false")
         payload.setdefault("kv_cache_affinity_enabled", "false")
         payload.setdefault("permissions_enabled", "false")
+        payload.setdefault("permissions_profile", "full_access")
         payload.setdefault("setup_guide_enabled", "true")
         payload.setdefault("skill_evolution", "false")
+        payload.setdefault("ttse_enabled", "false")
         payload.setdefault("memory_forbidden_enabled", "false")
         payload.setdefault("memory_forbidden_description", "")
         payload.setdefault("a2ui_enabled", "false")
         payload.setdefault("trajectory_ui_enabled", "false")
         payload.setdefault("trajectory_ui_diagnosis_enabled", "false")
         payload.setdefault("team_organization_ui_enabled", "false")
+<<<<<<< HEAD
         payload.setdefault("comfyui_workflow_enabled", "false")
         payload.setdefault("progressive_tool_optimize", "false")
+||||||| e487e9a30
+=======
+        payload.setdefault("task_full_duplex_enabled", "false")
+        payload.setdefault("task_asr_enabled", "false")
+        payload.setdefault("comfyui_workflow_enabled", "false")
+        payload.setdefault("progressive_tool_optimize", "false")
+>>>>>>> origin/develop
         payload.setdefault("swarmflow_enabled", "false")
         payload.setdefault("team_scheduled_dispatch_enabled", "false")
         payload.setdefault("team_task_verification_enabled", "false")
+        payload.setdefault("team_member_messaging_enabled", "false")
+        payload.setdefault("team_member_subtasks_enabled", "false")
         payload.setdefault("free_search_ddg_enabled", "false")
         payload.setdefault("free_search_bing_enabled", "false")
-        payload.setdefault("proactive_recommendation_enabled", "false")
-        payload.setdefault("proactive_recommendation_max_recommend_per_day", "10")
-        payload.setdefault("proactive_recommendation_max_rounds_per_tick", "20")
+        payload.setdefault("topic_recommendation_enabled", "false")
+        payload.setdefault("prompt_suggestion_enabled", "false")
         payload.setdefault("enable_free_models", "true")
     return payload
 

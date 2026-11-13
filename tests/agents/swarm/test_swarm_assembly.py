@@ -31,7 +31,6 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-
 from openjiuwen.agent_teams.rails.builtin_elements import SKILL_USE as CORE_SKILL_USE
 from openjiuwen.harness.schema import deep_agent_spec as das
 from openjiuwen.agent_teams.harness.manifest import get_catalog, resolve_factory
@@ -43,6 +42,7 @@ from openjiuwen.agent_teams.schema.blueprint import (
 from openjiuwen.agent_teams.schema.deep_agent_spec import (
     BuiltinToolSpec,
     DeepAgentSpec,
+    ProgressiveToolSpec,
     RailSpec,
     TeamModelConfig,
     WorkspaceSpec,
@@ -61,6 +61,8 @@ from openjiuwen.harness.tools.worktree import WorktreeConfig
 from openjiuwen.harness.prompts.builder import SystemPromptBuilder
 from openjiuwen.harness.prompts.prompt_attachment_manager import PromptAttachmentManager
 from openjiuwen.harness.rails import SkillUseRail
+from openjiuwen.agent_teams.rails.elements import TEAM_SKILL_USE
+from agent_gateway.common.mode_matrix import NEW_TEAM_DESIGN
 
 from jiuwenswarm.agents.harness.code.rails.heartbeat.tools import (
     HEARTBEAT_TOOL_NAMES,
@@ -80,15 +82,18 @@ from jiuwenswarm.agents.swarm import (
     preflight_team_mcps,
     register_swarm_providers,
 )
-from openjiuwen.agent_teams.rails.elements import TEAM_SKILL_USE
-
 from jiuwenswarm.agents.swarm import registry
 from jiuwenswarm.agents.swarm.config_specs import (
     build_member_capability_specs,
     build_member_deep_agent_spec,
     build_member_subagent_specs,
 )
+<<<<<<< HEAD
 from jiuwenswarm.common.mode_matrix import NEW_TEAM_DESIGN
+||||||| e487e9a30
+=======
+from agent_gateway.common.mode_matrix import NEW_TEAM_DESIGN
+>>>>>>> origin/develop
 from jiuwenswarm.agents.swarm.providers import (
     code_rails,
     evolution_rails,
@@ -723,6 +728,12 @@ def test_a4p_intent_authorization_provider_is_interactive_web_leader_only() -> N
             "request_a4p_intent_authorization"
         ]
         assert tools.build_a4p_intent_authorization({}, teammate) == []
+        context = AUTHORIZATION_EXECUTION_CONTEXTS.get("session-1")
+        context.metadata["cron"] = {"job_id": "job-1"}
+        assert tools.build_a4p_intent_authorization({}, enabled) == []
+        context.metadata.clear()
+        assert tools.build_a4p_intent_authorization({}, enabled)
+
     finally:
         AUTHORIZATION_EXECUTION_CONTEXTS.clear()
 
@@ -979,6 +990,45 @@ def test_team_member_deep_agent_spec_keeps_core_skill_discovery_when_retrieval_d
     spec = build_member_deep_agent_spec(_agentic_retrieval_config(False), "team", role, base)
 
     assert spec.enable_skill_discovery is True
+
+
+@pytest.mark.parametrize(
+    ("mode", "role"),
+    [
+        ("team", "leader"),
+        ("team", "teammate"),
+        ("team.plan", "leader"),
+        ("team.plan", "teammate"),
+    ],
+)
+def test_team_member_deep_agent_spec_follows_progressive_tool_switch(mode: str, role: str) -> None:
+    """The top-level single-agent switch mounts tool_search on every team member."""
+    spec = build_member_deep_agent_spec(
+        {"progressive_tool_enabled": True}, mode, role, DeepAgentSpec()
+    )
+
+    assert spec.progressive_tool is not None
+    assert spec.progressive_tool.enabled is True
+    logger.info("%s/%s progressive_tool: %s", mode, role, spec.progressive_tool)
+
+
+@pytest.mark.parametrize("role", ["leader", "teammate"])
+def test_team_member_deep_agent_spec_keeps_base_progressive_tool_when_switch_off(role: str) -> None:
+    """A disabled switch leaves the base spec's progressive_tool byte-identical."""
+    config = {"progressive_tool_enabled": False}
+
+    plain = build_member_deep_agent_spec(config, "team", role, DeepAgentSpec())
+    declared = build_member_deep_agent_spec(
+        config,
+        "team",
+        role,
+        DeepAgentSpec(progressive_tool=ProgressiveToolSpec(enabled=True, search_limit=7)),
+    )
+
+    assert plain.progressive_tool is None
+    assert declared.progressive_tool is not None
+    assert declared.progressive_tool.enabled is True
+    assert declared.progressive_tool.search_limit == 7
 
 
 @pytest.mark.parametrize("mode", ["code.team", "team.plan.code"])
@@ -1499,7 +1549,7 @@ def test_build_enabled_mcp_server_configs_resolves_credentials(
         lambda: [entry],
     )
     monkeypatch.setattr(
-        "jiuwenswarm.common.mcp_config.CredentialStore.get_all",
+        "jiuwenswarm.server.runtime.mcp.credential.CredentialStore.get_all",
         lambda self, name: {"GITHUB_TOKEN": "ghp_real_123"} if name == "github_http" else {},
     )
 

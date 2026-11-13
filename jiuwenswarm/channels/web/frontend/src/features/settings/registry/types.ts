@@ -27,7 +27,10 @@ export type SettingsAccessBinding = {
 };
 type SettingItemBase = {
   id: string;
+  rowClassName?: string;
   replaceable?: boolean;
+  /** Override the module source when a settings group contains multiple persistence services. */
+  source?: SettingsSource;
 };
 export type SettingSelectOption = {
   value: SettingValue;
@@ -49,8 +52,18 @@ export type SettingItemDefinition =
   | (SettingItemBase & {
       component: 'switch';
       key: string;
+<<<<<<< HEAD
       errorDisplay?: 'inline';
+||||||| e487e9a30
+=======
+      /** A false read-only capability disables the switch. */
+      availableWhen?: string;
+      /** Read-only reason code for the unavailable tooltip. */
+      unavailableReasonKey?: string;
+      errorDisplay?: 'inline';
+>>>>>>> origin/develop
       subItems?: SettingSubItems;
+      configure?: ComponentType<{ onSave: () => Promise<void>; onClose: () => void }>;
     })
   | (SettingItemBase & {
       component: 'select';

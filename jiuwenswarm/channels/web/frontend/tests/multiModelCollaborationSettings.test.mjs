@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
 import { build } from 'esbuild';
+import { createInstance } from 'i18next';
 import { JSDOM } from 'jsdom';
 
 // Initialize the browser before ReactDOM loads so controlled input events use its browser path.
@@ -32,7 +33,7 @@ await build({
       'export * from "./src/features/settings/modules/experimental/multiModelCollaborationSettingsState";',
       'export * from "./src/features/multiModelCollaboration/featureConfig";',
       'export const experimentalSectionIds = experimentalModule.sections.map(section => section.id);',
-      'export const SettingsFixture = () => createElement(SettingsSourceProvider, {source:"config"}, createElement(SettingItemRenderer, {item:experimentalModule.sections.find(section => section.id === "multi-model-collaboration").items[0], disabled:globalThis.collaborationFixture.disabled}));',
+      'export const SettingsFixture = () => { const section = experimentalModule.sections.find(section => section.id === (globalThis.collaborationFixture.section ?? "multi-model-collaboration")); return createElement(SettingsSourceProvider, {source:"config"}, createElement(SettingItemRenderer, {item:section.items[0], disabled:globalThis.collaborationFixture.disabled})); };',
     ].join('\n'),
     resolveDir: process.cwd(),
     loader: 'ts',
@@ -42,6 +43,7 @@ await build({
   platform: 'node',
   format: 'esm',
   packages: 'external',
+  define: { 'import.meta.env.DEV': 'false' },
   loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl' },
   plugins: [
     {
@@ -78,8 +80,15 @@ await build({
             'export const useSettingsServices = () => globalThis.collaborationFixture.services;',
           './ExperimentalSettings': [
             'A2UISetting',
+<<<<<<< HEAD
             'ExternalCliCustomAgentsItem',
             'ProactiveLimitsSetting',
+||||||| e487e9a30
+            'ExternalCliSettingsItem',
+            'ProactiveLimitsSetting',
+=======
+            'ExternalCliCustomAgentsItem',
+>>>>>>> origin/develop
             'RSISetting',
             'TaskAsrSetting',
             'TaskFullDuplexSetting',
@@ -88,9 +97,19 @@ await build({
             .map((name) => `export const ${name} = () => null;`)
             .join('\n'),
           './A4PSettings': 'export const A4PSettings = () => null;',
-          '../../../../assets/settings': 'export const settingsNavigationIcons = {experimental: () => null};',
-          'react-i18next':
-            'export const useTranslation = () => ({ t: (key) => key, i18n:{resolvedLanguage:"zh",language:"zh"} });',
+          '../../../../assets/providers': [
+            'export const getProviderLogoUrl = () => undefined;',
+            'export const getVendorLogoUrl = () => undefined;',
+          ].join('\n'),
+          '../../../../assets/settings': [
+            'export const settingsNavigationIcons = {experimental: () => null};',
+            'export const settingsActionIcons = {};',
+            'export const settingsCustomModelIcon = () => null;',
+          ].join('\n'),
+          'react-i18next': [
+            'export const initReactI18next = { type: "3rdParty", init() {} };',
+            'export const useTranslation = () => ({ t: (key, options) => globalThis.collaborationFixture?.translate?.(key, options) ?? key, i18n:{resolvedLanguage:"zh",language:"zh"} });',
+          ].join('\n'),
         };
         builder.onResolve({ filter: /.*/ }, (args) =>
           mocks[args.path] ? { path: args.path, namespace: 'mock' } : undefined,
@@ -165,7 +184,9 @@ async function mount(options, run) {
       throw new Error(`Unexpected RPC: ${method}`);
     },
   };
-  globalThis.collaborationFixture = { services, disabled: options.disabled ?? false };
+  globalThis.collaborationFixture = {
+    services, disabled: options.disabled ?? false, section: options.section, translate: options.translate,
+  };
   setMultiModelCollaborationEnabled(false);
   const root = createRoot(document.getElementById('root'));
   const render = () => act(async () => root.render(createElement(options.probe ? ConfigFixture : SettingsFixture)));
@@ -229,6 +250,67 @@ const configured = {
   jev_typesafe_api_key: 'shared-synthetic-key',
 };
 
+for (const available of [undefined, 'false', false, 'true', true]) {
+  test(`computer control remains visible and respects backend availability: ${available}`, async () => {
+    await mount(
+      {
+        section: 'computer-control',
+        config: {
+          cua_backend_available: available,
+          cua_backend_unavailable_reason: 'native_build_failed',
+          cua_agent_enabled: 'true',
+        },
+      },
+      async ({ get, saves, click, config }) => {
+        const toggle = get('settings-switch', 'cua-agent-enabled');
+        if (available !== true && available !== 'true') {
+          assert.equal(toggle.getAttribute('aria-checked'), 'true');
+          assert.equal(toggle.disabled, true);
+          assert.match(document.body.textContent, /cua_agent_enabled\.unavailableDescription/);
+          assert.match(
+            get('settings-unavailable-switch').getAttribute('data-tooltip'),
+            /cua_agent_enabled\.unavailableReasons\.native_build_failed/,
+          );
+          await click('settings-switch', 'cua-agent-enabled');
+          assert.deepEqual(saves, []);
+          assert.equal(config().cua_agent_enabled, 'true');
+          return;
+        }
+        assert.equal(toggle.disabled, false);
+        assert.equal(toggle.getAttribute('aria-checked'), 'true');
+        await click('settings-switch', 'cua-agent-enabled');
+        assert.equal(toggle.getAttribute('aria-checked'), 'false');
+        await click('settings-switch', 'cua-agent-enabled');
+        assert.equal(toggle.getAttribute('aria-checked'), 'true');
+        assert.deepEqual(saves, [{ cua_agent_enabled: 'false' }, { cua_agent_enabled: 'true' }]);
+      },
+    );
+  });
+}
+
+test('computer control localizes backend errors and falls back for unknown reasons', async () => {
+  for (const language of ['en', 'zh']) {
+    const translation = JSON.parse(fs.readFileSync(`src/i18n/locales/${language}.json`, 'utf8'));
+    const messages = translation.settingsPanel.fields.cua_agent_enabled;
+    const i18n = createInstance();
+    await i18n.init({ lng: language, resources: { [language]: { translation } } });
+    for (const [reason, expected] of [
+      ['native_build_failed', messages.unavailableReasons.native_build_failed],
+      ['backend_missing', messages.unavailableReasons.backend_missing],
+      ['unsupported_platform', messages.unavailableReasons.unsupported_platform],
+      ['future_reason', messages.unavailableDescription],
+    ]) {
+      await mount({
+        section: 'computer-control',
+        config: { cua_backend_available: 'false', cua_backend_unavailable_reason: reason },
+        translate: i18n.getFixedT(language),
+      }, async ({ get }) => {
+        assert.equal(get('settings-unavailable-switch').getAttribute('data-tooltip'), expected);
+      });
+    }
+  }
+});
+
 test('feature flag defaults off and accepts backend booleans', () => {
   setMultiModelCollaborationEnabled(undefined);
   assert.equal(isMultiModelCollaborationEnabled(), false);
@@ -238,9 +320,23 @@ test('feature flag defaults off and accepts backend booleans', () => {
   assert.equal(isMultiModelCollaborationEnabled(), false);
 });
 
+<<<<<<< HEAD
 test('collaboration and other experimental sections retain their order', () => {
+||||||| e487e9a30
+test('collaboration is the last experimental section and other sections retain their order', () => {
+=======
+test('experimental sections retain their order with a single computer control section', () => {
+>>>>>>> origin/develop
   assert.deepEqual(experimentalSectionIds, [
+<<<<<<< HEAD
     'external-cli-custom-agents',
+||||||| e487e9a30
+    'external-cli-agents',
+=======
+    'asr',
+    'task-full-duplex',
+    'external-cli-custom-agents',
+>>>>>>> origin/develop
     'rsi',
     'a2ui',
     'a4p',
@@ -249,7 +345,6 @@ test('collaboration and other experimental sections retain their order', () => {
     'kv-cache-affinity',
     'team-organization',
     'team-scheduled-dispatch',
-    'proactive-recommendation',
     'multi-model-collaboration',
     'tool-optimize',
     'computer-control',
@@ -431,7 +526,71 @@ test('reconnect response cannot overwrite a completed feature save, but a new re
   );
 });
 
+<<<<<<< HEAD
 test('shared JEV key save and clear survive stale config reloads', async () => {
+||||||| e487e9a30
+test('write-only JEV key and one-shot clear do not enter config snapshots and confirmed save survives stale reload', async () => {
+=======
+test('confirmed saves preserve shared JEV settings and notify recommendation changes', async () => {
+  let resolveSave;
+  const notifications = [];
+  await mount(
+    {
+      probe: true,
+      config: { prompt_suggestion_enabled: false, jev_typesafe_api_key: '' },
+      save: () => new Promise((resolve) => { resolveSave = resolve; }),
+    },
+    async ({ services, render }) => {
+      services.onRecommendationEnabledChange = (value) => notifications.push(value);
+      await render();
+      let saving;
+      await act(async () => {
+        saving = globalThis.collaborationFixture.controller.save(
+          { prompt_suggestion_enabled: 'true', jev_typesafe_api_key: 'shared-test-key' },
+          'recommendation-and-jev',
+        );
+      });
+      assert.deepEqual(notifications, []);
+      await act(async () => {
+        resolveSave();
+        await saving;
+      });
+      assert.deepEqual(notifications, [true]);
+      assert.equal(globalThis.collaborationFixture.controller.config.prompt_suggestion_enabled, 'true');
+      assert.equal(globalThis.collaborationFixture.controller.config.jev_typesafe_api_key, 'shared-test-key');
+    },
+  );
+});
+
+test('failed saves do not notify recommendation changes or overwrite shared JEV settings', async () => {
+  const notifications = [];
+  await mount(
+    {
+      probe: true,
+      config: { prompt_suggestion_enabled: true, jev_typesafe_api_key: 'saved-test-key' },
+      rejectSave: true,
+    },
+    async ({ services, render }) => {
+      services.onRecommendationEnabledChange = (value) => notifications.push(value);
+      await render();
+      await act(async () => {
+        await assert.rejects(
+          globalThis.collaborationFixture.controller.save(
+            { prompt_suggestion_enabled: 'false', jev_typesafe_api_key: '' },
+            'recommendation-and-jev',
+          ),
+          /save failed/,
+        );
+      });
+      assert.deepEqual(notifications, []);
+      assert.equal(globalThis.collaborationFixture.controller.config.prompt_suggestion_enabled, true);
+      assert.equal(globalThis.collaborationFixture.controller.config.jev_typesafe_api_key, 'saved-test-key');
+    },
+  );
+});
+
+test('shared JEV key save and clear survive stale config reloads', async () => {
+>>>>>>> origin/develop
   let resolveSave;
   let resolveReload;
   let loads = 0;

@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 import AppKit
 import ApplicationServices
 
@@ -397,3 +398,5 @@ enum BackgroundEvents {
         event.postToPid(window.pid)
     }
 }
+=======
+>>>>>>> origin/develop

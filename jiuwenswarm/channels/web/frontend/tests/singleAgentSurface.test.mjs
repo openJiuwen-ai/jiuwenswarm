@@ -114,6 +114,15 @@ test('trajectory host relies on native sidebar controls', () => {
   assert.doesNotMatch(teamWorkspaceStyles, /border-radius: 0\.5rem/);
   assert.match(teamWorkspaceStyles, /\.lanes[\s\S]*?overflow-y: auto/);
   assert.match(teamWorkspaceStyles, /\.laneRowExpanded[\s\S]*?flex: 0 0 100%/);
+  assert.match(
+    teamWorkspaceSource,
+    /const selected = group\.lanes\.some\([\s\S]*?css\.workflowGroupSelected/,
+  );
+  assert.match(teamWorkspaceStyles, /\.workflowGroupSelected\s*\{[\s\S]*?height: 100%[\s\S]*?flex: 0 0 100%/);
+  assert.match(
+    teamWorkspaceStyles,
+    /\.workflowGroupSelected \.workflowGroupLanes\s*\{[\s\S]*?min-height: 0[\s\S]*?flex: 1 1 0/,
+  );
   assert.match(teamWorkspaceSource, /lanesElement\.scrollTop \+= rowBounds\.top - lanesBounds\.top/);
   assert.match(chatPanelSource, /export const ChatPanel = React\.memo/);
   assert.match(
@@ -450,6 +459,7 @@ test('disabled trajectory feature restores the legacy chat-only Agent surface', 
   });
   container.remove();
 });
+<<<<<<< HEAD
 
 function renderDiagnosisSurface(props) {
   return React.createElement(SingleAgentSurface, {
@@ -736,3 +746,340 @@ test('diagnosis sub-page folds finished stages and offers record management', ()
   assert.match(select, /trajectory-diagnosis-record-search/);
   assert.match(select, /trajectory-diagnosis-record-delete-confirm/);
 });
+||||||| e487e9a30
+=======
+
+function renderDiagnosisSurface(props) {
+  return React.createElement(SingleAgentSurface, {
+    chat: React.createElement('div', { 'data-testid': 'diagnosis-chat-probe' }, 'chat'),
+    chatLabel: 'Chat',
+    mode: 'agent',
+    onViewChange: () => {},
+    tabListLabel: 'Single Agent surface',
+    trajectory: React.createElement('div', { 'data-testid': 'diagnosis-trajectory-probe' }, 'trace'),
+    trajectoryEnabled: true,
+    trajectoryLabel: 'Trajectory',
+    trajectoryRequested: false,
+    diagnosis: React.createElement('div', { 'data-testid': 'diagnosis-probe' }, 'diagnosis'),
+    ...props,
+  });
+}
+
+test('diagnosis view mounts only after the first request and never touches the trajectory view', async () => {
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+
+  await act(async () => {
+    root.render(renderDiagnosisSurface({
+      activeView: 'chat',
+      diagnosisEnabled: true,
+      diagnosisRequested: false,
+    }));
+  });
+  assert.equal(container.querySelector('[data-testid="single-agent-diagnosis-view"]'), null);
+  assert.equal(container.querySelectorAll('[role="tab"]').length, 2);
+
+  await act(async () => {
+    root.render(renderDiagnosisSurface({
+      activeView: 'diagnosis',
+      diagnosisEnabled: true,
+      diagnosisRequested: true,
+    }));
+  });
+  const view = container.querySelector('[data-testid="single-agent-diagnosis-view"]');
+  assert.ok(view);
+  assert.equal(view.getAttribute('aria-hidden'), 'false');
+  assert.ok(container.querySelector('[data-testid="diagnosis-probe"]'));
+  assert.equal(container.querySelector('[data-testid="single-agent-trajectory-view"]'), null);
+  assert.ok(container.querySelector('.single-agent-surface--diagnosis'));
+  // The 对话/轨迹 tab bar is not shown inside the diagnosis view.
+  assert.equal(container.querySelector('[data-testid="single-agent-surface-tabs"]'), null);
+  assert.equal(container.querySelectorAll('[role="tab"]').length, 0);
+
+  await act(async () => {
+    root.render(renderDiagnosisSurface({
+      activeView: 'chat',
+      diagnosisEnabled: true,
+      diagnosisRequested: true,
+    }));
+  });
+  // Leaving the view keeps it mounted but hidden.
+  assert.equal(
+    container.querySelector('[data-testid="single-agent-diagnosis-view"]').getAttribute('aria-hidden'),
+    'true',
+  );
+  assert.ok(container.querySelector('[data-testid="diagnosis-probe"]'));
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});
+
+test('diagnosis view falls back to chat when the entry is unavailable', async () => {
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+
+  await act(async () => {
+    root.render(renderDiagnosisSurface({
+      activeView: 'diagnosis',
+      diagnosisEnabled: false,
+      diagnosisRequested: true,
+    }));
+  });
+  assert.equal(container.querySelector('[data-testid="single-agent-diagnosis-view"]'), null);
+  assert.ok(container.querySelector('.single-agent-surface--chat'));
+  assert.equal(
+    container.querySelector('[data-testid="single-agent-chat-view"]').getAttribute('aria-hidden'),
+    'false',
+  );
+
+  await act(async () => {
+    root.render(renderDiagnosisSurface({
+      activeView: 'diagnosis',
+      diagnosisEnabled: true,
+      diagnosisRequested: true,
+      mode: 'auto_harness',
+    }));
+  });
+  assert.equal(container.querySelector('[data-testid="single-agent-diagnosis-view"]'), null);
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});
+
+test('diagnosis view works without the trajectory view and the two switches stay independent', async () => {
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+
+  // Diagnosis on, trajectory view off: no tab bar and no navigation layout, but the diagnosis view opens.
+  await act(async () => {
+    root.render(renderDiagnosisSurface({
+      activeView: 'diagnosis',
+      trajectoryEnabled: false,
+      diagnosisEnabled: true,
+      diagnosisRequested: true,
+    }));
+  });
+  assert.ok(container.querySelector('[data-testid="single-agent-diagnosis-view"]'));
+  assert.ok(container.querySelector('.single-agent-surface--diagnosis'));
+  assert.equal(container.querySelector('.single-agent-surface--navigation'), null);
+  assert.equal(container.querySelectorAll('[role="tab"]').length, 0);
+  assert.equal(container.querySelector('[data-testid="single-agent-trajectory-view"]'), null);
+
+  // The chat stays reachable and shows no tab bar while the trajectory view is off.
+  await act(async () => {
+    root.render(renderDiagnosisSurface({
+      activeView: 'chat',
+      trajectoryEnabled: false,
+      diagnosisEnabled: true,
+      diagnosisRequested: true,
+    }));
+  });
+  assert.equal(container.querySelectorAll('[role="tab"]').length, 0);
+  assert.equal(
+    container.querySelector('[data-testid="single-agent-chat-view"]').getAttribute('aria-hidden'),
+    'false',
+  );
+
+  // A stale trajectory request falls back to chat when only diagnosis is on.
+  await act(async () => {
+    root.render(renderDiagnosisSurface({
+      activeView: 'trajectory',
+      trajectoryEnabled: false,
+      trajectoryRequested: true,
+      diagnosisEnabled: true,
+      diagnosisRequested: true,
+    }));
+  });
+  assert.ok(container.querySelector('.single-agent-surface--chat'));
+  assert.equal(container.querySelector('[data-testid="single-agent-trajectory-view"]'), null);
+
+  // Trajectory view on, diagnosis off: the tab bar stays and the diagnosis view stays unavailable.
+  await act(async () => {
+    root.render(renderDiagnosisSurface({
+      activeView: 'diagnosis',
+      trajectoryEnabled: true,
+      diagnosisEnabled: false,
+      diagnosisRequested: true,
+    }));
+  });
+  assert.equal(container.querySelector('[data-testid="single-agent-diagnosis-view"]'), null);
+  assert.equal(container.querySelectorAll('[role="tab"]').length, 2);
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});
+
+test('diagnosis is the sole experimental switch and the chat trajectory tab is gone', () => {
+  const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const settingsSource = readFileSync(
+    new URL('../src/features/settings/modules/experimental/ExperimentalSettings.tsx', import.meta.url),
+    'utf8',
+  );
+  const definitionSource = readFileSync(
+    new URL('../src/features/settings/modules/experimental/definition.ts', import.meta.url),
+    'utf8',
+  );
+  const entry = appSource.match(/const diagnosisEntryAvailable = ([\s\S]*?);\r?\n/);
+  assert.ok(entry);
+  assert.doesNotMatch(entry[1], /trajectoryUiEnabled/);
+  assert.match(entry[1], /trajectoryDiagnosisEnabled/);
+  assert.match(appSource, /trajectoryEnabled=\{false\}/);
+  assert.match(appSource, /requestedChatSurfaceView === 'trajectory'/);
+  assert.doesNotMatch(appSource, /useTrajectoryUiEnabled|setTrajectoryUiEnabled/);
+  assert.doesNotMatch(settingsSource, /export function TrajectoryUiSetting|setTrajectoryUiEnabled/);
+  assert.doesNotMatch(definitionSource, /TrajectoryUiSetting|trajectory-ui-enabled/);
+  const diagnosisSetting = settingsSource.match(
+    /export function TrajectoryDiagnosisSetting[\s\S]*?\r?\n\}\r?\n/,
+  );
+  assert.ok(diagnosisSetting);
+  assert.doesNotMatch(diagnosisSetting[0], /trajectory_ui_enabled/);
+});
+
+test('diagnosis entry lives in the chat header and no longer in the trajectory panel', () => {
+  const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const chatSource = readFileSync(
+    new URL('../src/components/ChatPanel/index.tsx', import.meta.url),
+    'utf8',
+  );
+  const panelSource = readFileSync(
+    new URL('../src/features/trajectory/TrajectoryPanel.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(chatSource, /data-testid="chat-panel-header-diagnosis-toggle"/);
+  assert.match(chatSource, /t\('trajectory\.diagnosis\.entry'\)/);
+  assert.match(appSource, /onToggleDiagnosis=\{toggleDiagnosisView\}/);
+  assert.match(appSource, /selectChatSurfaceView\(chatSurfaceView === 'diagnosis' \? 'chat' : 'diagnosis'\)/);
+  // The raw trajectory page only draws the shared axis when the analysis page asks for it.
+  assert.doesNotMatch(panelSource, /DiagnosisPanel|diagnosisOpen|trajectory\.diagnosis\./);
+  assert.match(panelSource, /sharedTimeAxis = false/);
+});
+
+test('trajectory analysis page hosts the raw trajectory and diagnosis as sub-pages', () => {
+  const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const pageSource = readFileSync(
+    new URL('../src/features/trajectory/TrajectoryAnalysisPage.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(appSource, /TrajectoryAnalysisPage/);
+  assert.match(appSource, /onBack=\{leaveDiagnosisView\}/);
+  assert.match(pageSource, /data-testid="trajectory-analysis-back"/);
+  assert.match(pageSource, /data-testid=\{`trajectory-analysis-tab-\$\{tab\.id\}`\}/);
+  assert.match(pageSource, /<TrajectoryPanel[\s\S]*?sharedTimeAxis/);
+  assert.match(pageSource, /<DiagnosisSubpage/);
+  assert.doesNotMatch(pageSource, /DiagnosisPanel/);
+  // The trigger sits in the page header, outside both sub-pages.
+  assert.match(pageSource, /data-testid="trajectory-analysis-diagnose"/);
+  // The trajectory reports its lanes and receives the emphasised steps through additive props.
+  assert.match(pageSource, /onSubjectsChange=\{setSubjects\}/);
+  assert.match(pageSource, /highlightStepKeys: focused\.keys/);
+  // The header button enters selection mode instead of starting a run by itself.
+  assert.match(pageSource, /onClick=\{enterSelection\}/);
+  assert.match(
+    pageSource,
+    /\{\.\.\.\(selecting\s*\?\s*\{\s*selection: \{ state: selectionState, onChange: setSelectionState \},\s*fullScopeSelection: fullScope,\s*onFullScopeChange: setFullScope,\s*\}\s*:\s*\{\}\)\}/,
+  );
+  assert.match(pageSource, /<DiagnosisSelectionBar/);
+  // Sub-pages stay put while a pick is open, and Esc, hiding the page or a new session end it.
+  assert.match(pageSource, /disabled=\{selecting\}/);
+  assert.match(pageSource, /event\.key !== 'Escape' \|\| event\.defaultPrevented/);
+  assert.match(pageSource, /if \(!active\) exitSelection\(\)/);
+  assert.match(pageSource, /setPageSessionId\(sessionId\);[\s\S]*?setSelecting\(false\)/);
+  // A successful start leaves selection mode and jumps to the diagnosis sub-page; a failure keeps the pick.
+  assert.match(pageSource, /if \(!started\) return;\s*exitSelection\(\);\s*setSubpage\('diagnosis'\)/);
+});
+
+test('the analysis page draws single-Agent sessions as lanes on the shared axis', () => {
+  const panelSource = readFileSync(
+    new URL('../src/features/trajectory/TrajectoryPanel.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(panelSource, /const laneLayout = teamMode \|\| sharedTimeAxis/);
+  assert.match(panelSource, /useSharedTimeAxis\(sharedTimeAxis, sessionId, subjectSnapshots\)/);
+  assert.match(panelSource, /collectUserInteractionWallRanges\(turns\)/);
+  assert.match(panelSource, /turnMarkers=\{sharedAxisTurnMarkers\}/);
+  assert.match(panelSource, /userTurnGapRanges: sharedAxisTurnMarkers/);
+  assert.match(
+    readFileSync(new URL('../src/features/trajectory/client/TrajectoryTimeline.tsx', import.meta.url), 'utf8'),
+    /placeUserTurnAxisEdges\(ranges, visibleDuration\)/,
+  );
+  assert.match(
+    readFileSync(new URL('../src/features/trajectory/client/TrajectoryTimeline.tsx', import.meta.url), 'utf8'),
+    /data-divider="turn"/,
+  );
+  assert.match(
+    readFileSync(new URL('../src/features/trajectory/client/TrajectoryTimeline.tsx', import.meta.url), 'utf8'),
+    /data-divider="user-turn"/,
+  );
+  assert.match(
+    readFileSync(new URL('../src/features/trajectory/client/TrajectoryTimeline.tsx', import.meta.url), 'utf8'),
+    /clipIntervalAgainstGaps\(span\.start, span\.end, userTurnGaps\)/,
+  );
+  assert.match(
+    readFileSync(new URL('../src/features/trajectory/diagnosis/diagnosisTimeSelection.ts', import.meta.url), 'utf8'),
+    /USER_TURN_GAP_FRACTION = 0\.02/,
+  );
+  assert.match(
+    readFileSync(new URL('../src/features/trajectory/diagnosis/useSharedTimeAxis.ts', import.meta.url), 'utf8'),
+    /isTeamHarnessNoiseCell\(sample\)/,
+  );
+  assert.match(panelSource, /const teamContent = laneLayout &&/);
+  // Without the selection prop the lanes stay read-only; with it they pick per agent.
+  assert.match(panelSource, /const selecting = sharedTimeAxis && selection !== undefined/);
+  assert.match(panelSource, /spanSelectsRange: selecting/);
+  // Browse/zoom uses grab-to-pan; diagnosis selection locks the viewport for brush drag.
+  assert.match(panelSource, /lockTimelineViewport: selecting/);
+  assert.match(panelSource, /agentSelection: \{/);
+  // Include checkbox only while a shared brush / full-scope pick is active.
+  assert.match(panelSource, /shouldShowIncludeToggle\(selection\.state, fullScopeSelection, subjectId\)/);
+  // Full-trajectory pick keeps lane "select all" inactive; a click narrows to that lane.
+  assert.match(panelSource, /if \(fullScopeSelection\) return false;/);
+  assert.match(
+    panelSource,
+    /toggleSelectAllOnLane\(EMPTY_DIAGNOSIS_SELECTION, subjectId, intervals\)/,
+  );
+  const workspaceSource = readFileSync(
+    new URL('../src/features/trajectory/TeamTrajectoryWorkspace.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(workspaceSource, /showIncludeToggle === true && onToggleIncluded !== undefined/);
+  assert.match(workspaceSource, /trajectory\.diagnosis\.includeAgentHint/);
+});
+
+test('scheduled team lanes retain swarmflow grouping for regular members', () => {
+  const workspaceSource = readFileSync(
+    new URL('../src/features/trajectory/TeamTrajectoryWorkspace.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(workspaceSource, /const workflowGroupingLanes = laneSections === null \? flatLanes : standaloneMembers;/);
+  assert.match(
+    workspaceSource,
+    /data-testid="team-trajectory-member-group"[\s\S]*?ungrouped\.map\(renderLane\)[\s\S]*?workflowGroups\.map\(renderWorkflowGroup\)/,
+  );
+});
+
+test('diagnosis sub-page folds finished stages and offers record management', () => {
+  const dir = '../src/features/trajectory/diagnosis/';
+  const sessionHook = readFileSync(new URL(`${dir}useDiagnosisSession.ts`, import.meta.url), 'utf8');
+  // Team sessions may 403 list before team_name exists; keep the empty state, do not banner.
+  assert.match(sessionHook, /isUnsupportedSessionMode\(error\)/);
+  assert.match(sessionHook, /LIST_UNSUPPORTED_RETRIES/);
+  const subpage = readFileSync(new URL(`${dir}DiagnosisSubpage.tsx`, import.meta.url), 'utf8');
+  const select = readFileSync(new URL(`${dir}DiagnosisRecordSelect.tsx`, import.meta.url), 'utf8');
+  assert.match(subpage, /isStageExpanded\(view\.status, userChoice\)|isStageExpanded\(view\.status/);
+  assert.match(subpage, /data-testid="trajectory-diagnosis-cancel"/);
+  // The record select sits in the page's tab bar, not inside the sub-page.
+  const page = readFileSync(new URL('../src/features/trajectory/TrajectoryAnalysisPage.tsx', import.meta.url), 'utf8');
+  assert.match(page, /<DiagnosisRecordSelect/);
+  assert.match(select, /trajectory-diagnosis-record-search/);
+  assert.match(select, /trajectory-diagnosis-record-delete-confirm/);
+});
+>>>>>>> origin/develop

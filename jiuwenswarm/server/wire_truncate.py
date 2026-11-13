@@ -110,6 +110,7 @@ _HISTORY_COLLAPSE_KEEP_KEYS = {
     "is_goal_objective_message",
     "is_goal_completed_message",
     "evidence",
+    "payload_refs",
     "agent_template_name",
 }
 
@@ -130,6 +131,10 @@ _WORKFLOW_LIST_SUMMARY_KEEP_KEYS = (
     # Cold-start marker: the list row is what the tree renders first after a
     # session reopen, and the buttons key their greying on it.
     "recovered",
+    # Run attribution (None = no team context): the executor badge renders
+    # from the list row on a cold reopen — the same cold-start argument as
+    # "recovered"; the detail view shares these keep keys.
+    "executor",
 )
 
 
@@ -238,6 +243,7 @@ def _minimal_history_record_for_wire(record: dict[str, Any]) -> dict[str, Any]:
     return minimal
 
 
+<<<<<<< HEAD
 def is_restorable_history_record(record: Any) -> bool:
     """Return whether a stored record belongs in the public main transcript."""
     if not isinstance(record, dict):
@@ -261,6 +267,24 @@ def is_restorable_history_record(record: Any) -> bool:
     return has_content if not event_type else event_type in _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES
 
 
+||||||| e487e9a30
+=======
+def _restore_mcp_app_block(original: dict[str, Any], sanitized: dict[str, Any]) -> None:
+    """Keep an MCP App tool result (``raw_output.mcp_app``) byte-for-byte.
+
+    The app's ``structuredContent`` is data the app parses; depth/list/string
+    truncation would hand it values like ``"<truncated>"`` where it expects
+    numbers and crash it on history restore. The per-record size budget below
+    still applies: an oversized record collapses and drops the block entirely.
+    """
+    raw_output = original.get("raw_output")
+    block = raw_output.get("mcp_app") if isinstance(raw_output, dict) else None
+    sanitized_raw = sanitized.get("raw_output")
+    if isinstance(block, dict) and isinstance(sanitized_raw, dict):
+        sanitized_raw["mcp_app"] = block
+
+
+>>>>>>> origin/develop
 def _sanitize_history_record_for_wire(record: Any) -> dict[str, Any]:
     """Sanitize one history record, collapsing if it exceeds the per-record budget."""
     if not isinstance(record, dict):
@@ -268,6 +292,7 @@ def _sanitize_history_record_for_wire(record: Any) -> dict[str, Any]:
     sanitized = _sanitize_history_wire_value({key: value for key, value in record.items() if key != "_session_append"})
     if not isinstance(sanitized, dict):
         return {"content": str(sanitized), "truncated": True}
+    _restore_mcp_app_block(record, sanitized)
     if _json_wire_size(sanitized) <= _HISTORY_WIRE_RECORD_MAX_BYTES:
         return sanitized
     return _collapse_oversized_history_record(sanitized)

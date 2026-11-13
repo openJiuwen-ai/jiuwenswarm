@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import {
   APPROVAL_SOURCES,
   approvalCardHeader,
@@ -8,6 +9,21 @@ import {
   taskCancellationNotice,
   taskQuestionNotice,
 } from './taskPrompts.js';
+||||||| e487e9a30
+import { taskCancellationNotice, taskQuestionNotice } from './taskPrompts.js';
+=======
+import { duplexErrorDetail } from '../duplexErrorMessage';
+import {
+  APPROVAL_SOURCES,
+  approvalCardHeader,
+  pendingApprovalInstructions,
+  pendingCardTurnNotice,
+  spokenCardAnswer,
+  spokenCardAnswerNotice,
+  taskCancellationNotice,
+  taskQuestionNotice,
+} from './taskPrompts.js';
+>>>>>>> origin/develop
 import {
   createQwenOmniCancelResponseEvent,
   createQwenOmniFinishSessionEvent,
@@ -443,6 +459,7 @@ export class RealtimeDuplexSession {
     this.dispatchQueuedToolResult();
   }
 
+<<<<<<< HEAD
   enqueueQuestion(
     jobId: string,
     interaction: {
@@ -450,23 +467,56 @@ export class RealtimeDuplexSession {
       questions?: Array<{ header?: string; question?: string; options?: Array<{ label?: string }> }>;
     },
   ): void {
+||||||| e487e9a30
+  enqueueQuestion(jobId: string, interaction: { id?: string; request_id: string; state: string }): void {
+=======
+  enqueueQuestion(
+    jobId: string,
+    interaction: {
+      id?: string; request_id: string; state: string; source?: string;
+      questions?: Array<{ header?: string; question?: string; options?: Array<{ label?: string }> }>;
+    },
+  ): void {
+    const interactionId = interaction.id || interaction.request_id;
+>>>>>>> origin/develop
     if (interaction.state !== 'pending') {
+<<<<<<< HEAD
       this.pendingQuestions = this.pendingQuestions.filter(item => item.jobId !== jobId);
       this.closeApprovals(jobId);
+||||||| e487e9a30
+      this.pendingQuestions = this.pendingQuestions.filter(item => item.jobId !== jobId);
+=======
+      this.pendingQuestions = this.pendingQuestions.filter(item => item.jobId !== jobId
+        || (!jobId && (item.interaction.id || item.interaction.request_id) !== interactionId));
+      this.closeApprovals(jobId, interactionId);
+>>>>>>> origin/develop
       return;
     }
+<<<<<<< HEAD
     const key = `question:${jobId}:${interaction.id || interaction.request_id}`;
     if (interaction.source && APPROVAL_SOURCES.has(interaction.source) && !this.pendingApprovals.has(key)) {
       this.pendingApprovals.set(key, approvalCardHeader(jobId, interaction));
       this.syncApprovalInstructions();
       this.redirectSpeechReply();
     }
+||||||| e487e9a30
+    const key = `question:${jobId}:${interaction.id || interaction.request_id}`;
+=======
+    if (interaction.source === 'permission_interrupt') this.closeApprovals(jobId, interactionId);
+    const key = `question:${jobId}:${interactionId}`;
+    if (interaction.source && APPROVAL_SOURCES.has(interaction.source) && !this.pendingApprovals.has(key)) {
+      this.pendingApprovals.set(key, approvalCardHeader(jobId, interaction));
+      this.syncApprovalInstructions();
+      this.redirectSpeechReply();
+    }
+>>>>>>> origin/develop
     if (this.acceptedToolResultIds.has(key)) return;
     this.acceptedToolResultIds.add(key);
     this.pendingQuestions.push({ jobId, interaction });
     this.dispatchQueuedToolResult();
   }
 
+<<<<<<< HEAD
   private closeApprovals(jobId: string): void {
     const prefix = `question:${jobId}:`;
     const keys = [...this.pendingApprovals.keys()].filter(key => key.startsWith(prefix));
@@ -555,6 +605,99 @@ export class RealtimeDuplexSession {
     this.emitDiagnostic('qwen_approval_instructions_synced', { pending: this.pendingApprovals.size });
   }
 
+||||||| e487e9a30
+=======
+  private closeApprovals(jobId: string, interactionId?: string): void {
+    // Chat cards share an empty job ID; only the named interaction may close.
+    const keys = [...this.pendingApprovals].filter(([key, card]) => jobId
+      ? card.job_id === jobId
+      : Boolean(interactionId) && key === `question::${interactionId}`).map(([key]) => key);
+    if (!keys.length) return;
+    keys.forEach(key => this.pendingApprovals.delete(key));
+    this.syncApprovalInstructions();
+  }
+
+  private sessionUpdate(): Record<string, unknown> {
+    return createQwenOmniSessionUpdate({
+      voice: this.config.voice,
+      tools: this.config.tools,
+      replyLanguage: this.config.replyLanguage,
+      restoreInstructions: this.config.restoreInstructions,
+      extraInstructions: pendingApprovalInstructions([...this.pendingApprovals.values()]),
+      clientResponses: this.pendingApprovals.size > 0,
+      inputRate: INPUT_RATE,
+      outputRate: OUTPUT_RATE,
+    });
+  }
+
+  // A card that opens while the provider answers speech finished just before it: that
+  // reply was formed without the card ("已收到您的确认…继续执行"), so it is cancelled and
+  // re-requested after the card's status. Notices and tool results are never speech replies.
+  private redirectSpeechReply(): void {
+    if (this.staleReply || this.cardTurn) return;
+    if (this.speechReplyPendingAt !== null && performance.now() - this.speechReplyPendingAt < 8_000) {
+      this.staleReply = 'pending';
+    } else if (this.responseActive && this.speechReplyId && this.speechReplyId === this.responseId) {
+      this.cancelStaleReply();
+    }
+  }
+
+  private cancelStaleReply(): void {
+    this.staleReply = 'cancelling';
+    this.interruptQwenResponse(this.activeUserTurnId || 'card-turn', 0, 0, 0);
+  }
+
+  private reissueStaleReply(): void {
+    if (this.staleReply !== 'cancelling') return;
+    this.staleReply = null;
+    this.awaitingProviderResponse = true;
+    // That speech came before the card, so it is answered but never taken as the card's answer.
+    if (this.pendingApprovals.size) this.send({ type: 'conversation.item.create', item: {
+      type: 'message', role: 'user',
+      content: [{ type: 'input_text', text: pendingCardTurnNotice([...this.pendingApprovals.values()], '', true) }],
+    } });
+    this.send({ type: 'response.create' });
+    this.emitDiagnostic('qwen_card_turn_reissued', { pending: this.pendingApprovals.size });
+  }
+
+  private replyForCardTurn(said: string): void {
+    if (!this.cardTurn) return;
+    this.cardTurn = false;
+    const spoken = said ? spokenCardAnswer(said, [...this.pendingApprovals.values()]) : null;
+    if (spoken) {
+      const callId = `voice-card:${spoken.interaction_id}:${this.newTurnId('answer')}`;
+      this.spokenCardCalls.set(callId, spoken.answers[0]);
+      this.emitDiagnostic('qwen_card_spoken_answer', { interaction_id: spoken.interaction_id, answer: spoken.answers[0] });
+      this.callbacks.onFunctionCall?.({
+        name: 'jiuwen_task_answer', callId, arguments: JSON.stringify(spoken), task: 'jiuwen_task_answer',
+        inputId: this.latestInputId, originalInstruction: said,
+      });
+    }
+    if (!said || spoken) {
+      // Noise, or an answer already submitted: the receipt notice speaks for it.
+      this.awaitingProviderResponse = false;
+      this.dispatchQueuedToolResult();
+      return;
+    }
+    // Hold queued notices until this reply is created, so they cannot collide with it.
+    this.awaitingProviderResponse = true;
+    // The card may have closed meanwhile; the speech is still answered.
+    if (this.pendingApprovals.size) this.send({ type: 'conversation.item.create', item: {
+      type: 'message', role: 'user',
+      content: [{ type: 'input_text', text: pendingCardTurnNotice([...this.pendingApprovals.values()], said) }],
+    } });
+    this.send({ type: 'response.create' });
+    this.emitDiagnostic('qwen_card_turn_replied', { pending: this.pendingApprovals.size });
+  }
+
+  private syncApprovalInstructions(): void {
+    // Before the session is ready, the initial session.update already carries them.
+    if (this.socket?.readyState !== WebSocket.OPEN || !this.sessionReady) return;
+    this.send(this.sessionUpdate());
+    this.emitDiagnostic('qwen_approval_instructions_synced', { pending: this.pendingApprovals.size });
+  }
+
+>>>>>>> origin/develop
   enqueueToolResult(toolResult: RealtimeToolResult): boolean {
     this.pendingQuestions = this.pendingQuestions.filter(item => item.jobId !== toolResult.jobId);
     this.closeApprovals(toolResult.jobId);
@@ -659,12 +802,12 @@ export class RealtimeDuplexSession {
             const error = event.error as Record<string, unknown> | undefined;
             // The gateway's close notice must not erase the provider's quota/auth error.
             if (lastServiceError && error?.code === 'qwen_gateway_upstream_closed') return;
-            lastServiceError = readableError(event.error || event);
+            lastServiceError = duplexErrorDetail(event.error || event, { stage: type, event_id: event.event_id });
           }
           const response = event.response as Record<string, unknown> | undefined;
           if (type === 'response.done' && response?.status === 'failed') {
             const details = response.status_details as Record<string, unknown> | undefined;
-            lastServiceError = readableError(details?.error || details || 'Realtime 模型响应失败，服务端未提供具体原因');
+            lastServiceError = duplexErrorDetail(details?.error || details || 'Realtime 模型响应失败，服务端未提供具体原因', { stage: type, response_id: response?.id });
           }
           if (type === 'session.closed') {
             if (!this.sessionReady) reportedStartupError = true;
@@ -694,12 +837,14 @@ export class RealtimeDuplexSession {
           }
           if (type === 'error' && !this.sessionReady) {
             reportedStartupError = true;
-            rejectOnce(new Error(readableError(event.error || event)));
+            rejectOnce(new Error(duplexErrorDetail(event.error || event, { stage: 'session_start', event_id: event.event_id })));
           }
           if (this.config.restoreInstructions && !this.sessionReady) return;
           this.handleEvent(event, data);
-        } catch {
-          this.callbacks.onError('Realtime 返回了无效事件');
+        } catch (error) {
+          const message = duplexErrorDetail(error, { stage: 'event_parse_or_handle', event_chars: data.length });
+          this.emitDiagnostic('realtime_event_processing_failed', { message, error_type: error instanceof Error ? error.name : 'UnknownError' });
+          this.callbacks.onError(`Realtime 事件解析或处理失败：${message}`);
         }
       };
       socket.onerror = () => {
@@ -707,7 +852,7 @@ export class RealtimeDuplexSession {
         this.emitDiagnostic('realtime_websocket_error', {
           url: url.toString(),
         });
-        const message = lastServiceError || 'Realtime 网络连接异常，浏览器未提供具体原因，请检查网络或模型服务。';
+        const message = lastServiceError || `Realtime 网络连接异常，浏览器未提供具体原因 [stage=${this.sessionReady ? 'session_active' : 'session_start'}, readyState=${socket.readyState}]，请检查网络或模型服务。`;
         const startupAlreadyResolved = settled;
         rejectOnce(new Error(message));
         if (startupAlreadyResolved) this.callbacks.onError(message);
@@ -1004,7 +1149,7 @@ export class RealtimeDuplexSession {
         call_id: String(event.call_id || ''),
         arguments: typeof event.arguments === 'string' ? event.arguments.slice(0, 2_000) : event.arguments,
       });
-      this.callbacks.onError('千问返回了无效的工具调用');
+      this.callbacks.onError(duplexErrorDetail('千问返回了无效的工具调用：工具名或参数不符合约定，未提交此调用', { stage: type, name: event.name, call_id: event.call_id, response_id: eventResponseId }));
     } else if (type === 'session.created') {
       this.callbacks.onState('listening');
     } else if (type === 'response.created') {
@@ -1058,7 +1203,7 @@ export class RealtimeDuplexSession {
       const affectsActive = !eventResponseId || eventResponseId === this.responseId || this.notificationConflictWaiting;
       if (type === 'response.done' && response?.status === 'failed') {
         const details = response.status_details as Record<string, unknown> | undefined;
-        this.callbacks.onError(readableError(details?.error || details || 'Realtime 模型响应失败，服务端未提供具体原因'));
+        this.callbacks.onError(duplexErrorDetail(details?.error || details || 'Realtime 模型响应失败，服务端未提供具体原因', { stage: type, response_id: eventResponseId }));
       }
       if (type === 'response.done' && affectsActive) {
         this.responseActive = false;
@@ -1123,6 +1268,7 @@ export class RealtimeDuplexSession {
         image_append_sequence: media.imageAppendSequence,
         has_deferred_image: media.hasDeferredImage,
       });
+<<<<<<< HEAD
       // Qwen closes a connection after 300s without a generated response.
       // This is a provider limit, not a local idle timer that can be disabled.
       // The owner renews the transport with restored history; never fabricate
@@ -1144,6 +1290,31 @@ export class RealtimeDuplexSession {
         return;
       }
       this.callbacks.onError(message);
+||||||| e487e9a30
+      this.callbacks.onError(readableError(error || event));
+=======
+      // Qwen closes a connection after 300s without a generated response.
+      // This is a provider limit, not a local idle timer that can be disabled.
+      // The owner renews the transport with restored history; never fabricate
+      // a response or replay historical tool calls merely to keep it alive.
+      if (errorRecord.code === 'response_idle_timeout' && this.sessionReady && this.callbacks.onIdleTimeout) {
+        this.callbacks.onIdleTimeout();
+        return;
+      }
+      if (imageAppendError) {
+        // The rejected frame does not end audio or an already completed response.
+        // Wait for the next provider speech turn before sending another image.
+        this.qwenMedia.pauseVideo();
+        return;
+      }
+      if (supersededResponse) {
+        // Qwen discarded the pending response when the next spoken input arrived.
+        this.pendingResponseInterrupt = false;
+        if (!this.responseId) this.responseActive = false;
+        return;
+      }
+      this.callbacks.onError(duplexErrorDetail(event.error || message, { stage: type, event_id: event.event_id, response_id: eventResponseId }));
+>>>>>>> origin/develop
     }
   }
 
@@ -1333,7 +1504,11 @@ export class RealtimeDuplexSession {
           [output.buffer],
         );
       })
-      .catch(() => this.callbacks.onError('Realtime 音频解码失败'));
+      .catch((error) => {
+        const message = duplexErrorDetail(error, { stage: 'audio_decode_or_playback', response_id: responseId, audio_base64_chars: encoded.length });
+        this.emitDiagnostic('realtime_audio_playback_failed', { message, response_id: responseId });
+        this.callbacks.onError(`Realtime 音频解码或播放失败：${message}`);
+      });
   }
 
   private enqueuePlaybackDrain(responseId: string | null): void {

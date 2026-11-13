@@ -21,7 +21,11 @@ usage() {
 Usage: tests/test.sh [target] [--server-endpoint=URI] [pytest args...]
 
 Targets:
-  default                 Run test_server_api_default.py + test_cli_default.py
+  default                 Run the default integration pair + the curated
+                          unit list below (no server needed for the unit
+                          entries)
+  unit                    Run pure unit tests under tests/unit/ (no server
+                          needed; safe to run without a live jiuwenbox)
   inference-privacy-proxy Run test_inference_privacy_proxy.py
   performance             Run performance suite (accepts --sandbox-count /
                           --concurrency / --loop)
@@ -64,11 +68,24 @@ if [[ $# -gt 0 ]]; then
             TEST_TARGETS=(
                 "tests/integration/test_server_api_default.py"
                 "tests/integration/test_cli_default.py"
+<<<<<<< HEAD
                 "tests/unit/test_policy_update_store.py"
                 "tests/unit/test_etcd_sync_client.py"
                 "tests/unit/test_etcd_sync_service.py"
+||||||| e487e9a30
+=======
+                "tests/unit/test_policy_update_store.py"
+                "tests/unit/test_etcd_sync_client.py"
+                "tests/unit/test_etcd_sync_service.py"
+                "tests/unit/test_bwrap_to_args.py"
+>>>>>>> origin/develop
             )
             TEST_KIND="integration"
+            shift
+            ;;
+        unit)
+            TEST_TARGETS=("tests/unit/")
+            TEST_KIND="unit"
             shift
             ;;
         inference-privacy-proxy)
@@ -148,7 +165,9 @@ if (( ${#PYTEST_ARGS[@]} > 0 )); then
     done
 fi
 
-if [[ -n "$user_endpoint" ]]; then
+if [[ "$TEST_KIND" == "unit" ]]; then
+    : # unit tests need no server endpoint; skip the listener echo.
+elif [[ -n "$user_endpoint" ]]; then
     case "$user_endpoint" in
         unix://*)
             echo "[test.sh] endpoint=${user_endpoint} (uds)" >&2

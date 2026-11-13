@@ -17,6 +17,10 @@ from typing import Any, Mapping
 from collections.abc import Callable
 from copy import deepcopy
 
+from openjiuwen.core.single_agent.interrupt.response import InterruptKind
+
+from agent_gateway.common.interrupt_resume import answers_paused_calls
+
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     build_plan_approval_actions,
 )
@@ -35,7 +39,9 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.permission_options import
     ALWAYS_ALLOW,
     REJECT,
     SESSION_ALLOW,
+    resolve_permission_action,
 )
+from jiuwenswarm.enterprise import is_enterprise
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_invocation_key import (
     ToolInvocationKeyV1,
 )
@@ -48,18 +54,11 @@ from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_redaction impo
     sanitize_permission_ui_payload,
 )
 from jiuwenswarm.common.utils import logger
+from jiuwenswarm.enterprise import is_enterprise
 
 SKILL_EVOLUTION_APPROVAL_SCHEMA = "openjiuwen.skill_evolution_approval.v1"
 EVOLUTION_INTERRUPT_SOURCE = "evolution_interrupt"
 LEGACY_SKILL_EVOLUTION_APPROVAL_SOURCE = "skill_evolution_approval"
-INTERRUPT_RESUME_SOURCES = frozenset(
-    {
-        "permission_interrupt",
-        "confirm_interrupt",
-        "ask_user_interrupt",
-        EVOLUTION_INTERRUPT_SOURCE,
-    }
-)
 EVOLUTION_INTERRUPT_METADATA_SOURCES = frozenset(
     {
         EVOLUTION_INTERRUPT_SOURCE,
@@ -163,12 +162,11 @@ def has_interrupt_resume_payload(params: Any) -> bool:
 
 
 def is_interrupt_resume_payload(params: Any) -> bool:
+    if answers_paused_calls(params):
+        return True
     if not has_interrupt_resume_payload(params):
         return False
-    source = str(params.get("source") or "").strip()
-    if source in INTERRUPT_RESUME_SOURCES:
-        return True
-    if source != LEGACY_SKILL_EVOLUTION_APPROVAL_SOURCE:
+    if str(params.get("source") or "").strip() != LEGACY_SKILL_EVOLUTION_APPROVAL_SOURCE:
         return False
     evolution_meta = params.get("evolution_meta")
     return (
@@ -779,6 +777,7 @@ def build_permission_rail(
                 from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
                     permission_storage_lock, read_permission_layers_locked,
                 )
+<<<<<<< HEAD
                 with permission_storage_lock(sid):
                     _, user, session = read_permission_layers_locked(
                         sid, global_permissions=installed_global_permissions[0],
@@ -792,6 +791,45 @@ def build_permission_rail(
                 session_id=sid,
                 auto_mode=enable_auto_permission,
             )
+||||||| e487e9a30
+            rail = installed_permission_rail
+            getter = getattr(rail, "installed_permission_config", None)
+            if callable(getter):
+                installed = getter()
+                return installed if isinstance(installed, dict) else {}
+            return deepcopy(permission_config)
+=======
+                with permission_storage_lock(sid):
+                    _, user, session = read_permission_layers_locked(
+                        sid, global_permissions=installed_global_permissions[0],
+                    )
+            else:
+                user, session = load_user_permissions(), load_session_permissions(sid)
+            return compose_host_effective_permissions(
+                global_permissions=installed_global_permissions[0],
+                user_permissions=user,
+                session_permissions=session,
+                session_id=sid,
+                auto_mode=enable_auto_permission,
+            )
+
+        def _get_written_permissions() -> dict[str, Any]:
+            """The composed rules before Smart normalization, for the calls its reviewer cannot judge."""
+            from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+                permission_storage_lock, read_permission_layers_locked,
+            )
+            sid = _effective_session_id()
+            with permission_storage_lock(sid):
+                _, user, session = read_permission_layers_locked(
+                    sid, global_permissions=installed_global_permissions[0],
+                )
+            return compose_host_effective_permissions(
+                global_permissions=installed_global_permissions[0],
+                user_permissions=user,
+                session_permissions=session,
+                session_id=sid,
+            )
+>>>>>>> origin/develop
 
         def _permission_scene_config() -> dict[str, Any]:
             if enable_auto_permission:
@@ -918,6 +956,7 @@ def build_permission_rail(
                 persistent_audit_writer=persistent_audit_writer,
                 browser_runtime_security_profile=browser_runtime_security_profile,
                 trusted_search_urls=trusted_search_urls,
+                written_permissions=_get_written_permissions,
             )
             permission_rail.set_trusted_dirs(None)
 
@@ -950,6 +989,24 @@ def _read_value_field(value_obj: Any, field_name: str, default: Any = "") -> Any
     return default
 
 
+def _interrupt_kind(value_obj: Any) -> str:
+    """The ``InterruptKind`` of a request or its dict form; "" when the raiser declared none.
+
+    Skill-evolution approvals persisted before the field existed carry their
+    kind only in ``metadata["interrupt_kind"]``.
+    """
+    kind = _read_value_field(value_obj, "interrupt_kind", "") or _extract_interrupt_metadata(value_obj).get(
+        "interrupt_kind"
+    )
+    return kind if isinstance(kind, str) else ""
+
+
+def _interrupt_id(value_obj: Any) -> str:
+    """The ``interrupt_id`` of a request or its dict form; "" before agent-core assigned one."""
+    interrupt_id = _read_value_field(value_obj, "interrupt_id", "")
+    return interrupt_id if isinstance(interrupt_id, str) else ""
+
+
 def _normalize_tool_args(raw: Any) -> dict | None:
     if raw is None:
         return None
@@ -965,6 +1022,9 @@ def _normalize_tool_args(raw: Any) -> dict | None:
 
 
 def _is_ask_user_interrupt_value(value_obj: Any) -> bool:
+    kind = _interrupt_kind(value_obj)
+    if kind:
+        return kind == InterruptKind.ASK_USER
     tool_name = str(_read_value_field(value_obj, "tool_name", "") or "").strip()
     # Prefer the explicit tool identity whenever it is available.  Many tools
     # (for example memory_search) have a plain ``query`` argument, so treating
@@ -986,6 +1046,9 @@ def _is_ask_user_interrupt_value(value_obj: Any) -> bool:
 
 
 def _is_explicit_ask_user_shell(value_obj: Any) -> bool:
+    kind = _interrupt_kind(value_obj)
+    if kind:
+        return kind == InterruptKind.ASK_USER
     return (
         str(_read_value_field(value_obj, "tool_name", "") or "").strip() == "ask_user"
     )
@@ -1090,10 +1153,47 @@ def _parse_plan_metadata_from_message(message: str) -> tuple[str, str]:
     return plan_path, plan_slug
 
 
-def _resolve_interrupt_source(tool_name: str, message: str) -> str:
+_SOURCE_BY_KIND = {
+    InterruptKind.PERMISSION: "permission_interrupt",
+    InterruptKind.CONFIRM: "confirm_interrupt",
+}
+_APPROVAL_KINDS = frozenset({
+    InterruptKind.PERMISSION,
+    InterruptKind.CONFIRM,
+    InterruptKind.SKILL_EVOLUTION_APPROVAL,
+    InterruptKind.TEAM_TOOL_APPROVAL,
+})
+
+
+def _resolve_interrupt_source(value_obj: Any) -> str:
+    """Return ``permission_interrupt`` or ``confirm_interrupt`` for an approval.
+
+    The request's kind decides; a request without one (a session paused
+    before kinds existed, a rail that declares none) is told by its wording.
+    """
+    source = _SOURCE_BY_KIND.get(_interrupt_kind(value_obj))
+    if source is not None:
+        return source
+    tool_name, message, _tool_args = _read_interrupt_fields(value_obj)
     if _is_permission_interrupt_message(message, tool_name):
         return "permission_interrupt"
     return "confirm_interrupt"
+
+
+def _interrupt_identity(value_obj: Any) -> dict[str, str]:
+    """The fields a host answers an interrupt by (``interrupt_id``) and renders it by (``kind``)."""
+    return {"interrupt_id": _interrupt_id(value_obj), "kind": _interrupt_kind(value_obj)}
+
+
+def question_interactions(state_outputs: Any) -> list[Any]:
+    """The interactions of a pause that ask the user something.
+
+    A client tool call is not a question: it has its own chat.client_tool_request event.
+    """
+    return [
+        item for item in _iter_interactions(state_outputs or [])
+        if _interrupt_kind(_extract_interaction_parts(item)[1]) != InterruptKind.CLIENT_TOOL
+    ]
 
 
 def convert_interactions_to_ask_user_question(
@@ -1115,7 +1215,7 @@ def convert_interactions_to_ask_user_question(
     if not state_outputs:
         return None
 
-    interactions = list(_iter_interactions(state_outputs))
+    interactions = question_interactions(state_outputs)
     if not interactions:
         return None
     locator_rows = [
@@ -1166,6 +1266,7 @@ def convert_interactions_to_ask_user_question(
                 "request_id": request_id,
                 "questions": questions,
                 "source": "ask_user_interrupt",
+                **_interrupt_identity(value_obj),
             }
 
         for interaction in interactions:
@@ -1180,6 +1281,7 @@ def convert_interactions_to_ask_user_question(
                     "request_id": request_id,
                     "questions": [plain_question],
                     "source": "ask_user_interrupt",
+                    **_interrupt_identity(value_obj),
                 }
 
     # Only the Host-bound Smart queue owns the single-card contract. Ordinary
@@ -1206,7 +1308,7 @@ def convert_interactions_to_ask_user_question(
         source = (
             "permission_interrupt"
             if has_permission_locator
-            else _resolve_interrupt_source(tool_name, message)
+            else _resolve_interrupt_source(value_obj)
         )
         structured_approval = (
             None
@@ -1226,6 +1328,7 @@ def convert_interactions_to_ask_user_question(
             "request_id": request_id,
             "questions": [question_data],
             "source": source,
+            **_interrupt_identity(value_obj),
         }
         if (
             source == "confirm_interrupt"
@@ -1275,13 +1378,13 @@ def build_verified_permission_ask_user_question(
         "request_id": request_id,
         "questions": [question],
         "source": "permission_interrupt",
+        **_interrupt_identity(value_obj),
     }
 
 
 def _is_permission_interaction(interaction: Any) -> bool:
     _request_id, value_obj = _extract_interaction_parts(interaction)
-    tool_name, message, _tool_args = _read_interrupt_fields(value_obj)
-    return _resolve_interrupt_source(tool_name, message) == "permission_interrupt"
+    return _resolve_interrupt_source(value_obj) == "permission_interrupt"
 
 
 def _iter_interactions(state_outputs: list) -> Any:
@@ -1319,7 +1422,12 @@ def _extract_questions_from_value(value_obj: Any) -> list | None:
 
     Additional source: StructuredAskUserRail puts `questions` in the tool call
     arguments, which are preserved in ToolCallInterruptRequest.tool_args.
+
+    A request whose kind says it is an approval is never a question, even when
+    it pauses an ``ask_user`` call whose arguments carry ``questions``.
     """
+    if _interrupt_kind(value_obj) in _APPROVAL_KINDS:
+        return None
     # 1. Direct questions attribute on value_obj
     if hasattr(value_obj, "questions"):
         qs = value_obj.questions
@@ -1510,10 +1618,13 @@ def _reviewer_ui_metadata_from_interaction(
                 projected[key] = items
             continue
         if isinstance(value, str) and value.strip():
-            projected[key] = redact_secret_values(
-                value,
-                max_length=_AUTO_REVIEWER_UI_MAX_TEXT_LENGTH,
-            )
+            if key in {"evidence_summary", "manual_reason_summary", "user_review_hint"}:
+                projected[key] = value
+            else:
+                projected[key] = redact_secret_values(
+                    value,
+                    max_length=_AUTO_REVIEWER_UI_MAX_TEXT_LENGTH,
+                )
     return projected
 
 
@@ -1554,16 +1665,44 @@ def _normalize_question_option(option: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+# agent-core 权限 ask 文案里会附带「选择「永久记住」…」提示；企业版不出该按钮时一并去掉。
+_PERMANENT_REMEMBER_HINT_RE = re.compile(
+    r"[；;]?\s*选择「永久记住」[^。\n]*。?",
+)
+
+
 # 权限审批的兜底选项。``value`` 取自 ``permission_options``，与解析回答用的是同一份
 # 词表：web / CLI 回传 ``value``，TUI 回传 ``label``，两条路都要能被 ``build_inputs``
 # 解出同一个动作。label / description 保持原样，渲染出的文案不变。
+#
+# 企业版不提供 always 档（权限卡「永久记住」/ 演进卡「总是允许」）：写回本地
+# user overlay / approval_overrides 或跨次自动放行，与 Manager 权威源不一致。
+# 个人版仍保留四档权限选项。
 def _default_interrupt_options() -> list[dict[str, str]]:
-    return [
+    options = [
         {"value": ALLOW_ONCE, "label": "本次允许", "description": "仅本次授权执行"},
         {"value": SESSION_ALLOW, "label": "会话内记住", "description": "本次会话内自动放行同类操作"},
-        {"value": ALWAYS_ALLOW, "label": "永久记住", "description": "写回磁盘，所有会话均自动放行"},
         {"value": REJECT, "label": "拒绝", "description": "拒绝执行此工具"},
     ]
+    if not is_enterprise():
+        options.insert(
+            2,
+            {
+                "value": ALWAYS_ALLOW,
+                "label": "永久记住",
+                "description": "写回磁盘，所有会话均自动放行",
+            },
+        )
+    return options
+
+
+def _is_always_allow_option(option: dict[str, Any]) -> bool:
+    """权限「永久记住」与演进「总是允许」均映射到 ALWAYS_ALLOW。"""
+    return resolve_permission_action(option.get("value") or option.get("label")) == ALWAYS_ALLOW
+
+
+def _strip_permanent_remember_hint(message: str) -> str:
+    return _PERMANENT_REMEMBER_HINT_RE.sub("", message or "").strip()
 
 
 def _plan_approval_interrupt_options(
@@ -1580,6 +1719,17 @@ def _plan_approval_interrupt_options(
     return build_plan_approval_options_from_message(message)
 
 
+def _fallback_interrupt_options(
+    source: str,
+    tool_name: str,
+    message: str,
+) -> list[dict[str, Any]]:
+    return (
+        _plan_approval_interrupt_options(source, tool_name, message)
+        or _default_interrupt_options()
+    )
+
+
 def _question_options_from_ui_options(
     value_obj: Any,
     source: str,
@@ -1594,11 +1744,15 @@ def _question_options_from_ui_options(
         if normalized["label"]:
             options.append(normalized)
     if options:
+        # 企业版统一隐藏 always 档：权限「永久记住」与技能演进「总是允许」都不保留。
+        if is_enterprise():
+            options = [
+                option for option in options if not _is_always_allow_option(option)
+            ]
+            if not options:
+                return _fallback_interrupt_options(source, tool_name, message)
         return options
-    return (
-        _plan_approval_interrupt_options(source, tool_name, message)
-        or _default_interrupt_options()
-    )
+    return _fallback_interrupt_options(source, tool_name, message)
 
 
 def _classify_structured_approval(
@@ -1608,12 +1762,11 @@ def _classify_structured_approval(
     del question_data
     metadata = _extract_interrupt_metadata(value_obj)
     source = str(metadata.get("source") or "").strip()
-    interrupt_kind = str(metadata.get("interrupt_kind") or "").strip()
     tool_name = _extract_tool_name(value_obj)
 
     is_evolution_interrupt = (
-        source in EVOLUTION_INTERRUPT_METADATA_SOURCES
-        or interrupt_kind == LEGACY_SKILL_EVOLUTION_APPROVAL_SOURCE
+        _interrupt_kind(value_obj) == InterruptKind.SKILL_EVOLUTION_APPROVAL
+        or source in EVOLUTION_INTERRUPT_METADATA_SOURCES
     )
     if (
         not is_evolution_interrupt
@@ -1667,7 +1820,7 @@ def extract_question_from_interaction(
     source = (
         "permission_interrupt"
         if locator_state == "live"
-        else _resolve_interrupt_source(tool_name, message)
+        else _resolve_interrupt_source(value_obj)
     )
     return _format_question_from_interaction(
         payload,
@@ -1718,6 +1871,8 @@ def _format_question_from_interaction(
         ask_title = str(metadata.get("ask_title") or "").strip()
         header = ask_title or (f"权限审批: {tool_name}" if tool_name else "权限审批")
         question = message
+        if is_enterprise():
+            question = _strip_permanent_remember_hint(question)
 
     question_data = {
         "question": question,
@@ -1728,8 +1883,16 @@ def _format_question_from_interaction(
         "multi_select": False,
     }
     if source == "permission_interrupt":
+        if is_enterprise():
+            metadata = _extract_interaction_metadata(payload)
+            metadata.update(_extract_interrupt_metadata(value_obj))
+            matched_rule = metadata.get("matched_rule")
+            if isinstance(matched_rule, str) and matched_rule.strip():
+                question_data["matched_rule"] = redact_secret_values(matched_rule)
         if invocation_record is not None:
-            question_data["card_id"] = invocation_record.key.invocation_id
+            # Deprecated compatibility alias; use request_id for new identity logic.
+            # Existing clients must echo this value until the alias is retired.
+            question_data["card_id"] = invocation_record.key.tool_call_id
         if reviewer_metadata:
             question_data["reviewer_metadata"] = reviewer_metadata
         if isinstance(tool_args, dict):

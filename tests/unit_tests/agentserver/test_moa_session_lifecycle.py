@@ -6,7 +6,7 @@ from __future__ import annotations
 from copy import deepcopy
 from importlib import import_module
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -60,6 +60,7 @@ def router(monkeypatch):
             _session_mcp_reconcile_started=True, _initial_skill_scan_mcp_names=frozenset(),
             _skill_retrieval_session_enabled=False, _moa_enabled=False, _moa_fingerprint=None,
             busy=False, build_overrides=None, cleanup=AsyncMock(), start_interaction=AsyncMock(),
+            configure_initial_execution=Mock(), create_count=0,
             restore_skill_retrieval_session=lambda *_: None,
             persist_skill_retrieval_session_profile=lambda: None,
             mark_session_mcp_reconcile_started=lambda: None,
@@ -71,6 +72,7 @@ def router(monkeypatch):
             assert parent._session_adapter_locks[sid].locked()
             assert kwargs["mode"] == parent._session_instance_mode
             child.build_overrides = overrides
+            child.create_count += 1
             child._instance_overrides = overrides
             child._moa_enabled = overrides["moa_enabled"]
             if child._moa_enabled:
@@ -87,6 +89,7 @@ async def test_first_turn_group_precedes_build_and_restores_history(router):
     parent, config, metadata, built, warmup = router
     child = await parent._get_or_create_session_adapter("chat-a", model_selection=GROUP, history_before_request_id="current")
     assert child is built[0] and child.build_overrides["moa_enabled"] is True
+    assert child.create_count == 1
     assert child.build_overrides["moa_config_snapshot"] == config
     assert metadata["chat-a"]["moa_enabled"] is True
     assert metadata["chat-a"]["model_selection"]["id"] == GROUP["id"]
@@ -115,7 +118,7 @@ async def test_external_harness_ignores_invalid_moa_selection(
     monkeypatch.setattr(
         interface_deep,
         "load_persisted_external_harness_binding",
-        lambda _: binding if binding_source == "metadata" else None,
+        AsyncMock(side_effect=lambda _: binding if binding_source == "metadata" else None),
     )
     if binding_source == "cached":
         existing = parent._new_session_scoped_adapter(session_id)
@@ -159,6 +162,7 @@ async def test_group_and_configuration_switch_rebuild_under_session_lock(router)
 
 
 @pytest.mark.asyncio
+<<<<<<< HEAD
 @pytest.mark.parametrize(
     "kind,selection",
     [
@@ -218,6 +222,72 @@ async def test_busy_session_still_rejects_a_different_model_snapshot(router, dif
 
 
 @pytest.mark.asyncio
+||||||| e487e9a30
+=======
+@pytest.mark.parametrize(
+    "kind,selection",
+    [
+        ("agent", MODEL),
+        ("team", MODEL),
+        ("cron", MODEL),
+        ("team", {**GROUP, "route_id": "primary"}),
+        ("cron", {**GROUP, "route_id": "primary"}),
+    ],
+)
+async def test_busy_ordinary_session_accepts_its_applied_stable_model(router, kind, selection):
+    parent, _, metadata, built, _ = router
+    if kind == "team":
+        parent._session_instance_mode = "team"
+    elif kind == "cron":
+        parent._is_cron_execution_session = lambda _: True
+    child = await parent._get_or_create_session_adapter("chat-a", model_name="current")
+    model = object()
+    suffix = f":{selection['route_id']}" if selection.get("route_id") else ""
+    reference = f"{selection['type']}:{selection['id']}{suffix}"
+    child._stable_selection_cache = {reference: ("fingerprint", model)}
+    child._last_resolved_model = model
+    child.busy = True
+    before = deepcopy(metadata)
+
+    if kind == "cron" and selection["type"] == "model_group":
+        with pytest.raises(ValueError, match="only support a single model"):
+            await parent._get_or_create_session_adapter("chat-a", model_selection=selection)
+    else:
+        assert await parent._get_or_create_session_adapter("chat-a", model_selection=selection) is child
+    assert child._collaboration_model_selection is None
+    assert metadata == before
+    assert len(built) == 1
+    child.cleanup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("difference", ["model", "group", "route", "cached_model", "moa"])
+async def test_busy_session_still_rejects_a_different_model_snapshot(router, difference):
+    parent, _, _, _, _ = router
+    parent._session_instance_mode = "team"
+    child = await parent._get_or_create_session_adapter("chat-a", model_name="current")
+    model = object()
+    selection = {**GROUP, "route_id": "primary"}
+    child._stable_selection_cache = {"model_group:group-a:primary": ("fingerprint", model)}
+    child._last_resolved_model = model
+    child.busy = True
+    if difference == "model":
+        selection = MODEL
+    elif difference == "group":
+        selection = {**selection, "id": "group-b"}
+    elif difference == "route":
+        selection = {**selection, "route_id": "other"}
+    elif difference == "cached_model":
+        child._last_resolved_model = object()
+    else:
+        child._moa_enabled = True
+
+    with pytest.raises(RuntimeError, match="Model selection cannot change"):
+        await parent._get_or_create_session_adapter("chat-a", model_selection=selection)
+
+
+@pytest.mark.asyncio
+>>>>>>> origin/develop
 async def test_active_invocation_and_permission_resume_keep_snapshot_when_flag_changes(router):
     parent, config, _, built, _ = router
     installed = await parent._get_or_create_session_adapter("chat-a", model_selection=GROUP)
@@ -283,14 +353,18 @@ async def test_ordinary_model_never_enhances_and_bool_cannot_bypass_disabled_fla
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["team", "cron"])
-async def test_team_and_cron_group_continue_ordinary_routing(router, kind):
+async def test_team_group_routes_normally_and_cron_rejects_group(router, kind):
     parent, config, _, _, _ = router
     config["experimental"]["multi_model_collaboration_enabled"] = False
     if kind == "team":
         parent._session_instance_mode = "team"
     else:
         parent._is_cron_execution_session = lambda _: True
-    assert (await parent._get_or_create_session_adapter("ordinary", model_selection=GROUP))._moa_enabled is False
+    if kind == "cron":
+        with pytest.raises(ValueError, match="only support a single model"):
+            await parent._get_or_create_session_adapter("ordinary", model_selection=GROUP)
+    else:
+        assert (await parent._get_or_create_session_adapter("ordinary", model_selection=GROUP))._moa_enabled is False
 
 
 @pytest.mark.asyncio
@@ -301,12 +375,15 @@ async def test_first_mcp_reconcile_forwards_group_before_instance_build(router):
     assert built[0]._moa_enabled is True
 
 
-@pytest.mark.parametrize("runtime", ["server.runtime", "gateway.embedded.runtime"])
+# A3g：gateway.embedded.runtime 副本已删除（gateway 生产走 provider 注入的
+# server 实现），双侧对等校验收敛为 server 单侧。
+@pytest.mark.parametrize("runtime", ["server.runtime"])
 def test_metadata_updates_keep_moa_and_ordinary_selection_independent(tmp_path, monkeypatch, runtime):
     metadata = import_module(f"jiuwenswarm.{runtime}.session.session_metadata")
-    store = import_module(f"jiuwenswarm.{runtime}.session.model_selection_store")
+    # server 版已下沉 common（server 侧仅存兼容 shim，无模块属性）
+    store = import_module("jiuwenswarm.common.model_selection_store")
     projection = import_module(f"jiuwenswarm.{runtime}.session.session_info").to_session_info
-    from jiuwenswarm.common.model_selection import ModelSelection
+    from agent_gateway.common.model_selection import ModelSelection
 
     monkeypatch.setattr(metadata, "get_agent_sessions_dir", lambda: tmp_path)
     monkeypatch.setattr(store, "get_agent_sessions_dir", lambda: tmp_path)

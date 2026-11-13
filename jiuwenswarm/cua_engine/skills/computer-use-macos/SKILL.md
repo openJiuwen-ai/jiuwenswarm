@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 ---
 name: computer-use-macos
 description: Operate macOS application UI through computer_use MCP and the Computer → App → Element SDK. Use when observing, clicking, or typing on a macOS MCP host, including a remote host. Select by target desktop, not the Agent machine.
@@ -193,3 +194,5 @@ Use the SDK to target windows and controls. Respect tool-reported window, modal 
 Errors usually preserve Python variables. If a timeout, cancellation or disconnection clears state, recreate handles and read again; earlier effects remain. Do not leave background tasks or timers operating the UI.
 
 Keep recovery within the requested scope. Resolve loading, filters and truncation before concluding required input is absent; then report it instead of inventing a substitute or searching unrelated locations. Stop after verifying completion, or report the limitation when no supported route remains.
+=======
+>>>>>>> origin/develop

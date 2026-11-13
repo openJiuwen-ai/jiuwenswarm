@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Gateway proxies for the Designer execution-graph RPCs."""
 
@@ -43,3 +44,5 @@ def register_designer_handlers(channel, resolve_client):
 
     for req_method, timeout_seconds in _DESIGNER_METHODS:
         channel.register_method(req_method.value, proxy(req_method, timeout_seconds))
+=======
+>>>>>>> origin/develop

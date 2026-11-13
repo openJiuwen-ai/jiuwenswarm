@@ -2,6 +2,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 're
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, CircleAlert, ClipboardList, Code2, Palette, Workflow } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { isEnterprise } from '../../edition';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { useChatStore, type ChatRuntime } from '../../stores/chatStore';
 import { webClient } from '../../services/webClient';
@@ -12,8 +13,10 @@ import {
   filterJobsForProject,
   type SidebarCronJob,
 } from '../../stores';
+import { shouldDiscoverCronActiveSessions } from '../../features/cron/cronActiveSessionDiscovery';
 import type { AgentMode, ProjectInfo, Session, WorkMode } from '../../types';
 import {
+  formatSessionTime,
   getProjectNewLabel,
   getSessionActivityAt,
   getSessionIndicator,
@@ -105,6 +108,8 @@ interface ConversationSidebarProps {
   onSelect: (session: Session) => void;
   onSelectDesignSession?: (project: ProjectInfo, sessionId: string) => void;
   activeDesignSessionId?: string;
+  /** 主区域正在显示设计画布；workMode 持久化且不随路由切回，不能用它判断用户在看哪个会话 */
+  designCanvasOpen?: boolean;
   /** 项目软删除成功后回调；上层可按 workMode 决定是否需要路由回退等 */
   onProjectRemoved?: (projectId: string, workMode: WorkMode) => void;
   /** 跳转到"定时任务"主面板；该入口原来在最左侧图标栏，现移到工作小窗口的"新建任务"下方 */
@@ -156,20 +161,6 @@ export function getProcessingTransitions(
     }
   }
   return { snapshot, completedInBackground };
-}
-
-export function formatRelativeTime(
-  activityAt: number,
-  now: number,
-  language: string,
-  translate: (key: string, options?: Record<string, unknown>) => string,
-): string {
-  const elapsed = Math.max(0, now - activityAt);
-  if (elapsed < 60_000) return translate('time.justNow');
-  if (elapsed < 3_600_000) return translate('time.minutesAgo', { count: Math.floor(elapsed / 60_000) });
-  if (elapsed < 86_400_000) return translate('time.hoursAgo', { count: Math.floor(elapsed / 3_600_000) });
-  if (elapsed < 604_800_000) return translate('time.daysAgo', { count: Math.floor(elapsed / 86_400_000) });
-  return new Date(activityAt).toLocaleDateString(language, { month: 'short', day: 'numeric' });
 }
 
 function getSessionTitle(session: Session, fallback: string): string {
@@ -277,7 +268,7 @@ function ConversationListItem({
         title={getTaskStatusLabel(indicator, t)}
         data-testid="multi-session-conversation-list-item-status-read"
       >
-        <span>{formatRelativeTime(getSessionActivityAt(session), now, i18n.language, t)}</span>
+        <span>{formatSessionTime(getSessionActivityAt(session), now, i18n.language, t)}</span>
       </span>
     );
   }
@@ -311,7 +302,7 @@ function ConversationListItem({
           {status}
         </span>
       </button>
-      <SidebarMenu
+      {session.type !== 'group_chat' && <SidebarMenu
         type="session"
         session={session}
         scope={menuScope}
@@ -319,7 +310,7 @@ function ConversationListItem({
         onLeaveActiveSession={onLeaveActiveSession}
         onOpenChange={setMenuOpen}
         triggerTooltipHandlers={itemTooltipHandlers}
-      />
+      />}
       <button
         type="button"
         className="conversation-list-item__pin-action"
@@ -745,6 +736,7 @@ export function ConversationSidebar({
   onOpenCron,
   onSelectDesignSession,
   activeDesignSessionId,
+  designCanvasOpen = false,
   onProjectRemoved,
   isCronActive,
   collapsed = false,
@@ -756,6 +748,7 @@ export function ConversationSidebar({
   onMouseLeave,
 }: ConversationSidebarProps) {
   const { t } = useTranslation();
+  const enterprise = isEnterprise();
   const { tooltip: conversationsTooltip, handlers: conversationsTooltipHandlers } = useAdaptiveTooltip();
   const { tooltip: newProjectTooltip, handlers: newProjectTooltipHandlers } = useAdaptiveTooltip({ align: 'left' });
   const runtimes = useChatStore((state) => state.runtimes);
@@ -814,10 +807,15 @@ export function ConversationSidebar({
 
   const switchWorkMode = async (nextMode: WorkMode) => {
     setWorkModeMenuOpen(false);
+    if (enterprise && nextMode !== 'work') return;
     if (nextMode === workMode) return;
     await setWorkMode(nextMode);
     onNew();
   };
+
+  useEffect(() => {
+    if (enterprise && workMode !== 'work') void setWorkMode('work');
+  }, [enterprise, workMode, setWorkMode]);
 
   const cronJobs = useCronStore((s) => s.jobs);
   const loadCronJobs = useCronStore((s) => s.loadJobs);
@@ -833,6 +831,24 @@ export function ConversationSidebar({
   useEffect(() => {
     if (peek) return;
     void loadCronJobs();
+  }, [peek, loadCronJobs]);
+
+  // 企业 HTTP：轻量轮询 list，只为发现 active_session_id（到点跑起来），
+  // 再交给后台 live；不在这里根据 last_session_id 标未读。
+  useEffect(() => {
+    if (peek || !shouldDiscoverCronActiveSessions()) return;
+    const reload = () => {
+      void loadCronJobs();
+    };
+    const intervalId = window.setInterval(reload, 5000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') reload();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, [peek, loadCronJobs]);
 
   // 监听 agent 工具调用结果：当 cron 相关工具执行后刷新侧边栏定时任务
@@ -866,8 +882,14 @@ export function ConversationSidebar({
     return () => window.clearInterval(timer);
   }, []);
 
+<<<<<<< HEAD
   const viewedSessionId = getViewedSessionId(workMode, activeSessionId, activeDesignSessionId);
 
+||||||| e487e9a30
+=======
+  const viewedSessionId = getViewedSessionId(designCanvasOpen, activeSessionId, activeDesignSessionId);
+
+>>>>>>> origin/develop
   useEffect(() => {
     if (!viewedSessionId) return;
     setUnreadSessions((current) => {
@@ -928,7 +950,7 @@ export function ConversationSidebar({
   const sortedProjectSessions = useMemo(() => {
     const sorted: Record<string, Session[]> = {};
     for (const [projectId, list] of Object.entries(projectSessions)) {
-      sorted[projectId] = sortSessionsForSidebar(list);
+      sorted[projectId] = sortSessionsForSidebar(list.filter((session) => session.type !== 'group_chat'));
     }
     return sorted;
   }, [projectSessions]);
@@ -936,7 +958,10 @@ export function ConversationSidebar({
     if (defaultProject) return sortedProjectSessions[defaultProject.project_id] || [];
     return [];
   }, [defaultProject, sortedProjectSessions]);
-  const orderedPinnedSessions = useMemo(() => sortSessionsForSidebar(pinnedSessions), [pinnedSessions]);
+  const orderedPinnedSessions = useMemo(
+    () => sortSessionsForSidebar(pinnedSessions.filter((session) => session.type !== 'group_chat')),
+    [pinnedSessions],
+  );
   const observedSidebarSessions = useMemo(() => {
     const byId = new Map<string, Session>();
     for (const session of orderedPinnedSessions) {
@@ -1225,7 +1250,7 @@ export function ConversationSidebar({
     );
   }
 
-  const hasPinnedSection = pinnedProjects.length > 0 || orderedPinnedSessions.length > 0;
+  const hasPinnedSection = (!enterprise && pinnedProjects.length > 0) || orderedPinnedSessions.length > 0;
 
   // peek（hover 预览）不带蒙层：蒙层属于"固定展开"态，peek 的消失由指针移开驱动
   const showOverlay = floating && !collapsed && !peek;
@@ -1251,21 +1276,24 @@ export function ConversationSidebar({
             <button
               type="button"
               className="conversation-sidebar__mode-trigger"
-              onClick={() => setWorkModeMenuOpen((open) => !open)}
-              aria-haspopup="menu"
-              aria-expanded={workModeMenuOpen}
+              onClick={() => {
+                if (!enterprise) setWorkModeMenuOpen((open) => !open);
+              }}
+              aria-haspopup={enterprise ? undefined : 'menu'}
+              aria-expanded={enterprise ? undefined : workModeMenuOpen}
+              style={enterprise ? { cursor: 'default' } : undefined}
               data-testid="multi-session-work-mode-trigger"
             >
-              <span data-testid="multi-session-work-mode-label" data-variant={workMode}>
-                {workMode === 'code'
+              <span data-testid="multi-session-work-mode-label" data-variant={enterprise ? 'work' : workMode}>
+                {!enterprise && workMode === 'code'
                   ? t('codeMode.code')
-                  : workMode === 'design'
+                  : !enterprise && workMode === 'design'
                     ? t('nav.design')
                     : t('codeMode.work')}
               </span>
-              <ChevronDown size={15} className={workModeMenuOpen ? 'is-open' : ''} />
+              {!enterprise && <ChevronDown size={15} className={workModeMenuOpen ? 'is-open' : ''} />}
             </button>
-            {workModeMenuOpen ? (
+            {!enterprise && workModeMenuOpen ? (
               <div className="conversation-sidebar__mode-menu" role="menu" data-testid="multi-session-work-mode-menu">
                 <button
                   type="button"
@@ -1376,7 +1404,7 @@ export function ConversationSidebar({
                       projectMenu: Boolean(project && !isDefaultProject(project)),
                     });
                   })}
-                  {pinnedProjects.map((project) => renderProject(project))}
+                  {!enterprise && pinnedProjects.map((project) => renderProject(project))}
                 </div>
               </div>
             ) : null}
@@ -1395,6 +1423,7 @@ export function ConversationSidebar({
                 </div>
               </div>
             ) : null}
+            {!enterprise && (
             <div
               className="conversation-sidebar__group conversation-sidebar__project-add"
               ref={addMenuRef}
@@ -1446,6 +1475,7 @@ export function ConversationSidebar({
                 {regularProjects.map((project) => renderProject(project))}
               </div>
             </div>
+            )}
             <div
               className="conversation-sidebar__group conversation-sidebar__group--conversations"
               data-testid="multi-session-conversations-group"

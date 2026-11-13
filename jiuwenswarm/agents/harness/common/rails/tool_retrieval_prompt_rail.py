@@ -618,6 +618,7 @@ class ToolRetrievalPromptRail(DeepAgentRail):
                 names.add(name)
         return names
 
+<<<<<<< HEAD
     @staticmethod
     def _restore_baseline_meta_slot(tools: list[Any]) -> list[Any]:
         """Reslot tool_search/tool_call to their baseline advertised positions.
@@ -651,6 +652,43 @@ class ToolRetrievalPromptRail(DeepAgentRail):
                 return rest[: index + 1] + metas + rest[index + 1 :]
         return rest + metas
 
+||||||| e487e9a30
+=======
+    @staticmethod
+    def _restore_baseline_meta_slot(tools: list[Any]) -> list[Any]:
+        """Reslot tool_search/tool_call to their baseline advertised positions.
+
+        Registration order parks tool_search among the early shared tools and
+        tool_call near the tail; the advertised array must still read like the
+        bundled baseline (…, task_tool, tool_search, tool_call, todo_*), so a
+        reslot after filtering puts both metas right after the task_tool
+        anchor — or, with no anchor, at the tail in call order. A list with
+        no metas passes through as the same object; duplicate meta names keep
+        the first registration only.
+        """
+
+        meta_objects: dict[str, Any] = {}
+        rest: list[Any] = []
+        for tool in tools:
+            name = str(getattr(tool, "name", "") or "")
+            if name in _BASELINE_META_ORDER:
+                meta_objects.setdefault(name, tool)
+                continue
+            rest.append(tool)
+        if not meta_objects:
+            return tools
+        metas = [
+            meta_objects[name]
+            for name in _BASELINE_META_ORDER
+            if name in meta_objects
+        ]
+        for index, tool in enumerate(rest):
+            if str(getattr(tool, "name", "") or "") == _BASELINE_META_ANCHOR:
+                cut = index + 1
+                return rest[:cut] + metas + rest[cut:]
+        return rest + metas
+
+>>>>>>> origin/develop
     # ─── deferred-catalogue drift sync (mirrors ProgressiveToolRail) ─────
 
     async def _sync_deferred_tool_catalog(

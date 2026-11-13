@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 """Standalone Gateway entrypoint (split deployment).
 
@@ -3646,3 +3647,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+=======
+>>>>>>> origin/develop

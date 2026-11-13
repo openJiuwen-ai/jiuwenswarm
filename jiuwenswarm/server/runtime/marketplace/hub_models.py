@@ -109,9 +109,15 @@ class HubVersionDetail:
     publisher_id: str
     publisher_name: str
     changelog: str
+<<<<<<< HEAD
     preview_url: str = ""
     # Published package profile (capabilities/quick inputs/persona); absent on old versions.
     package_profile: dict[str, Any] | None = None
+||||||| e487e9a30
+=======
+    # Published package profile (capabilities/quick inputs/persona); absent on old versions.
+    package_profile: dict[str, Any] | None = None
+>>>>>>> origin/develop
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "HubVersionDetail":
@@ -132,8 +138,13 @@ class HubVersionDetail:
             publisher_id=_optional_string(payload, "publisher_id"),
             publisher_name=_optional_string(payload, "publisher_name"),
             changelog=_optional_string(payload, "changelog"),
+<<<<<<< HEAD
             preview_url=_optional_string(payload, "preview_url"),
             package_profile=profile if isinstance(profile, dict) else None,
+||||||| e487e9a30
+=======
+            package_profile=profile if isinstance(profile, dict) else None,
+>>>>>>> origin/develop
         )
 
 

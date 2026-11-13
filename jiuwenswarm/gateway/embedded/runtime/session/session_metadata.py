@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 """会话元数据管理模块"""
 from __future__ import annotations
 
@@ -2116,3 +2117,5 @@ def _collect_all_sessions_metadata(
                                 (dir_to_projects, id_to_work_mode))
         result.append(meta)
     return result
+=======
+>>>>>>> origin/develop

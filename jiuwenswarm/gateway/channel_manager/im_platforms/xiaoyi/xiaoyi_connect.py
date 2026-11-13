@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
 """XiaoyiChannel - 华为小艺 A2A 协议客户端."""
@@ -2275,3 +2276,5 @@ class XiaoyiChannel(BaseChannel):
                     )
 
         return None
+=======
+>>>>>>> origin/develop

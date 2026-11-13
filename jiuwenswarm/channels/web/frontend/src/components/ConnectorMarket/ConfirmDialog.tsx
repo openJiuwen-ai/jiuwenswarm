@@ -5,13 +5,19 @@ interface ConfirmDialogProps {
   title: string;
   message: string;
   confirmLabel?: string;
+<<<<<<< HEAD
   secondaryLabel?: string;
   busy?: boolean;
+||||||| e487e9a30
+=======
+  busy?: boolean;
+>>>>>>> origin/develop
   onCancel: () => void;
   onConfirm: () => void;
   onSecondary?: () => void;
 }
 
+<<<<<<< HEAD
 export function ConfirmDialog({
   title,
   message,
@@ -22,6 +28,18 @@ export function ConfirmDialog({
   onConfirm,
   onSecondary,
 }: ConfirmDialogProps) {
+||||||| e487e9a30
+export function ConfirmDialog({ title, message, confirmLabel, onCancel, onConfirm }: ConfirmDialogProps) {
+=======
+export function ConfirmDialog({
+  title,
+  message,
+  confirmLabel,
+  busy = false,
+  onCancel,
+  onConfirm,
+}: ConfirmDialogProps) {
+>>>>>>> origin/develop
   const { t } = useTranslation();
   // 用 Portal 渲染到 document.body：这个遮罩根节点原本是详情页 `.detail-body` 的直接子元素，
   // 会被 index.css 的 `.detail-body > * { width: min(1400px, calc(100% - 80px)); margin: auto }`

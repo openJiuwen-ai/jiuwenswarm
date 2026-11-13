@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent_gateway.common.model_selection import ResolvedModel, ResolvedModelGroup, ResolvedSelection
+
 from jiuwenswarm.common.model_errors import MODEL_RUNTIME_UNAVAILABLE, ModelSelectionError
+<<<<<<< HEAD
 from jiuwenswarm.common.model_selection import ResolvedModel, ResolvedModelGroup, ResolvedSelection
 from jiuwenswarm.common.reasoning_injector import inject_reasoning_params
 
@@ -19,6 +22,10 @@ def _core_model_data(model: ResolvedModel) -> dict[str, Any]:
     data = model.model_dump()
     data["request_defaults"] = _core_request_config(model.request_defaults)
     return data
+||||||| e487e9a30
+from jiuwenswarm.common.model_selection import ResolvedModel, ResolvedModelGroup, ResolvedSelection
+=======
+>>>>>>> origin/develop
 
 
 def compile_model_selection(resolved: ResolvedSelection) -> Any:

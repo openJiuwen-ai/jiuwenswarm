@@ -21,7 +21,24 @@ from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
 
 
 def _short(text: str, *, limit: int = 200) -> str:
-    return re.sub(r"\s+", " ", str(text or "").strip())[:limit]
+    flat = re.sub(r"\s+", " ", str(text or "").strip())
+    if len(flat) <= limit:
+        return flat
+    cut = flat[:limit]
+    # Prefer a clause/word boundary over a mid-word cut ("drifts to the do").
+    boundary = max(cut.rfind("; "), cut.rfind(", "), cut.rfind(" "), cut.rfind("，"), cut.rfind("；"))
+    if boundary >= int(limit * 0.5):
+        return cut[:boundary].rstrip(" ,;，；")
+    return cut
+
+
+def _prose(value: Any, *, limit: int) -> str:
+    """Authored prose only. Structured blocking stays in config and is never ``str()``-ed into text."""
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        value = "; ".join(item.strip() for item in value if item.strip())
+    if not isinstance(value, str):
+        return ""
+    return _short(value, limit=limit)
 
 
 def _prose(value: Any, *, limit: int) -> str:
@@ -495,6 +512,7 @@ def stamp_shot_states_on_clip_cfg(
     return out
 
 
+<<<<<<< HEAD
 _STORY_LINE_PHRASES: dict[str, dict[str, str]] = {
     "en": {
         "facing": "Opening: facing {facing}.",
@@ -514,6 +532,27 @@ _STORY_LINE_PHRASES: dict[str, dict[str, str]] = {
 
 
 def start_end_story_lines(cfg: dict[str, Any] | None, lang: str = "") -> list[str]:
+||||||| e487e9a30
+def start_end_story_lines(cfg: dict[str, Any] | None) -> list[str]:
+=======
+_STORY_LINE_PHRASES: dict[str, dict[str, str]] = {
+    "en": {
+        "facing": "Opening: facing {facing}.",
+        "opening_hold": "Opening hold: {pose}.",
+        "opening_facing": "Opening facing: {facing}.",
+        "last_frame": "By the last frame, {state}.",
+    },
+    "zh": {
+        "facing": "开场：面向{facing}。",
+        "opening_hold": "开场姿态：{pose}。",
+        "opening_facing": "开场朝向：{facing}。",
+        "last_frame": "到最后一帧时，{state}。",
+    },
+}
+
+
+def start_end_story_lines(cfg: dict[str, Any] | None, lang: str = "") -> list[str]:
+>>>>>>> origin/develop
     """Opening placement from start_state. Finished action poses stay off the video body."""
     cfg = cfg if isinstance(cfg, dict) else {}
     lang = lang or current_content_language()
@@ -531,9 +570,17 @@ def start_end_story_lines(cfg: dict[str, Any] | None, lang: str = "") -> list[st
     # Seats become seat_anchors and are phrased per cast member, by name, in the cast sentence.
     irreversible = _short(str(cfg.get("irreversible") or end.get("irreversible") or ""), limit=160)
     if irreversible and not _is_action_restatement(irreversible, action):
+<<<<<<< HEAD
         lines.append(phrase(_STORY_LINE_PHRASES, lang, "last_frame", state=strip_phrase(irreversible)))
     if emotion_label(cfg.get("emotion")) == "climax":
         lines.append(phrase(_STORY_LINE_PHRASES, lang, "climax"))
+||||||| e487e9a30
+        lines.append(f"By the last frame, {irreversible.rstrip('.')}.")
+    if emotion_label(cfg.get("emotion")) == "climax":
+        lines.append("This shot is the film's single climax.")
+=======
+        lines.append(phrase(_STORY_LINE_PHRASES, lang, "last_frame", state=strip_phrase(irreversible)))
+>>>>>>> origin/develop
     for change in list(cfg.get("wardrobe_changes") or [])[:3]:
         text = _short(str(change), limit=160)
         if text:

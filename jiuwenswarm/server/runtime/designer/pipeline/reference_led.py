@@ -839,6 +839,25 @@ def build_reference_led_video_graph(
         previous_action = str(shot.get("action") or "")
         previous_end = str(shot.get("end_state") or "")
 
+    from jiuwenswarm.common.schema.designer_node_labels import (
+        derive_story_name,
+        usable_story_title,
+    )
+    from jiuwenswarm.server.runtime.designer.capabilities import detect_audio_backends
+    from jiuwenswarm.server.runtime.designer.smart_graph import bgm_node, bgm_node_wanted
+
+    story_name = derive_story_name(
+        analysis=analysis,
+        prompt=prompt_text,
+        graph_title=str(title or ""),
+    )
+    compose_inputs = list(clip_ids)
+    audio = analysis.get("audio") if isinstance(analysis.get("audio"), dict) else {}
+    if bgm_node_wanted(audio, prompt_text, can_music=bool(detect_audio_backends().get("can_music"))):
+        add_node(bgm_node(story_name, inputs=["n_brief"]))
+        add_edge("n_brief", "n_music")
+        compose_inputs.append("n_music")
+
     add_node(
         {
             "id": "n_compose",
@@ -846,7 +865,7 @@ def build_reference_led_video_graph(
             "label": "Compose",
             "config": {
                 "role": NODE_ROLE_COMPOSE,
-                "inputs": clip_ids,
+                "inputs": compose_inputs,
                 "delegate": "agent",
                 "kind": "agent",
                 "skill_id": "compose",
@@ -855,6 +874,7 @@ def build_reference_led_video_graph(
             "layout": {"x": 1200, "y": 40, "width": 240, "height": 140},
         }
     )
+<<<<<<< HEAD
     for clip_id in clip_ids:
         add_edge(clip_id, "n_compose")
 
@@ -873,6 +893,19 @@ def build_reference_led_video_graph(
         or usable_story_title(title, prompt_text)
         or "设计项目"
     )
+||||||| e487e9a30
+    for clip_id in clip_ids:
+        add_edge(clip_id, "n_compose")
+
+=======
+    for source in compose_inputs:
+        add_edge(source, "n_compose")
+    graph_title = (
+        usable_story_title(story_name, prompt_text)
+        or usable_story_title(title, prompt_text)
+        or "设计项目"
+    )
+>>>>>>> origin/develop
     now = utc_now_ms()
     total = sum(int(shot.get("duration_sec") or 0) for shot in shots)
     return {
@@ -1679,7 +1712,7 @@ def _prepare_shots(analysis: dict[str, Any], prompt: str) -> list[dict[str, Any]
     shots: list[dict[str, Any]] = []
     cursor = 0.0
     for index, shot in enumerate(raw, start=1):
-        action = str(shot.get("action") or f"beat {index}").strip()
+        action = str(shot.get("action") or f"shot {index}").strip()
         duration = shot.get("duration_sec")
         if duration in (None, ""):
             duration = _duration_from_timeline(str(shot.get("timeline") or "")) or 5

@@ -10,6 +10,7 @@ import {
 } from './executionGraphTypes';
 
 /**
+<<<<<<< HEAD
  * The leader's round is not over while it streams, while it waits for the
  * user to answer an ask_user question, or while it is paused: the next send
  * resumes the paused round against the same graph. `isProcessing` alone is
@@ -32,6 +33,62 @@ export function isDesignerLeaderBusy(
  * graph, so nodes an earlier run left failed, cancelled or unrun must not
  * re-lock it. Manual canvases stay editable until the leader or a run is
  * actually active.
+||||||| e487e9a30
+ * The workflow stays read-only from the moment it is built until every node
+ * has finished. A run that is still going (including a pause between layers)
+ * keeps the lock. A failed or cancelled attempt unlocks so the graph can be
+ * fixed. Nodes added after a completed run do not re-lock it. Manual canvases
+ * stay editable until a run is actually active.
+=======
+ * The leader's round is not over while it streams, while it waits for the
+ * user to answer an ask_user question, or while it is paused: the next send
+ * resumes the paused round against the same graph. `isProcessing` alone is
+ * false in the last two.
+ */
+export function isDesignerLeaderBusy(
+  runtime: Pick<ChatRuntime, 'isProcessing' | 'isPaused' | 'pendingQuestions'> | undefined,
+): boolean {
+  if (!runtime) return false;
+  return runtime.isProcessing || runtime.isPaused || runtime.pendingQuestions.length > 0;
+}
+
+/**
+ * The chat-dock stop control covers the whole leader turn: streaming
+ * (`isProcessing`) and the canvas autorun that turn started
+ * (`trigger_source === 'leader'`). After ``chat.final``, processing is already
+ * false while child nodes keep running, so the stop button must follow the
+ * leader-triggered run as well. Canvas-initiated runs keep their own toolbar.
+ */
+export function isDesignerChatStoppable(params: {
+  isProcessing: boolean;
+  isRunning: boolean;
+  triggerSource?: string | null;
+}): boolean {
+  if (params.isProcessing) return true;
+  return params.isRunning && params.triggerSource === 'leader';
+}
+
+/** Stop control after a click: spinner until the run or leader turn actually ends. */
+export function designerChatStopControl(params: {
+  canStop: boolean;
+  stopPending: boolean;
+}): 'stopping' | 'stop' | 'send' {
+  if (params.stopPending) return 'stopping';
+  if (params.canStop) return 'stop';
+  return 'send';
+}
+
+/**
+ * The workflow stays read-only from the moment a prompt is sent until its
+ * first run finishes. While the design leader's round is open
+ * (`isDesignerLeaderBusy`), the graph it is about to fill may be empty or only
+ * partly built, so that keeps the lock too. A run that is still going (including a pause between layers)
+ * keeps the lock. Any finished run (completed, failed or cancelled) unlocks:
+ * a single-node or cascade rerun completes without touching the rest of the
+ * graph, so nodes an earlier run left failed, cancelled or unrun must not
+ * re-lock it. Manual canvases stay editable until the leader or a run is
+ * actually active.
+>>>>>>> origin/develop
  */
 export function isDesignerGraphEditingLocked(params: {
   bootstrapInProgress: boolean;

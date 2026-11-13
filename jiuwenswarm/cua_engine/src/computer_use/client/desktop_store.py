@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 import weakref
 
 from ..protocol.primitives import finite
@@ -85,3 +86,5 @@ class DesktopStore:
         if len(matches) != 1 or not matches[0]["captured"]:
             raise local_failure("coordinates are outside a captured display or in a display gap/overlap",
                                 "choose a point on one captured display in the desktop PNG")
+=======
+>>>>>>> origin/develop

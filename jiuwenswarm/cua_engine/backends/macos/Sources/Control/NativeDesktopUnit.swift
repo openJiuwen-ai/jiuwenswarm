@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 import AppKit
 import CoreGraphics
 
@@ -86,3 +87,5 @@ import CoreGraphics
         completed = true
     }
 }
+=======
+>>>>>>> origin/develop

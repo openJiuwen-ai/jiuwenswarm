@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """Model vendor preset registry.
@@ -591,3 +592,5 @@ def to_frontend_payload() -> dict[str, Any]:
             for p in _BY_PLAN[plan]
         ]
     return out
+=======
+>>>>>>> origin/develop

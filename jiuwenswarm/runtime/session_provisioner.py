@@ -139,15 +139,23 @@ class SessionCreateInput:
     model_selection: dict[str, Any] | None = None
     moa_enabled: bool | None = None
     cron_id: str = ""
+    client_app: str = ""
 
     def __post_init__(self) -> None:
+        if self.client_app:
+            # A client app creates its conversations with its id as ``client_app``.
+            from jiuwenswarm.server.client_attachments.registry import client_apps
+            if self.client_app not in client_apps():
+                raise SessionProvisionError(
+                    f"client_app {self.client_app} is not a registered client app", code="BAD_REQUEST"
+                )
         _require_bool("persist_session", self.persist_session)
         _require_bool("persist_session_supplied", self.persist_session_supplied)
         _require_bool("is_swarm", self.is_swarm)
         _require_bool("team_hint", self.team_hint)
         _require_optional_bool("moa_enabled", self.moa_enabled)
         if self.model_selection is not None:
-            from jiuwenswarm.common.model_selection import ModelSelection
+            from agent_gateway.common.model_selection import ModelSelection
             ModelSelection.model_validate(self.model_selection)
         _require_optional_bool("work_mode_explicit", self.work_mode_explicit)
 
@@ -530,7 +538,8 @@ class RuntimeSessionProvisioner:
         participant_registry: RuntimeParticipantRegistry | None = None,
         team_execution_controller: object | None = None,
     ) -> None:
-        self._agent_manager = agent_manager
+        # 默认槽；有请求时经 get_current_agent_manager() 覆盖（见 _agent_manager）。
+        self._default_agent_manager = agent_manager
         self._plan_controller = plan_controller
         self._delete_lifecycle = delete_lifecycle
         self._prepared_session_deletes: dict[str, SessionDeleteLifecycle] = {}
@@ -544,6 +553,20 @@ class RuntimeSessionProvisioner:
         self._background_create_kvc_tasks: set[asyncio.Task[None]] = set()
         self._completed_session_deletes = _RecentDeleteResults[SessionDeleteResult]()
         self._completed_team_deletes = _RecentDeleteResults[TeamDeleteResult]()
+
+    @property
+    def _agent_manager(self) -> AgentManager:
+        """优先用当前请求绑定的 Manager，避免 create/fork 钉死默认槽."""
+        from jiuwenswarm.runtime.context import get_current_agent_manager
+
+        bound = get_current_agent_manager()
+        if bound is not None:
+            return bound
+        return self._default_agent_manager
+
+    @_agent_manager.setter
+    def _agent_manager(self, manager: AgentManager) -> None:
+        self._default_agent_manager = manager
 
     def set_delete_lifecycle(
         self,
@@ -699,7 +722,7 @@ class RuntimeSessionProvisioner:
             if binding.error:
                 raise SessionProvisionError(binding.error, code=binding.code)
 
-            from jiuwenswarm.common.work_mode import (
+            from agent_gateway.common.work_mode import (
                 DEFAULT_WEB_WORK_MODE,
                 is_default_project_id,
             )
@@ -743,7 +766,7 @@ class RuntimeSessionProvisioner:
             else:
                 final_work_mode = binding.work_mode
 
-            from jiuwenswarm.common.mode_matrix import resolve_request_mode
+            from agent_gateway.common.mode_matrix import resolve_request_mode
             from jiuwenswarm.runtime.request import resolve_agent_request_mode
 
             params.update(
@@ -761,16 +784,26 @@ class RuntimeSessionProvisioner:
             canonical_mode = resolved.canonical_mode
             is_swarm = provision_input.is_swarm or resolved.is_team
             from jiuwenswarm.common.config import get_config
-            from jiuwenswarm.common.model_selection import ModelSelection
+            from agent_gateway.common.model_selection import ModelSelection
             from jiuwenswarm.server.runtime.moa_runtime import effective_moa_enabled, resolve_moa_settings
 
             raw_selection = provision_input.model_selection or existing_metadata.get("model_selection")
             selection = ModelSelection.model_validate(raw_selection) if raw_selection is not None else None
             try:
+<<<<<<< HEAD
                 if provision_input.cron_id and selection is not None:
                     from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
 
                     selection = ModelSelectionResolver().restore(selection)
+||||||| e487e9a30
+=======
+                if provision_input.cron_id and selection is not None:
+                    if selection.type != "model":
+                        raise ValueError("Scheduled task sessions only support a single model")
+                    from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+
+                    selection = ModelSelectionResolver().restore(selection)
+>>>>>>> origin/develop
                 config_snapshot = get_config()
                 moa_enabled = effective_moa_enabled(
                     config_snapshot, selection, mode=canonical_mode,
@@ -782,7 +815,11 @@ class RuntimeSessionProvisioner:
                 raise SessionProvisionError(str(exc), code=getattr(exc, "code", "BAD_REQUEST")) from exc
             prewarm_eligible = (
                 not is_swarm
+                and not (provision_input.cron_id and channel_id == "web")
                 and not moa_enabled
+                # A pooled agent is built before its conversation exists;
+                # a client app's conversation is built for its app.
+                and not provision_input.client_app
                 and canonical_mode
                 in {
                     "agent",
@@ -872,6 +909,7 @@ class RuntimeSessionProvisioner:
                     moa_enabled=moa_enabled,
                     cron_id=str(provision_input.cron_id or "").strip(),
                     channel_metadata=channel_metadata,
+                    client_app=provision_input.client_app,
                 )
                 if not explicit_tui_session:
                     self._agent_manager.activate_session_prewarm(session_id)
@@ -1014,7 +1052,7 @@ class RuntimeSessionProvisioner:
         previous_session_id: str,
         params: dict[str, object],
     ) -> tuple[SessionLifecycleTarget, SessionLifecycleTarget | None]:
-        from jiuwenswarm.common.mode_matrix import is_team_mode
+        from agent_gateway.common.mode_matrix import is_team_mode
 
         mode = str(params.get("mode") or "agent.plan")
         target_is_team = bool(params.get("team")) or is_team_mode(mode)
@@ -1165,7 +1203,7 @@ class RuntimeSessionProvisioner:
                 code="BAD_REQUEST",
             )
 
-        from jiuwenswarm.common.mode_matrix import is_team_mode
+        from agent_gateway.common.mode_matrix import is_team_mode
         from jiuwenswarm.runtime.request import resolve_agent_request_mode
 
         _, _, resolved_mode = resolve_agent_request_mode(provision_input.mode)
@@ -1521,7 +1559,7 @@ class RuntimeSessionProvisioner:
         if checkpoint_error is not None:
             return checkpoint_error
 
-        from jiuwenswarm.common.mode_matrix import is_team_mode
+        from agent_gateway.common.mode_matrix import is_team_mode
         from jiuwenswarm.server.runtime.session.session_metadata import (
             get_session_metadata,
         )
@@ -1865,7 +1903,7 @@ class RuntimeSessionProvisioner:
         *,
         binding_session_ids: tuple[str, ...],
     ) -> list[str]:
-        from jiuwenswarm.common.mode_matrix import is_team_mode
+        from agent_gateway.common.mode_matrix import is_team_mode
         from jiuwenswarm.common.utils import get_agent_sessions_dir
         from jiuwenswarm.server.runtime.session.session_metadata import (
             get_session_metadata,

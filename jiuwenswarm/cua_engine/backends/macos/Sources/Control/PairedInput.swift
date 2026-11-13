@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 import Foundation
 
 /// One operation owns its downs and releases. The delivery closure captures
@@ -66,3 +67,5 @@ import Foundation
         }
     }
 }
+=======
+>>>>>>> origin/develop

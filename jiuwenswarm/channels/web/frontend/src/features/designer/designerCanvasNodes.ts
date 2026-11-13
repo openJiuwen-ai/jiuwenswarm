@@ -8,6 +8,7 @@ import {
   DESIGNER_CONFIG_DELEGATE_HANDLER,
   DESIGNER_NODE_ROLE_AUDIO,
   DESIGNER_NODE_ROLE_IMAGE,
+  DESIGNER_NODE_ROLE_MUSIC,
   DESIGNER_NODE_ROLE_VIDEO,
   DESIGNER_NODE_TYPE_AUDIO,
   DESIGNER_NODE_TYPE_IMAGE,
@@ -52,6 +53,8 @@ export type DesignerAddTemplate = {
   id: string;
   type: DesignerNodeType;
   role: DesignerNodeRole;
+  /** Backend handler key; compose only beat-aligns upstream audio whose pipeline is `music`. */
+  pipeline?: string;
   label: string;
   group: DesignerAddGroup;
 };
@@ -75,16 +78,59 @@ export const DESIGNER_ADD_TEMPLATES: DesignerAddTemplate[] = [
     id: 'audio',
     type: DESIGNER_NODE_TYPE_AUDIO,
     role: DESIGNER_NODE_ROLE_AUDIO,
-    label: 'Audio',
+    pipeline: DESIGNER_NODE_ROLE_MUSIC,
+    label: 'BGM',
     group: 'audio',
   },
 ];
+
+<<<<<<< HEAD
+/**
+ * Templates a node's side port may add, derived from the shared wire matrix in
+ * `designerConnectionRules` so the menu can only offer connections that free
+ * dragging accepts too (#5382). Unknown node types allow nothing.
+ */
+||||||| e487e9a30
+const PORT_ADD_TYPES: Record<string, Record<DesignerNodePortSide, DesignerNodeType[]>> = {
+  [DESIGNER_NODE_TYPE_TEXT]: {
+    predecessor: [DESIGNER_NODE_TYPE_IMAGE],
+    successor: [DESIGNER_NODE_TYPE_IMAGE, DESIGNER_NODE_TYPE_VIDEO],
+  },
+  [DESIGNER_NODE_TYPE_TABLE]: {
+    predecessor: [DESIGNER_NODE_TYPE_IMAGE],
+    successor: [DESIGNER_NODE_TYPE_IMAGE, DESIGNER_NODE_TYPE_VIDEO],
+  },
+  [DESIGNER_NODE_TYPE_IMAGE]: {
+    predecessor: [DESIGNER_NODE_TYPE_IMAGE],
+    successor: [DESIGNER_NODE_TYPE_IMAGE, DESIGNER_NODE_TYPE_VIDEO],
+  },
+  [DESIGNER_NODE_TYPE_VIDEO]: {
+    predecessor: [DESIGNER_NODE_TYPE_IMAGE, DESIGNER_NODE_TYPE_VIDEO],
+    successor: [DESIGNER_NODE_TYPE_VIDEO],
+  },
+  [DESIGNER_NODE_TYPE_AUDIO]: {
+    predecessor: [],
+    successor: [DESIGNER_NODE_TYPE_VIDEO],
+  },
+};
+
+/** Templates a node's side port may add; unknown node types allow nothing. */
+=======
+/** Dropped or uploaded audio files stay plain audio references, not BGM. */
+const UPLOADED_AUDIO_TEMPLATE: DesignerAddTemplate = {
+  id: 'audio',
+  type: DESIGNER_NODE_TYPE_AUDIO,
+  role: DESIGNER_NODE_ROLE_AUDIO,
+  label: 'Audio',
+  group: 'audio',
+};
 
 /**
  * Templates a node's side port may add, derived from the shared wire matrix in
  * `designerConnectionRules` so the menu can only offer connections that free
  * dragging accepts too (#5382). Unknown node types allow nothing.
  */
+>>>>>>> origin/develop
 export function portAddTemplatesFor(
   nodeType: string,
   side: DesignerNodePortSide,
@@ -226,6 +272,10 @@ export function resolvedNodeCanvasSize(
   node: DesignerGraphNode,
   metadata?: Record<string, unknown> | null,
 ): { width: number; height: number } {
+  // Audio cards cannot be resized and the player needs the full default card; planner layouts may be smaller.
+  if (node.type === DESIGNER_NODE_TYPE_AUDIO) {
+    return { width: DESIGNER_CANVAS_NODE_WIDTH, height: DESIGNER_CANVAS_NODE_HEIGHT };
+  }
   const layout = node.layout;
   const storedWidth = typeof layout?.width === 'number' ? layout.width : undefined;
   const storedHeight = typeof layout?.height === 'number' ? layout.height : undefined;
@@ -770,6 +820,7 @@ export function buildManualDesignerNode(params: {
     label,
     config: {
       role: params.template.role,
+      ...(params.template.pipeline ? { pipeline: params.template.pipeline } : {}),
       delegate: DESIGNER_CONFIG_DELEGATE_HANDLER,
       interaction_mode: interactionMode,
       user_added: true,
@@ -794,7 +845,7 @@ export function templateForAssetKind(kind: DesignerLibraryAsset['kind']): Design
     return DESIGNER_ADD_TEMPLATES.find((item) => item.id === 'video') as DesignerAddTemplate;
   }
   if (kind === 'audio') {
-    return DESIGNER_ADD_TEMPLATES.find((item) => item.id === 'audio') as DesignerAddTemplate;
+    return UPLOADED_AUDIO_TEMPLATE;
   }
   return DESIGNER_ADD_TEMPLATES.find((item) => item.id === 'image') as DesignerAddTemplate;
 }

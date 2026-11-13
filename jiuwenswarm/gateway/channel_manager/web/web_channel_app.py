@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """FastAPI app for WebChannel: WebSocket and HTTP on the same port."""
@@ -236,3 +237,5 @@ async def _reject_unauthorized_handshake(
 def mount_future_http_router(app: FastAPI, router: Any) -> None:
     """Helper for later phases: ``app.include_router(router, prefix=...)``."""
     app.include_router(router)
+=======
+>>>>>>> origin/develop

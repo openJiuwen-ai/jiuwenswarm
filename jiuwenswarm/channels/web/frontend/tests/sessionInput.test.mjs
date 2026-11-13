@@ -1,3 +1,4 @@
+import './fixtures/browserEnvironment.mjs';
 import assert from 'node:assert/strict';
 import test, { before } from 'node:test';
 import { readFileSync } from 'node:fs';
@@ -10,6 +11,7 @@ import { JSDOM, VirtualConsole } from 'jsdom';
 import { A2UIProvider } from '@a2ui/react';
 
 const frontendRoot = fileURLToPath(new URL('..', import.meta.url));
+let parseHistoryJsonFileToPreviewMessages, i18n;
 let useWebSocket, useChatStore, useSessionStore, useGoalStore, webClient, TaskQueue, ChatTimelineList, buildTimelineItems;
 let useAgentCatalogStore;
 
@@ -24,6 +26,8 @@ before(async () => {
       agentCatalog: 'src/stores/agentCatalogStore.ts',
       webClient: 'src/services/webClient.ts',
       timeline: 'src/features/chatTimeline/buildTurnTimeline.ts',
+      history: 'src/features/historyRestore.ts',
+      i18n: 'src/i18n/index.ts',
       TaskQueue: 'queue-component',
     },
     absWorkingDir: frontendRoot,
@@ -65,6 +69,8 @@ before(async () => {
   ({ useAgentCatalogStore } = await load('agentCatalog'));
   ({ webClient } = await load('webClient'));
   ({ buildTimelineItems } = await load('timeline'));
+  ({ parseHistoryJsonFileToPreviewMessages } = await load('history'));
+  ({ default: i18n } = await load('i18n'));
   ({ TaskQueue, ChatTimelineList } = await load('TaskQueue'));
 });
 
@@ -161,6 +167,7 @@ async function mount(context) {
     runtime,
     receive,
     socket,
+    sockets,
     find,
     receipt: (taskId) => runtime().taskInputReceipts[taskId],
     api: () => api,
@@ -204,6 +211,212 @@ function addOriginalUser(c, content = 'original question') {
     timestamp: new Date(Date.now() - 1_000).toISOString(),
   }));
 }
+
+<<<<<<< HEAD
+test('MoA control resume wire frames display while the original execution remains active', async (context) => {
+  const c = await mount(context);
+  const frames = JSON.parse(readFileSync(new URL('./fixtures/moaControlResume.json', import.meta.url), 'utf8'));
+  try {
+    const messages = c.runtime().messages;
+    const receive = (frame) => c.receive(frame.event, { ...frame.payload, session_id: c.sid });
+    // Gateway suppresses processing=false while a resumed request is already registered.
+    assert.equal(c.runtime().activeExecutionId, 'execution-A');
+    receive(frames[0]);
+    assert.equal(c.runtime().moaOperations['resume-reference'].status, 'started');
+    assert.equal(c.runtime().activeExecutionId, 'execution-A');
+    receive(frames[1]);
+    assert.equal(c.runtime().moaOperations['resume-reference'].status, 'completed');
+    assert.equal(c.runtime().messages, messages);
+    assert.equal(c.runtime().isProcessing, true);
+    c.receive('chat.processing_status', { is_processing: true, execution_id: 'execution-B' });
+    receive(frames[0]);
+    assert.deepEqual(c.runtime().moaOperations, {});
+    assert.equal(c.runtime().activeExecutionId, 'execution-B');
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('MoA status events stay transient, isolate executions and clear after terminal events', async (context) => {
+  const c = await mount(context);
+  try {
+    const originalMessages = c.runtime().messages;
+    const status = (operation_id, phase, state = 'started', extra = {}) => c.receive('chat.moa_status', {
+      operation_id, phase, status: state, execution_id: 'execution-A', ...extra,
+    });
+    status('reference-a', 'reference');
+    status('reference-b', 'reference');
+    status('verification-a', 'verification');
+    assert.deepEqual(Object.values(c.runtime().moaOperations).map((operation) => operation.phase), [
+      'reference', 'reference', 'verification',
+    ]);
+    assert.equal(c.runtime().messages, originalMessages, 'status events must not add chat history');
+    status('old-verifier', 'verification', 'started', { execution_id: 'old-execution' });
+    assert.equal(c.runtime().moaOperations['old-verifier'], undefined);
+    assert.equal(c.runtime().activeExecutionId, 'execution-A');
+    status('verification-a', 'verification', 'completed');
+    status('verification-a', 'verification');
+    assert.equal(c.runtime().moaOperations['verification-a'].status, 'completed', 'duplicate starts stay closed');
+    status('reference-a', 'reference', 'completed');
+    assert.equal(c.runtime().moaOperations['reference-b'].status, 'started');
+    c.receive('execution.error', { execution_id: 'execution-A', error: 'failed' });
+    assert.deepEqual(c.runtime().moaOperations, {});
+    status('verification-b', 'verification');
+    assert.deepEqual(c.runtime().moaOperations, {}, 'late starts cannot revive a failed execution');
+    c.receive('chat.processing_status', { is_processing: false });
+    assert.deepEqual(c.runtime().moaOperations, {});
+    status('late-verifier', 'verification');
+    assert.deepEqual(c.runtime().moaOperations, {}, 'late starts must not revive a finished turn');
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('MoA terminal-first events stay closed and only a new execution reopens cleared hints', async (context) => {
+  const c = await mount(context);
+  try {
+    const before = c.runtime();
+    const emit = (status, extra = {}) => c.receive('chat.moa_status', {
+      operation_id: 'reordered', phase: 'verification', execution_id: 'execution-A', status, ...extra,
+    });
+    emit('completed');
+    emit('started');
+    assert.equal(c.runtime().moaOperations.reordered.status, 'completed');
+    emit('started', { operation_id: 'unbound', execution_id: undefined });
+    assert.equal(c.runtime().moaOperations.unbound, undefined);
+    c.store.clearMoaStatus(c.sid);
+    emit('started', { operation_id: 'late' });
+    assert.deepEqual(c.runtime().moaOperations, {});
+    assert.equal(c.runtime().messages, before.messages);
+    assert.equal(c.runtime().isProcessing, before.isProcessing);
+    assert.equal(c.runtime().activeExecutionId, before.activeExecutionId);
+    c.receive('chat.processing_status', { is_processing: true, execution_id: 'execution-B' });
+    emit('started', { operation_id: 'new', execution_id: 'execution-B' });
+    assert.equal(c.runtime().moaOperations.new.status, 'started');
+    emit('started', { operation_id: 'old' });
+    assert.equal(c.runtime().moaOperations.old, undefined);
+    c.receive('chat.processing_status', { is_processing: false });
+    act(() => c.store.setProcessing(c.sid, true));
+    emit('started', { operation_id: 'before-identity' });
+    emit('started', { operation_id: 'current', execution_id: 'execution-C' });
+    c.receive('chat.processing_status', { is_processing: true, execution_id: 'execution-C' });
+    assert.equal(c.runtime().moaOperations['before-identity'], undefined);
+    assert.equal(c.runtime().moaOperations.current.status, 'started');
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('MoA status is routed to its session and disappears on disconnect', async (context) => {
+  const c = await mount(context);
+  const otherSessionId = 'moa-background-session';
+  try {
+    c.store.ensureRuntime(otherSessionId);
+    c.store.setProcessing(otherSessionId, true);
+    c.store.setActiveExecutionId(otherSessionId, 'background-execution');
+    c.receive('chat.moa_status', {
+      session_id: otherSessionId,
+      execution_id: 'background-execution',
+      operation_id: 'background-reference', phase: 'reference', status: 'started',
+    });
+    assert.deepEqual(c.runtime().moaOperations, {});
+    assert.equal(c.store.getRuntime(otherSessionId).moaOperations['background-reference'].status, 'started');
+    await act(async () => webClient.disconnect());
+    assert.deepEqual(c.store.getRuntime(otherSessionId).moaOperations, {});
+  } finally {
+    c.store.removeRuntime(otherSessionId);
+    await c.dispose();
+  }
+});
+
+for (const event of ['chat.final', 'chat.interrupt_result']) {
+  test(`MoA hints stay cleared after ${event}`, async (context) => {
+    const c = await mount(context);
+    try {
+      const status = {
+        operation_id: 'reference', phase: 'reference', status: 'started', execution_id: 'execution-A',
+      };
+      c.receive('chat.moa_status', status);
+      assert.equal(c.runtime().moaOperations.reference.status, 'started');
+      c.receive(event, event === 'chat.final'
+        ? { execution_id: 'execution-A', content: '' }
+        : { execution_id: 'execution-A', intent: 'cancel', success: true, has_active_task: false });
+      c.receive('chat.moa_status', status);
+      assert.deepEqual(c.runtime().moaOperations, {});
+    } finally {
+      await c.dispose();
+    }
+  });
+}
+
+for (const intent of ['supplement', 'resume']) {
+  test(`MoA hints remain available after an active ${intent}`, async (context) => {
+    const c = await mount(context);
+    try {
+      const status = { phase: 'reference', status: 'started', execution_id: 'execution-A' };
+      c.receive('chat.moa_status', { ...status, operation_id: 'reference' });
+      c.receive('chat.interrupt_result', { execution_id: 'execution-A', intent, success: true, has_active_task: true });
+      assert.equal(c.runtime().moaOperations.reference.status, 'started');
+      c.receive('chat.moa_status', { ...status, operation_id: 'next-verifier', phase: 'verification' });
+      assert.equal(c.runtime().moaOperations['next-verifier'].status, 'started');
+      assert.equal(c.runtime().isProcessing, true);
+    } finally {
+      await c.dispose();
+    }
+  });
+}
+
+||||||| e487e9a30
+=======
+test('terminal forwarding error settles the current stream without sending queued input', async (context) => {
+  const c = await mount(context);
+  try {
+    const queued = c.queue('keep this queued');
+    c.receive('chat.error', {
+      request_id: 'original', code: 'GATEWAY_FORWARD_FAILED',
+      error: 'Gateway forwarding queue is full', is_complete: true, cron_session_stream: true,
+    });
+    assert.equal(c.runtime().isProcessing, false);
+    assert.equal(c.runtime().isThinking, false);
+    assert.equal(c.runtime().currentStreamId, null);
+    assert.ok(c.runtime().messages.every(message => !message.isStreaming));
+    assert.equal(c.runtime().executionError, 'Gateway forwarding queue is full');
+    assert.ok(c.runtime().taskQueue.some(task => task.id === queued));
+    assert.equal(c.requests().length, 0);
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('late forwarding error cannot stop a newer request', async (context) => {
+  const c = await mount(context);
+  try {
+    c.receive('chat.processing_status', { is_processing: true, request_id: 'newer', execution_id: 'new-execution' });
+    c.receive('chat.error', {
+      request_id: 'original', code: 'GATEWAY_FORWARD_FAILED',
+      error: 'Gateway forwarding queue is full', is_complete: true, execution_id: 'old-execution',
+    });
+    assert.equal(c.runtime().isProcessing, true);
+    assert.equal(c.runtime().executionError, null);
+    assert.equal(c.runtime().error, null);
+    assert.equal(c.runtime().activeExecutionId, 'new-execution');
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('nonterminal forwarding error does not settle the execution', async (context) => {
+  const c = await mount(context);
+  try {
+    c.receive('chat.error', {
+      request_id: 'original', code: 'GATEWAY_FORWARD_FAILED',
+      error: 'Gateway forwarding queue is full', is_complete: false,
+    });
+    assert.equal(c.runtime().isProcessing, true);
+  } finally {
+    await c.dispose();
+  }
+});
 
 test('MoA control resume wire frames display while the original execution remains active', async (context) => {
   const c = await mount(context);
@@ -358,6 +571,7 @@ for (const intent of ['supplement', 'resume']) {
   });
 }
 
+>>>>>>> origin/develop
 function assertNodeBefore(earlier, later, message) {
   const relation = earlier.compareDocumentPosition(later);
   const following = earlier.ownerDocument.defaultView.Node.DOCUMENT_POSITION_FOLLOWING;
@@ -1074,6 +1288,51 @@ for (const failure of ['timeout', 'disconnect']) {
   });
 }
 
+for (const language of ['zh', 'en']) {
+  for (const [content, media] of [
+    ['read notes', [{ type: 'document', filename: 'notes.txt', path: '/notes.txt' }]],
+    ['', [{ type: 'audio', filename: 'voice.wav', path: '/voice.wav' }]],
+  ]) {
+    test(`queued unsupported attachments remain editable (${language}, ${media[0].type})`, async (context) => {
+      const c = await mount(context);
+      const previousLanguage = i18n.language;
+      try {
+        await act(async () => i18n.changeLanguage(language));
+        const taskId = c.queue(content, media);
+        const queuedTask = c.runtime().taskQueue[0];
+        const streamId = c.runtime().currentStreamId;
+        let sent;
+        await act(async () => {
+          sent = await c.api().sendMessage('', c.sid, [], { queuedTaskId: taskId });
+        });
+
+        assert.equal(sent, false);
+        assert.equal(c.runtime().interruptResult.success, false);
+        assert.equal(c.runtime().interruptResult.message, i18n.t('chat.steerImagesOnly'));
+        assert.equal(c.requests().length, 0);
+        assert.deepEqual(c.runtime().taskQueue, [queuedTask]);
+        assert.deepEqual(c.runtime().taskQueue[0].mediaItems, media);
+        assert.equal(c.receipt(taskId), undefined);
+        assert.equal(c.runtime().isProcessing, true);
+        assert.equal(c.runtime().currentStreamId, streamId);
+        assert.equal(c.find(taskId, 'edit').disabled, false);
+
+        const confirm = context.mock.method(window, 'confirm', () => false);
+        await c.click(taskId, 'edit');
+        assert.deepEqual(c.runtime().taskQueue, [queuedTask]);
+        confirm.mock.mockImplementation(() => true);
+        await c.click(taskId, 'edit');
+        assert.equal(c.runtime().taskQueue.length, 0);
+        assert.equal(c.runtime().inputValue, content);
+        assert.equal(c.requests().length, 0);
+      } finally {
+        await act(async () => i18n.changeLanguage(previousLanguage));
+        await c.dispose();
+      }
+    });
+  }
+}
+
 test('attachments and pending interactions stay queued without changing the existing buttons', async (context) => {
   const c = await mount(context);
   try {
@@ -1097,6 +1356,236 @@ test('attachments and pending interactions stay queued without changing the exis
     assert.deepEqual(c.runtime().taskQueue[0].mediaItems, media);
     assert.ok(c.runtime().taskQueue.every((item) => item.status === 'queued'));
     assert.equal(c.runtime().interruptResult.success, false);
+  } finally {
+    await c.dispose();
+  }
+});
+
+const steerImages = [
+  { type: 'image', filename: 'compare.png', mimeType: 'image/png', path: 'C:/session/uploads/compare.png' },
+  { type: 'image', filename: 'compare-1.png', mimeType: 'image/png', path: 'C:/session/uploads/compare-1.png' },
+];
+const steerImageRecords = steerImages.map(({ mimeType, ...item }) => ({ ...item, mime_type: mimeType }));
+
+for (const ackFirst of [true, false]) {
+  test(`uploaded images steer by reference and render once with ${ackFirst ? 'early' : 'late'} ACK`, async (context) => {
+    const c = await mount(context);
+    try {
+      const original = 'Compare these two screenshots';
+      const id = c.queue(original, steerImages);
+      await c.click(id, 'send');
+      await c.click(id, 'send');
+      assert.equal(c.requests().length, 1);
+      const request = c.requests()[0];
+      assert.equal(request.params.content, original);
+      assert.equal(request.params.input_mode, 'steer');
+      assert.equal(request.params.expected_execution_id, 'execution-A');
+      assert.deepEqual(request.params.media_items, steerImageRecords);
+      assert.equal(request.params.files, undefined);
+      assert.deepEqual(c.receipt(id).mediaItems, steerImages);
+      act(() => c.socket.response(request.id));
+      assert.equal(c.receipt(id).status, 'sending', 'Gateway response alone is not Runtime acceptance');
+      if (ackFirst) c.receive('runtime.accepted', { request_id: request.id, input_boundary: 'stream' });
+      const boundary = {
+        request_id: 'original', input_request_id: request.id, execution_id: 'execution-A',
+        content: original, media_items: steerImageRecords, timestamp: Date.now(),
+      };
+      c.receive('chat.input_received', boundary);
+      if (!ackFirst) c.receive('runtime.accepted', { request_id: request.id, input_boundary: 'stream' });
+      c.receive('chat.input_received', boundary);
+      await c.flush();
+      assert.equal(c.receipt(id).status, 'accepted');
+      assert.equal(c.runtime().taskQueue.length, 0);
+      assert.equal(c.runtime().isProcessing, true);
+      const users = c.runtime().messages.filter((message) => message.supplementalInput?.requestId === request.id);
+      assert.equal(users.length, 1);
+      assert.equal(users[0].content, original);
+      assert.deepEqual(users[0].mediaItems.map((item) => item.path), steerImages.map((item) => item.path));
+      assert.equal(document.querySelectorAll('[data-testid="chat-panel-msg-file-card"]').length, 2);
+      assert.ok(!document.body.textContent.includes('C:/session/uploads/'));
+    } finally {
+      await c.dispose();
+    }
+  });
+}
+
+test('an uploaded image-only supplement keeps its empty user text', async (context) => {
+  const c = await mount(context);
+  try {
+    const id = c.queue('', [steerImages[0]]);
+    await c.click(id, 'send');
+    const request = c.requests()[0];
+    assert.equal(request.params.content, '');
+    assert.deepEqual(request.params.media_items, [steerImageRecords[0]]);
+    c.receive('runtime.accepted', { request_id: request.id, input_boundary: 'stream' });
+    c.receive('chat.input_received', {
+      request_id: 'original', input_request_id: request.id, content: '',
+      media_items: [steerImageRecords[0]], timestamp: Date.now(),
+    });
+    await c.flush();
+    const message = c.runtime().messages.find((item) => item.supplementalInput?.requestId === request.id);
+    assert.equal(message.content, '');
+    assert.equal(message.mediaItems.length, 1);
+    assert.equal(document.querySelectorAll('[data-testid="chat-panel-msg-file-card"]').length, 1);
+  } finally {
+    await c.dispose();
+  }
+});
+
+for (const [name, mediaItems] of [
+  ['a document', [{ type: 'document', filename: 'notes.txt', path: '/notes.txt' }]],
+  ['mixed images and files', [steerImages[0], { type: 'document', filename: 'notes.txt', path: '/notes.txt' }]],
+  ['an image with no persisted path', [{ ...steerImages[0], path: undefined }]],
+  ['an unfinished binary upload', [{ ...steerImages[0], base64Data: 'eA==' }]],
+  ['a snake-case binary upload', [{ ...steerImages[0], base64_data: 'eA==' }]],
+  ['a remote image URL', [{ ...steerImages[0], url: 'https://example.invalid/image.png' }]],
+]) {
+  test(`${name} stays queued with an explicit image-reference error`, async (context) => {
+    const c = await mount(context);
+    try {
+      const id = c.queue('inspect', mediaItems);
+      await c.click(id, 'send');
+      assert.equal(c.requests().length, 0);
+      assert.equal(c.runtime().taskQueue[0].status, 'queued');
+      assert.deepEqual(c.runtime().taskQueue[0].mediaItems, mediaItems);
+      assert.equal(c.receipt(id), undefined);
+      assert.match(c.runtime().interruptResult.message, /已上传的图片|uploaded images/);
+      assert.equal(c.runtime().isProcessing, true);
+    } finally {
+      await c.dispose();
+    }
+  });
+}
+
+test('a rejected image reference retains both screenshots for manual retry', async (context) => {
+  const c = await mount(context);
+  try {
+    const id = c.queue('compare', steerImages);
+    await c.click(id, 'send');
+    c.receive('chat.error', { request_id: c.requests()[0].id, error: 'Image is outside this session uploads directory' });
+    await c.flush();
+    assert.equal(c.runtime().taskQueue[0].status, 'failed');
+    assert.deepEqual(c.runtime().taskQueue[0].mediaItems, steerImages);
+    assert.deepEqual(c.receipt(id).mediaItems, steerImages);
+    assert.equal(c.runtime().isProcessing, true);
+    assert.equal(c.runtime().messages.filter((message) => message.supplementalInput).length, 0);
+    assert.equal(c.runtime().interruptResult.message, 'Image is outside this session uploads directory');
+  } finally {
+    await c.dispose();
+  }
+});
+
+for (const language of ['zh', 'en']) {
+  test(`image capability rejection shows actionable ${language} guidance without dropping attachments`, async (context) => {
+    const c = await mount(context);
+    const previousLanguage = i18n.language;
+    try {
+      await act(async () => i18n.changeLanguage(language));
+      const id = c.queue('compare', steerImages);
+      await c.click(id, 'send');
+      c.receive('chat.error', {
+        request_id: c.requests()[0].id, code: 'SESSION_INPUT_IMAGE_UNAVAILABLE', error: 'raw backend capability error',
+      });
+      await c.flush();
+      assert.equal(c.receipt(id).status, 'failed');
+      assert.equal(c.receipt(id).errorCode, 'SESSION_INPUT_IMAGE_UNAVAILABLE');
+      assert.equal(c.receipt(id).error, i18n.t('chat.steerImageUnavailable'));
+      assert.equal(c.runtime().interruptResult.message, i18n.t('chat.steerImageUnavailable'));
+      assert.match(c.receipt(id).error, language === 'zh' ? /配置图片理解工具/ : /configure an image understanding tool/);
+      assert.deepEqual(c.runtime().taskQueue[0].mediaItems, steerImages);
+      assert.equal(c.runtime().isProcessing, true);
+    } finally {
+      await act(async () => i18n.changeLanguage(previousLanguage));
+      await c.dispose();
+    }
+  });
+}
+
+test('idle image steering rejection retains the images without starting an ordinary chat', async (context) => {
+  const c = await mount(context);
+  try {
+    c.receive('chat.processing_status', { is_processing: false, request_id: 'original' });
+    await c.flush();
+    const streamId = c.runtime().currentStreamId;
+    const messageIds = c.runtime().messages.map((message) => message.id);
+    const id = c.queue('inspect these images', steerImages);
+    await c.click(id, 'send');
+    const request = c.requests()[0];
+    assert.equal(request.params.expected_execution_id, undefined);
+    c.receive('chat.error', {
+      request_id: request.id, code: 'SESSION_INPUT_TARGET_CHANGED',
+      error: 'The image input target has completed; keep these images queued for the next task.',
+    });
+    await c.flush();
+    assert.equal(c.requests().length, 1, 'rejection must not resend the images as ordinary chat');
+    assert.equal(c.receipt(id).status, 'failed');
+    assert.equal(c.receipt(id).errorCode, 'SESSION_INPUT_TARGET_CHANGED');
+    assert.equal(c.runtime().taskQueue[0].id, id);
+    assert.equal(c.runtime().taskQueue[0].status, 'failed');
+    assert.deepEqual(c.runtime().taskQueue[0].mediaItems, steerImages);
+    assert.deepEqual(c.receipt(id).mediaItems, steerImages);
+    assert.equal(c.runtime().isProcessing, false);
+    assert.equal(c.runtime().activeExecutionId, null);
+    assert.equal(c.runtime().currentStreamId, streamId);
+    assert.deepEqual(c.runtime().messages.map((message) => message.id), messageIds);
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('reconnecting never resends images and a replayed input boundary restores their bubble once', async (context) => {
+  const c = await mount(context);
+  try {
+    const id = c.queue('compare after reconnect', steerImages);
+    await c.click(id, 'send');
+    const request = c.requests()[0];
+    act(() => c.socket.response(request.id));
+    await act(async () => webClient.reconnect('test image delivery recovery'));
+    assert.equal(c.receipt(id).status, 'unknown');
+    assert.equal(c.runtime().taskQueue[0].status, 'unknown');
+    assert.deepEqual(c.receipt(id).mediaItems, steerImages);
+    const nextSocket = c.sockets.at(-1);
+    assert.notEqual(nextSocket, c.socket);
+    const boundary = {
+      session_id: c.sid, request_id: 'original', input_request_id: request.id,
+      content: 'compare after reconnect', media_items: steerImageRecords, timestamp: Date.now(),
+    };
+    act(() => {
+      nextSocket.receive('chat.input_received', boundary);
+      nextSocket.receive('chat.input_received', boundary);
+    });
+    await c.flush();
+    assert.equal(c.sockets.flatMap((socket) => socket.requests).filter((item) => item.method === 'chat.send').length, 1);
+    assert.equal(c.receipt(id).status, 'accepted');
+    assert.equal(c.runtime().taskQueue.length, 0);
+    const users = c.runtime().messages.filter((message) => message.supplementalInput?.requestId === request.id);
+    assert.equal(users.length, 1);
+    assert.equal(users[0].mediaItems.length, 2);
+    assert.equal(document.querySelectorAll('[data-testid="chat-panel-msg-file-card"]').length, 2);
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('image input replay without a local receipt and refreshed history keep user text and both images', async (context) => {
+  const c = await mount(context);
+  try {
+    const boundary = {
+      session_id: c.sid, request_id: 'original', input_request_id: 'image-from-another-client',
+      content: 'original user words', media_items: steerImageRecords, timestamp: Date.now(),
+    };
+    c.receive('chat.input_received', boundary);
+    const message = c.runtime().messages.find((item) => item.supplementalInput?.requestId === boundary.input_request_id);
+    assert.equal(message.content, boundary.content);
+    assert.equal(message.mediaItems.length, 2);
+    const restored = parseHistoryJsonFileToPreviewMessages([
+      { id: 'image-input', role: 'user', content: boundary.content, timestamp: Date.now(), event_payload: boundary },
+      { id: 'image-only-input', role: 'user', content: '', timestamp: Date.now() + 1, media_items: steerImageRecords },
+    ], c.sid);
+    assert.equal(restored.length, 2);
+    assert.deepEqual(restored.map((item) => item.content), [boundary.content, '']);
+    assert.ok(restored.every((item) => item.mediaItems.length === 2));
+    assert.deepEqual(restored[0].mediaItems.map((item) => item.path), steerImages.map((item) => item.path));
   } finally {
     await c.dispose();
   }
@@ -1302,6 +1791,198 @@ test('accepted steering preserves the thinking display while recording a lazy re
     await c.dispose();
   }
 });
+
+function answerCarryContract(c) {
+  act(() => c.store.clearMessages(c.sid));
+  addOriginalUser(c, '99 * 99');
+  const user = c.runtime().messages.find((message) => message.role === 'user');
+  const history = [{ id: 'carry-original-user', role: 'user', content: user.content, timestamp: user.timestamp }];
+  let sequence = 0;
+  const emit = (event, phase, payload = {}) => {
+    const frame = {
+      request_id: 'original', output_phase_id: phase,
+      output_order: { request_id: 'original', sequence: ++sequence },
+      timestamp: Date.now(), ...payload,
+    };
+    c.receive(event, frame);
+    if (event === 'chat.final') {
+      history.push({ ...frame, id: `carry-final-${sequence}`, role: 'assistant', event_type: event });
+    }
+    return frame;
+  };
+  const supplement = async (phase, content, image) => {
+    const taskId = c.queue(content, [image]);
+    await c.click(taskId, 'send');
+    const request = c.requests().at(-1);
+    c.receive('runtime.accepted', { request_id: request.id, input_boundary: 'stream' });
+    const frame = emit('chat.input_received', phase, {
+      input_request_id: request.id, execution_id: 'execution-A', content,
+      media_items: request.params.media_items,
+    });
+    history.push({
+      id: `carry-user-${request.id}`, role: 'user', content, timestamp: frame.timestamp,
+      request_id: request.id, output_order: frame.output_order,
+      is_supplemental_input: true, supplemental_input: { execution_id: 'execution-A' },
+      media_items: frame.media_items,
+    });
+    return request.id;
+  };
+  const assertVisibleAnswer = async (content, expected9801Count) => {
+    await c.flush();
+    const assistants = c.runtime().messages.filter((message) => message.role === 'assistant');
+    assert.deepEqual(assistants.map((message) => message.content), [content]);
+    const visibleText = [...document.querySelectorAll('[data-testid="chat-panel-message-bubble"]')]
+      .map((node) => node.textContent).join('\n');
+    assert.equal((visibleText.match(/9801/g) ?? []).length, expected9801Count);
+    const restored = parseHistoryJsonFileToPreviewMessages(history, c.sid);
+    const presentation = (messages) => messages.map((message) => ({
+      role: message.role, content: message.content, images: (message.mediaItems ?? []).map((item) => item.path),
+    }));
+    const live = buildTimelineItems(c.runtime().messages, [], []).map((item) => item.message);
+    assert.deepEqual(presentation(restored), presentation(live), 'live and refreshed history show the same answer and images');
+    assert.equal((restored.map((message) => message.content).join('\n').match(/9801/g) ?? []).length, expected9801Count);
+    assert.equal(c.runtime().isProcessing, false);
+  };
+  return { emit, supplement, assertVisibleAnswer };
+}
+
+test('server reissues an unseen arithmetic answer with the image answer once in live and restored history', async (context) => {
+  const c = await mount(context);
+  try {
+    const { emit, supplement, assertVisibleAnswer } = answerCarryContract(c);
+    emit('chat.output_phase', 'carry-old', { applied_input_ids: [] });
+    const inputId = await supplement('carry-old', 'Also describe this image', steerImages[0]);
+    emit('chat.delta', 'carry-old', { content: '99 * 99 = 9801', output_suppressed: true });
+    emit('chat.final', 'carry-old', { content: '99 * 99 = 9801', output_suppressed: true });
+    assert.ok(!c.runtime().messages.some((message) => message.content.includes('9801')));
+    assert.equal(c.runtime().isProcessing, true);
+    emit('chat.output_phase', 'carry-new', { applied_input_ids: [inputId] });
+    const answer = '99 * 99 = 9801. The image contains a red square.';
+    emit('chat.delta', 'carry-new', { content: answer });
+    await c.tick(16);
+    emit('chat.final', 'carry-new', { content: answer });
+    await assertVisibleAnswer(answer, 1);
+    assert.equal(document.querySelectorAll('[data-testid="chat-panel-msg-file-card"]').length, 1);
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('an explicit replacement does not restore the cancelled arithmetic answer into live or history', async (context) => {
+  const c = await mount(context);
+  try {
+    const { emit, supplement, assertVisibleAnswer } = answerCarryContract(c);
+    emit('chat.output_phase', 'replace-old', { applied_input_ids: [] });
+    const inputId = await supplement('replace-old', 'Cancel the arithmetic task. Only describe this image.', steerImages[0]);
+    emit('chat.final', 'replace-old', { content: '99 * 99 = 9801', output_suppressed: true });
+    emit('chat.output_phase', 'replace-new', { applied_input_ids: [inputId] });
+    const answer = 'The image contains a red square.';
+    emit('chat.delta', 'replace-new', { content: answer });
+    await c.tick(16);
+    emit('chat.final', 'replace-new', { content: answer });
+    await assertVisibleAnswer(answer, 0);
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('consecutive supplemented phases carry the unseen answer only into the final visible phase', async (context) => {
+  const c = await mount(context);
+  try {
+    const { emit, supplement, assertVisibleAnswer } = answerCarryContract(c);
+    emit('chat.output_phase', 'multi-old', { applied_input_ids: [] });
+    const first = await supplement('multi-old', 'Also describe the first image', steerImages[0]);
+    emit('chat.final', 'multi-old', { content: '99 * 99 = 9801', output_suppressed: true });
+    emit('chat.output_phase', 'multi-middle', { applied_input_ids: [first] });
+    const second = await supplement('multi-middle', 'And compare this second image', steerImages[1]);
+    emit('chat.final', 'multi-middle', {
+      content: '99 * 99 = 9801. The first image contains a red square.', output_suppressed: true,
+    });
+    assert.equal(c.runtime().messages.filter((message) => message.supplementalInput).length, 2);
+    assert.ok(!c.runtime().messages.some((message) => message.content.includes('9801')));
+    emit('chat.output_phase', 'multi-final', { applied_input_ids: [second] });
+    const answer = '99 * 99 = 9801. The first image is red and the second image is blue.';
+    emit('chat.delta', 'multi-final', { content: answer });
+    await c.tick(16);
+    emit('chat.final', 'multi-final', { content: answer });
+    await assertVisibleAnswer(answer, 1);
+    assert.equal(c.requests().length, 2);
+    assert.equal(document.querySelectorAll('[data-testid="chat-panel-msg-file-card"]').length, 2);
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('the native supplemented answer streams immediately and finishes without a reconciliation phase', async (context) => {
+  const c = await mount(context);
+  try {
+    const { emit, supplement, assertVisibleAnswer } = answerCarryContract(c);
+    emit('chat.output_phase', 'native-old', { applied_input_ids: [] });
+    const inputId = await supplement('native-old', 'Read the complete image text', steerImages[0]);
+    emit('chat.final', 'native-old', { content: '99 * 99 = 9801', output_suppressed: true });
+    emit('chat.output_phase', 'native-current', { applied_input_ids: [inputId] });
+    const answer = '99 * 99 = 9801. The image text is PROOF-NATIVE.';
+    emit('chat.delta', 'native-current', { content: answer });
+    await c.tick(16);
+    assert.equal(c.runtime().isProcessing, true);
+    assert.ok(document.body.textContent.includes('PROOF-NATIVE'), 'native output is visible before its final');
+    emit('chat.final', 'native-current', { content: answer });
+    await assertVisibleAnswer(answer, 1);
+    assert.equal(document.querySelectorAll('[data-testid="chat-panel-msg-file-card"]').length, 1);
+  } finally {
+    await c.dispose();
+  }
+});
+
+for (const language of ['zh', 'en']) {
+  test(`historical reconciliation failure retains ${language} guidance during replay`, async (context) => {
+    const c = await mount(context);
+    const previousLanguage = i18n.language;
+    try {
+      await act(async () => i18n.changeLanguage(language));
+      const { emit, supplement } = answerCarryContract(c);
+      emit('chat.output_phase', 'delivery-failure-old', { applied_input_ids: [] });
+      const inputId = await supplement('delivery-failure-old', 'Read the image', steerImages[0]);
+      emit('chat.final', 'delivery-failure-old', { content: '99 * 99 = 9801', output_suppressed: true });
+      emit('chat.output_phase', 'delivery-failure-pending', {
+        applied_input_ids: [inputId], delivery_reconciliation_pending: true,
+      });
+      const draft = 'DRAFT-IMAGE-ONLY-RESULT';
+      emit('chat.delta', 'delivery-failure-pending', { content: draft, output_suppressed: true });
+      emit('chat.final', 'delivery-failure-pending', { content: draft, output_suppressed: true });
+      assert.equal(c.runtime().isProcessing, true);
+      emit('chat.error', 'delivery-failure-pending', {
+        code: 'SESSION_INPUT_DELIVERY_FAILED', error: 'private reconciliation diagnostics',
+      });
+      await c.flush();
+      assert.equal(c.runtime().isProcessing, true, 'the authoritative processing terminal has not arrived');
+      assert.equal(c.runtime().executionError, i18n.t('chat.steerDeliveryFailed'));
+      const systemMessages = c.runtime().messages.filter((message) => message.role === 'system');
+      assert.equal(systemMessages.length, 1);
+      assert.ok(systemMessages[0].content.includes(i18n.t('chat.steerDeliveryFailed')));
+      assert.ok(document.querySelector('[data-testid="chat-panel-system-message-bubble"]')?.textContent.includes(i18n.t('chat.steerDeliveryFailed')));
+      assert.ok(!document.body.textContent.includes(draft));
+      assert.ok(!document.body.textContent.includes('private reconciliation diagnostics'));
+      const restored = parseHistoryJsonFileToPreviewMessages([{
+        id: 'req_mvqat7h5_81:assistant', role: 'assistant', event_type: 'chat.error',
+        request_id: 'req_mvqat7h5_81', timestamp: 1793082219.4158866,
+        content: 'Supplemental delivery reconciliation failed.',
+        code: 'SESSION_INPUT_DELIVERY_FAILED', error_type: 'SessionInputDeliveryError',
+      }], c.sid);
+      assert.equal(restored.length, 1);
+      assert.equal(restored[0].content, i18n.t('chat.steerDeliveryFailed'));
+      assert.ok(systemMessages[0].content.includes(restored[0].content), 'history and live errors use the same localized guidance');
+      assert.equal(c.runtime().messages.filter((message) => message.role === 'assistant').length, 0);
+      c.receive('chat.processing_status', { request_id: 'original', is_processing: false });
+      await c.flush();
+      assert.equal(c.runtime().isProcessing, false);
+      assert.ok(!c.runtime().messages.some((message) => message.content.includes(draft)));
+    } finally {
+      await act(async () => i18n.changeLanguage(previousLanguage));
+      await c.dispose();
+    }
+  });
+}
 
 for (const ackFirst of [true, false]) {
   test(`ordered input boundary freezes old output with ${ackFirst ? 'early' : 'late'} ACK`, async (context) => {
@@ -1654,6 +2335,159 @@ test('cross-session steering keeps its Agent source and the original task runnin
     assert.equal(c.runtime().isProcessing, true);
     assert.equal(c.requests().length, 0);
     assert.match(document.body.textContent, /Source Agent/);
+  } finally {
+    await c.dispose();
+  }
+});
+
+let restoredWorkerSequence = 0;
+
+function restoreCompletedSteerReply(c, { completed = true } = {}) {
+  const completedAt = Date.now() - 1_000 + 0.875;
+  const phase = 'restored-steer-phase';
+  const requestId = 'restored-original';
+  const content = '99 × 99 = 9801';
+  const workerInstance = `restored-worker-${++restoredWorkerSequence}`;
+  const rows = [
+    { id: 'restored-user', role: 'user', content: 'Write a story', timestamp: completedAt - 5_000 },
+    {
+      id: 'restored-steer', role: 'user', content: 'Answer 99 * 99 instead', timestamp: completedAt - 2_000,
+      request_id: 'restored-supplement', is_supplemental_input: true,
+      supplemental_input: { execution_id: 'restored-execution' },
+      output_order: { request_id: requestId, sequence: 2 },
+    },
+    {
+      id: 'restored-answer', role: 'assistant', event_type: 'chat.final', content,
+      timestamp: (completedAt - 500) / 1_000,
+      ...(completed ? { completed_at: completedAt / 1_000 } : {}),
+      request_id: requestId, output_phase_id: phase,
+      output_order: { request_id: requestId, sequence: 10 },
+    },
+  ];
+  act(() => {
+    c.store.removeRuntime(c.sid);
+    c.store.ensureRuntime(c.sid);
+    c.store.setActiveSessionId(c.sid);
+    c.store.replaceHistoryMessages(c.sid, parseHistoryJsonFileToPreviewMessages(rows, c.sid));
+  });
+  const frame = (sequence, extra = {}) => ({
+    request_id: requestId, execution_id: 'restored-execution', output_phase_id: phase,
+    output_order: { request_id: requestId, sequence },
+    runtime_event: { worker_instance: workerInstance, sequence, replayed: true },
+    timestamp: completedAt - 100, ...extra,
+  });
+  return { completedAt, phase, requestId, content, rows, frame };
+}
+
+for (const tailOnly of [false, true]) {
+  test(`history followed by ${tailOnly ? 'a truncated' : 'a complete'} output replay keeps one final answer`, async context => {
+    const c = await mount(context);
+    try {
+      const restored = restoreCompletedSteerReply(c);
+      c.receive('chat.output_phase', restored.frame(3));
+      c.receive('chat.reasoning', restored.frame(9, { content: 'Already completed reasoning' }));
+      c.receive('chat.delta', restored.frame(tailOnly ? 15 : 10, { content: tailOnly ? '801' : '9' }));
+      await c.tick(16);
+      c.receive('chat.final', restored.frame(20, { content: restored.content, timestamp: restored.completedAt }));
+      await c.flush();
+      const answers = c.runtime().messages.filter(message => message.role === 'assistant');
+      assert.deepEqual(answers.map(message => [message.id, message.content]), [['restored-answer', restored.content]]);
+      const bubbles = [...document.querySelectorAll('[data-testid="chat-panel-message-bubble"]')];
+      assert.equal(bubbles.filter(node => node.textContent.includes('9801')).length, 1);
+      assert.equal(c.runtime().currentStreamId, null);
+      assert.equal(c.runtime().isProcessing, false);
+      assert.equal(c.runtime().reasoningSegments.length, 0);
+      assert.equal(c.requests().length, 0);
+    } finally {
+      await c.dispose();
+    }
+  });
+}
+
+test('an old replay cannot reset the phase or close a newer running answer', async context => {
+  const c = await mount(context);
+  try {
+    const restored = restoreCompletedSteerReply(c);
+    const current = {
+      request_id: 'new-original', execution_id: 'new-execution', output_phase_id: 'new-phase',
+      timestamp: Date.now(), output_order: { request_id: 'new-original', sequence: 1 },
+    };
+    c.receive('chat.output_phase', current);
+    c.receive('chat.delta', { ...current, content: 'New task' });
+    await c.tick(16);
+    const streamId = c.runtime().currentStreamId;
+    c.receive('chat.output_phase', restored.frame(1, { output_phase_id: 'superseded-story-phase' }));
+    c.receive('chat.input_received', restored.frame(2, {
+      output_phase_id: 'superseded-story-phase', input_request_id: 'restored-supplement',
+      content: 'Answer 99 * 99 instead',
+    }));
+    c.receive('chat.output_phase', restored.frame(3));
+    c.receive('chat.delta', restored.frame(10, { content: '9' }));
+    c.receive('chat.final', restored.frame(20, { content: restored.content, timestamp: restored.completedAt }));
+    await c.flush();
+    assert.equal(c.runtime().outputPhaseId, current.output_phase_id);
+    assert.equal(c.runtime().currentStreamId, streamId);
+    assert.equal(c.runtime().isProcessing, true);
+    assert.equal(c.runtime().activeExecutionId, current.execution_id);
+    c.receive('chat.delta', { ...current, content: ' continues', output_order: { ...current.output_order, sequence: 2 } });
+    await c.tick(16);
+    assert.equal(c.runtime().messages.find(message => message.id === streamId).content, 'New task continues');
+  } finally {
+    await c.dispose();
+  }
+});
+
+for (const difference of ['later-output', 'different-phase', 'different-request', 'live-output', 'no-timestamp']) {
+  test(`history reconciliation retains ${difference}`, async context => {
+    const c = await mount(context);
+    try {
+      const restored = restoreCompletedSteerReply(c);
+      const payload = restored.frame(21, { content: restored.content });
+      if (difference === 'later-output') payload.timestamp = restored.completedAt + 1;
+      if (difference === 'different-phase') payload.output_phase_id = 'unfinished-phase';
+      if (difference === 'different-request') {
+        payload.request_id = 'other-request';
+        payload.output_order = { request_id: 'other-request', sequence: 21 };
+      }
+      if (difference === 'live-output') payload.runtime_event.replayed = false;
+      if (difference === 'no-timestamp') delete payload.timestamp;
+      c.receive('chat.output_phase', {
+        ...payload, content: undefined,
+        runtime_event: { ...payload.runtime_event, sequence: 20 },
+        output_order: { ...payload.output_order, sequence: 20 },
+      });
+      c.receive('chat.delta', payload);
+      await c.tick(16);
+      const assistants = c.runtime().messages.filter(message => message.role === 'assistant');
+      assert.equal(assistants.length, 2);
+      assert.deepEqual(assistants.map(message => message.content), [restored.content, restored.content]);
+      assert.equal(c.runtime().isProcessing, true);
+      assert.equal(c.runtime().currentStreamId, assistants[1].id);
+      c.receive('chat.final', {
+        ...payload,
+        runtime_event: { ...payload.runtime_event, sequence: 22 },
+        output_order: { ...payload.output_order, sequence: 22 },
+      });
+      await c.flush();
+      assert.deepEqual(c.runtime().messages.filter(message => message.role === 'assistant').map(message => message.content),
+        [restored.content, restored.content]);
+      assert.equal(c.runtime().currentStreamId, null);
+    } finally {
+      await c.dispose();
+    }
+  });
+}
+
+test('history without an explicit completion boundary still restores unfinished output', async context => {
+  const c = await mount(context);
+  try {
+    const restored = restoreCompletedSteerReply(c, { completed: false });
+    c.receive('chat.output_phase', restored.frame(3));
+    c.receive('chat.delta', restored.frame(10, { content: 'Continuation' }));
+    await c.tick(16);
+    assert.equal(c.runtime().messages.at(-1).content, 'Continuation');
+    assert.ok(c.runtime().currentStreamId);
+    assert.equal(c.runtime().isProcessing, true);
   } finally {
     await c.dispose();
   }

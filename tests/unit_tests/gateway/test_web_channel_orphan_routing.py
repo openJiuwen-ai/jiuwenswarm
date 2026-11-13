@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
 """断开重连后，原连接已不在的在途事件投给同 session 的新连接。
@@ -328,3 +329,5 @@ async def test_orphan_rebound_cleared_on_payload_event_type_only_terminal() -> N
     await channel.send(delta)
 
     assert len(calls) == 1, "绑定应已解除，且该连接不在 session 桶里，后续事件不再改投"
+=======
+>>>>>>> origin/develop

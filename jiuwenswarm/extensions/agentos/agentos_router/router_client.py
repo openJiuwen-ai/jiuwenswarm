@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
 from __future__ import annotations
@@ -3209,3 +3210,5 @@ class AgentOSRouterClient(AgentServerClient):
             payload={"error": message},
             is_complete=True,
         )
+=======
+>>>>>>> origin/develop

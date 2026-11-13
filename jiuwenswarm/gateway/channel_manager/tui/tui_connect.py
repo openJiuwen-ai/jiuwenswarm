@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
 from __future__ import annotations
@@ -2654,3 +2655,5 @@ def build_cli_route_binding(bind: CliRouteBindParams) -> GatewayRouteBinding:
         session_bind_handler=_tui_session_bound,
         ws_channel=bind.ws_channel,
     )
+=======
+>>>>>>> origin/develop

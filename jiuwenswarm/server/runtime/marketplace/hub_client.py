@@ -290,6 +290,7 @@ class HubClient(HubAssetPort):
             raise HubProtocolError("Hub version identity mismatch")
         return detail
 
+<<<<<<< HEAD
     async def read_public_readme(self, asset_id: str, version: str) -> str:
         """Return the package README text, or an empty string.
 
@@ -351,14 +352,56 @@ class HubClient(HubAssetPort):
             raise HubProtocolError("Hub file listing is malformed")
         return payload
 
+||||||| e487e9a30
+=======
+    async def read_public_readme(self, asset_id: str, version: str) -> str:
+        """Return the package README text, or an empty string.
+
+        Detail pages fall back to this when the Hub metadata has no description, which
+        happens for packages imported from outside the app. Uses the version files
+        endpoint so the archive is never downloaded; any failure keeps the page usable.
+        """
+        wanted = str(asset_id or "").strip()
+        wanted_version = str(version or "").strip()
+        if not wanted or not wanted_version:
+            return ""
+        files_path = (
+            f"/api/v1/plugins/{quote(wanted, safe='')}/versions/"
+            f"{quote(wanted_version, safe='')}/files"
+        )
+        try:
+            listing = await self.transport.get_data(files_path)
+            entries = listing.get("files")
+            if not isinstance(entries, list):
+                return ""
+            # Prefer the package-root README; nested ones (docs/README.md, skills/x/README.md)
+            # describe a sub-asset and must not stand in for the package description.
+            readmes: list[str] = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                path = entry.get("path")
+                if isinstance(path, str) and path.rsplit("/", 1)[-1].lower() == "readme.md":
+                    readmes.append(path)
+            readmes.sort(key=lambda item: (item.count("/"), len(item)))
+            target = readmes[0] if readmes else None
+            if not target:
+                return ""
+            payload = await self.transport.get_data(files_path, params={"with_content": target})
+        except (HubProtocolError, HubNotFoundError, ValueError, TypeError):
+            return ""
+        content = payload.get("content") if isinstance(payload, dict) else None
+        return content[:20000] if isinstance(content, str) else ""
+
+>>>>>>> origin/develop
     async def get_artifact(
-        self, asset_id: str, *, version: str | None = None
+        self, asset_id: str, *, version: str | None = None, is_cli_download: bool = False
     ) -> HubArtifact:
         wanted = str(asset_id or "").strip()
         if not wanted:
             raise ValueError("asset_id is required")
         wanted_version = str(version or "").strip()
-        params: dict[str, Any] = {"is_cli_download": False}
+        params: dict[str, Any] = {"is_cli_download": is_cli_download}
         if wanted_version:
             params["version"] = wanted_version
         payload = await self.transport.get_data(
@@ -441,9 +484,14 @@ class HubClient(HubAssetPort):
             icon_uri=self._normalize_icon_uri(detail.icon_uri or item.icon_uri),
             tags=detail.tags,
             package_name=detail.name or item.name,
+<<<<<<< HEAD
             preview_url=self._normalize_icon_uri(detail.preview_url),
             package_profile=detail.package_profile,
             versions=item.all_versions,
+||||||| e487e9a30
+=======
+            package_profile=detail.package_profile,
+>>>>>>> origin/develop
         )
 
     async def resolve_download(

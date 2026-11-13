@@ -23,8 +23,8 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.video_duplex.backend.task_adapter import AgentTaskExecutor
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskModification
-from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
-from jiuwenswarm.extensions.video_duplex.backend.tasks.rail import VoiceAgentTaskRail
+from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
+from jiuwenswarm.server.runtime.video_task.rail import VoiceAgentTaskRail
 from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import install_bridge
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 
@@ -86,8 +86,14 @@ async def test_native_answer_and_linked_revision_reach_actual_model_inputs(tmp_p
 
     class LocalAgentTransport:
         async def send_request(self, env):
+<<<<<<< HEAD
             if env.method == ReqMethod.SESSION_GET_METADATA.value:
                 return SimpleNamespace(ok=True, payload={"user_id": "user", "mode": "agent", "work_mode": work_mode})
+||||||| e487e9a30
+=======
+            if env.method == ReqMethod.SESSION_GET_METADATA.value:
+                return SimpleNamespace(ok=True, payload={"user_id": "user", "mode": "agent", "work_mode": "work"})
+>>>>>>> origin/develop
             return SimpleNamespace(ok=True, payload={"files": []})
 
         async def send_request_stream(self, env):

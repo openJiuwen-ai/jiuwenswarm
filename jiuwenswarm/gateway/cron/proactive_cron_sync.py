@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """Auto-register the proactive-recommendation tick cron job.
@@ -147,3 +148,5 @@ async def _find_job(cron_controller: Any) -> dict[str, Any] | None:
         except Exception as exc:
             logger.debug("[ProactiveAutoReg] store fallback failed: %s", exc)
     return None
+=======
+>>>>>>> origin/develop

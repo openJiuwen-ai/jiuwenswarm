@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 """Shared cron team round completion signals for gateway and agent server."""
 
 from __future__ import annotations
@@ -355,3 +356,5 @@ def apply_cron_team_round_event(state: dict[str, Any], event: dict[str, Any]) ->
         state["open_team_tasks"] = {}
         state["active_team_members"] = {}
         state["open_leader_tool_calls"] = {}
+=======
+>>>>>>> origin/develop

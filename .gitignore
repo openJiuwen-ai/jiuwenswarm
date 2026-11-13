@@ -119,6 +119,7 @@ report/index.html
 /sub_agents/
 /context/
 /.plans/
+<<<<<<< HEAD
 /todo/
 
 # Local launcher, notes, and task artifacts
@@ -132,3 +133,20 @@ report/index.html
 .test-temp/
 jiuwenswarm/resources/.env.media-capability.lock
 /webui_workbench_v2.zip
+||||||| e487e9a30
+/todo/
+=======
+/todo/
+
+# Local launcher, notes, and task artifacts
+/jiuwen-start.cmd
+/README_JIUWEN_START.md
+/README_JIUWEN_START_EN.md
+/.codex-tmp/
+/local-only/
+/outputs/
+/%SystemDrive%/
+
+# Local testing handoff documents are not versioned.
+/.agents/agent-docs/designs/testing/
+>>>>>>> origin/develop

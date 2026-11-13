@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 import AppKit
 import Foundation
 import Darwin
@@ -82,3 +83,5 @@ final class ApplicationDelegate: NSObject, NSApplicationDelegate {
 let delegate = ApplicationDelegate()
 app.delegate = delegate
 app.run()
+=======
+>>>>>>> origin/develop

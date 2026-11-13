@@ -582,6 +582,7 @@ def _dispatch() -> int | None:
 
         reset_external_cli_agents_in_config()
         return 0
+<<<<<<< HEAD
     if _pop_flag("--desktop-restore-upgrade-config"):
         if len(sys.argv) != 1:
             raise ValueError("upgrade configuration restore does not accept arguments")
@@ -597,6 +598,16 @@ def _dispatch() -> int | None:
         from jiuwenswarm.channels.cli.extension import main as extension_main
 
         return extension_main(sys.argv[2:])
+||||||| e487e9a30
+=======
+    if _pop_flag("--desktop-restore-upgrade-config"):
+        if len(sys.argv) != 1:
+            raise ValueError("upgrade configuration restore does not accept arguments")
+        from jiuwenswarm.common.windows_upgrade_config import restore_legacy_upgrade_config
+
+        restore_legacy_upgrade_config()
+        return 0
+>>>>>>> origin/develop
     # 已知子命令分发（不检查单实例锁）
     if len(sys.argv) >= 2 and sys.argv[1].lower() == "init":
         sys.argv.pop(1)
@@ -627,13 +638,17 @@ def _dispatch() -> int | None:
         from jiuwenswarm.channels.web.app_web import main as web_main
         web_main()
         return None
+    if _pop_flag("--desktop-run-worker-lifecycle"):
+        from jiuwenswarm.server.supervisor.shutdown import main as lifecycle_main
+        lifecycle_main()
+        return None
     if _pop_flag(_DESKTOP_RUN_AGENT):
         _activate_external_cli_runtime_paths()
         from jiuwenswarm.server.app_agentserver import main as agent_main
         agent_main()
         return None
     if _pop_flag(_DESKTOP_RUN_GATEWAY):
-        from jiuwenswarm.gateway.app_gateway import main as gateway_main
+        from agent_gateway.app_gateway import main as gateway_main
         gateway_main()
         return None
     if _DESKTOP_INSTALL_UPDATE in sys.argv:

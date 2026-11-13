@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 """Persistent Python worker. User code never shares the MCP server's stdout."""
 import ast
 import asyncio
@@ -340,3 +341,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+=======
+>>>>>>> origin/develop

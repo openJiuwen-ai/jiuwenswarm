@@ -32,10 +32,19 @@ import { webClient, webRequest } from '../../../../channels/web/frontend/src/ser
 import { createRealtimeDuplexSession, RealtimeDuplexSession } from './qwenOmniSession';
 import { isVideoSourceReady, RealtimeVideoFrameScheduler, waitForFirstVideoFrame } from './videoSource';
 import { JoyAIProvider } from './joyaiProvider';
+<<<<<<< HEAD
 import { captureVideoFrame, FrameEncoder } from './frameEncoding';
 import { setDuplexVoicePhase } from '../duplexAudioMeter';
 import { describeDuplexError } from '../duplexErrorMessage';
 import { reportedRuntimeState } from './runtimeState';
+||||||| e487e9a30
+import { describeDuplexError } from '../duplexErrorMessage';
+=======
+import { captureVideoFrame, FrameEncoder } from './frameEncoding';
+import { setDuplexVoicePhase } from '../duplexAudioMeter';
+import { describeDuplexError, duplexErrorDetail, screenCaptureFailure } from '../duplexErrorMessage';
+import { reportedRuntimeState } from './runtimeState';
+>>>>>>> origin/develop
 import {
   mergeSearchProgressJob,
   searchAwareToolStatus,
@@ -104,6 +113,7 @@ interface VideoLivePanelProps {
   onCoreAgentProgress?: (event: 'started' | 'progress' | 'completed' | 'failed', payload: SearchJobPayload) => void;
 }
 
+<<<<<<< HEAD
 export const SCREEN_SHARE_UNSUPPORTED_NOTICE = '当前环境不支持屏幕共享，已仅开启语音';
 export const SCREEN_SHARE_NO_PERMISSION_NOTICE =
   '没有屏幕录制权限，已仅开启语音。请在“系统设置 > 隐私与安全性 > 屏幕与系统录音”中允许本应用后重试';
@@ -129,6 +139,18 @@ function isScreenCaptureUnsupported(error: unknown): boolean {
   return name === 'NotSupportedError' || (typeof message === 'string' && /not supported/i.test(message));
 }
 
+||||||| e487e9a30
+=======
+export const SCREEN_SHARE_UNSUPPORTED_NOTICE = '当前环境不支持屏幕共享，已仅开启语音';
+
+function isScreenCaptureUnsupported(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === 'NotSupportedError') return true;
+  const name = (error as { name?: unknown } | null)?.name;
+  const message = (error as { message?: unknown } | null)?.message;
+  return name === 'NotSupportedError' || (typeof message === 'string' && /not supported/i.test(message));
+}
+
+>>>>>>> origin/develop
 export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelProps>(function VideoLivePanel(
   { headless = false, onConversationItem, onAssistantStream, onRuntimeState, onError, onCoreAgentProgress, onScreenSharingChange },
   ref,
@@ -805,6 +827,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     });
   }, []);
 
+<<<<<<< HEAD
   /**
    * `unsupported` means this runtime cannot capture the screen at all (e.g. the
    * Windows desktop WebView rejects getDisplayMedia with "Not supported", #5283).
@@ -813,18 +836,51 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   const screenFallbackNoticeRef = useRef(SCREEN_SHARE_UNSUPPORTED_NOTICE);
   const startScreen = async (allowUnsupported = false): Promise<boolean | 'unsupported'> => {
     screenFallbackNoticeRef.current = SCREEN_SHARE_UNSUPPORTED_NOTICE;
+||||||| e487e9a30
+  const startScreen = async (): Promise<boolean> => {
+=======
+  /**
+   * `unsupported` means this runtime cannot capture the screen at all (e.g. the
+   * Windows desktop WebView rejects getDisplayMedia with "Not supported", #5283).
+   * With `allowUnsupported` the caller handles that case instead of an error.
+   */
+  const startScreen = async (allowUnsupported = false): Promise<boolean | 'unsupported'> => {
+>>>>>>> origin/develop
     if (screens.length >= MAX_SCREENS) {
       setError(`最多同时读取 ${MAX_SCREENS} 个屏幕。`);
       return false;
     }
+<<<<<<< HEAD
     if (!navigator.mediaDevices?.getDisplayMedia || isDesktopScreenCaptureUnavailable()) {
       if (allowUnsupported) return 'unsupported';
+||||||| e487e9a30
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+=======
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      if (allowUnsupported) return 'unsupported';
+>>>>>>> origin/develop
       setError('当前运行环境不支持屏幕共享。');
       return false;
     }
 
     setError('');
+<<<<<<< HEAD
     const pickerStartedAt = Date.now();
+||||||| e487e9a30
+=======
+    const captureStartedAt = performance.now();
+    const captureId = `screen-${Date.now()}`;
+    let captureStage = 'getDisplayMedia';
+    const captureContext = JSON.stringify({
+      capture_id: captureId,
+      user_agent: navigator.userAgent,
+      secure_context: window.isSecureContext,
+      document_focused: document.hasFocus(),
+      user_activation: navigator.userActivation?.isActive,
+      existing_screens: screens.length,
+    });
+    reportRealtimeEvent('realtime_screen_capture_requested', { raw_event: captureContext });
+>>>>>>> origin/develop
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
@@ -836,15 +892,23 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         },
         audio: false,
       });
+      captureStage = 'videoTrack';
       const track = stream.getVideoTracks()[0];
       if (!track) {
         stream.getTracks().forEach((item) => item.stop());
         throw new Error('没有获得屏幕画面。');
       }
 
+<<<<<<< HEAD
       // Only a camera or file source is replaced. With nothing shared, a reset
       // would also stop the running voice transport and its conversation.
       if (source && source !== 'screen') {
+||||||| e487e9a30
+      if (source !== 'screen') {
+=======
+      captureStage = 'attachStream';
+      if (source !== 'screen') {
+>>>>>>> origin/develop
         resetSource();
       }
 
@@ -865,6 +929,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       });
       return true;
     } catch (screenError) {
+<<<<<<< HEAD
       if (isScreenCaptureDeniedBySystem(screenError)) {
         if (allowUnsupported) {
           screenFallbackNoticeRef.current = SCREEN_SHARE_NO_PERMISSION_NOTICE;
@@ -877,8 +942,25 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         setError(Date.now() - pickerStartedAt >= SCREEN_PICKER_TIMEOUT_MS ? SCREEN_PICKER_TIMEOUT_ERROR : '已取消选择屏幕');
       } else if (allowUnsupported && isScreenCaptureUnsupported(screenError)) {
         return 'unsupported';
+||||||| e487e9a30
+      if (screenError instanceof DOMException && screenError.name === 'NotAllowedError') {
+        setError('已取消选择屏幕。');
+=======
+      const { errorType, nativeMessage, reasonKey } = screenCaptureFailure(screenError);
+      const elapsedMs = Math.round(performance.now() - captureStartedAt);
+      const message = t('videoLive.screenCapture.failed', {
+        reason: t(`videoLive.screenCapture.${reasonKey}`),
+        errorType, nativeMessage, stage: captureStage, elapsedMs, captureId,
+      });
+      reportRealtimeEvent('realtime_screen_capture_failed', {
+        error_type: errorType, message, latency_ms: elapsedMs, raw_event: captureContext,
+      });
+      if (errorType !== 'NotAllowedError' && errorType !== 'AbortError'
+        && allowUnsupported && isScreenCaptureUnsupported(screenError)) {
+        return 'unsupported';
+>>>>>>> origin/develop
       } else {
-        setError(screenError instanceof Error ? screenError.message : '无法读取屏幕。');
+        setError(message);
       }
       return false;
     }
@@ -924,6 +1006,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       setError('');
       setRealtimeStatus('正在读取视频模型配置…');
       reportRealtimeEvent('realtime_config_requested');
+      let startupStage = 'video.realtime.config';
       try {
         searchSessionRef.current = conversationSearchSessionRef.current || searchSessionRef.current || crypto.randomUUID();
         const config = await webRequest<VideoSessionConfig>('video.realtime.config', {
@@ -944,6 +1027,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
           throw new Error(t('videoLive.qwenOnly'));
         }
         const videoFrames = new RealtimeVideoFrameScheduler(1_000);
+        startupStage = 'realtime_session_create';
         const session = createRealtimeDuplexSession(
           {
             url: config.url || '',
@@ -1086,7 +1170,13 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                   search_session_id: searchSessionId,
                   frame_data_url: framesRef.current.at(-1)?.data_url || '',
                 },
+<<<<<<< HEAD
                 { timeoutMs: call.name === 'jiuwen_queue_manage' ? 0 : 10_000 },
+||||||| e487e9a30
+                { timeoutMs: 10_000 },
+=======
+                { timeoutMs: call.name === 'jiuwen_queue_manage' ? 45_000 : 10_000 },
+>>>>>>> origin/develop
               )
                 .then((action) => {
                   reportRealtimeEvent('qwen_tool_call_receipt', {
@@ -1123,7 +1213,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                   reportRealtimeEvent('qwen_tool_call_receipt', {
                     name: call.name, call_id: call.callId, decision: 'rejected', message,
                   });
-                  setError(describeDuplexError(message, 'task'));
+                  setError(describeDuplexError(duplexErrorDetail(`工具调用失败：${message}`, { stage: 'tool_receipt', name: call.name, call_id: call.callId }), 'task'));
                   session.enqueueOperationResult(call.callId, { state: 'rejected', error: message });
                 });
             },
@@ -1137,6 +1227,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
           },
           () => reportRealtimeEvent('realtime_start_unsupported_browser'),
         );
+        startupStage = 'realtime_session_start';
         duplexRef.current = session;
         session.setMicrophoneMuted(microphoneMutedRef.current);
         session.setSpeakerMuted(speakerMutedRef.current);
@@ -1153,7 +1244,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         setIsRealtimeStarting(false);
         searchSessionRef.current = '';
         searchJobsRef.current.clear();
-        setError(realtimeError instanceof Error ? realtimeError.message : t('videoLive.errors.startFailed'));
+        const message = duplexErrorDetail(realtimeError, { stage: startupStage });
+        reportRealtimeEvent('realtime_start_failed', { message, error_type: realtimeError instanceof Error ? realtimeError.name : 'UnknownError' });
+        setError(`全双工启动失败：${message}`);
       }
     })();
     startingRealtimeRef.current = start;
@@ -1219,6 +1312,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         await startRealtime();
         return Boolean(duplexRef.current || joyaiProviderRef.current?.active);
       }
+<<<<<<< HEAD
       const result = await startScreen(true);
       if (result === 'unsupported') {
         // Fallback, not a root-cause fix: keep voice duplex usable when the
@@ -1230,6 +1324,23 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       }
       pendingScreenAutostartRef.current = result;
       return result;
+||||||| e487e9a30
+      const started = visualSource === 'camera' ? await startCamera() : await startScreen();
+      pendingScreenAutostartRef.current = started;
+      return started;
+=======
+      const result = await startScreen(true);
+      if (result === 'unsupported') {
+        // Fallback, not a root-cause fix: keep voice duplex usable when the
+        // runtime cannot share the screen (#5283).
+        pendingScreenAutostartRef.current = false;
+        toast.open({ content: SCREEN_SHARE_UNSUPPORTED_NOTICE, variant: 'warning' });
+        await startRealtime();
+        return Boolean(duplexRef.current || joyaiProviderRef.current?.active);
+      }
+      pendingScreenAutostartRef.current = result;
+      return result;
+>>>>>>> origin/develop
     },
     stop: () => {
       pendingScreenAutostartRef.current = false;
@@ -1326,7 +1437,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       const accepted = await duplexRef.current?.sendTextTurn(text);
       if (!accepted) throw new Error(t('videoLive.errors.qwenTextNotAccepted'));
     } catch (sendError) {
-      setError(sendError instanceof Error ? sendError.message : t('videoLive.errors.textSendFailed'));
+      setError(`全双工文字输入发送失败：${duplexErrorDetail(sendError, { stage: 'text_turn_submit' })}`);
     }
   };
 

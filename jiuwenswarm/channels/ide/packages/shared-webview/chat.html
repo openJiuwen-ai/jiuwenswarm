@@ -1736,6 +1736,7 @@ let state = {
   skills: [],
   showDebug: false,
   streaming: false,
+  stopRequested: false, // set when the user clicks ■; final turn is classified as stopped
   models: [],
   activeModel: null,
   turns: [],
@@ -2836,6 +2837,7 @@ function handleJiuwenEvent(evt) {
 // Called when we send a message — create a user turn and an empty assistant turn
 function beginTurn(requestId, userContent) {
   const msgs = document.getElementById('messages');
+  state.stopRequested = false;
 
   // User message
   const userEl = document.createElement('div');
@@ -3234,6 +3236,7 @@ function renderAskUserQuestion(rid, payload) {
     (payload.source === 'confirm_interrupt' ? 'Exit Plan and Execute' : 'Question');
   const question = payload.question || q.question || q.message || '';
   const source = payload.source || q.source || 'confirm_interrupt';
+  const interruptId = typeof payload.interrupt_id === 'string' ? payload.interrupt_id : '';
 
   // Waiting for the user — stop the typing animation
   if (pt.typingEl) {
@@ -3264,7 +3267,13 @@ function renderAskUserQuestion(rid, payload) {
     btn.addEventListener('click', function() {
       card.querySelectorAll('.question-btn').forEach(function(b) { b.disabled = true; });
       card.classList.add('answered');
+<<<<<<< HEAD
       sendAnswerForInterrupt(pt, rid, source, mapInterruptAnswerValue(pt, btn.dataset.value));
+||||||| e487e9a30
+      sendAnswerForInterrupt(pt, rid, source, btn.dataset.value);
+=======
+      sendAnswerForInterrupt(pt, rid, source, mapInterruptAnswerValue(pt, btn.dataset.value), interruptId);
+>>>>>>> origin/develop
     });
   });
 
@@ -3274,6 +3283,7 @@ function renderAskUserQuestion(rid, payload) {
   scrollToBottom();
 }
 
+<<<<<<< HEAD
 // The WebUI sends plan_execute / plan_skip / plan_revise for plan approval.
 // The generic ask-user card only has approve/reject options. A plain "reject"
 // keeps the agent in plan mode instead of finishing the turn (the source of the
@@ -3289,6 +3299,24 @@ function mapInterruptAnswerValue(pt, value) {
 function sendAnswerForInterrupt(pt, rid, source, optionValue) {
   // Ignore clicks from a card whose turn was already stopped/finalized.
   if (!pt || state.pendingTurns[rid] !== pt) return;
+||||||| e487e9a30
+function sendAnswerForInterrupt(pt, rid, source, optionValue) {
+=======
+// The WebUI sends plan_execute / plan_skip / plan_revise for plan approval.
+// The generic ask-user card only has approve/reject options. A plain "reject"
+// keeps the agent in plan mode instead of finishing the turn (the source of the
+// stuck stop-button state), so map only reject. Keep "approve" unchanged: the
+// IDE has no follow-up "execute" message step, whereas the WebUI does.
+function mapInterruptAnswerValue(pt, value) {
+  if (pt && pt.planApprovalKind === 'plan_approval' && value === 'reject') {
+    return 'plan_skip';
+  }
+  return value;
+}
+
+function sendAnswerForInterrupt(pt, rid, source, optionValue, interruptId) {
+  if (!pt || state.pendingTurns[rid] !== pt) return;
+>>>>>>> origin/develop
   pt.questionAnswered = true;
   // The user chose to continue this turn, so a previous stop click no longer
   // applies; let the resumed stream finish as completed.
@@ -3301,6 +3329,7 @@ function sendAnswerForInterrupt(pt, rid, source, optionValue) {
     mode: state.mode,
     requestId: rid,
     source: source,
+    interruptId: interruptId,
     answers: [{ selected_options: [optionValue], custom_input: '' }],
   });
 }
@@ -4254,11 +4283,13 @@ inputEl.addEventListener('input', function() {
 
 sendBtn.addEventListener('click', function() {
   if (state.streaming) {
+    state.stopRequested = true;
     send({ type: 'stop' });
     // Finalize all pending turns immediately — Gateway handles backend cancellation.
     // A turn waiting on an interrupt would otherwise keep the early-return path in
     // finalizeTurn and leave the UI stuck in streaming mode.
     Object.keys(state.pendingTurns).forEach(function(rid) {
+<<<<<<< HEAD
       var pt = state.pendingTurns[rid];
       if (pt) {
         pt.stopRequested = true;
@@ -4270,6 +4301,20 @@ sendBtn.addEventListener('click', function() {
           if (qStatus) qStatus.textContent = 'Stopped';
         }
       }
+||||||| e487e9a30
+=======
+      var pt = state.pendingTurns[rid];
+      if (pt) {
+        if (pt.pendingQuestion) {
+          pt.pendingQuestion.querySelectorAll('.question-btn').forEach(function(b) { b.disabled = true; });
+          pt.pendingQuestion.classList.add('answered');
+          var qStatus = pt.pendingQuestion.querySelector('.question-status');
+          if (qStatus) qStatus.textContent = 'Stopped';
+        }
+        pt.stopRequested = true;
+        pt.questionAnswered = true;
+      }
+>>>>>>> origin/develop
       finalizeTurn(rid, { stopped: true });
     });
     // No live turn (e.g. it was already finalized server-side) — still release UI.
@@ -4877,6 +4922,7 @@ function clearMessages() {
   msgs.innerHTML = '';
   state.pendingTurns = {};
   state.streaming = false;
+  state.stopRequested = false;
   state.rewindable = false;
   _historyPendingAssistant = null;
   document.getElementById('input').disabled = false;

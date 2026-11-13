@@ -1,7 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 """Orchestrate the recovery sidecar, AgentServer and Gateway in one command.
 
-Runs ``jiuwenswarm.server.app_agentserver`` then ``jiuwenswarm.gateway.app_gateway`` with the same
+Runs ``jiuwenswarm.server.app_agentserver`` then ``agent_gateway.app_gateway`` with the same
 environment as a normal CLI launch. Web RPC handlers live in ``app_web_handlers``.
 
 Supports ``--dotenv <path>`` for multi-instance isolation.
@@ -83,6 +83,7 @@ def main() -> None:
         metavar="<name>",
         help="Start a named instance from instances.yaml.",
     )
+    parser.add_argument("--keep-worker", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     # Route SIGTERM through the same shutdown path as Ctrl-C.
@@ -115,8 +116,14 @@ def main() -> None:
         recovery_cmd = [python, "--extension-recovery-sidecar"]
     else:
         agent_cmd = [python, "-m", "jiuwenswarm.server.app_agentserver"]
+<<<<<<< HEAD
         gateway_cmd = [python, "-m", "jiuwenswarm.gateway.app_gateway"]
         recovery_cmd = [python, "-m", "jiuwenswarm.common.system_plugin_recovery_sidecar"]
+||||||| e487e9a30
+        gateway_cmd = [python, "-m", "jiuwenswarm.gateway.app_gateway"]
+=======
+        gateway_cmd = [python, "-m", "agent_gateway.app_gateway"]
+>>>>>>> origin/develop
 
     # Pass --dotenv to subprocesses for multi-instance isolation
     if dotenv_path is not None:
@@ -152,6 +159,7 @@ def main() -> None:
         # SIGTERM still tear everything down through this supervisor's handlers.
         _popen_kwargs["start_new_session"] = True
 
+<<<<<<< HEAD
     recovery = SystemPluginRecovery()
 
     def _backend_restart_requested() -> bool:
@@ -181,6 +189,20 @@ def main() -> None:
         if recovery_process is not None:
             _stop_optional_recovery_sidecar(recovery_process)
     raise SystemExit(exit_code)
+||||||| e487e9a30
+    raise SystemExit(supervise({"agentserver": agent_cmd, "gateway": gateway_cmd}, _popen_kwargs))
+=======
+    from jiuwenswarm.common.process_supervision import application_shutdown
+    from jiuwenswarm.server.supervisor.shutdown import shutdown_application_worker
+
+    exit_code = supervise({"agentserver": agent_cmd, "gateway": gateway_cmd}, _popen_kwargs)
+    # Only a completed Front teardown permits final Worker shutdown.
+    # Internal Front/Gateway respawns never reach this application exit.
+    with application_shutdown():
+        if not args.keep_worker and not shutdown_application_worker():
+            raise SystemExit(1)
+    raise SystemExit(exit_code)
+>>>>>>> origin/develop
 
 
 if __name__ == "__main__":

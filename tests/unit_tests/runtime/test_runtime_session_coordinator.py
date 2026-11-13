@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+from contextlib import aclosing
 
 import pytest
 
@@ -170,7 +171,7 @@ async def test_session_messages_wait_for_control_and_keep_fifo_order() -> None:
         "question",
         SessionWorkKind.CHAT_UNARY,
         lambda: asyncio.sleep(0, result="ask"),
-        suspension_key=lambda _value: "control-1",
+        interaction_ids=lambda _value: frozenset({"control-1"}),
     ) == "ask"
 
     first = coordinator.submit_unary(
@@ -199,7 +200,7 @@ async def test_session_messages_wait_for_control_and_keep_fifo_order() -> None:
         return "answered"
 
     control = asyncio.create_task(
-        coordinator.deliver_control("session-a", "control-1", answer)
+        coordinator.deliver_control("session-a", ("control-1",), answer)
     )
     await control_started.wait()
     await asyncio.sleep(0.01)
@@ -224,7 +225,7 @@ async def test_session_message_waits_for_heartbeat_interaction() -> None:
 
     async def heartbeat() -> None:
         assert coordinator.record_interaction(
-            "session-a", "heartbeat-1", "control-1"
+            "session-a", "heartbeat-1", frozenset({"control-1"})
         )
         interaction_recorded.set()
         await release_heartbeat.wait()
@@ -288,7 +289,7 @@ async def test_cancel_session_message_while_it_waits_for_control() -> None:
         "question",
         SessionWorkKind.CHAT_UNARY,
         lambda: asyncio.sleep(0, result="ask"),
-        suspension_key=lambda _value: "control-1",
+        interaction_ids=lambda _value: frozenset({"control-1"}),
     )
     ran = False
 
@@ -757,13 +758,13 @@ async def test_control_input_bypasses_running_session_work_lane() -> None:
         "original",
         SessionWorkKind.CHAT_STREAM,
         original,
-        suspension_key=lambda item: (
-            "interaction" if item == "chat.ask_user_question" else None
+        interaction_ids=lambda item: (
+            frozenset({"interaction"}) if item == "chat.ask_user_question" else frozenset()
         ),
     )
     assert await anext(stream) == "chat.ask_user_question"
     assert await asyncio.wait_for(
-        coordinator.deliver_control("session-a", "interaction", answer),
+        coordinator.deliver_control("session-a", ("interaction",), answer),
         timeout=0.2,
     ) == "accepted"
     assert await asyncio.wait_for(anext(stream), timeout=0.2) == "chat.final"
@@ -801,8 +802,8 @@ async def test_control_input_resumes_work_after_output_stream_ends() -> None:
         "original",
         SessionWorkKind.CHAT_STREAM,
         original,
-        suspension_key=lambda item: (
-            "answer" if item == "chat.ask_user_question" else None
+        interaction_ids=lambda item: (
+            frozenset({"answer"}) if item == "chat.ask_user_question" else frozenset()
         ),
     )
     assert [item async for item in stream] == ["chat.ask_user_question"]
@@ -813,10 +814,10 @@ async def test_control_input_resumes_work_after_output_stream_ends() -> None:
 
     assert await coordinator.deliver_control(
         "session-a",
-        "answer",
+        ("answer",),
         lambda: asyncio.sleep(0, result="chat.ask_user_question"),
-        suspension_key=lambda item: (
-            "second-answer" if item == "chat.ask_user_question" else None
+        interaction_ids=lambda item: (
+            frozenset({"second-answer"}) if item == "chat.ask_user_question" else frozenset()
         ),
     ) == "chat.ask_user_question"
     suspended_again = coordinator.snapshot_session("session-a")
@@ -836,7 +837,7 @@ async def test_control_input_resumes_work_after_output_stream_ends() -> None:
     assert control.state is SessionExecutionState.WAITING_FOR_CONTROL
 
     assert await coordinator.deliver_control(
-        "session-a", "second-answer", lambda: asyncio.sleep(0, result="continued")
+        "session-a", ("second-answer",), lambda: asyncio.sleep(0, result="continued")
     ) == "continued"
     completed = coordinator.snapshot_session("session-a")
     assert completed is not None
@@ -845,6 +846,7 @@ async def test_control_input_resumes_work_after_output_stream_ends() -> None:
 
 
 @pytest.mark.asyncio
+<<<<<<< HEAD
 async def test_every_card_raised_in_one_round_stays_clickable() -> None:
     """#5738: parallel tool calls raise two cards in one round. Only the last
     card id was kept, so clicking the first card failed with "session has no
@@ -1081,6 +1083,256 @@ async def test_an_answered_heartbeat_card_cannot_resume_it_again() -> None:
 
 
 @pytest.mark.asyncio
+||||||| e487e9a30
+=======
+async def test_every_card_raised_in_one_round_stays_clickable() -> None:
+    """#5738: parallel tool calls raise two cards in one round. Only the last
+    card id was kept, so clicking the first card failed with "session has no
+    active execution" while it was still shown."""
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+
+    async def original():
+        yield "card-1"
+        yield "card-2"
+
+    stream = coordinator.run_stream(
+        "session-a",
+        "original",
+        SessionWorkKind.CHAT_STREAM,
+        original,
+        interaction_ids=lambda item: frozenset({item}),
+    )
+    assert [item async for item in stream] == ["card-1", "card-2"]
+
+    # Answering the first card resumes the round, which asks the second card again.
+    assert await coordinator.deliver_control(
+        "session-a",
+        ("card-1",),
+        lambda: asyncio.sleep(0, result="card-2"),
+        interaction_ids=lambda item: frozenset({item}),
+    ) == "card-2"
+    assert await coordinator.deliver_control(
+        "session-a", ("card-2",), lambda: asyncio.sleep(0, result="done")
+    ) == "done"
+    completed = coordinator.snapshot_session("session-a")
+    assert completed is not None
+    assert all(item.state.terminal for item in completed.executions)
+    await coordinator.close()
+
+
+async def _park_on_cards(coordinator: RuntimeSessionCoordinator, *cards: str) -> None:
+    async def original():
+        for card in cards:
+            yield card
+
+    stream = coordinator.run_stream(
+        "session-a",
+        "original",
+        SessionWorkKind.CHAT_STREAM,
+        original,
+        interaction_ids=lambda item: frozenset({item}),
+    )
+    assert [item async for item in stream] == list(cards)
+
+
+async def _answer(coordinator: RuntimeSessionCoordinator, card: str, *reasked: str) -> list[str]:
+    """Click ``card``; the resumed round asks ``reasked`` cards again, as the agent does."""
+
+    async def resume():
+        for item in reasked:
+            yield item
+
+    return [
+        item
+        async for item in coordinator.deliver_control_stream(
+            "session-a", (card,), resume, interaction_ids=lambda item: frozenset({item}),
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cards_raised_in_one_round_can_be_answered_in_any_order() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    await _park_on_cards(coordinator, "card-1", "card-2", "card-3")
+
+    assert await _answer(coordinator, "card-2", "card-1", "card-3") == ["card-1", "card-3"]
+    assert await _answer(coordinator, "card-1", "card-3") == ["card-3"]
+    assert await _answer(coordinator, "card-3") == []
+    completed = coordinator.snapshot_session("session-a")
+    assert completed is not None
+    assert all(item.state.terminal for item in completed.executions)
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_an_answered_card_cannot_resume_the_round_again() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    await _park_on_cards(coordinator, "card-1", "card-2")
+
+    assert await coordinator.deliver_control(
+        "session-a", ("card-1",), lambda: asyncio.sleep(0, result="card-2"),
+        interaction_ids=lambda item: frozenset({item}),
+    ) == "card-2"
+    # A second click on the same card must not run the resume twice.
+    with pytest.raises(RuntimeError, match="no active execution"):
+        await coordinator.deliver_control(
+            "session-a", ("card-1",), lambda: asyncio.sleep(0, result="again")
+        )
+    assert await coordinator.deliver_control(
+        "session-a", ("card-2",), lambda: asyncio.sleep(0, result="done")
+    ) == "done"
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_round_releases_all_of_its_cards() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    await _park_on_cards(coordinator, "card-1", "card-2")
+
+    await coordinator.cancel_execution("session-a", request_id="original")
+    for card in ("card-1", "card-2"):
+        with pytest.raises(RuntimeError, match="no active execution"):
+            await coordinator.deliver_control(
+                "session-a", (card,), lambda: asyncio.sleep(0, result="resumed")
+            )
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_owner_refuses_card_before_teardown_finishes() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    await _park_on_cards(coordinator, "card")
+    owner = coordinator.snapshot_session("session-a").executions[0]
+    coordinator._registry.get(owner.execution_id).cancellation_requested = True
+    with pytest.raises(RuntimeError, match="no active execution"):
+        await coordinator.deliver_control("session-a", ("card",), lambda: asyncio.sleep(0))
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_every_card_reasked_in_one_answer_stays_clickable() -> None:
+    """A web click resumes through the unary path, whose result can re-ask
+    several cards at once; each of them, not just the first, must resume."""
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    await _park_on_cards(coordinator, "card-1", "card-2", "card-3")
+
+    assert await coordinator.deliver_control(
+        "session-a", ("card-1",), lambda: asyncio.sleep(0, result=["card-2", "card-3"]),
+        interaction_ids=frozenset,
+    ) == ["card-2", "card-3"]
+    assert await coordinator.deliver_control(
+        "session-a", ("card-3",), lambda: asyncio.sleep(0, result=["card-2"]),
+        interaction_ids=frozenset,
+    ) == ["card-2"]
+    assert await coordinator.deliver_control(
+        "session-a", ("card-2",), lambda: asyncio.sleep(0, result="done")
+    ) == "done"
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_two_cards_of_one_round_cannot_resume_it_at_once() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    await _park_on_cards(coordinator, "card-1", "card-2")
+    gate = asyncio.Event()
+
+    async def slow_answer():
+        await gate.wait()
+        return "done"
+
+    first = asyncio.create_task(
+        coordinator.deliver_control("session-a", ("card-1",), slow_answer)
+    )
+    await asyncio.sleep(0)
+    # A near-simultaneous click on the other card must not inject a second
+    # answer into the round that card-1 is already resuming.
+    second = asyncio.create_task(coordinator.deliver_control(
+        "session-a", ("card-2",), lambda: asyncio.sleep(0, result="twice")
+    ))
+    await asyncio.sleep(0)
+    assert not second.done()
+    gate.set()
+    assert await first == "done"
+    with pytest.raises(RuntimeError, match="no active execution"):
+        await second
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_answering_the_latest_card_mid_round_keeps_the_earlier_card_open() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    finish = asyncio.Event()
+
+    async def original():
+        yield "card-1"
+        yield "card-2"
+        await finish.wait()
+
+    async def consume():
+        stream = coordinator.run_stream(
+            "session-a", "original", SessionWorkKind.CHAT_STREAM, original,
+            interaction_ids=lambda item: frozenset({item}),
+        )
+        return [item async for item in stream]
+
+    consumer = asyncio.create_task(consume())
+    while not any(
+        "card-2" in item.waiting_control_ids
+        for item in coordinator.snapshot_session("session-a").executions
+    ):
+        await asyncio.sleep(0)
+    assert await coordinator.deliver_control(
+        "session-a", ("card-2",), lambda: asyncio.sleep(0, result="card-1"),
+        interaction_ids=lambda item: frozenset({item}),
+    ) == "card-1"
+    finish.set()
+    assert await consumer == ["card-1", "card-2"]
+    # The round still waits on card-1 instead of ending with it on screen.
+    assert await coordinator.deliver_control(
+        "session-a", ("card-1",), lambda: asyncio.sleep(0, result="done")
+    ) == "done"
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_an_answered_heartbeat_card_cannot_resume_it_again() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    recorded = asyncio.Event()
+    release = asyncio.Event()
+
+    async def heartbeat() -> None:
+        assert coordinator.record_interaction("session-a", "heartbeat-1", frozenset({"card-x"}))
+        recorded.set()
+        await release.wait()
+
+    heartbeat_task = asyncio.create_task(
+        coordinator.run_unary("session-a", "heartbeat-1", SessionWorkKind.HEARTBEAT, heartbeat)
+    )
+    await recorded.wait()
+    assert await coordinator.deliver_control(
+        "session-a", ("card-x",), lambda: asyncio.sleep(0, result="card-y"),
+        interaction_ids=lambda item: frozenset({item}),
+    ) == "card-y"
+    with pytest.raises(RuntimeError, match="no active execution"):
+        await coordinator.deliver_control(
+            "session-a", ("card-x",), lambda: asyncio.sleep(0, result="twice")
+        )
+    release.set()
+    await asyncio.wait_for(heartbeat_task, timeout=1)
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+>>>>>>> origin/develop
 async def test_new_work_supersedes_waiting_control() -> None:
     coordinator = RuntimeSessionCoordinator()
     await _register(coordinator)
@@ -1095,8 +1347,8 @@ async def test_new_work_supersedes_waiting_control() -> None:
             "original",
             SessionWorkKind.CHAT_STREAM,
             original,
-            suspension_key=lambda item: (
-                "answer" if item == "chat.ask_user_question" else None
+            interaction_ids=lambda item: (
+                frozenset({"answer"}) if item == "chat.ask_user_question" else frozenset()
             ),
         )
     ] == ["chat.ask_user_question"]
@@ -1209,13 +1461,13 @@ async def test_control_input_matches_goal_interaction_id() -> None:
                 request_id,
                 work_kind,
                 interaction,
-                suspension_key=lambda _item, key=control_id: key,
+                interaction_ids=lambda _item, key=control_id: frozenset({key}),
             )
         ] == ["ask"]
 
     assert await coordinator.deliver_control(
         "session-a",
-        "goal-question",
+        ("goal-question",),
         lambda: asyncio.sleep(0, result="accepted"),
     ) == "accepted"
     snapshot = coordinator.snapshot_session("session-a")
@@ -1239,7 +1491,7 @@ async def test_control_input_requires_running_session_work() -> None:
     await _register(coordinator)
     with pytest.raises(RuntimeError, match="no active execution"):
         await coordinator.deliver_control(
-            "session-a", "interaction", lambda: asyncio.sleep(0)
+            "session-a", ("interaction",), lambda: asyncio.sleep(0)
         )
     await coordinator.close()
 
@@ -1265,11 +1517,11 @@ async def test_control_input_cancellation_does_not_cancel_parent_work() -> None:
         "original",
         SessionWorkKind.CHAT_STREAM,
         original,
-        suspension_key=lambda item: "answer" if item == "waiting" else None,
+        interaction_ids=lambda item: frozenset({"answer"}) if item == "waiting" else frozenset(),
     )
     assert await anext(stream) == "waiting"
     control_task = asyncio.create_task(
-        coordinator.deliver_control("session-a", "answer", control)
+        coordinator.deliver_control("session-a", ("answer",), control)
     )
     await control_started.wait()
     result = await coordinator.cancel_execution(
@@ -1280,7 +1532,7 @@ async def test_control_input_cancellation_does_not_cancel_parent_work() -> None:
         await control_task
 
     assert await coordinator.deliver_control(
-        "session-a", "answer", lambda: asyncio.sleep(0, result="answered")
+        "session-a", ("answer",), lambda: asyncio.sleep(0, result="answered")
     ) == "answered"
 
     finish_parent.set()
@@ -1311,7 +1563,7 @@ async def test_failed_control_setup_releases_claim_and_parent() -> None:
         "original",
         SessionWorkKind.CHAT_STREAM,
         original,
-        suspension_key=lambda item: "answer" if item == "waiting" else None,
+        interaction_ids=lambda item: frozenset({"answer"}) if item == "waiting" else frozenset(),
     )
     assert await anext(stream) == "waiting"
 
@@ -1326,14 +1578,14 @@ async def test_failed_control_setup_releases_claim_and_parent() -> None:
     registry.register = rejecting_register
     try:
         with pytest.raises(RuntimeError, match="registry rejected"):
-            await coordinator.deliver_control("session-a", "answer", control)
+            await coordinator.deliver_control("session-a", ("answer",), control)
     finally:
         del registry.register
 
     assert calls == 0
     # Neither a leaked claim nor a resumed-but-orphaned parent may block the
     # retry: both would strand the question forever.
-    assert await coordinator.deliver_control("session-a", "answer", control) == (
+    assert await coordinator.deliver_control("session-a", ("answer",), control) == (
         "answer"
     )
     assert calls == 1
@@ -1362,7 +1614,7 @@ async def test_control_result_after_parent_ended_raises_typed_error() -> None:
         "original",
         SessionWorkKind.CHAT_UNARY,
         work,
-        suspension_key=lambda _value: "answer",
+        interaction_ids=lambda _value: frozenset({"answer"}),
     )
     (parent,) = coordinator._registry.select(
         session_id="session-a", request_id="original"
@@ -1370,7 +1622,7 @@ async def test_control_result_after_parent_ended_raises_typed_error() -> None:
     assert parent.state is SessionExecutionState.WAITING_FOR_CONTROL
 
     control_task = asyncio.create_task(
-        coordinator.deliver_control("session-a", "answer", control)
+        coordinator.deliver_control("session-a", ("answer",), control)
     )
     await control_started.wait()
 
@@ -1459,6 +1711,139 @@ async def test_team_stream_receives_context_and_parks_persistent_owner() -> None
 
     release.set()
     await stream.aclose()
+    await coordinator.close()
+
+
+def _team_interaction_ids(item: str) -> frozenset[str]:
+    return frozenset({item.removeprefix("ask:")}) if item.startswith("ask:") else frozenset()
+
+
+async def _start_team_request_waiting_on(
+    coordinator: RuntimeSessionCoordinator,
+    control_id: str,
+    release: asyncio.Event,
+):
+    async def operation(context: TeamExecutionContext):
+        del context
+        yield f"ask:{control_id}"
+        await release.wait()
+
+    stream = coordinator.run_team_stream(
+        "session-a",
+        "team-request",
+        SessionWorkKind.TEAM_REQUEST,
+        operation,
+        details=TeamExecutionDetails(waiter_kind=TeamWaiterKind.PERSISTENT),
+        interaction_ids=_team_interaction_ids,
+    )
+    assert await anext(stream) == f"ask:{control_id}"
+    return stream
+
+
+async def _answer_team_control(
+    coordinator: RuntimeSessionCoordinator,
+    control_id: str,
+    *,
+    fail: bool = False,
+) -> None:
+    async def operation(context: TeamExecutionContext):
+        del context
+        yield "resumed"
+        if fail:
+            raise RuntimeError("answer was not delivered")
+
+    stream = coordinator.run_team_stream(
+        "session-a",
+        f"answer-{control_id}",
+        SessionWorkKind.TEAM_CONTROL,
+        operation,
+        details=TeamExecutionDetails(control_id=control_id),
+        interaction_ids=_team_interaction_ids,
+    )
+    async with aclosing(stream):
+        async for _ in stream:
+            pass
+
+
+def _team_request_execution(coordinator: RuntimeSessionCoordinator):
+    snapshot = coordinator.snapshot_session("session-a")
+    assert snapshot is not None
+    return next(item for item in snapshot.executions if item.request_id == "team-request")
+
+
+@pytest.mark.asyncio
+async def test_team_control_answer_releases_waiting_team_execution() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    release = asyncio.Event()
+    stream = await _start_team_request_waiting_on(coordinator, "call-1", release)
+    record = coordinator._sessions["session-a"]
+    assert _team_request_execution(coordinator).waiting_control_ids == frozenset({"call-1"})
+    assert not record.control_ready.is_set()
+
+    await _answer_team_control(coordinator, "call-1")
+
+    execution = _team_request_execution(coordinator)
+    assert execution.waiting_control_ids == frozenset()
+    assert execution.state is SessionExecutionState.RUNNING
+    assert record.control_ready.is_set()
+
+    release.set()
+    await stream.aclose()
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_team_control_answer_keeps_interaction_pending() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    release = asyncio.Event()
+    stream = await _start_team_request_waiting_on(coordinator, "call-1", release)
+
+    with pytest.raises(RuntimeError, match="not delivered"):
+        await _answer_team_control(coordinator, "call-1", fail=True)
+
+    assert _team_request_execution(coordinator).waiting_control_ids == frozenset({"call-1"})
+    assert not coordinator._sessions["session-a"].control_ready.is_set()
+
+    release.set()
+    await stream.aclose()
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_team_control_answer_only_releases_its_own_interaction() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    release = asyncio.Event()
+    stream = await _start_team_request_waiting_on(coordinator, "call-1", release)
+
+    await _answer_team_control(coordinator, "call-other")
+
+    assert _team_request_execution(coordinator).waiting_control_ids == frozenset({"call-1"})
+
+    release.set()
+    await stream.aclose()
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_team_control_answer_finishes_parked_team_execution() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    release = asyncio.Event()
+    release.set()
+    stream = await _start_team_request_waiting_on(coordinator, "call-1", release)
+    async with aclosing(stream):
+        async for _ in stream:
+            pass
+    assert _team_request_execution(coordinator).state is SessionExecutionState.WAITING_FOR_CONTROL
+
+    await _answer_team_control(coordinator, "call-1")
+
+    execution = _team_request_execution(coordinator)
+    assert execution.waiting_control_ids == frozenset()
+    assert execution.state is SessionExecutionState.SUCCEEDED
     await coordinator.close()
 
 

@@ -508,6 +508,9 @@ async def test_compose_handler_merges_clips_in_shot_order(
         "jiuwenswarm.server.runtime.designer.handlers.compose._clip_video_usable",
         lambda path, ffmpeg=None: Path(path).is_file() and Path(path).stat().st_size >= 512,
     )
+    monkeypatch.setattr("jiuwenswarm.server.runtime.designer.handlers.compose._find_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr("jiuwenswarm.server.runtime.designer.handlers.compose._media_duration_seconds", lambda *args: 10.0)
+    monkeypatch.setattr("jiuwenswarm.server.runtime.designer.handlers.compose.mix_compose_soundtrack", lambda video, *args, **kwargs: video)
     result = await ComposeNodeHandler().execute(
         graph["nodes"][-1],
         NodeExecutionContext(
@@ -585,7 +588,7 @@ def test_concatenate_clip_videos_concats_shot1_then_shot2(
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(compose_mod, "_find_ffmpeg", lambda: "ffmpeg")
-    monkeypatch.setattr(compose_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(compose_mod, "run_ffmpeg", fake_run)
     merged = compose_mod.concatenate_clip_videos([clip1, clip2], dest)
     assert merged == dest.resolve()
     assert dest.read_bytes() == b"concatenated"
@@ -634,7 +637,7 @@ def test_concatenate_clip_videos_falls_back_to_filter_concat(
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(compose_mod, "_find_ffmpeg", lambda: "ffmpeg")
-    monkeypatch.setattr(compose_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(compose_mod, "run_ffmpeg", fake_run)
     merged = compose_mod.concatenate_clip_videos([clip1, clip2], dest)
     assert merged == dest.resolve()
     assert dest.read_bytes() == b"reencoded"
@@ -648,6 +651,7 @@ def test_concatenate_clip_videos_falls_back_to_filter_concat(
     assert "aac" in filter_cmd
 
 
+<<<<<<< HEAD
 def test_mismatched_inputs_skip_stream_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import subprocess
 
@@ -685,6 +689,46 @@ def test_mismatched_inputs_skip_stream_copy(tmp_path: Path, monkeypatch: pytest.
     assert "[v0][a0][v1][a1]concat=n=2:v=1:a=1" in spec
 
 
+||||||| e487e9a30
+=======
+def test_mismatched_inputs_skip_stream_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    from jiuwenswarm.server.runtime.designer.handlers import compose as compose_mod
+
+    shot = tmp_path / "shot1.mp4"
+    upload = tmp_path / "upload.mp4"
+    dest = tmp_path / "film.mp4"
+    shot.write_bytes(b"clip-1")
+    upload.write_bytes(b"upload")
+    probes = {
+        str(shot.resolve()): (
+            "Stream #0:0: Video: h264 (High), yuv420p, 1280x720 [SAR 1:1], 24 fps, 24 tbr\n"
+            "Stream #0:1: Audio: aac (LC), 44100 Hz, stereo"
+        ),
+        str(upload.resolve()): "Stream #0:0: Video: hevc (Main), yuv420p, 640x480, 30 fps, 30 tbr",
+    }
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(list(cmd))
+        if "-filter_complex" not in cmd and "concat" not in cmd:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=probes.get(cmd[-1], ""))
+        dest.write_bytes(b"film")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(compose_mod, "_find_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(compose_mod, "run_ffmpeg", fake_run)
+    compose_mod.concatenate_clip_videos([shot, upload], dest)
+
+    assert not any("-f" in cmd and "concat" in cmd for cmd in calls)
+    filter_cmd = next(cmd for cmd in calls if "-filter_complex" in cmd)
+    spec = filter_cmd[filter_cmd.index("-filter_complex") + 1]
+    assert "anullsrc" in spec
+    assert "[v0][a0][v1][a1]concat=n=2:v=1:a=1" in spec
+
+
+>>>>>>> origin/develop
 
 @pytest.mark.asyncio
 async def test_generic_video_node_generates_at_its_manual_length(

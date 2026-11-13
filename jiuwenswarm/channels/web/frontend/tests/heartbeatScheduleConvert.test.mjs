@@ -92,6 +92,7 @@ test('scheduleDtoToForm/scheduleFormToDto round-trip for once uses job timezone 
   assert.equal(form.onceTime, '12:00');
   assert.deepEqual(scheduleFormToDto(form), dto);
 });
+<<<<<<< HEAD
 
 test('summarizeHeartbeatSchedule once uses provided timezone for wall clock', () => {
   const epoch = Date.UTC(2026, 9, 21, 2, 30, 0) / 1000;
@@ -102,3 +103,28 @@ test('summarizeHeartbeatSchedule once uses provided timezone for wall clock', ()
   );
   assert.equal(summary, 'heartbeat.schedule.summary.once:2026-10-21 10:30');
 });
+||||||| e487e9a30
+=======
+
+test('scheduleDtoToForm never yields an empty timezone for interval/cron/once', () => {
+  assert.equal(scheduleDtoToForm({ type: 'interval', interval_seconds: 60 }, '').timezone, 'Asia/Shanghai');
+  assert.equal(
+    scheduleDtoToForm({ type: 'cron', cron_expr: '0 9 * * *', timezone: '' }, '').timezone,
+    'Asia/Shanghai',
+  );
+  assert.equal(
+    scheduleDtoToForm({ type: 'once', run_at: Date.UTC(2026, 9, 22, 4, 0, 0) / 1000 }, '').timezone,
+    'Asia/Shanghai',
+  );
+});
+
+test('summarizeHeartbeatSchedule once uses provided timezone for wall clock', () => {
+  const epoch = Date.UTC(2026, 9, 21, 2, 30, 0) / 1000;
+  const summary = summarizeHeartbeatSchedule(
+    { type: 'once', run_at: epoch },
+    (key, opts) => `${key}:${opts?.date} ${opts?.time}`,
+    'Asia/Shanghai',
+  );
+  assert.equal(summary, 'heartbeat.schedule.summary.once:2026-10-21 10:30');
+});
+>>>>>>> origin/develop

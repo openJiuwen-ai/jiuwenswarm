@@ -7,8 +7,15 @@ import type { SettingsAccessResult, SettingsModuleDefinition, SettingsPageDefini
 import { restrictSettingsAccess } from './registry/buildSettingsPageDefinition';
 import { usePluginSettings } from './registry/usePluginSettings';
 import { useSettingsServices } from './services/SettingsServicesProvider';
+<<<<<<< HEAD
 import { formatSettingsSaveError, InlineSaveFeedbackContext } from './services/settingsSaveFeedback';
 import { SettingsSourceProvider, SettingsSourceVisibility } from './services/SettingsSourceProvider';
+||||||| e487e9a30
+import { SettingsSourceProvider } from './services/SettingsSourceProvider';
+=======
+import { formatSettingsSaveError, InlineSaveFeedbackContext } from './services/settingsSaveFeedback';
+import { SettingsSourceProvider } from './services/SettingsSourceProvider';
+>>>>>>> origin/develop
 import type { SettingsModuleTarget } from './settingsNavigation';
 import './SettingsPage.css';
 
@@ -161,6 +168,7 @@ export function SettingsPageLayout({
   );
   if (!active) return null;
   return (
+<<<<<<< HEAD
     <div
       className={`settings-page${sidebar?.collapsed ? ' settings-page--collapsed' : ''}${sidebar?.isActive === false ? ' settings-page--peek-only' : ''}`}
       data-testid="settings-page"
@@ -252,6 +260,146 @@ export function SettingsPageLayout({
                         ))}
                       </SettingsSection>
                     </SettingsSourceVisibility>
+||||||| e487e9a30
+    <div className="settings-page" data-testid="settings-page">
+      <aside className="settings-page__nav" aria-label={t('settingsPanel.title')} data-testid="settings-nav">
+        <h1 data-testid="settings-nav-title">{t('settingsPanel.title')}</h1>
+        <nav data-testid="settings-nav-list">
+          {availableModules.map(({ module }) => {
+            const Icon = module.icon;
+            return (
+              <button
+                key={module.id}
+                type="button"
+                className="settings-page__nav-button"
+                aria-current={active.module.id === module.id ? 'page' : undefined}
+                data-testid="settings-nav-button"
+                data-variant={module.id}
+                onClick={() => selectModule(module.id)}
+                disabled={saveStatus.status === 'saving'}
+              >
+                <Icon aria-hidden />
+                <span>{t(module.titleKey)}</span>
+              </button>
+            );
+          })}
+        </nav>
+      </aside>
+      <main className="settings-page__main" data-testid="settings-main">
+        <div className="settings-page__content">
+          <header className="settings-page__header" data-testid="settings-header">
+            <div className="settings-page__header-copy">
+              <h1 data-testid="settings-module-title">{t(active.module.titleKey)}</h1>
+              {active.module.descriptionKey ? <p data-testid="settings-module-description">{t(active.module.descriptionKey)}</p> : null}
+            </div>
+            {saveStatus.status === 'saving' ? (
+              <span className="settings-page__status" role="status" data-testid="settings-save-status" data-variant="saving">
+                <Loading size="sm" aria-label="" />
+                {t('settingsPanel.feedback.saving')}
+              </span>
+            ) : saveStatus.status === 'saved' ? (
+              <span className="settings-page__status settings-page__status--saved" role="status" data-testid="settings-save-status" data-variant="saved">
+                <Check size={14} aria-hidden />
+                {t('settingsPanel.feedback.saved')}
+              </span>
+            ) : saveStatus.status === 'error' ? (
+              <span className="settings-page__status settings-page__status--error" role="alert" data-testid="settings-save-status" data-variant="error">
+                <CircleAlert size={14} aria-hidden />
+                {saveStatus.error || t('settingsPanel.feedback.saveFailed')}
+              </span>
+            ) : null}
+          </header>
+          <SettingsSourceProvider source={active.module.source}>
+            <div className="settings-page__module" data-settings-module={active.module.id} data-testid="settings-module" data-variant={active.module.id}>
+              {active.visible.sections.map(({ section, items }) => (
+                <SettingsSection
+                  key={section.id}
+                  title={section.titleKey ? t(section.titleKey) : undefined}
+                  description={section.descriptionKey ? t(section.descriptionKey) : undefined}
+                  separatedRows={section.separatedRows === true}
+                >
+                  {items.map(({ item, access }) => (
+                    <SettingsItem key={item.id} item={item} access={access} />
+=======
+    <div
+      className={`settings-page${sidebar?.collapsed ? ' settings-page--collapsed' : ''}${sidebar?.isActive === false ? ' settings-page--peek-only' : ''}`}
+      data-testid="settings-page"
+    >
+      <div
+        className={sidebar?.peek ? 'chat-layout--peek-host' : 'settings-page__nav-host'}
+        {...(sidebar?.peek ? sidebar.surfaceProps : {})}
+        data-testid="settings-nav-host"
+      >
+        {(!sidebar?.collapsed || sidebar.peek) && (
+          <aside
+            className={`settings-page__nav${sidebar?.peek ? ' is-floating' : ''}`}
+            aria-label={t('settingsPanel.title')}
+            data-testid="settings-nav"
+          >
+            <h1 data-testid="settings-nav-title">{t('settingsPanel.title')}</h1>
+            <nav data-testid="settings-nav-list">
+              {availableModules.map(({ module }) => {
+                const Icon = module.icon;
+                return (
+                  <button
+                    key={module.id}
+                    type="button"
+                    className="settings-page__nav-button"
+                    aria-current={active.module.id === module.id ? 'page' : undefined}
+                    data-testid="settings-nav-button"
+                    data-variant={module.id}
+                    onClick={() => selectModule(module.id)}
+                    disabled={saveStatus.status === 'saving'}
+                  >
+                    <Icon aria-hidden />
+                    <span>{t(module.titleKey)}</span>
+                  </button>
+                );
+              })}
+            </nav>
+          </aside>
+        )}
+      </div>
+      {sidebar?.isActive !== false && (
+        <main className="settings-page__main" data-testid="settings-main">
+          <div className="settings-page__content">
+            <header className="settings-page__header" data-testid="settings-header">
+              <div className="settings-page__header-copy">
+                <h1 data-testid="settings-module-title">{t(active.module.titleKey)}</h1>
+                {active.module.descriptionKey ? <p data-testid="settings-module-description">{t(active.module.descriptionKey)}</p> : null}
+              </div>
+              {saveStatus.status === 'saving' ? (
+                <span className="settings-page__status" role="status" data-testid="settings-save-status" data-variant="saving">
+                  <Loading size="sm" aria-label="" />
+                  {t('settingsPanel.feedback.saving')}
+                </span>
+              ) : saveStatus.status === 'saved' ? (
+                <span className="settings-page__status settings-page__status--saved" role="status" data-testid="settings-save-status" data-variant="saved">
+                  <Check size={14} aria-hidden />
+                  {t('settingsPanel.feedback.saved')}
+                </span>
+              ) : saveStatus.status === 'error' && !inlineError ? (
+                <span className="settings-page__status settings-page__status--error" role="alert" data-testid="settings-save-status" data-variant="error">
+                  <CircleAlert size={14} aria-hidden />
+                  {formatSettingsSaveError(saveStatus.error, t)}
+                </span>
+              ) : null}
+            </header>
+            <InlineSaveFeedbackContext.Provider value={registerInlineFeedback}>
+              <SettingsSourceProvider source={active.module.source}>
+                <div className="settings-page__module" data-settings-module={active.module.id} data-testid="settings-module" data-variant={active.module.id}>
+                  {active.visible.sections.map(({ section, items }) => (
+                    <SettingsSection
+                      key={section.id}
+                      title={section.titleKey ? t(section.titleKey) : undefined}
+                      description={section.descriptionKey ? t(section.descriptionKey) : undefined}
+                      separatedRows={section.separatedRows === true}
+                    >
+                      {items.map(({ item, access }) => (
+                        <SettingsItem key={item.id} item={item} access={access} />
+                      ))}
+                    </SettingsSection>
+>>>>>>> origin/develop
                   ))}
                 </div>
               </SettingsSourceProvider>

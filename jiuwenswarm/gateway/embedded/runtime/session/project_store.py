@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 """项目存储模块 — projects.json 的持久化与 CRUD。
 
 存储位置: ``get_agent_root_dir() / "projects.json"``(与 ``sessions/`` 目录同级)。
@@ -1113,3 +1114,5 @@ def find_or_create_code_project_for_tui_params(params: dict[str, Any]) -> Projec
     if not candidate_dir:
         return None
     return find_or_create_code_project_for_dir(candidate_dir)
+=======
+>>>>>>> origin/develop

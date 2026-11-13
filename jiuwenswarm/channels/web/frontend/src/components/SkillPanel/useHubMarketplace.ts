@@ -10,7 +10,7 @@ import {
  * 技能广场（SkillHub 推荐 / 在线搜索 / 广场详情）数据 hook
  *
  * 首页按类型各拉 HUB_HOME_TOP_K（仅 swarmskill / skill；不单独请求 skillpack，
- * 技能包区块展示两路推荐/搜索结果中捎带的 skillpack 条目）。
+ * skillpack 条目与普通技能共同展示在精选技能）。
  * 推荐一律先 prefer_cache；cold miss 且无内存旧卡时立刻直连 Hub（不空等轮询），
  * miss 后台回填会写入目录缓存，二次打开即可命中。同分类再进仍 SWR（保留旧卡）。
  * 「更多」专页按需拉 HUB_MORE_TOP_K（同样 cache→miss 直连）。
@@ -18,6 +18,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { webRequest } from '../../services/webClient';
 import type { HubSkillDetail, LoadState, MarketplacePluginItem } from './types';
+import { groupMarketplaceSkills } from './skillPanelUtils';
 
 /** 技能广场首页：团队 / 普通技能各拉取条数 */
 export const HUB_HOME_TOP_K = 6;
@@ -75,6 +76,13 @@ interface UseHubMarketplaceParams {
   marketplaceCategory: string;
   marketplaceSubView: MarketplaceSubView;
   setMarketplaceSubView: (view: MarketplaceSubView) => void;
+<<<<<<< HEAD
+||||||| e487e9a30
+  withSession: WithSessionFn;
+=======
+  /** 企业版广场改挂企业技能源，跳过 Hub 拉取 */
+  skipHubFetch?: boolean;
+>>>>>>> origin/develop
 }
 
 export function useHubMarketplace({
@@ -83,6 +91,12 @@ export function useHubMarketplace({
   marketplaceCategory,
   marketplaceSubView,
   setMarketplaceSubView,
+<<<<<<< HEAD
+||||||| e487e9a30
+  withSession,
+=======
+  skipHubFetch = false,
+>>>>>>> origin/develop
 }: UseHubMarketplaceParams) {
   /** 搜索结果（online_search） */
   const [hubSkills, setHubSkills] = useState<MarketplacePluginItem[]>([]);
@@ -354,11 +368,6 @@ export function useHubMarketplace({
     [fetchHubMoreSkills, hubMoreLoadedFor, moreCaches, marketplaceCategory, setMarketplaceSubView],
   );
 
-  /** 进入"全部技能包"专页：不再单独请求技能包推荐，仅展示已有数据（首页两路推荐捎带 / 搜索结果） */
-  const openHubAllPacks = useCallback(() => {
-    setMarketplaceSubView('packs');
-  }, [setMarketplaceSubView]);
-
   const fetchOnlineSearch = useCallback(
     async (query: string, options?: { silent?: boolean }) => {
       const silent = Boolean(options?.silent);
@@ -475,7 +484,7 @@ export function useHubMarketplace({
   );
 
   useEffect(() => {
-    if (activeTab !== 'marketplace') return;
+    if (skipHubFetch || activeTab !== 'marketplace') return;
 
     if (!searchKeyword) {
       void fetchHubHomeSkills(marketplaceCategory);
@@ -487,27 +496,12 @@ export function useHubMarketplace({
     }, 500);
 
     return () => window.clearTimeout(timer);
-  }, [activeTab, marketplaceCategory, searchKeyword, fetchHubHomeSkills, fetchOnlineSearch]);
+  }, [activeTab, marketplaceCategory, searchKeyword, fetchHubHomeSkills, fetchOnlineSearch, skipHubFetch]);
 
-  // 分组：skillpack → 精选技能包，swarmskill → 精选团队技能，其余 → 精选技能
-  // （搜索时取搜索结果；无搜索词时取首页两路推荐结果合并，保持互斥分桶；
-  //   技能包不再单独请求，区块内容来自推荐/搜索结果中捎带的 skillpack 条目）
-  const { teamSkills, featuredSkills, skillPacks } = useMemo(() => {
-    const team: MarketplacePluginItem[] = [];
-    const featured: MarketplacePluginItem[] = [];
-    const packs: MarketplacePluginItem[] = [];
-    const all = searchKeyword ? hubSkills : [...hubTeamHome, ...hubSkillHome];
-    for (const skill of all) {
-      if (skill.skill_type === 'skillpack' || skill.plugin_type === 'skillpack') {
-        packs.push(skill);
-      } else if (skill.plugin_type === 'swarmskill') {
-        team.push(skill);
-      } else {
-        featured.push(skill);
-      }
-    }
-    return { teamSkills: team, featuredSkills: featured, skillPacks: packs };
-  }, [searchKeyword, hubSkills, hubTeamHome, hubSkillHome]);
+  const { teamSkills, featuredSkills } = useMemo(
+    () => groupMarketplaceSkills(searchKeyword ? hubSkills : [...hubTeamHome, ...hubSkillHome]),
+    [searchKeyword, hubSkills, hubTeamHome, hubSkillHome],
+  );
 
   // 广场详情页签（内容详情 / 包含技能，仅技能包显示"包含技能"）
   const [hubDetailTab, setHubDetailTab] = useState<'content' | 'members'>('content');
@@ -582,10 +576,9 @@ export function useHubMarketplace({
     hubSkillHome,
     hubTeamMore,
     hubSkillMore,
-    /** 分组结果：skillpack → 技能包，swarmskill → 团队技能，其余 → 精选技能 */
+    /** 分组结果：swarmskill → 团队技能；普通 Skill 与 SkillPack → 精选技能。 */
     teamSkills,
     featuredSkills,
-    skillPacks,
     selectedHubSkill,
     hubDetail,
     hubDetailState,
@@ -596,7 +589,6 @@ export function useHubMarketplace({
     setHubDetailState,
     fetchHubSkillDetail,
     openHubMore,
-    openHubAllPacks,
     invalidateHubFetch,
     pauseHubFetching,
   };

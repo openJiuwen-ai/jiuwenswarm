@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 import AppKit
 import ApplicationServices
 
@@ -353,3 +354,5 @@ import ApplicationServices
             onPosted: onPosted, onCleanupUnknown: onCleanupUnknown)
     }
 }
+=======
+>>>>>>> origin/develop

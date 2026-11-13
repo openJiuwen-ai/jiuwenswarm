@@ -52,6 +52,7 @@ export function TaskFullDuplexAction({
   hasTextDraft = false,
 }: ApplicationPluginTaskInputActionProps) {
   const enabled = useTaskFullDuplexEnabled();
+<<<<<<< HEAD
   const { state: runtimeState, sessionId: runtimeSessionId, error } = useTaskFullDuplexRuntime();
   const state = runtimeSessionId === sessionId ? runtimeState : 'idle';
   // Full duplex only runs on models the user configured; login free models hide the button.
@@ -69,6 +70,12 @@ export function TaskFullDuplexAction({
   useEffect(() => {
     if (freeModel && state !== 'idle') exitTaskFullDuplex();
   }, [freeModel, state]);
+||||||| e487e9a30
+  const { state, error, microphoneMuted, speakerMuted, screenSharing } = useTaskFullDuplexRuntime();
+=======
+  const { state: runtimeState, sessionId: runtimeSessionId, error } = useTaskFullDuplexRuntime();
+  const state = runtimeSessionId === sessionId ? runtimeState : 'idle';
+>>>>>>> origin/develop
 
   useEffect(() => {
     let cancelled = false;
@@ -112,7 +119,14 @@ export function TaskFullDuplexAction({
     await beginSession();
   }, [beginSession, state]);
 
+<<<<<<< HEAD
   const showAction = enabled && eligible && !freeModel;
+||||||| e487e9a30
+  const showAction = enabled && eligible;
+  const running = enabled && state !== 'idle';
+=======
+  const showAction = enabled && eligible;
+>>>>>>> origin/develop
   const title = error || (state === 'starting' ? labels.starting : state === 'active' ? labels.stop : labels.start);
 
   return (
@@ -149,6 +163,7 @@ export function TaskFullDuplexAction({
     </>
   );
 }
+<<<<<<< HEAD
 
 // Mounted with the app runtime, independently of any conversation composer.
 export function TaskFullDuplexControls() {
@@ -355,3 +370,201 @@ export function TaskFullDuplexControls() {
     </>
   );
 }
+||||||| e487e9a30
+=======
+
+// Mounted with the app runtime, independently of any conversation composer.
+export function TaskFullDuplexControls() {
+  const { t } = useTranslation();
+  const { state, microphoneMuted, speakerMuted, screenSharing } = useTaskFullDuplexRuntime();
+  const running = state !== 'idle';
+  const [orbMounted, setOrbMounted] = useState(running);
+  const [orbVariant, setOrbVariant] = useState<'starting' | 'active'>('starting');
+  useEffect(() => {
+    if (running) {
+      setOrbMounted(true);
+      setOrbVariant(state);
+      return;
+    }
+    const timer = window.setTimeout(() => setOrbMounted(false), 200);
+    return () => window.clearTimeout(timer);
+  }, [running, state]);
+  const controlsRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ id: number; x: number; y: number; left: number; top: number } | null>(null);
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
+
+  const constrainPosition = useCallback((left: number, top: number) => {
+    const bounds = controlsRef.current?.getBoundingClientRect();
+    return {
+      left: Math.max(8, Math.min(left, window.innerWidth - (bounds?.width ?? 80) - 8)),
+      top: Math.max(8, Math.min(top, window.innerHeight - (bounds?.height ?? 116) - 8)),
+    };
+  }, []);
+
+  // Until the user drags the orb, keep it clear of the composer and its cards.
+  const [dockBottom, setDockBottom] = useState<number | null>(null);
+  useEffect(() => {
+    if (!orbMounted || position) return;
+    let observed: Element[] = [];
+    // Page mutations arrive per React commit while replies stream; measure (a forced
+    // layout) at most once per frame.
+    let frame = 0;
+    const schedule = () => {
+      if (!frame) frame = window.requestAnimationFrame(() => { frame = 0; update(); });
+    };
+    const resizeObserver = typeof window.ResizeObserver === 'undefined' ? null : new window.ResizeObserver(schedule);
+    const update = () => {
+      const docked = Array.from(document.querySelectorAll(COMPOSER_DOCK_SELECTOR));
+      if (resizeObserver && (docked.length !== observed.length || docked.some((el, i) => el !== observed[i]))) {
+        resizeObserver.disconnect();
+        docked.forEach((el) => resizeObserver.observe(el));
+        observed = docked;
+      }
+      let top = Infinity;
+      for (const el of docked) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) top = Math.min(top, rect.top);
+      }
+      if (!Number.isFinite(top)) {
+        setDockBottom(null);
+        return;
+      }
+      const height = controlsRef.current?.offsetHeight || 116;
+      setDockBottom(Math.max(8, Math.min(window.innerHeight - top + COMPOSER_DOCK_GAP, window.innerHeight - height - 8)));
+    };
+    update();
+    const mutationObserver = new window.MutationObserver(schedule);
+    mutationObserver.observe(document.body, { childList: true, subtree: true });
+    window.addEventListener('resize', schedule);
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      mutationObserver.disconnect();
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', schedule);
+    };
+  }, [orbMounted, position]);
+
+  useEffect(() => {
+    const keepVisible = () => setPosition((current) => current
+      ? constrainPosition(current.left, current.top) : current);
+    keepVisible();
+    window.addEventListener('resize', keepVisible);
+    return () => window.removeEventListener('resize', keepVisible);
+  }, [running, screenSharing, constrainPosition]);
+
+  const startDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || !event.isPrimary) return;
+    const bounds = controlsRef.current?.getBoundingClientRect();
+    if (!bounds) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = { id: event.pointerId, x: event.clientX, y: event.clientY, left: bounds.left, top: bounds.top };
+    setPosition(constrainPosition(bounds.left, bounds.top));
+    setDragging(true);
+  };
+
+  const moveDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.id !== event.pointerId) return;
+    setPosition(constrainPosition(drag.left + event.clientX - drag.x, drag.top + event.clientY - drag.y));
+  };
+
+  const endDrag = () => {
+    dragRef.current = null;
+    setDragging(false);
+  };
+
+  return (
+    <>
+      {running || orbMounted
+        ? createPortal(
+            <div
+              ref={controlsRef}
+              className={`task-full-duplex-orb${dragging ? ' is-dragging' : ''}${running ? '' : ' is-leaving'}`}
+              style={
+                position
+                  ? { ...position, bottom: 'auto', transform: 'none' }
+                  : dockBottom !== null
+                    ? { bottom: dockBottom }
+                    : undefined
+              }
+              data-testid="chat-panel-duplex-controls"
+              data-variant={state}
+            >
+              {screenSharing ? (
+                <div className="task-full-duplex-sharing" role="status" data-testid="chat-panel-duplex-sharing-indicator">
+                  <span className="task-full-duplex-sharing__dot" aria-hidden="true" />
+                  <span>{t('chat.duplexControls.sharingVideo')}</span>
+                  <button type="button" onClick={stopTaskDuplexScreenSharing} data-testid="chat-panel-duplex-close-sharing">
+                    {t('common.close')}
+                  </button>
+                </div>
+              ) : null}
+              <div
+                className="task-full-duplex-orb__handle"
+                onPointerDown={startDrag}
+                onPointerMove={moveDrag}
+                onPointerUp={endDrag}
+                onPointerCancel={endDrag}
+                onLostPointerCapture={endDrag}
+                role="status"
+                aria-label={t(
+                  state === 'starting' ? 'chat.duplexControls.connecting' : 'chat.duplexControls.listening',
+                )}
+                data-testid="chat-panel-duplex-orb"
+              >
+                <DuplexOrb variant={orbVariant} microphoneMuted={running && microphoneMuted} />
+              </div>
+              <div className="task-full-duplex-orb__controls">
+                <button
+                  type="button"
+                  onClick={toggleTaskDuplexMicrophone}
+                  disabled={state !== 'active'}
+                  aria-pressed={microphoneMuted}
+                  aria-label={t(microphoneMuted ? 'chat.duplexControls.unmuteMic' : 'chat.duplexControls.muteMic')}
+                  title={t(microphoneMuted ? 'chat.duplexControls.unmuteMic' : 'chat.duplexControls.muteMic')}
+                  data-testid="chat-panel-duplex-microphone"
+                >
+                  {microphoneMuted ? <MicOff aria-hidden /> : <Mic aria-hidden />}
+                </button>
+                <button
+                  type="button"
+                  onClick={exitTaskFullDuplex}
+                  aria-label={t('chat.duplexControls.exit')}
+                  title={t('chat.duplexControls.exit')}
+                  data-testid="chat-panel-duplex-exit"
+                >
+                  <X aria-hidden />
+                </button>
+                <button
+                  type="button"
+                  onClick={toggleTaskDuplexSpeaker}
+                  disabled={state !== 'active'}
+                  aria-pressed={speakerMuted}
+                  aria-label={t(speakerMuted ? 'chat.duplexControls.unmuteSpeaker' : 'chat.duplexControls.muteSpeaker')}
+                  title={t(speakerMuted ? 'chat.duplexControls.unmuteSpeaker' : 'chat.duplexControls.muteSpeaker')}
+                  data-testid="chat-panel-duplex-speaker"
+                >
+                  {speakerMuted ? <VolumeX aria-hidden /> : <Volume2 aria-hidden />}
+                </button>
+                {screenSharing ? (
+                  <button
+                    type="button"
+                    onClick={stopTaskDuplexScreenSharing}
+                    aria-label={t('chat.duplexControls.stopSharing')}
+                    title={t('chat.duplexControls.stopSharing')}
+                    data-testid="chat-panel-duplex-stop-sharing"
+                  >
+                    <MonitorOff aria-hidden />
+                  </button>
+                ) : null}
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+>>>>>>> origin/develop

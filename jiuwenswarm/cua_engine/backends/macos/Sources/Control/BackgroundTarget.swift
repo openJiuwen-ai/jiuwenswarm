@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 import AppKit
 import ApplicationServices
 
@@ -165,3 +166,5 @@ struct BackgroundTarget {
         return current != nil || registrationConfirmedAtCapture
     }
 }
+=======
+>>>>>>> origin/develop

@@ -4,6 +4,7 @@ import {
   catalogModels,
   credentialsOptional,
   defaultGeneration,
+  GENERATION_SLOT_VENDORS,
   generationApiBase,
   generationVendor,
   isEditableBaseVendor,
@@ -11,6 +12,7 @@ import {
   isGenerationSlotConfigured,
 } from '../node_modules/.cache/generation-models/generationModels.mjs';
 
+<<<<<<< HEAD
 test('Ark generation accepts official regional addresses and rejects Coding Plan and proxy addresses', () => {
   assert.equal(isArkGenerationApiBase('https://ark.cn-beijing.volces.com/api/v3/'), true);
   assert.equal(isArkGenerationApiBase('https://ark.ap-southeast.bytepluses.com'), true);
@@ -21,6 +23,26 @@ test('Ark generation accepts official regional addresses and rejects Coding Plan
   assert.equal(isArkGenerationApiBase('http://ark.cn-beijing.volces.com/api/v3'), false);
 });
 
+||||||| e487e9a30
+=======
+test('Ark generation accepts official regional addresses and rejects Coding Plan and proxy addresses', () => {
+  assert.equal(isArkGenerationApiBase('https://ark.cn-beijing.volces.com/api/v3/'), true);
+  assert.equal(isArkGenerationApiBase('https://ark.ap-southeast.bytepluses.com'), true);
+  assert.equal(isArkGenerationApiBase('HTTPS://ARK.CN-BEIJING.VOLCES.COM/api/v3'), true);
+  assert.equal(isArkGenerationApiBase('https://ark.cn-beijing.volces.com/API/V3'), false);
+  assert.equal(isArkGenerationApiBase('https://ark.cn-beijing.volces.com/api/coding/v3'), false);
+  assert.equal(isArkGenerationApiBase('https://ark.cn-beijing.volces.com.evil.example/api/v3'), false);
+  assert.equal(isArkGenerationApiBase('http://ark.cn-beijing.volces.com/api/v3'), false);
+});
+
+test('MiniMax video offers the H3, Highspeed and Lite presets', () => {
+  assert.deepEqual(
+    catalogModels('video_gen', 'minimax').map((entry) => entry.model),
+    ['MiniMax-H3', 'MiniMax-H3-Highspeed', 'MiniMax-H3-Lite'],
+  );
+});
+
+>>>>>>> origin/develop
 test('DashScope lists wan 3.0 video and qwen-image 3.0 image models', () => {
   assert.deepEqual(
     catalogModels('video_gen', 'dashscope').map((entry) => entry.model),
@@ -69,4 +91,19 @@ test('a slot counts as configured without key and model only for vLLM-Omni', () 
     true,
   );
   assert.equal(isGenerationSlotConfigured({ ...base, video_gen_api_base: '' }, 'video_gen'), false);
+});
+
+test('music generation offers OpenRouter and vLLM-Omni only; MiniMax stays for video and image', () => {
+  assert.deepEqual(GENERATION_SLOT_VENDORS.music_gen, ['openrouter', 'vllm-omni']);
+  assert.equal(GENERATION_SLOT_VENDORS.video_gen.includes('minimax'), true);
+  assert.equal(GENERATION_SLOT_VENDORS.visual_gen.includes('minimax'), true);
+  assert.deepEqual(catalogModels('music_gen', 'minimax'), []);
+  assert.deepEqual(defaultGeneration('music_gen', 'openrouter'), {
+    protocol: 'google',
+    model: 'google/lyria-3-pro-preview',
+  });
+  assert.equal(
+    catalogModels('music_gen', 'vllm-omni').some((entry) => entry.model === 'MiniMaxAI/MiniMax-Music3'),
+    true,
+  );
 });

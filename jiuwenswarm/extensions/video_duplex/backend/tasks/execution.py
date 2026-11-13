@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 """Bind Host requests and output leases, and observe native execution settlement."""
 
 import asyncio
@@ -286,3 +287,5 @@ async def close_task_output(rail, request):
         # lease is separate: cancellation alone may leave next_output waiting.
         # The binding still waits for native execution handles before settlement.
         await binding.output_stream.close(abort_active_round=False)
+=======
+>>>>>>> origin/develop

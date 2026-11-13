@@ -8,11 +8,11 @@ import {
 import { setTeamScheduledDispatchEnabled } from '../../teamDispatch/featureConfig';
 import { setComfyuiWorkflowEnabled } from '../../designer/comfyuiFeatureConfig';
 import { setTeamOrganizationUiEnabled } from '../../teamOrganization/featureConfig';
-import { buildConfigSavePayload, SETTINGS_CONFIG_CHANGED_EVENT } from './settingsContract';
+import { buildConfigSavePayload, parseConfigBoolean, SETTINGS_CONFIG_CHANGED_EVENT } from './settingsContract';
 import { useSettingsServices } from './SettingsServicesProvider';
 
 export function useSettingsConfig() {
-  const { isConnected, request, saveQueue } = useSettingsServices();
+  const { isConnected, request, saveQueue, onRecommendationEnabledChange } = useSettingsServices();
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -84,7 +84,28 @@ export function useSettingsConfig() {
       if ('multi_model_collaboration_enabled' in payload.config) {
         setMultiModelCollaborationEnabled(payload.config.multi_model_collaboration_enabled);
       }
+<<<<<<< HEAD
       const visibleUpdates = payload.config;
+||||||| e487e9a30
+      // Do not retain write-only credentials or one-shot clear actions in settings state.
+      const { moa_jev_api_key: newJevKey, moa_jev_api_key_clear: clearJevKey, ...visibleUpdates } = payload.config;
+      if (newJevKey) visibleUpdates.moa_jev_api_key_configured = 'true';
+      if (clearJevKey === 'true') {
+        visibleUpdates.moa_jev_api_key_configured = 'false';
+        visibleUpdates.moa_jev_enabled = 'false';
+      }
+=======
+      if ('prompt_suggestion_enabled' in payload.config) {
+        onRecommendationEnabledChange?.(parseConfigBoolean(payload.config.prompt_suggestion_enabled));
+      }
+      // Do not retain write-only credentials or one-shot clear actions in settings state.
+      const { moa_jev_api_key: newJevKey, moa_jev_api_key_clear: clearJevKey, ...visibleUpdates } = payload.config;
+      if (newJevKey) visibleUpdates.moa_jev_api_key_configured = 'true';
+      if (clearJevKey === 'true') {
+        visibleUpdates.moa_jev_api_key_configured = 'false';
+        visibleUpdates.moa_jev_enabled = 'false';
+      }
+>>>>>>> origin/develop
       const revision = ++saveRevision.current;
       for (const [key, value] of Object.entries(visibleUpdates)) {
         confirmedUpdates.current.set(key, { revision, value });
@@ -92,7 +113,7 @@ export function useSettingsConfig() {
       setConfig((current) => ({ ...current, ...visibleUpdates }));
       return result;
     },
-    [request, saveQueue],
+    [onRecommendationEnabledChange, request, saveQueue],
   );
   return { config, setConfig, loading, error, reload, save };
 }

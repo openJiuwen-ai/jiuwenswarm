@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 import hashlib
 import os
 import shutil
@@ -53,3 +54,5 @@ def native_driver(platform=None, root=None):
     if platform == "win32":
         return dict(command=str(root / "backends/windows/.build/computer-use-driver.exe"), args=[])
     raise RuntimeError(f"platform {platform} is not implemented")
+=======
+>>>>>>> origin/develop

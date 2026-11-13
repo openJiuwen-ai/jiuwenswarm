@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 """Strict wire DTOs for protocol v5 execution; no platform or policy imports."""
 import json
 import math
@@ -363,3 +364,5 @@ def decode_execution_result(method, value):
                                                   or result["cleanup"] != "complete"):
             raise ValueError("protocol: uncertain input cannot authorize another route")
     return result
+=======
+>>>>>>> origin/develop

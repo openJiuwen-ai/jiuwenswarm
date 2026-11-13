@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
 import asyncio
@@ -4029,3 +4030,5 @@ class FeishuChannel(BaseChannel):
             filtered_content = re.sub(pattern, '[已过滤]', filtered_content, flags=re.IGNORECASE)
 
         return filtered_content
+=======
+>>>>>>> origin/develop

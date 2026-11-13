@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 import AppKit
 import ApplicationServices
 
@@ -189,3 +190,5 @@ struct ForegroundAssist {
         diagnose("foreground assist: prepared pid=\(target.application.processIdentifier), window=\(window)")
     }
 }
+=======
+>>>>>>> origin/develop

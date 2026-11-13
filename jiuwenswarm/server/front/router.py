@@ -16,6 +16,7 @@ from jiuwenswarm.server.control.methods import (
     CONTROL_CONFIG_METHODS,
     CONTROL_HEALTH_METHODS,
     CONTROL_HISTORY_METHODS,
+    CONTROL_HUB_METHODS,
     CONTROL_PROJECT_METHODS,
     CONTROL_SESSION_METHODS,
 )
@@ -40,6 +41,7 @@ _LOAD_HISTORY_SESSION_USAGE = None
 _STREAM_HISTORY_RECORDS = None
 _INVALID_HISTORY_CURSOR = None
 _HISTORY_SNAPSHOT_CHANGED = None
+_HISTORY_REPLAY_ERROR = None
 
 
 def _load_session_service() -> None:
@@ -73,10 +75,12 @@ def _load_history_service() -> None:
     global _HANDLE_HISTORY, _LOAD_HISTORY_QUERY, _LOAD_HISTORY_TODO_SNAPSHOT
     global _LOAD_HISTORY_SESSION_USAGE
     global _STREAM_HISTORY_RECORDS, _INVALID_HISTORY_CURSOR, _HISTORY_SNAPSHOT_CHANGED
+    global _HISTORY_REPLAY_ERROR
     if _HANDLE_HISTORY is not None:
         return
     from jiuwenswarm.server.control.history_service import (
         HistorySnapshotChanged,
+        HistoryReplayError,
         InvalidHistoryCursor,
         handle_history_request,
         load_history_query,
@@ -92,6 +96,7 @@ def _load_history_service() -> None:
     _STREAM_HISTORY_RECORDS = stream_history_records
     _INVALID_HISTORY_CURSOR = InvalidHistoryCursor
     _HISTORY_SNAPSHOT_CHANGED = HistorySnapshotChanged
+    _HISTORY_REPLAY_ERROR = HistoryReplayError
 
 
 def _load_control_services() -> None:
@@ -126,15 +131,35 @@ class MethodRouter:
         send_lock: Any,
     ) -> None:
         if is_control_method(request):
+            if request.req_method.value in CONTROL_HUB_METHODS:
+                await self._dispatch_hub_catalog(ws, request, send_lock)
+                return
             if request.req_method == ReqMethod.HEALTH_CHECK_GET_CONF:
                 await self._dispatch_health(ws, request, send_lock)
                 return
-            if request.req_method == ReqMethod.HISTORY_GET and request.is_stream:
+            if (request.req_method == ReqMethod.HISTORY_GET and request.is_stream
+                    and "artifact_sha256" not in (request.params or {})):
                 await self._dispatch_history_stream(ws, request, send_lock)
                 return
             await self._dispatch_control(ws, request, send_lock)
             return
         await self._admission.dispatch(ws, request, send_lock)
+
+    async def _dispatch_hub_catalog(
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: Any,
+    ) -> None:
+        # Keep the cluster catalog outside user tenant binding and execution admission.
+        from jiuwenswarm.server.control.hub_catalog_service import handle_hub_catalog_request
+
+        try:
+            response = await handle_hub_catalog_request(request)
+        except Exception as exc:
+            logger.exception("[Front] Hub catalog query failed")
+            response = build_error_response(request, str(exc), code="INTERNAL_ERROR")
+        await self._send(ws, send_lock, encode_response(response, response_id=request.request_id))
 
     async def _dispatch_health(
         self,
@@ -153,25 +178,47 @@ class MethodRouter:
         send_lock: Any,
     ) -> None:
         method = request.req_method.value if request.req_method is not None else ""
+        # Control-plane reads (session.list / history.get / …) must use the same
+        # tenant workspace as chat.send. Front never calls dispatch_parsed_request.
+        from jiuwenswarm.enterprise.tenant.tenant_identity import bind_control_tenant
+
         try:
-            if method in CONTROL_SESSION_METHODS:
-                _load_session_service()
-                response = await _HANDLE_SESSION(request)
-            elif method in CONTROL_PROJECT_METHODS:
-                _load_project_service()
-                response = await _HANDLE_PROJECT(request)
-            elif method in CONTROL_CONFIG_METHODS:
-                _load_config_service()
-                response = await _HANDLE_CONFIG(request)
-            elif method in CONTROL_HISTORY_METHODS:
-                _load_history_service()
-                response = await _HANDLE_HISTORY(request)
-            elif method in CONTROL_HEALTH_METHODS:
-                response = handle_readiness(request, self._readiness)
-            else:
-                response = build_error_response(
-                    request, f"unsupported control method: {method}", code="BAD_REQUEST"
-                )
+            with bind_control_tenant(request):
+                if method in CONTROL_SESSION_METHODS:
+                    _load_session_service()
+                    response = await _HANDLE_SESSION(request)
+                    if request.req_method == ReqMethod.SESSION_GET_METADATA and response.ok:
+                        backend = self._admission.backend
+                        snapshot_getter = getattr(backend, "get_runtime_snapshot", None)
+                        if callable(snapshot_getter):
+                            snapshot = await snapshot_getter(request)
+                            if isinstance(snapshot, dict):
+                                response.payload = {**response.payload, "runtime": snapshot}
+                                # Pending recovery is not evidence that execution
+                                # stopped. Preserve the persisted processing flag.
+                                if isinstance(snapshot.get("is_processing"), bool):
+                                    response.payload["is_processing"] = snapshot["is_processing"]
+                                    response.payload["status"] = "processing" if snapshot["is_processing"] else "idle"
+                        # Runtime may still contain child work after the Owner stops.
+                        # Keep its snapshot intact while projecting the Owner composer as idle.
+                        if response.payload.get("organization_owner_stopped") is True:
+                            response.payload["is_processing"] = False
+                            response.payload["status"] = "idle"
+                elif method in CONTROL_PROJECT_METHODS:
+                    _load_project_service()
+                    response = await _HANDLE_PROJECT(request)
+                elif method in CONTROL_CONFIG_METHODS:
+                    _load_config_service()
+                    response = await _HANDLE_CONFIG(request)
+                elif method in CONTROL_HISTORY_METHODS:
+                    _load_history_service()
+                    response = await _HANDLE_HISTORY(request)
+                elif method in CONTROL_HEALTH_METHODS:
+                    response = handle_readiness(request, self._readiness)
+                else:
+                    response = build_error_response(
+                        request, f"unsupported control method: {method}", code="BAD_REQUEST"
+                    )
         except Exception as exc:  # noqa: BLE001
             logger.exception("[Front] control dispatch failed: method=%s", method)
             response = build_error_response(request, str(exc), code="INTERNAL_ERROR")
@@ -184,6 +231,9 @@ class MethodRouter:
         request: AgentRequest,
         send_lock: Any,
     ) -> None:
+        from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+        from jiuwenswarm.enterprise.tenant.tenant_identity import extract_tenant_key
+
         _load_history_service()
         params = request.params if isinstance(request.params, dict) else {}
         session_id = params.get("session_id")
@@ -191,13 +241,22 @@ class MethodRouter:
         cursor_protocol = "cursor" in params
         request_cursor = params.get("cursor")
         subagent_id = params.get("subagent_id")
+        # Re-bind inside worker threads: control plane never hits Runtime bind.
+        tenant_key = extract_tenant_key(request)
+
+        def _load_history_page():
+            with TenantContext.scoped(tenant_key):
+                return _LOAD_HISTORY_QUERY(params)
+
         try:
-            data = await asyncio.to_thread(_LOAD_HISTORY_QUERY, params)
-        except (_INVALID_HISTORY_CURSOR, _HISTORY_SNAPSHOT_CHANGED) as exc:
+            data = await asyncio.to_thread(_load_history_page)
+        except (_INVALID_HISTORY_CURSOR, _HISTORY_SNAPSHOT_CHANGED, _HISTORY_REPLAY_ERROR) as exc:
             error_code = (
-                "HISTORY_SNAPSHOT_CHANGED"
-                if isinstance(exc, _HISTORY_SNAPSHOT_CHANGED)
-                else "INVALID_HISTORY_CURSOR"
+                exc.code if isinstance(exc, _HISTORY_REPLAY_ERROR) else (
+                    "HISTORY_SNAPSHOT_CHANGED"
+                    if isinstance(exc, _HISTORY_SNAPSHOT_CHANGED)
+                    else "INVALID_HISTORY_CURSOR"
+                )
             )
             err = AgentResponseChunk(
                 request_id=request.request_id,
@@ -277,38 +336,76 @@ class MethodRouter:
             cursor_protocol and request_cursor is None
         ) or (not cursor_protocol and page_idx == 1)
         if is_initial_history_batch and isinstance(session_id, str) and session_id.strip():
-            todos = await asyncio.to_thread(
-                _LOAD_HISTORY_TODO_SNAPSHOT, session_id.strip()
-            )
-            todo_chunk = AgentResponseChunk(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                payload={
-                    "event_type": "todo.updated",
-                    "todos": todos,
-                    "session_id": session_id.strip(),
-                },
-                is_complete=False,
-            )
-            wire_todo = encode_chunk(
-                todo_chunk, response_id=request.request_id, sequence=next_seq
-            )
-            sent_todo = await self._send(ws, send_lock, wire_todo)
-            if not sent_todo:
+            # The todo snapshot is best-effort extra data that lazily imports
+            # OpenJiuwen, whose import can raise in sandboxes with unwritable
+            # log dirs. It must never suppress the trailing done frame -- the
+            # frontend only exits the "loading history" state on done.
+            sid = session_id.strip()
+
+            def _load_todos():
+                with TenantContext.scoped(tenant_key):
+                    return _LOAD_HISTORY_TODO_SNAPSHOT(sid)
+
+            try:
+                todos = await asyncio.to_thread(_load_todos)
+            except Exception:  # noqa: BLE001
                 logger.warning(
-                    "[Front] history todo.updated snapshot send failed: "
-                    "request_id=%s session_id=%s seq=%s todo_count=%s",
+                    "[Front] history todo snapshot unavailable: "
+                    "request_id=%s session_id=%s",
                     request.request_id,
                     session_id.strip(),
-                    next_seq,
-                    len(todos),
+                    exc_info=True,
                 )
+                todos = None
+            if todos is not None:
+                todo_chunk = AgentResponseChunk(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    payload={
+                        "event_type": "todo.updated",
+                        "todos": todos,
+                        "session_id": session_id.strip(),
+                    },
+                    is_complete=False,
+                )
+                wire_todo = encode_chunk(
+                    todo_chunk, response_id=request.request_id, sequence=next_seq
+                )
+                sent_todo = await self._send(ws, send_lock, wire_todo)
+                if not sent_todo:
+                    logger.warning(
+                        "[Front] history todo.updated snapshot send failed: "
+                        "request_id=%s session_id=%s seq=%s todo_count=%s",
+                        request.request_id,
+                        session_id.strip(),
+                        next_seq,
+                        len(todos),
+                    )
             next_seq += 1
+<<<<<<< HEAD
         session_usage = None
         if not subagent_id and isinstance(session_id, str) and session_id.strip():
             session_usage = await asyncio.to_thread(
                 _LOAD_HISTORY_SESSION_USAGE, session_id.strip()
             )
+||||||| e487e9a30
+=======
+        session_usage = None
+        if not subagent_id and isinstance(session_id, str) and session_id.strip():
+            try:
+                session_usage = await asyncio.to_thread(
+                    _LOAD_HISTORY_SESSION_USAGE, session_id.strip()
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "[Front] history session usage unavailable: "
+                    "request_id=%s session_id=%s",
+                    request.request_id,
+                    session_id.strip(),
+                    exc_info=True,
+                )
+                session_usage = None
+>>>>>>> origin/develop
         done = AgentResponseChunk(
             request_id=request.request_id,
             channel_id=request.channel_id,

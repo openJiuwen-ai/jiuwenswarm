@@ -64,6 +64,7 @@ export function DesignerNodeActionBar({ nodeId, nodeType }: DesignerNodeActionBa
       const filename = designerMaterialFilename(material, `designer-node-${nodeId}`);
       let saved = false;
       if (material.previewUrl) {
+<<<<<<< HEAD
         saved = await downloadPreviewFile({ filename, downloadUrl: material.previewUrl });
       } else if (material.textUrl) {
         try {
@@ -74,6 +75,21 @@ export function DesignerNodeActionBar({ nodeId, nodeType }: DesignerNodeActionBa
         } catch {
           saved = false;
         }
+||||||| e487e9a30
+        await downloadPreviewFile({ filename, downloadUrl: material.previewUrl });
+        return;
+=======
+        saved = await downloadPreviewFile({ filename, downloadUrl: material.previewUrl });
+      } else if (material.textUrl) {
+        try {
+          const response = await fetch(material.textUrl);
+          if (response.ok) {
+            saved = await downloadPreviewFile({ filename, content: await response.text() });
+          }
+        } catch {
+          saved = false;
+        }
+>>>>>>> origin/develop
       }
       if (!saved) {
         useDesignerRunStore.setState({

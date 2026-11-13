@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -17,9 +18,13 @@ from pathlib import Path
 from typing import Any
 
 import portalocker
+from agent_gateway.common.work_mode import (
+    DEFAULT_PROJECT_ID_WORK,
+    DESIGN_WORK_MODE,
+    is_default_project_id,
+)
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
-
 from jiuwenswarm.common.schema.designer_graph import (
     GRAPH_SOURCE_MANUAL,
     SCHEMA_VERSION,
@@ -31,11 +36,6 @@ from jiuwenswarm.common.schema.designer_graph import (
 )
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.common.utils import get_agent_root_dir, get_agent_sessions_dir
-from jiuwenswarm.common.work_mode import (
-    DEFAULT_PROJECT_ID_WORK,
-    DESIGN_WORK_MODE,
-    is_default_project_id,
-)
 from jiuwenswarm.server.runtime.design import RunCoordinator
 from jiuwenswarm.server.runtime.design.context import get_graph_coordinator
 from jiuwenswarm.server.runtime.designer.graph_store import DesignerGraphStore
@@ -713,6 +713,54 @@ def _attach_design_references(
     return attach_user_references_to_graph(graph, user_refs)
 
 
+def _design_chat_model_selection(params: dict[str, Any]):
+    """Return a single-model selection when the client sent a stable id.
+
+    Design does not use model groups. A missing or group selection stays unset
+    so the legacy name path is unchanged.
+    """
+    raw = params.get("model_selection")
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("type") != "model":
+        return None
+    from agent_gateway.common.model_selection import ModelSelection
+    from pydantic import ValidationError
+
+    try:
+        selection = ModelSelection.model_validate(raw)
+    except (ValidationError, ValueError):
+        return None
+    if selection.type != "model":
+        return None
+    selected_id = str(selection.id or "").strip()
+    if not selected_id:
+        return None
+    return selection
+
+
+def _persist_design_chat_model(session_id: str, params: dict[str, Any]) -> None:
+    """Store the stable id on the session so team rounds do not guess by name."""
+    selection = _design_chat_model_selection(params)
+    if selection is None:
+        return
+    from jiuwenswarm.common.model_selection_store import set_session_model_selection
+
+    set_session_model_selection(session_id, selection)
+
+
+def _design_graph_model_metadata(params: dict[str, Any]) -> dict[str, str]:
+    """Graph fields the director chain reads. ``model_id`` wins over a shared name."""
+    model_name = str(params.get("model_name") or "").strip()
+    selection = _design_chat_model_selection(params)
+    fields: dict[str, str] = {}
+    if model_name:
+        fields["model_name"] = model_name
+    if selection is not None:
+        fields["model_id"] = str(selection.id).strip()
+    return fields
+
+
 async def _create_design_workspace_once(
     request: AgentRequest,
     params: dict[str, Any],
@@ -751,6 +799,7 @@ async def _create_design_workspace_once(
             work_mode=DESIGN_WORK_MODE,
             agent_group_name=DESIGNER_AGENT_GROUP,
         )
+        _persist_design_chat_model(session_id, params)
         graph = normalize_execution_graph(
             {
                 "schema_version": SCHEMA_VERSION,
@@ -764,7 +813,7 @@ async def _create_design_workspace_once(
                 "metadata": {
                     "session_id": session_id,
                     "work_mode": DESIGN_WORK_MODE,
-                    **({"model_name": model_name} if model_name else {}),
+                    **_design_graph_model_metadata(params),
                 },
             }
         )
@@ -819,6 +868,7 @@ async def _create_design_workspace(
                 "prompt": prompt,
                 "references": params.get("references") or [],
                 "model_name": str(params.get("model_name") or "").strip(),
+                "model_id": _design_graph_model_metadata(params).get("model_id", ""),
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -967,9 +1017,11 @@ def _compose_design_session(
         return None, "design session already has a canvas", "CONFLICT"
     graph = dict(graph)
     metadata = dict(graph.get("metadata") or {})
-    model_name = str(params.get("model_name") or "").strip()
+    model_fields = _design_graph_model_metadata(params)
+    model_name = model_fields.get("model_name", "")
     if model_name:
         metadata["model_name"] = model_name
+<<<<<<< HEAD
         # Team rounds resolve their chat model from the session, not the graph.
         # Persist the canvas's chosen model here as well, otherwise the leader
         # turn (``chat.send(mode='team.design')`` carries no model_name) falls
@@ -981,6 +1033,24 @@ def _compose_design_session(
             touch_last_message_at=False,
             sync_write=True,
         )
+||||||| e487e9a30
+=======
+        # Team rounds resolve their chat model from the session, not the graph.
+        # Persist the canvas's chosen model here as well, otherwise the leader
+        # turn falls back to the configured default even though the canvas was
+        # created with another model selected.
+        update_session_metadata(
+            session_id=session_id,
+            model=model_name,
+            touch_last_message_at=False,
+            sync_write=True,
+        )
+    if model_fields.get("model_id"):
+        metadata["model_id"] = model_fields["model_id"]
+    # A shared model_name matches every custom row with that API id. The stable
+    # selection lets the team round pick the row the landing page selected.
+    _persist_design_chat_model(session_id, params)
+>>>>>>> origin/develop
     graph["metadata"] = metadata
     if prompt:
         graph["description"] = prompt
@@ -1358,6 +1428,115 @@ def _launch_run_trigger(
     task.add_done_callback(_RUN_TASKS.discard)
 
 
+def _accepts_two_positionals(callback: Any) -> bool:
+    """True when ``callback`` can be invoked as ``callback(value, node_id)``."""
+    if callback is None:
+        return False
+    try:
+        signature = inspect.signature(callback)
+    except (TypeError, ValueError):  # builtins without introspection
+        return False
+    positional = 0
+    for param in signature.parameters.values():
+        if param.kind is param.VAR_POSITIONAL:
+            return True
+        if param.kind in (param.POSITIONAL_ONLY, param.POSITIONAL_OR_KEYWORD):
+            positional += 1
+    return positional >= 2
+
+
+async def _launch_run_trigger_and_ack(
+    coordinator: RunCoordinator,
+    payload: dict[str, Any],
+    on_update: Any,
+    *,
+    timeout_seconds: float = 10.0,
+    failure_grace_seconds: float = 0.8,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Launch the trigger and acknowledge the snapshot this round persisted.
+
+    ``designer.run.start`` used to answer with the graph's previous
+    lifelong-run record (or a synthesized draft placeholder), so consecutive
+    regenerations could read a stale ``run_id``/node version in the start
+    response. ``RunCoordinator._execute`` persists the armed 'running'
+    snapshot (with every executing node's version bumped) and emits it through
+    ``on_update`` *before* compiling, so awaiting that first update is cheap.
+
+    Returns ``(snapshot, None)`` for the real first record, ``(None, error)``
+    when the trigger crashes before persisting anything (prompt start error),
+    or ``(None, None)`` when no snapshot arrived in time (caller falls back to
+    the legacy accept-and-trigger placeholder). A short grace window also
+    catches a terminal failure that lands immediately after the snapshot
+    (compile refusal / setup crash) so the caller sees it instead of only a
+    push.
+    """
+    first: dict[str, Any] = {}
+    latest: dict[str, Any] = {}
+    started = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    forwards_node_id = _accepts_two_positionals(on_update)
+
+    def _capture(run: dict[str, Any], node_id: str | None = None) -> None:
+        snapshot = dict(run)
+        latest.clear()
+        latest.update(snapshot)
+        if not first:
+            first.update(snapshot)
+        # ``on_update`` can be invoked from a worker thread (see
+        # ``_run_update_callback``, which hops back with
+        # ``call_soon_threadsafe``); ``asyncio.Event`` is not thread-safe.
+        try:
+            loop.call_soon_threadsafe(started.set)
+        except RuntimeError:  # event loop already closed: run has finished
+            started.set()
+        if on_update is not None:
+            # ``RunCoordinator`` and ``DesignEventBridge`` push the node id too;
+            # dropping it lost every DESIGNER_NODE_UPDATED frame. Callers that
+            # only accept the snapshot keep the one-argument contract.
+            if forwards_node_id:
+                on_update(snapshot, node_id)
+            else:
+                on_update(snapshot)
+
+    async def _run() -> None:
+        try:
+            await coordinator.start(
+                payload["graph"],
+                node_ids=payload["node_ids"],
+                cascade=bool(payload.get("cascade")),
+                on_update=_capture,
+            )
+        except Exception as exc:  # noqa: BLE001 — background task must never raise
+            if not first:
+                latest.setdefault("error", str(exc) or exc.__class__.__name__)
+                started.set()
+            logger.exception(
+                "[DesignerAdapter] run trigger crashed: graph_id=%s",
+                payload.get("graph_id"),
+            )
+
+    task = asyncio.create_task(_run())
+    _RUN_TASKS.add(task)
+    task.add_done_callback(_RUN_TASKS.discard)
+    try:
+        await asyncio.wait_for(started.wait(), timeout=timeout_seconds)
+    except asyncio.TimeoutError:
+        return None, None
+    if not first:
+        return None, str(latest.get("error") or "design run failed to start")
+    if failure_grace_seconds > 0:
+        try:
+            # shield: the grace window must never cancel the live generation.
+            await asyncio.wait_for(
+                asyncio.shield(task), timeout=failure_grace_seconds
+            )
+        except Exception:  # noqa: BLE001 — timeout or already-logged crash
+            pass
+        if str(latest.get("status") or "") == "failed":
+            return None, str(latest.get("error") or "design run failed")
+    return dict(first), None
+
+
 def _initial_running_run(payload: dict[str, Any]) -> dict[str, Any]:
     """The 'running' snapshot the run.start response answers with.
 
@@ -1489,6 +1668,7 @@ class DesignerAdapter(GatewayAdapter):
                     # answer with the initial 'running' record at once; the
                     # canvas follows progress via designer.run.updated /
                     # designer.node.updated pushes and designer.run.get.
+<<<<<<< HEAD
                     # A canvas rerun can arrive with a cold in-process registry
                     # (server restarted since the last chat round); warm the
                     # design context so the trigger finds its worker base spec.
@@ -1505,6 +1685,36 @@ class DesignerAdapter(GatewayAdapter):
                     if run_out is not None:
                         run_out["status"] = "running"
                         run_out["current_node_ids"] = []
+||||||| e487e9a30
+                    _launch_run_trigger(coordinator, payload, _run_update_callback(request))
+                    run_out = _initial_running_run(payload)
+=======
+                    # A canvas rerun can arrive with a cold in-process registry
+                    # (server restarted since the last chat round); warm the
+                    # design context so the trigger finds its worker base spec.
+                    await _ensure_design_context(payload["graph"])
+                    # Acknowledge the snapshot THIS trigger persisted rather
+                    # than the previous lifelong-run record (or a synthesized
+                    # draft), and surface a start-time crash immediately.
+                    run_out, start_error = await _launch_run_trigger_and_ack(
+                        coordinator, payload, _run_update_callback(request)
+                    )
+                    if start_error:
+                        return build_error_response(
+                            request, start_error, code="RUN_START_FAILED"
+                        )
+                    if run_out is None:
+                        # Timeout fallback keeps the legacy contract: answer
+                        # with a running placeholder; pushes report progress.
+                        run_out = _initial_running_run(payload)
+                        run_out["status"] = "running"
+                        run_out["current_node_ids"] = []
+                        await _push_designer_event(
+                            request=request,
+                            event_type=EventType.DESIGNER_RUN_UPDATED.value,
+                            payload={"run": run_out},
+                        )
+>>>>>>> origin/develop
                     warning = str(payload.get("warning") or "").strip()
                     warnings = [
                         str(x)
@@ -1517,11 +1727,6 @@ class DesignerAdapter(GatewayAdapter):
                             warnings = [warning, *warnings]
                     if warnings:
                         run_out["warnings"] = warnings[:8]
-                    await _push_designer_event(
-                        request=request,
-                        event_type=EventType.DESIGNER_RUN_UPDATED.value,
-                        payload={"run": run_out},
-                    )
                     return _ok_response(
                         request,
                         {

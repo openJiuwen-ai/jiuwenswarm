@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+<<<<<<< HEAD
 from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
     current_content_language,
     join_sentences,
@@ -52,6 +53,60 @@ _PHRASES: dict[str, dict[str, str]] = {
     },
 }
 
+||||||| e487e9a30
+=======
+from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
+    current_content_language,
+    join_sentences,
+    list_separator,
+    localized_lighting,
+    localized_time_of_day,
+    phrase,
+    sentence,
+    strip_phrase,
+)
+
+_PHRASES: dict[str, dict[str, str]] = {
+    "en": {
+        "exterior": "Exterior, with the ground and the open background.",
+        "interior": "Interior of this place.",
+        "tod_with_lighting": "It is {label}; {lighting}.",
+        "tod": "It is {label}.",
+        "empty_setting": "One empty setting.",
+        "setting_is_empty": "The setting is empty.",
+        "visible_props": "Visible props: {props}.",
+        "one_clear_image": "One clear image.",
+        "one_person": "One person only: {name}, full or three-quarter body on a plain empty studio backdrop.",
+        "one_group": (
+            "One group only: {name}, {count} distinct people — varied faces, ages, and "
+            "postures within one shared wardrobe family, full bodies, on a plain empty "
+            "studio backdrop. No two share the same face."
+        ),
+        "neutral_backdrop": "Solid neutral background, identity and costume only.",
+        "wearing": "Wearing {costume}.",
+        "the_character": "the character",
+    },
+    "zh": {
+        "exterior": "室外，可见地面与开阔的背景。",
+        "interior": "该地点的室内。",
+        "tod_with_lighting": "时间是{label}；{lighting}。",
+        "tod": "时间是{label}。",
+        "empty_setting": "一个空旷的场景。",
+        "setting_is_empty": "场景中空无一人。",
+        "visible_props": "可见道具：{props}。",
+        "one_clear_image": "画面清晰，单张图像。",
+        "one_person": "画面中仅一人：{name}，全身或七分身，站在纯净空白的影棚背景前。",
+        "one_group": (
+            "画面中只有一群人：{name}，共{count}人，面孔、年龄与姿态各不相同，但属于"
+            "统一的着装体系；全员全身，站在纯净空白的影棚背景前。没有两个人共用同一张脸。"
+        ),
+        "neutral_backdrop": "纯色中性背景，只呈现人物身份与服装。",
+        "wearing": "身穿{costume}。",
+        "the_character": "该角色",
+    },
+}
+
+>>>>>>> origin/develop
 _BAD = re.compile(
     r"(?i)(\bforbid\b|\bforbidden\b|\bdo not\b|\bdon't\b|\bnever\b|"
     r"\bmust not\b|\bno people\b|\bno faces\b|\bno bodies\b|"
@@ -255,9 +310,23 @@ def compose_character_sheet_prompt(
     graph: dict[str, Any] | None = None,
     seed: str = "",
 ) -> str:
+<<<<<<< HEAD
     """Positive one-person studio sheet for the image model."""
     from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import wearable_phrase
 
+||||||| e487e9a30
+    """Positive one-person studio sheet for the image model."""
+    del graph
+=======
+    """Positive studio sheet for the image model.
+
+    A cast entry declared as a group gets a group sheet: one shared look drawn
+    across a small crowd. A "one person only" sheet for a team contradicted every
+    shot that then asked for that team on screen.
+    """
+    from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import wearable_phrase
+
+>>>>>>> origin/develop
     cfg = _cfg(cfg)
     lang = current_content_language()
     name = str(
@@ -270,9 +339,25 @@ def compose_character_sheet_prompt(
     costume = re.split(r"(?i)\b(?:do not|don't|never|forbid)\b", costume, maxsplit=1)[0]
     costume = wearable_phrase(costume, name=name, lang=lang).strip(" ,;.—-")[:200]
     look = _style_look(cfg)
+    is_group = str(cfg.get("cast_form") or "").strip().lower() == "group"
+    if is_group:
+        count = str(cfg.get("cast_group_size") or "").strip() or (
+            "数" if lang == "zh" else "several"
+        )
+        opening = phrase(_PHRASES, lang, "one_group", name=name, count=count)
+    else:
+        opening = phrase(_PHRASES, lang, "one_person", name=name)
     bits = [
+<<<<<<< HEAD
         phrase(_PHRASES, lang, "one_person", name=name),
         phrase(_PHRASES, lang, "neutral_backdrop"),
+||||||| e487e9a30
+        f"One person only: {name}, full or three-quarter body on a plain empty studio backdrop.",
+        "Solid neutral background, identity and costume only.",
+=======
+        opening,
+        phrase(_PHRASES, lang, "neutral_backdrop"),
+>>>>>>> origin/develop
     ]
     if costume and not _BAD.search(costume):
         bits.append(phrase(_PHRASES, lang, "wearing", costume=costume))

@@ -256,6 +256,7 @@ export function resolveDesignerNodePreviewRef(
       label: declared.label,
     };
   }
+<<<<<<< HEAD
   return configuredUploadRef(node?.config, nodeType);
 }
 
@@ -277,8 +278,84 @@ function configuredUploadRef(config: unknown, nodeType: string): AssetRef | null
     };
   }
   return null;
+||||||| e487e9a30
+  if (isDesignerFallbackTextAsset(candidate) && isDesignerFallbackTextAsset(accepted)) {
+    return candidate ?? null;
+  }
+  return accepted || candidate || null;
+=======
+  return configuredUploadRef(node?.config, nodeType);
+>>>>>>> origin/develop
 }
 
+<<<<<<< HEAD
+||||||| e487e9a30
+export function shouldAutoPromoteDesignerRevision(
+  original?: Pick<DesignerMaterial, 'kind' | 'uri' | 'mimeType' | 'label'> | null,
+  incoming?: Pick<DesignerMaterial, 'kind' | 'uri' | 'mimeType' | 'label'> | null,
+): boolean {
+  if (!original || !incoming) return false;
+  const asRef = (item: Pick<DesignerMaterial, 'kind' | 'uri' | 'mimeType' | 'label'>) => ({
+    kind: item.kind,
+    uri: item.uri,
+    mime_type: item.mimeType,
+    label: item.label,
+  });
+  if (isDesignerFallbackTextAsset(asRef(original)) && isDesignerMediaAsset(asRef(incoming))) {
+    return true;
+  }
+  return isDesignerFallbackTextAsset(asRef(original)) && isDesignerFallbackTextAsset(asRef(incoming));
+}
+
+export function hasPendingDesignerRevision(state: DesignerNodeState | undefined): boolean {
+  const uri = state?.candidate_output_ref?.uri || state?.candidate_output_refs?.[0]?.uri;
+  return Boolean(uri) && !isPlaceholderAsset(uri);
+}
+
+export type DesignerPendingRevision = {
+  nodeId: string;
+  label: string;
+  original: DesignerMaterial[];
+  incoming: DesignerMaterial[];
+  requiresSelection: boolean;
+};
+
+export function collectPendingRevisions(
+  graph: DesignerExecutionGraph | null | undefined,
+  run: DesignerExecutionRun | null | undefined,
+): DesignerPendingRevision[] {
+  if (!graph || !run) return [];
+  return graph.nodes.flatMap((node) => {
+    const state = run.node_states?.[node.id];
+    if (!hasPendingDesignerRevision(state)) return [];
+    const original = materialsFromRefs(node, refsFromState(state, 'accepted'), `${node.id}:orig`);
+    const incoming = materialsFromRefs(node, refsFromState(state, 'candidate'), `${node.id}:new`);
+    if (original.length === 0 || incoming.length === 0) return [];
+    const requiresSelection = DESIGNER_EDITABLE_ROLES.has(String(node.config?.pipeline || node.config?.role || ''));
+    return [{ nodeId: node.id, label: node.label, original, incoming, requiresSelection }];
+  });
+}
+=======
+/** An uploaded file kept only in the node config (upload slot or attached materials). */
+function configuredUploadRef(config: unknown, nodeType: string): AssetRef | null {
+  const media = readMediaConfig(config as Record<string, unknown> | undefined, nodeType);
+  const slots: Array<{ uri?: string; mime_type?: string; filename?: string }> = [
+    ...(media.materials ?? []),
+    media.upload ?? {},
+  ];
+  for (const slot of slots) {
+    const uri = String(slot?.uri ?? '').trim();
+    if (!uri || isPlaceholderAsset(uri)) continue;
+    return {
+      kind: nodeType || 'file',
+      uri,
+      mime_type: String(slot?.mime_type ?? '') || undefined,
+      label: String(slot?.filename ?? '') || undefined,
+    };
+  }
+  return null;
+}
+>>>>>>> origin/develop
 
 export function collectDesignerMaterials(
   graph: DesignerExecutionGraph | null | undefined,

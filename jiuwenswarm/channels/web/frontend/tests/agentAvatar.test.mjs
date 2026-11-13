@@ -1,8 +1,10 @@
+import './fixtures/browserEnvironment.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
+<<<<<<< HEAD
 import { build } from 'esbuild';
 await build({
   stdin: {
@@ -24,6 +26,31 @@ function seedCatalog(state) {
   useAgentCatalogStore.setState(state);
 }
 test.afterEach(() => seedCatalog({ catalog: null, status: 'idle' }));
+||||||| e487e9a30
+import { AgentAvatar } from '../node_modules/.cache/agent-avatar/AgentAvatar.mjs';
+=======
+import { build } from 'esbuild';
+await build({
+  stdin: {
+    contents: `export { AgentAvatar } from './src/components/AgentAvatar';
+      export { useAgentCatalogStore } from './src/stores/agentCatalogStore';`,
+    resolveDir: process.cwd(), loader: 'tsx',
+  },
+  bundle: true, packages: 'external', platform: 'node', format: 'esm',
+  outfile: 'node_modules/.cache/agent-avatar/identity-regression.mjs',
+  loader: { '.svg': 'dataurl', '.png': 'dataurl' },
+  define: { 'import.meta.env': '{}' },
+});
+const { AgentAvatar, useAgentCatalogStore } = await import(
+  '../node_modules/.cache/agent-avatar/identity-regression.mjs'
+);
+// SSR reads the store's initial snapshot; expose the seeded fixture for each render.
+function seedCatalog(state) {
+  Object.assign(useAgentCatalogStore.getInitialState(), state);
+  useAgentCatalogStore.setState(state);
+}
+test.afterEach(() => seedCatalog({ catalog: null, status: 'idle' }));
+>>>>>>> origin/develop
 
 test('selected Agent avatar can render its identity name', () => {
   const markup = renderToStaticMarkup(

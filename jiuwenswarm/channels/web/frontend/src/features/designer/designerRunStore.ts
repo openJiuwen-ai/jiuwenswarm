@@ -5,7 +5,12 @@ import { isDesignerPreviewGraph } from './designerBootstrapGraph';
 import { designerGraphClient } from './designerGraphClient';
 import { useDesignerStore } from './designerStore';
 import { derivePrimaryAction, type DesignerRunPrimaryAction } from './designerLayerRun';
+<<<<<<< HEAD
 import { findDesignRunProblem, loadedDesignChatAnthropicProblem } from './designModelsReadiness';
+||||||| e487e9a30
+=======
+import { findDesignRunProblem } from './designModelsReadiness';
+>>>>>>> origin/develop
 import { isActiveDesignerRun, designerRunFailureMessage } from './designerRunView';
 import {
   DESIGNER_LEADER_NODE_ID,
@@ -20,6 +25,7 @@ import {
   type DesignerNodeState,
 } from './executionGraphTypes';
 
+<<<<<<< HEAD
 function designChatProtocolBlock(graph: DesignerExecutionGraph): string | null {
   const sessionId = String(graph.metadata?.session_id ?? '').trim();
   const runtimeSelected = sessionId
@@ -29,6 +35,17 @@ function designChatProtocolBlock(graph: DesignerExecutionGraph): string | null {
   return loadedDesignChatAnthropicProblem(sessionId || null, runtimeSelected || metadataModel || null);
 }
 
+||||||| e487e9a30
+=======
+/** Session that owns the graph; run triggers must name it so run pushes land
+ * in the same session as the canvas (regenerate issue #5326). */
+function graphSessionId(graph: DesignerExecutionGraph | null | undefined): string | undefined {
+  const raw = graph?.metadata?.session_id;
+  const id = typeof raw === 'string' ? raw.trim() : '';
+  return id || undefined;
+}
+
+>>>>>>> origin/develop
 type DesignerRunStore = {
   run: DesignerExecutionRun | null;
   nodeStates: Record<string, DesignerNodeState>;
@@ -53,6 +70,12 @@ type DesignerRunStore = {
   applyUploadedOutput: (nodeId: string, outputRef: AssetRef) => void;
   /** Clear upload-produced preview on a node. */
   clearUploadedOutput: (nodeId: string) => void;
+  /**
+   * Re-read the run from the server. Events sent while the page was hidden or
+   * the socket was reconnecting are lost, which used to leave the canvas stuck
+   * on "Running…" until a full reload (#31).
+   */
+  reconcile: (graph: DesignerExecutionGraph | null) => Promise<void>;
 };
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -233,6 +256,7 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
   advance: async (graph) => {
     const state = get();
     if (state.isRunning || graph.nodes.length === 0) return;
+<<<<<<< HEAD
     // Run / Continue / Retry drive every node, so a generation slot this graph
     // actually uses being off or incomplete can only fail the round: report it
     // on the canvas instead of dispatching (#5266).
@@ -247,10 +271,27 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
       return;
     }
     await persistBeforeRun();
+||||||| e487e9a30
+    await persistBeforeRun();
+=======
+>>>>>>> origin/develop
     const run = state.run?.graph_id === graph.graph_id ? state.run : null;
     const nodeStates = run ? state.nodeStates : {};
     const currentLayerNodeIds = run ? state.currentLayerNodeIds : [];
     const primary = primaryFrom(graph, nodeStates, currentLayerNodeIds, false);
+    // A generation slot the remaining nodes actually use being off or incomplete
+    // can only fail the round: report it on the canvas instead of dispatching
+    // (#5266). Continue / Retry skip completed nodes, so only the rest count.
+    const resumes = primary === 'continue' || primary === 'retry_failed';
+    const pending = resumes
+      ? graph.nodes.filter((node) => nodeStates[node.id]?.status !== DESIGNER_NODE_STATUS_COMPLETED)
+      : graph.nodes;
+    const problem = await findDesignRunProblem(pending, graph);
+    if (problem) {
+      set({ runError: problem, runWarning: null });
+      return;
+    }
+    await persistBeforeRun();
     set({ runError: null, runWarning: null });
     try {
       let result;
@@ -265,12 +306,22 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
               graphId: graph.graph_id,
               runId: run?.run_id,
               nodeId: failedId,
+              sessionId: graphSessionId(graph),
             })
-          : await designerGraphClient.startRun({ graphId: graph.graph_id });
+          : await designerGraphClient.startRun({
+              graphId: graph.graph_id,
+              sessionId: graphSessionId(graph),
+            });
       } else if (run?.run_id && primary === 'continue') {
-        result = await designerGraphClient.startRun({ runId: run.run_id });
+        result = await designerGraphClient.startRun({
+          runId: run.run_id,
+          sessionId: graphSessionId(graph),
+        });
       } else {
-        result = await designerGraphClient.startRun({ graphId: graph.graph_id });
+        result = await designerGraphClient.startRun({
+          graphId: graph.graph_id,
+          sessionId: graphSessionId(graph),
+        });
       }
       const warning = String(result.warning || result.run?.warning || result.warnings?.[0] || '').trim() || null;
       get().applyRun(result.run);
@@ -284,6 +335,7 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
 
   rerunNode: async (graph, nodeId) => {
     if (get().isRunning || !nodeId) return;
+<<<<<<< HEAD
     // No model, no run: regenerating an image / video node with its Settings
     // slot off or incomplete can only fail, so report the same reason the
     // landing page uses instead of dispatching a doomed job (#5266).
@@ -298,6 +350,18 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
       set({ runError: problem, runWarning: null });
       return;
     }
+||||||| e487e9a30
+=======
+    // No model, no run: regenerating an image / video node with its Settings
+    // slot off or incomplete can only fail, so report the same reason the
+    // landing page uses instead of dispatching a doomed job (#5266).
+    const node = graph.nodes.find((item) => item.id === nodeId);
+    const problem = await findDesignRunProblem([node], graph);
+    if (problem) {
+      set({ runError: problem, runWarning: null });
+      return;
+    }
+>>>>>>> origin/develop
     await persistBeforeRun();
     set({ runError: null, runWarning: null });
     try {
@@ -306,6 +370,7 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
         graphId: graph.graph_id,
         runId: run?.run_id,
         nodeId,
+        sessionId: graphSessionId(graph),
       });
       const warning = String(result.warning || result.run?.warning || result.warnings?.[0] || '').trim() || null;
       get().applyRun(result.run);
@@ -319,6 +384,7 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
 
   restart: async (graph) => {
     if (get().isRunning || graph.nodes.length === 0) return;
+<<<<<<< HEAD
     // Rerun workflow starts over from the first node, so it needs the same
     // models a fresh run does (#5266).
     const protocolBlock = designChatProtocolBlock(graph);
@@ -331,10 +397,23 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
       set({ runError: problem, runWarning: null });
       return;
     }
+||||||| e487e9a30
+=======
+    // Rerun workflow starts over from the first node, so it needs the same
+    // models a fresh run does (#5266).
+    const problem = await findDesignRunProblem(graph.nodes, graph);
+    if (problem) {
+      set({ runError: problem, runWarning: null });
+      return;
+    }
+>>>>>>> origin/develop
     await persistBeforeRun();
     set({ runError: null, runWarning: null });
     try {
-      const result = await designerGraphClient.startRun({ graphId: graph.graph_id });
+      const result = await designerGraphClient.startRun({
+        graphId: graph.graph_id,
+        sessionId: graphSessionId(graph),
+      });
       const warning = String(result.warning || result.run?.warning || result.warnings?.[0] || '').trim() || null;
       get().applyRun(result.run);
       if (warning) {
@@ -361,6 +440,28 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
 
   patchNodeOutput: (nodeId, outputRef) => {
     get().applyUploadedOutput(nodeId, outputRef);
+  },
+
+  reconcile: async (graph) => {
+    const current = get().run;
+    const graphId = graph?.graph_id;
+    if (!graphId) return;
+    const runId = current?.run_id;
+    try {
+      const result = await designerGraphClient.getRun(
+        runId ? { runId } : { graphId },
+      );
+      const fresh = result.run;
+      if (!fresh) return;
+      if (fresh.graph_id !== graphId) return;
+      // Nothing changed: keep the current snapshot so polling is untouched.
+      if (current && fresh.run_id === current.run_id && fresh.status === current.status) {
+        return;
+      }
+      get().applyRun(fresh);
+    } catch {
+      // A failed reconcile must never surface as a run error to the user.
+    }
   },
 
   applyUploadedOutput: (nodeId, outputRef) => {
@@ -426,6 +527,12 @@ export function bindDesignerRuntime(): () => void {
     const graphId = useDesignerStore.getState().domainGraph?.graph_id;
     return Boolean(run?.run_id && (run.run_id === current?.run_id || (graphId && run.graph_id === graphId)));
   };
+  const onVisible = () => {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+    void useDesignerRunStore
+      .getState()
+      .reconcile(useDesignerStore.getState().domainGraph);
+  };
   const offRun = webClient.on('designer.run.updated', ({ payload }) => {
     const run = (payload as { run?: DesignerExecutionRun }).run ?? (payload as DesignerExecutionRun);
     if (matches(run)) useDesignerRunStore.getState().applyRun(run);
@@ -457,9 +564,20 @@ export function bindDesignerRuntime(): () => void {
     offLeader();
     offGraph();
     clearPoll();
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisible);
+    }
     runtimeBound = false;
     unbindRuntime = null;
   };
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisible);
+  }
+  // A reload repairs a missed terminal event, so the same read on bind repairs
+  // a page that was restored from bfcache or reconnected silently.
+  void useDesignerRunStore
+    .getState()
+    .reconcile(useDesignerStore.getState().domainGraph);
   return unbindRuntime;
 }
 

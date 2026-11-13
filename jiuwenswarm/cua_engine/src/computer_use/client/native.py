@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 """Public Python objects backed by one protocol-5 session.
 
 The public Computer selects this controller for its whole session. It never
@@ -580,3 +581,5 @@ class NativeController:
 def native_computer(port=None):
     """Host migration entry; model-facing classes and method signatures do not change."""
     return computer_for_controller(NativeController(port))
+=======
+>>>>>>> origin/develop

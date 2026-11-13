@@ -9,7 +9,12 @@ import { personalContextSettingsModule } from '../modules/personalContext';
 import { archivedTasksModule } from '../modules/archivedTasks';
 import { voiceModule } from '../modules/voice/definition';
 import { experimentalModule } from '../modules/experimental';
+<<<<<<< HEAD
 import { systemPluginRecoveryModule } from '../modules/systemPluginRecovery';
+||||||| e487e9a30
+=======
+import { appearanceModule } from '../modules/appearance';
+>>>>>>> origin/develop
 
 export const openSourceSettingsPageDefinition = createSettingsPageDefinition({
   id: 'open-source-settings',
@@ -25,7 +30,12 @@ export const openSourceSettingsPageDefinition = createSettingsPageDefinition({
     personalContextSettingsModule,
     archivedTasksModule,
     experimentalModule,
+<<<<<<< HEAD
     systemPluginRecoveryModule,
+||||||| e487e9a30
+=======
+    appearanceModule,
+>>>>>>> origin/develop
   ],
 });
 

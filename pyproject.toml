@@ -4,31 +4,50 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "workswarm"
-version = "0.2.5.beta1"
+version = "0.2.8"
 description = "WorkSwarm"
-requires-python = ">=3.11,<3.14"
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
 license = { text = "Apache-2.0" }
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
 ]
 dependencies = [
     "a2ui-agent-sdk==0.2.1",
-    "a4p @ git+https://gitcode.com/openJiuwen/agent-protocol.git@agent-protocol-V0.2.0#subdirectory=A4P",
+    "minio>=7.2,<8",
+    "a4p==0.1.0",
     "chromadb>=1.5.0,<2",
     "ruamel.yaml>=0.18.0,<0.20",
     "lark-oapi>=1.5.3,<2",
     "loguru>=0.7.3,<0.8",
+<<<<<<< HEAD
     "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@release/v0.1.20.post3",
     # openjiuwen's FS read-write lock acquires and releases on different tasks;
     # filelock>=4.0.2 binds async locks to their acquiring task, stranding them.
     "filelock>=3.25.0,<4",
+||||||| e487e9a30
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@680795de3b0b02b7e4951f92cbf0576480cfc8c1",
+=======
+    "openjiuwen-computeruse @ git+https://gitcode.com/openJiuwen/computer-use.git@2c8171fb6783dba589dd396263b3161186c5f3e4",
+    "JiuwenMemory>=0.2.0",
+    # openjiuwen's FS read-write lock acquires and releases on different tasks;
+    # filelock>=4.0.2 binds async locks to their acquiring task, stranding them.
+    "filelock>=3.25.0,<4",
+    "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@4c5f3e9eb41bd33d34d012b06a3e364e8497ac11#subdirectory=openjiuwen-protocol",
+    # openjiuwen（agent-core）自本变更起不再由母仓直接声明，唯一来源是 agent-gateway
+    # 的传递钉：whl 元数据与 uv 解析中 rev 均以 gateway 为准，由发版流程同步。
+    # 前进 core = 把 agent-gateway re-pin 到钉了目标 agent-core rev 的 commit。
+    # Gateway 传输层已拆分为独立仓 agent-gateway
+    "agent-gateway @ git+https://gitcode.com/openJiuwen/agent-gateway.git@54e5330d3ea6be972aa38de4c42a898ea73fed37",
+>>>>>>> origin/develop
     "pgvector>=0.4.2,<0.5",
     "portalocker>=3.2.0,<4",
     "prompt-toolkit>=3.0,<4.0",
     "websockets>=12.0,<16",
     "psutil>=7.2.2,<8",
     "aiosqlite>=0.22.1,<0.23",
-    "croniter>=2.0.0,<7",
+    "asyncpg>=0.29,<1",
+    "croniter>=3.0.0,<7",
     "python-telegram-bot>=20.0,<23",
     "discord.py>=2.4.0,<3",
     "slack-bolt>=1.30.0,<2",
@@ -46,6 +65,11 @@ dependencies = [
     "mcp>=1.28.1,<2",
     "protobuf>=5.29.5,<7",
     "starlette>=0.49.1,<1",
+    # Anthropic 协议模型客户端（MODEL_PROVIDER=Anthropic → /v1/messages）
+    # 上限钉在 1.0.0 前：anthropic 1.0.0（2026-08-20）底层迁移到 httpx2 fork，
+    # 自定义 httpx.AsyncClient 的 http_client 会被 SDK 类型校验拒绝。
+    # 待模型客户端适配 httpx2 后再放开上限。
+    "anthropic>=0.40.0,<1.0.0",
     "opentelemetry-api>=1.28.0,<1.42",
     "opentelemetry-sdk>=1.28.0,<1.42",
     "opentelemetry-exporter-otlp-proto-grpc>=1.28.0,<1.42",
@@ -69,9 +93,13 @@ dependencies = [
     "tree-sitter>=0.25.0,<0.26.0",
     "tree-sitter-bash>=0.25.0,<0.26.0",
     "playwright>=1.40,<2",
+    "tiktoken>=0.12.0,<0.13",
     "uv>=0.4.0,<0.13",
     "gitcode-cli==0.12.0",
     "imageio-ffmpeg>=0.5.1,<1",
+    # Enterprise / link-mtls / manager-config. Dockerfile.claw strips this line via
+    # openjiuwen_runtime_foundation and reinstalls from AGENT_RUNTIME_*.
+    "openjiuwen-runtime-foundation @ git+https://gitcode.com/openJiuwen/agent-runtime.git@develop#subdirectory=foundation",  # openjiuwen_runtime_foundation
 ]
 
 [project.optional-dependencies]
@@ -84,12 +112,19 @@ harmony = [
     "ruamel.yaml>=0.18.0",
     "lark-oapi>=1.5.3",
     "loguru>=0.7.3",
+<<<<<<< HEAD
     "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@release/v0.1.20.post3",
     "filelock>=3.25.0,<4",  # task-owned async locks strand openjiuwen FS locks
+||||||| e487e9a30
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@680795de3b0b02b7e4951f92cbf0576480cfc8c1",
+=======
+    "openjiuwen>=0.1.20",  # 经 agent-gateway 传递（见 project.dependencies 注释）；harmony 组为手动安装清单，从 PyPI 解析
+    "filelock>=3.25.0,<4",  # task-owned async locks strand openjiuwen FS locks
+>>>>>>> origin/develop
     "pgvector>=0.4.2",
     "portalocker>=3.2.0",
     "aiosqlite>=0.22.1",
-    "croniter>=2.0.0",
+    "croniter>=3.0.0",
     "python-telegram-bot>=20.0",
     "discord.py>=2.4.0",
     "slack-bolt>=1.30.0",
@@ -121,7 +156,7 @@ a2a = ["a2a-sdk[http-server]==1.0.0"]
 ssh = ["asyncssh>=2.14.0,<2.24"]
 desktop = ["pywebview>=5.4,<7"]
 dev = ["pyinstaller>=6.0.0", "pywebview>=5.4,<7"]
-tui = ["workswarm-tui==0.2.5.beta1"]  # build-config: tui-dependency
+tui = ["workswarm-tui==0.2.8"]  # build-config: tui-dependency
 distribute = ["openjiuwen[postgres,zmq]"]
 claude = ["openjiuwen[claude]"]
 codex = ["openjiuwen[codex]"]
@@ -130,12 +165,14 @@ shell-ast = []
 # Same packages as [dependency-groups] test (pip install -e ".[test]")
 test = [
     "a2a-sdk[http-server]==1.0.0",
+    "cryptography>=44.0.0",
     "asyncssh>=2.14.0,<2.24",
     "pytest>=8.3.5",
     "pytest-asyncio>=1.0.0",
     "pytest-html>=4.1.1",
     "pytest-mock>=3.14.0",
     "pytest-cov>=7.0.0",
+    "pytest-timeout>=2.3",
     "coverage>=7.7.1",
     "pyyaml>=6.0",
 ]
@@ -145,13 +182,13 @@ jiuwenswarm = "jiuwenswarm.channels.cli.main:main"
 jiuwenswarm-process = "jiuwenswarm.channels.process_cli.main:main"
 jiuwenswarm-app = "jiuwenswarm.app:main"
 jiuwenswarm-agentserver = "jiuwenswarm.server.app_agentserver:main"
-jiuwenswarm-gateway = "jiuwenswarm.gateway.app_gateway:main"
+jiuwenswarm-gateway = "agent_gateway.app_gateway:main"
 jiuwenswarm-web = "jiuwenswarm.channels.web.app_web:main"
 jiuwenswarm-start = "jiuwenswarm.start_services:main"
 jiuwenswarm-stop = "jiuwenswarm.debug_launcher:main"
 jiuwenswarm-init = "jiuwenswarm.init_workspace:main"
 jiuwenswarm-desktop = "jiuwenswarm.channels.desktop.desktop_app:main"
-jiuwenswarm-acp = "jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect:main"
+jiuwenswarm-acp = "agent_gateway.channel_manager.protocol.acp.acp_connect:main"
 jiuwenswarm-acp-chat = "jiuwenswarm.acp.cli:main"
 jiuwenbox = "jiuwenbox.cli.jiuwenbox:main"
 jiuwenbox-server = "jiuwenbox.server.launcher:main"
@@ -173,6 +210,8 @@ namespaces = false
 "*" = ["LICENSE"]
 jiuwenswarm = [
     "channels/process_cli/protocol/schema.json",
+    "agents/harness/common/auto_harness/issue_fix/code_rule.txt",
+    "server/runtime/agent_adapter/browser_runtime_network_guard.js",
     "channels/web/frontend/dist/**/*",
     "channels/web/frontend/dist/*",
     "agents/harness/common/rsi/harness_config.yaml",
@@ -180,13 +219,17 @@ jiuwenswarm = [
     "resources/**/*",
     "resources/*",
     "resources/.env.template",
-    "symphony/**/*.yaml",
-    "symphony/**/*.yml",
-    "symphony/**/*.json",
-    "symphony/**/*.md",
     "extensions/**/*.yaml",
     "extensions/**/*.yml",
     "extensions/**/*.md",
+    # Designer 内嵌 skills：scenarios / agents / orchestration / subjects /
+    # styles markdown 与 index.json，运行期由 designer.skills_loader 读取
+    "server/runtime/designer/skills/*",
+    "server/runtime/designer/skills/**/*",
+    # Office app packages (manifest.json, persona/, rails/, skills/, tools.json, profile.json, review.md),
+    # read at runtime
+    "office/powerpoint/*",
+    "office/powerpoint/**/*",
 ]
 jiuwenbox = [
     "configs/**/*",
@@ -195,6 +238,8 @@ jiuwenbox = [
 
 [tool.setuptools.exclude-package-data]
 jiuwenswarm = [
+    "resources/.env",
+    "resources/*.lock",
     "channels/web/frontend/node_modules/**",
     "channels/web/frontend/node_modules/*",
     "resources/agent/workspace/skills/project-maintainer/**/*",
@@ -203,21 +248,38 @@ jiuwenswarm = [
 
 [tool.uv]
 default-groups = ['dev']
+# openjiuwen（agent-core）自本变更起不再由母仓直接声明：whl 元数据与 uv 解析中，
+# 它唯一的 git 钉都是 agent-gateway 的传递钉，rev 以 gateway 为准、由发版流程同步。
+# override-dependencies 仅保留 openjiuwen-protocol —— 协议钉仍由母仓主导，
+# 覆盖网关传递的协议钉（override-dependencies 覆盖解析中所有来源的约束）。
+override-dependencies = [
+    "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@4c5f3e9eb41bd33d34d012b06a3e364e8497ac11#subdirectory=openjiuwen-protocol",
+]
 
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
+<<<<<<< HEAD
 openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", branch = "release/v0.1.20.post3" }
+||||||| e487e9a30
+openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "680795de3b0b02b7e4951f92cbf0576480cfc8c1" }
+=======
+agent-gateway = { git = "https://gitcode.com/openJiuwen/agent-gateway.git", rev = "54e5330d3ea6be972aa38de4c42a898ea73fed37" }
+openjiuwen-protocol = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", rev = "4c5f3e9eb41bd33d34d012b06a3e364e8497ac11", subdirectory = "openjiuwen-protocol" }
+openjiuwen-runtime-foundation = { git = "https://gitcode.com/openJiuwen/agent-runtime.git", branch = "develop", subdirectory = "foundation" }
+>>>>>>> origin/develop
 
 [dependency-groups]
 # Testing (keep in sync with optional-dependencies.test)
 test = [
     "a2a-sdk[http-server]==1.0.0",
+    "cryptography>=44.0.0",
     "asyncssh>=2.14.0,<2.24",
     "pytest>=8.3.5",
     "pytest-asyncio>=1.0.0",
     "pytest-html>=4.1.1",
     "pytest-mock>=3.14.0",
     "pytest-cov>=7.0.0",
+    "pytest-timeout>=2.3",
     "coverage>=7.7.1",
     "pyyaml>=6.0",
 ]

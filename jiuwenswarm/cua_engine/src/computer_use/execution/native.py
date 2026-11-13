@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 """The typed boundary between the Python engine and native execution units.
 
 Facts are observations, never authorizations. Native units must revalidate their
@@ -381,3 +382,5 @@ class NativePort(Protocol):
 
     async def finish(self, operation: str) -> Cleanup:
         ...
+=======
+>>>>>>> origin/develop

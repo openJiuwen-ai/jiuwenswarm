@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """Gateway HTTP read API for persisted single-Agent trajectory records."""
@@ -980,3 +981,5 @@ __all__ = [
     "load_session_metadata",
     "validate_http_origin",
 ]
+=======
+>>>>>>> origin/develop

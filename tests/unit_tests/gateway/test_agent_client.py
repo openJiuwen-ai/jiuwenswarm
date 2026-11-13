@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 import asyncio
 import json
 import logging
@@ -708,3 +709,5 @@ async def test_send_request_timeout_keeps_cancel_guard_for_reused_request_id(cap
         target_logger.removeHandler(caplog.handler)
         receiver.cancel()
         await receiver
+=======
+>>>>>>> origin/develop

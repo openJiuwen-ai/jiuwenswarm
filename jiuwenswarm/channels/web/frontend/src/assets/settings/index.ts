@@ -6,7 +6,12 @@ import BrowserIcon from './navigation/browser.svg?react';
 import ChannelsIcon from './navigation/channels.svg?react';
 import PersonalContextIcon from './navigation/personal-context.svg?react';
 import ExperimentalIcon from './navigation/experimental.svg?react';
+<<<<<<< HEAD
 import RecoveryIcon from './navigation/recovery.svg?react';
+||||||| e487e9a30
+=======
+import AppearanceIcon from './navigation/appearance.svg?react';
+>>>>>>> origin/develop
 import RefreshIcon from './actions/refresh.svg?react';
 import ConnectivityIcon from './actions/connectivity.svg?react';
 import EditIcon from './actions/edit.svg?react';
@@ -33,7 +38,12 @@ export const settingsNavigationIcons = {
   channels: ChannelsIcon,
   personalContext: PersonalContextIcon,
   experimental: ExperimentalIcon,
+<<<<<<< HEAD
   systemPluginRecovery: RecoveryIcon,
+||||||| e487e9a30
+=======
+  appearance: AppearanceIcon,
+>>>>>>> origin/develop
 } as const satisfies Record<string, SettingsNavigationIcon>;
 
 export const settingsActionIcons = {

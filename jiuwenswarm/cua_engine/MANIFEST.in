@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 include setup.py
 include backends/macos/Package.swift
 recursive-include backends/macos/Sources *.swift
@@ -7,3 +8,5 @@ recursive-include skills *.md
 prune backends/macos/.build
 prune backends/windows/.build
 global-exclude *.pyc *.pyo
+=======
+>>>>>>> origin/develop

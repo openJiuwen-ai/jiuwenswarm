@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 from __future__ import annotations
 
 import asyncio
@@ -3284,3 +3285,5 @@ async def test_apply_remote_overrides_keeps_reaper_running_on_value_change() -> 
     assert client._sandbox_idle_timeout_seconds == 120.0
     assert client._idle_reaper_task is existing  # same task, not restarted
     await client._stop_idle_reaper_task()
+=======
+>>>>>>> origin/develop

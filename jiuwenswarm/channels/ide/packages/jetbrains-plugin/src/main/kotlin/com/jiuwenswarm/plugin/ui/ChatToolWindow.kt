@@ -309,6 +309,7 @@ class ChatPanel(
     // ──────────────────────────────────────────
     // Webview → Plugin messages
     // ──────────────────────────────────────────
+<<<<<<< HEAD
 
     /** Re-fetch models.list so a session created before model config stops showing a stale placeholder. */
     private fun refreshModels() {
@@ -405,6 +406,105 @@ class ChatPanel(
         return true
     }
 
+||||||| e487e9a30
+=======
+    private fun readFileSnapshot(path: String): String? {
+        val vf = LocalFileSystem.getInstance().refreshAndFindFileByPath(path) ?: return null
+        return try {
+            ReadAction.compute<String?, Throwable> {
+                String(vf.contentsToByteArray(), vf.charset)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun clearRewindState() {
+        currentTurnSnapshots.clear()
+        lastTurnSnapshots = emptyMap()
+        turnBaseline.clear()
+        currentTurnInverseEdits.clear()
+        lastTurnInverseEdits = emptyMap()
+        currentTurnStartedAt = 0L
+    }
+
+    /**
+     * Capture pre-turn content before sending. The backend executes file tools
+     * before emitting chat.tool_call, so a snapshot taken from that event would
+     * already contain the agent's changes.
+     */
+    private fun beginTurn(mentionedPaths: List<String>) {
+        clearRewindState()
+        currentTurnStartedAt = System.currentTimeMillis()
+        val paths = mutableSetOf<String>()
+        ApplicationManager.getApplication().runReadAction {
+            FileEditorManager.getInstance(project).openFiles.forEach { paths.add(it.path) }
+        }
+        val root = project.basePath
+        for (raw in mentionedPaths) {
+            if (raw.isBlank()) continue
+            val f = File(raw)
+            paths.add(if (f.isAbsolute || root == null) f.path else File(root, raw).path)
+        }
+        for (path in paths) turnBaseline[path] = readFileSnapshot(path)
+    }
+
+    private fun noteFileEdit(path: String, oldStr: String?, newStr: String?) {
+        if (currentTurnSnapshots.containsKey(path) || currentTurnInverseEdits.containsKey(path)) return
+        if (turnBaseline.containsKey(path)) {
+            currentTurnSnapshots[path] = turnBaseline[path]
+            return
+        }
+        val createdThisTurn = try {
+            val attrs = Files.readAttributes(Paths.get(path), BasicFileAttributes::class.java)
+            currentTurnStartedAt > 0 && attrs.creationTime().toMillis() >= currentTurnStartedAt - 2_000
+        } catch (_: Exception) {
+            false
+        }
+        if (createdThisTurn) {
+            currentTurnSnapshots[path] = null
+            return
+        }
+        if (oldStr != null && newStr != null && oldStr != newStr) {
+            currentTurnInverseEdits.getOrPut(path) { mutableListOf() }.add(oldStr to newStr)
+        }
+    }
+
+    private fun promoteSnapshots(): Boolean {
+        if (currentTurnSnapshots.isEmpty() && currentTurnInverseEdits.isEmpty()) return false
+        lastTurnSnapshots = currentTurnSnapshots.toMap()
+        lastTurnInverseEdits = currentTurnInverseEdits.mapValues { it.value.toList() }
+        return true
+    }
+
+    /** Re-fetch models.list so a session created before model config stops showing a stale placeholder. */
+    private fun refreshModels() {
+        val sid = service.session.sessionId ?: return
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                val (models, model) = service.session.listModels()
+                if (service.session.sessionId != sid) return@executeOnPooledThread
+                val modelList = models.map { m ->
+                    mapOf(
+                        "model_name" to (m.get("model_name")?.asString ?: ""),
+                        "alias" to (m.get("alias")?.asString ?: ""),
+                        "model_provider" to (m.get("model_provider")?.asString ?: ""),
+                    )
+                }
+                dispatchToWebview(
+                    mapOf(
+                        "type" to "models_updated",
+                        "models" to modelList,
+                        "activeModel" to model,
+                    )
+                )
+            } catch (_: Exception) {
+                debug("models.list refresh failed")
+            }
+        }
+    }
+
+>>>>>>> origin/develop
     private fun handleWebviewMessage(jsonStr: String) {
         try {
             val msg = gson.fromJson(jsonStr, JsonObject::class.java)
@@ -442,8 +542,9 @@ class ChatPanel(
                     if (answers.size() == 0) return
                     val source = msg.get("source")?.asString ?: "confirm_interrupt"
                     val mode = msg.get("mode")?.asString ?: "code.plan"
+                    val interruptId = msg.get("interruptId")?.takeIf { it.isJsonPrimitive }?.asString ?: ""
                     debug("ANSWER→ requestId=$rid source=$source options=${answers.size()}")
-                    if (!service.session.sendAnswer(rid, answers, source, mode)) {
+                    if (!service.session.sendAnswer(rid, answers, source, mode, interruptId)) {
                         dispatchToWebview(mapOf(
                             "type" to "error",
                             "message" to "Not connected or no active session",

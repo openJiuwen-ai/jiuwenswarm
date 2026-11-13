@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 """Gateway-owned checkpoint commands over the existing E2A push/ACK channel."""
 
 import asyncio
@@ -200,3 +201,5 @@ async def handle_checkpoint_push(client, chunk, session_id):
         # The AgentServer waiter will time out. Do not repeat the operation.
         logger.warning("Task checkpoint acknowledgement delivery failed", exc_info=True)
     return True
+=======
+>>>>>>> origin/develop

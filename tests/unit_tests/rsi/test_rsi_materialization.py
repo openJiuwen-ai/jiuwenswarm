@@ -278,6 +278,7 @@ def test_materializer_copies_dataset_wraps_single_harness_and_writes_validation_
         == 5
     )
     assert profile["sha256"] == hashlib.sha256(profile_path.read_bytes()).hexdigest()
+<<<<<<< HEAD
     from openjiuwen.rsi.harness_rsi.config import load_auto_coordinating_harness_config
 
     config = load_auto_coordinating_harness_config(str(profile_path))
@@ -285,6 +286,27 @@ def test_materializer_copies_dataset_wraps_single_harness_and_writes_validation_
     assert config.promotion.min_improvement == 0.05
     assert config.promotion.non_target_max_regression == 0.05
     assert config.evaluator.score_mode == "continuous"
+||||||| e487e9a30
+=======
+    from openjiuwen.rsi.harness_rsi.config import load_auto_coordinating_harness_config
+
+    config = load_auto_coordinating_harness_config(str(profile_path))
+    assert profile_payload["promotion"] == {
+        "policy_version": "continuous_two_stage_v2",
+        "min_improvement": 0.05,
+        "non_target_max_regression": 0.05,
+    }
+    assert profile_payload["evaluator"]["score_mode"] == "continuous"
+    assert config.max_epochs == 4
+    # The pinned SDK may ignore these fields; check parsed semantics when supported.
+    if hasattr(config, "promotion"):
+        assert config.promotion.continuous
+        assert config.promotion.min_improvement == 0.05
+        assert config.promotion.non_target_max_regression == 0.05
+        assert config.evaluator.score_mode == "continuous"
+    else:
+        assert config.scheduling.promotion_policy == "epoch_full_evaluation"
+>>>>>>> origin/develop
 
 
 @pytest.mark.parametrize(
@@ -559,12 +581,23 @@ def test_task_service_materializes_private_validation_inputs_and_keeps_manifest_
     )
     assert profile["max_epochs"] == 5
     assert profile["member_optimizer"]["sibling_candidate_count"] == 1
+    assert profile["promotion"]["policy_version"] == "continuous_two_stage_v2"
+    assert profile["evaluator"]["score_mode"] == "continuous"
     # Exercise the real constructor, not just the YAML parser or a stub engine.
     request = HarnessEngineAdapter(provider).build_request(task.to_taskview())
     orchestrator = provider._resolve_orchestrator(request)
     assert orchestrator.config.max_epochs == 5
+<<<<<<< HEAD
     assert orchestrator.config.promotion.continuous
     assert orchestrator.config.evaluator.score_mode == "continuous"
+||||||| e487e9a30
+=======
+    if hasattr(orchestrator.config, "promotion"):
+        assert orchestrator.config.promotion.continuous
+        assert orchestrator.config.evaluator.score_mode == "continuous"
+    else:
+        assert orchestrator.config.scheduling.promotion_policy == "epoch_full_evaluation"
+>>>>>>> origin/develop
     assert orchestrator.config.member_optimizer.sibling_candidate_count == 1
     assert not orchestrator.config.member_optimizer.improver_policy_ref
     evaluated = []

@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 import AppKit
 import ApplicationServices
 
@@ -442,3 +443,5 @@ enum NativePointerReadiness {
         }
     }
 }
+=======
+>>>>>>> origin/develop

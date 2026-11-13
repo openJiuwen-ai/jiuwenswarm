@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
 
+<<<<<<< HEAD
 const previousDocument = globalThis.document;
 const renderDom = new JSDOM('<!doctype html><html><body></body></html>');
 globalThis.document = renderDom.window.document;
@@ -15,6 +16,20 @@ after(() => {
   renderDom.window.close();
 });
 
+||||||| e487e9a30
+=======
+const previousDocument = globalThis.document;
+const previousWindow = globalThis.window;
+const renderDom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost' });
+globalThis.document = renderDom.window.document;
+globalThis.window = renderDom.window;
+after(() => {
+  globalThis.document = previousDocument;
+  globalThis.window = previousWindow;
+  renderDom.window.close();
+});
+
+>>>>>>> origin/develop
 const panelSource = readFileSync(new URL('../src/components/AgentManagementPanel/index.tsx', import.meta.url), 'utf8');
 const installOutcomeSource = readFileSync(
   new URL('../src/features/agentManagement/installOutcome.ts', import.meta.url),
@@ -570,6 +585,7 @@ test('group card actions keep uninstall in the detail page and install created g
   );
   assert.match(panelSource, /groupClient\.importGroup\(path\)[\s\S]*groupClient\.installGroup\(result\.id\)/);
   assert.match(panelSource, /client\.createAgent\([\s\S]*handleInstall\(id\)/);
+<<<<<<< HEAD
   assert.match(panelSource, /client\.importAgentTemplate\(path\)[\s\S]*handleInstall\(result\.id, \{/);
 });
 
@@ -616,6 +632,62 @@ test('uncertain install errors are classified as transport failures', () => {
   assert.match(panelSource, /return isUncertainInstallError\(error\) \? 'uncertain' : 'failed';/);
   assert.doesNotMatch(panelSource, /agent_management_request_failed'\) return true/);
   assert.doesNotMatch(panelSource, /installFailed = !\(await handleInstall/);
+||||||| e487e9a30
+  assert.match(panelSource, /client\.importAgentTemplate\(path\)[\s\S]*handleInstall\(result\.id\)/);
+=======
+  assert.match(panelSource, /client\.importAgentTemplate\(path\)[\s\S]*handleInstall\(result\.id, \{\s*suppressInlineError: true,/);
+});
+
+test('failed expert upload install rolls back the import and shows the error in the upload dialog', () => {
+  assert.match(panelSource, /onError: \(message\) => \{ installErrorMessage = message; \}/);
+  // Only a definite backend rejection rolls the import back; uncertain
+  // outcomes (timeout/disconnect) keep the package for a manual retry.
+  assert.match(panelSource, /installFailed = outcome === 'failed';/);
+  assert.match(panelSource, /installOutcomeUnknown = outcome === 'uncertain';/);
+  // Install failure keeps the dialog open and shows the error inside it
+  // instead of closing the dialog and showing a notice on the card page.
+  assert.match(
+    panelSource,
+    /if \(installFailed\) \{[\s\S]*client\.deleteDefinition\(result\.id\)[\s\S]*\}[\s\S]*if \(installFailed\) \{[\s\S]*setGroupUploadError\(installErrorMessage \|\| t\('agentManagement\.states\.actionError'\)\)[\s\S]*setUploadError\(installErrorMessage \|\| t\('agentManagement\.states\.actionError'\)\)/,
+  );
+  assert.match(
+    panelSource,
+    /\} else if \(installOutcomeUnknown\) \{\s*\n\s*if \(kind === 'group'\) setGroupUploadError\(t\('agentManagement\.states\.installOutcomeUnknown'\)\)/,
+  );
+  // The dialog must NOT be closed inside the installFailed branch —
+  // setUploadDialogOpen(false) only appears in the success branch.
+  assert.match(
+    panelSource,
+    /\} else \{\s*\n\s*setUploadDialogOpen\(false\);\s*\n\s*setUploadError\(null\);\s*\n\s*setGroupUploadDialogOpen\(false\);/,
+  );
+  // The canned "imported but install failed" notice is fully replaced by the
+  // raw backend error message.
+  assert.doesNotMatch(panelSource, /uploadImportedInstallFailed/);
+});
+
+test('uncertain install errors are classified as transport failures', () => {
+  // Inverted verdict rule: only in-flight transport deaths stay 'uncertain'
+  // (the backend may still complete the install, so the just-imported
+  // package is kept). Every backend verdict rolls the import back —
+  // including rejections that carry no code: webClient leaves `code`
+  // undefined only on backend responses (resolvePending /
+  // resolveRuntimeAcceptedPending), which rethrowAgentError maps onto the
+  // agent_management_request_failed fallback. Behavioral coverage for the
+  // classification itself lives in tests/agentManagement.test.mjs.
+  assert.match(installOutcomeSource, /const INSTALL_TRANSPORT_ERROR_CODES: ReadonlySet<string> = new Set\(\[/);
+  for (const code of ['REQUEST_TIMEOUT', 'WS_DISCONNECTED', 'WS_CLOSED', 'WS_ERROR', 'REQUEST_ABORTED']) {
+    assert.match(installOutcomeSource, new RegExp(`'${code}',`));
+  }
+  assert.doesNotMatch(installOutcomeSource, /'WS_NOT_READY',/);
+  assert.match(installOutcomeSource, /return INSTALL_TRANSPORT_ERROR_CODES\.has\(code\);/);
+  // The fallback code must not be reintroduced as a blanket-uncertain rule:
+  // it also wraps codeless backend rejections, which are definite verdicts.
+  assert.doesNotMatch(installOutcomeSource, /agent_management_request_failed/);
+  assert.match(panelSource, /isUncertainInstallError,/);
+  assert.match(panelSource, /return isUncertainInstallError\(error\) \? 'uncertain' : 'failed';/);
+  assert.doesNotMatch(panelSource, /agent_management_request_failed'\) return true/);
+  assert.doesNotMatch(panelSource, /installFailed = !\(await handleInstall/);
+>>>>>>> origin/develop
 });
 
 test('primary management tabs retain tab semantics and chat picker enforces mode locks', () => {
@@ -642,7 +714,7 @@ test('primary management tabs retain tab semantics and chat picker enforces mode
   assert.match(inputAreaSource, /chat\.teamSkillsGroupLocked/);
   assert.match(inputAreaSource, /if \(!activeSessionId \|\| agentSelectionDisabled\) return;/);
   assert.match(inputAreaSource, /if \(agentGroupSelectionDisabled \|\| !activeSessionId\) return;/);
-  assert.match(inputAreaSource, /agentSelectionDisabled && 'is-locked'/);
+  assert.match(inputAreaSource, /\(agentSelectionDisabled \|\| externalSwitchBlocked\) && 'is-locked'/);
   assert.match(inputAreaSource, /agentGroupSelectionDisabled && 'is-locked'/);
   assert.match(inputAreaSource, /!isTeamMode \? \([\s\S]*chat-panel-agent-picker-agent-tab/);
   assert.match(inputAreaSource, /!isAgentMode \? \([\s\S]*chat-panel-agent-picker-agent-group-tab/);

@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """BaseWsChannel outbound queue: capped, drops instead of piling up memory."""
 
@@ -176,3 +177,5 @@ async def test_disconnected_queue_counts_do_not_survive_reconnect():
         assert not channel._queued_moa_notices
     finally:
         await channel.unregister_ws(replacement)
+=======
+>>>>>>> origin/develop

@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 """WebChannel - WebSocket 通道实现.
@@ -2189,3 +2190,5 @@ class WebChannel(BaseWsChannel):
         ts = format(int(time.time() * 1000), "x")
         suffix = secrets.token_hex(3)
         return f"sess_{ts}_{suffix}"
+=======
+>>>>>>> origin/develop

@@ -13,6 +13,14 @@ import type { TrajectoryTurnModel } from '../trajectory/model.ts'
 import type { AssistantMetricDetail, TrajectoryCellKind, TrajectoryCellProps } from '../trajectory/record.ts'
 import { formatTokenCount, liveElapsedSeconds } from '../trajectory/record.ts'
 import {
+  clipIntervalAgainstGaps,
+  collectUserInteractionWallRanges,
+  placeUserTurnAxisEdges,
+  userTurnDisplayGaps,
+  type SharedTurnAxisRange,
+} from '../diagnosis/diagnosisTimeSelection.ts'
+import {
+  alignPrepSpansBeforeModel,
   deriveTrajectoryTimeline,
   formatTimelineOffset,
   panTrajectoryTimelineViewport,
@@ -234,6 +242,7 @@ export interface TrajectoryTimelineProps {
   onRecordFocus?: (index: number) => void
   /** Shared presentation clock used only for open running intervals. */
   nowMilliseconds?: number
+<<<<<<< HEAD
   /**
    * Domain shared by every diagnosis lane. Without `mapTime`, span times stay
    * absolute and the overview no longer stretches a lane across its own span hull.
@@ -265,6 +274,46 @@ export interface TrajectoryTimelineProps {
    * at full strength. `focus` dims everything outside the brush.
    */
   rangeAppearance?: 'focus' | 'region'
+||||||| e487e9a30
+=======
+  /**
+   * Domain shared by every diagnosis lane. Without `mapTime`, span times stay
+   * absolute and the overview no longer stretches a lane across its own span hull.
+   */
+  sharedDomain?: TrajectoryTimeRange | null
+  /** Maps absolute span times onto `sharedDomain`, dropping idle gaps. */
+  mapTime?: (time: number) => number
+  /**
+   * Host-owned `user_turn` ranges already mapped onto the overview axis.
+   * Diagnosis lanes pass the leader / main-agent ranges so every swimlane pads
+   * and marks the same junctions; omit to derive gaps from this lane's turns.
+   */
+  userTurnGapRanges?: readonly SharedTurnAxisRange[]
+  /**
+   * Drag selects a range and a left-drag does not pan.
+   * Wheel zoom stays available when `onViewportChange` shares one window.
+   */
+  lockViewport?: boolean
+  /** A locked lane still selects the range of a clicked Input block. Off by default. */
+  spanSelectsRange?: boolean
+  /**
+   * A short press selects that block's ledger row and clears any local brush,
+   * including an Input block and a press that misses the block by a few pixels.
+   * Diagnosis lanes leave this off so the press still paints the shared brush.
+   */
+  clickSelectsRecord?: boolean
+  /** Shared visible window, in the same coordinates as `sharedDomain`. */
+  sharedViewport?: TrajectoryTimeRange | null
+  /** Reports a wheel zoom or pan of the shared window. Enables the wheel while locked. */
+  onViewportChange?: (viewport: TrajectoryTimeRange | null) => void
+  /** Latest shared window, so a wheel burst does not wait for the next render. */
+  sharedViewportRef?: RefObject<TrajectoryTimeRange | null>
+  /**
+   * `region` paints the brush as a light-blue band and leaves the other spans
+   * at full strength. `focus` dims everything outside the brush.
+   */
+  rangeAppearance?: 'focus' | 'region'
+>>>>>>> origin/develop
 }
 
 function minimumZoomDomain(mode: TrajectoryTimelineMode): number {
@@ -397,6 +446,7 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
   onRecordSelect,
   onRecordFocus,
   nowMilliseconds = Date.now(),
+<<<<<<< HEAD
   sharedDomain = null,
   mapTime,
   lockViewport = false,
@@ -406,7 +456,21 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
   onViewportChange,
   sharedViewportRef,
   rangeAppearance = 'focus',
+||||||| e487e9a30
+=======
+  sharedDomain = null,
+  mapTime,
+  userTurnGapRanges,
+  lockViewport = false,
+  spanSelectsRange = false,
+  clickSelectsRecord = false,
+  sharedViewport = null,
+  onViewportChange,
+  sharedViewportRef,
+  rangeAppearance = 'focus',
+>>>>>>> origin/develop
 }: TrajectoryTimelineProps) {
+<<<<<<< HEAD
   const model = useMemo(
     () => withSharedWallClockDomain(
       deriveTrajectoryTimeline(turns, mode, nowMilliseconds),
@@ -415,6 +479,27 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
     ),
     [mapTime, mode, nowMilliseconds, sharedDomain, turns],
   )
+||||||| e487e9a30
+  const model = useMemo(
+    () => deriveTrajectoryTimeline(turns, mode, nowMilliseconds),
+    [mode, nowMilliseconds, turns],
+  )
+=======
+  // Always slide late prep before the model reply so Input/CONTEXT never paint
+  // over ASSISTANT — including diagnosis selection. Brush and Input-click both
+  // use these display coordinates; toWall maps them back for the diagnosis scope.
+  const model = useMemo(() => {
+    const projected = withSharedWallClockDomain(
+      deriveTrajectoryTimeline(turns, mode, nowMilliseconds),
+      sharedDomain,
+      mapTime,
+    )
+    if (projected === null || mode === 'duration' || mode === 'tokens' || mode === 'sequence') {
+      return projected
+    }
+    return alignPrepSpansBeforeModel(projected, turns)
+  }, [mapTime, mode, nowMilliseconds, sharedDomain, turns])
+>>>>>>> origin/develop
   const detailByIndex = useMemo(
     () => new Map(turns.flatMap(turn =>
       turn.groups.flatMap(group =>
@@ -423,6 +508,68 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
     )),
     [nowMilliseconds, turns],
   )
+  // Numbered `turn` lines stay a single mark at the turn open. The blank,
+  // the start/end pair, and the axis clocks belong only to `user_turn`.
+  // Shared-axis hosts pass leader/main ranges so member lanes share those gaps.
+  const userTurnGapEdges = useMemo(() => {
+    if (model === null) return []
+    const useUserTurnGaps = sharedDomain !== null || mode === 'actual' || mode === 'time'
+    let ranges: readonly SharedTurnAxisRange[]
+    if (userTurnGapRanges !== undefined) {
+      ranges = userTurnGapRanges
+    } else if (!useUserTurnGaps) {
+      return []
+    } else {
+      const map = sharedDomain !== null && mapTime !== undefined
+        ? mapTime
+        : (time: number) => time
+      ranges = collectUserInteractionWallRanges(turns, nowMilliseconds).map(range => {
+        const start = map(range.startWallMs)
+        const end = map(range.endWallMs)
+        return {
+          turn: range.userTurn,
+          startAxisMs: Math.min(start, end),
+          endAxisMs: Math.max(start, end),
+          startWallMs: range.startWallMs,
+          endWallMs: range.endWallMs,
+        }
+      })
+    }
+    const visibleDuration = sharedViewport !== null && sharedViewport.end > sharedViewport.start
+      ? sharedViewport.end - sharedViewport.start
+      : Math.max(1, model.end - model.start)
+    return placeUserTurnAxisEdges(ranges, visibleDuration)
+  }, [mapTime, mode, model, nowMilliseconds, sharedDomain, sharedViewport, turns, userTurnGapRanges])
+  // Long Main-Agent model/tool spans often cross the forced junction; clip the blank.
+  const userTurnGaps = useMemo(
+    () => userTurnDisplayGaps(userTurnGapEdges),
+    [userTurnGapEdges],
+  )
+  const turnDividerMarks = useMemo(() => {
+    if (model === null) return []
+    return model.turnBoundaries.flatMap(boundary => {
+      if (!(boundary.start > model.start)) return []
+      // A user_turn junction already owns the blank. Do not drop another line
+      // into that gap; the turn mark stays on work that sits outside it.
+      const insideUserTurnGap = userTurnGaps.some(gap => (
+        boundary.start > gap.startMs && boundary.start < gap.endMs
+      ))
+      if (insideUserTurnGap) return []
+      return [{
+        key: `turn-${boundary.turn}-${boundary.start}`,
+        turn: boundary.turn,
+        time: boundary.start,
+      }]
+    })
+  }, [model, userTurnGaps])
+  const userTurnDividerMarks = useMemo(() => (
+    userTurnGapEdges.map(edge => ({
+      key: `user-turn-${edge.turn}-${edge.edge}-${edge.axisMs}`,
+      turn: edge.turn,
+      time: edge.displayAxisMs,
+      edge: edge.edge,
+    }))
+  ), [userTurnGapEdges])
   const dragRef = useRef<{
     pointerId: number
     anchorTime: number
@@ -865,7 +1012,15 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
       onRecordSelect?.(clickedSpan.index)
       return
     }
-    const committedRange = selected.end - selected.start < minimumSelectionDuration
+    // Diagnosis region brushes must keep the exact drag (same as SharedTimeAxis).
+    // Focus mode still pads short drags so a click-sized brush can frame a span.
+    // Region browse (clickSelectsOwnRecord) still falls through to nearest-record.
+    const exactRegionBrush = rangeAppearance === 'region' || spanSelectsRange
+    if (exactRegionBrush && click && !clickSelectsOwnRecord) {
+      return
+    }
+    const committedRange = !exactRegionBrush
+      && selected.end - selected.start < minimumSelectionDuration
       ? centeredRange(
         click ? selected.start : (selected.start + selected.end) / 2,
         minimumSelectionDuration,
@@ -984,31 +1139,42 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
           <div
             className={css.turnBoundaries}
             data-animate-viewport={animateViewport || undefined}
-            aria-hidden="true"
           >
-            {model.turnBoundaries
-              .filter(boundary => boundary.time > model.start)
-              .map(boundary => (
-                <span
-                  className={css.turnBoundary}
-                  data-turn={boundary.turn}
-                  key={boundary.turn}
-                  style={{
-                    '--trajectory-turn-left':
-                      `${(boundary.time - model.start) / fullDuration * 100}%`,
-                  } as CSSProperties}
-                />
-              ))}
+            {turnDividerMarks.map(mark => (
+              <span
+                className={css.turnBoundary}
+                data-divider="turn"
+                data-turn={mark.turn}
+                key={mark.key}
+                style={{
+                  '--trajectory-turn-left':
+                    `${Math.max(0, (mark.time - model.start) / fullDuration) * 100}%`,
+                  '--trajectory-turn-shift': '0px',
+                } as CSSProperties}
+              />
+            ))}
+            {userTurnDividerMarks.map(mark => (
+              <span
+                className={css.turnBoundary}
+                data-divider="user-turn"
+                data-turn={mark.turn}
+                data-edge={mark.edge}
+                key={mark.key}
+                style={{
+                  '--trajectory-turn-left':
+                    `${Math.max(0, (mark.time - model.start) / fullDuration) * 100}%`,
+                  '--trajectory-turn-shift': '0px',
+                } as CSSProperties}
+              />
+            ))}
           </div>
           <div
             className={css.lanes}
             data-animate-viewport={animateViewport || undefined}
             data-timeline-domain
           >
-            {model.spans.map((span) => {
-                const left = (span.start - model.start) / fullDuration
-                const width = (span.end - span.start) / fullDuration
-                const widthPercent = width * 100
+            {model.spans.flatMap((span) => {
+                const pieces = clipIntervalAgainstGaps(span.start, span.end, userTurnGaps)
                 const detail = detailByIndex.get(span.index)
                 const ttftMs = detail?.ttftMs
                 const decodingMs = detail?.decodingMs
@@ -1017,6 +1183,7 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
                   || ttftMs + decodingMs <= 0
                   ? null
                   : ttftMs / (ttftMs + decodingMs)
+<<<<<<< HEAD
                 const splitFraction = mode === 'tokens'
                   ? span.splitFraction ?? null
                   : ttftFraction
@@ -1048,20 +1215,95 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
                       data-selected={rangeAppearance === 'region' || activeRange === null
                         ? undefined
                         : span.start <= activeRange.end && span.end >= activeRange.start
+||||||| e487e9a30
+                const splitFraction = mode === 'tokens'
+                  ? span.splitFraction ?? null
+                  : ttftFraction
+                return (
+                  <Tooltip
+                    key={spanKey(span)}
+                    label={() => timelineTooltipLabel(span.kind, detail, span.segment)}
+                    side="bottom"
+                    delayMs={TIMELINE_TOOLTIP_DELAY_MS}
+                  >
+                    <span
+                      aria-hidden="true"
+                      className={css.span}
+                      data-timeline-span={span.kind}
+                      data-timeline-record-index={span.index}
+                      data-timeline-span-key={spanKey(span)}
+                      data-timeline-segment={span.segment}
+                      data-span-split={splitFraction === null ? undefined : 'true'}
+                      data-error={span.isError || undefined}
+                      data-equal-duration={mode === 'time' || undefined}
+                      data-current={spanCovers(span, selectedIndex) || undefined}
+                      data-hovered={hover?.recordIndex === span.index || undefined}
+                      data-search-match={searchMatchIndexes === null
+                        ? undefined
+                        : searchMatchIndexes.has(span.index) ? 'true' : 'false'}
+                      data-selected={activeRange === null
+                        ? undefined
+                        : span.start <= activeRange.end && span.end >= activeRange.start
+=======
+                const keepSplit = pieces.length === 1
+                  && pieces[0] !== undefined
+                  && pieces[0].startMs === span.start
+                  && pieces[0].endMs === span.end
+                const splitFraction = !keepSplit
+                  ? null
+                  : mode === 'tokens'
+                    ? span.splitFraction ?? null
+                    : ttftFraction
+                return pieces.map((piece, pieceIndex) => {
+                  const left = (piece.startMs - model.start) / fullDuration
+                  const width = (piece.endMs - piece.startMs) / fullDuration
+                  const widthPercent = width * 100
+                  return (
+                    <Tooltip
+                      key={`${spanKey(span)}#${pieceIndex}`}
+                      label={() => timelineTooltipLabel(span.kind, detail, span.segment)}
+                      side="bottom"
+                      delayMs={TIMELINE_TOOLTIP_DELAY_MS}
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={css.span}
+                        data-timeline-span={span.kind}
+                        data-timeline-record-index={span.index}
+                        data-timeline-span-key={spanKey(span)}
+                        data-timeline-segment={span.segment}
+                        data-span-split={splitFraction === null ? undefined : 'true'}
+                        data-error={span.isError || undefined}
+                        data-equal-duration={mode === 'time' || undefined}
+                        data-current={spanCovers(span, selectedIndex) || undefined}
+                        data-hovered={hover?.recordIndex === span.index || undefined}
+                        data-search-match={searchMatchIndexes === null
+                          ? undefined
+                          : searchMatchIndexes.has(span.index) ? 'true' : 'false'}
+                        data-highlight={pinnedIndexes !== null && pinnedIndexes.has(span.index)
+>>>>>>> origin/develop
                           ? 'true'
-                          : 'false'}
-                      style={{
-                        '--trajectory-span-left': `${left * 100}%`,
-                        '--trajectory-span-width': `${widthPercent}%`,
-                        '--trajectory-span-gap': `min(${widthPercent * 0.08}%, 1px)`,
-                        '--trajectory-span-lane': span.lane,
-                        ...(splitFraction === null
-                          ? {}
-                          : { '--trajectory-span-split': `${splitFraction * 100}%` }),
-                      } as CSSProperties}
-                    />
-                  </Tooltip>
-                )
+                          : undefined}
+                        data-selected={rangeAppearance === 'region' || activeRange === null
+                          ? undefined
+                          : span.start <= activeRange.end && span.end >= activeRange.start
+                            ? 'true'
+                            : 'false'}
+                        style={{
+                          '--trajectory-span-left': `${left * 100}%`,
+                          '--trajectory-span-width': `${widthPercent}%`,
+                          '--trajectory-span-gap': `min(${widthPercent * 0.08}%, 1px)`,
+                          '--trajectory-span-turn-pad-left': '0px',
+                          '--trajectory-span-turn-pad-right': '0px',
+                          '--trajectory-span-lane': span.lane,
+                          ...(splitFraction === null
+                            ? {}
+                            : { '--trajectory-span-split': `${splitFraction * 100}%` }),
+                        } as CSSProperties}
+                      />
+                    </Tooltip>
+                  )
+                })
               })}
           </div>
         </div>

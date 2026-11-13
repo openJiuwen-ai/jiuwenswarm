@@ -9,8 +9,10 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+<<<<<<< HEAD
 import yaml
 
 from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
@@ -18,21 +20,61 @@ from jiuwenswarm.common.config_panel import config_set_handlers, models_handlers
 from jiuwenswarm.extensions.registry import ExtensionRegistry
 from jiuwenswarm.gateway.channel_manager.web import app_web_handlers
 from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+||||||| e487e9a30
+
+from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
+from jiuwenswarm.common.config_panel import config_set_handlers, models_handlers
+from jiuwenswarm.extensions.registry import ExtensionRegistry
+from jiuwenswarm.gateway.channel_manager.web import app_web_handlers
+from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+=======
+import yaml
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse, StreamingResponse
+from agent_gateway.common.config_panel import config_set_handlers as _gw_config_set_handlers
+from agent_gateway.extensions.registry import ExtensionRegistry
+from agent_gateway.channel_manager.web import app_web_handlers, web_http_routes
+from agent_gateway.channel_manager.web.app_web_handlers import (
+>>>>>>> origin/develop
     WebHandlersBindParams,
     _build_external_cli_publish_url,
     _detect_external_cli_agent,
-    _flatten_external_cli_agents_for_config_panel,
-    _flatten_modes_team_for_config_panel,
-    _flatten_symphony_for_config_panel,
-    _inject_external_cli_publish_url,
     _normalize_feishu_conf,
     _normalize_xiaoyi_conf,
     _register_web_handlers,
     _validate_wechat_numeric_params,
 )
-from jiuwenswarm.gateway.heartbeat import HeartbeatServiceUnavailableError
-from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
-from jiuwenswarm.gateway.routing.keys import AgentRef, RoutingKey
+from agent_gateway.heartbeat import HeartbeatServiceUnavailableError
+from agent_gateway.runtime.cron import factory as _cron_factory_module
+
+from tests.unit_tests.gateway.config_routing_harness import (
+    make_config_routing_client,
+    make_legacy_config_routing_client,
+)
+from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
+from jiuwenswarm.common.config_panel import config_set_handlers, models_handlers
+from jiuwenswarm.common.config_panel.config_set_handlers import (
+    flatten_external_cli_agents_for_config_panel as _flatten_external_cli_agents_for_config_panel,
+    flatten_modes_team_for_config_panel as _flatten_modes_team_for_config_panel,
+    flatten_symphony_for_config_panel as _flatten_symphony_for_config_panel,
+    inject_external_cli_publish_url as _inject_external_cli_publish_url,
+)
+# gateway 进程的 bridge 已退役；测试进程按 server 侧同款"import 即注册"
+# 装配注入点（tests 不受 R3 约束），使 config 面板等 common 消费路径
+# 在本测试进程内可执行（生产形态为 gateway 经 WS 访问 AgentServer）。
+import jiuwenswarm.server.runtime.a2ui.integration  # noqa: F401,E402
+import jiuwenswarm.server.runtime.mcp.credential  # noqa: F401,E402
+import jiuwenswarm.server.runtime.mcp.state_store  # noqa: F401,E402
+import jiuwenswarm.server.runtime.session.session_metadata  # noqa: F401,E402
+import jiuwenswarm.server.runtime.team_binding_store  # noqa: F401,E402
+import jiuwenswarm.server.runtime.team_entity_store  # noqa: F401,E402
+from jiuwenswarm.common.external_providers import register as _register_test_provider
+from jiuwenswarm.server.runtime.mcp import registry as _mcp_registry_module
+
+_register_test_provider("cron_store_factory", _cron_factory_module)
+_register_test_provider("mcp_registry", _mcp_registry_module)
+from agent_gateway.routing.agent_client import WebSocketAgentServerClient  # pylint: disable=wrong-import-order
+from agent_gateway.routing.keys import AgentRef, RoutingKey  # pylint: disable=wrong-import-order
 
 
 class FakeWebChannel:
@@ -46,7 +88,7 @@ class FakeWebChannel:
         self.rebounds: list[tuple[str | None, str]] = []
         self.cleared: list[str | None] = []
 
-    def register_method(self, name, handler):
+    def register_method(self, name, handler, *, local_only=False):
         self.methods[name] = handler
 
     def on_connect(self, handler):
@@ -146,6 +188,7 @@ async def test_a4p_rpc_rejects_websocket_without_session_route(method) -> None:
     assert channel.responses[-1]["code"] == "A4P_WEB_SESSION_REQUIRED"
 
 
+<<<<<<< HEAD
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("cli_agent", "package", "relative"),
@@ -211,6 +254,74 @@ async def test_external_cli_detect_finds_compatible_sdk_on_cold_gateway(
         assert str(site) not in sys.path
 
 
+||||||| e487e9a30
+=======
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cli_agent", "package", "relative"),
+    [("claude", "claude_agent_sdk", "_bundled/claude"),
+     ("codex", "codex_cli_bin", "bin/codex")],
+)
+@pytest.mark.parametrize("runtime_state", ["current", "update_required"])
+@pytest.mark.parametrize("platform_name", ["nt", "posix"])
+async def test_external_cli_detect_finds_compatible_sdk_on_cold_gateway(
+    monkeypatch, tmp_path, cli_agent, package, relative, runtime_state, platform_name
+):
+    from agent_gateway.common import external_cli_runtime as runtime
+
+    site = tmp_path / cli_agent / "site-packages"
+    suffix = ".exe" if platform_name == "nt" else ""
+    executable = site / package / (relative + suffix)
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    (site / package / "__init__.py").touch()
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    original_find_spec = importlib.util.find_spec
+
+    def find_spec(name, *args, **kwargs):
+        if name == package:
+            if str(site) not in sys.path:
+                return None
+            return importlib.util.spec_from_file_location(name, site / package / "__init__.py")
+        return original_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", find_spec)
+    monkeypatch.setattr(app_web_handlers, "_is_frozen_runtime", lambda: True)
+    monkeypatch.setattr(runtime, "_is_frozen_windows", lambda: True)
+    monkeypatch.setattr(runtime, "external_cli_runtime_names", lambda: [cli_agent])
+    monkeypatch.setattr(runtime, "_runtime_site_packages", lambda _agent: site)
+    monkeypatch.setattr(runtime, "get_external_cli_runtime_status", lambda _agent: {"runtime_state": runtime_state})
+    # Replace only this module's reference, not the process-wide os.name.
+    monkeypatch.setattr(_gw_config_set_handlers, "os", SimpleNamespace(name=platform_name))
+    competing_cli = tmp_path / "path-bin" / (cli_agent + suffix)
+    competing_cli.parent.mkdir()
+    competing_cli.touch()
+    monkeypatch.setattr(
+        _gw_config_set_handlers.shutil, "which",
+        lambda name: str(competing_cli) if name == cli_agent and runtime_state == "current" else None,
+    )
+    monkeypatch.setattr(_gw_config_set_handlers, "external_cli_reference_version", lambda _agent: "1.2.3")
+    monkeypatch.setattr(_gw_config_set_handlers, "run_external_cli_version_command", lambda *_args: ("1.2.3", ""))
+    assert _gw_config_set_handlers.external_cli_managed_cli_path(cli_agent) == ""
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=SimpleNamespace(server_ready=True)))
+
+    await channel.methods["external_cli.detect"](
+        object(), "detect-cold", {"cli_agent": cli_agent, "use_builtin": True}, "session"
+    )
+
+    result = channel.responses[-1]
+    assert result["ok"] is True
+    if runtime_state == "current":
+        assert result["payload"]["status"] == "ok"
+        assert Path(result["payload"]["path"]) == executable
+        assert result["payload"]["version"] == "1.2.3"
+    else:
+        assert result["payload"]["status"] == "missing"
+        assert str(site) not in sys.path
+
+
+>>>>>>> origin/develop
 class FakeAgentClient:
     def __init__(self):
         self.reload_started = asyncio.Event()
@@ -224,6 +335,17 @@ class FakeAgentClient:
             return type("Resp", (), {"ok": True, "payload": {}})()
         finally:
             self.reload_finished.set()
+
+
+def test_client_attach_methods_are_plain_forwards_to_agent_server() -> None:
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    # A client's attach requests are answered by AgentServer, never by a local handler.
+    methods = {"client.attach", "client.renew", "client.list", "client.conversation.messages"}
+    assert methods <= app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
+    assert methods <= app_web_handlers._FORWARD_REQ_METHODS
+    assert not methods & channel.methods.keys()
 
 
 @pytest.mark.asyncio
@@ -240,7 +362,7 @@ async def test_models_get_returns_editable_detail_with_api_key(monkeypatch) -> N
 
     monkeypatch.setattr("jiuwenswarm.common.config_panel.model_resource_handlers.ModelCatalog", FakeCatalog)
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["models.get"](object(), "req-model", {"model_id": "mdl_a"}, "sid")
 
@@ -265,6 +387,7 @@ class _FakeModelsResponse:
 
 
 @pytest.mark.asyncio
+<<<<<<< HEAD
 @pytest.mark.parametrize(
     ("modality", "expected"),
     [
@@ -397,6 +520,141 @@ async def test_vendors_fetch_models_does_not_show_single_preset_when_ark_generat
 
 
 @pytest.mark.asyncio
+||||||| e487e9a30
+=======
+@pytest.mark.parametrize(
+    ("modality", "expected"),
+    [
+        ("image", ["doubao-seedream-active", "doubao-seedream-retiring"]),
+        ("video", ["doubao-seedance-active", "doubao-seedance-shutdown"]),
+    ],
+)
+async def test_vendors_fetch_models_filters_ark_generation_domain_without_dropping_lifecycle_status(
+    monkeypatch, modality, expected,
+):
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"data": [
+                {"id": "doubao-seedream-active", "domain": "ImageGeneration"},
+                {"id": "doubao-seedream-retiring", "domain": "ImageGeneration", "status": "Retiring"},
+                {"id": "doubao-seedance-active", "domain": "VideoGeneration"},
+                {"id": "doubao-seedance-shutdown", "domain": "VideoGeneration", "status": "Shutdown"},
+                {"id": "doubao-vision", "domain": "VLM", "modalities": {"input_modalities": ["image"]}},
+            ]}
+
+    requested = []
+
+    def fake_get(url, **kwargs):
+        requested.append(url)
+        return FakeResponse()
+
+    monkeypatch.setattr("httpx.get", fake_get)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["vendors.fetch_models"](
+        object(), "req-ark-models",
+        {
+            "vendor_key": "volcengine", "plan": "custom_api", "api_key": "secret",
+            "api_base": "https://ark.ap-southeast.bytepluses.com/api/v3", "modality": modality,
+        },
+        "sess-1",
+    )
+
+    assert requested == ["https://ark.ap-southeast.bytepluses.com/api/v3/models"]
+    assert channel.responses[-1]["payload"] == {"models": expected, "source": "remote"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("api_base", [
+    "https://ark.cn-beijing.volces.com.evil.example/api/v3",
+    "https://ark.cn-beijing.volces.com/api/coding/v3",
+])
+async def test_vendors_fetch_models_rejects_untrusted_ark_generation_base(monkeypatch, api_base):
+    monkeypatch.setattr("httpx.get", lambda *args, **kwargs: pytest.fail("unexpected remote request"))
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["vendors.fetch_models"](
+        object(), "req-ark-models",
+        {
+            "vendor_key": "volcengine", "plan": "custom_api", "api_key": "secret",
+            "api_base": api_base, "modality": "image",
+        },
+        "sess-1",
+    )
+
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_external_cli_validate_paths_survives_unreadable_paths(monkeypatch, tmp_path):
+    """A PermissionError yields null: unreadable is not proof of absence."""
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
+
+    usable_file = tmp_path / "claude.cmd"
+    usable_file.write_text("demo")
+    locked_path = str(tmp_path / "locked" / "codex.cmd")
+    original_is_file = Path.is_file
+
+    def flaky_is_file(self):
+        if self.name == "codex.cmd":
+            raise PermissionError(13, "Permission denied")
+        return original_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", flaky_is_file)
+
+    await channel.methods["external_cli.validate_paths"](
+        object(),
+        "req-validate-paths-eacces",
+        {"paths": [str(usable_file), locked_path]},
+        "sess-validate-paths-eacces",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    results = channel.responses[-1]["payload"]["results"]
+    assert results[str(usable_file)] is True
+    # null (not False): a locked path must never be treated as missing, so
+    # the history cleanup keeps it in the dropdown.
+    assert results[locked_path] is None
+
+
+@pytest.mark.asyncio
+async def test_vendors_fetch_models_requires_key_without_generation_preset_fallback(monkeypatch):
+    monkeypatch.setattr("httpx.get", lambda *args, **kwargs: pytest.fail("unexpected remote request"))
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    await channel.methods["vendors.fetch_models"](
+        object(), "req-ark-models", {"vendor_key": "volcengine", "plan": "custom_api", "modality": "image"}, "sess-1",
+    )
+    assert channel.responses[-1]["payload"] == {
+        "models": [], "source": "unavailable", "reason": "api_key required for fetch",
+    }
+
+
+@pytest.mark.asyncio
+async def test_vendors_fetch_models_does_not_show_single_preset_when_ark_generation_catalog_is_empty(monkeypatch):
+    monkeypatch.setattr("httpx.get", lambda *args, **kwargs: _FakeModelsResponse(["doubao-text-only"]))
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["vendors.fetch_models"](
+        object(), "req-ark-models",
+        {"vendor_key": "volcengine", "plan": "custom_api", "api_key": "secret", "modality": "image"},
+        "sess-1",
+    )
+
+    assert channel.responses[-1]["payload"] == {
+        "models": [], "source": "unavailable", "reason": "remote returned empty generation model list",
+    }
+
+
+@pytest.mark.asyncio
+>>>>>>> origin/develop
 @pytest.mark.parametrize("first_failure", ["exception", "empty"])
 async def test_config_validate_model_retries_failed_probe_with_more_tokens(
     monkeypatch, first_failure
@@ -419,7 +677,7 @@ async def test_config_validate_model_retries_failed_probe_with_more_tokens(
     monkeypatch.setattr(models_handlers, "Model", FakeModel)
     monkeypatch.setattr(models_handlers, "get_config", lambda: {"models": {}})
     monkeypatch.setattr(models_handlers, "get_default_models", lambda _config: [])
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.validate_model"](
         object(),
@@ -478,7 +736,7 @@ class _CapturingSessionListAgentClient:
 @pytest.mark.asyncio
 async def test_vendors_fetch_models_applies_alibaba_allowlist(monkeypatch):
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
     monkeypatch.setattr(
         "httpx.get",
         lambda *args, **kwargs: _FakeModelsResponse(
@@ -510,7 +768,7 @@ async def test_vendors_fetch_models_applies_alibaba_allowlist(monkeypatch):
 @pytest.mark.asyncio
 async def test_vendors_fetch_models_keeps_namespaced_models_for_other_vendors(monkeypatch):
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
     monkeypatch.setattr(
         "httpx.get",
         lambda *args, **kwargs: _FakeModelsResponse(
@@ -536,7 +794,7 @@ async def test_vendors_fetch_models_keeps_namespaced_models_for_other_vendors(mo
 @pytest.mark.asyncio
 async def test_vendors_fetch_models_falls_back_when_all_alibaba_models_are_namespaced(monkeypatch):
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
     monkeypatch.setattr(
         "httpx.get",
         lambda *args, **kwargs: _FakeModelsResponse(["MiniMax/MiniMax-M2.5"]),
@@ -574,15 +832,20 @@ class _CapturingCronController:
         return {"id": "cron-1"}
 
 
+async def _fail_if_asked_agent_binding(**_kwargs):
+    """默认项目不需要问 Agent：被调用即说明空编号走了 AgentServer 解析。"""
+    raise AssertionError("must not ask the Agent to resolve the default project binding")
+
+
 class _OwnedCronController:
     def __init__(self) -> None:
         self.job = SimpleNamespace(id="cron-owner", user_id="user-owner")
         self.update_calls = 0
 
-    async def get_job(self, job_id):
+    async def get_job(self, job_id, **_kwargs):
         return self.job if job_id == self.job.id else None
 
-    async def update_job(self, job_id, patch):
+    async def update_job(self, job_id, patch, **_kwargs):
         self.update_calls += 1
         return {"id": job_id, **patch}
 
@@ -710,7 +973,7 @@ async def test_heartbeat_web_methods_preserve_health_check_aliases_and_session()
 @pytest.mark.asyncio
 async def test_heartbeat_web_reports_unavailable_and_missing_job_codes() -> None:
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["heartbeat.job.list"](
         object(), "list-unavailable", {}, "session-current"
@@ -780,10 +1043,10 @@ async def test_path_select_file_returns_selected_path(
         return selected_path
 
     monkeypatch.setattr(
-        "jiuwenswarm.channels.web.directory_picker.select_file_native",
+        "agent_gateway.channel_manager.web.directory_picker.select_file_native",
         fake_select_file_native,
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["path.select_file"](
         object(),
@@ -809,10 +1072,10 @@ async def test_path_select_file_returns_selected_path(
 async def test_path_select_file_returns_cancelled(monkeypatch: pytest.MonkeyPatch) -> None:
     channel = FakeWebChannel()
     monkeypatch.setattr(
-        "jiuwenswarm.channels.web.directory_picker.select_file_native",
+        "agent_gateway.channel_manager.web.directory_picker.select_file_native",
         lambda **_: None,
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["path.select_file"](
         object(),
@@ -862,39 +1125,111 @@ async def test_session_list_forwards_via_e2a_proxy(
 
 
 @pytest.mark.asyncio
-async def test_session_list_keeps_single_user_shared_directory_fallback(monkeypatch) -> None:
-    """A local AgentServer restart must not hide legacy sessions from Web."""
+@pytest.mark.parametrize("enterprise", [False, True])
+@pytest.mark.parametrize("client_kind", ["legacy", "remote", "missing"])
+@pytest.mark.parametrize(
+    "method, params",
+    [
+        ("session.list", {"limit": 5}),
+        ("session.rename", {"session_id": "current", "title": "New title"}),
+        ("session.pin", {"session_id": "current", "pinned": True}),
+    ],
+)
+async def test_session_management_unavailable_without_server(
+    monkeypatch, enterprise, client_kind, method, params,
+) -> None:
+    """Offline session operations must never access Gateway's local session data."""
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: enterprise)
+    clients = {
+        "legacy": WebSocketAgentServerClient(),
+        "remote": _OfflineRemoteAgentClient(),
+        "missing": None,
+    }
     channel = FakeWebChannel()
-    _register_web_handlers(
-        WebHandlersBindParams(channel=channel, agent_client=WebSocketAgentServerClient())
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=clients[client_kind]))
+
+    def reject_local_access(*args, **kwargs):
+        raise AssertionError("must not access Gateway session data")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_all_sessions_metadata",
+        reject_local_access,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_all_sessions_metadata",
-        lambda *, limit, offset: ([{"session_id": "legacy", "mode": "agent"}], 1),
-    )
-
-    await channel.methods["session.list"](object(), "req-offline", {"limit": 5}, "current")
-
-    assert channel.responses[-1]["ok"] is True
-    assert channel.responses[-1]["payload"]["sessions"][0]["session_id"] == "legacy"
-
-
-@pytest.mark.asyncio
-async def test_session_list_does_not_fallback_for_offline_remote_client(monkeypatch) -> None:
-    """Only the local shared-directory client may use Gateway's data directory."""
-    channel = FakeWebChannel()
-    _register_web_handlers(
-        WebHandlersBindParams(channel=channel, agent_client=_OfflineRemoteAgentClient())
+        "jiuwenswarm.server.runtime.session.session_metadata.set_session_pinned",
+        reject_local_access,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_all_sessions_metadata",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not read Gateway state")),
+        "jiuwenswarm.server.runtime.session.session_rename.apply_session_rename",
+        reject_local_access,
     )
-
-    await channel.methods["session.list"](object(), "req-offline-remote", {}, "current")
+    await channel.methods[method](object(), "req-offline", params, "current", "user-42")
 
     assert channel.responses[-1]["ok"] is False
     assert channel.responses[-1]["code"] == "SERVICE_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enterprise", [False, True])
+@pytest.mark.parametrize(
+    "method, params, payload",
+    [
+        ("session.list", {"limit": 5, "offset": 2}, {"sessions": [], "total": 0}),
+        ("session.rename", {"session_id": "target", "title": "New title"}, {"title": "New title"}),
+        ("session.pin", {"session_id": "target", "pinned": True}, {"pinned": True, "pin_order": 1}),
+    ],
+)
+async def test_session_management_forwards_to_server(monkeypatch, enterprise, method, params, payload):
+    """Both editions preserve the E2A identity, request and Server response."""
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: enterprise)
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    send_request = AsyncMock(return_value=SimpleNamespace(ok=True, payload=payload))
+    monkeypatch.setattr(client, "send_request", send_request)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
+
+    await channel.methods[method](object(), "req-session", params, "current", "user-42")
+
+    send_request.assert_awaited_once()
+    envelope = send_request.call_args.args[0]
+    assert envelope.method == method
+    assert envelope.channel == "web"
+    assert envelope.user_id == "user-42"
+    assert envelope.params == params
+    assert envelope.session_id == "current"
+    assert envelope.is_stream is False
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"] == payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["session.list", "session.rename", "session.pin"])
+@pytest.mark.parametrize("failure", ["server-error", "disconnect"])
+async def test_enterprise_session_management_preserves_e2a_failures(monkeypatch, method, failure):
+    """Server errors and disconnects must not trigger local session handling."""
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: True)
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    send_request = AsyncMock(
+        return_value=SimpleNamespace(ok=False, payload={"error": "session not found", "code": "NOT_FOUND"}),
+    )
+    if failure == "disconnect":
+        send_request.side_effect = ConnectionError("disconnected")
+    monkeypatch.setattr(client, "send_request", send_request)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
+
+    await channel.methods[method](
+        object(), "req-failure", {"session_id": "target", "title": "New title", "pinned": True},
+        "current", "user-42",
+    )
+
+    send_request.assert_awaited_once()
+    response = channel.responses[-1]
+    assert response["ok"] is False
+    assert response["code"] == ("NOT_FOUND" if failure == "server-error" else "SERVICE_UNAVAILABLE")
+    assert response["error"] == ("session not found" if failure == "server-error" else "disconnected")
 
 
 @pytest.mark.asyncio
@@ -918,8 +1253,10 @@ class _DictOwnedCronController:
     def __init__(self) -> None:
         self.job = {"id": "cron-dict-owner", "user_id": "user-owner"}
         self.run_now_calls = 0
+        self.get_kwargs: dict = {}
 
-    async def get_job(self, job_id):
+    async def get_job(self, job_id, **kwargs):
+        self.get_kwargs = kwargs
         return self.job if job_id == self.job["id"] else None
 
     async def run_now_info(self, job_id):
@@ -939,6 +1276,7 @@ async def test_cron_job_run_now_accepts_matching_owner_with_dict_job() -> None:
     )
 
     assert cron.run_now_calls == 1
+    assert cron.get_kwargs["project_id"] is None
     assert channel.responses[-1]["ok"] is True
     assert channel.responses[-1]["payload"]["run_id"] == "run-1"
 
@@ -959,7 +1297,8 @@ async def test_cron_job_run_now_rejects_dict_job_with_different_owner() -> None:
 
 
 @pytest.mark.asyncio
-async def test_agentos_cron_create_does_not_read_gateway_session_metadata(monkeypatch) -> None:
+@pytest.mark.parametrize("targets", ["web", "feishu:im-app"])
+async def test_agentos_cron_create_does_not_read_gateway_session_metadata(monkeypatch, targets) -> None:
     """AgentOS project binding must stay in the routed user AgentServer directory."""
     channel = FakeWebChannel()
     cron = _CapturingCronController()
@@ -968,19 +1307,130 @@ async def test_agentos_cron_create_does_not_read_gateway_session_metadata(monkey
         WebHandlersBindParams(channel=channel, agent_client=client, cron_controller=cron)
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.routing.e2a_proxy.is_agentos_routing_client",
+        "agent_gateway.routing.e2a_proxy.is_agentos_routing_client",
         lambda _client: True,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.embedded.runtime.session.session_metadata.get_session_metadata",
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not read Gateway metadata")),
     )
 
     await channel.methods["cron.job.create"](
-        object(), "req-cron", {"name": "job", "cron_expr": "* * * * *"}, "user-session", "user-1"
+        SimpleNamespace(_jiuwen_app_id="browser-app"), "req-cron",
+        {"name": "job", "cron_expr": "* * * * *", "targets": targets}, "user-session", "user-1"
     )
 
     assert channel.responses[-1]["ok"] is True
+    # 没选项目不问 Agent，也不标记「已经在 Agent 上核对过」。
+    assert "_agentos_project_binding_verified" not in cron.params
+    assert "project_dir" not in cron.params
+    assert cron.params.get("app_id") == ("browser-app" if targets == "web" else None)
+    # 未选项目按 web 通道默认 work 模式本地物化 default（#5713，不落空串）。
+    assert cron.params["project_id"] == "default"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "work_mode, expected_project_id",
+    [
+        ("work", "default"),
+        ("code", "default_code"),
+        (None, "default"),
+    ],
+)
+async def test_cron_create_without_project_materializes_default_id(
+    monkeypatch, work_mode, expected_project_id
+) -> None:
+    """未选项目不问 Agent，但按 work_mode 物化 default/default_code（#5713）。"""
+    channel = FakeWebChannel()
+    cron = _CapturingCronController()
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=object(), cron_controller=cron)
+    )
+    monkeypatch.setattr(
+        "agent_gateway.routing.e2a_proxy.resolve_agent_cron_project_binding",
+        _fail_if_asked_agent_binding,
+    )
+
+    params = {"name": "job", "cron_expr": "* * * * *", "project_dir": ""}
+    if work_mode is not None:
+        params["work_mode"] = work_mode
+
+    await channel.methods["cron.job.create"](
+        SimpleNamespace(), "req-cron-default", params, "user-session", "user-1"
+    )
+
+    assert channel.responses[-1]["ok"] is True, channel.responses[-1]
+    assert cron.params["project_id"] == expected_project_id
+    assert "_agentos_project_binding_verified" not in cron.params
+
+
+@pytest.mark.asyncio
+async def test_cron_create_keeps_explicit_default_project_id(monkeypatch) -> None:
+    """显式 default_code 编号原样透传，不问 Agent、不覆盖。"""
+    channel = FakeWebChannel()
+    cron = _CapturingCronController()
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=object(), cron_controller=cron)
+    )
+    monkeypatch.setattr(
+        "agent_gateway.routing.e2a_proxy.resolve_agent_cron_project_binding",
+        _fail_if_asked_agent_binding,
+    )
+
+    await channel.methods["cron.job.create"](
+        SimpleNamespace(),
+        "req-cron-explicit-default",
+        {"name": "job", "cron_expr": "* * * * *", "project_id": "default_code"},
+        "user-session",
+        "user-1",
+    )
+
+    assert channel.responses[-1]["ok"] is True, channel.responses[-1]
+    assert cron.params["project_id"] == "default_code"
+    assert "_agentos_project_binding_verified" not in cron.params
+
+
+@pytest.mark.asyncio
+async def test_cron_create_with_project_asks_the_agent(monkeypatch) -> None:
+    """选了具体项目时，不论是不是 AgentOS，都让 Agent 核对，网关不翻本地名单。"""
+    channel = FakeWebChannel()
+    cron = _CapturingCronController()
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=object(), cron_controller=cron)
+    )
+    seen: dict = {}
+
+    async def _fake_resolve_agent_cron_project_binding(**kwargs):
+        seen.update(kwargs)
+        return True, {"project_id": "proj_2e7a6278", "work_mode": "work"}
+
+    monkeypatch.setattr(
+        "agent_gateway.routing.e2a_proxy.resolve_agent_cron_project_binding",
+        _fake_resolve_agent_cron_project_binding,
+    )
+    ws = SimpleNamespace(_web_routing={"user_id": "zxy", "group_id": "group-1", "bot_id": "bot-1"})
+
+    await channel.methods["cron.job.create"](
+        ws,
+        "req-cron-project",
+        {
+            "name": "job",
+            "cron_expr": "0 0 8 * * ? *",
+            "project_id": "proj_2e7a6278",
+            "project_dir": "/work/zxy",
+            "work_mode": "work",
+        },
+        "user-session",
+        "zxy",
+    )
+
+    assert channel.responses[-1]["ok"] is True, channel.responses[-1]
+    assert seen["params"]["project_id"] == "proj_2e7a6278"
+    assert seen["metadata"]["routing"]["group_id"] == "group-1"
+    assert seen["metadata"]["routing"]["bot_id"] == "bot-1"
+    assert cron.params["project_id"] == "proj_2e7a6278"
+    assert cron.params["work_mode"] == "work"
     assert cron.params["_agentos_project_binding_verified"] is True
     assert "project_dir" not in cron.params
 
@@ -1007,10 +1457,10 @@ async def test_agentos_cron_update_project_fields_with_dict_job(monkeypatch) -> 
             }
             self.update_calls: list[tuple[str, dict]] = []
 
-        async def get_job(self, job_id):
+        async def get_job(self, job_id, **_kwargs):
             return dict(self.job) if job_id == self.job["id"] else None
 
-        async def update_job(self, job_id, patch):
+        async def update_job(self, job_id, patch, **_kwargs):
             self.update_calls.append((job_id, dict(patch)))
             return {"id": job_id, **patch}
 
@@ -1020,7 +1470,7 @@ async def test_agentos_cron_update_project_fields_with_dict_job(monkeypatch) -> 
         WebHandlersBindParams(channel=channel, agent_client=_AgentOSClient(), cron_controller=cron)
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.routing.e2a_proxy.is_agentos_routing_client",
+        "agent_gateway.routing.e2a_proxy.is_agentos_routing_client",
         lambda _client: True,
     )
 
@@ -1028,7 +1478,7 @@ async def test_agentos_cron_update_project_fields_with_dict_job(monkeypatch) -> 
         return True, {"project_id": "user-proj-1", "work_mode": "code"}
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.routing.e2a_proxy.resolve_agent_cron_project_binding",
+        "agent_gateway.routing.e2a_proxy.resolve_agent_cron_project_binding",
         _fake_resolve_agent_cron_project_binding,
     )
 
@@ -1158,6 +1608,7 @@ async def test_path_set_refuses_jev_without_its_key_and_changes_nothing(
     assert writes == []
 
 
+<<<<<<< HEAD
 @pytest.mark.asyncio
 async def test_path_set_round_trips_jev_display_name(monkeypatch) -> None:
     from jiuwenswarm.common import config as config_module
@@ -1190,6 +1641,109 @@ async def test_path_set_round_trips_jev_display_name(monkeypatch) -> None:
 
 
 
+||||||| e487e9a30
+=======
+@pytest.mark.asyncio
+async def test_path_set_round_trips_jev_display_name(monkeypatch) -> None:
+    from agent_gateway.common import config as config_module
+
+    current = {"browser": {"decision": {"mode": "llm", "provider": "typesafe"}}}
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: current)
+    monkeypatch.setattr(app_web_handlers, "update_browser_in_config", lambda updates: None)
+    def save_decision(updates):
+        for key, value in updates.items():
+            if key == "display_name" and value is None:
+                current["browser"]["decision"].pop(key, None)
+            else:
+                current["browser"]["decision"][key] = value
+
+    monkeypatch.setattr(config_module, "update_browser_decision_in_config", save_decision)
+
+    async def no_runtime_change(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(app_web_handlers, "_clear_agent_config_cache", no_runtime_change)
+    monkeypatch.setattr(app_web_handlers, "_restart_agent_browser_runtime", no_runtime_change)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    await channel.methods["path.set"](
+        object(), "req-name", {"chrome_path": "", "decision_display_name": "  My Jev  "}, "sess-1",
+    )
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"]["decision_display_name"] == "My Jev"
+    assert current["browser"]["decision"]["display_name"] == "My Jev"
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_jev_clear_gateway_route_persists_and_reloads_in_agentserver(tmp_path, monkeypatch, legacy):
+    from unittest.mock import AsyncMock
+
+    from dotenv import dotenv_values
+    import yaml
+
+    from agent_gateway.common import config as config_module
+    from jiuwenswarm.common import config as server_config_module
+    from jiuwenswarm.common.browser_settings import JEV_PROVIDER_DEFAULTS
+
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    decision = {
+        **JEV_PROVIDER_DEFAULTS["openrouter"],
+        "mode": "hybrid", "provider": "openrouter", "display_name": "Shared Jev",
+    }
+    config_path.write_text(yaml.safe_dump({
+        "browser": {"chrome_path": "/custom/chrome", "headless": False, "decision": decision},
+        "experimental": {"multi_model_collaboration_enabled": True,
+                         "multi_model_collaboration": {"jev_enabled": True, "verifier_interval": 5}},
+    }), encoding="utf-8")
+    env_path.write_text("OPENROUTER_API_KEY=synthetic-router\nTYPESAFE_API_KEY=synthetic-typesafe\n", encoding="utf-8")
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", config_path)
+    monkeypatch.setattr(config_module, "get_config_file", lambda: config_path)
+    monkeypatch.setattr(server_config_module, "CONFIG_YAML_PATH", config_path)
+    monkeypatch.setattr(server_config_module, "get_config_file", lambda: config_path)
+    monkeypatch.setattr(config_set_handlers, "ENV_FILE", env_path)
+    monkeypatch.setattr(config_set_handlers, "_get_crypto_provider", lambda: None)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-router")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "synthetic-typesafe")
+    reload = AsyncMock(return_value=True)
+    restart = AsyncMock()
+    client = make_legacy_config_routing_client(reload) if legacy else make_config_routing_client(reload)
+    monkeypatch.setattr(app_web_handlers, "_clear_agent_config_cache", AsyncMock())
+    monkeypatch.setattr(app_web_handlers, "_restart_agent_browser_runtime", restart)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
+    await channel.methods["path.set"](
+        object(), "clear-browser", {
+            "chrome_path": "/custom/chrome", "headless": False,
+            "decision_mode": "llm", "decision_display_name": "",
+        }, "session", user_id="user-one",
+    )
+    assert channel.responses[-1]["ok"] is True
+    await channel.methods["config.save_all"](
+        object(), "clear-key", {"config": {"jev_openrouter_api_key": "", "moa_jev_enabled": "false"}},
+        "session", user_id="user-one",
+    )
+    assert channel.responses[-1]["ok"] is True
+    await channel.methods["path.get"](object(), "read-browser", {}, "session", user_id="user-one")
+    response = channel.responses[-1]
+    assert response["ok"] is True
+    assert response["payload"]["jev_key_configured"] is False
+    assert response["payload"]["decision_display_name"] == ""
+    saved = yaml.safe_load(config_path.read_text())
+    assert saved["browser"] == {
+        "chrome_path": "/custom/chrome", "headless": False,
+        "decision": {**decision, "mode": "llm", "display_name": ""},
+    }
+    assert saved["experimental"]["multi_model_collaboration_enabled"] is True
+    assert saved["experimental"]["multi_model_collaboration"] == {"jev_enabled": False, "verifier_interval": 5}
+    assert dotenv_values(env_path) == {"OPENROUTER_API_KEY": "", "TYPESAFE_API_KEY": "synthetic-typesafe"}
+    reload.assert_awaited_once()
+    restart.assert_awaited_once_with(client, previous_chrome_path="/custom/chrome", previous_headless=False)
+
+
+>>>>>>> origin/develop
 class FakeUpdaterService:
     def get_runtime_config(self):
         return {"release_api_type": "gitcode", "release_api_url": ""}
@@ -1279,7 +1833,7 @@ async def test_models_list_returns_exact_vendor_identity(monkeypatch) -> None:
     )
     monkeypatch.setattr(opencode_zen, "get_zen_free_model_entries", lambda: [])
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["models.list"](object(), "req-models", {}, "session-1")
 
@@ -1288,6 +1842,123 @@ async def test_models_list_returns_exact_vendor_identity(monkeypatch) -> None:
     assert model["vendor_key"] == "alibaba"
     assert model["plan"] == "token_plan"
     assert model["context_window_tokens"] == DEFAULT_CONTEXT_WINDOW_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_enterprise_no_runtime_models_list_uses_gateway_manager(
+    monkeypatch,
+) -> None:
+    """企业版无 runtime（legacy WebSocket）走 Gateway 企业库，不代理 AS yaml。"""
+    from agent_gateway.enterprise.config.effective.schemas import TemplateRefSlot
+
+    async def _fake_load(_request, _slots):
+        return SimpleNamespace(
+            models={
+                TemplateRefSlot.DEFAULT_MODEL.value: [
+                    {
+                        "model_id": "GLM-5.3",
+                        "template_name": "企业默认",
+                        "api_base": "https://manager.example/v1",
+                        "model_provider": "OpenAI",
+                        "timeout": 60,
+                        "parameters": {"temperature": 0.7, "reasoning_level": "off"},
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr(
+        "agent_gateway.enterprise.is_enterprise",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "agent_gateway.enterprise.config.effective.loader.load_effective_enterprise_config",
+        _fake_load,
+    )
+    # 若误走 A4g E2A / 个人 yaml，会落到这些占位值
+    monkeypatch.setattr(models_handlers, "get_config", lambda: {"models": {}})
+    monkeypatch.setattr(
+        models_handlers,
+        "get_default_models",
+        lambda _config: [{
+            "model_client_config": {
+                "model_name": "mdl_default_primary",
+                "api_base": "https://example.com/v1",
+                "api_key": "secret",
+                "client_provider": "OpenAI",
+            },
+            "model_config_obj": {},
+            "alias": "your-model-name",
+            "is_default": True,
+        }],
+    )
+
+    channel = FakeWebChannel()
+    _register_web_handlers(
+        WebHandlersBindParams(
+            channel=channel,
+            agent_client=make_legacy_config_routing_client(),
+        )
+    )
+
+    await channel.methods["models.list"](object(), "req-ent-models", {}, "session-1")
+
+    resp = channel.responses[-1]
+    assert resp["ok"] is True
+    assert resp["payload"]["model_source"] == "enterprise"
+    assert resp["payload"]["active_model"] == "GLM-5.3"
+    assert resp["payload"]["models"][0]["model_name"] == "GLM-5.3"
+    assert resp["payload"]["models"][0]["alias"] == "企业默认"
+    assert resp["payload"]["models"][0]["api_key"] == ""
+
+
+@pytest.mark.asyncio
+async def test_personal_legacy_models_list_still_proxies_to_agent_server(
+    monkeypatch,
+) -> None:
+    """个人版 legacy WebSocket 仍走 A4g E2A，不走企业 Gateway handler。"""
+    from jiuwenswarm.server.runtime import opencode_zen
+
+    monkeypatch.setattr(
+        "agent_gateway.enterprise.is_enterprise",
+        lambda: False,
+    )
+    monkeypatch.setattr(models_handlers, "get_config", lambda: {"models": {}})
+    monkeypatch.setattr(
+        models_handlers,
+        "get_default_models",
+        lambda _config: [{
+            "model_client_config": {
+                "model_name": "personal-from-yaml",
+                "api_base": "https://example.com/v1",
+                "api_key": "secret",
+                "client_provider": "OpenAI",
+            },
+            "model_config_obj": {"temperature": 0.95},
+            "alias": "personal-from-yaml",
+            "is_default": True,
+        }],
+    )
+    monkeypatch.setattr(opencode_zen, "get_zen_free_model_entries", lambda: [])
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.opencode_zen.append_zen_free_models",
+        lambda models: None,
+    )
+
+    channel = FakeWebChannel()
+    _register_web_handlers(
+        WebHandlersBindParams(
+            channel=channel,
+            agent_client=make_legacy_config_routing_client(),
+        )
+    )
+
+    await channel.methods["models.list"](object(), "req-personal", {}, "session-1")
+
+    resp = channel.responses[-1]
+    assert resp["ok"] is True
+    assert resp["payload"].get("model_source") != "enterprise"
+    assert resp["payload"]["models"][0]["model_name"] == "personal-from-yaml"
 
 
 @pytest.mark.asyncio
@@ -1311,7 +1982,7 @@ async def test_models_list_omits_context_for_empty_template_model(monkeypatch) -
     )
     monkeypatch.setattr(opencode_zen, "get_zen_free_model_entries", lambda: [])
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["models.list"](object(), "req-empty-model", {}, "session-1")
 
@@ -1336,7 +2007,7 @@ async def test_models_list_builds_the_list_off_the_event_loop(monkeypatch) -> No
     monkeypatch.setattr(models_handlers, "get_config", lambda: {"models": {}})
     monkeypatch.setattr(models_handlers, "get_available_models", fake_available)
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
     ws = SimpleNamespace(_jiuwen_auth_session="auth-sess-1")
 
     await channel.methods["models.list"](ws, "req-models", {}, "session-1")
@@ -1368,12 +2039,14 @@ async def test_models_list_includes_cached_zen_free_models(monkeypatch) -> None:
 
     monkeypatch.setattr(models_handlers, "get_config", lambda: {"models": {}})
     monkeypatch.setattr(models_handlers, "get_default_models", lambda _config: [])
+    # A4g：E2A 路径的 zen 免费模型合并在 server 侧 ConfigAdapter（等价于原
+    # gateway wrapper 的 fetch_zen_free_model_rows + zen_rows 注入）
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.zen_query.fetch_zen_free_model_rows",
-        _rows,
+        "jiuwenswarm.server.runtime.opencode_zen.append_zen_free_models",
+        lambda models: models.append(zen_row),
     )
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["models.list"](object(), "req-models", {}, "session-1")
 
@@ -1404,7 +2077,7 @@ async def test_openai_account_models_list_returns_refreshed_auth_status(
     monkeypatch.setattr(app_web_handlers, "OpenAIAccountAuthManager", FakeOpenAIAccountAuthManager)
     monkeypatch.setattr(app_web_handlers, "OpenAIAccountModelCatalog", FakeOpenAIAccountModelCatalog)
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["openai_account.models.list"](object(), "req-models", {}, "sess-1")
 
@@ -1461,7 +2134,7 @@ async def test_openai_account_logout_clears_pending_login_jobs(
         ),
     )
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["openai_account.auth.logout"](object(), "req-logout", {}, "sess-1")
 
@@ -1486,7 +2159,7 @@ async def test_openai_account_logout_wins_against_inflight_poll(
         ),
     )
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     poll_task = asyncio.create_task(channel.methods["openai_account.auth.poll_login"](
         object(), "req-poll", {"login_id": "login-1"}, "sess-1",
@@ -1508,7 +2181,7 @@ async def test_openai_account_logout_wins_against_inflight_poll(
     ("method", "params"),
     [
         ("channel.feishu.set_conf", {"apps": [{"app_id": "app-1"}]}),
-        ("channel.dingtalk.set_conf", {"enabled": False, "client_id": "client-1"}),
+        ("channel.dingtalk.set_conf", {"apps": [{"client_id": "client-1", "enabled": False, "allow_from": ["tester"]}]}),
         ("health_check.set_conf", {"every": 30, "target": "web"}),
         ("heartbeat.set_conf", {"every": 30, "target": "web"}),
     ],
@@ -1521,17 +2194,23 @@ async def test_config_save_handlers_respond_before_agent_reload_finishes(monkeyp
     persisted: list[tuple[str, dict]] = []
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.update_channel_in_config",
+        "agent_gateway.channel_manager.web.app_web_handlers.update_channel_in_config",
         lambda channel_id, conf: persisted.append((channel_id, dict(conf))),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.replace_channel_subsection_with_cleanup",
+        "agent_gateway.channel_manager.web.app_web_handlers.replace_channel_subsection_with_cleanup",
         lambda channel_id, subsection, conf, keep_keys: persisted.append((channel_id, conf)),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.update_health_check_in_config",
+        "agent_gateway.channel_manager.web.app_web_handlers.update_health_check_in_config",
         lambda payload: persisted.append(("health_check", dict(payload))),
     )
+    async def edit_channel(channel_id, edit):
+        saved = edit({})
+        persisted.append((channel_id, saved))
+        return saved
+
+    monkeypatch.setattr("agent_gateway.channel_manager.web.persistent_bindings.edit_channel_body", edit_channel)
 
     _register_web_handlers(
         WebHandlersBindParams(
@@ -1576,7 +2255,7 @@ async def test_config_set_applies_scoped_reload_before_responding(monkeypatch, t
     reload_calls: list[tuple[set[str], dict, dict]] = []
 
     monkeypatch.setattr(
-        "jiuwenswarm.extensions.registry.ExtensionRegistry.get_instance",
+        "agent_gateway.extensions.registry.ExtensionRegistry.get_instance",
         lambda: SimpleNamespace(get_crypto_provider=lambda: None),
     )
     for key in keys:
@@ -1600,6 +2279,7 @@ async def test_config_set_applies_scoped_reload_before_responding(monkeypatch, t
     _register_web_handlers(
         WebHandlersBindParams(
             channel=channel,
+            agent_client=make_config_routing_client(on_config_saved),
             on_config_saved=on_config_saved,
         )
     )
@@ -1645,6 +2325,7 @@ async def test_config_set_reports_saved_when_hot_reload_callback_fails(monkeypat
     _register_web_handlers(
         WebHandlersBindParams(
             channel=channel,
+            agent_client=make_config_routing_client(on_config_saved),
             on_config_saved=on_config_saved,
         )
     )
@@ -1700,6 +2381,7 @@ async def test_config_set_persists_setup_guide_without_runtime_reload(monkeypatc
     _register_web_handlers(
         WebHandlersBindParams(
             channel=channel,
+            agent_client=make_config_routing_client(on_config_saved),
             on_config_saved=on_config_saved,
         )
     )
@@ -1739,7 +2421,7 @@ async def test_config_get_returns_setup_guide_switch(monkeypatch, raw_config, ex
         "get_instance",
         lambda: SimpleNamespace(get_crypto_provider=lambda: None),
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.get"](
         object(),
@@ -1765,15 +2447,27 @@ async def test_config_get_returns_jev_credentials_like_model_settings(monkeypatc
         "get_instance",
         lambda: SimpleNamespace(get_crypto_provider=lambda: None),
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.get"](object(), "req-get-jev", {}, "sess-get-jev")
 
     payload = channel.responses[-1]["payload"]
+<<<<<<< HEAD
     assert payload["jev_openrouter_api_key"] == "synthetic-openrouter-secret"
     assert payload["jev_typesafe_api_key"] == "synthetic-typesafe-secret"
     assert app_web_handlers._CONFIG_SET_ENV_MAP["jev_openrouter_api_key"] == "OPENROUTER_API_KEY"
     assert app_web_handlers._CONFIG_SET_ENV_MAP["jev_typesafe_api_key"] == "TYPESAFE_API_KEY"
+||||||| e487e9a30
+    assert payload["jev_openrouter_api_key"] == "" and payload["jev_typesafe_api_key"] == ""
+    assert "synthetic-" not in repr(payload)
+    assert app_web_handlers._CONFIG_SET_ENV_MAP["jev_openrouter_api_key"] == "OPENROUTER_API_KEY"
+    assert app_web_handlers._CONFIG_SET_ENV_MAP["jev_typesafe_api_key"] == "TYPESAFE_API_KEY"
+=======
+    assert payload["jev_openrouter_api_key"] == "synthetic-openrouter-secret"
+    assert payload["jev_typesafe_api_key"] == "synthetic-typesafe-secret"
+    assert config_set_handlers.CONFIG_SET_ENV_MAP["jev_openrouter_api_key"] == "OPENROUTER_API_KEY"
+    assert config_set_handlers.CONFIG_SET_ENV_MAP["jev_typesafe_api_key"] == "TYPESAFE_API_KEY"
+>>>>>>> origin/develop
 
 
 @pytest.mark.asyncio
@@ -1806,7 +2500,7 @@ async def test_trajectory_diagnosis_switch_round_trips_through_config_rpc(monkey
         "update_trajectory_diagnosis_in_config",
         lambda enabled: persisted.append(enabled),
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.get"](object(), "req-trajectory-get", {}, "session")
     assert channel.responses[-1]["payload"]["trajectory_ui_diagnosis_enabled"] == "false"
@@ -1818,10 +2512,21 @@ async def test_trajectory_diagnosis_switch_round_trips_through_config_rpc(monkey
         "session",
     )
     assert persisted == [True]
+<<<<<<< HEAD
     assert channel.responses[-1]["payload"]["updated"] == ["trajectory_ui_diagnosis_enabled"]
     # Diagnosis owns the data plane and chat/trajectory tabs.
     diagnosis_change_set = app_web_handlers._ConfigChangeSet({}, ["trajectory_ui_diagnosis_enabled"])
     assert diagnosis_change_set.reload_scopes == {"agent_runtime", "web_ui"}
+||||||| e487e9a30
+    assert channel.responses[-1]["payload"]["updated"] == ["trajectory_ui_enabled"]
+    change_set = app_web_handlers._ConfigChangeSet({}, ["trajectory_ui_enabled"])
+    assert change_set.reload_scopes == {"agent_runtime", "web_ui"}
+=======
+    assert channel.responses[-1]["payload"]["updated"] == ["trajectory_ui_diagnosis_enabled"]
+    # Diagnosis owns the data plane and chat/trajectory tabs.
+    diagnosis_change_set = config_set_handlers.ConfigChangeSet({}, ["trajectory_ui_diagnosis_enabled"])
+    assert diagnosis_change_set.reload_scopes == {"agent_runtime", "web_ui"}
+>>>>>>> origin/develop
 
 
 @pytest.mark.asyncio
@@ -1839,7 +2544,7 @@ async def test_task_full_duplex_switch_round_trips_through_config_rpc(monkeypatc
         "update_task_full_duplex_in_config",
         lambda enabled: persisted.append(enabled),
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.get"](object(), "req-duplex-get", {}, "session")
     assert channel.responses[-1]["payload"]["task_full_duplex_enabled"] == "false"
@@ -1852,11 +2557,12 @@ async def test_task_full_duplex_switch_round_trips_through_config_rpc(monkeypatc
     )
     assert persisted == [True]
     assert channel.responses[-1]["payload"]["updated"] == ["task_full_duplex_enabled"]
-    change_set = app_web_handlers._ConfigChangeSet({}, ["task_full_duplex_enabled"])
+    change_set = config_set_handlers.ConfigChangeSet({}, ["task_full_duplex_enabled"])
     assert change_set.reload_scopes == {"web_ui"}
 
 
 @pytest.mark.asyncio
+<<<<<<< HEAD
 async def test_progressive_tool_optimize_switch_round_trips_through_config_rpc(monkeypatch):
     channel = FakeWebChannel()
     persisted: list[bool] = []
@@ -1889,6 +2595,43 @@ async def test_progressive_tool_optimize_switch_round_trips_through_config_rpc(m
 
 
 @pytest.mark.asyncio
+||||||| e487e9a30
+=======
+async def test_progressive_tool_optimize_switch_round_trips_through_config_rpc(monkeypatch):
+    channel = FakeWebChannel()
+    persisted: list[bool] = []
+    raw_config = {"progressive_tool_enabled": True, "progressive_tool_optimize": False}
+    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: raw_config)
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: raw_config)
+    # config.set 路径实现已下沉 config_set_handlers，config.get 仍读 gateway 侧，双patch
+    monkeypatch.setattr(config_set_handlers, "get_config_raw", lambda: raw_config)
+    monkeypatch.setattr(config_set_handlers, "get_config", lambda: raw_config)
+    monkeypatch.setattr(
+        config_set_handlers,
+        "update_progressive_tool_optimize_in_config",
+        lambda enabled: persisted.append(enabled),
+    )
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client())
+    )
+
+    await channel.methods["config.get"](object(), "req-tool-optimize-get", {}, "session")
+    assert channel.responses[-1]["payload"]["progressive_tool_optimize"] == "false"
+
+    await channel.methods["config.set"](
+        object(),
+        "req-tool-optimize-set",
+        {"progressive_tool_optimize": "true"},
+        "session",
+    )
+    assert persisted == [True]
+    assert channel.responses[-1]["payload"]["updated"] == ["progressive_tool_optimize"]
+    change_set = config_set_handlers.ConfigChangeSet({}, ["progressive_tool_optimize"])
+    assert change_set.reload_scopes == {"agent_runtime"}
+
+
+@pytest.mark.asyncio
+>>>>>>> origin/develop
 @pytest.mark.parametrize(
     ("raw_config", "expected"),
     [
@@ -1900,7 +2643,7 @@ async def test_config_get_returns_rsi_switch(monkeypatch, raw_config, expected):
     channel = FakeWebChannel()
     monkeypatch.setattr(config_set_handlers, "get_config_raw", lambda: raw_config)
     monkeypatch.setattr(config_set_handlers, "get_config", lambda: raw_config)
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.get"](
         object(),
@@ -1943,6 +2686,7 @@ async def test_config_save_all_persists_rsi_switch(monkeypatch):
     _register_web_handlers(
         WebHandlersBindParams(
             channel=channel,
+            agent_client=make_config_routing_client(on_config_saved),
             on_config_saved=on_config_saved,
         )
     )
@@ -1969,30 +2713,30 @@ async def test_config_save_all_persists_rsi_switch(monkeypatch):
 
 
 def test_media_capability_config_uses_multimodal_hot_reload_scope():
-    for env_key in app_web_handlers._MULTIMODAL_RELOAD_ENV_KEYS:
-        change_set = app_web_handlers._ConfigChangeSet({env_key: "true"}, [])
+    for env_key in config_set_handlers.MULTIMODAL_RELOAD_ENV_KEYS:
+        change_set = config_set_handlers.ConfigChangeSet({env_key: "true"}, [])
         assert change_set.reload_scopes == {"multimodal"}
 
 
 def test_media_capability_provider_identity_has_exact_env_contract():
     for modality in ("vision", "audio", "video"):
         prefix = modality.upper()
-        assert app_web_handlers._CONFIG_SET_ENV_MAP[f"{modality}_endpoint_profile"] == f"{prefix}_ENDPOINT_PROFILE"
-        assert app_web_handlers._CONFIG_SET_ENV_MAP[f"{modality}_vendor_key"] == f"{prefix}_VENDOR_KEY"
-        assert app_web_handlers._CONFIG_SET_ENV_MAP[f"{modality}_plan"] == f"{prefix}_PLAN"
-        assert f"{prefix}_ENDPOINT_PROFILE" in app_web_handlers._MULTIMODAL_RELOAD_ENV_KEYS
-        assert f"{prefix}_VENDOR_KEY" not in app_web_handlers._MULTIMODAL_RELOAD_ENV_KEYS
-        assert f"{prefix}_PLAN" not in app_web_handlers._MULTIMODAL_RELOAD_ENV_KEYS
+        assert config_set_handlers.CONFIG_SET_ENV_MAP[f"{modality}_endpoint_profile"] == f"{prefix}_ENDPOINT_PROFILE"
+        assert config_set_handlers.CONFIG_SET_ENV_MAP[f"{modality}_vendor_key"] == f"{prefix}_VENDOR_KEY"
+        assert config_set_handlers.CONFIG_SET_ENV_MAP[f"{modality}_plan"] == f"{prefix}_PLAN"
+        assert f"{prefix}_ENDPOINT_PROFILE" in config_set_handlers.MULTIMODAL_RELOAD_ENV_KEYS
+        assert f"{prefix}_VENDOR_KEY" not in config_set_handlers.MULTIMODAL_RELOAD_ENV_KEYS
+        assert f"{prefix}_PLAN" not in config_set_handlers.MULTIMODAL_RELOAD_ENV_KEYS
 
 
 def test_task_chat_uses_general_asr_config_independent_from_joyai():
-    assert app_web_handlers._CONFIG_SET_ENV_MAP["asr_api_base"] == "ASR_API_BASE"
-    assert app_web_handlers._CONFIG_SET_ENV_MAP["asr_api_key"] == "ASR_API_KEY"
-    assert app_web_handlers._CONFIG_SET_ENV_MAP["asr_model"] == "ASR_MODEL_NAME"
-    assert not any(value.startswith("VOICE_ASR_") for value in app_web_handlers._ASR_ENV_KEYS)
-    assert not any(value.startswith("JOYAI_") for value in app_web_handlers._ASR_ENV_KEYS)
-    for env_key in app_web_handlers._ASR_ENV_KEYS:
-        change_set = app_web_handlers._ConfigChangeSet({env_key: "value"}, [])
+    assert config_set_handlers.CONFIG_SET_ENV_MAP["asr_api_base"] == "ASR_API_BASE"
+    assert config_set_handlers.CONFIG_SET_ENV_MAP["asr_api_key"] == "ASR_API_KEY"
+    assert config_set_handlers.CONFIG_SET_ENV_MAP["asr_model"] == "ASR_MODEL_NAME"
+    assert not any(value.startswith("VOICE_ASR_") for value in config_set_handlers.ASR_ENV_KEYS)
+    assert not any(value.startswith("JOYAI_") for value in config_set_handlers.ASR_ENV_KEYS)
+    for env_key in config_set_handlers.ASR_ENV_KEYS:
+        change_set = config_set_handlers.ConfigChangeSet({env_key: "value"}, [])
         assert change_set.reload_scopes == {"web_ui"}
 
 
@@ -2005,7 +2749,7 @@ async def test_task_asr_rpc_returns_transcript(monkeypatch):
         return "transcribed speech"
 
     monkeypatch.setattr(app_web_handlers, "transcribe_task_audio", fake_transcribe)
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["task.asr.transcribe"](
         object(),
@@ -2039,7 +2783,11 @@ async def test_media_capability_provider_identity_round_trips_through_config_rpc
         return True
 
     _register_web_handlers(
-        WebHandlersBindParams(channel=channel, on_config_saved=on_config_saved)
+        WebHandlersBindParams(
+            channel=channel,
+            agent_client=make_config_routing_client(on_config_saved),
+            on_config_saved=on_config_saved,
+        )
     )
 
     await channel.methods["config.set"](
@@ -2096,9 +2844,9 @@ async def test_config_get_returns_canonical_permission_profile(
         lambda: SimpleNamespace(get_crypto_provider=lambda: None),
     )
     monkeypatch.setattr(
-        app_web_handlers, "_flatten_modes_team_for_config_panel", lambda raw: {}
+        config_set_handlers, "flatten_modes_team_for_config_panel", lambda raw: {}
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.get"](object(), "req-profile", {}, "sess-profile")
 
@@ -2119,7 +2867,7 @@ async def test_config_get_returns_canonical_permission_profile(
 async def test_config_set_rejects_invalid_permission_facade(monkeypatch, params):
     channel = FakeWebChannel()
     monkeypatch.setattr(config_set_handlers, "get_config_raw", lambda: {})
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.set"](object(), "req-profile", params, "sess-profile")
 
@@ -2154,7 +2902,7 @@ async def test_config_set_returns_canonical_permission_facade(
         "update_permissions_profile_in_config",
         lambda profile: saved.append(profile),
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.set"](object(), "req-profile", params, "sess-profile")
 
@@ -2180,7 +2928,11 @@ async def test_config_save_all_returns_canonical_permission_facade(monkeypatch):
         return True
 
     _register_web_handlers(
-        WebHandlersBindParams(channel=channel, on_config_saved=on_config_saved)
+        WebHandlersBindParams(
+            channel=channel,
+            agent_client=make_config_routing_client(on_config_saved),
+            on_config_saved=on_config_saved,
+        )
     )
 
     await channel.methods["config.save_all"](
@@ -2216,7 +2968,7 @@ async def test_invalid_combined_payload_does_not_persist_permission_profile(
         "update_permissions_profile_in_config",
         lambda profile: saved.append(profile),
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.set"](
         object(),
@@ -2245,7 +2997,7 @@ async def test_permission_profile_write_failure_returns_no_canonical_success(
         "update_permissions_profile_in_config",
         fail_update,
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.set"](
         object(),
@@ -2299,7 +3051,7 @@ async def test_config_save_all_kvc_failure_does_not_persist_permission_profile(
         "update_permissions_profile_in_config",
         lambda profile: saved.append(profile),
     )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.save_all"](
         object(),
@@ -2364,6 +3116,7 @@ async def test_models_replace_all_applies_scoped_reload_before_responding(monkey
     _register_web_handlers(
         WebHandlersBindParams(
             channel=channel,
+            agent_client=make_config_routing_client(on_config_saved),
             on_config_saved=on_config_saved,
         )
     )
@@ -2414,7 +3167,7 @@ async def test_models_replace_all_applies_scoped_reload_before_responding(monkey
 )
 async def test_models_replace_all_rejects_invalid_vendor_identity(vendor_key, plan, expected_error):
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["models.replace_all"](
         object(),
@@ -2442,7 +3195,7 @@ async def test_models_replace_all_rejects_invalid_vendor_identity(vendor_key, pl
 @pytest.mark.asyncio
 async def test_models_replace_all_rejects_reasoning_level_not_supported_by_model():
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["models.replace_all"](
         object(),
@@ -2471,7 +3224,7 @@ async def test_config_set_routes_team_payload_to_modes_team_helper(monkeypatch):
     channel = FakeWebChannel()
     recorded: list[dict] = []
 
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     monkeypatch.setattr("jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
                         lambda: {"preferred_language": "zh"})
@@ -2508,14 +3261,14 @@ async def test_config_set_installs_codex_dependency_before_team_save(monkeypatch
     dependency_checks: list[None] = []
     recorded: list[dict] = []
 
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_legacy_config_routing_client()))
 
     monkeypatch.setattr("jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
                         lambda: {"preferred_language": "zh"})
     monkeypatch.setattr("jiuwenswarm.common.config_panel.config_set_handlers.get_config",
                         lambda: {"modes": {"team": {}}})
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+        "agent_gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
         lambda: dependency_checks.append(None) or None,
     )
     monkeypatch.setattr(
@@ -2547,14 +3300,14 @@ async def test_config_set_does_not_install_codex_for_claude_only(monkeypatch):
     channel = FakeWebChannel()
     dependency_checks: list[None] = []
 
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     monkeypatch.setattr("jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
                         lambda: {"preferred_language": "zh"})
     monkeypatch.setattr("jiuwenswarm.common.config_panel.config_set_handlers.get_config",
                         lambda: {"modes": {"team": {}}})
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+        "agent_gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
         lambda: dependency_checks.append(None) or None,
     )
     monkeypatch.setattr(
@@ -2588,7 +3341,7 @@ async def test_config_set_updates_external_cli_switches_without_team_save(monkey
     histories_updates: list[dict[str, list[str]]] = []
 
     monkeypatch.setenv("WEB_PORT", "19000")
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_legacy_config_routing_client()))
 
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
@@ -2599,7 +3352,7 @@ async def test_config_set_updates_external_cli_switches_without_team_save(monkey
         lambda: {"modes": {"team": {}}},
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+        "agent_gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
         lambda: dependency_checks.append(None) or None,
     )
     monkeypatch.setattr(
@@ -2639,7 +3392,7 @@ async def test_config_set_saves_external_cli_path_after_detection(monkeypatch):
     histories_updates: list[dict[str, list[str]]] = []
 
     monkeypatch.setenv("WEB_PORT", "19000")
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
@@ -2661,7 +3414,7 @@ async def test_config_set_saves_external_cli_path_after_detection(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ensure_claude_dependency_available_or_start_install",
+        "agent_gateway.channel_manager.web.app_web_handlers._ensure_claude_dependency_available_or_start_install",
         lambda: None,
     )
     monkeypatch.setattr(
@@ -2684,6 +3437,7 @@ async def test_config_set_saves_external_cli_path_after_detection(monkeypatch):
     )
 
     assert updates == [([{"cli_agent": "claude", "cli_path": "/resolved/claude"}], "ws://127.0.0.1:19000/ws")]
+<<<<<<< HEAD
     # No previous path existed, so there is nothing to append to the history.
     assert histories_updates == [{}]
     assert channel.responses[-1]["ok"] is True
@@ -2753,6 +3507,78 @@ async def test_config_set_claude_switch_keeps_codex_entry_verbatim(monkeypatch):
     ]
     # The untouched codex path must not leak into any history write.
     assert histories_updates == [{}]
+||||||| e487e9a30
+=======
+    # No previous path existed, so there is nothing to append to the history.
+    assert histories_updates == [{}]
+    assert channel.responses[-1]["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_config_set_claude_switch_keeps_codex_entry_verbatim(monkeypatch):
+    """Toggling one card must not re-detect or rewrite the other agent's entry."""
+    channel = FakeWebChannel()
+    updates: list[tuple[list[dict], str | None]] = []
+    histories_updates: list[dict[str, list[str]]] = []
+
+    monkeypatch.setenv("WEB_PORT", "19000")
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
+        lambda: {
+            "preferred_language": "zh",
+            "modes": {
+                "team": {
+                    "jiuwen_team": {
+                        "external_cli_agents": [
+                            {"cli_agent": "codex", "cli_path": "/custom/codex"},
+                        ],
+                    },
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.get_config",
+        lambda: {"modes": {"team": {}}},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.detect_external_cli_agent",
+        lambda cli_agent, cli_path="": pytest.fail("untouched agents must not be re-detected"),
+    )
+    monkeypatch.setattr(
+        "agent_gateway.channel_manager.web.app_web_handlers._ensure_claude_dependency_available_or_start_install",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.update_external_cli_agents_in_config",
+        lambda agents, publish_url=None: updates.append((agents, publish_url)),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.update_external_cli_path_histories_in_config",
+        lambda histories: histories_updates.append(dict(histories)),
+    )
+
+    await channel.methods["config.set"](
+        object(),
+        "req-claude-switch-keeps-codex",
+        {
+            "external_cli_agent_claude_enabled": "true",
+            "external_cli_agent_claude_use_builtin": "true",
+        },
+        "sess-claude-switch-keeps-codex",
+    )
+
+    assert updates == [
+        (
+            [{"cli_agent": "claude"}, {"cli_agent": "codex", "cli_path": "/custom/codex"}],
+            "ws://127.0.0.1:19000/ws",
+        )
+    ]
+    # The untouched codex path must not leak into any history write.
+    assert histories_updates == [{}]
+>>>>>>> origin/develop
     assert channel.responses[-1]["ok"] is True
 
 
@@ -2763,7 +3589,7 @@ async def test_config_set_uses_builtin_codex_without_validating_stale_windows_sc
     histories_updates: list[dict[str, list[str]]] = []
 
     monkeypatch.setenv("WEB_PORT", "19000")
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
@@ -2789,7 +3615,7 @@ async def test_config_set_uses_builtin_codex_without_validating_stale_windows_sc
         lambda cli_agent, cli_path="": pytest.fail("built-in mode must not validate cli_path"),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+        "agent_gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
         lambda: None,
     )
     monkeypatch.setattr(
@@ -2819,6 +3645,7 @@ async def test_config_set_uses_builtin_codex_without_validating_stale_windows_sc
 
 
 @pytest.mark.asyncio
+<<<<<<< HEAD
 async def test_config_set_appends_replaced_path_when_switching_to_builtin(monkeypatch):
     """Switching from a custom path to the built-in CLI keeps the old path.
 
@@ -3119,11 +3946,316 @@ async def test_external_cli_prune_path_histories_drops_only_confirmed_misses(mon
 
 
 @pytest.mark.asyncio
+||||||| e487e9a30
+=======
+async def test_config_set_appends_replaced_path_when_switching_to_builtin(monkeypatch):
+    """Switching from a custom path to the built-in CLI keeps the old path.
+
+    The built-in mode reports an empty effective path, but the replaced
+    custom path must still join the history instead of being lost.
+    """
+    channel = FakeWebChannel()
+    updates: list[tuple[list[dict[str, str]], str | None]] = []
+    histories_updates: list[dict[str, list[str]]] = []
+
+    monkeypatch.setenv("WEB_PORT", "19000")
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
+        lambda: {
+            "preferred_language": "zh",
+            "modes": {
+                "team": {
+                    "jiuwen_team": {
+                        "external_cli_agents": [
+                            {"cli_agent": "codex", "cli_path": "/custom/codex"},
+                        ],
+                    },
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.get_config",
+        lambda: {"modes": {"team": {}}},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.detect_external_cli_agent",
+        lambda cli_agent, cli_path="": pytest.fail("built-in mode must not validate cli_path"),
+    )
+    monkeypatch.setattr(
+        "agent_gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.update_external_cli_agents_in_config",
+        lambda agents, publish_url=None: updates.append((agents, publish_url)),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.update_external_cli_path_histories_in_config",
+        lambda histories: histories_updates.append(dict(histories)),
+    )
+
+    await channel.methods["config.set"](
+        object(),
+        "req-codex-switch-builtin",
+        {
+            "external_cli_agent_codex_enabled": "true",
+            "external_cli_agent_codex_use_builtin": "true",
+            "external_cli_agent_codex_cli_path": "",
+        },
+        "sess-codex-switch-builtin",
+    )
+
+    # The built-in entry carries no cli_path, and the replaced custom path
+    # joins the history instead of being lost.
+    assert updates == [([{"cli_agent": "codex"}], "ws://127.0.0.1:19000/ws")]
+    assert histories_updates == [{"codex": ["/custom/codex"]}]
+    assert channel.responses[-1]["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_config_set_appends_replaced_cli_path_to_history(monkeypatch):
+    """Saving a different cli_path must persist the previous path as history."""
+    channel = FakeWebChannel()
+    updates: list[tuple[list[dict[str, str]], str | None]] = []
+    histories_updates: list[dict[str, list[str]]] = []
+
+    monkeypatch.setenv("WEB_PORT", "19000")
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
+        lambda: {
+            "preferred_language": "zh",
+            "modes": {
+                "team": {
+                    "jiuwen_team": {
+                        "external_cli_agents": [
+                            {"cli_agent": "codex", "cli_path": "/custom/codex"},
+                        ],
+                        "external_cli_path_histories": {"codex": ["/older/codex"]},
+                    },
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.get_config",
+        lambda: {"modes": {"team": {}}},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.detect_external_cli_agent",
+        lambda cli_agent, cli_path="": {
+            "cli_agent": cli_agent,
+            "status": "ok",
+            "path": "/new/codex",
+            "version": "1.2.3",
+            "reference_version": "1.2.3",
+            "message": "",
+        },
+    )
+    monkeypatch.setattr(
+        "agent_gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.update_external_cli_agents_in_config",
+        lambda agents, publish_url=None: updates.append((agents, publish_url)),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.update_external_cli_path_histories_in_config",
+        lambda histories: histories_updates.append(dict(histories)),
+    )
+
+    await channel.methods["config.set"](
+        object(),
+        "req-codex-path-history",
+        {
+            "external_cli_agent_codex_enabled": "true",
+            "external_cli_agent_codex_use_builtin": "false",
+            "external_cli_agent_codex_cli_path": "/new/codex",
+            "external_cli_agent_codex_path_histories": '["/older/codex"]',
+        },
+        "sess-codex-path-history",
+    )
+
+    assert updates == [([{"cli_agent": "codex", "cli_path": "/new/codex"}], "ws://127.0.0.1:19000/ws")]
+    assert histories_updates == [{"codex": ["/older/codex", "/custom/codex"]}]
+    assert channel.responses[-1]["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_config_set_history_only_save_rewrites_config_yaml(monkeypatch, tmp_path):
+    """A history-only save must rewrite config.yaml for built-in agents too.
+
+    The cleanup flow sends only ``path_histories`` keys; those keys must hit
+    the config.set handling branch, or the UI reports a cleanup that the
+    next config reload silently reverts.
+    """
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        yaml.safe_dump(
+            {
+                "modes": {
+                    "team": {
+                        "jiuwen_team": {
+                            "external_cli_agents": [
+                                {"cli_agent": "claude", "cli_path": "/custom/claude"},
+                            ],
+                        },
+                    },
+                },
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("jiuwenswarm.common.config.CONFIG_YAML_PATH", config_file)
+
+    channel = FakeWebChannel()
+    agent_writes: list[list[dict[str, str]]] = []
+    monkeypatch.setenv("WEB_PORT", "19000")
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
+        lambda: {
+            "preferred_language": "zh",
+            "modes": {
+                "team": {
+                    "jiuwen_team": {
+                        "external_cli_agents": [
+                            {"cli_agent": "claude", "cli_path": "/custom/claude"},
+                        ],
+                    },
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.get_config",
+        lambda: {"modes": {"team": {}}},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.detect_external_cli_agent",
+        lambda cli_agent, cli_path="": pytest.fail("a history-only save must not detect any cli_path"),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.update_external_cli_agents_in_config",
+        lambda agents, publish_url=None: agent_writes.append(list(agents)),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.refresh_external_cli_builtin_models",
+        lambda agents, **_: None,
+    )
+
+    await channel.methods["config.set"](
+        object(),
+        "req-claude-history-only",
+        {"external_cli_agent_claude_path_histories": '["/old/claude", "/custom/claude"]'},
+        "sess-claude-history-only",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    # The entry is kept verbatim; the histories key is what changes on disk.
+    assert agent_writes == [[{"cli_agent": "claude", "cli_path": "/custom/claude"}]]
+    saved = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+    histories = saved["modes"]["team"]["jiuwen_team"]["external_cli_path_histories"]
+    assert histories == {"claude": ["/old/claude", "/custom/claude"]}
+
+
+@pytest.mark.asyncio
+async def test_external_cli_validate_paths_reports_existence(tmp_path):
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
+
+    existing_file = tmp_path / "claude.cmd"
+    existing_file.write_text("demo")
+    existing_dir = tmp_path / "cli-dir"
+    existing_dir.mkdir()
+
+    await channel.methods["external_cli.validate_paths"](
+        object(),
+        "req-validate-paths",
+        {"paths": [str(existing_file), str(existing_dir), str(tmp_path / "missing"), " "]},
+        "sess-validate-paths",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    results = channel.responses[-1]["payload"]["results"]
+    assert results[str(existing_file)] is True
+    # A directory is not a CLI executable, so it is reported as missing.
+    assert results[str(existing_dir)] is False
+    assert results[str(tmp_path / "missing")] is False
+
+    await channel.methods["external_cli.validate_paths"](
+        object(),
+        "req-validate-paths-bad",
+        {"paths": "not-an-array"},
+        "sess-validate-paths-bad",
+    )
+
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_external_cli_prune_path_histories_drops_only_confirmed_misses(monkeypatch):
+    """The handler runs the intersection prune against gateway-side config copy."""
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
+    pruned: list[tuple[str, list[str]]] = []
+
+    def fake_prune(cli_agent, remove_paths):
+        pruned.append((cli_agent, list(remove_paths)))
+        return ["/kept/codex"]
+
+    # 该 prune 由 gateway 本地执行（读本进程 CONFIG_YAML_PATH），patch 必须落在
+    # gateway 副本上；母仓同名函数只在 ConfigAdapter 代理路径下才被执行。
+    monkeypatch.setattr(
+        "agent_gateway.common.config.prune_external_cli_path_histories_in_config",
+        fake_prune,
+    )
+
+    await channel.methods["external_cli.prune_path_histories"](
+        object(),
+        "req-prune-paths",
+        {"cli_agent": "Codex", "remove_paths": ["/gone/codex", " "]},
+        "sess-prune-paths",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"]["histories"] == ["/kept/codex"]
+    assert pruned == [("codex", ["/gone/codex", " "])]
+
+    await channel.methods["external_cli.prune_path_histories"](
+        object(),
+        "req-prune-paths-no-agent",
+        {"remove_paths": ["/gone/codex"]},
+        "sess-prune-paths-no-agent",
+    )
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "BAD_REQUEST"
+
+    await channel.methods["external_cli.prune_path_histories"](
+        object(),
+        "req-prune-paths-bad",
+        {"cli_agent": "codex", "remove_paths": "not-an-array"},
+        "sess-prune-paths-bad",
+    )
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+>>>>>>> origin/develop
 async def test_config_set_rejects_codex_windows_script_when_manual_path(monkeypatch):
     channel = FakeWebChannel()
     updates: list[tuple[list[dict[str, str]], str | None]] = []
 
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
         lambda: {"preferred_language": "zh", "modes": {"team": {"jiuwen_team": {}}}},
@@ -3165,7 +4297,7 @@ async def test_config_set_rejects_unavailable_external_cli_path(monkeypatch):
     channel = FakeWebChannel()
     updates: list[tuple[list[dict[str, str]], str | None]] = []
 
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
         lambda: {"preferred_language": "zh", "modes": {"team": {"jiuwen_team": {}}}},
@@ -3201,12 +4333,107 @@ async def test_config_set_rejects_unavailable_external_cli_path(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_config_save_all_nested_shape_triggers_install_gate(monkeypatch):
+    """A4g review P1 回归：save_all 嵌套键形状（前端真实链路）必须触发安装门控。
+
+    前端外部 CLI 卡片的唯一保存通道是 config.save_all 且键嵌套在
+    params.config 下；门控若只扫顶层键则对真实流量永不触发（安装不启动、
+    agent 以启用态直接落盘）。
+    """
+    channel = FakeWebChannel()
+
+    monkeypatch.setenv("WEB_PORT", "19000")
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=make_legacy_config_routing_client())
+    )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
+        lambda: {"preferred_language": "zh", "modes": {"team": {"jiuwen_team": {}}}},
+    )
+    monkeypatch.setattr(
+        "agent_gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+        lambda: {"status": "running", "error": "", "started_at": 1.0, "finished_at": 0.0},
+    )
+
+    await channel.methods["config.save_all"](
+        object(),
+        "req-save-all-nested-install",
+        {
+            "config": {
+                "external_cli_agent_codex_enabled": "true",
+                "external_cli_agent_codex_use_builtin": "true",
+            }
+        },
+        "sess-save-all-nested",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    installs = channel.responses[-1]["payload"]["external_cli_dependency_installs"]
+    assert installs["codex"]["status"] == "running"
+    # 安装启动即短路：嵌套键未被落盘（updated 为空）
+    assert channel.responses[-1]["payload"]["updated"] == []
+
+
+@pytest.mark.asyncio
+async def test_install_gate_team_collision_top_level_wins(monkeypatch):
+    """碰撞形状回归：顶层 team 与嵌套 config.team 并存时顶层优先（与
+    config_save_all_handler 的合并顺序一致）。
+
+    反向合并（嵌套覆盖顶层）时门控看到不含 codex 的嵌套 team 而漏判，
+    落盘的却是顶层含 codex 的 team——codex 未经安装门控直接启用。
+    """
+    channel = FakeWebChannel()
+
+    monkeypatch.setenv("WEB_PORT", "19000")
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=make_legacy_config_routing_client())
+    )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
+        lambda: {"preferred_language": "zh", "modes": {"team": {"jiuwen_team": {}}}},
+    )
+    ensure_calls: list[None] = []
+    monkeypatch.setattr(
+        "agent_gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+        lambda: ensure_calls.append(None) or {
+            "status": "running", "error": "", "started_at": 1.0, "finished_at": 0.0,
+        },
+    )
+
+    await channel.methods["config.save_all"](
+        object(),
+        "req-team-collision",
+        {
+            # 顶层 team 含 codex（save_all 落盘的正是这份）；嵌套 config.team 不含
+            "team": [
+                {"team_name": "alpha", "external_cli_agents": [{"cli_agent": "codex"}]},
+            ],
+            "config": {
+                "team": [
+                    {"team_name": "alpha", "external_cli_agents": [{"cli_agent": "claude"}]},
+                ],
+            },
+        },
+        "sess-team-collision",
+    )
+
+    # 门控按合并后（顶层优先）的 team 载荷判定：codex 命中 → ensure 被调、短路
+    assert ensure_calls, "碰撞形状下门控必须按顶层 team 判定并触发安装"
+    assert channel.responses[-1]["ok"] is True
+    installs = channel.responses[-1]["payload"]["external_cli_dependency_installs"]
+    assert installs["codex"]["status"] == "running"
+    assert channel.responses[-1]["payload"]["updated"] == []
+
+
+@pytest.mark.asyncio
 async def test_config_set_starts_codex_dependency_install_without_saving_codex(monkeypatch):
     channel = FakeWebChannel()
     updates: list[tuple[list[str], str | None]] = []
 
     monkeypatch.setenv("WEB_PORT", "19000")
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_legacy_config_routing_client()))
 
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
@@ -3217,7 +4444,7 @@ async def test_config_set_starts_codex_dependency_install_without_saving_codex(m
         lambda: {"modes": {"team": {}}},
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+        "agent_gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
         lambda: {"status": "running", "error": "", "started_at": 1.0, "finished_at": 0.0},
     )
     monkeypatch.setattr(
@@ -3239,9 +4466,13 @@ async def test_config_set_starts_codex_dependency_install_without_saving_codex(m
         "sess-codex-installing",
     )
 
-    assert updates == [([], "ws://127.0.0.1:19000/ws")]
+    # A4g 门控语义：安装启动时整条 config.set 短路（不写配置、不发 E2A），
+    # 响应携带安装状态；安装完成后前端重发，配置才落盘（终态与原
+    # "过滤安装中 agent 的部分写入"一致）。
+    assert updates == []
     assert channel.responses[-1]["ok"] is True
-    assert channel.responses[-1]["payload"]["codex_dependency_install"]["status"] == "running"
+    installs = channel.responses[-1]["payload"]["external_cli_dependency_installs"]
+    assert installs["codex"]["status"] == "running"
 
 
 @pytest.mark.asyncio
@@ -3250,7 +4481,7 @@ async def test_config_set_saves_claude_while_codex_dependency_is_installing(monk
     updates: list[tuple[list[str], str | None]] = []
 
     monkeypatch.setenv("WEB_PORT", "19000")
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_legacy_config_routing_client()))
 
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
@@ -3261,11 +4492,11 @@ async def test_config_set_saves_claude_while_codex_dependency_is_installing(monk
         lambda: {"modes": {"team": {}}},
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+        "agent_gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
         lambda: {"status": "running", "error": "", "started_at": 1.0, "finished_at": 0.0},
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ensure_claude_dependency_available_or_start_install",
+        "agent_gateway.channel_manager.web.app_web_handlers._ensure_claude_dependency_available_or_start_install",
         lambda: None,
     )
     monkeypatch.setattr(
@@ -3285,9 +4516,13 @@ async def test_config_set_saves_claude_while_codex_dependency_is_installing(monk
         "sess-claude-codex-installing",
     )
 
-    assert updates == [([{"cli_agent": "claude"}], "ws://127.0.0.1:19000/ws")]
+    # A4g 门控语义：codex 安装中即短路整条请求（claude 待安装完成后随重发
+    # 一起落盘，终态与原部分写入一致）。
+    assert updates == []
     assert channel.responses[-1]["ok"] is True
-    assert channel.responses[-1]["payload"]["codex_dependency_install"]["status"] == "running"
+    installs = channel.responses[-1]["payload"]["external_cli_dependency_installs"]
+    assert installs["codex"]["status"] == "running"
+    assert "claude" not in installs
 
 
 def test_build_external_cli_publish_url_uses_web_channel_env(monkeypatch):
@@ -3328,7 +4563,7 @@ def test_codex_dependency_install_is_not_started_twice(monkeypatch):
 
     original_find_spec = importlib.util.find_spec
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.importlib.util.find_spec",
+        "agent_gateway.channel_manager.web.app_web_handlers.importlib.util.find_spec",
         lambda name: None if name == "openai_codex" else original_find_spec(name),
     )
 
@@ -3338,7 +4573,7 @@ def test_codex_dependency_install_is_not_started_twice(monkeypatch):
         release_install.wait(timeout=5)
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._install_codex_dependency",
+        "agent_gateway.channel_manager.web.app_web_handlers._install_codex_dependency",
         install_once,
     )
 
@@ -3415,7 +4650,7 @@ def test_external_cli_dependency_install_starts_managed_runtime_in_frozen_deskto
 
     original_find_spec = importlib.util.find_spec
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.importlib.util.find_spec",
+        "agent_gateway.channel_manager.web.app_web_handlers.importlib.util.find_spec",
         lambda name: None if name == required_module else original_find_spec(name),
     )
     monkeypatch.setattr(app_web_handlers.sys, "frozen", True, raising=False)
@@ -3460,6 +4695,7 @@ def test_external_cli_dependency_install_starts_managed_runtime_in_frozen_deskto
     assert created_threads[0].started is True
 
 
+<<<<<<< HEAD
 @pytest.mark.parametrize(
     ("cli_agent", "required_module", "install_target", "thread_name"),
     [
@@ -3566,13 +4802,122 @@ def test_build_optional_dependency_install_args_repair_mode_uses_force_reinstall
     assert normal_args[-1] == "claude-agent-sdk==0.2.115"
 
 
+||||||| e487e9a30
+=======
+@pytest.mark.parametrize(
+    ("cli_agent", "required_module", "install_target", "thread_name"),
+    [
+        ("claude", "claude_agent_sdk", "_install_claude_dependency_background", "claude-dependency-install"),
+        ("codex", "openai_codex", "_run_codex_dependency_install_background", "codex-dependency-install"),
+    ],
+)
+def test_dependency_ensure_force_reinstalls_when_bundled_cli_file_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    cli_agent: str,
+    required_module: str,
+    install_target: str,
+    thread_name: str,
+) -> None:
+    """A deleted bundled CLI executable must trigger a repair reinstall.
+
+    The SDK package stays importable, so a plain install would end as a pip
+    "already satisfied" no-op and 一键安装 could never restore the file.
+    """
+    original_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        "agent_gateway.channel_manager.web.app_web_handlers.importlib.util.find_spec",
+        lambda name: SimpleNamespace() if name == required_module else original_find_spec(name),
+    )
+    monkeypatch.setattr(
+        app_web_handlers,
+        "_external_cli_managed_cli_path",
+        lambda _cli_agent: "",
+    )
+    monkeypatch.setattr(app_web_handlers, "_is_frozen_runtime", lambda: False)
+    monkeypatch.setattr(app_web_handlers, "_activate_managed_external_cli_paths_if_needed", lambda: None)
+
+    created_threads: list[SimpleNamespace] = []
+
+    class _Thread:
+        def __init__(
+            self,
+            *,
+            target: object,
+            args: tuple[bool],
+            name: str,
+            daemon: bool,
+        ) -> None:
+            created_threads.append(
+                SimpleNamespace(target=target, args=args, name=name, daemon=daemon, started=False)
+            )
+
+        def start(self) -> None:
+            created_threads[-1].started = True
+
+    monkeypatch.setattr(app_web_handlers.threading, "Thread", _Thread)
+
+    lock = app_web_handlers._EXTERNAL_CLI_DEPENDENCY_INSTALL_LOCKS[cli_agent]
+    status = app_web_handlers._EXTERNAL_CLI_DEPENDENCY_INSTALL_STATUSES[cli_agent]
+    with lock:
+        status.update({
+            "status": "idle",
+            "phase": "idle",
+            "error": "",
+            "last_log": "",
+            "log_tail": [],
+            "started_at": 0.0,
+            "finished_at": 0.0,
+        })
+
+    ensure_dependency = (
+        app_web_handlers._ensure_claude_dependency_available_or_start_install
+        if cli_agent == "claude"
+        else app_web_handlers._ensure_codex_dependency_available_or_start_install
+    )
+    snapshot = ensure_dependency()
+
+    assert snapshot is not None
+    assert snapshot["status"] == "running"
+    assert len(created_threads) == 1
+    assert created_threads[0].target is getattr(app_web_handlers, install_target)
+    assert created_threads[0].args == (True,)
+    assert created_threads[0].name == thread_name
+    assert created_threads[0].started is True
+
+
+def test_build_optional_dependency_install_args_repair_mode_uses_force_reinstall(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repair mode must add --force-reinstall --no-deps and reinstall only the
+    pinned SDK wheel: a plain install of an already-installed package is a pip
+    no-op and cannot restore a deleted bundled CLI."""
+    from agent_gateway.common import external_cli_runtime
+
+    monkeypatch.setattr(external_cli_runtime, "pinned_sdk_requirements", lambda _cli_agent: ["claude-agent-sdk==0.2.115"])
+    monkeypatch.setattr(app_web_handlers.shutil, "which", lambda _name: None)
+
+    repair_args = app_web_handlers._build_optional_dependency_install_args(
+        "openjiuwen[claude]", "claude", force_reinstall=True
+    )
+    assert "--force-reinstall" in repair_args
+    assert "--no-deps" in repair_args
+    assert repair_args[-1] == "claude-agent-sdk==0.2.115"
+    assert not any(arg.startswith("openjiuwen") for arg in repair_args)
+
+    normal_args = app_web_handlers._build_optional_dependency_install_args("openjiuwen[claude]", "claude")
+    assert "--force-reinstall" not in normal_args
+    assert "--no-deps" not in normal_args
+    assert normal_args[-1] == "claude-agent-sdk==0.2.115"
+
+
+>>>>>>> origin/develop
 def test_optional_dependency_install_restates_openjiuwen_url_requirements(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """uv pip refuses a URL dependency that is only transitive, so openjiuwen's
     git-pinned requirements must ride the install command as direct requirements;
     requirements gated on another extra stay out."""
-    from jiuwenswarm.common import external_cli_runtime
+    from agent_gateway.common import external_cli_runtime
 
     monkeypatch.setattr(external_cli_runtime, "pinned_sdk_requirements", lambda _cli_agent: ["claude-agent-sdk==0.2.115"])
     monkeypatch.setattr(app_web_handlers.shutil, "which", lambda _name: None)
@@ -3674,7 +5019,7 @@ def test_optional_dependency_install_times_out_after_one_hour(
 @pytest.mark.asyncio
 async def test_external_cli_codex_install_status_returns_snapshot():
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
     with app_web_handlers._CODEX_DEPENDENCY_INSTALL_LOCK:
         app_web_handlers._CODEX_DEPENDENCY_INSTALL_STATUS.update({
             "status": "running",
@@ -3791,6 +5136,9 @@ async def test_config_set_updates_canonical_skill_evolution(
     _register_web_handlers(
         WebHandlersBindParams(
             channel=channel,
+            agent_client=make_config_routing_client(
+                lambda _, **kwargs: (saved_updates.append(kwargs) or True)
+            ),
             on_config_saved=lambda _, **kwargs: (
                 saved_updates.append(kwargs) or True
             ),
@@ -3833,7 +5181,7 @@ async def test_config_set_preserves_deleted_template_for_bound_team(monkeypatch,
         },
     }
 
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
@@ -3878,7 +5226,7 @@ async def test_config_set_preserves_deleted_template_for_bound_team(monkeypatch,
 async def test_config_set_returns_bad_request_when_team_payload_is_invalid(monkeypatch):
     channel = FakeWebChannel()
 
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     monkeypatch.setattr("jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
                         lambda: {"preferred_language": "zh"})
@@ -4039,7 +5387,7 @@ def test_detect_external_cli_agent_rejects_windows_script_path(monkeypatch, tmp_
     script_path = tmp_path / "claude.cmd"
     script_path.write_text("@echo off\n", encoding="utf-8")
 
-    monkeypatch.setattr(config_set_handlers, "is_windows_platform", lambda: True)
+    monkeypatch.setattr(_gw_config_set_handlers, "is_windows_platform", lambda: True)
 
     result = _detect_external_cli_agent("claude", str(script_path))
 
@@ -4047,6 +5395,7 @@ def test_detect_external_cli_agent_rejects_windows_script_path(monkeypatch, tmp_
     assert result["path"] == str(script_path)
 
 
+<<<<<<< HEAD
 def test_resolve_external_cli_path_replaces_windows_script_shim_with_executable(monkeypatch, tmp_path) -> None:
     shim = tmp_path / "npm" / "claude.cmd"
     shim.parent.mkdir()
@@ -4098,6 +5447,60 @@ def test_detect_external_cli_agent_reports_windows_script_shim_without_executabl
     assert ".cmd" not in result["path"].lower()
 
 
+||||||| e487e9a30
+=======
+def test_resolve_external_cli_path_replaces_windows_script_shim_with_executable(monkeypatch, tmp_path) -> None:
+    shim = tmp_path / "npm" / "claude.cmd"
+    shim.parent.mkdir()
+    shim.write_text("@echo off\n", encoding="utf-8")
+    exe = tmp_path / "bin" / "claude.exe"
+    exe.parent.mkdir()
+    exe.write_bytes(b"MZ")
+    monkeypatch.setattr(
+        _gw_config_set_handlers,
+        "os",
+        SimpleNamespace(name="nt", environ={"PATH": str(exe.parent)}, pathsep=os.pathsep),
+    )
+    monkeypatch.setattr(
+        _gw_config_set_handlers.shutil,
+        "which",
+        lambda name: str(shim) if name == "claude" else None,
+    )
+
+    resolved, error, reason = _gw_config_set_handlers.resolve_external_cli_path("claude", "")
+
+    assert resolved == str(exe)
+    assert error == ""
+    assert reason == ""
+
+
+def test_detect_external_cli_agent_reports_windows_script_shim_without_executable(monkeypatch, tmp_path) -> None:
+    shim = tmp_path / "npm" / "claude.cmd"
+    shim.parent.mkdir()
+    shim.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr(
+        _gw_config_set_handlers,
+        "os",
+        SimpleNamespace(name="nt", environ={"PATH": str(shim.parent)}, pathsep=os.pathsep),
+    )
+    monkeypatch.setattr(
+        _gw_config_set_handlers.shutil,
+        "which",
+        lambda name: str(shim) if name == "claude" else None,
+    )
+
+    resolved, error, reason = _gw_config_set_handlers.resolve_external_cli_path("claude", "")
+    assert resolved == ""
+    assert reason == "windows_script"
+
+    result = _detect_external_cli_agent("claude", "")
+
+    assert result["status"] == "unsupported"
+    assert result["reason"] == "windows_script"
+    assert ".cmd" not in result["path"].lower()
+
+
+>>>>>>> origin/develop
 def test_config_panel_flatten_reads_symphony_enabled_and_skill_retrieval():
     raw = {
         "symphony": {
@@ -4129,7 +5532,7 @@ async def test_config_set_routes_symphony_payload_to_config_helper(monkeypatch):
     recorded_symphony: list[dict] = []
     recorded_skill_retrieval: list[dict] = []
 
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     monkeypatch.setattr(
         "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
@@ -4178,6 +5581,19 @@ async def test_config_set_routes_symphony_payload_to_config_helper(monkeypatch):
         "error": None,
         "code": None,
     }
+
+
+@pytest.mark.parametrize("method", [
+    "group.create", "group.delete", "group.get", "group.history.get", "group.list",
+    "group.member.add", "group.update", "session.assets.list", "session.assets.register",
+    "session.assets.rename",
+])
+def test_web_retains_mainline_group_and_session_asset_forwarding(method):
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
+    assert method not in channel.methods
+    assert method in app_web_handlers._FORWARD_REQ_METHODS
+    assert method in app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
 
 
 def test_web_exposes_graph_methods_and_rejects_legacy_symphony_methods():
@@ -4501,16 +5917,15 @@ async def test_channel_xiaoyi_get_conf_empty_returns_default_apps(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_channel_feishu_set_conf_apps_mode(monkeypatch):
+async def test_channel_feishu_set_conf_apps_mode(monkeypatch, tmp_path):
     """feishu.set_conf 带 apps → 写 channels.feishu.apps，返回归一化配置。"""
     channel = FakeWebChannel()
     cm = FakeChannelManager()
-    recorded_subsection: list[tuple] = []
+    from agent_gateway.common import config as config_module
 
-    monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.replace_channel_subsection_with_cleanup",
-        lambda cid, sub, conf, keep_keys: recorded_subsection.append((cid, sub, conf, keep_keys)),
-    )
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("channels: {}\n")
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", config_path)
 
     _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
 
@@ -4525,10 +5940,7 @@ async def test_channel_feishu_set_conf_apps_mode(monkeypatch):
     )
 
     # 验证写入了归一化后的 subsection（默认字段已填充）
-    assert len(recorded_subsection) == 1
-    assert recorded_subsection[0][0] == "feishu"
-    assert recorded_subsection[0][1] == "apps"
-    written_apps = recorded_subsection[0][2]
+    written_apps = config_module.load_yaml_round_trip(config_path)["channels"]["feishu"]["apps"]
     assert len(written_apps) == 2
     assert written_apps[0]["name"] == "应用A"
     assert written_apps[0]["app_id"] == "cli_a"
@@ -4551,6 +5963,173 @@ async def test_channel_feishu_set_conf_apps_mode(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_channel_feishu_bind_agent_persists_one_to_one_persistent_agent_id(monkeypatch, tmp_path):
+    from agent_gateway.common import config as config_module
+
+    channel = FakeWebChannel()
+    cm = FakeChannelManager()
+    cm.configs["feishu"] = {
+        "apps": [
+            {
+                "name": "现有应用",
+                "app_id": "cli_existing",
+                "app_secret": "existing-secret",
+                "persistent_agent_id": "mate_existing",
+            },
+            {
+                "name": "同事的旧应用",
+                "app_id": "cli_old_for_new",
+                "app_secret": "old-secret",
+                "persistent_agent_id": "mate_new",
+            },
+        ]
+    }
+    config_path = tmp_path / "config.yaml"
+    config_module.dump_yaml_round_trip(config_path, {"channels": {"feishu": cm.configs["feishu"]}})
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", config_path)
+
+    async def send_request(envelope):
+        # AgentServer answers with the agent it keeps for this app of the colleague.
+        payload = {"agent_id": "mate_new"} if envelope.method == "jiuwenmate.connection.attach" else {}
+        return SimpleNamespace(ok=True, payload=payload)
+
+    _register_web_handlers(WebHandlersBindParams(
+        channel=channel, channel_manager=cm, agent_client=SimpleNamespace(send_request=send_request),
+    ))
+
+    await channel.methods["channel.feishu.bind_agent"](
+        object(),
+        "req-bind-agent",
+        {"app_id": "cli_new", "app_secret": "new-secret", "config_id": "mate_colleague"},
+        "sess-1",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    saved_config = config_module.load_yaml_round_trip(config_path)
+    apps = saved_config["channels"]["feishu"]["apps"]
+    assert [(app["app_id"], app.get("persistent_agent_id")) for app in apps] == [
+        ("cli_existing", "mate_existing"),
+        ("cli_new", "mate_new"),
+    ]
+    new_app = apps[1]
+    assert new_app["app_secret"] == "new-secret"
+    assert "agent_id" not in new_app
+    assert cm.configs["feishu"]["apps"] == apps
+    assert channel.responses[-1]["payload"]["binding"] == {
+        "app_id": "cli_new",
+        "persistent_agent_id": "mate_new",
+    }
+
+
+@pytest.mark.asyncio
+async def test_channel_feishu_get_bindings_returns_ids_without_credentials():
+    channel = FakeWebChannel()
+    cm = FakeChannelManager()
+    cm.configs["feishu"] = {
+        "apps": [
+            {
+                "app_id": "cli_bound",
+                "app_secret": "must-not-leak",
+                "persistent_agent_id": "mate_bound",
+                "enabled": True,
+            },
+            {
+                "app_id": "cli_unbound",
+                "app_secret": "must-not-leak-either",
+                "enabled": True,
+            },
+        ]
+    }
+    _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
+
+    await channel.methods["channel.feishu.get_bindings"](object(), "req-bindings", {}, "sess-1")
+
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"] == {"agent_ids": ["mate_bound"]}
+
+
+@pytest.mark.asyncio
+async def test_channel_feishu_revoke_disables_only_the_bound_colleague(monkeypatch, tmp_path):
+    from agent_gateway.common import config as config_module
+
+    channel = FakeWebChannel()
+    cm = FakeChannelManager()
+    cm.configs["feishu"] = {
+        "apps": [
+            {
+                "app_id": "cli_keep",
+                "app_secret": "keep-secret",
+                "persistent_agent_id": "mate_keep",
+                "enabled": True,
+            },
+            {
+                "app_id": "cli_drop",
+                "app_secret": "drop-secret",
+                "persistent_agent_id": "mate_drop",
+                "enabled": True,
+            },
+        ]
+    }
+    config_path = tmp_path / "config.yaml"
+    config_module.dump_yaml_round_trip(config_path, {"channels": {"feishu": cm.configs["feishu"]}})
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", config_path)
+    _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
+
+    await channel.methods["channel.feishu.revoke"](
+        object(), "req-revoke-feishu", {"persistent_agent_id": "mate_drop"}, "sess-1",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"] == {"revoked": True}
+    assert "drop-secret" not in str(channel.responses[-1])
+    saved = config_module.load_yaml_round_trip(config_path)["channels"]["feishu"]["apps"]
+    by_agent = {app["persistent_agent_id"]: app for app in saved}
+    assert by_agent["mate_drop"]["enabled"] is False
+    assert by_agent["mate_drop"]["app_secret"] == "drop-secret"
+    assert by_agent["mate_keep"]["enabled"] is True
+    assert cm.configs["feishu"]["apps"] == saved
+
+
+@pytest.mark.asyncio
+async def test_channel_welink_revoke_disables_polling_and_keeps_the_account(monkeypatch, tmp_path):
+    from agent_gateway.common import config as config_module
+
+    channel = FakeWebChannel()
+    cm = FakeChannelManager()
+    cm.configs["welink"] = {
+        "enabled": True,
+        "account": "h00557917",
+        "persistent_agent_id": "mate_xiaojiu",
+        "credential_dir": "C:/welink/mate_xiaojiu",
+        "poll_interval_seconds": 5,
+    }
+    config_path = tmp_path / "config.yaml"
+    config_module.dump_yaml_round_trip(config_path, {"channels": {"welink": cm.configs["welink"]}})
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", config_path)
+    _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
+
+    await channel.methods["channel.welink.revoke"](
+        object(), "req-revoke-other", {"persistent_agent_id": "mate_other"}, "sess-1",
+    )
+    assert channel.responses[-1]["ok"] is False
+    assert cm.configs["welink"]["enabled"] is True
+
+    await channel.methods["channel.welink.revoke"](
+        object(), "req-revoke-welink", {"persistent_agent_id": "mate_xiaojiu"}, "sess-1",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"] == {"revoked": True}
+    saved = config_module.load_yaml_round_trip(config_path)["channels"]["welink"]
+    assert saved["enabled"] is False
+    assert saved["account"] == "h00557917"
+    assert saved["bindings"] == []
+    assert saved["reader_credential_dir"] == "C:/welink/mate_xiaojiu"
+    assert cm.configs["welink"]["enabled"] is False
+    assert cm.configs["welink"]["account"] == "h00557917"
+
+
+@pytest.mark.asyncio
 async def test_channel_xiaoyi_set_conf_apps_mode(monkeypatch):
     """xiaoyi.set_conf 带 apps → 写 channels.xiaoyi.apps，返回归一化配置。"""
     channel = FakeWebChannel()
@@ -4558,11 +6137,11 @@ async def test_channel_xiaoyi_set_conf_apps_mode(monkeypatch):
     recorded_subsection: list[tuple] = []
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.replace_channel_subsection_with_cleanup",
+        "agent_gateway.channel_manager.web.app_web_handlers.replace_channel_subsection_with_cleanup",
         lambda cid, sub, conf, keep_keys: recorded_subsection.append((cid, sub, conf, keep_keys)),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._clear_agent_config_cache",
+        "agent_gateway.channel_manager.web.app_web_handlers._clear_agent_config_cache",
         lambda *a, **kw: None,
     )
 
@@ -4602,16 +6181,15 @@ async def test_channel_xiaoyi_set_conf_apps_mode(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_channel_feishu_set_conf_apps_empty_list(monkeypatch):
+async def test_channel_feishu_set_conf_apps_empty_list(monkeypatch, tmp_path):
     """空 apps 列表 → 保存并返回空列表。"""
     channel = FakeWebChannel()
     cm = FakeChannelManager()
-    recorded_subsection: list[tuple] = []
+    from agent_gateway.common import config as config_module
 
-    monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.replace_channel_subsection_with_cleanup",
-        lambda cid, sub, conf, keep_keys: recorded_subsection.append((cid, sub, conf, keep_keys)),
-    )
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("channels: {}\n")
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", config_path)
 
     _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
 
@@ -4619,7 +6197,7 @@ async def test_channel_feishu_set_conf_apps_empty_list(monkeypatch):
         object(), "req-empty", {"apps": []}, "sess-1"
     )
 
-    assert recorded_subsection[0][2] == []
+    assert config_module.load_yaml_round_trip(config_path)["channels"]["feishu"]["apps"] == []
     assert channel.responses[-1]["ok"] is True
     assert channel.responses[-1]["payload"]["config"]["apps"] == []
 
@@ -4629,7 +6207,7 @@ async def test_channel_set_conf_channel_manager_unavailable(monkeypatch):
     """cm 为 None → 返回 SERVICE_UNAVAILABLE。"""
     channel = FakeWebChannel()
     # 不传 channel_manager，_resolve 返回 None
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["channel.feishu.set_conf"](object(), "req-1", {"apps": []}, "sess-1")
     assert channel.responses[-1]["ok"] is False
@@ -4724,11 +6302,11 @@ async def test_channel_wechat_set_conf_accepts_valid_numeric(monkeypatch):
     channel = FakeWebChannel()
     cm = FakeChannelManager()
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.update_channel_in_config",
+        "agent_gateway.channel_manager.web.app_web_handlers.update_channel_in_config",
         lambda channel_id, conf: None,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._clear_agent_config_cache",
+        "agent_gateway.channel_manager.web.app_web_handlers._clear_agent_config_cache",
         lambda *a, **kw: None,
     )
     _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
@@ -4749,7 +6327,7 @@ async def test_channel_wechat_set_conf_accepts_valid_numeric(monkeypatch):
 def test_update_channel_subsection_in_config_persists_to_disk(tmp_path, monkeypatch):
     """验证 update_channel_subsection_in_config 确实将数据写到 config.yaml 文件。"""
     import yaml
-    from jiuwenswarm.common import config as cfg
+    from agent_gateway.common import config as cfg
 
     # 1. 准备一个临时的 config.yaml，包含已有内容
     temp_config = tmp_path / "config.yaml"
@@ -4793,7 +6371,7 @@ def test_update_channel_subsection_in_config_persists_to_disk(tmp_path, monkeypa
 def test_update_channel_subsection_in_config_creates_missing_sections(tmp_path, monkeypatch):
     """当 channels / channel_id / subsection 不存在时，应自动创建。"""
     import yaml
-    from jiuwenswarm.common import config as cfg
+    from agent_gateway.common import config as cfg
 
     temp_config = tmp_path / "config.yaml"
     # 只有顶层字段，没有任何 channels
@@ -4818,7 +6396,7 @@ def test_update_channel_subsection_in_config_creates_missing_sections(tmp_path, 
 def test_update_channel_subsection_in_config_overwrites_existing(tmp_path, monkeypatch):
     """相同 subsection 多次写入应覆盖而不是追加。"""
     import yaml
-    from jiuwenswarm.common import config as cfg
+    from agent_gateway.common import config as cfg
 
     temp_config = tmp_path / "config.yaml"
     initial_data = {
@@ -4848,30 +6426,6 @@ def test_update_channel_subsection_in_config_overwrites_existing(tmp_path, monke
 # ── media.persist 大图 HTTP bridge 分流（Phase 2 传输取舍） ──────────────────
 
 
-def test_persist_media_locally_concurrent_same_name_does_not_clobber(tmp_path, monkeypatch):
-    """单用户大图本地落盘在同名并发请求下必须各自占用唯一文件。"""
-    from concurrent.futures import ThreadPoolExecutor
-
-    monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: tmp_path
-    )
-
-    def _persist(index: int):
-        return app_web_handlers._persist_media_locally(
-            f"image-{index}".encode(), "session-1", "image.png"
-        )
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        results = list(pool.map(_persist, range(16)))
-
-    assert all(ok for ok, _payload in results)
-    paths = [Path(payload["path"]) for _ok, payload in results]
-    assert len(set(paths)) == 16
-    assert {path.read_bytes() for path in paths} == {
-        f"image-{index}".encode() for index in range(16)
-    }
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("filename", "expected_name"),
@@ -4885,9 +6439,20 @@ def test_persist_media_locally_concurrent_same_name_does_not_clobber(tmp_path, m
 async def test_upload_media_item_via_http_keeps_recognized_image_suffix(
     tmp_path, monkeypatch, filename, expected_name
 ):
-    """大图 HTTP 落盘与 AgentServer 共用后缀规则：``.jpeg`` / ``.jfif`` 保留原名。"""
+    """大图 E2A 落盘与 AgentServer 共用后缀规则：``.jpeg`` / ``.jfif`` 保留原名。
+
+    A1g 后 legacy/AgentOS 统一走 E2A 分块上传，通道经 mock；被测的是
+    filename 后缀规则（ensure_image_upload_filename），与通道无关。
+    """
+    uploads: list[str] = []
+
+    async def _fake_e2a_upload(content, rel_path, **_kwargs):
+        uploads.append(rel_path)
+        return True, {"path": rel_path}
+
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: tmp_path
+        "agent_gateway.routing.agent_http_bridge.upload_file_bytes_via_e2a",
+        _fake_e2a_upload,
     )
 
     result = await app_web_handlers._upload_media_item_via_http(
@@ -4901,8 +6466,29 @@ async def test_upload_media_item_via_http_keeps_recognized_image_suffix(
 
     assert result is not None
     assert result["filename"] == expected_name
-    assert Path(result["path"]).name == expected_name
-    assert Path(result["path"]).read_bytes() == b"jpeg-bytes"
+    assert uploads == [f"agent/sessions/sess-1/uploads/{expected_name}"]
+
+
+@pytest.mark.asyncio
+async def test_document_upload_uses_e2a_for_remote_enterprise_client(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    client = object()
+    upload = AsyncMock(return_value=(True, {"path": "/tenant/uploads/report.txt"}))
+    monkeypatch.setattr(
+        "agent_gateway.routing.agent_http_bridge.upload_file_bytes_via_e2a", upload
+    )
+    result = await app_web_handlers._upload_document_item_via_http(
+        {"filename": "report.txt", "mimeType": "text/plain"}, b"report",
+        session_id="session-a", index=0, agent_client=client, user_id="user-a",
+    )
+    assert result["path"] == "/tenant/uploads/report.txt"
+    assert result["_persisted"] is True
+    upload.assert_awaited_once_with(
+        b"report", "agent/sessions/session-a/uploads/report.txt",
+        agent_client=client, user_id="user-a", channel_id="web", session_id="session-a",
+    )
 
 
 @pytest.mark.asyncio
@@ -4915,10 +6501,10 @@ async def test_pre_persist_large_media_splits_or_keeps_oversized_images(
     链路返回可重试错误），不静默丢图。小图始终保留 base64 走 E2A。"""
     import base64
 
-    from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+    from agent_gateway.channel_manager.web.app_web_handlers import (
         _pre_persist_large_media,
     )
-    from jiuwenswarm.gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
+    from agent_gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
 
     big_b64 = base64.b64encode(b"x" * (E2A_PAYLOAD_MAX_BYTES + 1)).decode("ascii")
     small_b64 = base64.b64encode(b"small-image-bytes").decode("ascii")
@@ -4938,7 +6524,7 @@ async def test_pre_persist_large_media_splits_or_keeps_oversized_images(
         }
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._upload_media_item_via_http",
+        "agent_gateway.channel_manager.web.app_web_handlers._upload_media_item_via_http",
         fake_upload,
     )
 
@@ -4985,8 +6571,8 @@ async def test_pre_persist_large_media_splits_or_keeps_oversized_images(
 
 
 def _a4p_config_request(method, params, channel="web", session="session"):
-    from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.common.schema.message import ReqMethod
+    from openjiuwen_protocol.e2a.agent_models import AgentRequest
+    from openjiuwen_protocol.message import ReqMethod
     return AgentRequest(request_id="rpc", channel_id=channel, session_id=session,
                         req_method=ReqMethod(method), params=params)
 
@@ -5161,7 +6747,7 @@ def _use_managed_provider_runtime(
     runtime_state: str = "not_installed",
 ) -> list[SimpleNamespace]:
     """Expose a third-party ``acme`` runtime and capture install threads instead of running them."""
-    from jiuwenswarm.common import external_cli_runtime
+    from agent_gateway.common import external_cli_runtime
 
     monkeypatch.setattr(
         app_web_handlers,
@@ -5195,7 +6781,7 @@ def _use_managed_provider_runtime(
 
 async def _call_external_cli(method: str, cli_agent: str) -> dict:
     channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
     await channel.methods[method](object(), f"req-{method}", {"cli_agent": cli_agent}, "sess-external-cli")
     return channel.responses[-1]
 
@@ -5267,8 +6853,8 @@ async def test_external_cli_install_status_reports_managed_provider_runtime(
 async def test_external_cli_custom_agent_remove_drops_config_before_uninstalling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from jiuwenswarm.common import config as config_module
-    from jiuwenswarm.common import custom_agent_runtime
+    from agent_gateway.common import config as config_module
+    from agent_gateway.common import custom_agent_runtime
 
     calls: list[tuple[str, object]] = []
     configured = [{"cli_agent": "claude"}, {"cli_agent": "acme", "cli_path": "/opt/acme"}]
@@ -5296,3 +6882,168 @@ async def test_external_cli_custom_agent_remove_drops_config_before_uninstalling
     assert calls == [("config", [{"cli_agent": "claude"}]), ("remove", "acme")]
     assert missing["ok"] is False
     assert missing["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_welink_multi_binding_status_and_revoke_preserve_shared_reader(monkeypatch, tmp_path):
+    from agent_gateway.common import config as config_module
+
+    channel, cm = FakeWebChannel(), FakeChannelManager()
+    cm.configs['welink'] = {
+        'account': 'reader', 'reader_credential_dir': '/reader', 'cli_authorized': True,
+        'bindings': [
+            {'persistent_agent_id': 'mate_1', 'config_id': 'config_1', 'assistant_credential_id': 'ak1', 'assistant_secret': 'secret1', 'credential_dir': '/assistant1'},
+            {'persistent_agent_id': 'mate_2', 'config_id': 'config_2', 'assistant_credential_id': 'ak2', 'assistant_secret': 'secret2', 'credential_dir': '/assistant2'},
+        ],
+    }
+    path = tmp_path / 'config.yaml'
+    config_module.dump_yaml_round_trip(path, {'channels': cm.configs})
+    monkeypatch.setattr(config_module, 'CONFIG_YAML_PATH', path)
+    _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
+    await channel.methods['channel.welink.get_bindings'](object(), 'status', {'config_id': 'config_2'}, 'session')
+    response = channel.responses[-1]
+    assert response['ok'] is True
+    assert response['payload']['persistent_agent_id'] == 'mate_2'
+    assert response['payload']['config_id'] == 'config_2'
+    assert len(response['payload']['bindings']) == 2
+    assert 'secret1' not in str(response)
+    await channel.methods['channel.welink.revoke'](object(), 'revoke', {'config_id': 'config_2'}, 'session')
+    assert channel.responses[-1]['ok'] is True
+    saved = config_module.load_yaml_round_trip(path)['channels']['welink']
+    assert saved['cli_authorized'] is True
+    assert saved['reader_credential_dir'] == '/reader'
+    assert [b['persistent_agent_id'] for b in saved['bindings']] == ['mate_1']
+    assert saved['bindings'][0]['enabled'] is True
+
+
+@pytest.mark.asyncio
+async def test_models_get_returns_desensitized_editable_detail(monkeypatch) -> None:
+    """Gateway 本地 ModelCatalog 路径仅企业版（无 AS / RuntimeRouted）启用。"""
+    class FakeCatalog:
+        def get_public_model_detail(self, model_id):
+            assert model_id == "mdl_a"
+            return {
+                "model_id": model_id,
+                "model_client_config": {"model_name": "a"},
+                "write_only_fields": ["model_client_config.api_key"],
+            }
+
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: True)
+    monkeypatch.setattr(app_web_handlers, "ModelCatalog", FakeCatalog)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["models.get"](object(), "req-model", {"model_id": "mdl_a"}, "sid")
+
+    response = channel.responses[-1]
+    assert response["ok"] is True
+    assert "api_key" not in response["payload"]["model"]["model_client_config"]
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runtime_busy, gateway_busy", [(True, False), (False, True)])
+async def test_session_metadata_retains_agent_runtime_authority(monkeypatch, runtime_busy, gateway_busy):
+    channel = FakeWebChannel()
+    channel.is_session_busy = lambda _: gateway_busy
+    captured = []
+
+    class AgentClient:
+        server_ready = True
+
+        async def send_request(self, envelope):
+            captured.append(envelope)
+            return SimpleNamespace(ok=True, payload={"session_id": "s1", "is_processing": runtime_busy})
+
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=AgentClient()))
+    ws = SimpleNamespace(_web_routing={"user_id": "u1", "group_id": "g1", "bot_id": "b1"})
+    await channel.methods["session.get_metadata"](ws, "metadata-1", {"session_id": "s1"}, "s1", "u1")
+    assert channel.responses[-1]["payload"]["is_processing"] is runtime_busy
+    assert captured[-1].channel_context["routing"] == {"group_id": "g1", "bot_id": "b1"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("metadata", "status", "expected"),
+    [({"cron_id": "job"}, 200, 200), ({}, 200, 404), ({}, 403, 403)],
+)
+async def test_cron_live_uses_routed_metadata_for_normal_web_session_ids(monkeypatch, metadata, status, expected):
+    lookup = AsyncMock(return_value=JSONResponse({"ok": status == 200, "data": metadata}, status_code=status))
+    monkeypatch.setattr(web_http_routes, "_unary", lookup)
+    app = FastAPI()
+    channel = object()
+    web_http_routes.register_web_http_api_routes(app, channel, enterprise=True)
+    endpoint = next(route.endpoint for route in app.routes if route.path == "/api/v1/sessions/{session_id}/live")
+    request = SimpleNamespace(is_disconnected=AsyncMock(return_value=True))
+    response = await endpoint("web_allocated_session", request)
+    assert response.status_code == expected
+    lookup.assert_awaited_once_with(request, channel, "session.get_metadata", {"session_id": "web_allocated_session"})
+    if expected == 200:
+        assert isinstance(response, StreamingResponse)
+        assert [frame async for frame in response.body_iterator] == []
+
+
+@pytest.mark.asyncio
+async def test_run_notification_subscription_works_without_session_and_isolates_tenants(monkeypatch):
+    from agent_gateway.common.cron_events import cron_notification_scope
+    from agent_gateway.cron import live_bus
+
+    monkeypatch.setattr(live_bus, "_redis_client", lambda: None)
+    bus = live_bus.CronLiveBus()
+    monkeypatch.setattr(live_bus, "cron_live_bus", bus)
+    monkeypatch.setattr(web_http_routes, "_unary", AsyncMock(return_value=JSONResponse({"ok": True})))
+    app = FastAPI()
+    web_http_routes.register_web_http_api_routes(app, object(), enterprise=True)
+    endpoint = next(route.endpoint for route in app.routes if route.path == "/api/v1/cron/runs/live")
+    request = SimpleNamespace(
+        headers={"x-user-id": "owner", "x-group-id": "group", "x-bot-id": "bot", "x-app-id": "app"},
+        client=SimpleNamespace(host="127.0.0.1"), is_disconnected=AsyncMock(return_value=False),
+    )
+    response = await endpoint(request)
+    stream = response.body_iterator
+    assert await anext(stream) == ": connected\n\n"
+    try:
+        for field in ("user_id", "group_id", "bot_id", "app_id"):
+            identity = dict(user_id="owner", group_id="group", bot_id="bot", app_id="app")
+            identity[field] = "other"
+            bus.publish(cron_notification_scope(**identity), {
+                "event": "cron.run.updated", "payload": {"event_id": f"wrong-{field}"},
+            })
+        scope = cron_notification_scope(user_id="owner", group_id="group", bot_id="bot", app_id="app")
+        for revision, phase in [(1, "finished"), (2, "reminder")]:
+            bus.publish(scope, {"event": "cron.run.updated", "payload": {
+                "event_id": f"run:{revision}", "request_id": "cron-run", "status": "failed",
+                "phase": phase, "session_id": None,
+            }})
+        assert '"phase": "finished"' in await anext(stream)
+        assert '"phase": "reminder"' in await anext(stream)
+    finally:
+        await stream.aclose()
+    assert not bus._subscribers.get(scope)
+
+
+@pytest.mark.asyncio
+async def test_run_notification_subscription_applies_access_checks(monkeypatch):
+    denied = JSONResponse({"ok": False}, status_code=403)
+    monkeypatch.setattr(web_http_routes, "_unary", AsyncMock(return_value=denied))
+    app = FastAPI()
+    web_http_routes.register_web_http_api_routes(app, object(), enterprise=True)
+    endpoint = next(route.endpoint for route in app.routes if route.path == "/api/v1/cron/runs/live")
+    assert await endpoint(SimpleNamespace()) is denied
+
+
+@pytest.mark.asyncio
+async def test_cron_session_selection_rpc_rejects_group_before_resolving(monkeypatch):
+    from jiuwenswarm.common.config_panel.model_resource_handlers import session_selection_handler
+    from jiuwenswarm.common.external_providers import _providers
+
+    monkeypatch.setitem(
+        _providers, "session_metadata",
+        SimpleNamespace(get_session_metadata=lambda session_id: {"cron_id": "job"}),
+    )
+    channel = SimpleNamespace(send_response=AsyncMock())
+    await session_selection_handler(
+        channel, None, "select", {"model_selection": {"type": "model_group", "id": "group"}}, "cron-session",
+    )
+    response = channel.send_response.call_args.kwargs
+    assert response["ok"] is False
+    assert response["code"] == "BAD_REQUEST"
+    assert "only support a single model" in response["error"]

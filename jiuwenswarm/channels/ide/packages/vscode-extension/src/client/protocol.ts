@@ -40,9 +40,15 @@ export type ExtToWebviewMsg =
   | { type: 'skill_toggled'; skillId: string; enabled: boolean }
   | { type: 'skills_error'; message: string }
   | { type: 'jiuwen_event'; event: Record<string, unknown> }
+<<<<<<< HEAD
 
   | { type: 'models_updated'; models: ModelEntry[]; activeModel?: string }
   | { type: 'team_message'; content: string }
+||||||| e487e9a30
+=======
+  | { type: 'team_message'; content: string }
+  | { type: 'models_updated'; models: ModelEntry[]; activeModel?: string }
+>>>>>>> origin/develop
   | { type: 'error'; message?: string; requestId?: string }
   | { type: 'debug_log'; line: string }
   | { type: 'prefill'; content: string }
@@ -86,7 +92,7 @@ export type WebviewToExtMsg =
   | { type: 'ready' }
   | { type: 'input_changed'; content: string }
   | { type: 'send'; content: string; mode: string; requestId: string; model?: string; mentionedPaths?: string[]; media_items?: unknown[] }
-  | { type: 'answer'; requestId: string; answers: unknown[]; source: string; mode: string }
+  | { type: 'answer'; requestId: string; answers: unknown[]; source: string; mode: string; interruptId?: string }
   | { type: 'new_session' }
   | { type: 'switch_session'; sessionId: string }
   | { type: 'delete_session'; sessionId: string }

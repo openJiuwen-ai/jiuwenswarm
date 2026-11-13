@@ -12,7 +12,13 @@ import {
 } from '../../utils/gitcodeOAuth';
 import { PUBLISH_RESTORE_KEY, useAssetPublish } from '../../hooks/useAssetPublish';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
+<<<<<<< HEAD
 import { localRecordState, validateMetadata, publishTimestamp } from '../../features/assetPublishState';
+||||||| e487e9a30
+import { publishOutcome, validateMetadata, publishTimestamp } from '../../features/assetPublishState';
+=======
+import { canRetrySkillPack, localRecordState, validateMetadata, publishTimestamp } from '../../features/assetPublishState';
+>>>>>>> origin/develop
 import { publishIssueKey } from '../../features/assetPublishErrors';
 import type { AssetPublishOpenRequest, AssetReference, PublishMetadata } from '../../types/assetPublish';
 import gitcodeIcon from '../../assets/settings/channels/gitcode.png';
@@ -79,6 +85,7 @@ const messages = {
     prepare: '检查发布内容',
     commit: '确认发布',
     retry: '找回此次提交',
+    retryPack: '重试此操作',
     busy: '处理中…',
     login: '登录后检查并发布',
     check: '发布内容检查',
@@ -86,6 +93,28 @@ const messages = {
     excluded: '排除项',
     normalizations: '发布副本调整',
     dependencies: '依赖',
+    packMembers: '成员发布计划',
+    packConsent: '确认后将公开发布以下本地成员，待所有成员审核通过后再发布 SkillPack。',
+    packReuse: '复用已发布版本',
+    packPublish: '先发布成员',
+    packBlocked: '需要处理',
+    packStagePublishingMembers: '正在发布成员',
+    packStageWaitingMembers: '等待成员审核',
+    packStagePublishingPack: '正在发布 SkillPack',
+    packStageWaitingPack: '等待 SkillPack 审核',
+    packStageCompleted: 'SkillPack 已发布',
+    packStageBlocked: '发布已停止，请处理原因',
+    packStageReconcile: '上次上传结果未确认，请核实后重试此操作',
+    packApproved: '审核通过',
+    packReviewPending: '等待审核',
+    packUnavailable: 'SkillPack 发布尚未启用，或当前市场未配置兼容客户端发布范围。',
+    packChanged: 'Pack 或成员内容已变化，请重新检查并确认新的发布内容。',
+    packMemberInvalid: '成员类型、来源或版本不符合要求，请查看成员计划。',
+    packMemberUnavailable: '成员版本当前不可公开下载，请检查审核/上架状态后重新检查。',
+    packConflict: 'Hub 已存在同名资产，或发布目标与本地记录不一致。请核对名称和版本。',
+    packRejected: '成员或 SkillPack 未通过 Hub 审核。已发布的独立成员会保留。',
+    packCheckFailed: '暂时无法核对 Hub 状态。任务已保存，恢复连接后请重试此操作。',
+    packPublishedNote: '已核对各成员及 Pack 的公开版本；当前 Hub 分别审核每个 Skill。',
     warnings: '提示',
     errors: '需要修正',
     technical: '技术详情',
@@ -98,9 +127,18 @@ const messages = {
     unconfirmed: '提交结果未确认',
     observed: '这里只显示本地可确定的提交状态；远端发布状态请以 Hub 为准。',
     requestFailed: '请求未完成，请重试或重新登录。',
+<<<<<<< HEAD
     invalidPackage: '发布内容不合法，请检查清单文件或版本号后重试。',
     publishUnavailable: '发布服务暂时不可用，请稍后重试。',
     uploadOutcomeUnknown: '提交结果未确认。请到 Hub 的“我的上传”确认该版本是否存在，再决定是否重新提交。',
+||||||| e487e9a30
+=======
+    undefinedPlaceholder: '连接器配置包含未声明的参数。请检查凭证占位符：宿主 OAuth 仅自动提供 OAUTH_ACCESS_TOKEN，其他参数需声明凭证字段。此问题与 Hub 登录无关。',
+    invalidAgentMcp: 'Hub 拒绝了连接器包校验（invalid_agent_mcp）。请检查清单及凭证声明；OAuth 认证头应由宿主提供，而非作为手填 Token 字段发布。请更新宿主后重新检查发布内容，不要反复重新登录。',
+    invalidPackage: '发布内容不合法，请检查清单文件或版本号后重试。',
+    publishUnavailable: '发布服务暂时不可用，请稍后重试。',
+    uploadOutcomeUnknown: '提交结果未确认。请到 Hub 的“我的上传”确认该版本是否存在，再决定是否重新提交。',
+>>>>>>> origin/develop
     invalidPluginStructure: '资源包结构不符合 Hub 要求，请检查清单文件和目录结构。',
     pluginNotFound: 'Hub 中找不到要更新的资源，请检查“更新目标 Hub ID”后重试。',
     sessionExchangeFailed: 'Hub 登录结果兑换失败，请重新授权；若仍失败请联系 Hub 管理员。',
@@ -172,6 +210,7 @@ const messages = {
     prepare: 'Check package',
     commit: 'Confirm publish',
     retry: 'Recover this submission',
+    retryPack: 'Retry this operation',
     busy: 'Working…',
     login: 'Sign in to check and publish',
     check: 'Package review',
@@ -179,6 +218,29 @@ const messages = {
     excluded: 'Excluded',
     normalizations: 'Snapshot adjustments',
     dependencies: 'Dependencies',
+    packMembers: 'Member publishing plan',
+    packConsent: 'Confirm to publish the listed local members publicly. The SkillPack is submitted after every member passes review.',
+    packReuse: 'Reuse published version',
+    packPublish: 'Publish member first',
+    packBlocked: 'Action required',
+    packStagePublishingMembers: 'Publishing members',
+    packStageWaitingMembers: 'Waiting for member reviews',
+    packStagePublishingPack: 'Publishing SkillPack',
+    packStageWaitingPack: 'Waiting for SkillPack review',
+    packStageCompleted: 'SkillPack published',
+    packStageBlocked: 'Publication stopped; resolve the reported issue',
+    packStageReconcile: 'Previous upload is unconfirmed. Verify it, then retry this operation.',
+    packApproved: 'Approved',
+    packReviewPending: 'Awaiting review',
+    packUnavailable: 'SkillPack publishing is disabled or this market has no compatible-client audience configured.',
+    packChanged: 'The Pack or a member changed. Check and confirm the new publishing content.',
+    packMemberInvalid: 'A member type, origin or version is incompatible. Check the member plan.',
+    packMemberUnavailable:
+      'This member version is not publicly downloadable. Check its review and listing status, then check again.',
+    packConflict: 'A Hub asset already uses this name, or the publication target differs from local records. Check the name and version.',
+    packRejected: 'A member or SkillPack did not pass Hub review. Independently published members are retained.',
+    packCheckFailed: 'Hub status could not be verified. Progress is saved. Restore the connection, then retry this operation.',
+    packPublishedNote: 'Public member and Pack versions have been verified. The current Hub reviews each Skill separately.',
     warnings: 'Warnings',
     errors: 'Fix before publishing',
     technical: 'Technical details',
@@ -191,10 +253,20 @@ const messages = {
     unconfirmed: 'Submission result unconfirmed',
     observed: 'Only locally confirmed submission states are shown here; check the Hub for remote publication status.',
     requestFailed: 'The request did not complete. Retry or sign in again.',
+<<<<<<< HEAD
     invalidPackage: 'The package is not publishable. Check its manifest or version and retry.',
     publishUnavailable: 'The publishing service is unavailable right now. Retry later.',
     uploadOutcomeUnknown:
       'The submission result is unconfirmed. Check "My uploads" on the Hub before submitting again.',
+||||||| e487e9a30
+=======
+    undefinedPlaceholder: 'The connector configuration contains an undeclared parameter. Host OAuth supplies only OAUTH_ACCESS_TOKEN; other parameters need credential schema fields. This is not a Hub sign-in error.',
+    invalidAgentMcp: 'Hub rejected connector package validation (invalid_agent_mcp). Check the manifest and credentials declaration. The host must supply OAuth authorization headers, not publish them as manual token fields. Update the host and check the package again instead of repeatedly signing in.',
+    invalidPackage: 'The package is not publishable. Check its manifest or version and retry.',
+    publishUnavailable: 'The publishing service is unavailable right now. Retry later.',
+    uploadOutcomeUnknown:
+      'The submission result is unconfirmed. Check "My uploads" on the Hub before submitting again.',
+>>>>>>> origin/develop
     invalidPluginStructure: 'The package structure does not meet Hub requirements. Check its manifest and folders.',
     pluginNotFound: 'The Hub resource to update was not found. Check the target Hub ID and retry.',
     sessionExchangeFailed:
@@ -312,10 +384,21 @@ function AssetPublishDrawer({
     }
     const code = issue?.code;
     if (code && known[code]) return known[code][zh ? 0 : 1] + (issue?.path ? ` (${issue.path})` : '');
+<<<<<<< HEAD
     // Prefer the Hub's own guidance when it is short enough; it is more specific than any code table.
     const reported = typeof issue?.message === 'string' ? issue.message.trim() : '';
     if (reported) return reported;
     const safeKey = publishIssueKey(code || '');
+||||||| e487e9a30
+    const safeKey = publishIssueKey(code || value);
+=======
+    const safeKey = publishIssueKey(code || value);
+    // Connector validation errors can contain credential details in the Hub message.
+    if (safeKey === 'undefinedPlaceholder' || safeKey === 'invalidAgentMcp') return text(safeKey);
+    // Prefer the Hub's own guidance when it is short enough; it is more specific than any code table.
+    const reported = typeof issue?.message === 'string' ? issue.message.trim() : '';
+    if (reported) return reported;
+>>>>>>> origin/develop
     return safeKey === 'requestFailed' ? text('requestFailed') : text(safeKey);
   };
   const panel = useRef<HTMLElement | null>(null);
@@ -418,6 +501,7 @@ function AssetPublishDrawer({
       }
     }
   };
+<<<<<<< HEAD
   const signOut = () => {
     if (!window.confirm(text('signOutConfirm'))) return;
     // Invalidate an authorization attempt that is still in flight, including the stage before
@@ -435,6 +519,28 @@ function AssetPublishDrawer({
   };
   const invalid = validateMetadata(state.metadata, reference.kind).length > 0;
   const invalidFields = new Set(validateMetadata(state.metadata, reference.kind));
+||||||| e487e9a30
+  const invalid = validateMetadata(state.metadata).length > 0;
+  const invalidFields = new Set(validateMetadata(state.metadata));
+=======
+  const signOut = () => {
+    if (!window.confirm(text('signOutConfirm'))) return;
+    // Invalidate an authorization attempt that is still in flight, including the stage before
+    // polling starts, otherwise it can resume and store a fresh token after signing out.
+    loginGeneration.current++;
+    loginAbort.current?.abort();
+    loginWindow.current?.close();
+    setLoginBusy(false);
+    clearHubOAuthSession();
+    setSwitchingAccount(false);
+    setReview(false);
+    setLoginError('');
+    // The hook listens for this event to re-read the authorization scope.
+    window.dispatchEvent(new CustomEvent('oauth-callback-complete'));
+  };
+  const invalid = validateMetadata(state.metadata).length > 0;
+  const invalidFields = new Set(validateMetadata(state.metadata));
+>>>>>>> origin/develop
   const fields = ['asset_name', 'version', 'display_name', 'description', 'tags', 'version_desc'] as const;
   const fieldHints: Partial<Record<(typeof fields)[number], MessageKey>> = {
     asset_name: reference.kind === 'system_plugin' ? 'assetNameHelpSystemPlugin' : 'assetNameHelp',
@@ -468,12 +574,42 @@ function AssetPublishDrawer({
   const accountName = oauthUser?.name || oauthUser?.login || `${providerName} ${text('signedIn')}`;
   const assetType = {
     skill: 'Skill',
+    skillpack: 'SkillPack',
     agent_template: zh ? '专家' : 'Expert',
     agent_group: zh ? '专家团' : 'Expert group',
     plugin: zh ? '插件' : 'Plugin',
     mcp: zh ? '连接器' : 'Connector',
     system_plugin: zh ? '系统插件' : 'System plugin',
   }[reference.kind];
+  const packStageLabels: Record<string, MessageKey> = {
+    publishing_members: 'packStagePublishingMembers',
+    waiting_member_review: 'packStageWaitingMembers',
+    publishing_pack: 'packStagePublishingPack',
+    waiting_pack_review: 'packStageWaitingPack',
+    completed: 'packStageCompleted',
+    blocked: 'packStageBlocked',
+    reconcile_upload: 'packStageReconcile',
+    reauth_required: 'authRequired',
+  };
+  const packMembers = state.record?.members || state.draft?.members;
+  const renderPackMembers = () => packMembers && (
+    <section className="asset-publish-pack-members" data-testid="asset-publish-pack-members">
+      <h4 data-testid="asset-publish-pack-members-title">{text('packMembers')}</h4>
+      {!state.record && <p data-testid="asset-publish-pack-consent">{text('packConsent')}</p>}
+      <ul data-testid="asset-publish-pack-member-list">
+        {packMembers.map((member) => (
+          <li key={member.name} data-testid="asset-publish-pack-member" data-variant={member.name}>
+            <strong>{member.name}</strong> · {member.version || text('empty')} · {text('public')}
+            <p data-testid="asset-publish-pack-member-action" data-variant={member.action}>
+              {text(member.action === 'reuse' ? 'packReuse' : member.action === 'publish' ? 'packPublish' : 'packBlocked')}
+              {member.review && ` · ${text(member.review === 'approved' ? 'packApproved' : 'packReviewPending')}`}
+            </p>
+            {member.error && <p className="text-danger">{issueText(member.error)}</p>}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
   const invalidText: Partial<Record<(typeof fields)[number], MessageKey>> = {
     asset_name: reference.kind === 'system_plugin' ? 'invalidAssetNameSystemPlugin' : 'invalidAssetName',
     version: 'invalidVersion',
@@ -580,6 +716,7 @@ function AssetPublishDrawer({
               </button>
             </>
           )}
+<<<<<<< HEAD
           {showResult && (
             <>
               <button
@@ -594,6 +731,36 @@ function AssetPublishDrawer({
                 {text('close')}
               </button>
             </>
+||||||| e487e9a30
+          {state.record && (
+            <button type="button" onClick={onClose} data-testid="asset-publish-done">
+              {text('close')}
+            </button>
+=======
+          {showResult && (
+            <>
+              {reference.kind === 'skillpack' && state.record && canRetrySkillPack(state.record) ? (
+                <button
+                  type="button"
+                  data-testid="asset-publish-retry-pack"
+                  disabled={!state.loggedIn || state.submissionLocked || state.busy}
+                  onClick={() => void state.retrySkillPack()}
+                >
+                  {text(state.busy ? 'busy' : 'retryPack')}
+                </button>
+              ) : <button
+                type="button"
+                data-testid="asset-publish-result-edit"
+                disabled={state.submissionLocked || state.busy}
+                onClick={backToForm}
+              >
+                {text('edit')}
+              </button>}
+              <button type="button" onClick={onClose} data-testid="asset-publish-done">
+                {text('close')}
+              </button>
+            </>
+>>>>>>> origin/develop
           )}
         </>
       }
@@ -756,7 +923,7 @@ function AssetPublishDrawer({
               <div className="asset-publish-field">
                 <span data-testid="asset-publish-visibility-label">{text('visibility')}</span>
                 <div className="asset-publish-visibility-options" role="radiogroup" aria-label={text('visibility')}>
-                  {(['public', 'private'] as const).map((visibility) => (
+                  {(reference.kind === 'skillpack' ? ['public'] as const : ['public', 'private'] as const).map((visibility) => (
                     <label
                       key={visibility}
                       className="asset-publish-visibility-option"
@@ -803,7 +970,7 @@ function AssetPublishDrawer({
                 <p className="text-text-muted" data-testid="asset-publish-ownership-note">
                   {text('ownership')}
                 </p>
-                <label className="asset-publish-checkbox">
+                {reference.kind !== 'skillpack' && <label className="asset-publish-checkbox">
                   <input
                     type="checkbox"
                     role="switch"
@@ -812,7 +979,7 @@ function AssetPublishDrawer({
                     onChange={(event) => state.setForce(event.target.checked)}
                   />
                   {text('force')}
-                </label>
+                </label>}
                 {state.force && <p className="asset-publish-force-warning">{text('forceWarning')}</p>}
               </div>
             </details>
@@ -837,8 +1004,10 @@ function AssetPublishDrawer({
           </p>
           {state.draft && (
             <>
+              {renderPackMembers()}
               <p data-testid="asset-publish-package-summary">
-                {state.draft.package_name} · {state.draft.version} · {state.draft.size_bytes} bytes
+                {state.draft.package_name} · {state.draft.version}
+                {!state.draft.members && ` · ${state.draft.size_bytes} bytes`}
               </p>
               {(['files', 'excluded', 'normalizations', 'dependencies', 'warnings', 'errors'] as const).map((key) => (
                 <details
@@ -879,7 +1048,15 @@ function AssetPublishDrawer({
             <span className="asset-publish-result-icon" aria-hidden="true" data-testid="asset-publish-result-icon">
               <ResultIcon size={20} />
             </span>
+<<<<<<< HEAD
             <h3 data-testid="asset-publish-result-status">{text(recordState as MessageKey)}</h3>
+||||||| e487e9a30
+            <h3>{text(outcome as MessageKey)}</h3>
+=======
+            <h3 data-testid="asset-publish-result-status">
+              {text(packStageLabels[state.record.stage || ''] || recordState as MessageKey)}
+            </h3>
+>>>>>>> origin/develop
           </header>
           <dl className="asset-publish-result-metadata" data-testid="asset-publish-result-metadata">
             {state.record.result?.asset_id && (
@@ -899,11 +1076,33 @@ function AssetPublishDrawer({
               </div>
             )}
           </dl>
+          {renderPackMembers()}
           {state.record.error && (
             <p className="asset-publish-result-error text-danger">{issueText(state.record.error)}</p>
           )}
           <footer className="asset-publish-result-footer" data-testid="asset-publish-result-footer">
+<<<<<<< HEAD
             <p data-testid="asset-publish-observed-note">{text('observed')}</p>
+||||||| e487e9a30
+            <p data-testid="asset-publish-observed-note">{text('observed')}</p>
+            {!['queued', 'uploading', 'unknown'].includes(outcome) && (
+              <button
+                type="button"
+                data-testid="asset-publish-new-version"
+                disabled={state.submissionLocked || state.busy}
+                onClick={() => {
+                  state.edit({});
+                  setReview(false);
+                }}
+              >
+                {text('recheck')}
+              </button>
+            )}
+=======
+            <p data-testid="asset-publish-observed-note">
+              {text(state.record.stage === 'completed' ? 'packPublishedNote' : 'observed')}
+            </p>
+>>>>>>> origin/develop
           </footer>
         </section>
       )}
@@ -975,7 +1174,13 @@ export function AssetPublishHost() {
         if (!value) return;
         const saved = JSON.parse(value);
         if (
+<<<<<<< HEAD
           ['skill', 'agent_template', 'agent_group', 'plugin', 'mcp', 'system_plugin'].includes(saved.reference?.kind) &&
+||||||| e487e9a30
+          ['skill', 'agent_template', 'agent_group', 'plugin', 'mcp'].includes(saved.reference?.kind) &&
+=======
+          ['skill', 'skillpack', 'agent_template', 'agent_group', 'plugin', 'mcp'].includes(saved.reference?.kind) &&
+>>>>>>> origin/develop
           typeof saved.reference?.local_id === 'string'
         )
           setSelection(saved);

@@ -9,11 +9,26 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 import hashlib
 import json
+<<<<<<< HEAD
+from typing import TYPE_CHECKING, Any, Callable
+||||||| e487e9a30
+import math
+from typing import Any, Callable
+=======
 from typing import TYPE_CHECKING, Any, Callable
 
+from agent_gateway.common.model_selection import ModelSelection
+>>>>>>> origin/develop
+
 from jiuwenswarm.common.model_catalog import ModelCatalog
+<<<<<<< HEAD
 from jiuwenswarm.common.browser_settings import resolve_jev_connection
 from jiuwenswarm.common.model_selection import ModelSelection
+||||||| e487e9a30
+from jiuwenswarm.common.model_selection import ModelSelection
+=======
+from jiuwenswarm.common.browser_settings import resolve_jev_connection
+>>>>>>> origin/develop
 from jiuwenswarm.common.moa_config import build_moa_config_from_frontend
 from jiuwenswarm.server.runtime.model_routing_registry import ModelExecutionContext, ModelSelectionResolver
 
@@ -24,7 +39,7 @@ if TYPE_CHECKING:
 def effective_moa_enabled(config: dict[str, Any], selection: ModelSelection | dict | None,
                           *, mode: str, is_cron: bool = False) -> bool:
     """Derive product MoA solely from experimental settings and stable selection."""
-    from jiuwenswarm.common.mode_matrix import is_team_mode
+    from agent_gateway.common.mode_matrix import is_team_mode
 
     if is_cron or is_team_mode(mode):
         return False

@@ -344,8 +344,8 @@ async def test_config_status_rpc_uses_backend_directory(monkeypatch, moa_config)
 @pytest.mark.parametrize("remote", [False, True])
 async def test_web_status_rpc_dispatches_through_e2a(monkeypatch, moa_config, remote):
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-    from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
-    from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+    from agent_gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
+    from agent_gateway.routing.agent_client import WebSocketAgentServerClient
     from jiuwenswarm.server.runtime.gateway_adapter.base import AdapterRegistry
     from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import ConfigAdapter
 
@@ -375,7 +375,7 @@ async def test_web_status_rpc_dispatches_through_e2a(monkeypatch, moa_config, re
         channel_id="web", methods={}, send_response=AsyncMock(),
         on_connect=lambda _: None, on_disconnect=lambda _: None,
     )
-    channel.register_method = lambda method, callback: channel.methods.update({method: callback})
+    channel.register_method = lambda method, callback, **kwargs: channel.methods.update({method: callback})
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
     assert "config.moa_status" in channel.methods
     await channel.methods["config.moa_status"](object(), "status", {"model_selection": SELECTION}, "chat", "authenticated-user")
@@ -389,8 +389,8 @@ async def test_web_status_rpc_dispatches_through_e2a(monkeypatch, moa_config, re
 @pytest.mark.asyncio
 @pytest.mark.parametrize("missing_client", [False, True])
 async def test_web_status_rpc_requires_available_agent_server(monkeypatch, missing_client):
-    from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
-    from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+    from agent_gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
+    from agent_gateway.routing.agent_client import WebSocketAgentServerClient
 
     def unexpected_config_read():
         raise AssertionError("Gateway must not read local MoA configuration")
@@ -404,7 +404,7 @@ async def test_web_status_rpc_requires_available_agent_server(monkeypatch, missi
         channel_id="web", methods={}, send_response=AsyncMock(),
         on_connect=lambda _: None, on_disconnect=lambda _: None,
     )
-    channel.register_method = lambda method, callback: channel.methods.update({method: callback})
+    channel.register_method = lambda method, callback, **kwargs: channel.methods.update({method: callback})
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
     ws = object()
     await channel.methods["config.moa_status"](
@@ -467,6 +467,7 @@ async def test_jev_interval_and_default_change_affect_next_runtime(moa_config, m
     assert before.fingerprint != after.fingerprint
 
 
+<<<<<<< HEAD
 @pytest.mark.parametrize("provider,base,model,key_env,endpoint", [
     ("typesafe", "https://api.typesafe.ai/v1", "jev-1.13.0", "TYPESAFE_API_KEY", "/systemone"),
     ("openrouter", "https://openrouter.ai/api/alpha", "typesafe/jev-1.13", "OPENROUTER_API_KEY", "/decisions"),
@@ -536,6 +537,78 @@ async def test_shared_jev_config_reaches_actual_client_wire_format(
     assert resolve_moa_settings(moa_config, SELECTION)[2] != runtime.fingerprint
 
 
+||||||| e487e9a30
+=======
+@pytest.mark.parametrize("provider,base,model,key_env,endpoint", [
+    ("typesafe", "https://api.typesafe.ai/v1", "jev-1.13.0", "TYPESAFE_API_KEY", "/systemone"),
+    ("openrouter", "https://openrouter.ai/api/alpha", "typesafe/jev-1.13", "OPENROUTER_API_KEY", "/decisions"),
+    ("custom", "https://jev.example.test/v1", "jev-preview", "JEV_CUSTOM_API_KEY", "/systemone"),
+])
+@pytest.mark.asyncio
+async def test_shared_jev_config_reaches_actual_client_wire_format(
+    moa_config, monkeypatch, provider, base, model, key_env, endpoint,
+):
+    import json
+
+    import httpx
+    from openjiuwen.core.foundation.llm.system_one.schema import ChoiceQuestion
+
+    from jiuwenswarm.common.browser_config import browser_decision_state
+    from jiuwenswarm.server.runtime.moa_progress import ProgressJevSystemOneClient
+
+    monkeypatch.setenv(key_env, "shared-provider-secret")
+    monkeypatch.setattr("jiuwenswarm.common.config.get_crypto_provider", lambda: None)
+    moa_config["browser"] = {"decision": {
+        "mode": "llm", "provider": provider, "api_base": base, "model": model,
+    }}
+    moa_config["experimental"]["multi_model_collaboration"].update({
+        "jev_enabled": True, "jev": {"api_key": "obsolete-key", "model_name": "obsolete-model"},
+    })
+    projected = browser_decision_state(moa_config)
+    settings = resolve_moa_settings(moa_config, SELECTION)[0]["jev"]
+    assert settings["api_base"] == projected["decision_api_base"]
+    assert settings["model_name"] == projected["decision_model"]
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json={
+            "model": model,
+            "answers": {"progress": {
+                "type": "choice", "choice": "T", "confidence": 1.0,
+                "probabilities": {chr(65 + index): float(index == 19) for index in range(20)},
+            }},
+            "usage": {"input_tokens": 10, "output_tokens": 1},
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.moa_progress.ProgressJevSystemOneClient",
+            lambda **kwargs: ProgressJevSystemOneClient(http_client=client, **kwargs),
+        )
+        runtime = await build_moa_runtime(moa_config, SELECTION)
+        try:
+            assert runtime.config.mode == "jev_routed"
+            assert runtime.config.scorer is None
+            response = await runtime.config.jev.client.system_one(
+                [{"role": "user", "content": "Read the page"}],
+                {"progress": ChoiceQuestion(
+                    instructions="Assess progress",
+                    criteria={"A": "Incomplete", "T": "Complete"},
+                )},
+            )
+            assert response.answers["progress"].choice == "T"
+        finally:
+            await runtime.aclose()
+    assert len(requests) == 1
+    assert str(requests[0].url) == base + endpoint
+    assert requests[0].headers["Authorization"] == "Bearer shared-provider-secret"
+    assert json.loads(requests[0].content)["model"] == model
+    monkeypatch.setenv(key_env, "rotated-shared-key")
+    assert resolve_moa_settings(moa_config, SELECTION)[2] != runtime.fingerprint
+
+
+>>>>>>> origin/develop
 @pytest.mark.parametrize("requested,expected", [("model-b", "model:mdl_b"), ("Alias b", "model:mdl_b"), ("login-only-model", "login-only-model"), ("zen-free-model", "zen-free-model")])
 @pytest.mark.parametrize("restored", [False, True])
 def test_ordinary_legacy_model_wins_over_global_default_group(moa_config, monkeypatch, requested, expected, restored):
@@ -576,6 +649,7 @@ def test_global_default_group_retains_upstream_team_and_cron_priority(moa_config
     adapter._is_cron_execution_session = lambda _: kind == "cron"
     request = AgentRequest(request_id="legacy", session_id="legacy", params={"model_name": "model-b"})
     assert adapter._requested_model_name(request) == "model_group:mgp_moa"
+<<<<<<< HEAD
 
 
 @pytest.mark.asyncio
@@ -853,3 +927,282 @@ async def test_moa_rail_emits_transient_reference_and_verification_status(moa_co
         assert all(statuses == ["started", "completed"] for statuses in by_operation.values())
     finally:
         await runtime.aclose()
+||||||| e487e9a30
+=======
+
+
+@pytest.mark.asyncio
+async def test_status_and_single_member_never_construct_jev_transport(moa_config, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "shared-jev-secret")
+    moa_config["experimental"]["multi_model_collaboration"].update({
+        "jev_enabled": True, "jev": {"api_key": "test-key"},
+    })
+    monkeypatch.setattr("jiuwenswarm.common.config.get_crypto_provider", lambda: None)
+    def unexpected_client(**_kwargs):
+        raise AssertionError("Status and a single member must not create JEV transport")
+    monkeypatch.setattr("jiuwenswarm.server.runtime.moa_progress.ProgressJevSystemOneClient", unexpected_client)
+    assert moa_status(moa_config, SELECTION)["configured"] is True
+    for route in moa_config["models"]["groups"][0]["routes"][1:]:
+        route["enabled"] = False
+    runtime = await build_moa_runtime(moa_config, SELECTION)
+    assert runtime.config is None
+    await runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_jev_factory_closes_client_on_configuration_failure(moa_config, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "shared-jev-secret")
+    import openjiuwen.harness.moa as moa
+    from openjiuwen.core.foundation.llm.system_one import JevSystemOneClient
+
+    moa_config["experimental"]["multi_model_collaboration"].update({
+        "jev_enabled": True, "jev": {"api_key": "test-key"},
+    })
+    monkeypatch.setattr("jiuwenswarm.common.config.get_crypto_provider", lambda: None)
+    closed = AsyncMock()
+    original_close = JevSystemOneClient.aclose
+    async def close(client):
+        await closed()
+        await original_close(client)
+    monkeypatch.setattr(JevSystemOneClient, "aclose", close)
+    def invalid_config(**_kwargs):
+        raise ValueError("configuration failed")
+    monkeypatch.setattr(moa, "MoAConfig", invalid_config)
+    with pytest.raises(ValueError, match="configuration failed"):
+        await build_moa_runtime(moa_config, SELECTION)
+    closed.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_runtime_close_is_idempotent_and_settles_before_cancellation():
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def close():
+        entered.set()
+        await release.wait()
+    client = SimpleNamespace(aclose=AsyncMock(side_effect=close))
+    runtime = MoARuntime(None, None, "fingerprint", "model", _jev_client=client)
+    task = asyncio.create_task(runtime.aclose())
+    await entered.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await runtime.aclose()
+    client.aclose.assert_awaited_once()
+    assert runtime._close_task.done()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("adapter_kind", ["work", "code"])
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+async def test_adapter_creation_failure_closes_owned_runtime(monkeypatch, adapter_kind, failure):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
+
+    adapter = JiuWenSwarmDeepAdapter() if adapter_kind == "work" else JiuwenSwarmCodeAdapter()
+    runtime = SimpleNamespace(aclose=AsyncMock())
+    async def fail(*_args, **_kwargs):
+        adapter._moa_runtime = runtime
+        raise failure()
+    monkeypatch.setattr(adapter, "_create_instance", fail)
+    monkeypatch.setattr(adapter, "_uses_smart_permission_lifecycle", lambda _: False)
+    with pytest.raises(failure):
+        await adapter.create_instance()
+    runtime.aclose.assert_awaited_once()
+    assert adapter._moa_runtime is None
+
+
+@pytest.mark.asyncio
+async def test_adapter_cleanup_closes_transport_when_other_cleanup_fails(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    adapter = JiuWenSwarmDeepAdapter()
+    runtime = SimpleNamespace(aclose=AsyncMock())
+    adapter._moa_runtime = runtime
+    monkeypatch.setattr(adapter, "_cleanup_adapter_resources", AsyncMock(side_effect=RuntimeError("cleanup failed")))
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        await adapter.cleanup()
+    runtime.aclose.assert_awaited_once()
+    assert adapter._moa_runtime is None
+
+
+@pytest.mark.asyncio
+async def test_preparing_runtime_closes_old_transport_before_replacement(moa_config, monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    adapter = JiuWenSwarmDeepAdapter()
+    old = SimpleNamespace(aclose=AsyncMock())
+    adapter._moa_runtime = old
+    adapter._instance_overrides = {"moa_model_selection": SELECTION}
+    adapter._session_instance_mode = "agent.work.normal"
+    await adapter._prepare_moa_for_build(moa_config)
+    old.aclose.assert_awaited_once()
+    assert adapter._moa_runtime is not old
+    await adapter.close_moa_runtime()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+async def test_session_start_failure_closes_uncached_child(moa_config, monkeypatch, failure):
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+
+    root = interface_deep.JiuWenSwarmDeepAdapter()
+    child = interface_deep.JiuWenSwarmDeepAdapter()
+    child.mark_as_session_scoped("failed-start")
+    runtime = MoARuntime(None, None, "fingerprint", "model", _jev_client=SimpleNamespace(aclose=AsyncMock()))
+    async def create(*_args, **_kwargs):
+        child._moa_runtime = runtime
+    monkeypatch.setattr(root, "_new_session_scoped_adapter", lambda _: child)
+    monkeypatch.setattr(root, "_load_skill_retrieval_session_profile", lambda _: None)
+    monkeypatch.setattr(child, "restore_skill_retrieval_session", lambda *_: None)
+    monkeypatch.setattr(child, "persist_skill_retrieval_session_profile", lambda: None)
+    monkeypatch.setattr(child, "create_instance", create)
+    monkeypatch.setattr(child, "start_interaction", AsyncMock(side_effect=failure()))
+    monkeypatch.setattr(interface_deep, "load_persisted_external_harness_binding", AsyncMock(return_value=None))
+    monkeypatch.setattr(interface_deep, "get_config", lambda: moa_config)
+    monkeypatch.setattr("jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata", lambda _: {})
+    with pytest.raises(failure):
+        await root._get_or_create_session_adapter("failed-start", model_selection=SELECTION)
+    runtime._jev_client.aclose.assert_awaited_once()
+    assert "failed-start" not in root._session_adapters
+
+
+@pytest.mark.asyncio
+async def test_factory_cleanup_error_preserves_original_build_failure(moa_config, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "shared-jev-secret")
+    import openjiuwen.harness.moa as moa
+    from openjiuwen.core.foundation.llm.system_one import JevSystemOneClient
+
+    moa_config["experimental"]["multi_model_collaboration"].update({
+        "jev_enabled": True, "jev": {"api_key": "test-key"},
+    })
+    monkeypatch.setattr("jiuwenswarm.common.config.get_crypto_provider", lambda: None)
+    original_close = JevSystemOneClient.aclose
+    async def failing_close(client):
+        await original_close(client)
+        raise RuntimeError("private provider failure")
+    monkeypatch.setattr(JevSystemOneClient, "aclose", failing_close)
+    def invalid_config(**_kwargs):
+        raise ValueError("original configuration failed")
+    monkeypatch.setattr(moa, "MoAConfig", invalid_config)
+    with pytest.raises(ValueError, match="original configuration failed"):
+        await build_moa_runtime(moa_config, SELECTION)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+async def test_adapter_cleanup_preserves_primary_failure_when_close_fails(monkeypatch, failure):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    adapter = JiuWenSwarmDeepAdapter()
+    primary = failure("original cleanup failure")
+    runtime = MoARuntime(None, None, "fingerprint", "model", _jev_client=SimpleNamespace(
+        aclose=AsyncMock(side_effect=ValueError("private transport error")),
+    ))
+    adapter._moa_runtime = runtime
+    monkeypatch.setattr(adapter, "_cleanup_adapter_resources", AsyncMock(side_effect=primary))
+    with pytest.raises(failure) as caught:
+        await adapter.cleanup()
+    assert caught.value is primary
+    assert runtime._close_task.done()
+    runtime._jev_client.aclose.assert_awaited_once()
+    assert adapter._moa_runtime is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_close_preserves_cancellation_when_transport_close_fails():
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def failing_close():
+        entered.set()
+        await release.wait()
+        raise ValueError("private transport error")
+    runtime = MoARuntime(None, None, "fingerprint", "model", _jev_client=SimpleNamespace(
+        aclose=AsyncMock(side_effect=failing_close),
+    ))
+    task = asyncio.create_task(runtime.aclose())
+    await entered.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert runtime._close_task.done()
+    runtime._jev_client.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_runtime_close_propagates_transport_failure_without_primary_failure():
+    runtime = MoARuntime(None, None, "fingerprint", "model", _jev_client=SimpleNamespace(
+        aclose=AsyncMock(side_effect=ValueError("transport failed")),
+    ))
+    with pytest.raises(ValueError, match="transport failed"):
+        await runtime.aclose()
+    assert runtime._close_task.done()
+
+
+@pytest.mark.parametrize("jev_enabled", [False, True])
+@pytest.mark.asyncio
+async def test_moa_rail_emits_transient_reference_and_verification_status(moa_config, monkeypatch, jev_enabled):
+    from openjiuwen.core.foundation.llm import AssistantMessage, Model, UserMessage
+    from openjiuwen.core.foundation.llm.system_one import ChoiceAnswer, JevSystemOneClient, SystemOneResponse, SystemOneUsage
+    from openjiuwen.core.session import get_current_session, with_session
+    from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, InvokeInputs, ModelCallInputs
+    from openjiuwen.harness.rails.moa_rail import MoARail
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-jev-key")
+    moa_config["experimental"]["multi_model_collaboration"].update({
+        "jev_enabled": jev_enabled, "verifier_interval": 1,
+    })
+    monkeypatch.setattr("jiuwenswarm.common.config.get_crypto_provider", lambda: None)
+    monkeypatch.setattr(Model, "invoke", AsyncMock(return_value=AssistantMessage(content="<c1>D</c1>")))
+    monkeypatch.setattr(JevSystemOneClient, "system_one", AsyncMock(return_value=SystemOneResponse(
+        model="jev-test", usage=SystemOneUsage(input_tokens=1, output_tokens=1, total_tokens=2),
+        answers={"consult_reference": ChoiceAnswer(
+            choice="CONSULT", confidence=0.9, probabilities={"CONSULT": 0.9, "CONTINUE": 0.1},
+        )},
+    )))
+    runtime = await build_moa_runtime(moa_config, SELECTION)
+    mailbox = runtime.progress.open()
+    session = SimpleNamespace(get_session_id=lambda: "moa-progress", write_stream=AsyncMock())
+    model = runtime.aggregator
+    def replace_model(value):
+        nonlocal model
+        model = value
+    agent = SimpleNamespace(get_llm=lambda: model, set_llm=replace_model, ability_manager=None)
+    rail = MoARail(runtime.config)
+    messages = [UserMessage(content="private task"), AssistantMessage(content="private answer")]
+    context = AgentCallbackContext(
+        agent=agent, session=session, inputs=InvokeInputs(query="private task"),
+        context=SimpleNamespace(get_messages=lambda: messages),
+    )
+
+    @with_session()
+    async def invoke_rail(session):
+        await rail.before_invoke(context)
+        try:
+            context.inputs = ModelCallInputs(messages=messages, react_iteration=1)
+            await rail.before_model_call(context)
+            await rail.after_react_iteration(context)
+        finally:
+            await rail.after_invoke(context)
+
+    previous_session = get_current_session()
+    try:
+        await invoke_rail(session=session)
+        assert get_current_session() is previous_session
+        session.write_stream.assert_not_called()
+        assert {event["phase"] for event in mailbox.pending} == {"reference", "verification"}
+        by_operation = {}
+        for event in mailbox.pending:
+            assert set(event) == {"operation_id", "phase", "status"}
+            by_operation.setdefault(event["operation_id"], []).append(event["status"])
+        # Both routes consult the two reference models after one verifier decision.
+        starts = [event["phase"] for event in mailbox.pending if event["status"] == "started"]
+        assert sorted(starts) == ["reference", "reference", "verification"]
+        assert all(statuses == ["started", "completed"] for statuses in by_operation.values())
+    finally:
+        await runtime.aclose()
+>>>>>>> origin/develop

@@ -1,6 +1,7 @@
 import { gatewayFetch } from '../../services/gatewayFetch';
 /** Turn a Designer output_ref.uri into a browser-playable /file-api URL. */
 
+<<<<<<< HEAD
 import { webRequest } from '../../services/webClient';
 
 /** Canvas uploads keep the pre-existing 32 MiB ceiling; chunks stay at 512 KiB. */
@@ -11,6 +12,20 @@ export const DESIGNER_UPLOAD_CHUNK_BYTES = 512 * 1024;
 // (/file-api/raw-file) accepts the persisted path in production builds.
 const DESIGNER_UPLOAD_DIR = 'agent/uploads/designer';
 
+||||||| e487e9a30
+=======
+import { webRequest } from '../../services/webClient';
+
+/** Canvas uploads keep the pre-existing 32 MiB ceiling; chunks stay at 512 KiB. */
+export const DESIGNER_UPLOAD_MAX_BYTES = 32 * 1024 * 1024;
+export const DESIGNER_UPLOAD_CHUNK_BYTES = 512 * 1024;
+export const DESIGNER_UPLOAD_TOO_LARGE = 'file_too_large';
+// ``file.upload_chunk`` resolves a relative target under the user workspace
+// (~/.jiuwenswarm). Keep uploads under ``agent/`` so the app_web preview root
+// (/file-api/raw-file) accepts the persisted path in production builds.
+const DESIGNER_UPLOAD_DIR = 'agent/uploads/designer';
+
+>>>>>>> origin/develop
 export function localPathToFileUri(path: string): string {
   const normalized = path.replace(/\\/g, '/');
   if (/^[A-Za-z]:\//.test(normalized)) {
@@ -113,8 +128,21 @@ export async function uploadDesignerAsset(file: File): Promise<{
   if (!file || file.size === 0) {
     throw new Error('empty_file');
   }
+<<<<<<< HEAD
   if (file.size > DESIGNER_UPLOAD_MAX_BYTES) {
     throw new Error('file_too_large');
+||||||| e487e9a30
+  const payload = (await response.json()) as {
+    files?: Array<{ path?: string; filename?: string; mime_type?: string }>;
+    errors?: Array<{ error?: string }>;
+  };
+  const uploaded = payload.files?.find((item) => item.path);
+  if (!uploaded?.path) {
+    throw new Error(payload.errors?.[0]?.error || 'upload_failed');
+=======
+  if (file.size > DESIGNER_UPLOAD_MAX_BYTES) {
+    throw new Error(DESIGNER_UPLOAD_TOO_LARGE);
+>>>>>>> origin/develop
   }
   const uploadToken = uploadId();
   const filename = safeUploadFilename(file.name);

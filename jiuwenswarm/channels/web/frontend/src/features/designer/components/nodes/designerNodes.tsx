@@ -42,6 +42,7 @@ import { DesignerStoryboardTable } from '../../DesignerStoryboardTable';
 import { DesignerActivityPeek } from '../DesignerActivityPeek';
 import { DesignerNodeActionBar } from '../controls/DesignerNodeActionBar';
 import { DesignerNodeToolbar } from '../controls/DesignerNodeToolbar';
+import { DesignerAudioPreview } from './DesignerAudioPreview';
 import { DesignerNodePortControl } from './DesignerNodePortControl';
 
 type DesignerNodeData = DesignerReactFlowNode['data'];
@@ -183,6 +184,7 @@ function DesignerNodeShell({
     <div
       className={`designer-node${media ? ' designer-node--media' : ''}${showMediaFill ? ' designer-node--media-filled' : ''}${generatingShimmer ? ' is-generating-shimmer' : ''}${selected ? ' is-selected' : ''}${statusClass} group`}
       data-testid="designer-node"
+      data-node-type={nodeType}
       data-selected={selected ? 'true' : 'false'}
       data-status={status}
     >
@@ -229,7 +231,7 @@ function DesignerNodeShell({
           </p>
         ) : null}
         <DesignerNodePortControl nodeId={nodeId} side="successor" />
-        <DesignerNodeResizeHandle nodeId={nodeId} />
+        {nodeType === DESIGNER_NODE_TYPE_AUDIO ? null : <DesignerNodeResizeHandle nodeId={nodeId} />}
       </div>
       {toolbar}
     </div>
@@ -262,11 +264,23 @@ function useDesignerAssetText(uri: string | null | undefined, producedAt: number
       return;
     }
     let cancelled = false;
+<<<<<<< HEAD
     // Keep the current text on screen while the same file reloads.
     if (loadedUrl.current !== url) setText(null);
     loadedUrl.current = url;
     const fetchUrl = `${url}${url.includes('?') ? '&' : '?'}t=${reloadKey}`;
     void gatewayFetch(fetchUrl)
+||||||| e487e9a30
+    setText(null);
+    const fetchUrl = `${url}${url.includes('?') ? '&' : '?'}t=${reloadAt}`;
+    void fetch(fetchUrl)
+=======
+    // Keep the current text on screen while the same file reloads.
+    if (loadedUrl.current !== url) setText(null);
+    loadedUrl.current = url;
+    const fetchUrl = `${url}${url.includes('?') ? '&' : '?'}t=${reloadKey}`;
+    void fetch(fetchUrl)
+>>>>>>> origin/develop
       .then((response) => {
         if (!response.ok) throw new Error(String(response.status));
         return response.text();
@@ -483,14 +497,7 @@ export function DesignerMediaNode({ id, data, selected }: NodeProps<DesignerFlow
       />
     );
   } else if (hasPreview && nodeType === DESIGNER_NODE_TYPE_AUDIO) {
-    inner = (
-      <audio
-        className="designer-node__audio-preview"
-        src={previewSrc || ''}
-        controls
-        data-testid="designer-node-uploaded-audio"
-      />
-    );
+    inner = <DesignerAudioPreview src={previewSrc || ''} />;
   }
 
   const generatingShimmer =

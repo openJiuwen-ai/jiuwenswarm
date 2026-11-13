@@ -5,11 +5,13 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
 
 from jiuwenswarm.runtime.run_permissions import RUN_PERMISSIONS, overlay_run_permissions
+from jiuwenswarm.runtime.run_context import CURRENT_RUN_CONTEXT, RunContext
 from jiuwenswarm.runtime.tool_allowlist import install_tool_allowlist
 from jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_rail import (
     JiuwenSwarmPermissionInterruptRail,
@@ -124,6 +126,7 @@ async def test_permission_rail_rejects_run_deny_before_host_approval() -> None:
         None, SimpleNamespace(name="write_file"), None
     )
     assert result == "[PERMISSION_DENIED] run policy"
+<<<<<<< HEAD
 
 
 @pytest.mark.unit
@@ -213,3 +216,185 @@ async def test_auto_callback_keeps_existing_workers_and_next_requests_isolated()
         await asyncio.gather(*tasks, return_exceptions=True)
         RUN_PERMISSIONS.reset(token)
         RUN_PERMISSIONS.reset(parent)
+||||||| e487e9a30
+=======
+
+
+@pytest.mark.parametrize("levels,expected", [
+    (None, {"get_current_goal": "deny", "mcp_exec_command": "deny", "locked": "deny"}),
+    ({}, {"get_current_goal": "allow", "locked": "deny"}),
+    ({"get_current_goal": "ask", "locked": "allow"}, {"get_current_goal": "ask", "locked": "deny"}),
+])
+def test_run_permissions_fallback_preserves_precedence_and_canonical_names(levels, expected):
+    installed = {"tools": {"get_current_goal": "allow", "locked": "deny"},
+                 "deny_tools": ["locked"], "file_guard": {"enabled": True}}
+    original = deepcopy(installed)
+    context = RunContext(request_id="request", tool_permissions=(
+        ("get_current_goal", "deny"), ("exec_command", "deny"), ("locked", "allow"),
+    ))
+    context_token = CURRENT_RUN_CONTEXT.set(context)
+    run_token = RUN_PERMISSIONS.set(levels)
+    try:
+        effective = overlay_run_permissions(installed)
+        assert effective["tools"] == expected
+        assert effective["file_guard"] == original["file_guard"]
+        assert installed == original
+        assert CURRENT_RUN_CONTEXT.get() is context and RUN_PERMISSIONS.get() is levels
+    finally:
+        RUN_PERMISSIONS.reset(run_token)
+        CURRENT_RUN_CONTEXT.reset(context_token)
+
+
+@pytest.mark.parametrize("tool_permissions", [None, ()])
+def test_empty_run_context_does_not_add_policy(tool_permissions):
+    installed = {"tools": {"get_current_goal": "ask"}}
+    context_token = CURRENT_RUN_CONTEXT.set(RunContext(tool_permissions=tool_permissions))
+    run_token = RUN_PERMISSIONS.set(None)
+    try:
+        assert overlay_run_permissions(installed) is installed
+    finally:
+        RUN_PERMISSIONS.reset(run_token)
+        CURRENT_RUN_CONTEXT.reset(context_token)
+
+
+@pytest.mark.parametrize("tool_permissions", [
+    (("exec_command", "deny"), ("mcp_exec_command", "allow")), ((" ", "deny"),),
+])
+def test_ambiguous_run_context_permissions_fail_closed(tool_permissions):
+    context_token = CURRENT_RUN_CONTEXT.set(RunContext(tool_permissions=tool_permissions))
+    run_token = RUN_PERMISSIONS.set(None)
+    try:
+        with pytest.raises(ValueError, match="ambiguous"):
+            overlay_run_permissions({"tools": {}})
+    finally:
+        RUN_PERMISSIONS.reset(run_token)
+        CURRENT_RUN_CONTEXT.reset(context_token)
+
+
+@pytest.mark.asyncio
+async def test_existing_workers_keep_run_permissions_isolated():
+    installed = {"tools": {"get_current_goal": "ask"}}
+    release = asyncio.Event()
+    tasks = []
+    parent_context = CURRENT_RUN_CONTEXT.get()
+    parent_levels = RUN_PERMISSIONS.get()
+
+    async def worker():
+        await release.wait()
+        assert RUN_PERMISSIONS.get() is None
+        return overlay_run_permissions(installed)["tools"]["get_current_goal"]
+
+    for level in ("deny", "allow"):
+        context_token = CURRENT_RUN_CONTEXT.set(RunContext(
+            request_id=level, tool_permissions=(("get_current_goal", level),),
+        ))
+        run_token = RUN_PERMISSIONS.set(None)
+        try:
+            tasks.append(asyncio.create_task(worker()))
+        finally:
+            RUN_PERMISSIONS.reset(run_token)
+            CURRENT_RUN_CONTEXT.reset(context_token)
+    # This later request binding cannot change either pre-existing task's context.
+    run_token = RUN_PERMISSIONS.set({"get_current_goal": "ask"})
+    try:
+        release.set()
+        assert await asyncio.gather(*tasks) == ["deny", "allow"]
+        assert installed == {"tools": {"get_current_goal": "ask"}}
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        RUN_PERMISSIONS.reset(run_token)
+    assert CURRENT_RUN_CONTEXT.get() is parent_context
+    assert RUN_PERMISSIONS.get() is parent_levels
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("current,fallback,expected", [
+    (None, {"get_current_goal": "deny", "locked": "allow"}, "deny"),
+    ({}, {"get_current_goal": "deny"}, "allow"),
+    ({"get_current_goal": "ask"}, {"get_current_goal": "deny"}, "ask"),
+    (None, None, "allow"),
+])
+@pytest.mark.asyncio
+async def test_auto_callback_restores_adapter_permissions(current, fallback, expected):
+    from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.before_tool import (
+        AutoPermissionBeforeToolMixin,
+    )
+
+    installed = {"tools": {"get_current_goal": "allow", "locked": "deny"}}
+
+    async def evaluate():
+        assert RUN_PERMISSIONS.get() == (fallback if current is None else current)
+        return overlay_run_permissions(installed)
+
+    rail = SimpleNamespace(base_rail=SimpleNamespace(), run_permission_levels=fallback, _before_tool_call_impl=evaluate)
+    token = RUN_PERMISSIONS.set(current)
+    try:
+        effective = await AutoPermissionBeforeToolMixin.before_tool_call(rail)
+        assert effective["tools"] == {"get_current_goal": expected, "locked": "deny"}
+        assert installed["tools"] == {"get_current_goal": "allow", "locked": "deny"}
+        assert RUN_PERMISSIONS.get() is current
+        assert rail.run_permission_levels is fallback
+    finally:
+        RUN_PERMISSIONS.reset(token)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("error", [RuntimeError, asyncio.CancelledError])
+@pytest.mark.asyncio
+async def test_auto_callback_cleans_request_permissions_on_failure(error):
+    from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.before_tool import (
+        AutoPermissionBeforeToolMixin,
+    )
+
+    async def fail():
+        assert RUN_PERMISSIONS.get() == {"get_current_goal": "deny"}
+        raise error()
+
+    rail = SimpleNamespace(base_rail=SimpleNamespace(), run_permission_levels={"get_current_goal": "deny"}, _before_tool_call_impl=fail)
+    token = RUN_PERMISSIONS.set(None)
+    try:
+        with pytest.raises(error):
+            await AutoPermissionBeforeToolMixin.before_tool_call(rail)
+        assert RUN_PERMISSIONS.get() is None
+    finally:
+        RUN_PERMISSIONS.reset(token)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_auto_callback_keeps_existing_workers_and_next_requests_isolated():
+    from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.before_tool import (
+        AutoPermissionBeforeToolMixin,
+    )
+
+    release = asyncio.Event()
+
+    async def evaluate():
+        await release.wait()
+        return overlay_run_permissions({"tools": {"get_current_goal": "ask"}})["tools"]["get_current_goal"]
+
+    rails = [SimpleNamespace(base_rail=SimpleNamespace(), run_permission_levels={"get_current_goal": level}, _before_tool_call_impl=evaluate)
+             for level in ("deny", "allow")]
+    parent = RUN_PERMISSIONS.set(None)
+    tasks = [asyncio.create_task(AutoPermissionBeforeToolMixin.before_tool_call(rail)) for rail in rails]
+    token = RUN_PERMISSIONS.set({"get_current_goal": "ask"})
+    try:
+        release.set()
+        assert await asyncio.gather(*tasks) == ["deny", "allow"]
+        assert RUN_PERMISSIONS.get() == {"get_current_goal": "ask"}
+        rails[0].run_permission_levels = None
+        RUN_PERMISSIONS.reset(token)
+        token = RUN_PERMISSIONS.set(None)
+        assert await AutoPermissionBeforeToolMixin.before_tool_call(rails[0]) == "ask"
+        assert RUN_PERMISSIONS.get() is None
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        RUN_PERMISSIONS.reset(token)
+        RUN_PERMISSIONS.reset(parent)
+>>>>>>> origin/develop

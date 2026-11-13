@@ -268,13 +268,18 @@ async def execute_core_agent(
     user_id: str | None = None,
     delegation_context: list[dict[str, Any]] | None = None,
     frame_data_url: str = "",
-    normalize_media_attachments: Callable[[dict[str, Any], str | None], None]
+    normalize_media_attachments: Callable[[dict[str, Any], str | None], Awaitable[None]]
     | None = None,
     on_progress: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     interaction_answer: Any = None,
     managed_task_binding: dict[str, str] | None = None,
+<<<<<<< HEAD
     execution_target: dict[str, Any] | None = None,
     model_auth: dict[str, Any] | None = None,
+||||||| e487e9a30
+=======
+    execution_target: dict[str, Any] | None = None,
+>>>>>>> origin/develop
 ) -> dict[str, Any]:
     """Run one delegated video task through the standard, full Core Agent API."""
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
@@ -319,7 +324,7 @@ async def execute_core_agent(
         params["media_items"] = [media_item]
         if normalize_media_attachments is None:
             raise RuntimeError("Core media attachment service is unavailable")
-        normalize_media_attachments(params, core_session_id)
+        await normalize_media_attachments(params, core_session_id)
     if interaction_answer is not None:
         answer_request = interaction_answer.to_agent_request()
         params = {**answer_request.params, "log_as_user": False}

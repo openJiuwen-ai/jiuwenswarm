@@ -9,11 +9,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.single_agent.interrupt.response import InterruptRequest
 from openjiuwen.harness.schema.task import TodoItem, TodoStatus
 
-from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
+from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY, ToolInterruptEntry, ToolInterruptionState
 from openjiuwen.harness.schema.interaction import SendInputRequest
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -41,6 +42,18 @@ from jiuwenswarm.server.runtime.agent_adapter.permission_dispatch import (
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_voice_context_sync(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Permission fixtures have no persisted speech or real history cursor.
+
+    Voice import and restore validation run in the shared conversation tests;
+    these tests exercise only interruption and permission dispatch ownership.
+    """
+    from jiuwenswarm.extensions.video_duplex.backend import conversation_context
+
+    monkeypatch.setattr(conversation_context, "sync_conversation_context", AsyncMock())
 
 
 def _build_cancel_request(session_id: str = "tui_sess_1") -> AgentRequest:
@@ -170,15 +183,17 @@ def _nonpermission_core_state(
     tool_call_id: str = "call-control",
     metadata: dict | None = None,
 ) -> SimpleNamespace:
-    tool_call = SimpleNamespace(id=tool_call_id, name=tool_name)
-    request = InterruptRequest(metadata=metadata or {})
-    state = SimpleNamespace(
+    tool_call = ToolCall(id=tool_call_id, type="function", name=tool_name, arguments="{}")
+    request = InterruptRequest(interrupt_id=f"intr_{tool_call_id}", metadata=metadata or {})
+    state = ToolInterruptionState(
+        ai_message=AssistantMessage(content="", tool_calls=[tool_call]),
+        iteration=0,
         interrupted_tools={
-            tool_call_id: SimpleNamespace(
+            tool_call_id: ToolInterruptEntry(
                 tool_call=tool_call,
                 interrupt_requests={tool_call_id: request},
             )
-        }
+        },
     )
     return SimpleNamespace(
         get_session_id=MagicMock(return_value=session_id),
@@ -582,7 +597,7 @@ async def test_unconfirmed_interaction_cancel_quarantines_inflight_permission() 
     )
     answer = InteractiveInput()
     answer.update(
-        card.key.invocation_id,
+        card.key.tool_call_id,
         {
             "approved": True,
             "auto_confirm": False,
@@ -698,7 +713,7 @@ async def test_fresh_cutover_consumes_admitted_answer_before_late_callback() -> 
     )
     incoming = InteractiveInput()
     incoming.update(
-        pending.key.invocation_id,
+        pending.key.tool_call_id,
         {"approved": True, "auto_confirm": False, "feedback": ""},
     )
     answer = queue.reserve_answer("sess-race", incoming)
@@ -848,7 +863,7 @@ async def test_permission_resume_waits_for_fresh_cutover_mutex() -> None:
     )
     resume_input = InteractiveInput()
     resume_input.update(
-        pending.key.invocation_id,
+        pending.key.tool_call_id,
         {"approved": True, "auto_confirm": False, "feedback": ""},
     )
     resume_request = AgentRequest(
@@ -918,7 +933,7 @@ def test_callback_claim_retires_accepted_handoff_after_request_finalizes() -> No
     )
     incoming = InteractiveInput()
     incoming.update(
-        pending.key.invocation_id,
+        pending.key.tool_call_id,
         {"approved": True, "auto_confirm": False, "feedback": ""},
     )
     answer = queue.reserve_answer("sess-claimed-handoff", incoming)
@@ -977,7 +992,7 @@ async def test_permission_resume_preaccept_failure_restores_exact_pending_card(
     )
     incoming = InteractiveInput()
     incoming.update(
-        pending.key.invocation_id,
+        pending.key.tool_call_id,
         {"approved": True, "auto_confirm": False, "feedback": ""},
     )
     answer = queue.reserve_answer("sess-preaccept", incoming)
@@ -1220,8 +1235,14 @@ async def test_interaction_cancel_skips_pause_when_no_goal() -> None:
 ])
 async def test_interaction_cancel_stops_scheduler_task_before_cancel_round(channel, managed_cua, resumed, monkeypatch) -> None:
     """A synchronous task_tool subagent must not block the interrupt response."""
+<<<<<<< HEAD
     from jiuwenswarm.extensions.video_duplex.backend.tasks import execution
     monkeypatch.setattr(execution, "close_task_output", AsyncMock())
+||||||| e487e9a30
+=======
+    from jiuwenswarm.server.runtime.video_task import execution
+    monkeypatch.setattr(execution, "close_task_output", AsyncMock())
+>>>>>>> origin/develop
     child_started = asyncio.Event()
     child_cancelled = asyncio.Event()
 
@@ -1373,7 +1394,7 @@ async def test_unmark_cleans_rail_on_normal_completion() -> None:
 
     getattr(adapter, "_unmark_session_active")("sess_a")
 
-    rail.cleanup_session.assert_called_once_with("sess_a")
+    rail.cleanup_session.assert_called_once_with("sess_a", preserve_tool_call_ids=False)
     assert "sess_a" not in getattr(adapter, "_active_session_ids")
 
 
@@ -1570,7 +1591,7 @@ def test_permission_resume_dispatch_reuses_frozen_root_context() -> None:
     )
     incoming = InteractiveInput()
     incoming.update(
-        card.key.invocation_id,
+        card.key.tool_call_id,
         {"approved": True, "auto_confirm": False, "feedback": ""},
     )
     answer = queue.reserve_answer("root-session", incoming)

@@ -9,7 +9,7 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any
 
-from jiuwenswarm.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     ResolvedMode,
     TEAM_PLAN_CODE_MODE,
     TEAM_PLAN_NORMAL_MODE,
@@ -18,10 +18,18 @@ from jiuwenswarm.common.mode_matrix import (
     resolve_new_canonical_mode,
     resolve_request_mode,
 )
+from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
+<<<<<<< HEAD
 from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
+||||||| e487e9a30
+from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+=======
+from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
+>>>>>>> origin/develop
 
 logger = logging.getLogger(__name__)
 

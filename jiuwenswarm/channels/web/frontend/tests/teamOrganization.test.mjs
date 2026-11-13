@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
@@ -6,11 +6,24 @@ import { loadCallback } from './loadProductionCallback.mjs';
 import { JSDOM } from 'jsdom';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import {
+const previousWindow = globalThis.window;
+const previousDocument = globalThis.document;
+const bootstrapDom = new JSDOM('', { url: 'http://localhost' });
+globalThis.window = bootstrapDom.window;
+globalThis.document = bootstrapDom.window.document;
+after(() => {
+  globalThis.window = previousWindow;
+  globalThis.document = previousDocument;
+  bootstrapDom.window.close();
+});
+
+const {
+  readComposerText,
   setTeamOrganizationUiEnabled,
   isTeamOrganizationUiEnabled,
   selectedExpertTeamId,
   expertTeamId,
+<<<<<<< HEAD
   sendExpertMessage,
   organizationOwnerStopTarget,
   isOrganizationProcessing,
@@ -22,6 +35,21 @@ import {
   organizationProcessingRevision,
   organizationOwnerStateRevision,
   useOrganizationConversationKey,
+||||||| e487e9a30
+=======
+  sendExpertMessage,
+  organizationOwnerStopTarget,
+  isOrganizationProcessing,
+  useOrganizationProcessing,
+  clearOrganizationRequests,
+  startExpertRequest,
+  finishExpertRequest,
+  reconcileOrganizationRequests,
+  organizationProcessingRevision,
+  organizationOwnerStateRevision,
+  useOrganizationConversationKey,
+  isReachableTeamMemberStatus,
+>>>>>>> origin/develop
   useOrganizationEvents,
   useChatStore,
   useSessionStore,
@@ -29,12 +57,15 @@ import {
   applyTeamSnapshotToSession,
   webClient,
   OrgInfoPanel,
+  OrganizationTeamsList,
+  buildOrganizationTaskTree,
   TeamSelector,
   resolveOrganizationTeamIdentity,
   resolveOrganizationTeamLabel,
   useTeamOrganizationUiEnabled,
   useSettingsConfig,
   SettingsServicesProvider,
+<<<<<<< HEAD
   parseHistoryJsonFileToPreviewMessages,
   parseOrganizationHistoryPanelRecords,
   setOrganizationOwnerStopped,
@@ -42,6 +73,203 @@ import {
   expertProcessingSnapshot,
   MemberToolEventProjector,
 } from '../node_modules/.cache/team-organization/organization.mjs';
+||||||| e487e9a30
+} from '../node_modules/.cache/team-organization/organization.mjs';
+=======
+  parseHistoryJsonFileToPreviewMessages,
+  parseOrganizationHistoryPanelRecords,
+  restoreOrganizationGroupHistory,
+  loadTeamHistoryPanelState,
+  mergeUniqueMessages,
+  toOwnerTeamMessage,
+  setOrganizationOwnerStopped,
+  isOrganizationOwnerStopped,
+  expertProcessingSnapshot,
+  MemberToolEventProjector,
+} = await import('../node_modules/.cache/team-organization/organization.mjs');
+
+test('child member tools populate isolated process panels without duplicating Owner or Leader events', async () => {
+  seed();
+  const originalRuntimes = useSessionStore.getState().runtimes;
+  useSessionStore.setState({ runtimes: { session: originalRuntimes.session } });
+  setTeamOrganizationUiEnabled(true);
+  const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' });
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const originals = { on: webClient.on, getState: webClient.getState, onStateChange: webClient.onStateChange };
+  const callbacks = new Map();
+  webClient.on = (event, callback) => { callbacks.set(event, callback); return () => callbacks.delete(event); };
+  webClient.getState = () => 'disconnected';
+  webClient.onStateChange = () => () => {};
+  const root = createRoot(document.getElementById('root'));
+  function Probe() { useOrganizationEvents(); return null; }
+  const payload = (team, member, id) => ({
+    session_id: 'session', team_id: team, member_name: member, role: 'teammate',
+    source: 'org_expert_background', request_id: 'round', timestamp: 1_700_000_000,
+    tool_call: { id, name: 'claim_task', arguments: { task_id: 'task' } },
+  });
+  const emit = (event, value) => callbacks.get(event)({ payload: value });
+  try {
+    await act(async () => root.render(React.createElement(Probe)));
+    await act(async () => {
+      emit('chat.tool_call', payload('expert', 'solution_architect', 'shared-id'));
+      emit('chat.tool_call', payload('expert', 'solution_architect', 'shared-id'));
+      emit('chat.tool_call', payload('other-child', 'researcher', 'shared-id'));
+      emit('chat.tool_call', payload('expert', 'reviewer', 'review-id'));
+      for (const team of ['expert', 'other-child']) {
+        emit('chat.tool_result', {
+          ...payload(team, undefined, 'shared-id'), role: undefined, tool_call: undefined,
+          tool_name: 'claim_task', tool_call_id: 'shared-id', result: 'claimed', success: true,
+        });
+      }
+      emit('chat.tool_call', { ...payload('expert', 'team_leader', 'leader-id'), role: 'leader' });
+      emit('chat.tool_call', { ...payload('owner', 'owner-member', 'owner-id'), source: 'org_root_background' });
+      emit('chat.tool_result', {
+        ...payload('unselected', undefined, 'shared-id'), tool_call: undefined,
+        tool_name: 'claim_task', tool_call_id: 'shared-id', result: 'unknown member',
+      });
+    });
+    const runtimes = useSessionStore.getState().runtimes;
+    const events = runtimes['session::expert'].teamMemberExecutionEvents;
+    assert.equal(events.length, 3);
+    assert.deepEqual(events.map(event => [event.member_id, event.kind]).sort(), [
+      ['solution_architect', 'tool_call'], ['reviewer', 'tool_call'], ['solution_architect', 'tool_result'],
+    ].sort());
+    assert.equal(events[0].timestamp, 1_700_000_000_000);
+    const call = events.find(event => event.member_id === 'solution_architect' && event.kind === 'tool_call');
+    const result = events.find(event => event.kind === 'tool_result');
+    assert.equal(call.tool_call_id, result.tool_call_id);
+    assert.equal(result.content, 'claimed');
+    assert.deepEqual(runtimes['session::other-child'].teamMemberExecutionEvents.map(event => event.member_id),
+      ['researcher', 'researcher']);
+    assert.equal(runtimes.session.teamMemberExecutionEvents.length, 0);
+    assert.equal(runtimes['session::unselected'], undefined);
+    assert.ok(useChatStore.getState().runtimes['session::expert'].toolExecutions.get('leader-id'));
+    await act(async () => setTeamOrganizationUiEnabled(false));
+    assert.equal(callbacks.has('chat.tool_call'), false);
+  } finally {
+    await act(async () => root.unmount());
+    useSessionStore.setState({ runtimes: originalRuntimes });
+    setTeamOrganizationUiEnabled(false);
+    Object.assign(webClient, originals);
+    dom.window.close();
+    delete globalThis.window;
+    delete globalThis.document;
+  }
+});
+
+test('history restores member tools by Team and preserves legacy behavior when organization UI is disabled', () => {
+  seed();
+  const records = ['owner', 'expert', 'another-child'].flatMap((team, index) => {
+    const common = {
+      session_id: 'session', mode: 'team', team_id: team, member_name: 'same-member', role: 'teammate',
+      source: team === 'owner' ? 'org_root_background' : 'org_expert_background', timestamp: 1_700_000_000_000 + index,
+    };
+    return [
+      { ...common, event_type: 'chat.tool_call', tool_call: { id: 'same-call', name: 'view_task', arguments: {} } },
+      { ...common, event_type: 'chat.tool_result', tool_call_id: 'same-call', tool_name: 'view_task', result: team },
+    ];
+  });
+  setTeamOrganizationUiEnabled(true);
+  try {
+    const state = parseOrganizationHistoryPanelRecords(records, 'session');
+    assert.equal(state.executionEvents.length, 2);
+    assert.equal(state.executionEvents[1].content, 'owner');
+    assert.equal(state.organizationExecutionEvents.expert.length, 2);
+    assert.equal(state.organizationExecutionEvents.expert[1].content, 'expert');
+    assert.equal(state.organizationExecutionEvents['another-child'][1].content, 'another-child');
+    setTeamOrganizationUiEnabled(false);
+    const legacy = parseOrganizationHistoryPanelRecords(records, 'session');
+    assert.equal(legacy.executionEvents.length, 6);
+    assert.equal(legacy.organizationExecutionEvents, undefined);
+  } finally {
+    setTeamOrganizationUiEnabled(false);
+  }
+});
+
+test('stopping Owner makes it idle while child execution and reconnect snapshots remain independent', () => {
+  seed();
+  const chat = useChatStore.getState();
+  startExpertRequest('session::expert', 'child-round', 'org_expert_background');
+  assert.equal(chat.getRuntime('session').isProcessing, true);
+  const oldRevision = organizationProcessingRevision();
+  setOrganizationOwnerStopped('session', true);
+  assert.equal(chat.getRuntime('session').isProcessing, false);
+  assert.equal(chat.getRuntime('session::expert').isProcessing, true);
+  startExpertRequest('session', 'late-owner-round', 'org_root_delivery');
+  // A late child event cannot relight the stopped Owner's Stop button.
+  startExpertRequest('session::expert', 'child-finalize', 'org_expert_background');
+  assert.equal(chat.getRuntime('session').isProcessing, false);
+  reconcileOrganizationRequests('session', 'owner', [], oldRevision, [], false);
+  assert.equal(isOrganizationOwnerStopped('session'), true);
+  reconcileOrganizationRequests('session', 'owner', [
+    { team_id: 'expert', request_id: 'child-round', source: 'org_expert_background' },
+  ], organizationProcessingRevision(), [], true);
+  assert.equal(chat.getRuntime('session').isProcessing, false);
+  assert.equal(chat.getRuntime('session::expert').isProcessing, true);
+  setOrganizationOwnerStopped('session', false);
+  assert.equal(isOrganizationProcessing('session'), true);
+  clearOrganizationRequests('session');
+  assert.equal(isOrganizationOwnerStopped('session'), false);
+});
+
+test('Owner history roster excludes expert and Summary members even when those Teams are no longer listed', () => {
+  seed();
+  // Uninstalled/stopped child Teams may be missing from the current selector roster.
+  useTeamSelectorStore.setState({ runtimes: {
+    session: { teams: [{ team_id: 'owner', is_owner: true }], selectedTeamId: 'owner' },
+  } });
+  const memberRecord = (team, member, source) => ({
+    session_id: 'session', mode: 'team', event_type: 'chat.tool_call', team_id: team, source,
+    role: 'teammate', member_name: member, timestamp: 1_700_000_000_000,
+    tool_call: { id: `call-${member}`, name: 'view_task', arguments: {} },
+  });
+  const records = [
+    memberRecord('owner', 'owner-member', 'org_root_background'),
+    memberRecord('removed-expert', 'solution_architect', 'org_expert_background'),
+    memberRecord('removed-summary', 'source-integrator', 'org_summary_background'),
+    memberRecord('removed-summary', 'delivery-drafter', 'org_summary_background'),
+  ];
+  setTeamOrganizationUiEnabled(true);
+  try {
+    const state = parseOrganizationHistoryPanelRecords(records, 'session');
+    assert.deepEqual(state.members.map(member => member.member_id), ['owner-member']);
+    assert.equal(state.organizationExecutionEvents['removed-expert'].length, 1);
+    assert.equal(state.organizationExecutionEvents['removed-summary'].length, 2);
+    setTeamOrganizationUiEnabled(false);
+    assert.equal(parseOrganizationHistoryPanelRecords(records, 'session').members.length, 4);
+  } finally {
+    setTeamOrganizationUiEnabled(false);
+  }
+});
+
+test('child shutdown does not remove a same-named Owner member during history restore', () => {
+  seed();
+  const ownerRecord = {
+    session_id: 'session', mode: 'team', event_type: 'chat.tool_call', team_id: 'owner',
+    source: 'org_root_background', role: 'teammate', member_name: 'shared-member', timestamp: 1_700_000_000_000,
+    tool_call: { id: 'owner-call', name: 'view_task', arguments: {} },
+  };
+  const shutdown = {
+    session_id: 'session', mode: 'team', event_type: 'team.member', team_id: 'expert',
+    source: 'org_expert_background', timestamp: 1_700_000_001_000,
+    event: { type: 'team.member.shutdown', member_id: 'shared-member', target_status: 'shut_down' },
+  };
+  setTeamOrganizationUiEnabled(true);
+  try {
+    const ownerOnly = parseOrganizationHistoryPanelRecords([ownerRecord], 'session');
+    const mixed = parseOrganizationHistoryPanelRecords([ownerRecord, shutdown], 'session');
+    assert.deepEqual(mixed.members, ownerOnly.members);
+    assert.deepEqual(mixed.members.map(member => member.member_id), ['shared-member']);
+    assert.deepEqual(mixed.executionEvents, ownerOnly.executionEvents);
+    setTeamOrganizationUiEnabled(false);
+    assert.deepEqual(parseOrganizationHistoryPanelRecords([ownerRecord, shutdown], 'session').members, []);
+  } finally {
+    setTeamOrganizationUiEnabled(false);
+  }
+});
+>>>>>>> origin/develop
 
 test('child member tools populate isolated process panels without duplicating Owner or Leader events', async () => {
   seed();
@@ -864,6 +1092,7 @@ async function withOrganizationPanel(request, run, { enabled = true } = {}) {
 const ownerList = { teams: [{ team_id: 'owner', is_owner: true }], default_team_id: 'owner' };
 const boundSnapshot = { organization: { organization_id: 'org', display_name: 'Bound organization' }, tasks: [] };
 
+<<<<<<< HEAD
 test('uninstalled organization experts remain visible and selectable for history with unavailable status', async () => {
   const teams = [
     { team_id: 'owner', is_owner: true, organization_id: 'org', state: 'paused' },
@@ -917,6 +1146,255 @@ test('composer rejects new input for an unavailable selected team without affect
   assert.equal(new Function(...Object.keys(bindings), `return ${disabled};`)(...Object.values(bindings)), true);
 });
 
+||||||| e487e9a30
+=======
+test('organization tree attaches out-of-order grandchildren and counts each task once', () => {
+  const tree = buildOrganizationTaskTree([
+    { task_id: 'grandchild', parent_task_id: 'child', status: 'COMPLETED' },
+    { task_id: 'root', status: 'IN_PROGRESS' },
+    { task_id: 'child', parent_task_id: 'root', status: 'COMPLETED' },
+    { task_id: 'orphan', parent_task_id: 'missing' },
+  ]);
+  assert.deepEqual(tree.map((node) => node.key), ['root', 'orphan']);
+  assert.equal(tree[0].children[0].children[0].key, 'grandchild');
+  assert.equal(tree[0].completed, 2);
+  assert.equal(tree[0].total, 3);
+});
+
+test('organization tree preserves cyclic and self-parented tasks without recursive loops', () => {
+  const tree = buildOrganizationTaskTree([
+    { task_id: 'a', parent_task_id: 'b' }, { task_id: 'b', parent_task_id: 'a' },
+    { task_id: 'self', parent_task_id: 'self' }, { task_id: 'blank', parent_task_id: ' ' },
+  ]);
+  assert.deepEqual(tree.map((node) => node.key), ['a', 'b', 'self', 'blank']);
+  assert.ok(tree.every((node) => node.total === 1));
+});
+
+test('organization details show nested tasks, resolved ownership and actionable failure information', async () => {
+  const team = { team_id: 'owner', is_owner: true, display_name: 'Analysis Team', execution_model_name: 'test-model' };
+  await withOrganizationPanel(
+    (method) => method === 'team.list' ? { teams: [team], default_team_id: 'owner' }
+      : method === 'agent_groups.list' ? { agentGroups: [] } : {
+        organization: { ...boundSnapshot.organization, owner_team_id: 'owner', leaders: [
+          { team_id: 'owner', leader_member_name: 'Research Lead', capabilities: ['analysis'] },
+        ] },
+        tasks: [
+          { task_id: 'root', title: 'Feasibility report', status: 'IN_PROGRESS', aggregation_mode: 'SUMMARY_TEAM' },
+          { task_id: 'child', parent_task_id: 'root', title: 'Review architecture', status: 'FAILED',
+            description: 'Check component boundaries', assignment: { team_id: 'owner', assigned_by_team_id: 'owner' },
+            failure_code: 'SOURCE_FAILED', required_capabilities: ['analysis'], updated_at: 1793430000 },
+          { task_id: 'grandchild', parent_task_id: 'child', title: 'Inspect modules', status: 'COMPLETED' },
+        ],
+      },
+    async () => {
+      const root = document.querySelector('[data-task-id="root"]');
+      const child = root.querySelector('[data-task-id="child"]');
+      assert.ok(child.querySelector('[data-task-id="grandchild"]'));
+      assert.equal(document.querySelector('[data-testid="team-area-org-task-progress"][data-variant="root"]').textContent.trim(), '1/3');
+      const detail = child.querySelector('[data-testid="team-area-org-info-task-details"]');
+      assert.equal(detail.open, false);
+      await act(async () => { detail.querySelector('summary').click(); });
+      assert.equal(detail.open, true);
+      assert.match(detail.textContent, /Analysis Team/);
+      assert.match(detail.textContent, /Check component boundaries/);
+      assert.doesNotMatch(detail.textContent, /所需能力/);
+      assert.doesNotMatch(detail.textContent, /analysis/);
+      assert.match(detail.textContent, /依赖任务失败/);
+      assert.match(document.querySelector('[data-testid="team-area-org-info-teams"]').textContent, /Research Lead/);
+      assert.match(document.querySelector('[data-testid="team-area-org-info-teams"]').textContent, /test-model/);
+      assert.equal(document.querySelector('[data-testid="team-area-organization-teams"]'), null);
+      assert.equal(document.querySelector('[data-testid="team-area-org-info-title"]'), null);
+      const toggle = document.querySelector('[data-testid="team-area-org-task-toggle"][data-variant="root"]');
+      await act(async () => toggle.click());
+      assert.equal(root.open, false);
+    },
+  );
+});
+
+test('Summary Team and its task appear below the Owner and root task in organization panels', async () => {
+  // Same relationships as web_1a1a58aaf21_cbda90ef0f13: the Summary Task has no parent.
+  const teams = [
+    { team_id: 'summary', display_name: 'Organization Summary Team' },
+    { team_id: 'expert', display_name: 'Technical Team' },
+    { team_id: 'owner', is_owner: true, display_name: 'Business Team' },
+  ];
+  const tasks = [
+    { task_id: 'summary-task', task_type: 'organization.summary', parent_task_id: null, root_task_id: 'root',
+      status: 'COMPLETED', assignment: { team_id: 'summary' } },
+    { task_id: 'root', root_task_id: 'root', status: 'COMPLETED', assignment: { team_id: 'owner' } },
+    { task_id: 'technical-task', parent_task_id: 'root', status: 'COMPLETED', assignment: { team_id: 'expert' } },
+  ];
+  await withOrganizationPanel(
+    (method) => method === 'team.list' ? { teams, default_team_id: 'owner' }
+      : method === 'org.snapshot' ? { organization: { organization_id: 'org', owner_team_id: 'owner', leaders: teams }, tasks }
+        : method === 'agent_groups.list' ? { agentGroups: [] } : { members: [], tasks: [] },
+    async ({ root }) => {
+      const rootTask = document.querySelector('[data-task-id="root"]');
+      const summaryTask = document.querySelector('[data-task-id="summary-task"]');
+      assert.equal(rootTask.dataset.variant, 'root');
+      assert.equal(summaryTask.dataset.variant, 'sub');
+      assert.ok(rootTask.querySelector('[data-testid="team-area-org-task-children"]').contains(summaryTask));
+      assert.equal(document.querySelectorAll('[data-testid="team-area-org-info-task-row"][data-variant="root"]').length, 1);
+      assert.equal(document.querySelector('[data-testid="team-area-org-task-progress"][data-variant="root"]').textContent.trim(), '3/3');
+      const subteams = document.querySelector('[data-testid="team-area-org-info-subteams"][data-variant="owner"]');
+      assert.equal(subteams.parentElement.firstElementChild.dataset.variant, 'owner');
+      assert.ok(subteams.querySelector('[data-testid="team-area-org-team-toggle"][data-variant="summary"]'));
+      assert.ok(subteams.querySelector('[data-testid="team-area-org-team-toggle"][data-variant="expert"]'));
+      assert.equal(subteams.querySelector('[data-testid="team-area-org-team-toggle"][data-variant="owner"]'), null);
+      for (const variant of ['compact', 'cards']) {
+        await act(async () => root.render(React.createElement(OrganizationTeamsList, { groups: [], variant })));
+        const branch = document.querySelector('[data-testid="team-area-organization-team-branch"][data-variant="owner"]');
+        assert.equal(branch.firstElementChild.dataset.variant, 'owner');
+        const children = branch.querySelector('[data-testid="team-area-organization-subteams"]');
+        assert.equal(children.querySelectorAll('[data-testid="team-area-organization-team"]').length, 2);
+        const summary = children.querySelector('[data-testid="team-area-organization-team"][data-variant="summary"]');
+        await act(async () => summary.click());
+        assert.equal(useTeamSelectorStore.getState().runtimes.session.selectedTeamId, 'summary');
+      }
+      assert.equal(tasks[0].parent_task_id, null);
+    },
+  );
+});
+
+test('summary display nesting preserves missing roots, explicit parents and cycle safety', () => {
+  const tree = buildOrganizationTaskTree([
+    { task_id: 'root' },
+    { task_id: 'other' },
+    { task_id: 'summary', task_type: 'organization.summary', root_task_id: 'root', parent_task_id: 'other' },
+    { task_id: 'missing', task_type: 'organization.summary', root_task_id: 'absent' },
+    { task_id: 'ordinary', root_task_id: 'root' },
+    { task_id: 'self', task_type: 'organization.summary', root_task_id: 'self' },
+    { task_id: 'cycle-a', task_type: 'organization.summary', root_task_id: 'cycle-b' },
+    { task_id: 'cycle-b', parent_task_id: 'cycle-a' },
+  ]);
+  assert.deepEqual(tree.map((node) => node.key), ['root', 'other', 'missing', 'ordinary', 'self', 'cycle-a', 'cycle-b']);
+  assert.deepEqual(tree[1].children.map((node) => node.key), ['summary']);
+});
+
+test('organization roster shows every expert and summary Team and navigates isolated conversations', async () => {
+  const teams = [
+    { team_id: 'owner', is_owner: true, display_name: 'Owner' },
+    ...['expert-a', 'expert-b', 'expert-c', 'expert-d', 'summary'].map((team_id) => ({
+      team_id, is_owner: false, display_name: team_id,
+    })),
+  ];
+  function Conversation() {
+    const key = useOrganizationConversationKey(useChatStore((state) => state.activeSessionId));
+    return React.createElement('output', { id: 'conversation-key' }, key);
+  }
+  await withOrganizationPanel(
+    (method) => method === 'team.list' ? { teams, default_team_id: 'owner' }
+      : method === 'org.snapshot' ? boundSnapshot : { members: [], tasks: [] },
+    async ({ root, calls }) => {
+      await act(async () => root.render(React.createElement(React.Fragment, null,
+        React.createElement(OrganizationTeamsList, { groups: [] }), React.createElement(Conversation))));
+      assert.equal(document.querySelectorAll('[data-testid="team-area-organization-team"]').length, 6);
+      for (const teamId of ['expert-a', 'summary', 'owner']) {
+        await act(async () => document.querySelector(`[data-testid="team-area-organization-team"][data-variant="${teamId}"]`).click());
+        assert.equal(useTeamSelectorStore.getState().runtimes.session.selectedTeamId, teamId);
+        assert.equal(document.getElementById('conversation-key').textContent,
+          teamId === 'owner' ? 'session' : `session::${teamId}`);
+        assert.equal(document.querySelector(`[data-testid="team-area-organization-team"][data-variant="${teamId}"]`).getAttribute('aria-pressed'), 'true');
+        assert.ok(calls.some((call) => call.method === 'team.snapshot' && call.params.team_name === teamId));
+      }
+      await act(async () => useTeamSelectorStore.setState((state) => ({ runtimes: {
+        ...state.runtimes, other: { teams: [{ team_id: 'other-owner', is_owner: true }], loaded: true },
+      } })));
+      await act(async () => useChatStore.getState().setActiveSessionId('other'));
+      assert.equal(document.querySelectorAll('[data-testid="team-area-organization-team"]').length, 1);
+      assert.equal(document.querySelector('[data-testid="team-area-organization-team"]').dataset.variant, 'other-owner');
+      await act(async () => setTeamOrganizationUiEnabled(false));
+      assert.equal(document.querySelector('[data-testid="team-area-organization-teams"]'), null);
+    },
+  );
+});
+
+test('uninstalled organization experts remain visible and selectable for history with unavailable status', async () => {
+  const teams = [
+    { team_id: 'owner', is_owner: true, organization_id: 'org', state: 'paused' },
+    { team_id: 'expert', is_owner: false, organization_id: 'org', state: 'configured', available: false,
+      unavailable_reason: 'AGENT_GROUP_NOT_INSTALLED', display_name: 'Removed Expert' },
+  ];
+  await withOrganizationPanel(
+    (method) => method === 'team.list' ? { teams, default_team_id: 'owner' }
+      : method === 'org.snapshot' ? { organization: { ...boundSnapshot.organization, leaders: [{ team_id: 'expert', available: false }] }, tasks: [] }
+      : method === 'agent_groups.list' ? { agentGroups: [] } : { members: [], tasks: [] },
+    async ({ root }) => {
+      assert.ok(document.querySelector('[data-testid="team-area-org-info-team-unavailable"]'));
+      await act(async () => root.render(React.createElement(TeamSelector, { sessionId: 'session' })));
+      await act(async () => document.querySelector('[data-testid="chat-panel-team-select-trigger"]').click());
+      const option = document.querySelector('[data-testid="chat-panel-team-select-option"][data-team-id="expert"]');
+      assert.ok(option.querySelector('[data-testid="chat-panel-team-select-option-unavailable"]'));
+      assert.equal(option.disabled, false);
+      await act(async () => option.click());
+      assert.equal(useTeamSelectorStore.getState().runtimes.session.selectedTeamId, 'expert');
+      assert.ok(document.querySelector('[data-testid="chat-panel-team-select-unavailable"]'));
+    },
+  );
+});
+
+test('organization details omit banner and Team navigation; compact roster retains animated navigation', async () => {
+  await withOrganizationPanel(
+    (method) => method === 'team.list' ? {
+      teams: [
+        { team_id: 'owner', is_owner: true, state: 'paused' },
+        { team_id: 'expert', state: 'running' },
+        { team_id: 'summary', state: 'configured' },
+      ], default_team_id: 'owner',
+    } : method === 'org.snapshot' ? {
+      organization: { ...boundSnapshot.organization, owner_team_id: 'owner' },
+      tasks: [{ task_id: 'root', title: 'Report', status: 'IN_PROGRESS' }],
+    } : { members: [], tasks: [] },
+    async ({ root }) => {
+      assert.equal(document.querySelector('[data-testid="team-area-org-info-title"]'), null);
+      assert.equal(document.querySelector('[data-testid="team-area-organization-teams"]'), null);
+      assert.equal(document.querySelector('[data-testid="team-area-org-info-details"]').open, false);
+      assert.equal(document.querySelector('[data-testid="team-area-org-info-task-details"]').open, false);
+      await act(async () => {
+        useChatStore.getState().ensureTeamRuntime('session', 'expert');
+        useChatStore.getState().setProcessing('session::expert', true);
+      });
+      await act(async () => root.render(React.createElement(OrganizationTeamsList, { groups: [] })));
+      assert.ok(document.querySelector('[data-testid="team-area-organization-team"][data-variant="expert"]').classList.contains('organization-team--running'));
+      const summary = document.querySelector('[data-testid="team-area-organization-team"][data-variant="summary"]');
+      await act(async () => summary.click());
+      assert.equal(useTeamSelectorStore.getState().runtimes.session.selectedTeamId, 'summary');
+      assert.equal(summary.getAttribute('aria-pressed'), 'true');
+      await act(async () => useChatStore.getState().setProcessing('session::expert', false));
+    },
+  );
+});
+
+test('composer rejects new input for an unavailable selected team without affecting Owner or disabled organization UI', () => {
+  const source = ts.createSourceFile('InputArea.tsx', readFileSync(
+    new URL('../src/components/ChatPanel/InputArea.tsx', import.meta.url), 'utf8',
+  ), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let selector;
+  let disabled;
+  function visit(node) {
+    if (ts.isVariableDeclaration(node)) {
+      if (node.name.getText(source) === 'organizationTeamUnavailable') selector = node.initializer.arguments[0].getText(source);
+      if (node.name.getText(source) === 'composerDisabled') disabled = node.initializer.getText(source);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  assert.ok(selector && disabled);
+  const evaluate = (enabled, teamId) => {
+    const fn = new Function('organizationEnabled', 'activeSessionId', `return (${selector});`)(enabled, 'session');
+    return fn({ runtimes: { session: { selectedTeamId: teamId, teams: [
+      { team_id: 'owner', available: true }, { team_id: 'expert', available: false },
+    ] } } });
+  };
+  assert.equal(evaluate(true, 'expert'), true);
+  assert.equal(evaluate(true, 'owner'), false);
+  assert.equal(evaluate(false, 'expert'), false);
+  const bindings = { agentGroupUnavailable: false, organizationTeamUnavailable: true, isCompactRunning: false,
+    hasPendingQuestion: false, hasRunningAgent: false, designLandingSubmitting: false };
+  assert.equal(new Function(...Object.keys(bindings), `return ${disabled};`)(...Object.values(bindings)), true);
+});
+
+>>>>>>> origin/develop
 test('settings load and save immediately gate the Team selector; failed saves preserve the flag', async () => {
   let settings;
   let failSave = false;
@@ -1033,7 +1511,7 @@ test('organization panel loads its own Team list and never queries without a Tea
       );
       assert.deepEqual(calls[1].params, { session_id: 'session', team_id: 'owner' });
       assert.equal(
-        document.querySelector('[data-testid="team-area-org-info-org-name"]').textContent,
+        document.querySelector('[data-testid="team-area-org-info-org-name"] span:last-child').textContent,
         'Bound organization',
       );
       assert.equal(document.querySelector('[data-testid="team-area-org-info-empty"]'), null);
@@ -1049,7 +1527,6 @@ test('disabled organization panel issues no requests or subscriptions', async ()
     async ({ calls, listeners }) => {
       assert.equal(calls.length, 0);
       assert.equal(listeners.size, 0);
-      assert.equal(document.querySelector('[data-testid="team-area-org-info-panel"]'), null);
     },
     { enabled: false },
   );
@@ -1072,6 +1549,7 @@ const organizationTeams = {
   default_team_id: 'owner',
 };
 
+<<<<<<< HEAD
 test('restarted Teams display saved names instead of generated IDs, including legacy records', () => {
   const modern = { team_id: 'org-expert-971a1cd81c04', agent_group_name: 'technology-insight', display_name: 'tech' };
   const legacy = { team_id: 'org-expert-f03138fc21f4', display_name: '代码架构设计专家团' };
@@ -1134,6 +1612,124 @@ test('historical database names render in both the organization panel and select
   );
 });
 
+||||||| e487e9a30
+=======
+test('restarted Teams display saved names instead of generated IDs, including legacy records', () => {
+  const modern = { team_id: 'org-expert-971a1cd81c04', agent_group_name: 'technology-insight', display_name: 'tech' };
+  const legacy = { team_id: 'org-expert-f03138fc21f4', display_name: '代码架构设计专家团' };
+  assert.equal(resolveOrganizationTeamLabel(modern, groupIdentities, '-'), '技术洞察专家团');
+  assert.equal(resolveOrganizationTeamLabel(legacy, groupIdentities, '-'), '代码架构设计专家团');
+  assert.equal(resolveOrganizationTeamIdentity(legacy, groupIdentities).id, 'software-architecture-design');
+  assert.equal(resolveOrganizationTeamLabel(legacy, [], '-'), '代码架构设计专家团');
+  assert.equal(resolveOrganizationTeamLabel({ team_id: 'summary', display_name: 'Organization Summary Team' }, [], '-'), 'Organization Summary Team');
+  assert.equal(resolveOrganizationTeamLabel({ team_id: 'unknown' }, [], '-'), 'unknown');
+  assert.equal(resolveOrganizationTeamLabel(null, [], '-'), '-');
+});
+
+test('legacy names with ambiguous catalog matches do not invent a package identity', () => {
+  const team = { team_id: 'org-expert-old', display_name: '重复名称' };
+  const groups = groupIdentities.map((group) => ({ ...group, displayName: '重复名称' }));
+  assert.equal(resolveOrganizationTeamIdentity(team, groups), null);
+  assert.equal(resolveOrganizationTeamLabel(team, groups, '-'), '重复名称');
+});
+
+test('persisted expert identity and legacy name fallback coexist after restart', () => {
+  const saved = {
+    id: 'saved-tech', name: 'technology-insight', display_name: 'Saved technology team', avatar: null,
+  };
+  const team = { agent_group_name: saved.name, team_group_identity: saved };
+  const identity = resolveOrganizationTeamIdentity(team, []);
+  assert.equal(identity.name, saved.name);
+  assert.equal(identity.displayName, saved.display_name);
+  assert.equal(resolveOrganizationTeamLabel(team, [], '-'), saved.display_name);
+  assert.equal(resolveOrganizationTeamIdentity(team, groupIdentities).id, groupIdentities[1].id);
+  assert.equal(
+    resolveOrganizationTeamIdentity({ ...team, agent_group_name: 'different-package' }, []),
+    null,
+  );
+  const legacy = { display_name: groupIdentities[2].displayName };
+  assert.equal(resolveOrganizationTeamIdentity(legacy, groupIdentities).id, groupIdentities[2].id);
+});
+
+test('historical database names render in both the organization panel and selector without a catalog', async () => {
+  const teams = organizationTeams.teams.map((team, index) => ({
+    ...team, agent_group_name: null, display_name: groupIdentities[index].displayName, state: 'configured',
+  }));
+  await withOrganizationPanel(
+    (method, params) => method === 'team.list' ? { teams, default_team_id: 'owner' }
+      : method === 'agent_groups.list' ? { agentGroups: [] }
+      : method === 'org.snapshot' ? { organization: { ...boundSnapshot.organization, owner_team_id: 'owner', leaders: teams }, tasks: [] }
+      : { team_id: params.team_id, members: [], tasks: [] },
+    async ({ root }) => {
+      for (const [index, team] of teams.entries()) {
+        assert.equal(
+          document.querySelector(`[data-testid="team-area-org-info-team-name"][data-variant="${team.team_id}"]`).textContent,
+          groupIdentities[index].displayName,
+        );
+      }
+      await act(async () => root.render(React.createElement(TeamSelector, { sessionId: 'session', groups: [] })));
+      await act(async () => document.querySelector('[data-testid="chat-panel-team-select-trigger"]').click());
+      for (const [index, team] of teams.entries()) {
+        assert.match(document.querySelector(`[data-team-id="${team.team_id}"]`).textContent, new RegExp(groupIdentities[index].displayName));
+      }
+    },
+  );
+});
+
+for (const { ownerIdentity, catalogAvailable } of [
+  ...groupIdentities,
+  { id: 'custom-asset', name: 'custom-package', displayName: 'Custom research team', avatarUrl: 'http://localhost/custom.png' },
+].flatMap((ownerIdentity) => [true, false].map((catalogAvailable) => ({ ownerIdentity, catalogAvailable })))) {
+  test(`owner identity renders independently of the group catalog, package=${ownerIdentity.name}, available=${catalogAvailable}`, async () => {
+    const identities = [ownerIdentity, ...groupIdentities.filter((group) => group.name !== ownerIdentity.name)];
+    const teams = organizationTeams.teams.map((team, index) => ({
+      ...team,
+      agent_group_name: identities[index].name,
+      display_name: '团队领导',
+      team_group_identity: {
+        id: identities[index].id,
+        name: identities[index].name,
+        display_name: identities[index].displayName,
+        avatar: identities[index].avatarUrl,
+      },
+    }));
+    await withOrganizationPanel(
+      (method, params) => {
+        if (method === 'team.list') return { teams, default_team_id: 'owner' };
+        if (method === 'agent_groups.list') {
+          if (!catalogAvailable) {
+            throw Object.assign(new Error('AgentServer response exceeds WebSocket send budget'), {
+              code: 'response_too_large',
+            });
+          }
+          return { agentGroups: [] };
+        }
+        if (method === 'org.snapshot') return {
+          organization: { ...boundSnapshot.organization, owner_team_id: 'owner', leaders: teams }, tasks: [],
+        };
+        return { team_id: params.team_id, members: [], tasks: [] };
+      },
+      async () => {
+        assert.equal(
+          document.querySelector('[data-testid="team-area-org-info-owner-team"]').lastElementChild.textContent,
+          ownerIdentity.displayName,
+        );
+        for (const [index, team] of teams.entries()) {
+          assert.equal(
+            document.querySelector(`[data-testid="team-area-org-info-team-name"][data-variant="${team.team_id}"]`).textContent,
+            identities[index].displayName,
+          );
+          assert.equal(
+            document.querySelector(`[data-testid="team-area-org-info-team-avatar"][data-variant="${team.team_id}"]`).getAttribute('src'),
+            identities[index].avatarUrl,
+          );
+        }
+      },
+    );
+  });
+}
+
+>>>>>>> origin/develop
 test('organization identity uses the selected Team package, preserving the session binding', () => {
   seed();
   useSessionStore.getState().setAgentGroupBinding('session', 'business-planning');
@@ -1236,7 +1832,11 @@ test('organization panel resolves Owner and team names from installed groups and
           id: group.id, name: group.name, displayName: group.displayName, avatar: group.avatarUrl, installed: true,
         })) }
       : { organization: { ...boundSnapshot.organization, owner_team_id: 'owner', leaders: organizationTeams.teams },
-          tasks: [{ task_id: 'root', status: 'COMPLETED' }], stats: { total: 4, open: 0, unclaimed: 1 } },
+          tasks: organizationTeams.teams.map((team, index) => ({
+            task_id: index === 0 ? 'root' : `task-${team.team_id}`,
+            parent_task_id: index === 0 ? null : 'root',
+            status: 'COMPLETED', assignment: { team_id: team.team_id },
+          })), stats: { total: 4, open: 0, unclaimed: 1 } },
     async () => {
       const organization = document.querySelector('[data-testid="team-area-org-info-organization"]');
       assert.match(organization.textContent, /商业策划专家团/);
@@ -1246,6 +1846,8 @@ test('organization panel resolves Owner and team names from installed groups and
       for (const [index, team] of organizationTeams.teams.entries()) {
         assert.equal(document.querySelector(`[data-testid="team-area-org-info-team-name"][data-variant="${team.team_id}"]`).textContent, groupIdentities[index].displayName);
         assert.equal(document.querySelector(`[data-testid="team-area-org-info-team-avatar"][data-variant="${team.team_id}"]`).getAttribute('src'), groupIdentities[index].avatarUrl);
+        const taskId = index === 0 ? 'root' : `task-${team.team_id}`;
+        assert.equal(document.querySelector(`[data-testid="team-area-org-task-team-avatar"][data-variant="${taskId}"]`).getAttribute('src'), groupIdentities[index].avatarUrl);
       }
       assert.equal(document.querySelector('[data-testid="team-area-org-info-stats"]'), null);
       assert.equal(document.querySelector('[data-testid="team-area-org-info-stat-card"]'), null);
@@ -1307,7 +1909,7 @@ test('organization changes on the same Team refresh after related events, ignori
         await new Promise((resolve) => setTimeout(resolve, 220));
       });
       assert.equal(
-        document.querySelector('[data-testid="team-area-org-info-org-name"]').textContent,
+        document.querySelector('[data-testid="team-area-org-info-org-name"] span:last-child').textContent,
         'Bound organization',
       );
     },
@@ -1319,6 +1921,7 @@ test('late snapshots cannot overwrite the newly selected Team', async () => {
   await withOrganizationPanel(
     (method, params) => {
       if (method === 'team.list') return ownerList;
+      if (method === 'agent_groups.list') return { agentGroups: [] };
       if (params.team_id === 'owner')
         return new Promise((resolve) => {
           resolveOwner = resolve;
@@ -1332,7 +1935,7 @@ test('late snapshots cannot overwrite the newly selected Team', async () => {
         })),
       );
       await act(async () => resolveOwner(boundSnapshot));
-      assert.equal(document.querySelector('[data-testid="team-area-org-info-org-name"]').textContent, 'expert-org');
+      assert.equal(document.querySelector('[data-testid="team-area-org-info-org-name"] span:last-child').textContent, 'expert-org');
     },
   );
 });
@@ -1353,7 +1956,7 @@ test('periodic refresh is deduplicated while pending and timers are removed when
       (method) =>
         method === 'team.list'
           ? ownerList
-          : new Promise((resolve) => {
+          : method === 'agent_groups.list' ? { agentGroups: [] } : new Promise((resolve) => {
               resolveSnapshot = resolve;
             }),
       async ({ calls, listeners }) => {
@@ -1388,6 +1991,7 @@ test('expert snapshot never overwrites owner roster or task board', () => {
   assert.equal(useSessionStore.getState().runtimes['session::expert'].teamTasks[0].task_id, 'expert-task');
 });
 
+<<<<<<< HEAD
 test('composer mentions follow the selected Team and discard old member chips', async () => {
   seed();
   // Exercise the actual composer selectors/effect without mounting unrelated media/settings UI.
@@ -1496,6 +2100,151 @@ test('expert member mentions retain their IDs and selected Team in chat.send', a
   }
 });
 
+||||||| e487e9a30
+=======
+test('composer mentions follow the selected Team and discard old member chips', async () => {
+  seed();
+  // Exercise the actual composer selectors/effect without mounting unrelated media/settings UI.
+  const source = ts.createSourceFile('InputArea.tsx', readFileSync(
+    new URL('../src/components/ChatPanel/InputArea.tsx', import.meta.url), 'utf8',
+  ), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const names = new Set(['conversationId', 'teamMembers', 'mentionableMembers', 'extractPlainText', 'composerConversationRef']);
+  const statements = [];
+  function visit(node) {
+    if (ts.isVariableStatement(node) && node.declarationList.declarations.some((d) => names.has(d.name.getText(source)))) {
+      statements.push(node.getText(source));
+    }
+    if (ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)
+      && node.expression.expression.getText(source) === 'useEffect'
+      && node.expression.arguments[1]?.getText(source) === '[conversationId, extractPlainText]') {
+      statements.push(node.getText(source));
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  assert.equal(statements.length, 6);
+  const body = ts.transpileModule(statements.join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
+  const fallback = source.statements.find((node) => ts.isVariableStatement(node)
+    && node.declarationList.declarations.some((d) => d.name.getText(source) === 'EMPTY_TEAM_MEMBERS'));
+  assert.ok(fallback, 'composer fallback must be stable before the component renders');
+  const fallbackBody = ts.transpileModule(fallback.getText(source), { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
+  const probe = new Function('readComposerText', 'useOrganizationConversationKey', 'isReachableTeamMemberStatus', 'useSessionStore', 'useChatStore', 'React', 'editor', 'report', `
+    const { useMemo, useRef, useEffect, useCallback } = React;
+    ${fallbackBody}
+    return function Probe({ activeSessionId }) {
+      const inputRef = useRef(editor);
+      const setComposerSuggestion = (value) => report.closed.push(value);
+      ${body}
+      report.members = mentionableMembers;
+      return null;
+    };
+  `);
+  const dom = new JSDOM('<div id="root"></div><div id="editor"></div>', { url: 'http://localhost' });
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.Node = dom.window.Node;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const editor = document.getElementById('editor');
+  const report = { closed: [] };
+  const Probe = probe(readComposerText, useOrganizationConversationKey, isReachableTeamMemberStatus, useSessionStore, useChatStore, React, editor, report);
+  const root = createRoot(document.getElementById('root'));
+  const originalRequest = webClient.request;
+  webClient.request = async () => { throw new Error('snapshot unavailable'); };
+  useChatStore.getState().setActiveSessionId('session');
+  const ids = () => report.members.map((member) => member.id);
+  try {
+    await act(async () => root.render(React.createElement(Probe, { activeSessionId: 'session' })));
+    assert.deepEqual(ids(), ['owner-member']); // Organization disabled.
+    await act(async () => setTeamOrganizationUiEnabled(true));
+    await act(async () => useTeamSelectorStore.getState().selectTeam('session', 'expert'));
+    await act(async () => applyTeamSnapshotToSession('session', 'expert', { members: [] }));
+    assert.deepEqual(ids(), []); // No fallback to the Owner while absent/failed/empty.
+    await act(async () => applyTeamSnapshotToSession('session', 'expert', {
+      members: [{ member_id: 'expert-member', name: 'Same name' }, { member_id: 'user' }],
+    }));
+    assert.deepEqual(ids(), ['expert-member']);
+    editor.innerHTML = 'draft <span contenteditable="false" data-composer-token="member" data-value="expert-member">@Same name</span>'
+      + '<span contenteditable="false" data-composer-token="role" data-value="reviewer">$reviewer</span>'
+      + ' <span contenteditable="false" data-composer-token="member" data-composer-item-kind="asset" data-value="notes.txt">@notes.txt</span>';
+    await act(async () => useTeamSelectorStore.getState().selectTeam('session', 'owner'));
+    assert.deepEqual(ids(), ['owner-member']);
+    assert.equal(editor.querySelector('[data-composer-token="member"]:not([data-composer-item-kind="asset"])'), null);
+    assert.ok(editor.querySelector('[data-composer-item-kind="asset"]'));
+    assert.ok(editor.querySelector('[data-composer-token="role"]'));
+    assert.equal(useChatStore.getState().getRuntime('session').inputValue, 'draft $reviewer @notes.txt');
+    assert.equal(report.closed.at(-1), null);
+    await act(async () => useTeamSelectorStore.setState((state) => ({ runtimes: {
+      ...state.runtimes, session: { ...state.runtimes.session,
+        teams: [...state.runtimes.session.teams, { team_id: 'other', is_owner: false }],
+      },
+    } })));
+    await act(async () => useTeamSelectorStore.getState().selectTeam('session', 'other'));
+    await act(async () => applyTeamSnapshotToSession('session', 'other', {
+      members: [{ member_id: 'other-member', name: 'Same name' }],
+    }));
+    assert.deepEqual(ids(), ['other-member']);
+    await act(async () => useTeamSelectorStore.getState().selectTeam('session', 'expert'));
+    assert.deepEqual(ids(), ['expert-member']); // Cached roster stays local to its Team.
+    await act(async () => setTeamOrganizationUiEnabled(false));
+    assert.deepEqual(ids(), ['owner-member']);
+  } finally {
+    await act(async () => root.unmount());
+    webClient.request = originalRequest;
+    setTeamOrganizationUiEnabled(false);
+    dom.window.close();
+    delete globalThis.window;
+    delete globalThis.document;
+    delete globalThis.Node;
+  }
+});
+
+test('expert member mentions retain their IDs and selected Team in chat.send', async () => {
+  seed();
+  setTeamOrganizationUiEnabled(true);
+  const originalRequest = webClient.request;
+  const calls = [];
+  webClient.request = async (method, params) => { calls.push({ method, params }); return {}; };
+  try {
+    await sendExpertMessage('@expert-member explain', 'session');
+    assert.equal(calls[0].method, 'chat.send');
+    assert.equal(calls[0].params.target_team_id, 'expert');
+    assert.equal(calls[0].params.content, '@expert-member explain');
+  } finally {
+    webClient.request = originalRequest;
+    setTeamOrganizationUiEnabled(false);
+  }
+});
+
+test('snapshot keeps departed members off the roster but in the departed directory', () => {
+  for (const snapshot of [
+    // 新后端：离队成员单独放在 departed_members
+    {
+      members: [
+        { member_id: 'worker', status: 'ready' },
+        { member_id: 'sleeper', status: 'dormant' },
+      ],
+      departed_members: [{ member_id: 'retired', name: 'Retired', status: 'shut_down' }],
+      tasks: [],
+    },
+    // 旧后端：离队成员混在 members 里
+    {
+      members: [
+        { member_id: 'worker', status: 'ready' },
+        { member_id: 'retired', name: 'Retired', status: 'shut_down' },
+        { member_id: 'sleeper', status: 'dormant' },
+      ],
+      tasks: [],
+    },
+  ]) {
+    seed();
+    applyTeamSnapshotToSession('session', 'expert', snapshot);
+    const runtime = useSessionStore.getState().runtimes['session::expert'];
+    assert.deepEqual(runtime.teamMembers.map((m) => m.member_id), ['worker', 'sleeper']);
+    assert.deepEqual(runtime.teamDepartedMembers.map((m) => [m.member_id, m.name]), [['retired', 'Retired']]);
+  }
+});
+
+>>>>>>> origin/develop
 test('history is routed to independent conversations without polluting owner', () => {
   seed();
   useChatStore.getState().replaceHistoryMessages('session', [
@@ -1567,8 +2316,20 @@ test('disabled UI has no organization event subscriptions; disabling unsubscribe
     await act(async () => root.render(React.createElement(Probe)));
     assert.equal(subscriptions.length, 0);
     await act(async () => setTeamOrganizationUiEnabled(true));
+<<<<<<< HEAD
     assert.ok(subscriptions.some((entry) => entry.name === 'chat.processing_status'));
     assert.ok(subscriptions.some((entry) => entry.name === 'org.turn_completed'));
+||||||| e487e9a30
+    assert.equal(subscriptions.length, 9);
+=======
+    assert.deepEqual(subscriptions.map((entry) => entry.name).sort(), [
+      'session.deleted', 'session.archived', 'chat.delta', 'chat.reasoning',
+      'chat.final', 'chat.error', 'chat.processing_status', 'chat.interrupt_result',
+      'org.turn_completed', 'chat.tool_call', 'chat.tool_result', 'team.task', 'team.member', 'team.message', 'team.model_changed',
+    ].sort());
+    assert.ok(subscriptions.some((entry) => entry.name === 'chat.processing_status'));
+    assert.ok(subscriptions.some((entry) => entry.name === 'org.turn_completed'));
+>>>>>>> origin/develop
     await act(async () => setTeamOrganizationUiEnabled(false));
     assert.equal(subscriptions.length, 0);
   } finally {
@@ -1579,6 +2340,7 @@ test('disabled UI has no organization event subscriptions; disabling unsubscribe
     delete globalThis.document;
   }
 });
+<<<<<<< HEAD
 
 
 test('organization terminals handle cold rosters and settle Owner output without clearing foreground work', async () => {
@@ -2251,3 +3013,1090 @@ for (const newerAction of ['child-progress', 'owner-input']) {
     }
   });
 }
+||||||| e487e9a30
+=======
+
+
+test('organization terminals handle cold rosters and settle Owner output without clearing foreground work', async () => {
+  seed();
+  const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' });
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const originalOn = webClient.on;
+  const previousSession = useSessionStore.getState().currentSession;
+  useSessionStore.setState({ currentSession: { session_id: 'session', team_name: 'owner' } });
+  const listeners = new Map();
+  webClient.on = (event, handler) => { listeners.set(event, handler); return () => listeners.delete(event); };
+  const root = createRoot(document.getElementById('root'));
+  function Probe() { useOrganizationEvents(); return null; }
+  const chat = useChatStore.getState();
+  const emit = (event, team, request, extra = {}) => listeners.get(event)({ payload: {
+    session_id: 'session', team_id: team, request_id: request, source: 'org_root_background', ...extra,
+  } });
+  try {
+    await act(async () => { setTeamOrganizationUiEnabled(true); root.render(React.createElement(Probe)); });
+    for (const source of ['org_root_background', 'org_root_delivery', 'org_summary_background', 'org_custom']) {
+      await act(async () => emit('chat.processing_status', 'expert', source, { source, is_processing: true }));
+      await act(async () => emit('chat.error', 'expert', source, { source, role: 'leader', error: 'terminal' }));
+      assert.equal(chat.getRuntime('session::expert').isProcessing, false);
+      assert.equal(isOrganizationProcessing('session'), false);
+    }
+    for (const extra of [
+      { source: undefined }, { source: 'legacy' }, { role: 'member' }, { role: 'team_leader' },
+    ]) {
+      await act(async () => {
+        emit('chat.processing_status', 'expert', 'error-request', { is_processing: true });
+        emit('chat.processing_status', 'expert', 'newer-request', { is_processing: true });
+        emit('chat.error', 'expert', 'error-request', { ...extra, error: 'failed' });
+      });
+      assert.equal(isOrganizationProcessing('session'), true);
+      await act(async () => emit('org.turn_completed', 'expert', 'newer-request'));
+      assert.equal(isOrganizationProcessing('session'), false);
+      assert.equal(chat.getRuntime('session::expert').isProcessing, false);
+      await act(async () => {
+        emit('chat.processing_status', 'expert', 'only-request', { is_processing: true });
+        emit('chat.error', 'expert', 'only-request', { ...extra, error: 'failed' });
+      });
+      assert.equal(isOrganizationProcessing('session'), false);
+      assert.equal(chat.getRuntime('session::expert').isThinking, false);
+    }
+    await act(async () => {
+      emit('chat.processing_status', 'expert', 'cancelled', { is_processing: true });
+      useTeamSelectorStore.setState({ runtimes: {} });
+      emit('chat.interrupt_result', 'owner', 'stop', { source: 'org_stop', success: true,
+        cancelled_requests: [{ team_id: 'expert', request_id: 'cancelled' }] });
+    });
+    assert.equal(chat.getRuntime('session::expert').isProcessing, false);
+    assert.equal(isOrganizationProcessing('session'), false);
+    for (const foreground of [false, true]) {
+      await act(async () => {
+        chat.setProcessing('session', foreground);
+        emit('chat.processing_status', 'owner', 'owner-round', { is_processing: true });
+        chat.setThinking('session', true);
+        chat.addMessage('session', { id: `owner-${foreground}`, role: 'system', content: 'partial', isStreaming: true });
+        emit('org.turn_completed', 'owner', 'owner-round');
+      });
+      assert.equal(chat.getRuntime('session').isProcessing, foreground);
+      assert.equal(chat.getRuntime('session').isThinking, foreground);
+      assert.equal(Boolean(chat.getRuntime('session').messages.find((m) => m.id === `owner-${foreground}`).isStreaming), foreground);
+    }
+    await act(async () => {
+      emit('chat.processing_status', 'expert', 'independent-child', { is_processing: true });
+      emit('chat.interrupt_result', 'owner', 'failed-stop', { source: 'org_owner_stop', success: false });
+    });
+    assert.equal(chat.getRuntime('session').isProcessing, true);
+    await act(async () => emit('chat.interrupt_result', 'owner', 'owner-stop', {
+      source: 'org_owner_stop', success: true,
+    }));
+    assert.equal(chat.getRuntime('session').isProcessing, false);
+    assert.equal(chat.getRuntime('session::expert').isProcessing, true);
+    await act(async () => emit('org.turn_completed', 'expert', 'independent-child'));
+    assert.equal(chat.getRuntime('session').isProcessing, false);
+    assert.equal(chat.getRuntime('session::expert').isProcessing, false);
+  } finally {
+    await act(async () => root.unmount());
+    chat.setProcessing('session', false);
+    chat.setThinking('session', false);
+    chat.stopStreaming('session');
+    setTeamOrganizationUiEnabled(false);
+    webClient.on = originalOn;
+    useSessionStore.setState({ currentSession: previousSession });
+    dom.window.close();
+    delete globalThis.window;
+    delete globalThis.document;
+  }
+});
+
+
+for (const roster of [undefined, [], [{ team_id: 'owner' }, { team_id: 'expert' }]]) {
+  test(`organization snapshot falls back to session Owner identity: roster=${JSON.stringify(roster)}`, async () => {
+    seed();
+    const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' });
+    globalThis.window = dom.window;
+    globalThis.document = dom.window.document;
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    const originals = { on: webClient.on, request: webClient.request,
+      getState: webClient.getState, onStateChange: webClient.onStateChange };
+    const previousSession = useSessionStore.getState().currentSession;
+    useSessionStore.setState({ currentSession: { session_id: 'session', team_name: 'owner' } });
+    const listeners = new Map();
+    let tick;
+    webClient.on = (event, handler) => { listeners.set(event, handler); return () => listeners.delete(event); };
+    webClient.getState = () => 'ready';
+    webClient.onStateChange = () => () => {};
+    webClient.request = async () => ({ teams: roster, organization_requests: [
+      { team_id: 'owner', request_id: 'owner-snapshot', source: 'org_root_background' },
+      { team_id: 'expert', request_id: 'expert-snapshot', source: 'org_expert_background' },
+    ] });
+    dom.window.setInterval = (callback) => { tick = callback; return 1; };
+    dom.window.clearInterval = () => {};
+    const root = createRoot(document.getElementById('root'));
+    function Probe() {
+      useOrganizationEvents();
+      const key = useOrganizationConversationKey('session');
+      const busy = useChatStore((state) => state.runtimes[key]?.isProcessing ?? false);
+      return React.createElement('output', null, `${key}:${busy}`);
+    }
+    const emit = (team, request, source) => listeners.get('org.turn_completed')({ payload: {
+      session_id: 'session', team_id: team, request_id: request, source,
+    } });
+    try {
+      await act(async () => {
+        setTeamOrganizationUiEnabled(true);
+        startExpertRequest('session', 'owner-snapshot', 'org_root_background');
+        root.render(React.createElement(Probe));
+      });
+      await act(async () => tick());
+      assert.equal(document.querySelector('output').textContent, 'session::expert:true');
+      assert.equal(useChatStore.getState().getRuntime('session::owner')?.isProcessing ?? false, false);
+      await act(async () => useTeamSelectorStore.setState((state) => ({ runtimes: {
+        ...state.runtimes, session: { ...state.runtimes.session, selectedTeamId: 'idle',
+          teams: [...state.runtimes.session.teams, { team_id: 'idle' }] },
+      } })));
+      assert.equal(document.querySelector('output').textContent, 'session::idle:false');
+      await act(async () => {
+        emit('owner', 'owner-snapshot', 'org_root_background');
+        emit('expert', 'expert-snapshot', 'org_expert_background');
+      });
+      assert.equal(isOrganizationProcessing('session'), false);
+      assert.equal(useChatStore.getState().getRuntime('session::expert').isProcessing, false);
+    } finally {
+      await act(async () => root.unmount());
+      clearOrganizationRequests('session');
+      setTeamOrganizationUiEnabled(false);
+      Object.assign(webClient, originals);
+      useSessionStore.setState({ currentSession: previousSession });
+      dom.window.close();
+      delete globalThis.window;
+      delete globalThis.document;
+    }
+  });
+}
+
+
+test('Owner store processing combines independent foreground and organization lifecycles', () => {
+  seed();
+  const chat = useChatStore.getState();
+  chat.setProcessing('session', false);
+  startExpertRequest('session', 'background', 'org_root_background');
+  assert.equal(chat.getRuntime('session').isProcessing, true);
+  assert.equal(chat.getRuntime('session').foregroundIsProcessing, false);
+  chat.setProcessing('session', true);
+  finishExpertRequest('session', 'background');
+  assert.equal(chat.getRuntime('session').isProcessing, true);
+  chat.setProcessing('session', false);
+  assert.equal(chat.getRuntime('session').isProcessing, false);
+  startExpertRequest('session::expert', 'child', 'org_expert_background');
+  chat.setProcessing('session', true);
+  chat.setProcessing('session', false);
+  assert.equal(chat.getRuntime('session').isProcessing, true);
+  finishExpertRequest('session::expert', 'child');
+  assert.equal(chat.getRuntime('session').isProcessing, false);
+  startExpertRequest('session::expert', 'direct');
+  assert.equal(chat.getRuntime('session').isProcessing, false);
+  clearOrganizationRequests('session');
+});
+
+// Execute the production event handlers through their activity recovery step;
+// subsequent message/tool rendering has its own tests and dependencies.
+function loadActivityHandler(eventName) {
+  const path = 'hooks/useWebSocket.ts';
+  const source = ts.createSourceFile(path, readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  let body;
+  function visit(node) {
+    if (ts.isCallExpression(node) && node.expression.getText(source) === 'webClient.on' &&
+      node.arguments[0]?.text === eventName) {
+      const statements = node.arguments[1].body.statements;
+      const boundary = statements.findIndex((statement) => ts.isVariableStatement(statement) &&
+        statement.declarationList.declarations.some((declaration) =>
+          ['currentMode', 'agentTemplateName'].includes(declaration.name.getText(source))));
+      assert.ok(boundary > 0, `${eventName}: activity recovery precedes rendering`);
+      body = statements.slice(0, boundary).map((statement) => statement.getText(source)).join('\n');
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  assert.ok(body, `${eventName}: production handler exists`);
+  const bindings = {
+    useChatStore,
+    isTeamOrganizationUiEnabled,
+    isProactiveRecommendationPayload: (payload) => payload.source === 'proactive_recommendation',
+    shouldIgnoreSessionOutput: () => false,
+    handleTaskInputReceipt: () => false,
+    resolveEventSessionId: (payload) => payload.session_id,
+    shouldDropDuplicatedEvent: () => false,
+  };
+  bindings.restoreForegroundProcessing = loadCallback(path, 'restoreForegroundProcessing', bindings);
+  const { outputText } = ts.transpileModule(`const callback = ({ payload }) => { ${body} };`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  });
+  return new Function(...Object.keys(bindings), `${outputText}\nreturn callback;`)(...Object.values(bindings));
+}
+
+for (const eventName of ['chat.delta', 'chat.reasoning', 'chat.tool_call']) {
+  for (const source of ['org_root_background', 'org_root_delivery']) {
+    test(`${eventName}: ${source} activity cannot leave Owner foreground busy`, () => {
+      seed();
+      setTeamOrganizationUiEnabled(true);
+      const chat = useChatStore.getState();
+      chat.setProcessing('session', false);
+      const activity = loadActivityHandler(eventName);
+      const payload = { session_id: 'session', team_id: 'owner', request_id: 'background', source };
+      try {
+        // Activity can arrive before processing=true or after its terminal.
+        activity({ payload });
+        assert.equal(chat.getRuntime('session').foregroundIsProcessing, false);
+        startExpertRequest('session', 'background', source);
+        assert.equal(chat.getRuntime('session').isProcessing, true);
+        activity({ payload });
+        finishExpertRequest('session', 'background');
+        assert.equal(chat.getRuntime('session').isProcessing, false);
+        activity({ payload });
+        assert.equal(chat.getRuntime('session').isProcessing, false);
+        // An independent foreground input must survive this background ending.
+        chat.setProcessing('session', true);
+        startExpertRequest('session', 'background', source);
+        activity({ payload });
+        finishExpertRequest('session', 'background');
+        assert.equal(chat.getRuntime('session').foregroundIsProcessing, true);
+        assert.equal(chat.getRuntime('session').isProcessing, true);
+      } finally {
+        chat.setProcessing('session', false);
+        clearOrganizationRequests('session');
+        setTeamOrganizationUiEnabled(false);
+      }
+    });
+  }
+
+  for (const source of [undefined, 'org_expert_direct', 'org_root_delivery', 'proactive_recommendation']) {
+    test(`${eventName}: foreground recovery preserves existing source behavior: ${source}`, () => {
+      seed();
+      // With the feature disabled, organization-tagged legacy output keeps its behavior.
+      setTeamOrganizationUiEnabled(source !== 'org_root_delivery');
+      const chat = useChatStore.getState();
+      chat.setProcessing('session', false);
+      const activity = loadActivityHandler(eventName);
+      try {
+        activity({ payload: { session_id: 'session', team_id: 'owner', source } });
+        assert.equal(chat.getRuntime('session').foregroundIsProcessing, source !== 'proactive_recommendation');
+      } finally {
+        chat.setProcessing('session', false);
+        setTeamOrganizationUiEnabled(false);
+      }
+    });
+  }
+}
+
+for (const direct of [undefined, [], [{ team_id: 'expert', request_id: 'direct' }]]) {
+  test(`mixed snapshots preserve direct requests according to their own snapshot: ${JSON.stringify(direct)}`, () => {
+    seed();
+    startExpertRequest('session::expert', 'direct');
+    startExpertRequest('session::expert', 'background', 'org_expert_background');
+    reconcileOrganizationRequests('session', 'owner', [], organizationProcessingRevision(), direct);
+    const expectedBusy = direct === undefined || direct.length > 0;
+    assert.equal(useChatStore.getState().getRuntime('session::expert').isProcessing, expectedBusy);
+    assert.equal(useChatStore.getState().getRuntime('session').isProcessing, false);
+    finishExpertRequest('session::expert', 'direct');
+    assert.equal(useChatStore.getState().getRuntime('session::expert').isProcessing, false);
+    clearOrganizationRequests('session');
+  });
+}
+
+for (const roster of [undefined, [], [{ team_id: 'expert' }]]) {
+  test(`store Team list uses persisted Owner identity with incomplete roster: ${JSON.stringify(roster)}`, async () => {
+    seed();
+    setTeamOrganizationUiEnabled(true);
+    const originalRequest = webClient.request;
+    const previousSession = useSessionStore.getState().currentSession;
+    useSessionStore.setState({ currentSession: { session_id: 'session', team_name: 'owner' } });
+    webClient.request = async () => ({ teams: roster, organization_requests: [
+      { team_id: 'owner', request_id: 'root', source: 'org_root_background' },
+    ], expert_requests: [{ team_id: 'expert', request_id: 'direct' }] });
+    try {
+      await useTeamSelectorStore.getState().fetchTeams('session');
+      assert.equal(useChatStore.getState().getRuntime('session').isProcessing, true);
+      assert.equal(useChatStore.getState().getRuntime('session::owner')?.isProcessing ?? false, false);
+      assert.equal(useChatStore.getState().getRuntime('session::expert').isProcessing, true);
+      finishExpertRequest('session', 'root');
+      assert.equal(useChatStore.getState().getRuntime('session').isProcessing, false);
+      assert.equal(useChatStore.getState().getRuntime('session::expert').isProcessing, true);
+      finishExpertRequest('session::expert', 'direct');
+      assert.equal(isOrganizationProcessing('session'), false);
+    } finally {
+      webClient.request = originalRequest;
+      clearOrganizationRequests('session');
+      setTeamOrganizationUiEnabled(false);
+      useSessionStore.setState({ currentSession: previousSession });
+    }
+  });
+}
+
+test('explicit Owner pause remains pause while organization requests are running', async () => {
+  seed();
+  setTeamOrganizationUiEnabled(true);
+  useSessionStore.getState().setMode('session', 'team');
+  useTeamSelectorStore.setState((state) => ({ runtimes: {
+    session: { ...state.runtimes.session, selectedTeamId: 'owner' },
+  } }));
+  startExpertRequest('session', 'background', 'org_root_background');
+  const calls = [];
+  const interrupt = loadCallback('hooks/useWebSocket.ts', 'interrupt', {
+    selectedExpertTeamId, organizationOwnerStopTarget, sendExpertMessage, useSessionStore,
+    getSessionWorkContext: () => ({}), resolveOutgoingMode: (_sid, mode) => mode,
+    request: async (method, params) => { calls.push({ method, params }); return { success: true }; },
+    onErrorRef: { current: (error) => assert.fail(error) }, t: (key) => key,
+  });
+  try {
+    assert.equal(await interrupt('session', 'pause'), true);
+    assert.equal(calls[0].params.intent, 'pause');
+    assert.equal(calls[0].params.organization_stop, undefined);
+    assert.equal(calls[0].params.target_team_id, undefined);
+  } finally {
+    clearOrganizationRequests('session');
+    setTeamOrganizationUiEnabled(false);
+  }
+});
+
+
+test('organization Hook synchronizes direct and background snapshots together', async () => {
+  seed();
+  setTeamOrganizationUiEnabled(true);
+  const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' });
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const originals = { on: webClient.on, request: webClient.request,
+    getState: webClient.getState, onStateChange: webClient.onStateChange };
+  let tick;
+  let expertRequests = [{ team_id: 'expert', request_id: 'direct' }];
+  webClient.on = () => () => {};
+  webClient.getState = () => 'ready';
+  webClient.onStateChange = () => () => {};
+  webClient.request = async () => ({ organization_requests: [], expert_requests: expertRequests });
+  dom.window.setInterval = (callback) => { tick = callback; return 1; };
+  dom.window.clearInterval = () => {};
+  const root = createRoot(document.getElementById('root'));
+  function Probe() { useOrganizationEvents(); return null; }
+  try {
+    startExpertRequest('session::expert', 'direct');
+    await act(async () => root.render(React.createElement(Probe)));
+    await act(async () => tick());
+    assert.equal(useChatStore.getState().getRuntime('session::expert').isProcessing, true);
+    assert.equal(useChatStore.getState().getRuntime('session').isProcessing, false);
+    expertRequests = [];
+    await act(async () => tick());
+    assert.equal(useChatStore.getState().getRuntime('session::expert').isProcessing, false);
+  } finally {
+    await act(async () => root.unmount());
+    clearOrganizationRequests('session');
+    setTeamOrganizationUiEnabled(false);
+    Object.assign(webClient, originals);
+    dom.window.close();
+    delete globalThis.window;
+    delete globalThis.document;
+  }
+});
+
+test('organization model change refreshes only its session Team list and unsubscribes on unmount', async () => {
+  seed();
+  setTeamOrganizationUiEnabled(true);
+  const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' });
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const originals = { on: webClient.on, getState: webClient.getState, onStateChange: webClient.onStateChange };
+  const originalFetch = useTeamSelectorStore.getState().fetchTeams;
+  const callbacks = new Map();
+  const calls = [];
+  webClient.on = (event, callback) => { callbacks.set(event, callback); return () => callbacks.delete(event); };
+  webClient.getState = () => 'disconnected';
+  webClient.onStateChange = () => () => {};
+  useTeamSelectorStore.setState({ fetchTeams: async (sessionId) => { calls.push(sessionId); return []; } });
+  const root = createRoot(document.getElementById('root'));
+  function Probe() { useOrganizationEvents(); return null; }
+  try {
+    await act(async () => root.render(React.createElement(Probe)));
+    await act(async () => callbacks.get('team.model_changed')({
+      payload: { session_id: 'session', team_id: 'expert', model_name: 'deepseek-flash' },
+    }));
+    assert.deepEqual(calls, ['session']);
+  } finally {
+    await act(async () => root.unmount());
+    assert.equal(callbacks.has('team.model_changed'), false);
+    useTeamSelectorStore.setState({ fetchTeams: originalFetch });
+    setTeamOrganizationUiEnabled(false);
+    Object.assign(webClient, originals);
+    dom.window.close();
+    delete globalThis.window;
+    delete globalThis.document;
+  }
+});
+
+
+test('idle organization cancel does not persist a new Owner stop', () => {
+  seed();
+  setTeamOrganizationUiEnabled(true);
+  useTeamSelectorStore.setState(state => ({ runtimes: { session: {
+    ...state.runtimes.session, selectedTeamId: 'owner',
+    teams: state.runtimes.session.teams.map(team => ({ ...team, organization_id: 'org' })),
+  } } }));
+  const chat = useChatStore.getState();
+  chat.setProcessing('session', false);
+  assert.equal(organizationOwnerStopTarget('session'), null);
+  chat.setProcessing('session', true);
+  assert.equal(organizationOwnerStopTarget('session'), 'owner');
+  chat.setProcessing('session', false);
+  setTeamOrganizationUiEnabled(false);
+});
+
+for (const intent of ['resume', 'supplement']) {
+  for (const success of [true, false]) {
+    test(`Owner ${intent} clears its stopped flag only when admitted: ${success}`, async () => {
+      seed();
+      setOrganizationOwnerStopped('session', true);
+      const interrupt = loadCallback('hooks/useWebSocket.ts', 'interrupt', {
+        selectedExpertTeamId: () => null,
+        organizationOwnerStopTarget,
+        useSessionStore,
+        getSessionWorkContext: () => ({}),
+        resolveOutgoingMode: (_sessionId, mode) => mode,
+        resolvePlanEntryPayload: () => ({}),
+        request: async () => ({ success }),
+        setOrganizationOwnerStopped,
+        clearConnectionPresentationForUserAction() {},
+        consumePlanEntryMark() {},
+        onErrorRef: { current: error => assert.fail(error) },
+        t: key => key,
+      });
+      assert.equal(await interrupt('session', intent), success);
+      assert.equal(isOrganizationOwnerStopped('session'), !success);
+      clearOrganizationRequests('session');
+    });
+  }
+}
+
+test('stopped Owner still receives terminal and board events while late deltas are suppressed', () => {
+  seed();
+  setOrganizationOwnerStopped('session', true);
+  const resolve = loadCallback('hooks/useWebSocket.ts', 'resolveEventSessionId', {
+    getPayloadSessionId: payload => payload.session_id,
+    isOrganizationOwnerStopped,
+    expertTeamId: () => null,
+    ensureSessionRuntimes() {},
+    useChatStore,
+  });
+  const payload = { session_id: 'session', source: 'org_root_background' };
+  for (const event of ['chat.delta', 'chat.reasoning', 'chat.tool_call', 'chat.tool_result']) {
+    assert.equal(resolve(payload, event), null);
+  }
+  for (const event of ['chat.final', 'chat.error', 'team.member', 'team.task', 'chat.processing_status']) {
+    assert.equal(resolve(payload, event), 'session');
+  }
+  assert.ok(expertProcessingSnapshot().keys.includes('session'));
+  reconcileOrganizationRequests('session', 'owner', [], organizationProcessingRevision(), [], false);
+  assert.equal(isOrganizationOwnerStopped('session'), false);
+  assert.equal(resolve(payload, 'chat.delta'), 'session');
+  assert.equal(expertProcessingSnapshot().keys.includes('session'), false);
+});
+
+test('history before team.list isolates uninstalled child records without org source tags', () => {
+  seed();
+  const previousSession = useSessionStore.getState().currentSession;
+  useSessionStore.setState({ currentSession: { session_id: 'session', team_name: 'owner' } });
+  useTeamSelectorStore.setState({ runtimes: {} });
+  setTeamOrganizationUiEnabled(true);
+  const record = (team, member) => ({
+    session_id: 'session', event_type: 'chat.tool_call', role: 'teammate', member_name: member,
+    team_id: team, timestamp: 1_700_000_000_000,
+    tool_call: { id: `call-${member}`, name: 'view_task', arguments: {} },
+  });
+  try {
+    const state = parseOrganizationHistoryPanelRecords([
+      record('owner', 'owner-member'),
+      { ...record('', 'child-member'), event_payload: { team_id: 'removed-child' } },
+    ], 'session');
+    assert.deepEqual(state.members.map(member => member.member_id), ['owner-member']);
+    assert.equal(state.organizationExecutionEvents['removed-child'].length, 1);
+  } finally {
+    useSessionStore.setState({ currentSession: previousSession });
+    setTeamOrganizationUiEnabled(false);
+  }
+});
+
+
+test('member tool process events always contain renderable strings for missing data', () => {
+  seed();
+  const projector = new MemberToolEventProjector();
+  const key = 'session::missing-tool-data';
+  const payload = { role: 'teammate', member_name: 'worker', request_id: 'round' };
+  projector.toolCall(key, payload, { id: 'empty-call', name: 'noop', memberName: 'worker' });
+  projector.toolResult(key, payload, { toolCallId: 'empty-call', toolName: 'noop' });
+  const events = useSessionStore.getState().runtimes[key].teamMemberExecutionEvents;
+  assert.equal(events.length, 2);
+  assert.deepEqual(events.map(event => event.content.trim()), ['', '']);
+});
+
+
+test('child final-only output populates its member process panel and stays isolated by Team', async () => {
+  seed();
+  setTeamOrganizationUiEnabled(true);
+  const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' });
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const originals = { on: webClient.on, getState: webClient.getState, onStateChange: webClient.onStateChange };
+  const callbacks = new Map();
+  webClient.on = (event, callback) => { callbacks.set(event, callback); return () => callbacks.delete(event); };
+  webClient.getState = () => 'disconnected';
+  webClient.onStateChange = () => () => {};
+  const root = createRoot(document.getElementById('root'));
+  function Probe() { useOrganizationEvents(); return null; }
+  const emit = payload => callbacks.get('chat.final')({ payload });
+  const payload = {
+    session_id: 'session', team_id: 'expert', member_name: 'final-only-worker', role: 'teammate',
+    source: 'org_expert_background', request_id: 'final-only-round', timestamp: 1_700_000_000,
+    content: 'Completed analysis',
+  };
+  try {
+    await act(async () => root.render(React.createElement(Probe)));
+    await act(async () => {
+      emit(payload);
+      emit(payload);
+      emit({ ...payload, team_id: 'summary-final-only', source: 'org_summary_background', content: 'Summary result' });
+      emit({ ...payload, role: 'leader', member_name: 'team_leader' });
+      emit({ ...payload, member_name: undefined });
+      emit({ ...payload, content: '  ' });
+      emit({ ...payload, team_id: 'owner', source: 'org_root_background' });
+    });
+    const events = useSessionStore.getState().runtimes['session::expert'].teamMemberExecutionEvents
+      .filter(event => event.member_id === 'final-only-worker');
+    assert.equal(events.length, 1);
+    assert.equal(events[0].kind, 'final');
+    assert.equal(events[0].content, 'Completed analysis');
+    assert.equal(events[0].timestamp, 1_700_000_000_000);
+    assert.ok(events[0].title);
+    const summary = useSessionStore.getState().runtimes['session::summary-final-only'].teamMemberExecutionEvents;
+    assert.equal(summary.length, 1);
+    assert.equal(summary[0].content, 'Summary result');
+    assert.equal(useSessionStore.getState().runtimes.session.teamMemberExecutionEvents
+      .some(event => event.member_id === 'final-only-worker'), false);
+  } finally {
+    await act(async () => root.unmount());
+    setTeamOrganizationUiEnabled(false);
+    Object.assign(webClient, originals);
+    dom.window.close();
+    delete globalThis.window;
+    delete globalThis.document;
+  }
+});
+
+
+for (const outcome of ['success', 'failure', 'disconnect']) {
+  test(`Owner stop is immediate before acknowledgement and restores on ${outcome}`, async () => {
+    seed();
+    clearOrganizationRequests('session');
+    setTeamOrganizationUiEnabled(true);
+    useTeamSelectorStore.setState((state) => ({ runtimes: {
+      ...state.runtimes, session: { ...state.runtimes.session, selectedTeamId: 'owner' },
+    } }));
+    useSessionStore.getState().setMode('session', 'team');
+    const chat = useChatStore.getState();
+    chat.setProcessing('session', true);
+    startExpertRequest('session::expert', 'child-running', 'org_expert_background');
+    let complete;
+    let fail;
+    const response = new Promise((resolve, reject) => { complete = resolve; fail = reject; });
+    const interrupt = loadCallback('hooks/useWebSocket.ts', 'interrupt', {
+      selectedExpertTeamId: () => null,
+      organizationOwnerStopTarget,
+      useSessionStore,
+      useChatStore,
+      getSessionWorkContext: () => ({}),
+      resolveOutgoingMode: (_sessionId, mode) => mode,
+      setOrganizationOwnerStopped,
+      isOrganizationOwnerStopped,
+      closeActiveTeamLeaderMessages() {},
+      request: async () => response,
+      onErrorRef: { current() {} },
+      t: key => key,
+    });
+    try {
+      const pending = interrupt('session', 'cancel');
+      assert.equal(isOrganizationOwnerStopped('session'), true);
+      assert.equal(chat.getRuntime('session').isProcessing, false);
+      assert.equal(chat.getRuntime('session').isThinking, false);
+      assert.equal(chat.getRuntime('session::expert').isProcessing, true);
+      startExpertRequest('session::expert', 'late-child-round', 'org_expert_background');
+      assert.equal(chat.getRuntime('session').isProcessing, false);
+      if (outcome === 'disconnect') fail(new Error('disconnected'));
+      else complete({ success: outcome === 'success' });
+      assert.equal(await pending, outcome === 'success');
+      assert.equal(isOrganizationOwnerStopped('session'), outcome === 'success');
+      assert.equal(chat.getRuntime('session').isProcessing, outcome !== 'success');
+      assert.equal(chat.getRuntime('session::expert').isProcessing, true);
+    } finally {
+      chat.setProcessing('session', false);
+      clearOrganizationRequests('session');
+      setTeamOrganizationUiEnabled(false);
+    }
+  });
+}
+
+
+for (const ownerOnly of [true, false]) {
+  test(`cancel preserves running subagents only for an Owner-only stop: ${ownerOnly}`, async () => {
+    const cancelled = [];
+    const cancel = loadCallback('hooks/useWebSocket.ts', 'cancel', {
+      organizationOwnerStopTarget: () => ownerOnly ? 'owner' : null,
+      interrupt: async () => true,
+      useSubagentStore: { getState: () => ({ markRunningSubagentsCancelled: id => cancelled.push(id) }) },
+      onErrorRef: { current: error => assert.fail(error) },
+      t: key => key,
+    });
+    await cancel('session');
+    assert.deepEqual(cancelled, ownerOnly ? [] : ['session']);
+  });
+}
+
+
+test('pending Owner stop retains live background rounds for failure rollback', () => {
+  seed();
+  clearOrganizationRequests('session');
+  useChatStore.getState().setProcessing('session', false);
+  startExpertRequest('session', 'owner-background', 'org_root_background');
+  setOrganizationOwnerStopped('session', true, true);
+  assert.equal(useChatStore.getState().getRuntime('session').isProcessing, false);
+  setOrganizationOwnerStopped('session', false);
+  assert.equal(useChatStore.getState().getRuntime('session').isProcessing, true);
+  setOrganizationOwnerStopped('session', true);
+  setOrganizationOwnerStopped('session', false);
+  assert.equal(useChatStore.getState().getRuntime('session').isProcessing, false);
+  clearOrganizationRequests('session');
+});
+
+
+for (const stoppedBy of ['local', 'persisted', 'neither']) {
+  test(`metadata refresh cannot relight a stopped Owner: ${stoppedBy}`, async () => {
+    seed();
+    clearOrganizationRequests('session');
+    const chat = useChatStore.getState();
+    chat.setProcessing('session', true);
+    startExpertRequest('session::expert', 'child-running', 'org_expert_background');
+    if (stoppedBy === 'local') setOrganizationOwnerStopped('session', true, true);
+    let projected;
+    const refresh = loadCallback('App.tsx', 'fetchSessionMetadata', {
+      useChatStore,
+      request: async () => ({ session_id: 'session', is_processing: true, status: 'processing',
+        organization_owner_stopped: stoppedBy === 'persisted' }),
+      sessionIdRef: { current: 'other-session' },
+      upsertSessionMetadata: session => { projected = session; },
+      useWorkspaceStore: { getState: () => ({ upsertSession() {} }) },
+      setProcessing: chat.setProcessing,
+      setThinking: chat.setThinking,
+      isOrganizationOwnerStopped,
+      setOrganizationOwnerStopped,
+      organizationOwnerStateRevision,
+    });
+    try {
+      assert.ok(await refresh('session'));
+      assert.equal(chat.getRuntime('session').isProcessing, stoppedBy === 'neither');
+      assert.equal(projected.is_processing, stoppedBy === 'neither');
+      if (stoppedBy !== 'neither') assert.equal(projected.status, 'interrupted');
+      assert.equal(chat.getRuntime('session::expert').isProcessing, true);
+    } finally {
+      chat.setProcessing('session', false);
+      clearOrganizationRequests('session');
+    }
+  });
+}
+
+
+test('a snapshot received while Owner stop is pending cannot clear its local stop', () => {
+  seed();
+  clearOrganizationRequests('session');
+  setOrganizationOwnerStopped('session', true, true);
+  reconcileOrganizationRequests('session', 'owner', [
+    { team_id: 'expert', request_id: 'child-running', source: 'org_expert_background' },
+  ], organizationProcessingRevision(), [], false);
+  assert.equal(isOrganizationOwnerStopped('session'), true);
+  assert.equal(useChatStore.getState().getRuntime('session').isProcessing, false);
+  setOrganizationOwnerStopped('session', false);
+  assert.equal(useChatStore.getState().getRuntime('session').isProcessing, true);
+  clearOrganizationRequests('session');
+});
+
+test('stopped Owner rejects late foreground deltas without an organization source tag', () => {
+  seed();
+  clearOrganizationRequests('session');
+  setOrganizationOwnerStopped('session', true);
+  const resolve = loadCallback('hooks/useWebSocket.ts', 'resolveEventSessionId', {
+    getPayloadSessionId: payload => payload.session_id,
+    isOrganizationOwnerStopped,
+    expertTeamId: () => null,
+    ensureSessionRuntimes() {},
+    useChatStore,
+  });
+  try {
+    for (const event of ['chat.delta', 'chat.reasoning', 'chat.tool_call', 'chat.tool_result']) {
+      assert.equal(resolve({ session_id: 'session' }, event), null);
+    }
+    assert.equal(resolve({ session_id: 'session' }, 'chat.final'), 'session');
+  } finally {
+    clearOrganizationRequests('session');
+  }
+});
+
+
+for (const newerAction of ['child-progress', 'owner-input']) {
+  test(`persisted Owner stop recovery distinguishes ${newerAction} during metadata query`, async () => {
+    seed();
+    clearOrganizationRequests('session');
+    const chat = useChatStore.getState();
+    chat.setProcessing('session', true);
+    let complete;
+    const response = new Promise(resolve => { complete = resolve; });
+    const refresh = loadCallback('App.tsx', 'fetchSessionMetadata', {
+      useChatStore, request: async () => response, sessionIdRef: { current: 'other-session' },
+      upsertSessionMetadata() {}, useWorkspaceStore: { getState: () => ({ upsertSession() {} }) },
+      setProcessing: chat.setProcessing, setThinking: chat.setThinking,
+      isOrganizationOwnerStopped, setOrganizationOwnerStopped, organizationOwnerStateRevision,
+    });
+    try {
+      const pending = refresh('session');
+      startExpertRequest('session::expert', 'child-running', 'org_expert_background');
+      if (newerAction === 'owner-input') setOrganizationOwnerStopped('session', false);
+      complete({ session_id: 'session', is_processing: true, organization_owner_stopped: true });
+      assert.ok(await pending);
+      assert.equal(isOrganizationOwnerStopped('session'), newerAction === 'child-progress');
+      assert.equal(chat.getRuntime('session').isProcessing, newerAction === 'owner-input');
+      assert.equal(chat.getRuntime('session::expert').isProcessing, true);
+    } finally {
+      chat.setProcessing('session', false);
+      clearOrganizationRequests('session');
+    }
+  });
+}
+
+test('expert group messages and task transitions arrive offscreen, deduplicate and survive switching Teams', async () => {
+  seed();
+  for (const key of ['session::expert', 'session::summary']) {
+    useChatStore.getState().removeRuntime(key);
+    useSessionStore.getState().removeRuntime(key);
+  }
+  const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' });
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const originals = { on: webClient.on, request: webClient.request, getState: webClient.getState, onStateChange: webClient.onStateChange };
+  const callbacks = new Map();
+  const snapshots = [];
+  webClient.on = (event, callback) => { callbacks.set(event, callback); return () => callbacks.delete(event); };
+  webClient.getState = () => 'disconnected';
+  webClient.onStateChange = () => () => {};
+  webClient.request = async (method, params) => {
+    snapshots.push({ method, params });
+    return { members: [], tasks: [{ task_id: 'shared-task', title: params.team_name, status: 'in_progress' }] };
+  };
+  useTeamSelectorStore.setState((state) => ({ runtimes: { ...state.runtimes,
+    session: { ...state.runtimes.session, selectedTeamId: 'owner', teams: [
+      { team_id: 'owner', is_owner: true }, { team_id: 'expert' }, { team_id: 'summary' },
+    ] },
+  } }));
+  const ownerMessages = useChatStore.getState().getRuntime('session').messages;
+  const root = createRoot(document.getElementById('root'));
+  function Probe() { useOrganizationEvents(); return null; }
+  try {
+    await act(async () => { setTeamOrganizationUiEnabled(true); root.render(React.createElement(Probe)); });
+    const message = (team) => ({ session_id: 'session', team_id: team, event: {
+      type: 'team.message.p2p', message_id: 'same-message', from_member: 'writer', to_member: 'reviewer',
+      timestamp: 1700000000000, content: `only-${team}`,
+    } });
+    await act(async () => {
+      for (const team of ['expert', 'summary']) {
+        callbacks.get('team.message')({ payload: message(team) });
+        callbacks.get('team.message')({ payload: message(team) });
+        callbacks.get('team.task')({ payload: { session_id: 'session', event: {
+          type: 'team.task.claimed', team_id: team, task_id: 'shared-task', title: `${team} title`,
+          member_id: 'writer', status: 'in_progress', timestamp: 1700000000100,
+        } } });
+      }
+    });
+    for (const team of ['expert', 'summary']) {
+      assert.equal(useChatStore.getState().getRuntime(`session::${team}`).messages.length, 1);
+      const projection = useSessionStore.getState().runtimes[`session::${team}`];
+      assert.equal(projection.teamTaskTimeline[0].type, 'team.task.claimed');
+      assert.equal(projection.teamTasks[0].title, `${team} title`);
+    }
+    assert.deepEqual(useChatStore.getState().getRuntime('session').messages, ownerMessages);
+    assert.equal(snapshots.length, 0);
+    await act(async () => useTeamSelectorStore.getState().selectTeam('session', 'expert'));
+    await act(async () => useTeamSelectorStore.getState().selectTeam('session', 'summary'));
+    assert.equal(useSessionStore.getState().runtimes['session::expert'].teamTaskTimeline.length, 1);
+    assert.equal(useSessionStore.getState().runtimes['session::summary'].teamTaskTimeline.length, 1);
+  } finally {
+    await act(async () => root.unmount());
+    setTeamOrganizationUiEnabled(false);
+    Object.assign(webClient, originals);
+    dom.window.close();
+    delete globalThis.window;
+    delete globalThis.document;
+  }
+});
+
+function groupHistoryRecords() {
+  return ['owner', 'expert', 'summary'].flatMap((team, index) => [
+    { session_id: 'session', team_id: team, role: 'assistant', timestamp: 1700000000000 + index,
+      event_type: 'team.message', event: { type: 'team.message.p2p', message_id: `message-${team}`,
+        from_member: 'writer', to_member: 'reviewer', content: `only-${team}`, timestamp: 1700000000000 + index } },
+    { session_id: 'session', role: 'assistant', timestamp: 1700000000000 + index,
+      event_type: 'team.task', event: { type: 'team.task.created', team_id: team, task_id: 'shared-task',
+        title: `${team} title`, status: 'pending', timestamp: 1700000000000 + index } },
+  ]);
+}
+
+test('history scopes group messages, task boards and transitions to Owner, experts and Summary Team', () => {
+  seed();
+  setTeamOrganizationUiEnabled(true);
+  try {
+    const state = parseOrganizationHistoryPanelRecords(groupHistoryRecords(), 'session');
+    assert.equal(state.messages.length, 1);
+    assert.match(state.messages[0].content, /only-owner/);
+    assert.deepEqual(state.taskTimeline.map((event) => event.title), ['owner title']);
+    assert.equal(state.tasks[0].title, 'owner title');
+    for (const team of ['expert', 'summary']) {
+      const projection = state.organizationTeamStates[team];
+      assert.equal(projection.messages.length, 1);
+      assert.match(projection.messages[0].content, new RegExp(`only-${team}`));
+      assert.deepEqual(projection.taskTimeline.map((event) => event.title), [`${team} title`]);
+      assert.equal(projection.tasks[0].title, `${team} title`);
+    }
+    setTeamOrganizationUiEnabled(false);
+    assert.equal(parseOrganizationHistoryPanelRecords(groupHistoryRecords(), 'session').messages.length, 3);
+  } finally { setTeamOrganizationUiEnabled(false); }
+});
+
+test('restoring group history populates child conversations and preserves live messages and task snapshots', () => {
+  seed();
+  for (const key of ['session::expert', 'session::summary']) useSessionStore.getState().removeRuntime(key);
+  setTeamOrganizationUiEnabled(true);
+  try {
+    const state = parseOrganizationHistoryPanelRecords(groupHistoryRecords(), 'session');
+    useSessionStore.getState().ensureRuntime('session::expert');
+    useSessionStore.getState().setTeamTasks('session::expert', [
+      { task_id: 'shared-task', title: 'Newer snapshot title', status: 'completed', timestamp: 1700000099999 },
+    ]);
+    restoreOrganizationGroupHistory('session', state);
+    restoreOrganizationGroupHistory('session', state);
+    const projection = useSessionStore.getState().runtimes['session::expert'];
+    assert.equal(projection.teamTaskTimeline.length, 1);
+    assert.equal(projection.teamHistoryMessages.length, 1);
+    assert.equal(projection.teamTasks[0].title, 'Newer snapshot title');
+    assert.equal(projection.teamTasks[0].status, 'completed');
+    const liveCopy = { ...projection.teamHistoryMessages[0], id: 'different-live-id' };
+    assert.equal(mergeUniqueMessages([...projection.teamHistoryMessages, liveCopy]).length, 1);
+    assert.match(useSessionStore.getState().runtimes['session::summary'].teamHistoryMessages[0].content, /only-summary/);
+  } finally { setTeamOrganizationUiEnabled(false); }
+});
+
+test('history task reconciliation requests the Owner snapshot even while an expert is selected', async () => {
+  seed();
+  setTeamOrganizationUiEnabled(true);
+  const original = webClient.request;
+  let snapshotParams;
+  webClient.request = async (method, params) => {
+    if (method === 'team.history.get') return { records: groupHistoryRecords(), has_more: false };
+    snapshotParams = params;
+    return { tasks: [{ task_id: 'owner-task', title: 'Owner snapshot', status: 'completed' }] };
+  };
+  try {
+    const state = await loadTeamHistoryPanelState('session');
+    assert.deepEqual(snapshotParams, { session_id: 'session', team_name: 'owner' });
+    assert.equal(state.tasks[0].title, 'Owner snapshot');
+    assert.equal(state.organizationTeamStates.expert.tasks[0].title, 'expert title');
+  } finally { webClient.request = original; setTeamOrganizationUiEnabled(false); }
+});
+
+test('expanded Team entry passes the selected Team task board into the real render callback', () => {
+  const source = ts.createSourceFile('ToolPanel.tsx', readFileSync(
+    new URL('../src/components/ToolPanel/index.tsx', import.meta.url), 'utf8',
+  ), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let callback;
+  function visit(node) {
+    if (ts.isJsxAttribute(node) && node.name.getText(source) === 'renderMiddleTabContent') {
+      callback = node.initializer.expression.getText(source);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  assert.ok(callback);
+  const tasks = [{ task_id: 'shared-task', title: 'Snapshot-only task title', status: 'completed' }];
+  const bindings = {
+    React, isTeam: true, TeamMembersPanel: () => null, teamMembers: [], teamTasks: tasks,
+    teamConnectionPresentation: null, teamAreaSelectedMemberId: '', teamAreaActiveDetailTab: 'group',
+    teamHistoryMessages: [], setTeamAreaSelectedMemberId: () => {}, setTeamAreaActiveDetailTab: () => {},
+  };
+  const code = ts.transpileModule(`const render = ${callback};`, { compilerOptions: {
+    target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None, jsx: ts.JsxEmit.React,
+  } }).outputText;
+  const render = new Function(...Object.keys(bindings), `${code}\nreturn render;`)(...Object.values(bindings));
+  assert.equal(render().props.tasks, tasks);
+});
+
+test('organization activity matches composer lifecycles rather than persistent runtime state', async () => {
+  const teams = [
+    { team_id: 'owner', is_owner: true, state: 'running' },
+    { team_id: 'expert', state: 'configured' },
+    { team_id: 'summary', state: 'running' },
+  ];
+  await withOrganizationPanel(
+    (method) => method === 'team.list' ? { teams, default_team_id: 'owner' }
+      : method === 'org.snapshot' ? boundSnapshot : { agentGroups: [] },
+    async ({ root }) => {
+      await act(async () => {
+        clearOrganizationRequests('session');
+        useChatStore.getState().setProcessing('session', false);
+        for (const team of ['expert', 'summary']) useChatStore.getState().removeRuntime(`session::${team}`);
+        root.render(React.createElement(OrganizationTeamsList, { groups: [] }));
+      });
+      const busy = (team) => document.querySelector(
+        `[data-testid="team-area-organization-team"][data-variant="${team}"]`,
+      ).classList.contains('organization-team--running');
+      const assertBusy = (expected) => assert.deepEqual(teams.map((team) => busy(team.team_id)), expected);
+      try {
+        assertBusy([false, false, false]);
+        await act(async () => useChatStore.getState().setProcessing('session', true));
+        assertBusy([true, false, false]);
+        await act(async () => useChatStore.getState().setProcessing('session', false));
+        assertBusy([false, false, false]);
+        await act(async () => startExpertRequest('session::expert', 'direct', 'org_expert_direct'));
+        assertBusy([false, true, false]);
+        await act(async () => finishExpertRequest('session::expert', 'direct'));
+        assertBusy([false, false, false]);
+        await act(async () => {
+          startExpertRequest('session::expert', 'background-a', 'org_expert_background');
+          startExpertRequest('session::expert', 'background-b', 'org_expert_background');
+        });
+        assertBusy([true, true, false]);
+        await act(async () => setOrganizationOwnerStopped('session', true));
+        assertBusy([false, true, false]);
+        await act(async () => setOrganizationOwnerStopped('session', false));
+        assertBusy([true, true, false]);
+        await act(async () => finishExpertRequest('session::expert', 'background-a'));
+        assertBusy([true, true, false]);
+        await act(async () => finishExpertRequest('session::expert', 'background-b'));
+        assertBusy([false, false, false]);
+        await act(async () => startExpertRequest('session::summary', 'summary', 'org_expert_background'));
+        assertBusy([true, false, true]);
+        await act(async () => finishExpertRequest('session::summary', 'summary'));
+        assertBusy([false, false, false]);
+      } finally {
+        await act(async () => clearOrganizationRequests('session'));
+      }
+    },
+  );
+});
+
+test('expert user-directed messages survive refresh in both chats with source identity', () => {
+  seed();
+  setTeamOrganizationUiEnabled(true);
+  const records = ['team.message.p2p', 'team.message'].map((type, index) => ({
+    session_id: 'session', team_id: 'expert', role: 'assistant', mode: 'team',
+    timestamp: 1700000000000 + index, event_type: 'team.message',
+    event: { type, message_id: `user-directed-${index}`, from_member: 'team_leader', to_member: 'user',
+      content: `Expert response ${index}`, timestamp: 1700000000000 + index },
+  }));
+  try {
+    const state = parseOrganizationHistoryPanelRecords(records, 'session');
+    assert.equal(state.messages.length, 2);
+    assert.ok(state.messages.every((message) => message.sourceTeamId === 'expert' && !message.teamId));
+    assert.equal(state.organizationTeamStates.expert.messages.length, 2);
+    const restored = parseHistoryJsonFileToPreviewMessages(records, 'session');
+    useChatStore.getState().replaceHistoryMessages('session', restored);
+    const ownerMessages = useChatStore.getState().getRuntime('session').messages;
+    assert.equal(ownerMessages.length, 2);
+    assert.ok(ownerMessages.every((message) => message.sourceTeamId === 'expert'));
+    const expertMessages = useChatStore.getState().getRuntime('session::expert').messages;
+    assert.equal(expertMessages.length, 2);
+    assert.ok(expertMessages.every((message) => message.content.includes('Expert response')));
+  } finally { setTeamOrganizationUiEnabled(false); }
+});
+
+test('only structured user-facing Team messages are mirrored and source identities participate in deduplication', () => {
+  const makeMessage = (teamId, type, to, from = 'team_leader') => ({
+    id: 'same-id', role: 'system', teamId, timestamp: '2026-11-02T03:00:00Z',
+    content: `team.event:${JSON.stringify({ event: { type, message_id: 'same-id', from_member: from,
+      to_member: to, content: 'Same answer', timestamp: 1793588400000 } })}`,
+  });
+  const direct = makeMessage('expert', 'team.message.p2p', 'user');
+  assert.equal(toOwnerTeamMessage(direct).sourceTeamId, 'expert');
+  assert.ok(toOwnerTeamMessage(makeMessage('expert', 'team.message', undefined)));
+  assert.equal(toOwnerTeamMessage(makeMessage('expert', 'team.message.p2p', 'reviewer')), null);
+  assert.equal(toOwnerTeamMessage(makeMessage('expert', 'team.message.broadcast', undefined)), null);
+  assert.equal(toOwnerTeamMessage({ ...direct, role: 'user' }), null);
+  const first = toOwnerTeamMessage(direct);
+  const second = toOwnerTeamMessage(makeMessage('summary', 'team.message.p2p', 'user'));
+  assert.notEqual(first.id, second.id);
+  assert.equal(mergeUniqueMessages([first, second, first]).length, 2);
+});
+
+test('live expert responses reach Owner once and history restore uses the same mirrored IDs', async () => {
+  seed();
+  const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' });
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const originals = { on: webClient.on, getState: webClient.getState, onStateChange: webClient.onStateChange };
+  const callbacks = new Map();
+  webClient.on = (event, callback) => { callbacks.set(event, callback); return () => callbacks.delete(event); };
+  webClient.getState = () => 'disconnected';
+  webClient.onStateChange = () => () => {};
+  const chat = useChatStore.getState();
+  chat.replaceHistoryMessages('session', []);
+  for (const team of ['expert', 'summary']) chat.removeRuntime(`session::${team}`);
+  useTeamSelectorStore.setState((state) => ({ runtimes: { ...state.runtimes,
+    session: { ...state.runtimes.session, teams: [
+      { team_id: 'owner', is_owner: true }, { team_id: 'expert' }, { team_id: 'summary' },
+    ] },
+  } }));
+  const root = createRoot(document.getElementById('root'));
+  function Probe() { useOrganizationEvents(); return null; }
+  const records = ['expert', 'summary'].flatMap((team) => ['user', 'reviewer'].map((recipient, index) => ({
+    session_id: 'session', team_id: team, mode: 'team', role: 'assistant', event_type: 'team.message',
+    timestamp: 1700000000000 + index,
+    event: { type: 'team.message.p2p', message_id: `${team}-${recipient}`, from_member: 'team_leader',
+      to_member: recipient, content: `${team} to ${recipient}`, timestamp: 1700000000000 + index },
+  })));
+  try {
+    await act(async () => { setTeamOrganizationUiEnabled(true); root.render(React.createElement(Probe)); });
+    await act(async () => {
+      for (const record of records) {
+        callbacks.get('team.message')({ payload: record });
+        callbacks.get('team.message')({ payload: record });
+      }
+    });
+    const liveOwner = chat.getRuntime('session').messages;
+    assert.equal(liveOwner.length, 2);
+    assert.ok(liveOwner.every((message) => message.content.includes('to user')));
+    assert.deepEqual(liveOwner.map((message) => message.sourceTeamId).sort(), ['expert', 'summary']);
+    assert.equal(chat.getRuntime('session::expert').messages.length, 2);
+    const history = parseOrganizationHistoryPanelRecords(records, 'session');
+    assert.equal(mergeUniqueMessages([...history.messages, ...liveOwner]).length, 2);
+    chat.replaceHistoryMessages('session', parseHistoryJsonFileToPreviewMessages(records, 'session'));
+    assert.deepEqual(chat.getRuntime('session').messages.map((message) => message.id).sort(),
+      liveOwner.map((message) => message.id).sort());
+    // Paging older history must retain the same user-facing projection and deduplicate overlap.
+    chat.prependMessages('session', parseHistoryJsonFileToPreviewMessages(records, 'session'));
+    assert.equal(chat.getRuntime('session').messages.length, 2);
+    assert.equal(chat.getRuntime('session::expert').messages.length, 2);
+  } finally {
+    await act(async () => root.unmount());
+    setTeamOrganizationUiEnabled(false);
+    Object.assign(webClient, originals);
+    dom.window.close();
+    delete globalThis.window;
+    delete globalThis.document;
+  }
+});
+>>>>>>> origin/develop

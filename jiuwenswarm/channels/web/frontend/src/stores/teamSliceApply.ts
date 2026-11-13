@@ -9,7 +9,13 @@ import { conversationKey } from './chatStore';
 import { useTeamSelectorStore } from './teamSelectorStore';
 import type { TeamTask, TeamTaskStatus } from './sessionStore';
 import type { TeamSnapshotPayload } from './teamSelectorStore';
+<<<<<<< HEAD
 import { resolveOrganizationTeamIdentity } from '../features/teamOrganization/teamIdentity';
+||||||| e487e9a30
+=======
+import { resolveOrganizationTeamIdentity } from '../features/teamOrganization/teamIdentity';
+import { isDepartedTeamMemberStatus } from '../features/teamMemberDeparture';
+>>>>>>> origin/develop
 
 const TEAM_TASK_STATUSES = new Set<TeamTaskStatus>([
   'pending',
@@ -46,18 +52,6 @@ function normalizeTaskStatus(value: unknown): TeamTaskStatus {
   return TEAM_TASK_STATUSES.has(status) ? status : 'pending';
 }
 
-/** 切换 Team 时先清空 session 级投影，避免请求期间继续展示上一个 Team。 */
-export function clearTeamSnapshotProjection(sessionId: string): void {
-  if (!sessionId) return;
-  const store = useSessionStore.getState();
-  if (!store.getRuntime(sessionId)) return;
-  store.setTeamMembers(sessionId, []);
-  store.setTeamTasks(sessionId, []);
-  store.setTeamTaskEvents(sessionId, []);
-  store.setTeamMemberExecutionEvents(sessionId, []);
-  store.setTeamLeaderMemberIds(sessionId, []);
-}
-
 export function applyTeamSnapshotToSession(
   sessionId: string,
   teamId: string,
@@ -76,9 +70,11 @@ export function applyTeamSnapshotToSession(
 
   const now = Date.now();
   const rawMembers = Array.isArray(snapshot?.members) ? snapshot.members : [];
+  const rawDepartedMembers = Array.isArray(snapshot?.departed_members) ? snapshot.departed_members : [];
   const rawTasks = Array.isArray(snapshot?.tasks) ? snapshot.tasks : [];
 
-  const members = rawMembers
+  // 旧后端把离队成员混在 members 里，按状态再拆一次。
+  const allMembers = [...rawMembers, ...rawDepartedMembers]
     .filter((member) => str(member?.member_id))
     .map((member, index) => ({
       id: `snapshot-${teamId}-${member.member_id}-${index}`,
@@ -90,7 +86,12 @@ export function applyTeamSnapshotToSession(
       mode: member.mode,
       role: member.role,
       cli_agent: member.cli_agent ?? null,
+      workflow_run_id: member.workflow_run_id,
+      agent_template: member.agent_template ?? null,
+      display_name: member.display_name ?? null,
     }));
+  const members = allMembers.filter((member) => !isDepartedTeamMemberStatus(member.status));
+  const departedMembers = allMembers.filter((member) => isDepartedTeamMemberStatus(member.status));
 
   // 快照项不带 team_name 时（老后端）按当前选中的 team 归属，
   // 这样切换后的过滤/展示仍然一致。
@@ -108,7 +109,31 @@ export function applyTeamSnapshotToSession(
 
   // teamMembers / teamTasks 是当前所选 Team 的 session 级投影，因此快照必须完整
   // 替换（包括空快照），不能与上一个 Team 的内容合并。
+  // 例外是镜像出来的 swarmflow worker（带 workflow_run_id）：它们只存在于前端、
+  // 不进 team.db 名册，快照缺席不代表已被移除，原样保留（规则同
+  // reconcileSnapshotRoster）；同一 member_id 两边都有时以快照为准，离队清理不丢。
+  // 保留无需按 teamId 过滤：函数入口已将 sessionId 重定向为 conversationKey
+  // （owner → 裸 sessionId，专家 team → sessionId##teamId），且镜像 worker 事件的
+  // team_id 是 workflow 名、不会被 expertTeamId 认领——镜像 worker 只存在于 owner
+  // 主投影，各专家投影互不相通，切换 Team 不会读到上一个 Team 的镜像成员。
   const currentStore = useSessionStore.getState();
-  currentStore.setTeamMembers(sessionId, members);
+  // In-service plus departed is the full set the snapshot already knows. A
+  // mirrored worker can sit in one projection locally while the snapshot
+  // reports it on the other side; both mirrors must exclude by the union or
+  // the same member_id survives in both projections.
+  const snapshotAllIds = new Set(
+    [...members, ...departedMembers].map((member) => member.member_id)
+  );
+  const mirroredMembers = (currentStore.getRuntime(sessionId)?.teamMembers ?? []).filter(
+    (member) => member.workflow_run_id && !snapshotAllIds.has(member.member_id)
+  );
+  currentStore.setTeamMembers(sessionId, [...mirroredMembers, ...members]);
+  // teamDepartedMembers 同样不能全量替换：镜像 worker 离队后只活在这条投影里
+  // （shutdown 事件写入，见 rememberDepartedTeamMember），快照不带它的身份记录，
+  // 清掉后任务卡与 @ 提及会退化为裸 member_id。
+  const mirroredDeparted = (currentStore.getRuntime(sessionId)?.teamDepartedMembers ?? []).filter(
+    (member) => member.workflow_run_id && !snapshotAllIds.has(member.member_id)
+  );
+  currentStore.setTeamDepartedMembers(sessionId, [...mirroredDeparted, ...departedMembers]);
   currentStore.setTeamTasks(sessionId, tasks);
 }

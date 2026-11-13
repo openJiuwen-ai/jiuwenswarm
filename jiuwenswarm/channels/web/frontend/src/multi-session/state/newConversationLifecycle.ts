@@ -66,7 +66,14 @@ function applyRuntimeSettings(
 
 export function resetNewConversationRuntime(settings: ConversationRuntimeSettings): void {
   const preservedDraft = useChatStore.getState().getRuntime(NEW_CONVERSATION_ID)?.inputValue ?? '';
+<<<<<<< HEAD
   // 草稿会话（'new'）的专家/专家团选择、技能选择与输入草稿一样只存在于内存 runtime
+||||||| e487e9a30
+  // 草稿会话（'new'）的专家/专家团选择与输入草稿一样只存在于内存 runtime
+=======
+  const preservedSkillPositions = useChatStore.getState().getRuntime(NEW_CONVERSATION_ID)?.inputSkillPositions ?? [];
+  // 草稿会话（'new'）的专家/专家团选择、技能选择与输入草稿一样只存在于内存 runtime
+>>>>>>> origin/develop
   // （sessionStore 对 'new' 刻意不落 localStorage），removeRuntime 重建会丢，
   // 表现为切到其他会话再回新建页时技能 tag / 专家 tag 消失而文字还在（#5771）。
   const previousRuntime = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID);
@@ -89,6 +96,7 @@ export function resetNewConversationRuntime(settings: ConversationRuntimeSetting
   if (preservedAgentGroupSelection) {
     useSessionStore.getState().setAgentGroupSelectionIntent(NEW_CONVERSATION_ID, preservedAgentGroupSelection);
   }
+<<<<<<< HEAD
   if (preservedTeamGroupIdentity) {
     useSessionStore.getState().setTeamGroupIdentity(NEW_CONVERSATION_ID, preservedTeamGroupIdentity);
   }
@@ -97,7 +105,18 @@ export function resetNewConversationRuntime(settings: ConversationRuntimeSetting
   }
   if (preservedDraft) {
     useChatStore.getState().setInputValue(NEW_CONVERSATION_ID, preservedDraft);
+||||||| e487e9a30
+  if (preservedDraft) {
+    useChatStore.getState().setInputValue(NEW_CONVERSATION_ID, preservedDraft);
+=======
+  if (preservedTeamGroupIdentity) {
+    useSessionStore.getState().setTeamGroupIdentity(NEW_CONVERSATION_ID, preservedTeamGroupIdentity);
+>>>>>>> origin/develop
   }
+  for (const skill of preservedSelectedSkills) {
+    useSessionStore.getState().addSelectedSkill(NEW_CONVERSATION_ID, skill);
+  }
+  useChatStore.getState().setInputValue(NEW_CONVERSATION_ID, preservedDraft, preservedSkillPositions);
   useChatStore.getState().setActiveSessionId(NEW_CONVERSATION_ID);
 }
 

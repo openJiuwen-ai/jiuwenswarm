@@ -49,6 +49,7 @@ start "" /wait "%cd%\dist\%BUILD_DIST_DIR_NAME%\%BUILD_EXECUTABLE_NAME_WINDOWS%"
 if errorlevel 1 exit /b 1
 
 echo.
+<<<<<<< HEAD
 echo Verifying frozen Gateway extensions bundle...
 start "" /wait "%cd%\dist\%BUILD_DIST_DIR_NAME%\%BUILD_EXECUTABLE_NAME_WINDOWS%" "%cd%\scripts\verify_gateway_extensions_bundle.py"
 if errorlevel 1 exit /b 1
@@ -59,6 +60,14 @@ start "" /wait "%cd%\dist\%BUILD_DIST_DIR_NAME%\%BUILD_EXECUTABLE_NAME_WINDOWS%"
 if errorlevel 1 exit /b 1
 
 echo.
+||||||| e487e9a30
+=======
+echo Verifying frozen Computer Use runtime without build tools...
+start "" /wait "%cd%\dist\%BUILD_DIST_DIR_NAME%\%BUILD_EXECUTABLE_NAME_WINDOWS%" "%cd%\scripts\verify_computer_use_bundle.py"
+if errorlevel 1 exit /b 1
+
+echo.
+>>>>>>> origin/develop
 echo Verifying frozen GitCode CLI bundle...
 start "" /wait "%cd%\dist\%BUILD_DIST_DIR_NAME%\%BUILD_EXECUTABLE_NAME_WINDOWS%" "%cd%\scripts\verify_gitcode_cli_bundle.py"
 if errorlevel 1 exit /b 1

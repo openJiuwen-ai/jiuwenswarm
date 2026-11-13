@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 import argparse
 import json
 import logging
@@ -192,3 +193,5 @@ def permissions_cli():
     # Console entry point; preserve the failure exit code for callers.
     # pylint: disable-next=avoid-using-exit
     raise SystemExit(_cli(permissions))
+=======
+>>>>>>> origin/develop

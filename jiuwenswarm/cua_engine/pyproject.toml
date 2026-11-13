@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
@@ -31,3 +32,5 @@ computer_use = ["*.pyi"]
 name = "pypi"
 url = "https://pypi.org/simple"
 default = true
+=======
+>>>>>>> origin/develop

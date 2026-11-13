@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 """Persistent lifecycle fences shared by request admission and disk writers.
 
 The resource file is the commit point: it embeds the current operation so a
@@ -647,3 +648,5 @@ def event_snapshots() -> list[dict]:
             )
         )
     return result
+=======
+>>>>>>> origin/develop

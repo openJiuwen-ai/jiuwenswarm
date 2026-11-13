@@ -7,6 +7,7 @@ import { OrgInfoPanel } from './OrgInfoPanel';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
 import { useSessionStore, useChatStore } from '../../stores';
 import { useTranslation } from 'react-i18next';
+import { Building2 } from 'lucide-react';
 
 export interface ExpandedPanelContribution extends PanelTabItem {
   content: ReactNode;
@@ -87,8 +88,18 @@ export function ExpandedPanel({
     resolveActiveTab(activeTab === 'organization' ? 'planning' : activeTab, artifactsCount, reviewPanel));
 
   const tabs = useExpandedPanelTabs({ middleTab, showMiddleTab, artifactsCount, reviewPanel, showBrowserTab });
+<<<<<<< HEAD
   if (showOrganization) tabs.push({ key: 'organization', label: t('team.org.tab') });
   tabs.push(...additionalPanels);
+||||||| e487e9a30
+  if (showOrganization) tabs.push({ key: 'organization', label: t('team.org.tab') });
+=======
+  if (showOrganization) tabs.push({
+    key: 'organization',
+    label: t('team.org.tab'),
+    icon: <Building2 size={16} aria-hidden="true" />,
+  });
+>>>>>>> origin/develop
 
   return (
     <div

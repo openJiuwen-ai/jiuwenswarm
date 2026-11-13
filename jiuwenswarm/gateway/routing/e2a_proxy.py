@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 """Gateway → AgentServer 统一薄代理（E2A 转发）。
 
 完成既有认证鉴权与路由后，把 Web/TUI/IM 入口的用户业务请求经 E2A /
@@ -386,3 +387,5 @@ async def fetch_git_diff_status(
         channel_id=channel_id,
         label="git-watch",
     )
+=======
+>>>>>>> origin/develop

@@ -699,11 +699,23 @@ class AutoReviewer:
             )
 
         reason_code = _sanitize_reason_code(payload["reason_code"])
+<<<<<<< HEAD
         reason_summary = _sanitize_reason_summary(payload["rationale"])
         if (
             outcome == ReviewerOutcome.MANUAL
             and OPTIONAL_REVIEWER_FIELDS.intersection(payload)
             and not OPTIONAL_REVIEWER_FIELDS.issubset(payload)
+||||||| e487e9a30
+        reason_summary = _sanitize_reason_summary(payload["rationale"])
+        if outcome == ReviewerOutcome.MANUAL and not all(
+            name in payload for name in OPTIONAL_REVIEWER_FIELDS
+=======
+        reason_summary = payload["rationale"]
+        if (
+            outcome == ReviewerOutcome.MANUAL
+            and OPTIONAL_REVIEWER_FIELDS.intersection(payload)
+            and not OPTIONAL_REVIEWER_FIELDS.issubset(payload)
+>>>>>>> origin/develop
         ):
             return self._manual("missing_manual_field")
         manual_reason_code = ""
@@ -713,10 +725,8 @@ class AutoReviewer:
             manual_reason_code = _sanitize_reason_code(
                 payload.get("manual_reason_code") or reason_code
             )
-            manual_reason_summary = _sanitize_reason_summary(
-                payload.get("manual_reason_summary") or reason_summary
-            )
-            user_review_hint = _sanitize_reason_summary(
+            manual_reason_summary = payload.get("manual_reason_summary") or reason_summary
+            user_review_hint = (
                 payload.get("user_review_hint")
                 or "Review the request manually before approving it."
             )

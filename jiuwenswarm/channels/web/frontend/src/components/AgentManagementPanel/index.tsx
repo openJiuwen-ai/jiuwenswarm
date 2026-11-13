@@ -1,3 +1,4 @@
+import { isEnterprise } from '../../edition';
 import { InstallationFilterSelect, matchesInstallation, type InstallationFilter } from '../marketplace/InstallationFilterSelect';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
 import { catalogAwaitingItems, scheduleCatalogRefresh, catalogScope, withCatalogCache, catalogCacheOf } from '../../features/catalogCache';
@@ -46,11 +47,13 @@ import {
   agentManagementReducer,
   buildCatalogViewModel,
   buildGroupCatalogViewModel,
+  collectCategories,
   initialAgentManagementState,
   isPreviewableFile,
   mergeAgentDetailWithCatalog,
   mergeAgentGroupDetailWithCatalog,
 } from '../../features/agentManagement';
+import { agentAccessDeniedCopyKey } from '../../features/agentManagement/accessDenied';
 import { AGENT_TAG_OPTIONS } from '../../features/agentManagement/tagOptions';
 import { findDefaultDefinitionFile } from './DefinitionFilePreview';
 import './agentManagement.css';
@@ -154,7 +157,11 @@ function getFriendlyErrorMessage(
   const code =
     error && typeof error === 'object' && 'code' in error ? String((error as { code?: unknown }).code || '') : '';
   if (code === 'agent_detail_empty') return translate('agentManagement.states.detailError');
+  if (code === 'pod_start_timeout') return translate('experts.podStartTimeout');
   const normalizedMessage = message.trim();
+  if (agentAccessDeniedCopyKey(normalizedMessage)) {
+    return translate('agentManagement.states.agentAccessDenied');
+  }
   if (code === 'REQUEST_TIMEOUT') return translate('network.requestTimeout');
   if (code === 'WS_NOT_READY') return translate('network.connectionUnavailable');
   if (code === 'WS_DISCONNECTED') return translate('network.connectionClosed');
@@ -258,6 +265,7 @@ export function AgentManagementPanel({
   const [groupCatalogQuery, setGroupCatalogQuery] = useState('');
   const [groupMineQuery, setGroupMineQuery] = useState('');
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [catalogPodStarting, setCatalogPodStarting] = useState(false);
   const [busySkillId, setBusySkillId] = useState<string | null>(null);
   const [detailOrigin, setDetailOrigin] = useState<'catalog' | 'mine'>('catalog');
   const [groupDetailOrigin, setGroupDetailOrigin] = useState<'teams' | 'mine'>('teams');
@@ -386,15 +394,37 @@ export function AgentManagementPanel({
 
   const [installationFilter, setInstallationFilter] = useState<InstallationFilter>('all');
   const [groupInstallationFilter, setGroupInstallationFilter] = useState<InstallationFilter>('all');
+  // 分类页签从广场可见目录（builtin+hub）动态统计（对齐插件广场）：后端 category 是
+  // manifest/Hub 自由字符串，写死枚举会导致大部分条目归不进任何页签（#5902）。
+  // 统计集合必须与列表可见集合一致——state.catalog 还含"我的"（local）条目，
+  // 否则本地专家的自定义分类会生成一个点进去为空的页签（#5902 回归）。
+  // 市场有几个分类就出几个页签，不截断、不自建 "Other" 聚合类型。
+  const plazaCatalog = useMemo(
+    () => state.catalog.filter((item) => item.source === 'builtin' || item.source === 'hub'),
+    [state.catalog],
+  );
+  const categories = useMemo(
+    () => collectCategories(plazaCatalog.map((item) => item.category)),
+    [plazaCatalog],
+  );
+  // 组目录侧 groupCatalog 已是 builtin+hub（buildGroupCatalogViewModel 在 catalog 作用域过滤），
+  // 直接统计全部分类，保持与市场一致。
+  const groupCategories = useMemo(
+    () => collectCategories(groupCatalog.map((item) => item.category)),
+    [groupCatalog],
+  );
   const catalogView = useMemo(
     () =>
-      buildCatalogViewModel(state.catalog.filter(item => matchesInstallation(item.installed, installationFilter)), {
-        scope: 'catalog',
-        category,
-        // Marketplace results are already filtered by Hub. Reapplying a
-        // client-side substring filter would discard name/tag matches.
-        query: '',
-      }),
+      buildCatalogViewModel(
+        state.catalog.filter((item) => matchesInstallation(item.installed, installationFilter)),
+        {
+          scope: 'catalog',
+          category,
+          // Marketplace results are already filtered by Hub. Reapplying a
+          // client-side substring filter would discard name/tag matches.
+          query: '',
+        },
+      ),
     [state.catalog, category, installationFilter],
 
   );
@@ -408,12 +438,13 @@ export function AgentManagementPanel({
     [state.mineCatalog, mineQuery, installationFilter],
   );
   const groupCatalogView = useMemo(
-    () => buildGroupCatalogViewModel(groupCatalog, {
-      scope: 'catalog',
-      category: groupCategory,
-      query: '',
-      installation: groupInstallationFilter,
-    }),
+    () =>
+      buildGroupCatalogViewModel(groupCatalog, {
+        scope: 'catalog',
+        category: groupCategory,
+        query: '',
+        installation: groupInstallationFilter,
+      }),
     [groupCatalog, groupCategory, groupInstallationFilter],
   );
   const groupMineView = useMemo(
@@ -430,18 +461,27 @@ export function AgentManagementPanel({
     const revision = ++catalogRevisionRef.current;
     const requestScope = catalogScope();
     if (options.includeTeamCompatibility) dispatch({ type: 'catalog.compatibility.loading' });
+    setCatalogPodStarting(false);
     dispatch({ type: 'catalog.loading' });
     try {
       const compatibilityOptions = options.includeTeamCompatibility
         ? { includeTeamCompatibility: true }
         : {};
+      const onPodStarting = () => {
+        if (revision === catalogRevisionRef.current) setCatalogPodStarting(true);
+      };
       const [marketplaceCatalog, mineCatalog] = await Promise.all([
         client.listCatalog({
           filter: equipmentListFilter('agent', 'catalog'),
           ...compatibilityOptions,
           ...(options.query ? { query: options.query } : {}),
+          onPodStarting,
         }),
-        client.listCatalog({ filter: equipmentListFilter('agent', 'mine'), ...compatibilityOptions }),
+        client.listCatalog({
+          filter: equipmentListFilter('agent', 'mine'),
+          ...compatibilityOptions,
+          onPodStarting,
+        }),
       ]);
       if (requestScope !== catalogScope()) return;
       const cache = scheduleCatalogRefresh('agent-catalog', marketplaceCatalog.cache, () => { void loadCatalog(options); }, () => catalogRevisionRef.current === revision);
@@ -451,6 +491,7 @@ export function AgentManagementPanel({
       if (revision !== catalogRevisionRef.current) return;
       withCatalogCache(catalog, cache);
       catalogRef.current = catalog;
+      setCatalogPodStarting(false);
       if (options.includeTeamCompatibility) dispatch({ type: 'catalog.compatibility.loaded' });
       // 回填共享目录缓存：聊天输入区的专家 tag 依赖它首帧解析 displayName/头像。
       if (!options.query) seedAgentCatalog(catalog);
@@ -540,6 +581,7 @@ export function AgentManagementPanel({
         await client.installSkill(skill);
         await loadSkills(view === 'group-create' ? { includeTeamMarketplace: true } : {});
       } catch (error) {
+        if (error && typeof error === 'object' && 'code' in error && error.code === 'skill_install_cancelled') return;
         onError(formatActionError(error, t('agentManagement.states.actionError')));
       } finally {
         setBusySkillId(null);
@@ -1255,6 +1297,7 @@ export function AgentManagementPanel({
         setMineKind('agent');
         setMineQuery('');
       }
+<<<<<<< HEAD
       setUploadDialogOpen(false);
       setUploadError(null);
       setGroupUploadDialogOpen(false);
@@ -1269,6 +1312,29 @@ export function AgentManagementPanel({
       } else {
         showActionNotice(t(kind === 'group' ? 'agentManagement.group.states.uploadSuccess' : 'agentManagement.states.uploadSuccess', { id: result.id }));
       }
+||||||| e487e9a30
+      setUploadDialogOpen(false);
+      setUploadError(null);
+      setGroupUploadDialogOpen(false);
+      setView('mine');
+      showActionNotice(t(kind === 'group' ? 'agentManagement.group.states.uploadSuccess' : 'agentManagement.states.uploadSuccess', { id: result.id }));
+=======
+      if (installFailed) {
+        // Keep the dialog open and show the error inside it so the user can
+        // see what went wrong without losing the upload context (#5431).
+        if (kind === 'group') setGroupUploadError(installErrorMessage || t('agentManagement.states.actionError'));
+        else setUploadError(installErrorMessage || t('agentManagement.states.actionError'));
+      } else if (installOutcomeUnknown) {
+        if (kind === 'group') setGroupUploadError(t('agentManagement.states.installOutcomeUnknown'));
+        else setUploadError(t('agentManagement.states.installOutcomeUnknown'));
+      } else {
+        setUploadDialogOpen(false);
+        setUploadError(null);
+        setGroupUploadDialogOpen(false);
+        setView('mine');
+        showActionNotice(t(kind === 'group' ? 'agentManagement.group.states.uploadSuccess' : 'agentManagement.states.uploadSuccess', { id: result.id }));
+      }
+>>>>>>> origin/develop
     } catch (error) {
       const message = formatActionError(error, t(kind === 'group' ? 'agentManagement.group.states.uploadError' : 'agentManagement.states.uploadError'));
       if (kind === 'group') setGroupUploadError(message);
@@ -1413,7 +1479,7 @@ export function AgentManagementPanel({
                 }}
                 placeholder={t(view === 'teams' ? 'agentManagement.searchTeams' : isGroupView || isMine ? 'common.searchName' : 'agentManagement.searchCatalog')}
               />
-              {isMine ? (
+              {isMine && !isEnterprise() ? (
                 <div className="agent-management-create-menu" data-testid="agent-management-create-menu">
                   <button
                     type="button"
@@ -1477,15 +1543,18 @@ export function AgentManagementPanel({
               items={view === 'teams' ? groupCatalogView.items : groupMineView.items}
               query={view === 'teams' ? groupCatalogQuery : groupMineQuery}
               category={view === 'teams' ? groupCategory : ''}
+              categories={view === 'teams' ? groupCategories : []}
               installation={groupInstallationFilter}
               status={view === 'teams' ? groupCatalogStatus : groupMineStatus}
               error={view === 'teams' ? groupCatalogError : groupMineError}
               busyIds={busyIds}
               onCategoryChange={setGroupCategory}
-              onRetry={() => void loadGroups(
-                view === 'teams' ? 'catalog' : 'mine',
-                view === 'teams' ? groupCatalogQuery.trim() : '',
-              )}
+              onRetry={() =>
+                void loadGroups(
+                  view === 'teams' ? 'catalog' : 'mine',
+                  view === 'teams' ? groupCatalogQuery.trim() : '',
+                )
+              }
               onOpen={openGroupDetail}
               onUse={handleUseGroup}
               onInstall={handleInstallGroup}
@@ -1498,13 +1567,17 @@ export function AgentManagementPanel({
               totalItems={isMine ? mineView.totalItems : catalogView.totalItems}
               query={isMine ? mineQuery : query}
               category={category}
+              categories={isMine ? [] : categories}
               installation={installationFilter}
               status={
-                !isMine && !state.catalogError && catalogAwaitingItems(catalogView.totalItems, catalogCacheOf(state.catalog))
+                !isMine &&
+                !state.catalogError &&
+                catalogAwaitingItems(catalogView.totalItems, catalogCacheOf(state.catalog))
                   ? 'loading'
                   : state.catalogStatus
               }
               error={state.catalogError}
+              loadingText={catalogPodStarting ? t('experts.podStarting') : undefined}
               busyIds={busyIds}
               onCategoryChange={setCategory}
               onRetry={() => void loadCatalog(

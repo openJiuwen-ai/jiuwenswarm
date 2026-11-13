@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 /// A local popup may be a child of a document AX tree while AXWindow names
 /// its separate popup surface. Only a live, exact forward path authorizes an
 /// action. A choice list published by a menu/combobox has the same logical
@@ -23,3 +24,5 @@ enum LocalMenuAttachment {
         return try ObservedPath.matches(path, root: window, same: same, children: children)
     }
 }
+=======
+>>>>>>> origin/develop

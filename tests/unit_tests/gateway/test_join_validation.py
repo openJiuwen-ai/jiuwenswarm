@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """Tests for /join team↔session 一致性校验与对外文案（路线 B：文案全在 gateway）。
@@ -213,3 +214,5 @@ async def test_member_not_in_team_reports_not_exist() -> None:
 
     assert any("不存在" in n for n in notices)
     assert registry.lookup_member(sid, "player-9") == []
+=======
+>>>>>>> origin/develop

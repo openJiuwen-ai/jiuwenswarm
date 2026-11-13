@@ -17,6 +17,7 @@ from pydantic import ValidationError
 
 from jiuwenbox.logging_config import configure_logging
 from jiuwenbox import __version__
+from jiuwenbox.perf_trace import configure_from_env as configure_perf_trace
 from jiuwenbox.server.auth import BearerTokenAuthMiddleware, get_configured_token
 from jiuwenbox.server.audit_logger import AuditLogger
 from jiuwenbox.models.sandbox import InvalidJobIdError, InvalidSandboxIdError
@@ -275,6 +276,8 @@ def _chmod_uds_socket_if_any() -> None:
 @asynccontextmanager
 async def lifespan(_application: FastAPI):
     global _sandbox_manager, _proxy_manager, _proxy_only_mode
+    # Only opens a log when jiuwenbox-server was started with --perf.
+    configure_perf_trace()
     # Both of these have to run after uvicorn has spun up its event loop -
     # ``set_default_executor`` requires a running loop, and raising NOFILE is
     # only effective within the live process. They are also independent of
@@ -333,6 +336,14 @@ async def lifespan(_application: FastAPI):
                 "start_idle_reaper failed during lifespan startup; idle sandboxes "
                 "will not be auto-reaped",
             )
+        start_warm_pool = getattr(_sandbox_manager.runtime, "start_warm_pool", None)
+        if start_warm_pool is not None:
+            try:
+                await asyncio.to_thread(start_warm_pool, _sandbox_manager.policy)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Warm pool failed to start; sandbox create stays on the cold path",
+                )
     _proxy_manager = ProxyManager(policy_reader=policy_reader)
     logger.info("box-server started (version %s)", __version__)
     if get_configured_token() is not None:
@@ -359,6 +370,7 @@ async def lifespan(_application: FastAPI):
     finally:
         if policy_sync is not None:
             await policy_sync.stop()
+<<<<<<< HEAD
         # Drop host veths first (milliseconds). Waiting on daemon SIGTERM can
         # exceed systemd TimeoutStopSec; if SIGKILL then arrives, NICs would
         # leak. Tear the uplinks down before that wait.
@@ -368,6 +380,23 @@ async def lifespan(_application: FastAPI):
         except Exception:  # noqa: BLE001
             logger.exception("drop_all_host_uplinks failed during lifespan shutdown")
         await _cleanup_orphaned_sandbox_network("shutdown-fast")
+||||||| e487e9a30
+=======
+        # Drop host veths first (milliseconds). Waiting on daemon SIGTERM can
+        # exceed systemd TimeoutStopSec; if SIGKILL then arrives, NICs would
+        # leak. Tear the uplinks down before that wait.
+        try:
+            if _sandbox_manager is not None:
+                stop_warm_pool = getattr(
+                    _sandbox_manager.runtime, "stop_warm_pool", None,
+                )
+                if stop_warm_pool is not None:
+                    await asyncio.to_thread(stop_warm_pool)
+                await asyncio.to_thread(_sandbox_manager.drop_all_host_uplinks)
+        except Exception:  # noqa: BLE001
+            logger.exception("drop_all_host_uplinks failed during lifespan shutdown")
+        await _cleanup_orphaned_sandbox_network("shutdown-fast")
+>>>>>>> origin/develop
         # Stop accepting MCP requests before tearing down managed resources.
         try:
             await _mcp_session_cm.__aexit__(None, None, None)

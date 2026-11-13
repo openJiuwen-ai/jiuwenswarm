@@ -14,6 +14,7 @@ import { SettingsSaveQueue } from './SettingsSaveQueue';
 import { SettingsUnsavedChangesRegistry } from './SettingsUnsavedChangesRegistry';
 
 export type SettingsServices = {
+  appVersion?: string;
   isConnected: boolean;
   connectionState: WebConnectionState;
   request: SettingsRequest;
@@ -48,6 +49,7 @@ export type SettingsServices = {
           Record<ExternalCliAgentKind, ExternalCliDetectResult>
         >),
   ) => void;
+  onRecommendationEnabledChange?: (enabled: boolean) => void;
 };
 
 const SettingsServicesContext = createContext<SettingsServices | null>(null);
@@ -66,6 +68,7 @@ export function SettingsServicesProvider({
   const value = useMemo(
     () => ({ ...services, saveQueue: saveQueueRef.current!, unsavedChanges: changesRef.current! }),
     [
+      services.appVersion,
       services.connectionState,
       services.externalCliDetectResults,
       services.externalCliInstallStatuses,
@@ -78,8 +81,15 @@ export function SettingsServicesProvider({
       services.onGetExternalCliInstallStatus,
       services.onSelectExternalCliPath,
       services.onTrackExternalCliDependencyInstalls,
+<<<<<<< HEAD
       services.onValidateExternalCliPaths,
       services.onPruneExternalCliPathHistories,
+||||||| e487e9a30
+=======
+      services.onValidateExternalCliPaths,
+      services.onPruneExternalCliPathHistories,
+      services.onRecommendationEnabledChange,
+>>>>>>> origin/develop
       services.request,
     ],
   );

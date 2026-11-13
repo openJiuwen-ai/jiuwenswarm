@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 import AppKit
 import ApplicationServices
 
@@ -94,3 +95,5 @@ import ApplicationServices
         return false
     }
 }
+=======
+>>>>>>> origin/develop

@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """ASR used by the regular task chat composer (see common.asr_client)."""
@@ -124,3 +125,5 @@ async def transcribe_task_audio(
     if not text:
         raise TaskAsrError("任务对话 ASR 未返回转写文本", "ASR_EMPTY_TRANSCRIPT")
     return text
+=======
+>>>>>>> origin/develop

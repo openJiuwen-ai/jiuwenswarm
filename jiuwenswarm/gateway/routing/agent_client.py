@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
 """AgentServerClient - Gateway 与 AgentServer 的 WebSocket 客户端."""
@@ -865,3 +866,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+=======
+>>>>>>> origin/develop

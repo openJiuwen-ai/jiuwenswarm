@@ -2,13 +2,29 @@ import { settingsNavigationIcons } from '../../../../assets/settings';
 import type { SettingsModuleDefinition } from '../../registry/types';
 import {
   A2UISetting,
+<<<<<<< HEAD
   ExternalCliCustomAgentsItem,
   ProactiveLimitsSetting,
+||||||| e487e9a30
+  ExternalCliSettingsItem,
+  ProactiveLimitsSetting,
+=======
+  ExternalCliCustomAgentsItem,
+>>>>>>> origin/develop
   RSISetting,
+<<<<<<< HEAD
   TrajectoryDiagnosisSetting,
+||||||| e487e9a30
+  TrajectoryUiSetting,
+=======
+  TaskAsrSetting,
+  TaskFullDuplexSetting,
+  TrajectoryDiagnosisSetting,
+>>>>>>> origin/develop
 } from './ExperimentalSettings';
 import { CollaborationVerifierInterval } from './MultiModelCollaborationSettings';
 import { A4PSettings } from './A4PSettings';
+import { MusicGenSettings } from '../agent/AgentSettings';
 
 export const experimentalModule: SettingsModuleDefinition = {
   id: 'experimental',
@@ -17,7 +33,23 @@ export const experimentalModule: SettingsModuleDefinition = {
   source: 'config',
   sections: [
     {
+<<<<<<< HEAD
       id: 'external-cli-custom-agents',
+||||||| e487e9a30
+      id: 'external-cli-agents',
+=======
+      id: 'asr',
+      titleKey: 'settingsPanel.experimental.taskAsr',
+      items: [{ id: 'task-asr-enabled', component: 'custom', render: TaskAsrSetting }],
+    },
+    {
+      id: 'task-full-duplex',
+      titleKey: 'settingsPanel.experimental.taskFullDuplex',
+      items: [{ id: 'task-full-duplex-enabled', component: 'custom', render: TaskFullDuplexSetting }],
+    },
+    {
+      id: 'external-cli-custom-agents',
+>>>>>>> origin/develop
       titleKey: 'settingsPanel.experimental.externalCliAgents',
       items: [{ id: 'external-cli-custom-agents', component: 'custom', render: ExternalCliCustomAgentsItem }],
     },
@@ -85,23 +117,9 @@ export const experimentalModule: SettingsModuleDefinition = {
             uncheckWithParent: true,
             items: [
               { id: 'team-task-verification-enabled', component: 'switch', key: 'team_task_verification_enabled' },
+              { id: 'team-member-messaging-enabled', component: 'switch', key: 'team_member_messaging_enabled' },
+              { id: 'team-member-subtasks-enabled', component: 'switch', key: 'team_member_subtasks_enabled' },
             ],
-          },
-        },
-      ],
-    },
-    {
-      id: 'proactive-recommendation',
-      titleKey: 'settingsPanel.experimental.proactive',
-      items: [
-        {
-          id: 'proactive-recommendation',
-          component: 'switch',
-          key: 'proactive_recommendation_enabled',
-          subItems: {
-            show: 'always',
-            disabled: 'when-parent-unchecked',
-            items: [{ id: 'proactive-limits', component: 'custom', render: ProactiveLimitsSetting }],
           },
         },
       ],
@@ -125,6 +143,7 @@ export const experimentalModule: SettingsModuleDefinition = {
         },
       ],
     },
+<<<<<<< HEAD
     {
       id: 'tool-optimize',
       titleKey: 'settingsPanel.experimental.toolOptimize',
@@ -153,5 +172,44 @@ export const experimentalModule: SettingsModuleDefinition = {
         },
       ],
     },
+||||||| e487e9a30
+=======
+    {
+      id: 'tool-optimize',
+      titleKey: 'settingsPanel.experimental.toolOptimize',
+      items: [
+        {
+          id: 'progressive-tool-optimize-enabled',
+          component: 'switch',
+          key: 'progressive_tool_optimize',
+        },
+      ],
+    },
+    {
+      id: 'computer-control',
+      titleKey: 'settingsPanel.experimental.computerControl',
+      items: [
+        {
+          id: 'cua-agent-enabled',
+          component: 'switch',
+          key: 'cua_agent_enabled',
+          availableWhen: 'cua_backend_available',
+          unavailableReasonKey: 'cua_backend_unavailable_reason',
+        },
+      ],
+    },
+    {
+      id: 'design-mode',
+      titleKey: 'settingsPanel.experimental.designMode',
+      items: [
+        {
+          id: 'comfyui-workflow-enabled',
+          component: 'switch',
+          key: 'comfyui_workflow_enabled',
+        },
+        { id: 'music-gen-settings', component: 'custom', render: MusicGenSettings },
+      ],
+    },
+>>>>>>> origin/develop
   ],
 };

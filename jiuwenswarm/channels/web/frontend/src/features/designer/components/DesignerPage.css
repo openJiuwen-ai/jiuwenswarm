@@ -940,10 +940,92 @@
 }
 
 .designer-node__audio-preview {
-  width: 100%;
-  max-width: 100%;
-  padding: 8px;
+  --designer-audio-waveform-bg: #f5f5f5;
+  --designer-audio-waveform-bar: #808080;
+  --designer-audio-controls-fg: #282828;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
   box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  padding: 16px;
+}
+
+.designer-node__audio-element {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Bar count is fixed in DesignerAudioPreview. Leftover width is the gap. */
+.designer-node__audio-waveform {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 56px;
+  padding: 12px 16px;
+  overflow: hidden;
+  border: none;
+  border-radius: 8px;
+  background: var(--designer-audio-waveform-bg);
+}
+
+.designer-node__audio-waveform-bar {
+  flex: 0 0 3px;
+  width: 3px;
+  min-height: 8px;
+  border-radius: 1px;
+  background: var(--designer-audio-waveform-bar);
+}
+
+.designer-node__audio-controls {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  min-height: 28px;
+  color: var(--designer-audio-controls-fg);
+}
+
+.designer-node__audio-time {
+  grid-column: 1;
+  justify-self: start;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  color: var(--designer-audio-controls-fg);
+  white-space: nowrap;
+}
+
+.designer-node__audio-play {
+  display: inline-flex;
+  grid-column: 2;
+  align-items: center;
+  justify-content: center;
+  justify-self: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--designer-audio-controls-fg);
+  cursor: pointer;
+}
+
+.designer-node__audio-play:hover {
+  background: color-mix(in srgb, var(--designer-audio-controls-fg) 8%, transparent);
+}
+
+.designer-node__audio-play:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--designer-audio-controls-fg) 40%, transparent);
+  outline-offset: 1px;
 }
 
 .designer-node-toolbar__action:disabled {
@@ -1027,6 +1109,7 @@
 }
 
 .designer-chat-panel__composer-box {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1090,6 +1173,17 @@
   max-width: calc(100% - 40px);
 }
 
+<<<<<<< HEAD
+.designer-chat-panel__composer-actions .chat-mode-select__trigger {
+  min-width: 0;
+  max-width: 100%;
+||||||| e487e9a30
+.designer-chat-panel__model-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+=======
 .designer-chat-panel__composer-actions .chat-mode-select__trigger {
   min-width: 0;
   max-width: 100%;
@@ -1097,6 +1191,79 @@
 
 .designer-chat-panel__composer-actions .chat-mode-select__label {
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* "@" node picker, floating above the composer box. */
+.designer-chat-panel__at-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--color-surface-card);
+  border: 1px solid var(--color-border-default);
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  z-index: 20;
+}
+
+.designer-chat-panel__at-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--color-text-primary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.designer-chat-panel__at-menu button:hover,
+.designer-chat-panel__at-menu button.is-active {
+  background: var(--color-action-secondary);
+}
+
+.designer-chat-panel__at-thumb {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--color-surface-shell);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+>>>>>>> origin/develop
+}
+
+<<<<<<< HEAD
+.designer-chat-panel__composer-actions .chat-mode-select__label {
+  min-width: 0;
+||||||| e487e9a30
+.designer-chat-panel__model-label {
+  min-width: 0;
+=======
+.designer-chat-panel__at-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.designer-chat-panel__at-label {
+>>>>>>> origin/develop
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1299,6 +1466,21 @@
 .designer-chat-panel__send:disabled {
   cursor: not-allowed;
   background-color: #D9D9D9;
+}
+
+/*
+ * Running state: the message is sent but the round has not reported processing
+ * yet (the stop button replaces this once it does), so the button must not
+ * look like the idle send plane (#5410). It stays disabled, but the spinner
+ * and the darker glyph make "working" unambiguous.
+ */
+.designer-chat-panel__send[data-variant='running']:disabled {
+  color: var(--color-text-primary);
+}
+
+.designer-chat-panel__send-spinner {
+  display: block;
+  flex-shrink: 0;
 }
 
 .designer-node {
@@ -1653,6 +1835,12 @@
 
 .designer-node--media-filled .designer-node__card {
   background: #111;
+}
+
+/* Audio preview uses a light control chrome; keep card/body off the dark media fill. */
+.designer-node--media-filled[data-node-type="audio"] .designer-node__body,
+.designer-node--media-filled[data-node-type="audio"] .designer-node__card {
+  background: #ffffff;
 }
 
 .designer-node__placeholder {
@@ -2580,6 +2768,7 @@
   cursor: default;
 }
 
+<<<<<<< HEAD
 .designer-media-settings__duration-row {
   display: flex;
   align-items: center;
@@ -2587,6 +2776,27 @@
   min-width: 0;
 }
 
+||||||| e487e9a30
+=======
+.designer-media-settings__duration-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.designer-media-settings__audio-duration {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.designer-media-settings__audio-duration .designer-media-settings__duration-input {
+  width: 6ch;
+}
+
+>>>>>>> origin/develop
 .designer-media-settings__slider {
   flex: 1 1 auto;
   width: 100%;

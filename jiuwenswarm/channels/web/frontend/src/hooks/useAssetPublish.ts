@@ -4,7 +4,15 @@ import { assetPublishApi } from '../services/assetPublishApi';
 import {
   createCommitAttempt,
   publishTimestamp,
+<<<<<<< HEAD
   isSubmissionLocked,
+||||||| e487e9a30
+  publishOutcome,
+=======
+  isSubmissionLocked,
+  shouldPollPublish,
+  canRetrySkillPack,
+>>>>>>> origin/develop
   definitiveCommitRejection,
 } from '../features/assetPublishState';
 import { getStoredOAuthProvider, getStoredOAuthToken } from '../utils/gitcodeOAuth';
@@ -27,9 +35,17 @@ export const emptyMetadata: PublishMetadata = {
   visibility: 'public',
 };
 const authScope = () => `${getStoredOAuthProvider()}:${getStoredOAuthToken() || ''}`;
+const normalizePublishMetadata = (reference: AssetReference, metadata: PublishMetadata): PublishMetadata =>
+  reference.kind === 'skillpack' ? { ...metadata, visibility: 'public' } : metadata;
 export function useAssetPublish(reference: AssetReference, restored?: PublishMetadata) {
   const [metadata, setMetadata] = useState<PublishMetadata>(
+<<<<<<< HEAD
     restored || { ...emptyMetadata },
+||||||| e487e9a30
+    restored || { ...emptyMetadata, asset_name: reference.local_id, display_name: reference.local_id },
+=======
+    normalizePublishMetadata(reference, restored || { ...emptyMetadata }),
+>>>>>>> origin/develop
   );
   const [targetAssetId, setTargetAssetId] = useState('');
   const [force, setForce] = useState(false);
@@ -45,6 +61,7 @@ export function useAssetPublish(reference: AssetReference, restored?: PublishMet
   const [scope, setScope] = useState(authScope);
   const [attempted, setAttempted] = useState(false);
   const [submissionLocked, setSubmissionLocked] = useState(false);
+  const [retryUncertain, setRetryUncertain] = useState(false);
   const activeSubmission = useRef<{ draftId?: string; operationId?: string } | null>(null);
   const updateSubmission = useCallback((next: PublishRecord) => {
     const active = activeSubmission.current;
@@ -55,6 +72,7 @@ export function useAssetPublish(reference: AssetReference, restored?: PublishMet
       ? { draftId: next.draft_id || active?.draftId, operationId: next.operation_id }
       : null;
     setSubmissionLocked(locked);
+    setRetryUncertain(false);
     setRecord(next);
     setRecords((previous) => [next, ...previous.filter((item) => item.operation_id !== next.operation_id)]);
     return true;
@@ -87,11 +105,17 @@ export function useAssetPublish(reference: AssetReference, restored?: PublishMet
   const refresh = useCallback(async () => {
     const version = generation.current;
     try {
-      if (!description) {
+      if (!description || !description.can_publish) {
         const next = await assetPublishApi.describe(reference);
         if (!current(version)) return;
         setDescription(next);
-        if (!edited.current) setMetadata({ ...emptyMetadata, ...next.defaults });
+        if (!edited.current) {
+          setMetadata(normalizePublishMetadata(reference, { ...emptyMetadata, ...next.defaults }));
+        }
+      }
+      if (!getStoredOAuthToken()) {
+        setError('');
+        return;
       }
       if (!getStoredOAuthToken()) {
         setError('');
@@ -127,6 +151,7 @@ export function useAssetPublish(reference: AssetReference, restored?: PublishMet
     setAttempted(false);
     activeSubmission.current = null;
     setSubmissionLocked(false);
+    setRetryUncertain(false);
     attempt.current = null;
     busyRef.current = false;
     setBusy(false);
@@ -138,7 +163,9 @@ export function useAssetPublish(reference: AssetReference, restored?: PublishMet
         setDescription(result);
         setRecords(result.records || []);
         if (result.records?.[0]) updateSubmission(result.records[0]);
-        if (!edited.current) setMetadata({ ...emptyMetadata, ...result.defaults });
+        if (!edited.current) {
+          setMetadata(normalizePublishMetadata(reference, { ...emptyMetadata, ...result.defaults }));
+        }
         setError('');
       })
       .catch((failure) => {
@@ -152,7 +179,7 @@ export function useAssetPublish(reference: AssetReference, restored?: PublishMet
     });
   }, [description, refresh]);
   useEffect(() => {
-    if (!record || !['queued', 'uploading'].includes(record.execution_status)) return;
+    if (!record || (!shouldPollPublish(record) && !retryUncertain)) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     const version = generation.current;
@@ -162,6 +189,7 @@ export function useAssetPublish(reference: AssetReference, restored?: PublishMet
         if (!stopped && current(version)) {
           updateSubmission(next);
           setError('');
+          if (!shouldPollPublish(next)) return;
         }
       } catch {
         if (!stopped && current(version)) setError('statusFailed');
@@ -173,7 +201,7 @@ export function useAssetPublish(reference: AssetReference, restored?: PublishMet
       stopped = true;
       clearTimeout(timer);
     };
-  }, [record?.operation_id, record?.execution_status, current, updateSubmission]);
+  }, [record?.operation_id, record?.execution_status, record?.stage, retryUncertain, current, updateSubmission]);
   const invalidate = () => {
     if (activeSubmission.current || busyRef.current) return false;
     edited.current = true;
@@ -187,7 +215,7 @@ export function useAssetPublish(reference: AssetReference, restored?: PublishMet
   };
   const edit = (patch: Partial<PublishMetadata>) => {
     if (!invalidate()) return;
-    setMetadata((prev) => ({ ...prev, ...patch }));
+    setMetadata((prev) => normalizePublishMetadata(reference, { ...prev, ...patch }));
   };
   const prepare = async () => {
     if (busyRef.current || activeSubmission.current) return;
@@ -257,6 +285,41 @@ export function useAssetPublish(reference: AssetReference, restored?: PublishMet
       }
     }
   };
+  const retrySkillPack = async () => {
+    if (reference.kind !== 'skillpack' || !record || !canRetrySkillPack(record) ||
+      !getStoredOAuthToken() || busyRef.current || activeSubmission.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    setError('');
+    const operationId = record.operation_id;
+    activeSubmission.current = { operationId, draftId: record.draft_id || operationId };
+    setSubmissionLocked(true);
+    const version = generation.current;
+    try {
+      // Resume the persisted plan, not a new preflight: independently uploaded
+      // members and uncertain upload IDs must remain owned by this operation.
+      const next = await assetPublishApi.commit(record.draft_id || operationId, crypto.randomUUID());
+      if (current(version)) updateSubmission(next);
+    } catch (failure) {
+      if (current(version)) {
+        const failureKey = publishFailureKey(failure);
+        if (definitiveCommitRejection(failure) || failureKey !== 'requestFailed') {
+          updateSubmission(record);
+          setError(failureKey);
+        } else {
+          // Keep this operation locked until its authoritative status is known.
+          // A lost retry response must not cause another plan or upload attempt.
+          setRetryUncertain(true);
+          setError('commitUncertain');
+        }
+      }
+    } finally {
+      if (current(version)) {
+        busyRef.current = false;
+        setBusy(false);
+      }
+    }
+  };
   return {
     metadata,
     edit,
@@ -282,6 +345,7 @@ export function useAssetPublish(reference: AssetReference, restored?: PublishMet
     error,
     prepare,
     commit,
+    retrySkillPack,
     refresh,
     attempted,
     loggedIn: !!getStoredOAuthToken(),

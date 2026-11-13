@@ -1,3 +1,4 @@
+<<<<<<< release/v0.2.9.beta3
 """Concrete NativePort over the same supervised JSONL connection as observation.
 
 No UI policy lives here: this module converts typed engine objects and strict
@@ -383,3 +384,5 @@ class ConnectionPort:
         self._check(operation)
         value = await self.connection.request("finish", dict(operation=operation), dict(timeoutMs=1000))
         return Cleanup(value["cleanup"])
+=======
+>>>>>>> origin/develop

@@ -15,6 +15,7 @@ from jiuwenswarm.agents.harness.common.prompt.cua_task_prompt import (
     build_cua_task_prompt,
     build_cua_unavailable_prompt,
 )
+from jiuwenswarm.common.cua_config import is_cua_backend_available
 
 
 class BrowserTaskPromptRail(SubagentRail):
@@ -27,11 +28,24 @@ class BrowserTaskPromptRail(SubagentRail):
         enable_subagent_runtime: bool = False,
         cua_agent_enabled: bool = False,
     ) -> None:
+<<<<<<< HEAD
         # Enabled in config but unavailable means the model rejects image
         # input: the adapter skipped mounting it, or the request model in use
         # now does.
+||||||| e487e9a30
+        # Enabled in config but absent from the mounted subagents means the
+        # adapter skipped it because the model rejects image input.
+=======
+>>>>>>> origin/develop
         self._cua_agent_enabled = cua_agent_enabled
+<<<<<<< HEAD
         self._deep_agent: object | None = None
+||||||| e487e9a30
+=======
+        self._cua_backend_available = cua_agent_enabled and is_cua_backend_available()
+        self._channel: str | None = None
+        self._deep_agent: object | None = None
+>>>>>>> origin/develop
         super().__init__(
             enable_async_subagent=enable_async_subagent,
             enable_subagent_runtime=enable_subagent_runtime,
@@ -42,12 +56,27 @@ class BrowserTaskPromptRail(SubagentRail):
             synchronous_subagent_types={"browser_agent", "cua_agent"},
         )
 
+<<<<<<< HEAD
     def init(self, agent) -> None:
         # Model-call callbacks carry the inner ReActAgent as ``ctx.agent``; only
         # the DeepAgent handed to ``init`` exposes ``deep_config.subagents``.
         self._deep_agent = agent
         super().init(agent)
 
+||||||| e487e9a30
+=======
+    def init(self, agent) -> None:
+        # Model-call callbacks carry the inner ReActAgent as ``ctx.agent``; only
+        # the DeepAgent handed to ``init`` exposes ``deep_config.subagents``.
+        self._deep_agent = agent
+        super().init(agent)
+
+    def set_channel(self, channel: str | None) -> None:
+        """Store the active runtime channel for this prompt rail."""
+        value = str(channel or "").strip()
+        self._channel = value or None
+
+>>>>>>> origin/develop
     def _task_prompt_extension(
         self,
         ctx: AgentCallbackContext,
@@ -68,7 +97,9 @@ class BrowserTaskPromptRail(SubagentRail):
                 build_cua_task_prompt(language, browser_available=has_browser)
             )
         elif self._cua_agent_enabled:
-            sections.append(build_cua_unavailable_prompt(language))
+            sections.append(
+                build_cua_unavailable_prompt(language, backend_available=self._cua_backend_available)
+            )
         if not sections:
             return None
         return "\n\n".join(sections)
