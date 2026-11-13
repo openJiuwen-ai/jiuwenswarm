@@ -4183,6 +4183,7 @@
       "detailError": "专家详情加载失败，请重试。",
       "hubAssetChanged": "该专家已在 Hub 更新或下架，广场正在刷新，请返回后重新选择。",
       "actionError": "操作未完成，请稍后重试。",
+      "agentAccessDenied": "不在授权范围内，操作已拒绝。",
       "duplicateName": "专家名称已存在，请更换名称后重试。",
       "agentUnavailable": "该专家已不存在，请刷新列表后重试。",
       "agentDefinitionUnavailable": "该专家定义不完整，暂时无法使用。",
