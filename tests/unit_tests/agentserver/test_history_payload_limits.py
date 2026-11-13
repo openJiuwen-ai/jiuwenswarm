@@ -176,14 +176,9 @@ def test_history_get_sanitizes_large_restorable_records(monkeypatch):
         },
     }
 
-    monkeypatch.setattr(
-        "jiuwenswarm.server.handlers.session.history_exists",
-        lambda session_id, **_kwargs: True,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.handlers.session.load_history_records",
-        lambda session_id, **_kwargs: [large_record],
-    )
+    from jiuwenswarm.server.runtime.session import session_history
+
+    session_history.write_history_records("sess-large", [large_record])
 
     # get_conversation_history 现在返回 raw record（不在内部 sanitize）——
     # sanitize 移到历史流里调 split 时做。这里先验 raw 透传。
