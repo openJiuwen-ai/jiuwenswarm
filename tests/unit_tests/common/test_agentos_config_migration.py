@@ -32,7 +32,7 @@ def runtime_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         seed.writestr("mcp_builtins/.mcp_builtins_version", "v0.2")
 
     workspace = tmp_path / "runtime"
-    (workspace / "config").mkdir(parents=True)
+    (workspace / "infra" / "config").mkdir(parents=True)
     monkeypatch.setattr(common_utils, "_find_package_root", lambda: package_root)
     monkeypatch.setattr(common_utils, "get_user_workspace_dir", lambda: workspace)
     monkeypatch.setattr(common_utils, "_install_default_builtin_skills", lambda **_kwargs: None)
@@ -61,7 +61,7 @@ def test_agentos_runtime_preserves_yuanrong_config(
     deployed["gateway"]["cron"]["etcd_prefix"] = "/agentos/custom/cron/"
     if config_version is not None:
         deployed["config_version"] = config_version
-    config_path = runtime_workspace / "config" / "config.yaml"
+    config_path = runtime_workspace / "infra" / "config" / "config.yaml"
     config_module.dump_yaml_round_trip(config_path, deployed)
     original_config = config_path.read_bytes()
 
@@ -81,7 +81,7 @@ def test_personal_runtime_still_migrates_config(
     runtime_workspace: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("JIUWENSWARM_RUNTIME_PROFILE", raising=False)
-    config_path = runtime_workspace / "config" / "config.yaml"
+    config_path = runtime_workspace / "infra" / "config" / "config.yaml"
     config_path.write_text(
         "# operator configuration\n"
         "preferred_language: en  # keep this choice\n"
@@ -122,7 +122,7 @@ def test_runtime_workspace_retries_migration_after_mcp_repair_lock_error(
     lock_error: Exception,
 ) -> None:
     monkeypatch.delenv("JIUWENSWARM_RUNTIME_PROFILE", raising=False)
-    config_path = runtime_workspace / "config" / "config.yaml"
+    config_path = runtime_workspace / "infra" / "config" / "config.yaml"
     config_path.write_text("operator_extra: keep\n", encoding="utf-8")
     warnings: list[str] = []
     monkeypatch.setattr(

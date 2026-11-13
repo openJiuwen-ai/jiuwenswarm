@@ -464,6 +464,15 @@ def get_user_workspace_dir() -> Path:
     return _workspace_base_dir
 
 
+def get_infra_data_dir() -> Path:
+    """System-data root for code restored with enterprise team mode.
+
+    Develop keeps one data root. Sockets, update files, and team-control
+    paths stay under the user workspace instead of an ``infra/`` partition.
+    """
+    return get_user_workspace_dir()
+
+
 
 
 # Cache for resolved paths
@@ -2487,6 +2496,75 @@ def get_checkpoint_dir() -> Path:
 def get_logs_dir() -> Path:
     _migrate_legacy_checkpoint_and_logs()
     return get_agent_root_dir() / ".logs"
+
+
+def configure_openjiuwen_runtime_logging() -> None:
+    """Point openjiuwen_runtime file logs at the current log directory.
+
+    The SDK resolves its file handler relative to the process cwd. Call this
+    before the first ``get_logger()``. Failures are logged and swallowed.
+    """
+    try:
+        from openjiuwen_runtime.foundation.log import setup_logging
+
+        setup_logging(
+            log_file=str(get_logs_dir() / "runtime" / "openjiuwen_runtime.log")
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("openjiuwen runtime logging bootstrap failed: %s", exc)
+
+
+def configure_openjiuwen_core_logging(*, suppress_level: int | None = None) -> bool:
+    """Point openjiwen core logs at the current log directory.
+
+    When ``config/logging.yaml`` exists it is loaded as-is. Otherwise a
+    built-in config writes under :func:`get_logs_dir`. Failures are logged
+    and swallowed.
+
+    Args:
+        suppress_level: Level applied to every core logger when the user does
+            not manage ``logging.yaml``. ``None`` leaves the built-in level.
+
+    Returns:
+        True when the user's ``logging.yaml`` was applied.
+    """
+    user_managed = False
+    logging_yaml = get_config_dir() / "logging.yaml"
+    if logging_yaml.exists():
+        try:
+            from openjiuwen.core.common.logging.log_config import configure_log
+
+            configure_log(str(logging_yaml))
+            user_managed = True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "openjiwen core logging: failed to load %s; using built-in config: %s",
+                logging_yaml,
+                exc,
+            )
+    if not user_managed:
+        try:
+            from openjiuwen.core.common.logging.log_config import configure_log_config
+
+            configure_log_config({
+                "backend": "default",
+                "level": "INFO",
+                "log_path": f"{get_logs_dir() / 'core'}/",
+                "log_file": "jiuwen.log",
+                "output": ["console", "file"],
+                "structured_output_format": "json",
+                "interface_log_file": "interface/jiuwen_interface.log",
+                "prompt_builder_interface_log_file": "interface/jiuwen_prompt_builder_interface.log",
+                "performance_log_file": "performance/jiuwen_performance.log",
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("openjiwen core logging bootstrap failed: %s", exc)
+        if suppress_level is not None:
+            from openjiuwen.core.common.logging import LogManager
+
+            for core_logger in LogManager.get_all_loggers().values():
+                core_logger.set_level(suppress_level)
+    return user_managed
 
 
 def get_gateway_log_dir() -> Optional[Path]:

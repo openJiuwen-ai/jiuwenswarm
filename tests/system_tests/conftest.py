@@ -170,7 +170,7 @@ def verify_workspace_structure():
     def _verify(workspace_dir: Path, language: str = "zh") -> None:
         """Verify the workspace has the expected structure."""
         expected_dirs = [
-            workspace_dir / "config",
+            workspace_dir / "infra" / "config",
             workspace_dir / "agent" / "home",
             workspace_dir / "agent" / "skills",
             workspace_dir / "agent" / "memory",
@@ -178,7 +178,7 @@ def verify_workspace_structure():
             workspace_dir / "agent" / "workspace",
             workspace_dir / "agent" / "workspace" / "projects",
             workspace_dir / "agent" / ".checkpoint",
-            workspace_dir / "agent" / ".logs",
+            workspace_dir / "infra" / "logs",
         ]
 
         for dir_path in expected_dirs:
@@ -188,11 +188,11 @@ def verify_workspace_structure():
                 raise NotADirectoryError(f"{dir_path} is not a directory")
 
         # Check config files
-        config_file = workspace_dir / "config" / "config.yaml"
+        config_file = workspace_dir / "infra" / "config" / "config.yaml"
         if not config_file.exists():
             raise FileNotFoundError("config.yaml does not exist")
 
-        env_file = workspace_dir / "config" / ".env"
+        env_file = workspace_dir / "infra" / "config" / ".env"
         if not env_file.exists():
             raise FileNotFoundError(".env does not exist")
 

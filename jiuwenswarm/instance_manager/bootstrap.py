@@ -107,7 +107,9 @@ def _create_basic_bootstrap_env(
 
     # Get instance index from instances.yaml order
     user_home = os.environ.get("JIUWENSWARM_HOME") or Path.home()
-    yaml_path = Path(user_home) / ".jiuwenswarm" / "instances.yaml"
+    yaml_path = Path(user_home) / ".jiuwenswarm" / "infra" / "instances.yaml"
+    if not yaml_path.exists():
+        yaml_path = Path(user_home) / ".jiuwenswarm" / "instances.yaml"
 
     try:
         data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))

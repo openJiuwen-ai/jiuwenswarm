@@ -1411,7 +1411,7 @@ permissions:
 
         template_path = tmp_path / "template.yaml"
         workspace_dir = tmp_path / "workspace"
-        config_dir = workspace_dir / "config"
+        config_dir = workspace_dir / "infra" / "config"
         config_dir.mkdir(parents=True)
         user_config_path = config_dir / "config.yaml"
 
@@ -1460,7 +1460,7 @@ react:
         template_path = tmp_path / "template.yaml"
         template_path.write_text("new_option: true\n", encoding="utf-8")
         workspace_dir = tmp_path / "workspace"
-        config_path = workspace_dir / "config" / "config.yaml"
+        config_path = workspace_dir / "infra" / "config" / "config.yaml"
         config_path.parent.mkdir(parents=True)
         original_config = "user_value: keep\n"
         config_path.write_text(original_config, encoding="utf-8")
@@ -1504,7 +1504,7 @@ react:
             encoding="utf-8",
         )
         workspace_dir = tmp_path / "workspace"
-        config_path = workspace_dir / "config" / "config.yaml"
+        config_path = workspace_dir / "infra" / "config" / "config.yaml"
         config_path.parent.mkdir(parents=True)
         config_path.write_text(
             'config_version: "0.2.8b1 · 2026-10-26"\nreact:\n  answer_chunk_size: 300\n',

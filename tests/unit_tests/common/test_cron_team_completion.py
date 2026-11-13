@@ -288,3 +288,13 @@ class TestCronTeamCompletionSignals:
         )
         assert state["leader_text"] == "round aborted"
         assert state["leader_final_seen"] is True
+
+    @staticmethod
+    def test_waiting_user_keeps_the_round_open():
+        state = new_cron_team_round_state()
+        state["leader_final_seen"] = True
+        state["leader_text"] = "需要你确认"
+        state["waiting_user"] = True
+        assert not cron_team_round_should_end(state)
+        state["waiting_user"] = False
+        assert cron_team_round_should_end(state)

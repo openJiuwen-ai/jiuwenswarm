@@ -150,6 +150,30 @@ def test_agent_templates_list_uses_the_dedicated_url(monkeypatch: pytest.MonkeyP
     assert sent.query["session_id"] == "sess-1"
 
 
+def test_personal_agent_groups_list_has_no_dedicated_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    with pytest.raises(HttpMethodNotHandled, match="还没有 HTTP 处理"):
+        assemble_rest_request(
+            _envelope("agent_groups.list"),
+            base_url="http://10.0.0.8:8766",
+        )
+
+
+def test_agent_groups_list_uses_the_dedicated_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    sent = assemble_rest_request(
+        _envelope("agent_groups.list"),
+        base_url="http://10.0.0.8:8766",
+    )
+    assert sent.verb == "GET"
+    assert sent.url == "http://10.0.0.8:8766/api/v1/agent-groups"
+    assert sent.used_rpc_fallback is False
+    assert sent.query is not None
+    assert sent.query["session_id"] == "sess-1"
+
+
 def test_skills_list_uses_the_dedicated_url() -> None:
     sent = assemble_rest_request(
         _envelope("skills.list"),
