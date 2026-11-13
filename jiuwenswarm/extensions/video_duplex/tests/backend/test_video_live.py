@@ -1476,8 +1476,8 @@ def test_joyai_logs_one_compact_record_per_event(monkeypatch, tmp_path, caplog) 
         video_live._append_joyai_log(event)
     with caplog.at_level(logging.DEBUG, logger=video_live.__name__):
         video_live._append_joyai_log(event)
-    records = [json.loads(line) for line in (tmp_path / "logs/duplex-realtime.jsonl").read_text(
-        encoding="utf-8").splitlines()]
+    lines = (tmp_path / "logs/duplex-realtime.jsonl").read_text(encoding="utf-8").splitlines()
+    records = [json.loads(line) for line in lines]
     assert len(records) == 2
     assert records[0]["component"] == "joyai"
     assert records[0]["model_raw_content_chars"] == len(event["model_raw_content"])
@@ -2397,8 +2397,8 @@ async def test_telemetry_writes_one_correlated_record(tmp_path, monkeypatch, eve
     }, request_id="diagnostic", session_id="session-1")
     assert channel.responses[-1][1]["payload"] == {"logged": True}
     assert [path.name for path in (tmp_path / "logs").glob("*.jsonl")] == [filename]
-    records = [json.loads(line) for line in (tmp_path / "logs" / filename).read_text(
-        encoding="utf-8").splitlines()]
+    lines = (tmp_path / "logs" / filename).read_text(encoding="utf-8").splitlines()
+    records = [json.loads(line) for line in lines]
     assert len(records) == 1
     assert records[0].items() >= {
         "event": event, "code": "provider_rejected", "message": "full failure reason",
@@ -2418,8 +2418,8 @@ def test_realtime_log_filters_noise_and_retains_bounded_failure(tmp_path, monkey
         })
     with caplog.at_level(logging.DEBUG, logger=video_live.__name__):
         video_live._append_realtime_telemetry({"event": "qwen_provider_vad"})
-    records = [json.loads(line) for line in (tmp_path / "logs/duplex-realtime.jsonl").read_text(
-        encoding="utf-8").splitlines()]
+    lines = (tmp_path / "logs/duplex-realtime.jsonl").read_text(encoding="utf-8").splitlines()
+    records = [json.loads(line) for line in lines]
     assert [record["event"] for record in records] == ["failed", "qwen_provider_vad"]
     assert records[0]["error"] == "invalid model response"
     assert records[0]["raw_content"] == "x" * 2_000
