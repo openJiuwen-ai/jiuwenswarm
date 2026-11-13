@@ -305,27 +305,6 @@ def build_lock(
             if lang == "en"
             else f"\u4ecd\u5728\u672c\u573a\u666f\u3001\u4f4d\u7f6e\u4e0d\u53d8\uff1a{who}\u3002"
         )
-    entities = [names.get(str(v).strip()) or "" for v in (visible or [])]
-    entities = [n for n in entities if n]
-    leaving = [
-        str(x)
-        for x in (
-            cfg.get("exiting_character_ids") or cfg.get("exit_character_ids") or []
-        )
-        if str(x).strip()
-    ]
-    entering = [
-        str(x) for x in (cfg.get("entering_character_ids") or []) if str(x).strip()
-    ]
-    if entities and not leaving and not entering:
-        who = _SEPARATOR[lang].join(entities)
-        clauses.append(
-            f"All {len(entities)} of them - {who} - stay in frame from the first frame to "
-            "the last, and the frame holds exactly this group."
-            if lang == "en"
-            else f"\u8fd9{len(entities)}\u4eba\uff08{who}\uff09\u4ece\u7b2c\u4e00\u5e27\u5230\u6700\u540e\u4e00\u5e27\u90fd\u5728\u753b\u9762\u5185\uff0c"
-            f"\u753b\u9762\u59cb\u7ec8\u53ea\u6709\u8fd9\u4e00\u7ec4\u4eba"
-        )
     clauses.append(
         "Everyone keeps the posture and seat they have when the shot opens, through the "
         "last frame; a reach, a turn or a gesture stays inside that posture."

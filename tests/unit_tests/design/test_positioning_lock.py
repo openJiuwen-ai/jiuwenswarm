@@ -319,21 +319,6 @@ def test_the_english_row_order_reads_the_same_way() -> None:
     assert "left to right" not in lock
 
 
-def test_the_shot_holds_its_cast_from_first_frame_to_last() -> None:
-    cfg = _cfg()
-    lock = build_lock(cfg=cfg, names=NAMES, lang="en")
-
-    assert "stay in frame from the first frame to the last" in lock
-    assert "the frame holds exactly this group" in lock
-
-
-def test_a_shot_with_a_declared_exit_does_not_claim_everyone_stays() -> None:
-    cfg = _cfg(exiting_character_ids=["char_2"])
-    lock = build_lock(cfg=cfg, names=NAMES, lang="en")
-
-    assert "the frame holds exactly this group" not in lock
-
-
 def test_the_opening_posture_holds_to_the_last_frame() -> None:
     cfg = _cfg()
     lock = build_lock(cfg=cfg, names=NAMES, lang="en")
