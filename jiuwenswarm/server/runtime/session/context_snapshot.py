@@ -82,8 +82,9 @@ def invalidate_snapshot_hint(session_id: str) -> None:
 
 def _identity(path: Path) -> tuple[int, int, int, int]:
     stat = path.stat()
-    # st_ctime_ns 不纳入：Windows 上 os.stat 与 os.fstat 对创建时间的回报
-    # 不一致，纳入会使跨源比对随机失败（同 history_replay._identity，JW-41）。
+    # st_ctime_ns is excluded: on Windows, os.stat and os.fstat report different
+    # values for the creation-time field, which breaks the cross-source
+    # comparison (same root cause as history_replay._identity, JW-41).
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
 
 
@@ -126,9 +127,10 @@ def _read_cursor(session_id: str, value: dict[str, Any]) -> HistoryReplayCursor 
     identity = _identity(path) if path.exists() else (0, 0, 0, 0)
     old_identity = value.get("identity")
     offset = value.get("offset")
-    # 兼容两种历史格式：旧快照 identity 含 st_ctime_ns（5 元），新快照为
-    # 4 元（去掉 ctime，见 _identity 注释）。ctime 槽位本就不参与下面的
-    # 有效性判断（只用 [:2] 与 [2]=size），因此旧快照无需迁移。
+    # Accept both identity formats: legacy snapshots persist a 5-element
+    # identity (with st_ctime_ns), new ones persist 4 elements (see _identity).
+    # The ctime slot never participates in the checks below (only [:2] and
+    # [2]=size are read), so legacy snapshots need no migration.
     if not isinstance(old_identity, list) or len(old_identity) not in (4, 5):
         raise HistoryReplayError("Invalid context snapshot boundary")
     if any(type(item) is not int for item in old_identity):

@@ -31,16 +31,17 @@ generated: true
 | [jiuwenswarm/server/control](#module-14) |
 | [jiuwenswarm/server/ipc](#module-15) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-16) |
-| [jiuwenswarm/server/runtime/skill](#module-17) |
-| [jiuwenswarm/server/supervisor](#module-18) |
-| [jiuwenswarm/server/worker](#module-19) |
-| [scripts](#module-20) |
-| [tests/fixtures/ttse_plugin](#module-21) |
-| [tests/unit_tests/agentserver](#module-22) |
-| [tests/unit_tests/gateway](#module-23) |
-| [tests/unit_tests/personal_context](#module-24) |
-| [tests/unit_tests/server/extensions](#module-25) |
-| [未分类](#module-26) |
+| [jiuwenswarm/server/runtime/session](#module-17) |
+| [jiuwenswarm/server/runtime/skill](#module-18) |
+| [jiuwenswarm/server/supervisor](#module-19) |
+| [jiuwenswarm/server/worker](#module-20) |
+| [scripts](#module-21) |
+| [tests/fixtures/ttse_plugin](#module-22) |
+| [tests/unit_tests/agentserver](#module-23) |
+| [tests/unit_tests/gateway](#module-24) |
+| [tests/unit_tests/personal_context](#module-25) |
+| [tests/unit_tests/server/extensions](#module-26) |
+| [未分类](#module-27) |
 
 <a id="module-1"></a>
 
@@ -184,13 +185,21 @@ generated: true
 
 <a id="module-17"></a>
 
+## jiuwenswarm/server/runtime/session
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [B_20261114_1545_history-restore-ctime](jiuwenswarm/server/runtime/session/B_20261114_1545_history-restore-ctime.md) | B | Windows 上会话历史恢复误报 HISTORY_RESTORE_CHANGED 导致老会话无法打开 | CharlesWang2030 | jiuwenswarm/server/runtime/session | jiuwenswarm/server/runtime/session/history_replay.py, jiuwenswarm/server/runtime/session/context_snapshot.py, jiuwenswarm/server/runtime/session/context_migration.py, jiuwenswarm/agents/harness/common/session_ops_service.py, jiuwenswarm/extensions/video_duplex/tests/backend/test_shared_conversation_context.py | 无独立 D：用户确认的恢复链路误报修复，无独立设计编号。 |
+
+<a id="module-18"></a>
+
 ## jiuwenswarm/server/runtime/skill
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261103_0936_skill-action-param-type-validation](jiuwenswarm/server/runtime/skill/B_20261103_0936_skill-action-param-type-validation.md) | B | 技能安装/更新/卸载入口参数类型校验缺失修复 | openjiuwen_ai | jiuwenswarm/server/runtime/skill | jiuwenswarm/server/runtime/skill/skill_manager.py, tests/unit_tests/agentserver/test_skill_manager_enterprise_state.py | 无独立 D：三个入口的参数契约（string 标识、boolean force）已由前端 webHttpClient 与 EnterpriseSkillSourcePanel 既有调用形态声明，本次为入口 类型校验层缺失的补接，无独立设计。 |
 
-<a id="module-18"></a>
+<a id="module-19"></a>
 
 ## jiuwenswarm/server/supervisor
 
@@ -199,7 +208,7 @@ generated: true
 | [B_20261107_1505_6226-forwarding-replay](jiuwenswarm/server/supervisor/B_20261107_1505_6226-forwarding-replay.md) | B | 历史回放触发转发队列溢出及前端计时不收尾 | kdgmpw | jiuwenswarm/server/supervisor, jiuwenswarm/channels/web/frontend | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, tests/unit_tests/agentserver/test_supervisor_forwarding.py, jiuwenswarm/channels/web/frontend/tests/sessionInput.test.mjs | 无独立 D：对现有有界转发及前端终态处理的小范围修复，无独立设计。 |
 | [B_20261110_1042_issue6191-ipc-recovery](jiuwenswarm/server/ipc/B_20261110_1042_issue6191-ipc-recovery.md) | B | IPC 突发积压与降级就绪重连导致 Runtime 失败 | 刘瑜 | jiuwenswarm/server/ipc, jiuwenswarm/server/supervisor | jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, tests/unit_tests/agentserver/test_ipc_receive_recovery.py | 无独立 D：对现有有界 IPC 和 Runtime 恢复状态机的小范围修复，无独立设计。 |
 
-<a id="module-19"></a>
+<a id="module-20"></a>
 
 ## jiuwenswarm/server/worker
 
@@ -207,7 +216,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261105_1518_worker-dispatch-slot-accounting](jiuwenswarm/server/worker/B_20261105_1518_worker-dispatch-slot-accounting.md) | B | Worker 派发容量排除已返回的 handler | kdgmpw | jiuwenswarm/server/worker | jiuwenswarm/server/worker/event_store.py | 无独立 D：按会话中确认的最小修复方案调整 Worker 内部计数。 |
 
-<a id="module-20"></a>
+<a id="module-21"></a>
 
 ## scripts
 
@@ -215,7 +224,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1006_ttse-runtime-fixture](tests/unit_tests/agentserver/B_20261031_1006_ttse-runtime-fixture.md) | B | TTSE runtime UT 使用版本化夹具修复整批 setup error | xinyang_bali | tests/unit_tests/agentserver, tests/unit_tests/server/extensions, tests/fixtures/ttse_plugin, scripts | tests/unit_tests/agentserver/test_ttse_plugin_runtime.py, tests/unit_tests/server/extensions/test_ttse_plugin_package.py, tests/unit_tests/conftest.py, tests/fixtures/ttse_plugin/manifest.json, tests/fixtures/ttse_plugin/config.yaml, tests/fixtures/ttse_plugin/rails/ttse_plugin_rail.py, scripts/package_ttse_plugin.py | 无独立 D：修复用户报告的 CI 测试数据缺失，保持现有 plugin_runtime v1 与生产默认打包路径，无独立 D。 |
 
-<a id="module-21"></a>
+<a id="module-22"></a>
 
 ## tests/fixtures/ttse_plugin
 
@@ -223,7 +232,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1006_ttse-runtime-fixture](tests/unit_tests/agentserver/B_20261031_1006_ttse-runtime-fixture.md) | B | TTSE runtime UT 使用版本化夹具修复整批 setup error | xinyang_bali | tests/unit_tests/agentserver, tests/unit_tests/server/extensions, tests/fixtures/ttse_plugin, scripts | tests/unit_tests/agentserver/test_ttse_plugin_runtime.py, tests/unit_tests/server/extensions/test_ttse_plugin_package.py, tests/unit_tests/conftest.py, tests/fixtures/ttse_plugin/manifest.json, tests/fixtures/ttse_plugin/config.yaml, tests/fixtures/ttse_plugin/rails/ttse_plugin_rail.py, scripts/package_ttse_plugin.py | 无独立 D：修复用户报告的 CI 测试数据缺失，保持现有 plugin_runtime v1 与生产默认打包路径，无独立 D。 |
 
-<a id="module-22"></a>
+<a id="module-23"></a>
 
 ## tests/unit_tests/agentserver
 
@@ -232,7 +241,7 @@ generated: true
 | [B_20261031_1006_ttse-runtime-fixture](tests/unit_tests/agentserver/B_20261031_1006_ttse-runtime-fixture.md) | B | TTSE runtime UT 使用版本化夹具修复整批 setup error | xinyang_bali | tests/unit_tests/agentserver, tests/unit_tests/server/extensions, tests/fixtures/ttse_plugin, scripts | tests/unit_tests/agentserver/test_ttse_plugin_runtime.py, tests/unit_tests/server/extensions/test_ttse_plugin_package.py, tests/unit_tests/conftest.py, tests/fixtures/ttse_plugin/manifest.json, tests/fixtures/ttse_plugin/config.yaml, tests/fixtures/ttse_plugin/rails/ttse_plugin_rail.py, scripts/package_ttse_plugin.py | 无独立 D：修复用户报告的 CI 测试数据缺失，保持现有 plugin_runtime v1 与生产默认打包路径，无独立 D。 |
 | [B_20261031_1048_ttse-core-dependent-ut](tests/unit_tests/agentserver/B_20261031_1048_ttse-core-dependent-ut.md) | B | 暂时移除依赖未合入 core 工厂能力的插件 UT | xinyang_bali | tests/unit_tests/agentserver | tests/unit_tests/agentserver/test_ttse_plugin_runtime.py | 无独立 D：用户明确要求暂时删除依赖 core 的相关 UT，不调整依赖或运行实现，无独立 D。 |
 
-<a id="module-23"></a>
+<a id="module-24"></a>
 
 ## tests/unit_tests/gateway
 
@@ -240,7 +249,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-24"></a>
+<a id="module-25"></a>
 
 ## tests/unit_tests/personal_context
 
@@ -248,7 +257,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-25"></a>
+<a id="module-26"></a>
 
 ## tests/unit_tests/server/extensions
 
@@ -256,7 +265,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1006_ttse-runtime-fixture](tests/unit_tests/agentserver/B_20261031_1006_ttse-runtime-fixture.md) | B | TTSE runtime UT 使用版本化夹具修复整批 setup error | xinyang_bali | tests/unit_tests/agentserver, tests/unit_tests/server/extensions, tests/fixtures/ttse_plugin, scripts | tests/unit_tests/agentserver/test_ttse_plugin_runtime.py, tests/unit_tests/server/extensions/test_ttse_plugin_package.py, tests/unit_tests/conftest.py, tests/fixtures/ttse_plugin/manifest.json, tests/fixtures/ttse_plugin/config.yaml, tests/fixtures/ttse_plugin/rails/ttse_plugin_rail.py, scripts/package_ttse_plugin.py | 无独立 D：修复用户报告的 CI 测试数据缺失，保持现有 plugin_runtime v1 与生产默认打包路径，无独立 D。 |
 
-<a id="module-26"></a>
+<a id="module-27"></a>
 
 ## 未分类
 

@@ -57,8 +57,9 @@ class SessionHistorySnapshot:
 
 def _history_file_identity(path: Path) -> tuple[int, int, int, int]:
     stat = path.stat()
-    # st_ctime_ns 不纳入：Windows 上 os.stat 与 os.fstat 对创建时间的回报
-    # 不一致，纳入会使跨源比对随机失败（同 history_replay._identity，JW-41）。
+    # st_ctime_ns is excluded: on Windows, os.stat and os.fstat report different
+    # values for the creation-time field, which breaks the cross-source
+    # comparison (same root cause as history_replay._identity, JW-41).
     return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
 
 

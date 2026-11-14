@@ -71,11 +71,12 @@ _CONTEXT_EVENTS = frozenset({
 
 
 def _identity(stat: os.stat_result) -> tuple[int, int, int, int]:
-    # st_ctime_ns 故意不纳入：Windows 上 os.stat(path)（目录元数据缓存）与
-    # os.fstat(fd)（文件句柄）对创建时间的回报不一致——文件创建后只要再被
-    # 写入过，两条路径就会分别报「创建时间」和「最后写入时间」，导致
-    # _read_prefix 的跨源比对随机失败、误报 HISTORY_RESTORE_CHANGED（JW-41）。
-    # 内容变化已由 st_size + st_mtime_ns 覆盖，无需 ctime。
+    # st_ctime_ns is deliberately excluded: on Windows, os.stat(path) (directory
+    # metadata cache) and os.fstat(fd) (open file handle) report different values
+    # for the creation-time field once a file has been written after creation,
+    # which made the cross-source comparison in _read_prefix fail randomly with
+    # spurious HISTORY_RESTORE_CHANGED (JW-41). Content changes are already
+    # covered by st_size + st_mtime_ns, so ctime adds nothing.
     return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
 
 
