@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from aiohttp import web
+from openai import AsyncOpenAI
 from openjiuwen.core.foundation.llm import (
     AssistantMessage, ModelClientConfig, ModelRequestConfig, ToolCall, UsageMetadata,
 )
@@ -85,6 +86,18 @@ async def vision(monkeypatch):
         "api_base": f"http://127.0.0.1:{port}/v1", "api_key": "local-test", "model_name": "vision-test",
         "client_provider": "OpenAI", "endpoint_profile": "openai_compatible", "verify_ssl": False}}}}
     monkeypatch.setattr(review, "get_config", lambda: stub.config)
+    # The first OpenAI-SDK request of the process spends about a second initializing the
+    # provider library. A test that tightens REVIEW_TIMEOUT_SECONDS below that would then
+    # time out before the request ever reaches this stub. Pay that cost here instead.
+    warmup = AsyncOpenAI(base_url=f"http://127.0.0.1:{port}/v1", api_key="local-test", max_retries=0)
+    try:
+        stub.reply("warmup")
+        await warmup.chat.completions.create(model="warmup", messages=[{"role": "user", "content": "warmup"}],
+                                             timeout=30)
+    finally:
+        await warmup.close()
+    stub.requests.clear()
+    stub.replies.clear()
     yield stub
     await runner.cleanup()
 
