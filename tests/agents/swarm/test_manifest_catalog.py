@@ -243,8 +243,8 @@ def test_config_specs_bakes_attribute_params() -> None:
         "permissions": {"enabled": True},
         "models": {"default": {"model_client_config": {"model_name": "gpt-4o"}}},
     }
-    # PERMISSION_INTERRUPT is excluded from code-profile rails;
-    # when enable_permissions=True the leader gets TEAM_PERMISSION_POLICY instead.
+    # The permission rail stays off until the global switch is on. When it is
+    # on, the leader mounts PERMISSION_INTERRUPT and not the team policy rail.
     rails_no_perm, _ = build_member_capability_specs(config, "code.team", "leader")
     by_type_no_perm = {spec.type: spec.params for spec in rails_no_perm}
     assert registry.PERMISSION_INTERRUPT not in by_type_no_perm
@@ -256,8 +256,10 @@ def test_config_specs_bakes_attribute_params() -> None:
         by_type[TEAM_SKILL_USE]["skill_mode"]
         == SkillUseRail.SKILL_MODE_AUTO_LIST
     )
-    assert registry.PERMISSION_INTERRUPT not in by_type
-    assert by_type[registry.TEAM_PERMISSION_POLICY]["permissions_config"] == {
+    assert registry.PERMISSION_INTERRUPT in by_type
+    assert registry.TEAM_PERMISSION not in by_type
+    assert registry.TEAM_PERMISSION_POLICY not in by_type
+    assert by_type[registry.PERMISSION_INTERRUPT]["permissions_config"] == {
         "enabled": True
     }
     assert (

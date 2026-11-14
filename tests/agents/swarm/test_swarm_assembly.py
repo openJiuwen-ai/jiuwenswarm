@@ -1193,12 +1193,14 @@ def test_enrich_team_spec_for_swarm_builds_a_narrow_reviewer_spec(
         registry.MEMBER_SKILL_TOOLKIT,
         registry.MEMBER_SKILL_EVOLUTION,
         registry.TEAM_PERMISSION,
+        registry.PERMISSION_INTERRUPT,
         registry.PLUGIN_RAILS,
     ):
         assert dropped not in rail_types
-    # The teammate keeps what the reviewer drops.
+    # The teammate keeps the user permission rail the reviewer drops.
     teammate_rail_types = {rail.type for rail in teammate.rails or []}
-    assert registry.TEAM_PERMISSION in teammate_rail_types
+    assert registry.PERMISSION_INTERRUPT in teammate_rail_types
+    assert registry.TEAM_PERMISSION not in teammate_rail_types
     assert registry.HEARTBEAT in teammate_rail_types
 
     tool_types = {tool.type for tool in reviewer.tools or [] if isinstance(tool, BuiltinToolSpec)}

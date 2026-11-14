@@ -4924,33 +4924,42 @@ async def _consume_stream_with_query(
                 )
                 if not result:
                     reason = str(getattr(result, "reason", None) or "interrupt_resume_rejected")
-                    logger.warning(
-                        "[TeamHelpers] interrupt resume interact rejected: "
-                        "original_event=team.recovered is_processing=False "
-                        "channel_id=%s session_id=%s reason=%s",
-                        _resolve_channel_id(channel_id),
-                        session_id,
-                        reason,
-                    )
-                    await _deliver(
-                        {
-                            "event_type": "chat.error",
-                            "error": "Failed to resume the pending question",
-                            "reason": reason,
-                            "session_id": session_id,
-                            "rid": round_id,
-                        },
-                    )
-                    await _deliver(
-                        {
-                            "event_type": "chat.processing_status",
-                            "session_id": session_id,
-                            "rid": round_id,
-                            "is_processing": False,
-                            "is_complete": True,
-                        },
-                    )
-                    terminal_broadcasted = True
+                    if reason == "interrupt_resume_busy":
+                        logger.info(
+                            "[TeamHelpers] interrupt resume busy; keeping the card: "
+                            "channel_id=%s session_id=%s reason=%s",
+                            _resolve_channel_id(channel_id),
+                            session_id,
+                            reason,
+                        )
+                    else:
+                        logger.warning(
+                            "[TeamHelpers] interrupt resume interact rejected: "
+                            "original_event=team.recovered is_processing=False "
+                            "channel_id=%s session_id=%s reason=%s",
+                            _resolve_channel_id(channel_id),
+                            session_id,
+                            reason,
+                        )
+                        await _deliver(
+                            {
+                                "event_type": "chat.error",
+                                "error": "Failed to resume the pending question",
+                                "reason": reason,
+                                "session_id": session_id,
+                                "rid": round_id,
+                            },
+                        )
+                        await _deliver(
+                            {
+                                "event_type": "chat.processing_status",
+                                "session_id": session_id,
+                                "rid": round_id,
+                                "is_processing": False,
+                                "is_complete": True,
+                            },
+                        )
+                        terminal_broadcasted = True
             # First event of any kind from the runner — usually a framework
             # control event (team.runtime_ready and friends), not model output.
             # It marks how long team startup took before the stream came alive.
@@ -5030,10 +5039,13 @@ async def _consume_stream_with_query(
                     continue
                 if _is_duplicate_ask_user_question(parsed, emitted_ask_user_request_ids):
                     continue
-                # Skip non-leader __interaction__ (permission ASK) — approval
-                # is routed internally via the leader; only leader
-                # interactions are forwarded to the frontend.
-                if not is_leader and parsed.get("event_type") == "chat.ask_user_question":
+                # Teammate questions stay off the frontend, except the user
+                # permission card, which keeps the member identity.
+                if (
+                    not is_leader
+                    and parsed.get("event_type") == "chat.ask_user_question"
+                    and parsed.get("source") != "permission_interrupt"
+                ):
                     continue
                 parsed["rid"] = round_id
                 # 标注来源 team，让前端能把这一帧分流到对应 team 的对话视图。

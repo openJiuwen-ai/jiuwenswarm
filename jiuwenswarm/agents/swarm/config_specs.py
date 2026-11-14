@@ -324,18 +324,11 @@ def _build_design_capability_specs(
         # Low rail priority => initializes after the mounting rails and
         # sees the fully assembled surface.
         rails_specs.append(RailSpec(type=registry.DESIGNER_SURFACE_SANITIZER))
-        if enable_permissions:
-            rails_specs.append(
-                RailSpec(
-                    type=registry.TEAM_PERMISSION_POLICY,
-                    params=_rail_params(registry.TEAM_PERMISSION_POLICY, config),
-                ),
-            )
-    if enable_permissions and role == "teammate":
+    if enable_permissions and role in {"leader", "teammate"}:
         rails_specs.append(
             RailSpec(
-                type=registry.TEAM_PERMISSION,
-                params=_rail_params(registry.TEAM_PERMISSION, config),
+                type=registry.PERMISSION_INTERRUPT,
+                params=_rail_params(registry.PERMISSION_INTERRUPT, config),
             ),
         )
 
@@ -650,16 +643,16 @@ def _team_common_rail_names(role: str) -> tuple[str, ...]:
     return _COMMON_RAIL_NAMES
 
 
-def _code_base_rail_names(role: str) -> tuple[str, ...]:
-    """Code-profile rails minus permission interrupt; leaders omit code todo planning.
+def _code_base_rail_names(role: str, *, enable_permissions: bool = False) -> tuple[str, ...]:
+    """Code-profile rails; leaders omit code todo planning.
 
-    ``PERMISSION_INTERRUPT`` is excluded for all team members: it relies on a
-    frontend user response that headless teammates cannot provide, and even the
-    leader's interrupt path is unreliable in a team context.
+    ``PERMISSION_INTERRUPT`` is included only while the global permission switch
+    is on. The user card is forwarded for teammates, so the rail is no longer
+    limited to a headless member that cannot answer itself.
     """
-    names = tuple(
-        name for name in _CODE_RAIL_NAMES if name != registry.PERMISSION_INTERRUPT
-    )
+    names = _CODE_RAIL_NAMES
+    if not enable_permissions:
+        names = tuple(name for name in names if name != registry.PERMISSION_INTERRUPT)
     if role == "leader":
         return tuple(name for name in names if name != registry.CODE_TASK_PLANNING)
     return names
@@ -722,19 +715,11 @@ def _build_team_capability_specs(
     rails_specs.append(_team_skill_use_rail_spec(config, role))
     rails_specs.append(RailSpec(type=registry.MEMBER_SKILL_TOOLKIT))
 
-    if enable_permissions and role == "teammate":
+    if enable_permissions and role in {"leader", "teammate"}:
         rails_specs.append(
             RailSpec(
-                type=registry.TEAM_PERMISSION,
-                params=_rail_params(registry.TEAM_PERMISSION, config),
-            ),
-        )
-
-    if enable_permissions and role == "leader":
-        rails_specs.append(
-            RailSpec(
-                type=registry.TEAM_PERMISSION_POLICY,
-                params=_rail_params(registry.TEAM_PERMISSION_POLICY, config),
+                type=registry.PERMISSION_INTERRUPT,
+                params=_rail_params(registry.PERMISSION_INTERRUPT, config),
             ),
         )
 
@@ -759,20 +744,17 @@ def _build_code_capability_specs(
 ) -> tuple[list[RailSpec], list[BuiltinToolSpec]]:
     """Build the code profile (code.team / team.plan.code) specs for a member.
 
-    PermissionInterruptRail (``swarm.permission_interrupt``) cannot resolve ASK
-    interrupts on headless team members: the user-facing confirmation path
-    requires a frontend connection that team members lack.  When
-    ``enable_permissions`` is true the team permission rails replace it —
-    ``TeamPermissionRail`` for teammates (leader-mediated ASK resolution) and
-    ``TeamPermissionPolicyRail`` for the leader (prompt section injection).
-    When ``enable_permissions`` is false the permission interrupt rail is
-    removed entirely: it would deadlock a teammate on any ASK-level tool call.
+    When ``enable_permissions`` is true the leader and teammate mount
+    ``swarm.permission_interrupt``. The same call is not also checked by
+    ``TeamPermissionRail`` or ``TeamPermissionPolicyRail``. When the switch is
+    false the rail stays off, so an ASK-level tool call is not left waiting
+    for a card the cluster will not show.
     """
     is_team_plan_leader = is_team_plan_mode(mode) and role == "leader"
 
     rails_specs: list[RailSpec] = [
         RailSpec(type=name, params=_rail_params(name, config))
-        for name in _code_base_rail_names(role)
+        for name in _code_base_rail_names(role, enable_permissions=enable_permissions)
     ]
 
     if is_team_plan_leader:
@@ -780,22 +762,6 @@ def _build_code_capability_specs(
 
     if role == "leader":
         rails_specs.append(RailSpec(type=registry.SESSION_MESSAGING_ROUTE))
-
-    if enable_permissions and role == "teammate":
-        rails_specs.append(
-            RailSpec(
-                type=registry.TEAM_PERMISSION,
-                params=_rail_params(registry.TEAM_PERMISSION, config),
-            ),
-        )
-
-    if enable_permissions and role == "leader":
-        rails_specs.append(
-            RailSpec(
-                type=registry.TEAM_PERMISSION_POLICY,
-                params=_rail_params(registry.TEAM_PERMISSION_POLICY, config),
-            ),
-        )
 
     # The plan-only approval gate belongs to the Leader. A code Team Plan
     # teammate must otherwise be assembled exactly like a code.team teammate.
