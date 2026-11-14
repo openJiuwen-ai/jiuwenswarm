@@ -227,9 +227,9 @@ async def _run(host: str, port: int) -> None:
                 mark_failed(str(exc))
 
     watcher = asyncio.create_task(_watch_backend(), name="runtime-supervisor-watch")
-    cleanup_stop = asyncio.Event()
+    # 复用进程停止信号：退出时既取消任务，也让它看到 stop 已设置。
     cleanup_task = asyncio.create_task(
-        run_skill_upload_cleanup_loop(cleanup_stop),
+        run_skill_upload_cleanup_loop(stop_event),
         name="skill-upload-cleanup",
     )
 
@@ -270,7 +270,6 @@ async def _run(host: str, port: int) -> None:
             backend_task.cancel()
         if not watcher.done():
             watcher.cancel()
-        cleanup_stop.set()
         if not cleanup_task.done():
             cleanup_task.cancel()
         pending = [

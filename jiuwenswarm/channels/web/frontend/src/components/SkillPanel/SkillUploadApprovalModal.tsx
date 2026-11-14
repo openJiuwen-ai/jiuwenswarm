@@ -12,6 +12,7 @@ import { CloseButton, LoadingSpinner, Select, Textarea } from '../ui';
 import {
   listApprovalCandidates,
   type ApprovalCandidate,
+  type SkillUploadRequestItem,
   type SkillUploadStageResult,
   type SkillUploadSubmitResult,
   type StagedSkillUpload,
@@ -25,7 +26,7 @@ interface SkillUploadApprovalModalProps {
   /** 暂存成功后查重：命中同名或同包的进行中单时返回既有单。 */
   onFindActive: (
     packageInfo: SkillUploadStageResult['package_info'],
-  ) => Promise<SkillUploadSubmitResult | null>;
+  ) => Promise<SkillUploadRequestItem | null>;
   onSubmit: (input: {
     reason: string;
     approverId: string;
@@ -57,6 +58,7 @@ export function SkillUploadApprovalModal({
   const [candidatesLoading, setCandidatesLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<SkillUploadSubmitResult | null>(null);
+  const [activeRequest, setActiveRequest] = useState<SkillUploadRequestItem | null>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -81,6 +83,9 @@ export function SkillUploadApprovalModal({
   const packageExpiresAt = staged?.package_info.stage_expires_at || '';
   const canSubmit = Boolean(approverId) && Boolean(reason.trim()) && !submitting;
   const canLeave = !stageLoading && !submitting;
+  // 查重命中的进行中单与本次提交成功都停在 done 步，只是字段来源不同。
+  const reused = activeRequest !== null || Boolean(result?.reused);
+  const doneOrderNum = result?.order_num ?? activeRequest?.order_num ?? '';
 
   const runStage = async (nextFile: File) => {
     setError('');
@@ -93,7 +98,8 @@ export function SkillUploadApprovalModal({
       // 暂存成功即查重：命中时直接提示，不再让用户白选审批人。
       const active = await onFindActive(data.package_info).catch(() => null);
       if (active) {
-        setResult(active);
+        setActiveRequest(active);
+        setResult(null);
         setStep('done');
       } else {
         setStep('review');
@@ -134,6 +140,7 @@ export function SkillUploadApprovalModal({
         packageInfo: staged.package_info,
       });
       setResult(submitted);
+      setActiveRequest(null);
       setStep('done');
     } catch (submitError) {
       setError(errorText(submitError));
@@ -146,7 +153,7 @@ export function SkillUploadApprovalModal({
     step === 'submit'
       ? 'skills.skillUploadApproval.submitTitle'
       : step === 'done'
-        ? result?.reused
+        ? reused
           ? 'skills.skillUploadApproval.duplicateTitle'
           : 'skills.skillUploadApproval.doneTitle'
         : 'skills.skillUploadApproval.title';
@@ -217,7 +224,12 @@ export function SkillUploadApprovalModal({
                   accept=".zip"
                   className="hidden"
                   disabled={stageLoading}
-                  onChange={(event) => pickFile(event.target.files?.[0])}
+                  onChange={(event) => {
+                    const nextFile = event.target.files?.[0];
+                    // 清空 value，否则重选同一个文件不会触发 change（暂存失败重试）。
+                    event.target.value = '';
+                    pickFile(nextFile);
+                  }}
                   data-testid="skill-panel-upload-approval-file-input"
                 />
               </label>
@@ -309,20 +321,20 @@ export function SkillUploadApprovalModal({
           </div>
         )}
 
-        {step === 'done' && result && (
+        {step === 'done' && (result || activeRequest) && (
           <div className="px-6 pt-4 pb-4 flex flex-col gap-2 text-sm">
             <div className="text-text" data-testid="skill-panel-upload-approval-result">
               {t(
-                result.reused
+                reused
                   ? 'skills.skillUploadApproval.reused'
                   : 'skills.skillUploadApproval.submitted',
-                { orderNum: result.order_num },
+                { orderNum: doneOrderNum },
               )}
             </div>
             <div className="text-xs text-text-muted" data-testid="skill-panel-upload-approval-submitted-hint">
               {t('skills.skillUploadApproval.submittedHint')}
             </div>
-            {packageExpiresAt && !result.reused ? (
+            {packageExpiresAt && !reused ? (
               <div className="text-xs text-warn" data-testid="skill-panel-upload-approval-done-retention">
                 {t('skills.skillUploadApproval.retentionHint', {
                   expiresAt: formatTimestamp(packageExpiresAt),

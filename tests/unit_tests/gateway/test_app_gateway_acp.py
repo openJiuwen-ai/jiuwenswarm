@@ -598,7 +598,7 @@ async def test_gateway_server_binds_session_for_local_request_and_calls_hook():
             "/tui": RouteConfig(
                 path="/tui",
                 channel_id="tui",
-                local_handlers={"config.get": local_handler},
+                local_handlers={"history.get": local_handler},
                 session_bind_handler=session_bind_handler,
             ),
         },
@@ -612,7 +612,7 @@ async def test_gateway_server_binds_session_for_local_request_and_calls_hook():
             {
                 "type": "req",
                 "id": "req-config",
-                "method": "config.get",
+                "method": "history.get",
                 "params": {"session_id": "sess-local"},
             }
         ),

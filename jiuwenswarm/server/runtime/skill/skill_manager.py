@@ -5930,7 +5930,14 @@ class SkillManager:
         }
 
     async def handle_skills_upload_finalize(self, params: dict) -> dict:
-        """按审批结果安装已暂存的 Skill 包。"""
+        """按审批结果安装已暂存的 Skill 包。
+
+        重新哈希、拿安装锁并拷贝目录都是同步 IO，放到线程池执行，
+        与 ``handle_skills_upload_stage`` 保持一致，避免阻塞事件循环。
+        """
+        return await asyncio.to_thread(self.finalize_skill_upload_sync, params)
+
+    def finalize_skill_upload_sync(self, params: dict) -> dict:
         from jiuwenswarm.server.runtime.skill.skill_upload_approval import (
             is_valid_upload_id,
             skill_tree_digest,

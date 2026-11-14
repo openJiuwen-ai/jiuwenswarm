@@ -322,12 +322,12 @@ export async function findActiveSkillUploadRequest(params: {
   jiuwenclawId: string;
   skillName: string;
   digest: string;
-}): Promise<SkillUploadSubmitResult | null> {
+}): Promise<SkillUploadRequestItem | null> {
   const query = new URLSearchParams();
   query.set('jiuwenclaw_id', params.jiuwenclawId);
   query.set('skill_name', params.skillName);
   if (params.digest) query.set('digest', params.digest);
-  return managerRequest<SkillUploadSubmitResult | null>(
+  return managerRequest<SkillUploadRequestItem | null>(
     `/manager-api/v1/user-console/skills/upload-requests/active?${query.toString()}`,
   );
 }
