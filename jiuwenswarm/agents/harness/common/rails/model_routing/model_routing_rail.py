@@ -622,12 +622,16 @@ def _default_model_builder(mcc_fields: dict, mco_fields: dict) -> Any:
     """无注入 builder 时的兜底构造（openjiuwen 直构）。
 
     入参是当前已建好模型的 client config 克隆，鉴权头已在其中，故直构也带得上凭证。
+    团队成员路由不注入 ``_build_model_from_entry``，此处补齐宿主流超时默认值，
+    避免切模后落回 SDK idle=60。
     """
     from openjiuwen.core.foundation.llm import Model, ModelClientConfig
     from openjiuwen.core.foundation.llm.model_clients.base_model_client import ModelRequestConfig
 
+    from jiuwenswarm.common.stream_timeout_defaults import apply_stream_timeout_defaults
+
     return Model(
-        model_client_config=ModelClientConfig(**mcc_fields),
+        model_client_config=ModelClientConfig(**apply_stream_timeout_defaults(mcc_fields)),
         model_config=ModelRequestConfig(**mco_fields),
     )
 
