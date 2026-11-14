@@ -84,6 +84,8 @@ test('group member search never matches internal member ids', () => {
   ];
   // Regression for #6318: a query that only occurs inside member_name must not return any row.
   assert.deepEqual(filterGroupMembers(members, 'ad'), []);
+  const fallback = { ...members[0], display_name: '' };
+  assert.deepEqual(filterGroupMembers([fallback, ...members], 'ad'), [fallback]);
   assert.deepEqual(filterGroupMembers(members, 'GRACE').map((member) => member.display_name), ['Grace']);
   assert.deepEqual(filterGroupMembers(members, '专家团').map((member) => member.display_name),
     ['商业策划专家团', '小红书爆款打造专家团']);
