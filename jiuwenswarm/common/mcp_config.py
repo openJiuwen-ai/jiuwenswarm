@@ -1769,6 +1769,22 @@ def _office_claw_invocation_id_from_params(params: Mapping[str, Any] | None) -> 
     return str(env.get("OFFICE_CLAW_INVOCATION_ID") or "").strip()
 
 
+def office_claw_thread_id_from_tools(tools: Iterable[Any] | None) -> str:
+    """Return the first OFFICE_CLAW_THREAD_ID pinned into request-scoped MCP tools."""
+
+    for tool in tools or ():
+        params = getattr(tool, "_params", None)
+        if not isinstance(params, Mapping):
+            continue
+        env = params.get("env")
+        if not isinstance(env, Mapping):
+            continue
+        thread_id = str(env.get("OFFICE_CLAW_THREAD_ID") or "").strip()
+        if thread_id:
+            return thread_id
+    return ""
+
+
 def resolve_active_office_claw_invocation_id() -> str | None:
     """Return the callback invocation id owned by the active allowlist, if known.
 
@@ -2849,6 +2865,7 @@ __all__ = [
     "get_live_office_claw_allowlist_for_tool_id",
     "get_live_office_claw_allowlist_for_tool_instance",
     "get_request_scoped_mcp_registration",
+    "office_claw_thread_id_from_tools",
     "invalidate_office_claw_mcp_schema_cache",
     "is_office_claw_tool_name_live_concurrent",
     "list_office_claw_mcp_tools",
