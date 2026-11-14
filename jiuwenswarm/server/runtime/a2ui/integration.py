@@ -174,7 +174,7 @@ __all__ = [
 def _register_common_provider() -> None:
     import sys
 
-    from openjiuwen_protocol.provider_domains import PROVIDER_DOMAIN_A2UI
+    from e2a.provider_domains import PROVIDER_DOMAIN_A2UI
 
     from jiuwenswarm.common.external_providers import register
 

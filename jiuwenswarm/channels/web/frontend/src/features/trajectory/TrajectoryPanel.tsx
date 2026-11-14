@@ -1100,6 +1100,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       importGenerationRef.current += 1;
       setImportProgress(null);
       setArchiveError(null);
+      setArchiveNotice(null);
       clearPublishedWindow();
       // Content hashes stay valid across epochs of one session, but another
       // session's content is only memory this reader will not use again.

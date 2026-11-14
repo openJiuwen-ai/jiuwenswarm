@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""转发别名：实现已迁 ``openjiuwen_protocol.message``。
+"""转发别名：实现已迁 ``e2a.message``。
 
 仅保留 ``jiuwenswarm.common.schema.message`` 旧 import 路径兼容，re-export 协议包
 的同一对象——``Message`` / ``ReqMethod`` / ``EventType`` / ``Mode`` 及线协议事件名
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from openjiuwen_protocol.message import (  # noqa: F401
+from e2a.message import (  # noqa: F401
     PROMPT_SUGGESTION_READY_EVENT,
     SESSION_REQUEST_COMPLETED_EVENT,
     TEAM_ATTACH_ONLY_PARAM,

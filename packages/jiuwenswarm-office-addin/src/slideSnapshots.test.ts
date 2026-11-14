@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { FakeDeck } from './fakePowerPoint';
 import { HostWriteQueue } from './hostWriteQueue';
@@ -10,15 +10,19 @@ const MB = 1024 * 1024;
 function setUp(slides = 3, limits?: { turns: number; bytes: number }) {
   const deck = new FakeDeck({ slides: Array.from({ length: slides }, (_, at) => ({
     shapes: [{ text: `slide ${at + 1}` }] })) });
-  const snapshots = new SlideSnapshots(powerPointSlideDeck(deck.run), new HostWriteQueue(), limits);
-  const exportSlides = async (ids: string[]) => ids.map(id => Buffer.from(JSON.stringify(deck.slide(id))).toString('base64'));
+  const slideDeck = powerPointSlideDeck(deck.run);
+  const snapshots = new SlideSnapshots(slideDeck, new HostWriteQueue(), limits);
+  const exportSlides = async (ids: string[]) => {
+    const exported = await slideDeck.exportSlides(ids);
+    return ids.map(id => exported.get(id)!);
+  };
   /** A write of call ``callId``: tells the journal what it changes, then changes it. */
   const write = async (callId: string, change: {
-    edit?: string[]; move?: [string, number][]; remove?: string[]; add?: number;
+    edit?: string[]; move?: [string, number][]; remove?: string[]; add?: number; replace?: string[];
   }) => {
     const journal = snapshots.journal(callId);
     const touched = [
-      ...(change.edit ?? []).map(id => ({ id, content: true })),
+      ...[...change.edit ?? [], ...change.replace ?? []].map(id => ({ id, content: true })),
       ...(change.remove ?? []).map(id => ({ id, content: true })),
       ...(change.move ?? []).map(([id]) => ({ id, content: false })),
     ];
@@ -36,6 +40,17 @@ function setUp(slides = 3, limits?: { turns: number; bytes: number }) {
         text: `new by ${callId}` }] });
       journal.created(id);
     }
+    // As a slide XML edit does it: an edited copy goes in after the slide, then the slide goes.
+    for (const id of change.replace ?? []) {
+      const slide = deck.slide(id);
+      const copy = { ...structuredClone(slide), id: `${id}${callId}` };
+      copy.shapes[0].text += ` (copy by ${callId})`;
+      deck.slides.splice(deck.slides.indexOf(slide) + 1, 0, copy);
+      journal.created(copy.id);
+      deck.slides = deck.slides.filter(item => item !== slide);
+      journal.replaced(id, copy.id);
+    }
+    return journal;
   };
   return { deck, snapshots, write };
 }
@@ -100,6 +115,21 @@ describe('undoing a turn', () => {
     expect(deck.content()).toEqual(before);
   });
 
+  it('undoes without asking when nothing changed since, though each export carries the time it was taken', async () => {
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-11-11T10:57:00Z') });
+    try {
+      const { deck, snapshots, write } = setUp();
+      const before = deck.content();
+      await write('c1', { edit: [deck.ids()[0]] });
+      await snapshots.closeTurn();
+      vi.setSystemTime(new Date('2026-11-11T10:58:30Z'));
+      expect(await snapshots.undo(['c1'])).toMatchObject({ kind: 'undone', turns: 1 });
+      expect(deck.content()).toEqual(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('counts a slide the user deleted since as changed', async () => {
     const { deck, snapshots, write } = setUp();
     const [a] = deck.ids();
@@ -141,6 +171,65 @@ describe('undoing a turn', () => {
     await snapshots.closeTurn();
     await snapshots.undo(['c1']);
     expect(deck.content()).toEqual(before);
+  });
+
+  it('puts back once a slide a call replaced by an edited copy, and deletes the copy', async () => {
+    const { deck, snapshots, write } = setUp();
+    const [, b] = deck.ids();
+    const before = deck.content();
+    await write('c1', { replace: [b] });
+    await write('c2', { replace: [`${b}c1`] });
+    await snapshots.closeTurn();
+
+    expect(snapshots.undoable(['c1'])).toEqual({ slides: 1 });
+    expect(await snapshots.undo(['c1'])).toMatchObject({ kind: 'undone', turns: 1, positions: [2] });
+    expect(deck.content()).toEqual(before);
+  });
+
+  it('follows a replacement into the earlier turns, so undoing them leaves no copy behind', async () => {
+    const { deck, snapshots, write } = setUp();
+    const [a] = deck.ids();
+    const before = deck.content();
+    await write('t1', { edit: [a], add: 1 });
+    await snapshots.closeTurn();
+    await write('t2', { replace: [a, deck.ids()[3]] });
+    await snapshots.closeTurn();
+
+    expect(snapshots.undoable(['t1'])).toEqual({ slides: 2 });
+    expect(await snapshots.undo(['t1'])).toMatchObject({ kind: 'undone', turns: 2 });
+    expect(deck.content()).toEqual(before);
+  });
+
+  it('rolls back a call that replaced slides as if it never ran', async () => {
+    const { deck, snapshots, write } = setUp();
+    const [a, b] = deck.ids();
+    await write('c1', { edit: [a] });
+    const before = deck.content();
+    const journal = await write('c2', { replace: [a, b] });
+    await journal.rollback();
+    expect(deck.content()).toEqual(before);
+    await snapshots.closeTurn();
+    expect(snapshots.undoable(['c1'])).toEqual({ slides: 1 });
+  });
+
+  it('forgets every turn when told, and the rest of the turn under way, which a rollback still puts back', async () => {
+    const { deck, snapshots, write } = setUp();
+    const [a, b] = deck.ids();
+    await write('t1', { edit: [a] });
+    await snapshots.closeTurn();
+    await write('c2', { edit: [b] });
+    snapshots.forget();
+    const before = deck.content();
+    await (await write('c3', { replace: [a] })).rollback();
+    expect(deck.content()).toEqual(before);
+    await write('c4', { edit: [b] });
+    await snapshots.closeTurn();
+    expect(snapshots.undoable(['t1'])).toBeUndefined();
+    expect(snapshots.undoable(['c2', 'c3', 'c4'])).toBeUndefined();
+
+    await write('t3', { edit: [b] });
+    await snapshots.closeTurn();
+    expect(snapshots.undoable(['t3'])).toEqual({ slides: 1 });
   });
 
   it('has nothing to undo for a turn that is gone', async () => {

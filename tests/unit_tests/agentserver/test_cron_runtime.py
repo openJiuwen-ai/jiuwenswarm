@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 import time
 
@@ -1470,3 +1471,51 @@ class TestBuildToolsAllowCreate:
         result = await unified._func(action="list")
 
         assert result == {"jobs": [{"id": "job-1"}]}
+
+
+class TestEnsureSchedulerStartedBackgroundTask:
+    """issue #6286：后台启动 Task 须持强引用且内部异常须记日志。"""
+
+    def _make_bridge_with_backend(self, ensure_coro_factory):
+        bridge = CronRuntimeBridge()
+        backend = MagicMock(spec=_CronToolsCronBackend)
+        backend.ensure_scheduler_started = ensure_coro_factory
+        bridge.set_backend(backend)
+        return bridge
+
+    @pytest.mark.asyncio
+    async def test_holds_task_reference_and_releases_on_done(self) -> None:
+        started = asyncio.Event()
+
+        async def slow_start():
+            await started.wait()
+
+        bridge = self._make_bridge_with_backend(slow_start)
+        bridge.ensure_scheduler_started()
+
+        assert len(bridge._scheduler_start_tasks) == 1
+        task = next(iter(bridge._scheduler_start_tasks))
+        assert not task.done()
+
+        started.set()
+        await task
+        assert bridge._scheduler_start_tasks == set()
+
+    @pytest.mark.asyncio
+    async def test_background_exception_is_logged_not_silent(self, caplog) -> None:
+        async def boom():
+            raise RuntimeError("scheduler-start-exploded")
+
+        bridge = self._make_bridge_with_backend(boom)
+        bridge.ensure_scheduler_started()
+
+        with caplog.at_level(logging.WARNING, logger="jiuwenswarm.common.utils"):
+            await asyncio.wait_for(
+                asyncio.gather(*bridge._scheduler_start_tasks), timeout=5
+            )
+
+        assert any(
+            "Background scheduler start failed" in rec.message
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+        )

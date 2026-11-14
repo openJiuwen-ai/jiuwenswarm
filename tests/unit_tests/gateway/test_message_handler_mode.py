@@ -36,7 +36,7 @@ from agent_gateway.message_handler.message_handler import (
     MessageHandler,
     _VALID_MODE_INPUTS,
 )
-from openjiuwen_protocol.message import Message
+from e2a.message import Message
 
 
 class _FakeAgentClient:

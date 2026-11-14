@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
 import { build } from 'esbuild';
+import { createInstance } from 'i18next';
 import { JSDOM } from 'jsdom';
 
 // Initialize the browser before ReactDOM loads so controlled input events use its browser path.
@@ -42,6 +43,7 @@ await build({
   platform: 'node',
   format: 'esm',
   packages: 'external',
+  define: { 'import.meta.env.DEV': 'false' },
   loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl' },
   plugins: [
     {
@@ -79,7 +81,6 @@ await build({
           './ExperimentalSettings': [
             'A2UISetting',
             'ExternalCliCustomAgentsItem',
-            'ProactiveLimitsSetting',
             'RSISetting',
             'TaskAsrSetting',
             'TaskFullDuplexSetting',
@@ -97,8 +98,10 @@ await build({
             'export const settingsActionIcons = {};',
             'export const settingsCustomModelIcon = () => null;',
           ].join('\n'),
-          'react-i18next':
-            'export const useTranslation = () => ({ t: (key) => key, i18n:{resolvedLanguage:"zh",language:"zh"} });',
+          'react-i18next': [
+            'export const initReactI18next = { type: "3rdParty", init() {} };',
+            'export const useTranslation = () => ({ t: (key, options) => globalThis.collaborationFixture?.translate?.(key, options) ?? key, i18n:{resolvedLanguage:"zh",language:"zh"} });',
+          ].join('\n'),
         };
         builder.onResolve({ filter: /.*/ }, (args) =>
           mocks[args.path] ? { path: args.path, namespace: 'mock' } : undefined,
@@ -162,7 +165,7 @@ async function mount(options, run) {
     unsavedChanges,
     request: async (method, params) => {
       calls.push({ method, params });
-      if (method === 'config.get') return options.load ? options.load() : { ...config };
+      if (method === 'config.get') return options.load ? options.load({ ...config }) : { ...config };
       if (method === 'config.save_all') {
         saves.push(params.config);
         if (options.rejectSave) throw new Error('save failed');
@@ -173,7 +176,9 @@ async function mount(options, run) {
       throw new Error(`Unexpected RPC: ${method}`);
     },
   };
-  globalThis.collaborationFixture = { services, disabled: options.disabled ?? false, section: options.section };
+  globalThis.collaborationFixture = {
+    services, disabled: options.disabled ?? false, section: options.section, translate: options.translate,
+  };
   setMultiModelCollaborationEnabled(false);
   const root = createRoot(document.getElementById('root'));
   const render = () => act(async () => root.render(createElement(options.probe ? ConfigFixture : SettingsFixture)));
@@ -214,6 +219,7 @@ async function mount(options, run) {
       calls,
       saves,
       render,
+      unmountFixture: () => act(async () => root.render(null)),
       services,
       dom,
       unsavedChanges,
@@ -240,19 +246,33 @@ const configured = {
 for (const available of [undefined, 'false', false, 'true', true]) {
   test(`computer control remains visible and respects backend availability: ${available}`, async () => {
     await mount(
-      { section: 'computer-control', config: { cua_backend_available: available, cua_agent_enabled: 'true' } },
-      async ({ get, saves, click }) => {
+      {
+        section: 'computer-control',
+        config: {
+          cua_backend_available: available,
+          cua_backend_unavailable_reason: 'native_build_failed',
+          cua_agent_enabled: 'true',
+        },
+      },
+      async ({ get, saves, click, config }) => {
         const toggle = get('settings-switch', 'cua-agent-enabled');
-        assert.equal(toggle.getAttribute('aria-checked'), 'true');
-        await click('settings-switch', 'cua-agent-enabled');
-        assert.equal(toggle.getAttribute('aria-checked'), 'false');
         if (available !== true && available !== 'true') {
+          assert.equal(toggle.getAttribute('aria-checked'), 'true');
           assert.equal(toggle.disabled, true);
           assert.match(document.body.textContent, /cua_agent_enabled\.unavailableDescription/);
-          assert.deepEqual(saves, [{ cua_agent_enabled: 'false' }]);
+          assert.match(
+            get('settings-unavailable-switch').getAttribute('data-tooltip'),
+            /cua_agent_enabled\.unavailableReasons\.native_build_failed/,
+          );
+          await click('settings-switch', 'cua-agent-enabled');
+          assert.deepEqual(saves, []);
+          assert.equal(config().cua_agent_enabled, 'true');
           return;
         }
         assert.equal(toggle.disabled, false);
+        assert.equal(toggle.getAttribute('aria-checked'), 'true');
+        await click('settings-switch', 'cua-agent-enabled');
+        assert.equal(toggle.getAttribute('aria-checked'), 'false');
         await click('settings-switch', 'cua-agent-enabled');
         assert.equal(toggle.getAttribute('aria-checked'), 'true');
         assert.deepEqual(saves, [{ cua_agent_enabled: 'false' }, { cua_agent_enabled: 'true' }]);
@@ -260,6 +280,29 @@ for (const available of [undefined, 'false', false, 'true', true]) {
     );
   });
 }
+
+test('computer control localizes backend errors and falls back for unknown reasons', async () => {
+  for (const language of ['en', 'zh']) {
+    const translation = JSON.parse(fs.readFileSync(`src/i18n/locales/${language}.json`, 'utf8'));
+    const messages = translation.settingsPanel.fields.cua_agent_enabled;
+    const i18n = createInstance();
+    await i18n.init({ lng: language, resources: { [language]: { translation } } });
+    for (const [reason, expected] of [
+      ['native_build_failed', messages.unavailableReasons.native_build_failed],
+      ['backend_missing', messages.unavailableReasons.backend_missing],
+      ['unsupported_platform', messages.unavailableReasons.unsupported_platform],
+      ['future_reason', messages.unavailableDescription],
+    ]) {
+      await mount({
+        section: 'computer-control',
+        config: { cua_backend_available: 'false', cua_backend_unavailable_reason: reason },
+        translate: i18n.getFixedT(language),
+      }, async ({ get }) => {
+        assert.equal(get('settings-unavailable-switch').getAttribute('data-tooltip'), expected);
+      });
+    }
+  }
+});
 
 test('feature flag defaults off and accepts backend booleans', () => {
   setMultiModelCollaborationEnabled(undefined);
@@ -283,7 +326,6 @@ test('experimental sections retain their order with a single computer control se
     'kv-cache-affinity',
     'team-organization',
     'team-scheduled-dispatch',
-    'proactive-recommendation',
     'multi-model-collaboration',
     'tool-optimize',
     'computer-control',
@@ -320,6 +362,112 @@ test('empty config defaults to disabled main and expands default verifier values
     assert.equal(get('settings-switch', 'collaboration-jev-enabled').getAttribute('aria-checked'), 'false');
     assert.equal(get('settings-collaboration-interval-input').value, '3');
   });
+});
+
+for (const nextEnabled of [true, false]) {
+  test(`completed collaboration save remains ${nextEnabled ? 'enabled' : 'disabled'} after settings remount`, async () => {
+    await mount(
+      { config: { multi_model_collaboration_enabled: !nextEnabled } },
+      async ({ main, click, unmountFixture, render, config }) => {
+        await click('settings-switch', 'multi-model-collaboration-enabled');
+        assert.equal(config().multi_model_collaboration_enabled, String(nextEnabled));
+        await unmountFixture();
+        await render();
+        assert.equal(main().getAttribute('aria-checked'), String(nextEnabled));
+        assert.equal(isMultiModelCollaborationEnabled(), nextEnabled);
+      },
+    );
+  });
+}
+
+test('a pending collaboration save refreshes settings remounted before the save completes', async () => {
+  let resolveSave;
+  await mount(
+    {
+      config: { multi_model_collaboration_enabled: false },
+      save: () => new Promise((resolve) => { resolveSave = resolve; }),
+    },
+    async ({ main, click, unmountFixture, render, config, calls }) => {
+      await click('settings-switch', 'multi-model-collaboration-enabled');
+      assert.equal(main().getAttribute('aria-checked'), 'true');
+      await unmountFixture();
+      await render();
+      assert.equal(main().getAttribute('aria-checked'), 'false');
+      await act(async () => { resolveSave(); });
+      assert.equal(config().multi_model_collaboration_enabled, 'true');
+      assert.equal(main().getAttribute('aria-checked'), 'true');
+      assert.equal(isMultiModelCollaborationEnabled(), true);
+      assert.equal(calls.filter(({ method }) => method === 'config.get').length, 3);
+    },
+  );
+});
+
+test('a late remount read cannot overwrite the refresh triggered by a completed collaboration save', async () => {
+  let resolveSave;
+  let resolveReload;
+  let loads = 0;
+  await mount(
+    {
+      config: { multi_model_collaboration_enabled: false },
+      load: (config) => {
+        loads += 1;
+        if (loads === 2) return new Promise((resolve) => { resolveReload = resolve; });
+        return config;
+      },
+      save: () => new Promise((resolve) => { resolveSave = resolve; }),
+    },
+    async ({ main, click, unmountFixture, render }) => {
+      await click('settings-switch', 'multi-model-collaboration-enabled');
+      await unmountFixture();
+      await render();
+      await act(async () => { resolveSave(); });
+      assert.equal(main().getAttribute('aria-checked'), 'true');
+      await act(async () => { resolveReload({ multi_model_collaboration_enabled: false }); });
+      assert.equal(main().getAttribute('aria-checked'), 'true');
+      assert.equal(isMultiModelCollaborationEnabled(), true);
+      assert.equal(loads, 3);
+    },
+  );
+});
+
+test('successful collaboration saves broadcast after the confirmed feature state changes', async () => {
+  let resolveSave;
+  await mount(
+    {
+      config: { multi_model_collaboration_enabled: false },
+      save: () => new Promise((resolve) => { resolveSave = resolve; }),
+    },
+    async ({ click, dom, config, main }) => {
+      const notifications = [];
+      dom.window.addEventListener('jiuwen:settings-config-changed', () => {
+        notifications.push({
+          saved: config().multi_model_collaboration_enabled,
+          enabled: isMultiModelCollaborationEnabled(),
+        });
+      });
+      await click('settings-switch', 'multi-model-collaboration-enabled');
+      assert.deepEqual(notifications, []);
+      await act(async () => { resolveSave(); });
+      assert.deepEqual(notifications, [{ saved: 'true', enabled: true }]);
+      assert.equal(main().getAttribute('aria-checked'), 'true');
+    },
+  );
+});
+
+test('failed collaboration saves roll back the switch without broadcasting a config change', async () => {
+  await mount(
+    { config: { multi_model_collaboration_enabled: false }, rejectSave: true },
+    async ({ click, dom, config, main, calls }) => {
+      let notifications = 0;
+      dom.window.addEventListener('jiuwen:settings-config-changed', () => { notifications += 1; });
+      await click('settings-switch', 'multi-model-collaboration-enabled');
+      assert.equal(notifications, 0);
+      assert.equal(config().multi_model_collaboration_enabled, false);
+      assert.equal(main().getAttribute('aria-checked'), 'false');
+      assert.equal(isMultiModelCollaborationEnabled(), false);
+      assert.equal(calls.filter(({ method }) => method === 'config.get').length, 1);
+    },
+  );
 });
 
 test('JEV switch rejects a missing key without opening or saving model configuration', async () => {
@@ -422,20 +570,20 @@ test('reconnect response cannot overwrite a completed feature save, but a new re
   await mount(
     {
       probe: true,
-      load: () => {
+      load: (config) => {
         loads += 1;
         if (loads === 2)
           return new Promise((resolve) => {
             resolveReload = resolve;
           });
-        return { multi_model_collaboration_enabled: false };
+        return { multi_model_collaboration_enabled: false, ...config };
       },
       save: () =>
         new Promise((resolve) => {
           resolveSave = resolve;
         }),
     },
-    async ({ services, render }) => {
+    async ({ services, render, config }) => {
       let saving;
       await act(async () => {
         saving = globalThis.collaborationFixture.controller.save(
@@ -453,12 +601,13 @@ test('reconnect response cannot overwrite a completed feature save, but a new re
       });
       assert.equal(isMultiModelCollaborationEnabled(), true);
       await act(async () => resolveReload({ multi_model_collaboration_enabled: false }));
-      assert.equal(globalThis.collaborationFixture.controller.config.multi_model_collaboration_enabled, true);
+      assert.equal(globalThis.collaborationFixture.controller.config.multi_model_collaboration_enabled, 'true');
       assert.equal(isMultiModelCollaborationEnabled(), true);
+      config().multi_model_collaboration_enabled = false;
       await act(async () => {
         await globalThis.collaborationFixture.controller.reload();
       });
-      assert.equal(loads, 3);
+      assert.equal(loads, 4);
       assert.equal(isMultiModelCollaborationEnabled(), false);
       assert.equal(globalThis.collaborationFixture.controller.config.multi_model_collaboration_enabled, false);
     },
@@ -530,7 +679,7 @@ test('shared JEV key save and clear survive stale config reloads', async () => {
   await mount(
     {
       probe: true,
-      load: () => {
+      load: (config) => {
         loads += 1;
         if (loads === 2)
           return new Promise((resolve) => {
@@ -539,6 +688,7 @@ test('shared JEV key save and clear survive stale config reloads', async () => {
         return {
           jev_typesafe_api_key: '',
           moa_jev_enabled: false,
+          ...config,
         };
       },
       save: () =>

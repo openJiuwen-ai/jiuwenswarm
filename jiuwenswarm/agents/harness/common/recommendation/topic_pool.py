@@ -6,12 +6,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, NamedTuple
+
+logger = logging.getLogger(__name__)
 
 from jiuwenswarm.agents.harness.common.recommendation.topic_history import (
     apply_negative_preferences,
@@ -26,7 +29,8 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
 
 POLICY_ID = "topic-starter-mvp-v5"
 PAYLOAD_VERSION = "topic-starter-pool-v1"
-BACKGROUND_GENERATION_DEADLINE_SECONDS = 180.0
+# None = wait until generate() finishes; per-call HTTP timeouts still apply.
+BACKGROUND_GENERATION_DEADLINE_SECONDS: float | None = None
 
 _PROMPT_IDS = frozenset({"i1", "i2", "i3", "i4", "i5"})
 _CARD_REQUIRED_FIELDS = frozenset(
@@ -310,6 +314,38 @@ def _valid_manifest(manifest: dict[str, Any], cards: list[dict[str, Any]]) -> bo
             for card in cards
         )
     )
+
+
+def drop_expired_pool_cards(
+    cards: list[dict[str, Any]],
+    manifest: dict[str, Any],
+    *,
+    now: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Drop cards whose retained/native expire_time is already past write time.
+
+    Without a generation wall-clock deadline, a multi-stage run can outlive the
+    plan-time retained margin. Writing those cards fails ``effective < expire``
+    (or would be filtered on serve). Drop them and renumber ranks so remaining
+    live cards can still form a pool.
+    """
+
+    live = [
+        card
+        for card in cards
+        if isinstance(card, dict) and now < float(card.get("expire_time") or 0.0)
+    ]
+    if len(live) == len(cards):
+        return cards, manifest
+    renumbered = [
+        {**card, "selector_rank": rank}
+        for rank, card in enumerate(live, start=1)
+    ]
+    updated_manifest = {
+        **manifest,
+        "card_revision_ids": [card["card_revision_id"] for card in renumbered],
+    }
+    return renumbered, updated_manifest
 
 
 def write_starter_pool(
@@ -605,7 +641,7 @@ class BackgroundGenerationCoordinator:
         self,
         store: TopicStarterStore,
         *,
-        deadline_seconds: float = BACKGROUND_GENERATION_DEADLINE_SECONDS,
+        deadline_seconds: float | None = BACKGROUND_GENERATION_DEADLINE_SECONDS,
         pool_writer: Callable[..., Any] = write_starter_pool,
         policy_id: str = POLICY_ID,
     ) -> None:
@@ -754,25 +790,28 @@ class BackgroundGenerationCoordinator:
                 generation_task = asyncio.ensure_future(generate())
             finally:
                 _GENERATION_ATTEMPT_ID.reset(context_token)
-            done, _ = await asyncio.wait(
-                {generation_task}, timeout=self.deadline_seconds
-            )
-            if generation_task not in done:
-                generation_task.cancel()
-                try:
-                    await generation_task
-                except asyncio.CancelledError:
-                    pass
-                except Exception:  # noqa: BLE001
-                    pass
-                self.record_generation_event(
-                    "background_generation_deadline",
-                    trigger_key,
-                    generation_attempt_id=generation_attempt_id,
-                )
-                return "background_generation_deadline"
             try:
-                result = generation_task.result()
+                if self.deadline_seconds is None:
+                    result = await generation_task
+                else:
+                    done, _ = await asyncio.wait(
+                        {generation_task}, timeout=self.deadline_seconds
+                    )
+                    if generation_task not in done:
+                        generation_task.cancel()
+                        try:
+                            await generation_task
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception:  # noqa: BLE001
+                            pass
+                        self.record_generation_event(
+                            "background_generation_deadline",
+                            trigger_key,
+                            generation_attempt_id=generation_attempt_id,
+                        )
+                        return "background_generation_deadline"
+                    result = generation_task.result()
             except Exception:  # noqa: BLE001
                 self.record_generation_event(
                     "background_generation_failed",
@@ -849,8 +888,31 @@ class BackgroundGenerationCoordinator:
                     external_invocation_audit=external_invocation_audit,
                 )
                 return "abstained"
+            write_started_at = time.time()
+            live_cards, live_manifest = drop_expired_pool_cards(
+                list(result.cards),
+                dict(result.manifest) if isinstance(result.manifest, dict) else {},
+                now=write_started_at,
+            )
+            if len(live_cards) != len(result.cards):
+                logger.info(
+                    "[Topic] dropped %s expired card(s) before pool write attempt=%s",
+                    len(result.cards) - len(live_cards),
+                    generation_attempt_id,
+                )
+            if not live_cards:
+                self.record_generation_event(
+                    "background_generation_rejected",
+                    trigger_key,
+                    generation_attempt_id=generation_attempt_id,
+                    reason="cards_expired_before_write",
+                    grounding_decision_receipt=grounding_decision_receipt,
+                    grounding_evidence_receipt=grounding_evidence_receipt,
+                    external_invocation_audit=external_invocation_audit,
+                )
+                return "background_generation_rejected"
             writer_kwargs = {
-                "created_at": time.time(),
+                "created_at": write_started_at,
                 "corpus_text_by_id": result.corpus_text_by_id,
             }
             if bind_pool_writer_model:
@@ -861,19 +923,27 @@ class BackgroundGenerationCoordinator:
                 )
             write_result = self._pool_writer(
                 self.store,
-                result.cards,
-                result.manifest,
+                live_cards,
+                live_manifest,
                 **writer_kwargs,
             )
             if not write_result:
                 writer_reason = str(getattr(write_result, "reason", "") or "")
+                reject_reason = result.failure_reason or writer_reason
+                # Events alone are easy to miss in full.log when diagnosing
+                # "homepage stuck on cold corpus" — surface the write gate too.
+                logger.warning(
+                    "[Topic] background pool write rejected attempt=%s reason=%s",
+                    generation_attempt_id,
+                    reject_reason or "unknown",
+                )
                 # With no pool written, what RID let through is recorded here.
                 rid_result = result.manifest.get("rid_result")
                 self.record_generation_event(
                     "background_generation_rejected",
                     trigger_key,
                     generation_attempt_id=generation_attempt_id,
-                    reason=result.failure_reason or writer_reason,
+                    reason=reject_reason,
                     grounding_decision_receipt=grounding_decision_receipt,
                     grounding_evidence_receipt=grounding_evidence_receipt,
                     external_invocation_audit=external_invocation_audit,

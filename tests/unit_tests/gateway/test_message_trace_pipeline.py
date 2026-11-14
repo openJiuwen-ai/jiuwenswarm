@@ -10,7 +10,7 @@ import pytest
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from openjiuwen_protocol.message import Message, ReqMethod
+from e2a.message import Message, ReqMethod
 
 from agent_gateway import telemetry
 from agent_gateway.channel_manager.channel_manager import ChannelManager
@@ -485,7 +485,7 @@ async def test_same_request_id_other_message_does_not_claim_background_task(monk
 
 @pytest.mark.asyncio
 async def test_supplement_stream_keeps_parent_until_producer_and_responses_finish(monkeypatch):
-    from openjiuwen_protocol.e2a.agent_models import AgentResponseChunk
+    from e2a.agent_models import AgentResponseChunk
     op = operation(monkeypatch)
     monkeypatch.setattr(MessageHandler, "_instance", None)
     entered = asyncio.Event()

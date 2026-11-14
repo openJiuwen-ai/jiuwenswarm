@@ -30,6 +30,12 @@ from agent_gateway.channel_manager.im_platforms.dingtalk.configuration import (
     allow_from_valid,
     dingtalk_apps,
 )
+from jiuwenswarm.server.jiuwenmate.dingtalk_cli_distribution import (
+    DWS_VERSION as _CLI_VERSION,
+    install_managed_dws,
+    managed_dws_path,
+    native_dws_platform,
+)
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.dingtalk_cli_runtime import (
     DingTalkCliScope,
@@ -39,11 +45,18 @@ from jiuwenswarm.server.jiuwenmate.dingtalk_cli_runtime import (
 from jiuwenswarm.server.jiuwenmate.sqlite_store import private_dir
 
 logger = logging.getLogger(__name__)
-_CLI_VERSION = "1.0.65"
 _CLI_PACKAGE = f"dingtalk-workspace-cli@{_CLI_VERSION}"
 _MAX_OUTPUT_BYTES = 240 * 1024
 _CLI_REQUEST_TIMEOUT_SECONDS = 30
 _DINGTALK_CLI_PREPARE_TIMEOUT_SECONDS = 75
+_NATIVE_DWS_PREPARE_TIMEOUT_SECONDS = 95
+_OAUTH_LOCK_TIMEOUT_SECONDS = 15
+# Group polling checks authorization before every CLI read; a short reuse window keeps the
+# per-employee lock available for page status requests without hiding revocation for long.
+_AUTH_STATUS_FRESH_SECONDS = 5
+_AUTH_STATUS_STALE_SECONDS = 120
+_AUTH_STATUS_BUSY_WAIT_SECONDS = 2
+_CACHEABLE_AUTH_STATUSES = frozenset({"connected", "not_connected"})
 _MAX_GROUP_FILE_SIZE = 100 * 1024 * 1024
 _NPM_CACHE_LOCK_TIMEOUT_SECONDS = 5
 _GROUP_MEMBER_PAGE_SIZE = 200
@@ -143,6 +156,8 @@ def _default_runner(
         input=input_text,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         env=env,
         cwd=cwd,
         timeout=timeout,
@@ -152,7 +167,7 @@ def _default_runner(
 
 @contextmanager
 def _npm_cache_lock(path: Path, *, timeout: float) -> Iterator[None]:
-    """Serialize npx installs that share npm's cache across processes."""
+    """Serialize DWS installs that share the program cache across processes."""
     private_dir(path.parent)
     path.touch(exist_ok=True)
     with path.open("r+b") as lock_file:
@@ -227,9 +242,11 @@ class LocalDingTalkCliRuntime:
         self._config = config_loader or self._load_config
         self._dws_path = Path(dws_path).expanduser().absolute() if dws_path is not None else None
         self._npx_path = Path(npx_path).expanduser().absolute() if npx_path is not None else _find_npx()
+        self._native_platform = native_dws_platform()
         self._runner = runner
         self._signed_upload = signed_upload or self._upload_signed_url
         self._oauth_locks: dict[str, threading.RLock] = {}
+        self._auth_status_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
     def _read_group_output_file(self, scope: DingTalkCliScope, file_path: str) -> tuple[str, bytes]:
         invalid_path_length = not isinstance(file_path, str) or len(file_path) > 512
@@ -1960,6 +1977,11 @@ class LocalDingTalkCliRuntime:
                     shutil.rmtree(package_dir)
 
     def _cached_dws_binary(self) -> Path | None:
+        if self._native_platform is not None:
+            managed = managed_dws_path(self._cache_root, self._native_platform)
+            if managed.is_file() and managed.resolve().is_relative_to(self._cache_root):
+                if not managed.is_symlink() and os.access(managed, os.X_OK):
+                    return managed
         binary_name = "dws.exe" if os.name == "nt" else "dws"
         matches: list[Path] = []
         for root in dict.fromkeys((self._cache_root, self._root)):
@@ -2009,6 +2031,28 @@ class LocalDingTalkCliRuntime:
                     path.unlink(missing_ok=True)
                 except OSError:
                     pass
+
+    def _install_managed_dws(self, *, timeout: float) -> Path:
+        if self._native_platform is None:
+            raise PersistentAgentError(
+                "当前系统无法自动安装钉钉 CLI，请配置可用的钉钉 CLI 路径。",
+                code="DINGTALK_CLI_PREPARE_FAILED",
+            )
+        deadline = time.monotonic() + timeout
+        lock_path = self._npm_cache_dir() / ".dingtalk-cli.lock"
+        try:
+            with _npm_cache_lock(lock_path, timeout=min(timeout, _NPM_CACHE_LOCK_TIMEOUT_SECONDS)):
+                cached = self._cached_dws_binary()
+                if cached is not None:
+                    return cached
+                return install_managed_dws(
+                    self._cache_root, self._native_platform, timeout=deadline - time.monotonic(),
+                )
+        except OSError as exc:
+            raise PersistentAgentError(
+                "无法访问钉钉 CLI 缓存目录，请检查目录权限后重试。",
+                code="DINGTALK_CLI_PREPARE_FAILED",
+            ) from exc
 
     def _profile_root(self, scope: DingTalkCliScope, binding: tuple[str, str]) -> Path:
         revision = hashlib.sha256(f"{binding[0]}\0{binding[1]}".encode()).hexdigest()[:16]
@@ -2070,7 +2114,42 @@ class LocalDingTalkCliRuntime:
         return url, code
 
     async def dingtalk_auth_status(self, scope: DingTalkCliScope) -> dict[str, Any]:
-        return await asyncio.to_thread(self._locked_oauth_operation, scope, self._dingtalk_auth_status)
+        key = self._auth_status_key(scope)
+        cached = self._auth_status_cache.get(key) if key is not None else None
+        age = time.monotonic() - cached[0] if cached is not None else None
+        if cached is not None and age < _AUTH_STATUS_FRESH_SECONDS:
+            return dict(cached[1])
+        stale = cached is not None and age < _AUTH_STATUS_STALE_SECONDS
+        try:
+            status = await asyncio.to_thread(
+                self._locked_oauth_operation, scope, self._dingtalk_auth_status,
+                timeout=_AUTH_STATUS_BUSY_WAIT_SECONDS if stale else _OAUTH_LOCK_TIMEOUT_SECONDS,
+            )
+        except PersistentAgentError as exc:
+            if stale and exc.code == "DINGTALK_CLI_AUTH_BUSY":
+                return dict(cached[1])
+            raise
+        if key is not None:
+            if status.get("status") in _CACHEABLE_AUTH_STATUSES:
+                self._auth_status_cache[key] = (time.monotonic(), dict(status))
+            else:
+                self._auth_status_cache.pop(key, None)
+        return status
+
+    def _auth_status_key(self, scope: DingTalkCliScope) -> str | None:
+        try:
+            binding = self._binding(scope)
+        except (OSError, TypeError, ValueError, KeyError):
+            return None
+        if binding is None:
+            return None
+        revision = hashlib.sha256(f"{binding[0]}\0{binding[1]}".encode()).hexdigest()[:16]
+        return f"{self._scope_digest(scope)}.{revision}"
+
+    def _forget_auth_status(self, scope: DingTalkCliScope) -> None:
+        prefix = f"{self._scope_digest(scope)}."
+        for key in [key for key in self._auth_status_cache if key.startswith(prefix)]:
+            self._auth_status_cache.pop(key, None)
 
     @staticmethod
     def _oauth_process_running(pid_path: Path) -> bool:
@@ -2092,6 +2171,8 @@ class LocalDingTalkCliRuntime:
         if self._dws_path is None and self._cached_dws_binary() is None:
             if not any(path.is_file() for path in root.rglob("*")):
                 return {"status": "not_connected", "cli_version": _CLI_VERSION}
+            if self._npx_path is None:
+                return {"status": "error", "cli_version": _CLI_VERSION}
         try:
             result = self._run_cli(
                 ["auth", "status", "--format", "json"], env=self._oauth_environment(scope), cwd=root,
@@ -2235,11 +2316,19 @@ class LocalDingTalkCliRuntime:
         return {"status": "not_connected", "cli_version": _CLI_VERSION}
 
     async def dingtalk_auth_begin(self, scope: DingTalkCliScope) -> dict[str, Any]:
-        return await asyncio.to_thread(self._locked_oauth_operation, scope, self._dingtalk_auth_begin)
+        self._forget_auth_status(scope)
+        try:
+            return await asyncio.to_thread(self._locked_oauth_operation, scope, self._dingtalk_auth_begin)
+        finally:
+            self._forget_auth_status(scope)
 
     def _prepare_oauth_cli(self, scope: DingTalkCliScope) -> None:
         """Finish the managed installation before the device-code deadline starts."""
         if self._dws_path is not None or self._cached_dws_binary() is not None:
+            return
+        if self._npx_path is None:
+            self._oauth_root(scope)
+            self._install_managed_dws(timeout=_NATIVE_DWS_PREPARE_TIMEOUT_SECONDS)
             return
         try:
             result = self._run_cli(
@@ -2312,7 +2401,10 @@ class LocalDingTalkCliRuntime:
         raise PersistentAgentError("等待钉钉设备授权码超时", code="DINGTALK_CLI_AUTH_TIMEOUT")
 
     async def dingtalk_auth_cancel(self, scope: DingTalkCliScope, operation_id: str) -> dict[str, Any]:
-        await asyncio.to_thread(self._locked_oauth_operation, scope, self._cancel_dingtalk_auth, operation_id)
+        try:
+            await asyncio.to_thread(self._locked_oauth_operation, scope, self._cancel_dingtalk_auth, operation_id)
+        finally:
+            self._forget_auth_status(scope)
         return await self.dingtalk_auth_status(scope)
 
     def _cancel_dingtalk_auth(self, scope: DingTalkCliScope, operation_id: str) -> None:
@@ -2361,12 +2453,15 @@ class LocalDingTalkCliRuntime:
         except OSError:
             pass
 
-    def _locked_oauth_operation(self, scope: DingTalkCliScope, operation: Callable, *args: Any) -> Any:
+    def _locked_oauth_operation(
+        self, scope: DingTalkCliScope, operation: Callable, *args: Any,
+        timeout: float = _OAUTH_LOCK_TIMEOUT_SECONDS,
+    ) -> Any:
         from filelock import FileLock, Timeout
 
-        deadline = time.monotonic() + 15
+        deadline = time.monotonic() + timeout
         lock = self._oauth_locks.setdefault(self._scope_digest(scope), threading.RLock())
-        if not lock.acquire(timeout=15):
+        if not lock.acquire(timeout=timeout):
             raise PersistentAgentError("DingTalk user authorization is busy; try again", code="DINGTALK_CLI_AUTH_BUSY")
         try:
             root = self._scope_root(scope)
@@ -2415,7 +2510,11 @@ class LocalDingTalkCliRuntime:
         return {"status": "not_connected", "cli_version": _CLI_VERSION}
 
     async def dingtalk_auth_disconnect(self, scope: DingTalkCliScope) -> dict[str, Any]:
-        return await asyncio.to_thread(self._locked_oauth_operation, scope, self._dingtalk_auth_disconnect)
+        self._forget_auth_status(scope)
+        try:
+            return await asyncio.to_thread(self._locked_oauth_operation, scope, self._dingtalk_auth_disconnect)
+        finally:
+            self._forget_auth_status(scope)
 
     def _binding(self, scope: DingTalkCliScope) -> tuple[str, str] | None:
         if scope.namespace_id != "local":
@@ -2454,7 +2553,11 @@ class LocalDingTalkCliRuntime:
 
     def is_available(self, scope: DingTalkCliScope) -> bool:
         try:
-            return self._binding(scope) is not None and (self._dws_path is not None or self._npx_path is not None)
+            if self._binding(scope) is None:
+                return False
+            if self._dws_path is not None or self._npx_path is not None or self._native_platform is not None:
+                return True
+            return self._cached_dws_binary() is not None
         except (OSError, TypeError, ValueError, KeyError):
             return False
 
@@ -2462,8 +2565,6 @@ class LocalDingTalkCliRuntime:
         binding = self._binding(scope)
         if binding is None:
             return {key: value for key, value in os.environ.items() if not key.startswith("DWS_")}
-        if self._dws_path is None and self._npx_path is None:
-            raise RuntimeError("Node.js npx is unavailable for DingTalk CLI")
         return self._environment_for_root(self._profile_root(scope, binding), binding)
 
     def _environment_for_root(self, root: Path, binding: tuple[str, str]) -> dict[str, str]:
@@ -2517,7 +2618,7 @@ class LocalDingTalkCliRuntime:
         timeout: float | None = None,
     ) -> subprocess.CompletedProcess:
         cached_binary = self._cached_dws_binary() if self._dws_path is None else None
-        uses_npx = self._dws_path is None and cached_binary is None
+        needs_install = self._dws_path is None and cached_binary is None
         deadline = None if timeout is None else time.monotonic() + timeout
 
         def run(command: list[str]) -> subprocess.CompletedProcess:
@@ -2529,7 +2630,11 @@ class LocalDingTalkCliRuntime:
                 timeout=remaining, cwd=str(cwd)
             )
 
-        if uses_npx:
+        if needs_install:
+            if self._npx_path is None:
+                prepare_timeout = _NATIVE_DWS_PREPARE_TIMEOUT_SECONDS if timeout is None else timeout
+                binary = self._install_managed_dws(timeout=prepare_timeout)
+                return run([str(binary), *argv])
             lock_path = self._npm_cache_dir() / ".dingtalk-cli.lock"
             with _npm_cache_lock(lock_path, timeout=_NPM_CACHE_LOCK_TIMEOUT_SECONDS):
                 cached_binary = self._cached_dws_binary()
@@ -2561,7 +2666,7 @@ class LocalDingTalkCliRuntime:
                 code="DINGTALK_CLI_TIMEOUT",
             ) from exc
         except OSError as exc:
-            raise RuntimeError("DingTalk CLI could not be started; check Node.js/npm and network access") from exc
+            raise RuntimeError("DingTalk CLI could not be started; check the executable and network access") from exc
         stdout = result.stdout if isinstance(result.stdout, str) else ""
         if len(stdout.encode("utf-8", errors="replace")) > _MAX_OUTPUT_BYTES:
             raise RuntimeError("DingTalk API response is too large")
@@ -2783,6 +2888,7 @@ class LocalDingTalkCliRuntime:
         return await asyncio.to_thread(self._execute, scope, argv)
 
     async def remove_runtime(self, scope: DingTalkCliScope) -> None:
+        self._forget_auth_status(scope)
         await asyncio.to_thread(shutil.rmtree, self._scope_root(scope), True)
 
 

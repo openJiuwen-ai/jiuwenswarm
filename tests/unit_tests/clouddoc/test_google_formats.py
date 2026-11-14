@@ -9,6 +9,37 @@ import pytest
 
 from jiuwenswarm.clouddoc.providers.base import ProviderError
 
+class _Sink:
+    def __init__(self):
+        self.rows = None
+
+    def begin(self, doc, edits, *, highlight, source="", executor=""):
+        self.rows = edits
+        return "r1"
+
+    def commit(self, rid, revision_after=None):
+        pass
+
+    def abort(self, rid, reason=""):
+        pass
+
+
+class _FakeGoogle:
+    """Enough of the provider for a writer to run against, and nothing more."""
+
+    def __init__(self, sink):
+        self.receipt_sink = sink
+        self.receipt_meta = {}
+        self.written = None
+
+    receipt_begin = None  # replaced below
+
+    def receipt_commit(self, rid, rev):
+        pass
+
+    def receipt_abort(self, rid, reason):
+        pass
+
 
 def test_a_grouped_text_box_is_not_lost():
     """Slides can nest shapes in groups; text inside one is still text a comment can
@@ -39,6 +70,85 @@ def test_no_format_claims_a_lock_it_does_not_have():
     assert TRAITS["spreadsheet"].has_revision_control is False
     assert TRAITS["presentation"].has_revision_control is True
     assert TRAITS["document"].has_revision_control is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["document", "spreadsheet", "presentation"])
+async def test_every_format_records_what_it_edited(kind):
+    """Not that a receipt happened -- what is in it. The first version of these writers
+    passed an empty list here and recorded receipts with no edits, which is the failure
+    rings ⑤ and ⑥ are built to prevent and which nothing else would have caught. So
+    the receipt is produced by the real writer, through the real recorder.
+    """
+    from jiuwenswarm.clouddoc.providers.base import DocSnapshot, Segment
+    from jiuwenswarm.clouddoc.providers.google.formats import (
+        write_presentation, write_spreadsheet,
+    )
+    from jiuwenswarm.clouddoc.providers.google.provider import GoogleDocsProvider
+
+    sink = _Sink()
+    prov = GoogleDocsProvider.__new__(GoogleDocsProvider)
+    prov._revision_cache = {}
+    prov.receipt_sink = sink
+    prov.receipt_meta = {}
+    prov.sheets_client = _AnyCall
+    prov.slides_client = _AnyCall
+    prov._clients = lambda: (_AnyCall(), None)
+
+    async def _call(fn):
+        return {}
+
+    prov.call_api = _call
+
+    if kind == "spreadsheet":
+        old, new = "合计", "总计"
+        out = await write_spreadsheet(prov, "d", _sheet_snapshot(), [(old, new)], None)
+    elif kind == "presentation":
+        old, new = "旧标题", "新标题"
+        out = await write_presentation(prov, "d", _deck_snapshot(), [(old, new)], "rev")
+    else:
+        old, new = "需要被改写", "已改写"
+        text = "前言。这一句需要被改写。结尾。"
+        snap = DocSnapshot(doc_id="d", kind="document", revision_id="r", text=text,
+                           segments=(Segment(0, len(text), 1, 1 + len(text)),))
+        out = await prov._submit("d", snap, [(old, new)], "rev")
+
+    assert out.status == "applied"
+    assert sink.rows == [{"old": old, "new": new, "for_comment_ids": []}]
+
+
+def test_a_failing_receipt_sink_refuses_the_write_before_the_platform_call_only():
+    """IC-2 splits the write-ahead order in two. ``begin`` runs before the platform
+    call: if it fails, nothing has landed, and the write is refused as
+    ``ledger_unavailable`` (swallowing it let the write go through untracked).
+    ``commit`` and ``abort`` run after: a failure there must not turn a write that
+    landed into a reported failure, so those still only log -- the receipt stays
+    pending for the sweep to adjudicate.
+    """
+    from jiuwenswarm.clouddoc.providers.google.provider import (
+        GoogleDocsProvider,
+    )
+    from jiuwenswarm.clouddoc.providers.base import ProviderError
+
+    class Broken:
+        def begin(self, *a, **k):
+            raise RuntimeError("sink down")
+
+        def commit(self, *a, **k):
+            raise RuntimeError("sink down")
+
+        def abort(self, *a, **k):
+            raise RuntimeError("sink down")
+
+    prov = object.__new__(GoogleDocsProvider)
+    prov.receipt_sink = Broken()
+    prov.receipt_meta = {}
+
+    with pytest.raises(ProviderError) as info:
+        prov.receipt_begin("d", [("a", "b")], highlight=False)
+    assert info.value.kind == "ledger_unavailable"
+    prov.receipt_commit("r1", "rev")
+    prov.receipt_abort("r1", "reason")
 
 
 def test_a_sheet_name_needing_quotes_gets_them():
@@ -74,6 +184,121 @@ def test_a_cell_address_carries_the_quoting_the_write_needs():
     addr = f"{_quote_sheet('Q3 Data')}!A1"
     _, segs = flatten_grid([[Cell(address=addr, formatted="x", formula="x")]])
     assert segs[0].address == "'Q3 Data'!A1"
+
+
+def test_a_link_comes_from_the_provider_not_a_template():
+    """The panel and the create-document tool both hand a link to a person, and both
+    built it as a Google **document** URL -- wrong for every Feishu document and for
+    every Google spreadsheet and deck.
+    """
+    from jiuwenswarm.clouddoc.providers.google.provider import (
+        GoogleDocsProvider,
+    )
+
+    prov = object.__new__(GoogleDocsProvider)
+    prov._kind_cache = {}
+    assert "/spreadsheets/" in prov.doc_url("X", "spreadsheet")
+    assert "/presentation/" in prov.doc_url("X", "presentation")
+    assert "/document/" in prov.doc_url("X", "document")
+    # An unknown kind gets the Drive file view, which opens every type, rather than the
+    # document editor, which opens one.
+    assert "drive.google.com" in prov.doc_url("X", "")
+
+
+def test_a_shape_anchor_decodes_to_region_addresses():
+    """Measured live: {"type":"shape","page":P,"targets":[T]} is the pageId/objectId
+    address the region machinery writes through. The 'anchors are opaque' verdict was
+    a per-format fact -- true of a spreadsheet's workbook-range, false here.
+    """
+    from jiuwenswarm.clouddoc.providers.google.provider import (
+        GoogleDocsProvider,
+    )
+
+    dec = GoogleDocsProvider._anchor_regions
+    assert dec('{"type":"shape","uid":1,"page":"g5_0","targets":["g5_2"]}') == ("g5_0/g5_2",)
+    assert dec('{"type":"shape","page":"p","targets":["a","b"]}') == ("p/a", "p/b")
+    # The opaque ones stay opaque, quietly.
+    assert dec('{"type":"workbook-range","uid":0,"range":"1896749560"}') == ()
+    assert dec("not json") == ()
+    assert dec(None) == ()
+    assert dec('{"type":"shape","targets":["x"]}') == (), "缺 page 的锚不产地址"
+
+
+def test_the_blanket_comment_attribution_reaches_every_edit():
+    """A region write's old is computed by the provider, so keying attribution by old
+    text cannot work there; the blanket list must land on each edit, or the receipt of a
+    comment-commissioned region write names no thread at all.
+    """
+    from jiuwenswarm.clouddoc.providers.google.provider import (
+        GoogleDocsProvider,
+    )
+
+    begun = {}
+
+    class _Sink:
+        def begin(self, doc_id, edits, *, highlight, source="", executor=""):
+            begun["edits"] = edits
+            return "r1"
+
+    prov = type("P", (), {})()
+    prov.receipt_sink = _Sink()
+    prov.receipt_meta = {"for_comment_ids": ["c9"], "executor": "comment:c9"}
+    bound = GoogleDocsProvider.receipt_begin.__get__(prov)
+    bound("doc", [("旧", "新")], highlight=False, regions=[("p/a", [["旧"]])])
+    (e,) = begun["edits"]
+    assert e["for_comment_ids"] == ["c9"]
+    assert e["region"] == "p/a" and e["old_grid"] == [["旧"]]
+
+
+@pytest.mark.asyncio
+async def test_a_markdown_row_left_over_from_before_refuses_rather_than_reading_as_a_doc():
+    """The panel's persisted metadata primes the format cache on every restart, so a
+    document adopted while markdown was served keeps answering "markdown" for as long
+    as its row exists. The reader falls through to the Google **document** API for a
+    kind it has no reader for, so without this gate the file would be read as a Doc
+    and the person would see the platform's confusion rather than our answer.
+    """
+    from jiuwenswarm.clouddoc.providers.google.provider import (
+        GoogleDocsProvider,
+    )
+
+    prov = object.__new__(GoogleDocsProvider)
+    prov._kind_cache = {"F": "markdown"}
+    with pytest.raises(ProviderError) as exc:
+        await prov._require_kind("F")
+    assert "不支持" in str(exc.value)
+
+    # An *unresolved* kind is a different thing and must not be caught here: it is
+    # what a bare token answers before the first read teaches the format.
+    from jiuwenswarm.clouddoc.providers.base import (
+        is_supported_kind,
+    )
+    assert is_supported_kind("") is True
+    assert is_supported_kind("markdown") is False
+
+
+def test_a_withdrawn_format_still_offers_a_link_the_platform_serves():
+    """The row stays, so the link has to keep working -- and it has to be the one
+    Drive actually serves.
+
+    This is a regression with a screenshot. Dropping markdown's entry let it fall
+    through to the ``/preview`` fallback, on the reasoning that the fallback "opens
+    every type". It does not: for a text/markdown file Drive's API returns ``/view``
+    as the webViewLink, and ``/preview`` answers with the "You need access" page
+    **to the file's owner** -- accusing the reader of a permission problem they do
+    not have. Verified against the live API on the owner's own file.
+    """
+    from jiuwenswarm.clouddoc.providers.google.provider import (
+        GoogleDocsProvider,
+    )
+
+    prov = object.__new__(GoogleDocsProvider)
+    prov._kind_cache = {}
+    assert prov.doc_url("F", "markdown") == "https://drive.google.com/file/d/F/view"
+    # And the fallback for a kind that resolved to nothing at all is the same
+    # address, for the same reason: it is only ever reached by a format the
+    # workbench does not embed, so there is nothing left to trade /view away for.
+    assert prov.doc_url("F", "") == "https://drive.google.com/file/d/F/view"
 
 
 # ------------------------- a write never creates a formula

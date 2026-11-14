@@ -7,8 +7,10 @@ from urllib.parse import quote
 from openjiuwen.harness.persistent_agent import GroupMessage
 
 from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
+from jiuwenswarm.server.jiuwenmate.delivery_notices import SHARING_NOTICE, DELIVERED_SHARING_NOTICE
 from jiuwenswarm.server.jiuwenmate.execution_models import RequestRecord
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
+from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.output_files import FILE_SHARE_MODES, shared_output_file_name
 
 
@@ -33,7 +35,7 @@ class ConversationResources:
         if route is None or route.channel not in {"feishu", "dingtalk"} or not route.app_id:
             raise ValueError("confirmed group delivery has no platform route")
         group = self._archive.groups.get(request.namespace_id, session.conversation.key)
-        if group.platform_chat_id != route.target_id:
+        if group.platform != route.channel or group.platform_chat_id != route.target_id:
             raise ValueError("delivery target differs from the Session group")
         payload = json.loads(job["payload_json"])
         attachment_refs = ()
@@ -46,5 +48,19 @@ class ConversationResources:
             text=payload["text"], reply_to=route.source_message_id,
             attachment_refs=attachment_refs,
         )
-        self._archive.append(request.namespace_id, group.group_chat_id, message,
-                             source_ref=f"delivery:{job['delivery_id']}")
+        try:
+            self._archive.append(request.namespace_id, group.group_chat_id, message,
+                                 source_ref=f"delivery:{job['delivery_id']}")
+        except PersistentAgentError as exc:
+            if exc.code != "CONFLICT" or job.get("status") != "delivered":
+                raise
+            existing, = self._archive.current_messages(request.namespace_id, group.group_chat_id, (message.message_id,))
+            if existing.sender_kind != "agent":
+                raise
+            # The platform echo/edit is already the public fact for this exact receipt.
+            # Never overwrite it with a stale candidate or a later visibility notice.
+            if job.get("notice_text") == SHARING_NOTICE and existing.text != SHARING_NOTICE:
+                self._sessions.replace_result_delivery_with_notice(
+                    request.namespace_id, str(job["delivery_id"]), notice_text=DELIVERED_SHARING_NOTICE,
+                    now=datetime.fromisoformat(job["updated_at"]),
+                )

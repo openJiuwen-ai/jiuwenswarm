@@ -44,18 +44,18 @@ export interface DocumentFile {
 }
 
 /**
- * How the attach names the document: its file name, else a label told apart by the GUID's end.
+ * How the attach names the document: its file name, else ``noun`` and the GUID's end.
  *
  * ``Office.context.document.url`` is often empty for local files on Mac, so
  * the file properties come first.
  */
-export async function documentDisplayName(file: DocumentFile, id: DocumentId): Promise<string> {
+export async function documentDisplayName(file: DocumentFile, id: DocumentId, noun: string): Promise<string> {
   const fromProperties = await new Promise<unknown>(resolve => {
     file.getFilePropertiesAsync(result => resolve(
       String(result.status).toLowerCase() === 'succeeded' ? result.value?.url : undefined));
   });
   const fileName = fileNameOf(fromProperties) || fileNameOf(file.url);
-  return fileName || `演示文稿 · ${id.slice(-6).toUpperCase()}`;
+  return fileName || `${noun} · ${id.slice(-6).toUpperCase()}`;
 }
 
 /**

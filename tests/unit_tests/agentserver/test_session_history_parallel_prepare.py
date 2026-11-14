@@ -33,7 +33,7 @@ def child_adapter():
     return SimpleNamespace(restore_skill_retrieval_session=Mock(),
         configure_initial_execution=Mock(),
         persist_skill_retrieval_session_profile=Mock(), create_instance=AsyncMock(),
-        start_interaction=AsyncMock(), _instance=object())
+        start_interaction=AsyncMock(), cleanup=AsyncMock(), _instance=object())
 
 
 @pytest.mark.asyncio
@@ -149,3 +149,28 @@ async def test_unavailable_pre_read_preserves_original_warmup_call(monkeypatch, 
         history_before_request_id=boundary) is child
     assert restore.await_args.kwargs == {"deep_agent": child._instance,
         "session_id": "session-fallback", "history_before_request_id": boundary}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["prefetch", "install"])
+async def test_restore_failure_propagates_and_discards_the_unusable_child(monkeypatch, stage):
+    from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
+
+    child = child_adapter()
+    parent = router(monkeypatch, child)
+
+    def read(*_args, **_kwargs):
+        if stage == "prefetch":
+            raise HistoryReplayError("history budget exceeded", code="HISTORY_RESTORE_LIMIT")
+        return None
+
+    restore = AsyncMock(side_effect=HistoryReplayError("context install failed"))
+    monkeypatch.setattr(session_ops_service, "prefetch_session_history", read)
+    monkeypatch.setattr(session_ops_service, "warmup_session_context", restore)
+    for attempt in range(2):
+        with pytest.raises(HistoryReplayError):
+            await parent._get_or_create_session_adapter("failed-restore", history_before_request_id="input")
+        assert parent._session_adapters == {}
+        assert child.cleanup.await_count == attempt + 1
+    if stage == "prefetch":
+        restore.assert_not_awaited()

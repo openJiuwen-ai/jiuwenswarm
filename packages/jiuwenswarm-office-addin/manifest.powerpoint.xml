@@ -25,7 +25,7 @@
     </Sets>
   </Requirements>
   <DefaultSettings>
-    <SourceLocation DefaultValue="https://localhost:3001/taskpane.html" />
+    <SourceLocation DefaultValue="https://localhost:3001/taskpane.powerpoint.html" />
   </DefaultSettings>
   <Permissions>ReadWriteDocument</Permissions>
   <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
@@ -87,7 +87,7 @@
         <bt:Image id="Icon.80x80" DefaultValue="https://localhost:3001/assets/icon-80.png" />
       </bt:Images>
       <bt:Urls>
-        <bt:Url id="Taskpane.Url" DefaultValue="https://localhost:3001/taskpane.html" />
+        <bt:Url id="Taskpane.Url" DefaultValue="https://localhost:3001/taskpane.powerpoint.html" />
       </bt:Urls>
       <bt:ShortStrings>
         <bt:String id="CommandsGroup.Label" DefaultValue="WorkSwarm" />

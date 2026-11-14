@@ -34,7 +34,7 @@ export class Composer {
   /** The box had the focus when it was disabled, as when a question came; it gets it back when enabled. */
   private refocus = false;
 
-  constructor(private readonly actions: {
+  constructor(private readonly noun: string, private readonly actions: {
     send: (text: string) => Promise<boolean>; stop: () => void; chooseModel: (model: string) => void;
   }) {
     this.button.addEventListener('click', () => (this.stops() ? actions.stop() : void this.submit()));
@@ -64,7 +64,7 @@ export class Composer {
     }
     if (reenabled) this.refocus = false;
     const disabledText: Record<Waiting, string> = {
-      document: copy.placeholderDisabled, displaced: copy.placeholderDisplaced, offline: copy.placeholderOffline,
+      document: copy.placeholderDisabled(this.noun), displaced: copy.placeholderDisplaced, offline: copy.placeholderOffline,
       prompt: copy.placeholderPrompt, history: copy.placeholderLoading,
     };
     this.input.placeholder = !enabled ? disabledText[waiting] : running ? copy.placeholderRunning : copy.placeholder;
