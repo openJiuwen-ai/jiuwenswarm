@@ -17,7 +17,7 @@
 //   ark.ap-southeast.bytepluses.com / 国内 ark.cn-beijing.volces.com），模型需要在
 //   Ark 控制台里先开通，否则调用会返回 ModelNotOpen。
 // - MiniMax：协议固定为 minimax，走 MiniMax 自己的原生接口
-//   （image-01 → /v1/image_generation；MiniMax-H3 → /v2/video_generation），后端由
+//   （MiniMax-H3-Image → /v1/images/generations 或 /v1/images/edits；MiniMax-H3 → /v2/video_generation），后端由
 //   gen_toolkits.py 处理。MiniMax 的密钥分区域（国际 api.minimax.io / 国内
 //   api.minimaxi.com），所以这个厂商的 API 地址需要用户能改。
 // - DashScope（阿里云百炼）：协议固定为 dashscope，走百炼原生的 /api/v1 接口
@@ -84,8 +84,8 @@ const OPENROUTER_MODELS: Record<GenerationSlot, readonly string[]> = {
 };
 
 const MINIMAX_MODELS: Record<GenerationSlot, readonly string[]> = {
-  video_gen: ['MiniMax-H3', 'MiniMax-H3-Highspeed', 'MiniMax-H3-Lite'],
-  visual_gen: ['image-01'],
+  video_gen: ['MiniMax-H3', 'MiniMax-H3-Highspeed', 'MiniMax-H3-Lite', 'MiniMax-H3-Max'],
+  visual_gen: ['MiniMax-H3-Image', 'MiniMax-H3-Image-Highspeed'],
   music_gen: [],
 };
 
@@ -142,7 +142,7 @@ export const DEFAULT_GENERATION_MODEL: Record<GenerationVendor, Record<Generatio
     visual_gen: 'google/gemini-3.1-flash-image',
     music_gen: 'google/lyria-3-pro-preview',
   },
-  minimax: { video_gen: 'MiniMax-H3', visual_gen: 'image-01', music_gen: '' },
+  minimax: { video_gen: 'MiniMax-H3', visual_gen: 'MiniMax-H3-Image', music_gen: '' },
   modelark: { video_gen: 'doubao-seedance-2-5-260628', visual_gen: 'doubao-seedream-5-0-flash-260915', music_gen: '' },
   dashscope: { video_gen: 'wan3.0-video', visual_gen: 'qwen-image-3.0', music_gen: '' },
   // 模型名可空：默认留空，由后端使用服务实际加载的模型。
@@ -236,6 +236,7 @@ export function generationVendor(vendorKey: string | undefined, apiBase: string)
   return undefined;
 }
 
+/** 下拉候选；不是请求白名单。已保存但不在目录里的模型名仍可通过 withCurrentOption 回显并原样请求。 */
 /** vendor 为 undefined 且 all=true（自定义地址）时，给出全部厂商的模型作为候选。 */
 export function catalogModels(slot: GenerationSlot, vendor: GenerationVendor | undefined, all = false): GenerationModel[] {
   if (vendor) return [...CATALOG[vendor][slot]];

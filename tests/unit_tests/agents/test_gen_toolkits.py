@@ -119,28 +119,40 @@ async def test_unknown_backend_is_an_error():
 
 def _mm_ok_image() -> httpx.Response:
     return httpx.Response(
-        200, json={"data": {"image_base64": [base64.b64encode(_PNG).decode()]}, "base_resp": {"status_code": 0}}
+        200,
+        json={
+            "data": [{"b64_json": base64.b64encode(_PNG).decode(), "size": "1424x800"}],
+            "output_format": "jpeg",
+        },
     )
 
 
 @pytest.mark.asyncio
 async def test_minimax_image_success(monkeypatch, tmp_path):
     seen = _patch_client(monkeypatch, lambda r: _mm_ok_image())
-    result = await _image("minimax", "sk-x", _MM_GLOBAL, "image-01", "a fox", "16:9", str(tmp_path))
+    result = await _image("minimax", "sk-x", _MM_GLOBAL, "MiniMax-H3-Image", "a fox", "16:9", str(tmp_path))
     saved = _saved_path(result)
     assert saved.parent == tmp_path and saved.read_bytes() == _PNG
-    assert str(seen[0].url) == "https://api.minimax.io/v1/image_generation"
+    assert str(seen[0].url) == "https://api.minimax.io/v1/images/generations"
     assert seen[0].headers["authorization"] == "Bearer sk-x"
-    assert _body(seen[0])["aspect_ratio"] == "16:9"
+    body = _body(seen[0])
+    assert body["model"] == "MiniMax-H3-Image"
+    assert body["response_format"] == "b64_json"
+    assert body["size"] == "auto"
+    assert body["aspect_ratio"] == "16:9"
+    assert body["area"] == "1K"
+    assert "width" not in body and "height" not in body
 
 
 @pytest.mark.asyncio
-async def test_minimax_image_explicit_size_sends_width_and_height(monkeypatch, tmp_path):
+async def test_minimax_image_explicit_size_sends_wxh_size(monkeypatch, tmp_path):
     seen = _patch_client(monkeypatch, lambda r: _mm_ok_image())
-    target = gt.GenerationTarget("minimax", "k", _MM_GLOBAL, "image-01")
+    target = gt.GenerationTarget("minimax", "k", _MM_GLOBAL, "MiniMax-H3-Image")
     await gt.generate_image(target, "fox", "16:9", str(tmp_path), gt.ImageOptions(size="1424x800"))
     body = _body(seen[0])
-    assert (body["width"], body["height"]) == (1424, 800) and "aspect_ratio" not in body
+    assert body["size"] == "1424x800"
+    assert "aspect_ratio" not in body and "area" not in body
+    assert "width" not in body and "height" not in body
 
 
 @pytest.mark.asyncio
@@ -149,13 +161,54 @@ async def test_minimax_region_failover_and_bad_key(monkeypatch, tmp_path):
         return httpx.Response(200, json=_MM_BAD_KEY) if request.url.host == "api.minimaxi.com" else _mm_ok_image()
 
     seen = _patch_client(monkeypatch, china_rejects)
-    result = await _image("minimax", "k", _MM_CHINA, "image-01", "p", "1:1", str(tmp_path))
+    result = await _image("minimax", "k", _MM_CHINA, "MiniMax-H3-Image", "p", "1:1", str(tmp_path))
     assert result.startswith("Image generated successfully!")
     assert [r.url.host for r in seen] == ["api.minimaxi.com", "api.minimax.io"]
 
     seen = _patch_client(monkeypatch, lambda r: httpx.Response(200, json=_MM_BAD_KEY))
-    result = await _image("minimax", "k", _MM_GLOBAL, "image-01", "p", "1:1", str(tmp_path))
+    result = await _image("minimax", "k", _MM_GLOBAL, "MiniMax-H3-Image", "p", "1:1", str(tmp_path))
     assert result.startswith("[ERROR]: MiniMax rejected the API key") and len(seen) == 2
+
+
+@pytest.mark.asyncio
+async def test_minimax_image_400_surfaces_api_error_detail(monkeypatch, tmp_path):
+    payload = {
+        "type": "error",
+        "error": {
+            "type": "bad_request_error",
+            "message": "invalid params, unknown model (2013)",
+            "http_code": "400",
+        },
+    }
+    _patch_client(monkeypatch, lambda r: httpx.Response(400, json=payload))
+    result = await _image(
+        "minimax", "k", _MM_GLOBAL, "some-brand-new-image", "p", "1:1", str(tmp_path)
+    )
+    assert result.startswith("[ERROR]: MiniMax image generation failed:")
+    assert "unknown model" in result
+    assert "模型不支持、请求格式未知" not in result
+
+
+@pytest.mark.asyncio
+async def test_minimax_image_custom_model_name_is_sent_without_whitelist(monkeypatch, tmp_path):
+    seen = _patch_client(monkeypatch, lambda r: _mm_ok_image())
+    await _image("minimax", "k", _MM_GLOBAL, "some-brand-new-image", "p", "1:1", str(tmp_path))
+    assert _body(seen[0])["model"] == "some-brand-new-image"
+
+
+@pytest.mark.asyncio
+async def test_minimax_image_references_use_edits_endpoint(monkeypatch, tmp_path):
+    ref = tmp_path / "ref.png"
+    ref.write_bytes(_PNG)
+    seen = _patch_client(monkeypatch, lambda r: _mm_ok_image())
+    target = gt.GenerationTarget("minimax", "k", _MM_GLOBAL, "MiniMax-H3-Image")
+    await gt.generate_image(
+        target, "edit the cat", "16:9", str(tmp_path),
+        gt.ImageOptions(reference_image_uris=(str(ref),)),
+    )
+    assert str(seen[0].url) == "https://api.minimax.io/v1/images/edits"
+    body = _body(seen[0])
+    assert body["images"][0]["image_url"].startswith("data:image/png;base64,")
 
 
 def _mm_video_handler(statuses: list[str], *, error: Any = None) -> Handler:
@@ -204,6 +257,49 @@ async def test_minimax_video_submit_poll_download(monkeypatch, tmp_path, model, 
     assert body["resolution"] == expected and body["duration"] == 15 and body["ratio"] == "9:16"
     assert body["content"][1]["role"] == "first_frame"
     assert "authorization" not in seen[-1].headers  # the pre-signed download must not carry the key
+
+
+@pytest.mark.parametrize(
+    "model,requested,expected",
+    [
+        ("MiniMax-H3", "480P", "768P"),
+        ("MiniMax-H3", "480p", "768P"),
+        ("MiniMax-H3", "720P", "768P"),
+        ("MiniMax-H3", "1080p", "2K"),
+        ("MiniMax-H3", "2K", "2K"),
+        ("MiniMax-H3", "", "768P"),
+        ("MiniMax-H3-Highspeed", "480P", "480P"),
+        ("MiniMax-H3-Highspeed", "480p", "480P"),
+        ("MiniMax-H3-Highspeed", "720P", "768P"),
+        ("MiniMax-H3-Highspeed", "2K", "768P"),
+        ("MiniMax-H3-Lite", "480P", "480P"),
+        ("MiniMax-H3-Lite", "2K", "768P"),
+        ("MiniMax-H3-Max", "480P", "480P"),
+        ("MiniMax-H3-Max", "1080p", "768P"),
+        ("MiniMax-H3-Max", "2K", "768P"),
+    ],
+)
+def test_minimax_video_resolution_follows_the_configured_model(model, requested, expected):
+    assert gt._minimax_video_resolution(requested, model) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model,requested,expected",
+    [
+        ("MiniMax-H3", "480P", "768P"),
+        ("MiniMax-H3-Highspeed", "480P", "480P"),
+        ("MiniMax-H3-Lite", "480P", "480P"),
+        ("MiniMax-H3-Max", "480P", "480P"),
+    ],
+)
+async def test_minimax_video_submit_keeps_supported_480p(monkeypatch, tmp_path, model, requested, expected):
+    seen = _patch_client(monkeypatch, _mm_video_handler(["succeeded"]))
+    result = await _submit(
+        "minimax", "k", _MM_GLOBAL, model, "fox", "16:9", requested, 5, False, None, str(tmp_path),
+    )
+    assert result.startswith("Video generated successfully!")
+    assert _body(seen[0])["resolution"] == expected
 
 
 @pytest.mark.asyncio

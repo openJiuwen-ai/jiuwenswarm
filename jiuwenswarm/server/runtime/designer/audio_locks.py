@@ -23,7 +23,7 @@ def configured_image_gen_model() -> str:
 
 
 def image_gen_is_minimax() -> bool:
-    """True when the configured image backend is MiniMax image-01 / live."""
+    """True when the configured image backend is MiniMax."""
     from jiuwenswarm.agents.harness.common.tools.gen_toolkits import MINIMAX
     from jiuwenswarm.server.runtime.designer.media_generation import slot_settings
 

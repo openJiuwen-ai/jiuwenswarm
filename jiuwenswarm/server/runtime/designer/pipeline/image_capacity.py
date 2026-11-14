@@ -3,7 +3,7 @@
 
 The toolbar offers a ratio and a tier; the backend sends ``IMAGE_SIZES[tier][ratio]``
 as the model's width x height. Which tiers a model gets follows the vendor limits:
-Qwen-Image 3.0 and MiniMax image-01 accept 512-2048 px per side, Seedream models take
+Qwen-Image 3.0 accepts 512-2048 px per side, MiniMax-H3-Image takes 1K-4K (area at least 655,360 px), Seedream models take
 their documented tiers, vLLM-Omni serves 0.5K-2K, and anything else gets 1K.
 """
 
@@ -33,7 +33,8 @@ class ImageModelCapacity:
 
 
 _ONE_K = ImageModelCapacity(resolutions=("1K",), default_resolution="1K")
-_QWEN_MINIMAX = ImageModelCapacity(resolutions=("1K", "1.5K"), default_resolution="1K")
+_QWEN = ImageModelCapacity(resolutions=("1K", "1.5K"), default_resolution="1K")
+_MINIMAX_H3 = ImageModelCapacity(resolutions=("1K", "1.5K", "2K", "4K"), default_resolution="1K")
 _SEEDREAM_50_PRO_FLASH = ImageModelCapacity(resolutions=("1K", "1.5K", "2K"), default_resolution="1K")
 _SEEDREAM_50 = ImageModelCapacity(resolutions=("2K", "3K", "4K"), default_resolution="2K")
 _SEEDREAM_45 = ImageModelCapacity(resolutions=("2K", "4K"), default_resolution="2K")
@@ -43,7 +44,7 @@ _VLLM_OMNI = ImageModelCapacity(resolutions=("0.5K", "1K", "1.5K", "2K"), defaul
 
 def image_capacity_for(model_id: str, backend: str | None) -> ImageModelCapacity:
     """Tiers for a configured image model on its backend."""
-    from jiuwenswarm.agents.harness.common.tools.gen_toolkits import OPENROUTER, VLLM_OMNI
+    from jiuwenswarm.agents.harness.common.tools.gen_toolkits import MINIMAX, OPENROUTER, VLLM_OMNI
 
     if backend == VLLM_OMNI:
         return _VLLM_OMNI
@@ -51,8 +52,10 @@ def image_capacity_for(model_id: str, backend: str | None) -> ImageModelCapacity
     if backend is None or backend == OPENROUTER:
         return _ONE_K
     key = re.sub(r"[^a-z0-9]+", "", (model_id or "").lower())
-    if "qwenimage30" in key or key.startswith("image01"):
-        return _QWEN_MINIMAX
+    if backend == MINIMAX or "minimaxh3image" in key or "h3image" in key:
+        return _MINIMAX_H3
+    if "qwenimage30" in key:
+        return _QWEN
     if "seedream50pro" in key or "seedream50flash" in key:
         return _SEEDREAM_50_PRO_FLASH
     if "seedream50" in key:

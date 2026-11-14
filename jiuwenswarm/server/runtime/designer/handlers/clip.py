@@ -743,11 +743,12 @@ class ClipNodeHandler:
                 )
         except Exception:  # noqa: BLE001
             pass
-        if ctx is not None and callable(getattr(ctx, "on_prompt_artifact", None)):
-            try:
-                ctx.on_prompt_artifact(prompt)
-            except Exception:  # noqa: BLE001
-                logger.debug("clip early prompt handoff failed", exc_info=True)
+        try:
+            from jiuwenswarm.server.runtime.designer.prompt_publish import emit_prompt_artifact
+
+            emit_prompt_artifact(ctx, prompt)
+        except Exception:  # noqa: BLE001
+            logger.debug("clip early prompt handoff failed", exc_info=True)
         from jiuwenswarm.server.runtime.designer.media_settings import video_settings
 
         video = video_settings(graph)

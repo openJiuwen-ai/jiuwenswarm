@@ -86,7 +86,7 @@ def test_stored_settings_snap_onto_the_active_model(monkeypatch: pytest.MonkeyPa
     assert image_settings(stills).resolution == "1K"
     _use_image_model(monkeypatch, "seedream-4-5-251128", MODELARK)
     assert image_settings(stills).resolution == "2K"
-    _use_image_model(monkeypatch, "image-01", "minimax")
+    _use_image_model(monkeypatch, "MiniMax-H3-Image", "minimax")
     assert image_settings(stills).size == "1792x1344"
     _use_image_model(monkeypatch, "Qwen/Qwen-Image-2512", VLLM_OMNI)
     assert image_settings(_graph()).resolution == "1K"
@@ -150,6 +150,27 @@ def test_capabilities_list_the_active_model_values(monkeypatch: pytest.MonkeyPat
     with_graph = media_capabilities(_graph({"resolution": "1080P"}))
     assert with_graph["settings"]["video"] == {"aspect_ratio": "16:9", "resolution": "768P"}
     assert with_graph["settings"]["image"] == {"aspect_ratio": "16:9", "resolution": "1K"}
+
+
+@pytest.mark.parametrize(
+    "model,resolutions,duration",
+    [
+        ("MiniMax-H3", ["768P", "2K"], (4, 15, 5)),
+        ("MiniMax-H3-Highspeed", ["480P", "768P"], (4, 15, 5)),
+        ("MiniMax-H3-Lite", ["480P", "768P"], (4, 15, 5)),
+        ("MiniMax-H3-Max", ["480P", "768P"], (5, 15, 6)),
+    ],
+)
+def test_minimax_h3_video_menu_ranges_follow_official_docs(
+    monkeypatch: pytest.MonkeyPatch, model, resolutions, duration
+) -> None:
+    """Regenerate secondary menu options come from media_capabilities."""
+    _use_model(monkeypatch, model)
+    caps = media_capabilities()["video"]
+    assert caps["model_id"] == model
+    assert caps["resolutions"] == resolutions
+    assert caps["default_resolution"] == "768P"
+    assert (caps["min_sec"], caps["max_sec"], caps["default_sec"]) == duration
 
 
 def test_graph_patch_updates_settings_for_the_whole_canvas(
