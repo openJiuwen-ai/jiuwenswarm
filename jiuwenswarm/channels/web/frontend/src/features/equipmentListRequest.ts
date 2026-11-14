@@ -1,0 +1,20 @@
+type EquipmentListRequest = <T>(
+  method: string,
+  params?: Record<string, unknown>,
+  options?: { timeoutMs?: number },
+) => Promise<T>;
+
+const EQUIPMENT_LIST_TIMEOUT_MS = 75_000;
+
+export function requestEquipmentList<T>(
+  request: EquipmentListRequest,
+  method: string,
+  params: Record<string, unknown>,
+  preferCache = true,
+): Promise<T> {
+  return request<T>(
+    method,
+    { ...params, ...(preferCache ? { cache_mode: 'prefer_cache' } : {}) },
+    { timeoutMs: EQUIPMENT_LIST_TIMEOUT_MS },
+  );
+}

@@ -34,6 +34,8 @@ from typing import Any, Optional
 
 import httpx
 
+from jiuwenswarm.edition import is_enterprise
+
 logger = logging.getLogger(__name__)
 
 # Linux ``prctl`` PR_SET_PDEATHSIG 选项常量 (来自 ``<linux/prctl.h>``);
@@ -60,13 +62,122 @@ def _win_hidden_kwargs() -> dict:
     if sys.platform != "win32":
         return {}
     import subprocess
-    startupinfo = subprocess.STARTUPINFO()
+    startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
+    if startupinfo_cls is None:
+        # Linux CI may monkeypatch platform=win32 without Windows subprocess APIs.
+        return {}
+    startupinfo = startupinfo_cls()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = 0  # SW_HIDE
     return {
         "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
         "startupinfo": startupinfo,
     }
+
+
+# 一次 Get-NetTCPConnection 覆盖整个端口段. 原先每个端口各起一次 PowerShell,
+# 10 次串在事件循环上, 启用沙箱时会把保存请求拖过前端 15 秒超时.
+_WIN_PROXY_QUERY_TIMEOUT_S = 8
+_SANDBOX_PROCESS_NAMES = frozenset({"jiuwenswarm", "jiuwenbox", "jiuwenbox-server"})
+
+
+def _win_proxy_listener_command(port_start: int, port_end: int) -> str:
+    """一条 PowerShell: 查出端口段上 Listen 的 pid、进程名、端口."""
+    return (
+        "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; "
+        f"$range = {int(port_start)}..{int(port_end)}; "
+        "Get-NetTCPConnection -LocalPort $range -State Listen -ErrorAction SilentlyContinue | "
+        "Group-Object OwningProcess | ForEach-Object { "
+        "$owning = $_.Name; "
+        "$proc = Get-Process -Id $owning -ErrorAction SilentlyContinue; "
+        "$name = if ($null -ne $proc) { $proc.ProcessName } else { '' }; "
+        "$localPorts = (($_.Group | ForEach-Object { $_.LocalPort } | Sort-Object -Unique) -join ','); "
+        "Write-Output ($owning + '|' + $name + '|' + $localPorts) "
+        "}"
+    )
+
+
+def _parse_win_proxy_listener_output(text: str) -> dict[int, tuple[str, list[int]]]:
+    """解析 ``pid|name|port,port`` 行."""
+    found: dict[int, tuple[str, list[int]]] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.count("|") < 2:
+            continue
+        pid_str, name, ports_str = line.split("|", 2)
+        pid_str = pid_str.strip()
+        if not pid_str.isdigit():
+            continue
+        ports = [int(part) for part in ports_str.split(",") if part.strip().isdigit()]
+        if not ports:
+            continue
+        found[int(pid_str)] = (name.strip(), ports)
+    return found
+
+
+def _is_sandbox_process_name(proc_name: str) -> bool:
+    name_l = proc_name.lower()
+    # 桌面包进程名是 jiuwenswarm, 开发态是 python*.
+    return name_l.startswith("python") or name_l in _SANDBOX_PROCESS_NAMES
+
+
+def _apply_soft_delete_env(env: dict[str, str]) -> None:
+    """开关打开时把软删除 DLL 路径和归档目录写进 box-server 环境。
+
+    box-server 只继承白名单和 ``JIUWENBOX_*``。开关关闭时不导入软删除模块。
+    模块缺失或 DLL 不存在时只记日志，沙箱照常启动，删除保持系统原样。
+    仅个人版。企业版不在 Windows 上运行，没有回收站，并清掉继承来的软删变量。
+    """
+    if is_enterprise():
+        for key in [name for name in env if name.startswith("JIUWENBOX_SOFT_DELETE")]:
+            env.pop(key, None)
+        return
+    already_requested = (
+        env.get("JIUWENBOX_SOFT_DELETE") == "1"
+        and (env.get("JIUWENBOX_SOFT_DELETE_DLL") or "").strip()
+    )
+    enabled = False
+    archive = ""
+    if not already_requested:
+        try:
+            from jiuwenswarm.common.config import get_config, get_file_soft_delete_settings
+
+            enabled, archive = get_file_soft_delete_settings(get_config())
+        except Exception:  # noqa: BLE001
+            logger.warning("读取软删除配置失败, 沙箱不启用软删除", exc_info=True)
+            return
+        if not enabled:
+            return
+    try:
+        from jiuwenbox.supervisor.win_softdelete import (
+            ENV_ARCHIVE,
+            ENV_DLL,
+            ENV_ENABLED,
+            dll_path,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("软删除模块不可用, 沙箱不启用软删除", exc_info=True)
+        env.pop("JIUWENBOX_SOFT_DELETE", None)
+        env.pop("JIUWENBOX_SOFT_DELETE_DLL", None)
+        env.pop("JIUWENBOX_SOFT_DELETE_ARCHIVE", None)
+        return
+
+    existing_dll = (env.get(ENV_DLL) or "").strip()
+    if env.get(ENV_ENABLED) == "1" and existing_dll:
+        if not os.path.isfile(existing_dll):
+            logger.warning("软删除 DLL 不存在, 沙箱不启用软删除: %s", existing_dll)
+            env.pop(ENV_ENABLED, None)
+            env.pop(ENV_DLL, None)
+            env.pop(ENV_ARCHIVE, None)
+        return
+    dll = dll_path()
+    if not dll.is_file():
+        logger.warning("软删除 DLL 不存在, 沙箱不启用软删除: %s", dll)
+        return
+    env[ENV_ENABLED] = "1"
+    env[ENV_DLL] = str(dll)
+    if archive:
+        env[ENV_ARCHIVE] = archive
 
 
 def _cleanup_stale_win_proxy_ports(
@@ -77,55 +188,38 @@ def _cleanup_stale_win_proxy_ports(
 
     agent-server 重启后, self.process 不再持有旧 box-server 引用 → ensure_running
     的 "owned_match" 判定失效, 旧 box-server (孤儿) 不会被 stop, 仍占着
-    60080-60089 → 新 box-server win_proxy bind WinError 10048. 这里检测占用
-    这些端口的进程, kill 掉 (Windows 用 PowerShell Get-NetTCPConnection).
+    60080-60089 → 新 box-server win_proxy bind WinError 10048. 这里一次查出
+    整个端口段上的监听进程再 kill (Windows 用 PowerShell Get-NetTCPConnection).
 
-    仅 Windows internal 模式调用. best-effort: 检测/kill 失败只 warning, 不阻断
-    spawn (极端情况端口被非 jiuwenbox 第三方占, 不该误杀).
+    同步函数, 调用方放到线程里跑, 避免卡住事件循环. 仅 Windows internal 模式调用.
+    best-effort: 检测/kill 失败只 warning, 不阻断 spawn (极端情况端口被非
+    jiuwenbox 第三方占, 不该误杀).
     """
     if sys.platform != "win32":
         return
-    import subprocess
-    stale_pids: dict[int, list[int]] = {}  # pid -> ports
-    for port in range(port_start, port_end + 1):
-        try:
-            # Get-NetTCPConnection 查 Listen 状态的端口占用.
-            result = subprocess.run(
-                [_get_powershell(), "-NoProfile", "-Command",
-                 f"Get-NetTCPConnection -LocalPort {port} -State Listen "
-                 f"-ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess"],
-                capture_output=True, timeout=5,
-                **_win_hidden_kwargs(),
-            )
-            out = result.stdout.decode("utf-8", errors="replace").strip()
-            if not out:
-                continue
-            for pid_str in out.splitlines():
-                pid_str = pid_str.strip()
-                if pid_str.isdigit():
-                    pid = int(pid_str)
-                    stale_pids.setdefault(pid, []).append(port)
-        except Exception:  # noqa: BLE001
-            continue
-    if not stale_pids:
+    try:
+        start = int(port_start)
+        end = int(port_end)
+    except (TypeError, ValueError):
         return
-    for pid, ports in stale_pids.items():
-        try:
-            name_result = subprocess.run(
-                [_get_powershell(), "-NoProfile", "-Command",
-                 f"(Get-Process -Id {pid} -ErrorAction SilentlyContinue).ProcessName"],
-                capture_output=True, timeout=5,
-                **_win_hidden_kwargs(),
-            )
-            proc_name = name_result.stdout.decode("utf-8", errors="replace").strip()
-        except Exception:  # noqa: BLE001
-            proc_name = ""
-        # 桌面包进程名是 jiuwenswarm, 不只 python*.
-        name_l = proc_name.lower()
-        if not (
-            name_l.startswith("python")
-            or name_l in ("jiuwenswarm", "jiuwenbox", "jiuwenbox-server")
-        ):
+    if not (1 <= start <= end <= 65535):
+        return
+    import subprocess
+    try:
+        result = subprocess.run(
+            [_get_powershell(), "-NoProfile", "-Command", _win_proxy_listener_command(start, end)],
+            capture_output=True,
+            timeout=_WIN_PROXY_QUERY_TIMEOUT_S,
+            **_win_hidden_kwargs(),
+        )
+        listeners = _parse_win_proxy_listener_output(
+            result.stdout.decode("utf-8", errors="replace")
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[JiuwenBoxRunner] 查询 win_proxy 端口占用失败, 继续启动: %s", exc)
+        return
+    for pid, (proc_name, ports) in listeners.items():
+        if not _is_sandbox_process_name(proc_name):
             logger.warning(
                 "[JiuwenBoxRunner] 端口 %s 被非沙箱进程 PID=%d (%s) 占用, 跳过清理",
                 ports, pid, proc_name or "<unknown>",
@@ -133,8 +227,9 @@ def _cleanup_stale_win_proxy_ports(
             continue
         try:
             subprocess.run(
-                [_get_powershell(), "-NoProfile", "-Command", f"Stop-Process -Id {pid} -Force"],
-                capture_output=True, timeout=5,
+                [_get_powershell(), "-NoProfile", "-Command", f"Stop-Process -Id {int(pid)} -Force"],
+                capture_output=True,
+                timeout=5,
                 **_win_hidden_kwargs(),
             )
             logger.warning(
@@ -149,25 +244,11 @@ def _cleanup_stale_win_proxy_ports(
             )
 
 
-def _resolve_jiuwenbox_src_dir() -> Optional[Path]:
-    """探测仓库内 ``code_agent/jiuwenbox/src``; 若存在则供 PYTHONPATH 注入用.
-
-    便于无需 ``pip install -e jiuwenbox/`` 也能直接运行本地源码版 jiuwenbox.
-    返回 ``None`` 表示未找到 (则依赖 site-packages 中的安装版).
-    """
-    here = Path(__file__).resolve()
-    for ancestor in here.parents[1:7]:
-        candidate = ancestor / "jiuwenbox" / "src" / "jiuwenbox" / "__init__.py"
-        if candidate.exists():
-            return candidate.parent.parent
-    return None
-
-
 def _resolve_jiuwenbox_configs_dir() -> Optional[Path]:
     """探测 ``jiuwenbox/configs/`` 目录 (policy 模板所在).
 
-    与 ``config._jiuwenbox_configs_dir`` 同一探测顺序: 冻包 ``_MEIPASS``、
-    仓库目录树、pip 安装包。
+    与 ``config._jiuwenbox_configs_dir`` 同一探测顺序: 冻包数据目录、
+    已安装的 jiuwenbox 包、本仓库残留目录。
     """
     from jiuwenswarm.common.config import _jiuwenbox_configs_dir
     return _jiuwenbox_configs_dir()
@@ -245,9 +326,8 @@ class JiuwenBoxRunner:
         """把 policy 文件名解析为绝对路径 (供 ``ensure_running(policy_path=...)``).
 
         ``filename`` 通常是 ``default-policy.yaml`` (Linux) 或
-        ``windows-policy.yaml`` (Windows)。优先在仓库内
-        ``jiuwenbox/src/jiuwenbox/configs/`` 找 (开发态), 失败回落到
-        site-packages 里随 wheel 带出的 ``jiuwenbox/configs/`` (打包态)。
+        ``windows-policy.yaml`` (Windows)。在已安装 jiuwenbox 包的
+        ``configs/`` 下查找; 冻包则用随安装包打进去的那份。
         找不到返回 ``None`` —— ``ensure_running`` 接受 ``None``, 由
         jiuwenbox-server 自身回落到内置默认 policy。
         """
@@ -433,7 +513,7 @@ class JiuwenBoxRunner:
             # 上面 _stop_no_lock 清不到孤儿进程. 旧 box-server 仍占端口 → 新 win_proxy bind WinError 10048. 按默认范围兜底清理.
             # (用户改了 proxy 端口范围则默认范围清不到, 但 bind 失败日志会显示具体端口).
             if sys.platform == "win32":
-                _cleanup_stale_win_proxy_ports()
+                await asyncio.to_thread(_cleanup_stale_win_proxy_ports)
 
             self.host = host
             self.port = port
@@ -484,18 +564,6 @@ class JiuwenBoxRunner:
             # extra_env (调用方显式传入) 覆盖, 权限最高.
             if extra_env:
                 env.update({str(k): str(v) for k, v in extra_env.items()})
-            # 若 jiuwenbox 未安装到 site-packages, 尝试用仓库内源码目录注入 PYTHONPATH
-            local_src = _resolve_jiuwenbox_src_dir()
-            if local_src is not None and not getattr(sys, "frozen", False):
-                existing = env.get("PYTHONPATH", "")
-                parts = [str(local_src)]
-                if existing:
-                    parts.append(existing)
-                env["PYTHONPATH"] = os.pathsep.join(parts)
-                logger.info(
-                    "[JiuwenBoxRunner] prepending local jiuwenbox src to PYTHONPATH: %s",
-                    local_src,
-                )
             # 把 policy 路径通过环境变量传给 jiuwenbox-server (与 README 中
             # ``JIUWENBOX_POLICY_PATH`` 用法一致, 即 ``server/app.py`` 启动时读取)。
             # 如果调用方没给, 显式删掉父进程继承下来的同名变量, 避免误用旧值。
@@ -507,6 +575,8 @@ class JiuwenBoxRunner:
                 )
             else:
                 env.pop("JIUWENBOX_POLICY_PATH", None)
+            if sys.platform == "win32":
+                _apply_soft_delete_env(env)
 
             logger.info("[JiuwenBoxRunner] spawning: %s", " ".join(cmd))
             try:

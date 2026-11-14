@@ -17,6 +17,7 @@ from openjiuwen.harness.rails.interrupt.interrupt_base import (
 )
 from openjiuwen.harness.security.models import PermissionConfirmResponse
 
+from jiuwenswarm.agents.harness.common.rails.permissions import config_loader
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import (
     JiuSwarmStreamEventRail,
 )
@@ -129,8 +130,13 @@ async def test_skill_display_metadata_without_install_gate(
     _, rail = permission_adapter(
         {"search_skill": "allow", "install_skill": "ask"},
     )
+    # FlashSkillSearchTool gates install via get_effective_permissions_config(),
+    # not rail._static_config alone — disable both for the "disabled" scenario.
+    agent_base_token = None
     if scenario == "disabled":
-        rail.update_config({**rail._static_config, "enabled": False})
+        disabled = {**rail._static_config, "enabled": False}
+        rail.update_config(disabled)
+        agent_base_token = config_loader.setup_permissions_agent_base(disabled)
     args = {"query": "fixture", **display_args}
     if scenario == "search_only":
         args["install"] = False
@@ -139,14 +145,18 @@ async def test_skill_display_metadata_without_install_gate(
     confirm = AsyncMock(side_effect=AssertionError("unexpected approval"))
     rail._host.request_permission_confirmation = confirm
     ctx = tool_context("search_skill", args)
-    async with sdk_tools(rail, ctx.session, [tool]) as (manager, native_ctx):
-        await register_events(native_ctx)
-        results = await manager.execute(native_ctx, ctx.inputs.tool_call, ctx.session)
-        assert results[0][0]["success"] is True, str(results)
-        search.assert_awaited_once()
-        confirm.assert_not_awaited()
-        assert install.await_count == int(scenario == "disabled")
-        assert_display(ctx.session, display_args)
+    try:
+        async with sdk_tools(rail, ctx.session, [tool]) as (manager, native_ctx):
+            await register_events(native_ctx)
+            results = await manager.execute(native_ctx, ctx.inputs.tool_call, ctx.session)
+            assert results[0][0]["success"] is True, str(results)
+            search.assert_awaited_once()
+            confirm.assert_not_awaited()
+            assert install.await_count == int(scenario == "disabled")
+            assert_display(ctx.session, display_args)
+    finally:
+        if agent_base_token is not None:
+            config_loader.reset_permissions_agent_base(agent_base_token)
 
 
 @pytest.mark.asyncio

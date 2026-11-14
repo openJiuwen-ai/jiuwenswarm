@@ -341,6 +341,7 @@ def _node_frames_for_chunk(
     display: tuple[str, str],
     event: str,
     content: Any,
+    nested_process: bool = False,
 ) -> tuple[list[dict], bool, bool]:
     """Build node frames without mutating state so persistence can preflight."""
     node_state = state.active_nodes.get(key)
@@ -359,6 +360,10 @@ def _node_frames_for_chunk(
             section = _escape_markdown_text(section)
             start_text = f"正在撰写章节：{section}\n"
             complete_text = f"章节撰写完成：{section}\n"
+    if nested_process and starts_node and agent not in FINAL_REPORT_NODES:
+        boundary = _stage_child_reasoning(stage, agent, display, "")
+        boundary.update(event_type="task.start")
+        frames.append(boundary)
     if starts_node and event != "done":
         frames.append(_node_reasoning(stage, agent, display, start_text.rstrip() + "\n\n"))
     if agent in _BRIEF_PROCESS_CONTENT_NODES:
@@ -366,6 +371,27 @@ def _node_frames_for_chunk(
             frames.append(_node_reasoning(stage, agent, display, text))
     if completes_node:
         frames.append(_node_reasoning(stage, agent, display, complete_text.rstrip() + "\n\n"))
+        if nested_process and agent not in FINAL_REPORT_NODES:
+            boundary = _stage_child_reasoning(stage, agent, display, "")
+            boundary.update(event_type="task.complete")
+            frames.append(boundary)
+    # Parallel Brief chapters need independent lifecycle identities too.
+    section_idx = str(chunk.get("section_idx") or "0").strip()
+    if nested_process and agent == "brief_sub_reporter" and section_idx != "0":
+        title = (
+            _text_field(chunk.get("section_title"))
+            or state.section_titles.get(section_idx)
+            or f"撰写第 {section_idx} 章"
+        )
+        state.section_titles[section_idx] = title
+        for frame in frames:
+            frame.update(stream_source_id=f"deepresearch_section_{section_idx}", task_content=title)
+            index = _positive_int(section_idx, maximum=MAX_SECTION_COUNT)
+            total = _positive_int(chunk.get("section_total"), maximum=MAX_SECTION_COUNT)
+            if index is not None:
+                frame["task_index"] = index
+            if total is not None:
+                frame["total_tasks"] = total
     return frames, starts_node, completes_node
 
 
@@ -756,7 +782,7 @@ def _section_reasoning(state: RouterState, chunk: dict, content: str) -> dict:
         "event_type": "chat.reasoning",
         "source_chunk_type": "process",
         "task_id": "deepresearch_stage_3",
-        "task_content": section_title or f"章节 {section_idx}",
+        "task_content": section_title or f"撰写第 {section_idx} 章",
         "stream_source_id": f"deepresearch_section_{section_idx}",
         "content": content,
     }
@@ -951,7 +977,7 @@ def build_interrupt_prompt(node_id: str, state: RouterState, marker: dict, query
     return raw or "请输入反馈"
 
 
-def route_chunk(chunk: dict, state: RouterState) -> list[dict]:
+def route_chunk(chunk: dict, state: RouterState, *, nested_process: bool = False) -> list[dict]:
     """把一条 deepsearch chunk 路由成 0~N 个 send_push payload。
 
     职责:① 累积 report 和 outline,为不含正文的 interrupt marker 提供兜底;
@@ -1018,6 +1044,7 @@ def route_chunk(chunk: dict, state: RouterState) -> list[dict]:
             display=display,
             event=event,
             content=content,
+            nested_process=nested_process,
         )
         pending_size = _pending_frames_text_size(preflight_node_frames[0])
         report_size = (
@@ -1062,6 +1089,18 @@ def route_chunk(chunk: dict, state: RouterState) -> list[dict]:
 
     if not display:
         return frames  # 未知节点不推(避免噪声)
+
+    # Brief collection emits summary_response chunks without a done boundary.
+    # Entering chapter writing is its authoritative handoff (review may loop
+    # back to collection, so do not close the aggregate on reviewer activity).
+    if nested_process and agent == "brief_sub_reporter":
+        for predecessor in ("brief_info_collector", "brief_evidence_reviewer"):
+            node_state = state.active_nodes.get(_node_key(predecessor, "0"))
+            if node_state and not node_state["done"]:
+                node_state["done"] = True
+                boundary = _stage_child_reasoning(3, predecessor, NODE_DISPLAY_INFO[predecessor], "")
+                boundary.update(event_type="task.complete")
+                frames.append(boundary)
 
     if agent in _SECTION_PROCESS_NODES and section_idx != "0":
         _remember_expected_sections(state, chunk)
@@ -1113,6 +1152,21 @@ def route_chunk(chunk: dict, state: RouterState) -> list[dict]:
 
     # 大纲正文展示在任务正文；SDK 原始 reasoning_content 不向界面转发。
     if agent in {"outline", "brief_outline"}:
+        if nested_process:
+            node_state = state.active_nodes.get(key)
+            if node_state is None:
+                state.active_nodes[key] = {
+                    "started": True,
+                    "done": False,
+                    "agent_name": agent,
+                    "section_idx": section_idx,
+                }
+                frames.append({"event_type": "task.start", "task_id": "deepresearch_stage_2",
+                               "task_content": display[0], "stream_source_id": "dr_outline"})
+            if event == "done" and not state.active_nodes[key]["done"]:
+                state.active_nodes[key]["done"] = True
+                frames.append({"event_type": "task.complete", "task_id": "deepresearch_stage_2",
+                               "task_content": display[0], "stream_source_id": "dr_outline"})
         if agent == "outline" and isinstance(content, str) and content:
             # A complete outline is a current snapshot. The same stream id is
             # reused after HITL; appending would leave the first draft on top.
@@ -1163,6 +1217,7 @@ def route_chunk(chunk: dict, state: RouterState) -> list[dict]:
                 display=display,
                 event=event,
                 content=content,
+                nested_process=nested_process,
             )
         )
         if agent == "reporter" and isinstance(content, str) and content:

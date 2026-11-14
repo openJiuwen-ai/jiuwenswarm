@@ -21,9 +21,13 @@ from jiuwenswarm.agents.harness.common.tools.command_tools import _build_subproc
 
 
 class TestBuildSubprocessEnv(unittest.TestCase):
+    # Windows intentionally seeds PATH even without extra env; the None
+    # contract only applies on POSIX.
+    @unittest.skipIf(os.name == "nt", reason="Windows seeds tool PATH")
     def test_returns_none_when_extra_env_is_none(self):
         assert _build_subprocess_env(None) is None
 
+    @unittest.skipIf(os.name == "nt", reason="Windows seeds tool PATH")
     def test_returns_none_when_extra_env_is_empty(self):
         assert _build_subprocess_env({}) is None
 

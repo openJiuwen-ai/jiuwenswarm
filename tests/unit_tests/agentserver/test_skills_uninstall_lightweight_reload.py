@@ -82,8 +82,11 @@ async def swarm_with_fake_adapter(monkeypatch):
 
     swarm._skill_manager = _StubSkillManager()
 
-    # Stub _refresh_team_shared_skill_links (no-op)
-    swarm._refresh_team_shared_skill_links = lambda session_id=None: None
+    # Stub team skill-view reload (no-op); soft-link refresh was removed in path-2.
+    async def _noop_reload(session_id=None):
+        return None
+
+    swarm._reload_team_skill_views = _noop_reload
 
     return swarm
 

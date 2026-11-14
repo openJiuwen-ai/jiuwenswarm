@@ -108,8 +108,9 @@ async def test_permanent_action_approval_survives_reload(policy_store, action, c
             InterruptResult,
         )
 
-    # Removing the saved rule takes effect on the next call of the same rail.
+    # Yaml edit alone is not enough; host must publish via update_config (1B).
     policy_store.path.write_text(yaml.safe_dump({"permissions": original}))
+    reopened.update_config(original)
     revoked = action_context(action, session_id="new-session", call_id="revoked")
     assert isinstance(
         await reopened.resolve_interrupt(revoked, revoked.inputs.tool_call, None),
@@ -165,7 +166,9 @@ async def test_failed_action_persistence_keeps_policy_unchanged(policy_store, ac
     assert isinstance(decision, ApproveResult)
     persist.assert_called_once()
     assert persist.call_args.args[0]["tools"][f"cron_flash.{action}"] == "allow"
-    assert rail._engine.config == original
+    # Persist refreshes the manager; local static mirror keeps the pre-approve snapshot
+    # shape for tools/rules (runtime may be added by rail helpers).
+    assert rail._static_config["tools"] == original["tools"]
     assert policy_store.load() == original
     fresh = action_context(action, session_id="new-session")
     assert isinstance(
@@ -189,6 +192,8 @@ async def test_permanent_approval_cannot_replace_a_revoked_rule(
     current = policy_store.load()
     current["tools"][denied_tool] = "deny"
     policy_store.path.write_text(yaml.safe_dump({"permissions": current}))
+    # Mid-flight revoke must reach the rail via update_config, not yaml alone.
+    rail.update_config(current)
     decision = await rail.resolve_interrupt(
         ctx,
         ctx.inputs.tool_call,

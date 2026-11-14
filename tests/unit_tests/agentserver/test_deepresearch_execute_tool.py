@@ -104,10 +104,14 @@ async def _invoke(
     conversation_id="",
     materials_context=None,
     mcp_servers=None,
+    task_mode=None,
+    parent_task_id="",
+    load_state=None,
 ):
     saved: list[dict] = []
     token = de.bind_deepresearch_execution_context(
         tool_call_id="call-1",
+        parent_task_id=parent_task_id,
         state=state,
         user_input=user_input,
         model=model,
@@ -116,6 +120,7 @@ async def _invoke(
         deepresearch_followup=deepresearch_followup,
         materials_context=materials_context,
         mcp_servers=mcp_servers,
+        load_state=load_state,
     )
     try:
         result = await de.deepresearch_execute._func(
@@ -124,6 +129,7 @@ async def _invoke(
             report_type=report_type,
             upgrade_from_brief=upgrade_from_brief,
             conversation_id=conversation_id,
+            **({"task_mode": task_mode} if task_mode is not None else {}),
         )
     finally:
         de.reset_deepresearch_execution_context(token)
@@ -1406,6 +1412,35 @@ async def test_option_generation_preserves_model_defaults_and_completion_budget(
     assert "不得输出分析或推理过程" in prompt
 
 
+@pytest.mark.asyncio
+async def test_replay_interrupt_card_cancelled_option_generation_returns_stopped():
+    """选项生成 await 点被取消时，重弹路径透传 stopped 终态而不是抛 KeyError。
+
+    回归检视意见：_guard_user_stop 取消路径返回 _stopped_result 的 dict
+    （kind=stopped），修复前 _replay_interrupt_card 直接按 options[index]
+    构造交互卡，dict 无整数键抛 KeyError，stopped 转译失效退回框架通用
+    [Interrupted] 分支。phase=new 与 phase=error 两个重弹入口共用本路径。
+    """
+    model = _Model(_option_payload("方向A"))
+    model.invoke = AsyncMock(side_effect=asyncio.CancelledError())
+    context = de.DeepResearchExecutionContext(
+        tool_call_id="call-1",
+        state=None,
+        user_input=None,
+        model=model,
+        agent_id="jiuwenswarm",
+        save_state=lambda _value: None,
+    )
+    state = {"query": "研究智能家电竞争格局", "conversation_id": "conv-stop-1"}
+    probe = {"node": "feedback_handler", "questions": ["重点研究哪些品类？"]}
+
+    result = await de._replay_interrupt_card(context, state, "conv-stop-1", probe)
+
+    assert isinstance(result, dict)
+    assert result["kind"] == "stopped"
+    assert "已被用户停止" in str(result["content"])
+
+
 def test_option_description_is_truncated_without_rejecting_valid_options():
     payload = json.dumps(
         {
@@ -1946,6 +1981,13 @@ async def test_cancelled_during_sdk_window_translates_to_stopped_without_error_o
     assert "明确要求继续" in result["content"]
     assert "如需继续，请再次调用" not in result["content"]
     assert "conversation-1" not in result["content"]
+    # 2026-11-05 B+ 补强（9973ed6e 线上事故回归）：停止定性为用户
+    # 主动行为（防猜测故障/因历史失败绕过）、“继续”优先于备选方案
+    # 解读、消息信封 timestamp 时序意识三重防御须在文案在位。
+    assert "停止是用户的主动操作" in result["content"]
+    assert "失败记录" in result["content"]
+    assert "备选方案" in result["content"]
+    assert "timestamp" in result["content"]
 
 
 @pytest.mark.asyncio
@@ -2063,11 +2105,97 @@ async def test_error_phase_without_stopped_snapshot_reports_finished():
         patch.object(de, "_probe_resumable_checkpoint", new=Mock(return_value=None)),
         patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream,
     ):
-        result, _ = await _invoke(state=state)
+        result, saved = await _invoke(state=state)
 
     assert result["kind"] == "error"
     assert "请重新发起" in result["content"]
     stream.assert_not_awaited()
+    # fix-4c：判死回落 new（参照 _stopped_result）。rail 对 error 终态保留
+    # state 后，phase=error 幸存会让同主题的重新发起被反复判死（死锁）；
+    # 回落 new 保留 conversation_id，下一次调用走 new 分支扫库认领或全新
+    # 起跑，重新发起可自愈。
+    assert saved[-1]["phase"] == "new"
+    assert saved[-1]["conversation_id"] == "conversation-1"
+
+
+@pytest.mark.asyncio
+async def test_error_phase_replays_feedback_card_from_interrupt_snapshot():
+    """修复8：error 相位 + feedback_handler 中断快照 → 重弹原反馈卡。
+
+    error 写入可能覆盖原 wait_feedback 相位（子进程失败退出），
+    checkpoint 残留的是交互中断快照：不判死，重弹原反馈卡，
+    用户答复后从原会话 resume，交互上下文不丢。
+    """
+    state = {
+        "schema_version": 1,
+        "phase": "error",
+        "revision": 4,
+        "query": "研究智能家电竞争格局",
+        "file_name": "智能家电报告",
+        "conversation_id": "C-FB-E",
+    }
+    probe = {
+        "node": "feedback_handler",
+        "questions": ["1. 重点研究哪些品类？", "2. 覆盖哪些市场？"],
+    }
+    model = _Model(_option_payload("重点研究哪些品类？", "覆盖哪些市场？"))
+    with (
+        patch.object(de, "_probe_resumable_checkpoint", new=Mock(return_value=probe)),
+        patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream,
+    ):
+        result, saved = await _invoke(state=state, model=model)
+
+    stream.assert_not_awaited()
+    assert result["kind"] == "interaction"
+    cards = result["interaction"]["questions"]
+    assert [card["question"] for card in cards] == [
+        "重点研究哪些品类？",
+        "覆盖哪些市场？",
+    ]
+    assert all(len(card["options"]) == 2 for card in cards)
+    final = saved[-1]
+    assert final["phase"] == "wait_feedback"
+    assert final["conversation_id"] == "C-FB-E"
+    # 与 new 相位认领同口径：probe 问题经 _split_questions 剥掉编号后入 state。
+    assert final["questions"] == ["重点研究哪些品类？", "覆盖哪些市场？"]
+
+
+@pytest.mark.asyncio
+async def test_error_phase_replays_outline_card_from_interrupt_snapshot():
+    """修复8：error 相位 + outline_interaction 中断快照 → 重弹大纲审阅卡。"""
+    state = {
+        "schema_version": 1,
+        "phase": "error",
+        "revision": 4,
+        "query": "研究智能家电竞争格局",
+        "file_name": "智能家电报告",
+        "conversation_id": "C-OL-E",
+    }
+    probe = {
+        "node": "outline_interaction",
+        "outline_json": {
+            "title": "智能家电竞争格局研究",
+            "thought": "先规模后玩家",
+            "sections": [
+                {"title": "市场规模", "is_core_section": True},
+                {"title": "主要玩家", "is_core_section": False},
+            ],
+        },
+    }
+    with (
+        patch.object(de, "_probe_resumable_checkpoint", new=Mock(return_value=probe)),
+        patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream,
+    ):
+        result, saved = await _invoke(state=state)
+
+    stream.assert_not_awaited()
+    assert result["kind"] == "interaction"
+    final = saved[-1]
+    assert final["phase"] == "wait_outline"
+    assert final["conversation_id"] == "C-OL-E"
+    assert final["outline_presented"] is True
+    question = result["interaction"]["questions"][0]
+    assert "**研究思路**：先规模后玩家" in question["preview"]["text"]
 
 
 @pytest.mark.asyncio
@@ -2335,6 +2463,12 @@ async def test_execution_rail_rewrites_stopped_result_to_block_auto_restart():
     assert ctx.inputs.tool_msg.tool_call_id == "call-1"
     assert "已被用户停止" in ctx.inputs.tool_msg.content
     assert "请勿" in ctx.inputs.tool_msg.content
+    # 2026-11-05 B+ 补强（9973ed6e 线上事故回归）：rail 改写口径与
+    # execution._stopped_result 同步——停止定性、备选方案优先级、
+    # timestamp 时序意识三重防御在位。
+    assert "停止是用户的主动操作" in ctx.inputs.tool_msg.content
+    assert "备选方案" in ctx.inputs.tool_msg.content
+    assert "timestamp" in ctx.inputs.tool_msg.content
     # conversation_id 与内部 state 字段不泄露进 LLM 历史
     assert "conversation-1" not in ctx.inputs.tool_msg.content
     assert "schema_version" not in ctx.inputs.tool_msg.content
@@ -3705,7 +3839,7 @@ async def test_completed_ignores_outline_sections_without_presented_card():
 async def test_material_snapshot_survives_clarification_and_outline(tmp_path, response):
     from jiuwenswarm.agents.harness.common.tools.deepresearch import materials as m
     source = tmp_path / "research.txt"
-    source.write_text("青鹭项目的试验数据是73.42%。")
+    source.write_text("青鹭项目的试验数据是73.42%。", encoding="utf-8")
     material_context = {"original_query": "参考附件研究青鹭项目", "files": [{"path": str(source), "name": source.name}],
                         "scope": "session-A", "output_dir": str(tmp_path)}
     interrupted = {"status": "interrupted", "node_id": "feedback_handler", "marker": {"questions": "研究范围？"}}
@@ -3961,3 +4095,265 @@ async def test_stopped_material_research_resumes_with_original_query_and_snapsho
     assert stream.await_args.kwargs["node"] == "stopped"
     assert stream.await_args.kwargs["conversation_id"] == "stopped-materials"
     assert stream.await_args.kwargs["_materials_reference"] == reference
+
+
+@pytest.mark.asyncio
+async def test_main_agent_research_returns_files_and_preserves_mode_on_replay():
+    files = [{"path": "/workspace/report.html", "name": "report.html", "mime_type": "text/html"}]
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock(return_value={
+        "status": "completed", "report_delivered": True, "report_files": files,
+    })) as stream:
+        result, _ = await _invoke(task_mode="main_agent")
+        replay, _ = await _invoke(state=result["state"])
+    assert result["continuation"] == "main_agent"
+    assert result["report_files"] == files
+    assert replay["report_files"] == files
+    assert replay["continuation"] == "main_agent"
+    assert result["state"]["task_mode"] == "main_agent"
+    stream.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_main_agent_completion_does_not_force_finish_or_leak_internal_state():
+    state = {"phase": "completed", "task_mode": "main_agent", "revision": 4}
+    result = {"schema_version": de.EXECUTION_SCHEMA, "kind": "completed", "state": state,
+              "content": "研究产物已准备好", "continuation": "main_agent",
+              "report_prepared": True, "report_delivered": False,
+              "report_files": [{"path": "/workspace/report.md", "name": "report.md", "mime_type": "text/markdown"}]}
+    ctx = _rail_ctx(result=result)
+    await DeepResearchExecutionRail(model_provider=lambda: None).after_tool_call(ctx)
+    assert ctx.force_finish_requests == []
+    message = json.loads(ctx.inputs.tool_msg.content)
+    assert message["report_files"] == result["report_files"]
+    assert message["status"] == "completed"
+    assert "state" not in message
+    assert "docx-craft" in message["next_action"]
+    assert message["report_prepared"] is True
+    assert message["report_delivered"] is False
+    assert "不发送中间 HTML/Markdown" in message["next_action"]
+
+
+@pytest.mark.asyncio
+async def test_main_agent_research_error_allows_plan_cleanup_but_not_conversion():
+    result = {"schema_version": de.EXECUTION_SCHEMA, "kind": "error",
+              "state": {"task_mode": "main_agent", "phase": "error"},
+              "content": "报告交付失败", "error_code": "report_file_delivery_failed"}
+    ctx = _rail_ctx(result=result)
+    await DeepResearchExecutionRail(model_provider=lambda: None).after_tool_call(ctx)
+    assert ctx.force_finish_requests == []
+    message = json.loads(ctx.inputs.tool_msg.content)
+    assert message["status"] == "error"
+    assert message["report_files"] == []
+    assert "不得" in message["next_action"]
+
+
+@pytest.mark.asyncio
+async def test_main_agent_mode_survives_feedback_and_outline_resume():
+    files = [{"path": "/workspace/final.md", "name": "final.md", "mime_type": "text/markdown"}]
+    modes = []
+
+    async def stream(**kwargs):
+        modes.append(dt._deepresearch_main_agent_plan_ctx.get())
+        if len(modes) == 1:
+            return {"status": "interrupted", "conversation_id": "C1", "node_id": "feedback_handler",
+                    "marker": {"questions": ["1. 研究范围？"]}}
+        if len(modes) == 2:
+            return {"status": "interrupted", "conversation_id": "C1", "node_id": "outline_interaction",
+                    "marker": {"outline": "# 研究报告\n### P1: 市场分析"}}
+        return {"status": "completed", "conversation_id": "C1", "report_delivered": True, "report_files": files}
+
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock(side_effect=stream)):
+        first, _ = await _invoke(task_mode="main_agent")
+        assert first["kind"] == "interaction"
+        second, _ = await _invoke(state=first["state"], user_input={"status": "skipped", "answers": []})
+        assert second["kind"] == "interaction"
+        final, _ = await _invoke(state=second["state"], user_input={"status": "skipped", "answers": []})
+    assert final["kind"] == "completed"
+    assert final["report_files"] == files
+    assert modes == [True, True, True]
+    assert dt._deepresearch_main_agent_plan_ctx.get() is False
+
+
+@pytest.mark.asyncio
+async def test_main_agent_material_replay_restores_both_context_variables():
+    state = {"phase": "completed", "task_mode": "main_agent", "materials_prepared": True,
+             "query": "q", "report_files": []}
+    result, _ = await _invoke(state=state)
+    assert result["continuation"] == "main_agent"
+    assert de._execution_context.get() is None
+    assert dt._deepresearch_main_agent_plan_ctx.get() is False
+
+
+@pytest.mark.asyncio
+async def test_main_agent_mode_isolated_from_concurrent_standalone_research():
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    observed = {}
+
+    async def stream(**kwargs):
+        observed[kwargs["query"]] = dt._deepresearch_main_agent_plan_ctx.get()
+        if kwargs["query"] == "main":
+            entered.set()
+            await release.wait()
+        return {"status": "completed", "report_delivered": True, "report_files": []}
+
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock(side_effect=stream)):
+        main_task = asyncio.create_task(_invoke(query="main", task_mode="main_agent"))
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        try:
+            standalone, _ = await _invoke(query="standalone")
+        finally:
+            release.set()
+        main, _ = await main_task
+    assert observed == {"main": True, "standalone": False}
+    assert main["continuation"] == "main_agent"
+    assert "continuation" not in standalone
+    assert dt._deepresearch_main_agent_plan_ctx.get() is False
+
+
+@pytest.mark.asyncio
+async def test_main_agent_cancelled_card_never_exposes_report_files():
+    state = {"phase": "wait_outline", "task_mode": "main_agent", "query": "q",
+             "conversation_id": "C1", "outline_presented": True}
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream:
+        result, _ = await _invoke(state=state, user_input={"status": "cancelled", "answers": []})
+    assert result["kind"] == "cancelled"
+    assert "report_files" not in result
+    stream.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_main_agent_can_continue_legacy_checkpoint_without_research_restart():
+    state = {"phase": "wait_outline", "query": "q", "conversation_id": "C1",
+             "file_name": "report", "outline_presented": True}
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock(return_value={
+        "status": "completed", "report_delivered": True, "report_files": [],
+    })) as stream:
+        result, _ = await _invoke(state=state, task_mode="main_agent",
+                                  user_input={"status": "skipped", "answers": []})
+    assert result["continuation"] == "main_agent"
+    assert stream.await_args.kwargs["action"] == "resume"
+
+
+@pytest.mark.asyncio
+async def test_main_agent_process_owner_is_persisted_and_not_rebound_on_resume():
+    scopes = []
+    async def stream(**kwargs):
+        scopes.append(dt._deepresearch_process_scope_ctx.get())
+        return {"status": "completed", "report_delivered": True, "report_files": []}
+    with patch.object(de, "_call_deepresearch_stream_impl", new=stream):
+        result, _ = await _invoke(task_mode="main_agent", parent_task_id="todo:research")
+        assert result["state"]["parent_task_id"] == "todo:research"
+        state = {**result["state"], "phase": "wait_outline", "outline_presented": True}
+        await _invoke(state=state, parent_task_id="todo:word", user_input={"status": "answered", "answers": [{"selected_options": ["确认大纲，继续研究"]}]})
+    assert scopes == [("todo:research", "call-1"), ("todo:research", "call-1")]
+    assert dt._deepresearch_process_scope_ctx.get() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bound_state", [{}, {"task_mode": "main_agent"}])
+async def test_material_resume_uses_mode_and_owner_from_reloaded_state(bound_state):
+    latest = {
+        "phase": "wait_outline",
+        "task_mode": "main_agent",
+        "parent_task_id": "todo:research",
+        "query": "q",
+        "conversation_id": "C1",
+        "materials_prepared": True,
+    }
+    files = [{"path": "/workspace/report.md"}]
+    load_state = Mock(return_value=latest)
+
+    async def stream(**kwargs):
+        assert kwargs["action"] == "resume"
+        assert dt._deepresearch_main_agent_plan_ctx.get() is True
+        assert dt._deepresearch_process_scope_ctx.get() == ("todo:research", "call-1")
+        return {"status": "completed", **dt._report_completion_fields(files)}
+
+    with patch.object(de, "_call_deepresearch_stream_impl", new=stream):
+        result, _ = await _invoke(
+            state=bound_state,
+            load_state=load_state,
+            parent_task_id="todo:word",
+            materials_context={"scope": "session-A"},
+            user_input={"status": "skipped", "answers": []},
+        )
+
+    load_state.assert_called_once_with()
+    assert result["kind"] == "completed"
+    assert result["report_files"] == files
+    assert result["report_delivered"] is False
+    assert dt._deepresearch_main_agent_plan_ctx.get() is False
+    assert dt._deepresearch_process_scope_ctx.get() is None
+
+
+@pytest.mark.asyncio
+async def test_main_agent_prepared_report_completes_and_replays_without_claiming_delivery():
+    files = [{"path": "/workspace/report.html", "name": "report.html", "mime_type": "text/html"}]
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock(return_value={
+        "status": "completed", "report_delivered": False, "report_prepared": True, "report_files": files,
+        "conversation_id": "brief-test", "brief_upgrade_available": True,
+    })) as stream:
+        result, _ = await _invoke(task_mode="main_agent", report_type="brief")
+        replay, _ = await _invoke(state=result["state"])
+    assert result["kind"] == "completed"
+    assert result["report_prepared"] is True
+    assert result["report_delivered"] is False
+    assert result["report_files"] == replay["report_files"] == files
+    assert replay["report_prepared"] is True
+    assert "未发送" in result["content"]
+    assert "brief_report" not in result
+    assert result["prepared_brief_report"] == replay["prepared_brief_report"]
+    assert result["prepared_brief_report"]["paths"] == ["/workspace/report.html"]
+    assert result["prepared_brief_report"]["report_delivered"] is False
+    assert result["prepared_brief_report"]["upgrade_available"] is True
+    stream.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,files", [
+    ("standalone", [{"path": "/workspace/report.html"}]),
+    ("main_agent", []), ("main_agent", [{}]),
+    ("main_agent", [{"path": "   "}]), ("main_agent", [{"path": 42}]),
+])
+async def test_prepared_report_does_not_complete_standalone_or_missing_artifacts(mode, files):
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock(return_value={
+        "status": "completed", "report_prepared": True, "report_delivered": False, "report_files": files,
+    })):
+        result, _ = await _invoke(task_mode=mode)
+    assert result["kind"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_legacy_main_agent_completed_checkpoint_preserves_delivered_semantics():
+    files = [{"path": "/workspace/previous.html"}]
+    state = {"phase": "completed", "task_mode": "main_agent", "query": "q", "report_files": files}
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream:
+        result, _ = await _invoke(state=state)
+    assert result["kind"] == "completed"
+    assert result["report_files"] == files
+    assert result["report_delivered"] is True
+    assert result["report_prepared"] is False
+    stream.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["new", "error"])
+async def test_main_agent_salvage_hands_prepared_report_back(phase):
+    state = {"phase": phase, "query": "研究智能家电竞争格局",
+             "conversation_id": "C-SAL", "file_name": "报告", "task_mode": "main_agent"}
+    files = [{"path": "/workspace/report.html"}]
+    outcome = {"status": "completed", "conversation_id": "C-SAL",
+               "report_prepared": True, "report_delivered": False, "report_files": files}
+    with (
+        patch.object(de, "_probe_resumable_checkpoint", return_value=None),
+        patch.object(de, "salvage_deepresearch_report", new=AsyncMock(return_value=outcome)) as salvage,
+        patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream,
+    ):
+        result, saved = await _invoke(state=state, conversation_id="C-SAL")
+    salvage.assert_awaited_once()
+    stream.assert_not_awaited()
+    assert result["kind"] == "completed"
+    assert result["continuation"] == "main_agent"
+    assert result["report_files"] == saved[-1]["report_files"] == files
+    assert result["report_delivered"] is False

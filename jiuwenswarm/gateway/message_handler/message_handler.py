@@ -1196,20 +1196,39 @@ class MessageHandler(FileTransferMixin, ABC):
         if cancel_source_value:
             env_interrupt.channel_context[E2A_INTERNAL_CANCEL_SOURCE_KEY] = cancel_source_value
 
-        if cancel_gateway_tasks:
-            await _cancel_tasks(tasks_to_cancel)
-            await self._pop_stream_tracking_and_broadcast(rids_cancelled)
-
         if agent_notify == "fire_and_forget":
-            # Still forward cancelled_tools once AgentServer responds — otherwise
-            # the UI keeps spinning until refresh (history was written, live push not).
+            # HTTP SSE：取消本地流任务等于拆掉上游连接。若先断流，AgentServer
+            # 的清理会跑在已被取消的任务里，scheduler.cancel_task 落不了地。
+            # 先等 unary 中断返回（应答前流任务清理已结束），再断本地 consumer。
+            # 等待放在后台任务里，不堵住 _forward_loop。
+            # interrupt_result 也放在断流之后：前端收到「任务已取消」会停流并清掉
+            # currentStreamId，若此时 SSE 仍在吐 delta，会把处理状态拉回并新开气泡。
+            async def _interrupt_then_drop_local_stream() -> None:
+                try:
+                    await self._send_interrupt_to_agent(
+                        env_interrupt,
+                        channel_id=msg.channel_id,
+                        session_id=sid_for_agent,
+                        metadata=cancel_metadata or None,
+                    )
+                finally:
+                    try:
+                        if cancel_gateway_tasks:
+                            await _cancel_tasks(tasks_to_cancel)
+                            await self._pop_stream_tracking_and_broadcast(rids_cancelled)
+                    finally:
+                        if publish_interrupt_result:
+                            await self._send_interrupt_result_notification(
+                                msg.id,
+                                msg.channel_id,
+                                sid_for_agent,
+                                "cancel",
+                                success=True,
+                            )
+
             task = asyncio.create_task(
-                self._send_interrupt_to_agent(
-                    env_interrupt,
-                    channel_id=msg.channel_id,
-                    session_id=sid_for_agent,
-                    metadata=cancel_metadata or None,
-                )
+                _interrupt_then_drop_local_stream(),
+                name=f"gw-interrupt-then-drop-{(sid_for_agent or 'x')[:24]}",
             )
             self._fire_and_forget_tasks.add(task)
             task.add_done_callback(self._fire_and_forget_tasks.discard)
@@ -1217,15 +1236,11 @@ class MessageHandler(FileTransferMixin, ABC):
                 "[MessageHandler] 已 fire-and-forget 发送 AgentServer 中断: session_id=%s",
                 sid_for_agent,
             )
-            if publish_interrupt_result:
-                await self._send_interrupt_result_notification(
-                    msg.id,
-                    msg.channel_id,
-                    sid_for_agent,
-                    "cancel",
-                    success=True,
-                )
             return True
+
+        if cancel_gateway_tasks:
+            await _cancel_tasks(tasks_to_cancel)
+            await self._pop_stream_tracking_and_broadcast(rids_cancelled)
 
         try:
             resp = await self._send_non_stream_agent_request(env_interrupt)
@@ -5572,7 +5587,7 @@ class MessageHandler(FileTransferMixin, ABC):
     ) -> None:
         """Fire-and-forget: 发送中断到 AgentServer，不阻塞转发循环.
 
-        ``interrupt_result`` 已由调用方提前推送；此处仍要把响应里的
+        ``interrupt_result`` 由调用方推送。此处仍要把响应里的
         ``cancelled_tools`` 转成 ``chat.tool_result``，否则前端 tool 卡片会一直转圈，
         直到刷新历史才看到 ``[Interrupted]``.
         """
@@ -5718,6 +5733,9 @@ class MessageHandler(FileTransferMixin, ABC):
     ) -> "Message":
         """Build tool_result message for cancelled tool execution."""
         from jiuwenswarm.common.schema.message import Message, EventType
+        from jiuwenswarm.server.utils.stream_utils import (
+            build_cancelled_tool_result_payload,
+        )
 
         return Message(
             id=f"tool_result_{int(time.time() * 1000):x}_{secrets.token_hex(3)}",
@@ -5728,12 +5746,9 @@ class MessageHandler(FileTransferMixin, ABC):
             timestamp=time.time(),
             ok=True,
             payload={
-                "tool_result": {
-                    "tool_name": tool_info.get("tool_name", ""),
-                    "tool_call_id": tool_info.get("tool_call_id", ""),
-                    "result": tool_info.get("result", ""),
-                    "status": tool_info.get("status", "error"),
-                },
+                # P0 协议兼容：wire status 保持 error，用 cancelled/cancel_reason
+                # 让新消费者区分取消；旧消费者只读 status 的行为不变。
+                "tool_result": build_cancelled_tool_result_payload(tool_info),
             },
             event_type=EventType.CHAT_TOOL_RESULT,
             metadata=metadata,

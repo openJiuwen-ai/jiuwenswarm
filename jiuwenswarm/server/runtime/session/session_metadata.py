@@ -7,7 +7,6 @@ import logging
 import os
 import queue
 import re
-import shutil
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1144,7 +1143,15 @@ def update_session_metadata(
     sync: bool = False,
     sync_write: bool = False,
     work_mode: str | None = None,
+    rsi_harness_installation_id: str | None = None,
     sessions_root: str | Path | None = None,
+    temporary_team_session: bool | None = None,
+    team_lifecycle: str | None = None,
+    team_mode: str | None = None,
+    team_entry: str | None = None,
+    team_origin: str | None = None,
+    skill_id: str | None = None,
+    team_cold_reopen_required: bool | None = None,
 ) -> None:
     """更新会话元数据(异步写入,不阻塞调用方)
 
@@ -1228,6 +1235,21 @@ def update_session_metadata(
             "status": "idle",
             "work_mode": resolved_work_mode,
         }
+        if temporary_team_session is not None:
+            metadata["temporary_team_session"] = bool(temporary_team_session)
+            metadata["team_temporary"] = bool(temporary_team_session)
+        if team_lifecycle is not None:
+            metadata["team_lifecycle"] = str(team_lifecycle).strip()
+        if team_mode is not None:
+            metadata["team_mode"] = str(team_mode).strip()
+        if team_entry is not None:
+            metadata["team_entry"] = str(team_entry).strip()
+        if team_origin is not None:
+            metadata["team_origin"] = str(team_origin).strip()
+        if skill_id is not None:
+            metadata["skill_id"] = str(skill_id).strip()
+        if team_cold_reopen_required is not None:
+            metadata["team_cold_reopen_required"] = bool(team_cold_reopen_required)
         # 首次创建时写入 channel_metadata
         if channel_metadata:
             metadata["channel_metadata"] = channel_metadata
@@ -1254,6 +1276,21 @@ def update_session_metadata(
             metadata["team_template_id"] = team_template_id
         if accent_color is not None:
             metadata["accent_color"] = accent_color
+        if temporary_team_session is not None:
+            metadata["temporary_team_session"] = bool(temporary_team_session)
+            metadata["team_temporary"] = bool(temporary_team_session)
+        if team_lifecycle is not None:
+            metadata["team_lifecycle"] = str(team_lifecycle).strip()
+        if team_mode is not None:
+            metadata["team_mode"] = str(team_mode).strip()
+        if team_entry is not None:
+            metadata["team_entry"] = str(team_entry).strip()
+        if team_origin is not None:
+            metadata["team_origin"] = str(team_origin).strip()
+        if skill_id is not None:
+            metadata["skill_id"] = str(skill_id).strip()
+        if team_cold_reopen_required is not None:
+            metadata["team_cold_reopen_required"] = bool(team_cold_reopen_required)
         # model：覆盖式——每次请求更新为本次模型
         if model is not None:
             metadata["model"] = model
@@ -1300,6 +1337,9 @@ def update_session_metadata(
         # 非消息操作复用本函数而不腐蚀 last_message_at 语义)
         if touch_last_message_at:
             metadata["last_message_at"] = _current_timestamp()
+
+    if rsi_harness_installation_id is not None:
+        metadata["rsi_harness_installation_id"] = rsi_harness_installation_id
 
     _enqueue_write(
         session_id,
@@ -1781,17 +1821,18 @@ def build_server_push_message(
 
 
 def remove_team_mode_session_dirs_at_startup() -> None:
-    """Remove only explicitly temporary team sessions at startup.
+    """Drop session-generated temporary team bindings; keep chat directories.
 
-    Stable team sessions are recoverable and must survive restarts. Older code
-    removed every ``mode=team`` session here, which prevents team session
-    restore once team entities are shared across sessions.
+    v2: no sticky ``TEAM_COLD_REOPEN_REQUIRED``. Next team chat may auto-bind
+    again (idempotent generated) or the user re-binds a catalog ``team_name``.
     """
     sessions_dir = get_agent_sessions_dir()
     if not sessions_dir.is_dir():
         return
 
-    removed = 0
+    from jiuwenswarm.server.runtime.swarm_skill_session import is_session_generated_team
+
+    cleared = 0
     for session_dir in sessions_dir.iterdir():
         if not session_dir.is_dir():
             continue
@@ -1799,7 +1840,7 @@ def remove_team_mode_session_dirs_at_startup() -> None:
         if not meta_path.is_file():
             continue
         try:
-            raw = json.loads(meta_path.read_text(encoding="utf-8") or '{}')
+            raw = json.loads(meta_path.read_text(encoding="utf-8") or "{}")
         except Exception as exc:  # noqa: BLE001
             logger.warning("启动清理跳过会话 %s: 读取 metadata.json 失败: %s", session_dir.name, exc)
             continue
@@ -1808,20 +1849,85 @@ def remove_team_mode_session_dirs_at_startup() -> None:
         mode = str(raw.get("mode") or "").strip().lower()
         if mode not in {"team", "team.plan", "code.team"}:
             continue
-        if not bool(raw.get("temporary_team_session") or raw.get("team_temporary")):
+        if not is_session_generated_team(raw):
+            # Still clear obsolete cold flags left by M1 builds.
+            if bool(raw.get("team_cold_reopen_required")):
+                try:
+                    update_session_metadata(
+                        session_id=session_dir.name,
+                        team_cold_reopen_required=False,
+                        touch_last_message_at=False,
+                        sync=True,
+                        sessions_root=sessions_dir,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             continue
 
         session_id = session_dir.name
+        logical_team = str(raw.get("team_name") or "").strip()
         try:
-            shutil.rmtree(session_dir)
-            with _CACHE_LOCK:
-                _METADATA_CACHE.pop(session_id, None)
-            removed += 1
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("启动清理删除 team 会话目录失败 %s: %s", session_id, exc)
+            if logical_team:
+                try:
+                    from jiuwenswarm.server.runtime.team_binding_store import (
+                        get_team_binding_store,
+                    )
+                    from jiuwenswarm.server.runtime.team_entity_store import (
+                        get_team_entity_store,
+                    )
 
-    if removed:
-        logger.info("启动清理: 已删除 %d 个 team 模式会话目录", removed)
+                    store = get_team_binding_store()
+                    try:
+                        store.unbind_session(session_id=session_id, team_name=logical_team)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    # Only delete when no other session still holds the team.
+                    remaining = None
+                    try:
+                        remaining = store.get(logical_team)
+                    except Exception:  # noqa: BLE001
+                        remaining = None
+                    if remaining is None or not remaining.session_ids:
+                        try:
+                            store.delete(logical_team)
+                        except Exception:  # noqa: BLE001
+                            pass
+                        try:
+                            get_team_entity_store().delete_team_directory(logical_team)
+                        except Exception:  # noqa: BLE001
+                            pass
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "启动清理 session-generated binding/entity 失败 session=%s team=%s",
+                        session_id,
+                        logical_team,
+                        exc_info=True,
+                    )
+            update_session_metadata(
+                session_id=session_id,
+                team_name="",
+                runtime_team_name="",
+                team_template_id="",
+                temporary_team_session=False,
+                team_lifecycle="",
+                team_mode="",
+                team_entry="",
+                team_origin="",
+                skill_id="",
+                team_cold_reopen_required=False,
+                touch_last_message_at=False,
+                sync=True,
+                sessions_root=sessions_dir,
+            )
+            cleared += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("启动清理临时团队会话失败 %s: %s", session_id, exc)
+
+    if cleared:
+        logger.info(
+            "启动清理: 已清除 %d 个 session-generated 临时团队绑定（保留聊天目录）",
+            cleared,
+        )
 
 
 def _resolve_legacy_work_mode(

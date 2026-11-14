@@ -33,6 +33,7 @@ SKILL_TURBO_APPROVAL_TOOLS: list[tuple[str, str]] = [
     ("glob", "搜索文件"),
     ("web_search", "联网搜索（快速调研、深度研究）"),
     ("fetch_webpage", "抓取网页内容（研究引用来源）"),
+    ("web_image_search", "联网检索并下载配图（图文并茂的产物）"),
     ("image_ocr", "图片文字识别"),
     ("visual_question_answering", "图片视觉理解"),
     ("generate_image", "生成图片"),

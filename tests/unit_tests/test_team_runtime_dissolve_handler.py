@@ -343,3 +343,66 @@ async def test_dissolve_skips_prune_when_agent_core_too_old():
             _ctx_for(mod, _make_request({"session_id": "sess_1"}))
         )
     assert captured["resp"].ok is True
+
+
+@pytest.mark.asyncio
+async def test_dissolve_generated_skips_metadata_clear_when_unbind_fails():
+    """SF-6: unbind failure must not clear team_* metadata (avoid half-dissolve)."""
+    from jiuwenswarm.server import agent_ws_server as mod
+    from jiuwenswarm.server.handlers import team as team_handlers
+    from jiuwenswarm.server.runtime.swarm_skill_session import (
+        TEAM_ORIGIN_SESSION_GENERATED,
+    )
+
+    captured, fake_encode = _capture()
+    fake_tm = MagicMock()
+    fake_tm.stop_session_runtime = AsyncMock(return_value=True)
+    fake_tm.clear_session_initialized = MagicMock()
+    binding_store = MagicMock()
+    binding_store.unbind_session.side_effect = RuntimeError("store locked")
+    meta_updates: list[dict] = []
+
+    def _capture_meta(**kwargs):  # noqa: ANN003
+        meta_updates.append(dict(kwargs))
+        return None
+
+    with patch(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        return_value={
+            "channel_id": "officeclaw",
+            "team_name": "oc_team_generated",
+            "team_origin": TEAM_ORIGIN_SESSION_GENERATED,
+            "temporary_team_session": True,
+        },
+    ), patch(
+        "jiuwenswarm.server.runtime.session.session_metadata."
+        "resolve_session_runtime_team_name",
+        return_value="oc_team_generated__sess_1",
+    ), patch(
+        "jiuwenswarm.server.runtime.session.session_metadata.update_session_metadata",
+        side_effect=_capture_meta,
+    ), patch(
+        "jiuwenswarm.agents.harness.team.get_team_manager",
+        return_value=fake_tm,
+    ), patch(
+        "openjiuwen.core.runner.Runner.reset_agent_team_session",
+        new=AsyncMock(return_value=True),
+    ), patch(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        return_value=binding_store,
+    ), patch.object(
+        team_handlers, "_sessions_dir_for_request", return_value="/tmp/sessions",
+    ), patch.object(
+        team_handlers, "_effective_config_for_request", return_value={},
+    ), patch.object(
+        team_handlers, "encode_agent_response_for_wire", side_effect=fake_encode,
+    ), patch.object(
+        mod, "send_wire_payload", new=AsyncMock(),
+    ):
+        await team_handlers.handle_team_runtime_dissolve(
+            _ctx_for(mod, _make_request({"session_id": "sess_1"}))
+        )
+
+    binding_store.unbind_session.assert_called_once()
+    assert meta_updates == []
+    assert captured["resp"].payload.get("temporary_catalog_cleaned") is False

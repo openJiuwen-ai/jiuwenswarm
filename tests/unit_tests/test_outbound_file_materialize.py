@@ -126,6 +126,7 @@ def test_materialize_outbound_files_rewrites_to_proxy_href():
 def test_assert_minio_url_allowed_rejects_foreign_host():
     class _Cfg:
         endpoint = "127.0.0.1:9000"
+        bucket = "jiuwenclaw"
         public_base_url = ""
 
     with patch(
@@ -140,6 +141,46 @@ def test_assert_minio_url_allowed_rejects_foreign_host():
             assert_minio_url_allowed("http://127.0.0.1:8080/bucket/obj")
         with pytest.raises(ValueError, match="not allowed"):
             assert_minio_url_allowed("http://127.0.0.1/bucket/obj")
+
+
+def test_assert_minio_url_allowed_accepts_huawei_obs_virtual_host():
+    class _Cfg:
+        endpoint = "obs.cn-north-4.myhuaweicloud.com"
+        bucket = "jiuwenswarm-ee"
+        public_base_url = ""
+
+    with patch(
+        "jiuwenswarm.channels.web.minio_upload.load_minio_upload_config",
+        return_value=_Cfg(),
+    ):
+        assert_minio_url_allowed(
+            "https://jiuwenswarm-ee.obs.cn-north-4.myhuaweicloud.com/uploads/x"
+        )
+        assert_minio_url_allowed("https://obs.cn-north-4.myhuaweicloud.com/uploads/x")
+        with pytest.raises(ValueError, match="not allowed"):
+            assert_minio_url_allowed(
+                "https://other-bucket.obs.cn-north-4.myhuaweicloud.com/uploads/x"
+            )
+
+
+def test_assert_minio_url_allowed_legacy_bucket_embedded_endpoint():
+    class _Cfg:
+        endpoint = "jiuwenswarm-ee.obs.cn-north-4.myhuaweicloud.com"
+        bucket = "jiuwenswarm-ee"
+        public_base_url = ""
+
+    with patch(
+        "jiuwenswarm.channels.web.minio_upload.load_minio_upload_config",
+        return_value=_Cfg(),
+    ):
+        # Endpoint itself remains allowed; do not require double-prefixed host.
+        assert_minio_url_allowed(
+            "https://jiuwenswarm-ee.obs.cn-north-4.myhuaweicloud.com/uploads/x"
+        )
+        with pytest.raises(ValueError, match="not allowed"):
+            assert_minio_url_allowed(
+                "https://jiuwenswarm-ee.jiuwenswarm-ee.obs.cn-north-4.myhuaweicloud.com/x"
+            )
 
 
 class _Upstream:

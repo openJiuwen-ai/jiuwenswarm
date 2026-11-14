@@ -20,6 +20,7 @@ import {
 import { ConfigFieldHintLabel } from "./ConfigFieldHintLabel";
 import { PersonalContextSettingsPanel } from '../PersonalContext/SettingsPanel';
 import { PermissionsToolsEditor } from "./PermissionsToolsEditor";
+import { SensitiveMaskPanel, type SensitiveMaskHandle } from "./SensitiveMaskPanel";
 import { ModelProviderIcon } from '../ModelProviderIcon';
 
 function MultiSelectDropdown({
@@ -366,6 +367,7 @@ const MEMORY_KEYS = new Set(["memory_forbidden_enabled", "memory_forbidden_descr
 const A2UI_KEYS = new Set(["a2ui_enabled"]);
 const TRAJECTORY_UI_KEYS = new Set(["trajectory_ui_enabled"]);
 const DIAGNOSIS_KEYS = new Set(["diagnosis_enabled"]);
+const RSI_KEYS = new Set(["rsi_enabled"]);
 const SWARMFLOW_KEYS = new Set(["swarmflow_enabled"]);
 const SYMPHONY_BOOLEAN_KEYS = new Set([
   "symphony_enabled",
@@ -422,18 +424,20 @@ function classifyKey(key: string): string {
   if (A2UI_KEYS.has(key)) return "a2ui";
   if (TRAJECTORY_UI_KEYS.has(key)) return "trajectory_ui";
   if (DIAGNOSIS_KEYS.has(key)) return "diagnosis";
+  if (RSI_KEYS.has(key)) return "rsi";
   if (SWARMFLOW_KEYS.has(key)) return "swarmflow";
   if (SYMPHONY_KEYS.has(key)) return "symphony";
   if (PROACTIVE_KEYS.has(key)) return "proactive";
   if (key === "context_engine_enabled") return "context_engine";
   if (key === "kv_cache_release_enabled" || key === "kv_cache_affinity_enabled") return "kv_cache_affinity";
   if (key === "permissions_enabled") return "permissions";
+  if (key === "sandbox_enabled") return "sandbox";
   if (key.startsWith("feishu")) return "feishu";
   return "other";
 }
 
 const MODEL_GROUP_TAGS = new Set(["model_default", "model_video", "model_audio", "model_vision"]);
-const SECURITY_GROUP_TAGS = new Set(["permissions", "memory"]);
+const SECURITY_GROUP_TAGS = new Set(["permissions", "sandbox", "memory"]);
 
 type ConfigMainTab = "model" | "agent" | "security" | "personalContext" | "other";
 
@@ -528,6 +532,13 @@ function getGroupIcon(tag: string) {
       </svg>
     );
   }
+  if (tag === "sandbox") {
+    return (
+      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M21 7.5l-9-5.25L3 7.5m18 0l-9 5.25m9-5.25v9l-9 5.25M3 7.5l9 5.25M3 7.5v9l9 5.25m0-9v9" />
+      </svg>
+    );
+  }
   if (tag === "a2ui") {
     return (
       <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
@@ -579,6 +590,7 @@ function getGroupToneClass(tag: string): string {
   if (tag === "context_engine") return "text-sky-500 bg-sky-500/10 border-sky-500/20";
   if (tag === "kv_cache_affinity") return "text-red-500 bg-red-500/10 border-red-500/20";
   if (tag === "permissions") return "text-rose-500 bg-rose-500/10 border-rose-500/20";
+  if (tag === "sandbox") return "text-sky-500 bg-sky-500/10 border-sky-500/20";
   if (tag === "a2ui") return "text-fuchsia-500 bg-fuchsia-500/10 border-fuchsia-500/20";
   if (tag === "swarmflow") return "text-blue-500 bg-blue-500/10 border-blue-500/20";
   if (tag === "symphony") return "text-amber-500 bg-amber-500/10 border-amber-500/20";
@@ -608,10 +620,12 @@ function isBooleanKey(key: string): boolean {
     key === "kv_cache_release_enabled" ||
     key === "kv_cache_affinity_enabled" ||
     key === "permissions_enabled" ||
+    key === "sandbox_enabled" ||
     key === "memory_forbidden_enabled" ||
     key === "a2ui_enabled" ||
     key === "trajectory_ui_enabled" ||
     key === "diagnosis_enabled" ||
+    key === "rsi_enabled" ||
     key === "swarmflow_enabled" ||
     SYMPHONY_BOOLEAN_KEYS.has(key) ||
     SKILL_RETRIEVAL_BOOLEAN_KEYS.has(key) ||
@@ -670,10 +684,12 @@ function getBooleanKeyLabel(key: string, t: (key: string) => string): string {
     kv_cache_release_enabled: t('config.booleanLabels.kvCacheRelease'),
     kv_cache_affinity_enabled: t('config.booleanLabels.kvCacheAffinity'),
     permissions_enabled: t('config.booleanLabels.enabled'),
+    sandbox_enabled: t('config.booleanLabels.enabled'),
     memory_forbidden_enabled: t('config.booleanLabels.enabled'),
     a2ui_enabled: t('config.booleanLabels.enabled'),
     trajectory_ui_enabled: t('config.booleanLabels.enabled'),
     diagnosis_enabled: t('config.booleanLabels.enabled'),
+    rsi_enabled: t('config.booleanLabels.enabled'),
     swarmflow_enabled: t('config.booleanLabels.enabled'),
     symphony_enabled: t('config.booleanLabels.enabled'),
     symphony_dynamic_graph_enabled: t('config.booleanLabels.dynamicGraph'),
@@ -725,9 +741,11 @@ function getGroupMeta(t: (key: string) => string): Record<string, { label: strin
     context_engine: { label: t('config.groups.contextEngine.label'), order: 8, hint: t('config.groups.contextEngine.hint') },
     kv_cache_affinity: { label: t('config.groups.kvCacheAffinity.label'), order: 8.5, hint: t('config.groups.kvCacheAffinity.hint') },
     permissions: { label: t('config.groups.permissions.label'), order: 9, hint: t('config.groups.permissions.hint') },
+    sandbox: { label: t('config.groups.sandbox.label'), order: 9.2, hint: t('config.groups.sandbox.hint') },
     a2ui: { label: t('config.groups.a2ui.label'), order: 10, hint: t('config.groups.a2ui.hint') },
     trajectory_ui: { label: t('config.groups.trajectoryUi.label'), order: 10.1, hint: t('config.groups.trajectoryUi.hint') },
     diagnosis: { label: t('config.groups.diagnosis.label'), order: 10.15, hint: t('config.groups.diagnosis.hint') },
+    rsi: { label: t('config.groups.rsi.label'), order: 10.16, hint: t('config.groups.rsi.hint') },
     swarmflow: { label: t('config.groups.swarmflow.label'), order: 10.2, hint: t('config.groups.swarmflow.hint') },
     symphony: { label: t('config.groups.symphony.label'), order: 10.4, hint: t('config.groups.symphony.hint') },
     skill_retrieval: { label: t('config.groups.skillRetrieval.label'), order: 10.5, hint: t('config.groups.skillRetrieval.hint') },
@@ -3589,6 +3607,11 @@ export function ConfigPanel({
   const savedTeamsRef = useRef<TeamEntry[] | null>(null);
   const [configTab, setConfigTab] = useState<ConfigMainTab>("model");
   const [saving, setSaving] = useState(false);
+  const [maskDirty, setMaskDirty] = useState(false);
+  const maskHandleRef = useRef<SensitiveMaskHandle | null>(null);
+  const onMaskDirtyChange = useCallback((dirty: boolean) => {
+    setMaskDirty(dirty);
+  }, []);
   const [error, setError] = useState<string | null>(null);
   const [modelError, setModelError] = useState<string | null>(null);
   const [deleteAgentConfirm, setDeleteAgentConfirm] = useState<{ idx: number; agentName: string; references: string[] } | null>(null);
@@ -4043,7 +4066,8 @@ export function ConfigPanel({
     }
     return false;
   }, [draftAgents, draftTeams, initialAgents, initialTeams]);
-  const hasChanges = hasConfigChanges || hasModelChanges || hasAgentsTeamsChanges;
+  const hasOtherChanges = hasConfigChanges || hasModelChanges || hasAgentsTeamsChanges;
+  const hasChanges = hasOtherChanges || maskDirty;
   useEffect(() => {
     onHasChangesChange?.(hasChanges);
   }, [hasChanges, onHasChangesChange]);
@@ -4241,6 +4265,7 @@ export function ConfigPanel({
 
   const handleCancel = () => {
     if (!hasChanges) return;
+    maskHandleRef.current?.reset();
     setDraftValues(normalizedConfig);
     setDraftModels(storeAvailableModels.map((m) => ({ ...m, alias: m.alias || "" })));
     setDraftAgents(initialAgents);
@@ -4349,6 +4374,12 @@ export function ConfigPanel({
     setError(null);
     setModelError(null);
     try {
+      if (maskHandleRef.current?.dirty) {
+        await maskHandleRef.current.save();
+      }
+      if (!hasOtherChanges) {
+        return;
+      }
       if (onSaveAllConfig) {
         const payload: ConfigSaveAllPayload = {};
         if (hasConfigChanges) {
@@ -4638,6 +4669,11 @@ export function ConfigPanel({
 
               {configTab === "security" ? (
                 <div role="tabpanel" aria-labelledby="config-tab-security" className="space-y-3 pb-2">
+                  <SensitiveMaskPanel
+                    isConnected={isConnected}
+                    onDirtyChange={onMaskDirtyChange}
+                    handleRef={maskHandleRef}
+                  />
                   {securityGroups.length === 0 ? (
                     <p className="text-sm text-text-muted px-1">{t("config.tabEmpty.security")}</p>
                   ) : (

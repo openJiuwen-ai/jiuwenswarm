@@ -770,6 +770,7 @@ from jiuwenswarm.common.config import (
     get_ttse_enabled,
     is_subagent_mirror_child_stream_enabled,
     is_subagent_runtime_enabled,
+    subagent_runtime_limits,
     resolve_config_env_vars,
     resolve_string_or_list_config,
 )
@@ -786,6 +787,7 @@ from jiuwenswarm.common.mcp_config import (
     extract_enabled_mcp_server_entries,
     extract_office_claw_mcp,
     extract_request_mcp_servers,
+    filter_request_mcp_servers_by_template,
     is_asyncio_outer_cancellation,
     is_request_scoped_mcp_tool_id,
     list_office_claw_mcp_tools,
@@ -924,6 +926,7 @@ from jiuwenswarm.common.utils import (
     load_yaml_dict,
     resolve_shipped_template_config_path,
 )
+from jiuwenswarm.common.runtime_workspace import resolve_runtime_workspace_paths
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
 
 load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
@@ -961,11 +964,34 @@ _SYS_OPERATION_REFCOUNTS: dict[str, int] = {}
 _SYS_OPERATION_REFCOUNT_LOCK = threading.Lock()
 
 
+_RESOLVED_ARTIFACT_DIRS: dict[str, str] = {}
+
+
+def _resolve_artifact_dir(path: str) -> str:
+    """Resolve a workspace path once; deep research asks for it several times per turn.
+
+    Only absolute paths are cached: a relative path resolves against the process cwd.
+    """
+    expanded = Path(path).expanduser()
+    if not expanded.is_absolute():
+        return str(expanded.resolve())
+    key = str(expanded)
+    resolved = _RESOLVED_ARTIFACT_DIRS.get(key)
+    if resolved is None:
+        resolved = str(expanded.resolve())
+        if len(_RESOLVED_ARTIFACT_DIRS) >= 256:
+            _RESOLVED_ARTIFACT_DIRS.clear()
+        _RESOLVED_ARTIFACT_DIRS[key] = resolved
+    return resolved
+
+
 class JiuWenSwarmDeepAdapter:
 
     # auto_harness / agent_ws_server 通过 getattr(类, ...) 查找，拆分后需挂回类属性。
     _parse_stream_chunk = staticmethod(_parse_stream_chunk)
     _build_model_from_entry = staticmethod(_build_model_from_entry)
+    # 跨模块调用使用公开入口；保留旧名称以兼容既有宿主装配。
+    build_model_from_entry = staticmethod(_build_model_from_entry)
     shutdown_context_session_memory = staticmethod(shutdown_context_session_memory)
     _build_model_routing = staticmethod(_build_model_routing)
     _build_disabled_tools_rail = staticmethod(_build_disabled_tools_rail)
@@ -1003,6 +1029,38 @@ class JiuWenSwarmDeepAdapter:
     - Deep evolution 绑定
     - Deep interrupt / user_answer 处理
     """
+
+    def _install_file_soft_delete(self) -> None:
+        """开关为真时把软删除 DLL 装进当前进程。失败只记日志，下次创建会再试。
+
+        仅个人版。企业版不在 Windows 上运行，没有回收站。
+        """
+        if is_enterprise() or sys.platform != "win32":
+            return
+        try:
+            from jiuwenswarm.common.config import get_file_soft_delete_settings
+
+            enabled, archive = get_file_soft_delete_settings(
+                get_config(),
+                workspace_dir=getattr(self, "_workspace_dir", None),
+            )
+            if not enabled:
+                return
+            from jiuwenbox.supervisor.win_softdelete import (
+                dll_path as jiuwenbox_soft_delete_dll_path,
+                install_win_soft_delete,
+            )
+
+            os.environ.setdefault(
+                "JIUWENBOX_SOFT_DELETE_DLL",
+                str(jiuwenbox_soft_delete_dll_path()),
+            )
+            install_win_soft_delete(archive)
+        except Exception:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] soft-delete DLL was not installed; deletes stay physical",
+                exc_info=True,
+            )
 
     def __init__(
         self,
@@ -1059,6 +1117,7 @@ class JiuWenSwarmDeepAdapter:
         # 场景). 单点 source-of-truth, 避免分布在多个方法里靠 isinstance
         # 或字符串嗅探 agent_name 反推。
         self._is_code_agent: bool = False
+        self._sandbox_active_workspace_root: str | None = None
         self._vision_tools_registered: bool = False
         self._audio_tools_registered: bool = False
         self._video_tool_registered: bool = False
@@ -1087,6 +1146,9 @@ class JiuWenSwarmDeepAdapter:
         # trust 判定使用；由白名单同步/热刷新/_refresh_skill_identity 维护。
         self._prebuilt_skills: set[str] = set()
         self._stream_event_rail: JiuSwarmStreamEventRail | None = None
+        # T1 出口归一化 rail：priority=82，归一所有工具结果为统一 schema
+        # （GitCode openJiuwen/jiuwenswarm#5243 v3.0 §4）
+        self._tool_result_normalize_rail: Any | None = None
         # ask_user 卡片序号：同一外层 tool_call_id 的第 N 次中断共用同一 id，
         # 卡片 request_id 以 {id}#{n} 区分（跨请求存续，见 should_skip_duplicate_ask_user）
         # 序号计数收口至 OuterCallIDDeduplicator（derive + seq 单一实现），
@@ -1178,6 +1240,8 @@ class JiuWenSwarmDeepAdapter:
         self._permission_rail: Any = None
         self._agent_permissions_body: dict[str, Any] | None = None
         self._permissions_persist_agent_id: str | None = None
+        # Enterprise triad for resolve_permission_key; personal keeps empty.
+        self._permission_routing: dict[str, str] = {}
         self._skill_active_state_rail: SkillActiveStateRail | None = None
         self._skill_sleep_rail: SkillSleepRail | None = None
         self._skill_credential_injection_rail: SkillCredentialInjectionRail | None = None
@@ -1235,6 +1299,11 @@ class JiuWenSwarmDeepAdapter:
         # Eager lock: lazy None→Lock races let concurrent set_checkpoint callers
         # each create a distinct lock and double-init the checkpointer.
         self._checkpoint_init_lock = asyncio.Lock()
+        self._rsi_harness_lock = asyncio.Lock()
+        self._rsi_session_harness_id: str = ""
+        self._rsi_harness_install_id: str | None = None
+        self._rsi_harness_config_path: str | None = None
+        self._rsi_harness_load_record: Any | None = None
         # Root-adapter-only: its own DeepAgent is built on demand (see
         # ``ensure_instance``), so the chat path does not pay for an instance it
         # never runs on.
@@ -3308,6 +3377,73 @@ class JiuWenSwarmDeepAdapter:
         self._registered_mcp_servers.pop(server_id, None)
 
 
+    def _is_builtin_shadowed_tool_name(self, tool_name: str) -> bool:
+        """True when a non-request-scoped ability (typically a harness built-in)
+        already occupies ``tool_name`` in this agent's AbilityManager."""
+        if self._instance is None:
+            return False
+        getter = getattr(getattr(self._instance, "ability_manager", None), "get", None)
+        if not callable(getter):
+            return False
+        try:
+            existing = getter(tool_name)
+        except Exception:
+            return False
+        if existing is None:
+            return False
+        existing_id = str(getattr(existing, "id", "") or "")
+        # Request-scoped holders (ours from a previous request or a foreign
+        # request) keep the install-time replace / fail-closed paths; only
+        # built-in occupancy triggers the staging rename.
+        return not is_request_scoped_mcp_tool_id(existing_id)
+
+    def _resolve_shadow_safe_tool_name(
+        self,
+        server_name: str,
+        tool_name: str,
+        buffers: _RequestMcpToolBuffers,
+    ) -> str:
+        """Rename a connector tool only when its short name is shadowed.
+
+        ``server_name_tool_name`` (LLM-safe) frees connectors such as
+        doubao-search's ``web_search`` from the built-in shadow skip. The
+        rename happens at staging — before any resource_mgr add — so the card
+        id, allowlists, and deepresearch admission all stay consistent.
+        Returns the raw name when no safe candidate exists; the install-time
+        builtin-shadow skip then keeps today's semantics.
+        """
+        if not self._is_builtin_shadowed_tool_name(tool_name):
+            return tool_name
+        base = re.sub(r"[^0-9A-Za-z_]", "_", f"{server_name}_{tool_name}").strip("_")
+        if not base:
+            return tool_name
+        for candidate in [base] + [f"{base}_{index}" for index in range(2, 21)]:
+            if candidate == tool_name or candidate in buffers.seen_names:
+                continue
+            if self._is_builtin_shadowed_tool_name(candidate):
+                continue
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] renamed shadowed MCP connector tool: "
+                "server=%s raw=%s staged=%s",
+                server_name,
+                tool_name,
+                candidate,
+            )
+            return candidate
+        return tool_name
+
+    @staticmethod
+    def _staged_research_tool_names(
+        tool_defs: list[dict[str, Any]],
+        rewrites: dict[str, str],
+    ) -> list[str]:
+        """Deepresearch admission compares installed names, so apply the rewrite."""
+        names: list[str] = []
+        for tool in tool_defs:
+            raw_name = str(tool.get("name") or "").strip()
+            names.append(rewrites.get(raw_name, raw_name))
+        return names
+
     async def _append_identity_pinned_office_claw_tools(
         self,
         request: AgentRequest,
@@ -3354,14 +3490,19 @@ class JiuWenSwarmDeepAdapter:
                 buffers.unavailable_connectors[server_name] = (
                     CONNECTOR_NO_TOOLS if params else CONNECTOR_DISCOVERY_FAILED
                 )
-            _stage_request_mcp_tools(request, server_name, tool_defs, params, buffers)
+            _stage_request_mcp_tools(
+                request, server_name, tool_defs, params, buffers,
+                staged_name_resolver=self._resolve_shadow_safe_tool_name,
+            )
             if tool_defs:
                 from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import project_search_server
                 research_server = project_search_server(server_name, server_config, params)
                 if research_server:
                     buffers.research_servers.append(research_server)
-                    buffers.research_tool_names[server_name] = [str(tool.get("name") or "").strip()
-                                                               for tool in tool_defs]
+                    rewrites = buffers.research_name_rewrites.get(server_name) or {}
+                    buffers.research_tool_names[server_name] = (
+                        self._staged_research_tool_names(tool_defs, rewrites)
+                    )
             if server_name == "office-claw" and not invocation_id:
                 env = params.get("env") if isinstance(params.get("env"), dict) else {}
                 invocation_id = str(env.get("OFFICE_CLAW_INVOCATION_ID") or "").strip()
@@ -3439,6 +3580,48 @@ class JiuWenSwarmDeepAdapter:
             request, generation, server_names, office_claw_config, leftover_servers,
         )
 
+    def _filter_request_mcp_servers_by_enterprise_template(
+        self,
+        request: AgentRequest,
+        request_mcp_servers: dict[str, dict[str, Any]] | None,
+        buffers: _RequestMcpToolBuffers,
+        *,
+        skip_office_claw: bool,
+    ) -> dict[str, dict[str, Any]] | None:
+        """企业版：丢弃与管理端 MCP 模板不一致的请求级连接器。
+
+        模板快照取自 ``_startup_config_base.mcp.servers``（企业配置加载时整表
+        替换）。不一致的连接器不建连、不注册，并记入 unavailable_connectors
+        供目录工具提示；模板为空时全部拒绝（fail-closed）。个人版不进入本路径。
+        """
+        if not request_mcp_servers:
+            return request_mcp_servers
+        candidates = {
+            name: config
+            for name, config in request_mcp_servers.items()
+            if not (skip_office_claw and name == "office-claw")
+        }
+        config_base = getattr(self, "_startup_config_base", None)
+        kept, rejected = filter_request_mcp_servers_by_template(
+            candidates,
+            extract_enabled_mcp_server_entries(
+                config_base if isinstance(config_base, dict) else {}
+            ),
+        )
+        if rejected:
+            resource_id = _enterprise_resource_id_from_request(request)
+            for name, reason in rejected.items():
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] enterprise request MCP connector rejected: "
+                    "request_id=%s session_id=%s enterprise_resource_id=%s name=%s reason=%s",
+                    request.request_id, request.session_id, resource_id, name, reason,
+                )
+                buffers.unavailable_connectors[name] = reason
+        result = dict(kept or {})
+        if skip_office_claw and "office-claw" in request_mcp_servers:
+            result["office-claw"] = request_mcp_servers["office-claw"]
+        return result or None
+
     async def _register_request_mcp_tools(
         self,
         request: AgentRequest,
@@ -3465,11 +3648,17 @@ class JiuWenSwarmDeepAdapter:
             )
 
         try:
+            if is_enterprise():
+                request_mcp_servers = self._filter_request_mcp_servers_by_enterprise_template(
+                    request, request_mcp_servers, buffers,
+                    skip_office_claw=office_claw_config is not None,
+                )
             if server_names:
                 snapshots = await get_mcp_server_registry().snapshot_for_chat(server_names)
                 for name, tool_defs, params in snapshots:
                     _stage_request_mcp_tools(
                         request, name, tool_defs, params, buffers, use_global_pool=True,
+                        staged_name_resolver=self._resolve_shadow_safe_tool_name,
                     )
                     reader = getattr(get_mcp_server_registry(), "get_server", None)
                     try:
@@ -3483,8 +3672,10 @@ class JiuWenSwarmDeepAdapter:
                         research_server = project_search_server(name, policy["config"], params)
                         if research_server:
                             buffers.research_servers.append(research_server)
-                            buffers.research_tool_names[name] = [str(tool.get("name") or "").strip()
-                                                                 for tool in tool_defs]
+                            rewrites = buffers.research_name_rewrites.get(name) or {}
+                            buffers.research_tool_names[name] = (
+                                self._staged_research_tool_names(tool_defs, rewrites)
+                            )
             # Preserve source priority: registry -> leftovers -> office-claw when
             # a registry list is present; otherwise office-claw -> connectors.
             if office_claw_config is not None and not server_names:
@@ -4139,12 +4330,10 @@ class JiuWenSwarmDeepAdapter:
                     "[JiuWenSwarmDeepAdapter] skill source config rejected: %s",
                     exc,
                 )
+        if request is not None:
+            self._remember_permission_routing(request=request)
         if loaded is None and request is not None and is_enterprise():
-            from jiuwenswarm.common.request_identity import web_routing_identity
-
-            identity = web_routing_identity(
-                request.metadata if isinstance(request.metadata, dict) else None
-            )
+            identity = self._permission_routing
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] no effective enterprise config loaded "
                 "(group_id=%s bot_id=%s user_id=%s)",
@@ -5079,6 +5268,38 @@ class JiuWenSwarmDeepAdapter:
             return
         self._instance.resolve_subagent_model = self._resolve_model_for_subagent
 
+    def _bind_subagent_runtime_config(self, config_base: dict[str, Any] | None = None) -> None:
+        """Pass this instance's nesting limits into the root SubagentControl.
+
+        A bad limit or an older SDK must not abort ``create_instance``. The
+        instance then keeps the core defaults.
+        """
+        if self._instance is None:
+            return
+        try:
+            import dataclasses
+
+            from openjiuwen.harness.subagent_runtime.config import SubagentRuntimeConfig
+
+            limits = subagent_runtime_limits(config_base)
+            accepted = {item.name for item in dataclasses.fields(SubagentRuntimeConfig)}
+            discarded = sorted(set(limits) - accepted)
+            if discarded:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] subagent runtime config keys "
+                    "not supported by SDK: %s",
+                    discarded,
+                )
+            self._instance.subagent_runtime_config = SubagentRuntimeConfig(
+                **{key: value for key, value in limits.items() if key in accepted}
+            )
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] subagent runtime config binding failed: %s",
+                exc,
+                exc_info=True,
+            )
+
     def _bind_subagent_authorization_wiring(self) -> None:
         """安装子 Agent Skill 动态授权装配（包装 create_subagent，不改 agent-core）。
 
@@ -5102,6 +5323,51 @@ class JiuWenSwarmDeepAdapter:
                 "[JiuWenSwarmDeepAdapter] subagent authorization wiring failed",
                 exc_info=True,
             )
+
+    def _subagent_ttse_consult_dependencies(self) -> Any | None:
+        """子 Agent 查询父 TTSE 内部状态的唯一入口；始终读取当前实例。"""
+        from jiuwenswarm.agents.harness.common.rails.subagent_ttse_consult_rail import (
+            TTSEConsultDependencies,
+        )
+
+        if self._is_code_agent:
+            return None
+        rail = self._ttse_rail
+        config = self._resolved_ttse_config()
+        if rail is None or not get_ttse_enabled({"ttse": config}):
+            return None
+        if not coerce_config_bool(config.get("inject_enabled"), True):
+            return None
+        disabled = resolve_string_or_list_config(self._config_cache.get("disabled_tools"))
+        live_disabled = getattr(self._disabled_tools_rail, "_disabled_tools", ())
+        if "ttse_consult" in disabled or "ttse_consult" in live_disabled:
+            return None
+        store = getattr(rail, "_ttse_store", None)
+        rail_config = getattr(rail, "_ttse_config", None)
+        if store is None or rail_config is None or not rail_config.inject_enabled:
+            return None
+        return TTSEConsultDependencies(
+            store=store,
+            max_chars=int(getattr(rail_config, "consult_max_chars", 8000) or 8000),
+            max_rules=int(getattr(rail_config, "consult_max_rules", 40) or 40),
+            default_top_k=int(getattr(rail_config, "consult_top_k", 8) or 8),
+            rrf_k=int(getattr(rail_config, "consult_rrf_k", 60) or 60),
+        )
+
+    def _bind_subagent_ttse_wiring(self) -> None:
+        """为非 Code 实例装配查询入口，能力由父级 TTSE 状态和开关决定。"""
+        if self._instance is None or self._is_code_agent:
+            return
+        try:
+            from jiuwenswarm.agents.harness.common.tools.subagent_executor.ttse import (
+                install_subagent_ttse_wiring,
+            )
+
+            install_subagent_ttse_wiring(
+                self._instance, self._subagent_ttse_consult_dependencies,
+            )
+        except Exception:
+            logger.warning("[subagent.ttse] wiring installation failed", exc_info=True)
 
     def _resolve_model_for_request(self, request: AgentRequest) -> Model:
         """根据请求中的 model_name 参数查找对应模型（支持别名），未匹配则回退默认模型。
@@ -5394,16 +5660,10 @@ class JiuWenSwarmDeepAdapter:
         return card
 
     def _resolve_project_dir_for_sandbox(self) -> str | None:
-        """Best-effort lookup of the user project directory for sandbox builds.
-
-        Prefers ``self._project_dir``,
-        then falls back to ``self._instance_overrides["project_dir"]`` which
-        :meth:`AgentManager.get_agent` populates from ``trusted_dirs[0]``.
-        Returning ``None`` lets :func:`build_filesystem_policy` use its own
-        fallback chain, but the agent-server cwd usually isn't what we want
-        so callers should treat ``None`` as "policy will mount cwd, which
-        may shadow secrets" and at minimum log it.
-        """
+        """Resolve the active task/project root without mounting the server cwd."""
+        task_root = getattr(self, "_sandbox_active_workspace_root", None)
+        if task_root:
+            return str(task_root)
         direct = getattr(self, "_project_dir", None)
         if direct:
             return str(direct)
@@ -5412,7 +5672,7 @@ class JiuWenSwarmDeepAdapter:
             value = overrides.get("project_dir")
             if value:
                 return str(value)
-        return None
+        return str(get_agent_root_dir())
 
 
     def _create_sys_operation(self) -> SysOperation | None:
@@ -5464,6 +5724,8 @@ class JiuWenSwarmDeepAdapter:
         if same_card_as_local and prior_local_retain:
             to_release.append(local_keep_id)
         self._release_sys_operations(to_release)
+        if sys_operation is not None:
+            self._install_file_soft_delete()
         return sys_operation
 
     def _retain_sys_operation(self, sys_operation_id: str) -> None:
@@ -6134,8 +6396,29 @@ class JiuWenSwarmDeepAdapter:
         )
 
         if files_changed:
+            isolation_key = _sys_operation_isolation_key(card)
+            if not launcher.base_url or not isolation_key:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] sandbox recreation skipped: "
+                    "missing endpoint or isolation key; files policy change "
+                    "was not applied to the existing sandbox"
+                )
+                return
+            isolation = getattr(card.gateway_config, "isolation", None)
+            scope = getattr(isolation, "container_scope", None)
+            # Only CUSTOM has a fully resolved isolation key on the card.
+            # SESSION templates still contain {session_id}; using one as a
+            # shared-cache key could evict another session's sandbox.
+            if getattr(scope, "value", scope) != "custom":
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] sandbox recreation skipped: "
+                    "only CUSTOM isolation scope is supported; files policy "
+                    "change was not applied to the existing sandbox"
+                )
+                return
             try:
                 from openjiuwen.extensions.sys_operation.sandbox.providers.jiuwenbox import (
+                    build_jiuwenbox_shared_scope_key,
                     force_recreate_jiuwenbox_sandbox,
                 )
             except Exception as exc:
@@ -6148,6 +6431,9 @@ class JiuWenSwarmDeepAdapter:
             try:
                 new_sandbox_id = await force_recreate_jiuwenbox_sandbox(
                     launcher.base_url,
+                    shared_key=build_jiuwenbox_shared_scope_key(
+                        str(launcher.base_url), str(isolation_key)
+                    ),
                     policy=new_policy,
                     policy_mode=extra.get("policy_mode", "append"),
                     preserve_files_upload=upload_list,
@@ -6411,7 +6697,7 @@ class JiuWenSwarmDeepAdapter:
                 return skill_dir, source or fallback_source, version or None
 
             rail = SkillAuthorizationRail(
-                engine=getattr(permission_rail, "_engine", None),
+                permission_key=getattr(permission_rail, "permission_key", None),
                 skill_resolver=resolve_skill,
                 prebuilt_dirs_provider=self._prebuilt_skill_dirs_snapshot,
                 builtin_dirs_provider=lambda: [get_builtin_skills_dir()],
@@ -6455,6 +6741,7 @@ class JiuWenSwarmDeepAdapter:
             return skill_rail.resolve_scope(ctx)
 
         setter(resolve_scope)
+        skill_rail.set_permission_key_resolver(permission_rail.permission_baseline_key_for)
 
     def _skill_rail_session_id(self) -> str | None:
         """Session id bound into skill rails for session-scoped adapters.
@@ -6835,15 +7122,19 @@ class JiuWenSwarmDeepAdapter:
         return skill_evolution_rail
 
     def _ttse_bank_path(self) -> str:
-        """FACT/TIP bank is always ``workspace/.ttse/bank.json``; not a user knob.
+        """FACT/TIP bank shared with expert-team mode; not a user knob.
 
-        Uses ``self._workspace_dir`` (same tenant root as memory rails). Sync
-        and reload do not bind ``_TENANT_JIUWENCLAW_WS_CV``, so
+        Uses ``self._workspace_dir`` (same tenant root as memory rails). On the
+        standard ``service_*/agent_*/agent/jiuwenclaw_workspace`` layout this is
+        ``service_*/.ttse/bank.json``, so single-agent and team write one file.
+        Sync and reload do not bind ``_TENANT_JIUWENCLAW_WS_CV``, so
         :func:`get_agent_workspace_dir` would fall back to the default-tenant
-        shared workspace and mix FACT/TIP banks across tenants.
+        workspace and pick the wrong service.
         """
+        from jiuwenswarm.common.config import resolve_shared_ttse_bank
+
         root = Path(self._workspace_dir) if self._workspace_dir else get_agent_workspace_dir()
-        return str(root / ".ttse" / "bank.json")
+        return str(resolve_shared_ttse_bank(root))
 
     def _resolved_ttse_config(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
         """User yaml ``react.ttse`` plus adapter cache (runtime cache wins).
@@ -7347,6 +7638,27 @@ class JiuWenSwarmDeepAdapter:
         return rail
 
 
+    @staticmethod
+    def _build_tool_result_normalize_rail() -> Any | None:
+        """Build ToolResultNormalizeRail（T1 出口归一，priority=82）.
+
+        开关在 rail 内部经 config 懒加载（tool_result_normalize_enabled /
+        tool_result_llm_render_enabled），rail 构建本身不读 config。
+        """
+        try:
+            from jiuwenswarm.agents.harness.common.rails.tool_result_normalize_rail import (
+                ToolResultNormalizeRail,
+            )
+
+            rail = ToolResultNormalizeRail()
+            logger.info("[JiuWenSwarmDeepAdapter] ToolResultNormalizeRail create success")
+            return rail
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] ToolResultNormalizeRail create failed: %s", exc
+            )
+            return None
+
     def _build_deepresearch_execution_rail(
         self,
     ) -> DeepResearchExecutionRail | None:
@@ -7822,7 +8134,7 @@ class JiuWenSwarmDeepAdapter:
             resolve_permission_config=resolve_permission_config,
         )
 
-    def _get_deepresearch_material_context(self) -> dict[str, Any] | None:
+    async def _get_deepresearch_material_context(self) -> dict[str, Any] | None:
         # Per-session adapter snapshot survives long-lived runner Task boundaries.
         context = copy.deepcopy(self._current_request_route.get("materials_context"))
         if context is None:
@@ -7838,17 +8150,37 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[DeepResearch] Material permission configuration unavailable")
             permission_config = {}
         enabled = permission_config.get("enabled") if isinstance(permission_config, dict) else None
-        engine = getattr(getattr(self, "_permission_rail", None), "_engine", None)
-        from openjiuwen.harness.security.models import PermissionLevel
+        key = getattr(getattr(self, "_permission_rail", None), "permission_key", None)
+        from jiuwenswarm.agents.harness.common.rails.permissions.permission_runtime import (
+            PermissionLevel,
+            check_permission_by_key,
+        )
+
         for item in context["files"]:
             if enabled is False:
                 # A disabled permission system intentionally has no PermissionRail.
                 item["read_allowed"] = True
-            elif enabled is not True or engine is None:
+            elif enabled is not True or not key:
                 item["read_allowed"] = False
             else:
-                level, _ = engine.check_tool_permission_directly("read_file", {"file_path": item.get("path", "")})
-                item["read_allowed"] = level == PermissionLevel.ALLOW
+                try:
+                    result = await check_permission_by_key(
+                        "read_file", {"file_path": item.get("path", "")}, key
+                    )
+                except Exception:
+                    # 路由身份重建会注销旧 key，并发中的材料求值可能查到已注销
+                    # 的 key；按拒绝处理，避免打断整个 deepresearch 流程。
+                    logger.warning(
+                        "[DeepResearch] Material read permission check failed",
+                        exc_info=True,
+                    )
+                    item["read_allowed"] = False
+                else:
+                    # 未登记 key → None，按拒绝（与原先异常路径一致）。
+                    item["read_allowed"] = (
+                        result is not None
+                        and result.permission == PermissionLevel.ALLOW
+                    )
         return context
 
     def _get_deepresearch_tool_context(self) -> dict[str, str]:
@@ -7907,11 +8239,11 @@ class JiuWenSwarmDeepAdapter:
             getattr(self, "_project_dir", None) or ""
         ).strip()
         if session_workspace:
-            return str(Path(session_workspace).expanduser().resolve())
-        workspace = Path(
-            getattr(self, "_workspace_dir", None) or get_agent_workspace_dir()
-        ).expanduser().resolve()
-        return str(workspace / "projects")
+            return _resolve_artifact_dir(session_workspace)
+        workspace = _resolve_artifact_dir(
+            str(getattr(self, "_workspace_dir", None) or get_agent_workspace_dir())
+        )
+        return str(Path(workspace) / "projects")
 
     async def refresh_skill_rails(self) -> None:
         """轻量刷新 skill 相关 rail，避免全量重建 agent 实例.
@@ -8081,6 +8413,10 @@ class JiuWenSwarmDeepAdapter:
                 self._build_deepresearch_execution_rail,
             ),
             _RailBuildInfo("_stream_event_rail", self._build_stream_event_rail),
+            _RailBuildInfo(
+                "_tool_result_normalize_rail",
+                self._build_tool_result_normalize_rail,
+            ),
             # opt-in: AGENT_EXTENSION_CONFIG_DEBUG_RAIL=1 (default off)
             _RailBuildInfo(
                 "_extension_config_debug_rail",
@@ -8359,6 +8695,45 @@ class JiuWenSwarmDeepAdapter:
             ),
         )
 
+    def _remember_permission_routing(
+        self,
+        metadata: dict[str, Any] | None = None,
+        *,
+        request: Any | None = None,
+    ) -> None:
+        """Cache identity dims used by ``resolve_permission_key`` (one path both editions)."""
+        if not is_enterprise():
+            self._permission_routing = {}
+            return
+        from jiuwenswarm.common.request_identity import web_routing_identity
+
+        meta = metadata
+        if meta is None and request is not None:
+            raw = getattr(request, "metadata", None)
+            meta = raw if isinstance(raw, dict) else None
+        identity = web_routing_identity(meta)
+        routing: dict[str, str] = {}
+        for key in ("group_id", "bot_id", "user_id"):
+            value = identity.get(key)
+            if isinstance(value, str) and value.strip():
+                routing[key] = value
+        self._permission_routing = routing
+
+    def _permission_key_dims(self) -> dict[str, str | None]:
+        """Args for ``resolve_permission_key`` / ``make_key`` (personal → all None)."""
+        if not is_enterprise():
+            return {"group_id": None, "bot_id": None, "user_id": None}
+        routing = self._permission_routing or {}
+        return {
+            "group_id": routing.get("group_id"),
+            "bot_id": routing.get("bot_id"),
+            "user_id": routing.get("user_id"),
+        }
+
+    def permission_key_dims(self) -> dict[str, str | None]:
+        """Public dims for callers outside this class (codecheck G.CLS.11)."""
+        return self._permission_key_dims()
+
     def _update_permission_rail(
         self,
         config_base: dict[str, Any] | None,
@@ -8368,16 +8743,62 @@ class JiuWenSwarmDeepAdapter:
         """原地更新已有 PermissionRail 配置，或在首次启用时新建。
 
         企业版优先使用 Agent template_ref.permissions 模板 body（与模型槽位同级）。
+        个人版 / 企业版同一路径；key 仅由 ``resolve_permission_key`` 的入参区分。
+
+        不发布会话级 Manager key / 不持有请求租约：权限只有用户级（三元组或
+        ``default``）登记；企业会话 overlay 判定时临时 ``config=``。``session_id``
+        仅保留给子类校验等宿主用途，不触发 session publish。
         """
-        permission_config = self._resolve_permission_config_for_agent(
-            session_id=session_id
+        from jiuwenswarm.agents.harness.common.rails.permissions.permission_key import (
+            resolve_permission_key,
         )
+
+        _ = session_id  # 保留形参兼容 Flash 等覆写；不再用于会话级发布
+        permission_config = self._resolve_permission_config_for_agent(
+            session_id=""
+        )
+        from jiuwenswarm.agents.harness.common.rails.permissions.permission_runtime import (
+            update_permission_config,
+        )
+
+        # 组 key 只走 resolve_permission_key；权限未启用且尚无 rail 时不必解析。
+        need_key = (
+            self._permission_rail is not None
+            or bool(permission_config.get("enabled", False))
+        )
+        wanted_key = (
+            resolve_permission_key(**self._permission_key_dims())
+            if need_key
+            else None
+        )
+        stale_rail = None
+        if self._permission_rail is not None:
+            current_key = getattr(self._permission_rail, "permission_key", None)
+            if getattr(self._permission_rail, "routing_key", current_key) != wanted_key:
+                # Pooled adapters can serve different routing identities over
+                # their lifetime. Rebuild instead of failing the whole request,
+                # releasing the old manager registration first so it is not
+                # leaked.
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] _permission_rail key changed "
+                    "current=%s wanted=%s; rebuilding",
+                    current_key,
+                    wanted_key,
+                )
+                # 旧注册在重建定论后才注销：重建抛错时保留旧 key，在途请求
+                # 不会撞上已注销的 key（unregistered -> 全量 DENY）。
+                stale_rail = self._permission_rail
+                self._permission_rail = None
         if self._permission_rail is not None:
             self._sync_permission_workspace(self._permission_rail)
-            self._permission_rail.update_config(permission_config)
-            logger.info("[JiuWenSwarmDeepAdapter] _permission_rail config hot-updated")
+            update_permission_config(self._permission_rail, permission_config)
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] _permission_rail config hot-updated key=%s",
+                wanted_key,
+            )
         elif permission_config.get("enabled", False):
-            self._permission_rail = self._build_permission_rail_for_agent(
+            # 建轨失败 → None（与迁仓前一致）；有 stale 时保留旧轨，不抬异常。
+            new_rail = self._build_permission_rail_for_agent(
                 config=config_base or {},
                 llm=self._model,
                 model_name=config_base.get("models", {})
@@ -8387,21 +8808,37 @@ class JiuWenSwarmDeepAdapter:
                 if isinstance(config_base, dict)
                 else "gpt-4",
             )
-            if self._permission_rail is not None:
-                logger.info("[JiuWenSwarmDeepAdapter] _permission_rail newly created on hot-reload")
-                # 冷启动时权限系统未启用则授权 Rail 的 engine 为 None（fail-closed）；
-                # 权限 Rail 热更新建后同步引擎，恢复 DENY 预判能力。
-                # agent-core 的 SkillAuthorizationRail 未提供引擎写入口，
-                # 用 setattr 做原地同步，避免重建 rail 丢失与运行中 Agent 的绑定。
+            if new_rail is not None:
+                self._permission_rail = new_rail
+                update_permission_config(self._permission_rail, permission_config)
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] _permission_rail newly created key=%s",
+                    getattr(self._permission_rail, "permission_key", wanted_key),
+                )
+                # Keep SkillAuthorizationRail on the same manager key as the
+                # permission rail (DENY pre-check without Skill overlay).
                 if self._skill_authorization_rail is not None:
                     setattr(
                         self._skill_authorization_rail,
-                        "_engine",
-                        getattr(self._permission_rail, "_engine", None),
+                        "_permission_key",
+                        getattr(
+                            self._permission_rail,
+                            "permission_key",
+                            getattr(self._skill_authorization_rail, "_permission_key", None),
+                        ),
                     )
                     self._bind_skill_permission_scope_resolver(
                         self._permission_rail, self._skill_authorization_rail
                     )
+            elif stale_rail is not None:
+                # 重建失败：退回旧轨，避免注销仍在服务的 key。
+                self._permission_rail = stale_rail
+                stale_rail = None
+        if stale_rail is not None and self._permission_rail is not stale_rail:
+            # 重建成功或权限被显式关闭后才注销旧 key。
+            release = getattr(stale_rail, "_release_registration", None)
+            if callable(release):
+                release()
 
     def _resolve_permission_config_for_agent(
         self,
@@ -8450,9 +8887,10 @@ class JiuWenSwarmDeepAdapter:
         return collapse_nested_agent_workspace_dir(get_agent_workspace_dir())
 
     def _sync_permission_workspace(self, rail: Any | None) -> None:
-        """把 file_guard.workspace 绑到本 Agent 工作区，不重建。
+        """把 file_guard.workspace 绑到本 Agent 工作区。
 
-        重建由随后的 ``update_config`` / ``set_trusted_dirs`` 完成。
+        经 ``set_workspace_root`` 写入已发布配置的 ``runtime.workspace_root``；
+        随后的 ``update_config`` / ``set_trusted_dirs`` 会保留该 runtime。
         """
         if rail is None:
             return
@@ -8460,10 +8898,20 @@ class JiuWenSwarmDeepAdapter:
         host = getattr(rail, "_host", None)
         if host is not None:
             host.resolve_workspace_dir = self._permission_workspace_dir
-        engine = getattr(rail, "_engine", None)
-        if engine is None:
-            return
-        setattr(engine, "_workspace_root", workspace)
+        setter = getattr(rail, "set_workspace_root", None)
+        if callable(setter):
+            try:
+                setter(workspace)
+            except Exception:
+                logger.debug(
+                    "[JiuWenSwarmDeepAdapter] permission set_workspace_root failed",
+                    exc_info=True,
+                )
+
+    @staticmethod
+    def _permission_rail_factory() -> Any | None:
+        """Optional rail class/factory; None → default SkillAuthorization/PermissionInterrupt rail."""
+        return None
 
     def _build_permission_rail_for_agent(
         self,
@@ -8471,7 +8919,12 @@ class JiuWenSwarmDeepAdapter:
         llm: Any = None,
         model_name: str | None = None,
     ) -> Any | None:
-        """冷启动构建 permission rail：注入 Agent 级模板 body。"""
+        """冷启动构建 permission rail：注入 Agent 级模板 body + 身份维 key。
+
+        所有 adapter（Deep/Code/Flash）共用此路径；Flash 仅覆盖
+        :meth:`_permission_rail_factory` 换成投影子类。
+        """
+        dims = self._permission_key_dims()
         return build_permission_rail(
             config=config or {},
             options=PermissionRailBuildOptions(
@@ -8480,6 +8933,10 @@ class JiuWenSwarmDeepAdapter:
                 permission_config=self._agent_permissions_body,
                 resolve_workspace_dir=self._permission_workspace_dir,
                 persist_target_agent_id_provider=self._permissions_persist_target,
+                rail_factory=self._permission_rail_factory(),
+                group_id=dims.get("group_id"),
+                bot_id=dims.get("bot_id"),
+                user_id=dims.get("user_id"),
             ),
         )
 
@@ -9324,6 +9781,8 @@ class JiuWenSwarmDeepAdapter:
                 )
                 self._bind_subagent_model_resolver()
                 self._bind_subagent_authorization_wiring()
+                self._bind_subagent_runtime_config(config_base)
+                self._bind_subagent_ttse_wiring()
 
                 _apply_llm_io_trace_patch()
 
@@ -9370,6 +9829,7 @@ class JiuWenSwarmDeepAdapter:
 
                 # 加载已激活的 packages（skills, rails, tools）
                 await self._load_active_packages()
+                await self._load_rsi_active_harness()
                 await asyncio.sleep(0)
 
                 self._sync_preinstance_runtime_tools_to_ability_manager()
@@ -9540,6 +10000,7 @@ class JiuWenSwarmDeepAdapter:
         self._refresh_multimodal_configs(config_base)
 
         self._config_cache = config_base.get("react", {}).copy()
+        self._install_file_soft_delete()
         return config_base
 
     async def _fan_out_reload_to_session_adapters(
@@ -10520,6 +10981,7 @@ class JiuWenSwarmDeepAdapter:
         cwd: str | None = None
         workspace: str | None = None
         project_dir: str | None = None
+        task_name: str | None = None
         supports_user_interaction: bool = True
         eternal_conversation_enabled: bool = False
         interaction_resume: bool = False
@@ -10529,6 +10991,34 @@ class JiuWenSwarmDeepAdapter:
         # 工具复制到 inputs["files"]，流水线 intent_classify 据此设 has_documents。
         files: Any = None
 
+
+    @staticmethod
+    def _extract_task_request_text(value: Any) -> str | None:
+        if isinstance(value, dict):
+            for key in ("content", "text", "query", "message"):
+                nested = value.get(key)
+                if isinstance(nested, str) and nested.strip():
+                    return nested.strip()
+            return None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return None
+
+    @staticmethod
+    def _resolve_request_task_name(request: AgentRequest, inputs: dict[str, Any]) -> str | None:
+        params = request.params if isinstance(request.params, dict) else {}
+        metadata = request.metadata if isinstance(request.metadata, dict) else {}
+        for source in (params, inputs, metadata):
+            for key in ("task_name", "title"):
+                value = source.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        for source in (params, metadata):
+            for key in ("query", "content", "message"):
+                candidate = JiuWenSwarmDeepAdapter._extract_task_request_text(source.get(key))
+                if candidate is not None:
+                    return candidate
+        return JiuWenSwarmDeepAdapter._extract_task_request_text(inputs.get("query"))
 
     async def configure_session_runtime(
         self,
@@ -10621,8 +11111,8 @@ class JiuWenSwarmDeepAdapter:
             runtime_config: Per-request runtime parameters for this turn.
             stage_timer: Timer marked at each stage boundary.
         """
-        # Request tenant bindings do not survive the supervisor round task.
-        # Carry only the trusted session path, never cached authorization data.
+        # The supervisor round task needs the trusted session path. Do not
+        # carry request-scoped authorization data into that task.
         from jiuwenswarm.common.utils import get_agent_sessions_dir
 
         sessions_root = get_agent_sessions_dir()
@@ -10631,13 +11121,23 @@ class JiuWenSwarmDeepAdapter:
             if rail is not None:
                 rail.set_sessions_root(sessions_root)
 
-        task_workspace = (
-            runtime_config.workspace
-            or runtime_config.project_dir
-            or self._project_dir
-            or str(get_default_project_session_workspace_dir(runtime_config.session_id))
+        runtime_paths = resolve_runtime_workspace_paths(
+            internal_workspace_dir=self._workspace_dir,
+            project_dir=runtime_config.project_dir or self._project_dir,
+            workspace_dir=runtime_config.workspace,
+            cwd=runtime_config.cwd,
+            session_id=runtime_config.session_id,
+            task_name=runtime_config.task_name,
+            bind_request=bind_request,
         )
-        task_cwd = runtime_config.cwd or task_workspace
+        task_workspace = str(runtime_paths.runtime_workspace_root)
+        task_cwd = str(runtime_paths.cwd)
+        if task_workspace != getattr(self, "_sandbox_active_workspace_root", None):
+            self._sandbox_active_workspace_root = task_workspace
+            if get_sandbox_runtime().get("enabled"):
+                await self.apply_sandbox_runtime_patch(
+                    get_sandbox_runtime(), files_changed=True
+                )
         self._seed_runtime_cwd(task_cwd, workspace=task_workspace)
         # Persist paths on StreamEventRail so the interaction round task can
         # rebind openjiuwen CwdState (request-task init_cwd does not propagate).
@@ -10693,6 +11193,7 @@ class JiuWenSwarmDeepAdapter:
         stage_timer.mark("eternal_conversation")
 
         if self._runtime_prompt_rail:
+            self._runtime_prompt_rail.set_session_id(runtime_config.session_id)
             self._runtime_prompt_rail.set_language(resolved_language)
             self._runtime_prompt_rail.set_channel(resolved_channel)
             self._runtime_prompt_rail.set_trusted_dirs(
@@ -10702,10 +11203,17 @@ class JiuWenSwarmDeepAdapter:
                 cwd=task_cwd,
                 project_dir=runtime_config.project_dir or self._project_dir,
                 workspace_dir=self._workspace_dir,
+                task_workspace_root=task_workspace if runtime_paths.is_projectless else None,
+                task_work_dir=str(runtime_paths.work_dir) if runtime_paths.work_dir else None,
+                task_outputs_dir=str(runtime_paths.outputs_dir) if runtime_paths.outputs_dir else None,
+            )
+            self._runtime_prompt_rail.set_execution_paths(
+                cwd=task_cwd,
+                project_root=str(runtime_paths.project_root),
+                workspace=task_workspace,
             )
             self._runtime_prompt_rail.set_model_name(self._resolve_model_name())
             self._runtime_prompt_rail.set_mode(runtime_config.mode)
-            self._runtime_prompt_rail.set_session_id(runtime_config.session_id)
             self._runtime_prompt_rail.set_request_system_prompt(
                 runtime_config.request_system_prompt if bind_request else None
             )
@@ -10718,7 +11226,10 @@ class JiuWenSwarmDeepAdapter:
         if permission_rail is not None and bind_request:
             try:
                 self._sync_permission_workspace(permission_rail)
-                permission_rail.set_trusted_dirs(runtime_config.trusted_dirs)
+                trusted_dirs = list(runtime_config.trusted_dirs or ())
+                if runtime_paths.is_projectless:
+                    trusted_dirs.append(task_workspace)
+                permission_rail.set_trusted_dirs(trusted_dirs)
             except Exception:
                 logger.debug(
                     "[JiuWenSwarmDeepAdapter] permission_rail.set_trusted_dirs failed",
@@ -11492,7 +12003,6 @@ class JiuWenSwarmDeepAdapter:
                 )
             output = result.get("output", "") or ""
         return str(output)
-
 
     async def prepare_plan_pause_for_request(self, request: AgentRequest) -> None:
         """On next agent.plan message after cancel: clear task_plan, inject decision prompt, clear flag."""
@@ -13296,9 +13806,9 @@ class JiuWenSwarmDeepAdapter:
             await approve_evolution_records(rail, request_id, approved_record_ids)
             # Sync updated team skill from workspace to global team_skills dir.
             try:
-                from jiuwenswarm.agents.harness.team import refresh_team_shared_skill_links_across_managers
+                from jiuwenswarm.agents.harness.team import reload_team_skill_views_across_managers
 
-                refresh_team_shared_skill_links_across_managers(session_id)
+                await reload_team_skill_views_across_managers(session_id)
             except Exception as exc:
                 logger.warning("[JiuWenSwarmDeepAdapter] team shared skill link refresh after approval failed: %s", exc)
             logger.info("[JiuWenSwarmDeepAdapter] team skill evolve accepted: request_id=%s", request_id)
@@ -13330,10 +13840,10 @@ class JiuWenSwarmDeepAdapter:
         if accepted:
             await rail.on_approve_simplify(request_id)
             try:
-                from jiuwenswarm.agents.harness.team import refresh_team_shared_skill_links_across_managers
+                from jiuwenswarm.agents.harness.team import reload_team_skill_views_across_managers
 
                 if session_id:
-                    refresh_team_shared_skill_links_across_managers(session_id)
+                    await reload_team_skill_views_across_managers(session_id)
             except Exception as exc:
                 logger.warning("[JiuWenSwarmDeepAdapter] team shared skill link refresh after simplify failed: %s", exc)
             logger.info("[JiuWenSwarmDeepAdapter] team simplify accepted: request_id=%s", request_id)
@@ -13753,8 +14263,9 @@ class JiuWenSwarmDeepAdapter:
         if permission_rail is None or not callable(setter):
             return
         existing: list[str] = []
-        engine = getattr(permission_rail, "_engine", None)
-        for item in getattr(engine, "trusted_dirs", None) or []:
+        static_cfg = getattr(permission_rail, "_static_config", None) or {}
+        runtime = static_cfg.get("runtime") if isinstance(static_cfg, dict) else None
+        for item in (runtime.get("trusted_dirs") if isinstance(runtime, dict) else None) or []:
             text = str(item).strip()
             if text:
                 existing.append(text)
@@ -13829,6 +14340,7 @@ class JiuWenSwarmDeepAdapter:
                     UserMessage(content=user_prompt),
                 ],
                 temperature=0,
+                request_purpose="rewrite",
             )
             content = _strip_skill_md_fence(
                 getattr(result, "content", None) or ""
@@ -15299,6 +15811,16 @@ class JiuWenSwarmDeepAdapter:
                 metadata=request.metadata,
             )
 
+        try:
+            await self._sync_rsi_session_harness(request)
+        except Exception as exc:
+            logger.exception("RSI Harness 会话同步失败，返回聊天错误响应")
+            return AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id, ok=False,
+                payload={"error_code": "rsi_harness_selection_failed", "error": str(exc)},
+                metadata=request.metadata,
+            )
+
         session_id = request.session_id or "default"
         query = request.params.get("query", "")
         mode = request.params.get("mode", "agent")
@@ -15466,21 +15988,14 @@ class JiuWenSwarmDeepAdapter:
             token_cid = TOOL_PERMISSION_CHANNEL_ID.set((request.channel_id or "").strip())
             token_perm = setup_permission_context(request)
             token_perm_sid = setup_permissions_session_scope(session_id)
+            self._remember_permission_routing(request=request)
             if not is_enterprise():
                 self._refresh_standard_agent_permissions_body(request)
             token_perm_agent = self._bind_agent_permissions_base()
-            try:
-                self._update_permission_rail(
-                    self._config_base_cache, session_id=session_id
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] permission rail agent-level bind failed: %s",
-                    exc,
-                )
             resolved_model = self._resolve_model_for_request(request)
             self._apply_model_to_react_agent(resolved_model)
             await self._maybe_apply_pending_reload()
+            self._update_permission_rail(self._config_base_cache)
             request_env_tokens = self._bind_request_env_overlay()
             self._mark_session_active(session_id)
             session_active = True
@@ -15516,6 +16031,8 @@ class JiuWenSwarmDeepAdapter:
                 cleanup_steps.append(
                     lambda: self._reset_request_env_bindings(*request_env_tokens)
                 )
+            if token_perm_agent is not None:
+                cleanup_steps.append(lambda: reset_permissions_agent_base(token_perm_agent))
             if token_perm_sid is not None:
                 cleanup_steps.append(
                     lambda: reset_permissions_session_scope(token_perm_sid)
@@ -15555,6 +16072,7 @@ class JiuWenSwarmDeepAdapter:
                     cwd=inputs.get("cwd"),
                     workspace=inputs.get("workspace_dir"),
                     project_dir=inputs.get("project_dir"),
+                    task_name=self._resolve_request_task_name(request, inputs),
                     supports_user_interaction=inputs.get(
                         "supports_user_interaction", True
                     ),
@@ -16134,6 +16652,17 @@ class JiuWenSwarmDeepAdapter:
             )
             return
 
+        try:
+            await self._sync_rsi_session_harness(request)
+        except Exception as exc:
+            logger.exception("RSI Harness 会话同步失败，返回聊天错误帧")
+            yield AgentResponseChunk(
+                request_id=request.request_id, channel_id=request.channel_id, is_complete=True,
+                payload={"event_type": "chat.error", "error_code": "rsi_harness_selection_failed", "error": str(exc)},
+                metadata=request.metadata or {},
+            )
+            return
+
         session_id = request.session_id or "default"
         rid = request.request_id
         cid = request.channel_id
@@ -16284,6 +16813,7 @@ class JiuWenSwarmDeepAdapter:
                     request,
                     inputs,
                     self._instance,
+                    image_files=image_files,
                     **team_stream_kwargs,
                 ):
                     maybe_mark_answer_first_byte(getattr(chunk, "payload", None))
@@ -16345,6 +16875,7 @@ class JiuWenSwarmDeepAdapter:
                         trusted_dirs=inputs.get("trusted_dirs"),
                         cwd=inputs.get("cwd"),
                         project_dir=inputs.get("project_dir"),
+                        task_name=self._resolve_request_task_name(request, inputs),
                         supports_user_interaction=inputs.get(
                             "supports_user_interaction", True
                         ),
@@ -16686,19 +17217,12 @@ class JiuWenSwarmDeepAdapter:
             token_cid = TOOL_PERMISSION_CHANNEL_ID.set((request.channel_id or "").strip())
             token_perm = setup_permission_context(request)
             token_perm_sid = setup_permissions_session_scope(session_id)
+            self._remember_permission_routing(request=request)
             if not is_enterprise():
                 self._refresh_standard_agent_permissions_body(request)
             token_perm_agent = self._bind_agent_permissions_base()
-            try:
-                self._update_permission_rail(
-                    self._config_base_cache, session_id=session_id
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] permission rail agent-level bind failed: %s",
-                    exc,
-                )
             await self._maybe_apply_pending_reload()
+            self._update_permission_rail(self._config_base_cache)
             # 按请求选择模型（企业配置已在 create_instance 合并）
             resolved_model = self._resolve_model_for_request(request)
             self._apply_model_to_react_agent(resolved_model)
@@ -16765,6 +17289,7 @@ class JiuWenSwarmDeepAdapter:
                     cwd=inputs.get("cwd"),
                     workspace=inputs.get("workspace_dir"),
                     project_dir=inputs.get("project_dir"),
+                    task_name=self._resolve_request_task_name(request, inputs),
                     supports_user_interaction=inputs.get(
                         "supports_user_interaction", True
                     ),
@@ -19067,7 +19592,7 @@ class JiuWenSwarmDeepAdapter:
         try:
             # No temperature override — inherit model default to match main agent
             # API params (thinking config is part of the Anthropic cache key).
-            result = await self._model.invoke(recap_messages, tools=tools)
+            result = await self._model.invoke(recap_messages, tools=tools, request_purpose="recap")
             # Tool-use guard: tools schema is passed only to preserve the cache
             # key (matches the main agent). Single turn + discard any tool_use
             # the model emits → tools are never executed. Aligned with
@@ -19164,6 +19689,7 @@ class JiuWenSwarmDeepAdapter:
         result = await self._model.invoke(
             [UserMessage(content=prompt)],
             temperature=0,
+            request_purpose="repair",
         )
         content = getattr(result, "content", None)
         if isinstance(content, str):
@@ -19250,7 +19776,7 @@ class JiuWenSwarmDeepAdapter:
         recap_messages.append(UserMessage(content=prompt))
 
         try:
-            result = await self._model.invoke(recap_messages, temperature=0)
+            result = await self._model.invoke(recap_messages, temperature=0, request_purpose="summary")
             raw = getattr(result, "content", None) or str(result)
         except Exception:
             logger.exception("[compact_partial] model call failed")
@@ -19692,5 +20218,124 @@ class JiuWenSwarmDeepAdapter:
             self._dreaming_started = False
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] stop_dreaming failed: %s", exc)
+
+    async def _load_rsi_active_harness(self):
+        self._rsi_session_harness_id = ""
+        self._rsi_harness_install_id = None
+        self._rsi_harness_config_path = None
+        self._rsi_harness_load_record = None
+        if not (get_user_workspace_dir() / "rsi" / "tasks" / "activation.json").is_file():
+            return
+        from jiuwenswarm.agents.harness.common.rsi.harness_activation import RsiHarnessActivationStore
+        from jiuwenswarm.agents.harness.common.rsi.context import get_rsi_workspace_root
+        try:
+            active = RsiHarnessActivationStore(get_rsi_workspace_root() / "tasks").get_active()
+            if active:
+                await self.apply_rsi_harness_install("activate", config_path=active["runtime_path"],
+                                                     installation_id=active["installation_id"])
+        except Exception:
+            logger.exception("Failed to restore the active RSI Harness; native agent remains available")
+
+    async def apply_rsi_harness_install(self, operation, *, config_path, installation_id):
+        """Apply a new default only to adapters following the global selection."""
+        async with self._rsi_harness_lock:
+            if getattr(self, "_rsi_session_harness_id", ""):
+                return {"status": "SKIPPED", "resources": []}
+            return await self._replace_rsi_harness(operation, config_path=config_path, installation_id=installation_id)
+
+    async def _sync_rsi_session_harness(self, request):
+        """Restore or change the installed Harness selected for this chat."""
+        # 关闭时不访问请求/适配器状态，也不导入可选 Harness 实现。
+        if ((get_config() or {}).get("rsi") or {}).get("enabled") is not True:
+            return
+        if not self._is_session_scoped_adapter or not request.session_id:
+            return
+        if request.req_method != ReqMethod.CHAT_SEND:
+            return
+        from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata, update_session_metadata
+        from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
+        from jiuwenswarm.agents.harness.common.rsi.harness_activation import RsiHarnessActivationStore
+        from jiuwenswarm.agents.harness.common.rsi.context import get_rsi_workspace_root
+
+        params = request.params or {}
+        mode = str(params.get("mode", "agent")).partition(".")[0]
+        if params.get("answers") or params.get("input_mode") == "steer" or mode != "agent":
+            return
+        field_name = "rsi_harness_installation_id"
+        changed = field_name in params
+        agent_id, service_id, workspace_key = TenantAgentPool.extract_ids(request)
+        root = resolve_tenant_sessions_dir(workspace_key, service_id=service_id, agent_id=agent_id)
+        async with self._rsi_harness_lock:
+            saved = get_session_metadata(
+                request.session_id, enable_writeback=False, sessions_root=root,
+            ).get(field_name, "")
+            desired = params[field_name] if changed else saved
+            if not isinstance(desired, str):
+                raise ValueError("RSI Harness 版本必须是字符串，空字符串表示恢复默认")
+            current = getattr(self, "_rsi_session_harness_id", "")
+            if not desired or desired != current:
+                store = RsiHarnessActivationStore(get_rsi_workspace_root() / "tasks")
+                selected = store.get_version(desired) if desired else store.get_active()
+                if desired and selected is None:
+                    raise ValueError("所选 RSI Harness 版本已不可用")
+                runtime = (
+                    store.validate_runtime_path(selected.get("runtime_path"), require_exists=True)
+                    if selected else None
+                )
+                if desired and runtime is None:
+                    raise ValueError("所选 RSI Harness 版本文件不存在")
+                installation_id = selected["installation_id"] if runtime else ""
+                loaded = getattr(self, "_rsi_harness_install_id", None) or ""
+                if installation_id != loaded:
+                    await self._replace_rsi_harness(
+                        "activate" if runtime else "deactivate",
+                        config_path=str(runtime) if runtime else "",
+                        installation_id=installation_id,
+                    )
+                self._rsi_session_harness_id = desired
+            if changed and desired != saved:
+                update_session_metadata(
+                    session_id=request.session_id, sessions_root=root,
+                    rsi_harness_installation_id=desired, touch_last_message_at=False, sync_write=True,
+                )
+
+    async def _replace_rsi_harness(self, operation, *, config_path, installation_id):
+        from openjiuwen.rsi.harness_rsi.package_compat import load_plugin_package
+        from jiuwenswarm.agents.harness.common.rsi.errors import RsiHarnessInstallConflict
+        instance = getattr(self, "_instance", None)
+        if instance is None:
+            return {"status": "SKIPPED", "resources": []}
+        current = getattr(self, "_rsi_harness_install_id", None)
+        if operation == "activate" and current == installation_id:
+            return {"status": "ACTIVE", "already_active": True, "resources": []}
+        previous = getattr(self, "_rsi_harness_config_path", None)
+        record = getattr(self, "_rsi_harness_load_record", None)
+        if operation not in {"activate", "deactivate"}:
+            raise ValueError("Unsupported RSI operation")
+        # Parse and validate before removing the currently active resources.
+        spec = load_plugin_package(config_path) if operation == "activate" else None
+        if record is not None:
+            await instance.unload_extension(record)
+        self._rsi_harness_load_record = None
+        self._rsi_harness_install_id = None
+        self._rsi_harness_config_path = None
+        if spec is None:
+            return {"status": "INACTIVE", "resources": []}
+        try:
+            record = await instance.load_plugin_spec(spec)
+        except Exception as exc:
+            if previous:
+                try:
+                    self._rsi_harness_load_record = await instance.load_plugin_spec(load_plugin_package(previous))
+                    self._rsi_harness_install_id = current
+                    self._rsi_harness_config_path = previous
+                except Exception as restore:
+                    raise RsiHarnessInstallConflict("Harness load and restoration failed") from restore
+            raise exc
+        self._rsi_harness_load_record = record
+        self._rsi_harness_install_id = installation_id
+        self._rsi_harness_config_path = config_path
+        return {"status": "ACTIVE", "resources": record.refs}
+
 
 

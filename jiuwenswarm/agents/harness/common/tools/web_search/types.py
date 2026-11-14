@@ -12,8 +12,9 @@ class WebSearchRecord:
     url: str
     snippet: str
     source: str
-    content: str = ""                     # 网页正文（仅 petal content=True 时携带；不进给模型的响应）
+    content: str = ""                     # 网页正文（petal / bocha 等 provider 携带，可能只是摘要）
     update_time: Optional[float] = None  # 网页更新时间 epoch 秒；None 表示缺失
+    images: list[str] = field(default_factory=list)  # provider 直接返回的图片 URL（可空）
 
 
 @dataclass

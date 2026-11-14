@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
+from jiuwenswarm.common.e2a.constants import E2A_INTERNAL_CANCEL_SOURCE_KEY, E2A_CANCEL_SOURCE_CRON_COMPLETE
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.handlers import _default, _shared, chat
 from jiuwenswarm.server.runtime.agent_adapter import interface
@@ -15,6 +16,33 @@ from jiuwenswarm.server.runtime.agent_manager import AgentManager, _make_agent_c
 from jiuwenswarm.server.runtime.session.session_manager import SessionManager
 from jiuwenswarm.server.runtime.session import session_metadata
 from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
+
+
+@pytest.mark.asyncio
+async def test_cron_completion_releases_agent_runtime_without_interrupting():
+    manager = SimpleNamespace(cleanup_session_runtime=AsyncMock(return_value=True))
+    request = AgentRequest(
+        request_id="cron-cleanup-test",
+        channel_id="__cron__",
+        session_id="cron-run-test",
+        req_method=ReqMethod.CHAT_CANCEL,
+        params={"intent": "cleanup"},
+        is_stream=False,
+        timestamp=0.0,
+        metadata={E2A_INTERNAL_CANCEL_SOURCE_KEY: E2A_CANCEL_SOURCE_CRON_COMPLETE},
+    )
+    ctx = SimpleNamespace(
+        request=request,
+        services=SimpleNamespace(agent_manager=manager),
+        sink=SimpleNamespace(send_wire=AsyncMock()),
+    )
+
+    await chat.handle_chat_cancel_dispatch(ctx)
+
+    manager.cleanup_session_runtime.assert_awaited_once_with(
+        channel_id="__cron__", session_id="cron-run-test"
+    )
+    ctx.sink.send_wire.assert_awaited_once()
 
 
 class RecordingAdapter:

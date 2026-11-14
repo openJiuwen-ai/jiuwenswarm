@@ -78,7 +78,9 @@ def test_full_grant_active_state_and_adapter_eviction(stores, manifest):
     set_skill_grant_store(b)
     skill_active_state.clear_session_skill_state("session", local_only=True)
     assert skill_active_state.get_session_active_skill("session") == manifest.skill_name
-    assert set(vars(a)) == {"sessions_root", "data_root"}
+    # File-backed roots must remain; SkillGrantStore.__init__ also installs
+    # in-memory maps / _permission_listeners that FileSkillGrantStore does not use.
+    assert {"sessions_root", "data_root"} <= set(vars(a))
     assert not hasattr(skill_active_state, "_sessions")
 
 
@@ -515,9 +517,10 @@ async def test_child_tool_approval_cannot_execute_after_session_storage_changes(
     directory = store.session_directory("session")
     policy = {"enabled": True, "defaults": {"*": "ask"},
               "skill_authorization": {"enabled": True}}
-    monkeypatch.setattr(
-        subagent_permission_rail, "merge_session_permissions_overlay", lambda base, **kw: base,
-    )
+    from jiuwenswarm.agents.harness.common.rails.permissions.published_scopes import PublishedPermissionScopes
+
+    publisher = PublishedPermissionScopes("default", base_config=policy, store=store)
+    publisher.publish_session("session", policy)
     with ExitStack() as resources:
         async def answer(**_kwargs):
             if change in {"delete", "recreate"}:
@@ -557,6 +560,7 @@ async def test_child_tool_approval_cannot_execute_after_session_storage_changes(
                 assert "_interrupt_decision" in ctx.extra
         finally:
             file_store._session_file_context.reset(token)
+            publisher.close()
 
 
 @pytest.mark.asyncio
@@ -594,8 +598,11 @@ async def test_created_subagent_uses_parent_session_files_without_inherited_main
     set_skill_grant_store(store)
     policy = {"enabled": True, "skill_authorization": {"enabled": True}}
     permission = SkillAuthorizationPermissionRail(config=policy)
+    permission.update_session_config("session", policy)
     main_gate = SkillAuthorizationRail(
-        engine=permission._engine, config_provider=lambda: policy, grant_store=store,
+        permission_key=permission.permission_key,
+        config_provider=lambda: policy,
+        grant_store=store,
     )
     main_gate.set_sessions_root(store.sessions_root())
     parent = create_deep_agent(
@@ -634,6 +641,8 @@ async def test_created_subagent_uses_parent_session_files_without_inherited_main
     finally:
         file_store._session_file_context.reset(file_token)
         reset_skill_authorization_context(auth_token)
+        permission._published_scopes.remove_session("session")
+        permission.uninit(None)
 
 
 @pytest.mark.asyncio

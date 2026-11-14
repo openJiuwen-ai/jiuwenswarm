@@ -123,7 +123,7 @@ def _scene_hook_input(normalized_tool_name: str, user_input):
         user_input=user_input,
         normalized_tool_name=normalized_tool_name,
         tool_args={},
-        engine=None,
+        permission_key="default",
     )
 
 
@@ -810,6 +810,78 @@ def test_extract_question_adds_intent_to_permission_card(
     assert "**工具 `write_file` 需要授权才能执行**" in question
     assert '"/ws/report.md"' in question
     assert {"本次允许", "拒绝"} <= {opt["label"] for opt in result["options"]}
+
+
+def _tool_permission_message_with_option_hint(tool_name: str, tool_args: dict) -> str:
+    return _tool_permission_message(tool_name, tool_args) + (
+        f"\n\n> 选择「本会话内允许」可在本会话内自动放行 ``{tool_name}`` 类工具的调用；"
+        "选择「永久记住」可将此规则写回磁盘，所有会话均自动放行。"
+    )
+
+
+def test_extract_question_rewrites_option_label_hint_for_custom_card_channel(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from jiuwenswarm.agents.harness.common.rails.interrupt import interrupt_helpers as helpers
+    from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
+        TOOL_PERMISSION_CHANNEL_ID,
+    )
+
+    monkeypatch.setattr(helpers, "is_enterprise", lambda: False)
+    tool_args = {"call_goal": "生成周报", "path": "/ws/report.md"}
+    interaction = SimpleNamespace(
+        id="call_hint_1",
+        value={
+            "message": _tool_permission_message_with_option_hint("write_file", tool_args),
+            "tool_name": "write_file",
+            "tool_args": tool_args,
+        },
+    )
+
+    token = TOOL_PERMISSION_CHANNEL_ID.set(next(iter(helpers._CUSTOM_OPTION_HINT_CHANNELS)))
+    try:
+        result = helpers.extract_question_from_interaction(interaction)
+    finally:
+        TOOL_PERMISSION_CHANNEL_ID.reset(token)
+
+    assert result is not None
+    question = result["question"]
+    assert "本会话内允许" not in question
+    assert "永久记住" not in question
+    assert "选择「本次允许」仅放行本次调用" in question
+    assert "选择「关闭安全审计」将关闭安全审计" in question
+    assert "**工具 `write_file` 需要授权才能执行**" in question
+    assert '"/ws/report.md"' in question
+
+
+def test_extract_question_keeps_option_label_hint_for_web(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from jiuwenswarm.agents.harness.common.rails.interrupt import interrupt_helpers as helpers
+    from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
+        TOOL_PERMISSION_CHANNEL_ID,
+    )
+
+    monkeypatch.setattr(helpers, "is_enterprise", lambda: False)
+    tool_args = {"path": "/ws/report.md"}
+    interaction = SimpleNamespace(
+        id="call_hint_2",
+        value={
+            "message": _tool_permission_message_with_option_hint("write_file", tool_args),
+            "tool_name": "write_file",
+            "tool_args": tool_args,
+        },
+    )
+
+    token = TOOL_PERMISSION_CHANNEL_ID.set("web")
+    try:
+        result = helpers.extract_question_from_interaction(interaction)
+    finally:
+        TOOL_PERMISSION_CHANNEL_ID.reset(token)
+
+    assert result is not None
+    assert "本会话内允许" in result["question"]
+    assert "永久记住" in result["question"]
 
 
 def test_extract_question_keeps_non_permission_interrupt_untouched():

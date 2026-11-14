@@ -675,6 +675,8 @@ async def run_rewrite_fast_path(
     model_kwargs = dict(model_call_kwargs or {})
     if request.action == "polish":
         model_kwargs["temperature"] = 0.2
+    # 重写快速通道的模型调用计作 deepresearch_rewrite，供 before_model_http 积分对账区分
+    model_kwargs["request_purpose"] = "deepresearch_rewrite"
     usage_metadata = None
     model_calls = 0
     structured_result = None

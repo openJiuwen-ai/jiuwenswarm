@@ -17,7 +17,7 @@ from jiuwenswarm.agents.harness.team.team_manager import (
     RuntimeInfo,
     TeamWorkspaceInfo,
     get_team_manager,
-    refresh_team_shared_skill_links_across_managers,
+    reload_team_skill_views_across_managers,
     reset_team_manager,
 )
 from jiuwenswarm.agents.harness.team.team_session_scope import TeamBootstrapParams
@@ -213,26 +213,31 @@ def test_find_team_skill_rail_for_request_uses_pending_governance() -> None:
     assert manager.find_team_skill_rail_for_request("missing") is None
 
 
-def test_refresh_team_shared_skill_links_across_managers_uses_registered_session(
-    tmp_path,
+@pytest.mark.asyncio
+async def test_reload_team_skill_views_across_managers_uses_registered_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    global_skills_dir = tmp_path / "global-skills"
-    skill_dir = global_skills_dir / "skill-a"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text("---\nname: skill-a\n---\n", encoding="utf-8")
-    team_shared_skills = tmp_path / "team-workspace" / "skills"
+    reset_team_manager()
+    manager = get_team_manager("web")
+    agent = object()
+    rail = object()
+    manager.register_team_live_rail("sess-1", agent, rail)
+
+    reload_calls: list[object] = []
+
+    async def _fake_reload(target) -> int:
+        reload_calls.append(target)
+        return 1
 
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.team.team_manager.get_agent_skills_dir",
-        lambda: global_skills_dir,
+        "jiuwenswarm.agents.harness.team.rails.team_skill_library_reload_rail.reload_agent_skill_views",
+        _fake_reload,
     )
 
-    manager = get_team_manager("web")
-    manager.register_team_shared_skill_link_target("sess-1", team_shared_skills)
+    reloaded = await reload_team_skill_views_across_managers("sess-1")
 
-    assert refresh_team_shared_skill_links_across_managers("sess-1")
-    assert (team_shared_skills / "skill-a").resolve() == skill_dir.resolve()
+    assert reloaded == 1
+    assert reload_calls == [agent]
 
 
 @pytest.mark.asyncio
@@ -428,15 +433,6 @@ async def test_team_manager_keeps_single_session_per_channel(monkeypatch: pytest
         return _Spec()
 
     monkeypatch.setattr(TeamManager, "_load_team_spec", staticmethod(fake_load_team_spec))
-    # Mock _initialize_team_shared_skill_links to avoid file operations
-    async def _noop_init_links(_spec):
-        return None
-
-    monkeypatch.setattr(
-        TeamManager,
-        "_initialize_team_shared_skill_links",
-        staticmethod(_noop_init_links),
-    )
     # Provider assembly is covered by the swarm suite; stub it so this
     # session-management test runs on the minimal fake spec.
     monkeypatch.setattr(
@@ -488,15 +484,6 @@ async def test_create_team_does_not_run_global_runtime_cleanup(monkeypatch: pyte
         return _Spec()
 
     monkeypatch.setattr(TeamManager, "_load_team_spec", staticmethod(fake_load_team_spec))
-    # Mock _initialize_team_shared_skill_links to avoid file operations
-    async def _noop_init_links(_spec):
-        return None
-
-    monkeypatch.setattr(
-        TeamManager,
-        "_initialize_team_shared_skill_links",
-        staticmethod(_noop_init_links),
-    )
     # Provider assembly is covered by the swarm suite; stub it so this
     # session-management test runs on the minimal fake spec.
     monkeypatch.setattr(
@@ -513,6 +500,53 @@ async def test_create_team_does_not_run_global_runtime_cleanup(monkeypatch: pyte
 
     assert team_agent is not None
     assert manager.get_team_agent("sess-1") is team_agent
+
+
+@pytest.mark.asyncio
+async def test_create_team_bakes_ttse_bank_from_explicit_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    class _FakeWorkspace:
+        root_path = None
+
+    def fake_load_team_spec(_session_id: str):
+        class _Spec:
+            team_name = "demo-team"
+            workspace = _FakeWorkspace()
+
+            @staticmethod
+            def build():
+                return SimpleNamespace()
+
+        return _Spec()
+
+    seen: dict[str, str] = {}
+
+    def fake_enrich(spec, **kwargs):
+        del spec, kwargs
+        from jiuwenswarm.agents.swarm.config_specs import _ttse_bank_path
+
+        seen["bank"] = _ttse_bank_path("leader")
+
+    monkeypatch.setattr(TeamManager, "_load_team_spec", staticmethod(fake_load_team_spec))
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.swarm.enrich_team_spec_for_swarm",
+        fake_enrich,
+    )
+    workspace = tmp_path / "service_billing" / "agent_office" / "agent" / "jiuwenclaw_workspace"
+    manager = TeamManager()
+
+    await manager.create_team(
+        "sess-1",
+        deep_agent=object(),
+        params=TeamBootstrapParams(channel_id="web", agent_workspace=workspace),
+    )
+
+    assert seen["bank"] == str(tmp_path / "service_billing" / ".ttse" / "bank.json")
+    from jiuwenswarm.server.runtime.tenant_context import get_bound_jiuwenclaw_workspace
+
+    assert get_bound_jiuwenclaw_workspace() is None
 
 
 def test_get_team_agent_includes_runner_owned_leader() -> None:
@@ -540,14 +574,6 @@ async def test_create_team_appends_session_id_to_team_name(monkeypatch: pytest.M
             return SimpleNamespace()
 
     monkeypatch.setattr(TeamManager, "_load_team_spec", staticmethod(lambda _session_id: _Spec()))
-    async def _noop_init_links(_spec):
-        return None
-
-    monkeypatch.setattr(
-        TeamManager,
-        "_initialize_team_shared_skill_links",
-        staticmethod(_noop_init_links),
-    )
     # Provider assembly is covered by the swarm suite; stub it so this
     # session-management test runs on the minimal fake spec.
     monkeypatch.setattr(
@@ -582,15 +608,7 @@ async def test_create_team_appends_session_id_to_web_team_name(monkeypatch: pyte
             created_team_names.append(self.team_name)
             return SimpleNamespace()
 
-    async def _noop_init_links(_spec):
-        return None
-
     monkeypatch.setattr(TeamManager, "_load_team_spec", staticmethod(lambda _session_id: _Spec()))
-    monkeypatch.setattr(
-        TeamManager,
-        "_initialize_team_shared_skill_links",
-        staticmethod(_noop_init_links),
-    )
     # Provider assembly is covered by the swarm suite; stub it so this
     # session-management test runs on the minimal fake spec.
     monkeypatch.setattr(
@@ -2076,14 +2094,6 @@ async def test_create_team_passes_sessions_root_to_load_session_team_spec(
     monkeypatch.setattr(
         "jiuwenswarm.common.config.get_config",
         lambda: {},
-    )
-    async def _noop_ensure_ready(self, session_id, spec):
-        return None
-
-    monkeypatch.setattr(
-        TeamManager,
-        "ensure_team_shared_skills_ready_for_session",
-        _noop_ensure_ready,
     )
     monkeypatch.setattr(
         TeamManager,

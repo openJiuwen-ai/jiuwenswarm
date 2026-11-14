@@ -1,5 +1,5 @@
 ---
-description: 给修改/检视 agents/harness 代码的 AI 助手与工程师：七子树地图、任务规划 / 可靠性 / subagent / 中断交互 / 事件流域 specs 索引（S_01~S_21）、公开入口、架构铁律、装配点与配置消费、测试与提交约束
+description: 给修改/检视 agents/harness 代码的 AI 助手与工程师：七子树地图、任务规划 / 可靠性 / subagent / 中断交互 / 事件流 / 原生多模态 specs 索引（S_01~S_23）、公开入口、架构铁律、装配点与配置消费、测试与提交约束
 ---
 
 # harness：代理执行挂件的多域聚合目录
@@ -14,16 +14,17 @@ common / code / flash——**spec 按改哪块机制切，不按目录树切**�
 [docs/AGENTS.md](docs/AGENTS.md)。
 
 **当前 specs 覆盖任务规划域（S_01~S_06）、可靠性域（S_07~S_10）、subagent 域
-（S_11~S_14）、中断交互域（S_15~S_19）与事件流域（S_20~S_21）**。未归档的域（team /
-skill_selection / memory / 观测性 / …）不等于不存在，只等于还没有契约文档；动这些域时
+（S_11~S_14）、中断交互域（S_15~S_19）、事件流域（S_20~S_21）与原生多模态图像输入
+（S_22）以及 RSI 场景与 Provider 装配（S_23）**。未归档的域（team / skill_selection / memory / 观测性 / …）不等于不存在，
+只等于还没有契约文档；动这些域时
 同样遵循"机制横跨多个子树"的找代码方式（subagent 域横跨 openjiuwen SDK 机制主体与
 server 装配层；中断交互域的原语层在 agent-core `openjiuwen`、守卫与结算层在 server
 runtime——spec 关联模块按仓分列；事件流域的正向通道底层在 agent-core stream 队列、
-消费侧在 server runtime），新增 spec 从 S_22 起编（编号跨域连续，不复用）。
+消费侧在 server runtime），新增 spec 从 S_24 起编（编号跨域连续，不复用）。
 
 修改任何代码前先读对应 spec；改规约本身必须同步 specs（三条强制约束见文末）。
 
-## Specs 索引（任务规划域 S_01~S_06 + 可靠性域 S_07~S_10 + subagent 域 S_11~S_14 + 中断交互域 S_15~S_19 + 事件流域 S_20~S_21）
+## Specs 索引（任务规划域 S_01~S_06 + 可靠性域 S_07~S_10 + subagent 域 S_11~S_14 + 中断交互域 S_15~S_19 + 事件流域 S_20~S_21 + 原生多模态图像输入 S_22 + RSI 场景 S_23）
 
 - `docs/specs/S_01_todo-storage-and-toolchain.md` — todo.json 整表存储、stock 四工具行为、代际 token、todo_compat monkeypatch 装配时序
 - `docs/specs/S_02_task-execution-rail.md` — TaskExecutionRail 全景：状态→事件映射、串行顺序约束、auto_advance / lazy_start、产物检测、代际过滤
@@ -46,6 +47,8 @@ runtime——spec 关联模块按仓分列；事件流域的正向通道底层�
 - `docs/specs/S_19_cancellation-settlement-and-finalization.md` — 取消结算与收尾（server runtime）：三级 settle 入口、纯 confirm 本地判定、合法 ToolMessage 插入（不产孤儿）、三通道降级写入、清键与持久化、`{id}#{n}` 序号代际
 - `docs/specs/S_20_stream-event-emission-channel.md` — 事件流主通道与发射契约：agent-core stream 底层（三 schema / END_FRAME / 队列重试与强清）、六类事件发射时机、sid 解析三序、cwd rebind 双模式、symphony 工具进度桥接、装配挂载七处、消费侧终态判定
 - `docs/specs/S_21_pause-checkpoints-and-context-repair.md` — 暂停检查点与上下文修复：pause/resume/abort 状态机（shell 进程树击杀）、per-session 六字典、早 checkpoint（post_agent_execute 不关流）、取消结果收集、占位检测（legacy 7 类文案）、call_goal 注入剥离（deepcopy 防泄漏）、SkillTurbo HITL 改写、上下文修复四计数
+- `docs/specs/S_22_native-multimodal-image-input.md` — 原生多模态图片输入：引用行 / 上传清单通道、能力位单一真源（modalities）、发送前像素物化 / 视图剥离、预算与状态行、工具侧护栏、team 成员的 N10 三要素（能力位 + rail + 清单，含 leader 分发提示 dispatch_hint、成员确定性分发的边界提及判定与 attached/omitted 幂等、live 清单只在开新轮的请求绑定）
+- `docs/specs/S_23_rsi-scenarios-and-providers.md` — RSI 场景与 Provider 装配：Harness、论文、程序、优化模型接线与回归范围。
 
 ## 统一术语表
 
@@ -169,7 +172,7 @@ agents/harness/
 │   ├── rails/                    #   task_execution_rail（S_02）+ 可靠性域（S_07 重试与溢出恢复 / S_08 熔断 execution_guard/ / S_09 并发安全 / S_10 配额 rail 与输入守卫纯函数库）+ subagent 域（S_13 subagent_skill_authorization_rail / subagent_permission_rail、S_14 browser_task_prompt_rail）+ 中断交互域（S_15/S_17 ask_user_rail、S_17 interrupt/ 子树 interrupt_helpers 与 permissions/ 子树 config_loader / owner_scopes / tool_permission_context）+ 事件流域（S_20/S_21 stream_event_rail、symphony/tool_stream_events）+ 模型路由 / symphony 编排等
 │   ├── tools/                    #   todo_resume / todo_compat / user_todo_tool（S_01/S_05）/ deepresearch/（S_06）/ subagent_compat.py（S_12 类替换）/ subagent_executor/（S_13/S_14 授权 wiring 与委托边界）/ web_search / xiaoyi_phone_tools 等 40+ 件
 │   └── …                         #   auto_harness/ auto_memory/ long_horizon/ memory/ plugins/ prompt/ recommendation/ skill_sleep/（未归档域）
-├── docs/                         # 归档规约 AGENTS.md + specs/（S_01~S_21）
+├── docs/                         # 归档规约 AGENTS.md + specs/（S_01~S_23）
 ├── flash/                        # flash profile 挂件
 │   ├── permissions/              #   tool_policy_projection（S_05 统一名权限投影三段式）/ flash_permission_rail / skill_install
 │   ├── rails/                    #   flash_todo_rail（S_05）/ flash_subagent_rail（S_11/S_14 flash 变体三差异）/ flash_delivery_summary / flash_memory / slim_sys_operation
@@ -182,7 +185,7 @@ agents/harness/
 
 ## 架构铁律
 
-从二十一份 specs 的不变量中提炼的跨 spec 最高优先级约束。逐条细则以回链 spec 为准。
+从二十二份 specs 的不变量中提炼的跨 spec 最高优先级约束。逐条细则以回链 spec 为准。
 
 1. **代际 token 单向流**：agent-core 侧只读 token 打标过滤，写侧唯一 bump 点是
    `todo_resume.bump_todo_generation_token`。新增任何"重置任务列表"的路径必须走 bump，

@@ -49,6 +49,7 @@ from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
 )
 
 from jiuwenswarm.edition import is_enterprise
+from jiuwenswarm.common.config import get_sandbox_runtime
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
     _AGENT_CARD_ID,
@@ -102,6 +103,7 @@ from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
     get_default_project_session_workspace_dir,
 )
+from jiuwenswarm.common.runtime_workspace import resolve_runtime_workspace_paths
 
 logger = logging.getLogger(__name__)
 
@@ -651,6 +653,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             ),
             **_agent_ras_kwargs_from_config(config_base),
         )
+        self._bind_subagent_runtime_config(config_base)
 
         # Keep ensure_initialized on the main event loop (same as interface_deep).
         # Running it via run_in_executor + asyncio.run in a worker thread poisons
@@ -1478,13 +1481,27 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         if self._instance is None:
             raise RuntimeError("JiuwenSwarmCodeAdapter 未初始化，请先调用 create_instance()")
 
-        project_workspace = (
-            runtime_config.workspace
-            or runtime_config.project_dir
-            or self._project_dir
-            or str(get_default_project_session_workspace_dir(runtime_config.session_id))
+        runtime_paths = resolve_runtime_workspace_paths(
+            internal_workspace_dir=self._agent_workspace_dir,
+            project_dir=runtime_config.project_dir or self._project_dir,
+            workspace_dir=runtime_config.workspace,
+            cwd=runtime_config.cwd,
+            session_id=runtime_config.session_id,
+            task_name=runtime_config.task_name,
+            bind_request=True,
         )
-        task_cwd = runtime_config.cwd or project_workspace
+        project_workspace = str(runtime_paths.runtime_workspace_root)
+        task_cwd = str(runtime_paths.cwd)
+        if project_workspace != getattr(self, "_sandbox_active_workspace_root", None):
+            self._sandbox_active_workspace_root = project_workspace
+            if get_sandbox_runtime().get("enabled"):
+                await self.apply_sandbox_runtime_patch(
+                    get_sandbox_runtime(), files_changed=True
+                )
+        deep_config = getattr(self._instance, "deep_config", None)
+        if deep_config is not None:
+            deep_config.cwd = task_cwd
+            deep_config.project_root = str(runtime_paths.project_root)
         self._seed_runtime_cwd(task_cwd, workspace=project_workspace)
         # Same CwdState rebind contract as deep adapter: interaction round tasks
         # do not inherit request-task init_cwd.
@@ -1515,6 +1532,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         resolved_channel = str(runtime_config.channel_id or
                                self._resolve_prompt_channel(runtime_config.session_id) or "web").strip() or "web"
         if self._runtime_prompt_rail:
+            self._runtime_prompt_rail.set_session_id(runtime_config.session_id)
             # Language section (response language) must follow the user's
             # preferred language, not the code-mode "en" which only governs
             # system-prompt scaffolding (time/runtime/env sections).
@@ -1529,8 +1547,15 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 project_dir=runtime_config.project_dir or self._project_dir,
                 # Agent data root (skills/memory/todo), not project context.
                 workspace_dir=self._agent_workspace_dir,
+                task_workspace_root=project_workspace if runtime_paths.is_projectless else None,
+                task_work_dir=str(runtime_paths.work_dir) if runtime_paths.work_dir else None,
+                task_outputs_dir=str(runtime_paths.outputs_dir) if runtime_paths.outputs_dir else None,
             )
-            self._runtime_prompt_rail.set_session_id(runtime_config.session_id)
+            self._runtime_prompt_rail.set_execution_paths(
+                cwd=task_cwd,
+                project_root=str(runtime_paths.project_root),
+                workspace=project_workspace,
+            )
             self._runtime_prompt_rail.set_request_system_prompt(
                 runtime_config.request_system_prompt
             )
@@ -1555,7 +1580,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         permission_rail = getattr(self, "_permission_rail", None)
         if permission_rail is not None:
             try:
-                permission_rail.set_trusted_dirs(runtime_config.trusted_dirs)
+                trusted_dirs = list(runtime_config.trusted_dirs or ())
+                if runtime_paths.is_projectless:
+                    trusted_dirs.append(project_workspace)
+                permission_rail.set_trusted_dirs(trusted_dirs)
             except Exception:
                 logger.debug(
                     "[JiuwenSwarmCodeAdapter] permission_rail.set_trusted_dirs failed",
@@ -1575,6 +1603,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # ProjectMemoryRail 语言同步 + trusted_dirs 注入
         if self._project_memory_rail is not None:
             self._project_memory_rail.set_language(resolved_language)
+            self._project_memory_rail.set_workspace_path(project_workspace)
             # trusted_dirs 来自 CLI 端的 trusted_dirs / workspace-dir，
             # 包含用户项目目录（即 /init 写 JIUWENSWARM.md 的目录）
             if runtime_config.trusted_dirs:

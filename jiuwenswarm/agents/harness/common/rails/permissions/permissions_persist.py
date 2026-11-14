@@ -223,10 +223,18 @@ def persist_permission_allow_rule(tool_name: str, tool_args: dict | str) -> bool
         perms.clear()
         perms.update(merged)
 
-    persist_permissions_mutate(
-        mutate,
-        persist_scope="session" if is_enterprise() else "base",
-    )
+    try:
+        persist_permissions_mutate(
+            mutate,
+            persist_scope="session" if is_enterprise() else "base",
+        )
+    except ValueError as exc:
+        logger.warning(
+            "[PermissionPersist] persist_permission_allow_rule.failed reason=%s tool=%s",
+            exc,
+            tool_name,
+        )
+        return False
     return True
 
 

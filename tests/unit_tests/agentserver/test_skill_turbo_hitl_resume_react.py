@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 import copy
-import re
 from collections import defaultdict
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -92,8 +92,16 @@ async def test_process_stream_does_not_persist_ambiguous_model_identity(monkeypa
     adapter._is_session_scoped_adapter = True
     adapter._instance = SimpleNamespace()
     adapter._deepresearch_rewrite_tx_uncertain = False
+    # 直接经过关闭的 RSI 钩子，保持本用例只检验模型身份写回。
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.get_config",
+        lambda: {"rsi": {"enabled": False}},
+    )
     adapter._active_session_ids = defaultdict(int)
     adapter._session_agent_tasks = {}
+    adapter._stream_event_rail = None
+    adapter._permission_rail = None
+    adapter._skill_authorization_rail = None
     model = SimpleNamespace(model_config=SimpleNamespace(model_name="glm-5.2"))
     other_model = SimpleNamespace(model_config=SimpleNamespace(model_name="glm-5.2"))
     adapter._model_cache = {
@@ -109,7 +117,9 @@ async def test_process_stream_does_not_persist_ambiguous_model_identity(monkeypa
     adapter._maybe_apply_pending_reload = lambda: _async_none()  # type: ignore[method-assign]
     adapter._bind_runtime_cron_context = lambda **_kwargs: None  # type: ignore[method-assign]
     adapter._reset_stream_runtime_context = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
-    adapter._run_cleanup_steps = lambda _steps: None  # type: ignore[method-assign]
+    adapter._run_cleanup_steps = lambda steps: [  # type: ignore[method-assign]
+        callback() for name, callback in steps
+    ]
     adapter._register_session_agent_task = lambda _session_id: None  # type: ignore[method-assign]
     adapter._unregister_session_agent_task = lambda _session_id: None  # type: ignore[method-assign]
     adapter._runtime_cron_tool_context = SimpleNamespace(
@@ -118,7 +128,9 @@ async def test_process_stream_does_not_persist_ambiguous_model_identity(monkeypa
     adapter._config_base_cache = {}
     adapter._refresh_standard_agent_permissions_body = lambda _request: None  # type: ignore[method-assign]
     adapter._bind_agent_permissions_base = lambda: None  # type: ignore[method-assign]
-    adapter._update_permission_rail = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+    # Session Manager keys retired: update returns None (no release callback).
+    permission_rail_updated = Mock(return_value=None)
+    adapter._update_permission_rail = permission_rail_updated  # type: ignore[method-assign]
     adapter._is_subagent_approval_answer = lambda *_args: False  # type: ignore[method-assign]
     adapter._refresh_stale_mcp_tool_lists = lambda: _async_none()  # type: ignore[method-assign]
     adapter._inject_extension_config_into_inputs = lambda *_args: None  # type: ignore[method-assign]
@@ -180,6 +192,7 @@ async def test_process_stream_does_not_persist_ambiguous_model_identity(monkeypa
 
     assert captured_metadata is not None
     assert _SKILL_TURBO_MODEL_IDENTITY_KEY not in captured_metadata
+    permission_rail_updated.assert_called()
 
 @pytest.mark.asyncio
 async def test_mark_resume_in_flight_persists_across_sessions():

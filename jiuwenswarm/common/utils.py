@@ -1,6 +1,5 @@
 import atexit
 import functools
-from jiuwenswarm.edition import is_enterprise
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
 """Path management for JiuWenSwarm.
@@ -35,6 +34,7 @@ import ctypes
 import json
 import os
 import re
+import stat
 import sys
 import datetime
 import shutil
@@ -54,6 +54,7 @@ import yaml
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.common.path_provider import (
     PathCategory,
     current_path_context,
@@ -301,6 +302,9 @@ def _log_component_from_logger_name(name: str) -> str:
     if name.startswith("jiuwenswarm.agents.harness.common.rails.permissions"):
         return "permissions"
     if name.startswith("openjiuwen.harness.security") or name.startswith("openjiuwen.harness.rails.security"):
+        return "permissions"
+    # W1a: agent_shield 判定日志进 permissions.log（permission.engine.decision / manager.*）
+    if name.startswith("agent_shield"):
         return "permissions"
     if name.startswith("jiuwenswarm.agents") or name.startswith("jiuwenswarm.server"):
         return "agent_server"
@@ -702,6 +706,7 @@ def _find_source_root() -> Path:
     return current
 
 
+@functools.lru_cache(maxsize=1)
 def _find_package_root() -> Path | None:
     """Best-effort detection of the jiuwenswarm package root.
 
@@ -809,12 +814,25 @@ def _get_builtin_skill_names() -> set[str]:
     return get_builtin_skill_names()
 
 
+_BUILTIN_SKILL_NAMES_CACHE: dict[str, tuple[int, frozenset[str]]] = {}
+
+
 def get_builtin_skill_names() -> set[str]:
     """Return official package builtin skill directory names."""
     builtin_skills_dir = get_builtin_skills_dir()
-    if not builtin_skills_dir.exists():
+    try:
+        mtime_ns = builtin_skills_dir.stat().st_mtime_ns
+    except OSError:
         return set()
-    return {item.name for item in builtin_skills_dir.iterdir() if item.is_dir()}
+    key = str(builtin_skills_dir)
+    cached = _BUILTIN_SKILL_NAMES_CACHE.get(key)
+    if cached is not None and cached[0] == mtime_ns:
+        return set(cached[1])
+    names = frozenset(item.name for item in builtin_skills_dir.iterdir() if item.is_dir())
+    if len(_BUILTIN_SKILL_NAMES_CACHE) >= 16:
+        _BUILTIN_SKILL_NAMES_CACHE.clear()
+    _BUILTIN_SKILL_NAMES_CACHE[key] = (mtime_ns, names)
+    return set(names)
 
 
 def is_builtin_skill(skill_name: str) -> bool:
@@ -1083,12 +1101,15 @@ def _migrate_workspace_to_jiuwenclaw_workspace(workspace_dir: Path) -> None:
 
     Covers every tenant layout:
     - Personal: ``~/.jiuwenswarm/service_default/agent_default``
-    - Enterprise: ``~/.jiuwenswarm/workspace_{key}`` for each key bucket
+    - Multi-tenant: ``~/.jiuwenswarm/workspace_{key}`` for each key bucket
     - Legacy pre-tenant: ``~/.jiuwenswarm`` itself
 
     Args:
         workspace_dir: Path to workspace root (~/.jiuwenswarm).
     """
+    # 企业版工作区由平台统一创建，不存在旧版个人目录布局，无需迁移检查。
+    if is_enterprise():
+        return
 
     def _merge_one(tenant_root: Path) -> None:
         agent_root = tenant_root / "agent"
@@ -1458,6 +1479,7 @@ def prepare_workspace(
     preferred_language: Optional[str] = None,
     workspace_dir: Optional[Path] = None,
 ) -> CopyDiffResult:
+    _prepare_t0 = time.perf_counter()
     package_root = _find_package_root()
     if not package_root:
         raise RuntimeError("package root not found")
@@ -1708,6 +1730,16 @@ def prepare_workspace(
 
     _resolve_paths(force=True)
 
+    # [startup] 归因：企业版首启/新 PVC 时本函数会整树拷贝资源，此前该阶段完全静默。
+    logger.info(
+        "[startup] prepare_workspace done: elapsed_ms=%.0f added_dirs=%d "
+        "added_files=%d overwritten_files=%d overwrite=%s",
+        (time.perf_counter() - _prepare_t0) * 1000.0,
+        len(cumulative_diff.added_dirs),
+        len(cumulative_diff.added_files),
+        len(cumulative_diff.overwritten_files),
+        overwrite,
+    )
     return cumulative_diff
 
 
@@ -1987,6 +2019,14 @@ def get_agent_workspace_dir() -> Path:
     return get_agent_root_dir() / "jiuwenclaw_workspace"
 
 
+def get_projectless_task_registry_dir() -> Path:
+    """Return the private session-to-task registry under the active workspace."""
+    configured = os.environ.get("JIUWENSWARM_TASK_REGISTRY_DIR", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return (get_agent_workspace_dir() / ".projectless_tasks").resolve()
+
+
 def get_default_project_workspace_dir() -> Path:
     """Get the fallback task workspace used when no project is bound.
 
@@ -1998,6 +2038,11 @@ def get_default_project_workspace_dir() -> Path:
     if overridden is not None:
         return overridden
     return get_agent_workspace_dir() / "projects"
+
+
+def _ensure_dir(path: Path) -> None:
+    if not path.is_dir():
+        path.mkdir(parents=True, exist_ok=True)
 
 
 def get_default_project_session_workspace_dir(session_id: str | None = None) -> Path:
@@ -2015,19 +2060,19 @@ def get_default_project_session_workspace_dir(session_id: str | None = None) -> 
         session_id=session_id,
     )
     if overridden is not None:
-        overridden.mkdir(parents=True, exist_ok=True)
+        _ensure_dir(overridden)
         return overridden
     base = get_default_project_workspace_dir()
     raw_session = str(session_id or "").strip()
     if not raw_session:
-        base.mkdir(parents=True, exist_ok=True)
+        _ensure_dir(base)
         return base
     safe_session = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_session).strip("._-")
     if not safe_session:
-        base.mkdir(parents=True, exist_ok=True)
+        _ensure_dir(base)
         return base
     workspace = base / safe_session
-    workspace.mkdir(parents=True, exist_ok=True)
+    _ensure_dir(workspace)
     return workspace
 
 
@@ -2403,6 +2448,32 @@ def resolve_agent_registered_skill_dirs() -> list[Path]:
     return [get_agent_skills_dir()]
 
 
+def resolve_team_skill_library_dirs() -> list[Path]:
+    """Skill library roots for team ``SkillUse`` / listings.
+
+    Same ordered roots as DeepAdapter (:func:`resolve_agent_registered_skill_dirs`):
+    request-bound dirs, else ``JIUWEN*_SHARED_SKILLS_DIRS``, else workspace skills.
+    Team rails must scan this list so Ace SHARED tips are not pinned to an empty
+    ``agent_* / skills`` workspace folder.
+    """
+    return list(resolve_agent_registered_skill_dirs())
+
+
+def primary_team_skill_library_dir() -> Path:
+    """Single-path pin for ``configure_global_skills_dir`` and write targets.
+
+    Agent-core's ``global_skills_dir()`` is still one path. When tip registers
+    multiple roots (Ace: official ``office-claw-skills`` then writable
+    ``.office-claw/skills``), prefer the **last** so Hub / evolution / create
+    land in the user library rather than the official tree. Pure Web with no
+    SHARED tip keeps the single workspace skills directory.
+    """
+    dirs = resolve_agent_registered_skill_dirs()
+    if not dirs:
+        return get_agent_skills_dir()
+    return dirs[-1]
+
+
 def get_interactions_dir() -> Path:
     """Get the interactions directory for pending interaction contexts.
 
@@ -2640,7 +2711,8 @@ def get_builtin_skills_dir() -> Path:
     package_root = _find_package_root()
     # 优先检查 workspace/skills 目录（标准布局）
     primary_path = package_root / "resources" / "agent" / "workspace" / "skills"
-    if primary_path.exists() and primary_path.is_dir():
+    # is_dir() 不存在时即为 False，与原先 exists() and is_dir() 等价，少一次 stat
+    if primary_path.is_dir():
         return primary_path
     # 回退到 skills 目录
     fallback_path = package_root / "resources" / "agent" / "skills"
@@ -4045,3 +4117,493 @@ def normalize_tenant_scope_id(value: str | None, *, default: str = "default") ->
     if "__" in text:
         raise ValueError(f"tenant scope ID must not contain '__': {text!r}")
     return text
+
+_openjiuwen_skill_library: Path | None = None
+
+
+def configure_skill_library() -> Path:
+    """Register the primary JiuWenSwarm Skill library for agent-core single-path APIs.
+
+    openJiuWen ``global_skills_dir()`` is one path (write / identity fallback).
+    Without this override it falls back to ``~/.openjiuwen/workspace/skills``.
+    Team *scan* roots use :func:`resolve_team_skill_library_dirs` (full SHARED
+    list), declared on ``core.team.skill_use`` — same as DeepAdapter.
+
+    Idempotent; safe to call from any startup path. Call it before assembling any
+    team, member or rail so they all resolve the same physical directory.
+
+    Returns:
+        Path of the primary Skill library pin.
+    """
+    global _openjiuwen_skill_library
+    skills_dir = primary_team_skill_library_dir()
+    if _openjiuwen_skill_library == skills_dir:
+        return skills_dir
+    # Hard boundary: visibility / TeamSkillUse assume this pin. Soft-skipping
+    # leaves assembly and RPC on different library roots.
+    from openjiuwen.agent_teams.paths import configure_global_skills_dir
+
+    configure_global_skills_dir(skills_dir)
+    _openjiuwen_skill_library = skills_dir
+    return skills_dir
+
+
+def _is_directory_link(path: Path) -> bool:
+    """Return whether a path entry is a symlink or a Windows reparse point.
+
+    Windows directory junctions created by ``mklink /J`` are not symlinks: they
+    show up as ordinary directories unless the reparse-point attribute is read.
+
+    Args:
+        path: Entry to inspect.
+
+    Returns:
+        True when the entry is a link rather than a real directory.
+    """
+    if path.is_symlink():
+        return True
+    if sys.platform != "win32":
+        return False
+    try:
+        file_attributes = os.lstat(path).st_file_attributes
+    except (AttributeError, OSError):
+        return False
+    return bool(file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _library_skill_names(library: Path) -> set[str]:
+    """Return the names of every valid Skill directory in the shared library.
+
+    Args:
+        library: The single Skill library directory.
+
+    Returns:
+        Set of Skill directory names; empty when the library is missing.
+    """
+    names: set[str] = set()
+    try:
+        entries = list(library.iterdir())
+    except OSError:
+        return names
+    for entry in entries:
+        if entry.is_dir() and (entry / "SKILL.md").is_file():
+            names.add(entry.name)
+    return names
+
+
+def _is_library_replica(entry: Path, libraries: list[Path]) -> bool:
+    """Return whether a real directory is an untouched copy of a library Skill.
+
+    Sandboxed runtimes (e.g. the HarmonyOS app sandbox) forbid ``symlink(2)``
+    even inside the app's own files directory, so the legacy view layer fell back
+    to copying the Skill directory. Those copies are indistinguishable from links
+    except by content, and they are the only real directories the migration is
+    allowed to delete.
+
+    Args:
+        entry: Real directory inside a legacy view directory.
+        libraries: Skill library roots to compare against (Ace may have several
+            SHARED roots; a replica may match any one of them).
+
+    Returns:
+        True when some library holds a Skill of the same name and the same
+        ``SKILL.md`` bytes, meaning nothing would be lost by removing the copy.
+    """
+    entry_md = entry / "SKILL.md"
+    if not entry_md.is_file():
+        return False
+    try:
+        entry_bytes = entry_md.read_bytes()
+    except OSError:
+        return False
+    for library in libraries:
+        source_md = library / entry.name / "SKILL.md"
+        if not source_md.is_file():
+            continue
+        try:
+            if entry_bytes == source_md.read_bytes():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _read_skill_view_names(view_dir: Path) -> set[str]:
+    """Return the Skill names a legacy view directory exposed.
+
+    The scan reports every directory-shaped entry, including one a user dropped
+    in by hand: the removal step needs to see those too, so it can keep them
+    instead of deleting them. Names that do not exist in the shared library are
+    filtered out again before anything is seeded from them, in
+    :func:`_seed_visibility_from_view`.
+
+    Args:
+        view_dir: Legacy ``skills/`` directory of a team or member workspace.
+
+    Returns:
+        Set of Skill names, covering links, junctions and sandbox copies alike.
+    """
+    names: set[str] = set()
+    try:
+        entries = list(view_dir.iterdir())
+    except OSError:
+        return names
+    for entry in entries:
+        if entry.name.startswith(".") or entry.name.startswith("_"):
+            continue
+        if _is_directory_link(entry) or entry.is_dir():
+            names.add(entry.name)
+    return names
+
+
+def _remove_skill_view_entry(entry: Path, libraries: list[Path]) -> bool:
+    """Remove one legacy view entry, never content the user owns.
+
+    Removable shapes:
+    * POSIX symlink (``unlink``)
+    * Windows junction / reparse point (``os.rmdir`` removes the link)
+    * sandbox fallback copy that still matches a library root byte for byte
+    * known scaffold marker files (``.workspace``) left by empty view dirs
+
+    Any other real directory or ordinary file is kept — user-authored notes
+    and packages must survive migration.
+
+    Args:
+        entry: Entry inside a legacy view directory.
+        libraries: Skill library roots used for replica detection.
+
+    Returns:
+        True when the entry was removed.
+    """
+    try:
+        if entry.is_symlink():
+            entry.unlink()
+            return True
+        if _is_directory_link(entry):
+            # Junction: rmdir detaches the link and leaves the target intact.
+            os.rmdir(entry)
+            return True
+        if entry.is_file():
+            # Only delete known workspace scaffold markers, never arbitrary
+            # user files (README / notes / leftover schema dumps).
+            if entry.name in {".workspace"}:
+                entry.unlink()
+                return True
+            logger.warning(
+                "[SkillViewMigration] kept user-owned file in legacy view: %s",
+                entry,
+            )
+            return False
+        if entry.is_dir() and _is_library_replica(entry, libraries):
+            shutil.rmtree(entry)
+            return True
+    except OSError as exc:
+        logger.warning("[SkillViewMigration] failed to remove legacy view entry %s: %s", entry, exc)
+        return False
+    logger.info("[SkillViewMigration] kept user-owned directory: %s", entry)
+    return False
+
+
+def _seed_visibility_from_view(
+    metadata_path: Path,
+    scope: str,
+    entity_id: str,
+    view_names: set[str],
+    library_names: set[str],
+) -> bool:
+    """Seed a workspace visibility document from its legacy view directory.
+
+    The seed is written at ``AUTHORITY_MIGRATION``, which ranks above the
+    default/config seeds every assembly path writes: the view directory records
+    what the workspace was *actually* allowed to see, a config seed only records
+    a default. The rank — not the call order — is what decides the outcome, so a
+    config-seeded document written earlier is replaced here instead of silently
+    winning, and a document already carrying an explicit authorization
+    (``AUTHORITY_EXPLICIT``) is never touched.
+
+    Prefer an explicit allow snapshot over empty-allow inheritance. Empty
+    ``allow`` means "inherit the whole library" at runtime, which would expand
+    a historical soft-link view to every Skill installed later (OfficeAce
+    members that previously had no skills declaration are especially exposed).
+    Migrating to a frozen snapshot keeps the pre-upgrade grant set.
+
+    Only names the library actually holds become a grant. A view directory can
+    also contain a directory somebody put there by hand; such a name is dropped
+    by intersecting with ``library_names``. When the intersection is empty there
+    is no grant left to preserve — seed an empty allow list (inherit) only in
+    that residual case so migration does not invent a deny-all contract the
+    visibility schema does not yet express.
+
+    If the view still lists skills but the library name set is empty, the scan
+    failed or the wrong library root was used — skip seeding so we never confuse
+    "library unresolved" with "every historical grant was removed".
+
+    Args:
+        metadata_path: Target ``skills-visibility.json`` path.
+        scope: ``member`` or ``team``.
+        entity_id: Member name or team name.
+        view_names: Skill names the legacy view exposed.
+        library_names: Skill names currently in the shared library.
+
+    Returns:
+        True when a visibility document was written (or already present at a
+        higher authority); False when seeding was skipped.
+    """
+    from openjiuwen.agent_teams.skill.visibility import AUTHORITY_MIGRATION, bootstrap_skill_visibility
+
+    if view_names and not library_names:
+        logger.warning(
+            "[SkillViewMigration] skip seed for %s/%s: view has %d name(s) but "
+            "library name set is empty (unresolved library); leaving legacy view",
+            scope,
+            entity_id,
+            len(view_names),
+        )
+        return False
+
+    granted = view_names & library_names
+    allow: list[str] = sorted(granted) if granted else []
+    if view_names and not granted:
+        logger.info(
+            "[SkillViewMigration] %s/%s: view names %s intersect library empty; "
+            "seeding allow=[] (inherit whole library)",
+            scope,
+            entity_id,
+            sorted(view_names),
+        )
+    try:
+        bootstrap_skill_visibility(
+            metadata_path,
+            scope=scope,
+            entity_id=entity_id,
+            allow=allow,
+            bootstrapped_from="migration:symlinks",
+            authority=AUTHORITY_MIGRATION,
+        )
+    except OSError as exc:
+        logger.warning("[SkillViewMigration] failed to seed %s: %s", metadata_path, exc)
+        return False
+    return True
+
+
+def _remove_empty_skill_view(view_dir: Path, libraries: list[Path]) -> None:
+    """Drop a ``skills/`` directory that exposes no Skill.
+
+    Older workspace schemas materialized an empty ``skills/`` directory in every
+    team and member workspace, complete with a ``.workspace`` marker file. It
+    grants nothing and no Skill lookup reads it, so it is removed rather than
+    migrated. Only the shapes :func:`_remove_skill_view_entry` accepts are
+    deleted, so a directory somebody put there by hand survives untouched and
+    the removal is simply skipped.
+
+    Args:
+        view_dir: The ``skills/`` directory of a team or member workspace.
+        libraries: Skill library roots used for replica detection.
+    """
+    try:
+        entries = list(view_dir.iterdir())
+    except OSError as exc:
+        logger.warning("[SkillViewMigration] failed to scan %s: %s", view_dir, exc)
+        return
+    for entry in entries:
+        if not _remove_skill_view_entry(entry, libraries):
+            return
+    try:
+        view_dir.rmdir()
+    except OSError as exc:
+        logger.warning("[SkillViewMigration] failed to remove empty view dir %s: %s", view_dir, exc)
+
+
+def _migrate_one_skill_view(
+    *,
+    view_dir: Path,
+    metadata_path: Path,
+    scope: str,
+    entity_id: str,
+    libraries: list[Path],
+    library_names: set[str],
+) -> int:
+    """Migrate one legacy view directory into visibility metadata and drop it.
+
+    Metadata is written before anything is deleted: a partial cleanup then leaves
+    a correct document behind and the next run simply retries the removal.
+
+    A directory that exposes no Skill at all is a bare scaffold, not a legacy
+    view — older workspace schemas created an empty ``skills/`` in every team and
+    member workspace. It is still removed, but nothing is seeded from it (there
+    is no grant to preserve, and config bootstrap is the right source for such a
+    workspace) and it is not counted as a migrated view, so an empty scaffold
+    cannot keep reporting a migration that never happens.
+
+    Args:
+        view_dir: Legacy ``skills/`` directory of the workspace.
+        metadata_path: Target ``skills-visibility.json`` path.
+        scope: ``member`` or ``team``.
+        entity_id: Member name or team name.
+        libraries: Skill library roots (Ace SHARED may contribute several).
+        library_names: Union of Skill names across ``libraries``.
+
+    Returns:
+        1 when the workspace still carried a legacy view directory, 0 otherwise.
+    """
+    if not view_dir.is_dir():
+        return 0
+
+    view_names = _read_skill_view_names(view_dir)
+    if not view_names:
+        _remove_empty_skill_view(view_dir, libraries)
+        return 0
+
+    if not _seed_visibility_from_view(
+        metadata_path, scope, entity_id, view_names, library_names
+    ):
+        # Do not delete the legacy view when seeding was skipped (e.g. empty
+        # library scan): retry on a later startup once the library is ready.
+        return 0
+
+    kept = 0
+    try:
+        entries = list(view_dir.iterdir())
+    except OSError as exc:
+        logger.warning("[SkillViewMigration] failed to scan %s: %s", view_dir, exc)
+        return 1
+    for entry in entries:
+        if not _remove_skill_view_entry(entry, libraries):
+            kept += 1
+    if kept == 0:
+        try:
+            view_dir.rmdir()
+        except OSError as exc:
+            logger.warning("[SkillViewMigration] failed to remove empty view dir %s: %s", view_dir, exc)
+    logger.info(
+        "[SkillViewMigration] migrated %s view: names=%d kept=%d -> %s",
+        scope,
+        len(view_names),
+        kept,
+        metadata_path,
+    )
+    return 1
+
+
+def _resolve_migration_library_roots(
+    library_dir: Path | None = None,
+    *,
+    library_dirs: list[Path] | None = None,
+) -> list[Path]:
+    """Resolve the Skill library roots used for view→visibility migration.
+
+    Prefer an explicit ``library_dirs`` list (tests / callers that already know
+    every SHARED root). A single ``library_dir`` stays supported for unit tests
+    that only materialize one library. Production default is the full
+    :func:`resolve_team_skill_library_dirs` set so Ace official + user roots
+    both participate in name intersection and replica detection — not just the
+    writable primary pin used by ``configure_global_skills_dir``.
+    """
+    if library_dirs is not None:
+        return [Path(item) for item in library_dirs]
+    if library_dir is not None:
+        return [Path(library_dir)]
+    roots = list(resolve_team_skill_library_dirs())
+    if roots:
+        return roots
+    return [primary_team_skill_library_dir()]
+
+
+def migrate_team_skill_views(
+    library_dir: Path | None = None,
+    *,
+    library_dirs: list[Path] | None = None,
+) -> int:
+    """Convert legacy per-workspace Skill view directories into visibility metadata.
+
+    Teams used to materialize a ``skills/`` directory inside every team and
+    member workspace, filled with directory links — or, on sandboxed runtimes
+    that forbid ``symlink(2)``, real copies — pointing at the shared library.
+    Skills now live in physical library root(s) and visibility is metadata,
+    so each view directory is read once, turned into the workspace's initial
+    allow list, and then removed. Single-agent workspaces are never scanned:
+    only ``agent_teams`` homes ever carried these view directories.
+
+    Idempotent: a second run writes no metadata, because the documents it wrote
+    already carry ``AUTHORITY_MIGRATION`` and a seed never overwrites its own
+    rank; it only retries removals that a user-owned directory kept alive.
+
+    Must run after :func:`configure_skill_library` so home/path wiring is ready.
+    Name intersection and replica checks use **all** team library roots (Ace
+    SHARED tips), not only the writable primary pin. It does *not* have to run
+    before team assembly: migrated allow lists win over config-seeded ones by
+    rank rather than by ordering (see :func:`_seed_visibility_from_view`).
+
+    Args:
+        library_dir: Optional single library root (unit tests). Ignored when
+            ``library_dirs`` is provided.
+        library_dirs: Optional explicit multi-root list. Defaults to
+            :func:`resolve_team_skill_library_dirs`.
+
+    Returns:
+        Number of workspaces that still carried a legacy view directory.
+    """
+    libraries = _resolve_migration_library_roots(
+        library_dir, library_dirs=library_dirs
+    )
+    # Hard boundary: migration must write skills-visibility.json. Soft-returning
+    # 0 after ImportError would look like "nothing to migrate" while legacy
+    # views remain and later assembly assumes visibility APIs exist.
+    from openjiuwen.agent_teams.paths import (
+        get_agent_teams_home,
+        member_skill_visibility_path,
+        team_skill_visibility_path,
+    )
+    from openjiuwen.agent_teams.skill.visibility import SCOPE_MEMBER, SCOPE_TEAM
+
+    teams_home = get_agent_teams_home()
+    if not teams_home.is_dir():
+        return 0
+
+    library_names: set[str] = set()
+    for library in libraries:
+        library_names |= _library_skill_names(library)
+    migrated = 0
+    try:
+        team_dirs = sorted(entry for entry in teams_home.iterdir() if entry.is_dir())
+    except OSError as exc:
+        logger.warning("[SkillViewMigration] failed to scan %s: %s", teams_home, exc)
+        return 0
+
+    for team_dir in team_dirs:
+        team_name = team_dir.name
+        migrated += _migrate_one_skill_view(
+            view_dir=team_dir / "team-workspace" / "skills",
+            metadata_path=team_skill_visibility_path(team_name),
+            scope=SCOPE_TEAM,
+            entity_id=team_name,
+            libraries=libraries,
+            library_names=library_names,
+        )
+        workspaces_root = team_dir / "workspaces"
+        if not workspaces_root.is_dir():
+            continue
+        try:
+            member_dirs = sorted(entry for entry in workspaces_root.iterdir() if entry.is_dir())
+        except OSError as exc:
+            logger.warning("[SkillViewMigration] failed to scan %s: %s", workspaces_root, exc)
+            continue
+        for member_ws in member_dirs:
+            if not member_ws.name.endswith("_workspace"):
+                continue
+            member_name = member_ws.name[: -len("_workspace")]
+            if not member_name:
+                continue
+            migrated += _migrate_one_skill_view(
+                view_dir=member_ws / "skills",
+                metadata_path=member_skill_visibility_path(team_name, member_name),
+                scope=SCOPE_MEMBER,
+                entity_id=member_name,
+                libraries=libraries,
+                library_names=library_names,
+            )
+    if migrated:
+        logger.info("[SkillViewMigration] migrated %d legacy skill views", migrated)
+    return migrated
+
+

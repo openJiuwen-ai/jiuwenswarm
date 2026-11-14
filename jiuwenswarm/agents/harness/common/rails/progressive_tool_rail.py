@@ -154,7 +154,7 @@ class ProgressiveToolRail(DeepAgentRail):
     # parent rails by reference; the child's init then rebinds the shared
     # instance and overwrites the cache with the child's smaller tool set.
     # Parent tools_search / invoke_tool for deferred names such as
-    # subagent_wait then miss (「未注册或不在按需可见工具列表中」) while the
+    # subagent_wait then miss (「工具 ... 未注册」) while the
     # child is still running. react.tool_lazy_load.subagents.enabled is
     # already false — this flag makes factory honor that.
     inherit_to_subagents = False
@@ -341,7 +341,17 @@ class ProgressiveToolRail(DeepAgentRail):
         tool_call = getattr(inputs, "tool_call", None)
         tool_call_id = str(getattr(tool_call, "id", "") or "")
         ctx.extra["_skip_tool"] = True
-        inputs.tool_result = message
+        # 拒绝执行 ≠ 成功：产出统一 schema dict（对齐 read_file_validation.
+        # reject_read_file 模式）。纯文本会被归一 rail 判为 success——skip 只跳过
+        # 工具执行体，AFTER_TOOL_CALL 链照常执行。
+        inputs.tool_result = {
+            "status": "error",
+            "success": False,
+            "error_code": "tool_not_available",
+            "error_message": message,
+            "error": message,
+            "display": message,
+        }
         inputs.tool_msg = ToolMessage(content=message, tool_call_id=tool_call_id)
 
     async def _skill_gate_blocks_direct_call(
@@ -1472,6 +1482,43 @@ class ProgressiveToolRail(DeepAgentRail):
                 ),
             }
 
+        if not result_matches:
+            # 反查全量注册表识别技能未激活场景：skill 未激活时 deferred
+            # 搜索缓存被过滤导致 matches 为空，但全量注册表（unfiltered）
+            # 仍保留门控工具卡片，可据此给出与 invoke_tool 门控拒绝分支
+            # 一致的重载指引，避免模型据此降级到非技能路径。注意 declared
+            # 卡片被 _deferred_tools 无条件排除，技能激活态下 matches 同样
+            # 为空——须先比对当前激活技能再下结论，已激活时直接可见可调用。
+            registered_card = self._tool_by_name(
+                getattr(self, "_cached_all_tool_infos", ()),
+                tool_name,
+            )
+            _, required_skill = _required_skill_requirement(registered_card)
+            if required_skill:
+                if required_skill == self._current_active_skill():
+                    return {
+                        "success": False,
+                        "matches": [],
+                        "count": 0,
+                        "message": (
+                            f"工具 '{tool_name}' 已随技能 '{required_skill}' "
+                            "激活并直接可见，请直接调用，无需 tools_search。"
+                        ),
+                    }
+                return {
+                    "success": False,
+                    "matches": [],
+                    "count": 0,
+                    "message": (
+                        f"工具 '{tool_name}' 属于技能 '{required_skill}' 的"
+                        "专属入口，当前该技能未激活（技能可能因闲置过期或"
+                        "会话切换而处于未激活状态）。请先调用 skill_tool("
+                        f'skill_name="{required_skill}") 重新加载技能，'
+                        "再直接调用该工具。这属于技能未激活，不代表能力"
+                        "不可用，不要据此降级或改用其他工具绕过。"
+                    ),
+                }
+
         return {
             "success": bool(result_matches),
             "matches": result_matches,
@@ -1736,16 +1783,18 @@ class ProgressiveToolRail(DeepAgentRail):
             getattr(self, "_cached_all_tool_infos", ()),
             tool_name,
         )
-        if registered_card is None:
-            registered_card = self._tool_by_name(
-                self._cached_deferred_tool_infos,
-                tool_name,
-            )
-        declared, _required_skill = _required_skill_requirement(registered_card)
+        declared, required_skill = _required_skill_requirement(registered_card)
         if declared:
+            skill_hint = f"（required_skill={required_skill}）" if required_skill else ""
             return {
                 "success": False,
-                "error": f"工具 '{tool_name}' 未注册或不在按需可见工具列表中。",
+                "error": (
+                    f"工具 '{tool_name}' 是技能门控工具{skill_hint}，"
+                    "不能通过 invoke_tool 代理调用。若其当前不可见，通常是"
+                    "所属技能未激活或授权已失效：请先通过 skill_tool 重新"
+                    "加载对应技能，再直接调用该工具。这属于技能未激活，"
+                    "不代表能力不可用，不要据此降级或改用其他工具绕过。"
+                ),
                 "tool_name": tool_name,
             }
 
@@ -1808,7 +1857,11 @@ class ProgressiveToolRail(DeepAgentRail):
                 }
             return {
                 "success": False,
-                "error": f"工具 '{tool_name}' 未注册或不在按需可见工具列表中。",
+                "error": (
+                    f"工具 '{tool_name}' 未注册。若它属于某个技能（声明了 "
+                    "required_skill），其可见性依赖技能激活：先通过 skill_tool "
+                    "加载对应技能，再直接调用该工具，不要据此判定能力不可用。"
+                ),
                 "tool_name": tool_name,
             }
 

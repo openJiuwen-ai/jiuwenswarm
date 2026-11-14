@@ -61,11 +61,14 @@ from jiuwenswarm.common.config import (
     update_skill_retrieval_in_config,
     update_symphony_in_config,
     update_setup_guide_enabled_in_config,
+    update_rsi_enabled_in_config,
     update_swarmflow_enabled_in_config,
     update_updater_in_config,
     update_proactive_recommendation_in_config,
     update_trajectory_ui_in_config,
     update_diagnosis_in_config,
+    get_sandbox_runtime,
+    update_sandbox_runtime,
 )
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.common.request_identity import (
@@ -114,6 +117,7 @@ from jiuwenswarm.server.runtime.enterprise_config.loader import (
 )
 from jiuwenswarm.server.runtime.enterprise_config.schemas import TemplateRefSlot
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.updater import DEFAULT_SOURCE_CONFIG, UpdaterService
 from jiuwenswarm.common.utils import (
     get_agent_sessions_dir,
@@ -632,6 +636,9 @@ class _DummyBus:
         pass
 
 
+# RSI 方法由 AgentServer 处理，两个转发入口共用枚举集合，避免新增方法遗漏。
+_RSI_FORWARD_METHODS = frozenset(method.value for method in ReqMethod if method.value.startswith("rsi."))
+
 # 仅转发到 Agent 的 Web method
 _FORWARD_REQ_METHODS = frozenset({
     "initialize",
@@ -646,6 +653,10 @@ _FORWARD_REQ_METHODS = frozenset({
     "chat.steer.status",
     "chat.resume",
     "chat.user_answer",
+    "chat.swarmflow_reply",
+    "swarmflow.pause",
+    "swarmflow.resume",
+    "swarmflow.stop",
     "history.get",
     # "tts.synthesize",
     "skills.marketplace.list",
@@ -751,9 +762,13 @@ _FORWARD_REQ_METHODS = frozenset({
     "team.binding.create",
     "team.binding.generate",
     "team.session.bind",
+    "team.runtime.dissolve",
     "team.snapshot",
     "team.history.get",
     "team.mq.publish",
+    "swarmflow.pause",
+    "swarmflow.resume",
+    "swarmflow.stop",
     # Agent configuration
     "agents.list",
     "agents.get",
@@ -782,6 +797,25 @@ _FORWARD_REQ_METHODS = frozenset({
     "issue.state.list",
     "issue.matrix",
     "issue.delete",
+    # RSI 优化平台（rsi.*；AgentServer 侧统一分发，见 server/rsi/rsi_handlers.py）
+    "rsi.dataset.validate",
+    "rsi.task.create",
+    "rsi.task.list",
+    "rsi.task.get",
+    "rsi.task.delete",
+    "rsi.training.start",
+    "rsi.training.pause",
+    "rsi.training.resume",
+    "rsi.training.terminate",
+    "rsi.report.get",
+    "rsi.usage.get",
+    "rsi.artifact.download",
+    "rsi.artifact.files.list",
+    "rsi.artifact.files.get",
+    "rsi.tree.get",
+    "rsi.harness.install",
+    "rsi.harness.versions.list",
+    "rsi.harness.rollback",
     "im.hosting.status",
     "im.hosting.discover",
     "im.hosting.targets.list",
@@ -794,7 +828,7 @@ _FORWARD_REQ_METHODS = frozenset({
     "im.hosting.history",
     "im.hosting.login.start",
     "im.hosting.login.status",
-})
+}) | _RSI_FORWARD_METHODS
 
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "chat.steer",
@@ -808,11 +842,15 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "team.binding.create",
     "team.binding.generate",
     "team.session.bind",
+    "team.runtime.dissolve",
     "team.delete",
     "command.goal",
     "team.snapshot",
     "team.history.get",
     "team.mq.publish",
+    "swarmflow.pause",
+    "swarmflow.resume",
+    "swarmflow.stop",
     "skills.marketplace.list",
     "skills.list",
     "skills.installed",
@@ -925,6 +963,25 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "mcp.server.update",
     "mcp.server.list",
     "mcp.server.get",
+    # RSI 优化平台（rsi.*；转发且不做本地 ack，AgentServer 侧统一分发）
+    "rsi.dataset.validate",
+    "rsi.task.create",
+    "rsi.task.list",
+    "rsi.task.get",
+    "rsi.task.delete",
+    "rsi.training.start",
+    "rsi.training.pause",
+    "rsi.training.resume",
+    "rsi.training.terminate",
+    "rsi.report.get",
+    "rsi.usage.get",
+    "rsi.artifact.download",
+    "rsi.artifact.files.list",
+    "rsi.artifact.files.get",
+    "rsi.tree.get",
+    "rsi.harness.install",
+    "rsi.harness.versions.list",
+    "rsi.harness.rollback",
     "im.hosting.status",
     "im.hosting.discover",
     "im.hosting.targets.list",
@@ -937,7 +994,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "im.hosting.history",
     "im.hosting.login.start",
     "im.hosting.login.status",
-})
+}) | _RSI_FORWARD_METHODS
 
 # 配置信息：config.get 返回、config.set 可修改的键（前端 param 名 -> 环境变量名）
 # default 模型 + video/audio/vision 多模型
@@ -1008,6 +1065,7 @@ _CONFIG_YAML_KEYS = frozenset({
     "kv_cache_release_enabled",
     "kv_cache_affinity_enabled",
     "permissions_enabled",
+    "sandbox_enabled",
     "memory_forbidden_enabled",
     "memory_forbidden_description",
     "a2ui_enabled",
@@ -1018,6 +1076,7 @@ _CONFIG_YAML_KEYS = frozenset({
     "proactive_recommendation_max_rounds_per_tick",
     "swarmflow_enabled",
     "setup_guide_enabled",
+    "rsi_enabled",
 })
 
 # 微信通道数值参数的取值范围：(下限, 上限, 是否必须为整数)。均为秒，必须为有限正数。
@@ -1316,7 +1375,6 @@ async def _clear_agent_config_cache(agent_client=None) -> None:
     try:
         if agent_client is not None:
             from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-            from jiuwenswarm.common.schema.message import ReqMethod
 
             env = e2a_from_agent_fields(
                 request_id=f"cfg-reload-{uuid.uuid4().hex[:8]}",
@@ -1336,7 +1394,6 @@ async def _restart_agent_browser_runtime(agent_client=None) -> None:
         return
 
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-    from jiuwenswarm.common.schema.message import ReqMethod
 
     env = e2a_from_agent_fields(
         request_id=f"browser-restart-{uuid.uuid4().hex[:8]}",
@@ -1640,7 +1697,6 @@ async def _fetch_all_sessions_from_agent(
 ) -> list[dict[str, Any]]:
     """Remote 模式下从 AgentServer ``session.list`` 分页拉取全量会话 metadata。"""
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-    from jiuwenswarm.common.schema.message import ReqMethod
 
     if agent_client is None:
         return []
@@ -2257,7 +2313,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 from jiuwenswarm.common.e2a.gateway_normalize import (
                     e2a_from_agent_fields,
                 )
-                from jiuwenswarm.common.schema.message import ReqMethod
 
                 real_client = _resolve(agent_client)
                 if real_client is None:
@@ -2365,6 +2420,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload["diagnosis_enabled"] = (
                 "true" if diagnosis_cfg.get("enabled", False) else "false"
             )
+            rsi_cfg = raw.get("rsi") or {}
+            payload["rsi_enabled"] = (
+                "true" if rsi_cfg.get("enabled", True) else "false"
+            )
             for key, val in payload.items():
                 payload[key] = decrypt(key, val)
             react_cfg = raw.get("react") or {}
@@ -2379,6 +2438,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             perm_cfg = raw.get("permissions") or {}
             payload["permissions_enabled"] = "true" if perm_cfg.get("enabled", False) else "false"
+            payload["sandbox_enabled"] = (
+                "true" if get_sandbox_runtime().get("enabled") else "false"
+            )
             # skill_create: tip 优先，fallback to config.yaml
             evolution_cfg = (raw.get("react") or {}).get("evolution") or {}
             payload["evolution_enabled"] = "true" if get_evolution_enabled(raw) else "false"
@@ -2417,9 +2479,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("kv_cache_release_enabled", "false")
             payload.setdefault("kv_cache_affinity_enabled", "false")
             payload.setdefault("permissions_enabled", "false")
+            payload.setdefault("sandbox_enabled", "false")
             payload.setdefault("setup_guide_enabled", "true")
             payload.setdefault("trajectory_ui_enabled", "false")
             payload.setdefault("diagnosis_enabled", "false")
+            payload.setdefault("rsi_enabled", "true")
             payload.setdefault("evolution_enabled", "true")
             payload.setdefault("ttse_enabled", "true")
             payload.setdefault("skill_create", "false")
@@ -2619,8 +2683,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     update_kv_cache_affinity_enabled_in_config(parsed)
                 elif param_key == "permissions_enabled":
                     await update_permissions_enabled_in_config(parsed)
+                elif param_key == "sandbox_enabled":
+                    update_sandbox_runtime({"enabled": parsed})
                 elif param_key == "setup_guide_enabled":
                     update_setup_guide_enabled_in_config(parsed)
+                elif param_key == "rsi_enabled":
+                    update_rsi_enabled_in_config(parsed)
                 elif param_key == "trajectory_ui_enabled":
                     update_trajectory_ui_in_config(parsed)
                 elif param_key == "diagnosis_enabled":
@@ -3831,7 +3899,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-        from jiuwenswarm.common.schema.message import ReqMethod
 
         create_params = dict(params)
         create_params.pop("session_id", None)
@@ -4080,7 +4147,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             ac = _resolve(agent_client)
             if ac is not None and getattr(ac, "server_ready", False):
                 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-                from jiuwenswarm.common.schema.message import ReqMethod
 
                 try:
                     env = e2a_from_agent_fields(
@@ -4189,7 +4255,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-        from jiuwenswarm.common.schema.message import ReqMethod
 
         ac = _resolve(agent_client)
         if ac is not None and getattr(ac, "server_ready", False):
@@ -4417,6 +4482,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             "cron_id": str(meta.get("cron_id", "")),
             "last_user_message_at": lum if isinstance(lum, (int, float)) and not isinstance(lum, bool) else None,
             "model": str(meta.get("model", "")),
+            "rsi_harness_installation_id": str(meta.get("rsi_harness_installation_id") or ""),
             "work_mode": str(meta.get("work_mode") or DEFAULT_WEB_WORK_MODE),
         }
 
@@ -6416,6 +6482,34 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             logger.warning("[locale.set_conf] 写回 config.yaml 失败: %s", e)
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 
+    async def _sensitive_mask_get_conf(ws, req_id, params, session_id):
+        from jiuwenswarm.gateway.channel_manager.web.sensitive_mask import get_sensitive_mask_config
+
+        try:
+            await channel.send_response(ws, req_id, ok=True, payload=get_sensitive_mask_config())
+        except Exception as e:
+            logger.exception("[sensitive_mask.get_conf] %s", e)
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+
+    async def _sensitive_mask_set_conf(ws, req_id, params, session_id):
+        from jiuwenswarm.gateway.channel_manager.web.sensitive_mask import set_sensitive_mask_config
+
+        if not isinstance(params, dict):
+            await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
+            return
+        rules = params.get("rules")
+        if not isinstance(rules, list):
+            await channel.send_response(ws, req_id, ok=False, error="rules must be a list", code="BAD_REQUEST")
+            return
+        try:
+            payload = set_sensitive_mask_config(bool(params.get("enabled")), rules)
+            await channel.send_response(ws, req_id, ok=True, payload=payload)
+        except (TypeError, ValueError) as e:
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
+        except Exception as e:
+            logger.warning("[sensitive_mask.set_conf] 写回 config.yaml 失败: %s", e)
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+
     async def _heartbeat_get_conf(ws, req_id, params, session_id):
         """返回当前心跳配置（every / target / active_hours）。"""
         hb = _resolve(heartbeat_service)
@@ -7562,6 +7656,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("history.get", _history_get)
     channel.register_method("locale.get_conf", _locale_get_conf)
     channel.register_method("locale.set_conf", _locale_set_conf)
+    channel.register_method("sensitive_mask.get_conf", _sensitive_mask_get_conf)
+    channel.register_method("sensitive_mask.set_conf", _sensitive_mask_set_conf)
     channel.register_method("updater.get_status", _updater_get_status)
     channel.register_method("updater.check", _updater_check)
     channel.register_method("updater.download", _updater_download)
@@ -7662,7 +7758,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         """permissions.*：优先经 E2A 转发到 AgentServer；Agent 未就绪时本地执行（与 config_rpc 同源）。"""
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.agent import AgentRequest
-        from jiuwenswarm.common.schema.message import ReqMethod
 
         if not isinstance(req_method, ReqMethod):
             await channel.send_response(ws, req_id, ok=False, error="invalid req_method", code="INTERNAL_ERROR")
@@ -7786,7 +7881,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     ):
         """harness.*：优先经 E2A 转发到 AgentServer；Agent 未就绪时本地执行（无 agent 实例）。"""
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-        from jiuwenswarm.common.schema.message import ReqMethod
 
         if not isinstance(req_method, ReqMethod):
             await channel.send_response(ws, req_id, ok=False, error="invalid req_method", code="INTERNAL_ERROR")

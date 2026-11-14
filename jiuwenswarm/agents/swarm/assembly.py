@@ -23,7 +23,11 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from openjiuwen.agent_teams.paths import team_home
+from openjiuwen.agent_teams.paths import (
+    SKILL_VISIBILITY_FILENAME,
+    configure_global_skills_dir,
+    team_home,
+)
 from openjiuwen.agent_teams.schema.deep_agent_spec import RailSpec
 
 from jiuwenswarm.agents.swarm.config_specs import build_member_deep_agent_spec
@@ -36,7 +40,7 @@ from jiuwenswarm.agents.swarm.registry import (
 )
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.mcp_config import build_enabled_mcp_server_configs
-from jiuwenswarm.common.utils import get_agent_skills_dir
+from jiuwenswarm.common.utils import primary_team_skill_library_dir
 
 logger = logging.getLogger(__name__)
 
@@ -138,8 +142,15 @@ def enrich_team_spec_for_swarm(
         if workspace and workspace.root_path
         else str(team_home(spec.team_name) / "team-workspace")
     )
-    team_skills_dir = str(Path(team_ws_root) / "skills")
-    global_skills_dir = str(get_agent_skills_dir())
+    # Pin agent-core's single-path global library (write / identity fallback).
+    # Scan roots for TeamSkillUse are the full resolve list, set on the rail
+    # params in config_specs — same roots DeepAdapter uses. Hard-require the
+    # pin API: skipping it would leave TeamSkillUse on the default home tree
+    # while RPC/context already assume the primary library.
+    skills_library = primary_team_skill_library_dir()
+    configure_global_skills_dir(skills_library)
+    team_visibility_path = str(Path(team_ws_root) / SKILL_VISIBILITY_FILENAME)
+    global_skills_dir = str(skills_library)
 
     base = SwarmBuildContext(
         session_id=session_id,
@@ -152,7 +163,7 @@ def enrich_team_spec_for_swarm(
         disable_teammate_worktree=str(channel_id or "").strip().lower() == "web",
         team_id=spec.team_name,
         team_ws_root=team_ws_root,
-        team_skills_dir=team_skills_dir,
+        team_skill_visibility_path=team_visibility_path,
         global_skills_dir=global_skills_dir,
         config=config,
         language=_normalize_prompt_language(

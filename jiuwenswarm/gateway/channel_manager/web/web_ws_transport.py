@@ -10,6 +10,8 @@ import json
 import logging
 import os
 import secrets
+import socket
+import sys
 import threading
 import time
 import uuid
@@ -127,6 +129,9 @@ class WebChannelConfig:
     http_port: int
     path: str
     allow_from: list[str]
+    # True: uvicorn+FastAPI on the WS port (WS now; HTTP routes can be added later).
+    # False: legacy websockets.serve only (rollback).
+    dual_protocol: bool
 
     def __init__(
         self,
@@ -138,6 +143,7 @@ class WebChannelConfig:
         path: str = "/ws",
         allow_from: list[str] | None = None,
         port: int | None = None,
+        dual_protocol: bool = True,
     ) -> None:
         if port is not None:
             ws_port = port
@@ -149,6 +155,7 @@ class WebChannelConfig:
         self.http_port = int(http_port) if http_port is not None else self.ws_port + 2
         self.path = path
         self.allow_from = list(allow_from or [])
+        self.dual_protocol = dual_protocol
         self.__post_init__()
 
     def __post_init__(self) -> None:
@@ -180,6 +187,8 @@ class WebWsTransport(BaseWsChannel):
         self._owner = owner
         self.config: WebChannelConfig = config
         self._server: Any = None
+        self._uvicorn_server: Any = None
+        self._uvicorn_task: asyncio.Task[None] | None = None
         # ws -> set[session_id]: 追踪每个连接上活跃的 session
         self._ws_sessions: dict[int, set[str]] = {}
         # session_id -> is_processing
@@ -627,6 +636,60 @@ class WebWsTransport(BaseWsChannel):
             logger.warning("WebWsTransport 未启用（enabled=False）")
             return
 
+        if self.config.dual_protocol:
+            await self._start_dual_protocol()
+            return
+        await self._start_websockets_legacy()
+
+    async def _start_dual_protocol(self) -> None:
+        """Same port: FastAPI/uvicorn (WS today; HTTP routes can be mounted later)."""
+        import uvicorn
+
+        from jiuwenswarm.common.ws_limits import WEB_WS_MAX_MESSAGE_BYTES
+        from jiuwenswarm.gateway.channel_manager.web.web_channel_app import (
+            build_web_channel_app,
+        )
+
+        app = build_web_channel_app(self._owner)
+        uv_cfg = uvicorn.Config(
+            app,
+            host=self.config.host,
+            port=self.config.ws_port,
+            log_level="info",
+            access_log=False,
+            ws_max_size=WEB_WS_MAX_MESSAGE_BYTES,
+            ws_ping_interval=20.0,
+            ws_ping_timeout=60.0,
+        )
+        # Bind here, not inside the serve task: uvicorn swallows bind errors
+        # with sys.exit(1) inside serve(), which would defer port conflicts
+        # (SystemExit) past the "已启动" log and HTTP startup. A pre-bound
+        # socket also fails fast with a plain OSError instead.
+        family = socket.AF_INET6 if ":" in (self.config.host or "") else socket.AF_INET
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        if sys.platform != "win32":
+            # Match uvicorn/asyncio defaults on POSIX (fast TIME_WAIT rebinding);
+            # SO_REUSEADDR on Windows enables port theft, so skip it there.
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((self.config.host, self.config.ws_port))
+        except OSError:
+            sock.close()
+            raise
+        self._uvicorn_server = uvicorn.Server(uv_cfg)
+        # serve() blocks; run it as a task so start() can bring up the HTTP
+        # listener afterwards (dev-stable's start/wait_closed split).
+        self._uvicorn_task = asyncio.create_task(self._uvicorn_server.serve(sockets=[sock]))
+        self._running = True
+        logger.info(
+            "WebChannel WS 已启动(dual_protocol): ws://%s:%s%s (HTTP-ready same port)",
+            self.config.host,
+            self.config.ws_port,
+            self.config.path,
+        )
+
+    async def _start_websockets_legacy(self) -> None:
+        """Rollback path: pure websockets.serve (no HTTP on this port)."""
         try:
             from websockets.legacy.server import serve as ws_serve
         except Exception:  # pragma: no cover
@@ -647,10 +710,13 @@ class WebWsTransport(BaseWsChannel):
         )
         self._running = True
         logger.info(
-            f"WebChannel WS 已启动: ws://{self.config.host}:{self.config.ws_port}{self.config.path}"
+            f"WebChannel WS 已启动(legacy): ws://{self.config.host}:{self.config.ws_port}{self.config.path}"
         )
 
     async def wait_closed(self) -> None:
+        if self._uvicorn_task is not None:
+            await self._uvicorn_task
+            return
         if self._server is not None:
             await self._server.wait_closed()
 
@@ -663,6 +729,17 @@ class WebWsTransport(BaseWsChannel):
             await asyncio.gather(*close_tasks, return_exceptions=True)
         self._clients_by_key.clear()
 
+        if self._uvicorn_server is not None:
+            self._uvicorn_server.should_exit = True
+            if self._uvicorn_task is not None:
+                try:
+                    await self._uvicorn_task
+                except asyncio.CancelledError:  # pragma: no cover
+                    pass
+                except Exception:
+                    logger.warning("WebChannel uvicorn task 异常退出", exc_info=True)
+            self._uvicorn_server = None
+            self._uvicorn_task = None
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
@@ -710,6 +787,7 @@ class WebWsTransport(BaseWsChannel):
             event_name in _WEB_FULL_PAYLOAD_EVENT_TYPES
             or event_name.startswith("team.")
             or event_name.startswith("harness.")
+            or event_name.startswith("rsi.")
             or event_name.startswith("personal_context.context.")
         )
 
@@ -791,8 +869,10 @@ class WebWsTransport(BaseWsChannel):
         if msg.event_type == EventType.HEARTBEAT_RELAY:
             frame = self._serialize_frame(msg, None)  # 返回 dict，由 writer 统一序列化
             clients = self.clients
-            for w in clients:
-                self._enqueue_send(w, frame)
+            self._enqueue_event_frames(
+                self._client_event_frames(frame, str(getattr(msg, "id", "") or "")),
+                clients,
+            )
             logger.debug(
                 "[WebChannel] heartbeat.relay broadcast to %d client(s) id=%s",
                 len(clients), getattr(msg, "id", ""),
@@ -810,8 +890,10 @@ class WebWsTransport(BaseWsChannel):
         ):
             frame = self._serialize_frame(msg, None)  # 返回 dict，由 writer 统一序列化
             clients = self.clients
-            for w in clients:
-                self._enqueue_send(w, frame)
+            self._enqueue_event_frames(
+                self._client_event_frames(frame, str(getattr(msg, "id", "") or "")),
+                clients,
+            )
             logger.debug(
                 "[WebChannel] cron push broadcast to %d client(s) id=%s run_id=%s",
                 len(clients), getattr(msg, "id", ""),
@@ -831,8 +913,10 @@ class WebWsTransport(BaseWsChannel):
         ):
             frame = self._serialize_frame(msg, None)  # 返回 dict，由 writer 统一序列化
             clients = self.clients
-            for w in clients:
-                self._enqueue_send(w, frame)
+            self._enqueue_event_frames(
+                self._client_event_frames(frame, str(getattr(msg, "id", "") or "")),
+                clients,
+            )
             logger.debug(
                 "[WebChannel] proactive_notification broadcast to %d client(s) id=%s",
                 len(clients), getattr(msg, "id", ""),
@@ -924,8 +1008,10 @@ class WebWsTransport(BaseWsChannel):
                             ws_set.add(w)
             if ws_set:
                 frame_data = self._serialize_frame(msg, routing_target, member_names=member_names)
-                for w in ws_set:
-                    self._enqueue_send(w, frame_data)
+                self._enqueue_event_frames(
+                    self._client_event_frames(frame_data, str(getattr(msg, "id", "") or "")),
+                    ws_set,
+                )
                 return
             # V2 精确路由未命中 —— 回退到 session_id 路由
             logger.debug(
@@ -1002,7 +1088,8 @@ class WebWsTransport(BaseWsChannel):
             "event": event_name,
             "payload": payload,
         }
-        await self._broadcast_to(frame_data, all_clients)
+        for frame in self._client_event_frames(frame_data, str(getattr(msg, "id", "") or "")):
+            await self._broadcast_to(frame, all_clients)
 
         # remote 模式下维护会话索引：chat.final 时写入最近一条助手消息预览
         if event_name == "chat.final" and msg.session_id:
@@ -1069,6 +1156,10 @@ class WebWsTransport(BaseWsChannel):
         )
 
     # ── 内部实现 ──────────────────────────────────────────
+
+    async def handle_connection(self, ws: Any, path: str | None = None) -> None:
+        """Public entry for serving one accepted WebSocket (dual-protocol / adapters)."""
+        await self._connection_handler(ws, path=path)
 
     async def _connection_handler(self, ws: Any, path: str | None = None) -> None:
         raw_path = path if path is not None else getattr(ws, "path", "")
@@ -1484,6 +1575,29 @@ class WebWsTransport(BaseWsChannel):
             "payload": payload,
         }
         return frame
+
+    def _client_event_frames(self, frame: dict[str, Any], request_id: str) -> list[dict[str, Any]]:
+        """网页出站帧。chat.final 先补上被挂住的尾巴，再替换本帧。个人版和企业版都走这里。"""
+        from jiuwenswarm.gateway.channel_manager.web.sensitive_mask import (
+            apply_web_event_mask,
+            pop_final_tail_frames,
+        )
+
+        event_name = str(frame.get("event") or "")
+        payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+        if event_name.startswith("chat.") and request_id and not payload.get("request_id"):
+            payload["request_id"] = request_id
+        frames: list[dict[str, Any]] = []
+        if event_name == "chat.final":
+            frames.extend(pop_final_tail_frames(payload, request_id))
+        apply_web_event_mask(event_name, payload, request_id)
+        frames.append(frame)
+        return frames
+
+    def _enqueue_event_frames(self, frames: list[dict[str, Any]], clients: set[Any]) -> None:
+        for frame in frames:
+            for client in clients:
+                self._enqueue_send(client, frame)
 
     @staticmethod
     def _parse_req_method(method: str) -> ReqMethod | None:

@@ -486,8 +486,8 @@ gateway:
     # 空闲扫描周期（秒）
     sandbox_idle_check_interval_seconds: 30
     registry:
-      # Agent OS 注册中心：host 来自 --hosts / CLUSTER_HOSTS 的 master IP
-      endpoint: http://<<MASTER_NODE_IP>>:<<REGISTRY_PORT>>
+      # Agent OS 注册中心：endpoint 绑定 ingress_virtual_ip(VIP)（与本机注册中心绑定一致）
+      endpoint: http://<<INGRESS_VIP>>:<<REGISTRY_PORT>>
       request_timeout_s: 10
       # 本机 nodeIP，供 POST /api/nodes/{node}/heartbeat
       node: <<MASTER_NODE_IP>>
@@ -674,8 +674,8 @@ channels:
     # 客户端: ssh -p <listen_port> user@<gateway-host>
     # 南向连接参数见 gateway.agentos.ssh；agent_type 跟随用户当前值（3rdagent.switch）。
     enabled: true
-    # 监听 IP：host 来自 --hosts / CLUSTER_HOSTS 的 master IP
-    listen_host: <<MASTER_NODE_IP>>
+    # 监听 IP：绑定 ingress_virtual_ip(VIP)，使 SSH 通道可通过统一入口访问
+    listen_host: <<INGRESS_VIP>>
     listen_port: <<SSH_PORT>>
     host_key_path: ~/.jiuwenswarm/config/ssh_host_key
     relay_timeout_sec: 3600

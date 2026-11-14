@@ -33,6 +33,7 @@ from openjiuwen.agent_teams.schema.deep_agent_spec import (
     SubAgentSpec,
 )
 from openjiuwen.agent_teams.rails.builtin_elements import SKILL_USE as CORE_SKILL_USE
+from openjiuwen.agent_teams.rails.elements import TEAM_SKILL_USE
 from openjiuwen.core.foundation.kv_cache import KVCacheAffinityConfig
 from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.core.single_agent import AgentCard
@@ -41,12 +42,21 @@ from openjiuwen.harness.rails import SkillUseRail
 
 from jiuwenswarm.common.config import (
     ASCEND_AFFINITY_PROVIDER,
+    _get_ttse_config,
+    coerce_config_bool,
     get_default_model_provider,
     get_evolution_auto_save_enabled,
     get_evolution_review_trigger_enabled,
     get_passive_skill_evolution_triggers,
     get_skill_create_enabled,
+    get_team_ttse_enabled,
+    get_ttse_embedding_config,
     resolve_string_or_list_config,
+    resolve_shared_ttse_bank,
+)
+from jiuwenswarm.common.utils import get_agent_workspace_dir
+from jiuwenswarm.agents.harness.common.tools.model_capabilities import (
+    supports_native_image,
 )
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     get_context_engine_enabled,
@@ -61,6 +71,10 @@ from jiuwenswarm.agents.harness.common.browser_defaults import (
 # Modes that route to the code adapter and get the code member profile.
 _CODE_MODES: frozenset[str] = frozenset({"code.team", "team.plan"})
 logger = logging.getLogger(__name__)
+
+# Hard boundary: TeamSkillUseRail is required. Silently folding to
+# ``core.skill_use`` would look like a successful team start while visibility
+# never mounts — worse than ImportError at assembly time.
 
 
 def _kv_cache_affinity_config(config: dict[str, Any]) -> KVCacheAffinityConfig:
@@ -94,7 +108,7 @@ _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.MODEL_ROUTING,
     registry.REQUEST_SCOPED_MCP_TOOLS,
     registry.TEAM_SKILL_STORAGE_POLICY,
-    registry.TEAM_SHARED_SKILL_LINK_REFRESH,
+    registry.TEAM_SKILL_LIBRARY_RELOAD,
     registry.RESPONSE_PROMPT,
     registry.SYS_OPERATION,
     registry.STREAM_EVENT,
@@ -127,7 +141,7 @@ _COMMON_TOOL_NAMES: tuple[str, ...] = (
     registry.AUDIO,
     # Skill-management tools (search/install/uninstall_skill) are registered by
     # the MEMBER_SKILL_TOOLKIT rail (appended below), which owns them with a
-    # link-refresh callback. Declaring SKILL_TOOLKIT here too only double-
+    # library-reload callback. Declaring SKILL_TOOLKIT here too only double-
     # registers the same-named tools, logging a refresh + duplicate-ability
     # warning per tool every build; the rail is the sole registrar.
     registry.SKILL_RETRIEVAL,
@@ -166,7 +180,9 @@ _CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.CODE_TASK_PLANNING,
     registry.CODE_AGENT_RAIL,
     registry.USER_HOOKS,
-    registry.CODE_SKILL_USE,
+    # Skill rail is declared separately as ``core.team.skill_use`` (see
+    # ``_team_skill_use_rail_spec``) so AgentConfigurator completes identity
+    # and does not remount a second generic SkillUseRail.
     registry.SKILL_RETRIEVAL_PROMPT,
     registry.SYMPHONY_ORCHESTRATION_PROMPT,
     registry.A2A_OUTBOUND_TOOLKIT,
@@ -309,23 +325,93 @@ def _retrieval_enabled(config: dict[str, Any] | None = None) -> bool:
     return False
 
 
-def _normalize_skill_use_rails_for_agentic_retrieval(rails: list[RailSpec]) -> list[RailSpec]:
-    """Normalize skill-use rails to auto-list mode and remove duplicates."""
-    skill_rail_types = {CORE_SKILL_USE, "skill_use", "SkillUseRail", registry.CODE_SKILL_USE}
-    has_skill_rail = False
-    normalized: list[RailSpec] = []
+# Legacy / alternate Skill-rail type names that must collapse into one
+# ``core.team.skill_use`` so Leader and Teammate share the same visibility track.
+_LEGACY_SKILL_RAIL_TYPES: frozenset[str] = frozenset(
+    {
+        CORE_SKILL_USE,
+        "skill_use",
+        "SkillUseRail",
+        registry.CODE_SKILL_USE,
+        TEAM_SKILL_USE,
+    }
+)
+
+
+def _team_skill_use_rail_spec(config: dict[str, Any]) -> RailSpec:
+    """Declare a bare team Skill rail; AgentConfigurator fills identity later.
+
+    Empty member identity is intentional: swarm blueprints cannot know the
+    spawned member name. ``complete_declared_team_skill_rails`` fills paths and
+    ``bootstrap_allow`` once the member exists. ``skills_dir`` is set here to
+    the full DeepAdapter-aligned library list so completion does not replace it
+    with the single-path ``global_skills_dir()`` pin (Ace SHARED tips stay
+    visible; pure Web without SHARED keeps workspace skills).
+    """
+    from jiuwenswarm.common.utils import resolve_team_skill_library_dirs
+
+    skill_mode = (
+        SkillUseRail.SKILL_MODE_AUTO_LIST
+        if _retrieval_enabled(config)
+        else _skill_mode(config)
+    )
+    return RailSpec(
+        type=TEAM_SKILL_USE,
+        params={
+            "skill_mode": skill_mode,
+            "include_tools": False,
+            "skills_dir": [str(path) for path in resolve_team_skill_library_dirs()],
+        },
+    )
+
+
+def _fold_team_skill_use_rails(
+    rails: list[RailSpec],
+    *,
+    force_auto_list: bool = False,
+) -> list[RailSpec]:
+    """Collapse every Skill-use rail into a single ``core.team.skill_use``.
+
+    Prefer params from an already-declared ``core.team.skill_use`` (capability
+    specs) over a legacy base-spec ``SkillUseRail``, so retrieval auto-list
+    and include_tools=False survive the fold. When *force_auto_list* is true,
+    exposure is forced to AUTO_LIST regardless of the source params.
+    """
+    preferred_params: dict[str, Any] | None = None
+    team_params: dict[str, Any] | None = None
     for rail in rails:
-        if rail.type in skill_rail_types:
-            if has_skill_rail:
-                continue
-            has_skill_rail = True
-            params = dict(rail.params or {})
-            params["skill_mode"] = SkillUseRail.SKILL_MODE_AUTO_LIST
-            params["include_tools"] = False
-            normalized.append(rail.model_copy(update={"params": params}))
+        if rail.type not in _LEGACY_SKILL_RAIL_TYPES:
             continue
-        normalized.append(rail)
-    return normalized
+        if preferred_params is None:
+            preferred_params = dict(rail.params or {})
+        if rail.type == TEAM_SKILL_USE:
+            team_params = dict(rail.params or {})
+    if preferred_params is None:
+        return list(rails)
+
+    params = dict(team_params if team_params is not None else preferred_params)
+    if force_auto_list:
+        params["skill_mode"] = SkillUseRail.SKILL_MODE_AUTO_LIST
+        params["include_tools"] = False
+    elif "include_tools" not in params:
+        params["include_tools"] = False
+
+    folded: list[RailSpec] = []
+    emitted = False
+    for rail in rails:
+        if rail.type not in _LEGACY_SKILL_RAIL_TYPES:
+            folded.append(rail)
+            continue
+        if emitted:
+            continue
+        emitted = True
+        folded.append(RailSpec(type=TEAM_SKILL_USE, params=params))
+    return folded
+
+
+def _normalize_skill_use_rails_for_agentic_retrieval(rails: list[RailSpec]) -> list[RailSpec]:
+    """Backward-compatible alias used by older call sites / tests."""
+    return _fold_team_skill_use_rails(rails, force_auto_list=True)
 
 
 def _additional_directories(config: dict[str, Any]) -> list[str]:
@@ -509,6 +595,115 @@ def _llm_retry_enabled(config: dict[str, Any]) -> bool:
     return retry.get("enabled", False) is True
 
 
+def _member_model_name(base_spec: DeepAgentSpec) -> str:
+    """Return the member's resolved model name ("" when it uses the default model).
+
+    The model name lives on ``ModelRequestConfig.model_name``; a few blueprint /
+    legacy shapes put it on the client config dict instead, so both are checked.
+    """
+    model = getattr(base_spec, "model", None)
+    request_config = getattr(model, "model_request_config", None)
+    if isinstance(request_config, dict):
+        name = str(request_config.get("model_name") or "").strip()
+        if name:
+            return name
+    name = str(getattr(request_config, "model_name", "") or "").strip()
+    if name:
+        return name
+    client_config = getattr(model, "model_client_config", None)
+    if isinstance(client_config, dict):
+        return str(client_config.get("model_name") or "").strip()
+    return str(getattr(client_config, "model_name", "") or "").strip()
+
+
+def _model_entry_name(entry: dict[str, Any]) -> str:
+    """Return the ``model_name`` of a ``models.defaults`` entry."""
+    client_config = entry.get("model_client_config")
+    if isinstance(client_config, dict):
+        name = str(client_config.get("model_name") or "").strip()
+        if name:
+            return name
+    return str(entry.get("model_name") or "").strip()
+
+
+def _model_entry_alias(entry: dict[str, Any]) -> str:
+    """Return the entry's top-level ``alias`` ("" when undeclared).
+
+    成员 spec 的模型名可能声明的是 alias 而不是 ``model_client_config.model_name``
+    （条目允许带顶层 ``alias``），因此匹配成员模型名时两个字段都算命中。
+    """
+    return str(entry.get("alias") or "").strip()
+
+
+def _declared_model_entries(config: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Return the model entries declared by the raw config (no decryption/copy).
+
+    能力位解析只需要 ``model_client_config.model_name`` / ``alias`` /
+    ``modalities`` 三个声明字段，而 ``get_default_models`` 会 deepcopy 全量条目
+    并逐个解密 api_key；team 装配按「每个成员、每一轮」调用本函数，走那条路径
+    纯属浪费（[[S_22]] N10）。这里直接读原始 config，条目选取优先级与
+    ``get_default_models`` 一致：``models.defaults``（非空 list）> ``models.default``
+    （单 dict）；两者都没有（env 兜底形态）→ 空列表，能力位按"未声明即不支持"处理。
+    """
+    models = config.get("models") if isinstance(config, dict) else None
+    models = models if isinstance(models, dict) else {}
+    declared = models.get("defaults")
+    if isinstance(declared, list) and declared:
+        return [entry for entry in declared if isinstance(entry, dict)]
+    single = models.get("default")
+    if isinstance(single, dict):
+        return [single]
+    return []
+
+
+def _resolve_member_native_image_enabled(
+    config: dict[str, Any], base_spec: DeepAgentSpec
+) -> bool:
+    """Resolve the member's native-image capability from the declared modalities.
+
+    Follows the adapter's single-source rule ([[S_22]] N2): only a model entry
+    whose ``modalities`` contains ``image`` enables native image input — no
+    built-in capability table and no model-name guessing. A member spec that
+    pins a model matches that entry by name or alias; otherwise the default
+    entry decides.
+    """
+    entries = _declared_model_entries(config)
+    if not entries:
+        return False
+    model_name = _member_model_name(base_spec)
+    if model_name:
+        for entry in entries:
+            if model_name in {_model_entry_name(entry), _model_entry_alias(entry)}:
+                return supports_native_image(entry.get("modalities"))
+        # 成员锁定了一个未声明的模型名时不得回落到默认条目：那等于拿"别的模型"的
+        # 能力位决定本成员能否原生看图（可能把纯文本成员判成支持，反向亦然），
+        # 违反 N2「模型条目是唯一依据、未声明即不支持」。warning 记下成员模型名，
+        # 便于定位这种难以察觉的配置漂移。
+        logger.warning(
+            "[swarm.config_specs] member model %r is not declared in "
+            "models.defaults; native image input disabled",
+            model_name,
+        )
+        return False
+    default_entry = next(
+        (entry for entry in entries if entry.get("is_default") is True), entries[0]
+    )
+    return supports_native_image(default_entry.get("modalities"))
+
+
+def _multimodal_image_rail_params(
+    config: dict[str, Any], native_image_enabled: bool
+) -> dict[str, Any]:
+    """Build the leader multimodal rail params (capability flag + image budgets)."""
+    react = _config_section(config, "react")
+    return {
+        "enable_image_multimodal": bool(native_image_enabled),
+        "max_total_bytes": react.get("multimodal_image_budget", 0),
+        "max_visual_tokens": react.get("multimodal_image_token_budget", 0),
+        "max_count": react.get("multimodal_image_max_count", 0),
+    }
+
+
 def _team_common_rail_names(role: str) -> tuple[str, ...]:
     """Shared chat-team rails; leaders omit harness todo planning."""
     if role == "leader":
@@ -533,10 +728,112 @@ def _code_base_rail_names(role: str) -> tuple[str, ...]:
     return names
 
 
+def _ttse_bank_path(role: str) -> str:
+    """Shared service bank for the leader and every member.
+
+    ``role`` is unused: leader windows and member windows write one file.
+    Resolve while the request tenant CV is bound.
+    """
+
+    del role
+    return str(resolve_shared_ttse_bank(get_agent_workspace_dir()))
+
+
+def _ttse_evolution_model_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Judge/induce model. ``react.ttse.model_name`` may pick a ``models.defaults`` entry."""
+
+    fallback = _evolution_model_config(config)
+    wanted = str(_get_ttse_config(config).get("model_name") or "").strip()
+    if not wanted:
+        return fallback
+    models = config.get("models") if isinstance(config, dict) else None
+    defaults = models.get("defaults") if isinstance(models, dict) else None
+    if isinstance(defaults, list):
+        for entry in defaults:
+            if not isinstance(entry, dict):
+                continue
+            client = entry.get("model_client_config") or {}
+            if str(client.get("model_name") or "").strip() != wanted:
+                continue
+            return {
+                "model_client_config": dict(client),
+                "model_config_obj": dict(entry.get("model_config_obj") or {}),
+                "model_name": wanted,
+            }
+    logger.warning(
+        "[swarm.ttse] model_name=%s is not in models.defaults; using the default evolution model",
+        wanted,
+    )
+    return fallback
+
+
+def _ttse_runtime_knobs(block: dict[str, Any]) -> dict[str, Any]:
+    """Dream, consult, and trajectory-export values shared with the single-agent rail.
+
+    Missing keys use the same defaults as ``interface_deep._build_ttse_rail``.
+    Core ``TTSEConfig`` itself defaults ``dream_interval`` to 20; the single-agent
+    path uses 50, and the team path must match that.
+    """
+
+    try:
+        dream_interval = int(block.get("dream_interval", 50))
+    except (TypeError, ValueError):
+        dream_interval = 50
+    try:
+        dream_min_hours = float(block.get("dream_min_hours", 24.0))
+    except (TypeError, ValueError):
+        dream_min_hours = 24.0
+    try:
+        dream_ttl_days = int(block.get("dream_ttl_days", 90))
+    except (TypeError, ValueError):
+        dream_ttl_days = 90
+    try:
+        consult_top_k = int(block.get("consult_top_k", 8) or 8)
+    except (TypeError, ValueError):
+        consult_top_k = 8
+    if consult_top_k <= 0:
+        consult_top_k = 8
+    consult_retrieve_mode = str(block.get("consult_retrieve_mode") or "").strip().lower()
+    if consult_retrieve_mode not in ("hybrid", "embed", "bm25"):
+        consult_retrieve_mode = "hybrid"
+    try:
+        consult_rrf_k = int(block.get("consult_rrf_k", 60) or 60)
+    except (TypeError, ValueError):
+        consult_rrf_k = 60
+    return {
+        "dream_interval": dream_interval,
+        "dream_min_hours": dream_min_hours,
+        "dream_ttl_days": dream_ttl_days,
+        "consult_top_k": consult_top_k,
+        "consult_retrieve_mode": consult_retrieve_mode,
+        "consult_rrf_k": consult_rrf_k,
+        "trajectory_export_enabled": coerce_config_bool(
+            block.get("trajectory_export_enabled"), False
+        ),
+        "trajectory_export_path": str(block.get("trajectory_export_path") or "").strip(),
+    }
+
+
+def _ttse_rail_params(config: dict[str, Any]) -> dict[str, Any]:
+    """Bake TTSE harness settings so spawn/recover builders do not re-read config.yaml."""
+
+    block = _get_ttse_config(config)
+    return {
+        "evolution_model_config": _ttse_evolution_model_config(config),
+        "evolve_enabled": coerce_config_bool(block.get("evolve_enabled"), True),
+        "inject_enabled": coerce_config_bool(block.get("inject_enabled"), True),
+        "dream_enabled": coerce_config_bool(block.get("dream_enabled"), True),
+        "leader_bank_path": _ttse_bank_path("leader"),
+        "member_bank_path": _ttse_bank_path("member"),
+        "embedding_config": get_ttse_embedding_config(config),
+        **_ttse_runtime_knobs(block),
+    }
+
+
 def _role_evolution_rails(config: dict[str, Any], role: str) -> list[RailSpec]:
-    """Return the role-specific skill-evolution rails (shared by both profiles)."""
+    """Return the role-specific evolution rails (shared by both profiles)."""
     if role == "leader":
-        return [
+        specs = [
             RailSpec(
                 type=registry.TEAM_SKILL_EVOLUTION,
                 params=_team_evolution_rail_params(config),
@@ -546,12 +843,20 @@ def _role_evolution_rails(config: dict[str, Any], role: str) -> list[RailSpec]:
                 params={"skill_create": get_skill_create_enabled(config)},
             ),
         ]
-    return [
+        if get_team_ttse_enabled(config):
+            specs.append(
+                RailSpec(type=registry.TEAM_TTSE, params=_ttse_rail_params(config))
+            )
+        return specs
+    specs = [
         RailSpec(
             type=registry.MEMBER_SKILL_EVOLUTION,
             params=_member_evolution_rail_params(config),
         ),
     ]
+    if get_team_ttse_enabled(config):
+        specs.append(RailSpec(type=registry.MEMBER_TTSE, params=_ttse_rail_params(config)))
+    return specs
 
 
 def _build_team_capability_specs(
@@ -576,16 +881,9 @@ def _build_team_capability_specs(
     if role == "leader":
         rails_specs.append(RailSpec(type=registry.STRUCTURED_ASK_USER))
 
-    if _retrieval_enabled(config):
-        rails_specs.append(
-            RailSpec(
-                type=CORE_SKILL_USE,
-                params={
-                    "skill_mode": SkillUseRail.SKILL_MODE_AUTO_LIST,
-                    "include_tools": False,
-                },
-            )
-        )
+    # One shared Skill track for Leader + Teammate (M2 路1). Soft-link toolkit
+    # remains below; do not also declare core.skill_use / swarm.code_skill_use.
+    rails_specs.append(_team_skill_use_rail_spec(config))
     rails_specs.append(
         RailSpec(
             type=registry.MEMBER_SKILL_TOOLKIT,
@@ -691,6 +989,8 @@ def _build_code_capability_specs(
                 params={"tool_names": ["switch_mode", "exit_plan_mode"]},
             ),
         )
+    # Fold code SkillUseRail into the same team Skill track as chat members.
+    rails_specs.append(_team_skill_use_rail_spec(config))
     rails_specs.append(
         RailSpec(
             type=registry.MEMBER_SKILL_TOOLKIT,
@@ -917,19 +1217,43 @@ def build_member_deep_agent_spec(
         if rail.type in {registry.STREAM_EVENT, registry.REQUEST_SCOPED_MCP_TOOLS}
     }
     merged_rails.extend(rail for rail in rails_specs if rail.type not in existing_runtime_rails)
+    # 原生图片输入：team 成员都不是 adapter 的 self._instance，上传清单只能经
+    # build context 到成员侧，所以由 swarm provider 给每个成员挂 rail（[[S_22]] N10）。
+    # 授权边界不在挂载处而在物化处：清单内的路径 + 成员自己历史里的引用行才出图，
+    # leader 用 send_message 转发引用行即视为分发（任务看板里的纯路径不算）。
+    explicit_native_image = getattr(base_spec, "enable_read_image_multimodal", None)
+    native_image_enabled = (
+        bool(explicit_native_image)
+        if explicit_native_image is not None
+        else _resolve_member_native_image_enabled(config, base_spec)
+    )
+    if not any(rail.type == registry.MULTIMODAL_IMAGE for rail in merged_rails):
+        rail_params = _multimodal_image_rail_params(config, native_image_enabled)
+        if role == "leader":
+            # leader 多一段"怎么把图交给成员"的提示（send_message 保留引用行）。
+            rail_params["dispatch_hint"] = True
+        merged_rails.append(
+            RailSpec(type=registry.MULTIMODAL_IMAGE, params=rail_params)
+        )
     merged_tools = list(base_spec.tools or [])
     merged_tools.extend(tool_specs)
     merged_mcps = _merge_mcp_configs(base_spec.mcps, mcp_configs)
 
     retrieval_enabled = _retrieval_enabled(config)
-    if retrieval_enabled:
-        merged_rails = _normalize_skill_use_rails_for_agentic_retrieval(merged_rails)
+    # Always fold legacy Skill rails into one team Skill track (Leader=Teammate).
+    merged_rails = _fold_team_skill_use_rails(
+        merged_rails,
+        force_auto_list=retrieval_enabled,
+    )
 
     update: dict[str, Any] = {
         "rails": merged_rails,
         "tools": merged_tools,
         "mcps": merged_mcps,
         "kv_cache_affinity_config": _kv_cache_affinity_config(config),
+        # 显式写死能力位：openjiuwen 对成员 None 一律兜底 False（省掉每成员一次
+        # 探测 LLM 往返），不写这里的话 rail 即便挂上也走非原生分支。
+        "enable_read_image_multimodal": native_image_enabled,
     }
     if role == "leader":
         # Leaders use the team task board (create_task / view_task / update_task).

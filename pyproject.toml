@@ -19,6 +19,7 @@ dependencies = [
     "loguru>=0.7.3",
     "markdown>=3.4,<4",
     "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@dev-stable-ee",
+    "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@9ec0370818bbb89a1dd446781e56fb063c54cd53#subdirectory=openjiuwen-protocol",
     # Gateway/AgentServer share the reviewed Runtime foundation implementation.
     "openjiuwen-runtime-foundation[link-mtls] @ git+https://gitcode.com/openJiuwen/agent-runtime.git@develop#subdirectory=foundation",
     "openjiuwen_deepsearch @ git+https://gitcode.com/openJiuwen/deepsearch.git@dev-stable-ee#subdirectory=deepsearch",
@@ -74,6 +75,10 @@ dependencies = [
     "minio>=7.2.0",
     "uvloop==0.22.1; sys_platform != 'win32'",
     "python-json-logger>=2.0.0",
+    "jiuwenbox @ git+https://gitcode.com/openJiuwen/agent-security.git@38db5a46327c11e21efc40d7f541d05ea120e08a#subdirectory=jiuwenbox",
+    "agent-shield @ git+https://gitcode.com/openJiuwen/agent-security.git@develop#subdirectory=agent_shield",
+    "agent-ssas @ git+https://gitcode.com/openJiuwen/agent-security.git@develop#subdirectory=agent_ssas",
+    "security-mask @ git+https://gitcode.com/openJiuwen/agent-security.git@develop#subdirectory=foundation",
 ]
 
 [project.optional-dependencies]
@@ -153,18 +158,15 @@ jiuwenswarm-desktop = "jiuwenswarm.channels.desktop.desktop_app:main"
 jiuwenswarm-acp = "jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect:main"
 jiuwenswarm-acp-chat = "jiuwenswarm.acp.cli:main"
 jiuwenswarm-skill-train = "jiuwenswarm.cli.skill_train:main"
-jiuwenbox = "jiuwenbox.cli.jiuwenbox:main"
-jiuwenbox-server = "jiuwenbox.server.launcher:main"
 
 [tool.setuptools]
 # 入口脚本现在是 jiuwenswarm 包内的一部分，不需要 py-modules
 py-modules = []
 include-package-data = true
-package-dir = {"jiuwenbox" = "jiuwenbox/src/jiuwenbox"}
 
 [tool.setuptools.packages.find]
-where = [".", "jiuwenbox/src"]
-include = ["jiuwenswarm*", "jiuwenbox*"]
+where = ["."]
+include = ["jiuwenswarm*"]
 exclude = ["jiuwenswarm.web*"]
 namespaces = false
 
@@ -184,10 +186,6 @@ jiuwenswarm = [
     "extensions/**/*.yaml",
     "extensions/**/*.yml",
     "extensions/**/*.md",
-]
-jiuwenbox = [
-    "configs/**/*",
-    "configs/*",
 ]
 
 [tool.setuptools.exclude-package-data]

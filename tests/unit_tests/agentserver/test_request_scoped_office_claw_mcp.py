@@ -1090,11 +1090,11 @@ def _request_with_connectors(
 @pytest.mark.asyncio
 async def test_connector_builtin_name_conflict_downgrades_per_tool(monkeypatch: pytest.MonkeyPatch) -> None:
     """A connector tool whose short name collides with a *built-in* agent tool
-    (e.g. ``filesystem.read_file`` vs the agent's ``read_file``) must be skipped
-    in place — the rest of the connector's tools and the overall registration
-    must survive. Previously this raised ``RuntimeError`` which propagated to the
-    outer ``except`` and rolled back the entire registration, leaving
-    ``tools_search`` with 0 matches and the LLM falling back to web_search."""
+    (e.g. ``filesystem.read_file`` vs the agent's ``read_file``) is renamed to
+    the LLM-safe ``server_tool`` form at staging instead of being skipped — the
+    rest of the connector's tools and the overall registration must survive.
+    Previously the tool was skipped entirely, leaving ``tools_search`` with 0
+    matches and the LLM falling back to web_search."""
 
     for key, value in _startup_env().items():
         monkeypatch.setenv(key, value)
@@ -1150,18 +1150,13 @@ async def test_connector_builtin_name_conflict_downgrades_per_tool(monkeypatch: 
 
     # Registration succeeds (not rolled back to None).
     assert registration is not None
-    # Only list_dir made it into the registration — read_file was skipped.
-    assert registration.tool_names == ("list_dir",)
-    # The built-in read_file mapping is untouched.
+    # read_file stages under the server-prefixed LLM-safe name; list_dir keeps
+    # its raw name — the built-in read_file mapping stays untouched.
+    assert registration.tool_names == ("filesystem_read_file", "list_dir")
     assert (
             adapter._instance.ability_manager.get("read_file") is builtin_read_file
     )
-    # No orphaned resource entry for the skipped read_file tool.
-    skipped_id = next(
-        (tid for tid in registration.tool_ids if tid.endswith(".read_file")),
-        None,
-    )
-    assert skipped_id is None
+    assert adapter._instance.ability_manager.get("filesystem_read_file") is not None
 
 
 @pytest.mark.asyncio
@@ -1709,6 +1704,57 @@ async def test_multi_block_mcp_result_keeps_payload_not_only_trailer() -> None:
     assert result["result"] == payload + "\n" + trailer
 
 
+def test_request_scoped_tool_defaults_remote_name_to_card_name() -> None:
+    tool = RequestScopedOfficeClawMcpTool(
+        ToolCard(id="office-claw-request-x.office-claw.multi", name="multi", input_params={}),
+        {"command": "node", "args": [], "cwd": "."},
+    )
+
+    assert tool._remote_tool_name == "multi"
+
+
+@pytest.mark.asyncio
+async def test_shadow_renamed_tool_calls_remote_original_name() -> None:
+    """改名只作用于对外暴露名；远程 MCP 服务器必须收到原始工具名。"""
+    from mcp.types import CallToolResult, TextContent
+
+    tool = RequestScopedOfficeClawMcpTool(
+        ToolCard(
+            id="office-claw-request-shadow.doubao-search.doubao_search_web_search",
+            name="doubao_search_web_search",
+            description="renamed connector tool",
+            input_params={},
+        ),
+        {"command": "node", "args": [], "cwd": "."},
+        "req-shadow",
+        "doubao-search",
+        remote_tool_name="web_search",
+    )
+    session = SimpleNamespace(
+        call_tool=AsyncMock(
+            return_value=CallToolResult(content=[TextContent(type="text", text="ok")])
+        )
+    )
+
+    with (
+        patch.object(tool, "_acquire_mcp_session", new=AsyncMock(return_value=session)),
+        patch("jiuwenswarm.common.mcp_config.ensure_request_scoped_mcp_tool_allowed"),
+        patch(
+            "jiuwenswarm.common.mcp_config.ensure_office_claw_tool_invocation_matches_active"
+        ),
+        patch(
+            "jiuwenswarm.common.mcp_config.annotate_connector_catalog_result",
+            side_effect=lambda *args, **kwargs: "ok",
+        ) as annotate,
+    ):
+        result = await tool._invoke_with_active_binding({})
+
+    assert session.call_tool.await_args.args[0] == "web_search"
+    # catalog 标注同样必须按远端原始工具名判定，否则改名后的工具永远匹配不到。
+    assert annotate.call_args.args[0] == "web_search"
+    assert result["result"] == "ok"
+
+
 @pytest.mark.asyncio
 async def test_mixed_text_and_image_result_keeps_text_payload() -> None:
     """文本说明 + 图片的 MCP 结果必须同时保留正文和图片占位。"""
@@ -2012,3 +2058,281 @@ def test_empty_catalog_text_has_no_dangling_preface() -> None:
     for empty in (None, ""):
         note = annotate_connector_catalog_result("office_claw_list_connectors", {}, empty, unavailable)
         assert "以上" not in note and "- huaweicloud-devkit：" in note
+
+
+@pytest.mark.asyncio
+async def test_builtin_shadowed_connector_tool_is_renamed_not_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connector tool named like a built-in stages under ``server_tool`` instead of being skipped."""
+    resource_manager = _ResourceManager()
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    adapter = _bare_session_adapter()
+    adapter._instance.ability_manager.cards["web_search"] = ToolCard(
+        id="builtin-web-search", name="web_search", description="builtin", input_params={}
+    )
+
+    buffers = interface_deep._RequestMcpToolBuffers()
+    interface_deep._stage_request_mcp_tools(
+        _request(),
+        "doubao-search",
+        [{"name": "web_search", "description": "doubao web search", "input_params": {"type": "object"}}],
+        {"command": "node"},
+        buffers,
+        staged_name_resolver=adapter._resolve_shadow_safe_tool_name,
+    )
+    adapter._install_staged_request_mcp_tools(buffers)
+
+    assert buffers.tool_names == ["doubao_search_web_search"]
+    assert buffers.tool_ids[0].endswith(".doubao-search.doubao_search_web_search")
+    assert adapter._instance.ability_manager.get("web_search").id == "builtin-web-search"
+    assert adapter._instance.ability_manager.get("doubao_search_web_search") is not None
+    assert len(resource_manager.tools) == 1
+
+
+@pytest.mark.asyncio
+async def test_unshadowed_connector_tool_keeps_raw_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resource_manager = _ResourceManager()
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    adapter = _bare_session_adapter()
+
+    buffers = interface_deep._RequestMcpToolBuffers()
+    interface_deep._stage_request_mcp_tools(
+        _request(),
+        "doubao-search",
+        [{"name": "custom_search", "description": "free name", "input_params": {"type": "object"}}],
+        {"command": "node"},
+        buffers,
+        staged_name_resolver=adapter._resolve_shadow_safe_tool_name,
+    )
+    adapter._install_staged_request_mcp_tools(buffers)
+
+    assert buffers.tool_names == ["custom_search"]
+    assert adapter._instance.ability_manager.get("custom_search") is not None
+    assert len(resource_manager.tools) == 1
+
+
+@pytest.mark.asyncio
+async def test_renamed_tool_is_error_keeps_remote_name_and_failure_schema() -> None:
+    """连接器存在 remote_tool_name 且 isError=True：调用名用远端名，失败标记同时保留。"""
+    from mcp.types import CallToolResult, TextContent
+
+    tool = RequestScopedOfficeClawMcpTool(
+        ToolCard(
+            id="office-claw-request-shadow.doubao-search.doubao_search_web_search",
+            name="doubao_search_web_search",
+            description="renamed connector tool",
+            input_params={},
+        ),
+        {"command": "node", "args": [], "cwd": "."},
+        "req-shadow-error",
+        "doubao-search",
+        remote_tool_name="web_search",
+    )
+    session = SimpleNamespace(
+        call_tool=AsyncMock(
+            return_value=CallToolResult(
+                isError=True,
+                content=[TextContent(type="text", text="boom")],
+            )
+        )
+    )
+
+    with (
+        patch.object(tool, "_acquire_mcp_session", new=AsyncMock(return_value=session)),
+        patch("jiuwenswarm.common.mcp_config.ensure_request_scoped_mcp_tool_allowed"),
+        patch(
+            "jiuwenswarm.common.mcp_config.ensure_office_claw_tool_invocation_matches_active"
+        ),
+        patch(
+            "jiuwenswarm.common.mcp_config.annotate_connector_catalog_result",
+            side_effect=lambda *args, **kwargs: args[2],
+        ) as annotate,
+    ):
+        result = await tool._invoke_with_active_binding({})
+
+    assert session.call_tool.await_args.args[0] == "web_search"
+    assert annotate.call_args.args[0] == "web_search"
+    assert result["status"] == "error"
+    assert result["success"] is False
+    assert result["error_code"] == "mcp_tool_error"
+    assert result["error_message"] == "boom"
+    assert result["result"] == "boom"
+
+
+def _corp_template_config_base() -> dict[str, object]:
+    return {
+        "mcp": {
+            "servers": [
+                {
+                    "name": "corp-docs",
+                    "transport": "streamable-http",
+                    "url": "https://corp.example.com/mcp",
+                    "enabled": True,
+                }
+            ]
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_enterprise_keeps_only_connectors_matching_template(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """请求级连接器必须与管理端 MCP 模板同名、同传输类型、同地址才建连。"""
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", _ResourceManager())
+    adapter = _bare_session_adapter()
+    adapter._startup_config_base = _corp_template_config_base()
+    discovered: list[str] = []
+
+    async def _fake_list(server_name, config):
+        discovered.append(server_name)
+        return (
+            [
+                {
+                    "name": "corp_docs_search",
+                    "description": "",
+                    "input_params": {"type": "object"},
+                }
+            ],
+            {"_mcp_client_type": "stdio", "command": "node"},
+        )
+
+    monkeypatch.setattr(
+        interface_deep,
+        "list_request_mcp_server_tools",
+        AsyncMock(side_effect=_fake_list),
+    )
+
+    registration = await adapter.register_request_scoped_office_claw_mcp(
+        _request_with_connectors(
+            connectors={
+                "corp-docs": {
+                    "type": "streamableHttp",
+                    "url": " https://corp.example.com/mcp ",
+                },
+                "rogue": {"type": "sse", "url": "https://evil.example.com/sse"},
+            }
+        )
+    )
+
+    assert discovered == ["corp-docs"]
+    assert registration.tool_names == ("corp_docs_search",)
+
+
+@pytest.mark.asyncio
+async def test_enterprise_rejects_template_name_with_different_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同名但地址被替换的连接器不得建连，避免借模板名绕过。"""
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", _ResourceManager())
+    adapter = _bare_session_adapter()
+    adapter._startup_config_base = _corp_template_config_base()
+    discovered: list[str] = []
+
+    async def _fake_list(server_name, config):
+        discovered.append(server_name)
+        return [], {}
+
+    monkeypatch.setattr(
+        interface_deep,
+        "list_request_mcp_server_tools",
+        AsyncMock(side_effect=_fake_list),
+    )
+
+    registration = await adapter.register_request_scoped_office_claw_mcp(
+        _request_with_connectors(
+            connectors={
+                "corp-docs": {
+                    "type": "streamable-http",
+                    "url": "https://evil.example.com/mcp",
+                }
+            }
+        )
+    )
+
+    assert discovered == []
+    assert registration.tool_names == ()
+
+
+@pytest.mark.asyncio
+async def test_enterprise_empty_template_rejects_all_request_connectors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """模板快照为空（或尚未加载）时 fail-closed：全部拒绝且不发起发现。"""
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", _ResourceManager())
+    adapter = _bare_session_adapter()
+    discovered: list[str] = []
+    warnings: list[str] = []
+
+    async def _fake_list(server_name, config):
+        discovered.append(server_name)
+        return [], {}
+
+    monkeypatch.setattr(
+        interface_deep,
+        "list_request_mcp_server_tools",
+        AsyncMock(side_effect=_fake_list),
+    )
+    # 该 logger 不向 root 传播，直接截获 warning 调用以校验拒绝原因可见。
+    monkeypatch.setattr(
+        interface_deep.logger,
+        "warning",
+        lambda *args, **_kwargs: warnings.append(" ".join(str(arg) for arg in args)),
+    )
+
+    registration = await adapter.register_request_scoped_office_claw_mcp(
+        _request_with_connectors(
+            connectors={"rogue": {"type": "sse", "url": "https://evil.example.com/sse"}}
+        )
+    )
+
+    assert discovered == []
+    assert registration.tool_names == ()
+    assert any("rogue" in message for message in warnings)
+    assert any("不在管理端下发的 MCP 模板中" in message for message in warnings)
+
+
+@pytest.mark.asyncio
+async def test_personal_edition_does_not_apply_template_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """个人版不读取企业 MCP 模板，请求级连接器保持原有发现行为。"""
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", _ResourceManager())
+    adapter = _bare_session_adapter()
+    adapter._startup_config_base = _corp_template_config_base()
+    discovered: list[str] = []
+
+    async def _fake_list(server_name, config):
+        discovered.append(server_name)
+        return (
+            [
+                {
+                    "name": "custom_search",
+                    "description": "",
+                    "input_params": {"type": "object"},
+                }
+            ],
+            {"_mcp_client_type": "stdio", "command": "node"},
+        )
+
+    monkeypatch.setattr(
+        interface_deep,
+        "list_request_mcp_server_tools",
+        AsyncMock(side_effect=_fake_list),
+    )
+
+    registration = await adapter.register_request_scoped_office_claw_mcp(
+        _request_with_connectors(
+            connectors={"rogue": {"command": "node", "args": ["x.js"], "cwd": "."}}
+        )
+    )
+
+    assert discovered == ["rogue"]
+    assert registration.tool_names == ("custom_search",)

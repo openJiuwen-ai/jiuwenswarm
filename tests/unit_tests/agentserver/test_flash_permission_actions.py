@@ -167,18 +167,19 @@ async def test_cron_actions_native_sdk_backend_counts(
     permission_adapter, action, legacy, args, policy, record_property, monkeypatch
 ):
     from flash_sdk import sdk_tools
-    from openjiuwen.harness.security.core import PermissionEngine
+    from agent_shield.tool_permission import get_permission_manager
 
     from jiuwenswarm.agents.harness.flash.tools.cron_flash import build_cron_flash_tool
 
     observed_args = {}
-    original_check = PermissionEngine.check_permission
+    manager = get_permission_manager()
+    original_check = manager.check_permission
 
-    async def observe(self, tool_name, tool_args):
+    async def observe(tool_name, tool_args, key=None, *, config=None):
         observed_args[tool_name] = dict(tool_args)
-        return await original_check(self, tool_name, tool_args)
+        return await original_check(tool_name, tool_args, key, config=config)
 
-    monkeypatch.setattr(PermissionEngine, "check_permission", observe)
+    monkeypatch.setattr(manager, "check_permission", observe)
 
     methods = {
         name: AsyncMock(return_value={"job_count": 0})
@@ -334,26 +335,41 @@ async def test_ambiguous_or_unknown_action_is_denied(permission_adapter, name, a
 async def test_disabled_permission_preserves_existing_execution(permission_adapter):
     from openjiuwen.harness.security.models import PermissionLevel
 
+    from unittest.mock import MagicMock
+
+    from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
+
     _, rail = permission_adapter({"web_flash": "deny", "web_search": "deny"})
     rail.update_config({**rail._static_config, "enabled": False})
+    ctx = AgentCallbackContext(agent=MagicMock(), extra={})
     assert (
-        await rail._engine.check_permission("web_flash", {"search": {"query": "a"}})
+        await rail._check_tool_permission(
+            "web_flash", {"search": {"query": "a"}}, ctx
+        )
     ).permission == PermissionLevel.ALLOW
 
 
 @pytest.mark.asyncio
 async def test_same_card_search_allow_fetch_deny(permission_adapter):
+    from unittest.mock import MagicMock
+
+    from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
     from openjiuwen.harness.security.models import PermissionLevel
 
     _, rail = permission_adapter(
         {"web_flash": "allow", "web_search": "allow", "mcp_fetch_webpage": "deny"}
     )
+    ctx = AgentCallbackContext(agent=MagicMock(), extra={})
     assert (
-        await rail._engine.check_permission("web_flash", {"search": {"query": "a"}})
+        await rail._check_tool_permission(
+            "web_flash", {"search": {"query": "a"}}, ctx
+        )
     ).permission == PermissionLevel.ALLOW
     assert (
-        await rail._engine.check_permission(
-            "web_flash", {"fetch": {"url": ["https://example.invalid/a"]}}
+        await rail._check_tool_permission(
+            "web_flash",
+            {"fetch": {"url": ["https://example.invalid/a"]}},
+            ctx,
         )
     ).permission == PermissionLevel.DENY
 

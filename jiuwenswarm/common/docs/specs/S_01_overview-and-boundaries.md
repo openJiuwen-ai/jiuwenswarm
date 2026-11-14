@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_01 / overview-and-boundaries |
 | 关联模块 | jiuwenswarm/common/（全包） |
-| 最近一次修订日期 | 2026-10-13 |
+| 最近一次修订日期 | 2026-11-03 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -44,6 +44,14 @@
   各自只有一个生产装配点（见「执行路径」表）；装配点之外禁止二次装配。
 
 ## utils.py 职责分解（~4040 行，本包最大文件）
+
+无项目 Agent/Code 任务目录由 `projectless_workspace.py` 单独解析，注册表根目录
+统一由 `utils.get_projectless_task_registry_dir()` 提供：注册表键对会丢失信息或
+仅大小写不同的会话 ID 附加原始 ID 摘要，保证不同会话不共享 `chat-N/work` 和
+`chat-N/outputs`；已登记的旧键仅在目录元数据中的完整会话 ID 一致时迁移。
+读取无效注册表记录时记录警告，保留原文件供排查，不将其当作有效任务目录。
+`runtime_workspace.py` 将该用户任务目录与 `utils.get_agent_workspace_dir()`
+返回的内部状态目录分离。
 
 utils.py 是**路径管理中枢 + 日志体系装配 + 杂项通用工具**的复合体，按职责分五块：
 

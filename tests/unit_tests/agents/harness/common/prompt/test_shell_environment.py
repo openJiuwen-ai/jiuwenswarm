@@ -13,8 +13,10 @@ from jiuwenswarm.agents.harness.common.rails import runtime_prompt_rail as rpr
 @pytest.fixture(autouse=True)
 def _clear_library_cache():
     se.build_python_library_prompt.cache_clear()
+    se.clear_shell_core_cache()
     yield
     se.build_python_library_prompt.cache_clear()
+    se.clear_shell_core_cache()
 
 
 def _patch_probes(monkeypatch: pytest.MonkeyPatch, available: set[str]) -> None:
@@ -92,6 +94,7 @@ def test_heredoc_rule_follows_git_bash_availability(monkeypatch: pytest.MonkeyPa
     _patch_windows_shells(monkeypatch, git_bash=None)
     assert "不要用 heredoc 写文件" in se.build_shell_environment_prompt("cn", "win32")
 
+    se.clear_shell_core_cache()
     _patch_windows_shells(monkeypatch, git_bash="C:/Git/bin/bash.exe")
     text = se.build_shell_environment_prompt("cn", "win32")
 
@@ -126,3 +129,42 @@ def test_missing_identity_section_lets_env_section_add_list() -> None:
     """code 模式没有 identity 段，运行时链路必须补注入。"""
     assert rpr._prompt_has_library_list(_FakeBuilder({})) is False
     assert rpr._prompt_has_library_list(object()) is False
+
+
+def _count_probes(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    calls = {"n": 0}
+
+    def _powershell() -> str:
+        calls["n"] += 1
+        return "powershell.exe"
+
+    monkeypatch.setattr(se.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(se, "_available_powershell", _powershell)
+    monkeypatch.setattr(se, "_available_git_bash", lambda: None)
+    return calls
+
+
+def test_shell_core_probes_once_while_environment_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _count_probes(monkeypatch)
+    first = se.build_shell_environment_prompt("cn", "win32", include_libraries=False)
+    second = se.build_shell_environment_prompt("cn", "win32", include_libraries=False)
+    assert first == second
+    assert calls["n"] == 1
+
+
+def test_shell_core_reprobes_when_path_changes(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _count_probes(monkeypatch)
+    se.build_shell_environment_prompt("cn", "win32", include_libraries=False)
+    monkeypatch.setenv("PATH", r"C:\new-tools")
+    se.build_shell_environment_prompt("cn", "win32", include_libraries=False)
+    assert calls["n"] == 2
+
+
+def test_shell_core_reprobes_after_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _count_probes(monkeypatch)
+    now = [1000.0]
+    monkeypatch.setattr(se.time, "monotonic", lambda: now[0])
+    se.build_shell_environment_prompt("cn", "win32", include_libraries=False)
+    now[0] += se._SHELL_CORE_TTL_S + 1
+    se.build_shell_environment_prompt("cn", "win32", include_libraries=False)
+    assert calls["n"] == 2

@@ -335,6 +335,10 @@ class TestCronLastSessionId:
         await svc.run_tasks[run_id]
 
         assert agent.released_sessions == ["cron_agentserver_allocated"]
+        cleanup = [env for env in agent.unary_requests if env.request_id == "cron-cleanup-cron_agentserver_allocated"]
+        assert len(cleanup) == 1
+        assert cleanup[0].channel_context["_jiuwenswarm_cancel_source"] == "cron_complete"
+        assert cleanup[0].session_id == "cron_agentserver_allocated"
 
     @pytest.mark.asyncio
     async def test_finished_run_keeps_slot_when_followup_is_inflight(self, tmp_path):
@@ -1213,7 +1217,7 @@ class TestTeamModeWake:
         await task
 
         assert len(agent.stream_requests) == 1
-        assert len(agent.unary_requests) == 0
+        assert agent.unary_requests == []
         env = agent.stream_requests[0]
         assert env.is_stream is True
         assert env.channel == "tui"
@@ -1240,7 +1244,7 @@ class TestTeamModeWake:
         assert task is not None
         await task
 
-        assert len(agent.unary_requests) == 1
+        assert len(agent.unary_requests) == 2
         assert len(agent.stream_requests) == 1
         create_env = agent.unary_requests[0]
         env = agent.stream_requests[0]

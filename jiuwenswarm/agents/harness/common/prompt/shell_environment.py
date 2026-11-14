@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import shutil
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Optional
@@ -185,7 +186,32 @@ def _path_bash_status(language: str, path: Optional[str]) -> str:
     return f"可用，路径 `{path}`" if language == "cn" else f"available at `{path}`"
 
 
+_SHELL_PROBE_ENV_KEYS = (
+    "PATH", "PATHEXT", "GIT_BASH", "GIT_BASH_PATH",
+    "ProgramFiles", "ProgramFiles(x86)", "LocalAppData", "SystemRoot",
+)
+_SHELL_CORE_TTL_S = 300.0
+_shell_core_cache: dict[tuple, tuple[float, str]] = {}
+
+
+def clear_shell_core_cache() -> None:
+    _shell_core_cache.clear()
+
+
 def _build_shell_core(language: str, os_type: str) -> str:
+    key = (language, os_type, *(os.environ.get(name) for name in _SHELL_PROBE_ENV_KEYS))
+    now = time.monotonic()
+    cached = _shell_core_cache.get(key)
+    if cached is not None and cached[0] > now:
+        return cached[1]
+    text = _probe_shell_core(language, os_type)
+    if len(_shell_core_cache) >= 16:
+        _shell_core_cache.clear()
+    _shell_core_cache[key] = (now + _SHELL_CORE_TTL_S, text)
+    return text
+
+
+def _probe_shell_core(language: str, os_type: str) -> str:
     """Return shell capability and selection guidance for the current host."""
     path_bash = shutil.which("bash")
 

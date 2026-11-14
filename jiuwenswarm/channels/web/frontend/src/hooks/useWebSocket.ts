@@ -7,6 +7,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { isWorkspaceQuotaError } from '../multi-session/state/createConversationSession';
+import { createConversationTitle } from '../multi-session/state/newConversationLifecycle';
 import {
   ConnectionAckPayload,
   WebConnectOptions,
@@ -59,7 +60,52 @@ import {
   RUNTIME_SCOPE_CHANGED_EVENT,
 } from '../services/runtimeScope';
 import { getWebTransport } from '../utils/env';
+import { stripTransitionalErrorPrefix } from '../utils/stripTransitionalErrorPrefix';
 import { isEnterprise } from '../edition';
+import {
+  SWARM_SKILL_FORBIDDEN_WHEN_TEAM_BOUND,
+  SWARM_SKILL_MULTIPLE_NOT_ALLOWED,
+} from '../features/teamCatalog/teamCatalogApi';
+
+/** Prefer business Swarm codes even when E2A wraps them under details/payload. */
+function resolveSwarmSkillErrorCode(error: WebError | { code?: string; payload?: unknown } | null | undefined): string {
+  const direct = String(error?.code || '').trim();
+  if (
+    direct === SWARM_SKILL_FORBIDDEN_WHEN_TEAM_BOUND
+    || direct === SWARM_SKILL_MULTIPLE_NOT_ALLOWED
+  ) {
+    return direct;
+  }
+  const payload = error && 'payload' in error ? error.payload : undefined;
+  if (payload && typeof payload === 'object') {
+    const body = payload as Record<string, unknown>;
+    const nested = body.code ?? (body.details && typeof body.details === 'object'
+      ? (body.details as Record<string, unknown>).code
+      : undefined);
+    const code = String(nested || '').trim();
+    if (
+      code === SWARM_SKILL_FORBIDDEN_WHEN_TEAM_BOUND
+      || code === SWARM_SKILL_MULTIPLE_NOT_ALLOWED
+    ) {
+      return code;
+    }
+  }
+  return direct;
+}
+
+function localizeSwarmSkillErrorMessage(
+  code: string,
+  fallback: string,
+  translate: (key: string) => string,
+): string {
+  if (code === SWARM_SKILL_FORBIDDEN_WHEN_TEAM_BOUND) {
+    return translate('chat.teamSession.swarmForbidden');
+  }
+  if (code === SWARM_SKILL_MULTIPLE_NOT_ALLOWED) {
+    return translate('chat.teamSession.swarmMultiple');
+  }
+  return fallback;
+}
 import {
   clearStaleCronPermissionPrompt,
   dismissCronAskUser,
@@ -634,7 +680,7 @@ interface UseWebSocketReturn {
   ) => Promise<T>;
   persistMedia: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   persistDocuments: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
-  sendMessage: (content: string, sessionId: string, mediaItems?: MediaItem[]) => Promise<boolean>;
+  sendMessage: (content: string, sessionId: string, mediaItems?: MediaItem[], rsiHarnessId?: string) => Promise<boolean>;
   sendLongHorizonKick: (
     sessionId: string,
     query: string,
@@ -1605,7 +1651,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
   // 发送聊天消息
   const sendMessage = useCallback(
-    async (content: string, sessionId: string, mediaItems: MediaItem[] = []): Promise<boolean> => {
+    async (content: string, sessionId: string, mediaItems: MediaItem[] = [], rsiHarnessId?: string): Promise<boolean> => {
       const hasMedia = mediaItems.length > 0;
       // User-visible text is required; attachment-only / 【上传文档】-only payloads
       // must not send (matches InputArea canSubmit / handleSubmit).
@@ -1635,6 +1681,29 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           beforeCompressed: 0,
           afterCompressed: 0,
         });
+        // Expert-team / dynamic open must create with empty title so the first
+        // user turn can name the session (backend auto-titles when title empty).
+        // Treat untitled placeholders as empty — older builds wrote「未命名对话」/「专家团」.
+        const existingTitle = (
+          useSessionStore.getState().sessions.find((s) => s.session_id === sessionId)?.title || ''
+        ).trim();
+        const isPlaceholderTitle = !existingTitle
+          || existingTitle === t('multiSession.untitled')
+          || existingTitle === t('chat.teamSession.label');
+        const sessionExists = sessionId !== 'new'
+          && useSessionStore.getState().sessions.some((item) => item.session_id === sessionId);
+        if (isPlaceholderTitle && sessionExists) {
+          const nextTitle = createConversationTitle(content).slice(0, 100);
+          if (nextTitle) {
+            // Persist first; only mirror locally after rename succeeds.
+            void useWorkspaceStore.getState().renameSession(sessionId, nextTitle)
+              .then(() => {
+                updateSession(sessionId, { title: nextTitle });
+                useWorkspaceStore.getState().patchSession(sessionId, { title: nextTitle });
+              })
+              .catch(() => {});
+          }
+        }
       }
 
       resetContextCompressionTurn(sessionId);
@@ -1690,7 +1759,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         useChatStore.getState().setPaused(sessionId, false);
         // 执行中追问：先收尾上一轮仍在 streaming 的 leader，避免新一轮气泡/头像挂错簇
         closeActiveTeamLeaderMessages(sessionId);
-        useChatStore.getState().closeReasoning(sessionId);
+        useChatStore.getState().closeReasoning(sessionId, { dropEmpty: true });
       }
       try {
         let outgoingContent = content.replace(/\{\{skill:([^}]+)\}\}/g, '$1');
@@ -1745,6 +1814,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const chatRequestId = makeClientRequestId('chat');
         activeRequestIdRef.current = chatRequestId;
         const outgoingMode = resolveOutgoingMode(sessionId, currentMode);
+
+        // v2: no openDynamicTeam. Unbound + Swarm rides chat.send → host auto-bind.
+        const sessionState = useSessionStore.getState();
+        const priorTeamName = String(
+          sessionState.sessions.find((item) => item.session_id === sessionId)?.team_name
+            || (sessionState.currentSession?.session_id === sessionId
+              ? sessionState.currentSession?.team_name
+              : '')
+            || '',
+        ).trim();
         await request('chat.send', {
           session_id: sessionId,
           content: outgoingContent,
@@ -1752,12 +1831,29 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...(outgoingFiles ? { files: outgoingFiles } : {}),
           mode: outgoingMode,
           ...(selectedModel ? { model_name: selectedModel } : {}),
+          ...(outgoingMode.split('.')[0] === 'agent' && !inputMode && rsiHarnessId !== undefined
+            ? { rsi_harness_installation_id: rsiHarnessId }
+            : {}),
           ...workContext,
           skills: selectedSkills,
           ...(inputMode ? { input_mode: inputMode } : {}),
           ...resolvePlanEntryPayload(sessionId, outgoingMode),
         }, { requestId: chatRequestId });
         consumePlanEntryMark(sessionId, outgoingMode);
+        // Sync host auto-bind team_name so SkillSelector XOR / picker stay honest.
+        if (outgoingMode === 'team' && selectedSkills.length > 0 && !priorTeamName) {
+          try {
+            const meta = await request<{ team_name?: string }>('session.get_metadata', {
+              session_id: sessionId,
+            });
+            const bound = String(meta?.team_name || '').trim();
+            if (bound) {
+              updateSession(sessionId, { team_name: bound, mode: 'team' });
+            }
+          } catch {
+            // Non-fatal: host still enforces policy; UI may look unbound until refresh.
+          }
+        }
         return true;
       } catch (error) {
         const webError = error as WebError;
@@ -1765,7 +1861,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         setConnectionStats({ lastError: webError.message });
         useChatStore.getState().setProcessing(sessionId, false);
         useChatStore.getState().setThinking(sessionId, false);
-        const errorMsg = webError.message || t('network.sendMessageFailed');
+        const swarmCode = resolveSwarmSkillErrorCode(webError);
+        const errorMsg = localizeSwarmSkillErrorMessage(
+          swarmCode,
+          webError.message || t('network.sendMessageFailed'),
+          t,
+        );
         onErrorRef.current?.(errorMsg);
         useChatStore.getState().addMessage(sessionId, {
           id: `error-${Date.now()}`,
@@ -1786,6 +1887,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       setContextCompressionStats,
       setConnectionStats,
       t,
+      updateSession,
     ]
   );
 
@@ -2761,11 +2863,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
         const reasoningContent =
           typeof payload.content === 'string' ? payload.content : '';
-        if (reasoningContent) {
-          useChatStore.getState().appendReasoning(sessionId, reasoningContent, {
-            atMs: eventTimestampMs(payload),
-          });
-        }
+        useChatStore.getState().appendReasoning(sessionId, reasoningContent, {
+          atMs: eventTimestampMs(payload),
+        });
       }),
       webClient.on('chat.final', ({ payload }) => {
         if (shouldDropDuplicatedEvent('chat.final', payload)) return;
@@ -2831,6 +2931,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
         if (!sessionId) return;
         flushPendingStreamDelta(sessionId);
+        useChatStore.getState().closeReasoning(sessionId, {
+          atMs: eventTimestampMs(payload),
+          dropEmpty: true,
+        });
 
         // cron B'：本帧 final 写完气泡后（含 chat.send 续跑路径），结束 live 保活窗口。
         // 有权限卡时 noteCronLiveContentFinal 内部会直接 return。
@@ -4051,11 +4155,19 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (!sessionId) return;
         if (shouldDropDuplicatedEvent('chat.error', payload)) return;
         useChatStore.getState().setThinking(sessionId, false);
+        // chat.error 可能携带 max_iterations_reached 前缀（给下游按文本归类的过渡标记）。
+        // 展示时剥离，避免英文技术标记暴露给终端用户；原始 error/code 仍随事件保留，不影响下游分类。
         const rawError =
-          typeof payload.error === 'string' ? payload.error : t('network.unknownError');
+          typeof payload.error === 'string'
+            ? stripTransitionalErrorPrefix(payload.error)
+            : t('network.unknownError');
+        const swarmCode = resolveSwarmSkillErrorCode({
+          code: typeof payload.code === 'string' ? payload.code : undefined,
+          payload,
+        });
         const errorMsg = isWorkspaceQuotaError(payload)
           ? t('multiSession.errors.quotaExceeded')
-          : rawError;
+          : localizeSwarmSkillErrorMessage(swarmCode, rawError, t);
         // 忽略 "invalid page_idx or session history not found" 错误，因为这是新会话的正常情况
         if (errorMsg.includes('invalid page_idx or session history not found')) {
           useChatStore.getState().setLoadingHistory(sessionId, false);
@@ -4535,6 +4647,19 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           timestamp: new Date().toISOString(),
         });
       }),
+      // SwarmFlow: workflow.updated → 增量合并到 workflowRuns（树/图视图）
+      webClient.on('workflow.updated', ({ payload }) => {
+        const sessionId = resolveEventSessionId(payload);
+        if (!sessionId) return;
+        const p = payload as { workflow?: unknown; event?: { workflow?: unknown } };
+        const workflow = (p.workflow ?? p.event?.workflow) as
+          | import('../components/teamArea/workflowTypes').WorkflowRun
+          | undefined;
+        if (workflow && typeof workflow === 'object' && workflow.id) {
+          useSessionStore.getState().applyWorkflowUpdate(sessionId, workflow);
+        }
+      }),
+
       webClient.on('team.task', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
@@ -4602,9 +4727,18 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             new_status?: string;
             timestamp?: number;
             name?: string;
+            displayName?: string;
+            display_name?: string;
             execution_status?: string | null;
             mode?: string;
           };
+          // M1 wire: prefer displayName, then name, then member_id.
+          const memberDisplayName =
+            (typeof e.displayName === 'string' && e.displayName.trim()) ||
+            (typeof e.display_name === 'string' && e.display_name.trim()) ||
+            (typeof e.name === 'string' && e.name.trim()) ||
+            e.member_id ||
+            '';
           const activeSessionId = getPayloadSessionId(payload) || undefined;
           upsertHumanShareCommandFromEvent(payload, e);
           if (e.type === 'team.member.shutdown' && e.member_id) {
@@ -4628,7 +4762,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
                 member_id: e.member_id,
                 status: e.status || '',
                 timestamp: e.timestamp || Date.now(),
-                name: e.name,
+                name: memberDisplayName,
                 execution_status: e.execution_status || e.new_status,
                 mode: e.mode,
               });
@@ -4639,7 +4773,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               member_id: e.member_id || '',
               status: e.status || '',
               timestamp: e.timestamp || Date.now(),
-              name: e.name,
+              name: memberDisplayName,
               execution_status: e.execution_status,
               mode: e.mode,
             });

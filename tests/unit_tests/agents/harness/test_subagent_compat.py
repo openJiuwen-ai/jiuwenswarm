@@ -48,13 +48,22 @@ async def test_restored_subagent_is_reported_idle_and_accepts_input(
     control = object.__new__(CompatibleSubagentControl)
     setattr(control, "_manager", SimpleNamespace(find=lambda subagent_id: restored))
 
-    async def _resume(_self: SubagentControl, subagent_id: str) -> ResumeResult:
+    seen: dict[str, str | None] = {}
+
+    async def _resume(
+        _self: SubagentControl,
+        subagent_id: str,
+        *,
+        caller_id: str | None = None,
+    ) -> ResumeResult:
         assert subagent_id == "sub-1"
+        seen["caller_id"] = caller_id
         return ResumeResult(status=SubagentStatus.pending_init(), restored=True)
 
     monkeypatch.setattr(SubagentControl, "resume", _resume)
 
-    result = await control.resume("sub-1")
+    result = await control.resume("sub-1", caller_id="caller-1")
+    assert seen["caller_id"] == "caller-1"
 
     assert result.status.kind is SubagentStatusKind.COMPLETED
     payload = build_subagent_updated_payload(

@@ -12,6 +12,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc 
     get_permissions_config_req_methods,
 )
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.server.handlers import rsi as rsi_handlers
 from jiuwenswarm.server.handlers import agents as agents_handlers
 from jiuwenswarm.server.handlers import bootstrap as bootstrap_handlers
 from jiuwenswarm.server.handlers import chat as chat_handlers
@@ -122,6 +123,9 @@ HANDLERS: dict[ReqMethod, HandlerSpec] = {
     ReqMethod.TEAM_HISTORY_GET: HandlerSpec(fn=team_handlers.handle_team_history_get),
     ReqMethod.TEAM_MEMBERS_GET: HandlerSpec(fn=team_handlers.handle_team_members_get),
     ReqMethod.TEAM_TASKS_DEPENDENCIES: HandlerSpec(fn=team_handlers.handle_team_tasks_dependencies),
+    ReqMethod.SWARMFLOW_PAUSE: HandlerSpec(fn=team_handlers.handle_swarmflow_control),
+    ReqMethod.SWARMFLOW_RESUME: HandlerSpec(fn=team_handlers.handle_swarmflow_control),
+    ReqMethod.SWARMFLOW_STOP: HandlerSpec(fn=team_handlers.handle_swarmflow_control),
     # --- 命令 ---
     # 整域实现在 handlers/commands.py。
     ReqMethod.COMMAND_WORKFLOWS: HandlerSpec(fn=commands_handlers.handle_command_workflows),
@@ -221,7 +225,19 @@ def _register_permissions_methods() -> None:
         HANDLERS[method] = spec
 
 
+def _register_rsi_methods() -> None:
+    """所有 RSI 方法共用 handler，注册时拒绝覆盖已有方法。"""
+    spec = HandlerSpec(fn=rsi_handlers.handle_rsi)
+    for method in ReqMethod:
+        if not method.value.startswith("rsi."):
+            continue
+        if method in HANDLERS:
+            raise RuntimeError(f"duplicate handler registration for {method}")
+        HANDLERS[method] = spec
+
+
 _register_permissions_methods()
+_register_rsi_methods()
 
 
 def supported_methods() -> frozenset[ReqMethod]:
@@ -276,3 +292,4 @@ def _default_context(server: Any, ws: Any, send_lock: Any, request: Any) -> Any:
         connection_id=str(id(ws)),
         services=AgentServerServices(server),
     )
+
