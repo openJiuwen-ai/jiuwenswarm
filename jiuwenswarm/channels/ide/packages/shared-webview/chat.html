@@ -1907,6 +1907,16 @@ function handleHostMessage(msg) {
       if (msg.models) { state.models = msg.models; }
       updateModelDisplay(state.models, state.activeModel);
       break;
+    case 'mode_updated': {
+      var nextMode = ideModeFromServer(msg.mode);
+      if (nextMode) {
+        applyMode(nextMode);
+        // Pin the session-owned mode so a later 'connected' update carrying the
+        // workspace default cannot override what the server restored.
+        state.modeCustomized = true;
+      }
+      break;
+    }
     case 'models_updated':
       if (msg.models) { state.models = msg.models; }
       if (msg.activeModel) { state.activeModel = msg.activeModel; }
@@ -1951,6 +1961,8 @@ function setConnected(yes, sessionId, title) {
     updateSessionPathMenu();
     document.getElementById('header-title').textContent = state.sessionTitle;
     if (isNewSession) {
+      // A mode restored for the previous session must not leak into the next one.
+      state.modeCustomized = false;
       clearMessages();
       clearAttachments();
       if (state.historyLoading) {
@@ -2530,6 +2542,20 @@ function selectMode(mode) {
   state.modeCustomized = true;
   applyMode(mode);
   closeModeDropdown();
+}
+
+function ideModeFromServer(mode) {
+  var m = String(mode || '').toLowerCase().trim();
+  if (!m) return null;
+  // Canonical server modes include compound values such as
+  // team.code.normal, agent.code.plan and agent.work.normal.
+  if (m === 'team' || m.indexOf('team.') === 0) return 'code.team';
+  var parts = m.split('.');
+  if (m === 'plan' || parts.indexOf('plan') !== -1) return 'code.plan';
+  if (m === 'execute' || m === 'normal' || m === 'code' || m === 'agent'
+      || parts.indexOf('normal') !== -1 || parts.indexOf('execute') !== -1
+      || parts.indexOf('fast') !== -1) return 'code.normal';
+  return null;
 }
 
 function applyMode(mode) {
