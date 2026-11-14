@@ -16,8 +16,10 @@ from typing import Any
 # 尝试从 jiuwenswarm.utils 导入，如果失败则使用环境变量或硬编码路径
 try:
     from jiuwenswarm.common.utils import get_agent_sessions_dir
+    from jiuwenswarm.common.timezone import get_default_timezone
     _has_jiuwenswarm = True
 except ImportError:
+    get_default_timezone = None  # type: ignore[assignment]
     _has_jiuwenswarm = False
 
 try:
@@ -321,7 +323,12 @@ def main() -> int:
         default=120,
         help="Time window minutes for --at or default search",
     )
-    parser.add_argument("--timezone", type=str, default="Asia/Shanghai", help="Timezone name")
+    parser.add_argument(
+        "--timezone",
+        type=str,
+        default=(get_default_timezone().key if _has_jiuwenswarm else "Asia/Shanghai"),
+        help="Timezone name",
+    )
     parser.add_argument("--limit", type=int, default=20, help="Max hits to emit in the report")
     parser.add_argument("--max-sessions", type=int, default=200, help="Max session folders to scan")
     parser.add_argument("--auto-expand", action="store_true", default=True, help="Auto expand to 72h if no hits")

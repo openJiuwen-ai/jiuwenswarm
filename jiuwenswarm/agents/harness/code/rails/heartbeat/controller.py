@@ -26,7 +26,6 @@ from jiuwenswarm.agents.harness.code.rails.heartbeat.models import (
     DEFAULT_CONCURRENCY_POLICY,
     DEFAULT_MAX_RUNS,
     DEFAULT_SESSION_DELETED_POLICY,
-    DEFAULT_TIMEZONE,
     HEARTBEAT_CONCURRENCY_POLICIES,
     HEARTBEAT_NAME_MAX_LENGTH,
     HEARTBEAT_PROMPT_MAX_LENGTH,
@@ -305,7 +304,7 @@ class HeartbeatController:
 
         schedule = HeartbeatSchedule.from_dict(
             params.get("schedule") or {},
-            default_timezone=str(params.get("timezone") or DEFAULT_TIMEZONE),
+            default_timezone=str(params.get("timezone") or ""),
         )
 
         source = str(params.get("source") or SOURCE_WEB_RPC).strip()
@@ -357,7 +356,7 @@ class HeartbeatController:
             session_id=session_id,
             prompt=prompt,
             schedule=schedule,
-            timezone=str(params.get("timezone") or DEFAULT_TIMEZONE),
+            timezone=params.get("timezone"),
             enabled=enabled,
             concurrency_policy=concurrency_policy,
             session_deleted_policy=session_deleted_policy,

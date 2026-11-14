@@ -18,11 +18,13 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone as dt_timezone, tzinfo
 from typing import Any, Dict, List, Optional, Sequence, Union
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from openjiuwen.core.foundation.tool import tool
 
+from jiuwenswarm.common.timezone import get_default_timezone
 from jiuwenswarm.common.utils import logger
 from .utils import (
     execute_device_command,
@@ -41,14 +43,30 @@ _ALARM_STATE = frozenset({0, 1})
 _RANGE_TYPE = frozenset({"all", "next", "current"})
 
 
-def _alarm_display_timezone():
-    """闹钟挂钟时区：优先 Asia/Shanghai，不可用时为 UTC+8（均带 tzinfo）."""
-    try:
-        from zoneinfo import ZoneInfo
+def _resolve_alarm_timezone(timezone: Optional[str]) -> tzinfo:
+    """闹钟挂钟时区：显式传入的 IANA 时区优先，否则取实例默认时区。
 
-        return ZoneInfo("Asia/Shanghai")
-    except Exception:
-        return timezone(timedelta(hours=8))
+    无时区的 ``YYYYMMDD hhmmss`` / 时分必须在某个时区下才有确定含义；调用方应传入
+    用户消息信封中的时区，缺省时使用 ``get_default_timezone()``（与信封默认值一致）。
+    """
+    name = (timezone or "").strip()
+    if not name:
+        return get_default_timezone()
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, OSError) as exc:
+        raise ToolInputError(
+            f"timezone 须为合法 IANA 时区名（例如 Asia/Shanghai、America/New_York）: {name!r}"
+        ) from exc
+
+
+def _wall_clock_to_ms(wall: datetime, tz: tzinfo) -> Optional[int]:
+    """将 ``tz`` 下的挂钟时间转为毫秒时间戳；夏令时跳变造成的不存在时间返回 None。"""
+    dt = wall.replace(tzinfo=tz)
+    round_trip = dt.astimezone(dt_timezone.utc).astimezone(tz)
+    if round_trip.replace(tzinfo=None) != wall.replace(tzinfo=None):
+        return None
+    return int(dt.timestamp() * 1000)
 
 
 def _is_valid_alarm_calendar_date(month: int, day: int) -> bool:
@@ -67,8 +85,11 @@ def _is_valid_alarm_clock_time(hour: int, minute: int, second: int) -> bool:
     return 0 <= second <= 59
 
 
-def _parse_alarm_time_to_ms(alarm_time: str) -> Optional[int]:
-    """将 YYYYMMDD hhmmss 解析为毫秒时间戳（挂钟时区同 _alarm_display_timezone）."""
+def _parse_alarm_time_to_ms(alarm_time: str, tz: tzinfo) -> Optional[int]:
+    """将 ``tz`` 下的 YYYYMMDD hhmmss 解析为毫秒时间戳（格式非法返回 None）。
+
+    该本地时间在 ``tz`` 中不存在（夏令时跳变）时抛 ToolInputError，而不是悄悄平移。
+    """
     trimmed = alarm_time.strip()
     if len(trimmed) < 13:
         return None
@@ -89,20 +110,26 @@ def _parse_alarm_time_to_ms(alarm_time: str) -> Optional[int]:
         return None
     if not _is_valid_alarm_clock_time(hour, minute, second):
         return None
-    tz = _alarm_display_timezone()
-    dt = datetime(year, month, day, hour, minute, second, tzinfo=tz)
-    ms = int(dt.timestamp() * 1000)
+    ms = _wall_clock_to_ms(datetime(year, month, day, hour, minute, second), tz)
+    if ms is None:
+        raise ToolInputError(
+            f"本地时间 {alarm_time.strip()} 在时区 {getattr(tz, 'key', tz)} 中不存在（夏令时跳变），请换一个时间"
+        )
     return ms
 
 
-def _alarm_time_ms_from_hour_minute(hour: int, minute: int) -> int:
-    """仅提供时分时：取下一次该时刻（与 YYYYMMDD 解析同一挂钟时区，秒为 0）."""
-    tz = _alarm_display_timezone()
+def _alarm_time_ms_from_hour_minute(hour: int, minute: int, tz: tzinfo) -> int:
+    """仅提供时分时：取 ``tz`` 下「下一次」该时刻（秒为 0）；跳过夏令时中不存在的日期。"""
     now = datetime.now(tz)
-    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if target <= now:
-        target += timedelta(days=1)
-    return int(target.timestamp() * 1000)
+    for day_offset in range(0, 4):
+        day = (now + timedelta(days=day_offset)).date()
+        wall = datetime(day.year, day.month, day.day, hour, minute)
+        ms = _wall_clock_to_ms(wall, tz)
+        if ms is not None and ms > int(now.timestamp() * 1000):
+            return ms
+    raise ToolInputError(
+        f"无法在时区 {getattr(tz, 'key', tz)} 中找到下一个 {hour:02d}:{minute:02d}，请改用 alarm_time"
+    )
 
 
 def _normalize_days_of_week(
@@ -175,7 +202,9 @@ def _normalize_delete_items(
 
 时间（二选一，优先 alarm_time）：
 - alarm_time: 字符串 YYYYMMDD hhmmss（例如 20240315 143000）
-- hour + minute: 仅时分时使用，将取「下一次」该时刻（本地时间）
+- hour + minute: 仅时分时使用，将取「下一次」该时刻
+- timezone: 上述时间所处的 IANA 时区（如 Asia/Shanghai、America/New_York），
+  请使用用户消息信封中的时区；缺省时使用实例默认时区
 
 可选：
 - alarm_title / label: 标题，默认「闹钟」（label 为 alarm_title 的别名）
@@ -199,9 +228,11 @@ async def create_alarm(
     alarm_ring_duration: Optional[int] = None,
     days_of_wake_type: Optional[int] = None,
     days_of_week: Optional[Union[str, List[str]]] = None,
+    timezone: Optional[str] = None,
 ) -> Dict[str, Any]:
     """创建闹钟"""
     try:
+        alarm_tz = _resolve_alarm_timezone(timezone)
         title = alarm_title if alarm_title is not None else label
         if title is None or title == "":
             title = "闹钟"
@@ -222,7 +253,7 @@ async def create_alarm(
 
         alarm_ms: Optional[int] = None
         if alarm_time:
-            alarm_ms = _parse_alarm_time_to_ms(alarm_time)
+            alarm_ms = _parse_alarm_time_to_ms(alarm_time, alarm_tz)
             if alarm_ms is None:
                 raise ToolInputError(
                     "alarm_time 格式须为 YYYYMMDD hhmmss（例如 20240315 143000）"
@@ -232,7 +263,7 @@ async def create_alarm(
                 raise ToolInputError("hour 须为 0-23 的整数")
             if not isinstance(minute, int) or minute < 0 or minute > 59:
                 raise ToolInputError("minute 须为 0-59 的整数")
-            alarm_ms = _alarm_time_ms_from_hour_minute(hour, minute)
+            alarm_ms = _alarm_time_ms_from_hour_minute(hour, minute, alarm_tz)
         else:
             raise ToolInputError("请提供 alarm_time（YYYYMMDD hhmmss）或同时提供 hour 与 minute")
 
@@ -258,7 +289,11 @@ async def create_alarm(
         if wake_t == 3 and week_list:
             intent_param["daysOfWeek"] = week_list
 
-        logger.info("[ALARM_TOOL] Creating alarm, alarmTime(ms)=%s", alarm_ms)
+        logger.info(
+            "[ALARM_TOOL] Creating alarm, alarmTime(ms)=%s, timezone=%s",
+            alarm_ms,
+            getattr(alarm_tz, "key", alarm_tz),
+        )
 
         command = {
             "header": {"namespace": "Common", "name": "Action"},
@@ -294,6 +329,8 @@ async def create_alarm(
         return format_success_response(
             {
                 "success": True,
+                "timezone": getattr(alarm_tz, "key", str(alarm_tz)),
+                "scheduledAt": datetime.fromtimestamp(alarm_ms / 1000, alarm_tz).isoformat(),
                 "alarm": {
                     "entityId": result.get("entityId"),
                     "entityName": result.get("entityName"),
@@ -327,6 +364,9 @@ async def create_alarm(
 - days_of_wake_type: 0-4（与创建时含义相同）
 - start_time + end_time: 时间区间，格式均为 YYYYMMDD hhmmss，须成对出现；
   设备侧为 timeInterval: [startMs, endMs]
+- timezone: start_time / end_time 所处的 IANA 时区，请使用用户消息信封中的时区；
+  缺省时使用实例默认时区。返回的 alarmTime 为毫秒时间戳（绝对时刻），
+  按该时区换算为本地时间后再告知用户
 
 注意：操作约 60 秒超时；检索前宜确认当前时间。
 """,
@@ -337,9 +377,11 @@ async def search_alarms(
     days_of_wake_type: Optional[int] = None,
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
+    timezone: Optional[str] = None,
 ) -> Dict[str, Any]:
     """搜索闹钟."""
     try:
+        alarm_tz = _resolve_alarm_timezone(timezone)
         has_range = range_type is not None
         has_as = alarm_state is not None
         has_wake = days_of_wake_type is not None
@@ -366,8 +408,8 @@ async def search_alarms(
                 raise ToolInputError(f"days_of_wake_type 须为: {sorted(_DAYS_OF_WAKE_TYPE)}")
             intent_param["daysOfWakeType"] = days_of_wake_type
         if has_start and has_end:
-            sm = _parse_alarm_time_to_ms(start_time or "")
-            em = _parse_alarm_time_to_ms(end_time or "")
+            sm = _parse_alarm_time_to_ms(start_time or "", alarm_tz)
+            em = _parse_alarm_time_to_ms(end_time or "", alarm_tz)
             if sm is None:
                 raise ToolInputError("start_time 格式须为 YYYYMMDD hhmmss")
             if em is None:
@@ -425,7 +467,11 @@ async def search_alarms(
         logger.info(f"[ALARM_TOOL] Found {len(parsed_alarms)} alarms")
 
         return format_success_response(
-            {"alarms": parsed_alarms, "count": len(parsed_alarms)},
+            {
+                "alarms": parsed_alarms,
+                "count": len(parsed_alarms),
+                "timezone": getattr(alarm_tz, "key", str(alarm_tz)),
+            },
             f"找到 {len(parsed_alarms)} 个闹钟",
         )
 
@@ -442,6 +488,7 @@ async def search_alarms(
 
 可选字段（与创建一致，仅填需要修改的项）：
 - alarm_time: YYYYMMDD hhmmss
+- timezone: alarm_time 所处的 IANA 时区，请使用用户消息信封中的时区；缺省时使用实例默认时区
 - alarm_title: 标题
 - alarm_state: 0 关 1 开
 - alarm_snooze_duration / alarm_snooze_total / alarm_ring_duration: 枚举同创建
@@ -465,9 +512,11 @@ async def modify_alarm(
     alarm_ring_duration: Optional[int] = None,
     days_of_wake_type: Optional[int] = None,
     days_of_week: Optional[Union[str, List[str]]] = None,
+    timezone: Optional[str] = None,
 ) -> Dict[str, Any]:
     """修改闹钟."""
     try:
+        alarm_tz = _resolve_alarm_timezone(timezone)
         eid = (entity_id or alarm_id or "").strip()
         if not eid:
             raise ToolInputError("缺少 entity_id 或 alarm_id（设备侧闹钟 entityId）")
@@ -478,7 +527,7 @@ async def modify_alarm(
         }
 
         if alarm_time is not None:
-            ms = _parse_alarm_time_to_ms(alarm_time)
+            ms = _parse_alarm_time_to_ms(alarm_time, alarm_tz)
             if ms is None:
                 raise ToolInputError("alarm_time 格式须为 YYYYMMDD hhmmss")
             intent_param["alarmTime"] = ms
@@ -560,6 +609,7 @@ async def modify_alarm(
         return format_success_response(
             {
                 "entity_id": eid,
+                "timezone": getattr(alarm_tz, "key", str(alarm_tz)),
                 "entityId": result.get("entityId"),
                 "alarmTitle": result.get("alarmTitle"),
                 "alarmTime": result.get("alarmTime"),
