@@ -20,7 +20,7 @@ dependencies = [
     "ruamel.yaml>=0.18.0,<0.20",
     "lark-oapi>=1.5.3,<2",
     "loguru>=0.7.3,<0.8",
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@2f4bedb9c5d85ab70d7c79d36183e6a98799e94e",
     "openjiuwen-computeruse @ git+https://gitcode.com/openJiuwen/computer-use.git@2c8171fb6783dba589dd396263b3161186c5f3e4",
     "JiuwenMemory>=0.2.0",
     # openjiuwen's FS read-write lock acquires and releases on different tasks;
@@ -234,18 +234,18 @@ default-groups = ['dev']
 # Overrides replace complete requirements, so preserve each optional core extra.
 # The distribute extra enables both postgres and zmq.
 override-dependencies = [
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4",
-    "openjiuwen[cua] @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4 ; extra == 'cua'",
-    "openjiuwen[claude] @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4 ; extra == 'claude'",
-    "openjiuwen[codex] @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4 ; extra == 'codex'",
-    "openjiuwen[postgres,zmq] @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4 ; extra == 'distribute'",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@2f4bedb9c5d85ab70d7c79d36183e6a98799e94e",
+    "openjiuwen[cua] @ git+https://gitcode.com/openJiuwen/agent-core.git@2f4bedb9c5d85ab70d7c79d36183e6a98799e94e ; extra == 'cua'",
+    "openjiuwen[claude] @ git+https://gitcode.com/openJiuwen/agent-core.git@2f4bedb9c5d85ab70d7c79d36183e6a98799e94e ; extra == 'claude'",
+    "openjiuwen[codex] @ git+https://gitcode.com/openJiuwen/agent-core.git@2f4bedb9c5d85ab70d7c79d36183e6a98799e94e ; extra == 'codex'",
+    "openjiuwen[postgres,zmq] @ git+https://gitcode.com/openJiuwen/agent-core.git@2f4bedb9c5d85ab70d7c79d36183e6a98799e94e ; extra == 'distribute'",
     "e2a @ git+https://gitcode.com/openJiuwen/agent-protocol.git@06a75d66eb011762077e8924d0d1e41791a93034#subdirectory=e2a",
 ]
 
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
 agent-gateway = { git = "https://gitcode.com/openJiuwen/agent-gateway.git", rev = "2c40ac150276477a8079ef7937674b600b6a1420" }
-openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "f3f8f576164cc405c046e43079c8ad00ee17f0c4" }
+openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "2f4bedb9c5d85ab70d7c79d36183e6a98799e94e" }
 e2a = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", rev = "06a75d66eb011762077e8924d0d1e41791a93034", subdirectory = "e2a" }
 openjiuwen-runtime-foundation = { git = "https://gitcode.com/openJiuwen/agent-runtime.git", branch = "develop", subdirectory = "foundation" }
 

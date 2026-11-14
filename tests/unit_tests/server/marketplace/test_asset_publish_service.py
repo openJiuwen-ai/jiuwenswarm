@@ -411,15 +411,29 @@ async def test_close_during_prepare_waits_for_thread_and_removes_output(
 
 
 @pytest.mark.asyncio
-async def test_expiry_maintenance_runs_without_more_requests(setup):
+async def test_expiry_maintenance_runs_without_more_requests(setup, monkeypatch):
+    from types import SimpleNamespace
+
+    from jiuwenswarm.server.runtime.marketplace import asset_publish_service
+    from jiuwenswarm.server.runtime.marketplace import asset_publish_store
+
+    now = 1000.0
+    clock = SimpleNamespace(time=lambda: now)
+    monkeypatch.setattr(asset_publish_service, "time", clock)
+    monkeypatch.setattr(asset_publish_store, "time", clock)
     service, store, _, _ = setup
-    service._draft_ttl = 0.02
+    service._draft_ttl = 60
     service._cleanup_interval = 0.01
     draft = await prepare(service)
     path = store.get_draft(
         "trusted-user-workspace-hub", draft["draft_id"]
     ).artifact_path
-    async with asyncio.timeout(1):
+    assert path.exists()
+    assert store.pending_draft_count() == 1
+
+    # Expire only after observing the live draft, regardless of CI scheduling.
+    now += service._draft_ttl + 1
+    async with asyncio.timeout(5):
         while path.exists():
             await asyncio.sleep(0.01)
     assert store.pending_draft_count() == 0
