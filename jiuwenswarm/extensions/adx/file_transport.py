@@ -9,7 +9,7 @@ from urllib.parse import quote
 
 import httpx
 
-from jiuwenswarm.extensions.adx.control_client import AdxControlError
+from jiuwenswarm.extensions.adx.control_client import AdxControlError, trace_headers
 
 
 logger = logging.getLogger(__name__)
@@ -47,7 +47,7 @@ async def file_request(control, environment: str, method: str, path: str, *, con
     """Keep the native response open until the caller finishes or cancels."""
     endpoint = 'upload' if method == 'POST' else 'download'
     url = control.config.ingress_url.rstrip('/') + '/direct/' + quote(environment, safe='') + '/' + endpoint
-    headers = {'Authorization': 'Bearer ' + control.config.token, 'Accept-Encoding': 'identity'}
+    headers = trace_headers({'Authorization': 'Bearer ' + control.config.token, 'Accept-Encoding': 'identity'})
     if method == 'POST':
         headers['Content-Type'] = 'application/octet-stream'
     if byte_range:

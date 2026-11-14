@@ -87,9 +87,11 @@ class AdxSshRelay(YuanrongSshRelay):
         pumps = []
         try:
             authority = f'{instance_id}:{self._settings.port}'
+            from jiuwenswarm.extensions.adx.control_client import trace_headers
+            context_headers = ''.join(f'{key}: {value}\r\n' for key, value in trace_headers({}).items())
             request = (f'CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n'
                        f'Authorization: Bearer {self._adx.token}\r\n'
-                       'X-Adx-Access-Kind: ssh\r\n\r\n')
+                       f'X-Adx-Access-Kind: ssh\r\n{context_headers}\r\n')
             writer.write(request.encode('ascii'))
             await writer.drain()
             headers = await reader.readuntil(b'\r\n\r\n')

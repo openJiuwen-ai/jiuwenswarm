@@ -762,13 +762,17 @@ async def test_redacted_instance_generation_uses_authenticated_runtime_probe(mon
     router._control.invoke = AsyncMock(return_value={'exit_code': 0, 'stdout': actual})
     try:
         if accepted:
-            assert (await router._control.wait_until_running(instance, expected_generation='expected'))['id'] == instance
+            assert (await router._control.wait_until_running(
+                instance, expected_generation='expected', trace_id='generation-probe',
+            ))['id'] == instance
         else:
             with pytest.raises(YuanrongAgentGenerationMismatchError):
-                await router._control.wait_until_running(instance, expected_generation='expected')
+                await router._control.wait_until_running(
+                    instance, expected_generation='expected', trace_id='generation-probe',
+                )
         router._control.invoke.assert_awaited_once_with(instance, 'cmd.run', {
             'cmd': f'printf %s "${AGENT_GENERATION_ENV}"', 'timeout': 5,
-        })
+        }, trace_id='generation-probe')
     finally:
         await router.shutdown()
 

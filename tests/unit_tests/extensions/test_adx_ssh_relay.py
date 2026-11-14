@@ -43,6 +43,11 @@ class Writer:
 @pytest.mark.asyncio
 async def test_ssh_connect_rejection_never_opens_ssh_or_exposes_credentials(monkeypatch,tmp_path):
     import jiuwenswarm.extensions.adx.ssh_relay as module
+    from jiuwenswarm.extensions.adx import control_client
+    monkeypatch.setattr(control_client, 'inject_request_headers', lambda headers: {
+        **headers, 'X-Trace-Id': '12345678-1234-1234-1234-123456789abc',
+        'traceparent': '00-12345678123412341234123456789abc-1234567812345678-01',
+    })
     config=settings(monkeypatch,tmp_path)
     relay=AdxSshRelay(config)
     monkeypatch.setattr(relay,'_resolve_client_keys',lambda user:['unit-key'])
@@ -59,6 +64,8 @@ async def test_ssh_connect_rejection_never_opens_ssh_or_exposes_credentials(monk
     connect.assert_not_called()
     assert b'CONNECT test-alice+http:2222 HTTP/1.1' in writer.data
     assert b'Authorization: Bearer unit-platform-key\r\n' in writer.data
+    assert b'X-Trace-Id: 12345678-1234-1234-1234-123456789abc\r\n' in writer.data
+    assert b'traceparent: 00-12345678123412341234123456789abc-1234567812345678-01\r\n' in writer.data
     assert open_connection.call_args.kwargs['ssl'].verify_mode.name=='CERT_REQUIRED'
 
 
