@@ -91,6 +91,7 @@ from jiuwenswarm.common.context_keys import (
 )
 from jiuwenswarm.common.hook_event import AgentServerHookEvents
 from jiuwenswarm.common.hooks_context import MemoryHookContext
+from jiuwenswarm.common.input_guard import InputTooLongError
 from jiuwenswarm.common.schema.agent import (
     AgentRequest,
     AgentResponse,
@@ -486,6 +487,34 @@ def _person_drove_turn(request: AgentRequest, *, is_team_mode: bool) -> bool:
     return is_external_user_authored_dispatch(
         request.params, channel_id=request.channel_id, request_method=request.req_method, metadata=request.metadata,
     )
+
+
+async def _check_user_input_guard(adapter: Any, request: AgentRequest, query: Any) -> None:
+    """Ask the adapter to reject one input that cannot fit its model window.
+
+    Runs before the user turn is written to history, so a rejected message is
+    never restored into the context on the next session warmup. Adapters that
+    do not implement the gate (for example external harnesses) are unaffected.
+
+    Only :class:`InputTooLongError` propagates. Any other failure is logged
+    and ignored: this gate is an optimization, never a new failure mode.
+    """
+    checker = getattr(adapter, "check_user_input_guard", None)
+    if not callable(checker):
+        return
+    try:
+        result = checker(request, query)
+        # Adapters currently implement this as a coroutine; accept a sync
+        # implementation too so an extension cannot silently bypass the gate.
+        if inspect.isawaitable(result):
+            await result
+    except InputTooLongError:
+        raise
+    except Exception:  # noqa: BLE001 - the gate must never break a request
+        logger.warning(
+            "[JiuWenSwarm] input guard check failed; continuing request",
+            exc_info=True,
+        )
 
 
 def _should_record_user_history(params: Any) -> bool:
@@ -3665,6 +3694,11 @@ class JiuWenSwarm:
         # proactive_recommendation 是系统触发的推荐指令（不是用户说的话），不写 user
         # history——否则刷新页面会显示"[主动推荐指令] xxx"这种用户没说过的消息。
         if _should_record_user_history(request.params):
+            try:
+                await _check_user_input_guard(adapter, request, query)
+            except InputTooLongError:
+                _schedule_feedback_once("error")
+                raise
             await _run_history_io(
                 append_history_record,
                 session_id=session_id,
@@ -4401,26 +4435,6 @@ class JiuWenSwarm:
                 TEAM_EXECUTION_CONTEXT_METADATA_KEY,
                 None,
             )
-        if (
-            request.req_method != ReqMethod.COMMAND_GOAL
-            and _should_record_user_history(params_for_history)
-        ):
-            await _run_history_io(
-                append_history_record,
-                session_id=session_id,
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                role="user",
-                content=_history_user_content(params_for_history, query),
-                timestamp=time.time(),
-                extra=_history_user_extra(params_for_history),
-                channel_metadata=history_channel_metadata,
-                mode=params_for_history.get("mode", "unknown"),
-            )
-        logger.info(
-            "[JiuWenSwarm] 处理流式请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
-            request.request_id, request.channel_id, session_id, self._sdk_name,
-        )
 
         rid = request.request_id
         cid = request.channel_id
@@ -4443,6 +4457,34 @@ class JiuWenSwarm:
                 session_id, rid, status=terminal_status, waiting_for_user=waiting_for_user,
                 completion=completion_receipt,
             )
+
+        if (
+            request.req_method != ReqMethod.COMMAND_GOAL
+            and _should_record_user_history(params_for_history)
+        ):
+            # Reject before history recording: a rejected message must not be
+            # restored into the model context on the next session warmup.
+            try:
+                await _check_user_input_guard(adapter, request, query)
+            except InputTooLongError:
+                _schedule_feedback_once("error")
+                raise
+            await _run_history_io(
+                append_history_record,
+                session_id=session_id,
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                role="user",
+                content=_history_user_content(params_for_history, query),
+                timestamp=time.time(),
+                extra=_history_user_extra(params_for_history),
+                channel_metadata=history_channel_metadata,
+                mode=params_for_history.get("mode", "unknown"),
+            )
+        logger.info(
+            "[JiuWenSwarm] 处理流式请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
+            request.request_id, request.channel_id, session_id, self._sdk_name,
+        )
 
         try:
             inputs, memory_mode, user_turn = self._build_inputs(request)

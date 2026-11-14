@@ -737,6 +737,28 @@ react:
   answer_chunk_size: 500
   stream_chunk_threshold: 50
   stream_character_threshold: 2000
+  # ============ 用户超长输入拦截（默认关闭）============
+  # 在消息进入上下文和历史之前，快速拒绝"即使压缩/裁剪全部历史也装不下"的单条输入。
+  # 只判输入本身，不扣减可压缩的历史；真正的兜底仍是 SDK 的 PTL 恢复机制。
+  input_guard_config:
+    enabled: false               # 总开关；关闭时零额外开销
+    # 单条输入上限 = (模型窗口 - 系统提示词 - 工具定义 - 预留输出) × 比例
+    # 启发式计数（无精确 tokenizer）时的保守比例。
+    max_input_ratio: 0.95
+    # 精确 tokenizer 计数时的比例；计数误差小，可用更紧的余量。
+    precise_max_input_ratio: 0.99
+    # 绝对上限（tokens）；0 = 不启用。与比例上限取更小值。
+    max_input_tokens: 0
+    # 为模型输出预留的 tokens；0 = 不预留。
+    reserved_output_tokens: 0
+    # true 时在 reserved_output_tokens=0 的情况下用模型配置的 max_tokens 作为预留。
+    # 注意 max_tokens 常是模型最大输出能力，可能明显大于实际请求，默认关闭。
+    use_model_max_tokens_as_reserve: false
+    # 拿不到实时 system/tools 且没有实测缓存时的固定开销估算。
+    fixed_overhead_tokens: 30000
+    # 拦截文案；支持 {tokens} 与 {limit} 占位符，按 preferred_language 选择中/英。
+    # message_zh: "本次输入约 {tokens} tokens，超过当前模型可用输入上限（约 {limit} tokens），已拦截，未发送。请拆分为多次发送，或把长文保存到文件后告诉我路径，我按需读取。"
+    # message_en: "This input is about {tokens} tokens, which exceeds the model's available input limit (~{limit} tokens). It was not sent. Please split it into multiple messages, or save the long text to a file and tell me the path so I can read it on demand."
   # ============ 上下文引擎（上下文压缩/召回/会话记忆）============
   context_engine_config:
     enabled: true # 全局开关：false 时整个上下文引擎（含下列所有处理器）不生效
