@@ -304,7 +304,7 @@ def upsert_mcp_record(
             record["enabled"] = False
         # Merge the entry's transport/connection fields (placeholders kept).
         for k in ("transport", "url", "headers", "command", "args", "env",
-                  "timeout_s", "server_id_scope"):
+                  "timeout_s", "server_id_scope", "dynamic_token_url"):
             if k in entry:
                 record[k] = entry[k]
         record["state"] = state
@@ -377,8 +377,11 @@ def record_to_mcp_entry(name: str, record: dict[str, Any]) -> dict[str, Any] | N
     entry: dict[str, Any] = {"name": n}
     transport = record.get("transport") or "streamable-http"
     entry["transport"] = transport
+    # dynamic_token_url is entry-level: its presence marks a gateway that needs
+    # a per-request dynamic token. Dropping it here silently degrades that
+    # gateway to its static template headers at registration time.
     for k in ("url", "headers", "command", "args", "env",
-              "timeout_s", "server_id_scope"):
+              "timeout_s", "server_id_scope", "dynamic_token_url"):
         if k in record and record[k] is not None:
             entry[k] = record[k]
     # enabled is TUI-only; carry it through so TUI's loader can filter on it.
