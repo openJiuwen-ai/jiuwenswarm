@@ -17,7 +17,7 @@ FLASH_TASK_SECTION_CN = """# 子代理委派（task_tool）
 - 任务的中间结果会显著膨胀主上下文：逐页深度研究（产出多篇研究文件）、\
 大规模抓取/解析/转换、多轮迭代的修复循环
 - 主上下文已经较长时，新的大块独立工作优先委派
-- 多个互不依赖的子任务需要并行执行时：在同一条消息中一次性发出全部 task_tool 调用；\
+- 多个互不依赖的子任务必须并行执行：在同一条消息中一次性发出全部 task_tool 调用；\
 每条消息只发一个调用等于串行等待，会成倍拉长总耗时
 
 何时不委派（直接执行更快）：
@@ -40,7 +40,7 @@ When to delegate (judge autonomously by context pressure, not by mandate):
 - The subtask's intermediate results would significantly bloat your context: \
 per-page deep research, large-scale fetch/parse/transform, multi-round fix loops
 - When your context is already long, prefer delegating new large independent work
-- When multiple independent subtasks need to run in parallel: issue ALL task_tool \
+- Multiple independent subtasks must run in parallel: issue ALL task_tool \
 calls together in a single message; one call per message serializes execution \
 and multiplies wall-clock time
 

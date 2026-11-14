@@ -66,8 +66,8 @@ from openjiuwen.harness.prompts.sections.safety import (  # noqa: E402
 
 # ── 双语 golden full_hash（与 tests/unit_tests/agentserver/flash_snapshot/ 落盘基线一致）──
 _GOLDEN_FULL_HASH = {
-    "cn": "f5102dc39fc023c338f7a4f1628b2ab188a3ba5b547a7aceb3f6526931714b12",
-    "en": "36b3fc67f537ba8b18c6f34cb08261b93f213a60c38109821fc5bccb3f7012a5",
+    "cn": "15a1e9613a960a8bf449c12584b0532ce44f20947f99984b324bb0843ec391e1",
+    "en": "95451da0a19d943d4669373c604a697370a9258e881e9371fd77d3d27f650534",
 }
 
 _EXPECTED_ORDER = [
