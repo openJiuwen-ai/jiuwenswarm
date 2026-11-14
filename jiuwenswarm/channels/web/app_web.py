@@ -159,6 +159,41 @@ def _parse_single_byte_range(
     return start, min(end, file_size - 1)
 
 
+# Upper bound for `/file-api/file-content` reads.  The endpoint used to slurp
+# the whole file into memory (raw bytes + decoded str + re-encoded body) with
+# no size check, so previewing a large workspace artifact or polling a
+# long-running log peaked at several times the file size per request and
+# could OOM the backend.  Text preview beyond this bound has little
+# interactive value; download (`/file-api/download`, streamed) covers it.
+MAX_FILE_CONTENT_BYTES = 10 * 1024 * 1024
+
+
+def _decode_bytes_auto(raw_data: bytes, errors: str = "strict") -> tuple[str, str]:
+    """Decode raw bytes with charset detection plus CJK fallbacks.
+
+    Shared by the whole-file and tail reads of ``/file-api/file-content`` so
+    both paths get identical encoding behaviour.  ``errors`` is forwarded to
+    ``bytes.decode``; tail reads pass ``"replace"`` because the window may
+    start mid-character even after line alignment.
+    """
+    import charset_normalizer
+
+    detected = charset_normalizer.from_bytes(raw_data).best()
+    if detected is None:
+        detected_encoding = "utf-8"
+    else:
+        detected_encoding = detected.encoding or "utf-8"
+    try:
+        return raw_data.decode(detected_encoding, errors), detected_encoding
+    except (UnicodeDecodeError, LookupError) as decode_exc:
+        for try_encoding in ["gbk", "gb2312", "big5", "shift_jis", "euc_kr"]:
+            try:
+                return raw_data.decode(try_encoding, errors), try_encoding
+            except (UnicodeDecodeError, LookupError):
+                continue
+    raise OSError("Unable to decode file with any known encoding") from decode_exc
+
+
 def _get_agent_teams_root(project_root: Path) -> Path:
     """Return the team state root without importing the agent runtime.
 
@@ -1655,6 +1690,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if path == "/file-api/file-content":
             file_arg = query.get("path", "")
             encoding_arg = query.get("encoding", "utf-8")
+            tail_arg = str(query.get("tail_bytes", "")).strip()
             if not file_arg:
                 self._write_json(400, {"error": "missing_file_path"})
                 return
@@ -1673,26 +1709,53 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     self._write_json(404, {"error": "file_not_found", "fullPath": str(full_path)})
                     return
 
+            # A length cap keeps int() away from the CPython digit-limit
+            # ValueError on absurdly long digit strings; anything longer is
+            # treated as "no tail" and lands in the 413 gate below.
+            tail_bytes = int(tail_arg) if tail_arg.isascii() and tail_arg.isdecimal() and len(tail_arg) <= 12 else 0
+            try:
+                file_size = full_path.stat().st_size
+            except OSError as exc:
+                self._write_json(500, {"error": str(exc)})
+                return
+            if file_size > MAX_FILE_CONTENT_BYTES and tail_bytes <= 0:
+                self._write_json(413, {
+                    "error": "file_too_large",
+                    "fileSize": file_size,
+                    "maxBytes": MAX_FILE_CONTENT_BYTES,
+                })
+                return
+            # Tail mode reads only the trailing bytes so callers like the
+            # logs panel can poll a growing log without transferring (or
+            # decoding) the whole file every interval.  The window is also
+            # clamped to MAX_FILE_CONTENT_BYTES: an unbounded tail_bytes
+            # would otherwise reopen the whole-file read this limit exists
+            # to prevent.
+            read_size = min(tail_bytes, file_size, MAX_FILE_CONTENT_BYTES) if tail_bytes > 0 else file_size
+            read_offset = file_size - read_size
+            truncated = file_size > read_size
+
             def read_file_with_encoding(file_path: Path, encoding: str) -> tuple[str, str]:
+                if read_size != file_size:
+                    with file_path.open("rb") as file_obj:
+                        file_obj.seek(read_offset)
+                        raw_data = file_obj.read()
+                    if truncated:
+                        # The seek lands on an arbitrary byte, possibly inside
+                        # a multi-byte character.  Align to the next newline
+                        # ('\n' never occurs inside UTF-8/GBK/Big5/Shift-JIS
+                        # sequences) so callers always get complete lines;
+                        # decode then uses "replace" as a last resort for
+                        # windows without any newline at all.
+                        newline_pos = raw_data.find(b"\n")
+                        if newline_pos >= 0:
+                            raw_data = raw_data[newline_pos + 1:]
+                    if encoding == "auto":
+                        return _decode_bytes_auto(raw_data, errors="replace")
+                    return raw_data.decode(encoding, errors="replace"), encoding
                 if encoding == "auto":
-                    import charset_normalizer
-                    raw_data = file_path.read_bytes()
-                    detected = charset_normalizer.from_bytes(raw_data).best()
-                    if detected is None:
-                        detected_encoding = "utf-8"
-                    else:
-                        detected_encoding = detected.encoding or "utf-8"
-                    try:
-                        return raw_data.decode(detected_encoding), detected_encoding
-                    except (UnicodeDecodeError, LookupError) as decode_exc:
-                        for try_encoding in ["gbk", "gb2312", "big5", "shift_jis", "euc_kr"]:
-                            try:
-                                return raw_data.decode(try_encoding), try_encoding
-                            except (UnicodeDecodeError, LookupError):
-                                continue
-                        raise OSError("Unable to decode file with any known encoding") from decode_exc
-                else:
-                    return file_path.read_text(encoding=encoding), encoding
+                    return _decode_bytes_auto(file_path.read_bytes())
+                return file_path.read_text(encoding=encoding), encoding
 
             try:
                 data, used_encoding = read_file_with_encoding(full_path, encoding_arg)
@@ -1707,6 +1770,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("X-Original-Encoding", used_encoding)
+            self.send_header("X-Truncated", "1" if truncated else "0")
             self.end_headers()
             if self.command != "HEAD":
                 self.wfile.write(body)

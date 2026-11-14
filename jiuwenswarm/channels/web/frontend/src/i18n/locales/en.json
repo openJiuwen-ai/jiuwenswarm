@@ -1855,6 +1855,7 @@
     "previewUnsupported": "This file type cannot be previewed yet. Download it to view it.",
     "previewMissingPath": "No downloadable resource is available for this artifact preview",
     "previewFailed": "Failed to load the file preview",
+    "previewTooLarge": "This file is too large to preview (over 10 MB). Please download it instead.",
     "docxPreviewFailed": "Failed to load the Word document preview",
     "presentationPreviewFailed": "Failed to load the PowerPoint presentation preview",
     "presentationResourceLimitExceeded": "The PowerPoint presentation content exceeds the browser preview limit. Download the file to view it.",
@@ -4453,6 +4454,7 @@
     "historyPreviewEmpty": "No messages to show after the same filtering as history restore (or the file is empty). Turn off preview to see raw JSON.",
     "edit": "Edit",
     "unknownError": "Unknown error",
+    "fileTooLarge": "This file is too large to preview (over 10 MB). Please download it instead.",
     "fileMissingPrefix": "This file does not exist. Create the file at",
     "fileMissingSuffix": "before editing.",
     "notPreviewable": "This file cannot be previewed. Only Markdown/JSON (.md/.mdx/.json) files are supported."

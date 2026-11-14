@@ -1855,6 +1855,7 @@
     "previewUnsupported": "此文件类型暂不支持预览，请下载后查看",
     "previewMissingPath": "当前产物没有可用于预览的下载资源",
     "previewFailed": "文件预览加载失败",
+    "previewTooLarge": "文件过大，无法预览（超过 10 MB）。请下载后查看。",
     "docxPreviewFailed": "Word 文档预览加载失败",
     "presentationPreviewFailed": "PowerPoint 演示文稿预览加载失败",
     "presentationResourceLimitExceeded": "PowerPoint 演示文稿内容规模超过浏览器预览上限，请下载后查看",
@@ -4450,6 +4451,7 @@
     "historyPreviewEmpty": "按与历史恢复相同的规则过滤后，没有可展示的消息（或文件为空）。可关闭预览查看原始 JSON。",
     "edit": "编辑",
     "unknownError": "未知错误",
+    "fileTooLarge": "文件过大，无法预览（超过 10 MB）。请下载后查看。",
     "fileMissingPrefix": "文件不存在。请先在",
     "fileMissingSuffix": "创建该文件后再编辑。",
     "notPreviewable": "该文件无法预览，仅支持 Markdown/JSON（.md/.mdx/.json）文件"
