@@ -1172,6 +1172,25 @@ class TestExtractLegacyParamsKindAt:
         assert out["timezone"] == "Asia/Tokyo"
         assert out["cron_expr"] == "0 0 9 1 1 ? 2026"
 
+    def test_kind_at_second_dst_occurrence_uses_utc(self) -> None:
+        context = SimpleNamespace(channel_id="web", session_id="sess-1")
+        payload = {
+            "schedule": {
+                "kind": "at",
+                "at": "2026-11-01T01:30:00-05:00",
+                "tz": "America/New_York",
+            },
+            "payload": {"kind": "agentTurn", "message": "提醒"},
+            "delivery": {"mode": "announce"},
+        }
+
+        out = _extract_legacy_params(payload, context=context, require_schedule=True)
+
+        # The second 01:30 in New York is 06:30Z; the local expression would
+        # have fired at the first one (05:30Z), an hour early.
+        assert out["cron_expr"] == "0 30 6 1 11 ? 2026"
+        assert out["timezone"] == "UTC"
+
     def test_kind_every_still_raises(self) -> None:
         context = SimpleNamespace(channel_id="web", session_id="sess-1")
         payload = {
