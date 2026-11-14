@@ -69,21 +69,14 @@ async def test_gateway_session_events_carry_project_id(archive, monkeypatch):
     await methods["session.archive"](
         object(), "req", {"session_ids": ["sess_a"]}, None, "alice"
     )
-    # session.archived 直接事件必须符合 §5.10.11 契约：project_id 必返。
-    assert len(events) == 1
-    event, payload = events[0]
-    assert event == "session.archived"
-    assert payload["session_id"] == "sess_a"
-    assert payload["project_id"] == "default"
-    assert payload["archived"] is True
-    assert isinstance(payload["archived_at"], float)
-    # Archive now returns before the directory move; the event says cleanup is
-    # still pending instead of pretending it already finished.
-    assert payload["stop_pending"] is True
+    # 归档清理未完成（accepted/finalizing/stop_pending）时不再立即广播
+    # session.archived，改由 Gateway 的 watcher 在清理完成后补发。
+    assert events == []
     await methods["session.delete"](
         object(), "req", {"session_id": "sess_a"}, None, "alice"
     )
     event, payload = events[-1]
+    # §5.10.11 契约：事件必须带 project_id，企业版才能定位到对应项目。
     assert event == "session.deleted"
     assert payload["session_id"] == "sess_a"
     assert payload["project_id"] == "default"

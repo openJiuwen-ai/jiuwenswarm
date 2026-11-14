@@ -148,6 +148,9 @@ def _configure_openjiuwen_logging() -> None:
 async def _run(host: str, port: int) -> None:
     _install_common_providers()
     from jiuwenswarm.server.front.server import AgentServerFront
+    from jiuwenswarm.server.runtime.skill.skill_upload_cleanup import (
+        run_skill_upload_cleanup_loop,
+    )
 
     _configure_openjiuwen_logging()
 
@@ -224,6 +227,11 @@ async def _run(host: str, port: int) -> None:
                 mark_failed(str(exc))
 
     watcher = asyncio.create_task(_watch_backend(), name="runtime-supervisor-watch")
+    # 复用进程停止信号：退出时既取消任务，也让它看到 stop 已设置。
+    cleanup_task = asyncio.create_task(
+        run_skill_upload_cleanup_loop(stop_event),
+        name="skill-upload-cleanup",
+    )
 
     def _on_signal() -> None:
         stop_event.set()
@@ -262,7 +270,13 @@ async def _run(host: str, port: int) -> None:
             backend_task.cancel()
         if not watcher.done():
             watcher.cancel()
-        pending = [task for task in (backend_task, watcher) if not task.done()]
+        if not cleanup_task.done():
+            cleanup_task.cancel()
+        pending = [
+            task
+            for task in (backend_task, watcher, cleanup_task)
+            if not task.done()
+        ]
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
         await front.stop()

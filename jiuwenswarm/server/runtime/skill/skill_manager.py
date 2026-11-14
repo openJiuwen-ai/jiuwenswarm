@@ -22,7 +22,7 @@ import uuid
 from contextlib import contextmanager
 from functools import wraps
 import zipfile
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timezone, timedelta
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Awaitable, Callable, Iterator
 from urllib.parse import quote, urlparse
@@ -152,6 +152,16 @@ ERROR_SKILLHUB_PUBLISH_FAILED = "SKILLHUB_PUBLISH_FAILED"
 ERROR_SKILLHUB_DETAIL_NOT_FOUND = "SKILLHUB_DETAIL_NOT_FOUND"
 ERROR_SKILLHUB_DETAIL_FAILED = "SKILLHUB_DETAIL_FAILED"
 ERROR_SKILL_OPERATION_UNSUPPORTED = "SKILL_OPERATION_UNSUPPORTED"
+ERROR_SKILL_UPLOAD_PACKAGE_INVALID = "SKILL_UPLOAD_PACKAGE_INVALID"
+ERROR_SKILL_UPLOAD_PACKAGE_TOO_LARGE = "SKILL_UPLOAD_PACKAGE_TOO_LARGE"
+ERROR_SKILL_UPLOAD_STAGE_EXPIRED = "SKILL_UPLOAD_STAGE_EXPIRED"
+ERROR_SKILL_UPLOAD_STAGE_NOT_FOUND = "SKILL_UPLOAD_STAGE_NOT_FOUND"
+ERROR_SKILL_UPLOAD_DIGEST_MISMATCH = "SKILL_UPLOAD_DIGEST_MISMATCH"
+ERROR_SKILL_UPLOAD_NOT_APPROVED = "SKILL_UPLOAD_NOT_APPROVED"
+ERROR_SKILL_UPLOAD_CHECK_UNAVAILABLE = "SKILL_UPLOAD_CHECK_UNAVAILABLE"
+ERROR_SKILL_UPLOAD_NAME_CONFLICT = "SKILL_UPLOAD_NAME_CONFLICT"
+ERROR_SKILL_UPLOAD_BUILTIN_READ_ONLY = "SKILL_UPLOAD_BUILTIN_READ_ONLY"
+ERROR_SKILL_UPLOAD_FEATURE_DISABLED = "SKILL_UPLOAD_FEATURE_DISABLED"
 
 _DETAIL_KEY_SKILLHUB_DETAIL_NOT_FOUND = "skills.swarmskillshub.errors.detailNotFound"
 _DETAIL_KEY_SKILLHUB_DETAIL_FAILED = "skills.swarmskillshub.errors.detailFailed"
@@ -5614,6 +5624,44 @@ class SkillManager:
         self._assert_skill_package_safe(skill_dir)
         return skill_dir
 
+    @staticmethod
+    def assert_enterprise_upload_path(path_str: str, session_id: str) -> Path:
+        """企业版上传路径校验：文件必须位于当前租户当前会话的 ``uploads`` 下。"""
+        try:
+            src = Path(path_str).resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise SkillRpcError(
+                ERROR_SKILL_INVALID_PACKAGE,
+                f"上传文件不存在: {path_str}",
+            ) from exc
+
+        from agent_gateway.common.attachment_safety import safe_session_dirname
+        from jiuwenswarm.common.utils import get_agent_sessions_dir
+        from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+        if (
+            not session_id
+            or session_id in {".", ".."}
+            or safe_session_dirname(session_id) != session_id
+        ):
+            raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, "会话标识非法")
+        if Path(path_str).expanduser().is_symlink():
+            raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, "上传内容不能是符号链接")
+        tenant_root = TenantContext.current_tenant_root()
+        uploads = get_agent_sessions_dir() / session_id / "uploads"
+        try:
+            uploads_resolved = uploads.resolve()
+            tenant_resolved = tenant_root.resolve() if tenant_root is not None else None
+        except (OSError, RuntimeError) as exc:
+            raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, f"上传目录无效: {exc}") from exc
+        if tenant_resolved is None or not uploads_resolved.is_relative_to(tenant_resolved):
+            raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, "上传路径不在当前租户内")
+        if src.parent != uploads_resolved:
+            raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, "仅支持当前会话 uploads 下的文件")
+        if not src.is_file() or src.is_symlink():
+            raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, "上传内容必须是普通文件")
+        return src
+
     async def handle_skills_import_upload(self, params: dict) -> dict:
         """浏览器上传的本地 ``.zip`` Skill 包安装到 workspace.
 
@@ -5622,20 +5670,26 @@ class SkillManager:
         params = params or {}
         path_str = str(params.get("path") or "").strip()
         overwrite = self._parse_overwrite(params.get("overwrite", False))
+        session_id = str(
+            params.get("_session_id") or params.get("session_id") or ""
+        ).strip()
         if not path_str:
             raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "缺少上传文件 path")
 
-        src = Path(path_str)
-        try:
-            src = src.resolve(strict=True)
-        except (OSError, RuntimeError) as exc:
-            raise SkillRpcError(
-                ERROR_SKILL_INVALID_PACKAGE,
-                f"上传文件不存在: {path_str}",
-            ) from exc
+        if is_enterprise():
+            src = self.assert_enterprise_upload_path(path_str, session_id)
+        else:
+            src = Path(path_str)
+            try:
+                src = src.resolve(strict=True)
+            except (OSError, RuntimeError) as exc:
+                raise SkillRpcError(
+                    ERROR_SKILL_INVALID_PACKAGE,
+                    f"上传文件不存在: {path_str}",
+                ) from exc
 
-        if not src.is_file():
-            raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "上传内容不是文件")
+            if not src.is_file():
+                raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "上传内容不是文件")
         name_lower = src.name.lower()
         if name_lower.endswith(".skill") or name_lower.endswith(".skill.zip"):
             raise SkillRpcError(
@@ -5663,6 +5717,476 @@ class SkillManager:
                 origin="file-api:upload",
                 conflict_code=ERROR_SKILL_ALREADY_EXISTS,
             )
+
+    # ── 企业版 Skill 按包上传审批：stage / finalize ─────────────────────
+
+    async def handle_skills_upload_stage(self, params: dict) -> dict:
+        """校验并暂存上传包，返回包描述符供审批。
+
+        解包、哈希与 OBS 上传都是同步 IO，放到线程池执行，避免阻塞事件循环。
+        """
+        return await asyncio.to_thread(self.stage_skill_upload_sync, params)
+
+    def stage_skill_upload_sync(self, params: dict) -> dict:
+        from jiuwenswarm.common.obs_files import (
+            AttachmentStore,
+            skill_approvals_object_key,
+        )
+        from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+        from jiuwenswarm.server.runtime.skill.skill_upload_approval import (
+            SCHEMA_VERSION,
+            skill_tree_digest,
+            stage_root,
+            stage_ttl_seconds,
+            validate_skill_name,
+        )
+
+        if not is_enterprise():
+            raise SkillRpcError(
+                ERROR_SKILL_UPLOAD_FEATURE_DISABLED,
+                "企业版 Skill 上传审批未启用",
+            )
+
+        params = params or {}
+        path_str = str(params.get("path") or "").strip()
+        session_id = str(
+            params.get("_session_id") or params.get("session_id") or ""
+        ).strip()
+        if not path_str:
+            raise SkillRpcError(
+                ERROR_SKILL_UPLOAD_PACKAGE_INVALID, "缺少上传文件 path"
+            )
+
+        try:
+            src = self.assert_enterprise_upload_path(path_str, session_id)
+        except SkillRpcError as exc:
+            raise SkillRpcError(
+                ERROR_SKILL_UPLOAD_PACKAGE_INVALID, exc.message
+            ) from exc
+
+        name_lower = src.name.lower()
+        # 仅接受 .zip；.skill.zip 同样以 .zip 结尾，需显式排除。
+        if not name_lower.endswith(".zip") or name_lower.endswith(".skill.zip"):
+            raise SkillRpcError(
+                ERROR_SKILL_UPLOAD_PACKAGE_INVALID, "仅接受 .zip 文件"
+            )
+        size = src.stat().st_size
+        if size > _SKILL_ZIP_MAX_UPLOAD_BYTES:
+            raise SkillRpcError(
+                ERROR_SKILL_UPLOAD_PACKAGE_TOO_LARGE,
+                f"上传包超过限制（{_SKILL_ZIP_MAX_UPLOAD_BYTES} 字节）",
+            )
+
+        tenant_key = TenantContext.current_tenant_key()
+        if not tenant_key:
+            raise SkillRpcError(
+                ERROR_SKILL_UPLOAD_FEATURE_DISABLED, "缺少租户上下文"
+            )
+
+        self._cleanup_expired_skill_uploads()
+
+        upload_id = uuid.uuid4().hex
+        staging = stage_root() / upload_id
+        content_dir = staging / "content"
+        extract_dir = staging / "_extract"
+        object_key = ""
+        store = None
+        try:
+            staging.mkdir(parents=True, exist_ok=False)
+            try:
+                self._safe_extract_zip_to_dir(src, extract_dir)
+            except SkillRpcError as exc:
+                if exc.code == ERROR_SKILL_FILE_TOO_LARGE:
+                    raise SkillRpcError(
+                        ERROR_SKILL_UPLOAD_PACKAGE_TOO_LARGE, exc.message
+                    ) from exc
+                raise
+            except (zipfile.BadZipFile, OSError, RuntimeError) as exc:
+                raise SkillRpcError(
+                    ERROR_SKILL_UPLOAD_PACKAGE_INVALID,
+                    f"无法解包 Skill 文件: {exc}",
+                ) from exc
+
+            skill_dir = self._locate_skill_dir(extract_dir)
+            if skill_dir is None:
+                raise SkillRpcError(
+                    ERROR_SKILL_UPLOAD_PACKAGE_INVALID,
+                    "包内未找到 SKILL.md，不是有效 Skill 包",
+                )
+            try:
+                meta = self._assert_skill_package_safe(skill_dir)
+            except SkillRpcError as exc:
+                raise SkillRpcError(
+                    ERROR_SKILL_UPLOAD_PACKAGE_INVALID, exc.message
+                ) from exc
+
+            skill_name = str(meta.get("name") or "").strip()
+            try:
+                validate_skill_name(skill_name)
+            except ValueError as exc:
+                raise SkillRpcError(
+                    ERROR_SKILL_UPLOAD_PACKAGE_INVALID, str(exc)
+                ) from exc
+
+            self._assert_skill_upload_target_available(skill_name)
+
+            shutil.move(str(skill_dir), str(content_dir))
+            shutil.rmtree(extract_dir, ignore_errors=True)
+
+            digest, file_count, uncompressed_bytes = skill_tree_digest(content_dir)
+
+            store = AttachmentStore.from_env()
+            object_key = skill_approvals_object_key(
+                tenant_key, upload_id, src.name
+            )
+            uploaded = store.upload_file(src, object_key, session_id=session_id)
+        except SkillRpcError:
+            shutil.rmtree(staging, ignore_errors=True)
+            if object_key and store is not None:
+                try:
+                    store.remove_key(object_key)
+                except Exception:  # noqa: BLE001
+                    pass
+            raise
+        except Exception as exc:  # noqa: BLE001
+            shutil.rmtree(staging, ignore_errors=True)
+            if object_key and store is not None:
+                try:
+                    store.remove_key(object_key)
+                except Exception:  # noqa: BLE001
+                    pass
+            logger.error("[SkillManager] upload stage failed: %s", exc)
+            raise SkillRpcError(
+                ERROR_SKILL_UPLOAD_CHECK_UNAVAILABLE,
+                "Skill 暂存失败，请稍后重试",
+            ) from exc
+
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(seconds=stage_ttl_seconds())
+        descriptor = {
+            "schema_version": SCHEMA_VERSION,
+            "upload_id": upload_id,
+            "skill_name": skill_name,
+            "skill_version": (
+                str(meta.get("version") or "").strip()[:64] or None
+            ),
+            "description": str(meta.get("description") or "").strip()[:1024],
+            "file_count": file_count,
+            "uncompressed_bytes": uncompressed_bytes,
+            "package": {
+                "filename": src.name,
+                "size_bytes": size,
+                "sha256": uploaded["digest"],
+                "object_key": object_key,
+            },
+            "digest": digest,
+            "staged_at": now.isoformat(),
+            "stage_expires_at": expires_at.isoformat(),
+        }
+
+        manifest = {
+            "schema_version": SCHEMA_VERSION,
+            "upload_id": upload_id,
+            "status": "staged",
+            "owner": {
+                "user_id": str(params.get("user_id") or ""),
+                "group_id": str(params.get("group_id") or ""),
+                "bot_id": str(params.get("bot_id") or ""),
+            },
+            "tenant_key": tenant_key,
+            "session_id": session_id,
+            "object_key": object_key,
+            "descriptor": descriptor,
+            "created_at": now.isoformat(),
+            "expires_at": expires_at.isoformat(),
+        }
+        try:
+            (staging / "manifest.json").write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            shutil.rmtree(staging, ignore_errors=True)
+            try:
+                store.remove_key(object_key)
+            except Exception:  # noqa: BLE001
+                pass
+            raise SkillRpcError(
+                ERROR_SKILL_UPLOAD_CHECK_UNAVAILABLE,
+                "Skill 暂存失败，请稍后重试",
+            ) from exc
+
+        existing = self._skill_upload_existing_skill(skill_name)
+        logger.info(
+            "[SkillManager] upload staged: upload_id=%s skill=%s files=%s",
+            upload_id,
+            skill_name,
+            file_count,
+        )
+        return {
+            "success": True,
+            "package_info": descriptor,
+            "existing_skill": existing,
+        }
+
+    async def handle_skills_upload_finalize(self, params: dict) -> dict:
+        """按审批结果安装已暂存的 Skill 包。
+
+        重新哈希、拿安装锁并拷贝目录都是同步 IO，放到线程池执行，
+        与 ``handle_skills_upload_stage`` 保持一致，避免阻塞事件循环。
+        """
+        return await asyncio.to_thread(self.finalize_skill_upload_sync, params)
+
+    def finalize_skill_upload_sync(self, params: dict) -> dict:
+        from jiuwenswarm.server.runtime.skill.skill_upload_approval import (
+            is_valid_upload_id,
+            skill_tree_digest,
+            stage_root,
+            validate_skill_name,
+        )
+
+        if not is_enterprise():
+            raise SkillRpcError(
+                ERROR_SKILL_UPLOAD_FEATURE_DISABLED,
+                "企业版 Skill 上传审批未启用",
+            )
+
+        params = params or {}
+        upload_id = str(params.get("upload_id") or "").strip()
+        order_num = str(params.get("order_num") or "").strip()
+        expected_digest = str(params.get("expected_digest") or "").strip()
+        skill_name_raw = str(params.get("skill_name") or "").strip()
+        # 只接受真正的 bool：字符串 "false" 经 bool() 会变成 True，从而把
+        # 不可覆盖误判成可覆盖。
+        replace = params.get("replace") is True
+        if not is_valid_upload_id(upload_id):
+            raise SkillRpcError(
+                ERROR_SKILL_UPLOAD_STAGE_NOT_FOUND, "暂存标识非法"
+            )
+        try:
+            validate_skill_name(skill_name_raw)
+        except ValueError as exc:
+            raise SkillRpcError(
+                ERROR_SKILL_UPLOAD_NOT_APPROVED, str(exc)
+            ) from exc
+        if not expected_digest:
+            raise SkillRpcError(
+                ERROR_SKILL_UPLOAD_DIGEST_MISMATCH, "缺少审批摘要"
+            )
+
+        staging = stage_root() / upload_id
+        manifest = self._read_skill_upload_manifest(staging)
+        if manifest is None:
+            if not staging.is_dir():
+                raise SkillRpcError(
+                    ERROR_SKILL_UPLOAD_STAGE_NOT_FOUND, "暂存包不存在或已清理"
+                )
+            raise SkillRpcError(
+                ERROR_SKILL_UPLOAD_STAGE_NOT_FOUND, "暂存包清单缺失"
+            )
+        if self._skill_upload_manifest_expired(manifest):
+            self._remove_staged_upload(staging, manifest)
+            raise SkillRpcError(
+                ERROR_SKILL_UPLOAD_STAGE_EXPIRED, "暂存包已超过保留期，请重新上传"
+            )
+
+        descriptor = manifest.get("descriptor")
+        if not isinstance(descriptor, dict):
+            raise SkillRpcError(
+                ERROR_SKILL_UPLOAD_STAGE_NOT_FOUND, "暂存包清单不完整"
+            )
+        from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+        tenant_key = TenantContext.current_tenant_key()
+        if not tenant_key or str(manifest.get("tenant_key") or "") != tenant_key:
+            raise SkillRpcError(
+                ERROR_SKILL_UPLOAD_NOT_APPROVED, "暂存包不属于当前租户"
+            )
+        if str(descriptor.get("skill_name") or "") != skill_name_raw:
+            raise SkillRpcError(
+                ERROR_SKILL_UPLOAD_NOT_APPROVED, "审批技能名与暂存包不一致"
+            )
+
+        existing = self._find_skill_installation(name=skill_name_raw)
+        if (
+            isinstance(existing, dict)
+            and self._skill_upload_skill_dir_present(skill_name_raw)
+            and self._skill_upload_already_installed(
+                existing, upload_id, expected_digest
+            )
+        ):
+            return {
+                "success": True,
+                "skill": self._skill_upload_installed_payload(
+                    skill_name_raw, existing
+                ),
+                "already_installed": True,
+            }
+
+        content_dir = staging / "content"
+        if not content_dir.is_dir():
+            # 暂存内容被清理或未完整落盘：属于暂存失效，不是摘要不一致。
+            raise SkillRpcError(
+                ERROR_SKILL_UPLOAD_STAGE_NOT_FOUND, "暂存内容缺失，请重新上传"
+            )
+        digest, _file_count, _bytes = skill_tree_digest(content_dir)
+        if digest != expected_digest:
+            raise SkillRpcError(
+                ERROR_SKILL_UPLOAD_DIGEST_MISMATCH,
+                "暂存内容与审批摘要不一致",
+            )
+
+        self._assert_skill_upload_target_available(skill_name_raw)
+        verification = {
+            "type": "skill_upload",
+            "order_num": order_num,
+            "upload_id": upload_id,
+            "digest": digest,
+        }
+        try:
+            result = self._install_imported_skill_dir(
+                content_dir,
+                force=replace,
+                origin=f"skill-upload:{order_num or upload_id}",
+                conflict_code=ERROR_SKILL_UPLOAD_NAME_CONFLICT,
+                verification=verification,
+            )
+        except SkillRpcError as exc:
+            if exc.code == ERROR_SKILL_BUILTIN_READ_ONLY:
+                raise SkillRpcError(
+                    ERROR_SKILL_UPLOAD_BUILTIN_READ_ONLY, exc.message
+                ) from exc
+            if exc.code == ERROR_SKILL_NAME_CONFLICT:
+                raise SkillRpcError(
+                    ERROR_SKILL_UPLOAD_NAME_CONFLICT, exc.message
+                ) from exc
+            raise
+        if not result.get("success"):
+            # 安装失败可能只带回 detail 而没有 code；补成带错误码的异常，
+            # Gateway 才能把审批单标为 failed，而不是按 ok=True 误记 installed。
+            detail = str(result.get("detail") or result.get("error") or "安装失败")
+            raise SkillRpcError(
+                ERROR_SKILL_UPLOAD_PACKAGE_INVALID, detail[:1024]
+            )
+
+        logger.info(
+            "[SkillManager] upload finalized: upload_id=%s order=%s skill=%s",
+            upload_id,
+            order_num,
+            skill_name_raw,
+        )
+        return {"success": True, "skill": result.get("skill"), "already_installed": False}
+
+    @staticmethod
+    def _read_skill_upload_manifest(staging: Path) -> dict[str, Any] | None:
+        from jiuwenswarm.server.runtime.skill.skill_upload_approval import (
+            read_manifest,
+        )
+
+        return read_manifest(staging)
+
+    @staticmethod
+    def _skill_upload_manifest_expired(manifest: dict[str, Any]) -> bool:
+        from jiuwenswarm.server.runtime.skill.skill_upload_approval import (
+            manifest_expired,
+        )
+
+        return manifest_expired(manifest)
+
+    @staticmethod
+    def _remove_staged_upload(
+        staging: Path, manifest: dict[str, Any] | None
+    ) -> None:
+        shutil.rmtree(staging, ignore_errors=True)
+        object_key = str((manifest or {}).get("object_key") or "").strip()
+        if not object_key:
+            return
+        try:
+            from jiuwenswarm.common.obs_files import AttachmentStore
+
+            AttachmentStore.from_env().remove_key(object_key)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[SkillManager] remove approval object failed: %s", exc
+            )
+
+    @staticmethod
+    def _cleanup_expired_skill_uploads() -> None:
+        from jiuwenswarm.server.runtime.skill.skill_upload_cleanup import (
+            purge_expired_staging,
+        )
+
+        purge_expired_staging()
+
+    def _skill_upload_existing_skill(self, skill_name: str) -> dict[str, Any] | None:
+        installation = self._find_skill_installation(name=skill_name)
+        dest = _safe_child_path(self._skills_dir, skill_name, "skill")
+        if installation is None and not dest.exists():
+            return None
+        version = ""
+        source = ""
+        if isinstance(installation, dict):
+            version = str(installation.get("version") or "").strip()
+            source = str(installation.get("source") or "").strip()
+        return {
+            "name": skill_name,
+            "version": version or None,
+            "source": source or None,
+        }
+
+    def _assert_skill_upload_target_available(self, skill_name: str) -> None:
+        installation = self._find_skill_installation(name=skill_name)
+        dest = _safe_child_path(self._skills_dir, skill_name, "skill")
+        if isinstance(installation, dict):
+            source_type = str(installation.get("source_type") or "").strip()
+            if source_type == "prebuilt":
+                raise SkillRpcError(
+                    ERROR_SKILL_UPLOAD_BUILTIN_READ_ONLY,
+                    f"skill `{skill_name}` is prebuilt and cannot be overwritten",
+                )
+            if source_type == "builtin":
+                raise SkillRpcError(
+                    ERROR_SKILL_UPLOAD_BUILTIN_READ_ONLY,
+                    f"内置 Skill 不可覆盖: {skill_name}",
+                )
+        if dest.exists() and self._is_builtin_skill(
+            skill_name, self._get_installed_plugins(), dest
+        ):
+            raise SkillRpcError(
+                ERROR_SKILL_UPLOAD_BUILTIN_READ_ONLY,
+                f"内置 Skill 不可覆盖: {skill_name}",
+            )
+
+    def _skill_upload_skill_dir_present(self, skill_name: str) -> bool:
+        """安装记录对应的目录是否还在；目录被删时不能按重试直接报成功。"""
+        try:
+            dest = _safe_child_path(self._skills_dir, skill_name, "skill")
+        except ValueError:
+            return False
+        return dest.is_dir()
+
+    @staticmethod
+    def _skill_upload_already_installed(
+        installation: dict[str, Any], upload_id: str, expected_digest: str
+    ) -> bool:
+        """暂存标识与审批摘要都一致，才允许按重试返回已安装。"""
+        verification = installation.get("verification")
+        if not isinstance(verification, dict):
+            return False
+        if str(verification.get("upload_id") or "").strip() != upload_id:
+            return False
+        return str(verification.get("digest") or "").strip() == expected_digest
+
+    @staticmethod
+    def _skill_upload_installed_payload(
+        skill_name: str, installation: dict[str, Any]
+    ) -> dict[str, Any]:
+        return {
+            "name": skill_name,
+            "description": str(installation.get("description") or ""),
+            "version": str(installation.get("version") or "") or None,
+            "source": str(installation.get("source") or "") or None,
+        }
 
     async def handle_skills_create_from_knowledge(self, params: dict) -> dict:
         """知识转 Skill：校验输入并准备隔离临时目录与 Agent follow-up.
@@ -6126,6 +6650,7 @@ class SkillManager:
         source_trusted: bool = False,
         conflict_code: str = ERROR_SKILL_IMPORT_OVERWRITE_REQUIRED,
         allow_skillpack: bool = False,
+        verification: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """把已校验的 Skill 目录安装到 workspace，并返回约定的 skill 字段."""
         with inventory_mutex(self._skills_dir):
@@ -6133,6 +6658,7 @@ class SkillManager:
             return self._install_imported_skill_dir_locked(
                 src, force=force, origin=origin, source_trusted=source_trusted,
                 conflict_code=conflict_code, allow_skillpack=allow_skillpack,
+                verification=verification,
             )
 
     def _install_imported_skill_dir_locked(
@@ -6144,6 +6670,7 @@ class SkillManager:
         source_trusted: bool,
         conflict_code: str,
         allow_skillpack: bool,
+        verification: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         meta = self._assert_skill_package_safe(
             src,
@@ -6257,6 +6784,7 @@ class SkillManager:
                     entity_dir=skill_name,
                     market_display_name=display_name or None,
                     replace_by_name=True,
+                    verification=verification,
                 )
             except SkillNameConflictError as exc:
                 raise SkillRpcError(ERROR_SKILL_NAME_CONFLICT, str(exc)) from exc
@@ -12637,8 +13165,16 @@ class SkillManager:
             normalized = str(value or "").strip()
             if normalized:
                 record[key] = normalized
+        existing_verification = record.get("verification")
         if isinstance(verification, dict):
             record["verification"] = dict(verification)
+        elif (
+            isinstance(existing_verification, dict)
+            and str(existing_verification.get("type") or "").strip() == "skill_upload"
+        ):
+            # 上传审批标记只描述当前安装内容。其他安装路径覆盖同一技能后必须失效，
+            # 否则 finalize 重试会误判 already_installed，把过期审批单当成已安装。
+            record.pop("verification", None)
 
         if existing is None:
             self._add_installed_plugin(record)
