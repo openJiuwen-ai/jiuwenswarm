@@ -1,0 +1,15 @@
+id: host-diagnostics
+name: Host Diagnostics
+version: 1.0.0
+description: Read-only runtime diagnostics for the Jiuwen host process
+author: zhuyingming0708
+min_jiuwenswarm_version: "0.2.5"
+package_type: application
+dependencies: {}
+permissions: []
+config_schema:
+  type: object
+  properties:
+    include_env:
+      type: boolean
+      default: false
