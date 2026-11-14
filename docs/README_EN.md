@@ -239,5 +239,10 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
       <td width="28%"><a href="en/development-practices/JiuwenSwarm-Daily-Report-Generator.md">Daily Report Generator</a></td>
       <td width="50%">Agent development case for automatically summarizing daily work reports.</td>
     </tr>
+    <tr>
+      <td width="22%"><strong>Cluster Mode Result Verification</strong></td>
+      <td width="28%"><a href="en/development-practices/JiuwenSwarm-Cluster-Mode-Result-Verification.md">Cluster Mode Result Verification</a></td>
+      <td width="50%">Verifying member work, execution failures and source faithfulness with a fixed input.</td>
+    </tr>
   </tbody>
 </table>
