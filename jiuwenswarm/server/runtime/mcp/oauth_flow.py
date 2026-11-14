@@ -13,14 +13,24 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlencode, urlsplit
 
 import httpx
 
 from jiuwenswarm.common.mcp_oauth import McpOAuthError
-from jiuwenswarm.common.utils import get_workspace_dir
+from jiuwenswarm.common.utils import get_agent_workspace_dir
 from jiuwenswarm.server.runtime.mcp.credential import CredentialStore
+
+
+def get_workspace_dir() -> Path:
+    """MCP 数据根锚点：租户感知的 agent workspace（保留旧名供测试 patch）。
+
+    个人版即全局 ``~/.jiuwenswarm/agent/workspace``；企业版随 ``TenantContext``
+    解析到 ``workspace_{tenant_key}``，OAuth 凭证按租户隔离。
+    """
+    return get_agent_workspace_dir()
 
 
 _FLOW_TTL_S = 10 * 60

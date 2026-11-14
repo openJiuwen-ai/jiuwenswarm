@@ -14,12 +14,22 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.common.utils import get_workspace_dir  # re-export for test patches
-
+from jiuwenswarm.common.utils import get_agent_workspace_dir
 from jiuwenswarm.server.runtime.mcp.paths import (
+    ensure_builtins_packages,
     has_skill_file as _has_skill_file,
     load_json,
 )
+
+
+def get_workspace_dir() -> Path:
+    """MCP 数据根锚点：租户感知的 agent workspace（保留旧名供测试 patch）。
+
+    - 个人版 ``~/.jiuwenswarm/agent/workspace``（与全局工作区一致）；
+    - 企业版 ``~/.jiuwenswarm/workspace_{tenant_key}/agent/jiuwenclaw_workspace``，
+      自定义 MCP / 连接状态 / 凭证随 ``TenantContext`` 按租户隔离。
+    """
+    return get_agent_workspace_dir()
 from jiuwenswarm.server.runtime.mcp.package_manifest import (
     McpPackageManifest,
     iter_mcp_packages,
@@ -136,7 +146,9 @@ def _mcp_root() -> Path:
 
 def _packages_dir() -> Path:
     """<workspace>/mcp/mcp_builtins/ — built-in package directory."""
-    return _mcp_root() / _PACKAGES_SUBDIR
+    pkgs = _mcp_root() / _PACKAGES_SUBDIR
+    ensure_builtins_packages(pkgs)
+    return pkgs
 
 
 def _hub_packages_dir() -> Path:

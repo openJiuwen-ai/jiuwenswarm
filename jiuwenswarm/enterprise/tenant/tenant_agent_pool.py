@@ -172,6 +172,20 @@ class TenantAgentPool:
             if is_enterprise():
                 tenant_root = get_multi_tenant_user_workspace_dir(tenant_key)
                 seed_tenant_agent_workspace(tenant_root)
+                # 管理面 env 通道预置连接器：随租户在本进程首次出现时按时间戳
+                # 栅栏对账进该租户的 mcp/state.json（失败不阻断 Manager 创建）。
+                try:
+                    from jiuwenswarm.server.runtime.mcp.preset_env import (
+                        ensure_managed_mcps,
+                    )
+
+                    ensure_managed_mcps(tenant_key)
+                except Exception:  # noqa: BLE001 — preset seeding must never block the pool
+                    logger.warning(
+                        "[TenantAgentPool] preset mcp seed failed tenant_key=%s",
+                        tenant_key,
+                        exc_info=True,
+                    )
 
             manager = AgentManager()
             await self._agent_wrappers.put(cache_key, manager)

@@ -43,7 +43,7 @@ def _safe_id(value: object) -> str:
 
 def resolve_local_asset(kind: str, local_id: str):
     """Only installed roots of this AgentServer; no request path or workspace override."""
-    from jiuwenswarm.common.utils import get_agent_skills_dir, get_workspace_dir
+    from jiuwenswarm.common.utils import get_agent_skills_dir, get_agent_workspace_dir
 
     local_id = _safe_id(local_id)
     if kind in {"skill", "skillpack"}:
@@ -82,7 +82,7 @@ def resolve_local_asset(kind: str, local_id: str):
         from .hub_install_state import HubInstallStateStore
         from .asset_mcp_publish_converter import CustomMcpSource
 
-        record = HubInstallStateStore(get_workspace_dir() / "mcp").get(local_id)
+        record = HubInstallStateStore(get_agent_workspace_dir() / "mcp").get(local_id)
         package_id = record.package_id if record and record.kind == "mcp" else local_id
         package = registry.resolve_package(package_id)
         if package is not None:

@@ -23,7 +23,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.common.utils import get_workspace_dir  # re-export for test patches
+from jiuwenswarm.common.utils import get_agent_workspace_dir
 
 from jiuwenswarm.server.runtime.mcp.paths import has_skill_file as _has_skill_file
 from jiuwenswarm.server.runtime.mcp.package_manifest import (
@@ -32,6 +32,15 @@ from jiuwenswarm.server.runtime.mcp.package_manifest import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def get_workspace_dir() -> Path:
+    """MCP 数据根锚点：租户感知的 agent workspace（保留旧名供测试 patch）。
+
+    个人版即全局 ``~/.jiuwenswarm/agent/workspace``；企业版随 ``TenantContext``
+    解析到 ``workspace_{tenant_key}``，MCP 附带 skills 按租户隔离。
+    """
+    return get_agent_workspace_dir()
 
 
 def _mcp_root() -> Path:

@@ -173,7 +173,7 @@ def test_default_loaders_use_yaml_config_and_read_only_runtime_state(
         return ({"name": "default-source"},)
 
     monkeypatch.setattr(config, "get_config_yaml_mcp_servers", load_config)
-    monkeypatch.setattr(utils, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(utils, "get_agent_workspace_dir", lambda: tmp_path)
     state_path = tmp_path / "mcp" / "state.json"
     state_path.parent.mkdir()
     state_path.write_text(
@@ -201,7 +201,7 @@ def test_default_state_loader_reports_corruption_without_leaking_path(
     state_path.parent.mkdir(parents=True)
     state_path.write_text("{not-json", encoding="utf-8")
     monkeypatch.setattr(config, "get_config_yaml_mcp_servers", lambda: ())
-    monkeypatch.setattr(utils, "get_workspace_dir", lambda: workspace)
+    monkeypatch.setattr(utils, "get_agent_workspace_dir", lambda: workspace)
 
     with pytest.raises(McpReferenceInventoryError) as captured:
         validate_mcp_references(["known"])
@@ -227,7 +227,7 @@ def test_default_state_loader_reports_unreadable_state_without_leaking_path(
     state_path = workspace / "mcp" / "state.json"
     state_path.mkdir(parents=True)
     monkeypatch.setattr(config, "get_config_yaml_mcp_servers", lambda: ())
-    monkeypatch.setattr(utils, "get_workspace_dir", lambda: workspace)
+    monkeypatch.setattr(utils, "get_agent_workspace_dir", lambda: workspace)
 
     with pytest.raises(McpReferenceInventoryError) as captured:
         validate_mcp_references(["known"])
