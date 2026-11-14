@@ -594,6 +594,36 @@ async def test_member_spawned_event_includes_mode_for_ai_member() -> None:
         await handler.stop()
 
 
+@pytest.mark.anyio
+async def test_member_spawned_event_includes_initial_status() -> None:
+    """spawn 帧携带成员初始状态：广播漏斗据此登记状态跟踪表
+    （流末快照帧 old_status 数据源）；缺 status 则首轮即快照的成员
+    零记录，终态补发帧被降级规则吞掉。"""
+    event = MonitorEvent(
+        event_type=MonitorEventType.MEMBER_SPAWNED,
+        team_name="team-1",
+        timestamp=123,
+        member_name="backend-dev",
+    )
+    handler = TeamMonitorHandler(
+        _FakeMonitor(
+            members=[_FakeMember("backend-dev", status="starting", role="teammate")],
+            leader_member_name=None,
+            events=[event],
+        ),
+        "sess-monitor",
+    )
+
+    await handler.start()
+    try:
+        converted = await anext(handler.events())
+
+        assert converted["event"]["member_id"] == "backend-dev"
+        assert converted["event"]["status"] == "starting"
+    finally:
+        await handler.stop()
+
+
 # =====================================================================
 # Truncation helpers (pure functions)
 # =====================================================================

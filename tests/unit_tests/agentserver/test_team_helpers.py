@@ -6417,6 +6417,12 @@ async def test_broadcast_team_state_snapshot_broadcasts_member_and_task_status(m
         def get_monitor_handler(session_id: str):
             return _FakeMonitorHandler()
 
+        @staticmethod
+        def get_member_status_last_seen(session_id: str):
+            # 快照帧只发「有广播记录且构成合法迁移」的成员——
+            # 喂合法边 busy→ready / ready→busy
+            return {"agent1": "busy", "agent2": "ready"}
+
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
     monkeypatch.setattr(
         team_helpers,
@@ -6430,8 +6436,10 @@ async def test_broadcast_team_state_snapshot_broadcasts_member_and_task_status(m
     member_events = [e for e in broadcast_events if e.get("event_type") == "team.member"]
     assert len(member_events) == 2
     assert member_events[0]["event"]["member_id"] == "agent1"
+    assert member_events[0]["event"]["old_status"] == "busy"
     assert member_events[0]["event"]["new_status"] == "ready"
     assert member_events[1]["event"]["member_id"] == "agent2"
+    assert member_events[1]["event"]["old_status"] == "ready"
     assert member_events[1]["event"]["new_status"] == "busy"
 
     # Verify task snapshots
@@ -6510,6 +6518,10 @@ async def test_broadcast_team_state_snapshot_task_event_carries_title_content_an
         @staticmethod
         def get_monitor_handler(session_id: str):
             return _FakeMonitorHandler()
+
+        @staticmethod
+        def get_member_status_last_seen(session_id: str):
+            return {}
 
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
     monkeypatch.setattr(
@@ -8180,3 +8192,143 @@ async def test_retry_hint_teammate_chunk_carries_member_name(monkeypatch):
     leader_event = next(e for e in retry_events if e.get("attempt") == 1)
     assert member_event.get("member_name") == "qa"
     assert "member_name" not in leader_event
+
+
+@pytest.mark.anyio
+async def test_broadcast_event_tracks_member_status_last_seen(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """广播漏斗登记成员状态——快照补发帧 old_status 的数据源。"""
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    manager = TeamManager()
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: manager)
+    monkeypatch.setattr(
+        manager, "broadcast_event", lambda session_id, event: sent.append(event)
+    )
+
+    await team_helpers._broadcast_event(
+        "web",
+        "sess-pm80",
+        {
+            "event_type": "team.member",
+            "session_id": "sess-pm80",
+            "event": {
+                "type": "team.member.status_changed",
+                "team_id": "t1",
+                "member_id": "frontend-dev",
+                "old_status": "busy",
+                "new_status": "ready",
+            },
+        },
+    )
+    # 非成员帧/非 status_changed 不登记
+    await team_helpers._broadcast_event(
+        "web",
+        "sess-pm80",
+        {"event_type": "chat.final", "session_id": "sess-pm80", "content": "x"},
+    )
+
+    assert manager.get_member_status_last_seen("sess-pm80") == {"frontend-dev": "ready"}
+
+    # spawned 帧携带初始状态，同样登记（否则首轮即快照的成员零记录）
+    await team_helpers._broadcast_event(
+        "web",
+        "sess-pm80",
+        {
+            "event_type": "team.member",
+            "session_id": "sess-pm80",
+            "event": {
+                "type": "team.member.spawned",
+                "team_id": "t1",
+                "member_id": "backend-dev",
+                "status": "busy",
+            },
+        },
+    )
+    assert manager.get_member_status_last_seen("sess-pm80") == {
+        "frontend-dev": "ready",
+        "backend-dev": "busy",
+    }
+
+
+@pytest.mark.anyio
+async def test_snapshot_member_frames_carry_last_seen_old_status(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """快照补发帧：合法迁移带 old_status=客户端上次所信；无迁移跳过；
+    零记录/非法压缩跳变降级发帧（不带 old_status——最后通道不吞帧，
+    且帧经漏斗登记收敛跟踪表）。"""
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    manager = TeamManager()
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: manager)
+    monkeypatch.setattr(
+        manager, "broadcast_event", lambda session_id, event: sent.append(event)
+    )
+    monkeypatch.setattr(team_helpers, "append_history_record", lambda **kwargs: None)
+
+    class _FakeMonitor:
+        async def get_team_snapshot(self):
+            return {
+                "team_id": "t1",
+                "members": [
+                    {"member_id": "frontend-dev", "status": "paused"},
+                    {"member_id": "backend-dev", "status": "paused"},
+                    {"member_id": "qa", "status": "ready"},
+                    {"member_id": "ghost", "status": "paused"},
+                ],
+                "tasks": [],
+            }
+
+    manager.register_monitor("sess-pm80", _FakeMonitor())
+    # frontend-dev：上次所信 ready → 现 paused（ready→paused 合法边）→ 带 old_status
+    manager.note_member_status_broadcast("sess-pm80", "frontend-dev", "ready")
+    # qa：上次所信 ready → 现 ready（无迁移）→ 跳过
+    manager.note_member_status_broadcast("sess-pm80", "qa", "ready")
+    # ghost：上次所信 shutdown → 现 paused（shutdown→paused 非法边，
+    # 中间帧死在流间空窗的压缩跳变）→ 降级发帧不带 old_status + WARNING
+    manager.note_member_status_broadcast("sess-pm80", "ghost", "shutdown")
+    # backend-dev：本会话零广播记录 → 降级发帧不带 old_status
+
+    await team_helpers._broadcast_team_state_snapshot("web", "sess-pm80")
+
+    member_frames = [e for e in sent if e.get("event_type") == "team.member"]
+    assert len(member_frames) == 3
+    by_member = {e["event"]["member_id"]: e["event"] for e in member_frames}
+    # 合法迁移：带客户端上次所信
+    assert by_member["frontend-dev"]["old_status"] == "ready"
+    assert by_member["frontend-dev"]["new_status"] == "paused"
+    # 非法压缩跳变：降级发帧不带 old_status（jiuwen-test M1 对非法边硬断言）
+    assert "old_status" not in by_member["ghost"]
+    assert by_member["ghost"]["new_status"] == "paused"
+    # 零记录：降级发帧不带 old_status
+    assert "old_status" not in by_member["backend-dev"]
+    assert by_member["backend-dev"]["new_status"] == "paused"
+    # qa 无迁移被跳过
+    assert "qa" not in by_member
+    # 三帧均经漏斗广播 → 跟踪表全部收敛到最新值（下轮不再重复降级/告警）
+    last_seen = manager.get_member_status_last_seen("sess-pm80")
+    assert last_seen["frontend-dev"] == "paused"
+    assert last_seen["ghost"] == "paused"
+    assert last_seen["backend-dev"] == "paused"
+    assert last_seen["qa"] == "ready"
+
+
+@pytest.mark.anyio
+async def test_member_status_last_seen_survives_pause_cleanup_cleared_on_destroy() -> None:
+    """跟踪表跨 pause 驻留（cleanup_locals 不清），会话终毁才清。"""
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    manager = TeamManager()
+    manager.note_member_status_broadcast("sess-pm80", "m1", "ready")
+
+    # pause 驻留路径走 _cleanup_runtime_locals——跟踪表必须存活（跨流语义）
+    await manager._cleanup_runtime_locals("sess-pm80")
+    assert manager.get_member_status_last_seen("sess-pm80") == {"m1": "ready"}
+
+    # 会话终毁（_destroy_team）清除——无 team_agent 早期返回前已清
+    await manager._destroy_team("sess-pm80")
+    assert manager.get_member_status_last_seen("sess-pm80") == {}
