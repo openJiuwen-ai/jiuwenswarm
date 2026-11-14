@@ -172,6 +172,66 @@ function click(element) {
   }));
 }
 
+// Advance past a string, template literal, or comment that starts at
+// `quoteIndex`, returning the index of its last character. Escapes inside a
+// string are skipped so a quote preceded by a backslash does not end it early.
+function skipQuoted(source, quoteIndex) {
+  const quote = source[quoteIndex];
+  for (let index = quoteIndex + 1; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === '\\') {
+      index += 1;
+      continue;
+    }
+    if (char === quote) return index;
+  }
+  return source.length - 1;
+}
+
+// Slice one `{ ... }` block out of source text by matching braces while
+// ignoring braces that sit inside strings or comments. A bare depth counter
+// would cut the block short (or run past it) the moment the block gains a brace
+// in a literal, so this keeps the source scans below honest as they grow.
+function sliceBraceBlock(source, openIndex) {
+  let depth = 0;
+  for (let index = openIndex; index < source.length; index += 1) {
+    const char = source[index];
+    const next = source[index + 1];
+    if (char === '/' && next === '/') {
+      const lineEnd = source.indexOf('\n', index);
+      if (lineEnd === -1) break;
+      index = lineEnd;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      const blockEnd = source.indexOf('*/', index + 2);
+      if (blockEnd === -1) break;
+      index = blockEnd + 1;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      index = skipQuoted(source, index);
+      continue;
+    }
+    if (char === '{') depth += 1;
+    else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(openIndex, index + 1);
+    }
+  }
+  return null;
+}
+
+// Slice the body of the `useCallback(...)` whose declaration starts at
+// `marker`, so an assertion cannot be satisfied by a call elsewhere in the file.
+function sliceCallbackBody(source, marker) {
+  const start = source.indexOf(marker);
+  if (start === -1) return null;
+  const openIndex = source.indexOf('{', start);
+  if (openIndex === -1) return null;
+  return sliceBraceBlock(source, openIndex);
+}
+
 test('single-Agent tabs keep chat mounted and load trajectory only after first request', async () => {
   const counters = {
     chatMounts: 0,
@@ -792,4 +852,39 @@ test('diagnosis sub-page folds finished stages and offers record management', ()
   assert.match(page, /<DiagnosisRecordSelect/);
   assert.match(select, /trajectory-diagnosis-record-search/);
   assert.match(select, /trajectory-diagnosis-record-delete-confirm/);
+});
+
+test('switching sessions drops a stale archive error and notice', () => {
+  const panelSource = readFileSync(
+    new URL('../src/features/trajectory/TrajectoryPanel.tsx', import.meta.url),
+    'utf8',
+  );
+  // A failed import or a replay-mode notice belongs to the session that raised
+  // it. The session-change branch resets the reader, so both banners must be
+  // cleared inside that branch, not only when a later import/export/exit
+  // happens to run. Slice the branch out first: a plain `[\s\S]*?` would reach
+  // the import/export handlers that also call these setters.
+  const start = panelSource.indexOf('if (sessionChanged) {');
+  assert.notEqual(start, -1, 'session-change branch not found');
+  const branch = sliceBraceBlock(panelSource, panelSource.indexOf('{', start));
+  assert.notEqual(branch, null, 'session-change branch does not close');
+  assert.match(branch, /setArchiveError\(null\)/);
+  assert.match(branch, /setArchiveNotice\(null\)/);
+});
+
+test('async archive results are dropped after a session switch', () => {
+  const panelSource = readFileSync(
+    new URL('../src/features/trajectory/TrajectoryPanel.tsx', import.meta.url),
+    'utf8',
+  );
+  // An import or export can still be running when the user switches sessions.
+  // The session-change branch runs synchronously at switch time, so it cannot
+  // catch a callback that fires afterwards: the writers must compare the
+  // session they started in against the one on screen now and drop the result.
+  for (const marker of ['const importArchive = useCallback', 'const exportArchive = useCallback']) {
+    const body = sliceCallbackBody(panelSource, marker);
+    assert.notEqual(body, null, `${marker} body not found`);
+    assert.match(body, /const originSession = sessionRef\.current;/);
+    assert.match(body, /sessionRef\.current !== originSession/);
+  }
 });
