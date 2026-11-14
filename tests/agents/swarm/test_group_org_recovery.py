@@ -201,3 +201,50 @@ async def test_worker_scan_runs_on_start_and_disables_on_shutdown(case, monkeypa
         stop.set()
         await asyncio.wait_for(scan, 2)
     assert not recovery._enabled
+
+
+@pytest.mark.asyncio
+async def test_pool_for_passes_the_resolved_runtime_config_to_the_shared_database(monkeypatch):
+    from openjiuwen.agent_teams.organization import task_pool
+    from openjiuwen.agent_teams.spawn import shared_resources
+
+    from jiuwenswarm.agents.harness.team import config_loader
+
+    config = object()
+    db = SimpleNamespace(initialize=AsyncMock())
+    opened = {}
+
+    def get_shared_db(got):
+        opened['config'] = got
+        return db
+
+    class Manager:
+        def __init__(self, *, db, organization_id):
+            opened['db'] = db
+            opened['organization_id'] = organization_id
+            self.initialize = AsyncMock()
+
+    monkeypatch.setattr(config_loader, 'resolve_team_runtime_database_config', lambda: config)
+    monkeypatch.setattr(shared_resources, 'get_shared_db', get_shared_db)
+    monkeypatch.setattr(task_pool, 'OrgTaskManager', Manager)
+    pool = await recovery._pool_for({'organization_id': 'org-1'})
+    assert opened['config'] is config
+    assert opened['db'] is db
+    assert opened['organization_id'] == 'org-1'
+    db.initialize.assert_awaited_once()
+    pool.initialize.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_pool_for_does_not_open_a_database_when_runtime_config_is_missing(monkeypatch):
+    from openjiuwen.agent_teams.spawn import shared_resources
+
+    from jiuwenswarm.agents.harness.team import config_loader
+
+    def get_shared_db(_config):
+        raise AssertionError('database opened')
+
+    monkeypatch.setattr(config_loader, 'resolve_team_runtime_database_config', lambda: None)
+    monkeypatch.setattr(shared_resources, 'get_shared_db', get_shared_db)
+    with pytest.raises(RuntimeError, match='No verified organization database'):
+        await recovery._pool_for({'organization_id': 'org-1'})

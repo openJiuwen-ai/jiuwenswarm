@@ -54,13 +54,12 @@ async def _pool_for(plan: dict):
     """Use Core's shared database, without launching any team to clean old rows."""
     from openjiuwen.agent_teams.organization.task_pool import OrgTaskManager
     from openjiuwen.agent_teams.spawn.shared_resources import get_shared_db
-    from openjiuwen.agent_teams.tools.database.config import DatabaseConfig
-    from jiuwenswarm.agents.harness.team.config_loader import resolve_team_sqlite_db_path
+    from jiuwenswarm.agents.harness.team.config_loader import resolve_team_runtime_database_config
 
-    path = resolve_team_sqlite_db_path()
-    if path is None:
+    config = resolve_team_runtime_database_config()
+    if config is None:
         raise RuntimeError("No verified organization database for offline cleanup")
-    db = get_shared_db(DatabaseConfig(connection_string=str(path)))
+    db = get_shared_db(config)
     await db.initialize()
     pool = OrgTaskManager(db=db, organization_id=plan["organization_id"])
     await pool.initialize()
