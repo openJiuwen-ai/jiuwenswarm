@@ -281,6 +281,9 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         "_skill_turbo_prompt_rail",
         
         "_task_planning_rail",
+        # Flash 没有 TaskExecutionRail 的业务事务重试保护；这里补一个只针对
+        # apply_ops 原子拒绝的窄触发 rail，不影响 deep/code/team 的共享循环。
+        "_flash_rejected_transaction_retry_rail",
         # auto 档动态路由：请求级 enable_routing / 进程级 model_routing.enabled
         # 均开启时，Flash 必须保留该 rail 才能执行分类器并真实 set_llm。
         "_model_routing_rail",
@@ -878,6 +881,10 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             "_flash_artifact_post_process_rail",
             self._build_flash_artifact_post_process_rail,
         ))
+        rail_infos.append(_RailBuildInfo(
+            "_flash_rejected_transaction_retry_rail",
+            self._build_flash_rejected_transaction_retry_rail,
+        ))
         rails = super()._instantiate_rails(rail_infos, config_base)
         selection = self._build_flash_skill_selection_rail(config_base)
         if selection is not None:
@@ -909,6 +916,26 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         except Exception as exc:
             logger.warning("[FlashAdapter] FlashTurboPromptRail create failed: %s", exc, exc_info=True)
             return None
+
+    def _build_flash_rejected_transaction_retry_rail(self):
+        """Build the Flash-only rejected-apply_ops continuation guard."""
+        try:
+            from jiuwenswarm.agents.harness.flash.rails.rejected_transaction_retry_rail import (
+                RejectedTransactionRetryRail,
+            )
+
+            rail = RejectedTransactionRetryRail()
+            logger.info(
+                "[JiuwenSwarmFlashAdapter] RejectedTransactionRetryRail create success"
+            )
+        except Exception as exc:
+            logger.warning(
+                "[JiuwenSwarmFlashAdapter] RejectedTransactionRetryRail create failed: %s",
+                exc,
+                exc_info=True,
+            )
+            rail = None
+        return rail
 
     def _build_skill_turbo_delivery_summary_rail(self) -> Any | None:
         """仅在 Turbo 开启时装配 Flash 专用的总结与收尾组件。"""
