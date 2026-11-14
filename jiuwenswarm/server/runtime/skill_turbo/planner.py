@@ -182,23 +182,16 @@ class SkillTurboPlanner:
 
 ## 按技能独立匹配
 根据 registered_skills 中各技能的 description、match_keywords 和用户要求的目标产物逐个判断。
-description 中的适用条件必须先满足；match_keywords 和下列产物场景只帮助识别任务类型，不能放宽适用条件。
 Word 文档、Excel 工作簿等任务按相应技能的支持范围匹配，包含其支持的模板填写、编辑和转换。
 以下 PPT 准入与排除规则仅约束 PPT 候选，不得据此排除其他技能。
 排除 PPT 后仍须检查其他已注册技能，只有全部不适配时才返回 skill_name=null。
 
-## PPT pipeline 准入规则（满足技能的适用条件、命中以下任一场景，且未触发排除规则）
+## PPT pipeline 准入规则（满足任意一条，PPT skill 参与候选）
 1. 新建空白 PPT 演示文稿
 2. 依据给定主题、素材生成整套演示文稿
 3. 上传 docx、pdf、md、txt 等文档，要求将文档内容转为 PPT
 4. 调整、重构 PPT 大纲、页面结构、文案逻辑用于生成演示文稿
 5. 以已有 PPT 文件内容为参考素材，重新生成全新版本 PPT
-
-## PPT Turbo 的额外适用条件
-对 description 声明仅处理加速制作 PPT 的候选（例如注册名为 ppt 的 pptx-craft-turbo），
-只有 task 保留了用户明确用“极速”“加速”“快速”或“turbo”提出的 PPT 加速请求时，才可选中。
-模型档位名、附件或引用中的文字、工具或技能名称、description 和 match_keywords 中出现的词都不算用户要求。
-如果 task 只是普通的新建 PPT 请求、明确不加速，或无法判断用户明确要求加速，排除该候选并继续检查其他技能。
 
 ## PPT pipeline 排除规则（满足任意一条，PPT skill 不参与候选）
 1. 寒暄闲聊、普通问答、纯事实查询、单纯概念讲解
