@@ -4,6 +4,7 @@ import {
   ChartLine,
   ChartNoAxesColumn,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   CirclePause,
   CirclePlay,
@@ -15,7 +16,7 @@ import {
   UsersRound,
   type LucideIcon,
 } from 'lucide-react';
-import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ActionMenu } from '../components/ActionMenu';
 import { ActivityHeatmap, HeatmapLegend } from '../components/ActivityHeatmap';
@@ -556,6 +557,43 @@ function ActivityIndividualTab({
   const [period, setPeriod] = useState<JiuwenMateWorkPeriod>('7d');
   const [query, setQuery] = useState('');
   const carouselRef = useRef<HTMLDivElement>(null);
+  const [carouselEdges, setCarouselEdges] = useState({ previous: false, next: false });
+  const updateCarouselEdges = useCallback(() => {
+    const carousel = carouselRef.current;
+    if (!carousel) return;
+    const previous = carousel.scrollLeft > 1;
+    const next = carousel.scrollLeft + carousel.clientWidth < carousel.scrollWidth - 1;
+    setCarouselEdges(current => current.previous === previous && current.next === next ? current : { previous, next });
+  }, []);
+  useEffect(() => {
+    const carousel = carouselRef.current;
+    if (!carousel) return undefined;
+    updateCarouselEdges();
+    const observer = new ResizeObserver(updateCarouselEdges);
+    observer.observe(carousel);
+    return () => observer.disconnect();
+  }, [colleagues.length, updateCarouselEdges]);
+  const scrollCarousel = (direction: 'previous' | 'next') => {
+    const carousel = carouselRef.current;
+    const first = carousel?.children.item(0);
+    const second = carousel?.children.item(1);
+    if (!carousel || !first || !second) return;
+    const viewport = carousel.getBoundingClientRect();
+    const firstCard = first.getBoundingClientRect();
+    const stride = second.getBoundingClientRect().left - firstCard.left;
+    if (stride <= 0) return;
+    const pageSize = Math.round((viewport.width - firstCard.width) / stride) + 1;
+    const pageStarts = Array.from(carousel.children).filter((_, index) => index % pageSize === 0);
+    const offset = (card: Element) => card.getBoundingClientRect().left - viewport.left;
+    const target = direction === 'next'
+      ? pageStarts.find(card => offset(card) > 1)
+      : pageStarts.reverse().find(card => offset(card) < -1);
+    if (!target) return;
+    carousel.scrollBy({
+      left: offset(target),
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+    });
+  };
   const keyword = query.trim();
   const usage = usageChange(member?.days ?? [], period, today);
   const groups = (member?.groups ?? []).filter((group) => !keyword || group.name.includes(keyword));
@@ -564,7 +602,7 @@ function ActivityIndividualTab({
   return (
     <div className="jiuwenmate-office__individual" data-testid="jiuwenmate-office-individual">
       <div className="jiuwenmate-office__carousel-frame">
-        <div className="jiuwenmate-office__carousel" ref={carouselRef}>
+        <div className="jiuwenmate-office__carousel" ref={carouselRef} onScroll={updateCarouselEdges}>
           {colleagues.map((colleague) => (
             <div key={colleague.id} className="jiuwenmate-office__member">
               {memberCard(t, colleague, handlers, {
@@ -574,14 +612,32 @@ function ActivityIndividualTab({
             </div>
           ))}
         </div>
-        <button
-          type="button"
-          className="jiuwenmate-office__carousel-next"
-          aria-label={t('jiuwenmate.office.next')}
-          onClick={() => carouselRef.current?.scrollBy({ left: 320, behavior: 'smooth' })}
-        >
-          <ChevronRight aria-hidden />
-        </button>
+        {carouselEdges.previous || carouselEdges.next ? (
+          <>
+            <button
+              type="button"
+              className="jiuwenmate-office__carousel-arrow"
+              data-direction="previous"
+              data-testid="jiuwenmate-office-carousel-previous"
+              aria-label={t('jiuwenmate.office.previous')}
+              disabled={!carouselEdges.previous}
+              onClick={() => scrollCarousel('previous')}
+            >
+              <ChevronLeft aria-hidden />
+            </button>
+            <button
+              type="button"
+              className="jiuwenmate-office__carousel-arrow"
+              data-direction="next"
+              data-testid="jiuwenmate-office-carousel-next"
+              aria-label={t('jiuwenmate.office.next')}
+              disabled={!carouselEdges.next}
+              onClick={() => scrollCarousel('next')}
+            >
+              <ChevronRight aria-hidden />
+            </button>
+          </>
+        ) : null}
       </div>
       <div className="jiuwenmate-office__section-head">
         <h2>{t('jiuwenmate.office.workRecord')}</h2>

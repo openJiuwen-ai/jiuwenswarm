@@ -6655,7 +6655,8 @@
       "minutesAgo": "{{count}} min ago",
       "hoursAgo": "{{count}} hr ago",
       "daysAgo": "{{count}} day ago",
-      "next": "Next",
+      "next": "Next group",
+      "previous": "Previous group",
       "workRecord": "Work record",
       "groupChats": "Group chats {{count}}",
       "channelColumns": {
