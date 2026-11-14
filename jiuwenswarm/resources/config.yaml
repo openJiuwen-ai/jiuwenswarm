@@ -336,8 +336,9 @@ models:
         client_provider: ${MODEL_PROVIDER}
         # HTTP 请求超时（秒）。需严格 > stream_first_chunk_timeout，确保先触发应用层流超时（可被 LLMRetryRail 重试）
         timeout: 360
-        # 流式：等待首个分片的最大时间（秒）。放宽以兼容 reasoning/思考模型思考期的静默
-        stream_first_chunk_timeout: 300
+        # 流式：等待首个分片的最大时间（秒）。须明显小于 relay team stall 看门狗（默认 300s），
+        # 否则无首 token 时会被 chat.interrupt 抢跑成 CancelledError，进不了 LLMRetryRail。
+        stream_first_chunk_timeout: 180
         # 流式：分片之间的最大空闲等待时间（秒）。部分模型的 tool 参数不增量下发，生成长参数时会静默较久
         stream_idle_timeout: 180
         verify_ssl: true
