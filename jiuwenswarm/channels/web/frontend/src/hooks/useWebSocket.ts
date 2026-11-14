@@ -5395,6 +5395,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             }
           }
         } else if (resultPayload.intent === 'cancel') {
+          // The SSE may already be closed; use the authoritative cancel snapshot.
+          if (resultPayload.success && Array.isArray(payload.todos)) {
+            useTodoStore.getState().setTodos(
+              sessionId,
+              payload.todos as Parameters<ReturnType<typeof useTodoStore.getState>['setTodos']>[1]
+            );
+          }
           if (shouldClearPermissionQuestionsForLifecycleEvent('cancel', resultPayload.success)) {
             useChatStore.getState().clearPermissionQuestions(sessionId);
           }

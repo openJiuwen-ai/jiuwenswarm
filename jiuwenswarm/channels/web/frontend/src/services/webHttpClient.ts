@@ -532,7 +532,7 @@ function isSseContentType(contentType: string | null | undefined): boolean {
 }
 
 /**
- * HTTP unary ``chat.interrupt`` 把 ``accepted`` 与 ``interrupt_result`` 合在同一 JSON body。
+ * HTTP unary ``chat.interrupt`` 等待最终 ``interrupt_result``，而不只返回 ``accepted`` ACK。
  * 只在 Gateway 明确给出 ``event_type`` 时映射为 WS 事件，前端不伪造 success。
  */
 export function interruptUnaryToEvents(payload: unknown, requestId?: string): WsEvent | null {
@@ -542,8 +542,7 @@ export function interruptUnaryToEvents(payload: unknown, requestId?: string): Ws
   return {
     type: 'event',
     event: 'chat.interrupt_result',
-    // HTTP 合成事件补上 interrupt 请求 id：interrupt_result 处理器按
-    // event.request_id 清理 pendingInterruptRequestIdsRef，缺失会缓慢泄漏。
+    // Correlate the synthesized event with the HTTP interrupt request.
     ...(requestId ? { request_id: requestId } : {}),
     payload: { ...payload },
   };
@@ -568,6 +567,8 @@ export class WebHttpClient {
   private sseInflight = new Map<string, { controller: AbortController; sessionId: string }>();
   /** 被后续 chat.send 顶掉的 SSE，abort 后不得再发 interrupt / 不得当发送失败。 */
   private sseSuperseded = new Set<string>();
+  /** Only a pending interrupt for the current turn may update its session. */
+  private pendingInterrupts = new Map<string, string>();
   /** chat.send + awaitRuntimeAccepted：等本请求 SSE 上的 runtime.accepted / chat.error。 */
   private runtimeAckPending = new Map<string, RuntimeAckPending>();
   private connectAbort: AbortController | null = null;
@@ -751,12 +752,16 @@ export class WebHttpClient {
         // SSE 下发。若此处 abort 同 session 旧 SSE，父连接被掐掉 → 实时无输出、
         // processing_status(false) 也丢，UI 一直「执行中」（刷新 history 才有字）。
         if (!isSteerSessionInputParams(params)) {
+          if (chatSessionId) this.pendingInterrupts.delete(chatSessionId);
           this.abortSseInflight({ exceptRequestId: requestId, sessionId: chatSessionId });
         }
         this.sseInflight.set(requestId, {
           controller,
           sessionId: chatSessionId ?? '',
         });
+      }
+      if (method === 'chat.interrupt' && chatSessionId) {
+        this.pendingInterrupts.set(chatSessionId, requestId);
       }
       const headers: Record<string, string> = {
         ...this.identityHeaders(requestId, params ?? {}),
@@ -829,7 +834,8 @@ export class WebHttpClient {
       this.sseInflight.delete(requestId);
       if (method === 'chat.interrupt') {
         const event = interruptUnaryToEvents(payload, requestId);
-        if (event) {
+        if (event && chatSessionId && this.pendingInterrupts.get(chatSessionId) === requestId) {
+          event.payload.session_id ??= chatSessionId;
           this.dispatchEvent(event);
           if (event.payload.success === true && interruptIntentOf(event.payload) === 'cancel') {
             this.abortSseInflight({
@@ -858,7 +864,7 @@ export class WebHttpClient {
       }
       if (options.signal?.aborted) {
         if (assembled.kind === 'sse' && typeof params?.session_id === 'string') {
-          void this.interruptChat(params.session_id, requestId);
+          void this.interruptChat(params.session_id);
         }
         throw this.createWebError(
           i18n.t('network.requestAborted'),
@@ -869,7 +875,7 @@ export class WebHttpClient {
       }
       if (error instanceof DOMException && error.name === 'AbortError') {
         if (assembled.kind === 'sse' && typeof params?.session_id === 'string') {
-          void this.interruptChat(params.session_id, requestId);
+          void this.interruptChat(params.session_id);
         }
         throw this.createWebError(
           i18n.t('network.requestTimeout'),
@@ -880,6 +886,10 @@ export class WebHttpClient {
       }
       throw this.asWebError(error, requestId, true);
     } finally {
+      const sessionId = pickHeaderString(params?.session_id);
+      if (sessionId && this.pendingInterrupts.get(sessionId) === requestId) {
+        this.pendingInterrupts.delete(sessionId);
+      }
       options.signal?.removeEventListener('abort', onAbort);
     }
   }
@@ -1026,6 +1036,8 @@ export class WebHttpClient {
           !controller.signal.aborted &&
           !this.sseSuperseded.has(requestId)
         ) {
+          // Register the receipt before the idle event can start a queued turn.
+          void this.interruptChat(sessionId);
           this.dispatchEvent({
             type: 'event',
             event: 'chat.processing_status',
@@ -1039,8 +1051,6 @@ export class WebHttpClient {
               source: sawChatError ? 'http_error_eof' : 'http_abnormal_eof',
             },
           } as WsEvent);
-          // 多副本下任意存活 gateway 均可按 session 转发 cancel。
-          void this.interruptChat(sessionId, requestId);
         }
       } catch (error) {
         console.warn('[WebHttpClient] Failed to settle errored SSE', requestId, error);
@@ -1065,7 +1075,9 @@ export class WebHttpClient {
     }
   }
 
-  private async interruptChat(sessionId: string, requestId: string): Promise<void> {
+  private async interruptChat(sessionId: string): Promise<void> {
+    const requestId = this.generateRequestId();
+    this.pendingInterrupts.set(sessionId, requestId);
     try {
       const assembled = assembleWebRest(
         'chat.interrupt',
@@ -1075,7 +1087,7 @@ export class WebHttpClient {
       if (!assembled) {
         return;
       }
-      await this.authenticatedFetch(appendQuery(assembled.url, assembled.query), {
+      const response = await this.authenticatedFetch(appendQuery(assembled.url, assembled.query), {
         method: assembled.verb,
         headers: {
           ...this.identityHeaders(requestId, { session_id: sessionId }),
@@ -1083,8 +1095,18 @@ export class WebHttpClient {
         },
         body: JSON.stringify(assembled.jsonBody ?? { intent: 'cancel' }),
       });
+      const payload = await this.readUnaryPayload(response, requestId);
+      const event = interruptUnaryToEvents(payload, requestId);
+      if (event && this.pendingInterrupts.get(sessionId) === requestId) {
+        event.payload.session_id ??= sessionId;
+        this.dispatchEvent(event);
+      }
     } catch {
       // 打断失败不掩盖本次 abort
+    } finally {
+      if (this.pendingInterrupts.get(sessionId) === requestId) {
+        this.pendingInterrupts.delete(sessionId);
+      }
     }
   }
 
@@ -1302,6 +1324,7 @@ export class WebHttpClient {
     this.inflight.clear();
     this.sseInflight.clear();
     this.sseSuperseded.clear();
+    this.pendingInterrupts.clear();
   }
 
   private abortSseInflight(opts: { exceptRequestId?: string; sessionId?: string } = {}): void {
