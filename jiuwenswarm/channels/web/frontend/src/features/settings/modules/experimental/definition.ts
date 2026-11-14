@@ -4,8 +4,6 @@ import {
   A2UISetting,
   ExternalCliCustomAgentsItem,
   RSISetting,
-  TaskAsrSetting,
-  TaskFullDuplexSetting,
   TrajectoryDiagnosisSetting,
 } from './ExperimentalSettings';
 import { CollaborationVerifierInterval } from './MultiModelCollaborationSettings';
@@ -18,16 +16,6 @@ export const experimentalModule: SettingsModuleDefinition = {
   icon: settingsNavigationIcons.experimental,
   source: 'config',
   sections: [
-    {
-      id: 'asr',
-      titleKey: 'settingsPanel.experimental.taskAsr',
-      items: [{ id: 'task-asr-enabled', component: 'custom', render: TaskAsrSetting }],
-    },
-    {
-      id: 'task-full-duplex',
-      titleKey: 'settingsPanel.experimental.taskFullDuplex',
-      items: [{ id: 'task-full-duplex-enabled', component: 'custom', render: TaskFullDuplexSetting }],
-    },
     {
       id: 'external-cli-custom-agents',
       titleKey: 'settingsPanel.experimental.externalCliAgents',

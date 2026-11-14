@@ -315,8 +315,6 @@ test('feature flag defaults off and accepts backend booleans', () => {
 
 test('experimental sections retain their order with a single computer control section', () => {
   assert.deepEqual(experimentalSectionIds, [
-    'asr',
-    'task-full-duplex',
     'external-cli-custom-agents',
     'rsi',
     'a2ui',
