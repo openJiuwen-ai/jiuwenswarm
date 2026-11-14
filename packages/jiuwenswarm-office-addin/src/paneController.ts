@@ -14,7 +14,8 @@ import {
 import { copy, reasonOf } from './copy';
 import type { DocumentId } from './documentIdentity';
 import type { ConnectionState, GatewayClient, GatewayEvent } from './gatewayClient';
-import type { PresentationSessionFacade, ResourceConversation } from './presentationSessionFacade';
+import type { ToolContract } from './appContract';
+import type { ResourceConversation, SessionFacade } from './sessionFacade';
 import type { SlideSnapshots } from './slideSnapshots';
 
 /** The turns the transcript offers to undo, by their ``changes`` entry. */
@@ -46,7 +47,7 @@ export interface PaneState {
 type Attachment = Pick<
   ClientAttachment, 'current' | 'sessionId' | 'start' | 'attach' | 'onEvent' | 'onStateChange' | 'cancelToolCalls'>;
 type Sessions = Pick<
-  PresentationSessionFacade, 'create' | 'models' | 'conversations' | 'history' | 'openDocuments'
+  SessionFacade, 'create' | 'models' | 'conversations' | 'history' | 'openDocuments'
   | 'sendText' | 'interrupt' | 'answer'>;
 
 export class TaskPaneController {
@@ -68,7 +69,9 @@ export class TaskPaneController {
   constructor(private readonly options: {
     attachment: Attachment; sessions: Sessions; documentId: DocumentId;
     connection: Pick<GatewayClient, 'onConnectionChange'>;
-    snapshots: Pick<SlideSnapshots, 'closeTurn' | 'undoable' | 'undo'>;
+    contract: Pick<ToolContract, 'isMutating'>;
+    /** The turns' undo; PowerPoint's alone, so a pane without it offers none. */
+    snapshots?: Pick<SlideSnapshots, 'closeTurn' | 'undoable' | 'undo'>;
   }) {
     const { attachment } = options;
     this.value = {
@@ -165,7 +168,7 @@ export class TaskPaneController {
       // The message goes back to the composer, so the transcript does not keep it too.
       const kept = withoutEntry(this.value.conversation, messageId);
       this.update({
-        conversation: running ? kept : endTurn(kept),
+        conversation: running ? kept : endTurn(kept, this.options.contract),
         alert: { tone: 'error', text: copy.sendFailed(reasonOf(error)) },
       });
       return false;
@@ -183,7 +186,8 @@ export class TaskPaneController {
       return;
     }
     this.options.attachment.cancelToolCalls();
-    this.updateShown(sessionId, conversation => endTurn(addNotice(conversation, 'info', copy.stopped)));
+    this.updateShown(
+      sessionId, conversation => endTurn(addNotice(conversation, 'info', copy.stopped), this.options.contract));
   }
 
   /** Answer the question the turn waits on, one choice per question. */
@@ -207,12 +211,13 @@ export class TaskPaneController {
    */
   async undo(card: string, overwrite = false): Promise<void> {
     const entry = this.value.conversation.entries.find(item => item.id === card);
-    if (entry?.kind !== 'changes' || !this.value.undo.offers.has(card) || this.undoing) return;
+    const { snapshots } = this.options;
+    if (entry?.kind !== 'changes' || !snapshots || !this.value.undo.offers.has(card) || this.undoing) return;
     this.undoing = true;
     this.update({ undo: { ...this.value.undo, confirm: undefined } });
     let result;
     try {
-      result = await this.options.snapshots.undo(entry.callIds, overwrite);
+      result = await snapshots.undo(entry.callIds, overwrite);
     } catch (error) {
       this.update({ alert: { tone: 'error', text: copy.undoFailed(reasonOf(error)) } });
       return;
@@ -266,7 +271,10 @@ export class TaskPaneController {
     if (load !== this.loads) return;
     const held = this.held;
     this.held = [];
-    this.update({ conversation: held.reduce(applyEvent, conversation), loadingHistory: false });
+    this.update({
+      conversation: held.reduce((shown, event) => applyEvent(shown, event, this.options.contract), conversation),
+      loadingHistory: false,
+    });
   }
 
   private received(event: GatewayEvent): void {
@@ -283,7 +291,7 @@ export class TaskPaneController {
       return;
     }
     const before = this.value.conversation;
-    const conversation = applyEvent(before, event);
+    const conversation = applyEvent(before, event, this.options.contract);
     this.update({ conversation });
     // A turn that ended may have titled its conversation.
     if (before.turn === 'running' && conversation.turn === 'idle') void this.refreshConversations().catch(() => undefined);
@@ -326,15 +334,17 @@ export class TaskPaneController {
     this.value.undo = { ...this.value.undo, offers: this.undoOffers() };
     this.listeners.forEach(listener => listener(this.value));
     // A changes entry closes its turn: the turn's undo records what the turn left, then the entry offers it.
-    if (newCard(before, this.value.conversation)) void this.options.snapshots.closeTurn().then(() => this.update({}));
+    const { snapshots } = this.options;
+    if (snapshots && newCard(before, this.value.conversation)) void snapshots.closeTurn().then(() => this.update({}));
   }
 
   /** A turn's undo while no turn runs and the pane holds the document. */
   private undoOffers(): ReadonlySet<string> {
     const { conversation, attachment } = this.value;
-    if (conversation.turn === 'running' || attachment.kind !== 'attached') return new Set();
+    const { snapshots } = this.options;
+    if (!snapshots || conversation.turn === 'running' || attachment.kind !== 'attached') return new Set();
     return new Set(conversation.entries.flatMap(entry => (
-      entry.kind === 'changes' && this.options.snapshots.undoable(entry.callIds) ? [entry.id] : [])));
+      entry.kind === 'changes' && snapshots.undoable(entry.callIds) ? [entry.id] : [])));
   }
 }
 

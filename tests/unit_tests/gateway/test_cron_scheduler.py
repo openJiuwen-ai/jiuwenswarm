@@ -13,8 +13,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
-from openjiuwen_protocol.message import EventType, ReqMethod
+from e2a.agent_models import AgentResponse, AgentResponseChunk
+from e2a.message import EventType, ReqMethod
 
 from agent_gateway.cron.models import CronJob, CronRunState
 from agent_gateway.cron.scheduler import (

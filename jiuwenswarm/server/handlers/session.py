@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import datetime as _dt
 import logging
-import math
 import sys
 from typing import Any
 
@@ -28,14 +27,13 @@ from jiuwenswarm.runtime.session_provisioner import (
 )
 from jiuwenswarm.server.context import AgentServerServices, RequestContext
 from jiuwenswarm.server.runtime.session.history_io import run_history_io
+from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
 from jiuwenswarm.server.runtime.session.session_history import (
     HistorySnapshotChanged,
     InvalidHistoryCursor,
     append_history_record,
     enqueue_history_request_completion,
-    history_exists,
     is_valid_session_id,
-    load_history_records,
     read_history_cursor_page,
     wait_for_history_receipt,
 )
@@ -110,6 +108,25 @@ async def _send_chunk(ctx: RequestContext, chunk: AgentResponseChunk, sequence: 
 
 async def handle_history_get(ctx: RequestContext) -> None:
     """读取历史。流式请求一片一片回，普通请求整页回。"""
+    params = ctx.request.params if isinstance(ctx.request.params, dict) else {}
+    if "artifact_sha256" in params:
+        from jiuwenswarm.server.runtime.session.history_artifacts import read_artifact_chunk
+
+        session_id = params.get("session_id") or ctx.request.session_id
+        try:
+            if ctx.request.is_stream or not is_valid_session_id(session_id):
+                raise ValueError("Artifact retrieval requires a valid session and unary request")
+            payload = await run_history_io(
+                read_artifact_chunk, session_id, params["artifact_sha256"],
+                offset=params.get("offset", 0), max_bytes=params.get("max_bytes", 65536),
+            )
+            response = AgentResponse(request_id=ctx.request.request_id, channel_id=ctx.request.channel_id,
+                                     ok=True, payload=payload)
+        except (OSError, ValueError, TypeError) as exc:
+            response = AgentResponse(request_id=ctx.request.request_id, channel_id=ctx.request.channel_id,
+                                     ok=False, payload={"code": "HISTORY_ARTIFACT_FAILED", "error": str(exc)})
+        await ctx.sink.send_response(response)
+        return
     if ctx.request.is_stream:
         await handle_history_get_stream(ctx)
     else:
@@ -1164,11 +1181,17 @@ async def handle_history_get_page(ctx: RequestContext) -> None:
     session_id = params.get("session_id")
     page_idx = _coerce_query_int(params.get("page_idx"))
     subagent_id = params.get("subagent_id")
-    data = get_conversation_history(
-        session_id=session_id,
-        page_idx=page_idx,
-        subagent_id=subagent_id if isinstance(subagent_id, str) else None,
-    )
+    try:
+        data = await run_history_io(
+            get_conversation_history, session_id=session_id, page_idx=page_idx,
+            subagent_id=subagent_id if isinstance(subagent_id, str) else None,
+        )
+    except HistoryReplayError as exc:
+        await ctx.sink.send_response(AgentResponse(
+            request_id=request.request_id, channel_id=request.channel_id, ok=False,
+            payload={"error": str(exc), "code": exc.code},
+        ))
+        return
     if data is None:
         resp = AgentResponse(
             request_id=request.request_id,
@@ -1243,11 +1266,13 @@ async def handle_history_get_stream(ctx: RequestContext) -> None:
                 page_idx=page_idx,
                 subagent_id=subagent_id if isinstance(subagent_id, str) else None,
             )
-    except (InvalidHistoryCursor, HistorySnapshotChanged) as exc:
+    except (InvalidHistoryCursor, HistorySnapshotChanged, HistoryReplayError) as exc:
         error_code = (
-            "HISTORY_SNAPSHOT_CHANGED"
-            if isinstance(exc, HistorySnapshotChanged)
-            else "INVALID_HISTORY_CURSOR"
+            exc.code if isinstance(exc, HistoryReplayError) else (
+                "HISTORY_SNAPSHOT_CHANGED"
+                if isinstance(exc, HistorySnapshotChanged)
+                else "INVALID_HISTORY_CURSOR"
+            )
         )
         error_chunk = AgentResponseChunk(
             request_id=request.request_id,
@@ -1499,72 +1524,9 @@ def get_conversation_history(
     *,
     subagent_id: str | None = None,
 ) -> dict[str, Any] | None:
-    # 按照 session_id 和分页消息获取历史记录
-    if not isinstance(session_id, str) or not session_id.strip():
-        return None
-    if not isinstance(page_idx, int) or page_idx <= 0:
-        return None
+    from jiuwenswarm.server.control.history_service import load_history_page
 
-    normalized_session_id = session_id.strip()
-    normalized_subagent_id = (
-        subagent_id.strip() if isinstance(subagent_id, str) and subagent_id.strip() else None
-    )
-    if normalized_subagent_id:
-        if not history_exists(normalized_session_id, subagent_id=normalized_subagent_id):
-            return {
-                "messages": [],
-                "total_pages": 1,
-                "page_idx": page_idx,
-                "subagent_id": normalized_subagent_id,
-            }
-    elif not history_exists(normalized_session_id):
-        return None
-    try:
-        raw = load_history_records(
-            normalized_session_id,
-            subagent_id=normalized_subagent_id,
-        )
-    except Exception:
-        return None
-    if not isinstance(raw, list):
-        return None
-
-    page_size = _HISTORY_PAGE_SIZE
-    restorable = [
-        item for item in raw
-        if _is_restorable_history_record(item)
-    ]
-    total = len(restorable)
-    total_pages = max(1, math.ceil(total / page_size))
-    if page_idx > total_pages:
-        return None
-
-    ordered = list(reversed(restorable))
-    start = (page_idx - 1) * page_size
-    end = start + page_size
-    # 不在此处 sanitize：split_history_record_for_stream（在 handle_history_get_stream
-    # 里调）需要拿到原文 content 才能正确切片；先 sanitize 会把 content 砍到 16KB，
-    # 切片器拿到的就只剩 16KB，分片就失去意义。
-    page_messages = list(ordered[start:end])
-    logger.debug(
-        "[history.get] session_id=%s subagent_id=%s page_idx=%s "
-        "raw_total=%s restorable_total=%s total_pages=%s returned=%s",
-        normalized_session_id,
-        normalized_subagent_id or "",
-        page_idx,
-        len(raw),
-        total,
-        total_pages,
-        len(page_messages),
-    )
-    result = {
-        "messages": page_messages,
-        "total_pages": total_pages,
-        "page_idx": page_idx,
-    }
-    if normalized_subagent_id:
-        result["subagent_id"] = normalized_subagent_id
-    return result
+    return load_history_page(session_id, page_idx, subagent_id=subagent_id)
 
 
 def get_conversation_history_cursor(

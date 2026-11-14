@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from jiuwenswarm.common.e2a.acp.session_updates import (
+from e2a.acp.session_updates import (
     build_acp_final_text_update,
     build_acp_session_update,
 )

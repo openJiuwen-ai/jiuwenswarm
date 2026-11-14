@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 import httpx
 from agent_gateway.routing.agent_client import AgentServerClient
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
+from e2a.models import E2AEnvelope
 from jiuwenswarm.common.request_identity import web_routing_identity
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.extensions.runtime_management_extension.agent_authorization import (
@@ -239,6 +239,9 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         # session_id → 当前仍在推流的 AgentServer base_url。长工具无 chunk 时
         # Runtime 亲和可能过期；interrupt 多播时带上这里，避免杀错 Pod。
         self._session_stream_bases: dict[str, str] = {}
+        # 短请求已经结束、团队还在原 Pod 上跑时的 touch。和流内保活分开，
+        # 流结束的 finally 不会取消它，也不在 touch 失败时重新 route。
+        self._session_keepalives: dict[str, asyncio.Task[None]] = {}
 
     def set_server_push_handler(
         self, handler: Callable[[dict[str, Any]], Awaitable[None]] | None
@@ -246,13 +249,14 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         self._on_server_push = handler
 
     async def _handle_pod_push(self, base_url: str, wire: dict[str, Any]) -> None:
-        from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+        from e2a.wire_codec import parse_agent_server_wire_chunk
 
+        chunk = parse_agent_server_wire_chunk(wire)
+        payload = chunk.payload if isinstance(chunk.payload, dict) else {}
+        await self._stop_deferred_keepalive_if_round_ended(wire, payload)
         handler = self._on_server_push
         if handler is None:
             return
-        chunk = parse_agent_server_wire_chunk(wire)
-        payload = chunk.payload if isinstance(chunk.payload, dict) else {}
         rpc = payload.get("jsonrpc", payload)
         key = None
         if isinstance(rpc, dict) and rpc.get("id") is not None and rpc.get("method"):
@@ -368,6 +372,7 @@ class RuntimeRoutedAgentClient(AgentServerClient):
 
     async def disconnect(self) -> None:
         self._connected = False
+        await self._cancel_deferred_keepalives()
         async with self._pod_locks_guard:
             clients = list(self._pod_clients.values())
             self._pod_clients.clear()
@@ -680,6 +685,9 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                         )
                         if new_route_id:
                             touch_state["route_id"] = new_route_id
+                self._ensure_deferred_keepalive(
+                    chunk, session_id, touch_state["route_id"]
+                )
                 yield chunk
         finally:
             if keepalive_task is not None:
@@ -695,6 +703,130 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                     )
             if self._session_stream_bases.get(session_id) == base_url:
                 self._session_stream_bases.pop(session_id, None)
+
+    def _ensure_deferred_keepalive(
+        self,
+        chunk: AgentResponseChunk,
+        session_id: str,
+        route_id: str,
+    ) -> None:
+        """短请求结束后，按当前会话号继续 touch。
+
+        这个客户端只在 ``GATEWAY_AGENT_CLIENT_MODE=runtime`` 时注册，个人版走 WebSocket，不会进到这里。
+        只认 ``chat.processing_status_deferred``。同一个号已有循环时不重开；停掉之后下一次 deferred 再拉起来。
+        """
+        payload = chunk.payload if isinstance(chunk.payload, dict) else None
+        if not isinstance(payload, dict):
+            return
+        if payload.get("event_type") != "chat.processing_status_deferred":
+            return
+        if self._touch_interval_seconds <= 0:
+            return
+        session_id = (session_id or "").strip()
+        route_id = (route_id or "").strip()
+        if not session_id or not route_id:
+            return
+        current = self._session_keepalives.get(session_id)
+        if current is not None and not current.done():
+            return
+        task = asyncio.create_task(
+            self._deferred_keepalive_loop(session_id, route_id),
+            name=f"runtime-deferred-touch:{session_id[:24]}",
+        )
+        self._session_keepalives[session_id] = task
+        logger.info(
+            "[RuntimeRouted] deferred keepalive started: session=%s",
+            session_id,
+        )
+
+    async def _deferred_keepalive_loop(self, session_id: str, route_id: str) -> None:
+        """只 touch。失败不重新 route，避免把还在跑的团队挪到另一台 Pod。"""
+        interval = self._touch_interval_seconds
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                if self._session_keepalives.get(session_id) is not asyncio.current_task():
+                    return
+                touched = await self._touch_quiet(session_id, route_id)
+                if self._session_keepalives.get(session_id) is not asyncio.current_task():
+                    return
+                if touched is False:
+                    logger.info(
+                        "[RuntimeRouted] deferred keepalive stopped: session=%s reason=touch_miss",
+                        session_id,
+                    )
+                    self._session_keepalives.pop(session_id, None)
+                    return
+        except Exception:  # noqa: BLE001 - 后续期失败只停掉自己
+            logger.warning(
+                "[RuntimeRouted] deferred keepalive failed: session=%s",
+                session_id,
+                exc_info=True,
+            )
+            if self._session_keepalives.get(session_id) is asyncio.current_task():
+                self._session_keepalives.pop(session_id, None)
+
+    async def _stop_deferred_keepalive_if_round_ended(
+        self,
+        wire: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> None:
+        """收口帧停掉这个会话的后续期。
+
+        ``idle`` 为真的灯帧表示团队还在这台 Pod 上，只是本轮灯灭了，继续 touch。
+        被按住的 team.idle 不会变成这帧。没有 ``idle`` 的 ``is_processing`` 为假
+        才是后台流真正退出。
+        """
+        if payload.get("event_type") != "chat.processing_status":
+            return
+        if payload.get("is_processing") is not False:
+            return
+        if payload.get("idle") is True:
+            return
+        seen: list[str] = []
+        for raw in (wire.get("session_id"), payload.get("session_id")):
+            text = str(raw or "").strip()
+            if text and text not in seen:
+                seen.append(text)
+        for session_id in seen:
+            await self._cancel_deferred_keepalive(session_id, reason="round_ended")
+
+    async def _cancel_deferred_keepalive(self, session_id: str, *, reason: str) -> None:
+        task = self._session_keepalives.pop(session_id, None)
+        if task is None:
+            return
+        logger.info(
+            "[RuntimeRouted] deferred keepalive stopped: session=%s reason=%s",
+            session_id,
+            reason,
+        )
+        if task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001 - 收口不阻断推送
+            logger.debug(
+                "[RuntimeRouted] deferred keepalive cancel error",
+                exc_info=True,
+            )
+
+    async def _cancel_deferred_keepalives(self) -> None:
+        tasks = list(self._session_keepalives.items())
+        self._session_keepalives.clear()
+        pending: list[asyncio.Task[None]] = []
+        for session_id, task in tasks:
+            logger.info(
+                "[RuntimeRouted] deferred keepalive stopped: session=%s reason=disconnect",
+                session_id,
+            )
+            if not task.done():
+                task.cancel()
+                pending.append(task)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def _restore_stream_affinity(
         self,

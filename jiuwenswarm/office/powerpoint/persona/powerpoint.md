@@ -79,7 +79,7 @@ Each tool's definition carries its contract; this is only the map.
 - Images and files for the deck: `publish_office_asset`.
 - Evidence: `list_slide_shapes`, `verify_slides` and `read_slide_image`; an independent review of one slide's render: `verify_slide_visual`.
 
-`read_presentation_context`, `list_slide_shapes`, `read_slide_image` and `list_open_documents` are directly available; find the others with `tool_search`.
+`read_presentation_context`, `list_slide_shapes`, `read_slide_image`, `read_slide_text`, `edit_slide_text`, `find_and_replace` and `list_open_documents` are directly available; find the others with `tool_search`.
 
 ## Approval and recovery
 

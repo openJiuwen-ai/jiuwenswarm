@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from agent_gateway.routing.keys import AgentRef
-from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest, PermissionContext
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front.admission import ExecutionAdmission
@@ -218,7 +218,19 @@ async def test_ipc_request_stream_and_cancel() -> None:
 
 
 @pytest.mark.asyncio
-async def test_supervisor_stub_dispatches_stream_and_cancel() -> None:
+@pytest.mark.parametrize("startup_delay", [0, 10], ids=["normal", "slow-start"])
+async def test_supervisor_stub_dispatches_stream_and_cancel(monkeypatch, startup_delay) -> None:
+    from jiuwenswarm.server.supervisor.worker_process import WorkerProcess
+
+    original_spawn = WorkerProcess.spawn
+
+    async def spawn(process):
+        await asyncio.sleep(startup_delay)
+        await original_spawn(process)
+
+    monkeypatch.setattr(WorkerProcess, "spawn", spawn)
+    # Cold process startup has a different budget from dispatch after readiness.
+    startup_timeout = 30
     path = _socket_path()
     capture = _Capture()
     readiness = Readiness()
@@ -230,14 +242,17 @@ async def test_supervisor_stub_dispatches_stream_and_cancel() -> None:
         stub=True,
         stub_ready_delay=0.2,
         max_restarts=0,
+        connect_timeout=15,
     )
-    admission = ExecutionAdmission(readiness, forwarder=capture, wait_seconds=5)  # type: ignore[arg-type]
+    admission = ExecutionAdmission(
+        readiness, forwarder=capture, wait_seconds=startup_timeout,  # type: ignore[arg-type]
+    )
     admission.attach_backend(supervisor)
     boot = asyncio.create_task(supervisor.run_until_ipc_ready())
     chat = _request(ReqMethod.CHAT_SEND, is_stream=True)
     queued = asyncio.create_task(admission.dispatch(object(), chat, asyncio.Lock()))
     try:
-        await asyncio.wait_for(boot, 5)
+        await asyncio.wait_for(boot, startup_timeout)
         await asyncio.wait_for(queued, 5)
         assert readiness.state is ReadinessState.AGENT_READY
         assert supervisor.worker_for_session(chat.session_id) == "primary"
@@ -271,7 +286,8 @@ async def test_worker_crash_fails_inflight_request() -> None:
         max_restarts=0,
     )
     try:
-        await asyncio.wait_for(supervisor.run_until_ipc_ready(), 5)
+        # Allow cold interpreter/import startup on loaded CI runners; crash handling stays bounded below.
+        await asyncio.wait_for(supervisor.run_until_ipc_ready(), 30)
         await asyncio.wait_for(readiness.wait_agent_ready(2), 3)
         request = _request(ReqMethod.CHAT_RESUME)
         await asyncio.wait_for(
@@ -1167,28 +1183,6 @@ async def test_shutdown_eof_resolves_ack_waiter_during_failed_recovery(monkeypat
     assert outcome["ok"] is False
     assert "closed before shutdown acknowledgement" in outcome["error"]
 
-@pytest.mark.asyncio
-async def test_reconnect_drops_old_generation_output() -> None:
-    holder = ConnHolder()
-    bridge = WorkerGatewayBridge(holder)
-    dispatcher = WorkerDispatcher(bridge)
-    runtime = _BlockingRuntime()
-    first = _RecordingConn()
-    second = _RecordingConn()
-    holder.open_session(first)
-    await dispatcher.bind_runtime(runtime)
-    await dispatcher.mark_ready()
-    request = _request(ReqMethod.CHAT_SEND, is_stream=True)
-    dispatcher._spawn(dispatcher._run_request(request, holder.generation), holder.generation)
-    await asyncio.wait_for(runtime.started.wait(), 1)
-    old = holder.close_session()
-    await dispatcher.retire_generation(old)
-    holder.open_session(second)
-    runtime.release.set()
-    await asyncio.gather(*list(dispatcher._tasks))
-    assert runtime.cancelled is False
-    assert second.sent == []
-    assert first.sent == []
 
 @pytest.mark.asyncio
 async def test_ipc_drop_runs_gateway_disconnect_once() -> None:

@@ -9,6 +9,19 @@ from jiuwenswarm.extensions.video_duplex.backend import conversation_context as 
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskService
 
 
+@pytest.fixture(autouse=True)
+def voice_history_reader(monkeypatch, tmp_path):
+    """Keep speech/context tests independent of the bounded reader's disk suite."""
+    from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayBatch, HistoryReplayCursor
+
+    def read(sid, *, is_restorable, **_kwargs):
+        records = [row for row in sync.session_history.load_history_records(sid) if is_restorable(row)]
+        cursor = HistoryReplayCursor(tmp_path / "history.jsonl", 0, (0, 0, 0, 0, 0), 0)
+        return HistoryReplayBatch(records, cursor, cursor, 0)
+
+    monkeypatch.setattr(sync, "read_history_replay", read)
+
+
 async def test_voice_history_filters_result_echoes_and_blank_or_non_text_records(monkeypatch):
     records = [
         dict(id="user", channel_id="video_duplex", role="user", content="Keep this"),

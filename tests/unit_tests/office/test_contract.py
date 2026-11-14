@@ -15,7 +15,8 @@ from jiuwenswarm.server.client_attachments import load_client_capabilities, regi
 from tests.unit_tests.agentserver.client_attachments_support import CLIENT_APP, answer, request
 from tests.unit_tests.office.conftest import POWERPOINT_PACKAGE
 
-DIRECT = {"read_presentation_context", "list_slide_shapes", "read_slide_image"}
+DIRECT = {"read_presentation_context", "list_slide_shapes", "read_slide_image",
+          "read_slide_text", "edit_slide_text", "find_and_replace"}
 # What JiuwenSwarm ships, read before the ``isolated`` fixture replaces it.
 _SHIPPED_APPS = registry.APPS
 SUPPORTED = {"supported_tools": ["read_presentation_context", "read_slide_image", "presentation_apply_patch"]}

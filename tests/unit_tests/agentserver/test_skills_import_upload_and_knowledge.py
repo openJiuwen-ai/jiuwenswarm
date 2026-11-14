@@ -590,7 +590,7 @@ async def test_skill_rpc_client_skips_ack_and_decoy_frames(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """最小 WS 客户端须先消费 connection.ack，并按 request_id 丢弃无关帧。"""
-    from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+    from e2a.wire_codec import encode_agent_response_for_wire
     from jiuwenswarm.server.runtime.skill import skills_multipart_http as mod
 
     seen: list[dict[str, Any]] = []

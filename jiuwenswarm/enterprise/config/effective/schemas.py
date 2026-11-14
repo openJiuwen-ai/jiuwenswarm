@@ -1,7 +1,7 @@
 """企业级配置路由上下文、加载结果与 ``template_ref`` 槽位定义。
 
 槽位枚举、槽位 → 实体表映射与 ``normalize_template_ref`` 的唯一实现在
-``openjiuwen_protocol.template_slots``；本模块 re-export 保持既有导入路径，
+``e2a.template_slots``；本模块 re-export 保持既有导入路径，
 只保留依赖本仓加载流程的数据快照。
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from openjiuwen_protocol.template_slots import (
+from e2a.template_slots import (
     DEFAULT_AGENT_LOAD_SLOTS,
     MODEL_SLOT_KEYS,
     SLOT_ENTITY_TABLE,

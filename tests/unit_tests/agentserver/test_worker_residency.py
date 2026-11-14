@@ -3,22 +3,25 @@
 """Worker execution residency, delivery and launch identity regressions."""
 
 from __future__ import annotations
+
 import asyncio
 import json
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
 import pytest
+
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front.request_registry import DuplicateRequestError, RequestRegistry
-from jiuwenswarm.server.ipc.protocol import KIND_DELIVERY_ACK, KIND_REQUEST, dump_agent_request
+from jiuwenswarm.server.ipc.protocol import KIND_DELIVERY_ACK, KIND_REQUEST, KIND_SUBSCRIBE, dump_agent_request
 from jiuwenswarm.server.worker.dispatcher import WorkerDispatcher
 from jiuwenswarm.server.worker.event_store import WorkerEventStore
 from jiuwenswarm.server.worker.gateway_bridge import (
     ConnHolder, WorkerGatewayBridge, begin_delivery_tracking, begin_request_dispatch,
     begin_request_generation, end_delivery_tracking, end_request_dispatch, end_request_generation,
 )
-from unittest.mock import AsyncMock, Mock
 from jiuwenswarm.server.ipc.protocol import KIND_HELLO, KIND_SHUTDOWN, KIND_SHUTDOWN_DONE
 from jiuwenswarm.server.supervisor import identity
 from jiuwenswarm.server.worker import service, stub
@@ -312,7 +315,7 @@ async def test_critical_reply_aborts_on_transport_detach():
 
 
 @pytest.mark.asyncio
-async def test_accepted_execution_survives_detach_and_publishes_on_new_connection():
+async def test_accepted_execution_survives_detach_and_replays_before_live_delivery():
     holder = ConnHolder()
     first = Connection()
     generation = holder.open_session(first)
@@ -346,6 +349,14 @@ async def test_accepted_execution_survives_detach_and_publishes_on_new_connectio
     second = Connection()
     new_generation = holder.open_session(second)
     release.set()
+    async with asyncio.timeout(1):
+        while bridge.events.records["original-dispatch"].completion is None:
+            await asyncio.sleep(0)
+    assert second.frames == []
+    await dispatcher.handle({"kind": KIND_SUBSCRIBE, "generation": new_generation,
+                             "query_id": "resume", "dispatch_id": "original-dispatch",
+                             "payload": dump_agent_request(request()), "after": 0,
+                             "worker_instance": bridge.events.instance}, second)
     await asyncio.wait_for(second.sent.wait(), 1)
     assert cancellations == []
     assert second.frames[0]["generation"] == new_generation
@@ -522,7 +533,7 @@ def test_replayed_frame_retains_authoritative_session_and_app_routing():
 
 def test_mailbox_push_and_execution_are_owned_by_target_session():
     from dataclasses import replace
-    from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+    from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
     from jiuwenswarm.runtime.execution_telemetry import observe_execution_entry
 
     bridge = WorkerGatewayBridge(ConnHolder())

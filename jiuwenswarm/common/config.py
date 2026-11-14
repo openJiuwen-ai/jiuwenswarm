@@ -26,6 +26,8 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
     get_default_model_provider as resolve_default_model_provider,
     set_default_model_provider_in_entries,
     validate_affinity_invariant,
+    prepare_model_affinity_update,
+    set_affinity_enabled,
 )
 from jiuwenswarm.common.observability_config import migrate_legacy_observability_config
 from jiuwenswarm.common.security.base_crypto import get_crypto_provider
@@ -938,20 +940,22 @@ def update_context_engine_enabled_in_config(value: bool) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def reconcile_model_affinity(data: dict[str, Any], *, explicit_enable: bool = False) -> None:
+    """Validate a complete candidate inside the caller's config write boundary."""
+    valid, failures = validate_affinity_invariant(resolve_env_vars(deepcopy(data)))
+    if valid:
+        return
+    if explicit_enable:
+        raise ValueError("Cannot enable KV cache affinity: " + "; ".join(failures))
+    set_affinity_enabled(data, False)
+
+
 def update_kv_cache_affinity_enabled_in_config(value: bool) -> None:
-    """更新 Application 级 KVC 开关，并清理旧 ReAct 配置。"""
+    """Reject incompatible activation before writing any configuration."""
     def _mutate(data: dict[str, Any]) -> dict[str, Any]:
-        kv_config = data.get(APPLICATION_KV_CACHE_CONFIG_KEY)
-        if not isinstance(kv_config, dict):
-            kv_config = {}
-            data[APPLICATION_KV_CACHE_CONFIG_KEY] = kv_config
-        kv_config[KV_CACHE_AFFINITY_ENABLED_KEY] = value
-
-        react = data.get("react")
-        if isinstance(react, dict):
-            react.pop(APPLICATION_KV_CACHE_CONFIG_KEY, None)
+        set_affinity_enabled(data, value)
+        reconcile_model_affinity(data, explicit_enable=value)
         return data
-
     update_config(_mutate)
 
 
@@ -2022,9 +2026,11 @@ def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
             if current.get("model_id") == saved["model_id"]:
                 _protect_model_key(saved, current)
                 saved = _merge_model_update(current, saved)
+                prepare_model_affinity_update(saved, current, entry)
                 defaults[index] = saved
                 break
         else:
+            prepare_model_affinity_update(saved, {}, entry)
             defaults.append(saved)
             _remove_initial_model_placeholder(candidate, saved)
             _protect_model_key(saved, {})
@@ -2032,6 +2038,7 @@ def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
             for current in candidate["defaults"]:
                 current["is_default"] = current["model_id"] == saved["model_id"]
         _validate_model_candidate(candidate)
+        reconcile_model_affinity(data)
         return data
 
     update_config(_mutate)
@@ -2146,6 +2153,7 @@ def delete_model_resource(resource_type: str, resource_id: str, *, cron_referenc
             candidate["groups"] = next_groups
         candidate[key] = filtered
         _validate_model_candidate(candidate)
+        reconcile_model_affinity(data)
         deleted = True
         return data
 
@@ -2252,6 +2260,7 @@ def get_available_models(
 
 def update_default_models_in_config(
     models_list: list[dict[str, Any]], *, cron_references_checked: bool = False,
+    affinity_enabled: bool | None = None,
 ) -> None:
     def _mutate(data):
         models = _models_for_write(data)
@@ -2262,6 +2271,9 @@ def update_default_models_in_config(
         if "default" in models:
             del models["default"]
         _validate_model_candidate(models)
+        if affinity_enabled is not None:
+            set_affinity_enabled(data, affinity_enabled)
+        reconcile_model_affinity(data, explicit_enable=affinity_enabled is True)
         return data
     update_config(_mutate)
 
@@ -3782,10 +3794,36 @@ def add_or_update_model_in_config(name: str, model_config: dict[str, Any]) -> No
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def _get_agentos_model(models: dict[str, Any], name: str) -> dict[str, Any] | None:
+    """在 models.agentos 备份模型中按 model_name/alias 查找。
+
+    仅 AgentOS 运行时生效：那类部署会把可用模型放在 models.agentos；
+    其他部署里该段只是只读备份，不参与按名校验。
+    """
+    from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
+
+    if not is_agentos_runtime():
+        return None
+    agentos = models.get("agentos")
+    if not isinstance(agentos, list) or not name:
+        return None
+    for entry in agentos:
+        if not isinstance(entry, dict):
+            continue
+        mcc = entry.get("model_client_config") or {}
+        entry_name = str(resolve_env_vars(mcc.get("model_name")) or "").strip()
+        alias = str(resolve_env_vars(entry.get("alias")) or "").strip()
+        if name in (entry_name, alias):
+            return entry
+    return None
+
+
 def get_model_config(name: str, index: int | None = None) -> dict[str, Any] | None:
     """获取指定模型的原始配置（不解析环境变量）。
 
-    优先从 models.defaults 列表中按 model_name 查找。
+    优先从 models.defaults 列表中按 model_name 查找；AgentOS 运行时未命中时
+    回退到 models.agentos（该部署把可用模型放在这里，仅扫 defaults 会让 cron
+    等按名校验的调用方误报 Unknown model）。
     当存在同名模型时，可通过 index 参数指定第几个匹配项（0-based）。
     若 index 为 None，返回 is_default=True 的条目；若无则返回第一个匹配。
     """
@@ -3808,6 +3846,9 @@ def get_model_config(name: str, index: int | None = None) -> dict[str, Any] | No
                 alias = entry.get("alias", "")
                 if alias and resolve_env_vars(str(alias)) == name:
                     return entry
+            agentos_entry = _get_agentos_model(models, name)
+            if agentos_entry is not None:
+                return agentos_entry
             return models.get(name) if name in models else None
         if index is not None:
             for pos, entry in matches:
@@ -3818,6 +3859,9 @@ def get_model_config(name: str, index: int | None = None) -> dict[str, Any] | No
             if entry.get("is_default") is True:
                 return entry
         return matches[0][1]
+    agentos_entry = _get_agentos_model(models, name)
+    if agentos_entry is not None:
+        return agentos_entry
     return models.get(name) if name in models else None
 
 

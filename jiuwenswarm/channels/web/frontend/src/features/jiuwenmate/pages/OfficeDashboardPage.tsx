@@ -46,8 +46,11 @@ import {
   setActivityRange,
   setActivityScope,
   setActivityYear,
+  toIsoDate,
   usageChange,
   yearHeatmap,
+  MAX_PERIOD_DAYS,
+  exceedsActivityPeriod,
   type JiuwenMateActivityRange,
   type JiuwenMateActivityScope,
   type JiuwenMateOfficeState,
@@ -333,6 +336,12 @@ function ActivityAllTab({
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
+  const [periodLimited, setPeriodLimited] = useState(false);
+  const changePeriod = (periodStart: string, periodEnd: string) => {
+    if (!periodStart || !periodEnd) return;
+    setPeriodLimited(exceedsActivityPeriod(periodStart, periodEnd));
+    setState((current) => setActivityPeriod(current, periodStart, periodEnd));
+  };
   const daily = useMemo(() => mergeDailyActivity(members), [members]);
   const heatmap = useMemo(() => yearHeatmap(state.year, today, daily), [state.year, today, daily]);
   const periodRows = useMemo(
@@ -397,18 +406,27 @@ function ActivityAllTab({
             </span>
           ) : (
             <span className="jiuwenmate-office__period">
+              {periodLimited ? (
+                <small className="jiuwenmate-office__period-limit" role="status" data-testid="jiuwenmate-office-period-limit">
+                  {t('jiuwenmate.office.periodLimit', { count: MAX_PERIOD_DAYS })}
+                </small>
+              ) : null}
               <input
                 type="date"
                 value={state.periodStart}
+                max={toIsoDate(today)}
                 aria-label={t('jiuwenmate.office.periodStart')}
-                onChange={(event) => setState((current) => setActivityPeriod(current, event.target.value, current.periodEnd))}
+                onChange={(event) => changePeriod(event.target.value, state.periodEnd)}
+                data-testid="jiuwenmate-office-period-start"
               />
               <span>{t('jiuwenmate.office.periodTo')}</span>
               <input
                 type="date"
                 value={state.periodEnd}
+                max={toIsoDate(today)}
                 aria-label={t('jiuwenmate.office.periodEnd')}
-                onChange={(event) => setState((current) => setActivityPeriod(current, current.periodStart, event.target.value))}
+                onChange={(event) => changePeriod(state.periodStart, event.target.value)}
+                data-testid="jiuwenmate-office-period-end"
               />
             </span>
           )}
@@ -541,7 +559,7 @@ function ActivityIndividualTab({
   const keyword = query.trim();
   const usage = usageChange(member?.days ?? [], period, today);
   const groups = (member?.groups ?? []).filter((group) => !keyword || group.name.includes(keyword));
-  const percent = usage.percent === null ? t('jiuwenmate.office.noResponse') : `${usage.percent}%`;
+  const percent = usage.percent === null ? '—' : `${usage.percent}%`;
 
   return (
     <div className="jiuwenmate-office__individual" data-testid="jiuwenmate-office-individual">

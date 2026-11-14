@@ -438,6 +438,7 @@ export function withColleagueEdit(
     connectors?: readonly string[];
     plugins?: readonly string[];
     knowledge?: readonly string[];
+    starterPrompts?: readonly string[];
   },
 ): JiuwenMateWireSettings {
   const settings = toWireSettings(
@@ -456,6 +457,7 @@ export function withColleagueEdit(
         connectors: [...(edit.connectors ?? colleague.capabilities.connectors)],
         plugins: [...(edit.plugins ?? colleague.capabilities.plugins)],
         knowledge: [...(edit.knowledge ?? colleague.capabilities.knowledge)],
+        starterPrompts: [...(edit.starterPrompts ?? colleague.capabilities.starterPrompts)],
       },
     },
     models,
@@ -940,8 +942,15 @@ export function toSchedule(value: unknown): JiuwenMateSchedule {
     endsAt: text(plan.ends_at) || null,
     conversationId: text(plan.conversation_id) || `schedule:${text(plan.plan_id)}`,
     runCount: typeof plan.run_count === 'number' ? plan.run_count : 0,
-    lastStatus: plan.last_status === 'failed' || plan.last_status === 'completed' || plan.last_status === 'paused'
-      ? plan.last_status : plan.enabled === true ? 'running' : 'paused',
+    // Trust server last_status including running: a finished once/ends_at plan can be
+    // enabled=false while its latest fire is still in flight; remapping that to paused
+    // flashes "已暂停" before "已完成" on the next refresh.
+    lastStatus: plan.last_status === 'failed'
+      || plan.last_status === 'completed'
+      || plan.last_status === 'paused'
+      || plan.last_status === 'running'
+      ? plan.last_status
+      : plan.enabled === true ? 'running' : 'paused',
   };
 }
 
@@ -1104,7 +1113,11 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
       return toModelCatalog(await request(JIUWENMATE_METHODS.modelsList));
     },
     async loadActivity(): Promise<JiuwenMateActivity> {
-      return toActivity(record(await request(JIUWENMATE_METHODS.activityGet)).activity);
+      const viewer = {
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+        utc_offset_minutes: -new Date().getTimezoneOffset(),
+      };
+      return toActivity(record(await request(JIUWENMATE_METHODS.activityGet, viewer)).activity);
     },
     async listSchedules(agentId?: string): Promise<JiuwenMateSchedule[]> {
       const listed = record(await request(JIUWENMATE_METHODS.scheduleList, agentId ? { agent_id: agentId } : {}));

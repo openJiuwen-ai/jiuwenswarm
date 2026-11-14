@@ -17,12 +17,13 @@ Two mount modes, picked by `memory.builtin.jiuwen.mode` (env
   ``identity_org`` / ``identity_user`` are http-only.
 - ``sdk``: the agent-memory kernel is assembled **in-process**. Kernel config
   priority: (1) the two-level namespace dict inlined under
-  ``memory.builtin.jiuwen.sdk`` in config.yaml (credential fields + markdown
-  root are injected here, then passed as ``config_dict``); (2) if absent, the
+    ``memory.builtin.jiuwen.sdk`` in config.yaml (credential fields + markdown
+    root are injected here, then passed as ``config_dict``); (2) if absent, the
   provider's **built-in agent-scenario default** (F09: document 真源 + shadow
   index + agent engine + agent_llm extractor — the serve-doc config hardcoded
   in the adapter, 2026-10-17). Either way the provider deep-merges the dict
-  onto its built-in default via ``_merge_config_over_default()``.
+    onto its built-in default via ``_merge_config_over_default()``. An eligible
+    Web turn supplies its media settings and workspace binding as SDK globals.
 
 Config shape (config.yaml)::
 
@@ -51,8 +52,13 @@ import hashlib
 import json
 import logging
 import os
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
+    get_enabled_multimodal_model_config,
+)
 
 from .config import _load_config, get_embed_config
 
@@ -107,10 +113,60 @@ def _custom_sdk_config_dict(j: Dict[str, Any]) -> Dict[str, Any]:
 
     ``memory.builtin.jiuwen.sdk`` holds the complete agent-memory assembly config
     (globals + per-namespace instance maps, same shape as config.serve-doc.yml).
-    Returns a shallow-filtered copy without the ``config_path`` key (legacy).
+    Returns a shallow copy without the legacy ``config_path`` key.
     """
     sdk = j.get("sdk") if isinstance(j.get("sdk"), dict) else {}
     return {k: v for k, v in sdk.items() if k != "config_path"}
+
+
+def _memory_scope(config: dict[str, Any], agent_name: str | None) -> dict[str, str]:
+    session_id = config.get("session_id")
+    return {
+        "org": str(config.get("scope_id") or _DEFAULT_SCOPE),
+        "space": str(config.get("space") or ""),
+        "user": str(config.get("user_id") or _DEFAULT_USER),
+        "agent": str(agent_name or config.get("agent_id") or "jiuwenswarm"),
+        "session": str(session_id) if session_id is not None else "",
+    }
+
+
+def get_jiuwen_sdk_media_globals(
+    config: dict[str, Any],
+    runtime_config: dict[str, Any],
+    *,
+    workspace: str | None,
+    agent_name: str | None,
+) -> dict[str, Any]:
+    """Forward Web models and bind a workspace when the host grants access."""
+    video = get_enabled_multimodal_model_config(runtime_config, "video")
+    audio = get_enabled_multimodal_model_config(runtime_config, "audio")
+    if not video and not audio:
+        return {}
+
+    jiuwen = get_jiuwen_builtin_config(config)
+    sdk_globals = _custom_sdk_config_dict(jiuwen).get("globals")
+    configured_roots = sdk_globals.get("local_media_roots") if isinstance(sdk_globals, dict) else None
+    globals_config: dict[str, Any] = {}
+    if workspace and not configured_roots and not os.getenv("JIUWEN_MEMORY_VIDEO_ROOTS", "").strip():
+        try:
+            root = Path(workspace).expanduser()
+            if root.is_absolute():
+                root = root.resolve(strict=True)
+                if root != root.parent and not str(root).startswith(("//", "\\\\")) and root.is_dir():
+                    globals_config["local_media_roots"] = [
+                        {"scope": _memory_scope(jiuwen, agent_name), "root": str(root)},
+                    ]
+        except (OSError, ValueError, RuntimeError):
+            logger.debug("[JiuwenRailBuilder] workspace unavailable for media import")
+    for prefix, model in (("video", video), ("asr", audio)):
+        if not model:
+            continue
+        globals_config.update({
+            f"{prefix}_base_url": str(model.get("api_base") or model.get("base_url")).strip(),
+            f"{prefix}_model": str(model.get("model_name") or model.get("model")).strip(),
+            f"{prefix}_api_key": str(model.get("api_key") or "").strip(),
+        })
+    return globals_config
 
 
 def _inject_sdk_creds_and_root(
@@ -198,6 +254,8 @@ def _build_security_provider(org: str, user: str) -> Any:
 def build_jiuwen_memory_rail(
     config: Optional[Dict[str, Any]] = None,
     agent_name: Optional[str] = None,
+    *,
+    sdk_media_globals: dict[str, Any] | None = None,
 ) -> Optional[Any]:
     """Build a JiuwenMemoryRail + AgentMemoryMemoryProvider from config.
 
@@ -224,13 +282,10 @@ def build_jiuwen_memory_rail(
 
     j = get_jiuwen_builtin_config(config)
     mode = get_jiuwen_builtin_mode(config)
-    user_id = str(j.get("user_id") or _DEFAULT_USER)
-    scope_id = str(j.get("scope_id") or _DEFAULT_SCOPE)
-    # session_id 缺省 ""：AgentMemory scope 语义——留空 = 跨会话共享，显式传值才隔离。
-    session_id = str(j.get("session_id") if j.get("session_id") is not None else "")
-    # agent_id：优先当前运行 agent 的 name（唯一标识，作 scope.agent 轴）；缺省
-    # 回落 config agent_id（历史语义 "jiuwenswarm"），再缺省固定 "jiuwenswarm"。
-    agent_id = str(agent_name or j.get("agent_id") or "jiuwenswarm")
+    scope = _memory_scope(j, agent_name)
+    user_id, scope_id, agent_id, session_id = (
+        scope["user"], scope["org"], scope["agent"], scope["session"]
+    )
 
     try:
         if mode == "sdk":
@@ -242,28 +297,19 @@ def build_jiuwen_memory_rail(
             # 时 provider.is_available() 为 False，rail 静默降级（memory 停用）。
             # 身份由本装配层产出（composition root），不从业务 user_id/scope_id 自述。
             security_provider = _build_security_provider(scope_id, user_id)
-            inline = _custom_sdk_config_dict(j)
+            inline = deepcopy(_custom_sdk_config_dict(j))
             if inline:
-                final_dict = _inject_sdk_creds_and_root(inline, config)
-                provider = AgentMemoryMemoryProvider(
-                    config_dict=final_dict,
-                    user_id=user_id,
-                    agent_id=agent_id,
-                    space=str(j.get("space") or ""),
-                    security_provider=security_provider,
-                )
-                logger.info(
-                    "[JiuwenRailBuilder] using inline kernel config dict from config.yaml"
-                )
-                config_desc = "inline-config-dict"
-            else:
-                provider = AgentMemoryMemoryProvider(
-                    user_id=user_id,
-                    agent_id=agent_id,
-                    space=str(j.get("space") or ""),
-                    security_provider=security_provider,
-                )
-                config_desc = "provider-builtin-agent-default"
+                _inject_sdk_creds_and_root(inline, config)
+            if sdk_media_globals:
+                inline.setdefault("globals", {}).update(deepcopy(sdk_media_globals))
+            provider = AgentMemoryMemoryProvider(
+                config_dict=inline or None,
+                user_id=user_id,
+                agent_id=agent_id,
+                space=scope["space"],
+                security_provider=security_provider,
+            )
+            config_desc = "merged-config-dict" if inline else "provider-builtin-agent-default"
         else:
             base_url = str(j.get("base_url") or os.environ.get("JIUWEN_MEMORY_BASE_URL", "") or "").strip()
             if not base_url:
@@ -308,7 +354,11 @@ def build_jiuwen_memory_rail(
     return rail
 
 
-def jiuwen_builtin_config_fingerprint(config: Optional[Dict[str, Any]] = None) -> str:
+def jiuwen_builtin_config_fingerprint(
+    config: Optional[Dict[str, Any]] = None,
+    *,
+    sdk_media_globals: dict[str, Any] | None = None,
+) -> str:
     """Stable fingerprint of the jiuwen builtin config for rail rebuild checks.
 
     Mirrors _embedding_config_fingerprint's contract: equal configs must
@@ -316,8 +366,8 @@ def jiuwen_builtin_config_fingerprint(config: Optional[Dict[str, Any]] = None) -
     compared in clear.
 
     模式相关字段只进各自模式的指纹：sdk 指纹 = 内联 sdk dict 的 sha256（无内联
-    时固定 ``builtin-default`` 标记——provider 内置默认随 adapter 代码更新，
-    不随用户配置变化）；http 指纹 = base_url/api_key hash/identity 轴。两模式
+    时固定 ``builtin-default`` 标记）以及会话多模态模型与导入目录的哈希；
+    http 指纹 = base_url/api_key hash/identity 轴。两模式
     共享的 scope 轴（user/scope/session/agent/space）与 session_end_extract 恒参与。
     """
     j = get_jiuwen_builtin_config(config)
@@ -342,6 +392,9 @@ def jiuwen_builtin_config_fingerprint(config: Optional[Dict[str, Any]] = None) -
                 parts += ["inline-unhashable"]
         else:
             parts += ["builtin-default"]
+        if sdk_media_globals:
+            payload = json.dumps(sdk_media_globals, sort_keys=True, ensure_ascii=False)
+            parts.append(hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16])
     else:
         base_url = str(j.get("base_url") or os.environ.get("JIUWEN_MEMORY_BASE_URL", "") or "").strip()
         if not base_url:

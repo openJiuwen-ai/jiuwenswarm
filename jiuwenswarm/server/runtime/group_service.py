@@ -145,31 +145,41 @@ def read_group(group_id: str) -> dict | None:
     return state
 
 
-def group_organization_teams(group_id: str) -> list[dict]:
-    """Expert-team instances recorded for a swarm group, or an empty list."""
-    try:
-        state = read_group(group_id)
-    except GroupError:
-        return []
-    if not isinstance(state, dict):
-        return []
-    teams = state.get("organization_teams")
-    if not isinstance(teams, list):
+def _organization_teams(state: dict) -> list[dict]:
+    """Normalize legacy rows using only their recorded organization identity."""
+    legacy_id = str(state.get("organization_id") or "")
+    stored = state.get("organization_teams")
+    if not isinstance(stored, list):
         return []
     return [
-        item
-        for item in teams
+        {**copy.deepcopy(item), "organization_id": str(item.get("organization_id", legacy_id) or "")}
+        for item in stored
         if isinstance(item, dict) and str(item.get("team_id") or "").strip()
     ]
 
 
-def clear_group_organization_binding(group_id: str) -> None:
-    """Forget the live organization registration. Plans and messages stay."""
+def group_organization_teams(group_id: str, organization_id: str | None = None) -> list[dict]:
+    """Read one organization's members, or all registrations for group-wide operations."""
+    try:
+        state = read_group(group_id)
+    except GroupError:
+        return []
+    teams = _organization_teams(state) if isinstance(state, dict) else []
+    if organization_id is not None:
+        teams = [item for item in teams if item["organization_id"] == organization_id]
+    return teams
+
+
+def clear_group_organization_binding(group_id: str, organization_id: str) -> None:
+    """Remove only this organization's registrations, retaining concurrent rounds."""
     state = read_group(group_id)
     if state is None:
         return
-    state.pop("organization_id", None)
-    state["organization_teams"] = []
+    state["organization_teams"] = [
+        item for item in _organization_teams(state) if item["organization_id"] != organization_id
+    ]
+    if state.get("organization_id") == organization_id:
+        state.pop("organization_id", None)
     state["updated_at"] = time.time()
     _save(state)
 
@@ -192,34 +202,25 @@ def mark_group_organization(
     state = read_group(group_id)
     if state is None:
         return
+    others = [item for item in _organization_teams(state) if item["organization_id"] != organization_id]
     state["organization_id"] = organization_id
-    state["organization_teams"] = teams
+    state["organization_teams"] = others + [
+        {**copy.deepcopy(item), "organization_id": organization_id} for item in teams
+    ]
     state["updated_at"] = time.time()
     _save(state)
 
 
-def upsert_group_organization_team(
-    group_id: str,
-    organization_id: str,
-    entry: dict,
-) -> None:
-    """Persist one proxy-to-instance binding without replacing the others."""
+def upsert_group_organization_team(group_id: str, organization_id: str, entry: dict) -> None:
+    """Upsert by organization and member, never replacing another round's rows."""
     state = read_group(group_id)
     if state is None:
         return
-    previous = str(state.get("organization_id") or "")
-    # A different organization must not keep the previous round's members.
-    # Those rows would be invited into the new organization.
-    if previous and previous != organization_id:
-        stored = []
-    else:
-        stored = state.get("organization_teams") or []
-    member_name = entry.get("member_name")
-    teams = []
-    for item in stored:
-        if isinstance(item, dict) and item.get("member_name") != member_name:
-            teams.append(item)
-    teams.append(copy.deepcopy(entry))
+    teams = [
+        item for item in _organization_teams(state)
+        if (item["organization_id"], item.get("member_name")) != (organization_id, entry.get("member_name"))
+    ]
+    teams.append({**copy.deepcopy(entry), "organization_id": organization_id})
     state["organization_id"] = organization_id
     state["organization_teams"] = teams
     state["updated_at"] = time.time()
@@ -298,6 +299,12 @@ def update_group_organization_plan(
     plans = group_organization_plans(group_id)
     for item in plans:
         if item["plan_id"] == plan_id:
+            if item.get("cleanup_status") and "status" in fields and not fields.get("runtime_interrupted"):
+                kept = {}
+                for key, value in fields.items():
+                    if key not in {"status", "error", "run_id", "run_owner"}:
+                        kept[key] = value
+                fields = kept
             item.update(copy.deepcopy(fields))
             break
     state["organization_plans"] = plans
@@ -358,6 +365,9 @@ def _public(state: dict) -> dict:
         external = definition.get("member", {}).get("external_cli") or {}
         if external.get("cli_agent") in {"claude", "codex"}:
             member["cli_agent"] = external["cli_agent"]
+    from jiuwenswarm.agents.swarm.group_route import public_routes
+
+    result["organization_routes"] = public_routes(state["group_id"])
     return result
 
 
@@ -918,7 +928,7 @@ class GroupService:
                         await self.manager_factory(channel_id).stop_session_runtime(
                             child_session, reason="group.delete.private",
                         )
-                if state.get("organization_id"):
+                if group_organization_teams(group_id):
                     from jiuwenswarm.agents.swarm.group_org_bootstrap import (
                         dissolve_group_organization,
                     )

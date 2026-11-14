@@ -51,6 +51,34 @@ test('chat.send is completions SSE with query dual-write', () => {
   assert.equal(assembled.jsonBody.content, 'hi');
 });
 
+test('session assets use the dedicated urls', () => {
+  const listed = assembleWebRest('session.assets.list', { session_id: 'sid' }, BASE);
+  assert.ok(listed);
+  assert.equal(listed.verb, 'GET');
+  assert.equal(listed.url, '/api/v1/sessions/sid/assets');
+  assert.equal(listed.jsonBody, null);
+
+  const registered = assembleWebRest(
+    'session.assets.register',
+    { session_id: 'sid', items: [{ path: '/tmp/a.pdf' }] },
+    BASE
+  );
+  assert.ok(registered);
+  assert.equal(registered.verb, 'POST');
+  assert.equal(registered.url, listed.url);
+  assert.deepEqual(registered.jsonBody, { items: [{ path: '/tmp/a.pdf' }] });
+
+  const renamed = assembleWebRest(
+    'session.assets.rename',
+    { session_id: 'sid', asset_id: 'asset_ab', name: 'brief' },
+    BASE
+  );
+  assert.ok(renamed);
+  assert.equal(renamed.verb, 'PATCH');
+  assert.equal(renamed.url, '/api/v1/sessions/sid/assets/asset_ab');
+  assert.deepEqual(renamed.jsonBody, { name: 'brief' });
+});
+
 test('interrupt and answer put session_id in path', () => {
   const interrupt = assembleWebRest(
     'chat.interrupt',

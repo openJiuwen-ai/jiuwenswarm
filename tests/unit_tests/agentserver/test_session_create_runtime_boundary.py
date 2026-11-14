@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
+from e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.session_provisioner import (

@@ -870,41 +870,45 @@ async def test_parallel_guard_does_not_resume_after_another_call_blocks(first_fa
     rail, router, snapshot, outer, _ = await _active(["weekly-release-pack"])
     route = rail._outer_states[id(outer)].pack_route
     route.root_loaded = True
-    both_waiting = asyncio.Event()
+    first_waiting = asyncio.Event()
+    second_started = asyncio.Event()
     first_release = asyncio.Event()
-    second_release = asyncio.Event()
     entered = []
 
     async def controlled_snapshot():
         index = len(entered)
         entered.append(index)
-        if len(entered) == 2:
-            both_waiting.set()
+        first_waiting.set()
         if index == 0:
             await first_release.wait()
             if first_failure == "snapshot_error":
                 raise TimeoutError("inventory unavailable")
             return {**snapshot, "inventory_revision": "changed"}
-        await second_release.wait()
         return copy.deepcopy(snapshot)
 
     router.snapshot = controlled_snapshot
     first = _tool_ctx(outer, "skill_tool", {"skill_name": "release-note"})
     second = _tool_ctx(outer, "skill_tool", {"skill_name": "risk-check"})
     first_task = asyncio.create_task(rail.before_tool_call(first))
-    second_task = asyncio.create_task(rail.before_tool_call(second))
+    await asyncio.wait_for(first_waiting.wait(), timeout=2)
+
+    async def queued_guard():
+        second_started.set()
+        await rail.before_tool_call(second)
+
+    second_task = asyncio.create_task(queued_guard())
     try:
-        await asyncio.wait_for(both_waiting.wait(), timeout=2)
+        await asyncio.wait_for(second_started.wait(), timeout=2)
+        assert entered == [0]
         first_release.set()
         await first_task
         assert first.inputs.tool_result["reason"] == "skillpack_state_changed"
-        second_release.set()
         await second_task
         assert second.inputs.tool_result["reason"] == "skillpack_state_changed"
         assert route.blocked and not route.member_started
+        assert entered == [0]
     finally:
         first_release.set()
-        second_release.set()
         await asyncio.gather(first_task, second_task, return_exceptions=True)
 
 

@@ -168,6 +168,23 @@ _HANDOFF_KIND_BY_TEMPLATE: dict[str, str] = {
 }
 
 
+def _open_team_runtime_db():
+    """Open the team runtime database used by the current team spec.
+
+    Returns ``None`` when personal sqlite storage has no resolvable path.
+    """
+    from openjiuwen.agent_teams.spawn.shared_resources import get_shared_db
+
+    from jiuwenswarm.agents.harness.team.config_loader import (
+        resolve_team_runtime_database_config,
+    )
+
+    config = resolve_team_runtime_database_config()
+    if config is None:
+        return None
+    return get_shared_db(config)
+
+
 @dataclass(frozen=True, slots=True)
 class _MessageDisplay:
     """一条邮箱消息在前端事件上的展示字段."""
@@ -586,7 +603,7 @@ class TeamMonitorHandler(BaseMonitorHandler):
         *,
         exclude_leader: bool = False,
     ) -> list[dict[str, Any]] | None:
-        """monitor 不在时直查 ``team.db`` 取该 team 的全部成员（/join 成员校验降级）。
+        """monitor 不在时直查团队运行库取该 team 的全部成员（/join 成员校验降级）。
 
         monitor 是 runtime 运行态对象，runtime 被 chat.interrupt 中断 / 后端重启
         / 轮间 idle 时 monitor 不在，但成员定义静态持久于全局 ``team_member`` 表，
@@ -611,19 +628,13 @@ class TeamMonitorHandler(BaseMonitorHandler):
                 ``build_team`` 经默认 role 建出，``role`` 字段和普通 teammate 一样，
                 按 role 过滤筛不掉它。
         """
-        from openjiuwen.agent_teams.spawn.shared_resources import get_shared_db
-        from openjiuwen.agent_teams.tools.database.config import DatabaseConfig
         from openjiuwen.agent_teams.tools.member_options import load_member_options
-
-        from jiuwenswarm.common.config import get_config
-        from jiuwenswarm.agents.harness.team.config_loader import resolve_team_sqlite_db_path
 
         if not team_name:
             return None
-        db_path = resolve_team_sqlite_db_path(get_config())
-        if db_path is None:
+        db = _open_team_runtime_db()
+        if db is None:
             return None
-        db = get_shared_db(DatabaseConfig(db_type="sqlite", connection_string=str(db_path)))
 
         # db.member dao 在 initialize() 后才挂载（未初始化时为 None），故必须先
         # initialize；幂等，runtime 已起过则 no-op。
@@ -656,7 +667,7 @@ class TeamMonitorHandler(BaseMonitorHandler):
         session_id: str,
         team_name: str,
     ) -> dict[str, Any] | None:
-        """monitor 不在时直查 ``team.db`` 拼出与 ``get_team_snapshot`` 同形的快照.
+        """monitor 不在时直查团队运行库，拼出与 ``get_team_snapshot`` 同形的快照.
 
         历史恢复走 ``team.snapshot`` RPC 时，runtime / monitor 往往已停，但
         任务行仍在 per-session 动态表 ``team_task_<hash>`` 里。本方法绑定
@@ -671,22 +682,15 @@ class TeamMonitorHandler(BaseMonitorHandler):
             ``{members, tasks, team_id}`` 或 None（参数/路径无效、查询失败）。
         """
         from openjiuwen.agent_teams.context import reset_session_id, set_session_id
-        from openjiuwen.agent_teams.spawn.shared_resources import get_shared_db
-        from openjiuwen.agent_teams.tools.database.config import DatabaseConfig
         from openjiuwen.agent_teams.tools.member_options import load_member_options
-
-        from jiuwenswarm.agents.harness.team.config_loader import resolve_team_sqlite_db_path
-        from jiuwenswarm.common.config import get_config
 
         sid = str(session_id or "").strip()
         tname = str(team_name or "").strip()
         if not sid or not tname:
             return None
-        db_path = resolve_team_sqlite_db_path(get_config())
-        if db_path is None:
+        db = _open_team_runtime_db()
+        if db is None:
             return None
-
-        db = get_shared_db(DatabaseConfig(db_type="sqlite", connection_string=str(db_path)))
         token = set_session_id(sid)
         try:
             await db.initialize()

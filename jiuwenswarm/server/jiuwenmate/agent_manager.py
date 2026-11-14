@@ -65,7 +65,10 @@ from jiuwenswarm.server.jiuwenmate.permission_approval_repository import (
     PermissionApproval,
     PermissionApprovalRepository,
 )
-from jiuwenswarm.server.jiuwenmate.permission_replies import IMPermissionReplies, approval_instructions
+from jiuwenswarm.server.jiuwenmate.permission_replies import (
+    IMPermissionReplies, approval_instructions, permission_command, permission_reply_text,
+)
+from jiuwenswarm.server.jiuwenmate.permission_cleanup import discard_permission_confirmation
 from jiuwenswarm.server.jiuwenmate.group_share_repository import GroupShareRepository
 from jiuwenswarm.server.jiuwenmate.group_sharing_service import APPROVAL_CONVERSATION, GroupSharingService
 from jiuwenswarm.server.jiuwenmate.ports.budget import DEFAULT_RESERVATION_TOKENS, HostBudgetPort
@@ -286,6 +289,7 @@ class AgentManager:
             permission_approvals=self._permission_approvals,
             group_sharing=self.group_sharing,
         )
+        self._permission_cleanup_fingerprint = driver.permission_cleanup_fingerprint
         self._scheduler = SessionScheduler(
             sessions,
             driver,
@@ -716,8 +720,13 @@ class AgentManager:
         app_id: str,
         source_message_id: str,
         is_direct_message: bool = True,
+        receiver_bot_mentioned: bool = False,
+        mentions_other: bool = False,
     ) -> bool:
         """Consume trusted IM control messages before admitting ordinary business Requests."""
+        if mentions_other:
+            return False
+        control_text = permission_reply_text(text, receiver_bot_mentioned=receiver_bot_mentioned)
         pending = await asyncio.to_thread(
             self._permission_approvals.for_route, namespace_id, agent_id,
             principal_ref=access.principal_ref, channel=channel, target_id=target_id, app_id=app_id,
@@ -731,8 +740,10 @@ class AgentManager:
                 "idempotency_key": f"sharing-wait:{source_message_id}",
                 "text": "跨群分享需要 Agent 所有者在 WorkSwarm 私聊中批准，当前会话的回复不能代为授权。",
             })
-            words = text.strip().split(maxsplit=1)
-            return bool(words and words[0].lower() in {"批准", "拒绝", "同意", "approve", "reject"})
+            words = control_text.strip().split(maxsplit=1)
+            return permission_command(control_text) is not None or bool(
+                words and words[0].lower() in {"批准", "拒绝", "同意", "approve", "reject"}
+            )
         handler = IMPermissionReplies(
             self._permission_approvals, decide=self.decide_permission_approval,
             send=self._send_permission_notice,
@@ -741,6 +752,7 @@ class AgentManager:
             text, namespace_id=namespace_id, agent_id=agent_id, access=access,
             channel=channel, target_id=target_id, app_id=app_id, source_message_id=source_message_id,
             is_direct_message=is_direct_message,
+            receiver_bot_mentioned=receiver_bot_mentioned,
         )
 
     async def recover(
@@ -926,6 +938,12 @@ class AgentManager:
 
         def clear(_task):
             self._permission_resume_tasks.pop(approval.approval_id, None)
+            if not _task.cancelled():
+                try:
+                    _task.result()
+                except Exception as exc:
+                    logger.warning("[JiuwenMate] permission resume will retry: request=%s approval=%s error_type=%s",
+                                   approval.request_id, approval.approval_id, type(exc).__name__)
 
         task.add_done_callback(clear)
 
@@ -940,16 +958,21 @@ class AgentManager:
                     # The request may have failed after its decision was saved
                     # but before consume, including across a process restart.
                     record = state.record
-                    generation = await asyncio.to_thread(
-                        self.group_sharing.repository.saved_request_window, record.namespace_id, record.request_id,
+                    fingerprint = None
+                    try:
+                        fingerprint = await self._permission_cleanup_fingerprint(record, approval)
+                    except Exception as exc:
+                        logger.warning(
+                            "[JiuwenMate] permission cleanup fingerprint unavailable: "
+                            "request=%s approval=%s error_type=%s",
+                            record.request_id, approval.approval_id, type(exc).__name__,
+                        )
+                    # Core still validates the fallback identity before the approval is consumed.
+                    await discard_permission_confirmation(
+                        sessions=self._sessions, windows=self._windows, sharing=self.group_sharing,
+                        approvals=self._permission_approvals, record=record, approval=approval,
+                        runtime_fingerprint=fingerprint,
                     )
-                    await core.discard_persistent_confirmation(
-                        self._windows.bind(record.namespace_id, record.agent_id, record.session_id,
-                                           generation=generation),
-                        agent_id=record.agent_id, session_id=record.session_id,
-                        request_id=record.request_id, spec_fingerprint=record.config_fingerprint,
-                    )
-                    await asyncio.to_thread(self._permission_approvals.consume, approval.approval_id)
                     await self._scheduler.wake(approval.namespace_id, approval.session_id)
                     return
                 try:

@@ -982,7 +982,7 @@ class TestCleanupStaleOpenjiuwenDescs:
         cleanup_call = source.index("cleanup_stale_openjiuwen_descs()")
 
         # 只约束 openjiuwen SDK 本体：清理针对的是 SDK 会读取的过期描述文件。
-        # ``openjiuwen_protocol`` 是独立的纯协议包，不读取 workspace 描述文件，
+        # ``e2a`` 是独立的纯协议包，不读取 workspace 描述文件，
         # 按导入分组规则可以排在清理调用之前。
         sdk_import_markers = (
             "from openjiuwen.",

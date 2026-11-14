@@ -10,7 +10,7 @@ import pytest
 
 from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel, FeishuConfig
 from agent_gateway.channel_manager.base import RobotMessageRouter
-from openjiuwen_protocol.message import Message, EventType
+from e2a.message import Message, EventType
 
 
 def _make_channel() -> FeishuChannel:

@@ -20,17 +20,15 @@ dependencies = [
     "ruamel.yaml>=0.18.0,<0.20",
     "lark-oapi>=1.5.3,<2",
     "loguru>=0.7.3,<0.8",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4",
     "openjiuwen-computeruse @ git+https://gitcode.com/openJiuwen/computer-use.git@2c8171fb6783dba589dd396263b3161186c5f3e4",
     "JiuwenMemory>=0.2.0",
     # openjiuwen's FS read-write lock acquires and releases on different tasks;
     # filelock>=4.0.2 binds async locks to their acquiring task, stranding them.
     "filelock>=3.25.0,<4",
-    "openjiuwen-protocol @ git+https://gitcode.com/xiaoyao42/agent-protocol.git@9cad18d10fb7b56644de018c4910fc6b7c25bbf9#subdirectory=openjiuwen-protocol",
-    # openjiuwen（agent-core）自本变更起不再由母仓直接声明，唯一来源是 agent-gateway
-    # 的传递钉：whl 元数据与 uv 解析中 rev 均以 gateway 为准，由发版流程同步。
-    # 前进 core = 把 agent-gateway re-pin 到钉了目标 agent-core rev 的 commit。
+    "e2a @ git+https://gitcode.com/openJiuwen/agent-protocol.git@06a75d66eb011762077e8924d0d1e41791a93034#subdirectory=e2a",
     # Gateway 传输层已拆分为独立仓 agent-gateway
-    "agent-gateway @ git+https://gitcode.com/openJiuwen/agent-gateway.git@a1bb80d9edc2cdfc41ccdf3ba2642e774e7f4cda",
+    "agent-gateway @ git+https://gitcode.com/openJiuwen/agent-gateway.git@2c40ac150276477a8079ef7937674b600b6a1420",
     "pgvector>=0.4.2,<0.5",
     "portalocker>=3.2.0,<4",
     "prompt-toolkit>=3.0,<4.0",
@@ -103,7 +101,7 @@ harmony = [
     "ruamel.yaml>=0.18.0",
     "lark-oapi>=1.5.3",
     "loguru>=0.7.3",
-    "openjiuwen>=0.1.20",  # 经 agent-gateway 传递（见 project.dependencies 注释）；harmony 组为手动安装清单，从 PyPI 解析
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4",
     "filelock>=3.25.0,<4",  # task-owned async locks strand openjiuwen FS locks
     "pgvector>=0.4.2",
     "portalocker>=3.2.0",
@@ -232,18 +230,23 @@ jiuwenswarm = [
 
 [tool.uv]
 default-groups = ['dev']
-# openjiuwen（agent-core）自本变更起不再由母仓直接声明：whl 元数据与 uv 解析中，
-# 它唯一的 git 钉都是 agent-gateway 的传递钉，rev 以 gateway 为准、由发版流程同步。
-# override-dependencies 仅保留 openjiuwen-protocol —— 协议钉仍由母仓主导，
-# 覆盖网关传递的协议钉（override-dependencies 覆盖解析中所有来源的约束）。
+# The root project controls the core and protocol revisions during uv resolution.
+# Overrides replace complete requirements, so preserve each optional core extra.
+# The distribute extra enables both postgres and zmq.
 override-dependencies = [
-    "openjiuwen-protocol @ git+https://gitcode.com/xiaoyao42/agent-protocol.git@9cad18d10fb7b56644de018c4910fc6b7c25bbf9#subdirectory=openjiuwen-protocol",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4",
+    "openjiuwen[cua] @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4 ; extra == 'cua'",
+    "openjiuwen[claude] @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4 ; extra == 'claude'",
+    "openjiuwen[codex] @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4 ; extra == 'codex'",
+    "openjiuwen[postgres,zmq] @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4 ; extra == 'distribute'",
+    "e2a @ git+https://gitcode.com/openJiuwen/agent-protocol.git@06a75d66eb011762077e8924d0d1e41791a93034#subdirectory=e2a",
 ]
 
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
-agent-gateway = { git = "https://gitcode.com/openJiuwen/agent-gateway.git", rev = "a1bb80d9edc2cdfc41ccdf3ba2642e774e7f4cda" }
-openjiuwen-protocol = { git = "https://gitcode.com/xiaoyao42/agent-protocol.git", rev = "9cad18d10fb7b56644de018c4910fc6b7c25bbf9", subdirectory = "openjiuwen-protocol" }
+agent-gateway = { git = "https://gitcode.com/openJiuwen/agent-gateway.git", rev = "2c40ac150276477a8079ef7937674b600b6a1420" }
+openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "f3f8f576164cc405c046e43079c8ad00ee17f0c4" }
+e2a = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", rev = "06a75d66eb011762077e8924d0d1e41791a93034", subdirectory = "e2a" }
 openjiuwen-runtime-foundation = { git = "https://gitcode.com/openJiuwen/agent-runtime.git", branch = "develop", subdirectory = "foundation" }
 
 [dependency-groups]

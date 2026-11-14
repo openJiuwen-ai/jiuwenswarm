@@ -5,7 +5,7 @@
  */
 import { expect, test } from 'vitest';
 
-import tools from '@contract/tools.json';
+import tools from '@office/powerpoint/tools.json';
 
 import { parseScenePatch, PatchRefused } from './presentationScenePatch';
 
@@ -26,11 +26,15 @@ const BASES: Record<string, S> = {
   update_shape: { op: 'update_shape', shape_id: '2' },
   update_table: { op: 'update_table', shape_id: '2', row_height: 30 },
   delete_shape: { op: 'delete_shape', shape_id: '2' },
+  // A free line, and one between two anchors: each takes fields the other refuses.
+  add_connector: { op: 'add_connector', left: 10, top: 10, width: 100, height: 0 },
+  'add_connector:anchored': { op: 'add_connector', start_anchor: { shape_name: 'a', side: 'right' },
+    end_anchor: { shape_id: '2', side: 'left' } },
 };
 /** Which ops take each operation property, from the property descriptions ("add_table only", "Required for ..."). */
 const USES: Record<string, string[]> = {
   op: ['add_text'], // each op's own base is accepted below; here only a value outside the enum
-  name: ['add_text', 'add_shape', 'add_image', 'add_table', 'update_shape'],
+  name: ['add_text', 'add_shape', 'add_image', 'add_table', 'update_shape', 'add_connector'],
   text: ['add_text', 'add_shape', 'update_shape'],
   role: ['add_text', 'add_shape', 'update_shape'],
   text_style: ['add_text', 'add_shape', 'update_shape'],
@@ -44,21 +48,24 @@ const USES: Record<string, string[]> = {
   rotation: ['add_text', 'add_shape', 'add_image', 'update_shape'],
   z_order: ['update_shape'],
   fill: ['add_text', 'add_shape', 'update_shape'],
-  line: ['add_text', 'add_shape', 'update_shape'],
-  left: ['add_text', 'add_shape', 'add_image', 'add_table', 'update_shape'],
-  top: ['add_text', 'add_shape', 'add_image', 'add_table', 'update_shape'],
-  width: ['add_text', 'add_shape', 'add_image', 'add_table', 'update_shape'],
-  height: ['add_text', 'add_shape', 'add_image', 'add_table', 'update_shape'],
+  line: ['add_text', 'add_shape', 'update_shape', 'add_connector'],
+  left: ['add_text', 'add_shape', 'add_image', 'add_table', 'update_shape', 'add_connector'],
+  top: ['add_text', 'add_shape', 'add_image', 'add_table', 'update_shape', 'add_connector'],
+  width: ['add_text', 'add_shape', 'add_image', 'add_table', 'update_shape', 'add_connector'],
+  height: ['add_text', 'add_shape', 'add_image', 'add_table', 'update_shape', 'add_connector'],
   column_widths: ['add_table', 'update_table'], row_height: ['add_table', 'update_table'],
   cell_styles: ['update_table'], row_rules: ['update_table'],
-  // add_connector only (refused on purpose until the connector PR): connector_type, end_arrow, start_anchor,
-  // end_anchor, waypoints.
+  connector_type: ['add_connector', 'add_connector:anchored'], end_arrow: ['add_connector'],
+  start_anchor: ['add_connector:anchored'], end_anchor: ['add_connector:anchored'],
+  waypoints: ['add_connector:anchored'],
 };
 /** Constraints the schema states only in prose; the probe expects these instead of the raw bounds. */
 const PROSE: Record<string, { minimum?: number; skipLength?: boolean; length?: number }> = {
   // "At least 0.1 for shapes": the raw bounds are add_connector's, whose geometry may be 0 or negative.
   'width': { minimum: 0.1 },
   'height': { minimum: 0.1 },
+  'add_connector:width': {},
+  'add_connector:height': {},
   'add_table:column_widths': { skipLength: true, length: 2 }, // "one width in points per column"
   'input:assets': { skipLength: true, length: 1 }, // keys must differ; the schema cannot say so
 };

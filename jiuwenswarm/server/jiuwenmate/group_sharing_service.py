@@ -13,11 +13,9 @@ from openjiuwen.harness import persistent_agent as core
 
 from jiuwenswarm.server.jiuwenmate.group_share_repository import GroupShareRepository
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
-from jiuwenswarm.server.jiuwenmate.web_conversations import WebConversationStore
+from jiuwenswarm.server.jiuwenmate.web_conversations import APPROVAL_CONVERSATION, WebConversationStore
 
 logger = logging.getLogger(__name__)
-
-APPROVAL_CONVERSATION = "sharing-approvals"
 
 
 def _owner_web_request(record, session) -> bool:
