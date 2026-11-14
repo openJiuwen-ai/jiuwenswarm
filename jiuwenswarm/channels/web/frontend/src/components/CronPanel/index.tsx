@@ -13,6 +13,7 @@ import { CRON_TEMPLATES, KNOWN_TARGET_KEYS, SELECTABLE_TARGET_KEYS } from './con
 import { isTeamCronModeValue } from './cronMode';
 import { cronModelPayloadFields } from './cronModelSelection';
 import { normalizeWakeOffsetSeconds } from './cronWakeOffset';
+import { createSubmitGuard } from './drawerSubmitGuard';
 import { cronExprToSchedule, summarizeSchedule } from './scheduleConvert';
 import StatusBadge, { BoldRingIcon, RunningIcon } from './StatusBadge';
 import ConfirmDialog from './ConfirmDialog';
@@ -438,6 +439,14 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     | null
   >(null);
 
+  // 抽屉提交中标记：cron.job.create/update 走 WebSocket（超时上限 15s），期间"确认"按钮必须
+  // 禁用，否则慢响应窗口内重复点击会发出第二个独立请求，创建出两个同名任务（对齐
+  // HeartbeatPanel 的 drawer.submitting 机制）。tryBegin 同步拦截兜底同一事件循环内的
+  // 双击（state 置位要等下一次渲染才反映到 disabled），state 驱动按钮禁用态；
+  // 拦截语义抽在 drawerSubmitGuard.ts，由 tests/cronDrawerSubmitGuard.test.mjs 锁定。
+  const [drawerSubmitting, setDrawerSubmitting] = useState(false);
+  const drawerSubmitGuard = useRef(createSubmitGuard()).current;
+
   const [confirmState, setConfirmState] = useState<{ type: 'delete' | 'stop' | 'runNow'; job: CronTaskUI } | null>(
     null,
   );
@@ -751,6 +760,17 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   const expiredCount = useMemo(() => jobs.filter((j) => jobStatusKey(j) === 'expired').length, [jobs]);
 
   async function handleCreateSubmit(value: CronTaskFormValue) {
+    if (!drawerSubmitGuard.tryBegin()) return;
+    setDrawerSubmitting(true);
+    try {
+      await submitCreate(value);
+    } finally {
+      drawerSubmitGuard.end();
+      setDrawerSubmitting(false);
+    }
+  }
+
+  async function submitCreate(value: CronTaskFormValue) {
     // 选中真实项目时以项目自身模式为准；未选项目时用当前 UI 模式。
     const submittingWorkMode = value.workMode
       ?? (currentWorkMode === 'code' || currentWorkMode === 'work' ? currentWorkMode : null);
@@ -808,6 +828,17 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   }
 
   async function handleEditSubmit(jobId: string, value: CronTaskFormValue) {
+    if (!drawerSubmitGuard.tryBegin()) return;
+    setDrawerSubmitting(true);
+    try {
+      await submitEdit(jobId, value);
+    } finally {
+      drawerSubmitGuard.end();
+      setDrawerSubmitting(false);
+    }
+  }
+
+  async function submitEdit(jobId: string, value: CronTaskFormValue) {
     try {
       const patch = {
         name: value.name.trim(),
@@ -1905,6 +1936,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
               if (drawer.mode === 'edit') void handleEditSubmit(drawer.jobId, value);
               else void handleCreateSubmit(value);
             }}
+            submitting={drawerSubmitting}
           />
         )}
 
