@@ -6654,7 +6654,7 @@
       "daysAgo": "{{count}} 天前",
       "next": "下一组",
       "workRecord": "工作记录",
-      "groupChats": "群聊 {{count}}",
+      "groupChats": "群聊（{{count}} 个）",
       "channelColumns": {
         "group": "群聊",
         "channel": "频道",
