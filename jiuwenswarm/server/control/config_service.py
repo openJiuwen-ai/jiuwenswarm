@@ -22,6 +22,7 @@ from dotenv import dotenv_values
 
 from jiuwenswarm.common.browser_settings import project_browser_decision
 from jiuwenswarm.common.cua_config import cua_backend_settings, is_cua_agent_enabled
+from jiuwenswarm.common.moa_config import flatten_moa_for_config_panel
 from jiuwenswarm.common.permission_mode import canonical_permission_facade, permission_profile
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -439,6 +440,7 @@ def get_panel() -> dict[str, Any]:
     payload.update(cua_backend_settings())
     try:
         raw = _read_raw_config()
+        payload.update(flatten_moa_for_config_panel(raw))
         setup_guide_cfg = raw.get("setup_guide") or {}
         payload["setup_guide_enabled"] = _bool_text(
             setup_guide_cfg.get("enabled", True), True
@@ -522,6 +524,8 @@ def get_panel() -> dict[str, Any]:
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[config_service] panel yaml merge failed: %s", exc)
+        for key, value in flatten_moa_for_config_panel({}).items():
+            payload.setdefault(key, value)
         payload.setdefault("context_engine_enabled", "false")
         payload.setdefault("cua_agent_enabled", "true" if is_cua_agent_enabled(None) else "false")
         payload.setdefault("kv_cache_affinity_enabled", "false")
