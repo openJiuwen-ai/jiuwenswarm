@@ -253,12 +253,15 @@ def _read_with_retry(filepath: Path, max_attempts: int = 3) -> dict[str, Any]:
 
 def get_config():
     """读取并解析 config.yaml（锁保护 + 跨进程降级重试）。"""
+    from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
+    if is_agentos_runtime():
+        from jiuwenswarm.extensions.adx.workspace import check_workspace_config
+        check_workspace_config(get_config_file())
     config_base = _read_with_retry(get_config_file())
     # resolve_env_vars 和 _normalize_config 只操作内存数据，在锁外执行以缩短锁持有时间
     config_base = resolve_env_vars(config_base)
     _normalize_config(config_base)
 
-    from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
     if is_agentos_runtime():
         for section, env_key in (
             ("code_graph", "JIUWENSWARM_AGENTOS_CODE_GRAPH_CONFIG"),
@@ -266,11 +269,16 @@ def get_config():
         ):
             try:
                 defaults = json.loads(os.getenv(env_key, "{}"))
-                if isinstance(defaults, dict) and defaults:
-                    local = config_base.get(section)
-                    config_base[section] = {**defaults, **local} if isinstance(local, dict) else defaults
             except (ValueError, TypeError):
                 logger.warning("Ignoring malformed AgentOS %s deployment config", section)
+                continue
+            if isinstance(defaults, dict) and defaults:
+                local = config_base.get(section)
+                if section == "sandbox":
+                    from jiuwenswarm.extensions.adx.runtime_config import bind_runtime_sandbox
+                    config_base[section] = bind_runtime_sandbox(local, defaults)
+                else:
+                    config_base[section] = {**defaults, **local} if isinstance(local, dict) else defaults
 
     return apply_runtime_model_config(config_base)
 
@@ -584,8 +592,13 @@ def dump_yaml_round_trip(config_path: Path, data: Any) -> None:
     rt.indent(mapping=2, sequence=4, offset=2)
     rt.width = 4096
     tmp = config_path.with_name(f"{config_path.stem}.{uuid.uuid4().hex}.yaml.tmp")
+    from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
+    mode = config_path.stat().st_mode & 0o777 if is_agentos_runtime() and config_path.exists() else None
     try:
         with open(tmp, "w", encoding="utf-8") as f:
+            if mode is not None:
+                # Prepared AgentOS configuration can contain private business credentials.
+                os.fchmod(f.fileno(), mode)
             rt.dump(data, f)
         _atomic_replace(tmp, config_path)
     except BaseException:
@@ -4237,6 +4250,12 @@ def get_sandbox_endpoint() -> dict[str, Any]:
         result["url"] = url or _DEFAULT_YUANRONG_URL
         result["executor"] = _normalize_yuanrong_executor(sandbox.get("executor"))
         for key in _YUANRONG_ENDPOINT_OPTIONAL_KEYS:
+            if key in sandbox:
+                result[key] = sandbox[key]
+    if sandbox_type == "adx-environment":
+        for key in ("image", "rootfs_template", "runtime", "workdir", "mounts", "cpu", "cpu_limit", "memory", "mem_limit",
+                    "idle_timeout", "user", "group", "network", "connection", "env", "create_timeout",
+                    "schedule_timeout", "endpoint_file"):
             if key in sandbox:
                 result[key] = sandbox[key]
     if sandbox_type == "jiuwenbox-conch":

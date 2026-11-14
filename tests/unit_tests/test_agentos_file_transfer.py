@@ -1561,3 +1561,9 @@ async def test_container_file_http_mkdir() -> None:
     assert kwargs["user_id"] == "user-1"
     assert kwargs["session_id"] == "sess-1"
     assert "auth_headers" not in kwargs
+
+
+def test_normalize_upload_preserves_hidden_parent_directories() -> None:
+    for relative in (".jiuwenswarm/agent/sessions/s/uploads/a.txt", "docs./a.txt", "./.cache/a.txt"):
+        from pathlib import PurePosixPath
+        assert normalize_agent_file_upload_path(relative) == "/home/agentos/" + str(PurePosixPath(relative))

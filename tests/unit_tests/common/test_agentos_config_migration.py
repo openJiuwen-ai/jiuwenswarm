@@ -52,7 +52,7 @@ def test_agentos_runtime_preserves_yuanrong_config(
 ) -> None:
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "agentos")
     deployment_template = (
-        PACKAGE_ROOT.parent / "deploy" / "yuanrong" / "conf"
+        PACKAGE_ROOT.parent / "tests" / "fixtures" / "config"
         / "gateway-config-yuanrong.template.yaml"
     )
     deployed = YAML().load(deployment_template.read_text(encoding="utf-8"))

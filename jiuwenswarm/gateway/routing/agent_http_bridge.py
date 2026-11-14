@@ -71,6 +71,16 @@ async def upload_file_bytes_via_e2a(
 
     if not content:
         return False, {"error": "empty upload", "code": "BAD_REQUEST"}
+    native_upload = getattr(agent_client, 'upload_attachment', None)
+    if getattr(agent_client, 'native_file_streaming', False) is True:
+        from jiuwenswarm.extensions.agentos.agentos_router.router_client import AgentOSFileTransferError
+        try:
+            result = await native_upload(content, target_rel_path, user_id=user_id or '',
+                                         session_id=session_id or '', channel_id=channel_id)
+            return True, result
+        except AgentOSFileTransferError as exc:
+            if exc.code != 'NATIVE_UPLOAD_PREPARE_UNSUPPORTED':
+                return False, {'error': str(exc), 'code': exc.code}
     upload_id = uuid.uuid4().hex
     resolved_path = ""
     last_payload: dict[str, Any] = {}

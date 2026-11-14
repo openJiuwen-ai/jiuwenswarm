@@ -279,14 +279,11 @@ def _uses_agentos_routing() -> bool:
     file APIs are therefore valid only for the shared-directory deployment;
     in AgentOS they must never silently read the Gateway deployment directory.
     """
-    try:
-        from jiuwenswarm.common.config import get_config_raw
+    from jiuwenswarm.common.config import get_config_raw
 
-        gateway = (get_config_raw() or {}).get("gateway") or {}
-        client = gateway.get("agent_client") or {}
-        return str(client.get("type") or "").strip().lower() == "agentos_router"
-    except Exception:  # noqa: BLE001
-        return False
+    gateway = (get_config_raw() or {}).get("gateway") or {}
+    client = gateway.get("agent_client") or {}
+    return str(client.get("type") or "").strip().lower() in {"agentos_router", "adx_router"}
 
 
 class _SpaStaticHandler(SimpleHTTPRequestHandler):
@@ -611,7 +608,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(data)
 
-    def _proxy_http(self) -> None:
+    def _proxy_http(self, *, stream: bool = False) -> None:
         outer_host = self._clean_outer_host()
         if outer_host is None:
             self._write_proxy_error(400, "invalid Host header")
@@ -632,11 +629,27 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 timeout=self._HTTP_PROXY_TIMEOUT,
             )
 
+        response_started = False
         try:
             body = b""
             if self.command not in ("GET", "HEAD"):
                 length = int(self.headers.get("Content-Length", "0") or "0")
-                body = self.rfile.read(length) if length > 0 else b""
+                if stream:
+                    if length < 0 or self.headers.get('Transfer-Encoding'):
+                        self._write_proxy_error(400, 'Content-Length is required for file uploads')
+                        self.close_connection = True
+                        return
+                    def body_chunks():
+                        remaining = length
+                        while remaining:
+                            chunk = self.rfile.read(min(65536, remaining))
+                            if not chunk:
+                                raise ConnectionError('Incomplete file upload')
+                            remaining -= len(chunk)
+                            yield chunk
+                    body = body_chunks() if length else b''
+                else:
+                    body = self.rfile.read(length) if length > 0 else b""
 
             forward_headers: dict[str, str] = {}
             for key, value in self.headers.items():
@@ -652,19 +665,32 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
             conn.request(self.command, self.path, body=body, headers=forward_headers)
             resp = conn.getresponse()
-            resp_body = resp.read()
+            resp_body = None if stream else resp.read()
 
             self.send_response(resp.status, resp.reason)
             for key, value in resp.getheaders():
                 if key.lower() in self._HOP_BY_HOP_HEADERS:
                     continue
                 self.send_header(key, value)
+            if stream and resp.getheader('Content-Length') is None:
+                self.send_header('Connection', 'close')
+                self.close_connection = True
             self.end_headers()
+            response_started = True
             if self.command != "HEAD":
-                self.wfile.write(resp_body)
+                if stream:
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                else:
+                    self.wfile.write(resp_body)
         except Exception as exc:  # noqa: BLE001
             self.log_error("proxy http error: %s", exc)
-            self._write_proxy_error(502, "proxy http error")
+            if not response_started:
+                self._write_proxy_error(502, "proxy http error")
+            self.close_connection = True
         finally:
             conn.close()
 
@@ -1396,6 +1422,12 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         self._write_json(200 if status.get("reused") else 202, status)
 
     def _handle_file_api_get(self, parsed) -> None:
+        if self.api_target and parsed.path in {
+            '/file-api/raw-file', '/file-api/file-content', '/file-api/list-files',
+            '/file-api/list-markdown', '/file-api/upload', '/file-api/download', '/file-api/mkdir',
+        } and _uses_agentos_routing():
+            self._proxy_http(stream=True)
+            return
         path = parsed.path
         query = self._parse_query(parsed.query)
 
@@ -2025,6 +2057,12 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self.wfile.write(chunk)
 
     def _handle_file_api_post(self, parsed) -> None:
+        if self.api_target and parsed.path in {
+            '/file-api/raw-file', '/file-api/file-content', '/file-api/list-files',
+            '/file-api/list-markdown', '/file-api/upload', '/file-api/download', '/file-api/mkdir',
+        } and _uses_agentos_routing():
+            self._proxy_http(stream=True)
+            return
         if parsed.path == "/file-api/skills/upload-temp":
             self._handle_skills_upload_temp()
             return

@@ -1,0 +1,9 @@
+# Service settings; application YAML and dotenv are prepared by the caller.
+profile: standalone
+gateway:
+  home: ${HOME}
+  host: 127.0.0.1
+  port: 19001
+  web_host: 127.0.0.1
+  web_port: 19000
+  static_port: 5173

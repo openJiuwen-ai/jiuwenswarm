@@ -96,9 +96,15 @@ from jiuwenbox.server.runtime.base import (
     RuntimeFileOpResult,
 )
 from jiuwenbox.server.runtime.process import BackgroundJobNotFoundError, ProcessRuntime
+from jiuwenbox.supervisor.network import NetworkSetupError
 from jiuwenbox.server.workspace import JIUWENBOX_HOME
 from jiuwenbox.server.policy_update_store import PolicyUpdateStore
-from jiuwenbox.server.runtime.errors import SandboxNotFoundError, SandboxConflictError, SandboxStateError
+from jiuwenbox.server.runtime.errors import (
+    SandboxConflictError,
+    SandboxCreateError,
+    SandboxNotFoundError,
+    SandboxStateError,
+)
 
 RUNTIME_PROCESS = "process"
 RUNTIME_CONCH = "conch"
@@ -649,7 +655,14 @@ class SandboxManager:
                 if current_ref is not ref or ref.phase == SandboxPhase.DELETING:
                     return ref
                 ref.phase = SandboxPhase.ERROR
-                ref.error_message = str(e)
+                if isinstance(e, SandboxCreateError):
+                    ref.error_message = e.public_message
+                elif isinstance(e, NetworkSetupError):
+                    ref.error_message = "Sandbox network setup failed"
+                    if "xtables lock" in str(e).lower():
+                        ref.error_message += ": xtables lock is busy"
+                else:
+                    ref.error_message = "Sandbox backend failed to create the sandbox"
                 ref.ip_address = None
                 logger.error("Failed to create sandbox %s: %s", sandbox_id, e)
                 self._save_state(ref)

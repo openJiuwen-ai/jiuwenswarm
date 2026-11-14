@@ -500,6 +500,13 @@ def _find_package_root() -> Path | None:
 
 def _find_config_template_path() -> Path:
     """Locate the shipped ``config.yaml`` template inside the package."""
+    if is_agentos_runtime():
+        prepared = os.environ.get('JIUWENSWARM_AGENTOS_CONFIG_TEMPLATE', '').strip()
+        if prepared:
+            template = Path(prepared)
+            if not template.is_absolute() or not template.is_file():
+                raise RuntimeError('AgentOS workspace template is unavailable; run deployment configuration')
+            return template
     package_root = _find_package_root()
     if not package_root:
         raise RuntimeError("package root not found")
@@ -1115,6 +1122,8 @@ def prepare_workspace(
         resources_dir / ".env.template",
         package_root / ".env.template",
     ]
+    if is_agentos_runtime() and os.environ.get('JIUWENSWARM_AGENTOS_CONFIG_TEMPLATE', '').strip():
+        env_template_src_candidates = [config_yaml_src.with_suffix('.env')]
     env_template_src = next((p for p in env_template_src_candidates if p.exists()), None)
     if not env_template_src:
         raise RuntimeError(
@@ -1265,6 +1274,9 @@ def prepare_workspace(
     # Fresh initialization and an explicit language choice can still set the language.
     if config_initialized or preferred_language is not None or not is_agentos_runtime():
         set_preferred_language_in_config_file(config_yaml_dest, resolved_lang)
+    if config_initialized and is_agentos_runtime() and os.environ.get('JIUWENSWARM_AGENTOS_CONFIG_TEMPLATE', '').strip():
+        # Language initialization rewrites the file; keep copied business values private.
+        config_yaml_dest.chmod(0o600)
 
     # ----- 默认安装内置技能: skill-creator 和 swarmskill-creator -----
     _install_default_builtin_skills(
@@ -1682,6 +1694,33 @@ def init_user_workspace(
     return workspace_dir
 
 
+def _seed_managed_workspace_config(workspace_dir: Path) -> None:
+    """Copy prepared deployment seeds before any config path is cached."""
+    if not is_agentos_runtime() or not os.environ.get('JIUWENSWARM_AGENTOS_CONFIG_TEMPLATE', '').strip():
+        return
+    directory = workspace_dir / 'config'
+    if (directory / 'config.yaml').is_file() and (directory / '.env').is_file():
+        return
+    template = _find_config_template_path()
+    dotenv = template.with_suffix('.env')
+    if not dotenv.is_file():
+        raise RuntimeError('AgentOS dotenv template is unavailable; run deployment configuration')
+    import tempfile
+    directory.mkdir(parents=True, exist_ok=True)
+    with portalocker.Lock(str(directory / 'config.lock'), timeout=10):
+        for source, target in ((template, directory / 'config.yaml'), (dotenv, directory / '.env')):
+            if target.exists():
+                continue
+            fd, temporary = tempfile.mkstemp(prefix='.agentos-seed-', dir=directory)
+            try:
+                with os.fdopen(fd, 'wb') as stream:
+                    stream.write(source.read_bytes())
+                os.replace(temporary, target)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+
+
 def _resolve_paths() -> None:
     """Resolve and cache all paths."""
     global _initialized, _config_dir, _workspace_dir, _root_dir
@@ -1690,6 +1729,7 @@ def _resolve_paths() -> None:
         return
 
     workspace_dir = get_user_workspace_dir()
+    _seed_managed_workspace_config(workspace_dir)
 
     # 优先使用已初始化的用户工作区 (~/.jiuwenswarm)，
     # 保证源码运行与安装包运行后的读写路径完全一致。

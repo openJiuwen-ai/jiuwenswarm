@@ -117,6 +117,7 @@ def load_dotenv_runtime(dotenv_path: str | Path | None, *, override: bool = True
     ``override=True`` (avoids banner vs Gateway bind mismatch, issue #2749).
     Electron launches additionally restore ``DESKTOP_BROWSER_PRESERVED_ENV_KEYS``
     so dotenv cannot replace the exact sideview target binding.
+    AgentOS keeps the launcher-injected node ingress across shared dotenv loads.
 
     Also drops ``AGENT_SERVER_URL`` in those modes: Gateway prefers that URL
     over ``AGENT_SERVER_PORT``, so a stale value from .env/shell would bypass
@@ -126,14 +127,19 @@ def load_dotenv_runtime(dotenv_path: str | Path | None, *, override: bool = True
     from dotenv import load_dotenv
 
     preserve = _should_preserve_session_ports()
-    preserved_keys = DESKTOP_PRESERVED_ENV_KEYS
-    if os.environ.get(ELECTRON_ENV_FLAG) == "1":
+    preserved_keys = DESKTOP_PRESERVED_ENV_KEYS if preserve else ()
+    if preserve and os.environ.get(ELECTRON_ENV_FLAG) == "1":
         preserved_keys += DESKTOP_BROWSER_PRESERVED_ENV_KEYS
-    saved = (
-        {k: os.environ[k] for k in preserved_keys if k in os.environ}
-        if preserve
-        else {}
-    )
+    if os.getenv("JIUWENSWARM_RUNTIME_PROFILE", "").strip().lower() == "agentos":
+        preserved_keys += (
+            "JIUWENSWARM_ADX_NODE_INGRESS_URL", "JIUWENSWARM_ADX_NODE_CONTEXT_FILE", "JIUWENSWARM_RUNTIME_PROFILE",
+            "JIUWENSWARM_AGENTOS_SANDBOX_CONFIG", "JIUWENSWARM_USER_DIRECTORY",
+            "JIUWENSWARM_AGENTOS_CONFIG_TEMPLATE",
+            "SSL_CERT_FILE", "ADX_TOKEN",
+            "GATEWAY_HOST", "GATEWAY_PORT", "WEB_HOST", "WEB_PORT",
+            "FRONTEND_HOST", "FRONTEND_PORT",
+        )
+    saved = {k: os.environ[k] for k in preserved_keys if k in os.environ}
     loaded = load_dotenv(dotenv_path=dotenv_path, override=override)
     if saved:
         os.environ.update(saved)
@@ -141,6 +147,20 @@ def load_dotenv_runtime(dotenv_path: str | Path | None, *, override: bool = True
         # Prefer remapped AGENT_SERVER_PORT over any URL from .env/parent env.
         os.environ.pop("AGENT_SERVER_URL", None)
     return loaded
+
+
+def load_agentos_api_credential() -> None:
+    """Move the launch-only AgentOS credential into the SDK environment.
+
+    Call before loading workspace dotenv. ADX reserves its own environment
+    prefix in create requests; the application consumes its dedicated key.
+    """
+    if os.getenv("JIUWENSWARM_RUNTIME_PROFILE", "").strip().lower() == "agentos":
+        token = os.environ.pop("JIUWENSWARM_ADX_API_TOKEN", None)
+        if token is not None:
+            if not token.strip():
+                raise ValueError("AgentOS launch credential is empty")
+            os.environ["ADX_TOKEN"] = token
 
 
 def parse_dotenv_early(component_name: str = "jiuwenswarm") -> Path | None:

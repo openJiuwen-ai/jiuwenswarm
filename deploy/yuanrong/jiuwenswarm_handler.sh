@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-set -euo >/dev/null 2>&1
+set -eu
 
-SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+SSH_OPTS="-o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10"
 
 is_local_host() {
     local host="$1"
@@ -60,170 +60,135 @@ port_is_listening() {
     exec_on_host "${host}" "if command -v ss >/dev/null 2>&1; then ss -ltn 2>/dev/null | grep -qE ':${port}[[:space:]]'; else timeout 3 bash -c 'exec 3<>/dev/tcp/${host}/${port}' 2>/dev/null; fi" 2>/dev/null
 }
 
-# 发行包名：0.2.8 起为 workswarm，旧包/日构建为 jiuwenswarm。
-# 输出目标机上已安装的发行包名；未安装时输出空串（返回 0，避免调用方在 set -e 下中断）。
-jiuwenswarm_dist_name() {
-    local host="$1"
-    local python_version="${DEPLOY_VARS["YR_PYTHON_VERSION"]}"
-    local name=""
-    if exec_on_host "${host}" "python${python_version} -m pip show workswarm >/dev/null 2>&1"; then
-        name="workswarm"
-    elif exec_on_host "${host}" "python${python_version} -m pip show jiuwenswarm >/dev/null 2>&1"; then
-        name="jiuwenswarm"
-    fi
-    printf '%s' "${name}"
+process_install() {
+    local -a core swarm
+    local package="${SWARM_PACKAGE_DIR:?Set SWARM_PACKAGE_DIR to the offline wheel directory}"
+    shopt -s nullglob
+    core=("${package}"/openjiuwen-*.whl)
+    swarm=("${package}"/jiuwenswarm-*-py3-none-any.whl "${package}"/workswarm-*-py3-none-any.whl)
+    shopt -u nullglob
+    [ "${#core[@]}" -eq 1 ] || error "release must contain exactly one matching Core wheel"
+    [ "${#swarm[@]}" -eq 1 ] || error "release must contain exactly one Swarm wheel"
+    (umask 022; "${BUSINESS_PYTHON}" -m pip install --no-index --no-deps --force-reinstall "${core[0]}" "${swarm[0]}") || return 1
 }
 
-jiuwenswarm_check_ssh() {
-    local host="$1"
-    if is_local_host "${host}"; then
-        return 0
-    fi
-    if ssh ${SSH_OPTS} root@${host} "echo ok" >/dev/null 2>&1; then
-        return 0
-    else
-        return 1
-    fi
-}
-
-jiuwenswarm_install() {
-    local host="$1"
-    local python_version="${DEPLOY_VARS["YR_PYTHON_VERSION"]}"
-
-    info "Checking jiuwenswarm on ${host}..."
-    local dist_name check_result=""
-    dist_name=$(jiuwenswarm_dist_name "${host}")
-    if [ -n "${dist_name}" ]; then
-        check_result=$(exec_on_host "${host}" "python${python_version} -m pip show ${dist_name} 2>/dev/null | grep -i '^Version:' | awk '{print \$2}'" | tr -d '\r') || true
-    fi
-
-    if [ -n "${check_result}" ]; then
-        success "jiuwenswarm already installed on ${host}: ${check_result} (${dist_name})"
-        return 0
-    fi
-
-    local package_url="${DEPLOY_VARS["JIUWENSWARM_PACKAGE_URL"]}"
-    if [ -z "${package_url}" ]; then
-        error "jiuwenswarm is not installed on ${host} and JIUWENSWARM_PACKAGE_URL is not set. Please set JIUWENSWARM_PACKAGE_URL in .env.custom to provide the install package URL."
-    fi
-
-    info "Installing jiuwenswarm from ${package_url} on ${host}..."
-    if exec_on_host "${host}" "python${python_version} -m pip install ${package_url} --quiet"; then
-        success "jiuwenswarm installed on ${host}"
-    else
-        error "Failed to install jiuwenswarm on ${host}"
-    fi
-}
-
-jiuwenswarm_infer_func_code_dir() {
-    local host="$1"
-    local python_version="${DEPLOY_VARS["YR_PYTHON_VERSION"]}"
-
-    local dist_name jiuwenswarm_location=""
-    dist_name=$(jiuwenswarm_dist_name "${host}")
-    if [ -n "${dist_name}" ]; then
-        jiuwenswarm_location=$(exec_on_host "${host}" "python${python_version} -m pip show ${dist_name} 2>/dev/null | grep -i '^Location:' | awk '{print \$2}'" | tr -d '\r') || true
-    fi
-
-    if [ -z "${jiuwenswarm_location}" ]; then
-        error "Failed to infer YR_FUNC_CODE_DIR: jiuwenswarm/workswarm not found on ${host}. Please set YR_FUNC_CODE_DIR in .env.custom."
-    fi
-
-    local inferred_dir="${jiuwenswarm_location}/jiuwenswarm/extensions"
-
-    if [ -n "${DEPLOY_VARS["YR_FUNC_CODE_DIR"]:-}" ]; then
-        if [ "${DEPLOY_VARS["YR_FUNC_CODE_DIR"]}" != "${inferred_dir}" ]; then
-            warning "YR_FUNC_CODE_DIR on ${host} (${inferred_dir}) differs from configured value (${DEPLOY_VARS["YR_FUNC_CODE_DIR"]})"
-        else
-            success "YR_FUNC_CODE_DIR verified on ${host}: ${inferred_dir}"
-        fi
-    else
-        DEPLOY_VARS["YR_FUNC_CODE_DIR"]="${inferred_dir}"
-        info "YR_FUNC_CODE_DIR inferred from jiuwenswarm install on ${host}: ${DEPLOY_VARS["YR_FUNC_CODE_DIR"]}"
-    fi
-}
-
-jiuwenswarm_ensure_func_code() {
-    local host="$1"
-    local func_dir="${DEPLOY_VARS["YR_FUNC_CODE_DIR"]}"
-    local func_file="${func_dir}/clawee.py"
-
-    info "Checking function code on ${host}:${func_dir}..."
-
-    if exec_on_host "${host}" "test -f '${func_file}'" 2>/dev/null; then
-        success "Function code already exists on ${host}: ${func_file}, skip sync"
-        return 0
-    fi
-
-    info "Function code missing on ${host}, syncing from local..."
-    exec_on_host "${host}" "mkdir -p ${func_dir}"
-    if copy_to_host "${host}" "${REG_FUNC_FILE}" "${func_dir}/"; then
-        success "Function code synced to ${host}"
-    else
-        error "Failed to sync function code to ${host}"
-    fi
-}
-
-deploy_jiuwenswarm() {
-    local hosts_str="${DEPLOY_VARS["CLUSTER_HOSTS"]}"
-    local master_host
-
-    IFS=',' read -ra JIUWENSWARM_HOST_LIST <<< "${hosts_str}"
-    master_host="${JIUWENSWARM_HOST_LIST[0]}"
-
-    info "Deploying jiuwenswarm"
-    info "Master host (yr master): ${master_host}"
-    info "Total hosts: ${#JIUWENSWARM_HOST_LIST[@]}"
-    info "Assuming yuanrong is already deployed on all hosts"
-
-    info "Checking connectivity to all hosts..."
-    for host in "${JIUWENSWARM_HOST_LIST[@]}"; do
-        if is_local_host "${host}"; then
-            success "${host} is local host, skip SSH check"
-        elif jiuwenswarm_check_ssh "${host}"; then
-            success "SSH to ${host} OK"
-        else
-            error "SSH to ${host} failed! Please configure SSH key authentication first."
-        fi
+# 停用并禁用 jiuwenswarm-gateway 和 jiuwenswarm-web 的 systemd 服务（本机），清理 unit 文件与 drop-in
+# uninstall 是本机操作（与 install 对称），故仅处理本机 systemd 服务；
+swarm_disable_systemd() {
+    command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ] || return 0
+    local unit_file found=0
+    # 枚举 gateway 和 web 两类 unit
+    for unit_file in "/etc/systemd/system/$(gateway_service_name).service" "/etc/systemd/system/$(web_service_name).service"; do
+        [ -f "${unit_file}" ] || continue
+        found=1
+        local svc_name
+        svc_name=$(basename "${unit_file}" .service)
+        info "Disabling systemd service ${svc_name}..."
+        systemctl disable --now "${svc_name}" 2>/dev/null || true
+        systemctl reset-failed "${svc_name}" 2>/dev/null || true
+        rm -rf "${unit_file}" "/etc/systemd/system/${svc_name}.service.d"
     done
 
-    for host in "${JIUWENSWARM_HOST_LIST[@]}"; do
-        jiuwenswarm_install "${host}"
-        jiuwenswarm_infer_func_code_dir "${host}"
-        jiuwenswarm_ensure_func_code "${host}"
-    done
-
-    success "jiuwenswarm deployment completed!"
-    echo ""
-    echo "=========================================="
-    success "Deployment Summary"
-    echo "=========================================="
-    echo "  YR Master: ${master_host}"
-    echo "  Func Code Dir: ${DEPLOY_VARS["YR_FUNC_CODE_DIR"]}"
-    echo ""
-    echo "  Next step: deploy gateway"
-    echo "    ./$(basename "$0") up gateway --hosts ${hosts_str}"
-    echo "=========================================="
+    systemctl daemon-reload 2>/dev/null || true
+    if [ "${found}" -eq 1 ]; then
+        success "jiuwenswarm systemd services disabled and cleaned up"
+    else
+        info "No jiuwenswarm systemd unit found, skipping"
+    fi
 }
 
-uninstall_jiuwenswarm() {
-    local hosts_str="${DEPLOY_VARS["CLUSTER_HOSTS"]:-}"
+process_uninstall() {
+    local identity
+    identity=$(swarm_service identity)
+    eval "${identity}"
+    local local_host
+    local_host="${BIND_IP:-$(hostname -I 2>/dev/null | awk '{print $1}')}"
+    [ -z "${local_host}" ] && local_host="127.0.0.1"
 
-    if [ -z "${hosts_str}" ]; then
-        hosts_str=$(get_local_ip)
-        DEPLOY_VARS["CLUSTER_HOSTS"]="${hosts_str}"
-        warning "CLUSTER_HOSTS not set, using local IP: ${hosts_str}"
+    # 先停用 systemd 服务，再卸载 pip 包，避免卸载后残留 unit 文件
+    swarm_disable_systemd
+    rm -f -- "${DEPLOY_VARS["HOME"]}/.jiuwenswarm/config/adx-service.env"
+
+    if "${BUSINESS_PYTHON}" -m pip uninstall -y jiuwenswarm workswarm openjiuwen; then
+        success "jiuwenswarm and openjiuwen uninstalled on ${local_host}"
+    else
+        warning "jiuwenswarm/openjiuwen not installed or failed to uninstall on ${local_host}"
+    fi
+}
+
+# 只读探测本机 jiuwenswarm 运行状态
+# 检测 jiuwenswarm-gateway 和 jiuwenswarm-web 两个服务
+# 输出格式: jiuwenswarm|<service>|<state>|<detail>|<version>
+process_status() {
+    local identity
+    identity=$(swarm_service identity)
+    eval "${identity}"
+    local rc=0
+
+    # 探测 jiuwenswarm 版本号：importlib.metadata 比 pip show 快约 30 倍
+    local jwsw_ver="-"
+    local pkg_ver
+    pkg_ver=$("${BUSINESS_PYTHON}" -c "from importlib.metadata import distributions; print(next((d.version for d in distributions() if d.metadata['Name'] in ('workswarm', 'jiuwenswarm')), '-'))" 2>/dev/null || true)
+    [ -n "${pkg_ver}" ] && jwsw_ver="${pkg_ver}"
+
+    # systemd 模式：枚举 gateway 和 web 两类 unit
+    if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+        local unit_file found=0
+        for unit_file in "/etc/systemd/system/$(gateway_service_name).service" "/etc/systemd/system/$(web_service_name).service"; do
+            [ -f "${unit_file}" ] || continue
+            found=1
+            local svc_name
+            svc_name=$(basename "${unit_file}" .service)
+
+            local state detail
+            if systemctl is-active --quiet "${svc_name}" 2>/dev/null; then
+                state="running"
+                detail="active"
+            elif systemctl is-failed --quiet "${svc_name}" 2>/dev/null; then
+                state="failed"
+                detail="failed"
+                rc=1
+            else
+                state="stopped"
+                detail="inactive"
+            fi
+            echo "jiuwenswarm|${svc_name}|${state}|${detail}|${jwsw_ver}"
+        done
+        if [ "${found}" -eq 1 ]; then
+            return ${rc}
+        fi
+        # 无 unit 文件，落入进程模式
     fi
 
-    IFS=',' read -ra JIUWENSWARM_HOST_LIST <<< "${hosts_str}"
-    local master_host="${JIUWENSWARM_HOST_LIST[0]}"
+    # 进程模式：pgrep 检测 jiuwenswarm-gateway 和 jiuwenswarm-web
+    _jwsw_pids_of() {
+        local pat="$1"
+        if command -v pgrep >/dev/null 2>&1; then
+            pgrep -f "${pat}" 2>/dev/null || true
+        else
+            ps -ef 2>/dev/null | grep "${pat}" | grep -v grep | awk '{print $2}' || true
+        fi
+    }
 
-    # 注意: down 仅停止服务，不注销 function（注册已不再需要）。
-    # pip 包卸载由 agentos uninstall 流程（module.sh 的 jiuwenswarm_uninstall 钩子）负责。
-    echo ""
-    echo "=========================================="
-    success "jiuwenswarm down completed!"
-    echo "=========================================="
-    echo "  YR Master: ${master_host}"
-    echo "=========================================="
+    local gw_pids web_pids gw_alive=0 web_alive=0
+    gw_pids=$(_jwsw_pids_of 'jiuwenswarm-gateway')
+    [ -n "${gw_pids}" ] && gw_alive=1
+    web_pids=$(_jwsw_pids_of 'jiuwenswarm-web')
+    [ -n "${web_pids}" ] && web_alive=1
+
+    # gateway 状态
+    if [ "${gw_alive}" -eq 1 ]; then
+        echo "jiuwenswarm|jiuwenswarm-gateway|running|active|${jwsw_ver}"
+    else
+        echo "jiuwenswarm|jiuwenswarm-gateway|stopped|no process|${jwsw_ver}"
+    fi
+
+    # web 状态
+    if [ "${web_alive}" -eq 1 ]; then
+        echo "jiuwenswarm|jiuwenswarm-web|running|active|${jwsw_ver}"
+    else
+        echo "jiuwenswarm|jiuwenswarm-web|stopped|no process|${jwsw_ver}"
+    fi
+
+    return ${rc}
 }

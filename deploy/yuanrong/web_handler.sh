@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo >/dev/null 2>&1
+set -eu
 
 # ============================================================
 # 模块: web (jiuwenswarm 前端静态服务器)
@@ -10,26 +10,9 @@ set -euo >/dev/null 2>&1
 # 钩子函数与 gateway_handler.sh 对齐:
 #   deploy_web / uninstall_web (systemd 优先, nohup 回退)
 #
-# 命名说明:
-#   app_web.py 内部读 FRONTEND_HOST/FRONTEND_PORT 作为 --host/--port 默认值,
-#   但 deploy 仓的 FRONTEND_PORT 已被 yuanrong frontend (8888) 占用。
-#   故此处用独立变量 WEB_STATIC_HOST / WEB_STATIC_PORT, 并通过 --host/--port
-#   显式传给 jiuwenswarm-web, 不依赖 app_web.py 的默认值读取, 避免撞车。
-# ============================================================
-
 # 解析 web server 所在主机(与 gateway 同,均部署在 master 节点)
 web_resolve_host() {
-    local master_host="${DEPLOY_VARS["MASTER_NODE_IP"]:-}"
-    if [ -z "${master_host}" ]; then
-        if [ -n "${DEPLOY_VARS["CLUSTER_HOSTS"]:-}" ]; then
-            IFS=',' read -ra _web_host_list <<< "${DEPLOY_VARS["CLUSTER_HOSTS"]}"
-            master_host="${_web_host_list[0]}"
-        else
-            master_host=$(get_local_ip)
-            info "MASTER_NODE_IP not set, defaulting to local: ${master_host}" >&2
-        fi
-    fi
-    echo "${master_host}"
+    get_local_ip
 }
 
 # 多实例时服务名带实例后缀(与 gateway 一致,避免 systemd unit 冲突)
@@ -48,13 +31,20 @@ web_has_systemd() {
     exec_on_host "${host}" "command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]" 2>/dev/null
 }
 
+web_proxy_target() {
+    local host="${DEPLOY_VARS["WEB_HOST"]:-127.0.0.1}"
+    case "${host}" in
+        0.0.0.0) host=127.0.0.1 ;;
+        ::) host='[::1]' ;;
+    esac
+    printf 'http://%s:%s' "${host}" "${DEPLOY_VARS["WEB_PORT"]:-19000}"
+}
+
 # systemd 模式启动:生成 unit + drop-in(注入 PATH/LD_LIBRARY_PATH),daemon-reload,restart,健康检查
 web_start_systemd() {
     local master_host="$1"
     local web_host="${DEPLOY_VARS["WEB_STATIC_HOST"]:-0.0.0.0}"
     local web_port="${DEPLOY_VARS["WEB_STATIC_PORT"]:-5173}"
-    local web_port_target="${DEPLOY_VARS["WEB_PORT"]:-19000}"
-    local python_version="${DEPLOY_VARS["YR_PYTHON_VERSION"]}"
     local instance_name="${DEPLOY_VARS["JIUWENSWARM_INSTANCE_NAME"]:-}"
 
     local svc_name
@@ -67,7 +57,7 @@ web_start_systemd() {
     local web_bin py_bindir py_libdir
     web_bin=$(exec_on_host "${master_host}" "command -v jiuwenswarm-web" 2>/dev/null | tr -d '\r') || true
     [ -n "${web_bin}" ] || error "jiuwenswarm-web not found on ${master_host}; run 'install' first (installs jiuwenswarm whl)"
-    py_bindir=$(exec_on_host "${master_host}" "dirname \$(command -v python${python_version}) 2>/dev/null" | tr -d '\r') || py_bindir="/usr/local/bin"
+    py_bindir=$(exec_on_host "${master_host}" "dirname \$(command -v ${BUSINESS_PYTHON}) 2>/dev/null" | tr -d '\r') || py_bindir="/usr/local/bin"
     py_libdir="${py_bindir}/lib"
 
     # 保留目标主机现有 PATH / LD_LIBRARY_PATH
@@ -75,12 +65,16 @@ web_start_systemd() {
     remote_path=$(exec_on_host "${master_host}" "echo \$PATH" 2>/dev/null | tr -d '\r') || remote_path=""
     remote_ld_lib=$(exec_on_host "${master_host}" "echo \${LD_LIBRARY_PATH:-}" 2>/dev/null | tr -d '\r') || remote_ld_lib=""
 
-    # /ws 代理目标:gateway 的 WebChannel(WEB_HOST)。
-    # 单机场景 WEB_HOST 可设 127.0.0.1 走回环; 多机场景用 ingress VIP / MASTER_NODE_IP 跨机可达。
-    local web_host_target="${DEPLOY_VARS["WEB_HOST"]:-127.0.0.1}"
-    local proxy_target="http://${web_host_target}:${web_port_target}"
+    # Wildcard listeners use loopback for the local /ws proxy connection.
+    local proxy_target
+    proxy_target=$(web_proxy_target)
 
     # unit 文件:ExecStart 显式传 --host/--port/--proxy-target, 不依赖 app_web.py 的 FRONTEND_HOST/PORT 默认
+    local exec_start_pre=""
+    if [ -n "${SWARM_SERVICE_PREFLIGHT}" ]; then
+        [ -x "${SWARM_SERVICE_PREFLIGHT}" ] || error "Service preflight is not executable"
+        exec_start_pre="ExecStartPre=${SWARM_SERVICE_PREFLIGHT}"
+    fi
     local unit_content
     unit_content="[Unit]
 Description=JiuwenSwarm Web Static Server
@@ -89,7 +83,15 @@ StartLimitIntervalSec=60
 StartLimitBurst=5
 
 [Service]
-ExecStart=${web_bin} --host ${web_host} --port ${web_port} --proxy-target ${proxy_target}
+${exec_start_pre}
+Environment=HOME=${DEPLOY_VARS["HOME"]:-/root}
+Environment=JIUWENSWARM_HOME=${DEPLOY_VARS["HOME"]:-/root}
+Environment=JIUWENSWARM_RUNTIME_PROFILE=${DEPLOY_VARS["RUNTIME_PROFILE"]:-standalone}
+Environment=GATEWAY_HOST=${DEPLOY_VARS["GATEWAY_HOST"]:-0.0.0.0}
+Environment=GATEWAY_PORT=${DEPLOY_VARS["GATEWAY_PORT"]:-19001}
+Environment=WEB_HOST=${DEPLOY_VARS["WEB_HOST"]:-127.0.0.1}
+Environment=WEB_PORT=${DEPLOY_VARS["WEB_PORT"]:-19000}
+ExecStart=${web_bin} --dotenv \"${DEPLOY_VARS["APP_ENV_FILE"]}\" --host ${web_host} --port ${web_port} --proxy-target ${proxy_target}
 Restart=on-failure
 RestartSec=3
 
@@ -104,7 +106,7 @@ Environment=PATH=${py_bindir}:${remote_path}
 Environment=LD_LIBRARY_PATH=${py_libdir}:${remote_ld_lib}"
     if [ -n "${instance_name}" ]; then
         dropin_content="${dropin_content}
-Environment=JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name}"
+Environment=JIUWENSWARM_DATA_DIR=${DEPLOY_VARS["HOME"]:-/root}/.jiuwenswarm"
     fi
 
     info "Creating systemd unit ${svc_name} on ${master_host}..."
@@ -157,26 +159,25 @@ web_start_nohup() {
     local home_prefix="${2:-}"
     local web_host="${DEPLOY_VARS["WEB_STATIC_HOST"]:-0.0.0.0}"
     local web_port="${DEPLOY_VARS["WEB_STATIC_PORT"]:-5173}"
-    local web_port_target="${DEPLOY_VARS["WEB_PORT"]:-19000}"
     local instance_name="${DEPLOY_VARS["JIUWENSWARM_INSTANCE_NAME"]:-}"
 
     local web_bin
     web_bin=$(exec_on_host "${master_host}" "command -v jiuwenswarm-web" 2>/dev/null | tr -d '\r') || true
     [ -n "${web_bin}" ] || error "jiuwenswarm-web not found on ${master_host}; run 'install' first (installs jiuwenswarm whl)"
 
-    local web_host_target="${DEPLOY_VARS["WEB_HOST"]:-127.0.0.1}"
-    local proxy_target="http://${web_host_target}:${web_port_target}"
+    local proxy_target
+    proxy_target=$(web_proxy_target)
     local instance_env=""
     local pidfile="/tmp/jiuwenswarm-web.pid"
     if [ -n "${instance_name}" ]; then
-        instance_env="JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name} "
+        instance_env="JIUWENSWARM_DATA_DIR=${DEPLOY_VARS["HOME"]:-/root}/.jiuwenswarm "
         pidfile="/tmp/jiuwenswarm-web-${instance_name}.pid"
     fi
 
     # 显式传 --host/--port/--proxy-target, 避开 app_web.py 的 FRONTEND_HOST/PORT 默认值。
     # JIUWENSWARM_DATA_DIR 等环境变量前缀只进子进程环境、不会出现在 /proc/PID/cmdline,
     # pkill -f 匹配不到, 故启动时把 PID 写入 pidfile, 停止时按 PID 精确结束。
-    local start_cmd="${home_prefix}${instance_env}nohup ${web_bin} --host ${web_host} --port ${web_port} --proxy-target ${proxy_target} </dev/null > /tmp/jiuwenswarm-web.log 2>&1 & echo \$! > ${pidfile}"
+    local start_cmd="${home_prefix}${instance_env}nohup ${web_bin} --dotenv \"${DEPLOY_VARS["APP_ENV_FILE"]}\" --host ${web_host} --port ${web_port} --proxy-target ${proxy_target} </dev/null > /tmp/jiuwenswarm-web.log 2>&1 & echo \$! > ${pidfile}"
 
     info "Starting jiuwenswarm-web on ${master_host} (nohup) -> http://${web_host}:${web_port} (proxy /ws -> ${proxy_target})..."
     exec_on_host "${master_host}" "bash -c '${start_cmd}'"
@@ -220,10 +221,7 @@ web_deploy_process() {
 
     # web server 无配置文件需渲染(jiuwenswarm whl 自带 frontend/dist), 直接启动。
     # 强制 JIUWENSWARM_HOME=/root 与 gateway 一致(确保多实例 data dir 解析正确)
-    local home_prefix=""
-    if ! gateway_check_jiuwenswarm_home "${master_host}"; then
-        home_prefix="JIUWENSWARM_HOME=/root "
-    fi
+    local home_prefix="JIUWENSWARM_HOME=${DEPLOY_VARS["HOME"]:-/root} "
 
     if web_has_systemd "${master_host}"; then
         web_start_systemd "${master_host}"
@@ -239,7 +237,10 @@ web_stop_systemd() {
     local svc_name
     svc_name=$(web_service_name)
     info "Stopping web server service on ${master_host}..."
-    exec_on_host "${master_host}" "systemctl stop ${svc_name} 2>/dev/null || true"
+    local loaded
+    loaded=$(exec_on_host "${master_host}" "systemctl show --property=LoadState --value ${svc_name}")
+    [ "${loaded}" != "not-found" ] || return 0
+    exec_on_host "${master_host}" "systemctl stop ${svc_name}"
     success "Web server service stopped on ${master_host}"
 }
 

@@ -77,13 +77,13 @@ from jiuwenswarm.common.config import migrate_config_from_template
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _TEMPLATE = _REPO_ROOT / "jiuwenswarm" / "resources" / "config.yaml"
 
-# Full configs the project ships beside the code. A deployment-specific file is
-# as good a witness as a resource one: what matters is that a human maintains
-# it against the same code.
+# Current shipped configs and the frozen YuanRong deployment fixture. Keep the
+# historical config in coverage so moving deployment to ADX does not drop
+# assertions for existing user configurations.
 _SHIPPED_CONFIGS = (
     "jiuwenswarm/resources/config.team.distributed.leader.yaml",
     "jiuwenswarm/resources/config.team.distributed.teammate.yaml",
-    "deploy/yuanrong/conf/gateway-config-yuanrong.template.yaml",
+    "tests/fixtures/config/gateway-config-yuanrong.template.yaml",
 )
 
 # Whole subtrees a shipped config carries and the default template does not,

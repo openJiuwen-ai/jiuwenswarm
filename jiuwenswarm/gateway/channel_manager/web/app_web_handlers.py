@@ -1847,6 +1847,11 @@ async def _upload_document_item_via_http(
         str(item.get("filename") or f"document-{index + 1}"),
         fallback=f"document-{index + 1}",
     )
+    from jiuwenswarm.gateway.embedded.runtime.attachments.document_attachments import (
+        _MAX_DOCUMENT_BYTES, _MAX_DOCUMENT_COUNT,
+    )
+    if index >= _MAX_DOCUMENT_COUNT or len(data) > _MAX_DOCUMENT_BYTES:
+        return None
     if is_forbidden_document(filename=filename):
         logger.warning("[document.persist] forbidden document skipped: %s", filename)
         return None
@@ -1867,6 +1872,10 @@ async def _upload_document_item_via_http(
         # AgentServer ``_store_document_item`` would use.
         ok, payload = _persist_media_locally(data, safe_session_id, filename)
     if not ok:
+        if getattr(agent_client, 'native_file_streaming', False) is True:
+            from jiuwenswarm.extensions.agentos.agentos_router.router_client import AgentOSFileTransferError
+            raise AgentOSFileTransferError(str(payload.get('error') or 'ADX upload failed'),
+                                           code=str(payload.get('code') or 'SERVICE_UNAVAILABLE'))
         logger.warning("[document.persist] 大文档上传失败: %s", payload.get("error"))
         return None
     return {
@@ -1921,7 +1930,7 @@ async def _pre_persist_large_documents(
             return item
         if not data:
             return item
-        if len(data) > remaining:
+        if getattr(agent_client, 'native_file_streaming', False) is True or len(data) > remaining:
             persisted = await _upload_document_item_via_http(
                 item,
                 data,
@@ -1982,6 +1991,8 @@ async def _upload_media_item_via_http(
         safe_upload_filename,
     )
 
+    if index >= _ma._MAX_IMAGE_COUNT or len(data) > _ma._MAX_IMAGE_BYTES:
+        return None
     mime_type = str(item.get("mimeType") or item.get("mime_type") or "").lower().strip()
     suffix = _ma.image_suffix_for_mime(mime_type)
     if suffix is None:
@@ -2013,6 +2024,10 @@ async def _upload_media_item_via_http(
         # ConnectionRefused.
         ok, payload = _persist_media_locally(data, safe_session_id, filename)
     if not ok:
+        if getattr(agent_client, 'native_file_streaming', False) is True:
+            from jiuwenswarm.extensions.agentos.agentos_router.router_client import AgentOSFileTransferError
+            raise AgentOSFileTransferError(str(payload.get('error') or 'ADX upload failed'),
+                                           code=str(payload.get('code') or 'SERVICE_UNAVAILABLE'))
         logger.warning("[media.persist] 大图上传失败: %s", payload.get("error"))
         return None
     return {
@@ -2067,7 +2082,7 @@ async def _pre_persist_large_media(
         if not data:
             new_items.append(item)
             continue
-        if len(data) > remaining:
+        if getattr(agent_client, 'native_file_streaming', False) is True or len(data) > remaining:
             persisted = await _upload_media_item_via_http(
                 item,
                 data,
