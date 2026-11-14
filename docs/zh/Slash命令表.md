@@ -55,7 +55,7 @@
 | `/new_session` | 新建会话（仅 IM 生效） |
 | `/mode` | 模式切换（支持一级入口与直达写法） |
 | `/switch` | 在当前模式族内切换二级模式 |
-| `/skills` | 技能管理（列表、安装、卸载、市场源、ClawHub、SkillNet） |
+| `/skills` | 技能管理（列表、安装、卸载、市场源、ClawHub） |
 | `/model` | 模型查看、新增、编辑、删除、切换（见下文） |
 | `/mcp` | MCP 服务管理（见下文） |
 | `/diff` | 交互式改动回顾：按轮次 diff + 未提交工作树改动（见下文） |
@@ -529,14 +529,14 @@ SwarmFlow 专用命令；完整流程见 **[TUI 使用 SwarmFlow 指南](TUI使�
 
 ### `/skills`（技能管理）
 
-管理技能的完整生命周期：列表查看、安装、卸载、市场源管理、ClawHub 和 SkillNet 在线技能库。
+管理技能的完整生命周期：列表查看、安装、卸载、市场源管理、ClawHub 在线技能库。
 
 #### 子命令
 
 | 命令 | 说明 |
 |---|---|
 | `/skills` 或 `/skills list` | 列出技能（分两组：已安装 / 可安装） |
-| `/skills install <skill>` 或 `/skills install <slug@clawhub>` 或 `/skills install <name@skillnet>` 或 `/skills install <skill@marketplace>` 或 `/skills install <path_or_url>` | 安装技能：内置技能可直接用名称，ClawHub 用 `<slug>@clawhub`，SkillNet 用 `<名称>@skillnet`（自动搜索获取 URL），市场源用 `<名称>@<市场源>`，本地路径或远程 URL 直接传入 |
+| `/skills install <skill>` 或 `/skills install <slug@clawhub>` 或 `/skills install <skill@marketplace>` 或 `/skills install <path_or_url>` | 安装技能：内置技能可直接用名称，ClawHub 用 `<slug>@clawhub`，市场源用 `<名称>@<市场源>`，本地路径或远程 URL 直接传入 |
 | `/skills uninstall <name>` | 按名称卸载技能 |
 | `/skills marketplace` 或 `/skills marketplace list` | 列出市场源（名称、URL、启用状态、最后更新时间） |
 | `/skills marketplace add <name> <url>` | 添加新的市场源 |
@@ -545,16 +545,13 @@ SwarmFlow 专用命令；完整流程见 **[TUI 使用 SwarmFlow 指南](TUI使�
 | `/skills marketplace clawhub` | 查看 ClawHub token 状态（已配置/未配置） |
 | `/skills marketplace clawhub token <value>` | 设置 ClawHub CLI token |
 | `/skills marketplace clawhub token` | 查看 ClawHub token 状态 |
-| `/skills skillnet` 或 `/skills skillnet search <query>` | 搜索 SkillNet 技能库（显示名称、简介、作者、星标、分类、URL） |
-| `/skills skillnet install <skill_url>` | 通过 SkillNet URL 安装技能（异步下载，自动轮询进度） |
 | `/skills use <skill_name>, <query>` | 使用指定技能执行查询 |
 
 #### 概念说明
 
-- **技能（Skill）**：可从市场源、ClawHub、SkillNet、内置目录或本地路径安装的扩展能力，为 Agent 提供额外功能。
+- **技能（Skill）**：可从市场源、ClawHub、内置目录或本地路径安装的扩展能力，为 Agent 提供额外功能。
 - **内置技能（Builtin skill）**：随软件打包发布的预置技能，安装时可直接使用技能名称（如 `/skills install advanced-daily-report`），无需指定市场源。
 - **ClawHub**：在线技能库（[clawhub.ai](https://clawhub.ai)），托管社区发布的技能。安装时使用 `<slug>@clawhub` 格式，其中 slug 是技能的唯一标识符（而非展示名）。使用前需先配置 ClawHub CLI token。
-- **SkillNet**：学术技能库（支持两种安装方式：`<名称>@skillnet`（自动搜索获取 URL 后安装）和 `/skills skillnet install <url>`（直接用 URL 安装）。
 - **市场源（Marketplace source）**：托管可用技能的远程 Git 仓库，每个源包含名称、URL 和启用/禁用状态。
 - **规格标识（Spec）**：安装时使用的标识格式，支持以下几种：`<技能名>@builtin`（内置）、`<slug>@clawhub`（ClawHub）、`<技能名>@<市场源名>`（Git 市场源）；裸名不带 `@` 时系统会自动检测是否为内置技能。
 - **本地安装（Local install）**：通过 `/skills install <path>` 将本地目录（需包含 `SKILL.md`）或远程归档 URL 安装为自定义技能；路径/URL 会自动识别并走本地导入流程。
@@ -583,14 +580,10 @@ SwarmFlow 专用命令；完整流程见 **[TUI 使用 SwarmFlow 指南](TUI使�
 
 - **超时**：`install`、`uninstall`、`marketplace toggle` 请求在 TUI 侧有 120 秒超时；其余子命令无显式超时设置。
 - **内置技能自动识别**：使用 `/skills install <skill>` 安装时，若技能名称不带 `@`，系统会自动检查是否为内置技能并重定向到内置安装流程；若不是内置技能则返回格式提示。
-- **路径/URL 自动识别**：使用 `/skills install <path_or_url>` 安装时，若参数为本地路径（如 `/path/to/skill`、`~/skill`、`C:\skill`）或远程 URL（如 `https://...`），系统自动走本地导入流程（`skills.import_local`）。所有 URL 统一走 import_local，不自动路由 SkillNet。本地路径须为**绝对路径**或 `~/...` 路径；`~` 表示服务端 JiuwenClaw 进程用户的 home 目录。其他相对路径、位于系统/敏感目录（如 `/etc`、`~/.ssh`）的源、符号链接，以及不含合法 `name`/`description` frontmatter 的 `SKILL.md` 会被拒绝。
-- **`@skillnet` 搜索安装**：使用 `/skills install <name>@skillnet` 时，前端先调用 `skills.skillnet.search` 搜索。**只有精确匹配 skill_name 时才自动安装**；无精确匹配时只展示搜索结果列表（含 URL 和名称），不自动安装第一个结果，用户需从中选择后用 `/skills skillnet install <url>` 或 `/skills install <精确名称>@skillnet` 安装。这是因为 SkillNet 搜索是语义匹配，搜索 "code" 可能返回 "taskflow"、"coding-agent" 等名称不含 "code" 的技能。
+- **路径/URL 自动识别**：使用 `/skills install <path_or_url>` 安装时，若参数为本地路径（如 `/path/to/skill`、`~/skill`、`C:\skill`）或远程 URL（如 `https://...`），系统自动走本地导入流程（`skills.import_local`）。本地路径须为**绝对路径**或 `~/...` 路径；`~` 表示服务端 JiuwenClaw 进程用户的 home 目录。其他相对路径、位于系统/敏感目录（如 `/etc`、`~/.ssh`）的源、符号链接，以及不含合法 `name`/`description` frontmatter 的 `SKILL.md` 会被拒绝。
 - **ClawHub token 必需**：从 ClawHub 安装技能前必须先配置 CLI token（通过 `/skills marketplace clawhub token <value>`）。未配置 token 时，`@clawhub` 安装会失败并提示配置方法。Token 可在 [clawhub.ai](https://clawhub.ai) 注册获取。
 - **ClawHub slug 与展示名**：ClawHub 技能的唯一标识是 **slug**（如 `code-review-security`），而非展示名（如 "Code Review Assistant"）。当直接使用 slug 安装失败时，系统会自动搜索 ClawHub 并列出匹配结果（含真实 slug 和简介），帮助用户找到正确的技能。
 - **ClawHub 重名覆盖确认**：当目标 slug 的技能已存在时（同名不同源也算已安装），TUI 会弹出交互式确认："Skill xxx 已安装，是否强制覆盖？"。用户选择"是"则用 `force: true` 重新安装并覆盖旧技能；选择"否"或退出则保持原技能不变。Web 端则直接以 `force: true` 覆盖，不弹确认。
-- **SkillNet 异步安装**：SkillNet 安装是异步的——先发起下载任务获取 `install_id`，然后自动轮询 `install_status` 直到完成或失败。TUI 每 800ms 轮询一次，最长等待 15 分钟。安装过程中会显示 `Downloading... (install_id: xxx)`。
-- **SkillNet 重名覆盖确认**：与 ClawHub 一致，TUI 在技能已存在时弹出交互确认。Web 端直接以 `force: true` 覆盖。
-- **SkillNet 国内可访问**：SkillNet API 在 `http://api-skillnet.openkg.cn`（OpenKG 平台），国内可直接访问，无需 VPN。技能本体托管在 GitHub，GitHub 访问可能受限。
 - **同名技能不可共存**：技能以目录名存储在 `skills/{name}/`，文件系统不允许同名目录共存。因此从不同源安装同名技能时，后安装的会覆盖前一个（需用户确认）。`/skills use` 只使用技能名，无法区分来源。
 - **ClawHub 网络访问**：ClawHub API 地址为 `https://clawhub.ai`，在国内可能需要 VPN 才能正常访问。
 - **缓存清理**：`marketplace remove` 发送 `{ name, remove_cache: true }` 以同时清理该源的本地缓存。
@@ -604,9 +597,6 @@ SwarmFlow 专用命令；完整流程见 **[TUI 使用 SwarmFlow 指南](TUI使�
 - `/skills install advanced-daily-report` — 安装内置技能（裸名自动识别）
 - `/skills install advanced-daily-report@builtin` — 安装内置技能（显式指定）
 - `/skills install code-review@clawhub` — 从 ClawHub 安装技能（使用 slug）
-- `/skills install code-review@skillnet` — 从 SkillNet 安装技能（自动搜索获取 URL）
-- `/skills skillnet search code-review` — 搜索 SkillNet 技能库
-- `/skills skillnet install https://github.com/user/skill-repo` — 通过 SkillNet 子命令安装技能（直接用 URL）
 - `/skills install my-skill@marketplace` — 从 Git 市场源安装技能
 - `/skills install /path/to/my-skill` — 从本地目录安装技能
 - `/skills install https://example.com/skill.zip` — 从远程 URL 安装技能（走本地导入）
