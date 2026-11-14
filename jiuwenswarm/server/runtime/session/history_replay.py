@@ -42,7 +42,7 @@ class HistoryReplayLimits:
 class HistoryReplayCursor:
     path: Path
     generation: int
-    identity: tuple[int, int, int, int, int]
+    identity: tuple[int, int, int, int]
     offset: int
 
 
@@ -56,7 +56,7 @@ class HistoryReplayBatch:
 
 @dataclass(frozen=True)
 class _HistoryHead:
-    identity: tuple[int, int, int, int, int]
+    identity: tuple[int, int, int, int]
     voice_end: int
 
 
@@ -70,8 +70,13 @@ _CONTEXT_EVENTS = frozenset({
 })
 
 
-def _identity(stat: os.stat_result) -> tuple[int, int, int, int, int]:
-    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+def _identity(stat: os.stat_result) -> tuple[int, int, int, int]:
+    # st_ctime_ns 故意不纳入：Windows 上 os.stat(path)（目录元数据缓存）与
+    # os.fstat(fd)（文件句柄）对创建时间的回报不一致——文件创建后只要再被
+    # 写入过，两条路径就会分别报「创建时间」和「最后写入时间」，导致
+    # _read_prefix 的跨源比对随机失败、误报 HISTORY_RESTORE_CHANGED（JW-41）。
+    # 内容变化已由 st_size + st_mtime_ns 覆盖，无需 ctime。
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
 
 
 def _is_voice(record: dict[str, Any]) -> bool:
@@ -113,8 +118,8 @@ def note_history_append(path: Path, record: dict[str, Any], before: os.stat_resu
 
 
 def _check_cursor(cursor: HistoryReplayCursor, path: Path, generation: int,
-                  identity: tuple[int, int, int, int, int]) -> None:
-    if cursor.generation == generation and cursor.identity == (0, 0, 0, 0, 0) and cursor.offset == 0:
+                  identity: tuple[int, int, int, int]) -> None:
+    if cursor.generation == generation and cursor.identity == (0, 0, 0, 0) and cursor.offset == 0:
         return
     if cursor.path != path or cursor.generation != generation:
         raise HistoryReplayError("History changed after context restore", code="HISTORY_RESTORE_CHANGED")
@@ -150,7 +155,7 @@ def read_history_replay(
             path = get_read_history_path(session_id)
             generation = int(lc.state("session", session_id).get("generation", 0))
             if not path.exists():
-                identity = (0, 0, 0, 0, 0)
+                identity = (0, 0, 0, 0)
                 if cursor is not None:
                     _check_cursor(cursor, path, generation, identity)
                 empty = HistoryReplayCursor(path, generation, identity, 0)
@@ -243,7 +248,7 @@ def latest_completed_request_bounded(session_id: str, *, max_tail_bytes: int = 1
 def _read_prefix(
     path: Path,
     generation: int,
-    identity: tuple[int, int, int, int, int],
+    identity: tuple[int, int, int, int],
     start: int,
     is_restorable: Callable[[dict[str, Any]], bool],
     before_request_id: str | None,

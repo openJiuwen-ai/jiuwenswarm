@@ -50,14 +50,16 @@ class SessionHistorySnapshot:
     generation: int
     runtime_owner: tuple[int, float | int]
     path: Path
-    file_identity: tuple[int, int, int, int, int]
+    file_identity: tuple[int, int, int, int]
     records: tuple[dict[str, Any], ...]
     replay_cursor: HistoryReplayCursor | None = None
 
 
-def _history_file_identity(path: Path) -> tuple[int, int, int, int, int]:
+def _history_file_identity(path: Path) -> tuple[int, int, int, int]:
     stat = path.stat()
-    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    # st_ctime_ns 不纳入：Windows 上 os.stat 与 os.fstat 对创建时间的回报
+    # 不一致，纳入会使跨源比对随机失败（同 history_replay._identity，JW-41）。
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
 
 
 def _history_runtime_owner(value: dict[str, Any]) -> tuple[int, float | int] | None:

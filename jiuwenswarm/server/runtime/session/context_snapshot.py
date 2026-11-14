@@ -80,9 +80,11 @@ def invalidate_snapshot_hint(session_id: str) -> None:
     (snapshot_directory(session_id) / "checkpoint-hint.json").unlink(missing_ok=True)
 
 
-def _identity(path: Path) -> tuple[int, int, int, int, int]:
+def _identity(path: Path) -> tuple[int, int, int, int]:
     stat = path.stat()
-    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+    # st_ctime_ns 不纳入：Windows 上 os.stat 与 os.fstat 对创建时间的回报
+    # 不一致，纳入会使跨源比对随机失败（同 history_replay._identity，JW-41）。
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
 
 
 def _anchor(path: Path, offset: int) -> str:
@@ -121,10 +123,13 @@ def _read_cursor(session_id: str, value: dict[str, Any]) -> HistoryReplayCursor 
 
     path = get_read_history_path(session_id)
     generation = int(lc.state("session", session_id).get("generation", 0))
-    identity = _identity(path) if path.exists() else (0, 0, 0, 0, 0)
+    identity = _identity(path) if path.exists() else (0, 0, 0, 0)
     old_identity = value.get("identity")
     offset = value.get("offset")
-    if not isinstance(old_identity, list) or len(old_identity) != 5:
+    # 兼容两种历史格式：旧快照 identity 含 st_ctime_ns（5 元），新快照为
+    # 4 元（去掉 ctime，见 _identity 注释）。ctime 槽位本就不参与下面的
+    # 有效性判断（只用 [:2] 与 [2]=size），因此旧快照无需迁移。
+    if not isinstance(old_identity, list) or len(old_identity) not in (4, 5):
         raise HistoryReplayError("Invalid context snapshot boundary")
     if any(type(item) is not int for item in old_identity):
         raise HistoryReplayError("Invalid context snapshot boundary")
@@ -283,7 +288,7 @@ def _advance_boundary(session_id: str, cursor: HistoryReplayCursor | None,
         lc.write_guard(session_id)
         path = get_read_history_path(session_id)
         generation = int(lc.state("session", session_id).get("generation", 0))
-        identity = _identity(path) if path.exists() else (0, 0, 0, 0, 0)
+        identity = _identity(path) if path.exists() else (0, 0, 0, 0)
         start = cursor.offset if cursor is not None else 0
         if cursor is not None:
             if cursor.path != path or cursor.generation != generation:
