@@ -1044,6 +1044,16 @@ class CronSchedulerService:
         self._run_tasks.clear()
         logger.info("[Cron] scheduler stopped")
 
+    def _is_unfinished_manual_run(self, run_id: str, existing_job_ids: set[str]) -> bool:
+        """Whether a run_now run still needs its one-shot wake/push events."""
+        state = self._runs.get(run_id)
+        return (
+            state is not None
+            and state.manual_trigger
+            and state.job_id in existing_job_ids
+            and state.status in ("pending", "running", "awaiting_approval")
+        )
+
     async def reload(self) -> None:
         """Reload jobs from store and rebuild the event queue.
 
@@ -1072,12 +1082,21 @@ class CronSchedulerService:
             for at_ts, seq, ev in self._events
             if ev.kind == "push_update" and ev.job_id in new_job_ids
         ]
+        # 手动 run-now 的 wake/push 是一次性事件：run_id 取自触发时刻而不是
+        # cron 表达式，reload 无法按表达式重排它们。若在消费前被清空，该 run
+        # 会永远停在 pending（首轮执行不开始），外部只能等超时（#5586）。
+        # 未完成且所属 job 仍在 store 中的手动 run 事件与 push_update 一并保留。
+        pending_manual_events = [
+            (at_ts, seq, ev)
+            for at_ts, seq, ev in self._events
+            if ev.kind in ("wake", "push") and self._is_unfinished_manual_run(ev.run_id, new_job_ids)
+        ]
         self._events.clear()
         # 不重置 _seq：保留的 push_update 事件携带原始 seq 值，
         # 若重置为 0，新调度事件的 seq 会从 1 开始递增，与保留事件的 seq 碰撞。
         # 当 at_ts 也相同时，heapq 元组比较回退到 _Event 比较（即使 _Event
         # 已加 order=True，仍应避免 seq 碰撞以保证排序语义正确）。
-        for item in pending_push_updates:
+        for item in pending_push_updates + pending_manual_events:
             heapq.heappush(self._events, item)
 
         # 取消并清理不再存在于 store 中的运行任务（ghost tasks）。
