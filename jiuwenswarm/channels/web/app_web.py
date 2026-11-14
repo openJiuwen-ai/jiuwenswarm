@@ -1107,7 +1107,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
     def _dispatch_proxy(self) -> bool:
         if self._is_api_route():
-            self._proxy_http()
+            # 个人版 /api 代理同样需要 SSE 流式透传：/api/v1/chat/completions
+            # 等接口以 text/event-stream 返回，整包读取会让响应头迟迟不到，
+            # 前端 15 秒超时报“请求超时”（#6411）。非 SSE 响应不受影响。
+            self._proxy_http(stream_sse=True)
             return True
         if self._is_ws_route():
             if self._is_websocket_upgrade():

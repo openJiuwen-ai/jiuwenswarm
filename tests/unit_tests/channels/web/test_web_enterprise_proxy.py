@@ -120,3 +120,17 @@ def test_personal_proxy_forwards_api_and_options_to_the_original_upstream(proxy,
     assert client.get("/api/v1/chat").text == "/api/v1/chat"
     assert client.options("/api/v1/chat").text == "/api/v1/chat"
     assert [path for path, _ in requests] == ["/api/v1/chat", "/api/v1/chat"]
+
+
+def test_personal_proxy_streams_sse_without_buffering_the_whole_response(proxy, monkeypatch):
+    """Personal-mode /api proxy must stream text/event-stream responses.
+
+    Buffering the full upstream body keeps the response headers from reaching
+    the browser until the chat stream finishes, so the frontend hits its 15s
+    timeout and shows "请求超时" while the agent is still running (#6411).
+    """
+    client, _ = proxy
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
+    response = client.get("/api/stream")
+    assert response.status_code == 200
+    assert response.content == b"data: ok\n\n"
