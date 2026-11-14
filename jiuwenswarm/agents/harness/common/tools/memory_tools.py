@@ -216,7 +216,7 @@ async def memory_search(
             else:
                 r["citation"] = f"{r['path']}#L{r['startLine']}-L{r['endLine']}"
         
-        status = _global_manager.status()
+        status = await _global_manager.status()
         
         return {
             "results": results,
