@@ -8916,6 +8916,7 @@ class AgentWebSocketServer:
         from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
             classify_swarmflow_control_miss,
             get_background_task_controller,
+            swarmflow_control_unavailable_payload,
         )
 
         session_id = request.session_id or ""
@@ -8943,11 +8944,21 @@ class AgentWebSocketServer:
                 payload={"error": "run_id is required"},
             )
         elif not team_runtime_running:
+            # A stopped/asleep Team cannot host the control handle, but the
+            # run may still be terminal in the persisted snapshot (for example
+            # immediately after chat.interrupt cancelled it). Keep the
+            # classification in the shared helper so both control RPC entry
+            # points stay aligned.
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=channel_id,
                 ok=False,
-                payload={"error": "工作流控制不可用，发送一条消息唤醒团队后即可使用。"},
+                payload=swarmflow_control_unavailable_payload(
+                    channel_id,
+                    session_id,
+                    run_id,
+                    team_manager=tm,
+                ),
             )
         else:
             run_id = run_id.strip()
@@ -8974,7 +8985,7 @@ class AgentWebSocketServer:
                 # 进程重启后注册表清空而状态快照还在。由 team 层找回权威
                 # status 一并返回，前端据此纠正卡片并明确提示，而不是
                 # 一句 not found。
-                miss = classify_swarmflow_control_miss(channel_id, session_id, run_id)
+                miss = classify_swarmflow_control_miss(channel_id, session_id, run_id, team_manager=tm)
                 if miss is not None:
                     resp = AgentResponse(
                         request_id=request.request_id,

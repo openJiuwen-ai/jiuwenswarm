@@ -150,9 +150,9 @@ class TeamSessionLifecycleAdapter:
         context: SessionLifecycleContext,
         *,
         reason: str,
-    ) -> None:
-        """Stop the matching Team generation."""
-        await self._team_manager.stop_session_runtime(
+    ) -> bool:
+        """Stop the matching Team generation; return whether live work was found."""
+        return await self._team_manager.stop_session_runtime(
             context.session_id,
             reason,
             generation=context.generation,

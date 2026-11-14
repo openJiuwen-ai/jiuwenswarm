@@ -112,6 +112,7 @@ from jiuwenswarm.runtime.session.model import (
     TEAM_ATTACH_ONLY_PARAM,
     TEAM_EXECUTION_CONTEXT_METADATA_KEY,
 )
+from jiuwenswarm.runtime.team_interrupt_control import current_team_runtime_action
 from jiuwenswarm.server.gateway_push.transport import WebSocketGatewayPushTransport
 from jiuwenswarm.server.runtime import extension_package_manager as package_manager
 from jiuwenswarm.server.runtime.a2ui.integration import (
@@ -3355,10 +3356,23 @@ class JiuWenSwarm:
         from jiuwenswarm.agents.harness.team import get_team_manager
         from jiuwenswarm.extensions.video_duplex.backend.tasks.design_execution import control_target
 
+        # Match the Runtime-side normalization so a case/whitespace variant
+        # cannot bypass the lifecycle hand-off and repeat the cancel.
+        intent = str(intent or "cancel").strip().lower()
         voice_round = control_target(request)
 
         team_manager = get_team_manager(request.channel_id)
         reason = f"interrupt(intent={intent}): "
+        lifecycle_action = current_team_runtime_action()
+        # Only cancel has an authoritative lifecycle stop today. Pause still
+        # goes through the Team manager because the lifecycle pause guard does
+        # not yet cover background-only runs.
+        lifecycle_handled = bool(
+            lifecycle_action is not None
+            and lifecycle_action.handled
+            and lifecycle_action.intent == "cancel"
+            and intent == "cancel"
+        )
 
         if intent == "resume":
             return self._build_interrupt_result_response(
@@ -3380,17 +3394,24 @@ class JiuWenSwarm:
                 )
                 message = "团队已暂停" if paused else "当前没有可暂停的团队任务"
             else:
-                # 断连兜底（client_disconnect）→ pause_all 保账本（可冷启动续跑）；用户主动终止 → stop_all 落 seal。
-                metadata = request.metadata if isinstance(request.metadata, dict) else {}
-                cancel_source = metadata.get(E2A_INTERNAL_CANCEL_SOURCE_KEY)
-                workflow_disposition = (
-                    "pause"
-                    if cancel_source == E2A_CANCEL_SOURCE_CLIENT_DISCONNECT
-                    else "stop"
-                )
-                cancelled = await team_manager.cancel_session_runtime(
-                    session_id, reason=reason, workflow_disposition=workflow_disposition
-                )
+                if lifecycle_handled:
+                    # The lifecycle stop above already owns the workflow
+                    # disposition (currently "stop"). A client-disconnect pause
+                    # needs a lifecycle-level disposition hand-off and is
+                    # tracked separately from this response fix.
+                    cancelled = True
+                else:
+                    # 断连兜底（client_disconnect）→ pause_all 保账本（可冷启动续跑）；用户主动终止 → stop_all 落 seal。
+                    metadata = request.metadata if isinstance(request.metadata, dict) else {}
+                    cancel_source = metadata.get(E2A_INTERNAL_CANCEL_SOURCE_KEY)
+                    workflow_disposition = (
+                        "pause"
+                        if cancel_source == E2A_CANCEL_SOURCE_CLIENT_DISCONNECT
+                        else "stop"
+                    )
+                    cancelled = await team_manager.cancel_session_runtime(
+                        session_id, reason=reason, workflow_disposition=workflow_disposition
+                    )
                 await self._session_manager.cancel_session_task(
                     session_id,
                     reason,

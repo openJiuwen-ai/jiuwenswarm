@@ -3723,6 +3723,12 @@ class TeamManager:
         Permanent delete callers leave the Runner runtime alive until
         ``Runner.delete_agent_team(force=True)`` so agent-core can snapshot its
         member bindings before performing the equivalent stop itself.
+
+        Returns:
+            True when live work matched the generation and teardown ran; False
+            when the generation did not match or no live work existed. This is
+            not a report of ``Runner.stop_agent_team`` success; local failures
+            are logged and teardown still proceeds.
         """
         if not self.generation_matches(session_id, generation):
             return False

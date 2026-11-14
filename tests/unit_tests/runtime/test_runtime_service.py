@@ -31,6 +31,10 @@ from jiuwenswarm.runtime.context import (
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.runtime.plan import PlanStateResult
 from jiuwenswarm.runtime.request import prepare_chat_turn
+from jiuwenswarm.runtime.team_interrupt_control import (
+    TeamRuntimeAction,
+    current_team_runtime_action,
+)
 from jiuwenswarm.runtime.session.model import (
     TEAM_ATTACH_ONLY_PARAM,
     TEAM_EXECUTION_CONTEXT_METADATA_KEY,
@@ -1485,6 +1489,60 @@ async def test_team_pause_does_not_push_completion_to_replaced_session(
     assert "Skipped stale Team pause completion" in caplog.text
     assert "generation=2 current_generation=3" in caplog.text
     test_logger.info("Suppressed pause completion after Session replacement: state=%s", new_state)
+
+
+@pytest.mark.asyncio
+async def test_team_cancel_exposes_lifecycle_outcome_to_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The lifecycle stop result must survive until the adapter's interrupt call."""
+    snapshot = SimpleNamespace(
+        session_id="session-a",
+        generation=7,
+        state=RuntimeSessionState.READY,
+        executions=(),
+    )
+    coordinator = SimpleNamespace(
+        snapshot_session=lambda session_id: snapshot,
+        cancel_execution=AsyncMock(
+            return_value=CancelExecutionResult(matched=0, cancelled=0, timed_out=())
+        ),
+    )
+    stop_session = AsyncMock(return_value=True)
+    runtime = AgentRuntime(
+        agent_manager=FakeAgentManager(),
+        initializer=AsyncMock(),
+        session_coordinator=coordinator,
+        session_runtime_lifecycle=SimpleNamespace(stop_session=stop_session),
+    )
+    seen_actions: list[TeamRuntimeAction | None] = []
+
+    async def cancel_agent(*args: object, **kwargs: object) -> AgentResponse:
+        seen_actions.append(current_team_runtime_action())
+        return AgentResponse(
+            request_id="cancel",
+            channel_id="web",
+            payload={"event_type": "chat.interrupt_result", "success": True},
+        )
+
+    monkeypatch.setattr("jiuwenswarm.runtime.request.cancel_request", cancel_agent)
+
+    response = await runtime.cancel_request(
+        AgentRequest(
+            request_id="cancel",
+            channel_id="web",
+            session_id="session-a",
+            req_method=ReqMethod.CHAT_CANCEL,
+            params={"mode": "team.work.normal", "intent": "cancel"},
+        )
+    )
+
+    assert response.payload["success"] is True
+    stop_session.assert_awaited_once()
+    assert seen_actions == [
+        TeamRuntimeAction(intent="cancel", handled=True, generation=7)
+    ]
+    assert current_team_runtime_action() is None
 
 
 @pytest.mark.asyncio
