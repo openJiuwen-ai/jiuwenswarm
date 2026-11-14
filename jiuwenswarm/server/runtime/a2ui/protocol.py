@@ -409,9 +409,17 @@ def _build_a2ui_event_payload(
     event: dict[str, Any],
     channel: str,
     language: str,
+    clock: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    # ``UserTurn.render`` hands an A2UI client event straight to this builder and
+    # never reaches its own envelope, so the clock has to be stated here or the
+    # turn arrives with no date at any position. It is passed in rather than read
+    # from a clock of this module's own, so a client event and an ordinary
+    # message from the same turn state one value resolved one way -- including
+    # the caller-declared timezone ``UserTurn._resolve_timezone`` honours.
     return {
         "source": channel,
+        **(clock or {}),
         "preferred_response_language": language,
         "type": A2UI_CLIENT_EVENT_TYPE,
         "protocolVersion": event.get("protocolVersion", VERSION_0_8),
@@ -423,8 +431,9 @@ def _build_browser_preflight_client_event_prompt(
     event: dict[str, Any],
     channel: str,
     language: str,
+    clock: dict[str, str] | None = None,
 ) -> str:
-    payload = _build_a2ui_event_payload(event, channel, language)
+    payload = _build_a2ui_event_payload(event, channel, language, clock)
     prefix = (
         "You receive an A2UI browser task preflight submission. The user has "
         "confirmed the values in event.userAction.context. Combine those values "
@@ -444,8 +453,9 @@ def _build_hotel_option_select_client_event_prompt(
     event: dict[str, Any],
     channel: str,
     language: str,
+    clock: dict[str, str] | None = None,
 ) -> str:
-    payload = _build_a2ui_event_payload(event, channel, language)
+    payload = _build_a2ui_event_payload(event, channel, language, clock)
     prefix = (
         "You receive an A2UI hotel candidate selection. The user selected one "
         "candidate from a hotel list previously returned by browser automation. "
@@ -473,8 +483,9 @@ def _build_hotel_payment_confirm_client_event_prompt(
     event: dict[str, Any],
     channel: str,
     language: str,
+    clock: dict[str, str] | None = None,
 ) -> str:
-    payload = _build_a2ui_event_payload(event, channel, language)
+    payload = _build_a2ui_event_payload(event, channel, language, clock)
     prefix = (
         "You receive an A2UI final hotel payment confirmation. The user is "
         "confirming the exact order summary shown in event.userAction.context. "
@@ -494,8 +505,9 @@ def _build_hotel_payment_cancel_client_event_prompt(
     event: dict[str, Any],
     channel: str,
     language: str,
+    clock: dict[str, str] | None = None,
 ) -> str:
-    payload = _build_a2ui_event_payload(event, channel, language)
+    payload = _build_a2ui_event_payload(event, channel, language, clock)
     prefix = (
         "You receive an A2UI hotel payment cancellation. Do not continue browser "
         "automation and do not submit payment or booking. Acknowledge the "
@@ -508,8 +520,9 @@ def _build_gmail_email_select_client_event_prompt(
     event: dict[str, Any],
     channel: str,
     language: str,
+    clock: dict[str, str] | None = None,
 ) -> str:
-    payload = _build_a2ui_event_payload(event, channel, language)
+    payload = _build_a2ui_event_payload(event, channel, language, clock)
     prefix = (
         "You receive an A2UI Gmail email/thread selection. The user selected "
         "one item from Gmail search results previously returned by browser "
@@ -534,8 +547,9 @@ def _build_gmail_reply_draft_select_client_event_prompt(
     event: dict[str, Any],
     channel: str,
     language: str,
+    clock: dict[str, str] | None = None,
 ) -> str:
-    payload = _build_a2ui_event_payload(event, channel, language)
+    payload = _build_a2ui_event_payload(event, channel, language, clock)
     prefix = (
         "You receive an A2UI Gmail reply draft selection. The user selected a "
         "reply draft or drafting style from an email summary. Treat "
@@ -555,8 +569,9 @@ def _build_gmail_send_confirm_client_event_prompt(
     event: dict[str, Any],
     channel: str,
     language: str,
+    clock: dict[str, str] | None = None,
 ) -> str:
-    payload = _build_a2ui_event_payload(event, channel, language)
+    payload = _build_a2ui_event_payload(event, channel, language, clock)
     prefix = (
         "You receive an A2UI final Gmail send confirmation. Before sending, "
         "verify that the visible Gmail compose/reply state matches "
@@ -576,8 +591,9 @@ def _build_gmail_send_cancel_client_event_prompt(
     event: dict[str, Any],
     channel: str,
     language: str,
+    clock: dict[str, str] | None = None,
 ) -> str:
-    payload = _build_a2ui_event_payload(event, channel, language)
+    payload = _build_a2ui_event_payload(event, channel, language, clock)
     prefix = (
         "You receive an A2UI Gmail send cancellation. Do not send email and do "
         "not continue browser automation. Acknowledge the cancellation briefly "
@@ -590,8 +606,9 @@ def _build_gmail_cleanup_select_client_event_prompt(
     event: dict[str, Any],
     channel: str,
     language: str,
+    clock: dict[str, str] | None = None,
 ) -> str:
-    payload = _build_a2ui_event_payload(event, channel, language)
+    payload = _build_a2ui_event_payload(event, channel, language, clock)
     prefix = (
         "You receive an A2UI Gmail cleanup selection. The user selected messages, "
         "categories, or cleanup rules from a Gmail cleanup candidate list. Treat "
@@ -609,8 +626,9 @@ def _build_gmail_cleanup_confirm_client_event_prompt(
     event: dict[str, Any],
     channel: str,
     language: str,
+    clock: dict[str, str] | None = None,
 ) -> str:
-    payload = _build_a2ui_event_payload(event, channel, language)
+    payload = _build_a2ui_event_payload(event, channel, language, clock)
     prefix = (
         "You receive an A2UI final Gmail cleanup confirmation. Continue by calling "
         "the synchronous task_tool once with subagent_type='browser_agent'. The "
@@ -630,8 +648,9 @@ def _build_gmail_cleanup_cancel_client_event_prompt(
     event: dict[str, Any],
     channel: str,
     language: str,
+    clock: dict[str, str] | None = None,
 ) -> str:
-    payload = _build_a2ui_event_payload(event, channel, language)
+    payload = _build_a2ui_event_payload(event, channel, language, clock)
     prefix = (
         "You receive an A2UI Gmail cleanup cancellation. Do not modify Gmail and "
         "do not continue browser automation. Acknowledge the cancellation briefly "
@@ -644,8 +663,9 @@ def _build_social_post_draft_select_client_event_prompt(
     event: dict[str, Any],
     channel: str,
     language: str,
+    clock: dict[str, str] | None = None,
 ) -> str:
-    payload = _build_a2ui_event_payload(event, channel, language)
+    payload = _build_a2ui_event_payload(event, channel, language, clock)
     prefix = (
         "You receive an A2UI social media post draft selection. The user selected "
         "one draft variant for a public social-media post. Treat "
@@ -666,8 +686,9 @@ def _build_social_post_confirm_client_event_prompt(
     event: dict[str, Any],
     channel: str,
     language: str,
+    clock: dict[str, str] | None = None,
 ) -> str:
-    payload = _build_a2ui_event_payload(event, channel, language)
+    payload = _build_a2ui_event_payload(event, channel, language, clock)
     prefix = (
         "You receive an A2UI final social media post confirmation. Before "
         "publishing, verify that the visible compose state matches "
@@ -687,8 +708,9 @@ def _build_social_post_cancel_client_event_prompt(
     event: dict[str, Any],
     channel: str,
     language: str,
+    clock: dict[str, str] | None = None,
 ) -> str:
-    payload = _build_a2ui_event_payload(event, channel, language)
+    payload = _build_a2ui_event_payload(event, channel, language, clock)
     prefix = (
         "You receive an A2UI social media post cancellation. Do not publish the "
         "post and do not continue browser automation. Acknowledge the cancellation "
@@ -697,36 +719,49 @@ def _build_social_post_cancel_client_event_prompt(
     return prefix + json.dumps(payload, ensure_ascii=False)
 
 
-def build_a2ui_client_event_prompt(event: dict[str, Any], channel: str, language: str) -> str:
+def build_a2ui_client_event_prompt(
+    event: dict[str, Any],
+    channel: str,
+    language: str,
+    clock: dict[str, str] | None = None,
+) -> str:
+    """Render an A2UI client event as a model prompt.
+
+    ``clock`` holds the ``timestamp`` field the turn's own envelope would
+    state (:meth:`UserTurn.clock_fields`). It is optional so
+    that callers outside the turn renderer keep working; a client event that
+    reaches the model without it states no date, which is what this
+    parameter exists to prevent.
+    """
     _log_a2ui_client_event(event)
     if _is_hotel_option_select(event):
-        return _build_hotel_option_select_client_event_prompt(event, channel, language)
+        return _build_hotel_option_select_client_event_prompt(event, channel, language, clock)
     if _is_hotel_payment_confirm(event):
-        return _build_hotel_payment_confirm_client_event_prompt(event, channel, language)
+        return _build_hotel_payment_confirm_client_event_prompt(event, channel, language, clock)
     if _is_hotel_payment_cancel(event):
-        return _build_hotel_payment_cancel_client_event_prompt(event, channel, language)
+        return _build_hotel_payment_cancel_client_event_prompt(event, channel, language, clock)
     if _is_gmail_email_select(event):
-        return _build_gmail_email_select_client_event_prompt(event, channel, language)
+        return _build_gmail_email_select_client_event_prompt(event, channel, language, clock)
     if _is_gmail_reply_draft_select(event):
-        return _build_gmail_reply_draft_select_client_event_prompt(event, channel, language)
+        return _build_gmail_reply_draft_select_client_event_prompt(event, channel, language, clock)
     if _is_gmail_send_confirm(event):
-        return _build_gmail_send_confirm_client_event_prompt(event, channel, language)
+        return _build_gmail_send_confirm_client_event_prompt(event, channel, language, clock)
     if _is_gmail_send_cancel(event):
-        return _build_gmail_send_cancel_client_event_prompt(event, channel, language)
+        return _build_gmail_send_cancel_client_event_prompt(event, channel, language, clock)
     if _is_gmail_cleanup_select(event):
-        return _build_gmail_cleanup_select_client_event_prompt(event, channel, language)
+        return _build_gmail_cleanup_select_client_event_prompt(event, channel, language, clock)
     if _is_gmail_cleanup_confirm(event):
-        return _build_gmail_cleanup_confirm_client_event_prompt(event, channel, language)
+        return _build_gmail_cleanup_confirm_client_event_prompt(event, channel, language, clock)
     if _is_gmail_cleanup_cancel(event):
-        return _build_gmail_cleanup_cancel_client_event_prompt(event, channel, language)
+        return _build_gmail_cleanup_cancel_client_event_prompt(event, channel, language, clock)
     if _is_social_post_draft_select(event):
-        return _build_social_post_draft_select_client_event_prompt(event, channel, language)
+        return _build_social_post_draft_select_client_event_prompt(event, channel, language, clock)
     if _is_social_post_confirm(event):
-        return _build_social_post_confirm_client_event_prompt(event, channel, language)
+        return _build_social_post_confirm_client_event_prompt(event, channel, language, clock)
     if _is_social_post_cancel(event):
-        return _build_social_post_cancel_client_event_prompt(event, channel, language)
+        return _build_social_post_cancel_client_event_prompt(event, channel, language, clock)
     if _is_browser_preflight_submit(event):
-        return _build_browser_preflight_client_event_prompt(event, channel, language)
+        return _build_browser_preflight_client_event_prompt(event, channel, language, clock)
 
     prefix = (
         "你收到了一次 A2UI 组件交互。请把 event.userAction.context "
@@ -741,7 +776,7 @@ def build_a2ui_client_event_prompt(event: dict[str, Any], channel: str, language
             "requests external work.\n"
         )
     )
-    payload = _build_a2ui_event_payload(event, channel, language)
+    payload = _build_a2ui_event_payload(event, channel, language, clock)
     return prefix + json.dumps(payload, ensure_ascii=False)
 
 
