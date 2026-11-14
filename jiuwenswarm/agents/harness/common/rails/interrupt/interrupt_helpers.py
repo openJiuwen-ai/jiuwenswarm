@@ -581,23 +581,7 @@ def build_permission_rail(
                     **descriptor,
                     "title": title,
                 },
-                "options": [
-                    {
-                        "optionId": "allow-once",
-                        "name": "Allow once",
-                        "kind": "allow_once",
-                    },
-                    {
-                        "optionId": "allow-always",
-                        "name": "Always allow",
-                        "kind": "allow_always",
-                    },
-                    {
-                        "optionId": "reject-once",
-                        "name": "Reject",
-                        "kind": "reject_once",
-                    },
-                ],
+                "options": _acp_permission_options(),
             }
 
             try:
@@ -643,6 +627,23 @@ def build_permission_rail(
                         approved=True, auto_confirm=False, feedback=""
                     )
                 if option_id == "allow-always":
+                    if is_enterprise():
+                        # 企业版不下发该档；陈旧 host 界面或手写客户端仍可能回送。
+                        # 与 interface.py 对「永久记住」的企业版解码一致，降级为会话内
+                        # 记住（auto_confirm=True + persist_allow=False）：只写 session
+                        # overlay，不写回本地 user overlay。
+                        logger.warning(
+                            "[InterruptHelpers] ACP host selected allow-always on enterprise, "
+                            "degraded to session allow tool=%s session=%s",
+                            tool_name or "unknown",
+                            session_id or "unknown",
+                        )
+                        return PermissionConfirmResponse(
+                            approved=True,
+                            auto_confirm=True,
+                            persist_allow=False,
+                            feedback="",
+                        )
                     return PermissionConfirmResponse(
                         approved=True, auto_confirm=True, feedback=""
                     )
@@ -1669,6 +1670,23 @@ def _default_interrupt_options() -> list[dict[str, str]]:
                 "label": "永久记住",
                 "description": "写回磁盘，所有会话均自动放行",
             },
+        )
+    return options
+
+
+# hosted ACP 把授权卡交给 host 渲染，``optionId`` / ``kind`` 是 ACP 协议字段，不能改名。
+# 企业版与 ``_default_interrupt_options`` 同一条理由不提供 always 档：长期策略归
+# Manager 权威源，ACP 的 ``allow-always`` 会写回本地 user overlay。ACP 协议没有
+# session 类选项，因此企业版只剩 ``allow-once`` + ``reject-once`` 两档。
+def _acp_permission_options() -> list[dict[str, str]]:
+    options = [
+        {"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"},
+        {"optionId": "reject-once", "name": "Reject", "kind": "reject_once"},
+    ]
+    if not is_enterprise():
+        options.insert(
+            1,
+            {"optionId": "allow-always", "name": "Always allow", "kind": "allow_always"},
         )
     return options
 
