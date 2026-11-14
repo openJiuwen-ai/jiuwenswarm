@@ -11224,6 +11224,17 @@ class JiuWenSwarmDeepAdapter:
             security_prompt_rail = None
         return security_prompt_rail
 
+    # 记忆 embedding 配置指纹（rail 重建基线）：类级默认空串。正常实例在 __init__
+    # 中赋实例初值；未走 __init__ 构造的对象（如测试用 object.__new__ 裸构造的
+    # adapter）回退到该默认值，语义等同"从未注册 rail"，避免裸构造场景读取时
+    # AttributeError。
+    _memory_embedding_fingerprint: str = ""
+    # 上次 aclose memory manager 时的有效记忆配置指纹（aclose 门控基线）：仅在
+    # _apply_reload_config_snapshot 末尾无条件推进，与上面的 rail 重建基线解耦
+    # （后者只在 builtin_on 且 register_rail 成功时回写，多条 reload 路径恒空）。
+    # 类级默认空串同样为裸构造对象提供回退，语义等同"从未 close 过"。
+    _last_closed_memory_fingerprint: str = ""
+
     # 重索引延时（秒）：embedding 配置变更后，延后这段时间再跑一次全量重索引。
     # 配合 _schedule_memory_reindex 的 debounce，连续改多次只在最后一次后跑一次。
     _MEMORY_REINDEX_DELAY_SECONDS: float = 5.0
@@ -11252,12 +11263,26 @@ class JiuWenSwarmDeepAdapter:
         api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
         return f"{model}:{base_url}:{api_key_hash}"
 
+    def _memory_config_fingerprint(self, config: dict | None) -> str:
+        """Effective memory config fingerprint (embed or jiuwen-builtin variant).
+
+        Mirrors the branch in _handle_memory_rail_by_config: jiuwen-builtin
+        memory keys off base_url/identity, native memory off the embed section.
+        Used both to decide rail rebuild and to gate the memory manager close
+        on reload so observers are never torn down when the effective memory
+        config is unchanged.
+        """
+        if is_jiuwen_builtin_memory(config):
+            return jiuwen_builtin_config_fingerprint(config)
+        return self._embedding_config_fingerprint(config)
+
     def _schedule_memory_reindex(self) -> None:
         """延时后对记忆重新索引（debounce：多次触发只跑最后一次）。
 
         前提：调用前 MemoryRail 已按新 embedding 配置重建（_embedding_config 已刷新），
-        且 openjiuwen lite 的 INDEX_CACHE 已清（aclose_memory_manager_cache）。
-        这样延时到期时 init_memory_manager_async 会用新配置建新 manager + 新 provider。
+        且本 adapter 名下的 openjiuwen lite manager 已按粒度关闭
+        （_aclose_own_memory_managers）。这样延时到期时 init_memory_manager_async
+        会用新配置建新 manager + 新 provider。
         """
         workspace = os.path.normcase(os.path.abspath(self._workspace_dir or ""))
         reindex_key = (workspace, self._memory_embedding_fingerprint)
@@ -11299,6 +11324,26 @@ class JiuWenSwarmDeepAdapter:
             with self._MEMORY_REINDEX_KEYS_LOCK:
                 self._MEMORY_REINDEX_KEYS.discard(reindex_key)
 
+    async def _aclose_own_memory_managers(self) -> int:
+        """按本 adapter 的粒度（agent_id + workspace root）关闭其名下的 memory manager。
+
+        openjiuwen lite 的 INDEX_CACHE 是进程级共享的：aclose_memory_manager_cache
+        全清会把其它 agent/session 尚未 reload 的 manager 一并拆掉（在途 search
+        命中已关 sqlite，本轮记忆召回静默为空；其 observer 也要陪跑一轮
+        stop/join 关闭竞态）。reload 门控是 per-adapter 的，关闭粒度必须与之
+        对齐：过滤维度与 _get_current_memory_manager 注册 manager 时一致
+        （agent_id + workspace root_path），只关本 adapter 名下的；其它
+        adapter 的 manager 由各自 reload 的门控负责。返回关闭数量。
+        """
+        from openjiuwen.core.memory.lite.manager import aclose_memory_managers_for
+
+        instance = getattr(self, "_instance", None)
+        agent_id = getattr(getattr(instance, "card", None), "id", None) or "default"
+        workspace_dir = getattr(self, "_workspace_dir", None) or "./"
+        resolved_language = getattr(self, "_resolved_language", None) or "zh"
+        workspace = Workspace(root_path=workspace_dir, language=resolved_language)
+        return await aclose_memory_managers_for(agent_id, workspace)
+
     async def _get_current_memory_manager(self):
         """获取当前 MemoryRail 对应的 memory manager（必要时按新配置重建）。
 
@@ -11329,9 +11374,12 @@ class JiuWenSwarmDeepAdapter:
         resolved_language = getattr(self, "_resolved_language", None) or "zh"
         return Workspace(root_path=self._workspace_dir or "./", language=resolved_language)
 
-    def _build_memory_rail(self, mode: str) -> Any | None:
+    def _build_memory_rail(self, mode: str, config: dict | None = None) -> Any | None:
         try:
-            config = get_config()
+            # 传入时复用调用方已解析的同一份配置，避免 rail 构建的
+            # embedding_config 与指纹判定分属两份配置源。
+            if config is None:
+                config = get_config()
             # jiuwen 变体：memory.builtin.provider=jiuwen 时用 JiuwenMemoryRail +
             # AgentMemoryMemoryProvider（HTTP -> agent-memory 服务）替换原生 MemoryRail。
             # 构建失败返回 None（不静默回退原生文件记忆，避免两套记忆语义混淆）。
@@ -13847,17 +13895,6 @@ class JiuWenSwarmDeepAdapter:
         from jiuwenswarm.enterprise.config.config_provider import refresh_config_source
 
         await refresh_config_source()
-        # 清 MemoryRail 实际使用的 openjiuwen lite INDEX_CACHE（而非仓内并行实现的那份），
-        # 并 close 旧实例（db 连接 / watchdog observer / 定时任务），使下次
-        # init_memory_manager_async 用最新 embedding_config 创建新 manager + 新 provider。
-        try:
-            from openjiuwen.core.memory.lite.manager import aclose_memory_manager_cache
-
-            await aclose_memory_manager_cache()
-        except Exception as e:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] aclose openjiuwen memory cache failed: %s", e
-            )
 
         # create_instance() already re-reads .env; reload must too, otherwise
         # ${MODEL_NAME} stays at process-start values and a later create_instance
@@ -13879,6 +13916,58 @@ class JiuWenSwarmDeepAdapter:
             raise TypeError("config_base must be a dict when provided")
         else:
             config_base = resolve_env_vars(config_base)
+
+        # 仅当有效记忆配置指纹（embed 段或 jiuwen-builtin 轴）非空且相对上次已
+        # close 的指纹发生变化，才 close 旧 manager（db 连接 / watchdog observer /
+        # 定时任务），使新 embedding 配置生效。指纹未变时 close 纯属多余，且会
+        # 高频触发 watchdog Windows 目录监听关闭的原生竞态（close_directory_handle
+        # 中 CancelIoEx 后立即 CloseHandle，与仍在阻塞 ReadDirectoryChangesW 的
+        # emitter 线程竞争 → access violation 直接杀 worker，见 runtime worker
+        # closed 问题单）。注意此处 gating 只降频缓解，未根治 watchdog 关闭竞态。
+        # 门控基线用独立的 _last_closed_memory_fingerprint（本方法末尾在关闭成功
+        # 或未进入关闭分支时推进，失败保留旧基线待重试），
+        # 不与 rail 重建基线 _memory_embedding_fingerprint 耦合——后者仅在
+        # builtin_on 且 register_rail 成功时回写，记忆默认关闭的 mode（agent/team）
+        # 与 custom code spec 等只应用快照的路径恒为空串，若用它做门控基线会恒判
+        # "变化"、每次 reload 都拆 manager。
+        # 指纹为空（快照缺 embed/jiuwen 记忆段）时跳过门控而非判为变化：不应凭
+        # 一份缺失记忆段的快照拆掉 manager。close 只按本 adapter 的粒度
+        # （agent_id + workspace root，见 _aclose_own_memory_managers），不做
+        # 进程级全清——INDEX_CACHE 是跨 agent/session 共享的，全清会连带拆掉
+        # 其它 agent 尚未 reload 的 manager：在途 search 命中已关 sqlite，本轮
+        # 记忆召回静默为空，且它们的 observer 也要陪跑一轮 stop/join 关闭竞态。
+        # 本 adapter 未建 instance（root adapter 只扇出不持有 rail）时同样跳过。
+        memory_fingerprint = self._memory_config_fingerprint(config_base)
+        closed_ok = True
+        if (
+            memory_fingerprint
+            and memory_fingerprint != self._last_closed_memory_fingerprint
+            and getattr(self, "_instance", None) is not None
+        ):
+            try:
+                closed = await self._aclose_own_memory_managers()
+                if closed:
+                    logger.info(
+                        "[JiuWenSwarmDeepAdapter] memory config changed, "
+                        "closed %d own memory manager(s)",
+                        closed,
+                    )
+            except Exception as e:
+                # 关闭失败（openjiuwen 版本缺 aclose_memory_managers_for 的
+                # ImportError、Workspace 构造或 close 本身异常）时不推进基线：
+                # 一旦推进，同指纹的后续 reload 永久放弃关闭，旧 manager 滞留
+                # INDEX_CACHE，新 embedding 配置静默不生效。保留旧基线让下次
+                # reload 重试——旧实现（每次 reload 无条件 close）本就每次重试，
+                # 门控不应丢失这层语义，重试仍限定在本 adapter 粒度。
+                closed_ok = False
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] aclose own memory managers failed: %s", e
+                )
+        # 仅在关闭成功、或未进入关闭分支（指纹为空 / 指纹未变 / 无 instance）时
+        # 推进 aclose 门控基线；空指纹同样推进，避免"空→非空"的往复被反复判为
+        # 变化。失败时基线保持旧值，下次 reload 同指纹会再次尝试 close。
+        if closed_ok:
+            self._last_closed_memory_fingerprint = memory_fingerprint
 
         self._config_base_cache = config_base.copy()
         self._refresh_multimodal_configs(config_base)
@@ -14198,9 +14287,11 @@ class JiuWenSwarmDeepAdapter:
         # 主动刷新 memory rail（不等下次请求的 _update_rails_for_mode）：
         # 让 embedding 配置变更立即走指纹检测 + 重建 rail + 延时重索引。
         # 若从未处理过请求（_last_mode 为 None，如冷启动后首次 reload），退化为默认 agent。
+        # 传入本方法上文已应用快照的 config_base：rail 的指纹判定与构建必须和
+        # _apply_reload_config_snapshot 里 aclose 门控用同一份配置，不能二次读盘。
         try:
             mode = self._last_mode or "agent"
-            await self._handle_memory_rail_by_config(mode)
+            await self._handle_memory_rail_by_config(mode, config=config_base)
         except Exception as e:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] memory rail refresh on reload failed: %s", e
@@ -22264,8 +22355,20 @@ class JiuWenSwarmDeepAdapter:
         with cls._subagent_progress_batches_lock:
             cls._subagent_progress_batches.clear()
 
-    async def _handle_memory_rail_by_config(self, mode: str):
-        config = get_config()
+    async def _handle_memory_rail_by_config(
+        self,
+        mode: str,
+        config: dict[str, Any] | None = None,
+    ):
+        # reload 路径传入与 aclose 门控同源的 config_base：同一次 reload 的门控
+        # 判定与 rail 重建必须基于同一份配置。二次读盘（get_config）会让两份
+        # 源不一致——门控"已变"而 rail"未变"（manager 被关、rail 保留旧
+        # embedding，新 endpoint 不生效），或门控"未变"而 rail"已变"（rail
+        # 重建但 MemoryIndexManager.get() 只检查 closed、不比对
+        # embedding_config，命中旧 manager，新配置静默不生效）。请求路径
+        # （_update_agent_rails）不传 config，保持读盘。
+        if config is None:
+            config = get_config()
         if get_memory_mode(config) == "local":
             # 引擎门禁：memory.engine 未放行内置时，等同于禁用
             builtin_on = (
@@ -22275,11 +22378,7 @@ class JiuWenSwarmDeepAdapter:
             )
             if builtin_on:
                 # 开启记忆
-                new_embed_fp = self._embedding_config_fingerprint(config)
-                if is_jiuwen_builtin_memory(config):
-                    # jiuwen 变体不走本地 embedding：指纹改用 jiuwen 配置指纹，
-                    # base_url/身份轴等变化即重建 rail；native↔jiuwen 切换同样触发。
-                    new_embed_fp = jiuwen_builtin_config_fingerprint(config)
+                new_embed_fp = self._memory_config_fingerprint(config)
                 previous_embed_fp = self._memory_embedding_fingerprint
                 if self._memory_rail is not None:
                     cur_memory_type = is_proactive_memory(mode, config)
@@ -22302,7 +22401,7 @@ class JiuWenSwarmDeepAdapter:
                         # 已经注册，且记忆类型与配置指纹均未变，无需其他操作
                         return
                 if self._memory_rail is None:
-                    self._memory_rail = self._build_memory_rail(mode)
+                    self._memory_rail = self._build_memory_rail(mode, config=config)
                 if self._memory_rail is not None:
                     # 重建（或首次注册）后记录新指纹，作为下次比对的基线
                     self._memory_embedding_fingerprint = new_embed_fp
