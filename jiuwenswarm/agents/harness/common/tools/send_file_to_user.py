@@ -142,6 +142,33 @@ def _partition_sent_files(
     return new_paths, skipped
 
 
+def _filter_duplicate_files(
+    session_id: str,
+    paths: list[str],
+    *,
+    force: bool = False,
+) -> tuple[list[str], list[str]]:
+    """Split *paths* into (new_to_send, already_sent), honouring an explicit resend.
+
+    The guard exists because compression can drop earlier tool results, which
+    invites the agent to re-call the same path on its own. It must not override
+    the user: when they say the file never arrived, the agent needs a way to
+    deliver it again, otherwise the path is blocked for the rest of the session
+    with no escape hatch.
+
+    Args:
+        session_id: Session whose delivery registry is consulted.
+        paths: Candidate paths.
+        force: Send everything, skipping the registry lookup.
+
+    Returns:
+        (paths to send, paths skipped as duplicates).
+    """
+    if force:
+        return list(paths), []
+    return _partition_sent_files(session_id, paths)
+
+
 def _mark_files_sent(session_id: str, paths: list[str]) -> None:
     sid = _sent_files_key(session_id)
     sent = _SENT_FILE_PATHS_BY_SESSION.setdefault(sid, set())
@@ -359,6 +386,7 @@ class SendFileToolkit:
         self,
         abs_file_path_list: list[str] | str,
         target_channels: list[str] | str | None = None,
+        force: bool = False,
         **_ignored: Any,
     ) -> str:
         """Send files to user.
@@ -371,6 +399,10 @@ class SendFileToolkit:
                 Gateway auto-routes the file to all channels joined to the
                 session (team mode). When provided, the file is delivered
                 only to the specified targets.
+            force: Send even if this session already delivered the same path.
+                For "I did not receive it, please resend" only: the session
+                dedup guard exists to stop the agent from repeating itself,
+                not to override an explicit request from the user.
 
         Returns:
             Success message or error description.
@@ -397,6 +429,7 @@ class SendFileToolkit:
                 envelope,
                 abs_file_path_list=abs_file_path_list,
                 target_channels=target_channels,
+                force=force,
             )
         except Exception as error:
             session_id = (
@@ -455,6 +488,7 @@ class SendFileToolkit:
         *,
         abs_file_path_list: Any,
         target_channels: Any,
+        force: bool = False,
     ) -> str:
         target_channel_list = SendFileToolkit._normalize_target_channels(
             target_channels
@@ -528,9 +562,10 @@ class SendFileToolkit:
                 msg_parts.append(f"  - {mf}")
             return "\n".join(msg_parts)
 
-        valid_files, skipped_files = _partition_sent_files(
+        valid_files, skipped_files = _filter_duplicate_files(
             envelope.session_id,
             valid_files,
+            force=force,
         )
         if not valid_files:
             logger.info(
@@ -830,6 +865,8 @@ class SendFileToolkit:
                     "省略时默认投给最近发起请求的人类成员（按 session 记录的发起者）；web 发起或无人类成员时投 web。"
                     "多 app 场景定向到指定 feishu 用户时，传入该用户的 member_name（不会误投其它 app）；"
                     "跨端投递（如把文件发给飞书用户、或发给 web）时传入对应 member_name 或 'web'。"
+                    "用户明确表示没收到文件、要求“再发一次/重新发送/文件呢”时，设置 force=true "
+                    "绕过本会话的重复发送保护；普通首次发送不要设置。"
                 ),
                 input_params={
                     "type": "object",
@@ -851,6 +888,13 @@ class SendFileToolkit:
                                 "或 team 人类席位名（如 'human-player-1'）。"
                                 "省略时默认投给最近发起请求的人类成员；web 发起或无人类成员时投 web。"
                                 "定向到指定 feishu 用户传其 member_name；跨端投递传对应 member_name 或 'web'。"
+                            ),
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "description": (
+                                "可选，默认 false。仅当用户明确表示没收到文件、要求重发时设为 true，"
+                                "绕过本会话的重复发送保护；普通首次发送不要设置。"
                             ),
                         },
                     },
