@@ -1,7 +1,7 @@
 ---
 title: 当前规约 S索引
-author: xinyang_bali
-author_email: 835397263@qq.com
+author: nawenyu139
+author_email: slamdunk111@163.com
 generated: true
 ---
 
@@ -21,7 +21,8 @@ generated: true
 | [jiuwenswarm/extensions/sdk](#module-4) |
 | [jiuwenswarm/resources/plugins/ttse](#module-5) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-6) |
-| [未分类](#module-7) |
+| [jiuwenswarm/server/supervisor](#module-7) |
+| [未分类](#module-8) |
 
 <a id="module-1"></a>
 
@@ -74,6 +75,14 @@ generated: true
 | [S_03_native-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/extensions/sdk | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/extensions/sdk/plugin_runtime.py | — |
 
 <a id="module-7"></a>
+
+## jiuwenswarm/server/supervisor
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [S_01_delivery-ledger](jiuwenswarm/server/supervisor/S_01_delivery-ledger.md) | S | 交付台账与占位卡契约（P6 静默吞回复兜底） | nawenyu139 | jiuwenswarm/server/supervisor | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/supervisor/delivery_ledger.py, jiuwenswarm/server/ipc/protocol.py, jiuwenswarm/common/utils.py | — |
+
+<a id="module-8"></a>
 
 ## 未分类
 

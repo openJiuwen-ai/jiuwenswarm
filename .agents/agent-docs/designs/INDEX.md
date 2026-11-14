@@ -1,12 +1,12 @@
 ---
 title: 设计文档索引
-author: xinyang_bali
-author_email: 835397263@qq.com
+author: nawenyu139
+author_email: slamdunk111@163.com
 generated: true
 ---
 
 <!-- 本文件由 .agents/skills/jw-design/scripts/generate_index.py 自动生成，请勿手改。重新生成：python .agents/skills/jw-design/scripts/generate_index.py -->
-<!-- generated-at: 2026-11-03T16:00+08:00 -->
+<!-- generated-at: 2026-11-06T20:57+08:00 -->
 
 # 设计文档索引 (INDEX)
 
