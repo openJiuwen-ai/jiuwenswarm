@@ -11,6 +11,7 @@ when it takes images, else to a local OpenAI-compatible vision model
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import zipfile
@@ -433,6 +434,29 @@ async def test_a_review_that_fails_returns_the_render_without_a_verdict(
     assert any(reason in result for reason in reasons)
     assert "visual_attachment.path: " in result
     assert len(vision.requests) == len(replies)
+
+
+async def test_a_review_deadline_cancels_the_request_and_returns_the_render(
+        conversation, attach_pane, vision, monkeypatch):
+    attach_pane("deck-a", REVIEWING)
+    answer = asyncio.get_running_loop().create_future()
+
+    async def wait_for_answer(_model, _messages, _reasoning):
+        return await answer
+
+    # Keep the model call pending without introducing the HTTP client's competing deadline.
+    monkeypatch.setattr(review, "_first_answer", wait_for_answer)
+    monkeypatch.setattr(review, "REVIEW_TIMEOUT_SECONDS", 0.5)
+
+    async with conversation([[_verify()]]) as pane:
+        [request] = await pane.turn(REVIEW_QUERY)
+        await pane.answer((request, _capture()))
+        result = pane.model.tool_results()["verify-1"]
+
+    assert answer.cancelled()
+    assert result.startswith('<verifier-result slide_id="256#1">No verdict: ')
+    assert "did not answer within" in result
+    assert "visual_attachment.path: " in result
 
 
 async def test_a_review_by_the_conversation_s_model_that_answers_nothing_names_that_model(
