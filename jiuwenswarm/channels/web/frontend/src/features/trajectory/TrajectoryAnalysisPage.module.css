@@ -1,4 +1,5 @@
 .root {
+  container-type: inline-size;
   display: flex;
   min-width: 0;
   min-height: 0;
@@ -11,6 +12,7 @@
 .header {
   display: flex;
   flex: 0 0 auto;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.25rem;
   padding: 0.75rem 1rem 0;
@@ -20,6 +22,7 @@
   display: inline-flex;
   width: 1.75rem;
   height: 1.75rem;
+  flex: none;
   align-items: center;
   justify-content: center;
   border: 0;
@@ -45,9 +48,11 @@
   font-size: 0.9375rem;
   font-weight: 600;
   line-height: 1.5rem;
+  white-space: nowrap;
 }
 
 .summary {
+  min-width: 0;
   margin-left: 0.75rem;
   color: var(--color-text-secondary);
   font-size: 0.75rem;
@@ -58,7 +63,7 @@
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 1rem;
+  column-gap: 1rem;
   border-bottom: 1px solid var(--color-border-default);
   margin-top: 0.5rem;
   padding: 0 1rem 0 2.25rem;
@@ -90,6 +95,7 @@
   font-size: 0.8125rem;
   line-height: 1.25rem;
   padding: 0.5rem 0.125rem;
+  white-space: nowrap;
 }
 
 .tab:hover {
@@ -134,6 +140,7 @@
   font-size: 0.8125rem;
   line-height: 1.25rem;
   padding: 0.25rem 1rem;
+  white-space: nowrap;
 }
 
 .diagnose:hover:not(:disabled) {
@@ -154,4 +161,22 @@
 .diagnose:focus-visible {
   outline: 2px solid var(--color-border-focus);
   outline-offset: 2px;
+}
+
+@container (max-width: 44rem) {
+  .tabBar {
+    flex-wrap: wrap;
+  }
+}
+
+@container (max-width: 32rem) {
+  .summary {
+    flex-basis: 100%;
+    margin-left: 0;
+    order: 1;
+  }
+
+  .tabBar {
+    padding-inline-start: 1rem;
+  }
 }

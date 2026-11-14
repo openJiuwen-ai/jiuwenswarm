@@ -2,6 +2,7 @@
   display: flex;
   min-width: 0;
   flex: 1 1 auto;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 0.5rem;
@@ -10,7 +11,7 @@
 
 .replay {
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   margin-right: auto;
   color: var(--color-text-secondary);
   font-size: 0.75rem;
@@ -24,6 +25,7 @@
 .folds {
   position: relative;
   display: inline-flex;
+  flex: none;
   align-items: center;
 }
 
@@ -57,6 +59,7 @@
   align-items: center;
   gap: 0.25rem;
   padding: 0 0.375rem 0 0.625rem;
+  white-space: nowrap;
 }
 
 .menuButton:disabled,
@@ -111,6 +114,7 @@
 .icon {
   display: inline-flex;
   width: 1.75rem;
+  flex: none;
   align-items: center;
   justify-content: center;
   padding: 0;
@@ -138,6 +142,7 @@
 .search {
   position: relative;
   display: inline-flex;
+  max-width: 100%;
   min-width: 0;
   width: 12.5rem;
   align-items: center;
@@ -159,4 +164,18 @@
 
 .searchInput::placeholder {
   color: var(--color-text-secondary);
+}
+
+@container (max-width: 32rem) {
+  .root {
+    justify-content: flex-start;
+  }
+
+  .replay {
+    flex-basis: 100%;
+  }
+
+  .search {
+    flex: 1 1 12.5rem;
+  }
 }
