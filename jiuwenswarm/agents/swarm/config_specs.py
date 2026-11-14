@@ -964,6 +964,30 @@ def _is_explore_subagent(spec: Any) -> bool:
     )
 
 
+
+def _is_browser_subagent(spec: Any) -> bool:
+    """Return whether ``spec`` declares the browser sub-agent.
+
+    Same three-carrier match as :func:`_is_explore_subagent`: a base team
+    spec's shared ``SubAgentSpec`` carries no ``subagent_type`` field (the
+    pydantic model drops the keyword), so the agent card name and the
+    ``factory_name`` are what actually identify it, while foreign platform
+    spec objects may only expose ``subagent_type``.
+
+    Args:
+        spec: A sub-agent spec from a base team spec or from
+            :func:`build_member_subagent_specs`.
+
+    Returns:
+        True when the spec declares the shared ``browser_agent``.
+    """
+    return (
+        getattr(spec, "subagent_type", None) == "browser_agent"
+        or getattr(spec, "factory_name", None) == registry.SWARM_BROWSER_AGENT
+        or getattr(getattr(spec, "agent_card", None), "name", None) == "browser_agent"
+    )
+
+
 def build_member_subagent_specs(
     config: dict[str, Any],
     mode: str,
@@ -1160,13 +1184,11 @@ def build_member_deep_agent_spec(
             ]
         # Remove any browser_agent from base_spec to prevent the shared
         # playwright_official_stdio entry from co-existing with our isolated one.
-        if team_browser_spec or any(
-            getattr(s, "subagent_type", None) == "browser_agent" for s in subagent_specs
-        ):
+        # SubAgentSpec has no subagent_type field, so the card / factory name
+        # checks are what actually match here (see _is_browser_subagent).
+        if team_browser_spec or any(_is_browser_subagent(s) for s in subagent_specs):
             merged_subagents = [
-                s
-                for s in merged_subagents
-                if getattr(s, "subagent_type", None) != "browser_agent"
+                s for s in merged_subagents if not _is_browser_subagent(s)
             ]
         if team_browser_spec:
             merged_subagents.append(team_browser_spec)
