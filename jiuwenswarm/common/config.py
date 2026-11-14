@@ -1559,52 +1559,63 @@ def _parse_custom_headers(value: str | dict | None) -> dict[str, Any] | None:
         return None
 
 
-def _infer_is_default(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """为模型条目列表推断 is_default 字段。
-
-    规则：
-    - 同 model_name 组内仅一个条目 → is_default = True
-    - 同 model_name 组内多个条目 → 第一个为 True，其余为 False
-    - 已有 is_default 字段且为 True 的条目保留，同组内其余置 False
-    """
+def _group_model_entries(entries: list[dict[str, Any]]):
+    """Group entry indices by ``model_name``; order is preserved."""
     from collections import OrderedDict
-    import copy
-
-    result = copy.deepcopy(entries)
 
     groups: OrderedDict[str, list[int]] = OrderedDict()
-    for i, entry in enumerate(result):
+    for i, entry in enumerate(entries):
         if not isinstance(entry, dict):
             # 非 dict 的脏条目不参与分组，但保留原位置以维持下标稳定
             continue
         name = (entry.get("model_client_config") or {}).get("model_name", "")
-        if name not in groups:
-            groups[name] = []
-        groups[name].append(i)
+        groups.setdefault(name, []).append(i)
+    return groups
 
-    for name, indices in groups.items():
-        if len(indices) == 1:
-            result[indices[0]]["is_default"] = True
-            continue
 
-        has_explicit = False
-        for idx in indices:
-            if result[idx].get("is_default") is True:
-                has_explicit = True
-                break
+def _explicit_default_index(entries: list[dict[str, Any]], indices: list[int]) -> int | None:
+    """First non-placeholder entry in the group explicitly marked as default."""
+    from jiuwenswarm.common.model_config_validation import is_placeholder_model_entry
 
-        if has_explicit:
-            first_true = True
-            for idx in indices:
-                if result[idx].get("is_default") is True and first_true:
-                    result[idx]["is_default"] = True
-                    first_true = False
-                else:
-                    result[idx]["is_default"] = False
-        else:
-            for j, idx in enumerate(indices):
-                result[idx]["is_default"] = j == 0
+    for i in indices:
+        entry = entries[i]
+        if isinstance(entry, dict) and entry.get("is_default") is True:
+            if not is_placeholder_model_entry(entry.get("model_client_config") or {}):
+                return i
+    return None
 
+
+def _mark_group_defaults(entries: list[dict[str, Any]], groups) -> None:
+    """Keep one default per ``model_name`` group; placeholders never default."""
+    from jiuwenswarm.common.model_config_validation import is_placeholder_model_entry
+
+    for indices in groups.values():
+        explicit = _explicit_default_index(entries, indices)
+        non_placeholder = [
+            i for i in indices
+            if not is_placeholder_model_entry(entries[i].get("model_client_config") or {})
+        ]
+        for i in indices:
+            entries[i]["is_default"] = False
+        chosen = explicit if explicit is not None else (non_placeholder[0] if non_placeholder else None)
+        if chosen is not None:
+            entries[chosen]["is_default"] = True
+
+
+def _infer_is_default(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """为模型条目列表推断 is_default 字段。
+
+    规则：
+    - 保持「每个 ``model_name`` 组一个默认」的既有语义；
+    - 组内显式 ``is_default: true`` 且非占位时优先；
+    - ``.env`` 模板占位条目（``your-model-name`` / ``example.com`` /
+      ``sk-xxxxxxxxx``）永不推断为默认：它们是「尚未配置」的哨兵值，
+      不能成为真实请求的目标
+    """
+    import copy
+
+    result = copy.deepcopy(entries)
+    _mark_group_defaults(result, _group_model_entries(result))
     return result
 
 
@@ -1730,8 +1741,35 @@ def _decrypt_model_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]
             if "custom_headers" in mcc:
                 mcc["custom_headers"] = _parse_custom_headers(mcc["custom_headers"])
 
+    # Record which entries the operator explicitly marked as default before
+    # `_infer_is_default` fills in per-name defaults. `choose(None)` prefers
+    # these, so the configured default wins over list order.
+    _mark_explicit_defaults(result)
+
     result = _infer_is_default(result)
     return result
+
+
+def _is_explicit_default_entry(entry: Any) -> bool:
+    """Whether an entry is a usable model explicitly marked as default."""
+    from jiuwenswarm.common.model_config_validation import is_placeholder_model_entry
+
+    if not isinstance(entry, dict):
+        return False
+    if entry.get("is_default") is not True:
+        return False
+    return not is_placeholder_model_entry(entry.get("model_client_config") or {})
+
+
+def _mark_explicit_defaults(entries: list[dict[str, Any]]) -> None:
+    """Flag entries the operator explicitly marked as default (and usable)."""
+    explicit_ids = set()
+    for entry in entries:
+        if _is_explicit_default_entry(entry):
+            explicit_ids.add(str(entry.get("model_id") or ""))
+    for entry in entries:
+        if isinstance(entry, dict):
+            entry["_explicit_default"] = str(entry.get("model_id") or "") in explicit_ids
 
 
 def get_agentos_models(config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -1932,8 +1970,9 @@ def _normalize_model_entry(entry: dict[str, Any]) -> dict[str, Any]:
 def _merge_model_update(current: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
     """Merge an editable DTO while preserving omitted/write-only settings."""
     merged = deepcopy(current)
+    merged.pop("_explicit_default", None)
     for key, value in update.items():
-        if key in {"source", "is_agentos", "read_only", "write_only_fields"}:
+        if key in {"source", "is_agentos", "read_only", "write_only_fields", "_explicit_default"}:
             continue
         if isinstance(value, dict) and isinstance(merged.get(key), dict):
             merged[key] = _merge_model_update(merged[key], value)

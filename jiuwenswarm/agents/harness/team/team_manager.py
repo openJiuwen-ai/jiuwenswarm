@@ -1621,10 +1621,24 @@ class TeamManager:
         return compiled
 
     @staticmethod
+    def _selection_is_placeholder(catalog, selection) -> bool:
+        """Whether a persisted ``model`` selection names a template placeholder."""
+        if selection.type != "model":
+            return False
+        from jiuwenswarm.common.model_config_validation import is_placeholder_model_entry
+        from jiuwenswarm.common.model_errors import ModelSelectionError
+
+        try:
+            entry = catalog.get_model(selection.id)["entry"]
+        except ModelSelectionError:
+            return False
+        return is_placeholder_model_entry(entry.get("model_client_config") or {})
+
+    @staticmethod
     def _default_if_deleted(
         selection: SwarmModelSelection | dict[str, Any],
     ) -> SwarmModelSelection | dict[str, Any]:
-        """Replace a persisted reference only when its resource was deleted."""
+        """Replace a persisted reference when deleted or a template placeholder."""
         from jiuwenswarm.common.model_catalog import ModelCatalog
         from jiuwenswarm.server.runtime.model_routing_registry import (
             ModelExecutionContext,
@@ -1633,9 +1647,13 @@ class TeamManager:
 
         selected = SwarmModelSelection.model_validate(selection)
         catalog = ModelCatalog()
-        if catalog.has_selection(selected):
+        if catalog.has_selection(selected) and not TeamManager._selection_is_placeholder(catalog, selected):
             return selection
-        logger.info("saved Team selection %s:%s was deleted; using current default", selected.type, selected.id)
+        logger.info(
+            "saved Team selection %s:%s was deleted or is a template placeholder; using current default",
+            selected.type,
+            selected.id,
+        )
         return ModelSelectionResolver(catalog).choose(None, ModelExecutionContext())
 
     @staticmethod
@@ -1953,6 +1971,29 @@ class TeamManager:
             login_model_entry=login_model_entry,
             model_id=selected_model_id or None,
         )
+        if not effective_models:
+            from jiuwenswarm.common.model_config_validation import is_placeholder_model_entry
+            from jiuwenswarm.common.model_errors import (
+                MODEL_SELECTION_DISABLED,
+                ModelSelectionError,
+            )
+
+            # Core supports a pool-free team using each member's declared model.
+            # Check the resolved members, including inherited fallback models.
+            for agent in spec_dict["agents"].values():
+                model = agent.get("model") or {}
+                client = model.get("model_client_config") or {}
+                request = model.get("model_request_config") or {}
+                model_name = str(request.get("model") or request.get("model_name") or "").strip()
+                if (
+                    not model_name
+                    or is_placeholder_model_entry(client)
+                    or is_placeholder_model_entry({"model_name": model_name})
+                ):
+                    raise ModelSelectionError(
+                        MODEL_SELECTION_DISABLED,
+                        "no usable model configured for a team member; add a model in Settings",
+                    )
         if effective_models:
             from openjiuwen.agent_teams.schema.team import ModelPoolEntry
 

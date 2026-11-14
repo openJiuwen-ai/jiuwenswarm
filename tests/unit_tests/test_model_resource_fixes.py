@@ -22,13 +22,13 @@ async def test_legacy_models_list_keeps_editable_key_but_hides_login_key(monkeyp
     models = [{
         "model_id": "mdl_local",
         "model_client_config": {
-            "model_name": "local", "api_base": "https://example.com/v1",
+            "model_name": "local", "api_base": "https://example-gw.test/v1",
             "api_key": "test-local-key", "client_provider": "OpenAI",
         },
     }, {
         "model_id": "mdl_login", "source": LOGIN_MODEL_SOURCE,
         "model_client_config": {
-            "model_name": "login", "api_base": "https://example.com/v1",
+            "model_name": "login", "api_base": "https://example-gw.test/v1",
             "api_key": "test-login-key", "client_provider": "OpenAI",
         },
     }]
@@ -129,7 +129,7 @@ def test_stable_selection_translates_reasoning_before_core_compilation(catalog_s
     )
 
     entry = catalog_state["models"]["defaults"][0]
-    entry["model_client_config"].update({"model_name": "Qwen3.8-Flash", "api_base": "https://example.com/v1"})
+    entry["model_client_config"].update({"model_name": "Qwen3.8-Flash", "api_base": "https://example-gw.test/v1"})
     entry["model_config_obj"] = {"reasoning_level": level, "temperature": 0.3}
     catalog_state["models"]["groups"] = [{
         "model_group_id": "mgp_reasoning", "enabled": True,
@@ -253,6 +253,16 @@ def test_only_explicit_default_edit_normalizes_flags(catalog_state):
     assert all(entry["is_default"] for entry in catalog_state["models"]["defaults"])
     config_module.upsert_model_resource({"model_id": "mdl_b", "is_default": True})
     assert [entry["is_default"] for entry in catalog_state["models"]["defaults"]] == [False, True]
+
+
+def test_explicit_default_marker_never_reaches_detail_or_config(catalog_state):
+    catalog_state["models"]["defaults"][0]["_explicit_default"] = True
+    detail = ModelCatalog(catalog_state).get_public_model_detail("mdl_a")
+    assert "_explicit_default" not in detail
+
+    saved = config_module.upsert_model_resource({**detail, "alias": "renamed"})
+    assert "_explicit_default" not in saved
+    assert all("_explicit_default" not in entry for entry in catalog_state["models"]["defaults"])
 
 
 def test_all_disabled_group_rejected_at_save_and_execution(catalog_state):
