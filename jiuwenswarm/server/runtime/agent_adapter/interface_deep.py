@@ -14320,6 +14320,7 @@ class JiuWenSwarmDeepAdapter:
             build_rebuild_llm_direct_prompt,
         )
 
+        ctx = rebuild_context if isinstance(rebuild_context, dict) else {}
         subject_payload = subject if isinstance(subject, dict) else {}
         if not subject_payload.get("name"):
             subject_payload = {
@@ -14330,7 +14331,7 @@ class JiuWenSwarmDeepAdapter:
             subject=subject_payload,
             current_skill_md=old_body,
             user_intent=user_intent,
-            rebuild_context=rebuild_context if isinstance(rebuild_context, dict) else {},
+            rebuild_context=ctx,
             language=self._resolve_runtime_language(),
         )
         try:

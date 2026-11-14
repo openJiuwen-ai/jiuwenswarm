@@ -8,9 +8,10 @@ portalocker file locks, so they also hold across runners in one process
 (per-session adapters, hot toggle) and across worker processes on the same
 host that share the directory (e.g. several sidecars writing one skills dir).
 
-Failures: the counter taken at start is added back when a cycle fails or is
-cancelled, and consecutive failures per skill back off exponentially
-(``skill_sleep_failures.json`` under ``state_dir``) with ERROR logs.
+Failures: the call counter is snapshotted at start and only consumed after a
+successful offline cycle (so mid-flight crashes keep the count). Consecutive
+failures per skill back off exponentially (``skill_sleep_failures.json`` under
+``state_dir``) with ERROR logs.
 """
 
 from __future__ import annotations
@@ -41,7 +42,12 @@ logger = logging.getLogger(__name__)
 ACTION_OFF = "off"
 ACTION_SUGGEST = "suggest"
 ACTION_AUTO = "auto"
-_SUGGEST_OPS = frozenset({"add", "replace"})
+_SUGGEST_OPS = frozenset({"add", "replace", "delete"})
+_SUGGEST_OP_TO_ACTION = {
+    "add": "append",
+    "replace": "replace",
+    "delete": "delete",
+}
 
 _DEFAULT_ATTEMPT_TIMEOUT = 300.0
 _DEFAULT_MAX_ATTEMPTS = 3
@@ -157,14 +163,22 @@ def _learned_lines(prompt: str) -> list[str]:
     return [_fold(line) for line in current_learned_lines(prompt or "")]
 
 
-def _normalize_reflect_edits(text: str, prompt: str) -> str:
+def _normalize_reflect_edits(
+    text: str,
+    prompt: str,
+    *,
+    preserve_body_ops: bool = False,
+) -> str:
     """Rewrite replace/delete edits the sleep applier cannot execute.
 
     openjiuwen applies replace/delete only inside the learned region (legacy
     ``SKILL-TRAIN-SLEEP:LEARNED`` markers), while the reflect prompt invites
-    anchors copied from the skill body. Such a replace becomes an ``add`` of
-    its new lines (anchor line removed); such a delete is dropped.
+    anchors copied from the skill body. In auto mode such a replace becomes an
+    ``add`` of its new lines (anchor line removed) and such a delete is dropped.
+    Suggest mode keeps body replace/delete so evolutions.json can record 增删改.
     """
+    if preserve_body_ops:
+        return text
     try:
         payload = json.loads(text)
     except (TypeError, ValueError):
@@ -217,11 +231,13 @@ class _ReflectNormalizingChatClient:
     The sleep reflect prompt asks for a bare JSON array, but models often wrap
     it in a json code fence; openjiuwen's parser only unwraps fenced dicts, so
     a fenced array silently yields zero edits. Body-anchored replace/delete
-    edits are rewritten by :func:`_normalize_reflect_edits`.
+    edits are rewritten by :func:`_normalize_reflect_edits` unless suggest mode
+    preserves them for 增删改 suggestion records.
     """
 
-    def __init__(self, inner: Any) -> None:
+    def __init__(self, inner: Any, *, preserve_body_ops: bool = False) -> None:
         self._inner = inner
+        self._preserve_body_ops = preserve_body_ops
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -230,12 +246,18 @@ class _ReflectNormalizingChatClient:
         text, meta = self._inner.chat(**kwargs)
         if kwargs.get("stage") in _FENCED_JSON_STAGES and isinstance(text, str):
             text = _normalize_reflect_edits(
-                _unwrap_json_fence(text), str(kwargs.get("user") or "")
+                _unwrap_json_fence(text),
+                str(kwargs.get("user") or ""),
+                preserve_body_ops=self._preserve_body_ops,
             )
         return text, meta
 
 
-def _build_chat_client(spec: SleepModelSpec | None = None) -> Any:
+def _build_chat_client(
+    spec: SleepModelSpec | None = None,
+    *,
+    preserve_body_ops: bool = False,
+) -> Any:
     """Build the sleep LLM client from *spec*, or from env/.env when absent."""
     from openjiuwen.agent_evolving.skill_train.llm_client import (
         ChatLLMClient,
@@ -262,7 +284,8 @@ def _build_chat_client(spec: SleepModelSpec | None = None) -> Any:
                 total_budget_secs=attempt_timeout * max_attempts + 30.0,
                 max_attempts=max_attempts,
             ),
-        )
+        ),
+        preserve_body_ops=preserve_body_ops,
     )
 
 
@@ -432,7 +455,10 @@ def run_sleep_cycle_sync(
     target_client = None
     optimizer_client = None
     if backend == "model":
-        client = _build_chat_client(model_spec)
+        client = _build_chat_client(
+            model_spec,
+            preserve_body_ops=(action == ACTION_SUGGEST),
+        )
         target_client = client
         optimizer_client = client
 
@@ -451,6 +477,12 @@ def run_sleep_cycle_sync(
         progress=True,
     )
     suggest = action == ACTION_SUGGEST
+    seed_tasks = None
+    consumed_max_ns = 0
+    if skill_name:
+        seed_tasks, consumed_max_ns = _mine_skill_tasks(
+            cfg, skill_name, state_dir=sleep_state
+        )
     outcome = run_sleep_cycle(
         cfg,
         dry_run=dry_run or suggest,
@@ -461,9 +493,13 @@ def run_sleep_cycle_sync(
         ),
         target_client=target_client,
         optimizer_client=optimizer_client,
-        seed_tasks=_mine_skill_tasks(cfg, skill_name) if skill_name else None,
+        seed_tasks=seed_tasks,
         evolution_store=store,
     )
+    if skill_name and consumed_max_ns > 0:
+        _persist_skill_harvest_watermark(
+            sleep_state, skill_name=skill_name, consumed_max_ns=consumed_max_ns
+        )
     suggest_written = 0
     if suggest and not dry_run:
         suggest_written = _persist_suggestions(store, skill_name, outcome)
@@ -477,29 +513,101 @@ def _unpack_sleep_cycle_result(raw: Any) -> tuple[Any, int | None]:
     return raw, None
 
 
-def _mine_skill_tasks(cfg: Any, skill_name: str) -> list[Any]:
-    """Harvest + mine trajectories, keeping only tasks hinted to *skill_name*."""
+def _persist_skill_harvest_watermark(
+    state_dir: str | Path,
+    *,
+    skill_name: str,
+    consumed_max_ns: int,
+) -> None:
+    """Advance per-skill harvest watermark after a successful offline cycle."""
+    from openjiuwen.agent_evolving.skill_train.sleep.state import SleepState
+
+    name = str(skill_name or "").strip()
+    ns = max(int(consumed_max_ns or 0), 0)
+    if not name or ns <= 0:
+        return
+    state = SleepState.load(Path(state_dir).expanduser() / "state.json")
+    previous = state.get_skill_harvest_ns(name)
+    if ns <= previous:
+        return
+    state.set_skill_harvest_ns(name, ns)
+    state.save()
+    logger.info(
+        "[SkillSleepRunner] advanced harvest watermark skill=%s ns=%s",
+        name,
+        ns,
+    )
+
+
+def _mine_skill_tasks(
+    cfg: Any,
+    skill_name: str,
+    *,
+    state_dir: str | Path | None = None,
+) -> tuple[list[Any], int]:
+    """Harvest + mine trajectories for *skill_name*, respecting per-skill watermark.
+
+    Returns ``(tasks, consumed_max_ns)``. ``consumed_max_ns`` is the harvest
+    watermark to persist after a successful cycle (0 = do not advance).
+
+    Watermark policy: only advance when ``mine_capped`` did **not** hit
+    ``max_tasks_per_night``. Then use the max ``SessionDigest.max_start_ns``
+    across the whole harvested window (fully scanned, including digests that
+    yielded no task). If truncated, return 0 so unread traces are not skipped.
+    """
     from openjiuwen.agent_evolving.skill_train.sleep.harvest import (
         harvest_otlp_trajectories,
     )
-    from openjiuwen.agent_evolving.skill_train.sleep.mine import mine
+    from openjiuwen.agent_evolving.skill_train.sleep.mine import mine_capped
+    from openjiuwen.agent_evolving.skill_train.sleep.state import SleepState
 
-    tasks = mine(
-        harvest_otlp_trajectories(cfg),
-        max_tasks=cfg.max_tasks_per_night,
+    name = str(skill_name or "").strip()
+    since_ns = 0
+    if state_dir is not None and name:
+        state = SleepState.load(Path(state_dir).expanduser() / "state.json")
+        since_ns = state.get_skill_harvest_ns(name)
+
+    digests = harvest_otlp_trajectories(cfg, since_ns=since_ns)
+    max_tasks = int(getattr(cfg, "max_tasks_per_night", 40) or 40)
+    tasks, truncated = mine_capped(
+        digests,
+        max_tasks=max_tasks,
         val_fraction=cfg.val_fraction,
         test_fraction=cfg.test_fraction,
         seed=cfg.seed,
     )
-    name = skill_name.strip()
-    return [task for task in tasks if (task.skill_hint or "").strip() == name]
+    filtered = [
+        task for task in tasks if (task.skill_hint or "").strip() == name
+    ] if name else list(tasks)
+
+    if truncated:
+        logger.warning(
+            "[SkillSleepRunner] skip harvest watermark skill=%s: "
+            "mine hit max_tasks_per_night=%s (digests=%s tasks=%s skill_tasks=%s); "
+            "unread traces kept for a later cycle",
+            name or "*",
+            max_tasks,
+            len(digests),
+            len(tasks),
+            len(filtered),
+        )
+        return filtered, 0
+
+    consumed_max_ns = 0
+    for digest in digests:
+        consumed_max_ns = max(
+            consumed_max_ns, int(getattr(digest, "max_start_ns", 0) or 0)
+        )
+    return filtered, consumed_max_ns
 
 
 def _suggestion_records(skill_name: str, outcome: Any) -> list[Any]:
     """Convert a dry-run outcome's edits into suggest-mode records.
 
-    Suggestions are for human review, so gate-rejected edits are kept too;
-    ``gate=accepted|rejected`` in the record context tells them apart.
+    Suggestions are for human review, so gate-rejected and unmatched edits are
+    kept too; ``gate=accepted|rejected|unmatched`` in the record context tells
+    them apart. Edit ops map to patch actions: add→append, replace→replace,
+    delete→delete.
     """
     from openjiuwen.agent_evolving.checkpointing.types import (
         EvolutionPatch,
@@ -516,21 +624,33 @@ def _suggestion_records(skill_name: str, outcome: Any) -> list[Any]:
     for gate, edits in (
         ("accepted", getattr(report, "edits", None) or []),
         ("rejected", getattr(report, "rejected_edits", None) or []),
+        ("unmatched", getattr(report, "unmatched_edits", None) or []),
     ):
         for edit in edits:
-            content = (edit.content or "").strip()
-            if (edit.op or "add").lower() not in _SUGGEST_OPS or not content:
+            op = (edit.op or "add").lower()
+            if op not in _SUGGEST_OPS:
                 logger.debug(
                     "[SkillSleepRunner] skip suggest edit skill=%s op=%s", skill_name, edit.op
                 )
                 continue
-            if content in seen:
+            content = (edit.content or "").strip()
+            if op == "delete":
+                content = content or (edit.anchor or "").strip()
+            if not content:
+                logger.debug(
+                    "[SkillSleepRunner] skip suggest edit skill=%s op=%s empty content",
+                    skill_name,
+                    edit.op,
+                )
                 continue
-            seen.add(content)
+            dedupe_key = f"{op}:{content}"
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
             rationale = (edit.rationale or "").strip()
             patch = EvolutionPatch(
                 section="Instructions",
-                action="append",
+                action=_SUGGEST_OP_TO_ACTION[op],
                 content=content,
                 target=EvolutionTarget.BODY,
                 summary=(rationale or content)[:100],
@@ -728,12 +848,12 @@ class SkillSleepRunner:
             return None
 
     def try_start(self, skill_name: str, *, session_id: str = "") -> bool:
-        """Take *skill_name*'s count and start sleep if no cycle is running.
+        """Snapshot *skill_name*'s count and start sleep if no cycle is running.
 
-        Returns True when a background task was scheduled. The taken count is
-        given back if scheduling fails or the cycle fails / is cancelled, and a
-        skill in failure backoff (or failing preflight) is not started at all.
-        *session_id* is the triggering session, used to route published / suggest pushes.
+        Returns True when a background task was scheduled. The counter is left
+        unchanged until the offline cycle succeeds (then ``consume`` of the
+        snapshotted amount). A skill in failure backoff or failing preflight is
+        not started. *session_id* routes published / suggest pushes.
         """
         name = str(skill_name or "").strip()
         if not name:
@@ -792,7 +912,8 @@ class SkillSleepRunner:
             self._record_failure(name, problem)
             return False
 
-        taken = self._counter.reset(name)
+        # Defer clear until offline experience generation succeeds.
+        taken = self._counter.get(name)
         coro = self._run_async(
             name, spec, taken, action, skills_dirs, session_id=str(session_id or "").strip()
         )
@@ -800,7 +921,6 @@ class SkillSleepRunner:
             task = loop.create_task(coro, name=f"skill-sleep:{name}")
         except Exception:
             coro.close()
-            self._counter.add(name, taken)
             self._abort_start()
             logger.warning(
                 "[SkillSleepRunner] create_task failed for %s; inflight cleared",
@@ -855,6 +975,10 @@ class SkillSleepRunner:
                 action=action,
             )
             outcome, suggest_written = _unpack_sleep_cycle_result(raw)
+            # Offline cycle returned: consume the pre-trigger count, keep any
+            # increments accrued while sleep was running.
+            if taken > 0:
+                self._counter.consume(skill_name, taken)
             report = getattr(outcome, "report", None)
             logger.info(
                 "[SkillSleepRunner] sleep finished skill=%s action=%s night=%s "
@@ -867,10 +991,8 @@ class SkillSleepRunner:
             )
             self._failures.record_success(skill_name)
         except asyncio.CancelledError:
-            self._counter.add(skill_name, taken)
             raise
         except Exception as exc:  # noqa: BLE001
-            self._counter.add(skill_name, taken)
             self._record_failure(skill_name, repr(exc), exc_info=True)
         finally:
             self._release_cross_process_locks()

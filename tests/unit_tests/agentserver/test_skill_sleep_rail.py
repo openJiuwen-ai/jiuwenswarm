@@ -85,6 +85,9 @@ class TestSkillCallCounter(unittest.TestCase):
 
             self.assertEqual(reloaded.add("tianqi", 2), 2)
             self.assertEqual(counter.get("tianqi"), 2)
+            self.assertEqual(counter.consume("tianqi", 1), 1)
+            self.assertEqual(counter.consume("tianqi", 5), 0)
+            self.assertEqual(counter.consume("tianqi", 0), 0)
 
     def test_cross_instance_increment_does_not_lose_updates(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -1447,7 +1450,7 @@ class TestSkillSleepRunner(unittest.TestCase):
             mocked = asyncio.run(_run())
         self.assertEqual(mocked.call_args.kwargs["action"], "suggest")
 
-    def test_try_start_resets_and_passes_paths(self) -> None:
+    def test_try_start_defers_clear_until_sleep_succeeds(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             traj = root / "trace"
@@ -1483,9 +1486,14 @@ class TestSkillSleepRunner(unittest.TestCase):
                     )
                     started = runner.try_start("tianqi")
                     self.assertTrue(started)
-                    self.assertEqual(counter.get("tianqi"), 0)
+                    # Count stays until offline cycle finishes.
+                    self.assertEqual(counter.get("tianqi"), 3)
                     self.assertEqual(len(tracked), 1)
+                    # Mid-flight usage should survive consume of the snapshotted amount.
+                    counter.increment("tianqi")
+                    self.assertEqual(counter.get("tianqi"), 4)
                     await tracked[0]
+                    self.assertEqual(counter.get("tianqi"), 1)
                     mocked.assert_called_once()
                     kwargs = mocked.call_args.kwargs
                     self.assertEqual(Path(kwargs["trajectory_dir"]), traj)
@@ -1555,7 +1563,7 @@ class TestSkillSleepRunner(unittest.TestCase):
         )
         return counter, runner
 
-    def test_sleep_failure_restores_count_and_backs_off(self) -> None:
+    def test_sleep_failure_keeps_count_and_backs_off(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             tracked: list[asyncio.Task] = []
@@ -1570,7 +1578,8 @@ class TestSkillSleepRunner(unittest.TestCase):
                     side_effect=ValueError("Missing required environment variables"),
                 ) as mocked:
                     self.assertTrue(runner.try_start("tianqi"))
-                    self.assertEqual(counter.get("tianqi"), 0)
+                    # Deferred clear: failure must not consume the snapshotted count.
+                    self.assertEqual(counter.get("tianqi"), 3)
                     counter.increment("tianqi")
                     await tracked[0]
                     self.assertEqual(counter.get("tianqi"), 4)
@@ -1891,7 +1900,7 @@ class TestRunSleepCycleSyncAction(unittest.TestCase):
             with patch(self._CYCLE, return_value=outcome) as cycle, patch(
                 self._STORE
             ) as store_cls, patch.object(
-                runner_mod, "_mine_skill_tasks", return_value=seed
+                runner_mod, "_mine_skill_tasks", return_value=(seed, 0)
             ) as mine_tasks:
                 store = store_cls.return_value
 
@@ -1937,17 +1946,24 @@ class TestRunSleepCycleSyncAction(unittest.TestCase):
         )
         cycle, append_record, _ = self._run("suggest", outcome)
         self.assertTrue(cycle.call_args.kwargs["dry_run"])
-        self.assertEqual(append_record.call_count, 2)
+        self.assertEqual(append_record.call_count, 3)
         for call in append_record.call_args_list:
             self.assertEqual(call.args[0], "tianqi")
             self.assertFalse(call.kwargs["update_skill_md"])
             record = call.args[1]
             self.assertEqual(record.review_status, "suggest")
             self.assertEqual(record.source, "skill_sleep")
-            self.assertEqual(record.change.action, "append")
             self.assertEqual(record.change.section, "Instructions")
-        first = append_record.call_args_list[0].args[1]
-        self.assertEqual(first.change.content, "use format=j1")
+        records = [call.args[1] for call in append_record.call_args_list]
+        self.assertEqual(
+            [(r.change.action, r.change.content) for r in records],
+            [
+                ("append", "use format=j1"),
+                ("replace", "new line"),
+                ("delete", "stale"),
+            ],
+        )
+        first = records[0]
         self.assertEqual(first.root_cause, "uv")
         self.assertIn("night=3", first.context)
         self.assertIn("gate=accepted", first.context)
@@ -1969,10 +1985,44 @@ class TestRunSleepCycleSyncAction(unittest.TestCase):
         )
         _, append_record, _ = self._run("suggest", outcome)
         records = [call.args[1] for call in append_record.call_args_list]
-        self.assertEqual([r.change.content for r in records], ["kept", "use %u for UV"])
+        self.assertEqual(
+            [(r.change.action, r.change.content) for r in records],
+            [
+                ("append", "kept"),
+                ("append", "use %u for UV"),
+                ("delete", "old"),
+            ],
+        )
         self.assertIn("gate=accepted", records[0].context)
         self.assertIn("gate=rejected", records[1].context)
         self.assertEqual(records[1].review_status, "suggest")
+        self.assertIn("gate=rejected", records[2].context)
+
+    def test_suggest_records_unmatched_delete_edits(self) -> None:
+        from openjiuwen.agent_evolving.skill_train.sleep.types import EditRecord
+
+        outcome = SimpleNamespace(
+            night=5,
+            report=SimpleNamespace(
+                n_tasks=2,
+                edits=[],
+                rejected_edits=[],
+                unmatched_edits=[
+                    EditRecord(
+                        target="skill",
+                        op="delete",
+                        anchor="- 空气质量",
+                        rationale="用户要求删除",
+                    ),
+                ],
+            ),
+        )
+        _, append_record, _ = self._run("suggest", outcome)
+        self.assertEqual(append_record.call_count, 1)
+        record = append_record.call_args.args[1]
+        self.assertEqual(record.change.action, "delete")
+        self.assertEqual(record.change.content, "- 空气质量")
+        self.assertIn("gate=unmatched", record.context)
 
     def test_all_skills_dirs_reach_evolution_store(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -1980,7 +2030,7 @@ class TestRunSleepCycleSyncAction(unittest.TestCase):
             (root / "trace").mkdir()
             first, second = root / "office-claw-skills", root / ".office-claw" / "skills"
             with patch(self._CYCLE) as cycle, patch(self._STORE) as store_cls, patch.object(
-                runner_mod, "_mine_skill_tasks", return_value=[]
+                runner_mod, "_mine_skill_tasks", return_value=([], 0)
             ):
                 runner_mod.run_sleep_cycle_sync(
                     trajectory_dir=root / "trace",
@@ -1997,23 +2047,175 @@ class TestRunSleepCycleSyncAction(unittest.TestCase):
 
     def test_mine_skill_tasks_keeps_only_hinted_skill(self) -> None:
         tasks = [
-            SimpleNamespace(skill_hint="tianqi"),
-            SimpleNamespace(skill_hint="other"),
-            SimpleNamespace(skill_hint=""),
-            SimpleNamespace(skill_hint=" tianqi "),
+            SimpleNamespace(skill_hint="tianqi", source_traces=["t1"]),
+            SimpleNamespace(skill_hint="other", source_traces=["t2"]),
+            SimpleNamespace(skill_hint="", source_traces=[]),
+            SimpleNamespace(skill_hint=" tianqi ", source_traces=["t3"]),
+        ]
+        digests = [
+            SimpleNamespace(trace_id="t1", max_start_ns=100),
+            SimpleNamespace(trace_id="t2", max_start_ns=200),
+            SimpleNamespace(trace_id="t3", max_start_ns=300),
         ]
         cfg = SimpleNamespace(
             max_tasks_per_night=40, val_fraction=0.34, test_fraction=0.0, seed=42
         )
         with patch(
             "openjiuwen.agent_evolving.skill_train.sleep.harvest.harvest_otlp_trajectories",
-            return_value=["digest"],
-        ), patch(
-            "openjiuwen.agent_evolving.skill_train.sleep.mine.mine", return_value=tasks
+            return_value=digests,
+        ) as harvest, patch(
+            "openjiuwen.agent_evolving.skill_train.sleep.mine.mine_capped",
+            return_value=(tasks, False),
         ) as mine:
-            kept = runner_mod._mine_skill_tasks(cfg, "tianqi")
+            kept, consumed = runner_mod._mine_skill_tasks(cfg, "tianqi")
         mine.assert_called_once()
+        harvest.assert_called_once()
+        self.assertEqual(harvest.call_args.kwargs.get("since_ns"), 0)
         self.assertEqual(kept, [tasks[0], tasks[3]])
+        # Untruncated: watermark covers the whole harvested window.
+        self.assertEqual(consumed, 300)
+
+    def test_mine_skill_tasks_respects_skill_watermark(self) -> None:
+        with TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            from openjiuwen.agent_evolving.skill_train.sleep.state import SleepState
+
+            # ISO watermark is second-resolution; use realistic OTLP-scale ns.
+            watermark_ns = 1_700_000_000_000_000_000
+            state = SleepState.load(state_dir / "state.json")
+            state.set_skill_harvest_ns("tianqi", watermark_ns)
+            state.save()
+            expected_since = SleepState.load(state_dir / "state.json").get_skill_harvest_ns(
+                "tianqi"
+            )
+            self.assertGreater(expected_since, 0)
+
+            digests = [
+                SimpleNamespace(trace_id="old", max_start_ns=watermark_ns - 1),
+                SimpleNamespace(trace_id="new", max_start_ns=watermark_ns + 1_000_000_000),
+            ]
+            tasks = [
+                SimpleNamespace(skill_hint="tianqi", source_traces=["new"]),
+            ]
+            cfg = SimpleNamespace(
+                max_tasks_per_night=40, val_fraction=0.34, test_fraction=0.0, seed=42
+            )
+            with patch(
+                "openjiuwen.agent_evolving.skill_train.sleep.harvest.harvest_otlp_trajectories",
+                return_value=digests,
+            ) as harvest, patch(
+                "openjiuwen.agent_evolving.skill_train.sleep.mine.mine_capped",
+                return_value=(tasks, False),
+            ):
+                kept, consumed = runner_mod._mine_skill_tasks(
+                    cfg, "tianqi", state_dir=state_dir
+                )
+            self.assertEqual(harvest.call_args.kwargs.get("since_ns"), expected_since)
+            self.assertEqual(kept, tasks)
+            self.assertEqual(consumed, watermark_ns + 1_000_000_000)
+
+    def test_mine_skill_tasks_skips_watermark_when_max_tasks_truncated(self) -> None:
+        digests = [
+            SimpleNamespace(trace_id="early", max_start_ns=100),
+            SimpleNamespace(trace_id="late", max_start_ns=500),
+        ]
+        tasks = [
+            SimpleNamespace(skill_hint="tianqi", source_traces=["late"]),
+        ]
+        cfg = SimpleNamespace(
+            max_tasks_per_night=1, val_fraction=0.34, test_fraction=0.0, seed=42
+        )
+        with patch(
+            "openjiuwen.agent_evolving.skill_train.sleep.harvest.harvest_otlp_trajectories",
+            return_value=digests,
+        ), patch(
+            "openjiuwen.agent_evolving.skill_train.sleep.mine.mine_capped",
+            return_value=(tasks, True),
+        ):
+            kept, consumed = runner_mod._mine_skill_tasks(cfg, "tianqi")
+        self.assertEqual(kept, tasks)
+        self.assertEqual(consumed, 0)
+
+    def test_mine_skill_tasks_watermark_covers_unmined_digests_when_complete(self) -> None:
+        """Untruncated window: advance past digests that yielded no task too."""
+        digests = [
+            SimpleNamespace(trace_id="unmined", max_start_ns=400),
+            SimpleNamespace(trace_id="used", max_start_ns=200),
+        ]
+        tasks = [
+            SimpleNamespace(skill_hint="tianqi", source_traces=["used"]),
+        ]
+        cfg = SimpleNamespace(
+            max_tasks_per_night=40, val_fraction=0.34, test_fraction=0.0, seed=42
+        )
+        with patch(
+            "openjiuwen.agent_evolving.skill_train.sleep.harvest.harvest_otlp_trajectories",
+            return_value=digests,
+        ), patch(
+            "openjiuwen.agent_evolving.skill_train.sleep.mine.mine_capped",
+            return_value=(tasks, False),
+        ):
+            kept, consumed = runner_mod._mine_skill_tasks(cfg, "tianqi")
+        self.assertEqual(kept, tasks)
+        self.assertEqual(consumed, 400)
+
+    def test_run_sleep_cycle_sync_advances_watermark_when_tasks_consumed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "trace").mkdir()
+            state_dir = root / "state"
+            consumed_ns = 1_700_000_000_500_000_000
+            outcome = SimpleNamespace(
+                night=1, report=SimpleNamespace(accepted=False, n_tasks=1, edits=[])
+            )
+            with patch(self._CYCLE, return_value=outcome), patch(
+                self._STORE
+            ), patch.object(
+                runner_mod,
+                "_mine_skill_tasks",
+                return_value=([SimpleNamespace(skill_hint="tianqi")], consumed_ns),
+            ):
+                runner_mod.run_sleep_cycle_sync(
+                    trajectory_dir=root / "trace",
+                    skills_base_dir=root / "skills",
+                    state_dir=state_dir,
+                    skill_name="tianqi",
+                    backend="mock",
+                    action="suggest",
+                )
+            from openjiuwen.agent_evolving.skill_train.sleep.state import SleepState
+
+            state = SleepState.load(state_dir / "state.json")
+            # Second-resolution ISO roundtrip may truncate sub-second ns.
+            got = state.get_skill_harvest_ns("tianqi")
+            self.assertGreaterEqual(got, consumed_ns - 1_000_000_000)
+            self.assertLessEqual(got, consumed_ns)
+
+    def test_run_sleep_cycle_sync_skips_watermark_when_no_tasks(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "trace").mkdir()
+            state_dir = root / "state"
+            outcome = SimpleNamespace(
+                night=1, report=SimpleNamespace(accepted=False, n_tasks=0, edits=[])
+            )
+            with patch(self._CYCLE, return_value=outcome), patch(
+                self._STORE
+            ), patch.object(
+                runner_mod, "_mine_skill_tasks", return_value=([], 0)
+            ):
+                runner_mod.run_sleep_cycle_sync(
+                    trajectory_dir=root / "trace",
+                    skills_base_dir=root / "skills",
+                    state_dir=state_dir,
+                    skill_name="tianqi",
+                    backend="mock",
+                    action="suggest",
+                )
+            from openjiuwen.agent_evolving.skill_train.sleep.state import SleepState
+
+            state = SleepState.load(state_dir / "state.json")
+            self.assertEqual(state.get_skill_harvest_ns("tianqi"), 0)
 
 
 class TestBuildChatClient(unittest.TestCase):
@@ -2123,6 +2325,40 @@ class TestBuildChatClient(unittest.TestCase):
         self.assertEqual((len(applied), len(unmatched)), (2, 0))
         self.assertIn("`%u` — UV指数", new_doc)
         self.assertIn("- `%l` — 地点", new_doc)
+
+    def test_suggest_preserves_body_replace_and_delete(self) -> None:
+        from openjiuwen.agent_evolving.skill_train.sleep.model_backend import (
+            _edits_from_payload,
+        )
+
+        skill = "# 天气\n\n## 格式代码\n\n- `%p` — 降水量\n- `%l` — 地点\n"
+        reply = json.dumps(
+            [
+                {
+                    "op": "replace",
+                    "anchor": "- `%p` — 降水量",
+                    "content": "- `%p` — 降水量\n- `%u` — UV指数",
+                    "rationale": "uv",
+                },
+                {"op": "delete", "anchor": "- `%l` — 地点", "rationale": "用户要求删除"},
+                {"op": "add", "content": "缺数据时重新查询"},
+            ],
+            ensure_ascii=False,
+        )
+        inner = MagicMock()
+        inner.chat.return_value = (reply, {})
+        client = runner_mod._ReflectNormalizingChatClient(inner, preserve_body_ops=True)
+        text, _ = client.chat(system="s", user=f"# Current skill\n{skill}", stage="sleep_reflect")
+
+        edits = _edits_from_payload(text, budget=4, target="skill")
+        self.assertEqual(
+            [(e.op, e.content, e.anchor) for e in edits],
+            [
+                ("replace", "- `%p` — 降水量\n- `%u` — UV指数", "- `%p` — 降水量"),
+                ("delete", "", "- `%l` — 地点"),
+                ("add", "缺数据时重新查询", ""),
+            ],
+        )
 
     def test_replace_inside_learned_region_is_kept(self) -> None:
         from openjiuwen.agent_evolving.skill_train.sleep.memory import (
