@@ -4453,6 +4453,7 @@
     "historyPreviewEmpty": "No messages to show after the same filtering as history restore (or the file is empty). Turn off preview to see raw JSON.",
     "edit": "Edit",
     "unknownError": "Unknown error",
+    "saveFailedForPath": "Failed to save {{path}}: ",
     "fileMissingPrefix": "This file does not exist. Create the file at",
     "fileMissingSuffix": "before editing.",
     "notPreviewable": "This file cannot be previewed. Only Markdown/JSON (.md/.mdx/.json) files are supported."
