@@ -4200,6 +4200,7 @@
       "connectorUnavailableNamed": "该专家依赖的连接器「{{connector}}」尚未连接，请先完成连接后再重试安装。",
       "uploadSuccess": "专家包 {{id}} 已导入，请在我的专家中查看",
       "installOutcomeUnknown": "网络中断，安装结果未确认。专家包已保留，可稍后在我的专家中重试安装。",
+      "installUnconfirmed": "安装请求超时，结果未确认。已刷新安装状态，请稍后确认是否已装好。",
       "uploadError": "上传并导入专家失败，请检查文件后重试",
       "uploadMissingManifest": "专家包缺少 manifest.json，或文件已损坏",
       "uploadMissingReadme": "专家包缺少 README.md 文件",

@@ -4,6 +4,7 @@ import { connectorApi } from '../../services/connectorApi';
 import { webRequest } from '../../services/webClient';
 import { installSkillWithPlan } from '../../components/SkillPanel/SkillPackInstallPlan';
 import { requestEquipmentList } from '../equipmentListRequest';
+import { INSTALL_REQUEST_TIMEOUT_MS } from '../../services/installTimeouts';
 import {
   AgentInstallPendingError,
   AgentManagementError,
@@ -399,7 +400,7 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
     },
     async installDefinition(id) {
       try {
-        await webRequest('agent_templates.install', { id }, { timeoutMs: 180000 });
+        await webRequest('agent_templates.install', { id }, { timeoutMs: INSTALL_REQUEST_TIMEOUT_MS });
         invalidateAgentCatalog();
         return { kind: 'ok' };
       } catch (error) {

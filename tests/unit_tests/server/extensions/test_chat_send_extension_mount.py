@@ -893,12 +893,22 @@ async def test_missing_hub_expert_invalidates_catalog_and_returns_code(monkeypat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", [ReqMethod.PLUGIN_PACKAGES_INSTALL, ReqMethod.AGENT_TEMPLATES_INSTALL])
+@pytest.mark.parametrize(
+    "method",
+    [
+        ReqMethod.PLUGIN_PACKAGES_INSTALL,
+        ReqMethod.AGENT_TEMPLATES_INSTALL,
+        ReqMethod.AGENT_GROUPS_INSTALL,
+    ],
+)
 async def test_equipment_install_has_total_timeout(monkeypatch, method):
     iface = _iface()
     owner = iface.JiuWenSwarm.__new__(iface.JiuWenSwarm)
     async def expired(operation, *, timeout):
-        assert timeout == 120
+        # One budget for every install kind, and it must stay below the
+        # frontend's request timeout so the server answers first (#6426).
+        assert timeout == iface._EQUIPMENT_INSTALL_TIMEOUT_SECONDS
+        assert 120 < timeout < 240
         operation.close()
         raise TimeoutError()
     monkeypatch.setattr(iface.asyncio, "wait_for", expired)
