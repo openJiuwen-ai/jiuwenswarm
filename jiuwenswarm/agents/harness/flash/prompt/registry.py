@@ -79,8 +79,10 @@ from jiuwenswarm.agents.harness.flash.prompt.content.tools import (
     _PRIO_BASH,
     _PRIO_RESULT,
     _PRIO_SELECTION,
-    _RESULT_CN,
-    _RESULT_EN,
+    _BROWSER_ROUTING_CN,
+    _BROWSER_ROUTING_EN,
+    _RESULT_BASE_CN,
+    _RESULT_BASE_EN,
     _SELECTION_CN,
     _SELECTION_EN,
 )
@@ -189,12 +191,19 @@ def _render_response(ctx: PromptRenderContext) -> tuple[PromptSection, ...]:
 
 
 def _render_tools(ctx: PromptRenderContext) -> tuple[PromptSection, ...]:
-    """300/330/340 三段的 06 目标正文（content.tools 硬编码，无动态源）。"""
+    """300/330/340 三段的 06 目标正文（content.tools 硬编码，无动态源）。
+
+    340 的「浏览器任务强制路由」子节依赖 task_tool(browser_agent) 在位；
+    task_tool 被禁用时剔除该子节，避免提示词要求调用不可见的浏览器子代理。
+    """
     cn = ctx.is_cn
+    result = _RESULT_BASE_CN if cn else _RESULT_BASE_EN
+    if "task_tool" in ctx.enabled_tools:
+        result += "\n" + (_BROWSER_ROUTING_CN if cn else _BROWSER_ROUTING_EN)
     targets = (
         (_NAME_SELECTION, _PRIO_SELECTION, _SELECTION_CN if cn else _SELECTION_EN),
         (_NAME_BASH, _PRIO_BASH, _BASH_CN if cn else _BASH_EN),
-        (_NAME_RESULT, _PRIO_RESULT, _RESULT_CN if cn else _RESULT_EN),
+        (_NAME_RESULT, _PRIO_RESULT, result),
     )
     return tuple(
         PromptSection(name=name, content={ctx.lang: text}, priority=priority)

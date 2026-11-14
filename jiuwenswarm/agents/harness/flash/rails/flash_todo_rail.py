@@ -490,7 +490,7 @@ class FlashTodoRail(DeepAgentRail):
             builder.remove_section(SectionName.TODO)
             return
         language = builder.language
-        language = language if language in ("cn", "zh") else "en"
+        language = "cn" if language in ("cn", "zh") else "en"
         discipline = _TODO_DISCIPLINE_CN if language == "cn" else _TODO_DISCIPLINE_EN
         model_note = NO_MODEL_SELECTION_PROMPT.get(
             language, NO_MODEL_SELECTION_PROMPT["cn"]

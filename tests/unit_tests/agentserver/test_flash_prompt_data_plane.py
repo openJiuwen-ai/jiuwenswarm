@@ -116,6 +116,20 @@ def test_reconcile_gates_tool_domains() -> None:
     assert "task_tool" not in names
 
 
+def test_reconcile_gates_browser_routing_on_task_tool() -> None:
+    # 关 task_tool：340 仍产出，但不得残留 browser_agent 强制路由指令。
+    empty = reconcile(PromptRenderContext(lang="cn", enabled_tools=frozenset()))
+    result = next(s for s in empty if s.name == "tool_result")
+    assert "browser_agent" not in result.content["cn"]
+    assert "浏览器任务强制路由" not in result.content["cn"]
+
+    # 开 task_tool（默认上下文）：browser_agent 路由保留。
+    full = reconcile(build_default_context("cn"))
+    result = next(s for s in full if s.name == "tool_result")
+    assert "browser_agent" in result.content["cn"]
+    assert "浏览器任务强制路由" in result.content["cn"]
+
+
 # ── 2. content.safety：_transform_safety 双语锚点命中 / 缺失回退 ─────────────
 @pytest.mark.parametrize(
     ("language", "anchors"),

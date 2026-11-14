@@ -70,29 +70,35 @@ _BASH_EN = """# bash Discipline
 - On Windows, replace multi-line quoted commands (e.g. multi-line python -c) with a script file (they are silently truncated to an empty result by cmd)
 """
 
-_RESULT_CN = """# 工具结果与专用路由
+_RESULT_BASE_CN = """# 工具结果与专用路由
 
 - 以工具实际返回的内容为准，不凭空推断执行结果。
 - 工具调用报错、超时或失败时：诚实面对失败，调整策略或参数后重试，并简要说明原因与后续做法；不要假装成功、不要掩盖失败。
 - 权限拒绝时停止重试同一目标，不换命令语法反复尝试。
 - （产物内容是否真写对，见 400「拒绝盲信写入」——本段只管工具调用本身成功与否。）
+"""
 
-## 浏览器任务强制路由
+_BROWSER_ROUTING_CN = """## 浏览器任务强制路由
 - 凡涉及浏览器/网页操作的任务，必须调用 task_tool 并指定 subagent_type: "browser_agent"。
 - 严禁在 bash 中用脚本、subprocess 或系统命令自建浏览器进程。
 """
 
-_RESULT_EN = """# Tool Result and Specialized Routing
+_RESULT_CN = _RESULT_BASE_CN + "\n" + _BROWSER_ROUTING_CN
+
+_RESULT_BASE_EN = """# Tool Result and Specialized Routing
 
 - Treat the tool's actual returned content as authoritative; never infer execution results.
 - When a tool errors, times out, or fails: face the failure honestly, adjust strategy or parameters and retry, and briefly state the reason and next steps; never pretend success or hide failure.
 - On permission denial, stop retrying the same target; do not repeatedly try alternative command syntax.
 - (Whether the artifact content is written correctly is covered by 400 "reject blind writes" — this section only governs whether the tool call itself succeeds.)
+"""
 
-## Mandatory Browser Task Routing
+_BROWSER_ROUTING_EN = """## Mandatory Browser Task Routing
 - For any task involving browser/web operations, you must call task_tool with subagent_type: "browser_agent".
 - Never build a browser process yourself in bash using scripts, subprocess, or system commands.
 """
+
+_RESULT_EN = _RESULT_BASE_EN + "\n" + _BROWSER_ROUTING_EN
 
 
 _SUBSECTION_RE = re.compile(r"^##\s[^\n]*", re.MULTILINE)

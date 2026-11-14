@@ -139,7 +139,7 @@ modify 的 update/append 必须提供 `todos` 数组，单项修改也使用数�
 `interface_code._build_code_task_planning_rail()` 或 swarm `code_rails` → `CodeTaskPlanningRail()`（构造即关 progress_repeat）→ `init(agent)`：幂等扫描 + 补注册四子类 → 每轮 `before_model_call`：双阈值判定 → 命中则 `_load_fresh_todos` + `add_section` 注入 task_reminder 附件 → `after_tool_call`：`todo_` 前缀命中即清零计数 + 清附件 → `after_invoke`：finally 清 session 态。
 
 **P2 flash 装配**
-`interface_flash._build_task_planning_rail(config)`（兼容带参与不带参两种调用）→ `FlashTodoRail()` → `init(agent)`：取 workspace TODO 节点 + `shared_lock = TodoLockManager()` + 四引擎 + `UnifiedTodoTool` → `add_ability` 原子注册 → `before_model_call`：stock `build_todo_section` + 四对名称替换（`todo_create → todo(action=create)`…）注入，section 为 None 时移除。
+`interface_flash._build_task_planning_rail(config)`（兼容带参与不带参两种调用）→ `FlashTodoRail()` → `init(agent)`：取 workspace TODO 节点 + `shared_lock = TodoLockManager()` + 四引擎 + `UnifiedTodoTool` → `add_ability` 原子注册 → `before_model_call`：直接读取 Flash 目标正文（`_TODO_DISCIPLINE_*` + `NO_MODEL_SELECTION_PROMPT`）注入，`todo` 被禁用（`react.disabled_tools`）时移除。
 
 **P3 flash 统一调用**
 模型发 `todo(action=..., ...)` → `invoke` 透传 session → 按 action 分发引擎 → modify 再按 modify_action 分发 → 结构化 ToolOutput 整包返回（无增量流式）→ 权限面 `project_operations` 展开引擎名 + 历史 fallback 名。

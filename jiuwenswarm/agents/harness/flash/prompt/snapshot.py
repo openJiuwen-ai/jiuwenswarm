@@ -144,16 +144,15 @@ def build_prompt_snapshot(
         section for section in section_snapshots if section.carrier == "system"
     )
 
+    prefix_text = "\n\n".join(section.text for section in static_sections)
     return PromptSnapshot(
         language=normalized_language,
         sections=section_snapshots,
         bands=_build_band_snapshots(section_snapshots),
         full_hash=_hash_sections(section_snapshots),
         static_hash=_hash_sections(static_sections),
-        prefix_hash=_hash_payload(
-            "\n".join(section.text for section in static_sections),
-        ),
-        prefix_chars=sum(section.chars for section in static_sections),
+        prefix_hash=_hash_payload(prefix_text),
+        prefix_chars=len(prefix_text),
     )
 
 
