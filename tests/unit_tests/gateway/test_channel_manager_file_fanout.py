@@ -8,7 +8,7 @@ session (e.g. Feishu) instead of only the originating channel.
 from __future__ import annotations
 
 import pytest
-from openjiuwen_protocol.message import EventType, Message
+from e2a.message import EventType, Message
 from agent_gateway.channel_manager.channel_manager import ChannelManager
 from agent_gateway.routing.keys import AgentRef, RoutingKey, make_delivery_target
 from agent_gateway.routing.session_sharing import SessionSharingRegistry, SubRole

@@ -21,7 +21,10 @@
   },
   "enterpriseEntry": {
     "invalidIdentity": "Identity returned no user ID.",
-    "noContext": "No Agent is available for this account. Ask an administrator to grant access.",
+    "emptyTitle": "No Agent Available",
+    "backToLogin": "Back to Sign in",
+    "language": "Interface language",
+    "noContext": "No Agent is available for this account. Please grant access in the Manager console first.",
     "loadFailed": "Failed to load Agent contexts.",
     "switchFailed": "Failed to switch context.",
     "errorTitle": "Unable to enter workspace",
@@ -4186,6 +4189,7 @@
       "detailError": "Unable to load Expert details. Try again.",
       "hubAssetChanged": "This expert has changed or been removed on Hub. The catalog is refreshing; go back and select it again.",
       "actionError": "The action could not be completed. Try again in a moment.",
+      "agentAccessDenied": "You are outside the authorized scope. The action was denied.",
       "duplicateName": "An Expert with this name already exists. Choose a different name and try again.",
       "agentUnavailable": "This Expert is no longer available. Refresh the list and try again.",
       "agentDefinitionUnavailable": "This Expert definition is incomplete and cannot be used right now.",
@@ -6531,10 +6535,11 @@
         "paused": "Paused",
         "failed": "Failed",
         "completed": "Completed",
-        "queued": "Queued"
+        "queued": "Queued",
+        "expired": "Expired"
       },
       "run": {
-        "success": "Succeeded",
+        "success": "Completed",
         "failed": "Failed",
         "stopped": "Stopped",
         "running": "Running"
@@ -6694,6 +6699,7 @@
     }
   },
   "groupChat": {
+    "organizationInterrupted": "The organization task was interrupted by a service restart or process exit. Completed work is retained. Please submit a new request.",
     "externalRuntimeDisabled": "{{agents}} is not enabled. Enable it in Settings → Agents → External Agents, then add the member again.",
     "useTeam": "Use this team",
     "teamMembers": "Team members ({{count}})",
@@ -6701,6 +6707,10 @@
     "taskTitle": "Task",
     "unnamedTask": "Untitled subtask",
     "noSubtasks": "No subtask records",
+    "expertTasks": "Team tasks for this request",
+    "expertTasksProgress": "Completed {{completed}} / {{total}}",
+    "expertTasksUnavailable": "Team tasks could not be refreshed. Existing records may be out of date.",
+    "expertTaskUnassigned": "Unassigned",
     "generatingTasks": "Generating tasks",
     "organizationStage": {
       "starting": "Starting expert teams",
@@ -6726,6 +6736,11 @@
     "modelLocked": "The model cannot be changed after the group chat starts",
     "processing": "Processing…",
     "mentionPhase": {
+      "organizationFailed": "This request did not complete. Please send it again.",
+      "organizationPending": "Received, processing…",
+      "organizationClarification": "Waiting for clarification…",
+      "organizationReceived": "Organization received your request, processing…",
+      "organizationSummarizing": "Summarizing…",
       "dispatching": "Received, processing…",
       "planning": "Planning tasks…",
       "generating": "Generating task plan…",

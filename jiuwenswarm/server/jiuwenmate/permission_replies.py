@@ -22,6 +22,33 @@ _COMMAND = re.compile(
     re.IGNORECASE,
 )
 _PREFIX = re.compile(r"\s*(approve\b|reject\b|(?:批准|拒绝)(?=\s|$|了))", re.IGNORECASE)
+_REFERENCE = re.compile(r"\s*([a-f0-9]{12})(?:\s+(\S+))?\s*", re.IGNORECASE)
+_TOOL_REFERENCE = re.compile(r"\s*(call[_-][A-Za-z0-9_-]+)\s*")
+_ACTION_TOOL = re.compile(r"\s*(approve|批准|reject|拒绝)\s+(call[_-][A-Za-z0-9_-]+)\s*", re.IGNORECASE)
+_LEADING_MENTION = re.compile(r"^\s*[@＠][^\s@＠]+[\s\u200b]+")
+
+
+def permission_reply_text(text: str, *, receiver_bot_mentioned: bool = False) -> str:
+    """Remove a leading mention only when the platform authenticated its recipient."""
+    return _LEADING_MENTION.sub("", text, count=1) if receiver_bot_mentioned else text
+
+
+def permission_command(text: str) -> tuple[str, str | None, str | None] | None:
+    """Parse complete control messages; references never authorize an ambiguous batch."""
+    match = _COMMAND.fullmatch(text)
+    if match is not None:
+        if match.group(1) == "同意" and match.group(2) is None:
+            return None
+        decision = "approve" if match.group(1).lower() in {"approve", "批准", "同意"} else "reject"
+        return decision, match.group(2).lower() if match.group(2) is not None else None, match.group(3)
+    match = _REFERENCE.fullmatch(text)
+    if match is not None:
+        return "approve", match.group(1).lower(), match.group(2)
+    match = _ACTION_TOOL.fullmatch(text)
+    if match is not None:
+        return ("approve" if match.group(1).lower() in {"approve", "批准"} else "reject"), None, match.group(2)
+    match = _TOOL_REFERENCE.fullmatch(text)
+    return ("approve", None, match.group(1)) if match is not None else None
 
 
 def approval_instructions(approval: PermissionApproval) -> str:
@@ -64,8 +91,14 @@ class IMPermissionReplies:
         self, text: str, *, namespace_id: str, agent_id: str, access: AccessSnapshot,
         channel: str, target_id: str, app_id: str, source_message_id: str,
         is_direct_message: bool = True,
+        receiver_bot_mentioned: bool = False,
+        mentions_other: bool = False,
     ) -> bool:
         """Return True only for control messages; business messages keep their normal queue."""
+        if mentions_other:
+            return False
+        text = permission_reply_text(text, receiver_bot_mentioned=receiver_bot_mentioned)
+        addressed = is_direct_message or receiver_bot_mentioned
         identity = dict(namespace_id=namespace_id, agent_id=agent_id, channel=channel,
                         app_id=app_id, target_id=target_id, principal_ref=access.principal_ref)
 
@@ -89,15 +122,16 @@ class IMPermissionReplies:
                 == (channel, app_id, target_id)
             )
 
-        match = _COMMAND.fullmatch(text)
-        if match is not None and match.group(1) == "同意" and match.group(2) is None:
-            # Ordinary agreement is business input; the alias needs an explicit approval ID.
-            match = None
+        command = permission_command(text)
         pending = await asyncio.to_thread(self._repository.for_route, **identity)
         replay = await asyncio.to_thread(
             self._repository.reply_approval, **identity, message_id=source_message_id,
-        ) if match is not None else None
-        if match is None:
+        ) if command is not None else None
+        reference_only = _REFERENCE.fullmatch(text) is not None or _TOOL_REFERENCE.fullmatch(text) is not None
+        if reference_only and not (pending or replay is not None or receiver_bot_mentioned):
+            # Reference-shaped business text needs an authenticated control context.
+            command = None
+        if command is None:
             if pending:
                 approval = pending[0]
                 if _PREFIX.match(text):
@@ -106,7 +140,8 @@ class IMPermissionReplies:
                 await feedback("当前任务仍在等待确认，后续消息将排队；请先批准或拒绝原操作。\n"
                                + approval_instructions(approval))
             elif _PREFIX.match(text):
-                await feedback("未识别审批指令，请使用审批通知中给出的完整命令。")
+                if addressed:
+                    await feedback("未识别审批指令，请使用审批通知中给出的完整命令。")
                 return True
             else:
                 waiting = await asyncio.to_thread(
@@ -117,25 +152,33 @@ class IMPermissionReplies:
             return False
 
         if replay == "":
-            await feedback("这条审批消息此前未对应可处理的操作，请重新发送完整审批命令。")
+            if addressed or pending:
+                await feedback("这条审批消息此前未对应可处理的操作，请重新发送完整审批命令。")
             return True
-        decision = "approve" if match.group(1).lower() in {"approve", "批准", "同意"} else "reject"
-        approval_id = replay or match.group(2)
-        tool_call_id = match.group(3)
+        decision, approval_id, tool_call_id = command
+        approval_id = replay or approval_id
         if approval_id is None:
-            if len(pending) != 1:
+            ambiguous_group = False
+            if not addressed and len(pending) == 1:
+                conversations = await asyncio.to_thread(
+                    self._repository.for_conversation, namespace_id, channel=channel, target_id=target_id,
+                )
+                ambiguous_group = len(conversations) != 1
+            if len(pending) != 1 or ambiguous_group:
                 # Even an unaccepted bare command must not authorize a future interruption.
                 await asyncio.to_thread(
                     self._repository.reply_approval, **identity, message_id=source_message_id, approval_id="",
                 )
-                await feedback("当前没有待审批操作。" if not pending else
-                               "有多条待审批记录，请使用对应通知中的完整命令。")
+                if addressed or pending:
+                    await feedback("当前没有待审批操作。" if not pending else
+                                   "有多条待审批记录，请 @ 对应员工或使用对应通知中的完整命令。")
                 return True
             approval = pending[0]
         else:
             approval = await asyncio.to_thread(self._repository.get, approval_id)
             if approval is None or not belongs(approval):
-                await feedback("未找到你在当前会话中可处理的审批，请核对原通知。")
+                if addressed:
+                    await feedback("未找到你在当前会话中可处理的审批，请核对原通知。")
                 return True
 
         bound = await asyncio.to_thread(

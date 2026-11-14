@@ -322,6 +322,8 @@ async def test_a_conversation_whose_model_cannot_see_images_has_the_vision_model
 
     [sent] = vision.requests
     assert (sent["model"], sent["max_tokens"]) == ("vision-test", review.REVIEW_MAX_TOKENS)
+    # The review only needs a short answer; a model left to think can spend every token on it.
+    assert sent["reasoning_effort"] == "none"
     system, user = sent["messages"]
     assert system == {"role": "system", "content": REVIEW_CHECKLIST}
     assert user["content"][1] == {"type": "image_url", "image_url": {"url": RENDER}}
@@ -439,7 +441,7 @@ async def test_a_review_deadline_cancels_the_request_and_returns_the_render(
     attach_pane("deck-a", REVIEWING)
     answer = asyncio.get_running_loop().create_future()
 
-    async def wait_for_answer(_model, _messages):
+    async def wait_for_answer(_model, _messages, _reasoning):
         return await answer
 
     # Keep the model call pending without introducing the HTTP client's competing deadline.

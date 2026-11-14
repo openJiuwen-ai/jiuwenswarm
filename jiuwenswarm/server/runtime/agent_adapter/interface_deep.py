@@ -564,6 +564,7 @@ from jiuwenswarm.agents.harness.common.a4p.execution_context import (
 )
 from jiuwenswarm.server.runtime.session.session_metadata import build_server_push_message
 from jiuwenswarm.server.runtime.session.session_history import append_history_record, load_history_records
+from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
 from jiuwenswarm.server.runtime import extension_package_manager as equipment
 
 # Goal 用户历史：忙碌插队时先挂起，等上一轮→goal 边界（或流结束）再落盘，
@@ -749,6 +750,7 @@ from jiuwenswarm.server.runtime.agent_adapter.browser_runtime_security import (
     apply_browser_runtime_security_profile,
 )
 from jiuwenswarm.server.runtime.agent_adapter.user_turn import TEAM_USER_TURN_KEY, UserTurn
+from jiuwenswarm.server.runtime.agent_adapter.llm_usage_projection import LlmUsageProjection
 from jiuwenswarm.agents.harness.common.auto_harness.service import _HARNESS_PACKAGES_FILE
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
 from jiuwenswarm.runtime.cron import CronTargetChannel
@@ -4660,6 +4662,8 @@ class JiuWenSwarmDeepAdapter:
                 if history_preparation is not None:
                     try:
                         history_snapshot = await history_preparation
+                    except HistoryReplayError:
+                        raise
                     except Exception as exc:
                         logger.debug(
                             "session history preparation failed for %s: %s", sid, exc
@@ -4684,7 +4688,7 @@ class JiuWenSwarmDeepAdapter:
                     if restoring_permission and not restored:
                         raise RootPermissionQueueError("permission_continuation_context_missing")
                 except Exception as exc:
-                    if restoring_permission:
+                    if restoring_permission or isinstance(exc, (HistoryReplayError, MemoryError)):
                         raise
                     logger.warning(
                         "[JiuWenSwarmDeepAdapter] session context warmup failed: "
@@ -4701,12 +4705,17 @@ class JiuWenSwarmDeepAdapter:
                         sid, adapter, host_external_input=host_external_input, freshly_built=True,
                     )
                     self._session_adapters[sid] = adapter
-            except BaseException:
+            except BaseException as exc:
                 if restoring_permission:
                     await adapter._isolate_permission_instance()  # pylint: disable=protected-access
                     # Publish only an isolated owner, then use the existing cleanup gate.
                     self._session_adapters[sid] = adapter
                     await self._evict_failed_permission_session_adapter(sid, adapter)
+                elif isinstance(exc, (HistoryReplayError, MemoryError, asyncio.CancelledError)):
+                    # A partially restored child must never become a warm cache hit.
+                    if self._session_adapters.get(sid) is adapter:
+                        self._session_adapters.pop(sid, None)
+                    await adapter.cleanup()
                 raise
             finally:
                 await self._drain_history_preparation(history_preparation)
@@ -9288,7 +9297,7 @@ class JiuWenSwarmDeepAdapter:
 
     @staticmethod
     def _login_required_message(request: AgentRequest) -> str:
-        from jiuwenswarm.common.e2a.constants import E2A_LOGIN_REQUIRED_HINT_PARAM_KEY
+        from e2a.constants import E2A_LOGIN_REQUIRED_HINT_PARAM_KEY
 
         params = request.params if isinstance(request.params, dict) else {}
         hint = params.get(E2A_LOGIN_REQUIRED_HINT_PARAM_KEY)
@@ -10794,7 +10803,7 @@ class JiuWenSwarmDeepAdapter:
                 pass
             ttse_rail = TTSERail(
                 llm=self._model,
-                model=self._default_model_name or config.get("model_name", "gpt-4"),
+                model=self._resolve_model_name(),
                 ttse_config=TTSEConfig(**ttse_kwargs),
                 trajectory_span_processor=trajectory_span_processor,
             )
@@ -12780,7 +12789,7 @@ class JiuWenSwarmDeepAdapter:
             if callable(update_llm):
                 update_llm(
                     self._model,
-                    self._default_model_name or config.get("model_name", "gpt-4"),
+                    self._resolve_model_name(),
                 )
 
         # Reuse existing SkillUseRail to preserve dynamically loaded skills
@@ -20048,6 +20057,7 @@ class JiuWenSwarmDeepAdapter:
             "output_cost": 0.0,
             "total_cost": 0.0,
         }
+        usage_projection = LlmUsageProjection()
         emitted_ask_user_events: set[tuple[Any, ...]] = set()
         # The run's final answer for the OTel trace output, kept as the streamed
         # deltas plus the terminal chat.final — see ``_assemble_run_answer``.
@@ -20692,7 +20702,6 @@ class JiuWenSwarmDeepAdapter:
             if moa_progress is not None:
                 moa_stream = moa_progress.stream(interaction_stream)
                 runner_stream = moa_stream
-            last_llm_prompt: str | None = None
             # Call-start time — anchors the chat.usage_metadata record so the LLM
             # Call card renders before the response text (recorded at completion).
             last_llm_start_ts: float | None = None
@@ -20705,6 +20714,10 @@ class JiuWenSwarmDeepAdapter:
                     chunk.get("event_type", chunk.get("type"))
                     if isinstance(chunk, dict) else getattr(chunk, "type", None)
                 )
+                if chunk_type == "answer":
+                    pending_usage = usage_projection.drain()
+                    if pending_usage is not None:
+                        yield pending_usage
                 if chunk_type == "chat.moa_status":
                     # A notice is not evidence of model output or a new round.
                     parsed = parse_common_stream_chunk(chunk)
@@ -20816,17 +20829,19 @@ class JiuWenSwarmDeepAdapter:
 
                 if chunk_type in ("llm_call_start", "llm_call_end"):
                     payload = chunk.payload if isinstance(chunk.payload, dict) else {}
+                    if chunk_type == "llm_call_start":
+                        pending_usage = usage_projection.start()
+                        if pending_usage is not None:
+                            yield pending_usage
+                    else:
+                        usage_projection.end()
                     forward: dict[str, Any] = {
                         "event_type": "chat." + chunk_type,
                         "member_name": payload.get("member_name"),
                         "role": payload.get("role"),
                     }
-                    prompt = payload.get("prompt")
-                    if prompt:
-                        forward["prompt"] = prompt
-                        if chunk_type == "llm_call_start":
-                            last_llm_prompt = str(prompt)
-                            last_llm_start_ts = time.time()
+                    if chunk_type == "llm_call_start":
+                        last_llm_start_ts = time.time()
                     content = payload.get("content")
                     if content:
                         forward["content"] = content
@@ -20841,6 +20856,10 @@ class JiuWenSwarmDeepAdapter:
                         payload=await note_chat_payload(forward),
                         is_complete=False,
                     )
+                    if chunk_type == "llm_call_end":
+                        pending_usage = usage_projection.drain()
+                        if pending_usage is not None:
+                            yield pending_usage
                     continue
 
                 if chunk_type == "llm_usage":
@@ -20860,14 +20879,7 @@ class JiuWenSwarmDeepAdapter:
                             usage_accumulator[token] += usage_meta.get(token, 0) or 0
                         for cost in ("input_cost", "output_cost", "total_cost"):
                             usage_accumulator[cost] += usage_meta.get(cost, 0.0) or 0.0
-                        # agent-core no longer serializes the prompt; carry the one
-                        # captured by the llm_call_start rail event so the final
-                        # prompt stays available for the LLM call.
-                        if last_llm_prompt and not usage_meta.get("prompt"):
-                            usage_meta = {**usage_meta, "prompt": last_llm_prompt}
-                            if isinstance(chunk.payload, dict):
-                                chunk.payload["usage_metadata"] = usage_meta
-                    yield AgentResponseChunk(
+                    ready_usage = usage_projection.accept(AgentResponseChunk(
                         request_id=rid,
                         channel_id=cid,
                         payload={
@@ -20877,7 +20889,9 @@ class JiuWenSwarmDeepAdapter:
                             **({"llm_start_ts": last_llm_start_ts} if last_llm_start_ts is not None else {}),
                         },
                         is_complete=False,
-                    )
+                    ))
+                    if ready_usage is not None:
+                        yield ready_usage
                     continue
 
                 if chunk_type == "llm_reasoning":
@@ -21047,6 +21061,9 @@ class JiuWenSwarmDeepAdapter:
                         is_complete=False,
                     )
 
+            pending_usage = usage_projection.drain()
+            if pending_usage is not None:
+                yield pending_usage
             if accumulated_text:
                 # Same rule as _adapt_goal_intermediate_final: demote host
                 # flush only when the flushed text belonged to a goal round.
@@ -21171,9 +21188,18 @@ class JiuWenSwarmDeepAdapter:
                 else:
                     _debug_logger.end_run(status="ok")
             interaction_stream_abort = run_failure is not None
-        except asyncio.CancelledError as exc:
+        except (asyncio.CancelledError, GeneratorExit) as exc:
             _run_exception = exc
             stream_consumer_cancelled = True
+            pending_usage = usage_projection.drain()
+            if pending_usage is not None:
+                from jiuwenswarm.server.runtime.agent_adapter.interface import persist_cancelled_llm_usage
+
+                try:
+                    await persist_cancelled_llm_usage(pending_usage, request=request, session_id=session_id)
+                except Exception:
+                    logger.warning("Cancelled stream usage could not be persisted: session=%s", session_id,
+                                   exc_info=True)
             logger.info(
                 "[JiuWenSwarmDeepAdapter] 流式任务被取消: request_id=%s session_id=%s",
                 rid,
@@ -21195,6 +21221,9 @@ class JiuWenSwarmDeepAdapter:
                 _debug_logger.end_run(status="error", error=exc)
             if permission_prepare_rejected:
                 raise
+            pending_usage = usage_projection.drain()
+            if pending_usage is not None:
+                yield pending_usage
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=cid,
@@ -21905,6 +21934,8 @@ class JiuWenSwarmDeepAdapter:
                                 result_payload["raw_output"] = raw_output
                             for key in (
                                 "rendered_result",
+                                "payload_refs",
+                                "raw_output_truncated",
                                 "status",
                                 "success",
                                 "is_error",
@@ -22538,6 +22569,15 @@ class JiuWenSwarmDeepAdapter:
         if result == "compressed":
             context = context_engine.get_context(session_id=session_id)
             if context:
+                from jiuwenswarm.server.runtime.session.context_snapshot import save_context_snapshot
+                from jiuwenswarm.agents.harness.common.session_ops_service import resolve_live_agent_session
+
+                effective_session = session or resolve_live_agent_session(self._instance, session_id)
+                if effective_session is None:
+                    effective_session = context.get_session_ref()
+                if effective_session is None:
+                    raise RuntimeError("The compacted context has no persistent session")
+                await save_context_snapshot(context_engine=context_engine, session=effective_session)
                 total_tokens = await self._count_full_context_tokens(
                     context, react_agent, session_id
                 )

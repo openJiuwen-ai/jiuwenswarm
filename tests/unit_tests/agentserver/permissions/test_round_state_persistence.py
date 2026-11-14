@@ -153,7 +153,14 @@ async def test_a_cancel_during_the_round_commit_still_releases_the_session(
         await release.wait()
         finished.set()
 
-    monkeypatch.setattr(h.adapter._instance.loop_session, "commit", slow_commit)
+    commit_round_state = h.adapter._commit_round_state
+
+    async def slow_round_commit(session_id):
+        # Earlier model-boundary snapshots must finish before this fault is armed.
+        monkeypatch.setattr(h.adapter._instance.loop_session, "commit", slow_commit)
+        await commit_round_state(session_id)
+
+    monkeypatch.setattr(h.adapter, "_commit_round_state", slow_round_commit)
     request = asyncio.create_task(_send_request(h, streaming=streaming, query="", **answer))
     await asyncio.wait_for(started.wait(), 10)
     request.cancel()

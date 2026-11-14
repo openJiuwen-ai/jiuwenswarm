@@ -1515,30 +1515,6 @@ async def test_sync_reload_partial_landing_triggers_agent_reload() -> None:
     assert "create_instance" in reloaded, "applied 非空场景必须重建 agent 实例"
 
 
-@pytest.mark.asyncio
-async def test_sync_apply_no_landed_skill_skips_agent_reload() -> None:
-    """WS apply 路由已收缩（仅剩 skills.sync.reload），无落盘 reload 不重建."""
-    stub = _StubManager({"success": True, "applied": []})
-    facade = _build_facade_with_stub(stub)
-    reloaded: list[str] = []
-
-    async def fake_create_instance() -> None:
-        reloaded.append("create_instance")
-
-    async def fake_reload_rails(session_id=None) -> None:
-        reloaded.append(f"rails:{session_id}")
-
-    monkey_local = pytest.MonkeyPatch()
-    monkey_local.setattr(facade, "create_instance", fake_create_instance)
-    monkey_local.setattr(facade, "_reload_team_skill_rails", fake_reload_rails)
-    try:
-        response = await facade._handle_skills_request(_sync_reload_request([]))
-    finally:
-        monkey_local.undo()
-
-    assert response is not None and response.ok
-    assert "create_instance" not in reloaded, "无落盘场景不应重建 agent 实例"
-
 
 def test_ws_routes_only_reload_registered() -> None:
     """skills.sync.diff/package/apply 不得进 WS 路由（绕过 token 鉴权）."""

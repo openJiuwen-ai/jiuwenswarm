@@ -1,15 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { attachDeclaration } from './appContract';
 import { ClientAttachment, type SessionId } from './clientAttachment';
+import { ClientToolDispatcher, type ClientToolRuntime } from './clientToolDispatcher';
 import type { Entry } from './conversationModel';
 import type { DocumentId } from './documentIdentity';
 import { GatewayRequestError, type JsonObject } from './gatewayClient';
 import { HostWriteQueue } from './hostWriteQueue';
 import { TaskPaneController } from './paneController';
-import { PowerPointToolDispatcher, type PresentationToolRuntime } from './powerPointToolDispatcher';
-import { presentationAttachDeclaration } from './presentationContract';
-import { PresentationSessionFacade } from './presentationSessionFacade';
+import { POWERPOINT } from './powerPointApp';
 import { ScriptedGateway } from './scriptedGateway';
+import { SessionFacade } from './sessionFacade';
 import type { SlideSnapshots, UndoResult } from './slideSnapshots';
 import type { Timer } from './workerTimer';
 
@@ -25,7 +26,7 @@ const PERMISSION: JsonObject = {
 };
 
 let gateway: ScriptedGateway;
-let execute: ReturnType<typeof vi.fn<PresentationToolRuntime['execute']>>;
+let execute: ReturnType<typeof vi.fn<ClientToolRuntime['execute']>>;
 let snapshots: {
   closeTurn: ReturnType<typeof vi.fn<SlideSnapshots['closeTurn']>>;
   undoable: ReturnType<typeof vi.fn<SlideSnapshots['undoable']>>;
@@ -34,13 +35,13 @@ let snapshots: {
 
 /** The pane as the task pane wires it, against a scripted Gateway and a stand-in PowerPoint. */
 function pane(): TaskPaneController {
-  execute = vi.fn<PresentationToolRuntime['execute']>(async () => ({ ok: true, result: { slide_count: 3 } }));
-  const runtime: PresentationToolRuntime = { tools: new Set(['read_presentation_context']), execute };
-  const sessions = new PresentationSessionFacade(gateway);
+  execute = vi.fn<ClientToolRuntime['execute']>(async () => ({ ok: true, result: { slide_count: 3 } }));
+  const runtime: ClientToolRuntime = { tools: new Set(['read_presentation_context']), execute };
+  const sessions = new SessionFacade(gateway, POWERPOINT.clientApp);
   const attachment = new ClientAttachment({
     gateway,
-    executor: new PowerPointToolDispatcher(runtime, new HostWriteQueue()),
-    declaration: async () => presentationAttachDeclaration({
+    executor: new ClientToolDispatcher(POWERPOINT, runtime, new HostWriteQueue()),
+    declaration: async () => attachDeclaration(POWERPOINT, {
       documentId: DOCUMENT, displayName: '季度汇报.pptx', host: { isSetSupported: () => true, worker: true },
       implemented: runtime.tools,
     }),
@@ -52,7 +53,8 @@ function pane(): TaskPaneController {
     undoable: vi.fn(() => ({ slides: 2 })),
     undo: vi.fn(async (): Promise<UndoResult> => ({ kind: 'undone', turns: 1, positions: [2, 3] })),
   };
-  return new TaskPaneController({ attachment, sessions, documentId: DOCUMENT, connection: gateway, snapshots });
+  return new TaskPaneController(
+    { attachment, sessions, documentId: DOCUMENT, connection: gateway, contract: POWERPOINT.contract, snapshots });
 }
 
 const settle = async (): Promise<void> => {
