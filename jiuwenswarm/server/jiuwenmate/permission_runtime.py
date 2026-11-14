@@ -36,6 +36,7 @@ class EmployeePermissionRailFactory:
         from jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_rail import (
             JiuwenSwarmPermissionInterruptRail,
         )
+        from jiuwenswarm.common.config import get_config
 
         policy = deepcopy(permissions)
         policy["enabled"] = True
@@ -60,7 +61,10 @@ class EmployeePermissionRailFactory:
         reviewer_model = build_isolated_reviewer_model(model)
         reviewer = (
             AutoReviewer(
-                client=IsolatedModelReviewerClient(model=reviewer_model, display_language_getter=lambda: "zh"),
+                client=IsolatedModelReviewerClient(
+                    model=reviewer_model,
+                    display_language_getter=lambda: get_config().get("preferred_language", "zh"),
+                ),
                 timeout_ms=options["reviewer_timeout_ms"],
                 reviewer_output_format=options["reviewer_output_format"],
             )
