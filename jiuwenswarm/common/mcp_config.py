@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import functools
 import hashlib
 import ipaddress
 import json
@@ -18,7 +19,7 @@ from contextlib import AsyncExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping
 from urllib.parse import urlparse
 import anyio
 
@@ -965,6 +966,8 @@ class OfficeClawMcpRegistration:
 # discovery/startup and call_tool. Process-level ToolMgr clients use the
 # separate 30s ``mcp_call_timeout_patch.DEFAULT_CALL_TIMEOUT`` fallback.
 _MCP_CALL_TOOL_TIMEOUT_S = 300.0
+# 经活动 worker 复扫列工具的上限：列工具与调用共用一个串行 owner，不能让它按调用超时占着队列。
+_MCP_WORKER_LIST_TOOLS_TIMEOUT_S = 30.0
 _MCP_CONNECTOR_DISCOVERY_TIMEOUT_S = 300.0
 
 
@@ -979,11 +982,20 @@ class McpWorkerStoppedError(RuntimeError):
 class _McpCallRequest:
     """One call_tool request handed from an invoke task to the owner task."""
 
-    __slots__ = ("tool_name", "arguments", "future")
+    __slots__ = ("tool_name", "arguments", "meta", "list_tools", "future")
 
-    def __init__(self, tool_name: str, arguments: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        meta: dict[str, str] | None = None,
+        *,
+        list_tools: bool = False,
+    ) -> None:
         self.tool_name = tool_name
+        self.list_tools = list_tools
         self.arguments = arguments
+        self.meta = meta
         self.future: asyncio.Future = asyncio.get_running_loop().create_future()
 
 
@@ -1003,9 +1015,11 @@ class _PooledMcpWorker:
         "inflight",
         "close_reason",
         "call_timeout_s",
+        "on_tools_changed",
     )
 
     def __init__(self, server_name: str, params_fingerprint: str = "") -> None:
+        self.on_tools_changed: Callable[[], None] | None = None
         self.queue: asyncio.Queue[_McpCallRequest | None] = asyncio.Queue()
         self.task: asyncio.Task | None = None
         self.server_name = server_name
@@ -1024,18 +1038,42 @@ class _PooledMcpWorker:
     def busy(self) -> bool:
         return self.inflight > 0
 
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
-        """Submit a call_tool to the owner task and await its result."""
-        if self.retiring:
-            raise McpWorkerRetiringError(
-                f"MCP worker for '{self.server_name}' is retiring"
-            )
-        if not self.alive:
-            raise RuntimeError(
-                f"request-scoped MCP worker for '{self.server_name}' is not running"
-            )
-        self.last_used = time.monotonic()
-        req = _McpCallRequest(name, arguments)
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        meta: Mapping[str, str] | None = None,
+        reserved: bool = False,
+    ) -> Any:
+        """Submit a call_tool to the owner task and await its result.
+
+        ``reserved`` 表示分组池选中本 worker 时已替这次调用占了一个 inflight 名额，
+        这里只负责归还。
+        """
+        if not reserved:
+            self.inflight += 1
+        try:
+            if self.retiring:
+                raise McpWorkerRetiringError(
+                    f"MCP worker for '{self.server_name}' is retiring"
+                )
+            if not self.alive:
+                raise RuntimeError(
+                    f"request-scoped MCP worker for '{self.server_name}' is not running"
+                )
+            self.last_used = time.monotonic()
+            req = _McpCallRequest(name, arguments, dict(meta) if meta else None)
+            await self.queue.put(req)
+            return await req.future
+        finally:
+            self.inflight -= 1
+
+    async def list_tools(self) -> list[dict[str, Any]]:
+        """经本 worker 的会话列工具，返回与工具发现相同形状的定义。"""
+        if self.retiring or not self.alive:
+            raise McpWorkerStoppedError(f"MCP worker unavailable: server={self.server_name}")
+        req = _McpCallRequest("tools/list", {}, list_tools=True)
         self.inflight += 1
         try:
             await self.queue.put(req)
@@ -1085,7 +1123,7 @@ async def _run_mcp_worker(
             if client_type in ("sse", "streamable-http"):
                 session = await _enter_remote_mcp_session(stack, params, client_type)
             else:
-                session = await _enter_stdio_mcp_session(stack, params)
+                session = await _enter_stdio_mcp_session(stack, params, worker)
         except BaseException as exc:
             # 初始化失败：失败已排队的 caller，退出以便下次 invoke 时 acquire 重建。
             logger.warning(
@@ -1109,10 +1147,19 @@ async def _run_mcp_worker(
             try:
                 # remote 的 patch 可能在调用中重连，因此整个调用也留在 owner。
                 try:
-                    if client_type in ("sse", "streamable-http"):
+                    if getattr(req, "list_tools", False):
+                        with anyio.fail_after(min(call_timeout_s, _MCP_WORKER_LIST_TOOLS_TIMEOUT_S)):
+                            listed = await session.list_tools()
+                        result = listed if isinstance(listed, list) else _extract_mcp_tool_defs(listed)
+                    elif client_type in ("sse", "streamable-http"):
                         async with asyncio.timeout(call_timeout_s):
                             result = await session.call_tool(
                                 req.tool_name, arguments=req.arguments
+                            )
+                    elif getattr(req, "meta", None):
+                        with anyio.fail_after(call_timeout_s):
+                            result = await session.call_tool(
+                                req.tool_name, arguments=req.arguments, meta=req.meta
                             )
                     else:
                         with anyio.fail_after(call_timeout_s):
@@ -1157,16 +1204,28 @@ async def _run_mcp_worker(
             worker.queue.task_done()
 
 
-async def _enter_stdio_mcp_session(stack: AsyncExitStack, params: Mapping[str, Any]) -> Any:
+async def _enter_stdio_mcp_session(
+    stack: AsyncExitStack, params: Mapping[str, Any], worker: _PooledMcpWorker | None = None
+) -> Any:
     """stdio transport：起子进程 ClientSession，生命周期交由 stack 管理。"""
-    from mcp import ClientSession
+    from mcp import ClientSession, types
     from mcp.client.stdio import stdio_client
+
+    async def on_message(message: Any) -> None:
+        root = getattr(message, "root", None)
+        callback = worker.on_tools_changed if worker is not None else None
+        if callback is not None and isinstance(root, types.ToolListChangedNotification):
+            try:
+                callback()
+            except Exception:  # noqa: BLE001
+                # 回调出错不能冒到 SDK 的收消息循环里，否则这条会话的后续响应都收不到。
+                logger.warning("MCP tools/list_changed callback failed", exc_info=True)
 
     read, write = await stack.enter_async_context(
         stdio_client(_stdio_server_parameters(params))
     )
     session = await stack.enter_async_context(
-        ClientSession(read, write, sampling_callback=None)
+        ClientSession(read, write, sampling_callback=None, message_handler=on_message)
     )
     await session.initialize()
     return session
@@ -1253,6 +1312,24 @@ class _RemoteMcpCallAdapter:
 
     def __init__(self, client: Any) -> None:
         self._client = client
+
+    async def list_tools(self) -> list[dict[str, Any]]:
+        listed = await self._client.list_tools()
+        # openjiuwen 客户端返回 McpToolCard 列表；也兼容 ListToolsResult 与 dict 列表。
+        items = listed if isinstance(listed, list) else getattr(listed, "tools", None) or []
+        defs: list[dict[str, Any]] = []
+        for tool in items:
+            read = tool.get if isinstance(tool, Mapping) else functools.partial(getattr, tool)
+            name = str(read("name", "") or "").strip()
+            if not name:
+                logger.warning("remote MCP list_tools returned a tool without name, skipped")
+                continue
+            defs.append({
+                "name": name,
+                "description": read("description", "") or "",
+                "input_params": read("input_params", None) or read("inputSchema", None) or {},
+            })
+        return defs
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         from mcp.types import CallToolResult, TextContent
@@ -1758,28 +1835,30 @@ def revoke_request_scoped_mcp_registration(
             _live_request_scoped_mcp_registrations_by_session.pop(session_id, None)
 
 
-def _office_claw_invocation_id_from_params(params: Mapping[str, Any] | None) -> str:
-    """Extract OFFICE_CLAW_INVOCATION_ID from MCP connect params, if present."""
+def office_claw_tool_identity_value(tool: Any, key: str) -> str:
+    """读取工具绑定的调用身份：注册面条目在本轮执行时参数里，旧通道在进程 env 里。"""
 
-    if not isinstance(params, Mapping):
-        return ""
-    env = params.get("env")
+    runtime = getattr(tool, "_runtime_params", None)
+    if isinstance(runtime, Mapping):
+        value = str(runtime.get(key) or "").strip()
+        if value:
+            return value
+    params = getattr(tool, "_params", None)
+    env = params.get("env") if isinstance(params, Mapping) else None
     if not isinstance(env, Mapping):
         return ""
-    return str(env.get("OFFICE_CLAW_INVOCATION_ID") or "").strip()
+    return str(env.get(key) or "").strip()
+
+
+def _office_claw_tool_invocation_id(tool: Any) -> str:
+    return office_claw_tool_identity_value(tool, "OFFICE_CLAW_INVOCATION_ID")
 
 
 def office_claw_thread_id_from_tools(tools: Iterable[Any] | None) -> str:
     """Return the first OFFICE_CLAW_THREAD_ID pinned into request-scoped MCP tools."""
 
     for tool in tools or ():
-        params = getattr(tool, "_params", None)
-        if not isinstance(params, Mapping):
-            continue
-        env = params.get("env")
-        if not isinstance(env, Mapping):
-            continue
-        thread_id = str(env.get("OFFICE_CLAW_THREAD_ID") or "").strip()
+        thread_id = office_claw_tool_identity_value(tool, "OFFICE_CLAW_THREAD_ID")
         if thread_id:
             return thread_id
     return ""
@@ -1801,7 +1880,7 @@ def resolve_active_office_claw_invocation_id() -> str | None:
     card_match: str | None = None
     with _live_office_claw_allowlist_lock:
         for tool, ids in _live_office_claw_tool_instances.items():
-            inv = _office_claw_invocation_id_from_params(getattr(tool, "_params", None))
+            inv = _office_claw_tool_invocation_id(tool)
             if not inv:
                 continue
             if ids == allowed_ids:
@@ -1958,7 +2037,7 @@ def ensure_office_claw_tool_invocation_matches_active(
     expected = resolve_active_office_claw_invocation_id()
     if not expected:
         return
-    actual = _office_claw_invocation_id_from_params(getattr(tool, "_params", None))
+    actual = _office_claw_tool_invocation_id(tool)
     if actual and actual != expected:
         raise RuntimeError(
             "OfficeClaw MCP tool env invocation mismatches active request binding; "
@@ -2128,6 +2207,7 @@ def validate_office_claw_mcp_config(
     config: Mapping[str, Any],
     *,
     environ: Mapping[str, str] | None = None,
+    extra_env_keys: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Validate request config against Relay's startup-time MCP identity.
 
@@ -2176,7 +2256,7 @@ def validate_office_claw_mcp_config(
         raise ValueError("office_claw_mcp cwd does not match Relay startup identity")
 
     unknown_env_keys = {str(key) for key in request_env}.difference(
-        _OFFICE_CLAW_MCP_ENV_KEYS
+        _OFFICE_CLAW_MCP_ENV_KEYS, extra_env_keys
     )
     if unknown_env_keys:
         raise ValueError(
@@ -2636,6 +2716,7 @@ CONNECTOR_DISCOVERY_FAILED = "工具发现失败（连接器进程未能启动�
 CONNECTOR_NO_TOOLS = "未提供任何可用工具（工具可能已全部停用）"
 CONNECTOR_NOT_IN_TEMPLATE = "不在管理端下发的 MCP 模板中，本轮不加载"
 CONNECTOR_TEMPLATE_MISMATCH = "与 MCP 模板的名称、传输类型或地址不一致，本轮不加载"
+CONNECTOR_RUNTIME_PARAMS_INVALID = "本轮调用凭证缺失或不合法"
 
 
 def annotate_connector_catalog_result(
@@ -2691,6 +2772,11 @@ class RequestScopedOfficeClawMcpTool(Tool):
         *,
         use_global_pool: bool = False,
         remote_tool_name: str = "",
+        runtime_params: Mapping[str, str] | None = None,
+        runtime_via: str = "",
+        runtime_group: str = "",
+        request_owned_worker: bool = False,
+        catalog_host: bool = False,
     ) -> None:
         super().__init__(card)
         # Deep-copy env so concurrent registrations cannot mutate each other's
@@ -2706,11 +2792,27 @@ class RequestScopedOfficeClawMcpTool(Tool):
         self._unavailable_connectors: dict[str, str] = {}
         # 对外可改名（避免遮蔽内置工具），但远程 MCP 服务器只认原始工具名。
         self._remote_tool_name = str(remote_tool_name or getattr(card, "name", "") or "")
+        # 本轮执行时参数只绑定在工具对象上，随请求注销；不进注册表、不落盘、不记日志。
+        self._runtime_params = dict(runtime_params or {})
+        self._runtime_via = str(runtime_via or "")
+        self._runtime_group = str(runtime_group or "")
+        self._request_owned_worker = bool(request_owned_worker)
+        self._catalog_host = bool(catalog_host)
 
     @property
     def server_name(self) -> str:
         """只读暴露工具所属来源，不改变请求级连接身份。"""
         return self._server_name
+
+    @property
+    def catalog_host(self) -> bool:
+        """是否承载连接器目录查询（系统条目），目录结果要按本轮装载情况注解。"""
+        return self._catalog_host
+
+    @property
+    def request_owned_worker(self) -> str:
+        """随请求关闭的连接在全局池里的键后缀；不是这类连接时为空。"""
+        return self._runtime_group if self._request_owned_worker else ""
 
     def set_unavailable_connectors(self, unavailable: Mapping[str, str]) -> None:
         self._unavailable_connectors = dict(unavailable)
@@ -2719,6 +2821,11 @@ class RequestScopedOfficeClawMcpTool(Tool):
         if self._use_global_pool:
             from jiuwenswarm.common.mcp_server_registry import get_mcp_server_registry
 
+            if self._runtime_via in ("header", "env"):
+                return await get_mcp_server_registry().acquire_worker(
+                    self._server_name, force_rebuild=force_rebuild, via=self._runtime_via,
+                    values=self._runtime_params, variant=self._runtime_group,
+                )
             return await get_mcp_server_registry().acquire_worker(
                 self._server_name, force_rebuild=force_rebuild
             )
@@ -2728,6 +2835,25 @@ class RequestScopedOfficeClawMcpTool(Tool):
             self._params,
             force_rebuild=force_rebuild,
         )
+
+    async def _call_through_group_pool(self, remote_name: str, arguments: dict[str, Any]) -> Any:
+        """meta 方式：进程跨请求共享，本轮参数随每次调用的 _meta 下发。"""
+        from jiuwenswarm.common.mcp_server_registry import get_mcp_server_registry
+
+        registry = get_mcp_server_registry()
+        worker = await registry.acquire_group_worker(self._server_name, self._runtime_group)
+        try:
+            return await worker.call_tool(
+                remote_name, arguments, meta=self._runtime_params, reserved=True
+            )
+        except Exception:  # noqa: BLE001
+            # 与非分组路径一致：换掉出错的 worker 重试一次。
+            worker = await registry.acquire_group_worker(
+                self._server_name, self._runtime_group, replace=worker
+            )
+            return await worker.call_tool(
+                remote_name, arguments, meta=self._runtime_params, reserved=True
+            )
 
     async def stream(self, inputs: Any, **kwargs: Any):
         raise build_error(StatusCode.TOOL_STREAM_NOT_SUPPORTED, card=self._card)
@@ -2792,13 +2918,16 @@ class RequestScopedOfficeClawMcpTool(Tool):
         arguments = inputs if isinstance(inputs, dict) else {}
         remote_name = self._remote_tool_name or self._card.name
         try:
-            session = await self._acquire_mcp_session()
-            try:
-                result = await session.call_tool(remote_name, arguments=arguments)
-            except Exception:
-                # 池化进程可能在请求中途死掉（崩溃/stdin 关闭）：丢弃重建一次再重试。
-                session = await self._acquire_mcp_session(force_rebuild=True)
-                result = await session.call_tool(remote_name, arguments=arguments)
+            if self._use_global_pool and self._runtime_via == "meta":
+                result = await self._call_through_group_pool(remote_name, arguments)
+            else:
+                session = await self._acquire_mcp_session()
+                try:
+                    result = await session.call_tool(remote_name, arguments=arguments)
+                except Exception:
+                    # 池化进程可能在请求中途死掉（崩溃/stdin 关闭）：丢弃重建一次再重试。
+                    session = await self._acquire_mcp_session(force_rebuild=True)
+                    result = await session.call_tool(remote_name, arguments=arguments)
             result_content = _extract_mcp_result_text(result)
             is_error = getattr(result, "isError", False) is True
             text = annotate_connector_catalog_result(
@@ -2833,11 +2962,49 @@ class RequestScopedOfficeClawMcpTool(Tool):
             ) from exc
 
 
+def create_request_scoped_mcp_tool(
+    request_id: str,
+    session_id: str,
+    server_name: str,
+    tool_def: Mapping[str, Any],
+    params: Mapping[str, Any],
+    *,
+    staged_name: str = "",
+    use_global_pool: bool = False,
+    strict: bool = False,
+    runtime_params: Mapping[str, str] | None = None,
+    runtime_delivery: tuple[str, str, bool] = ("", "", False),
+    catalog_host: bool = False,
+) -> RequestScopedOfficeClawMcpTool:
+    """按一条工具定义构造本轮工具对象；对话装载与扩展的按需装载共用，保证标识与行为一致。"""
+
+    name = str(tool_def.get("name") or "").strip()
+    scope = hashlib.sha256(f"{session_id}:{request_id}".encode()).hexdigest()[:20]
+    prefix = MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX if use_global_pool else OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX
+    card = ToolCard(
+        id=f"{prefix}{scope}.{server_name}.{staged_name or name}",
+        name=staged_name or name,
+        description=str(tool_def.get("description") or ""),
+        input_params=tool_def.get("input_params") or {},
+    )
+    if not strict:
+        timeout = _positive_timeout_s(params.get("timeout_s"))
+        if timeout is not None:
+            card.properties["resilience"] = {"timeout_s": timeout}
+    return RequestScopedOfficeClawMcpTool(
+        card, params, request_id, server_name, use_global_pool=use_global_pool,
+        remote_tool_name=name, runtime_params=runtime_params,
+        runtime_via=runtime_delivery[0], runtime_group=runtime_delivery[1],
+        request_owned_worker=runtime_delivery[2], catalog_host=catalog_host,
+    )
+
+
 __all__ = [
     "CONNECTOR_DISCOVERY_FAILED",
     "CONNECTOR_NO_TOOLS",
     "CONNECTOR_NOT_IN_TEMPLATE",
     "CONNECTOR_TEMPLATE_MISMATCH",
+    "CONNECTOR_RUNTIME_PARAMS_INVALID",
     "OFFICE_CLAW_EXPECTED_TOOL_IDS_KWARG",
     "OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX",
     "MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX",
@@ -2853,6 +3020,7 @@ __all__ = [
     "build_enabled_mcp_server_configs",
     "build_mcp_server_config",
     "create_mcp_tool",
+    "create_request_scoped_mcp_tool",
     "ensure_office_claw_tool_invocation_matches_active",
     "ensure_request_scoped_mcp_tool_allowed",
     "ensure_request_scoped_office_claw_tool_allowed",
@@ -2870,6 +3038,7 @@ __all__ = [
     "is_office_claw_tool_name_live_concurrent",
     "list_office_claw_mcp_tools",
     "list_request_mcp_server_tools",
+    "office_claw_tool_identity_value",
     "preflight_mcp_server_reachable",
     "publish_live_office_claw_allowlist",
     "publish_request_scoped_mcp_registration",

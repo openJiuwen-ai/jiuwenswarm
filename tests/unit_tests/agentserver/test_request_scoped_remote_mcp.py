@@ -616,3 +616,24 @@ async def test_missing_type_command_args_discovery_defaults_to_stdio(
 
     assert [t["name"] for t in tool_defs] == ["legacy_tool"]
     assert params["_mcp_client_type"] == "stdio"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrap", [list, lambda tools: SimpleNamespace(tools=tools)])
+async def test_remote_list_tools_normalizes_shapes_and_skips_nameless(wrap) -> None:
+    from jiuwenswarm.common.mcp_config import _RemoteMcpCallAdapter
+
+    tools = [
+        SimpleNamespace(name="card", description="d", input_params={"type": "object"}),
+        SimpleNamespace(name="raw", description=None, inputSchema={"type": "object"}),
+        {"name": "plain", "inputSchema": {"type": "object"}},
+        {"description": "no name"},
+        SimpleNamespace(name="  "),
+    ]
+    inner = MagicMock(_owner_task=None)
+    inner.list_tools = AsyncMock(return_value=wrap(tools))
+    defs = await _RemoteMcpCallAdapter(inner).list_tools()
+    assert defs == [
+        {"name": n, "description": d, "input_params": {"type": "object"}}
+        for n, d in (("card", "d"), ("raw", ""), ("plain", ""))
+    ]

@@ -777,6 +777,7 @@ from jiuwenswarm.common.config import (
 from jiuwenswarm.common.mcp_config import (
     CONNECTOR_DISCOVERY_FAILED,
     CONNECTOR_NO_TOOLS,
+    CONNECTOR_RUNTIME_PARAMS_INVALID,
     MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX,
     OfficeClawMcpRegistration,
     RequestScopedOfficeClawMcpTool,
@@ -808,9 +809,17 @@ from jiuwenswarm.common.mcp_config import (
 from jiuwenswarm.common.mcp_server_registry import (
     DisabledMcpServerError,
     McpRegistryChatError,
+    McpServerDeclaration,
     UnknownMcpServerError,
+    deepresearch_connect_params,
+    extract_mcp_runtime_params,
     extract_mcp_server_list,
+    extract_mcp_tool_scope,
     get_mcp_server_registry,
+    is_office_claw_entry_name,
+    resolve_runtime_params,
+    retire_request_owned_mcp_workers,
+    runtime_delivery,
 )
 from jiuwenswarm.server.runtime.agent_adapter.deepagent_task_plan_binding_patch import (
     apply_deepagent_task_plan_binding_patch,
@@ -3461,6 +3470,100 @@ class JiuWenSwarmDeepAdapter:
         env = params.get("env") if isinstance(params.get("env"), dict) else {}
         return str(env.get("OFFICE_CLAW_INVOCATION_ID") or "").strip()
 
+    async def _append_registry_mcp_server_tools(
+        self,
+        request: AgentRequest,
+        server_names: list[str],
+        buffers: _RequestMcpToolBuffers,
+    ) -> str:
+        """Stage registered servers from the tool cache; returns the bound invocation id."""
+        registry = get_mcp_server_registry()
+        runtime_params = extract_mcp_runtime_params(request.params)
+        tool_scope = extract_mcp_tool_scope(request.params)
+        snapshots = await registry.snapshot_for_chat(server_names)
+        declaration_reader = getattr(registry, "chat_declarations", None)
+        declarations = declaration_reader(server_names) if callable(declaration_reader) else {}
+        policy_reader = getattr(registry, "get_server", None)
+        invocation_id = ""
+        # office-claw 条目先占名：之后的连接器重名时让位，不反过来挤掉系统工具。
+        for name, tool_defs, params in sorted(
+            snapshots, key=lambda item: not is_office_claw_entry_name(item[0]),
+        ):
+            declaration = declarations.get(name) or McpServerDeclaration()
+            # 连接器目录按连接器 ID 查询，注册名是 <userId>:<connectorId>。
+            catalog_name = name if declaration.system else name.rsplit(":", 1)[-1]
+            values, skip_reason, dropped = resolve_runtime_params(
+                declaration, runtime_params.get(name),
+            )
+            if dropped:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] undeclared MCP runtime params dropped: "
+                    "request_id=%s server=%s count=%s names=%s",
+                    request.request_id, name, len(dropped), dropped[:16],
+                )
+            if skip_reason:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] registered MCP server skipped this request: "
+                    "request_id=%s server=%s reason=%s", request.request_id, name, skip_reason,
+                )
+                buffers.unavailable_connectors[catalog_name] = CONNECTOR_RUNTIME_PARAMS_INVALID
+                continue
+            scope = tool_scope.get(name)
+            if scope is not None:
+                tool_defs = [t for t in tool_defs if str(t.get("name") or "").strip() in scope]
+                if not tool_defs:
+                    buffers.unavailable_connectors[catalog_name] = CONNECTOR_NO_TOOLS
+            strict = is_office_claw_entry_name(name)
+            if strict:
+                conflict = self._strict_mcp_entry_conflict(tool_defs, buffers)
+                if conflict is not None:
+                    logger.error(
+                        "[JiuWenSwarmDeepAdapter] system MCP entry dropped on tool name conflict: "
+                        "request_id=%s server=%s tool=%s", request.request_id, name, conflict,
+                    )
+                    continue
+            _stage_request_mcp_tools(
+                request, name, tool_defs, params, buffers, use_global_pool=True, strict=strict,
+                staged_name_resolver=self._resolve_shadow_safe_tool_name,
+                runtime_params=values, catalog_host=declaration.system,
+                runtime_delivery=runtime_delivery(
+                    declaration, values, f"{request.session_id}:{request.request_id}",
+                ),
+            )
+            if declaration.system and not invocation_id:
+                invocation_id = values.get("OFFICE_CLAW_INVOCATION_ID", "")
+            if not tool_defs:
+                continue
+            try:
+                policy = await policy_reader(name) if callable(policy_reader) else None
+            except Exception:
+                policy = None
+            if policy and policy.get("enabled"):
+                from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import (
+                    project_search_server,
+                )
+                # 委托经本轮装载的工具对象调用，判定时把随请求下发的请求头一并计入。
+                research_server = project_search_server(
+                    name, policy["config"], deepresearch_connect_params(params, declaration, values),
+                )
+                if research_server:
+                    buffers.research_servers.append(research_server)
+                    rewrites = buffers.research_name_rewrites.get(name) or {}
+                    buffers.research_tool_names[name] = (
+                        self._staged_research_tool_names(tool_defs, rewrites)
+                    )
+        return invocation_id
+
+    def _strict_mcp_entry_conflict(
+        self, tool_defs: list[dict[str, Any]], buffers: _RequestMcpToolBuffers,
+    ) -> str | None:
+        """严格装载的条目不改名、不逐个跳过：有一个工具名不可用就整组不装。"""
+        names = [str(tool.get("name") or "").strip() for tool in tool_defs]
+        for name in names:
+            unusable = not name or names.count(name) > 1
+            if unusable or name in buffers.seen_names or self._is_builtin_shadowed_tool_name(name):
+                return name
+        return None
 
     async def _append_request_mcp_server_tools(
         self,
@@ -3654,28 +3757,9 @@ class JiuWenSwarmDeepAdapter:
                     skip_office_claw=office_claw_config is not None,
                 )
             if server_names:
-                snapshots = await get_mcp_server_registry().snapshot_for_chat(server_names)
-                for name, tool_defs, params in snapshots:
-                    _stage_request_mcp_tools(
-                        request, name, tool_defs, params, buffers, use_global_pool=True,
-                        staged_name_resolver=self._resolve_shadow_safe_tool_name,
-                    )
-                    reader = getattr(get_mcp_server_registry(), "get_server", None)
-                    try:
-                        policy = await reader(name) if callable(reader) else None
-                    except Exception:
-                        policy = None
-                    if policy and policy.get("enabled") and tool_defs:
-                        from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import (
-                            project_search_server,
-                        )
-                        research_server = project_search_server(name, policy["config"], params)
-                        if research_server:
-                            buffers.research_servers.append(research_server)
-                            rewrites = buffers.research_name_rewrites.get(name) or {}
-                            buffers.research_tool_names[name] = (
-                                self._staged_research_tool_names(tool_defs, rewrites)
-                            )
+                invocation_id = await self._append_registry_mcp_server_tools(
+                    request, server_names, buffers,
+                )
             # Preserve source priority: registry -> leftovers -> office-claw when
             # a registry list is present; otherwise office-claw -> connectors.
             if office_claw_config is not None and not server_names:
@@ -3688,9 +3772,11 @@ class JiuWenSwarmDeepAdapter:
                     skip_office_claw=office_claw_config is not None,
                 )
             if office_claw_config is not None and server_names:
-                invocation_id = await self._append_identity_pinned_office_claw_tools(
+                legacy_invocation_id = await self._append_identity_pinned_office_claw_tools(
                     request, office_claw_config, buffers, yield_to_existing=True,
                 )
+                # 注册面的系统条目已绑定调用身份时，旧字段的同名工具让位，身份也以注册面为准。
+                invocation_id = invocation_id or legacy_invocation_id
 
             if buffers.unavailable_connectors:
                 logger.warning(
@@ -3698,7 +3784,7 @@ class JiuWenSwarmDeepAdapter:
                     "request_id=%s connectors=%s", request.request_id, buffers.unavailable_connectors,
                 )
                 for tool, _strict in buffers.pending_tools:
-                    if tool.server_name == "office-claw":
+                    if tool.server_name == "office-claw" or tool.catalog_host:
                         tool.set_unavailable_connectors(buffers.unavailable_connectors)
 
             if not replace_request_scoped_mcp_registration(generation, generation):
@@ -3975,6 +4061,19 @@ class JiuWenSwarmDeepAdapter:
                 self._active_office_claw_mcp.request_id,
             )
         revoke_live_office_claw_allowlist(registration.tool_ids)
+        # connection_scope: request 的连接归本请求独占，请求结束（含取消、报错、审批中断）即关。
+        # 放在上面的状态清理之后：这里可能挂起，清理被取消时不能把活动注册留在半清状态。
+        try:
+            await retire_request_owned_mcp_workers(
+                registration.tool_instances, request_id=registration.request_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] request-owned MCP connection close failed: "
+                "request_id=%s error=%s",
+                registration.request_id,
+                exc,
+            )
         # 销毁本请求池化的长生命周期 stdio session（如 chrome-devtools-mcp 浏览器进程），
         # 以免其活过 chat.send。best-effort，不阻塞清理。
         try:

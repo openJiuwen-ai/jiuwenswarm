@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_02 / request-pipeline-dispatch |
 | 关联模块 | jiuwenswarm/server/{dispatch.py, pipeline.py, context.py, wire_parse.py, wire_truncate.py, ws_send.py, handlers/, transports/} |
-| 最近一次修订日期 | 2026-10-15 |
+| 最近一次修订日期 | 2026-11-10 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -56,7 +56,7 @@
 - file_transfer（3）：按 event_type 分派
 - team ：TEAM_* 全域
 - commands ：COMMAND_* + COMMAND_MCP / COMMAND_SANDBOX（外借）
-- mcp_servers ：MCP_SERVER_ADD / REMOVE / UPDATE / LIST / GET
+- mcp_servers ：MCP_SERVER_ADD / REMOVE / UPDATE / LIST / GET / RESCAN
 - agents ：AGENTS_*
 - extensions ：EXTENSIONS_* + HOOKS_LIST + HARNESS_PACKAGES_*
 - schedule ：SCHEDULE_CHECK_CONFIG / UPDATE_CONFIG / CREATE / RUN / LIST / STATUS / LOGS / CANCEL / DELETE + ISSUE_WATCH_ONCE / ISSUE_STATE_LIST / ISSUE_DELETE / ISSUE_MATRIX（共用 handle_schedule_request）
