@@ -6,6 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
+import os
+from pathlib import Path
 import logging
 from typing import Any
 
@@ -66,6 +69,34 @@ def connection_role(ws: Any) -> str:
     return (value or "").strip().lower()
 
 
+def _managed_transport_epoch(ws: Any) -> tuple[str, str, str, str] | None:
+    """Identify transport state saved before a managed sandbox restore."""
+    context_path = os.getenv("JIUWENSWARM_ADX_NODE_CONTEXT_FILE", "").strip()
+    if not context_path:
+        return None
+    context = json.loads(Path(context_path).read_text())
+    node_id = str(context.get("node_id") or "").strip()
+    ingress = str(context.get("ingress_url") or "").strip()
+    if not node_id or not ingress:
+        raise ValueError("managed node context requires node_id and ingress_url")
+    address = getattr(ws, "local_address", None)
+    local_ip = str(address[0]) if isinstance(address, tuple) and address else ""
+    # The native restore identity changes even when node and guest IP are
+    # reused. Read the runtime file; child-process environments are filtered
+    # and restored Python os.environ would describe the source execution.
+    runtime_id = ""
+    runtime_environment = Path("/proc/gvisor/spec_environ")
+    if runtime_environment.is_file():
+        content = runtime_environment.read_text()
+        entries = content.split("\0") if "\0" in content else content.splitlines()
+        for entry in entries:
+            key, separator, value = entry.partition("=")
+            if separator and key.strip() == "ADX_RUNTIME_ID":
+                runtime_id = value.strip().strip("\"'")
+                break
+    return node_id, ingress, local_ip, runtime_id
+
+
 class ConnectionHandler:
     """Accept Gateway connections and own the server-push slot.
 
@@ -89,6 +120,8 @@ class ConnectionHandler:
         self._admission = admission
         self._forwarder = forwarder
         self._push_conns: list[tuple[Any, asyncio.Lock]] = []
+        self._transport_epoch: tuple[str, str, str, str] | None = None
+        self._connection_tasks: dict[Any, asyncio.Task] = {}
 
     @property
     def current_ws(self) -> Any:
@@ -140,6 +173,31 @@ class ConnectionHandler:
             except Exception:
                 logger.exception("[Front] runtime disconnect cleanup failed")
 
+    async def _retire_restored_transports(self, connections: list[Any]) -> None:
+        """Cancel saved request streams after publishing the new push target."""
+        if not connections:
+            return
+        tasks = []
+        for connection in connections:
+            task = self._connection_tasks.get(connection)
+            try:
+                await asyncio.wait_for(
+                    connection.close(code=1012, reason="managed sandbox transport changed"),
+                    timeout=1.0,
+                )
+            except Exception:
+                transport = getattr(connection, "transport", None)
+                if transport is not None:
+                    transport.abort()
+            if task is not None and task is not asyncio.current_task() and not task.done():
+                task.cancel()
+                tasks.append(task)
+        if tasks:
+            _done, pending = await asyncio.wait(tasks, timeout=5.0)
+            if pending:
+                raise RuntimeError("saved Gateway request streams did not retire after restore")
+        logger.info("[Front] retired saved Gateway transports: count=%s", len(connections))
+
     async def __call__(self, ws: Any) -> None:
         remote = ws.remote_address
         role = connection_role(ws)
@@ -147,11 +205,32 @@ class ConnectionHandler:
         logger.info("[Front] 新连接: %s role=%s", remote, role or "gateway")
         send_lock = asyncio.Lock()
         if not is_rpc:
+            epoch = _managed_transport_epoch(ws)
+            previous_epoch = self._transport_epoch
+            saved_connections = []
+            if epoch is not None:
+                if self._transport_epoch is not None and epoch != self._transport_epoch:
+                    saved_connections = [connection for connection, _lock in self._push_conns]
+                self._transport_epoch = epoch
+            task = asyncio.current_task()
+            if task is not None:
+                self._connection_tasks[ws] = task
             self._push_conns.append((ws, send_lock))
             try:
                 await self._publish_push_target(ws, send_lock)
             except Exception:
                 logger.exception("[Front] push 通道登记失败 (%s)", remote)
+            try:
+                # A restored TCP session can look open while its original
+                # peer is gone. Retire its stream consumers, not the Team
+                # producer, so they cannot shadow a new attach-only waiter.
+                await self._retire_restored_transports(saved_connections)
+            except BaseException:
+                if self._transport_epoch == epoch:
+                    self._transport_epoch = previous_epoch
+                self._connection_tasks.pop(ws, None)
+                await self._release_push_target(ws, remote)
+                raise
         try:
             ack = connection_ack_frame(
                 readiness_state=self._readiness.state.value,
@@ -181,6 +260,7 @@ class ConnectionHandler:
         except Exception:
             logger.exception("[Front] 连接处理异常 (%s)", remote)
         finally:
+            self._connection_tasks.pop(ws, None)
             for task in list(tasks):
                 if not task.done():
                     task.cancel()

@@ -1108,3 +1108,59 @@ async def test_admission_reload_failed_recovery_still_rejects(
     assert sent
     assert "RUNTIME_FAILED" in str(sent[0])
     assert readiness.state is ReadinessState.FAILED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('new_node', 'new_ip', 'new_runtime_id', 'retire_old'),
+    [('worker', '10.88.4.9', 'old-backend', True),
+     ('master', '10.99.0.9', 'old-backend', True),
+     ('master', '10.99.0.8', 'restored-backend', True),
+     ('master', '10.99.0.8', 'old-backend', False)],
+)
+async def test_managed_restore_retires_saved_gateway_transport(
+    monkeypatch, tmp_path, new_node, new_ip, new_runtime_id, retire_old,
+):
+    import json
+
+    from jiuwenswarm.server.front import connection
+    runtime_environment = tmp_path / 'runtime-environment'
+    runtime_environment.write_text('ADX_RUNTIME_ID=old-backend\0OTHER=irrelevant\0')
+    monkeypatch.setattr(connection, 'Path', lambda name: runtime_environment if name == '/proc/gvisor/spec_environ' else Path(name))
+    context = tmp_path / 'node.json'
+    context.write_text(json.dumps({'node_id': 'master', 'ingress_url': 'http://10.99.0.1:8080'}))
+    monkeypatch.setenv('JIUWENSWARM_ADX_NODE_CONTEXT_FILE', str(context))
+    backend = _RecordingPushBackend()
+    handler, _ = _push_handler(monkeypatch, backend)
+
+    class ManagedWs(_HoldCloseWs):
+        def __init__(self, name, address):
+            super().__init__(name, asyncio.Event())
+            self.local_address = (address, 19000)
+            self.closed = False
+
+        async def close(self, **kwargs):
+            self.closed = True
+            self._close_gate.set()
+
+    old = ManagedWs('old gateway', '10.99.0.8')
+    new = ManagedWs('new gateway', new_ip)
+    old_task = asyncio.create_task(handler(old))
+    await _settle()
+    context.write_text(json.dumps({'node_id': new_node, 'ingress_url': 'http://10.99.0.1:8080'}))
+    runtime_environment.write_text('ADX_RUNTIME_ID=' + new_runtime_id + '\0OTHER=irrelevant\0')
+    new_task = asyncio.create_task(handler(new))
+    try:
+        await _settle()
+        assert handler.current_ws is new
+        assert old.closed is retire_old
+        if retire_old:
+            result = await asyncio.wait_for(asyncio.gather(old_task, return_exceptions=True), timeout=1)
+            assert result[0] is None or isinstance(result[0], asyncio.CancelledError)
+        assert backend.disconnected == [], 'Retiring an old connection must not cancel the new runtime'
+    finally:
+        old._close_gate.set()
+        new._close_gate.set()
+        results = await asyncio.gather(old_task, new_task, return_exceptions=True)
+        assert results[1] is None
+        assert results[0] is None or (retire_old and isinstance(results[0], asyncio.CancelledError))
