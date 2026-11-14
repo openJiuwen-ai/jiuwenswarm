@@ -1,0 +1,13 @@
+/* 面板内独立按钮/页签的键盘焦点统一用主色描边，与第二列「新建任务/定时任务」
+   等既有可见焦点保持一致。 */
+.cron-panel button:focus-visible {
+  outline: 2px solid var(--color-action-primary);
+  outline-offset: 2px;
+}
+
+/* 菜单项沿用悬停底色（与 ui-dropdown-menu__item 的既有约定一致），不叠加描边 */
+.cron-panel .dropdown-menu button:focus-visible,
+.cron-popover-menu button:focus-visible {
+  background: var(--color-surface-hover);
+  outline: none;
+}

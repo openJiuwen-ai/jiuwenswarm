@@ -2600,10 +2600,15 @@
   opacity: .72;
 }
 
-.chat-work-select__trigger:focus,
-.chat-work-select__trigger:focus-visible {
+.chat-work-select__trigger:focus:not(:focus-visible) {
   box-shadow: none;
   outline: none;
+}
+
+/* 与同排 chat-mode-select__trigger 保持同一种焦点样式 */
+.chat-work-select__trigger:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(var(--color-action-primary-rgb), 0.18);
 }
 
 /* 欢迎页放宽常态的 160px 上限、让项目名尽量展示完整，但不能放宽到无上限：
@@ -2822,6 +2827,13 @@
 .chat-work-select__option:hover:not(:disabled),
 .chat-work-select__option.is-active {
   background: var(--color-icon-btn-hover-surface);
+}
+
+/* 选中项与非选中项底色相同，聚焦时额外用描边区分 */
+.chat-work-select__option:focus-visible:not(:disabled) {
+  background: var(--color-icon-btn-hover-surface);
+  outline: 2px solid var(--color-action-primary);
+  outline-offset: -2px;
 }
 
 .chat-work-select__check {
@@ -4416,6 +4428,12 @@
   background: rgba(25, 25, 25, 0.08);
 }
 
+.chat-welcome__campaign-close:focus-visible,
+.chat-welcome__campaign-claim:focus-visible {
+  outline: 2px solid var(--color-action-primary);
+  outline-offset: 2px;
+}
+
 .chat-welcome__campaign-close svg {
   width: 15px;
   height: 15px;
@@ -4651,6 +4669,12 @@
 .chat-suggestion-card:hover,
 .chat-suggestion-card:focus-within {
   background: var(--color-surface-hover);
+}
+
+.chat-suggestion-card__main:focus-visible {
+  outline: 2px solid var(--color-action-primary);
+  outline-offset: -2px;
+  border-radius: 10px;
 }
 
 .chat-suggestion-card__text {

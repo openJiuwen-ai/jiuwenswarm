@@ -111,6 +111,12 @@
   border-radius: 10.67px;
 }
 
+.conversation-sidebar__mode-collapse:focus-visible,
+.conversation-sidebar__mode-trigger:focus-visible {
+  outline: 2px solid var(--color-action-primary);
+  outline-offset: 2px;
+}
+
 .conversation-sidebar__mode-trigger {
   display: flex;
   align-items: center;
@@ -180,6 +186,12 @@
 
 .conversation-sidebar__mode-menu>button.is-active:hover {
   background: var(--color-surface-hover);
+}
+
+/* 放在 is-active 之后：聚焦选中项时也要盖过其透明底色 */
+.conversation-sidebar__mode-menu>button:focus-visible {
+  background: var(--color-surface-hover);
+  outline: none;
 }
 
 .conversation-sidebar__mode-menu>button>span {
@@ -588,6 +600,12 @@
   background: var(--color-sidebar-action-hover);
 }
 
+/* 行内按钮 outline 已关闭，键盘聚焦用整行底色提示 */
+.conversation-entity-row:focus-within,
+.conversation-list-item:focus-within {
+  background: var(--color-sidebar-action-hover);
+}
+
 .conversation-list-item__title {
   min-width: 0;
   flex: 1 1 auto;
@@ -771,7 +789,8 @@
   flex: 0 0 auto;
 }
 
-.conversation-list-item__menu-item:hover:not(:disabled) {
+.conversation-list-item__menu-item:hover:not(:disabled),
+.conversation-list-item__menu-item:focus-visible:not(:disabled) {
   background: var(--color-icon-btn-hover-surface);
 }
 
