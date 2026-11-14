@@ -1697,14 +1697,16 @@ function ProfileSectionDetail({
                         {imNotice.text}
                       </small>
                     ) : null}
-                    <button
-                      type="button"
-                      className="jiuwenmate-link-button jiuwenmate-link-button--blue"
-                      onClick={() => onConfigureIm(undefined, platform)}
-                      data-testid={platformConnections.length ? 'jiuwenmate-profile-im-add' : 'jiuwenmate-profile-im-authorize'}
-                    >
-                      {t(platformConnections.length ? 'jiuwenmate.profile.addConnection' : 'jiuwenmate.profile.authorize')}
-                    </button>
+                    {platformConnections.length === 0 ? (
+                      <button
+                        type="button"
+                        className="jiuwenmate-link-button jiuwenmate-link-button--blue"
+                        onClick={() => onConfigureIm(undefined, platform)}
+                        data-testid="jiuwenmate-profile-im-authorize"
+                      >
+                        {t('jiuwenmate.profile.authorize')}
+                      </button>
+                    ) : null}
                   </div>
                 </header>
                 {platformConnections.length > 0 ? (
