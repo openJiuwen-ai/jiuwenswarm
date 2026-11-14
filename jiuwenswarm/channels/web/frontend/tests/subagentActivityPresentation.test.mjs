@@ -239,3 +239,49 @@ test('keeps thinking collapsed preview bounded and empty for empty summaries', (
     activity('thinking-empty', 2, { summary: '' }),
   ])[0]), '');
 });
+
+// Shell results no longer start with a `Command:` echo, so the preview must read the command from the call.
+function shellPreview(callSummary, resultSummary = 'Stdout: a\n\nStderr: (empty)\nExit Code: 0') {
+  const call = activity('call-shell', 1, {
+    kind: 'tool_call',
+    tool_name: 'bash',
+    tool_call_id: 'shell-1',
+    summary: callSummary,
+  });
+  const result = activity('result-shell', 2, {
+    kind: 'tool_result',
+    tool_name: 'bash',
+    tool_call_id: 'shell-1',
+    summary: resultSummary,
+  });
+  return getSubagentActivityPreview({ activity: call, activities: [call, result], summary: callSummary, count: 1 });
+}
+
+test('reads the shell command from dict-style call arguments', () => {
+  assert.equal(shellPreview('bash(command=ls -la, description=list)'), 'ls -la');
+  assert.equal(shellPreview('bash(description=list, command=ls -la)'), 'ls -la');
+  assert.equal(shellPreview('bash(command=pwd)'), 'pwd');
+  assert.equal(shellPreview('bash(command=python train.py\n--epochs 3, description=train)'), 'python train.py\n--epochs 3');
+  assert.equal(shellPreview(`bash(command=${'x'.repeat(40)}...`), 'x'.repeat(40));
+});
+
+test('reads the shell command from a JSON call summary cut off before its closing quote', () => {
+  assert.equal(shellPreview('bash({"command": "python -c \\"print(1)\\"; echo done'), 'python -c "print(1)"; echo done');
+  assert.equal(shellPreview('bash({"command": "echo one\\ntwo...'), 'echo one\ntwo');
+  assert.equal(shellPreview('bash({"command": "echo a\\'), 'echo a');
+});
+
+test('keeps reading complete JSON call summaries and falls back to the result without a call', () => {
+  assert.equal(shellPreview('bash({"command": "echo hi"})'), 'echo hi');
+  assert.equal(shellPreview('bash({"command": "echo hi", "description": "greet"})'), 'echo hi');
+
+  const resultOnly = groupSubagentActivities([
+    activity('result-only', 1, {
+      kind: 'tool_result',
+      tool_name: 'bash',
+      tool_call_id: 'shell-2',
+      summary: 'Stdout: total 0\n\nStderr: (empty)\nExit Code: 0',
+    }),
+  ]);
+  assert.equal(getSubagentActivityPreview(resultOnly[0]), 'Stdout: total 0');
+});
