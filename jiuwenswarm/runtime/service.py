@@ -20,6 +20,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from agent_gateway.common.mode_matrix import (
+    base_mode_without_plan,
     deprecate_mode,
     is_code_profile_mode,
     is_single_agent_mode,
@@ -345,6 +346,14 @@ def _client_tool_answer_mismatch(request: AgentRequest) -> Iterator[None]:
 
 def _awaits_answers(execution: SessionExecutionSnapshot) -> bool:
     return bool(execution.waiting_control_ids) and not execution.state.terminal
+
+
+class SessionModeSwitchError(ValueError):
+    """A requested Session mode change cannot be committed."""
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class AgentRuntime:
@@ -1740,7 +1749,7 @@ class AgentRuntime:
     ) -> list[RuntimeEvent]:
         """Execute one non-streaming request and return Runtime events."""
         await self.start()
-        request = self.normalize_request(request)
+        request = await self._normalize_tui_chat_after_claim(request)
         attachment_completion = self._non_team_attachment_completion(request)
         if attachment_completion is not None:
             return [attachment_completion]
@@ -2282,7 +2291,7 @@ class AgentRuntime:
             set_runtime_context,
         )
 
-        request = self.normalize_request(request)
+        request = await self._normalize_tui_chat_after_claim(request)
         attachment_completion = self._non_team_attachment_completion(request)
         if attachment_completion is not None:
             yield attachment_completion
@@ -3222,6 +3231,118 @@ class AgentRuntime:
         if not requests:
             self._pending_chat_requests.pop(session_id, None)
 
+    def switch_session_mode(
+        self,
+        *,
+        session_id: str,
+        target_mode: str,
+        expected_mode: str | None,
+        channel_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        """Synchronously commit a TUI route while retaining project ownership."""
+        from jiuwenswarm.server.runtime.session.session_history import (
+            append_session_mode_changed,
+        )
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            SessionModeBusyError,
+            SessionModeConflictError,
+            compare_and_set_session_mode,
+            get_session_metadata,
+            normalize_tui_session_mode,
+            tui_session_visible_to,
+        )
+
+        if normalize_tui_session_mode(target_mode) != target_mode:
+            raise SessionModeSwitchError("unsupported mode", code="BAD_REQUEST")
+        metadata = get_session_metadata(
+            session_id, cache_bust=True, enable_writeback=False,
+        )
+        if not metadata or not tui_session_visible_to(metadata, user_id):
+            raise SessionModeSwitchError("session not found", code="NOT_FOUND")
+        already_current = normalize_tui_session_mode(metadata.get("mode")) == target_mode
+        if not already_current and self._session_mode_switch_busy(session_id):
+            raise SessionModeSwitchError("session is busy", code="SESSION_BUSY")
+        try:
+            previous_mode, written, changed = compare_and_set_session_mode(
+                session_id, target_mode, expected_mode, user_id=user_id,
+            )
+        except SessionModeConflictError as exc:
+            raise SessionModeSwitchError(str(exc), code="MODE_CONFLICT") from exc
+        except SessionModeBusyError as exc:
+            raise SessionModeSwitchError(str(exc), code="SESSION_BUSY") from exc
+        except FileNotFoundError as exc:
+            raise SessionModeSwitchError("session not found", code="NOT_FOUND") from exc
+        if changed:
+            try:
+                append_session_mode_changed(
+                    session_id=session_id,
+                    channel_id=channel_id,
+                    previous_mode=previous_mode,
+                    mode=target_mode,
+                )
+            except Exception:
+                logger.warning("failed to record session mode change: %s", session_id, exc_info=True)
+        return {
+            "previous_mode": previous_mode,
+            "mode": written["mode"],
+            "work_mode": written.get("work_mode"),
+            "project_id": written.get("project_id"),
+            "changed": changed,
+        }
+
+    @staticmethod
+    def get_session_mode(*, session_id: str, user_id: str) -> dict[str, Any]:
+        """Return the persisted TUI route for an uncertain client retry."""
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+            normalize_tui_session_mode,
+            tui_session_visible_to,
+        )
+
+        metadata = get_session_metadata(
+            session_id, cache_bust=True, enable_writeback=False,
+        )
+        if not metadata or not tui_session_visible_to(metadata, user_id):
+            raise SessionModeSwitchError("session not found", code="NOT_FOUND")
+        mode = normalize_tui_session_mode(metadata.get("mode"))
+        if mode is None:
+            raise SessionModeSwitchError(
+                "session mode is unknown; use /mode to choose an explicit mode",
+                code="MODE_UNKNOWN",
+            )
+        return {
+            "mode": mode,
+            "work_mode": metadata.get("work_mode"),
+            "project_id": metadata.get("project_id"),
+        }
+
+    def _session_mode_switch_busy(self, session_id: str) -> bool:
+        pending = self._pending_chat_requests.get(session_id)
+        if pending and not self.has_parked_team_streams(session_id):
+            return True
+        controller = self._admission_controller
+        for name in ("is_user_active", "is_heartbeat_active", "has_pending_interaction"):
+            probe = getattr(controller, name, None)
+            if callable(probe) and probe(session_id):
+                return True
+        snapshot = self._session_coordinator.snapshot_session(session_id)
+        if snapshot and any(
+            execution.state in {
+                SessionExecutionState.QUEUED,
+                SessionExecutionState.RUNNING,
+                SessionExecutionState.WAITING_FOR_CONTROL,
+            }
+            or (
+                execution.state is SessionExecutionState.WAITING_FOR_INPUT
+                and not (execution.team and execution.team.observation_only)
+                and not self.has_parked_team_streams(session_id)
+            )
+            for execution in snapshot.executions
+        ):
+            return True
+        return self.is_session_running(session_id)
+
     def is_session_running(
         self, session_id: str, *, ignore_heartbeats: bool = False
     ) -> bool:
@@ -3983,10 +4104,15 @@ class AgentRuntime:
             if not isinstance(work_mode, str) or work_mode.strip().lower() not in {"code", "work"}:
                 work_mode = "code" if is_code_profile_mode(resolved_mode) else "work"
             requested_mode = resolve_request_runtime_mode(request, work_mode=work_mode)
-            if requested_mode.is_team == is_team_mode(resolved_mode):
+            if request.channel_id == "tui" and "mode_revision" in metadata:
+                if base_mode_without_plan(requested_mode.canonical_mode) == base_mode_without_plan(
+                    resolved_mode
+                ):
+                    return request
+            elif requested_mode.is_team == is_team_mode(resolved_mode):
                 return request
             logger.warning(
-                "Runtime corrected cross-type mode: session=%s request=%s channel=%s "
+                "Runtime corrected uncommitted mode: session=%s request=%s channel=%s "
                 "requested=%r effective=%r",
                 session_id, request.request_id, request.channel_id, raw_mode, resolved_mode,
             )
@@ -3995,6 +4121,46 @@ class AgentRuntime:
         if not normalized_params.get("work_mode") and metadata.get("work_mode"):
             normalized_params["work_mode"] = metadata["work_mode"]
         return replace(request, params=normalized_params)
+
+    async def _normalize_tui_chat_after_claim(self, request: AgentRequest) -> AgentRequest:
+        """Claim a persisted TUI Session before deciding its chat work kind.
+
+        A mode.set in another AgentServer may commit between an early route
+        read and Runtime admission. Claiming first and then reading metadata
+        again makes the subsequent Agent/Team classification use the committed
+        mode; mode.set cannot commit after the claim while this owner is live.
+        """
+        if (
+            request.channel_id == "tui"
+            and request.session_id
+            and request.req_method in self._chat_turn_methods()
+        ):
+            # An already-adopted Session needs only the authoritative route read
+            # in normalize_request. Cold Sessions still check metadata before
+            # adoption, then read again after claiming to avoid a mode race.
+            snapshot = self._session_coordinator.snapshot_session(request.session_id)
+            if snapshot is not None and snapshot.state not in {
+                RuntimeSessionState.QUIESCING,
+                RuntimeSessionState.CLOSED,
+            }:
+                await self._ensure_session_registered(request)
+                return self.normalize_request(request)
+
+            from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+            try:
+                metadata = get_session_metadata(
+                    request.session_id, cache_bust=True, enable_writeback=False,
+                )
+            except (OSError, ValueError) as exc:
+                logger.warning(
+                    "Runtime admission could not read session %s: %s",
+                    request.session_id, exc,
+                )
+                metadata = None
+            if metadata and metadata.get("channel_id") in (None, "", "tui"):
+                await self._ensure_session_registered(request)
+        return self.normalize_request(request)
 
     @classmethod
     def uses_session_runtime(

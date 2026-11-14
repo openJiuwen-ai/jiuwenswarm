@@ -581,7 +581,8 @@ async def test_gateway_server_falls_back_to_session_client_when_request_ws_close
 
 
 @pytest.mark.asyncio
-async def test_gateway_server_binds_session_for_local_request_and_calls_hook():
+@pytest.mark.parametrize("method,binds_session", [("history.get", True), ("config.get", False)])
+async def test_gateway_server_local_requests_only_bind_foreground_sessions(method, binds_session):
     bound_sessions = []
 
     async def local_handler(ws, req_id, params, session_id):
@@ -598,13 +599,14 @@ async def test_gateway_server_binds_session_for_local_request_and_calls_hook():
             "/tui": RouteConfig(
                 path="/tui",
                 channel_id="tui",
-                local_handlers={"config.get": local_handler},
+                local_handlers={method: local_handler},
                 session_bind_handler=session_bind_handler,
             ),
         },
     )
     server = GatewayServerProbe(config, DummyBus())
     ws = FakeWebSocket()
+    server.bind_session_client("sess-existing", ws, channel_id="tui")
 
     await server.handle_raw_message_public(
         ws,
@@ -612,19 +614,29 @@ async def test_gateway_server_binds_session_for_local_request_and_calls_hook():
             {
                 "type": "req",
                 "id": "req-config",
-                "method": "config.get",
+                "method": method,
                 "params": {"session_id": "sess-local"},
             }
         ),
         path="/tui",
     )
 
+    assert ws.sent_frames[-1] == {
+        "type": "res", "id": "req-config", "ok": True, "payload": {"session_id": "sess-local"},
+    }
+    expected_session = "sess-local" if binds_session else "sess-existing"
+    assert bound_sessions == ([("tui", "sess-local")] if binds_session else [])
+    expected_bindings = {("tui", "sess-existing"): ws}
+    if binds_session:
+        expected_bindings[("tui", "sess-local")] = ws
+    assert server._session_to_client == expected_bindings
+
     await server.send(
         Message(
             id="req-after-reconnect",
             type="event",
             channel_id="tui",
-            session_id="sess-local",
+            session_id=expected_session,
             params={},
             timestamp=time.time(),
             ok=True,
@@ -633,11 +645,10 @@ async def test_gateway_server_binds_session_for_local_request_and_calls_hook():
         )
     )
 
-    assert bound_sessions == [("tui", "sess-local")]
     assert ws.sent_frames[-1] == {
         "type": "event",
         "event": "chat.delta",
-        "payload": {"content": "resumed", "session_id": "sess-local"},
+        "payload": {"content": "resumed", "session_id": expected_session},
     }
 
 

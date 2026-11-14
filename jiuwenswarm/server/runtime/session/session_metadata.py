@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from agent_gateway.common.mode_matrix import (
     NEW_AGENT_CODE_NORMAL,
     NEW_AGENT_WORK_NORMAL,
+    NEW_CANONICAL_MODES,
+    base_mode_without_plan,
     deprecate_mode,
     is_new_canonical_mode,
     is_team_mode,
@@ -142,6 +144,103 @@ def patch_session_metadata(session_id: str, fields: dict[str, Any]) -> dict[str,
     written = _write_metadata_sync(session_id, metadata, options)
     _refresh_written_cache(session_id, written, options)
     return written
+
+
+class SessionModeConflictError(ValueError):
+    """The stored Session mode changed before an explicit mode switch."""
+
+
+class SessionModeBusyError(ValueError):
+    """Another AgentServer still owns this Session's Runtime."""
+
+
+def normalize_tui_session_mode(mode: Any) -> str | None:
+    """Resolve supported TUI routes without inventing a missing route."""
+    if not isinstance(mode, str):
+        return None
+    resolved = deprecate_mode(mode)
+    return resolved if resolved in NEW_CANONICAL_MODES and resolved != "team.design" else None
+
+
+def tui_session_visible_to(metadata: dict[str, Any], user_id: str) -> bool:
+    """Whether a TUI caller may address the Session these metadata describe."""
+    if metadata.get("channel_id") not in (None, "", "tui"):
+        return False
+    stored_user_id = str(metadata.get("user_id") or "").strip()
+    return not stored_user_id or stored_user_id == user_id
+
+
+def compare_and_set_session_mode(
+    session_id: str,
+    target_mode: str,
+    expected_mode: str | None,
+    *,
+    user_id: str,
+) -> tuple[str | None, dict[str, Any], bool]:
+    """Commit a mode change while keeping the Session's project index fixed."""
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+
+    initial = lc.raw_metadata(session_id)
+    if not initial:
+        raise FileNotFoundError(f"session not found: {session_id}")
+    project_id = lc.project_id_for(initial)
+    with lc.resource_lock("project", project_id), lc.resource_lock("session", session_id):
+        lc.write_guard(session_id, None)
+        with _FILE_LOCK:
+            current = lc.raw_metadata(session_id)
+            if not current:
+                raise FileNotFoundError(f"session not found: {session_id}")
+            if not tui_session_visible_to(current, user_id):
+                raise FileNotFoundError(f"session not found: {session_id}")
+            if lc.project_id_for(current) != project_id:
+                raise SessionModeConflictError("session project changed during mode switch")
+            previous_mode = normalize_tui_session_mode(current.get("mode"))
+            if previous_mode == target_mode:
+                return previous_mode, dict(current, mode=previous_mode), False
+            # Chat adoption uses claim_runtime under this same cross-process
+            # Session lock. A foreign live owner may still be executing after
+            # its request stream is parked, so local probes are insufficient.
+            try:
+                lc.assert_runtime_owner(session_id)
+            except lc.LifecycleError as exc:
+                raise SessionModeBusyError(str(exc)) from exc
+            # An explicit target repairs unknown legacy routes. Once a route
+            # is known, stale clients must still pass the normal CAS check.
+            # Plan entry and exit bypass mode.set, so plan state alone may
+            # differ from the client's; only another route is a conflict.
+            expected_route = normalize_tui_session_mode(expected_mode)
+            if previous_mode is not None and expected_mode is not None:
+                if (
+                    expected_route is None
+                    or base_mode_without_plan(previous_mode) != base_mode_without_plan(expected_route)
+                ):
+                    raise SessionModeConflictError(
+                        f"session mode changed from {expected_mode!r} to {previous_mode!r}"
+                    )
+            revision = _mode_revision(current.get("mode_revision")) + 1
+            options = _MetadataWriteOptions(
+                merge_fields=frozenset({"mode", "mode_revision"}),
+            )
+            written = _write_metadata_unfenced(
+                session_id,
+                {"mode": target_mode, "mode_revision": revision},
+                options,
+            )
+        with _CACHE_LOCK:
+            key = _metadata_cache_key(session_id)
+            _METADATA_CACHE.pop(key, None)
+            _METADATA_CACHE_GENERATIONS.pop(key, None)
+            _CACHE_DISK_STAMPS.pop(key, None)
+            # Only the route was committed; other queued fields stay readable.
+            pending = _PENDING_FIELDS.get(key)
+            if pending:
+                pending.pop("mode", None)
+                pending.pop("mode_revision", None)
+        return previous_mode, written, True
+
+
+def _mode_revision(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 # 会话级 project 重绑版本号: 每次 rebind_session_project 自增。
 # _enqueue_write 入队时捕获当前值; worker 处理时若发现入队值 < 当前值,
@@ -394,7 +493,7 @@ def _apply_metadata_defaults_with_inference(
     # 静默映射到新三段命名 canonical（agent.work.normal 等）。仅迁移非空且非新
     # canonical 的 mode 字段；映射后写盘以避免后续读路径重复迁移。
     existing_mode = metadata.get("mode")
-    if existing_mode and not is_new_canonical_mode(existing_mode):
+    if isinstance(existing_mode, str) and existing_mode and not is_new_canonical_mode(existing_mode):
         new_mode = deprecate_mode(existing_mode)
         if new_mode != existing_mode:
             logger.log(logging.INFO if enable_writeback else logging.DEBUG,
@@ -746,6 +845,15 @@ def _write_metadata_unfenced(
         if current is not None and isinstance(current.get("team_group_identity"), dict):
             to_write = to_write.copy()
             to_write["team_group_identity"] = copy.deepcopy(current["team_group_identity"])
+
+        # A queued chat snapshot captured before mode.set cannot restore its
+        # old route, including through the identity recovery path above.
+        if current is not None and _mode_revision(current.get("mode_revision")) > _mode_revision(
+            metadata.get("mode_revision")
+        ):
+            to_write = to_write.copy()
+            to_write["mode"] = current["mode"]
+            to_write["mode_revision"] = current["mode_revision"]
 
         # External Harness runtime selection is a first-binding field. Preserve
         # the authoritative on-disk value against stale queued snapshots and

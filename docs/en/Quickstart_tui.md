@@ -67,7 +67,7 @@ Suitable for users who manage their own Python environment. Follow these steps:
 | **exists** | AgentServer preserves the persisted project/mode binding, runs the switch lifecycle, and the TUI replays history | explicit-ID `session.create` + `history.get` + `session.rename` (title) |
 | **does not exist** | AgentServer validates the id, resolves the TUI project under a per-id lock, writes `metadata.json`, and starts with empty history without claiming a warm slot | explicit-ID `session.create` + `history.get` (empty) |
 
-The explicit-ID form of `session.create` is TUI-only and idempotent. AgentServer logs that this compatibility request bypasses prewarming. It is released by `app-state.ts` `initializeBootSession` after `connection.ack` and runs once on reconnect; normal startup, `/new`, and `/clear` omit `session_id` so AgentServer allocates a new one.
+The explicit-ID form of `session.create` is TUI-only and idempotent. AgentServer logs that this compatibility request bypasses prewarming. It is released by `app-state.ts` `initializeBootSession` after `connection.ack` and runs once on reconnect. Ordinary startup, `/new`, and `/clear` keep a draft until the first message; their eventual `session.create` omits `session_id` so AgentServer allocates one.
 
 **Examples**:
 
@@ -99,7 +99,7 @@ jiuwenswarm-tui --session a/b             # slash → same
 jiuwenswarm-tui --session "$(printf 'a%.0s' {1..200})"  # over 128 → length limit
 ```
 
-**Without `--session`**: the frontend generates a random id (`generateSessionId` → `tui_<hex>_<hex>`), and the backend directory is lazily created only when the **first message writes history**. So launching without `--session` and quitting before sending any message leaves no backend directory and the id does not appear in `/sessions` (empty sessions do not pollute the list). Launching with `--session` creates the directory immediately, so **even without sending a message the id appears in the list** for next-time resume — a key behavioral difference.
+**Without `--session`**: an ordinary startup opens an in-memory draft. No session directory is created until the first message. Reopening the TUI without sending a message leaves no empty session behind. `--session <id>` resumes or creates the specified ID immediately. `--persist-session` without `--session` creates a Persist Session immediately.
 
 ## Method 2: Install from Source
 
