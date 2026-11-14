@@ -44,9 +44,9 @@ describe('document identity', () => {
 
     expect(await documentId(settings)).toBe(stored);
     expect(saved.size).toBe(0);
-    expect(await documentDisplayName(original, stored as DocumentId)).toBe('Deck.pptx');
+    expect(await documentDisplayName(original, stored as DocumentId, '演示文稿')).toBe('Deck.pptx');
     expect(await documentId(settings)).toBe(stored);
-    expect(await documentDisplayName(savedAs, stored as DocumentId)).toBe('Deck final.pptx');
+    expect(await documentDisplayName(savedAs, stored as DocumentId, '演示文稿')).toBe('Deck final.pptx');
   });
 
   it('replaces a stored value that is not a GUID', async () => {
@@ -58,10 +58,10 @@ describe('document identity', () => {
 
   it('names the document after its file, else after the end of its GUID', async () => {
     const id = '3f1c2a9e-7b4d-4e8a-9c21-5d6f7a8b9c0d' as DocumentId;
-    expect(await documentDisplayName(fileAt('', '/Users/me/My Deck.pptx'), id)).toBe('My Deck.pptx');
-    expect(await documentDisplayName(fileAt('C:\\Users\\me\\Plan.pptx', ''), id)).toBe('Plan.pptx');
+    expect(await documentDisplayName(fileAt('', '/Users/me/My Deck.pptx'), id, '演示文稿')).toBe('My Deck.pptx');
+    expect(await documentDisplayName(fileAt('C:\\Users\\me\\Plan.pptx', ''), id, '演示文稿')).toBe('Plan.pptx');
     const unsaved: DocumentFile = { url: null, getFilePropertiesAsync: callback => callback({ status: 'failed' }) };
-    expect(await documentDisplayName(unsaved, id)).toBe('演示文稿 · 8B9C0D');
+    expect(await documentDisplayName(unsaved, id, '演示文稿')).toBe('演示文稿 · 8B9C0D');
     expect(fileNameOf('https://example.test/docs/Quarterly.pptm?download=1')).toBe('Quarterly.pptm');
     expect(fileNameOf('file:///Users/test/%E5%AD%A3%E5%BA%A6.pptx')).toBe('季度.pptx');
   });

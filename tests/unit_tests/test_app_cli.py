@@ -2,9 +2,10 @@ import json
 import sys
 from types import SimpleNamespace
 
+from e2a.constants import E2A_RESPONSE_KIND_ACP_PROMPT_RESULT
+from e2a.models import E2AProvenance, E2AResponse, utc_now_iso
+
 from jiuwenswarm.channels.acp.app_acp import run_acp
-from jiuwenswarm.common.e2a.constants import E2A_RESPONSE_KIND_ACP_PROMPT_RESULT
-from jiuwenswarm.common.e2a.models import E2AProvenance, E2AResponse, utc_now_iso
 
 
 class FakeStdin:

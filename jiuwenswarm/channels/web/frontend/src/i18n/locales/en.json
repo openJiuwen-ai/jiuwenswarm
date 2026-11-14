@@ -21,7 +21,10 @@
   },
   "enterpriseEntry": {
     "invalidIdentity": "Identity returned no user ID.",
-    "noContext": "No Agent is available for this account. Ask an administrator to grant access.",
+    "emptyTitle": "No Agent Available",
+    "backToLogin": "Back to Sign in",
+    "language": "Interface language",
+    "noContext": "No Agent is available for this account. Please grant access in the Manager console first.",
     "loadFailed": "Failed to load Agent contexts.",
     "switchFailed": "Failed to switch context.",
     "errorTitle": "Unable to enter workspace",
@@ -4288,6 +4291,7 @@
       "detailError": "Unable to load Expert details. Try again.",
       "hubAssetChanged": "This expert has changed or been removed on Hub. The catalog is refreshing; go back and select it again.",
       "actionError": "The action could not be completed. Try again in a moment.",
+      "agentAccessDenied": "You are outside the authorized scope. The action was denied.",
       "duplicateName": "An Expert with this name already exists. Choose a different name and try again.",
       "agentUnavailable": "This Expert is no longer available. Refresh the list and try again.",
       "agentDefinitionUnavailable": "This Expert definition is incomplete and cannot be used right now.",
@@ -6202,6 +6206,8 @@
         "knowledge": "Add knowledge",
         "starterPrompts": "Add quick prompt"
       },
+      "starterPromptsLimit": "Up to {{count}} prompts",
+      "starterPromptDuplicate": "Duplicates an earlier prompt; only one is kept when saved",
       "empty": {
         "skills": "No skills",
         "connectors": "No connectors",
@@ -6312,6 +6318,7 @@
       "editResources": "Edit skills and connectors",
       "resourcesHint": "Choose from skills installed on this machine and connectors that are already connected. A new task uses the selection after it is saved and published.",
       "saveResources": "Save and publish",
+      "saveSuccess": "Saved",
       "savingResources": "Saving",
       "saveSettingsFailed": "Could not save or publish the configuration. Please try again.",
       "modelEmptyHint": "Add a model in Settings → Models.",
@@ -6422,10 +6429,12 @@
       "cancelAuthorizationTitle": "Revoke channel authorization",
       "cancelAuthorizationWarning": "After revoking, this colleague stops receiving and replying on this channel.",
       "cancelAuthorizationMessage": "Revoke the “{{channel}}” authorization? It can be authorized again later.",
+      "cancelAuthorizationSuccess": "Authorization revoked",
       "addConnection": "Add connection",
       "removeConnection": "Disconnect",
       "removeConnectionWarning": "Messages to this app no longer reach the employee. The connection's workspace and history stay and return when the same app is bound again.",
       "removeConnectionConfirm": "Disconnect {{platform}} app {{app}} from the AI employee: ",
+      "removeConnectionSuccess": "Disconnected",
       "workLog": "Work log",
       "periods": {
         "7d": "Last 7 days",
@@ -6544,11 +6553,6 @@
       "webConnection": "Web",
       "connectionHint": "Files shared here can also be read by {{platform}} users.",
       "webResult": "New result in the Web workspace. View it",
-      "defaultPrompts": [
-        "Summarize today's hot questions",
-        "Review group reply quality",
-        "Export today's conversation summary"
-      ],
       "featuresTitle": "Features",
       "features": {
         "chat": {
@@ -6633,10 +6637,11 @@
         "paused": "Paused",
         "failed": "Failed",
         "completed": "Completed",
-        "queued": "Queued"
+        "queued": "Queued",
+        "expired": "Expired"
       },
       "run": {
-        "success": "Succeeded",
+        "success": "Completed",
         "failed": "Failed",
         "stopped": "Stopped",
         "running": "Running"
@@ -6648,8 +6653,10 @@
         "running": "Running"
       },
       "error": {
+        "nameRequired": "Enter a task name.",
+        "promptRequired": "Enter a task description.",
         "required": "Enter a name and a description",
-        "executorRequired": "Choose an executor",
+        "executorRequired": "Select an AI employee to run this task.",
         "intervalInvalid": "The interval must be a positive integer",
         "futureRequired": "A one-time run must be in the future",
         "rangeInvalid": "The effective end must be after the start"
@@ -6716,6 +6723,7 @@
       "periodStart": "Start date",
       "periodEnd": "End date",
       "periodTo": "to",
+      "periodLimit": "Up to {{count}} days can be shown; the start date was adjusted",
       "metrics": {
         "members": "Members",
         "activeDays": "Active days",
@@ -6793,6 +6801,7 @@
     }
   },
   "groupChat": {
+    "organizationInterrupted": "The organization task was interrupted by a service restart or process exit. Completed work is retained. Please submit a new request.",
     "externalRuntimeDisabled": "{{agents}} is not enabled. Enable it in Settings → Agents → External Agents, then add the member again.",
     "useTeam": "Use this team",
     "teamMembers": "Team members ({{count}})",
@@ -6800,6 +6809,10 @@
     "taskTitle": "Task",
     "unnamedTask": "Untitled subtask",
     "noSubtasks": "No subtask records",
+    "expertTasks": "Team tasks for this request",
+    "expertTasksProgress": "Completed {{completed}} / {{total}}",
+    "expertTasksUnavailable": "Team tasks could not be refreshed. Existing records may be out of date.",
+    "expertTaskUnassigned": "Unassigned",
     "generatingTasks": "Generating tasks",
     "organizationStage": {
       "starting": "Starting expert teams",
@@ -6825,6 +6838,11 @@
     "modelLocked": "The model cannot be changed after the group chat starts",
     "processing": "Processing…",
     "mentionPhase": {
+      "organizationFailed": "This request did not complete. Please send it again.",
+      "organizationPending": "Received, processing…",
+      "organizationClarification": "Waiting for clarification…",
+      "organizationReceived": "Organization received your request, processing…",
+      "organizationSummarizing": "Summarizing…",
       "dispatching": "Received, processing…",
       "planning": "Planning tasks…",
       "generating": "Generating task plan…",

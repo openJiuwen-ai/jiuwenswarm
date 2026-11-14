@@ -28,6 +28,7 @@ import { mergeChatEntries } from '../chatEntries';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import { ConversationComposer } from '../components/ConversationComposer';
 import { GroupSharingInbox } from '../components/GroupSharingInbox';
+import { MAX_STARTER_PROMPTS } from '../components/StarterPromptsEditor';
 import { SHARING_CONVERSATION_ID } from '../groupSharingApi';
 import {
   chatPhase,
@@ -284,6 +285,8 @@ export function ColleagueWorkspacePage({
     picked?.agentId === agentId ? picked.conversationId : conversationList.loaded ? (records.find((item) =>
       item.agentId === agentId && item.id !== SHARING_CONVERSATION_ID)?.id ?? freshId) : '';
   const colleaguePlans = schedules.filter((plan) => plan.agentId === colleagueId);
+  const visibleManagementPlans = colleaguePlans.filter((plan) =>
+    plan.name.toLocaleLowerCase().includes(managementSearch.trim().toLocaleLowerCase()));
   const activePlan = colleaguePlans.find((plan) => plan.id === scheduleId) ?? colleaguePlans[0] ?? null;
   const chatConversationId = state.recordTab === 'schedules' && activePlan ? activePlan.conversationId : activeConversationId;
   const chatAgentId = state.recordTab === 'schedules' && activePlan ? colleagueId : agentId;
@@ -1149,10 +1152,7 @@ export function ColleagueWorkspacePage({
   };
 
   const renderWelcome = () => {
-    const prompts =
-      colleague.capabilities.starterPrompts.length > 0
-        ? colleague.capabilities.starterPrompts.slice(0, 3)
-        : [0, 1, 2].map((index) => t(`jiuwenmate.workspace.defaultPrompts.${index}`));
+    const prompts = colleague.capabilities.starterPrompts.slice(0, MAX_STARTER_PROMPTS);
     return (
       <section className="jiuwenmate-chat-welcome" data-testid="jiuwenmate-chat-welcome">
         <header className="jiuwenmate-main-header jiuwenmate-chat-welcome__header">
@@ -1167,7 +1167,7 @@ export function ColleagueWorkspacePage({
             <h2>{colleague.name}</h2>
             <p>{colleague.description}</p>
           </div>
-          <div className="jiuwenmate-chat-welcome__suggestions">
+          <div className="jiuwenmate-chat-welcome__suggestions" aria-hidden={prompts.length === 0 || undefined}>
             {prompts.map((prompt, index) => (
               <button type="button" key={`${prompt}-${index}`} onClick={() => setDraft(prompt)}>
                 <span>{prompt}</span>
@@ -1226,10 +1226,7 @@ export function ColleagueWorkspacePage({
             <ArrowLeft aria-hidden />
           </button>
         ) : null}
-        <strong>
-          {channel.name}
-          <ChevronDown aria-hidden />
-        </strong>
+        <strong>{channel.name}</strong>
         {!state.traceOpen ? (
           <button
             type="button"
@@ -1522,8 +1519,12 @@ export function ColleagueWorkspacePage({
                         <Plus aria-hidden />
                       </button>
                     </div>
-                    {colleaguePlans.length === 0 ? <p className="jiuwenmate-records__empty">{t('jiuwenmate.workspace.noSchedules')}</p> : null}
-                    {colleaguePlans.filter((plan) => plan.name.toLocaleLowerCase().includes(managementSearch.trim().toLocaleLowerCase())).map((plan) => (
+                    {visibleManagementPlans.length === 0 ? (
+                      <p className="jiuwenmate-records__empty" data-testid="jiuwenmate-management-schedule-empty">
+                        {t(colleaguePlans.length === 0 ? 'jiuwenmate.workspace.noSchedules' : 'jiuwenmate.schedule.noMatchingSchedules')}
+                      </p>
+                    ) : null}
+                    {visibleManagementPlans.map((plan) => (
                       <div key={plan.id} className="jiuwenmate-side-panel__schedule-item">
                         <span className="jiuwenmate-side-panel__schedule-name">{plan.name}</span>
                         <ActionMenu

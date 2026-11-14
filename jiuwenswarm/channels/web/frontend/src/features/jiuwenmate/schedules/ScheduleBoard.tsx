@@ -4,12 +4,12 @@ import { useTranslation } from 'react-i18next';
 import { ActionMenu } from '../components/ActionMenu';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import type { JiuwenMateActivity, JiuwenMateCategory } from '../types';
-import { filterSchedules, scheduleSummary } from './state';
+import { filterSchedules, scheduleDisplayStatus, scheduleSummary } from './state';
 import { ScheduleDialog } from './ScheduleDialog';
 import { ScheduleHistory } from './ScheduleHistory';
 import type { Schedule, ScheduleDraft, ScheduleRun } from './types';
 
-const STATUSES = ['', 'running', 'paused', 'failed', 'completed'] as const;
+const STATUSES = ['', 'running', 'paused', 'failed', 'expired'] as const;
 const TIME_RANGES = ['7d', '30d', ''] as const;
 
 type BoardColleague = {
@@ -153,6 +153,7 @@ export function ScheduleBoard({
               </tr>
             ) : visible.map((plan) => {
               const colleague = colleagueOf(plan.agentId);
+              const displayStatus = scheduleDisplayStatus(plan);
               const nextExecution = plan.nextFireAt ?? (plan.scheduleKind === 'once' ? plan.runAt : null);
               return (
                 <tr key={plan.id} data-testid="jiuwenmate-schedule-board-row" data-variant={plan.id}>
@@ -182,9 +183,9 @@ export function ScheduleBoard({
                     </span>
                   </td>
                   <td>
-                    <span className="jiuwenmate-schedule-board__status" data-tone={plan.lastStatus}>
+                    <span className="jiuwenmate-schedule-board__status" data-tone={displayStatus} data-testid="jiuwenmate-schedule-board-status">
                       <i aria-hidden />
-                      {t(`jiuwenmate.schedule.status.${plan.lastStatus}`, { defaultValue: plan.lastStatus })}
+                      {t(`jiuwenmate.schedule.status.${displayStatus}`, { defaultValue: displayStatus })}
                     </span>
                   </td>
                   <td>{plan.runCount}</td>

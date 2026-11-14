@@ -6,13 +6,13 @@ import weakref
 import pytest
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 from websockets.exceptions import ConnectionClosedError
+from e2a.wire_codec import parse_agent_server_wire_unary
 
 from jiuwenswarm.agents.harness.common.tools.cron import cron_tools
 from jiuwenswarm.common.e2a.gateway_normalize import (
     build_fallback_e2a,
     e2a_from_agent_fields,
 )
-from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module

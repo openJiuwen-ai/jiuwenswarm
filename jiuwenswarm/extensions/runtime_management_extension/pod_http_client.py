@@ -18,12 +18,12 @@ from agent_gateway.routing.agent_client import (
     AgentServerClient,
 )
 
-from jiuwenswarm.common.e2a.constants import (
+from e2a.constants import (
     E2A_RESPONSE_KIND_ACP_OUTPUT_REQUEST,
     E2A_WIRE_SERVER_PUSH_KEY,
 )
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+from e2a.models import E2AEnvelope
+from e2a.wire_codec import parse_agent_server_wire_chunk
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
 from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (

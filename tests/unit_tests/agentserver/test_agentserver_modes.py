@@ -2825,7 +2825,8 @@ async def test_deep_adapter_unregisters_ttse_rail_when_disabled(monkeypatch):
     assert adapter._instance.unregistered == [ttse_rail]
 
 
-def test_build_ttse_rail_uses_workspace_bank_path_and_fixed_dream(monkeypatch, tmp_path):
+@pytest.mark.parametrize("model_available", [True, False])
+def test_build_ttse_rail_uses_workspace_bank_path_and_fixed_dream(monkeypatch, tmp_path, model_available):
     captured: dict[str, object] = {}
     fake_processor = object()
     tenant_ws = tmp_path / "tenant_ws"
@@ -2852,8 +2853,9 @@ def test_build_ttse_rail_uses_workspace_bank_path_and_fixed_dream(monkeypatch, t
 
     adapter = interface_deep_module.JiuWenSwarmDeepAdapter()
     adapter._workspace_dir = str(tenant_ws)
-    adapter._model = Mock()
-    adapter._default_model_name = "test-model"
+    adapter._model = Mock(model_config=None) if model_available else None
+    adapter._model_request_config = Mock(model_name="test-model")
+    adapter._default_model_name = "model:mdl_internal"
 
     rail = adapter._build_ttse_rail(
         {
@@ -2884,6 +2886,31 @@ def test_build_ttse_rail_uses_workspace_bank_path_and_fixed_dream(monkeypatch, t
     assert induce_policy.total_budget_secs == 300.0
     assert captured["rail"]["model"] == "test-model"
     assert captured["rail"]["trajectory_span_processor"] is fake_processor
+
+
+@pytest.mark.parametrize("model_available", [True, False])
+def test_ttse_hot_reload_uses_current_client_model_name(monkeypatch, model_available):
+    adapter = interface_deep_module.JiuWenSwarmDeepAdapter()
+    adapter._ttse_rail = Mock()
+    adapter._skill_evolution_rail = None
+    adapter._skill_rail = None
+    adapter._heartbeat_rail = Mock()
+    adapter._permission_state.permission_update_in_progress = True
+    monkeypatch.setattr(adapter, "_build_skill_rail", lambda *args, **kwargs: None)
+    monkeypatch.setattr(adapter, "_filesystem_rail_enabled_for_profile", lambda: False)
+
+    for reference, api_model in (
+        ("model:mdl_first", "pool_0024"),
+        ("model:mdl_second", "pool_0025"),
+        ("model:mdl_missing_config", "unknown"),
+    ):
+        adapter._default_model_name = reference
+        adapter._model = Mock(model_config=None) if model_available else None
+        adapter._model_request_config = Mock(model_name=api_model) if api_model != "unknown" else None
+
+        adapter._get_current_agent_rails({"model_name": "stale-model"})
+
+        adapter._ttse_rail.update_llm.assert_called_with(adapter._model, api_model)
 
 
 def test_build_ttse_rail_skips_when_trajectory_processor_unavailable(monkeypatch, tmp_path):

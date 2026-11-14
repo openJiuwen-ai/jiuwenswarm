@@ -12,6 +12,7 @@ from typing import Any
 from openjiuwen.harness.persistent_agent import AgentEvent, EventType
 
 from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository, _notice_delivery_job
+from jiuwenswarm.server.jiuwenmate.delivery_notices import SHARING_NOTICE, DELIVERED_SHARING_NOTICE
 from jiuwenswarm.server.jiuwenmate.group_collaboration import resolve_group_mentions
 
 logger = logging.getLogger(__name__)
@@ -23,7 +24,6 @@ FILE_SEND_TIMEOUT = 180.0
 # How long AgentServer waits for Gateway's ACK; shorter than the service timeouts above.
 GATEWAY_ACK_TIMEOUT = 25.0
 GATEWAY_FILE_ACK_TIMEOUT = 170.0
-SHARING_NOTICE = "跨群分享授权已失效，本次内容未发送。"
 
 
 def _utc_now() -> datetime:
@@ -79,7 +79,7 @@ class ResultDeliveryService:
         """Attach the host's business authorization check for public delivery."""
         self._sharing_guard = guard
 
-    async def _check_sharing(self, job: dict[str, object]) -> bool:
+    async def _check_sharing(self, job: dict[str, object], *, delivered: bool = False) -> bool:
         if self._sharing_guard is None:
             return True
         try:
@@ -88,11 +88,14 @@ class ResultDeliveryService:
             allowed = False
         if allowed:
             return True
+        notice = (job.get("notice_text") or DELIVERED_SHARING_NOTICE) if delivered else SHARING_NOTICE
         # No public side effect may precede this durable substitution.
         await asyncio.to_thread(
             self._repository.replace_result_delivery_with_notice,
-            self._namespace_id, str(job["delivery_id"]), notice_text=SHARING_NOTICE, now=self._clock(),
+            self._namespace_id, str(job["delivery_id"]), notice_text=notice, now=self._clock(),
         )
+        if delivered:
+            job["notice_text"] = notice
         return False
 
     def set_handoff_handler(
@@ -220,7 +223,7 @@ class ResultDeliveryService:
             delivered_outside_welink = outcome == "delivered" and job.get("channel") != "welink"
             if delivered_outside_welink and job.get("mention_targets") and self._handoff_handler is not None:
                 try:
-                    if await self._check_sharing(job):
+                    if await self._check_sharing(job, delivered=True):
                         await self._handoff_handler(
                             job,
                             job["mention_targets"],
@@ -315,14 +318,16 @@ class ResultDeliveryService:
             self._archive_after = (jobs[-1]["updated_at"], jobs[-1]["delivery_id"])
         for job in jobs:
             try:
-                if not await self._check_sharing(job):
-                    job = dict(job, notice_text=SHARING_NOTICE, file_key=None,
-                               payload_json=json.dumps({"share_mode": "message", "text": SHARING_NOTICE}),
+                if not await self._check_sharing(job, delivered=True):
+                    notice = job["notice_text"]
+                    job = dict(job, file_key=None,
+                               payload_json=json.dumps({"share_mode": "message", "text": notice}),
                                job_json=None, handoff_done=1)
                 await self._archive_delivery(job)
                 await asyncio.to_thread(self._repository.mark_delivery_archived, self._namespace_id, job["delivery_id"])
-            except Exception:
-                logger.warning("[JM-11] confirmed delivery archive pending: delivery_id=%s", job["delivery_id"])
+            except Exception as exc:
+                logger.warning("[JM-11] confirmed delivery archive pending: delivery_id=%s error_type=%s error_code=%s",
+                               job["delivery_id"], type(exc).__name__, getattr(exc, "code", None))
 
     async def apply_ack(self, ack: Mapping[str, Any]) -> dict[str, object]:
         """Persist an ACK that arrived after the request waiter timed out or disconnected."""

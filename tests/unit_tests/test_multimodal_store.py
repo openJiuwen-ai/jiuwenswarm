@@ -382,7 +382,7 @@ async def test_legacy_mixed_write_rejected_before_any_other_side_effect(catalogu
 async def test_gateway_real_registration_preserves_confirmation_payload(catalogue, monkeypatch, enterprise):
     from types import SimpleNamespace
     from agent_gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
-    from openjiuwen_protocol.e2a.agent_models import AgentResponse
+    from e2a.agent_models import AgentResponse
 
     methods = {}
     channel = SimpleNamespace(channel_id="web", register_method=lambda name, fn, local_only=False: methods.update({name: fn}),

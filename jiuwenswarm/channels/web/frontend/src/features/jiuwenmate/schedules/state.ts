@@ -62,7 +62,13 @@ export function validateDraft(draft: ScheduleDraft, executorId: string): string 
   return null;
 }
 
-export function filterSchedules<T extends { name: string; agentId: string; lastStatus: string }>(
+type ScheduleStatusSource = Pick<Schedule, 'lastStatus'>;
+
+export function scheduleDisplayStatus(plan: ScheduleStatusSource): string {
+  return plan.lastStatus === 'completed' ? 'expired' : plan.lastStatus;
+}
+
+export function filterSchedules<T extends ScheduleStatusSource & { name: string; agentId: string }>(
   plans: readonly T[],
   query: string,
   agentId: string,
@@ -72,7 +78,7 @@ export function filterSchedules<T extends { name: string; agentId: string; lastS
   return plans.filter((plan) => {
     if (keyword && !plan.name.toLowerCase().includes(keyword)) return false;
     if (agentId && plan.agentId !== agentId) return false;
-    if (status && plan.lastStatus !== status) return false;
+    if (status && scheduleDisplayStatus(plan) !== status) return false;
     return true;
   });
 }

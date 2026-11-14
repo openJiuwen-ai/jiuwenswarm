@@ -47,7 +47,7 @@ from logging.handlers import BaseRotatingHandler
 import portalocker
 from ruamel.yaml import YAML
 
-from openjiuwen_protocol.logging_config import (
+from e2a.logging_config import (
     LOGGING_LEVEL_FIELDS,
     LOG_CONFIG_OP_DELETE,
     LOG_CONFIG_OP_FIELD,
@@ -1870,6 +1870,11 @@ def get_agent_root_dir(tenant_key: str | None = None) -> Path:
                 "tenant_context unavailable for agent root bind", exc_info=True
             )
     return get_multi_tenant_user_workspace_dir(tenant_key) / "agent"
+
+
+def get_package_avatar_cache_dir() -> Path:
+    """Return the tenant-scoped cache for HTTP-served package avatars."""
+    return get_agent_workspace_dir() / ".cache" / "package-avatars"
 
 
 def get_agent_home_dir() -> Path:

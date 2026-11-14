@@ -2,7 +2,7 @@
 
 import pytest
 
-from openjiuwen_protocol.message import ReqMethod as ProtocolReqMethod
+from e2a.message import ReqMethod as ProtocolReqMethod
 from jiuwenswarm.common.schema.message import ReqMethod
 
 
