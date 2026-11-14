@@ -44,6 +44,8 @@ _TASK_PANE_LEAVES_OUT = frozenset({Capability.SUBAGENTS, Capability.FILE_DELIVER
 # resolves the same from source and from a frozen bundle, and the capabilities its conversations leave out.
 APPS: dict[str, tuple[str, frozenset[Capability]]] = {
     "office-powerpoint": ("jiuwenswarm/office/powerpoint", _TASK_PANE_LEAVES_OUT),
+    "office-word": ("jiuwenswarm/office/word", _TASK_PANE_LEAVES_OUT),
+    "office-excel": ("jiuwenswarm/office/excel", _TASK_PANE_LEAVES_OUT),
 }
 
 

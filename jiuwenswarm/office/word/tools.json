@@ -1,0 +1,98 @@
+[
+  {
+    "type": "custom",
+    "name": "read_doc_section",
+    "description": "Read part of the body by heading or by paragraph range. Text is the final copy, pending tracked changes applied, so there is no need to accept revisions to read it. Each paragraph comes with its zero-based index and its markers: built-in style, the rendered list number (which is not in the paragraph text), in a table, page break, strikethrough, picture, field, footnote. Use it when <doc_state> shows only an outline or you need exact text before an edit. With include_formatting each paragraph also carries its font, size, colour and paragraph format, to match formatting elsewhere or find an inconsistency. Give heading or paragraph_start, not both.",
+    "input_schema": {"type": "object", "properties": {"heading": {"type": "string", "minLength": 1, "description": "A heading exactly as the outline in <doc_state> shows it; reads until a heading at its level or above."}, "paragraph_start": {"type": "integer", "minimum": 0, "description": "Zero-based first paragraph."}, "paragraph_end": {"type": "integer", "minimum": 1, "description": "Zero-based end, not included; paragraph_start + 1 when left out."}, "include_formatting": {"type": "boolean", "default": false}}, "required": [], "additionalProperties": false},
+    "annotations": {"mutating": false, "exposure": "direct", "parallel_safe": true},
+    "host_requirements": {"sets": {"WordApi": "1.6"}}
+  },
+  {
+    "type": "custom",
+    "name": "search_doc_text",
+    "description": "Find a literal phrase in the body (not in headers or footers, which <doc_state> shows) and get each hit's paragraph_index and a snippet, with total_matches. Use it to locate text when you do not know its section; pass a hit's paragraph_index to read_doc_section or its snippet to edit_doc_text. For many replacements, search once and then make one edit_doc_text per hit; looping over search results in execute_office_js can hang Word on a large document.",
+    "input_schema": {"type": "object", "properties": {"query": {"type": "string", "minLength": 1, "description": "A phrase within one paragraph (no \\n). Case and whitespace must match; curly and straight quotes match each other. A phrase over 255 characters is matched by its start and end."}, "max_results": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10}}, "required": ["query"], "additionalProperties": false},
+    "annotations": {"mutating": false, "exposure": "direct", "parallel_safe": true},
+    "host_requirements": {"sets": {"WordApi": "1.6"}}
+  },
+  {
+    "type": "custom",
+    "name": "edit_doc_text",
+    "description": "Replace one exact passage of the body, changing only the words that differ, so with Track Changes on the redline shows word-level revisions rather than a whole paragraph deleted and inserted. For mechanical edits: typos, formatting of text, numbering, consistent defined terms. A change of meaning (rewording a clause; changing an amount, cap or date; adding or removing a provision) goes through propose_doc_edits so the user reviews it first. Inserting paragraphs, changing styles and tables go through execute_office_js. Fails when old_text is not found or is found more than once.",
+    "input_schema": {"type": "object", "properties": {"old_text": {"type": "string", "minLength": 1, "description": "The exact text to replace, found exactly once in the body: add neighbouring words until it is unique, and otherwise limit it to the words you change. To span paragraphs, join their full texts with \\n. Whitespace must match; curly and straight quotes match each other."}, "new_text": {"type": "string", "description": "The replacement; an empty string deletes old_text. \\n starts a new paragraph; write a literal backslash as \\\\. Repeat any neighbouring words from old_text unchanged, so only the words you mean to change differ."}}, "required": ["old_text", "new_text"], "additionalProperties": false},
+    "annotations": {"mutating": true, "exposure": "direct", "parallel_safe": false},
+    "host_requirements": {"sets": {"WordApi": "1.6"}}
+  },
+  {
+    "type": "custom",
+    "name": "edit_doc_list",
+    "description": "Create a simple bulleted or numbered list after a paragraph (create_list: anchor_text, items, list_style), or add one item beside an item of an existing list (insert_item: anchor_item_text, new_item_text, position), so its numbering continues instead of restarting. Multi-level numbering such as (a)(i), custom schemes and level changes go through execute_office_js.",
+    "input_schema": {"type": "object", "properties": {"action": {"enum": ["create_list", "insert_item"]}, "anchor_text": {"type": "string", "minLength": 1, "maxLength": 255, "description": "create_list: unique text of the paragraph the list follows."}, "items": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1, "description": ""}, "description": "create_list: item texts in order, without bullet or number prefixes."}, "list_style": {"enum": ["bullet", "number"], "description": "create_list only."}, "anchor_item_text": {"type": "string", "minLength": 1, "maxLength": 255, "description": "insert_item: unique text of an existing list item; the new item joins its list at the same level."}, "new_item_text": {"type": "string", "minLength": 1, "description": "insert_item: the new item's text, without bullet or number prefix."}, "position": {"enum": ["Before", "After"], "description": "insert_item: relative to anchor_item_text."}}, "required": ["action"], "additionalProperties": false},
+    "annotations": {"mutating": true, "exposure": "direct", "parallel_safe": false},
+    "host_requirements": {"sets": {"WordApi": "1.6"}}
+  },
+  {
+    "type": "custom",
+    "name": "collapse_blank_paragraphs",
+    "description": "Shrink every run of empty paragraphs to at most max_consecutive. Empty paragraphs that hold a picture, shape, section break, bookmark, tracked change or comment anchor are kept and reported, and so are empty list items and table-cell paragraphs. Use it instead of deleting paragraphs in a loop in execute_office_js, which times out on a large document.",
+    "input_schema": {"type": "object", "properties": {"max_consecutive": {"type": "integer", "minimum": 0, "maximum": 2, "default": 1}}, "required": [], "additionalProperties": false},
+    "annotations": {"mutating": true, "exposure": "direct", "parallel_safe": false},
+    "host_requirements": {"sets": {"WordApi": "1.6"}}
+  },
+  {
+    "type": "custom",
+    "name": "verify_doc",
+    "description": "Quick structural check of the whole document: how many paragraphs use each style, the list numbering sequence, and the number of cells in each row of each table. No render and no model call. Run it between edits to catch a numbering restart, a broken table or a paragraph that lost its style; rendered appearance (fonts, spacing, reflow) needs verify_doc_visual.",
+    "input_schema": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
+    "annotations": {"mutating": false, "exposure": "direct", "parallel_safe": true},
+    "host_requirements": {"sets": {"WordApi": "1.6"}}
+  },
+  {
+    "type": "custom",
+    "name": "verify_doc_visual",
+    "description": "Independent visual review of the rendered document. The task pane exports the document as PDF and renders its pages; a separate reviewer that sees nothing of this conversation checks them for inconsistent fonts, broken styles or numbering, reflowed tables, stray bold or italic runs, spacing faults and garbled tracked changes. It reviews at most the first 6 pages. Returns verdict done or needs_work with the defects to repair, and the pages it reviewed. Not available in Word on the web.",
+    "input_schema": {"type": "object", "properties": {"page_hint": {"type": "string", "maxLength": 200, "description": "Where to look first, e.g. 'page 3' or 'the Limitation of Liability section'; the reviewer still checks the pages around it."}}, "required": [], "additionalProperties": false},
+    "annotations": {"mutating": false, "exposure": "direct", "parallel_safe": true},
+    "host_requirements": {"sets": {"WordApi": "1.6"}}
+  },
+  {
+    "type": "custom",
+    "name": "propose_doc_edits",
+    "description": "Show substantive changes to the user as suggestion cards before the document changes: a clause reworded, a provision added or dropped, a new meaning for a defined term, a different amount, threshold or date, a reply to the other side's redline. Mechanical edits (typos, formatting, numbering, punctuation) go straight in with edit_doc_text. Never write proposed wording in chat for the user to approve; put it here, with alternatives when several phrasings are defensible. old_text and new_text follow the edit_doc_text rules. The call checks every old_text and returns without waiting for the user; edits whose text it cannot find come back in invalid_edits: read the passage, fix old_text and propose them again, never write them with another tool. What the user did with each card (applied as an edit, as a tracked change or as a comment; dismissed; failed; undone) arrives in the next turn's <user_reviewed_edits>. For more than about five edits, call it once per group, with a short bold heading in chat before each call.",
+    "input_schema": {"type": "object", "properties": {"edits": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {"id": {"type": "string", "minLength": 1, "description": "A short id you choose, e.g. 'cap-1', by which <user_reviewed_edits> names the card. Never show it to the user or write it into the document."}, "section": {"type": "string", "minLength": 1, "description": "The heading or clause the edit falls under; shown on the card."}, "change_summary": {"type": "string", "minLength": 1, "description": "One-line card title, e.g. 'Liability cap from 1M to 5M'. With alternatives, name the intent only."}, "old_text": {"type": "string", "minLength": 1, "description": "The exact text to replace, found exactly once in the body: add neighbouring words until it is unique, and otherwise limit it to the words you change. To span paragraphs, join their full texts with \\n. Whitespace must match; curly and straight quotes match each other."}, "new_text": {"type": "string", "description": "The replacement; an empty string deletes old_text. \\n starts a new paragraph; write a literal backslash as \\\\. Repeat any neighbouring words from old_text unchanged, so only the words you mean to change differ."}, "new_text_label": {"type": "string", "description": "A 2 to 4 word label for new_text, shown when alternatives are given."}, "alternatives": {"type": "array", "maxItems": 3, "items": {"type": "object", "properties": {"label": {"type": "string", "minLength": 1, "description": "What sets this phrasing apart."}, "text": {"type": "string", "description": "The full replacement text."}}, "required": ["label", "text"], "additionalProperties": false}, "description": "Other phrasings of the same text that differ in substance; the user picks one. When the options would change different text or sections, ask the user first instead."}, "context_before": {"type": "string", "description": "A few words just before old_text, so the card reads as continuous text."}, "context_after": {"type": "string", "description": "A few words just after old_text."}, "reasoning": {"type": "string", "description": "Why, in one sentence for a routine change. It becomes the comment text when the user applies the edit with a comment, so write it for the other side to read."}, "comment": {"type": "object", "properties": {"text": {"type": "string", "minLength": 1, "description": "The comment, written for whoever will read the document."}, "for": {"type": "string", "description": "Who the comment is for."}}, "required": ["text"], "additionalProperties": false, "description": "Makes this a comment-only suggestion: set new_text equal to old_text, which is where the comment attaches."}}, "required": ["id", "section", "change_summary", "old_text", "new_text"], "additionalProperties": false}}}, "required": ["edits"], "additionalProperties": false},
+    "annotations": {"mutating": false, "exposure": "direct", "parallel_safe": true},
+    "host_requirements": {"sets": {"WordApi": "1.6"}}
+  },
+  {
+    "type": "custom",
+    "name": "withdraw_doc_edits",
+    "description": "Withdraw suggestion cards of yours that the user has not reviewed yet; they stay in the chat, greyed out. Cards the user applied, dismissed or is applying are left alone. Use it only to replace or retract your own pending suggestion, usually because the user asked to change it: withdraw it, then propose the fixed version before the turn ends. A suggestion reported failed because its text changed counts as pending: withdraw it before proposing it again. Never changes the document.",
+    "input_schema": {"type": "object", "properties": {"ids": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1, "description": ""}, "description": "The ids you gave the edits when you proposed them."}}, "required": ["ids"], "additionalProperties": false},
+    "annotations": {"mutating": false, "exposure": "direct", "parallel_safe": true},
+    "host_requirements": {"sets": {"WordApi": "1.6"}}
+  },
+  {
+    "type": "custom",
+    "name": "explain_edits",
+    "description": "Check your reasoning before an edit that introduces or changes legal language: a definition, a reworded clause, a new or deleted provision, accepting or rejecting a redline. Skip it only for mechanical edits. Break each planned edit's reasoning into claims about the current document, its tracked changes, the law, a skill or the user's standing instructions, or label a claim model_judgment. A reviewer that does not see this conversation checks each claim and returns a verdict per claim with the source text it quotes. Revise the plan when a claim is contradicted or not found and call again if needed; tell the user about claims that still fail before you edit.",
+    "input_schema": {"type": "object", "properties": {"edits": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {"location": {"type": "string", "minLength": 1, "description": "Where the edit lands, as kind:target, e.g. 'heading:Limitation of Liability', 'paragraph:<id>', 'comment:<id>' or 'revision:<n>'."}, "change_summary": {"type": "string", "minLength": 1, "description": "One line: what you intend to change."}, "proposed_text": {"type": "string", "description": "The wording you plan to insert; left out when the edit inserts none."}, "reasoning": {"type": "string", "minLength": 1, "description": "Why you plan this edit, in prose."}, "grounding": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {"claim": {"type": "string", "minLength": 1, "description": "The fact the reasoning rests on, stated plainly."}, "basis": {"enum": ["document_text", "tracked_change", "external_law", "skill_instruction", "user_instruction", "model_judgment"], "description": "The narrowest true source of the claim; model_judgment when none applies."}, "reference": {"type": "string", "description": "Section number, citation or skill section; left out for model_judgment."}, "skill_name": {"type": "string", "description": "The skill's exact name; required when basis is skill_instruction."}}, "required": ["claim", "basis"], "additionalProperties": false}, "description": "The reasoning as checkable claims about the current document, its tracked changes, the law, a skill or the user's standing instructions. \"The user asked\" is not a claim."}, "confidence": {"enum": ["high", "medium", "needs_review"]}, "open_question": {"type": "string", "description": "A question for the user: a business call or missing context."}}, "required": ["location", "change_summary", "reasoning", "grounding", "confidence"], "additionalProperties": false}}}, "required": ["edits"], "additionalProperties": false},
+    "annotations": {"mutating": false, "exposure": "direct", "parallel_safe": true},
+    "host_requirements": {"sets": {"WordApi": "1.6"}}
+  },
+  {
+    "type": "custom",
+    "name": "execute_office_js",
+    "description": "Run Office.js code in the open document for what the other tools do not cover: inserting paragraphs and other content, styles and fonts, tables, comments, tracked changes and the Track Changes mode, fields, headers and footers, footnotes, content controls, pictures and equations. The task pane runs the code inside Word.run on its main thread, with nothing else in scope: no network (fetch, XMLHttpRequest, WebSocket), no dialogs, no add-in or file APIs. Calls that reach the network, and changes that reach every document on the computer (the Normal template, building blocks, the list gallery) are refused before they run; tell the user what was refused instead of trying another way. Each call may need the user's approval under their permission settings; the card shows the explanation and the code. Returns success and the code's return value; when the code changed the Track Changes mode, also tracked_change_warning.",
+    "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "Body of an async function with context (the Word.RequestContext) and the Word enums in scope: write the statements directly, without wrapping them in another function, which would never be called. load what you read and await context.sync() before using it. Sync every write before the code returns: writes still queued when it returns are reported as an error and do not happen. return a JSON-serializable value; it becomes the result, cut to the result budget. attachImage(base64Png) adds an image to the result for you to look at. Each context.sync() may take at most 30 seconds and the whole call 90 seconds; after a timeout the code may still finish in the background, so read back before you retry."}, "explanation": {"type": "string", "minLength": 1, "maxLength": 50, "description": "What the code does, in at most 50 characters; shown on the approval card."}}, "required": ["code", "explanation"], "additionalProperties": false},
+    "annotations": {"mutating": true, "exposure": "direct", "parallel_safe": false},
+    "host_requirements": {"sets": {"WordApi": "1.6"}}
+  },
+  {
+    "type": "custom",
+    "name": "read_surface_context",
+    "description": "The document's state for this turn: <doc_state> (the outline with fonts and list numbers, or the full text of a short document; headers and footers; comment threads with their ids; content controls; tracked changes and the Track Changes mode; the body font, custom styles and columns), <user_selection>, <user_changes> since your last turn and <user_reviewed_edits>. This call and its result are added at the start of each turn. Calling it yourself returns no newer state: use the latest added result, and read_doc_section or search_doc_text for more text.",
+    "input_schema": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
+    "annotations": {"mutating": false, "exposure": "direct", "parallel_safe": true},
+    "host_requirements": {"sets": {"WordApi": "1.6"}}
+  }
+]

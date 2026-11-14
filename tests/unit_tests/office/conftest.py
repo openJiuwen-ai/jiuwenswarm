@@ -34,8 +34,9 @@ from jiuwenswarm.server.client_attachments import attach, close_client_attachmen
 from jiuwenswarm.server.runtime.attachments import media_attachments
 from tests.unit_tests.agentserver.client_attachments_support import CLIENT_APP, isolated  # noqa: F401 - the fixture
 
-# The package JiuwenSwarm ships for the app, read before a test's ``isolated`` fixture replaces the apps.
+# The packages JiuwenSwarm ships for the apps, read before a test's ``isolated`` fixture replaces the apps.
 POWERPOINT_PACKAGE = registry.client_apps()[CLIENT_APP].package_dir
+WORD_PACKAGE = registry.client_apps()["office-word"].package_dir
 
 
 @pytest.fixture(autouse=True)
@@ -55,14 +56,14 @@ def sessions(tmp_path, monkeypatch):
 
 @pytest.fixture
 def attach_pane():
-    """What ``client.attach`` keeps: the tools the presentation's PowerPoint runs, and the live attachment."""
+    """What ``client.attach`` keeps: the tools the document's host runs, and the live attachment."""
 
     def attach_pane(session_id: str, supported_tools: list[str], *, owner: str = "user-1",
-                    name: str = "Deck.pptx", live: bool = True) -> None:
+                    name: str = "Deck.pptx", live: bool = True, client_app: str = CLIENT_APP) -> None:
         resource = {"key": f"deck-{session_id}", "display_name": name, "kind": "presentation",
                     "host_vendor": "microsoft"}
         attachment = get_attachment_directory().attach(
-            channel_id="web", ws_id=f"pane-{session_id}", owner_id=owner, client_app=CLIENT_APP,
+            channel_id="web", ws_id=f"pane-{session_id}", owner_id=owner, client_app=client_app,
             resource=resource, session_id=session_id)
         attach.save_client_capabilities(session_id, {"supported_tools": supported_tools},
                                         attachment_id=attachment.attachment_id, resource=resource)
@@ -120,7 +121,7 @@ class VisionModel:
 
 @pytest.fixture
 def conversation(tmp_path):
-    """``conversation(steps, native_images=...)``: a conversation's agent with the PowerPoint rail."""
+    """``conversation(steps, native_images=..., package=...)``: a conversation's agent with an app's rail."""
     return partial(Conversation, tmp_path)
 
 
@@ -169,12 +170,13 @@ class ScriptedModel:
 
 
 class Conversation:
-    """One conversation's own agent with the PowerPoint rail, one turn at a time."""
+    """One conversation's own agent with an app's rail (PowerPoint's by default), one turn at a time."""
 
     def __init__(self, tmp_path: Path, steps: list[list[ToolCall] | str], *, native_images: bool = False,
-                 session_id: str = "deck-a") -> None:
+                 session_id: str = "deck-a", package: Path = POWERPOINT_PACKAGE) -> None:
         self.model = ScriptedModel(steps)
         self.session_id = session_id
+        self.package = package
         self.agent = create_deep_agent(
             model=self.model, workspace=str(tmp_path / "workspace"), enable_task_loop=True,
             max_iterations=6, enable_model_anomaly_detection_rail=False, enable_read_image_multimodal=native_images,
@@ -183,7 +185,7 @@ class Conversation:
     async def __aenter__(self) -> "Conversation":
         await Runner.start()
         await self.agent.ensure_initialized()
-        await self.agent.register_rail(OfficeToolsRail(POWERPOINT_PACKAGE))
+        await self.agent.register_rail(OfficeToolsRail(self.package))
         session = create_agent_session(session_id=self.session_id, card=self.agent.card)
         await session.pre_run(inputs={})
         await self.agent.start(session=session)

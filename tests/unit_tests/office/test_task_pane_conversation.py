@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""A task pane's conversation (``client_app`` ``office-powerpoint``) has the PowerPoint template on every turn."""
+"""A task pane's conversation (``client_app`` ``office-powerpoint``) has its app's template on every turn."""
 
 from __future__ import annotations
 
@@ -32,12 +32,15 @@ from tests.unit_tests.office.conftest import POWERPOINT_PACKAGE, ScriptedModel
 
 PERSONA = "You are WorkSwarm, a presentation designer"
 DEFAULT_IDENTITY = "You are the general assistant of this test."
-# What the skill catalog shows the model: each skill's frontmatter description.
-SKILL_DESCRIPTIONS = [
-    re.search(r"^description: (.+)$", (POWERPOINT_PACKAGE / "skills" / name / "SKILL.md").read_text("utf-8"),
-              re.MULTILINE).group(1)
-    for name in ("deck-planning", "slide-design", "charts", "themes-and-masters")
-]
+
+
+def _skill_description(skill_dir) -> str:
+    """What the skill catalog shows the model: the skill's frontmatter description."""
+    return re.search(r"^description: (.+)$", (skill_dir / "SKILL.md").read_text("utf-8"), re.MULTILINE).group(1)
+
+
+SKILL_DESCRIPTIONS = [_skill_description(POWERPOINT_PACKAGE / "skills" / name)
+                      for name in ("deck-planning", "slide-design", "charts", "themes-and-masters")]
 SUPPORTED = ["read_presentation_context", "presentation_apply_patch"]
 APP_TOOLS = {"list_open_documents", "publish_office_asset"}
 SYS_OPERATION = SysOperationCard(id="task-pane-conversation", mode=OperationMode.LOCAL,
@@ -144,6 +147,24 @@ async def test_a_task_pane_conversation_has_the_powerpoint_template_from_its_fir
 
         assert_has_the_powerpoint_template(*await pane.turn())
         assert len(pane.rails()) == 1
+
+
+@pytest.mark.parametrize(("client_app", "persona", "supported", "unsupported"), [
+    ("office-word", "You are WorkSwarm, a document editor", "edit_doc_text", "verify_doc_visual"),
+    ("office-excel", "You are WorkSwarm, a spreadsheet analyst", "set_cell_range", "execute_office_js"),
+])
+async def test_a_word_or_excel_conversation_has_its_app_s_template(
+        tmp_path, monkeypatch, attach_pane, client_app, persona, supported, unsupported) -> None:
+    attach_pane("doc-a", [supported], client_app=client_app)
+    package = registry.client_apps()[client_app].package_dir
+    skills = json.loads((package / "manifest.json").read_text("utf-8"))["skills"]
+
+    async with SessionAdapter(tmp_path, monkeypatch, "doc-a", client_app) as pane:
+        offered, system = await pane.turn()
+
+    assert persona in system and PERSONA not in system and DEFAULT_IDENTITY not in system
+    assert all(_skill_description(package / skill) in system for skill in skills)
+    assert {supported} | APP_TOOLS <= offered and unsupported not in offered
 
 
 async def test_a_conversation_of_no_client_app_gets_no_powerpoint_template(
