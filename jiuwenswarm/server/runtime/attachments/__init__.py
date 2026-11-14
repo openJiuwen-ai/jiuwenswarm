@@ -6,5 +6,6 @@
 
 - ``upload_storage``：上传文件名/session 目录安全化规则；
 - ``media_attachments``：浏览器上传图片的 base64 解码与落盘；
-- ``document_attachments``：文档本地路径黑名单校验（不落盘）。
+- ``document_attachments``：文档本地路径黑名单校验（不落盘）；
+- ``remote_fetch``：外部 URL 导入的 SSRF、大小与文件名边界。
 """

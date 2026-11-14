@@ -890,6 +890,53 @@ class TestWorkspaceFileAdapter:
         assert resp.ok is True
         assert resp.payload["files"][0]["path"] == str(tmp_path / "y.txt")
 
+    async def test_import_url_rejects_unsafe_scheme(self, monkeypatch, tmp_path) -> None:
+        """file:// must not reach the downloader; the item carries an error."""
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.gateway_adapter.workspace_file_adapter.get_agent_workspace_dir",
+            lambda: tmp_path,
+        )
+        resp = await self._adapter().handle(
+            _request(
+                ReqMethod.FILE_IMPORT_URL,
+                {"files": [{"url": "file:///etc/passwd", "name": "/etc/passwd"}]},
+            )
+        )
+        assert resp.ok is True
+        item = resp.payload["files"][0]
+        assert "error" in item
+        assert "unsupported url scheme" in item["error"]
+        assert list(tmp_path.iterdir()) == []
+
+    async def test_import_url_sanitizes_traversal_name(self, monkeypatch, tmp_path) -> None:
+        """A traversal name must not escape the workspace."""
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.gateway_adapter.workspace_file_adapter.get_agent_workspace_dir",
+            lambda: tmp_path,
+        )
+
+        def fake_download(url, workspace, *, preferred_name="", fallback_name="download", overwrite=False):
+            from jiuwenswarm.server.runtime.attachments.remote_fetch import sanitize_filename
+
+            target = tmp_path / sanitize_filename(preferred_name, fallback=fallback_name)
+            target.write_bytes(b"ok")
+            return target
+
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.gateway_adapter.workspace_file_adapter.download_url_to_workspace",
+            fake_download,
+        )
+        resp = await self._adapter().handle(
+            _request(
+                ReqMethod.FILE_IMPORT_URL,
+                {"files": [{"url": "http://example.com/a.txt", "name": "../../escape.txt"}]},
+            )
+        )
+        assert resp.ok is True
+        written = resp.payload["files"][0]["path"]
+        assert written == str(tmp_path / "escape.txt")
+        assert (tmp_path / "escape.txt").read_bytes() == b"ok"
+
     async def test_im_file_persist(self, monkeypatch, tmp_path) -> None:
         """IM 附件落盘注入目录；非法 base64 拒绝（决策 D6）。"""
         import base64 as _b64

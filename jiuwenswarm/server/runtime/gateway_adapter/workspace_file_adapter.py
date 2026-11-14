@@ -42,9 +42,13 @@ from jiuwenswarm.server.runtime.attachments.media_attachments import (
     discard_session_upload,
     normalize_chat_media_attachments,
 )
+from jiuwenswarm.server.runtime.attachments.remote_fetch import (
+    UnsafeImportUrlError,
+    download_url_to_workspace,
+    sanitize_filename,
+)
 from jiuwenswarm.server.runtime.attachments.upload_storage import (
     atomic_write_unique,
-    unique_upload_path,
 )
 from jiuwenswarm.server.runtime.gateway_adapter.base import (
     GatewayAdapter,
@@ -738,34 +742,35 @@ def _append_upload_chunk(target: Path, chunk: bytes) -> None:
 
 
 def _import_url_file(item: dict[str, Any], *, overwrite: bool = False) -> dict[str, Any]:
-    """下载单个外部 url 文件到注入 workspace 并返回带本地 path 的元数据。"""
+    """下载单个外部 url 文件到注入 workspace 并返回带本地 path 的元数据。
+
+    下载边界由 :mod:`remote_fetch` 统一约束：只允许 http(s)、目标必须是公网
+    地址、每次重定向重新校验、文件名只保留 basename，最终路径必须落在
+    workspace 内。见 ``file.import_url`` 安全修复。
+    """
     import mimetypes as _mimetypes
-    import urllib.request
 
     file_url = str(item.get("url") or item.get("uri") or "").strip()
     if not file_url:
         raise ValueError("missing url for file import")
-    fallback_name = "download"
     try:
         fallback_name = Path(file_url.split("?")[0]).name or "download"
     except (ValueError, IndexError):
-        pass
-    filename = str(
-        item.get("name") or item.get("filename") or fallback_name
-    ).strip() or "download"
+        fallback_name = "download"
+    fallback_name = sanitize_filename(fallback_name)
 
     workspace_dir = get_agent_workspace_dir()
     workspace_dir.mkdir(parents=True, exist_ok=True)
-    target = workspace_dir / filename if overwrite else unique_upload_path(workspace_dir / filename)
-
-    req = urllib.request.Request(file_url, headers={"User-Agent": "jiuwenswarm-agent"})
-    with urllib.request.urlopen(req, timeout=60) as upstream:  # noqa: S310
-        with open(target, "wb") as out:
-            while True:
-                chunk = upstream.read(65536)
-                if not chunk:
-                    break
-                out.write(chunk)
+    try:
+        target = download_url_to_workspace(
+            file_url,
+            workspace_dir,
+            preferred_name=item.get("name") or item.get("filename") or fallback_name,
+            fallback_name=fallback_name,
+            overwrite=overwrite,
+        )
+    except UnsafeImportUrlError as exc:
+        raise ValueError(f"unsafe file url: {exc}") from exc
     size = 0
     try:
         size = target.stat().st_size
