@@ -135,6 +135,12 @@ Gateway's web channel (`JIUWENSWARM_WEB_CHANNEL_URL`, by default
 (`JIUWENSWARM_FILE_API_URL`, by default `http://127.0.0.1:5173`). Sideload `manifest.<host>.xml` into the host to
 open its pane.
 
+`npm run build:desktop` builds the three pages under `/office/` into the web
+frontend's `dist/office/`, with `manifest.powerpoint.xml` beside them; the
+desktop serves them from there and installs the PowerPoint pane
+(`jiuwenswarm/office/README.md`, 桌面安装). The desktop does not install the
+Word and Excel panes yet.
+
 ## Checks
 
 ```

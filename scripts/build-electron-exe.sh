@@ -150,6 +150,10 @@ if [ ! -d "node_modules" ]; then
     npm ci --prefer-offline --no-audit --no-fund
 fi
 ELECTRON=true npm run build
+# Office task pane, served by the desktop at /office/ (inside the frontend dist built above).
+cd "$PROJECT_ROOT/packages/jiuwenswarm-office-addin"
+npm ci --prefer-offline --no-audit --no-fund
+npm run build:desktop
 cd "$PROJECT_ROOT"
 
 # ── 3. Install Electron desktop dependencies ─────────────────────────────────

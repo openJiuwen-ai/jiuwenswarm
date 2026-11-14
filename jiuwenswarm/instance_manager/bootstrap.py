@@ -58,6 +58,7 @@ def create_bootstrap_env(config: InstanceConfig) -> Path:
         "web": "WEB_PORT",
         "gateway": "GATEWAY_PORT",
         "frontend": "FRONTEND_PORT",
+        "office_tls": "OFFICE_TLS_PORT",
     }
 
     for port_type, env_name in port_env_mapping.items():
@@ -129,6 +130,7 @@ def _create_basic_bootstrap_env(
         f"WEB_PORT={ports['web']}",
         f"GATEWAY_PORT={ports['gateway']}",
         f"FRONTEND_PORT={ports['frontend']}",
+        f"OFFICE_TLS_PORT={ports['office_tls']}",
     ]
     bootstrap_env.write_text("\n".join(lines) + "\n", encoding="utf-8")
     _early_logger.info(
