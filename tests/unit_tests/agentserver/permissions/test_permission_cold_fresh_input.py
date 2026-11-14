@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from openjiuwen.core.foundation.llm import AssistantMessage
+from openjiuwen.core.foundation.llm import AssistantMessage, ToolMessage
 from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY, InterruptAnswer
 
 from jiuwenswarm.agents.harness.common import session_ops_service
@@ -336,3 +336,182 @@ async def test_default_cold_batch_validates_identity_without_mutation(hosts, mon
             continuation.unanswered_permission_batch(instance, "cold-default-invalid", "cold-default-invalid")
     assert instance.loop_session.get_state(INTERRUPTION_KEY) == before
     assert h.executions == []
+
+
+# ---------------------------------------------------------------------------
+# The rebuilt context never matches Core's batch byte for byte. A fresh user
+# turn must still settle the restored batch instead of failing every send.
+# ---------------------------------------------------------------------------
+
+
+def pending_calls(h) -> list[dict[str, str]]:
+    """The exact calls Core holds pending, in the shape history records them."""
+    state = h.adapter._instance.loop_session.get_state(INTERRUPTION_KEY)
+    return [
+        {"id": entry.tool_call.id, "name": entry.tool_call.name,
+         "arguments": entry.tool_call.arguments}
+        for entry in state.interrupted_tools.values()
+    ]
+
+
+def crash_history(calls) -> list[dict]:
+    """The records a turn paused on an approval leaves behind in history.jsonl."""
+    records = [
+        {"role": "user", "request_id": "crashed",
+         "content": "Delete file_15.txt from the desktop", "timestamp": 1.0},
+        {"role": "assistant", "request_id": "crashed", "event_type": "chat.reasoning",
+         "content": "Preparing the delete", "timestamp": 1.1},
+    ]
+    for call in calls:
+        records.append({
+            "role": "assistant", "request_id": "crashed", "event_type": "chat.tool_call",
+            "tool_call": {
+                "name": call["name"], "tool_call_id": call["id"], "arguments": call["arguments"],
+            },
+            "timestamp": 1.2,
+        })
+    return records
+
+
+def history_parent(h, monkeypatch, records):
+    """A parent whose restart rebuild replays the given history, not a stub."""
+    parent = parent_for(h, monkeypatch)
+    monkeypatch.setattr(session_ops_service, "read_history_replay", lambda _sid, **_kwargs: SimpleNamespace(
+        records=[dict(item) for item in records],
+        prefix_cursor=None,
+    ))
+    return parent
+
+
+def assert_settled(child, request, ids):
+    """The batch is gone from Core and the context stays well formed."""
+    assert not getattr(child._instance.loop_session.get_state(INTERRUPTION_KEY), "interrupted_tools", None)
+    context = child._instance.react_agent.context_engine.get_context(session_id=request.session_id)
+    messages = context.get_messages()
+    calls = [call.id for message in messages for call in (getattr(message, "tool_calls", None) or [])]
+    results = [getattr(message, "tool_call_id", None) for message in messages
+               if getattr(message, "tool_call_id", None)]
+    assert set(results) <= set(calls)  # no tool message without its call
+    assert set(calls) <= set(results)  # no call left without a result
+    for call_id in ids & set(calls):
+        assert results.count(call_id) == 1
+    return messages, set(calls) & ids
+
+
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+@pytest.mark.parametrize("count", [1, 2])
+@pytest.mark.parametrize("wrapper_goal", [None, "call_goal"])
+async def test_trimmed_restored_batch_still_settles_on_fresh_input(
+    hosts, sqlite_checkpoint, monkeypatch, mode, count, wrapper_goal,
+):
+    """The paused call is absent from the rebuilt context; it is re-added once."""
+    old = await hosts("old", "cold-trimmed", mode=mode)
+    await _interrupt(old, monkeypatch, mode=mode, kind="permission", count=count)
+    if wrapper_goal:
+        session = old.adapter._instance.loop_session
+        session.update_state({INTERRUPTION_KEY: wrap_batch(
+            deepcopy(session.get_state(INTERRUPTION_KEY)), wrapper_goal,
+        )})
+        await session.commit()
+    calls = pending_calls(old)
+    ids = {call["id"] for call in calls}
+    await stopped_checkpoint(old, sqlite_checkpoint)
+
+    h = await hosts("new", "cold-trimmed", mode=mode)
+    if wrapper_goal:
+        # Production wraps the call before Core records it, so its snapshot and
+        # its batch agree. This fixture wraps a batch that a snapshot already
+        # holds unwrapped, so restore through the replay path a session without
+        # a usable snapshot takes instead.
+        from jiuwenswarm.server.runtime.session import context_snapshot
+
+        monkeypatch.setattr(context_snapshot, "restore_checkpoint_context", AsyncMock(return_value=False))
+    parent = history_parent(h, monkeypatch, crash_history(calls))
+    request = fresh(h)
+    child = await parent._get_or_create_session_adapter(
+        request.session_id, execution_request=request, host_external_input=True,
+    )
+    assert child is h.adapter
+    _, present = assert_settled(child, request, ids)
+    assert present == ids
+    h.script.responses = [AssistantMessage(content="FRESH-COLD-COMPLETED")]
+    result = await _request(h, query=request.params["query"])
+    assert result.ok and "FRESH-COLD-COMPLETED" in repr(result.payload)
+    await sqlite_checkpoint()
+    assert await _recovered_ids(h) == set()
+
+
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+@pytest.mark.parametrize("count", [1, 2])
+async def test_restored_result_for_a_pending_call_still_settles(
+    hosts, sqlite_checkpoint, monkeypatch, mode, count,
+):
+    """A restored window may already hold a result for a paused call.
+
+    The batch is still wholly unanswered for Core, so the call keeps its real
+    result, is not cancelled twice, and the rest of the batch is settled.
+    """
+    old = await hosts("old", "cold-restored-result", mode=mode)
+    await _interrupt(old, monkeypatch, mode=mode, kind="permission", count=count)
+    calls = pending_calls(old)
+    ids = {call["id"] for call in calls}
+    await stopped_checkpoint(old, sqlite_checkpoint)
+
+    h = await hosts("new", "cold-restored-result", mode=mode)
+    parent = parent_for(h, monkeypatch)
+    request = fresh(h)
+    assert await parent._get_or_create_session_adapter(request.session_id) is h.adapter
+    context = h.adapter._instance.react_agent.context_engine.get_context(session_id=request.session_id)
+    await context.add_messages(ToolMessage(tool_call_id=calls[0]["id"], content="deleted"))
+
+    child = await parent._get_or_create_session_adapter(
+        request.session_id, execution_request=request, host_external_input=True,
+    )
+    assert child is h.adapter
+    messages, present = assert_settled(child, request, ids)
+    assert present == ids
+    kept = [message for message in messages if getattr(message, "tool_call_id", None) == calls[0]["id"]]
+    assert len(kept) == 1 and kept[0].content == "deleted"
+    h.script.responses = [AssistantMessage(content="FRESH-COLD-COMPLETED")]
+    result = await _request(h, query=request.params["query"])
+    assert result.ok and "FRESH-COLD-COMPLETED" in repr(result.payload)
+    await sqlite_checkpoint()
+    assert await _recovered_ids(h) == set()
+
+
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+@pytest.mark.parametrize("count", [1, 2])
+async def test_prewarmed_batch_drift_still_settles(
+    hosts, sqlite_checkpoint, monkeypatch, mode, count,
+):
+    """A second, drifted copy of the batch must not double-balance or block."""
+    from openjiuwen.core.foundation.llm import ToolCall
+
+    old = await hosts("old", "cold-drift", mode=mode)
+    await _interrupt(old, monkeypatch, mode=mode, kind="permission", count=count)
+    calls = pending_calls(old)
+    ids = {call["id"] for call in calls}
+    await stopped_checkpoint(old, sqlite_checkpoint)
+
+    h = await hosts("new", "cold-drift", mode=mode)
+    parent = parent_for(h, monkeypatch)
+    request = fresh(h)
+    assert await parent._get_or_create_session_adapter(request.session_id) is h.adapter
+    context = h.adapter._instance.react_agent.context_engine.get_context(session_id=request.session_id)
+    await context.add_messages(AssistantMessage(content="", tool_calls=[
+        ToolCall(id=call["id"], type="function", name=call["name"],
+                 arguments=json.dumps({"display_only": "drifted"}))
+        for call in calls
+    ]))
+
+    child = await parent._get_or_create_session_adapter(
+        request.session_id, execution_request=request, host_external_input=True,
+    )
+    assert child is h.adapter
+    _, present = assert_settled(child, request, ids)
+    assert present == ids
+    h.script.responses = [AssistantMessage(content="FRESH-COLD-COMPLETED")]
+    result = await _request(h, query=request.params["query"])
+    assert result.ok and "FRESH-COLD-COMPLETED" in repr(result.payload)
+    await sqlite_checkpoint()
+    assert await _recovered_ids(h) == set()
