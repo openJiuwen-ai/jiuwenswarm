@@ -69,7 +69,7 @@ def test_privdrop_is_env_not_a_second_python(tmp_path, monkeypatch):
 
     args = _bwrap_args(runtime, policy)
     env = _setenv(args)
-    assert args.count("python3") == 1
+    assert args.count(process_mod.sys.executable) == 1
     assert "-c" not in args
     assert "netns" not in args
     assert env[process_mod.DROP_UID_ENV].isdigit()
@@ -181,6 +181,29 @@ def test_launcher_loads_memfd_and_skips_disk(tmp_path, monkeypatch):
     assert loaded.co_consts
     assert launcher.DAEMON_CODE_FD_ENV not in os.environ
     assert not missing.exists()
+
+
+def test_daemon_uses_server_venv_before_workspace_mounts(tmp_path, monkeypatch):
+    base = tmp_path / "python"
+    venv = tmp_path / "venv"
+    base.mkdir()
+    venv.mkdir()
+    executable = str(venv / "bin/python")
+    monkeypatch.setattr(process_mod.sys, "executable", executable)
+    monkeypatch.setattr(process_mod.sys, "base_prefix", str(base))
+    monkeypatch.setattr(process_mod.sys, "prefix", str(venv))
+    monkeypatch.setattr(ProcessRuntime, "_sandbox_root", staticmethod(lambda: tmp_path))
+    runtime = ProcessRuntime()
+    policy = SecurityPolicy()
+
+    args = _bwrap_args(runtime, policy)
+    assert args[-7:-3] == [executable, "-S", "-u", "/jiuwenbox/landlock-launcher.py"]
+    for directory in (str(base), str(venv)):
+        assert any(args[i:i + 3] == ["--ro-bind", directory, directory] for i in range(len(args)))
+
+    policy.landlock.compatibility = "disabled"
+    args = _bwrap_args(runtime, policy)
+    assert args[-4:] == [executable, *SANDBOX_DAEMON_COMMAND[1:]]
 
 
 def test_launcher_drop_privileges_uses_env(monkeypatch):
