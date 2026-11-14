@@ -606,3 +606,31 @@ def test_installer_does_not_block_completion_on_doctor() -> None:
     assert "Check: DoctorPassed" not in installer
     assert "DoctorSucceeded" not in installer
     assert "ExecAsOriginalUser" not in installer
+
+
+def test_startup_diagnostics_fallback_does_not_follow_a_planted_parent(
+    desktop_app, tmp_path: Path, monkeypatch
+) -> None:
+    blocked_logs = tmp_path / "blocked-logs"
+    blocked_logs.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setattr(desktop_app, "get_logs_dir", lambda: blocked_logs)
+    shared_tmp = tmp_path / "tmp"
+    shared_tmp.mkdir()
+    monkeypatch.setattr(desktop_app.tempfile, "tempdir", str(shared_tmp))
+    # Another account claims the old fixed parent name first.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (shared_tmp / "jiuwenswarm-startup").symlink_to(elsewhere)
+
+    runtime = desktop_app.DesktopRuntime(
+        frontend_host="127.0.0.1",
+        ports=calculate_instance_ports(0),
+    )
+
+    session_dir = runtime._startup_diagnostics_dir
+    assert session_dir.parent == shared_tmp
+    assert session_dir.name.startswith("jiuwenswarm-startup-")
+    assert not session_dir.is_symlink()
+    assert list(elsewhere.iterdir()) == []
+    if sys.platform != "win32":
+        assert session_dir.stat().st_mode & 0o777 == 0o700

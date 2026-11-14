@@ -42,6 +42,18 @@ web_service_name() {
     fi
 }
 
+# nohup 模式下 web 的运行时文件(nohup 日志、pidfile)所在目录。
+# 不用共享临时目录：`>` 会跟随符号链接, web 以 root 拉起, 任何能写临时目录的账号都
+# 可以事先在固定名字上放一个链接, 把输出重定向到别处并覆盖任意文件; pidfile 还会被
+# web_stop_nohup 读回来交给 kill, 被替换后等于由别的账号指定 root 结束哪个进程。
+# 名字只能是固定的：文件建在目标主机上, 而本机的失败提示要引用它、另一次 down 调用要
+# 读回它, 两处都拿不到目标主机上 mktemp 生成的随机名。故改目录而非改名字,
+# 目录与 gateway 的日志目录同根, 由 root 在目标主机上建立, 非 root 不可写。
+# 启动端与停止端各算一次, 必须得到同一个值, 故集中在此。
+web_runtime_dir() {
+    echo "/var/log/agentos"
+}
+
 # 检测目标主机上 systemd 是否可用(与 gateway 同)
 web_has_systemd() {
     local host="$1"
@@ -108,12 +120,21 @@ Environment=JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name}"
     fi
 
     info "Creating systemd unit ${svc_name} on ${master_host}..."
-    local tmp_unit="/tmp/${svc_name}.service.$$"
+    # `>` 会跟随符号链接, 而 ${svc_name} 与 $$ 都是可预测的, 任何能写共享临时目录的
+    # 账号都可以先在这个名字上放一个链接, 把 unit 内容写到别处。
+    # mktemp 以 0600 新建文件, 名字被占用时失败而不是复用。
+    local tmp_unit
+    if ! tmp_unit=$(mktemp "${TMPDIR:-/tmp}/${svc_name}.service.XXXXXXXX"); then
+        error "Failed to create a temporary unit file"
+    fi
     printf '%s\n' "${unit_content}" > "${tmp_unit}"
     copy_to_host "${master_host}" "${tmp_unit}" "${unit_file}"
     rm -f "${tmp_unit}"
 
-    local tmp_dropin="/tmp/${svc_name}-env.conf.$$"
+    local tmp_dropin
+    if ! tmp_dropin=$(mktemp "${TMPDIR:-/tmp}/${svc_name}-env.conf.XXXXXXXX"); then
+        error "Failed to create a temporary drop-in file"
+    fi
     printf '%s\n' "${dropin_content}" > "${tmp_dropin}"
     exec_on_host "${master_host}" "mkdir -p '${dropin_dir}'"
     copy_to_host "${master_host}" "${tmp_dropin}" "${dropin_file}"
@@ -167,16 +188,22 @@ web_start_nohup() {
     local web_host_target="${DEPLOY_VARS["WEB_HOST"]:-127.0.0.1}"
     local proxy_target="http://${web_host_target}:${web_port_target}"
     local instance_env=""
-    local pidfile="/tmp/jiuwenswarm-web.pid"
+
+    local runtime_dir
+    runtime_dir=$(web_runtime_dir)
+    exec_on_host "${master_host}" "mkdir -p '${runtime_dir}'" || true
+    local nohup_log="${runtime_dir}/web-nohup.log"
+
+    local pidfile="${runtime_dir}/jiuwenswarm-web.pid"
     if [ -n "${instance_name}" ]; then
         instance_env="JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name} "
-        pidfile="/tmp/jiuwenswarm-web-${instance_name}.pid"
+        pidfile="${runtime_dir}/jiuwenswarm-web-${instance_name}.pid"
     fi
 
     # 显式传 --host/--port/--proxy-target, 避开 app_web.py 的 FRONTEND_HOST/PORT 默认值。
     # JIUWENSWARM_DATA_DIR 等环境变量前缀只进子进程环境、不会出现在 /proc/PID/cmdline,
     # pkill -f 匹配不到, 故启动时把 PID 写入 pidfile, 停止时按 PID 精确结束。
-    local start_cmd="${home_prefix}${instance_env}nohup ${web_bin} --host ${web_host} --port ${web_port} --proxy-target ${proxy_target} </dev/null > /tmp/jiuwenswarm-web.log 2>&1 & echo \$! > ${pidfile}"
+    local start_cmd="${home_prefix}${instance_env}nohup ${web_bin} --host ${web_host} --port ${web_port} --proxy-target ${proxy_target} </dev/null > ${nohup_log} 2>&1 & echo \$! > ${pidfile}"
 
     info "Starting jiuwenswarm-web on ${master_host} (nohup) -> http://${web_host}:${web_port} (proxy /ws -> ${proxy_target})..."
     exec_on_host "${master_host}" "bash -c '${start_cmd}'"
@@ -194,7 +221,7 @@ web_start_nohup() {
         info "Waiting for web server to start... (${retry}/${max_retry})"
     done
 
-    error "Web process failed to start on ${master_host}, check /tmp/jiuwenswarm-web.log"
+    error "Web process failed to start on ${master_host}, check ${nohup_log}"
 }
 
 web_deploy_process() {
@@ -247,11 +274,13 @@ web_stop_systemd() {
 web_stop_nohup() {
     local master_host="$1"
     local instance_name="${DEPLOY_VARS["JIUWENSWARM_INSTANCE_NAME"]:-}"
-    local pidfile="/tmp/jiuwenswarm-web.pid"
+    local runtime_dir
+    runtime_dir=$(web_runtime_dir)
+    local pidfile="${runtime_dir}/jiuwenswarm-web.pid"
     local fallback="pkill -f '[j]iuwenswarm-web'"
     if [ -n "${instance_name}" ]; then
         local web_port="${DEPLOY_VARS["WEB_STATIC_PORT"]:-5173}"
-        pidfile="/tmp/jiuwenswarm-web-${instance_name}.pid"
+        pidfile="${runtime_dir}/jiuwenswarm-web-${instance_name}.pid"
         # JIUWENSWARM_DATA_DIR=... 只进环境不进 cmdline, 无法用 pkill -f 精确匹配。
         # 优先按启动时写入的 pidfile 停止; 无 pidfile(遗留进程)时按命令行可见的 --port 匹配。
         fallback="pkill -f 'jiuwenswarm-web.*--port ${web_port}'"
