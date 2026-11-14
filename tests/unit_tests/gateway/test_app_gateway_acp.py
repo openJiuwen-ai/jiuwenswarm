@@ -14,7 +14,8 @@ from agent_gateway.app_gateway import (
     RouteConfig,
     _normalize_gateway_message,
 )
-from e2a.message import EventType, Message, ReqMethod
+from e2a.message import EventType, Message
+from agent_gateway.common.protocol_methods import ReqMethod
 
 
 class DummyBus:

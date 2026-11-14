@@ -7,7 +7,8 @@ from __future__ import annotations
 import pytest
 
 from agent_gateway.common.mode_matrix import is_team_mode
-from e2a.message import EventType, Message, ReqMethod
+from e2a.message import EventType, Message
+from agent_gateway.common.protocol_methods import ReqMethod
 from agent_gateway.message_handler.message_handler import (
     _KNOWN_TEAM_MODE_INPUTS,
     MessageHandler,

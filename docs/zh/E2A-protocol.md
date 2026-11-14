@@ -103,6 +103,8 @@
 
 AgentServer 的 Gateway WebSocket 入口将显式传入的方法名转换为本服务的 `ReqMethod`；未知或非字符串方法返回终态错误响应，`payload.code` 为 `METHOD_NOT_FOUND`。未传方法的内部请求保持原有处理路径。
 
+JiuwenSwarm 在 `jiuwenswarm/common/schema/req_method.py` 独立维护方法枚举，`schema.message` 和 `schema.agent` 导出同一对象。依赖该枚举的 `Message`、`AgentRequest` 及 `common/e2a/gateway_normalize.py` 中的请求转换也由本仓维护，不再引用或运行时扩展 e2a 的 `ReqMethod`。新增 Swarm 方法无需为枚举更新 agent-protocol 版本；仍需同步处理函数、转发配置与测试。E2A/IPC 上的方法名始终是字符串，线协议字段不变。独立 agent-gateway 保留自己的方法类型，双方通过线协议交互，不共享 Python 枚举身份；E2A 信封、响应及事件类型仍复用协议包。
+
 **`params` 常用键约定**（可按业务扩展，以下为与 ACP 桥接协作的推荐名）：
 
 | 键 | 用途 |

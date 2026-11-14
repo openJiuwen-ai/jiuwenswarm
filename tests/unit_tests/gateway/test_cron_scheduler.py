@@ -14,7 +14,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from e2a.agent_models import AgentResponse, AgentResponseChunk
-from e2a.message import EventType, ReqMethod
+from e2a.message import EventType
+from jiuwenswarm.common.schema.req_method import ReqMethod
 
 from agent_gateway.cron.models import CronJob, CronRunState
 from agent_gateway.cron.scheduler import (

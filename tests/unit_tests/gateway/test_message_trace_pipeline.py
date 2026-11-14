@@ -10,7 +10,8 @@ import pytest
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from e2a.message import Message, ReqMethod
+from e2a.message import Message
+from agent_gateway.common.protocol_methods import ReqMethod
 
 from agent_gateway import telemetry
 from agent_gateway.channel_manager.channel_manager import ChannelManager

@@ -6,7 +6,8 @@ from collections.abc import AsyncIterator
 from types import SimpleNamespace
 
 import pytest
-from e2a.message import EventType, ReqMethod
+from e2a.message import EventType
+from agent_gateway.common.protocol_methods import ReqMethod
 from agent_gateway.message_handler.message_handler import MessageHandler
 
 from jiuwenswarm.common.schema import Message

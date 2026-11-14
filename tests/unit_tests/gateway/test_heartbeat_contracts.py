@@ -9,7 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 from websockets.legacy.server import serve as websocket_serve
-from e2a.message import EventType, ReqMethod
+from e2a.message import EventType
+from jiuwenswarm.common.schema.req_method import ReqMethod
 from agent_gateway.heartbeat import (
     HeartbeatControllerProxy,
     HeartbeatServiceUnavailableError,
