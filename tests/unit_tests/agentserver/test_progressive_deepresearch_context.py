@@ -433,15 +433,25 @@ async def test_deferred_tool_lookup_keeps_default_timeout_boundary():
         "tool_name": "missing_deferred",
     }
 
-@pytest.mark.parametrize('permission,allowed', [(None, False), ('ask', False), ('deny', False), ('allow', True)])
-def test_material_paths_require_explicit_read_permission(permission, allowed):
-    from openjiuwen.harness.security.models import PermissionLevel
+@pytest.mark.asyncio
+@pytest.mark.parametrize('permission,allowed', [('ask', False), ('deny', False), ('allow', True)])
+async def test_material_paths_require_explicit_read_permission(permission, allowed):
+    from uuid import uuid4
+    from agent_shield.tool_permission import get_permission_manager
+    key = f"test:material:{uuid4()}"
+    manager = get_permission_manager()
+    manager.update_config(
+        {'enabled': True, 'tools': {'read_file': permission}}, key,
+    )
     adapter = SimpleNamespace(_current_request_route={'materials_context': {
         'files': [{'path': '/uploaded/a.txt', 'name': 'a.txt'}], 'scope': 's', 'original_query': '参考附件'}},
         _resolve_permission_config_for_agent=Mock(return_value={'enabled': True}),
-        _permission_rail=SimpleNamespace(_engine=SimpleNamespace(check_tool_permission_directly=Mock(
-            return_value=(PermissionLevel(permission) if permission else None, None)))))
-    context = interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
+        _permission_rail=SimpleNamespace(permission_key=key),
+    )
+    try:
+        context = await interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
+    finally:
+        manager.remove_config(key)
     assert context['files'][0]['read_allowed'] is allowed
     assert 'read_allowed' not in adapter._current_request_route['materials_context']['files'][0]
 
@@ -464,7 +474,7 @@ async def test_disabled_permissions_prepare_current_request_material(tmp_path):
         _permission_rail=None,
         _resolve_permission_config_for_agent=resolve_config,
     )
-    context = interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
+    context = await interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
     reference = await prepare_materials(context, 'e7c43dd6-2d6e-4093-8c97-4d894fd0fef1')
     payload = json.loads(Path(reference['path']).read_text())
     assert payload['materials'][0]['content'] == attachment.read_text()
@@ -473,26 +483,42 @@ async def test_disabled_permissions_prepare_current_request_material(tmp_path):
     assert 'read_allowed' not in adapter._current_request_route['materials_context']['files'][0]
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize('config', [
     {'enabled': True}, {}, {'enabled': None}, {'enabled': 'false'}, {'enabled': 0}, None, [],
 ])
-def test_missing_material_permission_engine_stays_closed(config):
+async def test_missing_material_permission_engine_stays_closed(config):
     adapter = SimpleNamespace(
         _current_request_route={'materials_context': {'files': [{'path': '/uploaded/a.txt'}]}},
         _permission_rail=None,
         _resolve_permission_config_for_agent=Mock(return_value=config),
     )
-    context = interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
+    context = await interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
     assert context['files'][0]['read_allowed'] is False
 
 
-def test_material_permission_config_failure_stays_closed():
-    check = Mock(return_value=('allow', None))
+@pytest.mark.asyncio
+async def test_material_permission_config_failure_stays_closed(monkeypatch):
+    """配置解析失败必须短路 fail-closed：即使 Manager 会放行也不得查询。"""
+    from uuid import uuid4
+
+    from agent_shield.tool_permission import get_permission_manager
+
+    key = f"test:material:{uuid4()}"
+    manager = get_permission_manager()
+    manager.update_config({"enabled": True, "tools": {"read_file": "allow"}}, key)
+
+    async def _must_not_consult(*args, **kwargs):
+        raise AssertionError("config failure must short-circuit before the manager")
+
+    monkeypatch.setattr(manager, "check_permission", _must_not_consult)
     adapter = SimpleNamespace(
         _current_request_route={'materials_context': {'files': [{'path': '/uploaded/a.txt'}]}},
-        _permission_rail=SimpleNamespace(_engine=SimpleNamespace(check_tool_permission_directly=check)),
+        _permission_rail=SimpleNamespace(permission_key=key),
         _resolve_permission_config_for_agent=Mock(side_effect=RuntimeError('configuration unavailable')),
     )
-    context = interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
-    assert context['files'][0]['read_allowed'] is False
-    check.assert_not_called()
+    try:
+        context = await interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
+        assert context['files'][0]['read_allowed'] is False
+    finally:
+        manager.remove_config(key)

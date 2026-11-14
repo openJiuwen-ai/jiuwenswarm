@@ -113,6 +113,8 @@ class _RequestMcpToolBuffers:
     pending_tools: list[tuple[RequestScopedOfficeClawMcpTool, bool]] = field(default_factory=list)
     research_servers: list[dict[str, Any]] = field(default_factory=list, repr=False)
     research_tool_names: dict[str, list[str]] = field(default_factory=dict)
+    # server -> {raw tool name -> staged name} for built-in-shadow renames.
+    research_name_rewrites: dict[str, dict[str, str]] = field(default_factory=dict)
     unavailable_connectors: dict[str, str] = field(default_factory=dict)
 
 # shutdown_context_session_memory 用哨兵区分"属性缺失（框架改名/异型

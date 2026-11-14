@@ -22,6 +22,29 @@ _DEBOUNCE_SECONDS = 2.0
 _config_update_handle: asyncio.TimerHandle | None = None
 
 
+def invalidate_local_enterprise_config_caches() -> None:
+    """只失效本进程（gateway）的企业配置缓存，不调度 runtime 刷新。
+
+    供扩展配置模板写端点调用（研发评审："只做缓存失效，不调度 config_refresh"）。
+    gateway 进程自身经同一 loader 模块级缓存读企业配置（web 渠道
+    app_web_handlers 的模型列表等槽位），失效后下次调用即重读库看到新内容；
+    AgentServer Pod 的进程内 loader 缓存独立于本进程、收不到该失效（温 Pod
+    滞留上限=TTL），精确失效通道交平台研发跟进。
+    失败仅告警，不影响写端点本身。
+    """
+    try:
+        from jiuwenswarm.server.runtime.enterprise_config import (
+            invalidate_enterprise_config_caches,
+        )
+
+        invalidate_enterprise_config_caches()
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[ManagerConfigReceiver] invalidate local enterprise config caches failed",
+            exc_info=True,
+        )
+
+
 def trigger_runtime_config_update() -> None:
     """企业配置变更：防抖后请求 agent-runtime 强制刷新（日落老 Pod + 按新配置重建）。"""
     base = read_env("GATEWAY_RUNTIME_MANAGER_URL", "").strip()

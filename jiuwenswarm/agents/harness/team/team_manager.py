@@ -13,10 +13,12 @@ import time
 import weakref
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from openjiuwen.agent_teams.agent.team_agent import TeamAgent
-from openjiuwen.agent_teams.paths import team_home
+from openjiuwen.agent_teams.runtime.background_task_controller import (
+    BackgroundTaskController,
+)
 from openjiuwen.agent_teams.runtime.pool import RuntimeState
 from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
 from openjiuwen.agent_teams.context import reset_session_id, set_session_id
@@ -30,6 +32,10 @@ from openjiuwen.harness.rails import (
     TeamSkillEvolutionRail,
 )
 from jiuwenswarm.agents.harness.team.bootstrap import configure_agent_teams_home
+from jiuwenswarm.agents.harness.team.swarmflow_btc import (
+    pause_background_tasks,
+    stop_background_tasks,
+)
 from jiuwenswarm.agents.harness.team.team_session_scope import TeamBootstrapParams
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.utils import get_user_workspace_dir
@@ -58,7 +64,6 @@ from jiuwenswarm.agents.harness.team.distributed_runtime import (
 from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
 from jiuwenswarm.agents.harness.team import kv_cache_hooks
 from jiuwenswarm.agents.harness.team.remote_member_bootstrap import release_a2x_reservations_for_session
-from jiuwenswarm.agents.harness.team.team_skill_links import offload_link_sync, sync_skill_dir_links
 from jiuwenswarm.common.config import (
     get_config,
     get_default_models,
@@ -79,7 +84,6 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     TeamWorkspaceInfo,
     build_member_rails,
 )
-from jiuwenswarm.common.utils import get_agent_skills_dir
 from jiuwenswarm.server.runtime.session.session_metadata import (
     get_session_metadata,
     get_session_team_template_snapshot,
@@ -304,6 +308,9 @@ class TeamManager:
         self._runner_team_agents: dict[str, TeamAgent] = {}
         self._team_monitors: dict[str, TeamMonitorHandler] = {}
         self._stream_tasks: dict[str, asyncio.Task] = {}
+        # session_id → BackgroundTaskController（swarmflow 后台跑控票证表）。
+        # 会话级而非回合级：暂停后恢复必须看到同一票证；仅在最终拆除时 pop。
+        self._background_task_controllers: dict[str, BackgroundTaskController] = {}
         self._bootstrap_lock = asyncio.Lock()
         self._distributed_switch_lock = asyncio.Lock()
         self._session_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
@@ -359,7 +366,6 @@ class TeamManager:
         # session_id → runtime_ready requested a watcher before the rail registered
         self._pending_team_evolution_watcher_sessions: set[str] = set()
         # session_id -> team workspace skills directory used as the shared link view.
-        self._team_shared_skill_link_targets: dict[str, Path] = {}
         # session_id → workflow handler instance
         self._workflow_handlers: dict[str, Any] = {}
         # session_id → True once a team-building event (team.member,
@@ -579,6 +585,47 @@ class TeamManager:
     def pop_cron_completion(self, session_id: str) -> dict[str, Any] | None:
         """Drop the cron team round completion state for the session."""
         return self._cron_team_completion.pop(session_id, None)
+
+    def get_background_task_controller(self, session_id: str) -> BackgroundTaskController:
+        """The session's pause/resume/stop surface for background work (swarmflow runs).
+
+        Session-scoped, not round-scoped: a pause in one round and a resume in
+        a later round must observe the same ticket registry, and the leader
+        NativeHarness that hosts the runs is rebuilt every round. Lazily
+        created; dropped by ``_cleanup_runtime_locals`` only when the team is
+        torn down for good (a paused team keeps its tickets).
+        """
+        controller = self._background_task_controllers.get(session_id)
+        if controller is None:
+            controller = BackgroundTaskController()
+            self._background_task_controllers[session_id] = controller
+        return controller
+
+    def find_background_task_controller(
+        self, session_id: str
+    ) -> BackgroundTaskController | None:
+        """The session's controller when one already exists, else None.
+
+        Read-only companion of :meth:`get_background_task_controller`: state
+        checks must not lazily seed the registry with an empty controller.
+        """
+        return self._background_task_controllers.get(session_id)
+
+    def has_swarmflow_runs(self, session_id: str) -> bool:
+        """Whether the session's controller still holds active or paused runs.
+
+        A swarmflow background run outlives the leader round: after the round
+        ends the stream task and active markers are gone, yet the run keeps
+        burning tokens. Lifecycle short-circuits keyed only on the foreground
+        round would silently skip these runs, so this is the "background work
+        exists" leg of those checks.
+        """
+        controller = self._background_task_controllers.get(session_id)
+        if controller is None:
+            return False
+        return bool(getattr(controller, "_active", None)) or bool(
+            getattr(controller, "_paused", None)
+        )
 
     def is_runtime_active(self, session_id: str) -> bool:
         """Return whether a Runner-owned runtime is active for the session."""
@@ -996,21 +1043,42 @@ class TeamManager:
                 template_snapshot = copy.deepcopy(entity.template_snapshot)
         # 模板漂移自愈：live 模板 vs 冻结快照指纹比对，漂移则刷新两处冻结副本。
         # fail-open：reconcile 任何异常都原样返回 frozen，不阻断 chat。
-        # runtime_config 已在上方 :701 解析（仅当 team_name 真值时定义，与下方
-        # 守卫同前置条件，故此处引用安全）。
+        # Session-generated (v2 Swarm / auto-bind) keeps frozen open-library
+        # skills=[] — must not rehydrate whitelist from live preset.
+        # runtime_config 已在上方解析（仅当 team_name 真值时定义）。
         if team_name and template_id and isinstance(template_snapshot, dict):
             from jiuwenswarm.server.runtime.team_snapshot_refresh import (
                 reconcile_session_team_snapshot,
             )
 
-            template_snapshot = reconcile_session_team_snapshot(
-                session_id=session_id,
-                team_name=team_name,
-                template_id=template_id,
-                frozen_snapshot=template_snapshot,
-                config_base=runtime_config,
-                sessions_root=sessions_root,
-            )
+            # Optional: session-web adds should_skip_live_template_reconcile.
+            # Soft-import so visibility-only builds never ModuleNotFoundError.
+            skip_reconcile = False
+            try:
+                from jiuwenswarm.server.runtime.swarm_skill_session import (
+                    should_skip_live_template_reconcile,
+                )
+            except ImportError:
+                should_skip_live_template_reconcile = None  # type: ignore[assignment]
+            if callable(should_skip_live_template_reconcile):
+                skip_reconcile = bool(should_skip_live_template_reconcile(metadata))
+
+            if skip_reconcile:
+                logger.debug(
+                    "[TeamManager] skip live template reconcile for "
+                    "session-generated team: session_id=%s team=%s",
+                    session_id,
+                    team_name,
+                )
+            else:
+                template_snapshot = reconcile_session_team_snapshot(
+                    session_id=session_id,
+                    team_name=team_name,
+                    template_id=template_id,
+                    frozen_snapshot=template_snapshot,
+                    config_base=runtime_config,
+                    sessions_root=sessions_root,
+                )
         return (
             team_name or None,
             runtime_team_name or None,
@@ -1103,6 +1171,7 @@ class TeamManager:
         requested_model_ref: str | None = None,
         config_base: dict[str, Any] | None = None,
         sessions_root: str | Path | None = None,
+        swarmflow_config: dict | None = None,
     ) -> TeamAgentSpec:
         """Build a team spec via provider-based assembly (no parent DeepAgent).
 
@@ -1117,6 +1186,9 @@ class TeamManager:
             request_id: Originating request id, if any.
             channel_id: Raw channel id from the request, if any.
             request_metadata: Request metadata mapping.
+            swarmflow_config: Optional session-level swarmflow overlay
+                (``enable_swarmflow`` / ``swarmflow_budget`` / ``swarmflow_worktree``).
+                Defaults remain False when omitted — do not force-enable.
 
         Returns:
             The enriched ``TeamAgentSpec`` ready to build (``build_context`` set;
@@ -1150,6 +1222,33 @@ class TeamManager:
             request_metadata=request_metadata,
             config_base=runtime_config,
         )
+        if swarmflow_config is not None:
+            # Apply only keys present on the session overlay. Missing keys keep
+            # whatever ``config_loader`` already put on the team template
+            # (enable_swarmflow / swarmflow_budget / worktree). Never treat an
+            # absent key as "force false / clear".
+            if "enable_swarmflow" in swarmflow_config:
+                spec.enable_swarmflow = bool(swarmflow_config.get("enable_swarmflow"))
+            if "swarmflow_budget" in swarmflow_config:
+                budget = swarmflow_config.get("swarmflow_budget")
+                # Only a positive int overrides the team template. None / 0 /
+                # garbage must not clear ``spec.swarmflow_budget`` — callers
+                # that mean "no session override" omit the key entirely.
+                if isinstance(budget, int) and budget > 0:
+                    spec.swarmflow_budget = budget
+            # Session-level worktree gate: True arms the manager, False withholds
+            # it, missing/None keeps the team config's worktree section.
+            if "swarmflow_worktree" in swarmflow_config:
+                worktree_flag = swarmflow_config.get("swarmflow_worktree")
+                if worktree_flag is True:
+                    if spec.worktree is None:
+                        from openjiuwen.harness.tools.worktree import WorktreeConfig
+
+                        spec.worktree = WorktreeConfig(enabled=True)
+                    elif not spec.worktree.enabled:
+                        spec.worktree = spec.worktree.model_copy(update={"enabled": True})
+                elif worktree_flag is False:
+                    spec.worktree = None
         return spec
 
     @staticmethod
@@ -1513,94 +1612,47 @@ class TeamManager:
             post_start_log_every_sec=_PG_POST_START_LOG_EVERY_SEC,
         )
 
-    @staticmethod
-    async def _initialize_team_shared_skill_links(spec: TeamAgentSpec) -> None:
-        """Initialize team shared skill links from the global skill root.
 
-        The sync is filesystem-heavy - one lstat per global skill entry plus one
-        link creation per new skill - and runs once per team on the first
-        request. It must not run inline on the event loop: on 2026-09-18 a
-        machine where each ``cmd.exe`` junction creation cost about a second
-        stalled the loop for 268s (BUG20260918365771). It also must complete
-        before the first team turn starts, so callers await it rather than
-        fire-and-forget.
+    async def reload_team_skill_views(self, session_id: str | None = None) -> int:
+        """Re-scan the shared Skill library for live team members.
+
+        Skills live in exactly one physical library and each member is narrowed
+        by its ``skills-visibility.json`` document, so a library or metadata
+        change needs no fan-out: the only stale thing is each running member's
+        in-memory Skill rail.
+
+        Args:
+            session_id: Restrict the reload to one session; ``None`` reloads
+                every tracked session.
+
+        Returns:
+            Number of Skill rails reloaded across the visited agents.
         """
-        global_skills_dir = get_agent_skills_dir()
-        if not global_skills_dir.exists():
-            logger.warning("[TeamManager] global_skills_dir does not exist: %s", global_skills_dir)
-            return
-
-        # Resolve team workspace path
-        ws_config = spec.workspace
-        ws_path = ws_config.root_path if ws_config and ws_config.root_path else None
-        if not ws_path:
-            ws_path = str(team_home(spec.team_name) / "team-workspace")
-
-        team_shared_skills_dir = Path(ws_path) / "skills"
-
-        def _sync() -> None:
-            team_shared_skills_dir.mkdir(parents=True, exist_ok=True)
-            sync_skill_dir_links(global_skills_dir, team_shared_skills_dir)
-
-        await asyncio.to_thread(_sync)
-
-        logger.info("[TeamManager] Initialized team shared skill links: %s", team_shared_skills_dir)
-
-    @staticmethod
-    def _resolve_team_shared_skills_dir(spec: TeamAgentSpec) -> Path:
-        ws_config = spec.workspace
-        ws_path = ws_config.root_path if ws_config and ws_config.root_path else None
-        if not ws_path:
-            ws_path = str(team_home(spec.team_name) / "team-workspace")
-        return Path(ws_path) / "skills"
-
-    @staticmethod
-    async def ensure_team_shared_skills_initialized(spec: TeamAgentSpec) -> None:
-        """Ensure team shared skills are available in the team workspace."""
-        await TeamManager._initialize_team_shared_skill_links(spec)
-
-    async def ensure_team_shared_skills_ready_for_session(self, session_id: str, spec: TeamAgentSpec) -> None:
-        """Ensure team shared skills are initialized and registered for refresh."""
-        await self.ensure_team_shared_skills_initialized(spec)
-        self.register_team_shared_skill_link_target(
-            session_id,
-            self._resolve_team_shared_skills_dir(spec),
+        from jiuwenswarm.agents.harness.team.rails.team_skill_library_reload_rail import (
+            reload_agent_skill_views,
         )
 
-    def register_team_shared_skill_link_target(self, session_id: str, target: Path) -> None:
-        """Register the team shared skills directory for link refresh."""
-        self._team_shared_skill_link_targets[session_id] = target
+        if session_id is None:
+            sessions = list(self._team_live_rails)
+        else:
+            sessions = [session_id]
 
-    def refresh_team_shared_skill_links(self, session_id: str) -> bool:
-        """Refresh team shared skill links from global skills.
-
-        The sync is offloaded to a worker thread when this runs on the event
-        loop (rail refresh callbacks are sync callables invoked there); see
-        ``offload_link_sync``.
-        """
-        target = self._team_shared_skill_link_targets.get(session_id)
-        if target is None:
-            logger.debug("[TeamManager] no team shared skill link target for session_id=%s", session_id)
-            return False
-        global_skills_dir = get_agent_skills_dir()
-        if not global_skills_dir.exists():
-            logger.warning("[TeamManager] global_skills_dir does not exist: %s", global_skills_dir)
-            return False
-        offload_link_sync(global_skills_dir, target)
+        visited: set[int] = set()
+        reloaded = 0
+        for current_session in sessions:
+            for agent, _rail in list(self._team_live_rails.get(current_session, [])):
+                if agent is None or id(agent) in visited:
+                    continue
+                visited.add(id(agent))
+                reloaded += await reload_agent_skill_views(agent)
         logger.info(
-            "[TeamManager] Scheduled refresh of team shared skill links: session_id=%s target=%s",
+            "[TeamManager] reloaded team skill views: session_id=%s agents=%d rails=%d",
             session_id,
-            target,
+            len(visited),
+            reloaded,
         )
-        return True
+        return reloaded
 
-    def refresh_all_team_shared_skill_links(self) -> int:
-        """Refresh every registered team shared skill link view."""
-        refreshed = 0
-        for session_id in list(self._team_shared_skill_link_targets):
-            if self.refresh_team_shared_skill_links(session_id):
-                refreshed += 1
-        return refreshed
 
     async def create_team(
         self,
@@ -1637,15 +1689,29 @@ class TeamManager:
         from jiuwenswarm.agents.swarm import enrich_team_spec_for_swarm
 
         self.apply_team_plan_mode(spec, request_metadata=bootstrap.request_metadata)
-        enrich_team_spec_for_swarm(
-            spec,
-            session_id=session_id,
-            mode=resolved_mode,
-            project_dir=(bootstrap.request_metadata or {}).get("project_dir"),
-            request_id=bootstrap.request_id,
-            channel_id=bootstrap.channel_id,
-            request_metadata=bootstrap.request_metadata,
+        from jiuwenswarm.server.runtime.tenant_context import (
+            bind_jiuwenclaw_workspace,
+            reset_tenant_workspace_dirs,
         )
+
+        workspace_tokens = (
+            bind_jiuwenclaw_workspace(bootstrap.agent_workspace)
+            if bootstrap.agent_workspace
+            else None
+        )
+        try:
+            enrich_team_spec_for_swarm(
+                spec,
+                session_id=session_id,
+                mode=resolved_mode,
+                project_dir=(bootstrap.request_metadata or {}).get("project_dir"),
+                request_id=bootstrap.request_id,
+                channel_id=bootstrap.channel_id,
+                request_metadata=bootstrap.request_metadata,
+            )
+        finally:
+            if workspace_tokens is not None:
+                reset_tenant_workspace_dirs(workspace_tokens)
 
         logger.info("[TeamManager] TeamAgentSpec ready: team_name=%s", spec.team_name)
 
@@ -1656,7 +1722,6 @@ class TeamManager:
             team_agent.channel_id = bootstrap.channel_id  # 记录 channel，供 _destroy_other_sessions 按 channel 隔离
             self._team_agents[session_id] = team_agent
             # After build, initialize team shared skill links.
-            await self.ensure_team_shared_skills_ready_for_session(session_id, spec)
 
             if self._is_distributed_mode(config_base):
                 try:
@@ -1857,7 +1922,6 @@ class TeamManager:
         self._team_skill_create_rails.pop(session_id, None)
         self._team_rail_contexts.pop(session_id, None)
         self._team_live_rails.pop(session_id, None)
-        self._team_shared_skill_link_targets.pop(session_id, None)
 
     async def _cancel_team_evolution_watcher(self, session_id: str) -> None:
         watcher_task = self._team_evolution_watchers.pop(session_id, None)
@@ -2362,6 +2426,42 @@ class TeamManager:
                 exc,
             )
 
+    async def _dispatch_swarmflow_controller(
+        self,
+        session_id: str,
+        *,
+        action: Literal["pause", "stop"],
+    ) -> None:
+        """Drive the session's BackgroundTaskController for every swarmflow run.
+
+        Team lifecycle teardown is the single point that must do this, or a
+        paused/destroyed team leaves dangling handles still burning tokens.
+        Pause keeps the relaunch ticket (resumable); stop drops it (seal).
+
+        The controller only returns once each cancelled task has unwound, i.e.
+        the engine has written the pause/seal record and emitted the terminal
+        progress event — so the workflow handler (still alive at this point)
+        has it in its queue before anything tears the harness down.
+        """
+        controller = self.get_background_task_controller(session_id)
+        try:
+            if action == "pause":
+                await pause_background_tasks(controller, None)
+            else:
+                await stop_background_tasks(controller, None)
+        except Exception as exc:
+            logger.warning(
+                "[TeamManager] background task controller dispatch failed: "
+                "session_id=%s action=%s error=%s",
+                session_id,
+                action,
+                exc,
+            )
+
+    async def _pause_swarmflow_runs(self, session_id: str) -> None:
+        """Park every active swarmflow run (idempotent for already-paused ones)."""
+        await self._dispatch_swarmflow_controller(session_id, action="pause")
+
     async def _cleanup_runtime_locals(
         self, session_id: str, *, finalize_workflows: bool = True
     ) -> None:
@@ -2370,8 +2470,20 @@ class TeamManager:
         target_epoch = self.get_session_runtime_epoch(session_id)
         watcher_task = self._team_evolution_watchers.pop(session_id, None)
         stream_task = self._stream_tasks.pop(session_id, None)
+        # finalize_workflows=False is the pause path: the team comes back in
+        # this process and resumes against the same tickets, so the controller
+        # must survive. Every other teardown is final.
+        if finalize_workflows:
+            self._background_task_controllers.pop(session_id, None)
         monitor_handler = self._team_monitors.pop(session_id, None)
-        workflow_handler = self.pop_workflow_handler(session_id)
+        # Pause parks the runtime in place: keep the stopped workflow handler
+        # registered so wake remount can migrate in-memory runs and team-event
+        # dedup tables (seen_phase / seen_agent / spawned_members). Final
+        # teardown pops it so nothing is left dangling.
+        if finalize_workflows:
+            workflow_handler = self.pop_workflow_handler(session_id)
+        else:
+            workflow_handler = self.get_workflow_handler(session_id)
         if watcher_task and not watcher_task.done():
             watcher_task.cancel()
             try:
@@ -2701,6 +2813,7 @@ class TeamManager:
         if lock.locked():
             team_name = self._resolve_session_team_name(session_id)
             if team_name:
+                await self._dispatch_swarmflow_controller(session_id, action="stop")
                 stop_t0 = time.perf_counter()
                 await self._stop_runner_team_runtime(
                     session_id, team_name, "cancel: forced"
@@ -2737,7 +2850,8 @@ class TeamManager:
                 or self.is_runtime_active(session_id)
                 or self.is_runtime_pending(session_id)
             )
-            if has_stream_task or has_team_runtime:
+            has_swarmflow = self.has_swarmflow_runs(session_id)
+            if has_stream_task or has_team_runtime or has_swarmflow:
                 cancelled = True
                 # 记录终态原因：stream task 被拆除后，follow-up waiter 靠它区分
                 # "被取消退出"与"正常完成"，不再假报 is_complete
@@ -2752,6 +2866,11 @@ class TeamManager:
 
                 # Resolve team_name early before cleanup, from active/pending/metadata
                 team_name = self._resolve_session_team_name(session_id)
+
+                # Drive the swarmflow controller BEFORE Runner.stop. Runner.stop
+                # tears down the leader harness; without a controller-driven stop
+                # the swarmflow coroutine dies as a plain cancel (no seal).
+                await self._dispatch_swarmflow_controller(session_id, action="stop")
 
                 # Stop Runner-owned runtime first before cancelling stream task
                 # to avoid gate/teardown races and ensure pool removal
@@ -2823,7 +2942,11 @@ class TeamManager:
                 or self.is_runtime_active(session_id)
                 or self.is_runtime_pending(session_id)
             )
-            if not has_stream_task and not has_team_runtime:
+            if (
+                not has_stream_task
+                and not has_team_runtime
+                and not self.has_swarmflow_runs(session_id)
+            ):
                 return False
 
             logger.info(
@@ -2831,6 +2954,11 @@ class TeamManager:
                 reason,
                 session_id,
             )
+            # Drive the swarmflow controller BEFORE the teardown below drops
+            # it: without a controller-driven stop the run dies as a plain
+            # cancel — no abort reason, no seal record (same ordering
+            # rationale as the cancel path).
+            await self._dispatch_swarmflow_controller(session_id, action="stop")
             team_agent = self._team_agents.pop(session_id, None) if has_local_team_runtime else None
             await self._cleanup_runtime_locals(session_id)
 
@@ -2941,6 +3069,15 @@ class TeamManager:
                             reason, session_id,
                         )
                         return False
+
+                    # Park swarmflow runs BEFORE Runner.pause. Runner.pause tears
+                    # down the leader harness, whose async-tool runtime cancels
+                    # the swarmflow coroutine as a plain cancel — no abort reason,
+                    # no pause record, and run_background's finally deregisters
+                    # the handle. Pausing first lets the controller unwind the
+                    # engine so it writes the pause record while the workflow
+                    # handler is still alive, and parks the relaunch ticket.
+                    await self._pause_swarmflow_runs(session_id)
 
                     # 注册当前 pause 任务，供 cancel 抢占取消
                     self._active_pause_tasks[session_id] = asyncio.current_task()
@@ -3138,12 +3275,18 @@ def find_team_skill_rail_across_managers(request_id: str) -> Any | None:
     return get_team_manager().find_team_skill_rail_for_request(request_id)
 
 
-def refresh_team_shared_skill_links_across_managers(session_id: str | None = None) -> bool:
-    """Refresh team shared skill links on the singleton manager."""
+async def reload_team_skill_views_across_managers(session_id: str | None = None) -> int:
+    """Reload Skill views on every (or one) channel TeamManager.
+
+    Args:
+        session_id: Optional session filter; ``None`` reloads all tracked sessions
+            on the default channel manager.
+
+    Returns:
+        Total number of Skill rails reloaded.
+    """
     tm = get_team_manager()
-    if session_id is None:
-        return tm.refresh_all_team_shared_skill_links() > 0
-    return tm.refresh_team_shared_skill_links(session_id)
+    return await tm.reload_team_skill_views(session_id)
 
 
 async def cancel_all_team_stream_tasks_across_managers(reason: str = "") -> None:

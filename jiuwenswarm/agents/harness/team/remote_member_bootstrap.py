@@ -23,6 +23,7 @@ import shutil
 import socket
 import types
 import uuid
+from pathlib import Path
 from typing import Any, NamedTuple
 
 logger = logging.getLogger(__name__)
@@ -279,6 +280,56 @@ async def _existing_team_member(team_agent: Any | None, member_name: str) -> Any
         return await get_member(member_name, team_name)
 
 
+def resolve_process_agent_workspace(
+    *,
+    user_workspace_dir: str | Path | None = None,
+    workspace_key: str | None = None,
+    service_id: str | None = None,
+    agent_id: str | None = None,
+) -> str:
+    """Agent workspace for this process, from explicit tenant fields.
+
+    A set ``user_workspace_dir`` wins. Otherwise the path is derived from
+    ``service_id`` / ``agent_id`` (personal) or ``workspace_key`` (enterprise),
+    not from an unbound request ContextVar.
+    """
+    from jiuwenswarm.common.utils import (
+        collapse_nested_agent_workspace_dir,
+        get_agent_workspace_relative_dir,
+        resolve_tenant_agent_workspace_dir,
+    )
+
+    if user_workspace_dir:
+        return str(
+            collapse_nested_agent_workspace_dir(
+                Path(user_workspace_dir) / get_agent_workspace_relative_dir()
+            )
+        )
+    return str(
+        resolve_tenant_agent_workspace_dir(
+            workspace_key,
+            service_id=service_id,
+            agent_id=agent_id,
+        )
+    )
+
+
+def _resolve_bootstrap_agent_workspace() -> str | None:
+    """Workspace of the teammate process that is about to rebuild a team spec."""
+    try:
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        manager = AgentWebSocketServer.get_instance().get_agent_manager()
+        return resolve_process_agent_workspace(
+            user_workspace_dir=getattr(manager, "_user_workspace_dir", None),
+            workspace_key=getattr(manager, "_workspace_key", None),
+            service_id=getattr(manager, "_env_service_id", None),
+            agent_id=getattr(manager, "_env_agent_id", None),
+        )
+    except Exception:
+        return None
+
+
 def _resolve_bootstrap_sessions_root(
     sessions_root: str | None = None,
 ) -> str | None:
@@ -336,6 +387,7 @@ async def _team_agent_for_session(
                 params=TeamBootstrapParams(
                     channel_id=channel_id,
                     sessions_root=_resolve_bootstrap_sessions_root(),
+                    agent_workspace=_resolve_bootstrap_agent_workspace(),
                 ),
             )
         finally:
@@ -2481,6 +2533,7 @@ async def _ensure_dynamic_member_execution_loop(
                 channel_id=channel_id,
                 request_metadata=request_metadata,
                 sessions_root=_resolve_bootstrap_sessions_root(),
+                agent_workspace=_resolve_bootstrap_agent_workspace(),
             ),
         )
         helper_token = set_session_id(sid)

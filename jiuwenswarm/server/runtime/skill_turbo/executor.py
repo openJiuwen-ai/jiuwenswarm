@@ -1815,7 +1815,16 @@ class SkillTurboExecutor:
                 logger.exception(
                     "[SkillTurboExecutor] use_tool failed name=%s err=%r", tool_name, e
                 )
-                ctx.inputs.tool_result = f"Error: {e}"
+                # T1 统一 schema：失败不再降级为裸字符串 "Error: {e}"（旧形状
+                # 消费端只能靠文本前缀识别）；tool_utils 判定链对 dict 的
+                # status/success/error 键链天然识别。
+                ctx.inputs.tool_result = {
+                    "status": "error",
+                    "success": False,
+                    "error_code": "skill_turbo_tool_error",
+                    "error_message": str(e),
+                    "error": str(e),
+                }
                 await self._run_rail_hook("after_tool_call", ctx)
                 trace_status = "error"
                 trace_error = repr(e)
@@ -2053,6 +2062,7 @@ class SkillTurboExecutor:
                             response = await client.invoke(
                                 messages,
                                 max_tokens=_DEFAULT_LLM_MAX_TOKENS,
+                                request_purpose="skill_turbo",
                                 **thinking_kwargs,
                             )
                         except Exception as inv_exc:
@@ -2067,6 +2077,7 @@ class SkillTurboExecutor:
                                 response = await client.invoke(
                                     messages,
                                     max_tokens=_DEFAULT_LLM_MAX_TOKENS,
+                                    request_purpose="skill_turbo",
                                 )
                             else:
                                 raise
@@ -2242,6 +2253,7 @@ class SkillTurboExecutor:
                                 async for chunk in client.stream(
                                     messages,
                                     max_tokens=_DEFAULT_LLM_MAX_TOKENS,
+                                    request_purpose="skill_turbo",
                                     **thinking_kwargs,
                                 ):
                                     yield chunk
@@ -2257,6 +2269,7 @@ class SkillTurboExecutor:
                                     async for chunk in client.stream(
                                         messages,
                                         max_tokens=_DEFAULT_LLM_MAX_TOKENS,
+                                        request_purpose="skill_turbo",
                                     ):
                                         yield chunk
                                 else:

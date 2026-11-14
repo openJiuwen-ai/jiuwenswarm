@@ -45,6 +45,45 @@ _WORKFLOW_SNAPSHOT_MAX_WORKFLOWS = 1000
 _WORKFLOW_LIST_SUMMARY_STRING_LIMIT = 256
 _WORKFLOW_COLLAPSED_AGENT_TEXT_LIMIT = 512
 _WORKFLOW_WAITING_HUMAN_PROMPT_MAX_BYTES = 512 * 1024
+# ~200-char stubs on get_phase agent rows; full text comes from get_agent.
+_WORKFLOW_AGENT_SUMMARY_PREVIEW_LIMIT = 200
+_WORKFLOW_PHASE_MAX_AGENT_LIMIT = 2000
+
+# Identity / counters kept on get_phase agent summaries (no heavy text bodies).
+_WORKFLOW_AGENT_SUMMARY_KEEP_KEYS = (
+    "id",
+    "name",
+    "status",
+    "model",
+    "kind",
+    "node_type",
+    "agent_type",
+    "agent_template",
+    "display_name",
+    "correlation_id",
+    "parent_session_id",
+    "member_name",
+    "started_at",
+    "completed_at",
+    "duration_ms",
+    "token_count",
+    "cache_token_count",
+    "input_token_count",
+    "output_token_count",
+)
+
+_WORKFLOW_PHASE_META_KEEP_KEYS = (
+    "id",
+    "name",
+    "description",
+    "status",
+    "agent_count",
+    "completed_agent_count",
+    "phase_type",
+    "parent_phase",
+    "iteration",
+    "verify_groups",
+)
 
 _TRUNCATE_SUFFIX = " [truncated]"
 
@@ -508,6 +547,53 @@ def _sanitize_workflow_snapshot_item_for_wire(item: Any) -> dict[str, Any]:
     return _collapse_oversized_workflow_snapshot_item(item)
 
 
+def _iter_waiting_human_agents(item: dict[str, Any]) -> list[dict[str, Any]]:
+    """Collect waiting-human agent dicts still present on ``item``."""
+    agents: list[dict[str, Any]] = []
+    phases = item.get("phases")
+    if not isinstance(phases, list):
+        return agents
+    for phase in phases:
+        if not isinstance(phase, dict):
+            continue
+        phase_agents = phase.get("agents")
+        if not isinstance(phase_agents, list):
+            continue
+        for agent in phase_agents:
+            if isinstance(agent, dict) and _is_waiting_human_agent(agent):
+                agents.append(agent)
+    return agents
+
+
+def _shrink_waiting_human_prompts_to_budget(
+    item: dict[str, Any],
+    budget: int,
+) -> dict[str, Any]:
+    """Truncate waiting-human prompts until ``item`` fits ``budget`` when possible.
+
+    Always keeps the waiting-human nodes. Prefer a truncated question over a
+    bare metadata stub that would leave a HITL turn without its prompt.
+    """
+    if _json_wire_size(item) <= budget:
+        return item
+    agents = _iter_waiting_human_agents(item)
+    if not agents:
+        return item
+    limit = _WORKFLOW_WAITING_HUMAN_PROMPT_MAX_BYTES
+    while _json_wire_size(item) > budget and limit > 64:
+        limit = max(64, limit // 2)
+        for agent in agents:
+            prompt = agent.get("human_prompt")
+            if isinstance(prompt, str) and prompt:
+                agent["human_prompt"] = _truncate_string_by_bytes(prompt, limit)
+    if _json_wire_size(item) > budget:
+        for agent in agents:
+            prompt = agent.get("human_prompt")
+            if isinstance(prompt, str) and prompt:
+                agent["human_prompt"] = _truncate_string_by_bytes(prompt, 64)
+    return item
+
+
 def _fit_workflow_detail_to_budget(
     item: dict[str, Any],
     *,
@@ -516,9 +602,10 @@ def _fit_workflow_detail_to_budget(
 ) -> dict[str, Any]:
     """Shrink a workflow detail item until it fits ``budget`` bytes.
 
-    Drop logs first, then strip to waiting-human-only, then bare metadata.
-    Preserved human prompts are re-attached after every shrink so a HITL turn
-    is never left without its question.
+    Drop logs first, then strip to waiting-human-only (prompts truncated as
+    needed). Preserved human prompts are re-attached after every shrink so a
+    HITL turn is never left without its question — never fall through to a
+    bare metadata stub that drops waiting-human nodes.
     """
     if _json_wire_size(item) <= budget:
         return item
@@ -536,6 +623,9 @@ def _fit_workflow_detail_to_budget(
         if _json_wire_size(trimmed) <= budget:
             trimmed["truncated"] = True
             return trimmed
+        trimmed = _shrink_waiting_human_prompts_to_budget(trimmed, budget)
+        trimmed["truncated"] = True
+        return trimmed
 
     minimal = _minimal_workflow_snapshot_item_for_wire(item)
     minimal["truncated"] = True
@@ -680,11 +770,10 @@ def _build_workflow_detail_payload(workflow: dict[str, Any], *, session_id: str)
         item = _collapse_oversized_workflow_snapshot_item(workflow)
         truncated = True
         if _json_wire_size(item) > detail_budget:
+            # Keep waiting-human nodes here; _fit_workflow_detail_to_budget
+            # truncates prompts as the floor. Do not drop to bare metadata.
             item = _minimal_workflow_detail_preserving_waiting_human(workflow)
             truncated = True
-            if _json_wire_size(item) > detail_budget:
-                item = _minimal_workflow_snapshot_item_for_wire(workflow)
-                truncated = True
     _restore_waiting_human_prompts(item, preserved_prompts)
     item = _fit_workflow_detail_to_budget(
         item,
@@ -729,6 +818,189 @@ def _find_workflow_agent(
             if correlation_id and agent.get("correlation_id") == correlation_id:
                 return agent
     return None
+
+
+def _find_workflow_phase(
+    workflow: dict[str, Any],
+    phase_id: str,
+) -> dict[str, Any] | None:
+    """Locate one phase dict by id inside a workflow run."""
+    phases = workflow.get("phases")
+    if not isinstance(phases, list):
+        return None
+    for phase in phases:
+        if isinstance(phase, dict) and phase.get("id") == phase_id:
+            return phase
+    return None
+
+
+def _workflow_agent_summary(agent: dict[str, Any]) -> dict[str, Any]:
+    """Compact agent row for ``action=get_phase`` — identity + short previews.
+
+    Heavy text (``prompt`` / ``outcome`` / ``error`` / HITL bodies / activity)
+    stays off the wire; the tree expands via ``action=get_agent``.
+    """
+    summary: dict[str, Any] = {
+        "id": agent.get("id", ""),
+        "name": agent.get("name", ""),
+        "status": agent.get("status", "running"),
+    }
+    for key in _WORKFLOW_AGENT_SUMMARY_KEEP_KEYS:
+        if key in ("id", "name", "status"):
+            continue
+        value = agent.get(key)
+        if value is None:
+            continue
+        summary[key] = value
+
+    outcome = agent.get("outcome")
+    if isinstance(outcome, str) and outcome.strip():
+        summary["outcome_preview"] = _truncate_string_by_bytes(
+            outcome, _WORKFLOW_AGENT_SUMMARY_PREVIEW_LIMIT
+        )
+    error = agent.get("error")
+    if isinstance(error, str) and error.strip():
+        summary["error_preview"] = _truncate_string_by_bytes(
+            error, _WORKFLOW_AGENT_SUMMARY_PREVIEW_LIMIT
+        )
+
+    summary["detail_pending"] = True
+    return summary
+
+
+def _build_workflow_phase_payload(
+    workflow: dict[str, Any],
+    *,
+    session_id: str,
+    phase_id: str,
+    agent_offset: int = 0,
+    agent_limit: int | None = None,
+) -> dict[str, Any]:
+    """Build the ``workflow_phase_detail`` payload for ``action=get_phase``."""
+    phase = _find_workflow_phase(workflow, phase_id)
+    if phase is None:
+        return {
+            "type": "workflow_phase_detail",
+            "action": "get_phase",
+            "session_id": session_id,
+            "error": f"phase not found: {phase_id}",
+        }
+
+    agents_raw = phase.get("agents")
+    agents = [item for item in agents_raw if isinstance(item, dict)] if isinstance(agents_raw, list) else []
+    total = len(agents)
+    offset = max(0, int(agent_offset or 0))
+    # No agent_limit → return the full remaining page (web expands a phase once
+    # and does not yet paginate). An explicit limit is clamped for wire safety.
+    if agent_limit is None:
+        page = agents[offset:]
+    else:
+        limit = _coerce_int(
+            agent_limit,
+            default=_WORKFLOW_PHASE_MAX_AGENT_LIMIT,
+            minimum=1,
+            maximum=_WORKFLOW_PHASE_MAX_AGENT_LIMIT,
+        )
+        page = agents[offset:offset + limit]
+    has_more = offset + len(page) < total
+
+    phase_out: dict[str, Any] = {}
+    for key in _WORKFLOW_PHASE_META_KEEP_KEYS:
+        value = phase.get(key)
+        if value is None:
+            continue
+        if key == "description" and isinstance(value, str):
+            phase_out[key] = _truncate_string_by_bytes(
+                value, _WORKFLOW_LIST_SUMMARY_STRING_LIMIT
+            )
+        elif key == "verify_groups" and isinstance(value, list):
+            # Keep structure for the tree; strip heavy per-round outcome bodies.
+            groups: list[dict[str, Any]] = []
+            for group in value:
+                if not isinstance(group, dict):
+                    continue
+                slim = {
+                    gk: gv
+                    for gk, gv in group.items()
+                    if gk != "outcome" and gv is not None
+                }
+                outcome = group.get("outcome")
+                if isinstance(outcome, str) and outcome.strip():
+                    slim["outcome_preview"] = _truncate_string_by_bytes(
+                        outcome, _WORKFLOW_AGENT_SUMMARY_PREVIEW_LIMIT
+                    )
+                groups.append(slim)
+            phase_out[key] = groups
+        else:
+            phase_out[key] = value
+
+    phase_out.setdefault("id", phase_id)
+    phase_out.setdefault("name", phase.get("name", ""))
+    phase_out.setdefault("status", phase.get("status", "running"))
+    phase_out.setdefault("agent_count", total)
+    phase_out.setdefault("completed_agent_count", phase.get("completed_agent_count", 0))
+    phase_out["agents"] = [_workflow_agent_summary(agent) for agent in page]
+    phase_out["agent_total"] = total
+    phase_out["has_more"] = has_more
+    phase_out["detail_pending"] = False
+
+    return {
+        "type": "workflow_phase_detail",
+        "action": "get_phase",
+        "phase": phase_out,
+        "session_id": session_id,
+        "agent_total": total,
+        "has_more": has_more,
+    }
+
+
+def _build_workflow_agent_payload(
+    workflow: dict[str, Any],
+    *,
+    session_id: str,
+    phase_id: str,
+    agent_id: str,
+) -> dict[str, Any]:
+    """Build the ``workflow_agent_detail`` payload for ``action=get_agent``."""
+    phase = _find_workflow_phase(workflow, phase_id)
+    if phase is None:
+        return {
+            "type": "workflow_agent_detail",
+            "action": "get_agent",
+            "session_id": session_id,
+            "error": f"phase not found: {phase_id}",
+        }
+
+    agents_raw = phase.get("agents")
+    agents = [item for item in agents_raw if isinstance(item, dict)] if isinstance(agents_raw, list) else []
+    match = next((item for item in agents if item.get("id") == agent_id), None)
+    if match is None:
+        return {
+            "type": "workflow_agent_detail",
+            "action": "get_agent",
+            "session_id": session_id,
+            "error": f"agent not found: {agent_id}",
+        }
+
+    sanitized = _sanitize_history_wire_value(match)
+    if not isinstance(sanitized, dict):
+        sanitized = {"id": agent_id, "summary": str(sanitized)}
+    # Full body is present — clear the get_phase lazy-load marker.
+    sanitized.pop("detail_pending", None)
+    sanitized.pop("outcome_preview", None)
+    sanitized.pop("error_preview", None)
+
+    # Single-agent budgets: if still huge, collapse text fields but keep identity.
+    if _json_wire_size(sanitized) > _HISTORY_WIRE_RECORD_MAX_BYTES:
+        sanitized = _workflow_agent_for_collapse(match)
+        sanitized.pop("detail_pending", None)
+
+    return {
+        "type": "workflow_agent_detail",
+        "action": "get_agent",
+        "agent": sanitized,
+        "session_id": session_id,
+    }
 
 
 def _build_workflow_human_prompt_payload(
@@ -797,6 +1069,8 @@ __all__ = [
     "_WORKFLOW_LIST_SUMMARY_STRING_LIMIT",
     "_WORKFLOW_COLLAPSED_AGENT_TEXT_LIMIT",
     "_WORKFLOW_WAITING_HUMAN_PROMPT_MAX_BYTES",
+    "_WORKFLOW_AGENT_SUMMARY_PREVIEW_LIMIT",
+    "_WORKFLOW_PHASE_MAX_AGENT_LIMIT",
     "_HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES",
     "_json_wire_size",
     "_coerce_int",
@@ -814,6 +1088,8 @@ __all__ = [
     "_collapse_oversized_workflow_snapshot_item",
     "_minimal_workflow_snapshot_item_for_wire",
     "_minimal_workflow_detail_preserving_waiting_human",
+    "_iter_waiting_human_agents",
+    "_shrink_waiting_human_prompts_to_budget",
     "_sanitize_workflow_snapshot_item_for_wire",
     "_fit_workflow_detail_to_budget",
     "_workflow_list_summary_phase",
@@ -823,6 +1099,10 @@ __all__ = [
     "_build_workflow_list_payload",
     "_build_workflow_detail_payload",
     "_find_workflow_agent",
+    "_find_workflow_phase",
+    "_workflow_agent_summary",
+    "_build_workflow_phase_payload",
+    "_build_workflow_agent_payload",
     "_build_workflow_human_prompt_payload",
     "_build_workflow_snapshot_payload",
 ]

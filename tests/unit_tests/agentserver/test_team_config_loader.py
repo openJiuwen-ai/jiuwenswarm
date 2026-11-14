@@ -889,6 +889,7 @@ def test_list_team_template_summaries_reads_modes_team_templates() -> None:
             "available": True,
             "source": "modes.team.default",
             "team_name": "configured_team",
+            "expose_in_catalog": False,
         },
         {
             "template_id": "research",
@@ -896,6 +897,7 @@ def test_list_team_template_summaries_reads_modes_team_templates() -> None:
             "available": True,
             "source": "modes.team.research",
             "team_name": "",
+            "expose_in_catalog": False,
         },
     ]
 
@@ -918,6 +920,7 @@ def test_list_team_template_summaries_falls_back_to_legacy_team_config() -> None
             "available": True,
             "source": "team",
             "team_name": "legacy_team",
+            "expose_in_catalog": False,
         },
     ]
 

@@ -76,6 +76,8 @@ from jiuwenswarm.common.utils import (
     collapse_nested_agent_workspace_dir,
     get_env_file,
     reset_free_search_runtime_flags,
+    configure_skill_library,
+    migrate_team_skill_views,
 )
 from jiuwenswarm.server.runtime.a2ui.integration import (
     finalize_assistant_response_if_a2ui,
@@ -802,6 +804,9 @@ _SKILL_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SKILLS_ENTERPRISE_UNINSTALL: "handle_skills_web_uninstall",
     ReqMethod.SKILLS_ENTERPRISE_SOURCE_PROVIDERS: "handle_skills_source_providers",
     ReqMethod.SKILLS_ENTERPRISE_SOURCE_SEARCH: "handle_skills_source_search",
+    ReqMethod.SKILLS_VISIBILITY_GET: "handle_skills_visibility_get",
+    ReqMethod.SKILLS_VISIBILITY_SET: "handle_skills_visibility_set",
+    ReqMethod.SKILLS_VISIBILITY_UPDATE: "handle_skills_visibility_update",
 }
 
 # Evolution version RPCs (archives/rollback/rebuild) are handled by DeepAdapter.
@@ -814,6 +819,13 @@ _SKILL_EVOLUTION_RAIL_ROUTES: frozenset[ReqMethod] = frozenset(
 )
 
 # Web 企业装卸（对外 RPC 仍为 skills.enterprise.*）
+_SKILL_VISIBILITY_WRITE_HANDLERS: frozenset[str] = frozenset(
+    {
+        "handle_skills_visibility_set",
+        "handle_skills_visibility_update",
+    }
+)
+
 _SKILLS_WEB_HANDLERS: frozenset[str] = frozenset(
     {
         "handle_skills_web_install",
@@ -1274,6 +1286,19 @@ class JiuWenSwarm:
                     agent_id=self._agent_id,
                 ),
             )
+        try:
+            configure_skill_library()
+            # Migration intersects legacy views against *all* team library
+            # roots (Ace SHARED tips), not only the writable primary pin that
+            # configure_skill_library installs into agent-core.
+            migrate_team_skill_views()
+        except Exception:
+            # Soft-link views are no longer consulted. Swallowing migrate
+            # failures would leave members without skills-visibility.json on
+            # TeamSkillUse's unrestricted (empty-allow inherit) path — a silent
+            # privilege widen. Fail loud so operators fix the library/view set.
+            logger.exception("[JiuWenSwarm] skill library preparation failed")
+            raise
         self._session_manager = SessionManager()
         self._permission_response_ledger = PermissionResponseLedger()
         # SkillDev 模式：懒初始化，首次 skilldev.* 请求时构造
@@ -1705,18 +1730,18 @@ class JiuWenSwarm:
     async def _on_skillnet_install_complete(self) -> None:
         """Reload the agent and refresh active team shared skill links after async install."""
         await self.create_instance()
-        self._refresh_team_shared_skill_links()
+        await self._reload_team_skill_views()
         self.bump_skill_enabled_version()
 
     @staticmethod
-    def _refresh_team_shared_skill_links(session_id: str | None = None) -> None:
-        """Refresh team shared skill links after the global skill root changes."""
+    async def _reload_team_skill_views(session_id: str | None = None) -> None:
+        """Reload live team member Skill views after the global library changes."""
         try:
-            from jiuwenswarm.agents.harness.team import refresh_team_shared_skill_links_across_managers
+            from jiuwenswarm.agents.harness.team import reload_team_skill_views_across_managers
 
-            refresh_team_shared_skill_links_across_managers(session_id)
+            await reload_team_skill_views_across_managers(session_id)
         except Exception as exc:
-            logger.warning("[JiuWenSwarm] team shared skill link refresh failed: %s", exc)
+            logger.warning("[JiuWenSwarm] team skill view reload failed: %s", exc)
 
     def bump_skill_enabled_version(self) -> int | None:
         """Mark live session SkillUseRail allow-lists stale after skill install/uninstall.
@@ -2577,7 +2602,7 @@ class JiuWenSwarm:
                 await self.create_instance()
                 _reload_create_ms = (time.perf_counter() - _reload_t0) * 1000.0
                 _links_t0 = time.perf_counter()
-                self._refresh_team_shared_skill_links(request.session_id)
+                await self._reload_team_skill_views(request.session_id)
                 logger.info(
                     "[SkillManager] skills reload handler=%s create_instance_ms=%.1f links_ms=%.1f request_id=%s",
                     handler_name,
@@ -2588,7 +2613,10 @@ class JiuWenSwarm:
                 skills_changed = True
             elif handler_name == "handle_skills_uninstall" and payload.get("success"):
                 await self._refresh_skill_rails_after_change()
-                self._refresh_team_shared_skill_links(request.session_id)
+                await self._reload_team_skill_views(request.session_id)
+                skills_changed = True
+            elif handler_name in _SKILL_VISIBILITY_WRITE_HANDLERS and payload.get("success"):
+                await self._reload_team_skill_views(request.session_id)
                 skills_changed = True
             if skills_changed:
                 # Root create_instance / refresh often no-ops on the chat path;
@@ -4755,3 +4783,11 @@ class JiuWenSwarm:
             self._adapter = None
 
         logger.info("[JiuWenSwarm] cleanup: 完成")
+
+    async def apply_rsi_harness_install(self, operation, *, config_path, installation_id):
+        await self.ensure_instance()
+        apply = getattr(self._adapter, "apply_rsi_harness_install", None)
+        if not callable(apply):
+            raise RuntimeError("Current agent does not support Harness installation")
+        return await apply(operation, config_path=config_path, installation_id=installation_id)
+

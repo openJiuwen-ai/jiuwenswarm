@@ -24,6 +24,8 @@ def test_web_flash_schema_requires_exactly_one_action() -> None:
     validate({"search": {"query": "current news"}})
     validate({"search": {"query": "current news", "search_source": "bocha"}})
     validate({"fetch": {"url": ["https://example.com"]}})
+    validate({"images": {"query": "签约现场"}})
+    validate({"images": {"query": "签约现场", "max_images": 2, "search_mode": "paid"}})
 
     invalid = [
         {},
@@ -33,6 +35,10 @@ def test_web_flash_schema_requires_exactly_one_action() -> None:
         {"fetch": {"url": "https://example.com"}},
         {"search": {"query": "q", "provider": "paid"}},
         {"search": {"query": "q", "search_source": "not-a-provider"}},
+        {"images": {}},
+        {"images": {"query": ""}},
+        {"images": {"query": "q", "max_images": 99}},
+        {"images": {"query": "q", "unknown": 1}},
     ]
     for inputs in invalid:
         with pytest.raises(ValidationError):
@@ -154,6 +160,70 @@ async def test_web_flash_explicit_search_source_reaches_web_search_impl(
             "max_results": 10,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_web_flash_images_action_returns_image_paths(monkeypatch) -> None:
+    captured: dict = {}
+
+    class _Outcome:
+        error = ""
+
+        def to_content(self) -> str:
+            return "downloaded 1 image"
+
+        def as_dict(self) -> dict:
+            return {"images": [{"local_path": "/tmp/a.png"}], "stats": {"downloaded": 1}}
+
+    async def _fake_search_images(query: str, **kwargs):
+        captured["query"] = query
+        captured.update(kwargs)
+        return _Outcome()
+
+    monkeypatch.setattr(web_flash, "search_images", _fake_search_images)
+    tool = web_flash.build_web_flash_tool(agent_id="agent", language="cn")
+
+    result = await tool.invoke(
+        {
+            "images": {
+                "query": "签约现场",
+                "max_images": 2,
+                "output_dir": "D:/slides/images",
+            }
+        }
+    )
+
+    assert result.data["content"] == "downloaded 1 image"
+    assert result.data["images"] == [{"local_path": "/tmp/a.png"}]
+    assert "multimodal" not in result.data
+    assert captured["query"] == "签约现场"
+    assert captured["max_images"] == 2
+    assert captured["output_dir"] == "D:/slides/images"
+
+
+@pytest.mark.asyncio
+async def test_web_flash_images_action_reports_failure_when_outcome_has_error(
+    monkeypatch,
+) -> None:
+    class _Outcome:
+        error = "no search results"
+
+        def to_content(self) -> str:
+            return "Failed: no search results"
+
+        def as_dict(self) -> dict:
+            return {"images": [], "stats": {"records": 0}}
+
+    async def _fake_search_images(query: str, **_kwargs):
+        return _Outcome()
+
+    monkeypatch.setattr(web_flash, "search_images", _fake_search_images)
+    tool = web_flash.build_web_flash_tool(agent_id="agent", language="cn")
+
+    result = await tool.invoke({"images": {"query": "签约现场"}})
+
+    assert result.success is False
+    assert result.error == "no search results"
 
 
 @pytest.mark.asyncio

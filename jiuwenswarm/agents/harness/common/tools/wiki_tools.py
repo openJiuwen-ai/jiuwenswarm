@@ -431,7 +431,7 @@ async def wiki_ingest(
             src_path = get_agent_workspace_dir() / src_path
 
         if not src_path.exists():
-            return f"Error: Source {source} not found."
+            return f"[ERROR]: Source {source} not found."
 
         # Ensure we avoid circular ingestion by skipping the .llm_wiki directory itself
         protected_root = str(final_workspace).lower()
@@ -460,7 +460,7 @@ async def wiki_ingest(
 
         return "Wiki Ingestion Results:\n" + json.dumps(all_results, indent=2)
     except Exception as e:
-        return f"Wiki Ingest Error: {str(e)}"
+        return f"[ERROR]: Wiki Ingest Error: {str(e)}"
 
 
 @tool(
@@ -476,13 +476,13 @@ async def wiki_query(
 ) -> str:
     """Queries the LLM Wiki."""
     if not query or not query.strip():
-        return "Error: Query cannot be empty."
+        return "[ERROR]: Query cannot be empty."
     try:
         model = _get_default_model()
         final_workspace = _resolve_workspace(workspace)
         if not final_workspace.exists():
             return (
-                f"Error: The workspace '{workspace}' does not have an initialized LLM Wiki."
+                f"[ERROR]: The workspace '{workspace}' does not have an initialized LLM Wiki."
                 " You must use 'wiki_ingest' first to create the knowledge base."
             )
         wiki = LLMWiki(workspace=str(final_workspace), model=model, sys_operation=sys_operation)
@@ -492,10 +492,10 @@ async def wiki_query(
         if "output" in result:
             return str(result["output"])
         elif "error" in result:
-            return f"Error querying wiki: {result['error']}"
+            return f"[ERROR]: Error querying wiki: {result['error']}"
         return json.dumps(result, indent=2)
     except Exception as e:
-        return f"Wiki Query Error: {str(e)}"
+        return f"[ERROR]: Wiki Query Error: {str(e)}"
 
 
 @tool(
@@ -513,7 +513,7 @@ async def wiki_lint(workspace: str = "", sys_operation: Optional[SysOperation] =
         final_workspace = _resolve_workspace(workspace)
         if not final_workspace.exists():
             return (
-                f"Error: The workspace '{workspace}' does not have an initialized LLM Wiki."
+                f"[ERROR]: The workspace '{workspace}' does not have an initialized LLM Wiki."
                 " You must use 'wiki_ingest' first to create the knowledge base."
             )
         wiki = LLMWiki(workspace=str(final_workspace), model=model, sys_operation=sys_operation)
@@ -523,7 +523,7 @@ async def wiki_lint(workspace: str = "", sys_operation: Optional[SysOperation] =
         if "output" in result:
             return str(result["output"])
         elif "error" in result:
-            return f"Error linting wiki: {result['error']}"
+            return f"[ERROR]: Error linting wiki: {result['error']}"
         return json.dumps(result, indent=2)
     except Exception as e:
-        return f"Wiki Lint Error: {str(e)}"
+        return f"[ERROR]: Wiki Lint Error: {str(e)}"

@@ -50,6 +50,7 @@ from jiuwenswarm.agents.swarm.providers import (
     evolution_rails as _evolution_rails,
     long_horizon as _long_horizon,
     member_rails as _member_rails,
+    multimodal as _multimodal,
     runtime_tools as _runtime_tools,
     skills as _skills,
     tools as _tools,
@@ -77,7 +78,7 @@ AUDIO = _OJ_AUDIO
 PERSONAL_CONTEXT = _member_rails.PERSONAL_CONTEXT
 RUNTIME_PROMPT = _member_rails.RUNTIME_PROMPT
 TEAM_SKILL_STORAGE_POLICY = _member_rails.TEAM_SKILL_STORAGE_POLICY
-TEAM_SHARED_SKILL_LINK_REFRESH = _member_rails.TEAM_SHARED_SKILL_LINK_REFRESH
+TEAM_SKILL_LIBRARY_RELOAD = _member_rails.TEAM_SKILL_LIBRARY_RELOAD
 TEAM_WORKSPACE_REPORT_PATH = _member_rails.TEAM_WORKSPACE_REPORT_PATH
 CONTEXT_PROCESSOR = _member_rails.CONTEXT_PROCESSOR
 CONTEXT_OVERFLOW_RECOVERY = _member_rails.CONTEXT_OVERFLOW_RECOVERY
@@ -89,11 +90,15 @@ A2A_OUTBOUND_TOOLKIT = _member_rails.A2A_OUTBOUND_TOOLKIT
 DISABLED_TOOLS = _member_rails.DISABLED_TOOLS
 REQUEST_SCOPED_MCP_TOOLS = _member_rails.REQUEST_SCOPED_MCP_TOOLS
 MODEL_ROUTING = _member_rails.MODEL_ROUTING
+# Leader-only native image input (uploaded pixels into the model context).
+MULTIMODAL_IMAGE = _multimodal.MULTIMODAL_IMAGE
 TEAM_PERMISSION = _member_rails.TEAM_PERMISSION
 TEAM_PERMISSION_POLICY = _member_rails.TEAM_PERMISSION_POLICY
 TEAM_SKILL_EVOLUTION = _evolution_rails.TEAM_SKILL_EVOLUTION
 TEAM_SKILL_CREATE = _evolution_rails.TEAM_SKILL_CREATE
 MEMBER_SKILL_EVOLUTION = _evolution_rails.MEMBER_SKILL_EVOLUTION
+TEAM_TTSE = _evolution_rails.TEAM_TTSE
+MEMBER_TTSE = _evolution_rails.MEMBER_TTSE
 EVOLUTION_INTERRUPT = _evolution_rails.EVOLUTION_INTERRUPT
 
 # Code-mode (code.team / team.plan) swarm-owned rail provider names.
@@ -200,7 +205,7 @@ __all__ = [
     "MEMBER_SKILL_TOOLKIT",
     "RUNTIME_PROMPT",
     "TEAM_SKILL_STORAGE_POLICY",
-    "TEAM_SHARED_SKILL_LINK_REFRESH",
+    "TEAM_SKILL_LIBRARY_RELOAD",
     "TEAM_WORKSPACE_REPORT_PATH",
     "CONTEXT_PROCESSOR",
     "CONTEXT_OVERFLOW_RECOVERY",
@@ -211,11 +216,15 @@ __all__ = [
     "A2A_OUTBOUND_TOOLKIT",
     "DISABLED_TOOLS",
     "REQUEST_SCOPED_MCP_TOOLS",
+    "MODEL_ROUTING",
+    "MULTIMODAL_IMAGE",
     "TEAM_PERMISSION",
     "TEAM_PERMISSION_POLICY",
     "TEAM_SKILL_EVOLUTION",
     "TEAM_SKILL_CREATE",
     "MEMBER_SKILL_EVOLUTION",
+    "TEAM_TTSE",
+    "MEMBER_TTSE",
     "RESPONSE_PROMPT",
     "SYS_OPERATION",
     "STREAM_EVENT",

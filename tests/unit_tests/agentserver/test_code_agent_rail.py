@@ -36,6 +36,39 @@ class TestBuildAgentToolCard:
 
 
 class TestAgentTool:
+    @pytest.mark.parametrize("lazy", [False, True])
+    def test_create_subagent_preserves_spec_rails(self, monkeypatch, tmp_path, lazy):
+        from openjiuwen.harness.workspace.workspace import Workspace
+        from jiuwenswarm.agents.harness.common.rails.disabled_tools_rail import DisabledToolsRail
+        from jiuwenswarm.server.runtime.agent_adapter.deep import subagent_load
+
+        forked = object()
+        fork = MagicMock(return_value=forked)
+        progressive = SimpleNamespace(fork_for_agent=fork)
+        monkeypatch.setattr(subagent_load, "get_config", dict)
+        monkeypatch.setattr(subagent_load, "is_subagent_tool_lazy_load_enabled", lambda _: lazy)
+        monkeypatch.setattr(subagent_load, "build_progressive_tool_rail_from_config", lambda *args, **kwargs: progressive)
+        parent = SimpleNamespace(
+            deep_config=SimpleNamespace(
+                model=object(), workspace=Workspace(root_path=str(tmp_path)),
+                max_iterations=10, backend=None, sys_operation=None,
+                language="cn", prompt_mode=None, enable_read_image_multimodal=False,
+            ),
+            ability_manager=SimpleNamespace(list=list),
+        )
+        definition = _make_agent_def()
+        definition.disallowed_tools = ["ttse_consult"]
+        tool = _make_agent_tool(parent=parent, custom_agents=[definition])
+        with patch("openjiuwen.harness.factory.create_deep_agent") as factory:
+            tool._create_sub_agent(definition, "child-session")
+        rails = factory.call_args.kwargs["rails"]
+        assert any(isinstance(rail, DisabledToolsRail) and "ttse_consult" in rail._disabled_tools for rail in rails)
+        if lazy:
+            assert forked in rails
+            fork.assert_called_once_with()
+        else:
+            assert len(rails) == 1
+
     @pytest.mark.asyncio
     async def test_invoke_missing_subagent_type_raises(self):
         tool = _make_agent_tool()

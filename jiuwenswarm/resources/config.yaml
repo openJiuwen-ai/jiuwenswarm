@@ -9,6 +9,23 @@ config:
 # 前端显示语言：zh（中文）/ en（英文），与 Web 界面语言切换同步
 preferred_language: zh
 
+# 网页回答脱敏。enabled 默认关闭，关闭时 rules 不生效，原文直出。
+# 只替换网页上看到的回答、思考、工具结果和历史回放，不改历史文件。
+# pattern 要能匹配敏感内容本身。命中的那一段换成等长星号。
+sensitive_mask:
+  enabled: false
+  rules:
+    - title: 邮箱
+      pattern: '\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}\b'
+    - title: 手机号
+      pattern: '(?<!\d)(?:\+?86[-\s]?)?1[3-9]\d{9}(?!\d)'
+    - title: 身份证号
+      pattern: '(?<!\d)\d{17}[\dXx](?!\d)'
+    - title: API Key
+      pattern: '(?:sk|rk|pk|ak)-[A-Za-z0-9]{8,}'
+    - title: Token
+      pattern: 'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
+
 # Web 首次模型配置引导；用户确认完成后会自动关闭，可通过侧栏问号再次打开
 setup_guide:
   enabled: true
@@ -37,6 +54,10 @@ a2ui:
   stream_validation_enabled: true
   non_web_fallback_enabled: false
   dev_smoke_tools_enabled: false
+
+# RSI 递归自我改进实验入口；默认开启
+rsi:
+  enabled: true
 
 symphony:
   enabled: false
@@ -330,7 +351,8 @@ models:
         max_tokens: ${LLM_MAX_TOKENS:-32768}
       # 该主模型的原生能力模态（OpenAI 风格）：只有 modalities 含 image 才走原生看图；
       # 未声明 / 不含 image / 其它值一律按不支持处理（走 VQA / 视觉工具链），不再内置能力表猜测。
-      # modalities: [text, image]
+      # 按前端「图片输入」开关下发 MODEL_MODALITIES（text,image / 不传即 text）。
+      modalities: ${MODEL_MODALITIES:-text}
       is_default: true
   video:
     model_client_config:
@@ -647,6 +669,9 @@ react:
   # send_input/close/resume 六个工具替换（两者互斥）。默认开启。
   subagent_runtime:
     enabled: true
+    max_spawn_depth: 2            # 1 = 关闭嵌套。2 = general-purpose 下面一层 fork
+    max_concurrent_running: 20    # 整棵树同时 running
+    max_subagents: 20             # 整棵树同时存活，必须 >= 并发
     # 把子代理的思考/工具帧原样镜像到父会话流，并带 stream_source_id=子代理 id，
     # 供按 source 路由的宿主（RelayClaw）渲染成嵌套子代理行。进程级开关：
     # 打开后同一进程服务的所有 channel 都会收到这些帧，默认开启。
@@ -689,6 +714,9 @@ react:
       - write_memory
       - edit_memory
       - external_memory_search
+      - enter_plan_mode             # plan 模式两件套必须常驻（BUG20261105402443）：plan 态下
+      - exit_plan_mode              # reminder 指示模型调 enter_plan_mode，但懒加载把它滤进
+                                    # deferred，模型反复探测无进展触发 agent_ras 熔断 OA.05000060
     # 模型白名单（空=全部启用），对模型名做子串匹配，大小写不敏感；未命中的模型全部工具直接可见。
     # 懒加载依赖模型读懂 tools_search → invoke_tool，加入新模型前需先验证。
     enable_for_models:
@@ -842,10 +870,11 @@ react:
       model_tier: ""            # 可选，lite | pro，对应 models.defaults[].tier；model_name 优先
       gate_mode: "on"           # on = 候选须在验证任务上得分高于原版才采纳；off = 应用成功的修改直接采纳（不比分）
   # TTSE（Two-Track Self-Evolution）FACT/TIP 双轨自演进；与 skill 演进独立
-  # 默认开启；agent 模式挂载 TTSERail，并由代码把 ttse_consult 插入首轮
-  # eager schema（不必写进上方 eager_tools）。
+  # 单 Agent 默认开启：agent 模式挂载 TTSERail，并由代码把 ttse_consult 插入首轮
+  # eager schema（不必写进上方 eager_tools）。专家团看 team_enabled，默认关闭。
   ttse:
-    enabled: true           # 默认开启；true 才挂载 TTSERail（仅 agent 模式）
+    enabled: true           # 单 Agent；true 才挂载 TTSERail（仅 agent 模式）
+    team_enabled: false     # 专家团；与 enabled 独立，默认关闭
     evolve_enabled: true    # 是否从轨迹归纳 FACT/TIP
     inject_enabled: true    # 是否注入系统 prompt
     # Auto-dream（经验库卫生：TTL 剪枝 / 近重合并 / TIP 清洗）
@@ -1311,10 +1340,35 @@ permissions:
   enabled: false
   schema: tiered_policy
   permission_mode: normal
+  # 包内命令 builtin 规则开关；缺键时引擎默认开启。必须出现在模板里，
+  # 用户 override 的 false 才会在 merge 后保留（模板无键会丢掉用户独有键）。
+  package_builtin_rules: true
+  # 宿主守卫：拦杀运行时进程、严格 worktree 等。默认开；用户可改 enabled: false。
+  # 必须出现在模板里，否则用户 override 的 false 会在 merge 后被丢掉。
+  host_guard:
+    enabled: true
+  # 结构底线应对；缺键时引擎五键均按 ask。必须出现在模板里，
+  # 用户 override（如 compound_chain: allow）才会在 merge 后保留。
+  guard_actions:
+    too_complex: ask
+    parse_unavailable: ask
+    structure_guard: ask
+    interpreter_sink: ask
+    compound_chain: ask
   # 技能级动态授权（Skill overlay）：默认关闭；开启后根 SKILL.md 加载经
   # SkillAuthorizationRail 门禁审批，ACTIVE Grant 参与权限合成。
   skill_authorization:
     enabled: false
+  # W3：网页/搜索出站防护；在权限系统开启后独立启用。
+  # 当前受保护传输固定 DNS 校验后的连接 IP，不支持代理，禁止自动直连降级。
+  net_guard:
+    enabled: false
+    defaults: allow
+    urls: {}
+    connection:
+      allow_http: false
+      allow_loopback: false
+      allow_private_network: false
   defaults:
     '*': allow
   tools:
@@ -1516,6 +1570,10 @@ permissions:
       severity: HIGH
   owner_scopes: {}
   deny_guidance_message: ''
+  soft_delete:
+    enabled: false
+    archive_dir: ""
+    batch_delete_threshold: 100
   file_guard:
     enabled: true
     defaults:
@@ -1676,6 +1734,18 @@ web_search:
   paid_provider_order:
     - petal
     - bocha
+  # Image discovery settings for the web image channel (search -> download -> multimodal).
+  # 相关性由搜索引擎排序负责，客户端只做结构性校验（内网地址/占位图/最小尺寸/去重）。
+  image_search:
+    max_images: 6              # 单次最多下载张数（上限 12）
+    max_pages: 3               # 兜底抓页时最多解析多少个结果页（上限 5）
+    min_image_side: 200        # 仅用于滤掉图标/表情等小图，不做相关性判断
+    max_bytes_per_image: 6291456    # 单图字节上限（6MB）
+    max_total_bytes: 18874368       # 单次总字节上限（18MB），超出即停止
+    # 搜索引擎返回的图片结果已按查询相关性排序，默认独占本次检索，不掺网页扒图。
+    prefer_provider_images: true
+    # 仅在 provider 无图、或上面为 false 且张数不足时，才抓结果页 <img> 补足。
+    allow_page_fallback: false
 
 modes:
   # 一级模式 agent / code / team
@@ -1729,6 +1799,9 @@ modes:
       teammate_mode: build_mode
       spawn_mode: inprocess
       enable_swarmflow: false
+      # Optional session/token budget ceiling for SwarmFlow (positive int).
+      # Omitted/null = no budget rail. Only effective when enable_swarmflow is true.
+      # swarmflow_budget:
       # Per-teammate soft ceiling for debate messages; task-board collaboration is excluded.
       max_debate_rounds: 3
 

@@ -1,8 +1,9 @@
 """Request material preparation and immutable snapshot contracts."""
 import asyncio
 import json
-from pathlib import Path
+import os
 import stat
+from pathlib import Path
 
 import pytest
 from jiuwenswarm.agents.harness.common.tools.deepresearch import materials as m
@@ -28,6 +29,9 @@ async def test_snapshot_publish_failure_removes_temporary_file(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    os.name == "nt", reason="POSIX mode bits are not materialized on Windows"
+)
 async def test_snapshot_publish_closes_private_file_before_atomic_replace(tmp_path, monkeypatch):
     source = tmp_path / 'source.txt'
     source.write_text('material content')
@@ -62,14 +66,14 @@ async def test_snapshot_publish_closes_private_file_before_atomic_replace(tmp_pa
 @pytest.mark.asyncio
 async def test_snapshot_large_text_partial_failure_and_dedup(tmp_path):
     source = tmp_path / "source.txt"
-    source.write_text("独特事实青鹭项目效率为73.42%。" * 10000)
+    source.write_text("独特事实青鹭项目效率为73.42%。" * 10000, encoding="utf-8")
     context = {"original_query": "参考附件研究", "files": [
         {"path": str(source), "name": "source.txt"},
         {"path": str(source), "name": "same.txt"},
         {"path": str(tmp_path / "bad.txt"), "name": "bad.txt"}],
         "scope": "session-one", "output_dir": str(tmp_path)}
     ref = await m.prepare_materials(context, "35c0b386-7e75-4923-b373-720ed2ed848b")
-    payload = json.loads(Path(ref["path"]).read_text())
+    payload = json.loads(Path(ref["path"]).read_text(encoding="utf-8"))
     assert len(payload["materials"]) == 1
     assert len(payload["materials"][0]["content"]) > 65536
     assert [r["status"] for r in payload["results"]] == ["ready", "duplicate", "failed"]
@@ -150,7 +154,12 @@ async def test_limits_symlink_and_all_failed(tmp_path, monkeypatch):
     assert ref['results'][0]['status'] == 'limit_exceeded'
     assert '未获得可用材料' in m.material_summary(ref)
     link = tmp_path / 'link.txt'
-    link.symlink_to(source)
+    try:
+        link.symlink_to(source)
+    except OSError:
+        # Creating symlinks needs privilege on Windows; the rejection
+        # semantics are covered where symlinks are creatable.
+        pytest.skip("symlink creation requires privilege on this platform")
     with pytest.raises(m.MaterialsError):
         await m.extract_attachment(str(link))
     monkeypatch.setattr(m, 'MAX_INPUT', 10)
@@ -441,7 +450,7 @@ async def test_candidate_count_and_total_content_limit(tmp_path, monkeypatch):
     reference = await m.prepare_materials(context, '35c0b386-7e75-4923-b373-720ed2ed848b')
     assert len(reference['results']) == 12
     assert reference['results'][10]['status'] == 'limit_exceeded'
-    body = json.loads(Path(reference['path']).read_text())
+    body = json.loads(Path(reference['path']).read_text(encoding='utf-8'))
     assert sum(len(item['content']) for item in body['materials']) <= 50
 
 

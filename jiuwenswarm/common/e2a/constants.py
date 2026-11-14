@@ -100,6 +100,7 @@ E2A_WIRE_SERVER_PUSH_KEY = "_jiuwenswarm_server_push"
 # Gateway 内部断连 cancel 来源；不得由 channel/user metadata 透传生成。
 E2A_INTERNAL_CANCEL_SOURCE_KEY = "_jiuwenswarm_cancel_source"
 E2A_CANCEL_SOURCE_CLIENT_DISCONNECT = "client_disconnect"
+E2A_CANCEL_SOURCE_CRON_COMPLETE = "cron_complete"
 
 # 仅用于编解码 / 队列语义，不得随业务 channel metadata 下发给 Message.metadata
 E2A_WIRE_INTERNAL_METADATA_KEYS: frozenset[str] = frozenset(

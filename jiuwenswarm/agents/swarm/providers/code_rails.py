@@ -255,19 +255,29 @@ class _TeamPlanPermissionInterruptRail:
     input_model=PermissionInterruptInput,
 )
 def build_permission_interrupt(params: dict[str, Any], ctx: SwarmBuildContext) -> Any:
-    """Build PermissionInterruptRail (None unless ``permissions.enabled`` in config)."""
+    """Build PermissionInterruptRail (None unless ``permissions.enabled`` in config).
+
+    Same ``build_permission_rail`` as Deep/Flash adapters; identity dims come
+    from request metadata (personal → default; enterprise → triad / default).
+    Assembly is fail-open: any failure → warning + None (S_17 / 铁律 34).
+    """
     try:
         from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
             PermissionRailBuildOptions,
             build_permission_rail,
         )
+        from jiuwenswarm.common.request_identity import web_routing_identity
 
         inp = PermissionInterruptInput.resolve(params, ctx)
+        identity = web_routing_identity(getattr(ctx, "request_metadata", None))
         rail = build_permission_rail(
             config={"permissions": inp.permissions_config},
             options=PermissionRailBuildOptions(
                 llm=None,
                 model_name=inp.model_name,
+                group_id=identity.get("group_id"),
+                bot_id=identity.get("bot_id"),
+                user_id=identity.get("user_id"),
             ),
         )
         if rail is not None and _is_team_plan_leader(ctx):

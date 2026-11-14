@@ -169,7 +169,8 @@ async def test_get_team_snapshot_filters_leader_member() -> None:
         "members": [
             {
                 "member_id": "worker-1",
-                "name": "",
+                "name": "worker-1",
+                "displayName": "worker-1",
                 "status": "ready",
                 "execution_status": None,
                 "mode": "normal",
@@ -207,7 +208,8 @@ async def test_get_team_snapshot_keeps_members_when_team_info_unavailable() -> N
         "members": [
             {
                 "member_id": "worker-1",
-                "name": "",
+                "name": "worker-1",
+                "displayName": "worker-1",
                 "status": "ready",
                 "execution_status": None,
                 "mode": "normal",
@@ -215,7 +217,8 @@ async def test_get_team_snapshot_keeps_members_when_team_info_unavailable() -> N
             },
             {
                 "member_id": "worker-2",
-                "name": "",
+                "name": "worker-2",
+                "displayName": "worker-2",
                 "status": "ready",
                 "execution_status": None,
                 "mode": "normal",

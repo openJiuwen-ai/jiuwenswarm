@@ -26,12 +26,14 @@ from jiuwenswarm.server.transports.sink import ResponseSink
 #:
 #: 新增能力时在此登记一行；越界访问仍会当场 ``AttributeError``（语义与从前一致）。
 SERVICE_MEMBERS: dict[str, str] = {
+    "get_rsi_handlers": "_get_rsi_handlers",
     # 共享状态（server 实例属性；server 自己也在用，故走委托而非持有）
     "agent_manager": "_agent_manager",
     "session_stream_tasks": "_session_stream_tasks",
     "scheduler_service": "_scheduler_service",
     "scheduler_agent": "_scheduler_agent",
     "jiuwenbox_runner": "_jiuwenbox_runner",
+    "sync_sandbox_runtime": "_sync_sandbox_runtime",
     "proactive_engine": "_proactive_engine",
     "model_cache": "_model_cache",
     "default_model": "_default_model",

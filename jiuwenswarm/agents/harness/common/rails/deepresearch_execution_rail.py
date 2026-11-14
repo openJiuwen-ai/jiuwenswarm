@@ -35,6 +35,7 @@ from jiuwenswarm.common.schema.ask_user import ask_user_response_schema
 from jiuwenswarm.perf.context import (
     extract_session_id_from_callback,
     get_request_context,
+    resolve_task_id,
 )
 
 DEEPRESEARCH_EXECUTION_STATE_KEY = "deepresearch_execution_states"
@@ -52,7 +53,7 @@ _BRIEF_REFRESH_INSTRUCTION = (
     "report_type='brief'、upgrade_from_brief=False；执行工具会核对来源报告并读取原报告。"
     "必须生成并交付包含补充数据、事实依据和来源的新版精简报告文件，不要只在聊天里回答。"
     "用户所说的‘不需要重新生成完整报告’指不生成专业版，不禁止生成新版精简报告。"
-    "不要升级专业版、不要另建 todo，也不要重复发送工具已交付的报告。"
+    "不要升级专业版；沿用已有顶层 todo，不将研究内部步骤拆为待办，也不要重复发送工具已交付的报告。"
 )
 
 # HITL 暂停占位文案（interaction 分支写入 tool_msg）。必须注册进
@@ -294,9 +295,11 @@ def _bridge_stale_workflow(
     new ∪ error（wait_feedback/wait_outline 卡由交互卡 id 自带 alias，
     不入候选；cancelled 是显式放弃的死终态，不入候选）；③ query 与
     停止认领同口径；④ 显式 conversation_id 不抢别的会话；⑤ 过滤后
-    唯一。探针门：in-flight 与 error 候选须存在优雅停止快照（in-flight
-    防活子进程交叉写坏；error 可能是子进程失败退出无快照可恢复）才桥；
-    new 相位候选免门（停止终态已返回，子进程必已退出）。
+    唯一。探针门：in-flight 候选须存在优雅停止快照（防活子进程交叉
+    写坏）才桥；error 候选放行停止快照与交互中断快照（修复8：error
+    写入可能覆盖原 wait_* 相位，残留的中断快照可桥接后由 execution
+    重弹原交互卡；子进程已失败退出无交叉写坏风险）；new 相位候选免
+    门（停止终态已返回，子进程必已退出）。
     """
     if tool_call_id in states:
         return ""
@@ -317,7 +320,20 @@ def _bridge_stale_workflow(
         if phase != "new":
             state_cid = str(state.get("conversation_id") or "").strip()
             probe = _probe_resumable_checkpoint(state_cid) if state_cid else None
-            if not (isinstance(probe, Mapping) and probe.get("stopped")):
+            # 修复8：error 相位放行停止快照与交互中断快照；in-flight
+            # 相位仍硬要求 stopped 优雅停止快照（防活子进程交叉写坏）。
+            if phase == "error":
+                if not isinstance(probe, Mapping):
+                    logger.warning(
+                        "[deepresearch_execution_rail] bridge rejected: "
+                        "candidate state has no resumable checkpoint; "
+                        "tool_call_id=%s workflow_id=%s phase=%s",
+                        tool_call_id,
+                        workflow_id,
+                        phase,
+                    )
+                    continue
+            elif not (isinstance(probe, Mapping) and probe.get("stopped")):
                 logger.warning(
                     "[deepresearch_execution_rail] bridge rejected: "
                     "candidate state has no stopped snapshot; "
@@ -497,7 +513,9 @@ class DeepResearchExecutionRail(DeepAgentRail):
             file_name=str(args.get("file_name") or ""),
             requested_report_type=requested_type,
         )
-        if hit is not None and not is_upgrade and workflow_id not in states:
+        # The legacy delivery index has no artifact paths for downstream todos.
+        allow_legacy_delivery = args.get("task_mode") != "main_agent" and not is_upgrade
+        if allow_legacy_delivery and hit is not None and workflow_id not in states:
             from jiuwenswarm.agents.harness.common.tools.deepresearch.execution import (
                 _completion_content,
                 _persist_delivered_state,
@@ -559,6 +577,13 @@ class DeepResearchExecutionRail(DeepAgentRail):
         mcp_servers = self._mcp_context_provider() if callable(self._mcp_context_provider) else None
         if inspect.isawaitable(mcp_servers):
             mcp_servers = await mcp_servers
+        materials_context = (
+            self._materials_context_provider()
+            if callable(self._materials_context_provider)
+            else None
+        )
+        if inspect.isawaitable(materials_context):
+            materials_context = await materials_context
         token = bind_deepresearch_execution_context(
             tool_call_id=workflow_id,
             state=states.get(workflow_id),
@@ -567,11 +592,10 @@ class DeepResearchExecutionRail(DeepAgentRail):
             save_state=save_state,
             agent_id=self._agent_id,
             request_id=request_id,
+            parent_task_id=resolve_task_id(request_ctx=request_context) or "",
             requested_report_type=requested_report_type,
             deepresearch_followup=deepresearch_followup,
-            materials_context=(
-                self._materials_context_provider() if callable(self._materials_context_provider) else None
-            ),
+            materials_context=materials_context,
             mcp_servers=mcp_servers,
             mcp_context_provider=self._mcp_context_provider,
             load_state=lambda: _load_states(ctx.session).get(workflow_id),
@@ -671,29 +695,45 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 # 研究。改写为禁止自动重启的面向模型口径，且不含
                 # conversation_id（切断模型拿 cid 直通重启的最短路径）；
                 # 用户明确要求继续时模型凭原主题 query 重调，修复9' 的
-                # 扫库认领会自动认领停止快照。恢复入口双指引（2026-10-15
-                # 19:52 回归实证：停止后新请求中 execute 被 ProgressiveToolRail
-                # 过滤，单 execute 指引是死信，模型绕行 stream start 全新
-                # 起跑丢快照——stream 侧已同口径扫库认领）。
+                # 扫库认领会自动认领停止快照。恢复入口统一 skill_tool 重载
+                # 指引（2026-11-03 改版：原 stream 回落双指引与 SKILL.md
+                # 降级规则打架，门控拒绝被误读为入口未开放而直降模型研究
+                # 路径；统一口径后 Main Agent 不再触碰 deepresearch_stream）。
+                # 2026-11-05 B+ 补强：线上 9973ed6e 会话中排队 55s 的
+                # “继续”晚于备选方案回复投递，被模型误读为采纳方案而
+                # 转走模型自主研究路径；文案与 execution._stopped_result
+                # 同步增加停止定性（用户主动、非故障/非历史失败）、
+                # “继续”优先于备选方案解读、消息信封 timestamp 时序
+                # 意识三重防御。
                 ctx.inputs.tool_msg = ToolMessage(
                     content=(
                         "DeepResearch 任务已被用户停止，执行进度已保存。"
-                        "请勿代替用户决定继续，也不要自动重新调用研究工具；"
-                        "仅当用户明确要求继续该研究时才恢复执行：优先再次"
-                        "调用 deepresearch_execute（传入原研究主题即可自动"
-                        "认领停止快照）；若该工具当前不可见，可调用"
-                        " deepresearch_stream（action='start'，传入原研究"
-                        "主题，同样会自动认领）。恢复将从停止处继续，已完成"
-                        "阶段不会重跑。"
+                        "停止是用户的主动操作，不代表系统故障、超时或会话"
+                        "残留，也不要因记忆中该主题曾有失败记录而绕过研究"
+                        "工具。请勿代替用户决定继续，也不要自动重新调用"
+                        "研究工具；仅当用户明确要求继续该研究时才恢复执行："
+                        "再次调用 deepresearch_execute（传入原研究主题即可"
+                        "自动认领停止快照）；若该工具当前不可见，先调用 "
+                        "skill_tool(skill_name=\"deepresearch\") 重新加载本"
+                        "技能，再按上述方式调用。恢复将从停止处继续，已完成"
+                        "阶段不会重跑。用户回复“继续”“继续研究”即属明确"
+                        "要求继续：即使你曾向用户提供过备选方案，也应优先"
+                        "按上述方式续跑，而非将其理解为采纳备选方案或改走"
+                        "模型自主研究路径。另注意用户消息信封自带 "
+                        "timestamp，晚于你最近一条回复到达的消息未必是对"
+                        "该回复的回应，解读用户意图前先核对消息时序。"
                     ),
                     tool_call_id=history_id,
                 )
                 return
 
-            # 幂等守卫：completed 终态在清理 state 前记录交付索引，供下一轮
-            # 同主题×同 file_name 调用 before_tool_call 短路返回「已交付」，
-            # 阻止深度研究报告交付后再次对话重复执行（issue #5131）。
-            if payload.get("kind") == "completed" and isinstance(state, Mapping):
+            # 仅记录已交付报告，供下一轮同主题×同 file_name 调用去重（issue #5131）。
+            # standalone 的 completed 结果可以省略 report_delivered，因为已在工具内确认交付。
+            if (
+                payload.get("kind") == "completed"
+                and isinstance(state, Mapping)
+                and payload.get("report_delivered", state.get("task_mode") != "main_agent") is True
+            ):
                 _record_delivery(
                     ctx.session,
                     workflow_id,
@@ -719,7 +759,23 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 and isinstance(fallback, Mapping)
                 and fallback.get("mode") == "model_research"
             )
-            if not (model_handoff or (isinstance(state, Mapping) and state.get("materials_prepared"))):
+            # fix-4c：error 终态不再弹 state（参照 stopped 终态的保留范式）。
+            # error 写入可能覆盖原 wait_* 相位（execution.py 修复点3.2：取消
+            # 转译的 stopped 写入被同 revision 的 error 覆盖写吞掉），其
+            # checkpoint 残留可恢复快照（stopped 直通续跑 / 中断交互卡重弹 /
+            # salvage 止损）。弹掉 state 后下一次调用 state miss → 无 bridge
+            # 候选 → 全新 cid 从头重跑（生产事故 10-27 双轮场景：暂停后续跑
+            # 丢上下文、研究全部重来）。保留后由 _bridge_stale_workflow 的
+            # error 相位候选（探针门已放行中断快照）桥接续跑。防死锁配套：
+            # execution 判死路已把 phase 回落 new（同 _stopped_result），
+            # 换主题/重新发起不会被 error 相位反复判死。completed/cancelled
+            # 仍是干净终态，维持清弹。
+            error_terminal = payload.get("kind") == "error"
+            if not (
+                model_handoff
+                or error_terminal
+                or (isinstance(state, Mapping) and state.get("materials_prepared"))
+            ):
                 states.pop(workflow_id, None)
             _save_states(ctx.session, states)
             aliases = {
@@ -733,6 +789,35 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 # The next main-model turn follows the Skill, using existing tools.
                 return
             content = payload.get("content")
+
+            if isinstance(state, Mapping) and state.get("task_mode") == "main_agent":
+                completed = payload.get("kind") == "completed"
+                message = {
+                    "status": "completed" if completed else str(payload.get("kind") or "error"),
+                    "content": content,
+                    "report_files": payload.get("report_files", []) if completed else [],
+                    "report_prepared": payload.get("report_prepared", False) if completed else False,
+                    "report_delivered": payload.get("report_delivered", False) if completed else False,
+                    "next_action": (
+                        "研究阶段已完成，请更新顶层 todo 并继续用户要求的后续工作。"
+                        "如需 Word，加载 docx-craft，读取 report_files 中的正文，"
+                        "只做排版转换、校验和交付，不重新研究或改写结论与引用。"
+                        "根据 report_delivered 判断研究产物是否已发送；只交付用户需要的最终产物，避免重复发送。"
+                        "如用户仅要 Word，不发送中间 HTML/Markdown。没有后续加工时由你决定报告交付。"
+                        if completed else
+                        "研究未成功，更新顶层 todo 并说明原因；不得继续文档转换、"
+                        "虚报完成或自动重启研究。"
+                    ),
+                }
+                ctx.inputs.tool_msg = ToolMessage(
+                    content=json.dumps(message, ensure_ascii=False),
+                    tool_call_id=history_id,
+                )
+                # Keep completed state for idempotent replay, including file paths.
+                if completed:
+                    states[workflow_id] = dict(state)
+                    _save_states(ctx.session, states)
+                return
 
             if payload.get("kind") == "completed":
                 # 完成态回写：completed 结果不再以原始 JSON payload（含

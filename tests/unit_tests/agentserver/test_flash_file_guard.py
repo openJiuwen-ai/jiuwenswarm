@@ -30,7 +30,12 @@ async def test_mixed_batch_no_read_before_all_resources_approved(
     target = b
     if symlink:
         target = allowed / "link.txt"
-        target.symlink_to(b)
+        try:
+            target.symlink_to(b)
+        except OSError:
+            # Creating symlinks needs privilege on Windows; the rejection
+            # semantics are covered where symlinks are creatable.
+            pytest.skip("symlink creation requires privilege on this platform")
     config = (
         {"external_directory": {"*": "deny"}}
         if legacy
@@ -43,8 +48,7 @@ async def test_mixed_batch_no_read_before_all_resources_approved(
         }
     )
     _, rail = permission_adapter({"read_file": "allow"}, **config)
-    rail._engine._workspace_root = allowed
-    rail.update_config(rail._static_config)
+    rail.set_workspace_root(allowed)
     tool = FlashReadFileTool(operation=object(), agent_id="flash-test")
     read = AsyncMock(
         return_value={"file_path": str(a), "content": "fixture-a", "error": None}
@@ -74,10 +78,15 @@ async def test_allowed_batch_and_single_have_equivalent_decisions(
             "paths": [{"path": str(tmp_path), "read": "allow"}],
         },
     )
+    from unittest.mock import MagicMock
+
+    from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
+
     paths = [str(tmp_path / name) for name in ("a", "b")]
+    ctx = AgentCallbackContext(agent=MagicMock(), extra={})
     for args in ({"file_path": paths[0]}, {"file_paths": paths}):
         assert (
-            await rail._engine.check_permission("read_file", args)
+            await rail._check_tool_permission("read_file", args, ctx)
         ).permission == PermissionLevel.ALLOW
 
 

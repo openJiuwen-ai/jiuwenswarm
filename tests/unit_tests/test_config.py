@@ -17,6 +17,7 @@ from jiuwenswarm.common.config import (
     get_evolution_signal_trigger_enabled,
     get_passive_skill_evolution_triggers,
     get_skill_create_enabled,
+    get_team_ttse_enabled,
     get_ttse_embedding_config,
     get_ttse_enabled,
     migrate_config_from_template,
@@ -380,8 +381,25 @@ class TestConfigFunctions:
         )
         config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         assert config["react"]["ttse"]["enabled"] is True
+        assert config["react"]["ttse"]["team_enabled"] is False
         assert config["react"]["evolution"]["enabled"] is True
         assert get_ttse_enabled(config) is True
+        assert get_team_ttse_enabled(config) is False
+
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [
+            ({}, False),
+            ({"react": {"ttse": {"enabled": True}}}, False),
+            ({"react": {"ttse": {"team_enabled": True, "enabled": False}}}, True),
+            ({"react": {"ttse": {"team_enabled": False, "enabled": True}}}, False),
+            ({"react": {"ttse": {"team_enabled": "true"}}}, True),
+            ({"ttse": {"team_enabled": True}}, True),
+            ({"react": {"ttse": {}}}, False),
+        ],
+    )
+    def test_team_ttse_enabled_is_independent(self, config, expected):
+        assert get_team_ttse_enabled(config) is expected
 
     @pytest.mark.parametrize(
         ("config", "expected"),

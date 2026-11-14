@@ -136,7 +136,9 @@ export function buildTimelineItems(
     execution,
   }));
 
-  const reasoningItems: TimelineItem[] = reasoningSegments.map((segment, index) => ({
+  const reasoningItems: TimelineItem[] = reasoningSegments
+    .filter((segment) => segment.text.trim())
+    .map((segment, index) => ({
     type: 'reasoning',
     key: `timeline/reasoning/${segment.id}`,
     timestampMs: segment.startedAt,

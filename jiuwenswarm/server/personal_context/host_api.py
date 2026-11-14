@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 from copy import deepcopy
 import json
 import os
@@ -38,7 +39,6 @@ from openjiuwen.harness.personal_context.distill.store import (
 )
 
 from jiuwenswarm.common.config import get_config, get_default_models
-from jiuwenswarm.server.im.im_connector.learning_source import as_im_learning_source
 from jiuwenswarm.server.im.im_hosting.connectors import LazySharedRegistryView
 from jiuwenswarm.server.personal_context.distill_ports import (
     build_distill_corpus,
@@ -708,6 +708,12 @@ def _new_personal_context(home: Path) -> PersonalContext:
     fetch resolves ChannelPlugin instances shared with the hosting chain (one
     CLI subprocess and one throttle window per channel).
     """
+
+    # The paired stable SDK predates IM learning. Keep its existing context
+    # runtime usable without importing the newer optional interface at boot.
+    if "im_learning_source" not in inspect.signature(PersonalContext).parameters:
+        return PersonalContext(home=home)
+    from jiuwenswarm.server.im.im_connector.learning_source import as_im_learning_source
 
     return PersonalContext(
         home=home,

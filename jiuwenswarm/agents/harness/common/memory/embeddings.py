@@ -51,11 +51,41 @@ class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
         self.base_url = base_url or read_env("EMBED_BASE") or read_env("EMBED_BASE_URL") or embed_config.get(
             "base_url", "")
 
-        if self.base_url and self.base_url.endswith("/embeddings"):
-            self.base_url = self.base_url.rsplit("/embeddings", 1)[0]
+        self.base_url = self.normalize_base_url(self.base_url) or ""
 
         self.dims = 1024
         self._client = None
+
+    @staticmethod
+    def normalize_base_url(base_url: Optional[str]) -> Optional[str]:
+        """Match ``openjiuwen`` ``OpenAICompatibleEmbeddingProvider.normalize_base_url``.
+
+        Strip whitespace, drop trailing slashes, then drop a trailing
+        ``/embeddings``. ``https://x.com/v1/`` and ``https://x.com/v1/embeddings``
+        both become ``https://x.com/v1``.
+        """
+        if not base_url:
+            return base_url
+        url = base_url.strip()
+        while url.endswith("/"):
+            url = url[:-1]
+        if url.endswith("/embeddings"):
+            url = url.rsplit("/embeddings", 1)[0]
+        return url
+
+    def config_fingerprint(self) -> str:
+        """Same fingerprint as the core embedding client.
+
+        Team rails and the single-agent adapter share one bank. A different
+        fingerprint makes consult delete and rebuild the semantic index.
+        ``base_url`` is normalized here as well, so a trailing slash cannot
+        disagree with the core client.
+        """
+        import hashlib
+
+        api_key_hash = hashlib.sha256((self.api_key or "").encode()).hexdigest()[:16]
+        base_url = self.normalize_base_url(self.base_url) or ""
+        return f"{self.id}:{self.model or ''}:{base_url}:{api_key_hash}"
 
     def _get_client(self):
         """Get or create HTTP client."""

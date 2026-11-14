@@ -164,10 +164,165 @@ def current_multimodal_image_files_from_agent(agent: Any) -> list[dict[str, Any]
     return list(value)
 
 
+# 「本轮上传清单」随 build context 传给 team 成员的键。team 成员 agent 不是 adapter
+# 的 ``self._instance``（agent 属性镜像拿不到），ContextVar 也跨不到成员自己的任务，
+# 唯一可达通道是 ``SwarmBuildContext.request_metadata``——与 ``enable_routing`` 同一做法。
+# 写侧必须在 adapter/team_helpers 里用真实上传清单覆盖写（同一键由请求 metadata 透传时
+# 可能是外部输入，不能被当成清单信任）。
+_TEAM_REQUEST_IMAGE_FILES_KEY = "multimodal_image_files"
+
+
+def store_team_request_image_files(
+    request_metadata: Any, image_files: list[dict[str, Any]] | None
+) -> None:
+    """把本轮上传清单写进 ``request_metadata``（覆盖写，空列表即清除上一轮残留）。"""
+
+    if not isinstance(request_metadata, dict):
+        return
+    request_metadata[_TEAM_REQUEST_IMAGE_FILES_KEY] = _normalize_image_files(
+        image_files or []
+    )
+
+
+def team_request_image_files(request_metadata: Any) -> list[dict[str, Any]] | None:
+    """读 ``request_metadata`` 里的上传清单；从未写入 → None（调用方自行回退）。"""
+
+    if not isinstance(request_metadata, dict):
+        return None
+    raw = request_metadata.get(_TEAM_REQUEST_IMAGE_FILES_KEY)
+    if not isinstance(raw, list):
+        return None
+    return [dict(item) for item in raw if isinstance(item, dict)]
+
+
 def normalize_image_path(path: str) -> str:
     """把图片路径归一为可比较的 key（大小写 / 相对段 / ``~`` 展开）。"""
 
     return os.path.normcase(os.path.realpath(os.path.expanduser(str(path or "").strip())))
+
+
+# 图片提及的「文件名类字符」：字母 / 数字 / 下划线 / 连字符。命中片段前后若是这些
+# 字符，说明它只是另一个更长文件名的一部分（``1.png`` vs ``11.png``、``a.png`` vs
+# ``data.png``），不是同一张图。
+_IMAGE_MENTION_BOUNDARY = r"[0-9A-Za-z_\-]"
+
+
+def normalize_image_mention_text(text: str) -> str:
+    """把任意文本归一成图片提及的比较形态：``\\`` → ``/`` 且小写。
+
+    为什么不用 :func:`normalize_image_path`：这里比较的是**自由文本**（消息正文 /
+    工具结果）里的片段，realpath 会把正文里的相对段 / ``~`` 一并改写；而 POSIX 上
+    ``os.path.normcase`` 是恒等，无法把 Windows 反斜杠路径与正斜杠文本对齐。这里
+    只做「分隔符 + 大小写」两项归一，保证两种形态互认。
+    """
+
+    return str(text or "").replace("\\", "/").lower()
+
+
+def _image_mention_pattern(needle: str) -> re.Pattern[str] | None:
+    """把路径 / 文件名编译成带边界的提及正则；空串返回 None。"""
+
+    normalized = normalize_image_mention_text(needle).strip()
+    if not normalized:
+        return None
+    return re.compile(
+        rf"(?<!{_IMAGE_MENTION_BOUNDARY}){re.escape(normalized)}(?!{_IMAGE_MENTION_BOUNDARY})"
+    )
+
+
+def normalized_text_mentions_image(image: dict[str, Any], normalized_text: str) -> bool:
+    """在**已归一**的文本里判断是否提到该图（完整路径或 basename 文件名）。
+
+    归一（``\\`` → ``/`` + 小写）由调用方用 :func:`normalize_image_mention_text` 做一次。
+    为什么单独暴露：``ensure_manifest_images_referenced`` 要在每次模型调用、最多 N 张图
+    × 全量消息（含 60k 级 tool result）上循环，逐 (image, text) 组合归一等于每张图都
+    重扫一遍大文本；先对每条消息归一一次再对多张图复用，才能保住 Nice-2 的
+    「不做全量重复小写扫描」。
+    """
+
+    path = str(image.get("path") or "").strip()
+    path_pattern = _image_mention_pattern(path)
+    if path_pattern is not None and path_pattern.search(normalized_text):
+        return True
+    # filename 按 basename 形态比较：上传方可能把带目录的名字原样透传，也可能给图改名
+    # （filename 与路径 basename 不同），两种形态都只按末段文件名判定。
+    filename = str(image.get("filename") or "").strip()
+    if not filename:
+        filename = path
+    filename = os.path.basename(normalize_image_mention_text(filename))
+    filename_pattern = _image_mention_pattern(filename)
+    return bool(filename_pattern is not None and filename_pattern.search(normalized_text))
+
+
+def text_mentions_image(image: dict[str, Any], text: str) -> bool:
+    """判断文本是否提到清单里的这张图（完整路径或文件名，边界对齐）。
+
+    为什么不用裸 ``in``：清单 ``1.png`` 会在 ``11.png`` / ``data.png`` 里命中（子串），
+    清单 ``C:/uploads/3.jpg`` 在 Windows 反斜杠形态的正文里又命中不了（只能靠文件名
+    兜底，路径命中整体失效）。这里先统一分隔符 / 大小写，再要求命中片段前后不是
+    文件名类字符：``请识别3.jpg`` 仍命中，``1.png`` 不再误命中 ``11.png``。
+    单条文本的便捷封装；批量场景（同一文本要对多张图判定）请先归一一次，再走
+    :func:`normalized_text_mentions_image`，避免每张图重复归一同一段大文本。
+    """
+
+    normalized_text = normalize_image_mention_text(text)
+    if not normalized_text:
+        return False
+    return normalized_text_mentions_image(image, normalized_text)
+
+
+_DISPATCH_REFERENCE_RE = re.compile(r"\[image #\d+\]\s+path=(.+?)\s+filename=")
+
+
+def augment_message_with_reference_lines(
+    content: str,
+    image_files: list[dict[str, Any]] | None,
+    *,
+    max_images: int = 4,
+) -> str:
+    """把成员消息里"只提了文件名 / 路径"的上传图补成完整引用行（leader 分发兜底）。
+
+    为什么需要：team leader 常把图片路径写进任务看板（tool result，不物化）或只写
+    "识别 3.jpg"，成员侧的注入只认 user 消息里的 ``[image #n] path=...`` 引用行。
+    这里按**文件名 / 完整路径**把本轮上传清单中对应的图补成引用行，追加到消息正文；
+    只有真正被提到的图才补，不会把整批上传清单塞给任意成员。提及判定走
+    :func:`text_mentions_image`（分隔符 / 大小写归一 + 边界对齐），避免 ``1.png``
+    被 ``11.png`` 之类的子串误命中。
+
+    幂等：消息里已有同一路径的引用行时不重复追加；``max_images`` 限单条消息补几张。
+    """
+
+    if not isinstance(content, str) or not content.strip():
+        return content
+    images = image_files or []
+    if not images:
+        return content
+    already: set[str] = set()
+    for match in _DISPATCH_REFERENCE_RE.finditer(content):
+        already.add(normalize_image_path(match.group(1)))
+    next_index = 1
+    used = [int(i) for i in re.findall(r"\[image #(\d+)\]", content)]
+    if used:
+        next_index = max(used) + 1
+    appended: list[str] = []
+    for image in _normalize_image_files(images):
+        if len(appended) >= max(0, int(max_images or 0)):
+            break
+        path = str(image.get("path") or "").strip()
+        if not path:
+            continue
+        key = normalize_image_path(path)
+        if key in already:
+            continue
+        if not text_mentions_image(image, content):
+            continue
+        appended.append(build_image_reference_line(image, next_index))
+        already.add(key)
+        next_index += 1
+    if not appended:
+        return content
+    return content.rstrip() + "\n" + "\n".join(appended)
+
 
 
 def is_provided_image_path(path: str, provided_paths: Any) -> bool:

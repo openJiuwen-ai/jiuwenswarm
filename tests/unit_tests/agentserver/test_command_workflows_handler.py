@@ -502,7 +502,14 @@ class TestHandleCommandWorkflows:
 def _find_payload_recursive(data: Any) -> dict[str, Any]:
     """Recursively search for a workflow list/detail payload dict."""
     if isinstance(data, dict):
-        if data.get("type") in ("workflow_run_snapshot", "workflow_run_detail", "workflow_human_prompt"):
+        if data.get("type") in (
+            "workflow_run_snapshot",
+            "workflow_run_detail",
+            "workflow_human_prompt",
+            "workflow_phase_detail",
+            "workflow_agent_detail",
+            "workflow_command_error",
+        ):
             return data
         for v in data.values():
             result = _find_payload_recursive(v)
@@ -530,6 +537,152 @@ class TestCommandWorkflowsDispatch:
         spec = HANDLERS.get(ReqMethod.COMMAND_WORKFLOWS)
         assert spec is not None, "COMMAND_WORKFLOWS 应在分发表内"
         assert spec.fn is commands_handlers.handle_command_workflows
+
+
+class TestWorkflowPhaseAndAgentLazyLoad:
+    """get_phase / get_agent — frontend lazy-load for truncated list/detail skeletons."""
+
+    @staticmethod
+    def _phase_snapshot() -> list[dict[str, Any]]:
+        return [
+            {
+                "id": "wf_lazy",
+                "name": "lazy-flow",
+                "status": "completed",
+                "phases": [
+                    {
+                        "id": "phase-1",
+                        "name": "main",
+                        "status": "completed",
+                        "agent_count": 2,
+                        "completed_agent_count": 2,
+                        "agents": [
+                            {
+                                "id": "agent-1",
+                                "name": "clip_3",
+                                "status": "completed",
+                                "agent_template": "clip",
+                                "display_name": "视频镜头师",
+                                "agent_type": "codex",
+                                "prompt": "heavy prompt " * 40,
+                                "outcome": "done-" + ("x" * 400),
+                                "error": "err-" + ("y" * 400),
+                            },
+                            {
+                                "id": "agent-2",
+                                "name": "writer",
+                                "status": "completed",
+                                "prompt": "second prompt",
+                                "outcome": "second outcome",
+                            },
+                        ],
+                    }
+                ],
+            }
+        ]
+
+    @pytest.mark.anyio
+    async def test_get_phase_returns_agent_summaries_without_heavy_fields(self) -> None:
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        ws = _FakeWS()
+        request = _make_request(session_id="sess-phase", channel_id="web")
+        request.params = {
+            "action": "get_phase",
+            "workflow_id": "wf_lazy",
+            "phase_id": "phase-1",
+        }
+        send_lock = asyncio.Lock()
+        fake_tm = _FakeTeamManager(
+            workflow_handler=_FakeWorkflowHandler(snapshot=self._phase_snapshot())
+        )
+
+        with patch(
+            "jiuwenswarm.agents.harness.team.get_team_manager",
+            return_value=fake_tm,
+        ):
+            await commands_handlers.handle_command_workflows(
+                _ctx_for_test(ws, request, send_lock, server)
+            )
+
+        payload = TestHandleCommandWorkflows._extract_payload_from_wire(json.loads(ws.sent[0]))
+        assert payload["type"] == "workflow_phase_detail"
+        assert payload["action"] == "get_phase"
+        assert payload["agent_total"] == 2
+        assert payload["has_more"] is False
+        phase = payload["phase"]
+        assert phase["id"] == "phase-1"
+        assert len(phase["agents"]) == 2
+        first = phase["agents"][0]
+        assert first["agent_template"] == "clip"
+        assert first["display_name"] == "视频镜头师"
+        assert first["agent_type"] == "codex"
+        assert first["detail_pending"] is True
+        assert "prompt" not in first
+        assert "outcome" not in first
+        assert first["outcome_preview"].startswith("done-")
+        assert first["error_preview"].startswith("err-")
+
+    @pytest.mark.anyio
+    async def test_get_agent_returns_full_body(self) -> None:
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        ws = _FakeWS()
+        request = _make_request(session_id="sess-agent", channel_id="web")
+        request.params = {
+            "action": "get_agent",
+            "workflow_id": "wf_lazy",
+            "phase_id": "phase-1",
+            "agent_id": "agent-1",
+        }
+        send_lock = asyncio.Lock()
+        fake_tm = _FakeTeamManager(
+            workflow_handler=_FakeWorkflowHandler(snapshot=self._phase_snapshot())
+        )
+
+        with patch(
+            "jiuwenswarm.agents.harness.team.get_team_manager",
+            return_value=fake_tm,
+        ):
+            await commands_handlers.handle_command_workflows(
+                _ctx_for_test(ws, request, send_lock, server)
+            )
+
+        payload = TestHandleCommandWorkflows._extract_payload_from_wire(json.loads(ws.sent[0]))
+        assert payload["type"] == "workflow_agent_detail"
+        assert payload["action"] == "get_agent"
+        agent = payload["agent"]
+        assert agent["id"] == "agent-1"
+        assert agent["prompt"].startswith("heavy prompt")
+        assert agent["outcome"].startswith("done-")
+        assert "detail_pending" not in agent
+
+    @pytest.mark.anyio
+    async def test_unknown_action_no_longer_silently_lists(self) -> None:
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        ws = _FakeWS()
+        request = _make_request(session_id="sess-bad", channel_id="web")
+        request.params = {"action": "not_a_real_action"}
+        send_lock = asyncio.Lock()
+        fake_tm = _FakeTeamManager(
+            workflow_handler=_FakeWorkflowHandler(snapshot=self._phase_snapshot())
+        )
+
+        with patch(
+            "jiuwenswarm.agents.harness.team.get_team_manager",
+            return_value=fake_tm,
+        ):
+            await commands_handlers.handle_command_workflows(
+                _ctx_for_test(ws, request, send_lock, server)
+            )
+
+        payload = TestHandleCommandWorkflows._extract_payload_from_wire(json.loads(ws.sent[0]))
+        assert payload.get("error")
+        assert "not_a_real_action" in str(payload["error"])
 
 
 class TestWorkflowHumanPromptWireHelpers:

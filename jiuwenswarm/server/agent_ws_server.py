@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import datetime as _dt
 import importlib
+import inspect
 import json
 import logging
 import math
@@ -53,6 +54,7 @@ from jiuwenswarm.common.e2a.wire_codec import (
 )
 from jiuwenswarm.common.model_config_validation import is_placeholder_api_base
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.version import __version__
 from jiuwenswarm.common.ws_diagnostics import (
     describe_ws_exception,
@@ -169,6 +171,7 @@ from jiuwenswarm.server.personal_context.ws_handler import (
 )
 
 logger = logging.getLogger(__name__)
+
 
 _INTERFACE_DEEP_MODULE = "jiuwenswarm.server.runtime.agent_adapter.interface_deep"
 _startup_warmup_task: asyncio.Task[None] | None = None
@@ -290,6 +293,8 @@ from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported fo
     _WORKFLOW_LIST_SUMMARY_STRING_LIMIT,
     _WORKFLOW_COLLAPSED_AGENT_TEXT_LIMIT,
     _WORKFLOW_WAITING_HUMAN_PROMPT_MAX_BYTES,
+    _WORKFLOW_AGENT_SUMMARY_PREVIEW_LIMIT,
+    _WORKFLOW_PHASE_MAX_AGENT_LIMIT,
     _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES,
     _json_wire_size,
     _coerce_int,
@@ -316,6 +321,10 @@ from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported fo
     _build_workflow_list_payload,
     _build_workflow_detail_payload,
     _find_workflow_agent,
+    _find_workflow_phase,
+    _workflow_agent_summary,
+    _build_workflow_phase_payload,
+    _build_workflow_agent_payload,
     _build_workflow_human_prompt_payload,
     _build_workflow_snapshot_payload,
 )
@@ -506,6 +515,11 @@ class AgentWebSocketServer:
         self._proactive_engine: Any = None
         self._runtime_push_handler = None
         self._previous_runtime_push_handler = None
+        # RSI 服务域分发句柄（懒加载，见 _get_rsi_handlers）
+        self._rsi_handlers = None
+        # Optional production Provider injection point.  The concrete class is
+        # supplied by the composition root once it is available.
+        self._rsi_harness_provider: Any = None
         get_acp_output_manager().set_send_push_callback(
             lambda msg: asyncio.create_task(self.send_push(msg))
         )
@@ -518,6 +532,42 @@ class AgentWebSocketServer:
     def set_proactive_engine(self, engine: Any) -> None:
         """Store the proactive engine instance for debug trigger interface."""
         self._proactive_engine = engine
+
+    def set_rsi_harness_provider(self, provider: Any) -> None:
+        """Install the production ``HarnessProvider`` at the RSI seam."""
+        self._rsi_harness_provider = provider
+        handlers = self._rsi_handlers
+        if handlers is not None:
+            handlers.context.register_harness_provider(provider)
+
+    def _resolve_model(self, model_name: Optional[str] = None) -> Optional[Any]:
+        """Resolve model from jiuwenswarm config.
+
+        Args:
+            model_name: Requested model name, falls back to default if None or not found
+
+        Returns:
+            Model instance or None if config cannot be loaded
+        """
+        # Build model cache if not already done
+        if not self._model_cache:
+            self._build_model_cache()
+
+        # Resolve by name or use default
+        if model_name and model_name in self._model_cache:
+            return self._model_cache[model_name]
+        if model_name:
+            # 缓存是启动时的一次性快照，登录后新拿到的模型不在里面；静默回退到默认模型会让
+            # 用户"选了 A 却跑了 B"。所以未命中时重建一次再查，仍然没有才回退。
+            self._build_model_cache()
+            if model_name in self._model_cache:
+                return self._model_cache[model_name]
+            logger.warning(
+                "[_resolve_model] 模型 %r 不在可用列表里，回退到默认模型；可用模型: %s",
+                model_name,
+                sorted(self._model_cache),
+            )
+        return self._default_model
 
     @staticmethod
     def _ws_capabilities_key(ws: Any) -> str:
@@ -1144,6 +1194,35 @@ class AgentWebSocketServer:
                 "unexpected error; skipping (用户可在 TUI 里 /sandbox enable 重试)"
             )
 
+    async def _sync_sandbox_runtime(self) -> None:
+        """按当前 ``sandbox.enabled`` 拉起或停掉本进程管理的 box-server。
+
+        配置页保存后 agent 会 reload。这里只在开关和进程状态不一致时动作：
+        已在跑的不重复拉起，没拉起过的关闭也不去停。
+        """
+        from jiuwenswarm.common.config import clear_config_cache
+        from jiuwenswarm.server.sandbox_lifecycle import shutdown_jiuwenbox_sandboxes
+
+        try:
+            if is_enterprise():
+                return
+            clear_config_cache()
+            enabled = bool(get_sandbox_runtime().get("enabled"))
+            runner = self._jiuwenbox_runner
+            owns = bool(getattr(runner, "owns_process", False))
+            if not enabled:
+                if not owns:
+                    return
+                await runner.stop()
+                await asyncio.to_thread(shutdown_jiuwenbox_sandboxes)
+                logger.info("[sandbox_lifecycle] sandbox.enabled=false, 已停掉 box-server")
+                return
+            if owns:
+                return
+            await self._bootstrap_internal_jiuwenbox()
+        except Exception:  # noqa: BLE001
+            logger.exception("[sandbox_lifecycle] sync sandbox runtime failed")
+
     async def _stop_scheduler(self) -> None:
         """Stop the auto_harness scheduler."""
         try:
@@ -1231,7 +1310,13 @@ class AgentWebSocketServer:
         try:
             await self._stop_main_services()
         finally:
-            await self._stop_personal_context_best_effort()
+            try:
+                handlers = getattr(self, "_rsi_handlers", None)
+                if handlers is not None:
+                    await handlers.context.worker.aclose()
+                    self._rsi_handlers = None
+            finally:
+                await self._stop_personal_context_best_effort()
 
     async def _stop_main_services(self) -> None:
         """Stop shared execution and services before optional PersonalContext cleanup."""
@@ -1516,7 +1601,6 @@ class AgentWebSocketServer:
                 ),
             )
             return
-        # 汇合点在server/pipeline.py
         ctx = RequestContext(
             request=request,
             sink=WSSink(ws, send_lock),
@@ -1535,7 +1619,6 @@ class AgentWebSocketServer:
     async def _handle_sandbox_config(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         """处理 sandbox.* 配置 E2A 请求 (officeAce 经 WS 控制沙箱开关/启动方式/文件/网络)."""
         from jiuwenswarm.server.sandbox_config_rpc import dispatch_sandbox_config_request
-        from jiuwenswarm.common.schema.message import ReqMethod
 
         resp = dispatch_sandbox_config_request(request)
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
@@ -1930,3 +2013,37 @@ class AgentWebSocketServer:
                 "[AgentServer] Built model cache with %d models, default=%s",
                 len(self._model_cache), first_name
             )
+
+    def _get_rsi_handlers(self):
+        handlers = getattr(self, "_rsi_handlers", None)
+        if handlers is not None:
+            return handlers
+        from jiuwenswarm.agents.harness.common.rsi.context import build_rsi_service_context
+        from jiuwenswarm.agents.harness.common.rsi.provider_factory import build_rsi_adapters
+        from jiuwenswarm.server.rsi import RsiAgentServerHandlers
+        mode = os.environ.get("RSI_PROVIDER_MODE", "real").strip().lower()
+        context = build_rsi_service_context(None, enable_harness_materialization=True,
+                                            allow_missing_harness=(mode == "mock"), agent_manager=self._agent_manager)
+        context.register_adapters(build_rsi_adapters(context.tasks_root, mode=mode,
+                                                     harness_provider=getattr(self, "_rsi_harness_provider", None),
+                                                     model_resolver=context.model_resolver))
+        self._rsi_handlers = RsiAgentServerHandlers(context, send_push=self.send_push,
+                                                   harness_refs_provider=self._rsi_harness_refs_provider)
+        return self._rsi_handlers
+
+    @staticmethod
+    def _rsi_harness_refs_provider(params: dict[str, Any] | None = None) -> str | None:
+        from jiuwenswarm.agents.harness.common.rsi.harness_activation import (
+            RsiHarnessActivationStore,
+            resolve_native_harness_baseline,
+        )
+        from jiuwenswarm.agents.harness.common.rsi.context import get_rsi_workspace_root
+        if params and (params.get("package_id") or params.get("harness_id")):
+            raise ValueError("This stable build selects the active RSI Harness")
+        store = RsiHarnessActivationStore(get_rsi_workspace_root() / "tasks")
+        active_path = store.resolve_active_runtime_path()
+        if active_path:
+            return active_path
+        baseline = resolve_native_harness_baseline()
+        return str(baseline) if baseline is not None else None
+

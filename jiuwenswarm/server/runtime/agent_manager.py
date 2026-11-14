@@ -860,6 +860,25 @@ class AgentManager:
                 )
                 continue
 
+            if cache_key.endswith(f":session:{sid}") and channel_agents.get(cache_key) is agent:
+                if not self._agent_pins.get(id(agent), 0) and not self._has_agent_borrowers(
+                    agent, exclude=asyncio.current_task(),
+                ):
+                    channel_agents.pop(cache_key, None)
+                    create_params = self._agent_create_params.get(channel_key, {}).pop(cache_key, None)
+                    try:
+                        await agent.cleanup()
+                    except Exception:
+                        channel_agents[cache_key] = agent
+                        if create_params is not None:
+                            self._agent_create_params.setdefault(channel_key, {})[cache_key] = create_params
+                        failed_agents += 1
+                        logger.exception(
+                            "[AgentManager] projectless session agent cleanup failed: "
+                            "channel_id=%s session_id=%s", channel_key, sid,
+                        )
+                    continue
+
             if channel_key != "tui":
                 continue
             try:
@@ -894,7 +913,17 @@ class AgentManager:
         reason: str = "session_deleted",
     ) -> bool:
         """Release subagent control owned by the channel's existing Agent."""
-        agent = self.get_agent_nowait(channel_id=channel_id or "")
+        agent = self.get_agent_for_session_nowait(channel_id or "", session_id)
+        if agent is None:
+            # 删除时 session runtime 可能已释放，仍需定位会话专属根实例。
+            channel_agents = self.agents.get(_normalize_channel_id(channel_id or ""), {})
+            agent = next(
+                (candidate for key, candidate in channel_agents.items()
+                 if key.endswith(f":session:{session_id}")),
+                None,
+            )
+        if agent is None:
+            agent = self.get_agent_nowait(channel_id=channel_id or "")
         adapter = getattr(agent, "_adapter", None) if agent is not None else None
         release_runtime = getattr(adapter, "release_subagent_runtime_for_session", None)
         if not callable(release_runtime):
@@ -1031,6 +1060,7 @@ class AgentManager:
             project_dir: str = None,
             sub_mode: str = None,
             request: Any | None = None,
+            session_id: str | None = None,
     ) -> "JiuWenSwarm | None":
         """获取 Agent 实例（自动创建）.
 
@@ -1051,6 +1081,9 @@ class AgentManager:
         sub_mode_key = collapse_plan_sub_mode(mode_key, sub_mode)
         project_key = _normalize_project_dir(project_dir)
         cache_key = _make_agent_cache_key(mode_key, sub_mode_key, project_key)
+        # 无项目目录的会话有独立任务路径；Agent/rail/prompt builder 不能跨会话复用。
+        if not project_key and mode_key in {"agent", "code"} and session_id:
+            cache_key = f"{cache_key}:session:{session_id}"
         channel_agents = self.agents.get(channel_key, {})
         if cache_key in channel_agents:
             return self._borrow_agent(channel_agents[cache_key])
@@ -1331,6 +1364,7 @@ class AgentManager:
                 project_dir=project_dir,
                 sub_mode=sub_mode,
                 request=request if is_enterprise() else None,
+                session_id=session_id,
             )
         channel_id = str(getattr(request, "channel_id", "") or "")
         return await self.get_agent(
@@ -1339,6 +1373,7 @@ class AgentManager:
             project_dir=project_dir,
             sub_mode=sub_mode,
             request=request if is_enterprise() else None,
+            session_id=session_id,
         )
 
     def get_agent_nowait(
@@ -1893,7 +1928,7 @@ class AgentManager:
         params = getattr(request, "params", {}) if isinstance(getattr(request, "params", {}), dict) else {}
         mode_full = params.get("mode", "agent")
         mode = str(mode_full).split(".")[0] if mode_full else "agent"
-        workspace_dir = params.get("workspace_dir")
+        project_dir = params.get("project_dir")
 
         bound_skill_dirs = disk_only_evolution_skill_dirs(params)
         skill_dirs_token = None
@@ -1905,7 +1940,7 @@ class AgentManager:
             existing = self.get_agent_nowait(
                 channel_id,
                 mode,
-                project_dir=workspace_dir,
+                project_dir=project_dir,
             )
             if existing is not None:
                 return await existing.process_message(request)
@@ -2038,11 +2073,11 @@ class AgentManager:
                 adapter_source = getattr(request, "resolved_adapter_source", None)
         request.resolved_adapter_mode = adapter_mode
         request.resolved_adapter_source = adapter_source
-        project_dir = (
-            params.get("project_dir")
-            or params.get("workspace_dir")
-            or params.get("cwd")
-        )
+        # The internal workspace and cwd are execution paths, not a selected
+        # user project. Keep projectless Agent/Code cache identity projectless.
+        project_dir = params.get("project_dir")
+        if mode not in {"agent", "code", "auto_harness", "plan", "fast"} or agent_mode == "flash":
+            project_dir = project_dir or params.get("workspace_dir") or params.get("cwd")
         if isinstance(project_dir, str):
             project_dir = project_dir.strip() or None
         else:
@@ -2163,3 +2198,104 @@ class AgentManager:
         self._retirement_tasks.clear()
         self._agent_create_locks.clear()
         logger.info("[AgentManager] All agents cleaned up")
+
+    async def broadcast_rsi_harness_change(
+        self,
+        *,
+        old_installation: dict[str, Any] | None,
+        new_installation: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Hot-load an RSI Harness on agent/code facades only.
+
+        This path intentionally calls the dedicated facade API, which owns
+        ``DeepAgent.load_plugin`` LoadRecords and session fan-out.  It never
+        touches the legacy ``harness-packages.json`` broadcast.
+        """
+
+        # ``new_installation=None`` is used only by the installer while
+        # restoring the pre-install state after an active-pointer write
+        # failure.  In that case the ``old_installation`` argument is the
+        # version currently loaded in live agents and must be deactivated.
+        operation = "activate"
+        target_installation = new_installation
+        if target_installation is None:
+            if old_installation is None:
+                return {"attempted": 0, "succeeded": 0, "failed": []}
+            operation = "deactivate"
+            target_installation = old_installation
+        installation_id = str(target_installation.get("installation_id") or "").strip()
+        runtime_path = str(target_installation.get("runtime_path") or "").strip()
+        if not installation_id or not runtime_path:
+            raise ValueError("RSI Harness installation record is incomplete")
+        from jiuwenswarm.agents.harness.common.rsi.errors import RsiHarnessInstallConflict
+        target_modes = {"agent", "code"}
+        attempted = 0
+        succeeded = 0
+        failed: list[dict[str, str]] = []
+        applied: list[Any] = []
+
+        for channel_key, channel_agents in list(self.agents.items()):
+            if not isinstance(channel_agents, dict):
+                continue
+            for cache_key, agent in list(channel_agents.items()):
+                mode = str(cache_key).split(":", 1)[0]
+                if mode not in target_modes:
+                    continue
+                attempted += 1
+                try:
+                    ensure = getattr(agent, "ensure_instance", None)
+                    if callable(ensure):
+                        await ensure()
+                    apply = getattr(agent, "apply_rsi_harness_install", None)
+                    if not callable(apply):
+                        raise RuntimeError("agent facade does not support RSI Harness installation")
+                    await apply(
+                        operation,
+                        config_path=runtime_path,
+                        installation_id=installation_id,
+                    )
+                    succeeded += 1
+                    applied.append(agent)
+                except Exception as exc:  # noqa: BLE001 - rollback below
+                    failed.append(
+                        {
+                            "channel": str(channel_key),
+                            "agent": str(cache_key),
+                            "error": str(exc),
+                        }
+                    )
+                    break
+            if failed:
+                break
+
+        if failed:
+            rollback_failures: list[str] = []
+            for agent in reversed(applied):
+                try:
+                    apply = getattr(agent, "apply_rsi_harness_install", None)
+                    if not callable(apply):
+                        continue
+                    if old_installation:
+                        await apply(
+                            "activate",
+                            config_path=str(old_installation.get("runtime_path") or ""),
+                            installation_id=str(old_installation.get("installation_id") or ""),
+                        )
+                    else:
+                        await apply(
+                            "deactivate",
+                            config_path=runtime_path,
+                            installation_id=installation_id,
+                        )
+                except Exception as exc:  # noqa: BLE001 - expose rollback conflict
+                    rollback_failures.append(str(exc))
+            if rollback_failures:
+                raise RsiHarnessInstallConflict(
+                    "RSI Harness 广播失败且回滚失败: " + "; ".join(rollback_failures)
+                )
+            raise RsiHarnessInstallConflict(
+                "RSI Harness 广播失败: " + "; ".join(item["error"] for item in failed)
+            )
+        return {"attempted": attempted, "succeeded": succeeded, "failed": failed}
+
+

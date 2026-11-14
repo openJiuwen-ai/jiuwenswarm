@@ -368,6 +368,8 @@ class JiuwenSwarmChatClient:
         invoke_kwargs["top_p"] = self.config.top_p
         if request_overrides:
             invoke_kwargs.update(request_overrides)
+        # 图谱编排 LLM 的用途固定为 symphony，不进 request_overrides，供积分对账区分
+        invoke_kwargs["request_purpose"] = "symphony"
 
         return await self._model.invoke(
             messages=[

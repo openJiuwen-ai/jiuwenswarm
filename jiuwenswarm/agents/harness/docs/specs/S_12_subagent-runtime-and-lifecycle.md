@@ -8,7 +8,7 @@
 | 编号 / slug | S_12 / subagent-runtime-and-lifecycle |
 | 关联模块（agent-core 仓，机制主体） | `openjiuwen/harness/subagent_runtime/`（`control.py` 1227 行 `SubagentControl`、`instance.py` `SubagentInstance`、`models.py` 状态机、`config.py` 常量、`session_manager.py`、`__init__.py` 事件常量 re-export）、`openjiuwen/harness/tools/subagent/_control_registry.py`（属性挂载协议）、`openjiuwen/harness/tools/subagent/subagent_tools.py`（runtime 六工具）、`openjiuwen/harness/deep_agent.py`（释放三入口 @3027 / @3097） |
 | 关联模块（jiuwenswarm 仓，compat 与投影） | `jiuwenswarm/agents/harness/common/tools/subagent_compat.py`（`CompatibleSubagentControl` + `install_subagent_control_compat_patch`）、`jiuwenswarm/server/runtime/agent_adapter/subagent_stream.py`（3A 事件投影 / 批槽 / 子行持久化）、`interface_deep.py`（`release_subagent_runtime_for_session` @3468、`_session_has_live_subagent_runtime` @3437、compat patch 装配 @9860） |
-| 最近一次修订日期 | 2026-11-03 |
+| 最近一次修订日期 | 2026-11-04 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -34,9 +34,9 @@
 
 ## 不变量
 
-- **N1（per-parent-session 编排器）**：`SubagentControl` 一父会话一实例，经属性挂载协议 `_subagent_controls`（dict[parent_session_id → SubagentControl]）挂在 DeepAgent 上。`get_subagent_control` 懒创建 + `hydrate()` + `merge_persisted_records()`；已存在则 `set_parent_session` 复用。**不是**全局单例——跨父会话不共享容量。
+- **N1（per-parent-session 编排器）**：`SubagentControl` 一父会话一实例，经属性挂载协议 `_subagent_controls`（dict[parent_session_id → SubagentControl]）挂在 DeepAgent 上。`get_subagent_control` 懒创建 + `hydrate()` + `merge_persisted_records()`；已存在则 `set_parent_session` 复用。**不是**全局单例——跨父会话不共享容量。嵌套再派不另挂一份：子代理的 runtime 工具在 `_runtime_call` 里走 `ToolBinding.control`，回到根会话这一个 control，不按子会话再 `get_subagent_control`。状态机、容量和 lineage 都在这一份上。
 - **N2（spawn 二段式）**：`spawn`（control.py @169）先 reservation（容量预留）再 `commit/rollback`——预留必须二选一收口，**不允许悬挂预留**。失败路径必须 rollback 释放槽位。
-- **N3（容量与 LRU）**：`_acquire_slot` @728 容量不足时按 `enable_lru_eviction=True` 走 LRU 驱逐。默认容量 `max_subagents=10` / `max_concurrent_running=10`（config.py）。closed 记录裁剪至 `max_subagents × 2`（`_trim_closed_records` @977）——防内存膨胀。
+- **N3（容量与 LRU）**：`_acquire_slot` @728 容量不足时按 `enable_lru_eviction=True` 走 LRU 驱逐。默认容量 `max_subagents=20` / `max_concurrent_running=20`（config.py）。产品模板同样是 20/20。closed 记录裁剪至 `max_subagents × 2`（`_trim_closed_records` @977）——防内存膨胀。
 - **N4（串行 turn）**：`SubagentInstance` 一个实例同时只有一个 active turn。`_turn_claimed` **先于** semaphore 等待置位（@198）——防等待期间被误判 idle 而驱逐。
 - **N5（状态机七态）**：`PENDING_INIT / RUNNING / COMPLETED / INTERRUPTED / ERRORED / CLOSED / NOT_FOUND`。`is_final()` = {COMPLETED, ERRORED, CLOSED, NOT_FOUND}——**INTERRUPTED 非终态**（可 resume）。`SubagentStatus` 是 frozen dataclass：状态迁移 = 整体 `replace`，禁止原地改。
 - **N6（interrupt / cancel 二分）**：`_settle_cancelled_turn` @258——interrupt → INTERRUPTED（保留会话，resume 回放 `SubagentCreateOptions`：thinking / model_name / model_tier）；cancel → 视为放弃。
@@ -134,6 +134,7 @@
 - [ ] 投影持久化（N17）的 channel/mode 标记未漂移（Web 路由依赖）？
 - [ ] 三释放入口（N18）是否仍覆盖新增的释放路径？
 - [ ] 事件常量引用是否都走包入口（N11）？
+- [ ] 嵌套工具是否仍通过 `ToolBinding.control` 回到根 control，而没有按子会话再挂一份（N1）？
 
 ## spec 关系
 

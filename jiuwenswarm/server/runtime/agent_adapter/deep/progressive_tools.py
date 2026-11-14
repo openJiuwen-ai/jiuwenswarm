@@ -33,6 +33,7 @@ _DEFAULT_PROGRESSIVE_EAGER_TOOLS = [
     "invoke_tool",
     "web_search",
     "fetch_webpage",
+    "web_image_search",
     "ask_user",
     "list_files",
     "read_file",
@@ -46,6 +47,10 @@ _DEFAULT_PROGRESSIVE_EAGER_TOOLS = [
     "todo_create",
     "todo_list",
     "todo_modify",
+    # plan 模式两件套必须常驻（BUG20261105402443）：plan 态 reminder 指示模型调
+    # enter_plan_mode，被懒加载剔除后模型探测无进展会触发 agent_ras 熔断 OA.05000060
+    "enter_plan_mode",
+    "exit_plan_mode",
 ]
 
 _PROGRESSIVE_META_TOOL_NAMES = frozenset({"tools_search", "invoke_tool"})
