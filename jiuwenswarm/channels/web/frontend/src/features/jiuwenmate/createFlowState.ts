@@ -256,3 +256,13 @@ export function createColleagueId(name: string, existingIds: readonly string[]):
   }
   return candidate;
 }
+
+/** Map each prompt to the 1-based position of the prompt it duplicates, or null when unique or blank. */
+export function duplicatePromptIndices(prompts: readonly string[]): (number | null)[] {
+  const normalized = prompts.map((prompt) => prompt.trim());
+  return normalized.map((value, index) => {
+    if (!value) return null;
+    const first = normalized.indexOf(value);
+    return first === index ? null : first + 1;
+  });
+}

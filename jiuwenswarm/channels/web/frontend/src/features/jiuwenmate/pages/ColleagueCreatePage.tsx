@@ -8,6 +8,7 @@ import { CustomCreateDialog } from '../components/CustomCreateDialog';
 import { JiuwenMateDialog } from '../components/JiuwenMateDialog';
 import { TemplateDetailDrawer } from '../components/TemplateDetailDrawer';
 import { colleaguePortrait, customAvatarHue } from '../colleaguePortraits';
+import { duplicatePromptIndices } from '../createFlowState';
 import type { JiuwenMateModelCatalog } from '../jiuwenmateApi';
 import {
   type ColleagueCapabilityCatalog,
@@ -165,7 +166,10 @@ function ColleagueRefineForm({
   const { t } = useTranslation();
   const [installingSkill, setInstallingSkill] = useState<string | null>(null);
   const [skillInstallError, setSkillInstallError] = useState<string | null>(null);
-  const canSubmit = !submitting && draft.name.trim().length > 0 && draft.description.trim().length > 0;
+  const promptDuplicates = duplicatePromptIndices(draft.capabilities.starterPrompts);
+  const hasDuplicatePrompts = promptDuplicates.some((item) => item !== null);
+  const canSubmit = !submitting && !hasDuplicatePrompts
+    && draft.name.trim().length > 0 && draft.description.trim().length > 0;
   const hue = customAvatarHue(draft);
   const updateCapabilities = (patch: Partial<JiuwenMateCapabilities>) =>
     onDraftChange({ capabilities: { ...draft.capabilities, ...patch } });
@@ -455,6 +459,7 @@ function ColleagueRefineForm({
           form="jiuwenmate-refine-form"
           className="jiuwenmate-dark-button"
           disabled={!canSubmit}
+          title={hasDuplicatePrompts ? t('jiuwenmate.create.duplicatePromptSummary') : undefined}
           data-testid="jiuwenmate-create-submit-button"
         >
           {t('jiuwenmate.common.create')}
