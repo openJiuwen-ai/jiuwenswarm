@@ -1,6 +1,7 @@
 """Import persisted realtime speech into the shared chat Agent before dispatch."""
 
 import asyncio
+import logging
 
 from openjiuwen.core.foundation.llm import AssistantMessage, UserMessage
 from openjiuwen.core.foundation.llm.schema.message import (
@@ -14,6 +15,8 @@ from jiuwenswarm.server.runtime.session.history_replay import (
     HistoryReplayError,
     read_history_replay,
 )
+
+logger = logging.getLogger(__name__)
 
 HISTORY_ID = "duplex_history_id"
 
@@ -62,10 +65,28 @@ async def sync_conversation_context(agent, session_id):
         await _sync_conversation_context(agent, session_id, context, react)
 
 
-async def _sync_conversation_context(agent, session_id, context, react):
-    cursor = getattr(context, "duplex_history_cursor", None)
-    batch = await _load_voice_batch(session_id, cursor)
-    records = batch.records
+async def _load_voice_batch_tolerant(session_id, cursor):
+    """Read one voice batch, or ``None`` when the history writer is busy.
+
+    Ordinary chat dispatch runs this sync for every message, and the voice
+    import only enriches the context: a flush timeout (RuntimeError raised by
+    ``_load_voice_batch``) must not fail the whole chat request (#6608). The
+    caller leaves its cursor untouched, so a later sync picks the records up.
+    """
+    try:
+        return await _load_voice_batch(session_id, cursor)
+    except RuntimeError as exc:
+        logger.warning("Skipping voice history import for %s: %s", session_id, exc)
+        return None
+
+
+def _pending_voice_messages(context, records):
+    """Build the not-yet-imported voice messages from one batch.
+
+    Returns ``(pending, seen_ids)`` where ``seen_ids`` is the retained
+    consumed-ID set (also cached on the context). IDs already seen are skipped
+    so a warm-restored message is never imported twice.
+    """
     # Retain consumed IDs even if Core compacts its message window.
     seen = getattr(context, "duplex_history_ids", None)
     if seen is None:
@@ -90,6 +111,16 @@ async def _sync_conversation_context(agent, session_id, context, react):
             })
         pending.append(message_type(content=content, metadata=metadata))
         pending_ids.add(identity)
+    return pending, seen
+
+
+async def _sync_conversation_context(agent, session_id, context, react):
+    cursor = getattr(context, "duplex_history_cursor", None)
+    batch = await _load_voice_batch_tolerant(session_id, cursor)
+    if batch is None:
+        return
+    records = batch.records
+    pending, seen = _pending_voice_messages(context, records)
     if pending:
         from jiuwenswarm.agents.harness.common.session_ops_service import resolve_live_agent_session
 
@@ -126,12 +157,19 @@ async def _sync_conversation_context(agent, session_id, context, react):
                 raise
             raise HistoryReplayError("Could not save imported voice context") from exc
     seen.update(conversation_record_id(record) for record in records)
+    _advance_voice_cursor(context, seen, batch)
+
+
+def _advance_voice_cursor(context, seen, batch):
+    """Persist the batch cursor and trim consumed IDs it now fences.
+
+    The durable cursor fences all older imports, including messages that Core
+    has compacted; only IDs still present in the active window are kept.
+    """
     # Never advance before both import and the ReAct reload snapshot succeeded.
     cursor = batch.cursor
     context.duplex_history_cursor = cursor if cursor is not None and cursor.path.suffix.lower() == ".jsonl" else None
     if context.duplex_history_cursor is not None:
-        # The durable cursor fences all older imports, including messages that
-        # Core has compacted. Keep only IDs still present in the active window.
         retained_ids = {(getattr(message, "metadata", None) or {}).get(HISTORY_ID)
                         for message in context.get_messages()}
         seen.intersection_update(retained_ids)
