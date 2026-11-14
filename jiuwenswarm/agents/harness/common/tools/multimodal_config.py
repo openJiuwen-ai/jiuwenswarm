@@ -130,6 +130,18 @@ def multimodal_model_enabled(
     return complete_multimodal_model_configured(config_base, model_type)
 
 
+def get_enabled_multimodal_model_config(
+    config_base: dict[str, Any], model_type: str,
+) -> dict[str, Any]:
+    """Return the configured model only when the tool capability is ready."""
+    if not (
+        multimodal_model_enabled(config_base, model_type)
+        and complete_multimodal_model_configured(config_base, model_type)
+    ):
+        return {}
+    return _get_model_config(config_base, model_type)
+
+
 def _get_embed_model_name(embed_cfg: dict[str, Any], model_type: str) -> str:
     """
     从 embed 配置中获取指定类型的模型名称
