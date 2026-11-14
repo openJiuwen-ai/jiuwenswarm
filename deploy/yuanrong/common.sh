@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo >/dev/null 2>&1
+set -eu
 
 info() { echo -e "\033[36m=== $@ ===\033[0m"; }
 success() { echo -e "\033[32m✅ $@\033[0m"; }

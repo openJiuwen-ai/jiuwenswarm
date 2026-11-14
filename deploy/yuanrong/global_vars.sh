@@ -1,80 +1,18 @@
 #!/usr/bin/env bash
-set -euo >/dev/null 2>&1
-
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-CUSTOM_ENV_FILE="${SCRIPT_DIR}/.env.custom"
-ENV_FILE="${SCRIPT_DIR}/.env"
-
-GATEWAY_CONFIG_TEMPLATE_FILE="${SCRIPT_DIR}/conf/gateway-config-yuanrong.template.yaml"
-GATEWAY_CONFIG_FILE="${SCRIPT_DIR}/conf/gateway-config.yaml"
-GATEWAY_ENV_FILE="${SCRIPT_DIR}/conf/gateway.env"
-
-REG_FUNC_FILE="${SCRIPT_DIR}/../../jiuwenswarm/extensions/clawee.py"
-
+BUSINESS_PYTHON="${SWARM_PYTHON:-python3.11}"
+export SWARM_PYTHON="${BUSINESS_PYTHON}"
+SERVICE_SETTINGS="${SCRIPT_DIR}/service.py"
+SWARM_SETTINGS="${SWARM_SETTINGS:-${SCRIPT_DIR}/settings.yaml}"
+SWARM_BINDINGS="${SWARM_BINDINGS:-}"
+SWARM_SERVICE_PREFLIGHT="${SWARM_SERVICE_PREFLIGHT:-}"
 CMD=""
-
-declare -ga MODULES=()
-
+declare -a MODULES=()
 declare -A DEPLOY_VARS=(
-    ["FUNC_SVC_NAME"]="0@jiuwen@swarm"
-    ["SANDBOX_TYPE"]=""
-    ["MGR_CPU"]="300"
-    ["MGR_MEMORY"]="600"
-    ["MGR_MIN_INSTANCE"]="1"
-    ["MGR_MAX_INSTANCE"]="10"
-    ["MGR_CONCURRENT_NUM"]="10"
-    ["CLUSTER_HOSTS"]=""
-    ["YR_PYTHON_VERSION"]="3.11"
-    ["YR_FUNC_CODE_DIR"]=""
-    ["JIUWENSWARM_PACKAGE_URL"]=""
-    ["JIUWENSWARM_INSTANCE_NAME"]=""
-    ["GATEWAY_CONCURRENCY"]="1"
-    ["GATEWAY_INVOKE_TIMEOUT"]="60"
-    ["GATEWAY_SESSION_MAP_SCOPE"]="per_chat_bot_user"
-    # Cron 作业持久化：file（单节点，默认）| etcd（一体机主备）；AgentOS 一体机模板默认 etcd
-    ["CRON_STORE_BACKEND"]="etcd"
-    ["ETCD_ENDPOINTS"]=""
-    ["AGENTOS_CODE_GRAPH_PROFILE"]="off"
-    ["TOOL_SANDBOX_TYPE"]="jiuwenbox"
-    ["TOOL_SANDBOX_ENABLE"]="true"
-    ["TOOL_SANDBOX_EXECUTOR"]="bubblewrap"
-    ["TOOL_SANDBOX_IMAGE"]=""
-    ["TOOL_SANDBOX_CPU"]=""
-    ["TOOL_SANDBOX_MEMORY"]=""
-    ["TOOL_SANDBOX_USER"]=""
-    ["TOOL_SANDBOX_GROUP"]=""
-    ["CONCH_TEMPLATE_NAME"]=""
-    ["CONCH_SDK_CONFIG"]=""
-    ["MODEL_PROVIDER"]=""
-    ["MODEL_NAME"]=""
-    ["API_BASE"]=""
-    ["API_KEY"]=""
-    ["EMBED_API_KEY"]=""
-    ["EMBED_API_BASE"]=""
-    ["EMBED_MODEL"]=""
-    ["FRONTEND_PORT"]=""
-    ["FUNCTION_ID"]=""
-    ["MASTER_NODE_IP"]=""
-    ["INGRESS_VIP"]=""
-    ["REGISTRY_PORT"]=""
-    ["SSH_PORT"]=""
-    # TUI GatewayServer bind host; empty → default to 0.0.0.0 at deploy check time
-    ["GATEWAY_HOST"]=""
-    ["GATEWAY_PORT"]=""
-    # WebChannel bind host; empty → default to 0.0.0.0 at deploy check time
-    ["WEB_HOST"]=""
-    ["WEB_PORT"]=""
-    # jiuwenswarm web 静态服务器 (jiuwenswarm-web, serve frontend/dist)
-    # /ws 代理到 gateway 的 WEB_PORT; 独立变量, 不复用 FRONTEND_PORT(后者指 yuanrong frontend 8888)
-    ["WEB_STATIC_HOST"]=""
-    ["WEB_STATIC_PORT"]=""
-    ["SANDBOX_IDLE_TIMEOUT_SECONDS"]=""
-    # Channel timeout cleanup; empty -> default to gateway.agentos.disconnect_cleanup_timeout_seconds
-    ["DISCONNECT_CLEANUP_TIMEOUT_SECONDS"]=""
-    ["OS_TYPE"]=""
-    ["EXTENSION_DIRS"]=""
-    # AgentOS IAM; empty URL → http://MASTER_NODE_IP:8090 at deploy check time
-    ["AGENTOS_AUTH_SERVICE_URL"]=""
-    ["AGENTOS_AUTH_TIMEOUT"]=""
+    [JIUWENSWARM_INSTANCE_NAME]=""
+    [GATEWAY_HOST]="0.0.0.0" [GATEWAY_PORT]="19001"
+    [WEB_HOST]="127.0.0.1" [WEB_PORT]="19000"
+    [WEB_STATIC_HOST]="0.0.0.0" [WEB_STATIC_PORT]="5173"
 )

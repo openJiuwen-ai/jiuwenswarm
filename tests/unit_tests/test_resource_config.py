@@ -43,9 +43,9 @@ def test_default_code_configs_do_not_load_multimodal_tools():
         / "resources"
         / "config.team.distributed.teammate.yaml",
         repo_root
-        / "deploy"
-        / "yuanrong"
-        / "conf"
+        / "tests"
+        / "fixtures"
+        / "config"
         / "gateway-config-yuanrong.template.yaml",
     ]
     multimodal_tools = {

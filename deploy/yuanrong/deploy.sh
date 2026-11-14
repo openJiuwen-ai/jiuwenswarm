@@ -1,24 +1,25 @@
 #!/usr/bin/env bash
-set -euo >/dev/null 2>&1
+set -eu
 
+cd "$(dirname "${BASH_SOURCE[0]}")"
 source "global_vars.sh"
 source "common.sh"
-source "cmd_handler.sh"
 source "args_handler.sh"
 source "check_handler.sh"
-source "envfile_handler.sh"
-source "template_handler.sh"
 source "jiuwenswarm_handler.sh"
 source "gateway_handler.sh"
 source "web_handler.sh"
 
+swarm_service() {
+    local -a args=(--settings "${SWARM_SETTINGS}")
+    [ -z "${SWARM_BINDINGS}" ] || args+=(--bindings "${SWARM_BINDINGS}")
+    "${BUSINESS_PYTHON}" "${SERVICE_SETTINGS}" "$@" "${args[@]}"
+}
+
 process_up() {
+    gateway_load_config
     for module in "${MODULES[@]}"; do
         case "${module}" in
-            jiuwenswarm)
-                check_jiuwenswarm_up_dependency
-                deploy_jiuwenswarm
-                ;;
             gateway)
                 check_gateway_up_dependency
                 deploy_gateway
@@ -32,6 +33,9 @@ process_up() {
 }
 
 process_down() {
+    local identity
+    identity=$(swarm_service identity)
+    eval "${identity}"
     local reversed_modules=()
     for ((i=${#MODULES[@]}-1; i>=0; i--)); do
         reversed_modules+=("${MODULES[$i]}")
@@ -39,9 +43,6 @@ process_down() {
 
     for module in "${reversed_modules[@]}"; do
         case "${module}" in
-            jiuwenswarm)
-                uninstall_jiuwenswarm
-                ;;
             gateway)
                 uninstall_gateway
                 ;;
@@ -58,7 +59,6 @@ process_restart() {
 }
 
 main() {
-    read_env_from_file "${CUSTOM_ENV_FILE}" "DEPLOY_VARS"
     parse_args "$@"
     check_dependency
     process_${CMD}
