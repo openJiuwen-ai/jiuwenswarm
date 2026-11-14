@@ -25,6 +25,7 @@ taking its stdout as the value. The contract:
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import shlex
 import subprocess
@@ -41,6 +42,10 @@ _BACKOFF_SECONDS = 300
 # A pending claim older than 2x the subprocess timeout has a dead owner
 # (nothing else holds a claim across a subprocess run longer than that).
 _STALE_PENDING_SECONDS = 2 * _EXEC_TIMEOUT_SECONDS
+# Prewarm wall-clock budget: the pool abandons commands still running at the
+# deadline instead of delaying server readiness by ceil(N/8)*30s; abandoned
+# references resolve on first miss via the background queue.
+_PREWARM_BUDGET_SECONDS = 60
 
 # Process-level result store. Key: the full reference string; value: the
 # secret plaintext plus its status ("pending" while a track is executing,
@@ -359,8 +364,41 @@ def prewarm_from_config(config_raw: dict[str, Any]) -> None:
     if not todo:
         return
 
-    with ThreadPoolExecutor(
+    deadline = time.monotonic() + _PREWARM_BUDGET_SECONDS
+    pool = ThreadPoolExecutor(
         max_workers=min(8, len(todo)), thread_name_prefix="exec-secret-prewarm"
-    ) as pool:
-        for ref, fp in todo:
-            pool.submit(_resolve_now, ref, field_path=fp)
+    )
+    budget_exceeded = False
+    try:
+        futures = {
+            ref: pool.submit(_resolve_now, ref, field_path=fp)
+            for ref, fp in todo
+        }
+        for ref, future in futures.items():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                # Budget exhausted: leave this reference to the background
+                # queue — a first miss enqueues it and self-heals.
+                _warn_degraded(ref, dict(todo).get(ref, ""), "prewarm budget exceeded")
+                budget_exceeded = True
+                future.cancel()
+                continue
+            try:
+                future.result(timeout=remaining)
+            except concurrent.futures.TimeoutError:
+                logger.warning(
+                    "[credentials] prewarm budget exceeded for %r; deferring to the "
+                    "background queue",
+                    ref,
+                )
+                budget_exceeded = True
+    finally:
+        if budget_exceeded:
+            # A still-running command must not delay readiness past the
+            # budget: drop what has not started, return without joining the
+            # running workers (they finish in their own thread and update
+            # the store for later queries).
+            pool.shutdown(wait=False, cancel_futures=True)
+        else:
+            # Everything resolved inside the budget: a normal join.
+            pool.shutdown(wait=True)

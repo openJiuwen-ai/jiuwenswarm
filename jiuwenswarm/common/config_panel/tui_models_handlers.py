@@ -41,15 +41,12 @@ from openjiuwen.rsi.harness_rsi.auto_harness.schema import load_auto_harness_con
 
 from jiuwenswarm.common.auth.model_catalog import is_login_model
 from jiuwenswarm.common.config import (
-    CONFIG_YAML_PATH,
     _duplicate_api_key_matches,
-    config_write_lock,
     get_available_models,
     get_config,
     get_config_raw,
     get_default_models,
     get_model_names,
-    load_yaml_round_trip,
     raw_api_keys_by_model_id,
     resolve_env_vars,
     update_auto_recap_enabled_in_config,
@@ -1493,6 +1490,10 @@ async def command_model_handler(
                 _update_result["updated_name"] = resolve_env_vars(str(_upd_mcc.get("model_name", "")))
                 _cur_mcc = (_raw_defs[0].get("model_client_config") or {}) if _raw_defs else {}
                 _update_result["current_name"] = resolve_env_vars(str(_cur_mcc.get("model_name", "")))
+                # The save track needs the persisted api_key; capture it here
+                # while the lock is already held (same rule as the display
+                # fields above) instead of re-locking after the commit.
+                _update_result["persisted_api_key"] = str(_upd_mcc.get("api_key") or "")
                 return data
             update_config(_update_mutate)
         except ModelOpError as _op_err:
@@ -1503,25 +1504,13 @@ async def command_model_handler(
             return
         # Save track: resolve a just-written exec: reference before the config
         # reload below reads it (same rationale as model.add above). The key
-        # is read from the persisted entry (not the raw configs payload) so
-        # the `api_key`/`key` alias pair cannot disagree with what landed on
-        # disk. A failed resolve keeps the saved entry and is surfaced in the
+        # was captured inside the write transaction (persisted_api_key), so no
+        # second lock acquisition happens here — update_config already
+        # committed, and the response must not fail after a successful write.
+        # A failed resolve keeps the saved entry and is surfaced in the
         # response payload.
         _exec_resolve_error = ""
-        _persisted_holder: dict = {}
-
-        def _read_persisted_key(data):
-            _models = data.get("models") or {}
-            _defs = _models.get("defaults") if isinstance(_models, dict) else None
-            if isinstance(_defs, list) and 0 <= _idx < len(_defs) and isinstance(_defs[_idx], dict):
-                _persisted_holder["key"] = str(
-                    (_defs[_idx].get("model_client_config") or {}).get("api_key") or ""
-                )
-            return data
-
-        with config_write_lock():
-            _read_persisted_key(load_yaml_round_trip(CONFIG_YAML_PATH))
-        _upd_saved_key = _persisted_holder.get("key", "")
+        _upd_saved_key = str(_update_result.get("persisted_api_key") or "")
         if _upd_saved_key.startswith("exec:"):
             from jiuwenswarm.common.credentials.resolver import resolve_credential_ref_now as _resolve_now
 
