@@ -5,7 +5,7 @@
 from enum import Enum
 
 
-class ReqMethod(Enum):
+class ReqMethod(str, Enum):
     INITIALIZE = "initialize"
     ACP_TOOL_RESPONSE = "acp.tool_response"
 
