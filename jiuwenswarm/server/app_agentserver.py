@@ -30,7 +30,8 @@ def _mark_startup_import_phase(stage: str) -> None:
     _STARTUP_IMPORT_PHASES.append((stage, time.monotonic()))
 
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
-from jiuwenswarm.dotenv_early import parse_dotenv_early, load_dotenv_runtime
+from jiuwenswarm.dotenv_early import parse_dotenv_early, load_dotenv_runtime, load_agentos_api_credential
+load_agentos_api_credential()
 parse_dotenv_early("jiuwenswarm-agentserver")
 _mark_startup_import_phase("dotenv_parsed")
 
