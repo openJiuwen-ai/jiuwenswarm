@@ -13,9 +13,15 @@ Exit code 0 = all required checks passed; 1 = something required is missing.
 import argparse
 import importlib
 import json
-import shutil
 import subprocess
 import sys
+
+from _tool_paths import (
+    FC_LIST_FALLBACKS,
+    PDFTOPPM_FALLBACKS,
+    SOFFICE_FALLBACKS,
+    resolve,
+)
 
 # (module, pip-name, required?)
 PY_DEPS = [
@@ -24,10 +30,14 @@ PY_DEPS = [
     ("lxml", "lxml", False),
 ]
 
-# External CLI tools used for recalculation / rendering.
+# External CLI tools used for recalculation / rendering, together with the
+# install locations to search when PATH does not carry them. Tool lookup goes
+# through _tool_paths.resolve, the same resolver libreoffice_recalc.py and
+# xlsx_render.py use, so this report cannot disagree with what those scripts can
+# actually do.
 CLI_TOOLS = [
-    ("soffice", "libreoffice", True),    # recalc + render to PDF
-    ("pdftoppm", "poppler-utils", True), # PDF -> PNG
+    ("soffice", "libreoffice", SOFFICE_FALLBACKS, True),      # recalc + render to PDF
+    ("pdftoppm", "poppler-utils", PDFTOPPM_FALLBACKS, True),  # PDF -> PNG
 ]
 
 # Fonts that can render CJK glyphs. Any one is enough.
@@ -62,8 +72,8 @@ def check_py_deps(results):
 
 
 def check_cli(results):
-    for tool, pkg, required in CLI_TOOLS:
-        path = shutil.which(tool)
+    for tool, pkg, fallbacks, required in CLI_TOOLS:
+        path = resolve(tool, fallbacks)
         results.append({
             "check": f"cli:{tool}", "ok": path is not None,
             "detail": path or f"missing; install: {pkg}",
@@ -74,11 +84,12 @@ def check_cli(results):
 def check_cjk_font(results):
     """A CJK font is required for correct rendering of Chinese text."""
     found = []
-    fc = shutil.which("fc-list")
+    fc = resolve("fc-list", FC_LIST_FALLBACKS)
     if fc:
         try:
             out = subprocess.run([fc, ":lang=zh", "family"],
-                                 capture_output=True, text=True, timeout=20).stdout
+                                 capture_output=True, text=True,
+                                 encoding="utf-8", errors="replace", timeout=20).stdout
             families = {line.strip() for line in out.splitlines() if line.strip()}
             found = sorted(families)[:8]
         except Exception:  # noqa: BLE001
@@ -87,7 +98,8 @@ def check_cjk_font(results):
         # Fall back to a name-hint scan over all fonts.
         if fc:
             try:
-                allf = subprocess.run([fc, "family"], capture_output=True, text=True, timeout=20).stdout
+                allf = subprocess.run([fc, "family"], capture_output=True, text=True,
+                                      encoding="utf-8", errors="replace", timeout=20).stdout
                 found = sorted({h for h in CJK_FONT_HINTS if h.lower() in allf.lower()})
             except Exception:  # noqa: BLE001
                 pass

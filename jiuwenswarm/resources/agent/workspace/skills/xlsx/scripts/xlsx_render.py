@@ -19,10 +19,16 @@ import argparse
 import base64
 import glob
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
+
+from _tool_paths import (
+    FC_LIST_FALLBACKS,
+    PDFTOPPM_FALLBACKS,
+    SOFFICE_FALLBACKS,
+    resolve,
+)
 
 CJK_FONT_CANDIDATES = [
     "Noto Sans CJK SC", "Noto Sans CJK TC", "Noto Sans CJK JP",
@@ -31,15 +37,13 @@ CJK_FONT_CANDIDATES = [
 ]
 
 
-def _have(tool):
-    return shutil.which(tool) is not None
-
-
 def _pick_cjk_font():
-    if not _have("fc-list"):
+    fc_list = resolve("fc-list", FC_LIST_FALLBACKS)
+    if fc_list is None:
         return None
     try:
-        out = subprocess.run(["fc-list", "family"], capture_output=True, text=True, timeout=20).stdout
+        out = subprocess.run([fc_list, "family"], capture_output=True, text=True,
+                             encoding="utf-8", errors="replace", timeout=20).stdout
     except Exception:  # noqa: BLE001
         return None
     low = out.lower()
@@ -48,7 +52,8 @@ def _pick_cjk_font():
             return f
     # any zh font
     try:
-        zh = subprocess.run(["fc-list", ":lang=zh", "family"], capture_output=True, text=True, timeout=20).stdout
+        zh = subprocess.run([fc_list, ":lang=zh", "family"], capture_output=True, text=True,
+                            encoding="utf-8", errors="replace", timeout=20).stdout
         first = [l.strip() for l in zh.splitlines() if l.strip()]
         return first[0].split(",")[0] if first else None
     except Exception:  # noqa: BLE001
@@ -57,18 +62,20 @@ def _pick_cjk_font():
 
 def to_pdf(src, outdir):
     """Convert workbook to PDF via LibreOffice headless. Returns pdf path."""
-    if not _have("soffice"):
+    soffice = resolve("soffice", SOFFICE_FALLBACKS)
+    if soffice is None:
         raise SystemExit("soffice (LibreOffice) not found; cannot render. See doctor.py")
     os.makedirs(outdir, exist_ok=True)
     env = dict(os.environ)
     # Isolated profile avoids locking issues when run repeatedly.
     profile = tempfile.mkdtemp(prefix="lo_profile_")
     cmd = [
-        "soffice", "--headless", "--norestore", "--convert-to", "pdf",
+        soffice, "--headless", "--norestore", "--convert-to", "pdf",
         "--outdir", outdir, src,
         f"-env:UserInstallation=file://{profile}",
     ]
-    subprocess.run(cmd, check=True, capture_output=True, text=True, env=env, timeout=180)
+    subprocess.run(cmd, check=True, capture_output=True, text=True,
+                   encoding="utf-8", errors="replace", env=env, timeout=180)
     base = os.path.splitext(os.path.basename(src))[0]
     pdf = os.path.join(outdir, base + ".pdf")
     if not os.path.exists(pdf):
@@ -77,11 +84,13 @@ def to_pdf(src, outdir):
 
 
 def pdf_to_pngs(pdf, outdir, prefix):
-    if not _have("pdftoppm"):
+    pdftoppm = resolve("pdftoppm", PDFTOPPM_FALLBACKS)
+    if pdftoppm is None:
         raise SystemExit("pdftoppm (poppler-utils) not found; cannot rasterize. See doctor.py")
     stem = os.path.join(outdir, prefix)
-    subprocess.run(["pdftoppm", "-png", "-r", "120", pdf, stem],
-                   check=True, capture_output=True, text=True, timeout=180)
+    subprocess.run([pdftoppm, "-png", "-r", "120", pdf, stem],
+                   check=True, capture_output=True, text=True,
+                   encoding="utf-8", errors="replace", timeout=180)
     return sorted(glob.glob(stem + "*.png"))
 
 
