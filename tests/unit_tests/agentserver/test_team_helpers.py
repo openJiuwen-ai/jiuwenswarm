@@ -5137,6 +5137,67 @@ def _patch_resume_env(monkeypatch, fake_runner, fake_mgr, broadcasted: list) -> 
 
 
 @pytest.mark.anyio
+async def test_hide_teammate_still_forwards_permission_card(monkeypatch):
+    broadcasted: list[dict] = []
+    ready_calls: list[tuple[str, str]] = []
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(
+            type="answer",
+            payload={"output": {"output": "teammate answer"}, "result_type": "answer"},
+            role=TeamRole.TEAMMATE,
+            source_member="analyst",
+        )
+        yield SimpleNamespace(
+            type="chat.ask_user_question",
+            payload={
+                "source": "ask_user_interrupt",
+                "request_id": "ask-1",
+                "questions": [{"question": "ordinary"}],
+            },
+            role=TeamRole.TEAMMATE,
+            source_member="analyst",
+        )
+        yield SimpleNamespace(
+            type="chat.ask_user_question",
+            payload={
+                "source": "permission_interrupt",
+                "request_id": "perm-1",
+                "questions": [{"question": "allow bash?"}],
+            },
+            role=TeamRole.TEAMMATE,
+            source_member="analyst",
+        )
+        yield SimpleNamespace(
+            type="team.completed",
+            payload={"event_type": "team.completed"},
+            role=TeamRole.LEADER,
+        )
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+        @staticmethod
+        async def get_agent_team_monitor(team_name: str, session_id: str, hide_dm: bool = False):
+            return None
+
+    monkeypatch.setenv("JIUWENSWARM_TEAM_HIDE_TEAMMATE", "true")
+    _patch_resume_env(monkeypatch, _FakeRunner, _resume_fake_manager(ready_calls), broadcasted)
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-hide-teammate",
+        SimpleNamespace(team_name="demo-team"),
+        "hello",
+    )
+
+    questions = [event for event in broadcasted if event.get("event_type") == "chat.ask_user_question"]
+    assert [event.get("source") for event in questions] == ["permission_interrupt"]
+    assert questions[0].get("member_name") == "analyst"
+    assert not any(event.get("content") == "teammate answer" for event in broadcasted)
+
+
+@pytest.mark.anyio
 async def test_consume_stream_with_query_cold_interrupt_resume_submits_after_recovered(monkeypatch):
     broadcasted: list[dict] = []
     ready_calls: list[tuple[str, str]] = []
@@ -5267,6 +5328,75 @@ async def test_consume_stream_with_query_reports_rejected_interrupt_resume_deliv
     # The terminal processing status still closes the round for the frontend.
     assert broadcasted[-1]["event_type"] == "chat.processing_status"
     assert broadcasted[-1]["is_complete"] is True
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "reason",
+    ["interrupt_resume_busy", "interrupt_resume_unavailable"],
+)
+async def test_consume_stream_with_query_busy_resume_still_reports_retryable_error(
+    monkeypatch,
+    reason,
+):
+    broadcasted: list[dict] = []
+    ready_calls: list[tuple[str, str]] = []
+    interact_calls: list[tuple] = []
+
+    async def _fake_start_stream(**kwargs):
+        yield SimpleNamespace(
+            type="message",
+            payload={"event_type": "team.recovered"},
+            role=TeamRole.LEADER,
+        )
+        yield SimpleNamespace(
+            type="team.completed",
+            payload={"event_type": "team.completed"},
+            role=TeamRole.LEADER,
+        )
+
+    class _Busy:
+        ok = False
+
+        def __bool__(self) -> bool:
+            return False
+
+    receipt = _Busy()
+    receipt.reason = reason
+
+    class _FakeRunner:
+        start_agent_team_streaming = staticmethod(_fake_start_stream)
+
+        @staticmethod
+        async def interact_agent_team(payload, *, team_name=None, session_id=None, run_context=None):
+            interact_calls.append((payload, team_name, session_id, run_context))
+            return receipt
+
+        @staticmethod
+        async def get_agent_team_monitor(team_name: str, session_id: str, hide_dm: bool = False):
+            return None
+
+    fake_mgr = _resume_fake_manager(ready_calls)
+    _patch_resume_env(monkeypatch, _FakeRunner, fake_mgr, broadcasted)
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-resume-busy",
+        SimpleNamespace(team_name="demo-team"),
+        "",
+        interrupt_input=object(),
+    )
+
+    assert len(interact_calls) == 1
+    error_events = [event for event in broadcasted if event.get("event_type") == "chat.error"]
+    assert len(error_events) == 1
+    assert error_events[0].get("reason") == reason
+    assert error_events[0].get("error") == "Failed to resume the pending question"
+    complete = [
+        event for event in broadcasted
+        if event.get("event_type") == "chat.processing_status" and event.get("is_complete") is True
+    ]
+    assert complete
 
 
 @pytest.mark.anyio
@@ -6427,6 +6557,74 @@ async def test_consume_stream_with_query_deduplicates_ask_user_questions(monkeyp
     assert len(ask_events) == 1
     assert ask_events[0]["request_id"] == "tool-ask-1"
 
+
+@pytest.mark.anyio
+async def test_held_permission_card_is_delivered_again_after_the_sibling_runs(monkeypatch):
+    broadcasted: list[dict] = []
+    permission_ask = {
+        "request_id": "call-held",
+        "source": "permission_interrupt",
+        "interrupt_id": "intr-held",
+        "questions": [{"question": "bash: curl", "header": "确认", "options": []}],
+    }
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(
+            type="chat.ask_user_question",
+            payload=permission_ask,
+            role=TeamRole.LEADER,
+        )
+        yield SimpleNamespace(
+            type="chat.ask_user_question",
+            payload=permission_ask,
+            role=TeamRole.LEADER,
+        )
+        yield SimpleNamespace(
+            type="tool_result",
+            payload={"tool_call_id": "call-approved", "tool_name": "bash", "result": "ok"},
+            role=TeamRole.LEADER,
+        )
+        yield SimpleNamespace(
+            type="chat.ask_user_question",
+            payload=permission_ask,
+            role=TeamRole.LEADER,
+        )
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str, *, generation: int | None = None) -> None:
+            pass
+
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    fake_mgr = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: fake_mgr)
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcasted, fake_mgr),
+    )
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-held-permission",
+        SimpleNamespace(team_name="demo-team"),
+        "hello",
+    )
+
+    ask_events = [
+        event
+        for event in broadcasted
+        if event.get("event_type") == "chat.ask_user_question"
+    ]
+    assert [event["request_id"] for event in ask_events] == ["call-held", "call-held"]
+    assert all(event["interrupt_id"] == "intr-held" for event in ask_events)
 
 
 @pytest.mark.anyio
