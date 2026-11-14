@@ -18,6 +18,19 @@ This patch is applied once at process startup (from
      dead session and recover on the next call; older clients are disconnected
      so the next call fails fast with "Not connected".
 
+     A lost connection is also persisted, but only once the transport is
+     provably gone (issue #5711: the UI kept showing "connected" forever
+     after a timeout killed the session):
+
+       * no lazy reconnect (SSE) — we just tore the client down and nothing
+         rebuilds it, so every later call fails "Not connected";
+       * lazy reconnect (streamable-http) — the *next* call decides: a
+         successful one recovers, a "Not connected" guard means the reconnect
+         was attempted and abandoned.
+
+     A single slow call never flips the persisted state, and ``CancelledError``
+     (user pressed stop) is never read as a dead connection.
+
      NB: must use ``anyio.fail_after`` (a cancel scope), *not*
      ``asyncio.wait_for``. The MCP SDK runs its streamable-http transport
      inside an anyio task group; ``asyncio.wait_for`` runs the wrapped
@@ -49,6 +62,83 @@ _wrapped_methods: set[tuple[type, str]] = set()
 DEFAULT_CALL_TIMEOUT = 30.0
 
 __all__ = ["apply_mcp_call_timeout_patch", "DEFAULT_CALL_TIMEOUT"]
+
+
+def _client_mcp_name(client: Any) -> str:
+    """MCP name of a core client: it is ``config.server_name`` at construction."""
+    return str(getattr(client, "_name", "") or "").strip()
+
+
+def _current_session_id() -> str:
+    """Session id of the chat run this call belongs to, or "" outside one.
+
+    ``interface_deep._bind_permission_request_context`` binds
+    ``CURRENT_RUN_CONTEXT`` around the whole request, so a tool call running
+    inside it inherits the value; background/worker paths that never bind it
+    simply get no web notification (the persisted state is still correct).
+    """
+    try:
+        from jiuwenswarm.runtime.run_context import CURRENT_RUN_CONTEXT
+
+        context = CURRENT_RUN_CONTEXT.get()
+    except Exception:  # noqa: BLE001 - notification must never break the call
+        return ""
+    return str(getattr(context, "session_id", "") or "").strip()
+
+
+def _is_temp_probe_client(client: Any) -> bool:
+    """True for the throwaway clients that only list an MCP's tools.
+
+    ``fetch_mcp_tools_via_temp_connection`` builds one per ``mcp.show`` /
+    ``mcp.list``. It is not the client the session registered, so its timeout
+    says nothing about the live connection — reporting it would detach a
+    healthy MCP just because the user opened its detail page.
+    """
+    from jiuwenswarm.common.mcp_config import TEMP_PROBE_CLIENT_ATTR
+
+    return bool(getattr(client, TEMP_PROBE_CLIENT_ATTR, False))
+
+
+def _is_not_connected_guard(exc: BaseException) -> bool:
+    """True for the clients' own "session is gone" RuntimeError.
+
+    Deliberately narrow: ``asyncio.CancelledError`` (the user pressed stop)
+    and business errors must never be read as a dead connection.
+    """
+    return isinstance(exc, RuntimeError) and "not connected" in str(exc).lower()
+
+
+async def _report_connection_lost(client: Any) -> None:
+    """Persist the lost connection and ask the web UI to reload its MCP list.
+
+    Idempotent through ``mark_mcp_connection_lost`` (only a record that is
+    still ``connected`` flips), so repeated failures cost one state read.
+    """
+    name = _client_mcp_name(client)
+    if not name:
+        logger.debug("[mcp-timeout] cannot attribute a lost connection: client has no _name")
+        return
+    try:
+        if _is_temp_probe_client(client):
+            logger.debug(
+                "[mcp-timeout] '%s' timed out on a one-shot probe client; "
+                "the registered connection is untouched, not reporting",
+                name,
+            )
+            return
+        from jiuwenswarm.server.runtime.mcp import registry
+
+        event = registry.mark_mcp_connection_lost(name)
+        if not event:
+            return
+        setattr(client, "_jws_session_lost", False)
+        from jiuwenswarm.server.runtime.mcp.connection_events import (
+            publish_connection_changed,
+        )
+
+        await publish_connection_changed(_current_session_id())
+    except Exception as exc:  # noqa: BLE001 - must not mask the tool failure
+        logger.warning("[mcp-timeout] connection-lost report for '%s' failed: %r", name, exc)
 
 
 def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) -> None:
@@ -85,13 +175,16 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
             timeout = _resolve_timeout(self, kwargs.get("timeout"))
             # SSE re-defaults a missing timeout to 60s; forward ours.
             call_kwargs = {**kwargs, "timeout": timeout}
+            # A previous call lost this client's session; only a later call
+            # can tell us whether it came back (see the handlers below).
+            had_lost = bool(getattr(self, "_jws_session_lost", False))
             try:
                 # anyio.fail_after (cancel scope) — NOT asyncio.wait_for: the
                 # latter runs the coroutine in a separate asyncio Task, which
                 # breaks anyio's cancel-scope invariants inside the MCP SDK
                 # transport and corrupts the session on healthy calls.
                 with anyio.fail_after(timeout):
-                    return await orig(self, *args, **call_kwargs)
+                    result = await orig(self, *args, **call_kwargs)
             except TimeoutError:
                 logger.warning(
                     "[mcp-timeout] %s.%s timed out after %.1fs, releasing client: %s",
@@ -103,9 +196,12 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
                 if hasattr(self, "_lazy_reconnect"):
                     # Detach the dead session; the next call lazily reconnects
                     # on the owner task. Awaiting disconnect here would block
-                    # behind that queue.
+                    # behind that queue. A slow-but-alive server looks exactly
+                    # like this, so the persisted state is left alone until a
+                    # later call proves the transport cannot come back.
                     setattr(self, "_lazy_reconnect", True)
                     setattr(self, "_session", None)
+                    setattr(self, "_jws_session_lost", True)
                 else:
                     # Older clients: tear down so the next call fails fast.
                     try:
@@ -123,6 +219,10 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
                                 name,
                                 coerce_exc,
                             )
+                    # Nothing rebuilds this transport (no lazy reconnect), so
+                    # every later call fails "Not connected": the connection is
+                    # gone and the persisted state must say so.
+                    await _report_connection_lost(self)
                 raise
             except BaseException as exc:
                 # The mcp SDK's streamablehttp_client runs inside an anyio task
@@ -138,7 +238,19 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
                 from jiuwenswarm.server.runtime.mcp.exc_group import (
                     reraise_as_exception,
                 )
+                if had_lost and _is_not_connected_guard(exc):
+                    # This call ran after a timeout detached the session and
+                    # ended on the client's "Not connected" guard: the lazy
+                    # reconnect was attempted and abandoned, so the transport
+                    # is gone. CancelledError and business errors never match.
+                    await _report_connection_lost(self)
                 reraise_as_exception(exc)
+
+            if had_lost:
+                # The session is back (lazy reconnect succeeded): nothing was
+                # persisted, only the client-side mark needs clearing.
+                setattr(self, "_jws_session_lost", False)
+            return result
 
         setattr(cls, name, wrapped)
 
