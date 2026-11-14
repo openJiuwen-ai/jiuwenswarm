@@ -1077,6 +1077,23 @@ def build_smart_video_graph(
     setting_num = {sid: i + 1 for i, sid in enumerate(setting_order)}
     shot_ord_by_setting: dict[str, int] = {sid: 0 for sid in setting_order}
 
+    # One arrangement per setting, gathered from every shot that declares blocking, so
+    # no single shot can re-invent who stands where.
+    from jiuwenswarm.server.runtime.designer.pipeline.positioning_lock import (
+        merged_positions,
+    )
+
+    for _sid in setting_order:
+        _sid_shots = [
+            _s
+            for _s in shots
+            if isinstance(_s, dict)
+            and (str(_s.get("setting_id") or "set_1").strip() or "set_1") == _sid
+        ]
+        _merged = merged_positions(_sid_shots)
+        if _merged:
+            spatial_by_setting.setdefault(_sid, dict(spatial_lock))["positions"] = _merged
+
     scene_by_id: dict[str, dict[str, Any]] = {}
     for sc in scenes:
         if not isinstance(sc, dict):
@@ -1362,6 +1379,10 @@ def build_smart_video_graph(
             shot["action"] = action
         action = action[:800]
         costume_lock = _costume_lock_for_ids(characters, focus_cids)
+        from jiuwenswarm.server.runtime.designer.pipeline.wardrobe_plan import (
+            wardrobe_by_character,
+        )
+
         from jiuwenswarm.server.runtime.designer.pipeline.clip_staging_lock import (
             enrich_clip_staging,
             staging_lock_clause,
@@ -1624,6 +1645,7 @@ def build_smart_video_graph(
             "cast_names": focus_names,
             "identity_refs": identity_refs,
             "costume_lock": costume_lock,
+            "costume_by_id": wardrobe_by_character(shot) or None,
             "positioning_lock": staging.get("positioning_lock"),
             "action_lock": staging.get("action_lock"),
             "relationship_lock": staging.get("relationship_lock"),

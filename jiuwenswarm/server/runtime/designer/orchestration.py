@@ -1884,7 +1884,16 @@ class Director:
                 "cast_actions, featured_cast_ids, ensemble_cast_ids, setting_id, "
                 "crowd_spec {present,density,placement}, "
                 "clip_prompt, exiting_character_ids, clip_strategy, "
-                "speech_by_character, speech_line. "
+                "speech_by_character, speech_line, "
+                "wardrobe_by_character "
+                '{"char_1":"<short garment clause this shot wears>"}. '
+                "Fill wardrobe_by_character ONLY for a character whose look in this "
+                "shot differs from the identity card you gave them (a change of "
+                "clothes between settings, an added coat, a removed apron). One look "
+                "per character per shot: never list two outfits or per-scene "
+                "conditions in one clause. Repeat it on every shot in that setting "
+                "where the character still wears that other look. Omit the field, or "
+                "the character, when the card already shows what this shot wears. "
                 "Schema: "
                 '{"style_lock":{"look":"...","medium":"..."},'
                 '"characters":[{"id":"char_1","name":"...","description":"...",'
@@ -1892,7 +1901,8 @@ class Director:
                 '"accessories":"","outfit":""}}],'
                 '"clips":[{"clip_index":1,"timeline":"<copy this shot timeline from the approved brief>",'
                 '"action":"...",'
-                '"speech_by_character":{"char_1":"exact line"},"speech_line":"..."}],'
+                '"speech_by_character":{"char_1":"exact line"},"speech_line":"...",'
+                '"wardrobe_by_character":{"char_1":"dark green gown with gold embroidery"}}],'
                 '"target_clip_count":N,"include_speech":bool,'
                 '"include_music":bool,"notes":"..."}'
             ) + _language_rule() + POSITIVE_VISUAL_RULE
@@ -2179,10 +2189,17 @@ class Director:
         ).strip()
 
 
-        if costume_lock and "Costume lock" not in prompt and "costume lock" not in prompt.lower():
-            prompt = prompt + f"\nCostume lock (must keep): {costume_lock}"
-            notes.append("inject_costume_lock")
+        def _add_lock_banner(text: str, note: str) -> None:
+            """Clips render from their plates, so a stored lock banner adds nothing."""
+            nonlocal prompt, changed, notes
+            if role == "clip":
+                return
+            prompt = prompt + text
+            notes.append(note)
             changed = True
+
+        if costume_lock and "Costume lock" not in prompt and "costume lock" not in prompt.lower():
+            _add_lock_banner(f"\nCostume lock (must keep): {costume_lock}", "inject_costume_lock")
         # Always reinforce garment-level clothing lock for frames + shots.
         try:
             from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import (
@@ -2200,26 +2217,23 @@ class Director:
                 for_clip=(role == "clip"),
             )
             if cloth and "CLOTHING LOCK" not in prompt and "CLOTHING HOLD" not in prompt:
-                prompt = prompt + "\n" + cloth
-                notes.append("inject_clothing_lock")
-                changed = True
+                _add_lock_banner("\n" + cloth, "inject_clothing_lock")
         except Exception:  # noqa: BLE001
             pass
 
         if spatial and "SPATIAL LOCK" not in prompt and role != "scene":
-            prompt = (
-                prompt
-                + "\nSPATIAL LOCK: "
-                + "; ".join(f"{k}={v}" for k, v in spatial.items() if str(v).strip())
+            _add_lock_banner(
+                "\nSPATIAL LOCK: "
+                + "; ".join(f"{k}={v}" for k, v in spatial.items() if str(v).strip()),
+                "inject_spatial_lock",
             )
-            notes.append("inject_spatial_lock")
-            changed = True
             cfg["spatial_lock"] = spatial
 
         if character_spec_ids and "IDENTITY" not in prompt and "character spec" not in prompt.lower():
-            prompt = prompt + f"\nIDENTITY character specs (do not invent faces): {', '.join(character_spec_ids)}"
-            notes.append("inject_identity_character_specs")
-            changed = True
+            _add_lock_banner(
+                f"\nIDENTITY character specs (do not invent faces): {', '.join(character_spec_ids)}",
+                "inject_identity_character_specs",
+            )
 
         # Group plate gate: a plate for a shared-look group must show distinct
         # people, not one face cloned across the declared headcount.
@@ -2417,13 +2431,11 @@ class Director:
 
         detail_needles = ("gaze", "screen-left", "screen left", "motion direction", "looks at")
         if not any(n in prompt.lower() for n in detail_needles):
-            prompt = (
-                prompt
-                + "\nDETAIL LOCK: specify motion direction, who each person looks at, "
-                "relative screen L/R positioning, and prop/landmark anchors for this shot."
+            _add_lock_banner(
+                "\nDETAIL LOCK: specify motion direction, who each person looks at, "
+                "relative screen L/R positioning, and prop/landmark anchors for this shot.",
+                "inject_detail_lock",
             )
-            notes.append("inject_detail_lock")
-            changed = True
 
         # Per-shot staging locks (positioning / action / relationships) — equal to clothing.
         try:
@@ -2446,9 +2458,7 @@ class Director:
                 characters=analysis_chars,
             )
             if staging_clause and "STAGING LOCK" not in prompt:
-                prompt = prompt + "\n" + staging_clause
-                notes.append("inject_staging_lock")
-                changed = True
+                _add_lock_banner("\n" + staging_clause, "inject_staging_lock")
         except Exception:  # noqa: BLE001
             pass
 
@@ -2495,9 +2505,7 @@ class Director:
                             "by the brief and storyboard."
                         )
                 if clause:
-                    prompt = prompt + "\n" + clause
-                    notes.append("inject_style_lock")
-                    changed = True
+                    _add_lock_banner("\n" + clause, "inject_style_lock")
         # Leaf nodes never invent a visual medium. The brief/storyboard style is
         # propagated through analysis/metadata above; a missing style stays missing
         # here instead of silently becoming a model-specific default.
@@ -2651,30 +2659,29 @@ class Director:
                 )
 
                 if clip_uses_scene_specs(cfg, graph if isinstance(graph, dict) else {}):
-                    prompt = (
-                        prompt
-                        + "\nCHARACTER CONSISTENCY LOCK: animate ONLY on-screen people from "
+                    _add_lock_banner(
+                        "\nCHARACTER CONSISTENCY LOCK: animate ONLY on-screen people from "
                         "character specs bound as character1/character2… (attach order). "
                         "The LAST reference is the Scene specs (environment) — not a person. "
-                        f"Keep faces, body types, ages, and costumes"
+                        "Keep faces, body types, ages, and costumes"
                         f"{(' for ' + cast_who) if cast_who else ''}. "
-                        "Do not recast, redesign clothing, or invent unlabeled extras."
+                        "Do not recast, redesign clothing, or invent unlabeled extras.",
+                        "inject_clip_character_consistency",
                     )
                 else:
-                    prompt = (
-                        prompt
-                        + "\nCHARACTER CONSISTENCY LOCK: animate ONLY people already in Image 1 "
+                    _add_lock_banner(
+                        "\nCHARACTER CONSISTENCY LOCK: animate ONLY people already in Image 1 "
                         "(this shot's scene spec); keep the same faces, body types, ages, and "
                         f"costumes{(' for ' + cast_who) if cast_who else ''}. "
                         "Do not recast, redesign clothing, or invent a different hero. "
-                        "IDENTITY character specs remain the face authority."
+                        "IDENTITY character specs remain the face authority.",
+                        "inject_clip_character_consistency",
                     )
-                notes.append("inject_clip_character_consistency")
-                changed = True
             if costume_lock and "Costume lock" not in prompt and "costume lock" not in prompt.lower():
-                prompt = prompt + f"\nCostume lock (must keep on shot): {costume_lock}"
-                notes.append("inject_shot_costume_lock")
-                changed = True
+                _add_lock_banner(
+                    f"\nCostume lock (must keep on shot): {costume_lock}",
+                    "inject_shot_costume_lock",
+                )
             if costume_lock and "CLOTHING LOCK" not in prompt:
                 from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import (
                     clothing_lock_clause,
@@ -2682,9 +2689,7 @@ class Director:
 
                 cloth = clothing_lock_clause(costume_lock, for_clip=True)
                 if cloth:
-                    prompt = prompt + "\n" + cloth
-                    notes.append("inject_shot_clothing_lock")
-                    changed = True
+                    _add_lock_banner("\n" + cloth, "inject_shot_clothing_lock")
             # Storyboard shot for THIS shot only (avoid full-board mix).
             action = str(cfg.get("clip_action") or "").strip()
             if action and f"Primary action for shot {clip_index}" not in prompt:
@@ -2769,13 +2774,9 @@ class Director:
             if block and missing_lock:
                 # Replace soft fragments with full lock block once.
                 if "LANGUAGE LOCK" not in prompt:
-                    prompt = prompt + "\n" + block
-                    notes.append("inject_audio_locks")
-                    changed = True
+                    _add_lock_banner("\n" + block, "inject_audio_locks")
                 elif "SPEECH LOCK" not in prompt or "BGM LOCK" not in prompt:
-                    prompt = prompt + "\n" + block
-                    notes.append("reinforce_audio_locks")
-                    changed = True
+                    _add_lock_banner("\n" + block, "reinforce_audio_locks")
 
         # Soft anti-repeat for images only. Shot video calls stay positive — director
         # omits exited cast instead of appending forbid lines.
@@ -4597,8 +4598,13 @@ def _identity_consistency_patch(graph: DesignerExecutionGraph) -> list[str]:
         from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import (
             costume_lock_for_ids,
             enrich_character_clothing,
+            sync_costume_from_specs,
         )
 
+        # The identity plate owns the wardrobe: pick up a costume edited on the
+        # character node before this clip is stamped, or the clip keeps the
+        # garments it was authored with.
+        spec_costume_ids = sync_costume_from_specs(graph)
         analysis_chars = list(
             ((graph.get("metadata") or {}).get("script_analysis") or {}).get("characters")
             or []
@@ -4609,10 +4615,27 @@ def _identity_consistency_patch(graph: DesignerExecutionGraph) -> list[str]:
         costume_lock = str(cfg.get("costume_lock") or "").strip()
         detailed = costume_lock_for_ids(analysis_chars, cids) if cids else ""
         has_slots = any(key in costume_lock for key in ("top=", "bottom=", "outfit="))
+        spec_supplied = bool(spec_costume_ids.intersection(cids))
+        # Split in two decisions so each condition stays within three clauses.
+        stamp_reason = ""
         if detailed and (not costume_lock or not has_slots):
+            stamp_reason = "stamped"
+        elif detailed and spec_supplied and detailed != costume_lock:
+            stamp_reason = "refreshed"
+        if stamp_reason:
+            was_set = bool(costume_lock)
             costume_lock = detailed
             cfg["costume_lock"] = costume_lock
-            notes.append(f"{node.get('id')}: clothing costume_lock stamped")
+            identity = cfg.get("identity_refs") if isinstance(cfg.get("identity_refs"), dict) else {}
+            if identity:
+                identity = dict(identity)
+                identity["costume_lock"] = costume_lock
+                cfg["identity_refs"] = identity
+            notes.append(
+                f"{node.get('id')}: costume_lock refreshed from the character spec"
+                if stamp_reason == "refreshed" and was_set
+                else f"{node.get('id')}: clothing costume_lock stamped"
+            )
         elif not costume_lock and cids:
             costume_lock = "; ".join(
                 f"{id_to_name.get(cid, cid)}: {costume_by_cid.get(cid, '')[:120]}".strip(": ")

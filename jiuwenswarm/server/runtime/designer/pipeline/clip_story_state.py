@@ -638,6 +638,38 @@ def stamp_continuity_story_fields(
     return cfg
 
 
+def resolve_reference_slots(
+    cast_count: int,
+    extra_count: int = 0,
+    *,
+    max_refs: int = 5,
+) -> dict[str, Any]:
+    """Predict ``cap_r2v_reference_paths`` for the prompt: which slot each ref gets.
+
+    Keeps the first ``max_refs - 1`` character plates plus the last (setting)
+    plate, so a six-cast shot must not cite an Image 7 that was never attached.
+    """
+    cap = max(1, int(max_refs or 5))
+    cast = max(0, int(cast_count or 0))
+    extra = max(0, int(extra_count or 0))
+    if cast + extra + 1 <= cap:
+        return {
+            "cast": list(range(1, cast + 1)),
+            "extra": list(range(cast + 1, cast + extra + 1)),
+            "scene": cast + extra + 1,
+            "cast_dropped": 0,
+        }
+    keep = cap - 1
+    kept_cast = min(cast, keep)
+    kept_extra = max(0, keep - kept_cast)
+    return {
+        "cast": list(range(1, kept_cast + 1)),
+        "extra": list(range(kept_cast + 1, kept_cast + kept_extra + 1)),
+        "scene": cap,
+        "cast_dropped": cast - kept_cast,
+    }
+
+
 def cap_r2v_reference_paths(paths: list[Path], *, max_refs: int = 5) -> list[Path]:
     """Keep on-screen character specs + last scene specs within Wan's 5-ref cap."""
     unique: list[Path] = []

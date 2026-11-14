@@ -327,6 +327,7 @@ def collect_clip_reference_images(
     ctx: NodeExecutionContext | None,
     clip_index: int = 1,
     node: DesignerGraphNode | None = None,
+    bindings: dict[str, Any] | None = None,
 ) -> list[Path]:
     """Wan reference_images: on-screen character specs, then user images, then the scene spec.
 
@@ -334,6 +335,11 @@ def collect_clip_reference_images(
     first-frame image. Order matches Wan R2V labeling: character specs are
     character1…, uploads and user-wired image nodes follow, and the scene spec
     stays last as the environment.
+
+    ``bindings`` (optional) is filled with the real slot each reference landed
+    in — ``cast`` (character id → Image N), ``extra`` (upload order → Image N),
+    ``scene`` and ``unbound`` (on-screen cast with no attached plate, so the
+    prompt must name them without inventing an image).
     """
     from jiuwenswarm.server.runtime.designer.handlers.common import (
         node_ids_output_image_paths,
@@ -345,16 +351,18 @@ def collect_clip_reference_images(
 
     paths: list[Path] = []
     seen: set[str] = set()
+    origin: dict[str, tuple[str, str]] = {}
 
-    def add(path: Path | None) -> None:
+    def add(path: Path | None, kind: str = "", key: str = "") -> None:
         if path is None:
             return
         resolved = path.resolve()
-        key = str(resolved)
-        if key in seen:
+        marker = str(resolved)
+        if marker in seen:
             return
-        seen.add(key)
+        seen.add(marker)
         paths.append(resolved)
+        origin[marker] = (kind, key)
 
     if ctx is None:
         return paths
@@ -421,22 +429,57 @@ def collect_clip_reference_images(
     if flow is not None:
         for path in ordered_flow_paths(flow, attached):
             add(path)
+        # Flow edges carry no character attribution, so leave ``bindings`` empty
+        # and let the prompt composer keep its positional fallback.
         return cap_r2v_reference_paths(paths)
 
     if solo_nids:
-        for path in node_ids_output_image_paths(ctx, solo_nids):
-            add(path)
+        for nid in solo_nids:
+            for path in node_ids_output_image_paths(ctx, [nid]):
+                add(path, "cast_nid", nid)
     elif not on_screen:
         for path in role_output_image_paths(ctx, NODE_ROLE_CHARACTER)[:4]:
             add(path)
 
     for path in attached:
-        add(path)
+        add(path, "extra", "")
 
     scene = collect_clip_scene_image(ctx, clip_index, node=node)
     # Scene specs is the last environment reference for every clip.
-    add(scene)
-    return cap_r2v_reference_paths(paths)
+    add(scene, "scene", "")
+    kept = cap_r2v_reference_paths(paths)
+    _fill_reference_bindings(bindings, kept, origin, solo_by_cid, on_screen)
+    return kept
+
+
+def _fill_reference_bindings(
+    bindings: dict[str, Any] | None,
+    kept: list[Path],
+    origin: dict[str, tuple[str, str]],
+    solo_by_cid: dict[str, str],
+    on_screen: list[str],
+) -> None:
+    """Record the real Image-N slot of every reference the call will send."""
+    if bindings is None:
+        return
+    cast: dict[str, int] = {}
+    extra: list[int] = []
+    scene_index = 0
+    for index, path in enumerate(kept, start=1):
+        kind, key = origin.get(str(path.resolve()), ("", ""))
+        if kind == "cast_nid":
+            for cid, nid in solo_by_cid.items():
+                if nid == key:
+                    cast[str(cid)] = index
+                    break
+        elif kind == "extra":
+            extra.append(index)
+        elif kind == "scene":
+            scene_index = index
+    bindings["cast"] = cast
+    bindings["extra"] = extra
+    bindings["scene"] = scene_index
+    bindings["unbound"] = [cid for cid in on_screen if str(cid) not in cast]
 
 
 def edge_storyboard_text(
@@ -514,6 +557,20 @@ def build_clip_prompt(
     clip_index, shot = _shot_for_node(graph, node, ctx)
     cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
     cfg = dict(cfg)
+    try:
+        from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import (
+            refresh_dependent_costumes,
+        )
+
+        # A costume edited on the identity plate outranks the wardrobe this clip
+        # was authored with, including the phrase already written into its prompt.
+        for note in refresh_dependent_costumes(graph):
+            logger.info("clip costume refresh: %s", note)
+        if isinstance(node, dict):
+            cfg = node.get("config") if isinstance(node.get("config"), dict) else cfg
+            cfg = dict(cfg)
+    except Exception:
+        logger.debug("refresh_dependent_costumes failed in build_clip_prompt", exc_info=True)
     try:
         from jiuwenswarm.server.runtime.designer.pipeline.clip_story_state import (
             ensure_prior_clip_story_on_cfg,
@@ -691,9 +748,12 @@ class ClipNodeHandler:
         cfg = scrub_restated_speech(cfg)
         node["config"] = cfg
 
-        refs = collect_clip_reference_images(
-            ctx, clip_index, node=node
-        )
+        binding: dict[str, Any] = {}
+        refs = collect_clip_reference_images(ctx, clip_index, node=node, bindings=binding)
+        if binding:
+            # Prompt must cite the Image N the call actually sends.
+            cfg["reference_binding"] = binding
+            node["config"] = cfg
         image_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
         ref_files = [p for p in refs if p.is_file() and p.suffix.lower() in image_suffixes]
         duration = video_duration_seconds(ctx, node)

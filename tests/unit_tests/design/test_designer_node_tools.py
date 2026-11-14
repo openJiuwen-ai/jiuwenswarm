@@ -244,6 +244,54 @@ async def test_unresolvable_generate_ticket_is_logged(node_tools, run_env, caplo
     assert "brief generate rejected: error=ticket_run_mismatch" in caplog.text
 
 
+_CLIP_TOOLS = _GROUP / "agents" / "clip" / "tools"
+
+
+@pytest.fixture
+def clip_tools(monkeypatch) -> ModuleType:
+    monkeypatch.syspath_prepend(str(_CLIP_TOOLS))
+    for name in ("support", "designer_node_tools"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    spec = importlib.util.spec_from_file_location(
+        "generate_clip_under_test", _CLIP_TOOLS / "generate_shot_video.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    yield module
+    for name in ("support", "designer_node_tools"):
+        sys.modules.pop(name, None)
+
+
+async def test_a_failed_clip_call_does_not_spend_the_one_shot(clip_tools, monkeypatch):
+    generate_clip = clip_tools.GenerateShotVideo()
+    calls = {"n": 0}
+
+    async def flaky(*args, **kwargs):
+        calls["n"] += 1
+        ok = calls["n"] > 1
+        return {
+            "success": ok,
+            "video_uri": "file:///v.mp4" if ok else None,
+            "error": None if ok else "generation_failed",
+        }
+
+    monkeypatch.setattr(
+        clip_tools,
+        "node_tools",
+        lambda: SimpleNamespace(
+            generate_node_output=flaky, note_rejection=lambda *a, **k: None
+        ),
+    )
+
+    first = await generate_clip.invoke({"shot_ticket": _ticket("n_clip"), "prompt": "???"})
+    assert first["success"] is False
+    second = await generate_clip.invoke({"shot_ticket": _ticket("n_clip"), "prompt": "???"})
+    assert second["success"] is True
+    third = await generate_clip.invoke({"shot_ticket": _ticket("n_clip"), "prompt": "???"})
+    assert third["error"] == "generate_already_called"
+    assert calls["n"] == 2
+
+
 @pytest.fixture
 def generate_brief(monkeypatch) -> Any:
     monkeypatch.syspath_prepend(str(_BRIEF_TOOLS))
@@ -283,3 +331,26 @@ async def test_generate_tool_records_a_guarded_second_call(generate_brief, run_e
         run_env["bridge"].member_error_for("n_brief")
         == "generate_brief rejected: generate_already_called"
     )
+
+def test_a_clip_prompt_carries_the_setting_arrangement(node_tools: ModuleType) -> None:
+    node = {
+        "id": "n_clip",
+        "config": {
+            "pipeline": "clip",
+            "character_ids": ["char_1", "char_2"],
+            "cast_names": ["祖母", "父亲"],
+            "spatial_lock": {
+                "layout": "圆桌在房间中间，祖母坐左侧，父亲坐右侧"
+            },
+        },
+    }
+
+    once = node_tools._with_positioning_lock("祖母递过汤碗。", node)
+
+    assert once.startswith("本场景固定位置：")
+    assert "祖母递过汤碗。" in once
+    # The next shot of the same setting adds nothing twice.
+    assert node_tools._with_positioning_lock(once, node) == once
+    # No cast on the config means nothing to lock.
+    bare = {"id": "n_clip", "config": {"pipeline": "clip"}}
+    assert node_tools._with_positioning_lock("未命名", bare) == "未命名"

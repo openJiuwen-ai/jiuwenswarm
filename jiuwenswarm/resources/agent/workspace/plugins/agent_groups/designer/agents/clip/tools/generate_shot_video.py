@@ -45,6 +45,7 @@ class GenerateShotVideo(Tool):
             )
         )
         self._used = False
+        self._attempts = 0
 
     def _failure(self, prompt: str, error: str) -> dict:
         return {
@@ -74,12 +75,18 @@ class GenerateShotVideo(Tool):
             if not prompt.strip():
                 return self._reject(data, prompt, "missing_prompt")
             self._used = True
-            return await node_tools().generate_node_output(
+            self._attempts += 1
+            result = await node_tools().generate_node_output(
                 ticket,
                 member="clip",
                 prompt=prompt,
                 duration_seconds=_seconds(data.get("duration_seconds")),
             )
+            if not (isinstance(result, dict) and result.get("success")):
+                # A failed call did not spend the shot: allow one more try.
+                self._attempts -= 1
+                self._used = self._attempts >= 2
+            return result
         except Exception as exc:  # noqa: BLE001
             return self._failure(prompt, str(exc))
 

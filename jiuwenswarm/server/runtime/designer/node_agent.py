@@ -1130,9 +1130,14 @@ class DesignerGraphToolkit:
 
         # Gated same-scene last-frame chain before prompt so Wan binding matches attach order.
         clip_index = node_clip_index(node)
+        binding: dict[str, Any] = {}
         refs = collect_clip_reference_images(
-            self.ctx, clip_index, node=node
+            self.ctx, clip_index, node=node, bindings=binding
         )
+        if binding:
+            # Prompt must cite the Image N the call actually sends.
+            cfg["reference_binding"] = binding
+            node["config"] = cfg
         image_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
         ref_paths = [p for p in refs if p.is_file() and p.suffix.lower() in image_suffixes]
         ref_files = [str(p) for p in ref_paths]
