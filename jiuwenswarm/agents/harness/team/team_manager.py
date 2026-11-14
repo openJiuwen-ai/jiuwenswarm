@@ -4414,11 +4414,15 @@ def get_team_manager(channel_id: str | None = None) -> TeamManager:
         from jiuwenswarm.enterprise.edition import is_enterprise
 
         if is_enterprise():
+            from jiuwenswarm.agents.harness.team.stop_team_settle_patch import (
+                apply_stop_team_settle_patch,
+            )
             from jiuwenswarm.agents.harness.team.task_reassign_patch import (
                 apply_task_reassign_patch,
             )
 
             apply_task_reassign_patch()
+            apply_stop_team_settle_patch()
         _team_manager = TeamManager()
     return _team_manager
 
