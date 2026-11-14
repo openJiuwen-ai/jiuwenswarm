@@ -11,6 +11,15 @@ import { ModelProviderSelect } from '../models/ModelProviderSelect';
 import { ContextWindowField } from '../models/ContextWindowField';
 import { parseContextWindowTokens } from '../models/contextWindow';
 import {
+  CUSTOM_FETCH_METHOD,
+  describeFetchReason,
+  getCustomModelFetchKey,
+  getCustomStatusKey,
+  getModelFetchKey,
+  getPresetStatusKey,
+  isHttpApiBase,
+} from '../models/customModelCatalog';
+import {
   CUSTOM_VENDOR_SELECTION,
   findVendorPreset,
   normalizeModelOptions,
@@ -33,34 +42,7 @@ const EMPTY_VENDOR_CATALOG: VendorPresetMap = {
   custom_api: [],
 };
 
-const FETCH_REASON_KEYS: Record<string, string> = {
-  'no remote models endpoint': 'noEndpoint',
-  'api_key required for fetch': 'apiKeyRequired',
-  'remote fetch failed or empty': 'remoteFailed',
-};
-
 type SaveConfig = (updates: Record<string, string>, operation: string) => Promise<unknown>;
-
-function getPresetStatusKey(
-  preset: VendorPreset | undefined,
-  apiKey: string,
-  options: readonly string[],
-): string | undefined {
-  if (!preset) return undefined;
-  if (!preset.models_endpoint)
-    return options.length > 0
-      ? 'settingsPanel.models.fetchReasons.noEndpoint'
-      : 'settingsPanel.models.noPresetModelsNoEndpoint';
-  if (preset.models_needs_key && !apiKey.trim())
-    return options.length > 0
-      ? 'settingsPanel.models.fetchReasons.apiKeyRequired'
-      : 'settingsPanel.models.noPresetModelsApiKeyRequired';
-  return options.length > 0 ? 'settingsPanel.models.presetModels' : 'settingsPanel.models.noPresetModels';
-}
-
-function getModelFetchKey(preset: VendorPreset, apiKey: string): string {
-  return JSON.stringify([preset.plan, preset.vendor_key, apiKey.trim()]);
-}
 
 function validateMediaModelDraft(
   value: MediaModelDraft,
@@ -153,10 +135,26 @@ export function MediaModelConfigDialog({
 
   const describePresetStatus = useCallback(
     (targetPreset: VendorPreset | undefined, apiKey: string, options: readonly string[]) => {
-      const statusKey = getPresetStatusKey(targetPreset, apiKey, options);
+      const statusKey = getPresetStatusKey(targetPreset, apiKey, options, 'preset');
       return statusKey ? t(statusKey) : '';
     },
     [t],
+  );
+
+  const describeCustomStatus = useCallback(
+    (apiBase: string, apiKey: string, options: readonly string[]) => {
+      const statusKey = getCustomStatusKey(apiBase, apiKey, options);
+      return statusKey ? t(statusKey) : '';
+    },
+    [t],
+  );
+
+  const describeSelectionStatus = useCallback(
+    (selection: string, apiBase: string, apiKey: string, options: readonly string[]) =>
+      selection === CUSTOM_VENDOR_SELECTION
+        ? describeCustomStatus(apiBase, apiKey, options)
+        : describePresetStatus(findVendorPreset(catalog, selection), apiKey, options),
+    [catalog, describeCustomStatus, describePresetStatus],
   );
 
   const updateModelOptions = (options: readonly string[]) => {
@@ -207,6 +205,12 @@ export function MediaModelConfigDialog({
 
   useEffect(() => {
     const current = form.getValues();
+    if (current.vendor_selection === CUSTOM_VENDOR_SELECTION) {
+      // Custom endpoints keep whatever the user already fetched; api_base and
+      // api_key handlers refresh the hint when their value changes.
+      setFetchStatus(describeCustomStatus(current.api_base, current.api_key, []));
+      return;
+    }
     const currentPreset = findVendorPreset(catalog, current.vendor_selection);
     if (!currentPreset) return;
     const presetOptions = normalizeModelOptions(currentPreset.model_options);
@@ -216,7 +220,7 @@ export function MediaModelConfigDialog({
         : presetOptions;
     setModelOptions(nextOptions);
     setFetchStatus(describePresetStatus(currentPreset, current.api_key, nextOptions));
-  }, [catalog, describePresetStatus, form]);
+  }, [catalog, describeCustomStatus, describePresetStatus, form]);
 
   const invalidateFetchState = () => {
     fetchRequestId.current += 1;
@@ -233,7 +237,7 @@ export function MediaModelConfigDialog({
         api_base: '',
         api_key: '',
         model_name: '',
-        model_input_mode: 'manual',
+        model_input_mode: 'options',
         provider: 'OpenAI',
         endpoint_profile: '',
         vendor_key: '',
@@ -241,6 +245,7 @@ export function MediaModelConfigDialog({
       });
       setModelOptions([]);
       form.clearValidate(['vendor_selection', 'api_base', 'api_key', 'model_name']);
+      setFetchStatus(describeCustomStatus('', '', []));
       return;
     }
 
@@ -266,10 +271,65 @@ export function MediaModelConfigDialog({
     setFetchStatus(describePresetStatus(nextPreset, '', nextOptions));
   };
 
+  const fetchCustomModels = async (currentValues: MediaModelDraft): Promise<void> => {
+    const apiBase = currentValues.api_base.trim();
+    const apiKey = currentValues.api_key.trim();
+    if (!apiBase || !apiKey) {
+      updateModelOptions([]);
+      setFetchStatus(describeCustomStatus(apiBase, apiKey, []));
+      return;
+    }
+    if (!isHttpApiBase(apiBase)) {
+      updateModelOptions([]);
+      setFetchStatus(describeCustomStatus(apiBase, apiKey, []));
+      return;
+    }
+    const currentRequestId = ++fetchRequestId.current;
+    setFetching(true);
+    setFetchStatus(t('settingsPanel.models.fetchModelsLoading'));
+    try {
+      const result = await request<VendorFetchModelsResult>(
+        CUSTOM_FETCH_METHOD,
+        { api_base: apiBase, api_key: apiKey, protocol: currentValues.protocol },
+        { timeoutMs: 30_000 },
+      );
+      if (currentRequestId !== fetchRequestId.current) return;
+      if (!Array.isArray(result.models) || !result.models.every((name) => typeof name === 'string')) {
+        throw new Error(t('settingsPanel.models.fetchModelsInvalidResponse'));
+      }
+      const nextOptions = normalizeModelOptions(result.models);
+      if (result.source === 'remote') {
+        if (nextOptions.length === 0) throw new Error(t('settingsPanel.models.fetchModelsInvalidResponse'));
+        updateModelOptions(nextOptions);
+        fetchedModelLists.current.add(getCustomModelFetchKey(apiBase, apiKey, currentValues.protocol));
+        setFetchStatus(t('settingsPanel.models.fetchModelsRemote', { count: nextOptions.length }));
+      } else if (result.source === 'unavailable') {
+        // Custom endpoints have no preset fallback: report why and keep manual entry.
+        updateModelOptions([]);
+        setFetchStatus(describeFetchReason(result.reason, t));
+      } else {
+        throw new Error(t('settingsPanel.models.fetchModelsUnrecognizedResult'));
+      }
+    } catch (error) {
+      if (currentRequestId === fetchRequestId.current) {
+        updateModelOptions([]);
+        const message = error instanceof Error ? error.message : t('settingsPanel.models.fetchModelsFailed');
+        setFetchStatus(message);
+      }
+    } finally {
+      if (currentRequestId === fetchRequestId.current) setFetching(false);
+    }
+  };
+
   const fetchModels = async () => {
     const currentValues = form.getValues();
+    if (fetching) return;
+    if (currentValues.vendor_selection === CUSTOM_VENDOR_SELECTION) {
+      await fetchCustomModels(currentValues);
+      return;
+    }
     const currentPreset = findVendorPreset(catalog, currentValues.vendor_selection);
-    if (!currentPreset || fetching) return;
+    if (!currentPreset) return;
     const presetOptions = normalizeModelOptions(currentPreset.model_options);
     if (!currentPreset.models_endpoint || (currentPreset.models_needs_key && !currentValues.api_key.trim())) {
       updateModelOptions(presetOptions);
@@ -299,9 +359,9 @@ export function MediaModelConfigDialog({
         updateModelOptions(nextOptions);
         fetchedModelLists.current.add(getModelFetchKey(currentPreset, currentValues.api_key));
         setFetchStatus(t('settingsPanel.models.fetchModelsRemote', { count: nextOptions.length }));
-      } else if (result.source === 'preset' && result.reason && FETCH_REASON_KEYS[result.reason]) {
+      } else if (result.source === 'preset' && result.reason) {
         updateModelOptions(nextOptions);
-        setFetchStatus(t(`settingsPanel.models.fetchReasons.${FETCH_REASON_KEYS[result.reason]}`));
+        setFetchStatus(describeFetchReason(result.reason, t));
       } else {
         throw new Error(t('settingsPanel.models.fetchModelsUnrecognizedResult'));
       }
@@ -322,6 +382,18 @@ export function MediaModelConfigDialog({
 
   const openModelList = () => {
     const currentValues = form.getValues();
+    if (currentValues.vendor_selection === CUSTOM_VENDOR_SELECTION) {
+      const apiBase = currentValues.api_base.trim();
+      const apiKey = currentValues.api_key.trim();
+      if (!apiBase || !apiKey) {
+        updateModelOptions([]);
+        setFetchStatus(describeCustomStatus(apiBase, apiKey, []));
+        return;
+      }
+      if (!fetchedModelLists.current.has(getCustomModelFetchKey(apiBase, apiKey, currentValues.protocol)))
+        void fetchModels();
+      return;
+    }
     const currentPreset = findVendorPreset(catalog, currentValues.vendor_selection);
     if (!currentPreset) return;
     const presetOptions = normalizeModelOptions(currentPreset.model_options);
@@ -376,6 +448,14 @@ export function MediaModelConfigDialog({
       component: 'input',
       required: true,
       placeholder: t('settingsPanel.fields.api_base.placeholder'),
+      onChange: (_apiBase, nextValues) => {
+        invalidateFetchState();
+        fetchedModelLists.current.clear();
+        setModelOptions([]);
+        setFetchStatus(
+          describeSelectionStatus(nextValues.vendor_selection, nextValues.api_base, nextValues.api_key, []),
+        );
+      },
     });
   }
 
@@ -393,6 +473,13 @@ export function MediaModelConfigDialog({
     onChange: (_apiKey, nextValues) => {
       invalidateFetchState();
       fetchedModelLists.current.clear();
+      if (nextValues.vendor_selection === CUSTOM_VENDOR_SELECTION) {
+        const nextOptions = updateModelOptions([]);
+        setFetchStatus(
+          describeSelectionStatus(nextValues.vendor_selection, nextValues.api_base, nextValues.api_key, nextOptions),
+        );
+        return;
+      }
       const nextPreset = findVendorPreset(catalog, nextValues.vendor_selection);
       if (!nextPreset) return;
       const nextOptions = updateModelOptions(nextPreset.model_options);
@@ -410,17 +497,28 @@ export function MediaModelConfigDialog({
         id={id}
         value={String(value ?? '')}
         mode={values.model_input_mode}
+        // Only the custom branch accepts values outside the list; preset
+        // vendors keep their pre-existing options-only behaviour.
+        allowCustomValue={custom}
         options={modelOptions}
         disabled={fieldDisabled || !values.vendor_selection}
         invalid={Boolean(error)}
         fetchStatus={fetchStatus}
         fetching={fetching}
-        showRefresh={Boolean(preset)}
-        fetchDisabled={!isConnected || !preset?.models_endpoint || fetching || submitting || testing}
+        showRefresh={Boolean(preset) || custom}
+        fetchDisabled={
+          !isConnected ||
+          (custom ? !isHttpApiBase(values.api_base) || !values.api_key.trim() : !preset?.models_endpoint) ||
+          fetching ||
+          submitting ||
+          testing
+        }
         emptyText={t(
-          preset
-            ? (getPresetStatusKey(preset, values.api_key, []) ?? 'settingsPanel.models.noModelResults')
-            : 'settingsPanel.models.noModelResults',
+          custom
+            ? (getCustomStatusKey(values.api_base, values.api_key, []) ?? 'settingsPanel.models.noModelResults')
+            : preset
+              ? (getPresetStatusKey(preset, values.api_key, [], 'preset') ?? 'settingsPanel.models.noModelResults')
+              : 'settingsPanel.models.noModelResults',
         )}
         onOpen={openModelList}
         onFetch={() => void fetchModels()}

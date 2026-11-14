@@ -1,0 +1,11 @@
+id: custom-model-catalog
+name: custom_model_catalog
+version: 0.1.0
+description: Fetch the model catalogue of a user-configured OpenAI-compatible gateway
+author: JiuwenSwarm
+min_jiuwenswarm_version: "0.2.8"
+package_type: application
+requires_transport: true
+dependencies: {}
+permissions:
+  - outbound_network

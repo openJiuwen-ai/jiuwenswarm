@@ -335,6 +335,7 @@ async function mountDialog(t, modelOverrides = {}, propOverrides = {}) {
     requests.push({ method, params });
     if (method === 'config.validate_model') return {};
     if (method === 'vendors.fetch_models') return { source: 'remote', models: ['glm-5.2', 'glm-new'] };
+    if (method === 'vendors.fetch_custom_models') return { source: 'remote', models: ['custom-a', 'custom-b'] };
     if (method === 'openai_account.auth.pending_login') return { status: 'none', auth: { authenticated: true } };
     if (method === 'openai_account.models.list') return { models: ['glm-5.2'], auth: { authenticated: true } };
     throw new Error(`Unexpected request: ${method}`);
@@ -410,6 +411,34 @@ test('reopening model details retains the API key and fetches remote models with
     vendor_key: vendor.vendor_key, plan: vendor.plan, api_key: 'test-saved-key',
   });
   assert.ok([...document.querySelectorAll('[role="option"]')].some((node) => node.textContent.trim() === 'glm-new'));
+});
+
+test('a custom gateway fetches its own catalogue from the configured api_base', async (t) => {
+  const ui = await mountDialog(t, {
+    model_name: 'my-model',
+    api_base: 'https://custom.example/v1',
+    api_key: 'custom-key',
+    vendor_key: undefined,
+    plan: undefined,
+  });
+  const refresh = document.querySelector('[data-testid="settings-model-name-field-refresh-btn"]');
+  assert.ok(refresh, 'a custom endpoint keeps the dropdown and its refresh action');
+  assert.equal(refresh.disabled, false);
+  await click(refresh);
+  assert.deepEqual(ui.requests.find(({ method }) => method === 'vendors.fetch_custom_models').params, {
+    api_base: 'https://custom.example/v1',
+    api_key: 'custom-key',
+    protocol: 'openai',
+  });
+  assert.equal(
+    ui.requests.filter(({ method }) => method === 'vendors.fetch_models').length,
+    0,
+    'custom endpoints never resolve against the preset registry',
+  );
+  assert.ok(
+    [...document.querySelectorAll('[role="option"]')].some((node) => node.textContent.trim() === 'custom-a'),
+    'fetched models become dropdown options',
+  );
 });
 
 test('opening an unsupported saved value displays and submits default without changing the saved configuration', async (t) => {
