@@ -60,7 +60,7 @@ const TEAM_MODES = new Set([
   "team.code.plan",
   // Legacy canonical modes still arriving over the wire from cron jobs created
   // before the three-segment rename — treat as team. See
-  // jiuwenswarm/common/mode_matrix.py DEPRECATION_MAP: these are the old
+  // gateway/common/mode_matrix.py DEPRECATION_MAP: these are the old
   // canonical IDs (team.plan / team.plan.normal / team.plan.code / code.team)
   // that the backend silently remaps to the new team.work.* / team.code.*
   // canonicals, but stored cron jobs may still carry the old value.

@@ -23,7 +23,7 @@ export function isClientMode(value: string): value is ClientMode {
 
 /**
  * 旧 canonical 串 → 新三段 canonical 的归一化表，与后端
- * ``jiuwenswarm/common/mode_matrix.py::DEPRECATION_MAP`` 字面对齐。
+ * ``gateway/common/mode_matrix.py::DEPRECATION_MAP`` 字面对齐。
  *
  * 后端在请求侧已经 `deprecate_mode` 把旧串映射到新串写回 ``params["mode"]``，
  * 但服务器推送路径（``session.updated`` / ``plan.mode_exited``、cron 任务的存储
