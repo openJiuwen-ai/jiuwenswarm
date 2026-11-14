@@ -107,6 +107,26 @@ async def test_call_tool_unknown_tool(session):
         await apps.call_app_tool("store", "nope", {})
 
 
+_CLIENT_CLASSES = (
+    ("stdio_client", "StdioClient"),
+    ("sse_client", "SseClient"),
+    ("streamable_http_client", "StreamableHttpClient"),
+)
+
+
+class _AppOnlySession(_FakeSession):
+    """Adds ``submit``, an app-only tool (visibility ``["app"]``)."""
+
+    async def list_tools(self):
+        result = await super().list_tools()
+        result.tools.append(mcp_types.Tool(
+            name="submit",
+            inputSchema={"type": "object"},
+            _meta={"ui": {"resourceUri": UI_URI, "visibility": ["app"]}},
+        ))
+        return result
+
+
 @pytest.fixture
 def patched_mcp_tool(monkeypatch):
     """Apply the invoke patch for one test, restoring openjiuwen afterwards."""
@@ -121,6 +141,9 @@ def patched_mcp_tool(monkeypatch):
         module = importlib.import_module(f"openjiuwen.core.foundation.tool.mcp.client.{name}")
         monkeypatch.setattr(module, "extract_mcp_tool_result_content",
                             module.extract_mcp_tool_result_content)
+    for name, cls_name in _CLIENT_CLASSES:
+        cls = getattr(importlib.import_module(f"openjiuwen.core.foundation.tool.mcp.client.{name}"), cls_name)
+        monkeypatch.setattr(cls, "list_tools", cls.list_tools)
     apps.apply_mcp_apps_patch()
     return mcp_base
 
@@ -332,3 +355,71 @@ async def test_initialize_advertises_mcp_apps_extension(monkeypatch):
         "io.modelcontextprotocol/ui": {"mimeTypes": ["text/html;profile=mcp-app"]}
     }
     assert "params" not in sent[1].model_dump(by_alias=True, mode="json", exclude_none=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("module_name,class_name", _CLIENT_CLASSES)
+async def test_app_only_tools_hidden_from_model_tool_list(monkeypatch, module_name, class_name):
+    """#6407: visibility ["app"] tools must not reach the model's tool list."""
+    import importlib
+
+    from openjiuwen.core.foundation.tool.mcp import base as mcp_base
+
+    cls = getattr(importlib.import_module(f"openjiuwen.core.foundation.tool.mcp.client.{module_name}"), class_name)
+
+    async def flattened_list_tools(self, *, timeout=None):
+        # What openjiuwen's clients return: cards without ``_meta``.
+        raw = await self._session.list_tools()
+        return [
+            mcp_base.McpToolCard(name=t.name, server_name=self._name, description="", input_params=t.inputSchema)
+            for t in raw.tools
+        ]
+
+    monkeypatch.setattr(cls, "list_tools", flattened_list_tools)
+    monkeypatch.setattr(apps, "_ui_resource_cache", {})
+    apps._hide_app_only_tools_from_model()
+
+    client = SimpleNamespace(_session=_AppOnlySession(), _name="store")
+    names = [card.name for card in await cls.list_tools(client)]
+
+    assert names == ["browse", "secret"]
+    # The app still sees (and may call) the app-only tool via the raw session.
+    monkeypatch.setattr(apps, "_live_client", lambda name: client)
+    assert "submit" in [t["name"] for t in await apps.list_app_tools("store")]
+    await apps.call_app_tool("store", "submit", {})
+    assert client._session.calls == [("submit", {})]
+
+
+@pytest.mark.asyncio
+async def test_app_only_tools_listing_failure_keeps_cards(monkeypatch):
+    from openjiuwen.core.foundation.tool.mcp.client import streamable_http_client
+
+    cls = streamable_http_client.StreamableHttpClient
+
+    async def flattened_list_tools(self, *, timeout=None):
+        return [SimpleNamespace(name="browse")]
+
+    monkeypatch.setattr(cls, "list_tools", flattened_list_tools)
+    monkeypatch.setattr(apps, "_ui_resource_cache", {})
+    apps._hide_app_only_tools_from_model()
+
+    class _Broken:
+        async def list_tools(self):
+            raise ValueError("boom")
+
+    client = SimpleNamespace(_session=_Broken(), _name="store")
+    assert [c.name for c in await cls.list_tools(client)] == ["browse"]
+
+
+@pytest.mark.asyncio
+async def test_invoke_patch_rejects_app_only_tool(patched_mcp_tool):
+    raw = mcp_types.CallToolResult(content=[mcp_types.TextContent(type="text", text="paid")])
+    client = _FakeClient(raw)
+    client._session = _AppOnlySession()
+    tool = _real_tool(patched_mcp_tool, client, "submit")
+
+    with pytest.raises(PermissionError):
+        await tool.invoke({})
+
+    # Model-visible tools on the same server are unaffected.
+    assert (await _real_tool(patched_mcp_tool, client, "browse").invoke({"q": 1}))["result"] == "paid"
