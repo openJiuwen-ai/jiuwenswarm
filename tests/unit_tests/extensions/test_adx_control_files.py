@@ -265,20 +265,19 @@ async def test_file_routes_follow_original_auth_disabled_behavior(monkeypatch):
     await router.shutdown()
 
 
-@pytest.mark.parametrize('recursive', [False, True])
 @pytest.mark.asyncio
-async def test_mkdir_uses_native_adx_action_and_default_mode(monkeypatch, recursive):
+async def test_recursive_mkdir_uses_native_adx_action_and_default_mode(monkeypatch):
     router, control = _files(monkeypatch)
     await router.connect('')
     control.invoke.side_effect = lambda env, action, args: (
         {'created': True, 'error': None} if action == 'file.mkdir' else {'exit_code': 0}
     )
     assert await router.mkdir_container_dir(
-        user_id='alice', path='/home/agentos/nested/dir', recursive=recursive,
+        user_id='alice', path='/home/agentos/nested/dir', recursive=True,
     ) == {'success': True, 'path': '/home/agentos/nested/dir', 'created': True}
     control.invoke.assert_awaited_once_with(_alice_instance(router), 'file.mkdir', {'path': '/home/agentos/nested/dir'})
     assert await router.mkdir_container_dir(
-        user_id='alice', path='/home/agentos/other', mode='700', recursive=recursive,
+        user_id='alice', path='/home/agentos/other', mode='700', recursive=True,
     ) == {'success': True, 'path': '/home/agentos/other', 'created': True}
     assert control.invoke.await_args_list[-2].args[1:] == ('file.mkdir', {'path': '/home/agentos/other'})
     assert control.invoke.await_args_list[-1].args[1] == 'cmd.run'
@@ -598,5 +597,78 @@ async def test_upload_does_not_publish_when_mode_cannot_be_applied(monkeypatch):
             await router.upload_container_file(user_id='alice', path='a', content=b'a', mode='600')
         assert not any(call.args[1] == 'file.rename' for call in control.invoke.await_args_list)
         assert any(call.args[1] == 'file.remove' for call in control.invoke.await_args_list)
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('recursive', [False, True])
+@pytest.mark.parametrize('path', ['relative', '/outside/root', '/home/agentos/../escape', '/home/agentos/bad\x00name'])
+async def test_mkdir_invalid_path_is_rejected_before_environment_use(monkeypatch, recursive, path):
+    router, control = _files(monkeypatch)
+    await router.connect('')
+    try:
+        with pytest.raises(AgentOSFileTransferError) as error:
+            await router.mkdir_container_dir(user_id='alice', path=path, recursive=recursive)
+        assert error.value.code == 'BAD_REQUEST'
+        control.invoke.assert_not_awaited()
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_nonrecursive_mkdir_preserves_filesystem_contract(monkeypatch, tmp_path):
+    import subprocess
+    from jiuwenswarm.extensions.agentos.agentos_router import router_client
+
+    monkeypatch.setattr(router_client, '_AGENT_FILE_PATH_ROOT', str(tmp_path))
+    router, control = _files(monkeypatch)
+    await router.connect('')
+    async def invoke(environment, action, args):
+        assert action == 'cmd.run'
+        value = await asyncio.to_thread(subprocess.run, args['cmd'], shell=True,
+                                       capture_output=True, text=True)
+        return {'exit_code': value.returncode, 'stdout': value.stdout, 'stderr': value.stderr}
+    control.invoke.side_effect = invoke
+    try:
+        missing = tmp_path / 'missing/deep'
+        with pytest.raises(AgentOSFileTransferError) as error:
+            await router.mkdir_container_dir(user_id='alice', path=str(missing))
+        assert error.value.code == 'BAD_REQUEST'
+        assert not missing.parent.exists()
+
+        target = tmp_path / "quoted '; echo unsafe #"
+        result = await router.mkdir_container_dir(user_id='alice', path=str(target))
+        assert result == {'success': True, 'path': str(target), 'created': True}
+        assert target.is_dir()
+        result = await router.mkdir_container_dir(user_id='alice', path=str(target))
+        assert result['created'] is False
+
+        regular = tmp_path / 'regular'
+        regular.write_text('retained')
+        with pytest.raises(AgentOSFileTransferError) as error:
+            await router.mkdir_container_dir(user_id='alice', path=str(regular))
+        assert error.value.code == 'BAD_REQUEST'
+        assert regular.read_text() == 'retained'
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_mkdir_http_rejects_nul(monkeypatch):
+    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
+
+    router, control = _files(monkeypatch)
+    await router.connect('')
+    channel = _file_channel(router)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=build_web_channel_app(channel)),
+                                     base_url='http://gateway') as client:
+            response = await client.post('/file-api/mkdir', params={
+                'user_id': 'alice', 'path': '/home/agentos/bad\x00name', 'recursive': 'false',
+            })
+            assert response.status_code == 400
+            assert response.json()['code'] == 'BAD_REQUEST'
+        control.invoke.assert_not_awaited()
     finally:
         await router.shutdown()

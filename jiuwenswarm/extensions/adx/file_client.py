@@ -274,11 +274,33 @@ class AdxFileMixin:
         agent_type: str | None = None, session_id: str = "", instance_id: str | None = None,
         auth_headers=None,
     ) -> dict:
-        del auth_headers, recursive
-        mode = _validate_mode(mode)
+        del auth_headers
         path = normalize_agent_file_download_path(path)
+        if "\x00" in path:
+            raise AgentOSFileTransferError("path must not contain NUL", code="BAD_REQUEST")
+        mode = _validate_mode(mode)
         async with self._file_environment(user_id, agent_type, instance_id, session_id) as environment:
-            result = await self._file_invoke(environment, "file.mkdir", {"path": path})
+            if recursive:
+                result = await self._file_invoke(environment, "file.mkdir", {"path": path})
+            else:
+                # Native file.mkdir always creates parents. Plain mkdir preserves
+                # the Gateway's non-recursive contract, including concurrent creates.
+                target = shlex.quote(path)
+                parent = shlex.quote(str(PurePosixPath(path).parent))
+                command = (
+                    f"if mkdir -- {target}; then printf created; "
+                    f"elif [ -d {target} ]; then printf exists; "
+                    f"elif [ -e {target} ] || [ -L {target} ] || [ ! -d {parent} ]; then exit 2; "
+                    "else exit 1; fi"
+                )
+                response = await self._file_invoke(environment, "cmd.run", {"cmd": command, "timeout": 30})
+                if response.get("exit_code") != 0:
+                    code = "BAD_REQUEST" if response.get("exit_code") == 2 else "INTERNAL_ERROR"
+                    raise AgentOSFileTransferError("Cannot create directory", code=code)
+                outcome = response.get("stdout", "").strip()
+                if outcome not in ("created", "exists"):
+                    raise AgentOSFileTransferError("Invalid ADX mkdir response")
+                result = {"created": outcome == "created"}
             if not isinstance(result.get("created"), bool):
                 raise AgentOSFileTransferError("Invalid ADX mkdir response")
             if mode is not None:
