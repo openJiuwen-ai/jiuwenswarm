@@ -330,10 +330,9 @@ export function buildRenderItems(items: TimelineItem[], isTeamMode: boolean, isP
       continue;
     }
 
-    // 群广播和成员之间的回复要留在主会话里。收进活动卡片后，刷新页面就只剩用户提示词。
+    // 成员之间的广播和互聊留在活动卡片，不进主对话框。
+    // 团长对用户、以及私聊给用户的消息不在此列，仍走下面的主会话渲染。
     if (isTeamMemberCollaborationMessage(item.message)) {
-      flushToolGroup(true);
-      pushMessage(item);
       continue;
     }
 
