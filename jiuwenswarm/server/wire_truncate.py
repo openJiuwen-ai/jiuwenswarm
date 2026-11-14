@@ -180,27 +180,101 @@ def _compact_wire_metadata_value(value: Any) -> Any:
     return _truncate_string_by_bytes(str(value), _HISTORY_WIRE_METADATA_STRING_LIMIT)
 
 
-def _sanitize_history_wire_value(value: Any, *, depth: int = 0) -> Any:
-    """Recursively bound a value for the wire: strings, lists, depth."""
+class _WireTruncationStats:
+    """Counts the value-level cuts that leave no marker at the cut site.
+
+    String cuts append ``" [truncated]"`` in place, so they describe
+    themselves. List trimming and depth overflow are otherwise silent, so a
+    caller passing this accumulator gets them stamped onto the owning mapping
+    through ``<key>_truncated`` siblings and a record-level ``truncated``.
+    """
+
+    __slots__ = ("list_cuts", "depth_cuts")
+
+    def __init__(self) -> None:
+        self.list_cuts = 0
+        self.depth_cuts = 0
+
+    @property
+    def truncated(self) -> bool:
+        return bool(self.list_cuts or self.depth_cuts)
+
+    @property
+    def marks(self) -> tuple[int, int]:
+        """Snapshot for before/after comparison around one field."""
+        return (self.list_cuts, self.depth_cuts)
+
+
+def _sanitize_mapping_items(
+    fields: dict[Any, Any],
+    *,
+    child_depth: int,
+    stats: _WireTruncationStats | None = None,
+) -> dict[str, Any]:
+    """Sanitize every value of one mapping and stamp truncation siblings.
+
+    A value that lost data anywhere in its subtree (a trimmed list or a depth
+    cut) gets a ``<key>_truncated: true`` sibling. A pre-set falsy marker is
+    upgraded, because a payload may ship ``foo_truncated: false`` and a real
+    cut must not stay invisible behind it; a pre-set truthy marker is kept
+    as-is (the live path already emits ``raw_output_truncated``).
+    """
+    original = {str(key): value for key, value in fields.items()}
+    sanitized: dict[str, Any] = {}
+    cut_fields: list[str] = []
+    for name, value in original.items():
+        if stats is None:
+            sanitized[name] = _sanitize_history_wire_value(value, depth=child_depth)
+            continue
+        before = stats.marks
+        sanitized[name] = _sanitize_history_wire_value(value, depth=child_depth, stats=stats)
+        if stats.marks != before:
+            cut_fields.append(name)
+    if stats is not None:
+        for name in cut_fields:
+            marker = f"{name}_truncated"
+            if not sanitized.get(marker):
+                sanitized[marker] = True
+    return sanitized
+
+
+def _sanitize_record_fields(fields: dict[Any, Any], *, child_depth: int) -> dict[str, Any]:
+    """Sanitize one record's top-level fields and stamp record-level truncation."""
+    stats = _WireTruncationStats()
+    sanitized = _sanitize_mapping_items(fields, child_depth=child_depth, stats=stats)
+    if stats.truncated:
+        sanitized["truncated"] = True
+    return sanitized
+
+
+def _sanitize_history_wire_value(
+    value: Any,
+    *,
+    depth: int = 0,
+    stats: _WireTruncationStats | None = None,
+) -> Any:
+    """Recursively bound a value for the wire: strings, lists, depth.
+
+    ``stats`` is optional and only reports cuts that would otherwise be
+    silent: list trimming and depth overflow.
+    """
     if depth > _HISTORY_WIRE_DEPTH_LIMIT:
+        if stats is not None:
+            stats.depth_cuts += 1
         return "<truncated>"
     if isinstance(value, str):
         return _truncate_string_by_bytes(value, _HISTORY_WIRE_STRING_LIMIT)
     if isinstance(value, dict):
-        return {
-            str(key): _sanitize_history_wire_value(item, depth=depth + 1)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [
-            _sanitize_history_wire_value(item, depth=depth + 1)
-            for item in value[:_HISTORY_WIRE_LIST_LIMIT]
+        return _sanitize_mapping_items(value, child_depth=depth + 1, stats=stats)
+    if isinstance(value, (list, tuple)):
+        items = list(value)
+        sanitized = [
+            _sanitize_history_wire_value(item, depth=depth + 1, stats=stats)
+            for item in items[:_HISTORY_WIRE_LIST_LIMIT]
         ]
-    if isinstance(value, tuple):
-        return [
-            _sanitize_history_wire_value(item, depth=depth + 1)
-            for item in value[:_HISTORY_WIRE_LIST_LIMIT]
-        ]
+        if stats is not None and len(items) > _HISTORY_WIRE_LIST_LIMIT:
+            stats.list_cuts += 1
+        return sanitized
     return value
 
 
@@ -241,6 +315,26 @@ def _minimal_history_record_for_wire(record: dict[str, Any]) -> dict[str, Any]:
     return minimal
 
 
+def _record_without_mcp_app(record: dict[str, Any]) -> dict[str, Any]:
+    """Shallow copy of ``record`` with ``raw_output.mcp_app`` removed.
+
+    The MCP App block is restored byte-for-byte after sanitizing
+    (``_restore_mcp_app_block``), so its own lists and depth must not feed the
+    truncation stats: a marker inside a block the client receives in full
+    would describe data that was never cut.
+    """
+    raw_output = record.get("raw_output")
+    block = raw_output.get("mcp_app") if isinstance(raw_output, dict) else None
+    if not isinstance(block, dict):
+        return record
+    return {
+        **record,
+        "raw_output": {
+            key: value for key, value in raw_output.items() if key != "mcp_app"
+        },
+    }
+
+
 def _restore_mcp_app_block(original: dict[str, Any], sanitized: dict[str, Any]) -> None:
     """Keep an MCP App tool result (``raw_output.mcp_app``) byte-for-byte.
 
@@ -257,16 +351,31 @@ def _restore_mcp_app_block(original: dict[str, Any], sanitized: dict[str, Any]) 
 
 
 def _sanitize_history_record_for_wire(record: Any) -> dict[str, Any]:
-    """Sanitize one history record, collapsing if it exceeds the per-record budget."""
+    """Sanitize one history record, collapsing if it exceeds the per-record budget.
+
+    List and depth cuts are stamped with ``<key>_truncated`` siblings and a
+    record-level ``truncated: true`` so a restored record is never silently
+    incomplete. The MCP App block stays out of the stats because it is
+    restored verbatim below.
+
+    Markers never decide the collapse: when the marked record overflows the
+    budget, the unmarked sanitized form is measured again, and a record that
+    fits without them is served unmarked instead of being collapsed to a stub.
+    Otherwise a near-budget record (typically one carrying an MCP App block)
+    would lose that block purely to a few marker bytes.
+    """
     if not isinstance(record, dict):
         return {"content": _sanitize_history_wire_value(record), "truncated": True}
-    sanitized = _sanitize_history_wire_value(record)
-    if not isinstance(sanitized, dict):
-        return {"content": str(sanitized), "truncated": True}
+    source = _record_without_mcp_app(record)
+    sanitized = _sanitize_record_fields(source, child_depth=1)
     _restore_mcp_app_block(record, sanitized)
     if _json_wire_size(sanitized) <= _HISTORY_WIRE_RECORD_MAX_BYTES:
         return sanitized
-    return _collapse_oversized_history_record(sanitized)
+    unmarked = _sanitize_history_wire_value(source)
+    _restore_mcp_app_block(record, unmarked)
+    if _json_wire_size(unmarked) <= _HISTORY_WIRE_RECORD_MAX_BYTES:
+        return unmarked
+    return _collapse_oversized_history_record(unmarked)
 
 
 def split_history_record_for_stream(
@@ -284,12 +393,21 @@ def split_history_record_for_stream(
 
     对可切片的 record，顶层 ``content`` 字符串**保留原文**——
     ``_sanitize_history_wire_value`` 会把它砍到 16KB，那切片就没意义了。
-    其他元数据字段照常 sanitize（短字符串几乎不会被截）。
-    切完后的整体若 ≤ 单条 record wire 预算（64KB），返回单帧、不带 ``_part``
-    字段，与旧协议完全兼容。否则把 content 按 ``part_bytes`` 字节切成 N 片，
-    每片带完整元数据 + ``_part = {{record_id, part_idx, total_parts}}`` 标记，
-    供前端按 record_id 重组。若可切片的 record 没有 string content 字段，
-    退化到 sanitize 路径，仍能发出一帧（极少见，防漏）。
+    其他元数据字段照常 sanitize（短字符串几乎不会被截），列表/深度裁剪照常
+    在元数据上打标记。切完后的整体若 ≤ 单条 record wire 预算（64KB），返回
+    单帧、不带 ``_part`` 字段，与旧协议完全兼容。
+
+    标记不得决定帧数，与 ``_sanitize_history_record_for_wire`` 对称：带标记的
+    整体超预算时，先用不带标记的形态再测一次；能放下就单帧返回不带标记的形态
+    （content 完整送达，元数据上的列表/深度裁剪因此变成静默截断），只有不带
+    标记也放不下才切片——否则几十字节的标记会把落在窄带的 ``chat.final`` 从
+    单帧推成 N 片，每片还重复携带完整元数据。
+
+    切片时把 content 按 ``part_bytes`` 字节切成 N 片，每片带完整元数据 +
+    ``_part = {{record_id, part_idx, total_parts}}`` 标记，供前端按 record_id
+    重组；切片后不再按帧复测预算，元数据本身较大时单帧仍可能超过 64KB。
+    若可切片的 record 没有 string content 字段，退化到 sanitize 路径，仍能
+    发出一帧（极少见，防漏）。
     """
     event_type = record.get("event_type") if isinstance(record, dict) else None
     if event_type not in _HISTORY_SPLIT_EVENT_TYPES:
@@ -304,17 +422,26 @@ def split_history_record_for_stream(
         # chat.final 无可用 string content → 走 sanitize（内部会 collapse 到元数据 stub）
         return [_sanitize_history_record_for_wire(record)]
 
-    # 元数据照常 sanitize；content 保留原文
-    metadata = {
-        key: _sanitize_history_wire_value(value)
-        for key, value in record.items()
-        if key != "content"
-    }
+    # 元数据照常 sanitize（含截断标记）；content 保留原文
+    fields = {key: value for key, value in record.items() if key != "content"}
+    metadata = _sanitize_record_fields(fields, child_depth=0)
     full = {**metadata, "content": content}
 
     if _json_wire_size(full) <= _HISTORY_WIRE_RECORD_MAX_BYTES:
         # 不超预算 → 单帧，不带 _part，与旧协议兼容
         return [full]
+
+    # 与 _sanitize_history_record_for_wire 对称：标记不得决定帧数。带标记的完整
+    # record 超预算时，先用不带标记的 sanitize 重构元数据再测一次；能放下就单帧
+    # 返回不带标记的形态（content 完整送达，列表/深度的裁剪因此变成静默截断），
+    # 只有不带标记也放不下才切片。否则几十字节的标记会把落在窄带的 chat.final
+    # 从单帧推成 N 帧，每片重复携带完整元数据。
+    unmarked_full = {
+        **_sanitize_mapping_items(fields, child_depth=0),
+        "content": content,
+    }
+    if _json_wire_size(unmarked_full) <= _HISTORY_WIRE_RECORD_MAX_BYTES:
+        return [unmarked_full]
 
     # 取 record_id 供前端重组：优先用 id，其次 request_id，最后兜底 hist-<objid>
     record_id = (
@@ -772,6 +899,7 @@ __all__ = [
     "_coerce_int",
     "_truncate_string_by_bytes",
     "_compact_wire_metadata_value",
+    "_WireTruncationStats",
     "_sanitize_history_wire_value",
     "_collapse_oversized_history_record",
     "_minimal_history_record_for_wire",
