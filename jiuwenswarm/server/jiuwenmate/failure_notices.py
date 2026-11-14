@@ -13,6 +13,14 @@ _EXCEPTION_TYPE = re.compile(
 
 def failure_notice_text(request_id: str, *, reason: str, detail: str | None) -> str:
     """Classify diagnostics without broadcasting credentials, paths or provider bodies."""
+    group_reasons = {
+        "group_access_lost": "等待或恢复期间，员工的群访问权限已失效。请恢复授权后重新发送请求。",
+        "group_access_unavailable": "当前无法确认员工的群访问权限。请检查渠道连接和群成员状态后重新发送请求。",
+        "group_authorization_changed": "处理期间，员工的群访问权限或可读取的历史范围发生变化。请确认授权后重新发送请求。",
+        "group_trigger_out_of_scope": "原消息早于员工当前可读取的群历史范围，本次请求未继续执行。请在群里重新发送请求。",
+    }
+    if reason in group_reasons:
+        return f"本次任务已终止。\n原因：{group_reasons[reason]}\n已执行的操作不代表已回滚。\n请求编号：{request_id}"
     detail = detail or ""
     match = _EXCEPTION_TYPE.search(detail)
     error_type = match.group(1) if match else None

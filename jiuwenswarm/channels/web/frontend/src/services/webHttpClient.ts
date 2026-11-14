@@ -88,6 +88,14 @@ interface RouteRow {
 const ROUTES: Record<string, RouteRow> = {
   'media.persist': { verb: 'POST', path: '/sessions/{session_id}/media', kind: 'unary' },
   'media.discard': { verb: 'DELETE', path: '/sessions/{session_id}/media', kind: 'unary' },
+  // session.assets.remove 暂不提供 HTTP。 gateway中 DELETE 一条因协议枚举缺失不可达
+  'session.assets.list': { verb: 'GET', path: '/sessions/{session_id}/assets', kind: 'unary' },
+  'session.assets.register': { verb: 'POST', path: '/sessions/{session_id}/assets', kind: 'unary' },
+  'session.assets.rename': {
+    verb: 'PATCH',
+    path: '/sessions/{session_id}/assets/{asset_id}',
+    kind: 'unary',
+  },
   'document.persist': { verb: 'POST', path: '/sessions/{session_id}/documents', kind: 'unary' },
   'document.formats': { verb: 'GET', path: '/documents/formats', kind: 'unary' },
   'file.import_url': { verb: 'POST', path: '/sessions/{session_id}/files/import', kind: 'unary' },

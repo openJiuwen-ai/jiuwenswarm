@@ -22,6 +22,7 @@ await esbuild.build({
   absWorkingDir: root,
   entryPoints: [
     'src/features/jiuwenmate/pages/ColleagueProfilePage.tsx',
+    'src/features/jiuwenmate/pages/OfficeDashboardPage.tsx',
     'src/features/jiuwenmate/schedules/ScheduleBoard.tsx',
     'src/features/jiuwenmate/components/ColleagueDeleteDialog.tsx',
     'src/features/jiuwenmate/components/ImAuthorizeDialog.tsx',

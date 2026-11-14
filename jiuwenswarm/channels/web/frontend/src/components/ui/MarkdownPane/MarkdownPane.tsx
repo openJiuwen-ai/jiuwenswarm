@@ -6,15 +6,20 @@ export interface MarkdownPaneProps {
   emptyText?: ReactNode;
   className?: string;
   testId?: string;
+  onLinkClick?: (href: string) => boolean | void;
 }
 
-export function MarkdownPane({ content, emptyText, className, testId }: MarkdownPaneProps) {
+export function MarkdownPane({ content, emptyText, className, testId, onLinkClick }: MarkdownPaneProps) {
   return (
     <div
       data-testid={testId}
       className={`flex-1 min-h-[150px] overflow-y-auto text-sm text-text rounded-md p-3${className ? ` ${className}` : ''}`}
     >
-      {content != null ? <MarkdownRenderer content={content} className="chat-text chat-markdown" /> : emptyText}
+      {content != null ? (
+        <MarkdownRenderer content={content} className="chat-text chat-markdown" onLinkClick={onLinkClick} />
+      ) : (
+        emptyText
+      )}
     </div>
   );
 }

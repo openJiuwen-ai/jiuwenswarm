@@ -217,7 +217,7 @@ async def test_shutdown_cancels_owned_tasks_before_server_and_joins_persistence(
         finally:
             resources.events.append(name + ".cancelled")
 
-    for name in ("image", "proactive", "teammate", "zen"):
+    for name in ("image", "teammate", "zen"):
         tasks[name] = asyncio.create_task(background(name))
     await asyncio.sleep(0)
 
@@ -227,7 +227,7 @@ async def test_shutdown_cancels_owned_tasks_before_server_and_joins_persistence(
 
     runtime = WorkerRuntime(
         server=SimpleNamespace(stop=stop_server), stop_event=asyncio.Event(),
-        image_task=tasks["image"], proactive_task=tasks["proactive"],
+        image_task=tasks["image"],
         teammate_task=tasks["teammate"], zen_task=tasks["zen"],
     )
     tasks["notification"] = runtime.spawn(background("notification"), name="notification-test")

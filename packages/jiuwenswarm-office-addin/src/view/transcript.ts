@@ -1,5 +1,5 @@
 import type { Entry } from '../conversationModel';
-import { copy } from '../copy';
+import { copy, type DocumentCopy } from '../copy';
 import type { UndoState } from '../paneController';
 import { activityGroup, running, StepClock, tickSeconds, type Step } from './activity';
 import { h, syncChildren } from './dom';
@@ -102,16 +102,19 @@ export class Transcript {
   private copiedTimer: ReturnType<typeof setTimeout> | undefined;
   private last: TranscriptState | undefined;
   private readonly loading = h('p', { class: 'transcript-loading' }, copy.loadingHistory);
-  private readonly suggestions = copy.suggestions.map(text => h('button', {
-    type: 'button', class: 'suggestion', onclick: () => this.suggest(text),
-  }, text));
-  private readonly welcomeNode = h('div', { class: 'welcome' },
-    h('img', { class: 'welcome-mascot', src: BEE, alt: '', width: '80', height: '80' }),
-    h('h2', { class: 'welcome-title' }, copy.welcomeTitle),
-    h('p', { class: 'welcome-body' }, copy.welcomeBody),
-    h('div', { class: 'suggestions' }, ...this.suggestions));
+  private readonly suggestions: HTMLButtonElement[];
+  private readonly welcomeNode: HTMLElement;
 
-  constructor(private readonly suggest: (text: string) => void, private readonly actions: UndoActions) {}
+  constructor(words: DocumentCopy, suggest: (text: string) => void, private readonly actions: UndoActions) {
+    this.suggestions = words.suggestions.map(text => h('button', {
+      type: 'button', class: 'suggestion', onclick: () => suggest(text),
+    }, text));
+    this.welcomeNode = h('div', { class: 'welcome' },
+      h('img', { class: 'welcome-mascot', src: BEE, alt: '', width: '80', height: '80' }),
+      h('h2', { class: 'welcome-title' }, copy.welcomeTitle),
+      h('p', { class: 'welcome-body' }, words.welcomeBody),
+      h('div', { class: 'suggestions' }, ...this.suggestions));
+  }
 
   update(state: TranscriptState): void {
     this.last = state;

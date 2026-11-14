@@ -53,6 +53,7 @@ import {
   mergeAgentDetailWithCatalog,
   mergeAgentGroupDetailWithCatalog,
 } from '../../features/agentManagement';
+import { agentAccessDeniedCopyKey } from '../../features/agentManagement/accessDenied';
 import { AGENT_TAG_OPTIONS } from '../../features/agentManagement/tagOptions';
 import { findDefaultDefinitionFile } from './DefinitionFilePreview';
 import './agentManagement.css';
@@ -158,6 +159,9 @@ function getFriendlyErrorMessage(
   if (code === 'agent_detail_empty') return translate('agentManagement.states.detailError');
   if (code === 'pod_start_timeout') return translate('experts.podStartTimeout');
   const normalizedMessage = message.trim();
+  if (agentAccessDeniedCopyKey(normalizedMessage)) {
+    return translate('agentManagement.states.agentAccessDenied');
+  }
   if (code === 'REQUEST_TIMEOUT') return translate('network.requestTimeout');
   if (code === 'WS_NOT_READY') return translate('network.connectionUnavailable');
   if (code === 'WS_DISCONNECTED') return translate('network.connectionClosed');

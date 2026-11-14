@@ -87,6 +87,11 @@ from jiuwenswarm.common.config import (
     get_skill_evolution_enabled,
     get_symphony_evolution_enabled,
 )
+from jiuwenswarm.common.observability_config import (
+    is_observability_scope_enabled,
+    observability_export_settings,
+    resolve_observability_section,
+)
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.observability.config import load_trajectory_store_settings
 from jiuwenswarm.observability.runtime import (
@@ -143,7 +148,7 @@ def sync_team_observability() -> None:
     """Synchronize observability state with current config.
 
     Called before each ``Runner.run_agent_team_streaming`` so that
-    hot-reloading the ``team_observability.enabled`` flag takes
+    hot-reloading the ``observability.team.enabled`` flag takes
     effect immediately:
 
     * disabled → enabled : ``init_observability()``
@@ -159,7 +164,8 @@ def sync_team_observability() -> None:
     """
     global _observability_active
     config = get_config()
-    cfg = config.get("team_observability", {}) or {}
+    section = resolve_observability_section(config)
+    cfg = observability_export_settings(section)
     trajectory_settings = load_trajectory_store_settings(config)
     evolution_requested = get_skill_evolution_enabled(
         config
@@ -169,7 +175,7 @@ def sync_team_observability() -> None:
     # the SQLite sink. ``trajectory_ui.enabled`` therefore also pulls the
     # provider up, mirroring ``sync_agent_observability``.
     want_enabled = (
-        bool(cfg.get("enabled", False))
+        is_observability_scope_enabled(section, "team")
         or trajectory_settings.enabled
         or evolution_requested
     )
@@ -756,9 +762,7 @@ class TeamManager:
                     task_id = str(task["task_id"])
                     status = task.get("status")
                     task_type = str(task.get("type") or "")
-                    if status in {"completed", "cancelled", "failed"} or task_type.endswith(
-                        (".completed", ".cancelled", ".verified")
-                    ):
+                    if self._is_terminal_team_task(event):
                         current_round.open_archive_tasks.discard(task_id)
                     elif status or task_type.endswith((".created", ".started", ".claimed")):
                         current_round.open_archive_tasks.add(task_id)
@@ -786,6 +790,12 @@ class TeamManager:
                 # opens the workflows view. Fall back to the gateway server-push
                 # side channel, which delivers events without a chat stream.
                 await self._push_event_without_waiter(
+                    session_id, event, channel_id=channel_id
+                )
+            elif self._is_terminal_team_task(event):
+                # 队长流结束时直播等待者已经摘掉。之后才到终态的子任务
+                # 进了历史，打开着的团队页收不到这帧。沿直播用的 session_live 推出去。
+                self._publish_terminal_team_task_live(
                     session_id, event, channel_id=channel_id
                 )
             elif terminal:
@@ -883,6 +893,59 @@ class TeamManager:
                 event,
             )
         return bool(waiters)
+
+    @staticmethod
+    def _is_terminal_team_task(event: dict[str, Any]) -> bool:
+        """team.task 是否把卡片收口。和回合里从进行中名单去掉任务用同一套状态。"""
+        if str(event.get("event_type") or "") != "team.task":
+            return False
+        task = event.get("event")
+        if not isinstance(task, dict):
+            return False
+        status = task.get("status")
+        task_type = str(task.get("type") or "")
+        return status in {"completed", "cancelled", "failed"} or task_type.endswith(
+            (".completed", ".cancelled", ".verified")
+        )
+
+    @staticmethod
+    def _publish_terminal_team_task_live(
+        session_id: str,
+        event: dict[str, Any],
+        *,
+        channel_id: str | None = None,
+    ) -> None:
+        """没有等待者时，把终态 team.task 推到企业版团队直播。"""
+        from jiuwenswarm.enterprise.team.push_fanout import publish
+        from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+        from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+            _build_team_event_chunk_meta,
+        )
+
+        payload = dict(event)
+        payload.setdefault("session_id", session_id)
+        try:
+            agent_ref, metadata = _build_team_event_chunk_meta(payload)
+            wire_metadata = dict(metadata or {})
+            wire_metadata["delivery_scope"] = "session_live"
+            publish(
+                build_server_push_wire(
+                    {
+                        "request_id": f"team-session-live:{session_id}",
+                        "channel_id": str(channel_id or ""),
+                        "session_id": session_id,
+                        "payload": payload,
+                        "is_complete": False,
+                        "agent_ref": agent_ref,
+                        "metadata": wire_metadata,
+                    }
+                )
+            )
+        except Exception:
+            logger.exception(
+                "[TeamManager] failed to publish terminal team.task session_id=%s",
+                session_id,
+            )
 
     @staticmethod
     def _is_workflow_terminal_event(event: dict[str, Any]) -> bool:
@@ -1844,10 +1907,16 @@ class TeamManager:
                     if key in raw_selection
                 }
             )
+        selected_model_id = (
+            str(selection.id).strip()
+            if selection is not None and selection.type == "model"
+            else ""
+        )
         if selection is not None and selection.type == "model":
             # A single-model selection only names the page-selected model; the
             # pool keeps every configured model below so members can still be
             # assigned any of them. Resolving it also rejects a stale selection.
+            # ``model_id`` keeps a shared model_name on the chosen endpoint.
             requested_model_name = TeamManager._selected_model_name(
                 selection,
                 TeamManager._resolve_and_compile_team_selection(selection),
@@ -1857,6 +1926,7 @@ class TeamManager:
             config_base=config_base,
             requested_model_name=requested_model_name,
             login_model_entry=login_model_entry,
+            model_id=selected_model_id or None,
             template_id=template_id,
             template_snapshot=template_snapshot,
             strict_template=strict_template,
@@ -1881,6 +1951,7 @@ class TeamManager:
             config_base,
             requested_model_name=requested_model_name,
             login_model_entry=login_model_entry,
+            model_id=selected_model_id or None,
         )
         if effective_models:
             from openjiuwen.agent_teams.schema.team import ModelPoolEntry
@@ -2480,9 +2551,6 @@ class TeamManager:
             ).strip()
             or None,
         )
-        from jiuwenswarm.agents.swarm.assembly import assign_shared_sandbox_sys_operation
-
-        assign_shared_sandbox_sys_operation(spec, deep_agent)
 
         logger.info("[TeamManager] TeamAgentSpec ready: team_name=%s", spec.team_name)
 

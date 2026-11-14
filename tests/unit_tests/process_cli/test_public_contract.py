@@ -221,7 +221,7 @@ def test_protocol_discovery_guard_still_blocks_runtime_imports(module):
 
 def test_protocol_discovery_guard_allows_shared_protocol_package():
     run = subprocess.run(
-        [sys.executable, "-c", _RUNTIME_IMPORT_BLOCKER + "\nfrom openjiuwen_protocol.message import ReqMethod"],
+        [sys.executable, "-c", _RUNTIME_IMPORT_BLOCKER + "\nfrom e2a.message import ReqMethod"],
         cwd=ROOT,
         capture_output=True,
         timeout=20,

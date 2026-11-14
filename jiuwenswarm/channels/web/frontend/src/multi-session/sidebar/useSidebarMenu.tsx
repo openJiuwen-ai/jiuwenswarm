@@ -306,7 +306,6 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
     removeSessionLocally,
     workMode,
   } = useWorkspaceStore();
-  const loadCronJobs = useCronStore((s) => s.loadJobs);
   const loadCronSessions = useCronStore((s) => s.loadCronSessions);
 
   const activeSessionId = options.type === 'session' ? options.activeSessionId : null;
@@ -414,7 +413,6 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
       const projectId = deleteProjectTarget.project_id;
       if (projectAction === 'delete') {
         const removed = await removeProject(projectId);
-        await loadCronJobs();
         if (options.type === 'project') options.onRemoved?.(projectId);
         // 项目下没有定时任务时只提示“项目已移除”；字段缺失（旧网关）沿用原文案。
         toast.open({

@@ -30,7 +30,7 @@ def _load_backend() -> Any:
         for attribute in attributes:
             if not callable(getattr(module, attribute, None)):
                 raise ImportError(f"Required full-duplex capability unavailable: {name}.{attribute}")
-    protocol = importlib.import_module("openjiuwen_protocol.message")
+    protocol = importlib.import_module("e2a.message")
     if getattr(protocol.ReqMethod, "VOICE_TASK_CHECKPOINT_ACK", None) is None:
         raise ImportError("Required protocol capability unavailable: VOICE_TASK_CHECKPOINT_ACK")
     tools = importlib.import_module(f"{backend}.qwen_omni_tools")

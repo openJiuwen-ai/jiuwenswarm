@@ -125,7 +125,7 @@ def hollywood_leaf_instructions(role: str) -> str:
             "from structured continuity fields only — never paste prior Wan text "
             "into call_video_model; never restage finished speech/action.\n"
             "OPENING HOLDS: if pose_holds / beat_done / crowd_state exist, open the prompt "
-            "already past those beats (e.g. already facing the landmark; crowd already gone "
+            "already past those moments (e.g. already facing the landmark; crowd already gone "
             "or still in background). Never restage a finished turn/exit/onset unless THIS "
             "storyboard row asks to repeat it.\n"
             "Clip API call rules: positive sentences only — no forbid, no 'do not', no already-done, "

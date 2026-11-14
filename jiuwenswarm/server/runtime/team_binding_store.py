@@ -384,7 +384,7 @@ def get_team_binding_store() -> TeamBindingStore:
 def _register_common_provider() -> None:
     import sys
 
-    from openjiuwen_protocol.provider_domains import PROVIDER_DOMAIN_TEAM_BINDING_STORE
+    from e2a.provider_domains import PROVIDER_DOMAIN_TEAM_BINDING_STORE
 
     from jiuwenswarm.common.external_providers import register
 

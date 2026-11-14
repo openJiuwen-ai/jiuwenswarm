@@ -758,18 +758,14 @@ async def test_public_group_leader_muted_tools_are_temporarily_muted(service, mo
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["public_member", "expert_team_leader"])
-async def test_muted_tools_stay_available_outside_public_group_leader(service, monkeypatch, kind):
+async def test_muted_tools_stay_available_outside_public_group_leader(service, monkeypatch):
     from openjiuwen.core.foundation.llm import ToolCall
 
     from jiuwenswarm.agents.swarm import group_execution as policies
 
     group = await make_group(service)
-    backend = SimpleNamespace(
-        member_name="advisor" if kind == "public_member" else "private-leader",
-        team_name="outer-team" if kind == "expert_team_leader" else group["team_name"],
-        is_leader=kind == "expert_team_leader",
-    )
+    # A private expert-team leader is neither the public leader nor a public member.
+    backend = SimpleNamespace(member_name="private-leader", team_name="outer-team", is_leader=True)
     monkeypatch.setattr(policies, "get_team_backend", lambda _: backend)
     rail = policies.GroupTaskPolicyRail(
         SimpleNamespace(session_id=group["group_id"], member_name=backend.member_name)
@@ -785,6 +781,60 @@ async def test_muted_tools_stay_available_outside_public_group_leader(service, m
     )
 
     await rail.before_tool_call(ctx)
+
+    assert ctx.extra == {}
+
+
+async def _run_member_tool(service, monkeypatch, *, kind: str, tool_name: str):
+    from openjiuwen.core.foundation.llm import ToolCall
+
+    from jiuwenswarm.agents.swarm import group_execution as policies
+
+    group = await make_group(service, kind=kind)
+    backend = SimpleNamespace(member_name="advisor", team_name=group["team_name"], is_leader=False)
+    monkeypatch.setattr(policies, "get_team_backend", lambda _: backend)
+    rail = policies.GroupTaskPolicyRail(SimpleNamespace(session_id=group["group_id"], member_name="advisor"))
+    ctx = SimpleNamespace(
+        extra={},
+        inputs=SimpleNamespace(
+            tool_name=tool_name,
+            tool_call=ToolCall(id="call", type="function", name=tool_name, arguments="{}"),
+        ),
+    )
+    await rail.before_tool_call(ctx)
+    return ctx
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["write_file", "edit_file", "send_file_to_user"])
+async def test_expert_team_proxy_cannot_produce_deliverables_itself(service, monkeypatch, tool_name):
+    ctx = await _run_member_tool(service, monkeypatch, kind="agent_group", tool_name=tool_name)
+
+    assert ctx.extra["_skip_tool"] is True
+    assert "run_team" in ctx.inputs.tool_result["error"]
+    assert "action=continue" in ctx.inputs.tool_msg.content
+
+
+@pytest.mark.asyncio
+async def test_public_member_send_file_points_to_group_attachments(service, monkeypatch):
+    ctx = await _run_member_tool(service, monkeypatch, kind="agent_template", tool_name="send_file_to_user")
+
+    assert ctx.extra["_skip_tool"] is True
+    assert "attachments" in ctx.inputs.tool_result["error"]
+    assert "execution_id" in ctx.inputs.tool_msg.content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["write_file", "edit_file"])
+async def test_individual_expert_keeps_file_tools(service, monkeypatch, tool_name):
+    ctx = await _run_member_tool(service, monkeypatch, kind="agent_template", tool_name=tool_name)
+
+    assert ctx.extra == {}
+
+
+@pytest.mark.asyncio
+async def test_expert_team_proxy_keeps_read_tools(service, monkeypatch):
+    ctx = await _run_member_tool(service, monkeypatch, kind="agent_group", tool_name="read_file")
 
     assert ctx.extra == {}
 
@@ -1121,6 +1171,11 @@ async def test_proxy_cannot_post_an_acknowledgement_after_delegating(service, to
 
     final = call(tool_name, {"content": "Result", "execution_id": "e1"})
     await rail.before_tool_call(final)
+    if tool_name == "send_file_to_user":
+        # Its direct-chat file event never reaches the group, with or without an execution.
+        assert final.extra["_skip_tool"]
+        assert "does not reach the group chat" in final.inputs.tool_result["error"]
+        return
     assert not final.extra
 
     # A new turn (another message) may reply normally again.
@@ -1134,3 +1189,23 @@ async def test_proxy_cannot_post_an_acknowledgement_after_delegating(service, to
     retry = call(tool_name, {"content": "Sorry, that failed"})
     await rail.before_tool_call(retry)
     assert not retry.extra
+
+
+@pytest.mark.asyncio
+async def test_nested_organization_progress_persists_without_changing_parent_counts(service):
+    group = await make_group(service)
+    store = ge.GroupExecutions(group['group_id'])
+    args = dict(title='Task', task='Task', organization_id='org', owner_member='advisor',
+                team_id='owner', root_task_id='root', tasks={'chapter': 'in_progress'},
+                status='running', phase='executing', organization_plan_id='plan')
+    child = dict(task_id='research', title='Research', status='in_progress', assignee='expert')
+    first = await store.upsert_organization_card('nested', **args,
+        task_details={'chapter': {'title': 'Chapter', 'expert_tasks': [child]}})
+    child['status'] = 'completed'
+    second = await store.upsert_organization_card('nested', **args,
+        task_details={'chapter': {'title': 'Chapter', 'expert_tasks': [child]}})
+    assert second['revision'] == first['revision'] + 1
+    assert second['progress'] == {'completed': 0, 'total': 1}
+    restored = ge.GroupExecutions(group['group_id']).get('nested')
+    assert restored['task_details']['chapter']['expert_tasks'][0]['status'] == 'completed'
+    assert restored['tasks'] == {'chapter': 'in_progress'}

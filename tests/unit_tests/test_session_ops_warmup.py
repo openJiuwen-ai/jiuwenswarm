@@ -12,6 +12,15 @@ from openjiuwen.core.foundation.llm.schema.message import (
 )
 
 
+@pytest.fixture(autouse=True)
+def semantic_history_reader(monkeypatch):
+    """These tests isolate message conversion; bounded disk I/O has its own suite."""
+    from jiuwenswarm.agents.harness.common import session_ops_service as service
+
+    monkeypatch.setattr(service, "read_history_replay", lambda sid, **_kwargs: SimpleNamespace(
+        records=service.load_history_records(sid), prefix_cursor=None))
+
+
 def _deep_agent_with_empty_context():
     context_engine = SimpleNamespace(
         get_context=lambda *, session_id: None,
@@ -87,10 +96,17 @@ async def test_cron_refresh_keeps_existing_context_and_session_state(monkeypatch
     if invalid_history:
         monkeypatch.setattr(session_ops_service, "_build_context_messages_from_history", lambda _records: ([object()], 0))
 
-    restored = await session_ops_service.warmup_session_context(
-        deep_agent=deep_agent, session_id=session_id, refresh_existing=True,
-    )
-    assert restored is not invalid_history
+    if invalid_history:
+        from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
+
+        with pytest.raises(HistoryReplayError):
+            await session_ops_service.warmup_session_context(
+                deep_agent=deep_agent, session_id=session_id, refresh_existing=True,
+            )
+    else:
+        assert await session_ops_service.warmup_session_context(
+            deep_agent=deep_agent, session_id=session_id, refresh_existing=True,
+        )
     assert context_engine.get_context(session_id=session_id) is existing_context
     await context_engine.create_context(session=session)
     expected = ["Cached task"] if invalid_history else ["Research task", "Completed report"]

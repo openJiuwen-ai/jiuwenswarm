@@ -449,3 +449,13 @@ button.group-chat-member-row:hover:not(:disabled) { background: var(--color-surf
   color: var(--color-text-secondary);
   font-size: 11px;
 }
+
+.group-chat-organization-task { border-radius: 8px; background: var(--color-surface-page); }
+.group-chat-expert-tasks { margin: 0 16px 10px; padding: 0 0 0 12px; border-left: 2px solid var(--color-border-default); font-size: 12px; }
+.group-chat-expert-tasks > summary { cursor: pointer; padding: 8px 0; color: var(--color-text-secondary); }
+.group-chat-expert-tasks > summary:focus-visible { outline: 2px solid var(--color-text-secondary); outline-offset: 2px; }
+.group-chat-expert-tasks > summary > span { margin-left: 8px; }
+.group-chat-expert-tasks > p { color: var(--color-text-secondary); margin: 6px 0; }
+.group-chat-expert-task { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--color-border-default); }
+.group-chat-expert-task .group-chat-subtask-info > strong { white-space: normal; }
+.group-chat-subtasks.is-organization { max-height: none; overflow-y: visible; }

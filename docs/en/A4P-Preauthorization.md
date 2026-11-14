@@ -159,6 +159,8 @@ sequenceDiagram
 
 #### Stage 2: Verification at scheduled execution
 
+The current request’s `metadata.cron` identifies unattended execution, regardless of the Web channel or whether a browser is connected. Cron runs do not create an A4P authorizer route, expose the authorization request tool, or inject ordinary session authorization guidance. They retain the cron scope guidance and token verification. A later ordinary user message in the same session can use interactive authorization again.
+
 When A4P is enabled and the permission guardrail is active, both single-Agent and team cron jobs go through permission rule evaluation: `allow` passes directly, `deny` is rejected directly, and only `ask` calls look up the credential bound to the job ID. Valid and matching calls continue execution; when the job ID is missing, the credential is missing, expired, mismatched, or verification fails, the call is rejected directly — no interactive approval is awaited, and session credentials are not used as a fallback.
 
 ```mermaid
