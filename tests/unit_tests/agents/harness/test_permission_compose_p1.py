@@ -8,6 +8,8 @@ whole-tool ask; deny still wins.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from openjiuwen.harness.security import PermissionLevel
 from openjiuwen.harness.security.permission_engine.toolguard.tool_policy import (
     evaluate_tiered_policy,
@@ -319,3 +321,221 @@ def test_user_can_disable_shell_guard_flags() -> None:
     sg = effective["shell_guard"]
     assert sg["unknown_structure"] is False
     assert sg["interpreter_sink"] is False
+
+
+def _rules_for(effective: dict, path: str) -> list[dict]:
+    """Package builtin globs are appended too; keep only the rules under test."""
+    fg = effective.get("file_guard") or {}
+    return [item for item in fg.get("paths") or [] if item.get("path") == path]
+
+
+def test_file_guard_same_path_merges_axes_across_layers() -> None:
+    effective = compose_host_effective_permissions(
+        global_permissions={"enabled": True},
+        user_permissions={
+            "file_guard": {"paths": [{"path": "/data", "match": "prefix", "read": "allow", "write": "ask"}]}
+        },
+        session_permissions={
+            "file_guard": {"paths": [{"path": "/data", "match": "prefix", "write": "allow"}]}
+        },
+    )
+    rules = _rules_for(effective, "/data")
+    # The Engine keeps the first entry per equal prefix, so one entry per path
+    # is what makes the session grant reachable at all.
+    assert len(rules) == 1
+    assert rules[0]["read"] == "allow"
+    assert rules[0]["write"] == "allow"
+    # No layer spoke about exec; the Engine's own default stays in charge.
+    assert "exec" not in rules[0]
+
+
+def test_file_guard_user_ask_does_not_tighten_global_allow() -> None:
+    # The approval flow writes ask for the actions it did not grant, so a User
+    # read grant must not turn a Global write=allow back into a prompt. exec is
+    # a different axis: no layer allows it here, so the ask stays and the
+    # Engine keeps prompting for it.
+    effective = compose_host_effective_permissions(
+        global_permissions={
+            "enabled": True,
+            "file_guard": {
+                "paths": [{"path": "/data", "match": "prefix", "read": "allow", "write": "allow"}]
+            },
+        },
+        user_permissions={
+            "file_guard": {
+                "paths": [
+                    {"path": "/data", "match": "prefix", "read": "allow", "write": "ask", "exec": "ask"}
+                ]
+            }
+        },
+    )
+    rules = _rules_for(effective, "/data")
+    assert len(rules) == 1
+    assert rules[0]["write"] == "allow"
+    assert rules[0]["read"] == "allow"
+    assert rules[0]["exec"] == "ask"
+
+
+def test_file_guard_user_ask_survives_a_partial_global_rule() -> None:
+    # compose seeds a scope from the first layer entry that mentions it, so a
+    # Global rule which omits an axis is the only place a dropped User ask goes
+    # missing. legacy compiles that absence as allow, so the ask must survive.
+    effective = compose_host_effective_permissions(
+        global_permissions={
+            "enabled": True,
+            "file_guard": {"paths": [{"path": "/data", "match": "prefix", "read": "allow"}]},
+        },
+        user_permissions={
+            "file_guard": {
+                "paths": [{"path": "/data", "match": "prefix", "write": "ask", "exec": "ask"}]
+            }
+        },
+    )
+    rules = _rules_for(effective, "/data")
+    assert len(rules) == 1
+    assert rules[0]["read"] == "allow"
+    assert rules[0]["write"] == "ask"
+    assert rules[0]["exec"] == "ask"
+
+
+def test_file_guard_user_ask_below_session_allow_stays_allow() -> None:
+    # The session grant is what !9724 exists for; the User fill ask must not
+    # shadow it.
+    effective = compose_host_effective_permissions(
+        global_permissions={"enabled": True},
+        user_permissions={
+            "file_guard": {"paths": [{"path": "/data", "match": "prefix", "write": "ask", "exec": "ask"}]}
+        },
+        session_permissions={
+            "file_guard": {"paths": [{"path": "/data", "match": "prefix", "write": "allow"}]}
+        },
+    )
+    rules = _rules_for(effective, "/data")
+    assert len(rules) == 1
+    assert rules[0]["write"] == "allow"
+    assert rules[0]["exec"] == "ask"
+
+
+def test_file_guard_legacy_compile_keeps_the_user_ask(tmp_path: Path) -> None:
+    from openjiuwen.harness.security.permission_engine.fileguard.file_guard import (
+        build_file_guard_checker,
+    )
+
+    target = (tmp_path / "shared").resolve()
+    target.mkdir()
+    # external_directory keeps the Engine on legacy semantics; an explicit
+    # file_guard.enabled would let compose inject the package glob paths and
+    # flip the config back to native.
+    global_permissions = {
+        "enabled": True,
+        "external_directory": {"*": "allow"},
+        "file_guard": {"paths": [{"path": target.as_posix(), "match": "prefix", "read": "allow"}]},
+    }
+    user_permissions = {
+        "file_guard": {"paths": [{"path": target.as_posix(), "match": "prefix", "write": "ask"}]}
+    }
+    effective = compose_host_effective_permissions(
+        global_permissions=global_permissions,
+        user_permissions=user_permissions,
+    )
+    checker = build_file_guard_checker(effective, workspace_root=tmp_path)
+    assert checker is not None
+    # A legacy path rule compiles an absent axis as read/write allow, so a
+    # dropped User ask would let the write through without a prompt.
+    assert checker._resolve_one(target / "out.txt", "write")[0].value == "ask"
+    assert checker._resolve_one(target / "out.txt", "read")[0].value == "allow"
+
+
+def test_file_guard_native_compile_keeps_the_user_ask(tmp_path: Path) -> None:
+    from openjiuwen.harness.security.permission_engine.fileguard.file_guard import (
+        build_file_guard_checker,
+    )
+
+    target = (tmp_path / "shared").resolve()
+    target.mkdir()
+    # Native semantics need an explicit defaults dict; file_guard.enabled keeps
+    # the checker from coming back as None.
+    global_permissions = {
+        "enabled": True,
+        "file_guard": {
+            "enabled": True,
+            "defaults": {"read": "ask", "write": "ask", "exec": "ask"},
+            "paths": [{"path": target.as_posix(), "match": "prefix", "read": "allow"}],
+        },
+    }
+    user_permissions = {
+        "file_guard": {"paths": [{"path": target.as_posix(), "match": "prefix", "write": "ask"}]}
+    }
+    effective = compose_host_effective_permissions(
+        global_permissions=global_permissions,
+        user_permissions=user_permissions,
+    )
+    checker = build_file_guard_checker(effective, workspace_root=tmp_path)
+    assert checker is not None
+    assert checker._resolve_one(target / "out.txt", "write")[0].value == "ask"
+
+
+def test_file_guard_keeps_unopinionated_axes_absent() -> None:
+    # legacy mode compiles an absent axis as allow, so materializing "ask"
+    # would add prompts to a rule that never had any.
+    effective = compose_host_effective_permissions(
+        global_permissions={
+            "enabled": True,
+            "file_guard": {"paths": [{"path": "/data", "match": "prefix", "read": "allow"}]},
+        },
+    )
+    rules = _rules_for(effective, "/data")
+    assert rules == [{"path": "/data", "match": "prefix", "read": "allow"}]
+
+
+def test_file_guard_deny_in_durable_layers_survives_session_allow() -> None:
+    effective = compose_host_effective_permissions(
+        global_permissions={
+            "enabled": True,
+            "file_guard": {"paths": [{"path": "/secret", "match": "prefix", "read": "deny"}]},
+        },
+        session_permissions={
+            "file_guard": {"paths": [{"path": "/secret", "match": "prefix", "read": "allow"}]}
+        },
+    )
+    rules = _rules_for(effective, "/secret")
+    assert len(rules) == 1
+    assert rules[0]["read"] == "deny"
+
+
+def test_file_guard_distinct_paths_keep_first_seen_order() -> None:
+    effective = compose_host_effective_permissions(
+        global_permissions={
+            "enabled": True,
+            "file_guard": {"paths": [{"path": "/a", "match": "prefix", "read": "allow"}]},
+        },
+        user_permissions={
+            "file_guard": {"paths": [{"path": "/b", "match": "prefix", "read": "allow"}]}
+        },
+        session_permissions={
+            "file_guard": {"paths": [{"path": "/c", "match": "prefix", "read": "allow"}]}
+        },
+    )
+    prefixes = [
+        item["path"]
+        for item in effective["file_guard"]["paths"]
+        if item.get("match") != "glob"
+    ]
+    assert prefixes == ["/a", "/b", "/c"]
+
+
+def test_file_guard_prefix_and_glob_entries_stay_separate() -> None:
+    effective = compose_host_effective_permissions(
+        global_permissions={
+            "enabled": True,
+            "file_guard": {"paths": [{"path": "/x", "match": "prefix", "read": "allow"}]},
+        },
+        session_permissions={
+            "file_guard": {"paths": [{"path": "/x", "match": "glob", "read": "deny"}]}
+        },
+    )
+    rules = _rules_for(effective, "/x")
+    assert {(item["match"], item["read"]) for item in rules} == {
+        ("prefix", "allow"),
+        ("glob", "deny"),
+    }
