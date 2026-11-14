@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import binascii
 import ctypes
 import http.client
 import json
@@ -569,6 +568,11 @@ class _WindowApi:
         """保存前端生成的 data URL 文件，供分享图片和图表导出使用。"""
         return self._runtime.save_data_url(data_url, filename)
 
+    def retry_startup(self) -> bool:
+        """启动失败提示上的「重试」按钮：清理后重新拉起服务。"""
+        logger.info("[desktop] retry_startup requested from error page")
+        return self._runtime.retry_startup()
+
     def select_project_directory(self) -> str | None:
         """打开系统目录选择器，返回用户选择的项目目录绝对路径。"""
         return self._runtime.select_project_directory()
@@ -685,6 +689,8 @@ class DesktopRuntime:
         self.window = None
         self._lock = threading.Lock()
         self._is_shutting_down = False
+        self._shutdown_finished = threading.Event()
+        self._shutdown_finished.set()
         self._desktop_dnd_bound = False
 
     @property
@@ -727,6 +733,34 @@ class DesktopRuntime:
             process=self.processes["web"],
         )
         logger.info("[desktop] services ready: %s", self.frontend_url)
+
+    def _start_services_and_navigate(self) -> None:
+        try:
+            self.start_services()
+            if self.window is not None:
+                self.window.load_url(self.frontend_url)
+        except Exception as exc:
+            logger.error("[desktop] service startup failed: %s", exc)
+            # 超时/失败时清理已拉起的子进程，避免残留进程占用端口导致下次启动失败
+            self.shutdown()
+            # 加载页上就地显示失败原因和重试按钮，代替永久转圈
+            self._show_startup_error(exc)
+
+    def retry_startup(self) -> bool:
+        """错误页「重试」：重置 shutdown 状态后重新走一遍启动流程。"""
+        # 等上一轮 shutdown 收尾，避免旧清理循环误杀本轮新拉起的子进程
+        self._shutdown_finished.wait(timeout=12.0)
+        with self._lock:
+            self._is_shutting_down = False
+        self.processes.clear()
+        if self.window is not None:
+            try:
+                # 先回到加载页，给用户重试中的视觉反馈
+                self.window.load_html(self._build_loading_html())
+            except Exception:  # noqa: BLE001
+                pass
+        threading.Thread(target=self._start_services_and_navigate, daemon=True).start()
+        return True
 
     def minimize_window(self) -> bool:
         if self.window is None or not hasattr(self.window, "minimize"):
@@ -1585,6 +1619,7 @@ nohup {q_executable} >/dev/null 2>&1 &
             if self._is_shutting_down:
                 return
             self._is_shutting_down = True
+        self._shutdown_finished.clear()
 
         deadline = time.monotonic() + 8.0
         logger.info("[desktop] shutting down child processes")
@@ -1603,6 +1638,7 @@ nohup {q_executable} >/dev/null 2>&1 &
                 _kill_process_tree(process)
 
         self.processes.clear()
+        self._shutdown_finished.set()
 
     @staticmethod
     def _clear_wkwebview_system_cache() -> None:
@@ -1646,17 +1682,7 @@ nohup {q_executable} >/dev/null 2>&1 &
         self.window.events.loaded += self._on_loaded_first
         self.window.events.closed += self._on_closed
 
-        def _start_services_and_navigate() -> None:
-            try:
-                self.start_services()
-                if self.window is not None:
-                    self.window.load_url(self.frontend_url)
-            except Exception as exc:
-                logger.error("[desktop] service startup failed: %s", exc)
-                # 超时/失败时清理已拉起的子进程，避免残留进程占用端口导致下次启动失败
-                self.shutdown()
-
-        threading.Thread(target=_start_services_and_navigate, daemon=True).start()
+        threading.Thread(target=self._start_services_and_navigate, daemon=True).start()
 
         gui = "edgechromium" if os.name == "nt" else None
         logger.info("[desktop] opening window with loading screen")
@@ -1767,6 +1793,56 @@ setInterval(showTip,3500);
 </script>
 </body>
 </html>""".replace("__LOGO_SVG__", logo_svg)
+
+    # 启动失败时直接在已加载的加载页上改 DOM（隐藏转圈、显示原因和重试按钮），
+    # 不另建错误页。tips 轮播只写 #tip，底部 tip-label 不受影响，可直接改写。
+    _STARTUP_ERROR_JS = r"""
+(function(){
+var sp=document.querySelector('.spinner'); if(sp) sp.style.display='none';
+var dots=document.getElementById('dots'); if(dots) dots.style.display='none';
+var tip=document.getElementById('tip'); if(tip) tip.style.display='none';
+var labels=document.querySelectorAll('.tip-label');
+var label=labels.length?labels[labels.length-1]:null;
+if(label){
+  label.textContent='服务启动失败';
+  label.style.color='#f1f5f9';
+  label.style.fontSize='14px';
+}
+var root=document.querySelector('.root'); if(!root) return;
+if(!document.getElementById('startupErrReason')){
+  var r=document.createElement('div');
+  r.id='startupErrReason';
+  r.textContent=__REASON__;
+  r.style.cssText='margin-top:-16px;font-size:13px;color:#94a3b8;'
+   +'max-width:520px;text-align:center;word-break:break-all;line-height:1.6';
+  root.appendChild(r);
+}
+if(document.getElementById('btnRetry')) return;
+var b=document.createElement('button');
+b.id='btnRetry'; b.textContent='重 试';
+b.style.cssText='margin-top:4px;padding:10px 40px;border-radius:8px;'
+ +'border:1px solid rgba(96,165,250,.45);background:rgba(96,165,250,.12);'
+ +'color:#f1f5f9;font-size:14px;letter-spacing:2px;cursor:pointer;font-family:inherit';
+b.onmouseenter=function(){ b.style.background='rgba(96,165,250,.22)'; };
+b.onmouseleave=function(){ b.style.background='rgba(96,165,250,.12)'; };
+b.onclick=function(){ b.disabled=true; b.textContent='正在重试…';
+  var api=window.pywebview&&window.pywebview.api;
+  if(api) api.retry_startup(); };
+root.appendChild(b);
+})();
+"""
+
+    def _show_startup_error(self, reason: str) -> None:
+        """在加载页上显示启动失败原因和重试按钮（复用加载页，不新建页面）。"""
+        if self.window is None:
+            return
+        try:
+            self.window.evaluate_js(
+                # json.dumps 输出带引号的 JS 安全字符串，防止原因内容注入 JS
+                self._STARTUP_ERROR_JS.replace("__REASON__", json.dumps(str(reason)))
+            )
+        except Exception:  # noqa: BLE001
+            logger.error("[desktop] failed to render startup error hint")
 
     def _on_loaded_first(self) -> None:
         if self.window is not None:
@@ -1888,7 +1964,7 @@ def _setup_tui_path() -> None:
         if marker in existing:
             return
         with open(zshrc, "a", encoding="utf-8") as f:
-            f.write(f"\n# Added by JiuwenSwarm - jiuwenswarm-tui CLI\n")
+            f.write("\n# Added by JiuwenSwarm - jiuwenswarm-tui CLI\n")
             f.write(f'export PATH="{tui_dir}:$PATH"\n')
         logger.info("[desktop] added TUI to PATH in ~/.zshrc")
     except OSError as exc:
