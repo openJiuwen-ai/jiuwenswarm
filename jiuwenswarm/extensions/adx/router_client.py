@@ -149,14 +149,6 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
         return await self._control.create_sandbox(
             builtin=agent_info.agent_type == BUILTIN_AGENT_TYPE, **kwargs)
 
-    def _ensure_stale_cleanup_task(self) -> None:
-        if self._config.runtime_class == 'runsc':
-            # An empty Gateway cache after restart says nothing about native
-            # Environment liveness. Native idle/recovery owns these resources.
-            logger.info('[ADX] native lifecycle retains registered Environments across Gateway restart')
-            return
-        super()._ensure_stale_cleanup_task()
-
     def set_channel_manager(self, channel_manager) -> None:
         super().set_channel_manager(channel_manager)
         channel = channel_manager.get_channel(ChannelType.WEB)
@@ -199,24 +191,6 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
                         instance, view.get('status'))
         if await self._agent_manager.is_current(runtime):
             await self._close_ws_client(instance)
-
-    async def _delete_idle_agent(self, user_id: str, agent_type: str, *, key_values: dict,
-                                 idle_timeout_seconds: float, trace_on_pop: bool = False) -> bool:
-        if self._config.runtime_class != 'runsc':
-            return await super()._delete_idle_agent(user_id, agent_type, key_values=key_values,
-                idle_timeout_seconds=idle_timeout_seconds, trace_on_pop=trace_on_pop)
-        # Native idle policy owns deletion and checkpoint retention. Releasing
-        # an idle Gateway route closes Relay activity without deleting Paused.
-        key = AgentRuntime.build_key(self._agent_manager.key_fields, user_id=user_id,
-                                     agent_type=agent_type, key_values=key_values or None)
-        async with self._sandbox_lifecycle(_sandbox_name(user_id, agent_type)):
-            runtime = await self._agent_manager.pop_if_idle(key, idle_timeout_seconds, include_shared_sandbox=True)
-            if runtime is None:
-                return False
-            await self._close_ws_client(runtime.info.sandbox_id)
-            logger.info('[ADX] released idle routing state; native idle policy retains lifecycle instance_id=%s',
-                        runtime.info.sandbox_id)
-            return True
 
     def _agent_url(self, instance: str, port: int, protocol: str) -> str:
         origin = urlsplit(self._config.ingress_url)

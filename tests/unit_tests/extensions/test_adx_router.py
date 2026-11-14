@@ -152,12 +152,12 @@ async def test_workspace_failure_blocks_only_its_user_and_is_retryable(monkeypat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('runtime,status,retained', [
-    ('runsc', 'running', True), ('runsc', 'paused', True),
-    ('supervisor', 'running', False), ('conch', 'running', False),
+@pytest.mark.parametrize('runtime,status', [
+    ('runsc', 'running'), ('runsc', 'paused'),
+    ('supervisor', 'running'), ('conch', 'running'),
 ])
-async def test_restart_preserves_native_lifecycle_and_keeps_legacy_startup_cleanup(
-    monkeypatch, runtime, status, retained,
+async def test_startup_cleanup_retires_untracked_environments_for_all_runtimes(
+    monkeypatch, runtime, status,
 ):
     router, _ = _router(_config(monkeypatch, runtime_class=runtime))
     instance = 'test-alice+jiuwenswarm'
@@ -175,10 +175,9 @@ async def test_restart_preserves_native_lifecycle_and_keeps_legacy_startup_clean
         await router.connect('')
         if router._stale_cleanup_task is not None:
             await asyncio.wait_for(router._stale_cleanup_task, timeout=2)
-        assert (instance in router.test_api.environments) is retained
-        assert bool(registry.unregister_instance.await_count) is not retained
-        if retained:
-            registry.list_instances.assert_not_awaited()
+        assert instance not in router.test_api.environments
+        registry.unregister_instance.assert_awaited_once()
+        registry.list_instances.assert_awaited()
     finally:
         await router.shutdown()
 
@@ -697,22 +696,49 @@ async def test_uncertain_lifecycle_observation_does_not_delete(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_runsc_idle_releases_routing_without_deleting_native_environment(monkeypatch):
-    router, clients = _router(_config(monkeypatch, runtime_class='runsc'))
+@pytest.mark.parametrize('runtime_class', ['supervisor', 'runsc'])
+async def test_gateway_idle_deletes_environment_and_next_request_recreates(monkeypatch, runtime_class):
+    router, clients = _router(_config(monkeypatch, runtime_class=runtime_class))
     await router.connect('')
     try:
         await router.send_request(_request())
         runtime = await router._agent_manager.get_agent('alice', 'jiuwenswarm')
+        router._agent_manager.increment_user_connections('alice')
+        assert clients[0].server_ready
         router._agent_manager._runtimes[runtime.key].last_active_at = 0
-        assert router.test_api.creates[0]['idleTimeoutSeconds'] == 600
-        assert await router._delete_idle_agent('alice', 'jiuwenswarm', key_values={}, idle_timeout_seconds=60)
-        assert runtime.info.sandbox_id in router.test_api.environments
-        assert not any(r.method == 'DELETE' for r in router.test_api.requests)
-        clients[0].disconnect.assert_awaited()
-        await router.send_request(_request(rid='resume-idle-route'))
-        assert len(router.test_api.creates) == 1
-        await router.delete_agent('alice', 'jiuwenswarm')
+        if runtime_class == 'runsc':
+            assert router.test_api.creates[0]['idleTimeoutSeconds'] == 600
+        assert await router._reap_idle_once() == 1
+        assert runtime.info.sandbox_id not in router.test_api.environments
+        assert await router._agent_manager.get_agent('alice', 'jiuwenswarm') is None
         assert any(r.method == 'DELETE' for r in router.test_api.requests)
+        clients[0].disconnect.assert_awaited()
+        response = await router.send_request(_request(rid='chat-after-idle'))
+        assert response.ok
+        assert len(router.test_api.creates) == 2
+        replacement = await router._agent_manager.get_agent('alice', 'jiuwenswarm')
+        assert replacement.info.sandbox_id != runtime.info.sandbox_id
+        assert replacement.info.sandbox_id in router.test_api.environments
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('runtime_class', ['supervisor', 'runsc'])
+async def test_gateway_idle_keeps_inflight_requests_and_restarts_clock_on_release(monkeypatch, runtime_class):
+    router, _ = _router(_config(monkeypatch, runtime_class=runtime_class))
+    await router.connect('')
+    try:
+        await router.send_request(_request())
+        runtime = await router._agent_manager.get_agent('alice', 'jiuwenswarm', acquire=True)
+        router._agent_manager._runtimes[runtime.key].last_active_at = 0
+        assert await router._reap_idle_once() == 0
+        assert runtime.info.sandbox_id in router.test_api.environments
+        await router._agent_manager.release(runtime.key, expected_agent_id=runtime.info.agent_id)
+        assert await router._reap_idle_once() == 0
+        router._agent_manager._runtimes[runtime.key].last_active_at = 0
+        assert await router._reap_idle_once() == 1
+        assert runtime.info.sandbox_id not in router.test_api.environments
     finally:
         await router.shutdown()
 
