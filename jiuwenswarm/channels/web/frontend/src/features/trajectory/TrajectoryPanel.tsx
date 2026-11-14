@@ -474,7 +474,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   // makes the addressed file small.
   const replayArchiveFileRef = useRef<Blob | null>(null);
   const [importProgress, setImportProgress] = useState<TrajectoryArchiveProgress | null>(null);
-  // A newer import supersedes one still reading; only the latest may publish.
+  // Only the latest import in the current session may publish.
   const importGenerationRef = useRef(0);
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const [archiveNotice, setArchiveNotice] = useState<string | null>(null);
@@ -1097,6 +1097,10 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     const sessionChanged = loadedSessionRef.current !== sessionId;
     if (sessionChanged) {
       loadedSessionRef.current = sessionId;
+      importGenerationRef.current += 1;
+      setImportProgress(null);
+      setArchiveError(null);
+      setArchiveNotice(null);
       clearPublishedWindow();
       // Content hashes stay valid across epochs of one session, but another
       // session's content is only memory this reader will not use again.
