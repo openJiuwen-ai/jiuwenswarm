@@ -23,6 +23,7 @@ from openjiuwen.agent_teams.paths import (
 )
 from openjiuwen.agent_teams.runtime import RunActionKind
 from openjiuwen.agent_teams.schema.team import TeamRole
+from openjiuwen.agent_teams.schema.status import MEMBER_TRANSITIONS, MemberStatus
 from openjiuwen.agent_teams.monitor import TeamStreamLogger
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.common.logging import server_logger
@@ -295,7 +296,7 @@ def _build_logical_targets(event: dict) -> list[dict]:
 def _is_followup_delivery_boundary_reason(reason: str | None) -> bool:
     """Return whether follow-up delivery likely hit a runtime boundary."""
     normalized = str(reason or "")
-    # pause_in_progress（PM-63 F1）：消息未投递，重试窗内 pause 收尾则
+    # pause_in_progress：消息未投递，重试窗内 pause 收尾则
     # first_request_ready → 转首请求 RESUME_FROM_PAUSE 恢复；超时回诚实错误。
     if normalized in {"agent_unavailable", "gate_closed", "not_active", "pause_in_progress"}:
         return True
@@ -1220,6 +1221,22 @@ async def _broadcast_event(
     result = tm.broadcast_event(session_id, event)
     if inspect.isawaitable(result):
         await result
+    # 登记成员状态广播（流末快照补发帧的 old_status 数据源）——
+    # 漏斗单点收口，覆盖 monitor 真实帧/快照帧/主流兜底帧/workflow 翻译帧。
+    # spawned 帧携带初始状态，同样登记（否则首轮即快照的成员零记录）。
+    member_evt = event.get("event") if isinstance(event, dict) else None
+    if event.get("event_type") == "team.member" and isinstance(member_evt, dict):
+        evt_type = member_evt.get("type")
+        if evt_type == "team.member.status_changed":
+            mid = str(member_evt.get("member_id") or "").strip()
+            new_st = str(member_evt.get("new_status") or "").strip()
+        elif evt_type == "team.member.spawned":
+            mid = str(member_evt.get("member_id") or "").strip()
+            new_st = str(member_evt.get("status") or "").strip()
+        else:
+            mid = new_st = ""
+        if mid and new_st:
+            tm.note_member_status_broadcast(session_id, mid, new_st)
     # Track team-building events so chat.final can be gated correctly.
     if (not tm.has_seen_team_events(session_id)) and event.get("event_type") in _TEAM_BUILDING_EVENT_TYPES:
         tm.mark_seen_team_events(session_id)
@@ -1237,6 +1254,16 @@ def _approval_chunk_from_event(evt: Any) -> dict[str, Any] | None:
     if not isinstance(questions, list) or not questions:
         return None
     return parsed
+
+
+def _is_legal_member_transition(old_status: str, new_status: str) -> bool:
+    """old→new 是否为 MEMBER_TRANSITIONS 合法边（该表是 {from: [to, ...]}）。"""
+    try:
+        return MemberStatus(new_status) in MEMBER_TRANSITIONS.get(
+            MemberStatus(old_status), ()
+        )
+    except ValueError:
+        return False
 
 
 async def _broadcast_team_state_snapshot(
@@ -1263,19 +1290,64 @@ async def _broadcast_team_state_snapshot(
         team_id = snapshot.get("team_id", "")
 
         # Broadcast member status snapshot
+        # 快照帧补 old_status（语义=客户端上次所信状态，来自广播漏斗的
+        # 跟踪表）。本函数是客户端拿到成员终态的最后保证通道，跳过即永失
+        # （RPC 快照只在刷新/重连时兜底，在线客户端不自愈）——故只保留
+        # 一条跳过规则「old==new 无迁移噪音」，其余降级发帧：
+        # ① 零广播记录 / ③ old→new 非法压缩跳变（中间迁移帧死在流间空窗、
+        #    或强制落库旁路迁移表）：仍发帧但**不带 old_status**——jiuwen-test
+        #    M1 对非法边硬断言失败、空 old_status 仅软报告；且降级帧经
+        #    _broadcast_event 漏斗登记 new_status，跟踪表同步收敛，下轮
+        #    不再重复 WARNING。
+        last_seen = team_manager.get_member_status_last_seen(session_id)
+        skip_no_change = 0
         for m in snapshot.get("members", []):
+            old_status = last_seen.get(m["member_id"])
+            if old_status == m["status"]:
+                skip_no_change += 1
+                continue
+            member_frame: dict[str, Any] = {
+                "type": "team.member.status_changed",
+                "team_id": team_id,
+                "member_id": m["member_id"],
+                "new_status": m["status"],
+            }
+            if old_status is None:
+                logger.debug(
+                    "[TeamHelpers] snapshot member frame without old_status "
+                    "(no prior broadcast this session): session_id=%s "
+                    "member_id=%s new=%s",
+                    session_id,
+                    m["member_id"],
+                    m["status"],
+                )
+            elif _is_legal_member_transition(old_status, m["status"]):
+                member_frame["old_status"] = old_status
+            else:
+                logger.warning(
+                    "[TeamHelpers] snapshot member frame degraded (illegal "
+                    "compressed transition, voided frames in inter-stream "
+                    "gap; old_status omitted): session_id=%s member_id=%s "
+                    "old=%s new=%s",
+                    session_id,
+                    m["member_id"],
+                    old_status,
+                    m["status"],
+                )
             event = {
                 "event_type": "team.member",
                 "session_id": session_id,
-                "event": {
-                    "type": "team.member.status_changed",
-                    "team_id": team_id,
-                    "member_id": m["member_id"],
-                    "new_status": m["status"],
-                },
+                "event": member_frame,
             }
             _persist_team_history_event(channel_id, session_id, event)
             await _broadcast_event(channel_id, session_id, event)
+        if skip_no_change:
+            logger.debug(
+                "[TeamHelpers] snapshot member frames skipped (no status "
+                "change): session_id=%s count=%d",
+                session_id,
+                skip_no_change,
+            )
 
         # Broadcast task status snapshot
         for t in snapshot.get("tasks", []):

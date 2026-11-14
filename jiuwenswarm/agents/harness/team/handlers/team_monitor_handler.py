@@ -183,6 +183,10 @@ class TeamMonitorHandler(BaseMonitorHandler):
             member_info = await self._monitor.get_member(event.member_name or "")
             if member_info is not None:
                 base["mode"] = "human" if member_info.role == "human_agent" else member_info.role
+                # 携带初始状态：广播漏斗（team_helpers._broadcast_event）据此
+                # 登记成员状态跟踪表（流末快照帧 old_status 数据源）——缺它
+                # 则只广播过 spawn 帧的成员零记录，终态补发帧被降级规则吞掉
+                base["status"] = member_info.status
         except Exception as e:
             logger.warning(
                 "[TeamMonitorHandler] 获取成员 role 失败: member=%s, error=%s",
