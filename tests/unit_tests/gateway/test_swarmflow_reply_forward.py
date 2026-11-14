@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 from e2a.gateway_normalize import e2a_from_agent_fields
-from e2a.message import ReqMethod
+from jiuwenswarm.common.schema.req_method import ReqMethod
 from agent_gateway.message_handler.message_handler import MessageHandler
 
 from jiuwenswarm.common.schema import Message

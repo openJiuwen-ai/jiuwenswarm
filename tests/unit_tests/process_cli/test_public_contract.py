@@ -219,9 +219,14 @@ def test_protocol_discovery_guard_still_blocks_runtime_imports(module):
     assert "AssertionError: Runtime imported for protocol discovery" in run.stderr.decode(errors="replace")
 
 
-def test_protocol_discovery_guard_allows_shared_protocol_package():
+def test_protocol_discovery_guard_allows_local_req_method():
     run = subprocess.run(
-        [sys.executable, "-c", _RUNTIME_IMPORT_BLOCKER + "\nfrom e2a.message import ReqMethod"],
+        [
+            sys.executable,
+            "-c",
+            _RUNTIME_IMPORT_BLOCKER
+            + "\nfrom jiuwenswarm.common.schema.req_method import ReqMethod",
+        ],
         cwd=ROOT,
         capture_output=True,
         timeout=20,

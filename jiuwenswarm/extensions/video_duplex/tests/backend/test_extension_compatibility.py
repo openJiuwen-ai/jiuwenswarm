@@ -19,7 +19,9 @@ def compatible_modules(monkeypatch, caplog):
         f"{backend}.error_details": SimpleNamespace(duplex_failure=Mock()),
         f"{backend}.joyai_action_helper": SimpleNamespace(select_model=Mock()),
         "agent_gateway.extensions.video_duplex.backend.tasks.bridge": SimpleNamespace(GatewayTaskEndpoint=Mock()),
-        "e2a.message": SimpleNamespace(ReqMethod=SimpleNamespace(VOICE_TASK_CHECKPOINT_ACK="ack")),
+        "jiuwenswarm.common.schema.req_method": SimpleNamespace(
+            ReqMethod=SimpleNamespace(VOICE_TASK_CHECKPOINT_ACK="ack")
+        ),
         f"{backend}.qwen_omni_tools": SimpleNamespace(qwen_omni_tools=lambda queue_manager=False: []),
         f"{backend}.video_live": SimpleNamespace(video_duplex_enabled=lambda: True),
     }
@@ -61,8 +63,8 @@ async def test_old_tool_signature_skips_registration(compatible_modules, caplog)
 
 
 @pytest.mark.asyncio
-async def test_missing_protocol_capability_skips_registration(compatible_modules, caplog):
-    compatible_modules["e2a.message"].ReqMethod = SimpleNamespace()
+async def test_missing_req_method_capability_skips_registration(compatible_modules, caplog):
+    compatible_modules["jiuwenswarm.common.schema.req_method"].ReqMethod = SimpleNamespace()
     registry = Mock()
     assert await extension.register_extensions(registry) == []
     registry.register_application_plugin.assert_not_called()

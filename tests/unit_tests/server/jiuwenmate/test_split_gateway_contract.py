@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 
 import pytest
-from e2a.message import ReqMethod as WireMethod
+from jiuwenswarm.common.schema.req_method import ReqMethod as WireMethod
 from e2a.models import E2AEnvelope
 
 from jiuwenswarm.common.schema.message import ReqMethod

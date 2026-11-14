@@ -9,6 +9,8 @@ e2a 协议包 同一对象。``e2a_response_from_agent_chunk`` / ``e2a_response_
 
 from __future__ import annotations
 
+from dataclasses import replace
+from enum import Enum
 from typing import Any
 
 from e2a import gateway_normalize as protocol_normalize
@@ -35,14 +37,38 @@ from e2a.gateway_normalize import (  # noqa: F401
     MAX_LEGACY_AGENT_REQUEST_JSON_BYTES,
     build_fallback_e2a,
     channel_context_for_channel_reply,
-    e2a_from_agent_fields,
     e2a_response_from_agent_response,
     e2a_response_to_agent_response,
-    message_to_e2a,
-    message_to_e2a_or_fallback,
-    message_to_legacy_agent_dict,
     utc_now_iso,
 )
+from e2a.message import Message
+
+
+def _wire_method(method: Any) -> Any:
+    return method.value if isinstance(method, Enum) else method
+
+
+def _message_with_wire_method(msg: Message) -> Message:
+    method = _wire_method(msg.req_method)
+    return msg if method is msg.req_method else replace(msg, req_method=method)
+
+
+def message_to_legacy_agent_dict(msg: Message) -> dict[str, Any]:
+    return protocol_normalize.message_to_legacy_agent_dict(_message_with_wire_method(msg))
+
+
+def message_to_e2a(msg: Message) -> E2AEnvelope:
+    return protocol_normalize.message_to_e2a(_message_with_wire_method(msg))
+
+
+def message_to_e2a_or_fallback(msg: Message) -> E2AEnvelope:
+    return protocol_normalize.message_to_e2a_or_fallback(_message_with_wire_method(msg))
+
+
+def e2a_from_agent_fields(*, req_method: Any = None, **fields: Any) -> E2AEnvelope:
+    return protocol_normalize.e2a_from_agent_fields(
+        req_method=_wire_method(req_method), **fields
+    )
 
 
 def copy_team_delta_identity(source: dict[str, Any], target: dict[str, Any]) -> None:
