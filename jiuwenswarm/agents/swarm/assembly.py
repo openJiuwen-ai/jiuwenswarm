@@ -627,6 +627,20 @@ def enrich_team_spec_for_swarm(
         teammate = spec.agents["teammate"]
         teammate.rails = [*(teammate.rails or []), RailSpec(type=GROUP_MEMBER_TEMPLATE,
             params={"initial_names": [member["member_name"] for member in group_members]})]
+    # This seam runs for new teams and Runner cold recovery alike. Explicitly
+    # carry the current deployment's tool backend; missing specs default to LOCAL.
+    from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
+        build_adx_team_sysop_spec,
+    )
+
+    for name, member in list(spec.agents.items()):
+        tool_spec = build_adx_team_sysop_spec(spec.team_name, name)
+        if tool_spec is not None:
+            spec.agents[name] = member.model_copy(update={"sys_operation": tool_spec})
+    if spec.reviewer_agent is not None:
+        tool_spec = build_adx_team_sysop_spec(spec.team_name, "reviewer")
+        if tool_spec is not None:
+            spec.reviewer_agent = spec.reviewer_agent.model_copy(update={"sys_operation": tool_spec})
     logger.info(
         "[swarm.assembly] enriched team spec '%s' "
         "(roles=%s, session=%s, mcps=%d, agent_group=%s)",
