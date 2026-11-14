@@ -68,18 +68,30 @@ class TaskService:
         self.pending_interrupts = set()
         self.closed = False
         self.started = False
+        self.active_scopes = set()
         self.lease = portalocker.Lock(str(store.path) + ".owner", timeout=0)
 
-    def start(self):
+    def start(self, owner=None, session=None):
+        """Recover only the requested conversation before dispatching its queue."""
         if self.closed:
             raise RuntimeError("Task service is closed")
-        if self.started:
+        if (owner is not None or session is not None) and (
+            not isinstance(owner, str) or not isinstance(session, str) or not session
+        ):
+            raise ValueError("Task owner must be a string and conversation is required")
+        if self.started and (owner is None or (owner, session) in self.active_scopes):
             return
-        self.lease.acquire()
+        first_start = not self.started
+        if first_start:
+            self.lease.acquire()
         try:
             stopping = set()
             with self.store.transaction() as db:
-                for task in self.store.rows(db):
+                tasks = self.store.rows(db, owner, session)
+                scopes = {(owner, session)} if owner is not None else {
+                    (task["owner"], task["session"]) for task in tasks
+                }
+                for task in tasks:
                     if task["status"] == "cancelling":
                         # The user asked to stop it, so Core's "not running" settles it as cancelled (#5545).
                         stopping.add(task["id"])
@@ -99,9 +111,11 @@ class TaskService:
                         task["sequence"] += 1
                         self.store.put(db, task)
         except BaseException:
-            self.lease.release()
+            if first_start:
+                self.lease.release()
             raise
         self.started = True
+        self.active_scopes.update(scopes)
         self.kick()
         try:
             loop = asyncio.get_running_loop()
@@ -109,7 +123,10 @@ class TaskService:
             loop = None
         if loop is not None:
             with self.store.transaction() as db:
-                lost = [t for t in self.store.rows(db) if t["status"] == "unknown"]
+                lost = [
+                    t for t in self.store.rows(db, owner, session)
+                    if t["status"] == "unknown"
+                ]
             for task in lost:
                 self._spawn_reconcile(task, stopped=task["id"] in stopping)
 
@@ -251,6 +268,8 @@ class TaskService:
         self._prune_reconciliation(tasks)
         active = []
         for task in tasks:
+            if (task["owner"], task["session"]) not in self.active_scopes:
+                continue
             if task["status"] in {"running", "cancelling", "unknown", "waiting_user"} or task["id"] in self.workers:
                 active.append(task)
         # Capacity covers executions owned by this service. Unknown executions
@@ -258,6 +277,8 @@ class TaskService:
         for task in sorted(tasks, key=lambda t: t["position"]):
             if sum(map(self._holds_capacity, active)) >= self.concurrency:
                 break
+            if (task["owner"], task["session"]) not in self.active_scopes:
+                continue
             if task["status"] != "queued" or task["id"] in self.workers:
                 continue
             if not self._ready(task, tasks, active):
@@ -372,12 +393,17 @@ class TaskService:
             output_closed=False,
         )
 
+    # Public alias for callers outside the class (extension tests seed tasks in
+    # a second conversation); reaching for ``_new`` there is a G.CLS.11
+    # protected-access violation.
+    new_task = _new
+
     def submit(self, owner, session, command_id, instruction, request=None):
-        self.start()
         # WebChannel permits an absent user; persist it as an exact empty scope.
         # None remains invalid because store reads use it to mean "all owners".
         if not isinstance(owner, str) or not session:
             raise ValueError("Task owner must be a string and conversation is required")
+        self.start(owner, session)
         if not isinstance(instruction, str) or not instruction.strip():
             raise ValueError("Task instruction is required")
         if len(instruction) > 16000:
@@ -431,11 +457,11 @@ class TaskService:
         return task
 
     def get(self, owner, session, task_id):
-        self.start()
+        self.start(owner, session)
         return self.store.read(task_id, owner, session)
 
     def list(self, owner, session, *, query="", status="", offset=0, limit=50):
-        self.start()
+        self.start(owner, session)
         if not isinstance(offset, int) or offset < 0:
             raise ValueError("Invalid pagination")
         if not isinstance(limit, int) or not 1 <= limit <= 100:
@@ -458,7 +484,7 @@ class TaskService:
     def modify(self, owner, session, task_id, command_id, change: TaskModification):
         revision, instruction = change.revision, change.instruction
         title = _clean_title(change.title)
-        self.start()
+        self.start(owner, session)
         if (
             not isinstance(instruction, str)
             or not instruction.strip()
@@ -543,7 +569,7 @@ class TaskService:
         return child
 
     async def cancel(self, owner, session, task_id, command_id, *, user_instruction=""):
-        self.start()
+        self.start(owner, session)
         if not isinstance(user_instruction, str) or len(user_instruction) > 4000:
             raise ValueError("Cancellation instruction must contain at most 4000 characters")
         user_instruction = user_instruction.strip()
@@ -668,7 +694,7 @@ class TaskService:
     def reorder(
         self, owner, session, task_id, revision, before_id=None, *, command_id=None
     ):
-        self.start()
+        self.start(owner, session)
         with self.store.transaction() as db:
             task = self.store.get(db, task_id, owner, session)
             if command_id is not None:
@@ -735,7 +761,7 @@ class TaskService:
             NATIVE_APPROVAL_SOURCES,
         )
 
-        self.start()
+        self.start(owner, session)
         with self.store.transaction() as db:
             task = self.store.get(db, task_id, owner, session)
             replay, fingerprint = self.store.replay(
@@ -821,7 +847,7 @@ class TaskService:
         return version
 
     def snapshot(self, owner, session):
-        self.start()
+        self.start(owner, session)
         with self.store.transaction() as db:
             tasks = self.store.rows(db, owner, session)
             all_tasks = self.store.rows(db)

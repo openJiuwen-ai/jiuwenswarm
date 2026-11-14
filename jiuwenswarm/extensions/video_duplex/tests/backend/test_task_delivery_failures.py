@@ -194,7 +194,7 @@ def subscribed_manager(tmp_path, metadata):
         log_event=lambda _: None, qwen_active=lambda: True, authorize=lambda ws, scope: ("alice", scope),
     )
     scope = "task-duplex:saved"
-    task = TaskService._new("alice", scope, "Plan a meeting", {})
+    task = TaskService.new_task("alice", scope, "Plan a meeting", {})
     task.update(status="completed", result={"answer": "Done"})
     # Persist the completed record before startup/recovery and queue projections.
     with manager.service.store.transaction() as db:
@@ -432,7 +432,7 @@ async def test_5570_voice_reorder_pushes_queue_to_every_subscriber(tmp_path):
     scope = done["session"]
     # Keep both tasks queued; this test is only about queue delivery.
     manager.service.concurrency = 0
-    first, second = (TaskService._new("alice", scope, text, {}) for text in ("first", "second"))
+    first, second = (TaskService.new_task("alice", scope, text, {}) for text in ("first", "second"))
     first.update(position=0)
     second.update(position=1)
     with manager.service.store.transaction() as db:
