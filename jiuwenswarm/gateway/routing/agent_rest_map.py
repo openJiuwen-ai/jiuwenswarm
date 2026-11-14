@@ -376,6 +376,11 @@ def _query_values(remaining: Mapping[str, Any]) -> dict[str, str]:
     for key, value in remaining.items():
         if isinstance(value, (dict, list)):
             query[key] = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        elif isinstance(value, bool):
+            # Query 是字符串空间：bool 必须用小写字面量往返（AgentServer 端
+            # collect_params 按同表还原）。``str(False)`` 产出的 ``"False"``
+            # 会被 handler 侧 ``bool("False")`` 判真，把显式 false 当 true（#5441）。
+            query[key] = "true" if value else "false"
         else:
             query[key] = str(value)
     return query

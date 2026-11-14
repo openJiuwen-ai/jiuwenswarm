@@ -493,12 +493,75 @@ async def _safe_json_body(request: Any) -> dict[str, Any]:
     return data if isinstance(data, dict) else {"body": data}
 
 
+#: 布尔型 query 参数：``1``/``0`` 与 ``true``/``false`` 同义，必须还原成真正的
+#: bool。``is True`` / ``is False`` 形态的消费方只认 bool，int 1/0 会被判错
+#: （``interface._should_record_user_history`` 的 ``log_as_user``/``attach_goal``、
+#: ``team_helpers`` 的 ``enable_routing``、
+#: ``extension_package_manager`` 的 ``include_team_compatibility`` 等）。
+#: 新增布尔型 GET 参数时在此登记。
+_BOOLEAN_QUERY_KEYS = frozenset(
+    {
+        "attach_goal",
+        "catalog_only",
+        "enable_routing",
+        "enable_streaming",
+        "enable_swarmflow",
+        "enabled",
+        "force",
+        "include_team_compatibility",
+        "is_swarm",
+        "log_as_user",
+        "refresh",
+        "refresh_marketplaces",
+        "supports_user_interaction",
+        "team",
+        "with_installed",
+    }
+)
+
+#: 数值型 query 参数：还原为 int，保留分页/数量语义。其余键一律保持字符串——
+#: 标识类参数（``session_id`` / ``name`` / ``cursor`` / ``*_id``）可能有前导零，
+#: 且必须与 path/header 通道（不做类型还原）保持同一类型。
+_NUMERIC_QUERY_KEYS = frozenset({"limit", "offset", "page", "page_size", "max_bytes"})
+
+
+def _coerce_query_value(key: str, raw: str) -> Any:
+    """按参数键的类型约定还原 query 值。
+
+    REST query 是字符串空间：Gateway 南向把 bool 序列化成 ``true``/``false``，
+    原样透传时 handler 侧 ``bool("False")`` / ``bool("off")`` 恒为真，显式
+    false 被当 true（#5441）。布尔字面量对所有键都还原，文本/数值参数不会使用
+    这些字面量，无歧义；``1``/``0`` 只在 :data:`_BOOLEAN_QUERY_KEYS` 登记的
+    布尔参数上归布尔——全局归布尔会把 ``limit=1`` 变成 ``True``
+    （``handlers/session._coerce_int`` 视 bool 为非法并回落默认值），也会把
+    ``q=1`` 这类文本参数错误地变成 ``True``。
+    """
+    text = str(raw).strip()
+    lowered = text.lower()
+    if key in _NUMERIC_QUERY_KEYS:
+        if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
+            return int(text)
+        return text
+    if lowered in {"true", "yes", "on"}:
+        return True
+    if lowered in {"false", "no", "off"}:
+        return False
+    if key in _BOOLEAN_QUERY_KEYS and lowered in {"1", "0"}:
+        return lowered == "1"
+    return text
+
+
 async def collect_params(request: Any) -> dict[str, Any]:
     """合并 query / path / body 为单一 ``params`` 字典。
 
     优先级：body > path > query（body 最贴近调用者意图）。
+    query 值经 ``_coerce_query_value`` 还原类型；body 是 JSON 已带类型、
+    path 占位符约定为字符串，均不做转换。
     """
-    params: dict[str, Any] = dict(request.query_params)
+    params: dict[str, Any] = {
+        key: _coerce_query_value(key, value)
+        for key, value in dict(request.query_params or {}).items()
+    }
     params.update(dict(request.path_params or {}))
     params.update(await _safe_json_body(request))
     return params
@@ -578,13 +641,20 @@ def _envelope_wants_stream(request: Any, envelope: dict[str, Any]) -> bool:
 
 
 def wants_stream(request: Any, params: dict[str, Any]) -> bool:
-    """判定是否走 SSE：``Accept: text/event-stream`` 或 ``enable_streaming``。"""
+    """判定是否走 SSE：``Accept: text/event-stream`` 或 ``enable_streaming``。
+
+    ``collect_params`` 还原类型后 ``?enable_streaming=1`` 是 int 1、``=0``
+    是 int 0；必须与 ``_as_bool`` 一样接受 int/float，否则显式 1 被判 False，
+    SSE 静默退化为单帧 JSON（调用方收不到任何 chunk 且不报错）。
+    """
     accept = (request.headers.get("accept") or "").lower()
     if "text/event-stream" in accept:
         return True
     flag = params.get("enable_streaming")
     if isinstance(flag, bool):
         return flag
+    if isinstance(flag, (int, float)):
+        return bool(flag)
     if isinstance(flag, str):
         return flag.strip().lower() in {"1", "true", "yes", "on"}
     return False
