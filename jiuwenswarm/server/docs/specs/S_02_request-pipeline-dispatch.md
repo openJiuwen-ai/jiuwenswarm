@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_02 / request-pipeline-dispatch |
 | 关联模块 | jiuwenswarm/server/{dispatch.py, pipeline.py, context.py, wire_parse.py, wire_truncate.py, ws_send.py, handlers/, transports/} |
-| 最近一次修订日期 | 2026-10-15 |
+| 最近一次修订日期 | 2026-11-11 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -81,6 +81,8 @@ async def dispatch_parsed_request(
 Todo输出策略在进入此流水线前由宿主绑定：WS按连接身份，HTTP按已有宿主身份，读取
 `todo.snapshot_modes[app_id]`，缺省legacy。请求的channel/client名称、params或metadata
 不能启用versioned。请求内固定选择，实时与历史共享；退出时恢复调用者上下文。
+
+history.get 的 Todo 快照通过所属会话 adapter.read_todo_snapshot 读取，返回实际工具后端的快照和同会话 generation 标记，再按当前接入策略输出。管理器选择沿用聊天的 `_uses_tenant_pool` 判定：租户请求经 `services.tenant_pool()` 按请求身份取得管理器，其他请求使用 `services.agent_manager`；租户读取失败不回退默认管理器。冷会话依据既有 metadata 的 adapter_mode/channel/project 解析运行宿主；不执行用户任务，不新增请求字段。无法确定所属后端（包括没有运行宿主）或读取失败时不回退宿主旧副本、不发伪空表，历史消息仍返回。common.todo_snapshot 的本地文件读取接口保持原兼容能力，但不能替代运行会话的实际后端。
 
 ### context.RequestContext（frozen dataclass）
 

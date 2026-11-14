@@ -126,6 +126,7 @@ from openjiuwen.harness.schema.interaction import (
     SendInputRequest,
 )
 from openjiuwen.harness.schema.task import TodoStatus
+from openjiuwen.harness.tools.todo_store import TodoSnapshot
 from openjiuwen.harness.workspace.workspace import Workspace, WorkspaceNode
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
@@ -8183,7 +8184,7 @@ class JiuWenSwarmDeepAdapter:
                     )
         return context
 
-    def _get_deepresearch_tool_context(self) -> dict[str, str]:
+    def _get_deepresearch_tool_context(self) -> dict[str, Any]:
         """Return the adapter-owned route that survives runner task boundaries.
 
         Prefers the per-session-adapter ``_current_request_route`` snapshot
@@ -8206,6 +8207,7 @@ class JiuWenSwarmDeepAdapter:
                 "service_id": scope.service_id,
                 "agent_id": scope.agent_id,
                 "workspace_key": scope.workspace_key,
+                "todo_tool_provider": lambda: self._get_todo_modify_tool(scope.session_id),
                 "output_dir": self._deepresearch_artifact_output_dir(
                     route.get("output_dir")
                 ),
@@ -8221,6 +8223,7 @@ class JiuWenSwarmDeepAdapter:
             "service_id": scope.service_id,
             "agent_id": scope.agent_id,
             "workspace_key": scope.workspace_key,
+            "todo_tool_provider": lambda: self._get_todo_modify_tool(scope.session_id),
             "output_dir": self._deepresearch_artifact_output_dir(
                 metadata.get("project_dir")
             ),
@@ -10366,6 +10369,7 @@ class JiuWenSwarmDeepAdapter:
                 service_id=scope.service_id,
                 agent_id=scope.agent_id,
                 workspace_key=scope.workspace_key,
+                todo_tool_provider=lambda: self._get_todo_modify_tool(scope.session_id),
                 output_dir=self._deepresearch_artifact_output_dir(
                     normalized_metadata.get("project_dir")
                 ),
@@ -14821,6 +14825,38 @@ class JiuWenSwarmDeepAdapter:
         return await self._dispatch_goal_control(
             action="set", objective=objective, session_id=session_id
         )
+
+    async def read_todo_snapshot(
+        self, session_id: str, *, request: AgentRequest | None = None,
+    ) -> tuple[TodoSnapshot, str | None] | None:
+        """返回所属后端快照和同会话代际标记，不以宿主同名文件替代。"""
+        from jiuwenswarm.common.utils import is_valid_session_id
+
+        if not is_valid_session_id(session_id):
+            return None
+        adapter = await self._get_or_create_session_adapter(session_id, request=request)
+        tool = adapter.get_todo_modify_tool(session_id)
+        if tool is None:
+            return None
+        instance = getattr(adapter, "_instance", None)
+        session = getattr(instance, "_interaction_session", None)
+        generation_token = None
+        if session is not None:
+            try:
+                generation_token = get_todo_generation_token(session)
+            except Exception:
+                logger.debug("[history.get] Todo generation unavailable: session_id=%s", session_id, exc_info=True)
+        items = await tool.read_todos(session_id)
+        snapshot = getattr(items, "snapshot", None)
+        if snapshot is None or not snapshot.exists:
+            return None
+        if not snapshot.read_authoritative or snapshot.read_only_backend:
+            return None
+        return snapshot, generation_token
+
+    def get_todo_modify_tool(self, session_id: str) -> TodoModifyTool | None:
+        """取得所属会话的 Todo 引擎，保留各模式的选择逻辑。"""
+        return self._get_todo_modify_tool(session_id)
 
     def _get_todo_modify_tool(self, session_id: str) -> TodoModifyTool | None:
         """Return a session-scoped TodoModifyTool, or None if DeepAgent unavailable.

@@ -30,6 +30,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
+from openjiuwen.core.common.exception.errors import BaseError
 from openjiuwen.core.foundation.tool import tool
 from openjiuwen.core.sys_operation.cwd import get_cwd
 
@@ -65,9 +66,11 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch.tls import (
     normalize_child_tls_config,
 )
 from jiuwenswarm.agents.harness.common.tools.deepresearch.todo_progress import (
+    close_research_todo_scope,
     deepresearch_todo_path,
     persist_deepresearch_task_update,
     capture_deepresearch_todo_target,
+    research_todo_scope,
 )
 from jiuwenswarm.agents.harness.common.tools.deepresearch.usage import (
     normalize_workflow_llm_token_usage,
@@ -367,6 +370,7 @@ def push_deepresearch_route(
     agent_id: str = "default",
     workspace_key: str = "default",
     output_dir: str = "",
+    todo_tool_provider: Callable[[], Any] | None = None,
 ) -> contextvars.Token:
     """Bind request routing and its trusted DeepResearch artifact root."""
     return _deepresearch_route_ctx.set(
@@ -378,6 +382,7 @@ def push_deepresearch_route(
             "agent_id": (agent_id or "default").strip() or "default",
             "workspace_key": (workspace_key or "default").strip() or "default",
             "output_dir": str(output_dir or "").strip(),
+            "todo_tool_provider": todo_tool_provider,
         }
     )
 
@@ -396,6 +401,50 @@ def _get_route() -> dict[str, object]:
         "service_id": route.get("service_id", "default") or "default",
         "agent_id": route.get("agent_id", "default") or "default",
     }
+
+
+def _todo_workspace_key(route: dict[str, object]) -> str:
+    context = _deepresearch_route_ctx.get() or {}
+    return str(route.get("workspace_key") or context.get("workspace_key") or "default")
+
+
+def _research_todo_path(route: dict[str, object], todo_tool=None) -> Path:
+    """Resolve the Todo path from its owning tool when available."""
+    session_id = str(route.get("session_id") or "")
+    if todo_tool is None:
+        from openjiuwen.harness.tools.todo_store import bound_todo_tool
+
+        provider = (_deepresearch_route_ctx.get() or {}).get("todo_tool_provider")
+        if callable(provider):
+            todo_tool = provider()
+        else:
+            bound_tool, bound_session = bound_todo_tool()
+            if bound_session == session_id:
+                todo_tool = bound_tool
+    return deepresearch_todo_path(
+        session_id=session_id, workspace_key=_todo_workspace_key(route), tool=todo_tool,
+    )
+
+
+async def _capture_todo_target(todo_path: Path, session_id: str, *, todo_tool=None):
+    """宿主 provider 优先，不能由同名 session 的旧 worker 绑定覆盖。"""
+    if todo_tool is None:
+        provider = (_deepresearch_route_ctx.get() or {}).get("todo_tool_provider")
+        if callable(provider):
+            todo_tool = provider()
+            if todo_tool is None:
+                return None
+    if todo_tool is None:
+        return await capture_deepresearch_todo_target(todo_path, session_id=session_id)
+    return await capture_deepresearch_todo_target(todo_path, tool=todo_tool, session_id=session_id)
+
+
+async def _try_capture_todo_target(todo_path: Path, session_id: str):
+    try:
+        return await _capture_todo_target(todo_path, session_id)
+    except (BaseError, OSError, ValueError, RuntimeError, TypeError) as exc:
+        logger.warning("[deepresearch_stream] Todo owner unavailable type=%s", type(exc).__name__)
+        return None
 
 
 def _route_scope() -> RuntimeScopeKey:
@@ -2903,6 +2952,7 @@ async def _call_deepresearch_stream_impl(
         "(no feedback needed); completed stages are not re-executed."
     ),
 )
+@research_todo_scope
 async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
     action: str,
     query: str = "",
@@ -3177,26 +3227,39 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
             action, "search_config_missing", search_error, query, file_name,
         )
 
-    # Flash must bind its Todo owner before starting the research process.
-    # The same target also survives the cancellation/completion delivery path.
+    # Capture the existing Todo owner before starting the research process.
+    # Flash must have a valid target; other modes keep research available if
+    # the persistence target cannot be established.
     from openjiuwen.harness.tools.todo_store import bound_todo_tool
 
-    bound_tool, _ = bound_todo_tool()
+    bound_tool, bound_session = bound_todo_tool()
     todo_context = None
-    if getattr(bound_tool, "snapshot_guard", None) is not None:
+    provider = (_deepresearch_route_ctx.get() or {}).get("todo_tool_provider")
+    if bound_tool is not None or callable(provider):
+        selected_tool = bound_tool
         try:
-            todo_path = deepresearch_todo_path(
-                session_id=str(route.get("session_id") or ""),
-                workspace_key=str(route.get("workspace_key") or "default"),
-            )
-            todo_target = await capture_deepresearch_todo_target(todo_path)
-            if todo_target is None:
-                raise ValueError("Flash Todo owner is unavailable")
-            todo_context = (todo_path, todo_target)
-        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            if callable(provider):
+                selected_tool = provider()
+            elif bound_session != str(route.get("session_id") or "") and route.get("session_id"):
+                if getattr(selected_tool, "snapshot_guard", None) is not None:
+                    raise ValueError("Flash Todo binding does not match the request session")
+                selected_tool = None
+            if selected_tool is not None:
+                todo_path = _research_todo_path(route, selected_tool)
+                todo_target = await _capture_todo_target(
+                    todo_path, str(route.get("session_id") or ""), todo_tool=selected_tool,
+                )
+                if todo_target is None and getattr(selected_tool, "snapshot_guard", None) is not None:
+                    raise ValueError("Flash Todo owner is unavailable")
+                todo_context = (todo_path, todo_target)
+            else:
+                todo_context = (None, None)
+        except (BaseError, OSError, ValueError, RuntimeError, TypeError) as exc:
             logger.warning("[deepresearch_stream] Todo owner unavailable type=%s", type(exc).__name__)
-            return json.dumps({"status": "error", "error_code": "stream_failed",
-                               "error": f"DeepResearch stream failed: {type(exc).__name__}"}, ensure_ascii=False)
+            if getattr(selected_tool, "snapshot_guard", None) is not None:
+                return json.dumps({"status": "error", "error_code": "stream_failed",
+                                   "error": f"DeepResearch stream failed: {type(exc).__name__}"}, ensure_ascii=False)
+            todo_context = (None, None)
 
     try:
         progress_artifact = _create_progress_artifact()
@@ -3285,6 +3348,7 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
                 _deepresearch_stage_hint_ctx.reset(stage_hint_token)
     except asyncio.CancelledError:
         # 用户停止:先优雅停止(发帧→等落盘→超时兜底),保留 checkpoint
+        close_research_todo_scope()
         # 供 resume --node stopped 恢复,不回退到并行调研阶段重跑。
         captured: dict[str, Any] = {}
         cleanup = asyncio.create_task(
@@ -3632,17 +3696,17 @@ async def _deliver_race_completed_report(
     else:
         todo_path: Path | None = None
         try:
-            todo_path = deepresearch_todo_path(
-                session_id=str(route["session_id"]),
-                workspace_key=str(route.get("workspace_key") or "default"),
-            )
+            todo_path = _research_todo_path(route)
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.warning(
                 "[deepresearch_stream] resolve todo path failed type=%s",
                 type(exc).__name__,
             )
 
-        todo_target = await capture_deepresearch_todo_target(todo_path) if todo_path is not None else None
+        todo_target = (
+            await _try_capture_todo_target(todo_path, str(route["session_id"]))
+            if todo_path is not None else None
+        )
 
     if todo_path is not None and todo_target is None:
         logger.warning("[deepresearch_stream] skip Todo persistence: no bound Todo owner")
@@ -3895,17 +3959,17 @@ async def _consume_stream(
         todo_path: Path | None = None
         if route.get("session_id"):
             try:
-                todo_path = deepresearch_todo_path(
-                    session_id=str(route["session_id"]),
-                    workspace_key=str(route.get("workspace_key") or "default"),
-                )
+                todo_path = _research_todo_path(route)
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 logger.warning(
                     "[deepresearch_stream] resolve todo path failed type=%s",
                     type(exc).__name__,
                 )
 
-        todo_target = await capture_deepresearch_todo_target(todo_path) if todo_path is not None else None
+        todo_target = (
+            await _try_capture_todo_target(todo_path, str(route.get("session_id") or ""))
+            if todo_path is not None else None
+        )
 
     if todo_path is not None and todo_target is None:
         logger.warning("[deepresearch_stream] skip Todo persistence: no bound Todo owner")

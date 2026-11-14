@@ -1,7 +1,9 @@
 """会话元数据是初始化依据；文件丢失和旧队列写不能重新授予初始化。"""
 
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +14,43 @@ def new_session(tmp_path):
     record = {"session_id": "s", "todo_initialized": False, "title": "new"}
     metadata._write_metadata_sync("s", record, sessions_root=str(tmp_path))
     return record
+
+
+def test_other_session_initialization_does_not_wait_for_blocked_metadata(tmp_path, monkeypatch):
+    for sid in ("A", "B"):
+        path = tmp_path / sid / "metadata.json"
+        path.parent.mkdir()
+        path.write_text(json.dumps({"session_id": sid, "todo_initialized": True}))
+    original = metadata.portalocker.Lock
+    waiting, release = threading.Event(), threading.Event()
+
+    class BlockedLock:
+        def __init__(self, path, **kwargs):
+            self.lock = original(path, **kwargs)
+
+        def __enter__(self):
+            waiting.set()
+            assert release.wait(3)
+            return self.lock.__enter__()
+
+        def __exit__(self, *args):
+            return self.lock.__exit__(*args)
+
+    def lock_for_path(path, **kwargs):
+        return BlockedLock(path, **kwargs) if Path(path).parent.name == "A" else original(path, **kwargs)
+
+    monkeypatch.setattr(metadata.portalocker, "Lock", lock_for_path)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(metadata.check_todo_initialization, "A", file_exists=True,
+                            committing=True, sessions_root=tmp_path)
+        try:
+            assert waiting.wait(2)
+            second = pool.submit(metadata.check_todo_initialization, "B", file_exists=True,
+                                 committing=True, sessions_root=tmp_path)
+            second.result(timeout=.5)
+        finally:
+            release.set()
+            first.result(timeout=2)
 
 
 def test_first_initialization_is_consumed_before_commit_and_survives_reload(tmp_path):

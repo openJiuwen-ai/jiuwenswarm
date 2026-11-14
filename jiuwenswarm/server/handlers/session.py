@@ -11,23 +11,18 @@ import shutil
 from typing import Any
 from weakref import WeakValueDictionary
 
-from openjiuwen.core.single_agent import create_agent_session
-
-from jiuwenswarm.agents.harness.common.tools.todo_resume import (
-    get_todo_generation_token,
-)
 from jiuwenswarm.common.e2a.wire_codec import (
     encode_agent_chunk_for_wire,
     encode_agent_response_for_wire,
 )
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
-from jiuwenswarm.common.todo_snapshot import load_todo_snapshot_for_frontend
+from jiuwenswarm.common.todo_snapshot import FrontendTodos, project_todo_snapshot
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.handlers._shared import (
-    _agent_workspace_dir_for_request,
     _background_session_kvc_tasks,
     _sessions_dir_for_request,
     _is_team_metadata_mode,
+    _uses_tenant_pool,
     _log_background_session_kvc_failure,
     _plan_active_sessions,
     _plan_exited_sessions,
@@ -59,46 +54,6 @@ _session_switch_locks: WeakValueDictionary[str, asyncio.Lock] = (
 )
 
 
-async def _todo_generation_token_for_history(
-    ctx: RequestContext,
-    session_id: str,
-) -> str | None:
-    """Restore the current todo generation from the session checkpoint."""
-    try:
-        resolved = await _resolve_rewind_agent(
-            ctx,
-            ctx.request.channel_id or "default",
-            session_id,
-        )
-        if resolved is None:
-            return None
-        deep_agent, _ = resolved
-        live_session = getattr(deep_agent, "_interaction_session", None)
-        if live_session is not None:
-            try:
-                live_session_id = str(live_session.get_session_id() or "").strip()
-            except Exception:  # noqa: BLE001 - tolerate session implementations
-                live_session_id = ""
-            if live_session_id == session_id:
-                token = get_todo_generation_token(live_session)
-                if token:
-                    return token
-
-        checkpoint_session = create_agent_session(
-            session_id=session_id,
-            card=deep_agent.card,
-        )
-        await checkpoint_session.pre_run(inputs=None)
-        return get_todo_generation_token(checkpoint_session)
-    except Exception:  # noqa: BLE001 - history restore must remain fail-open
-        logger.warning(
-            "[history.get] todo generation restore failed: session_id=%s",
-            session_id,
-            exc_info=True,
-        )
-        return None
-
-
 def _coerce_int(value: object, default: int) -> int:
     """宽松解析整数：兼容 int / 整数值 float / 数字字符串。
 
@@ -113,6 +68,51 @@ def _coerce_int(value: object, default: int) -> int:
     if isinstance(value, str) and value.strip().isdigit():
         return int(value.strip())
     return default
+
+
+async def _todo_snapshot_for_history(ctx: RequestContext, session_id: str) -> FrontendTodos | None:
+    """所属后端不可用时不回退宿主旧副本；历史消息仍可正常返回。"""
+    try:
+        if _uses_tenant_pool(ctx.request):
+            from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
+
+            manager = await ctx.services.tenant_pool().get_agent_manager(*TenantAgentPool.extract_ids(ctx.request))
+        else:
+            manager = getattr(ctx.services, "agent_manager", None)
+        if manager is None:
+            return None
+        channel = ctx.request.channel_id or "default"
+        agent = manager.get_agent_for_session_nowait(channel_id=channel, session_id=session_id)
+        if agent is None:
+            from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+            metadata = await asyncio.to_thread(
+                get_session_metadata, session_id, sessions_root=str(_sessions_dir_for_request(ctx.request)),
+                cache_bust=True, enable_writeback=False,
+            )
+            if not isinstance(metadata, dict):
+                return None
+            channel = metadata.get("channel_id") or channel
+            agent = manager.get_agent_for_session_nowait(channel_id=channel, session_id=session_id)
+            if agent is None:
+                mode = metadata.get("adapter_mode") or metadata.get("work_mode")
+                if mode not in ("agent", "code", "flash"):
+                    return None
+                agent = await manager.get_agent(
+                    channel_id=channel, mode=mode, project_dir=metadata.get("project_dir"), request=ctx.request,
+                )
+        adapter = ctx.services.resolve_adapter(agent)
+        reader = getattr(adapter, "read_todo_snapshot", None)
+        if not callable(reader):
+            return None
+        result = await reader(session_id, request=ctx.request)
+        if result is None:
+            return None
+        snapshot, generation_token = result
+        return project_todo_snapshot(snapshot, generation_token)
+    except Exception:
+        logger.warning("[history.get] owning Todo snapshot unavailable: session_id=%s", session_id, exc_info=True)
+        return None
 
 
 async def _resolve_rewind_agent(
@@ -961,16 +961,7 @@ async def handle_history_get_stream(ctx: RequestContext) -> None:
     next_sequence = len(messages) if isinstance(messages, list) else 0
     if page_idx == 1 and isinstance(session_id, str) and session_id.strip():
         normalized_session_id = session_id.strip()
-        generation_token = await _todo_generation_token_for_history(
-            ctx,
-            normalized_session_id,
-        )
-        todo_root = _agent_workspace_dir_for_request(request) / "todo"
-        todos = load_todo_snapshot_for_frontend(
-            normalized_session_id,
-            todo_root=todo_root,
-            generation_token=generation_token,
-        )
+        todos = await _todo_snapshot_for_history(ctx, normalized_session_id)
         if todos is not None:
             todo_chunk = AgentResponseChunk(
                 request_id=request.request_id,

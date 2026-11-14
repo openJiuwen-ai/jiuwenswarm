@@ -4,7 +4,7 @@
 |---|---|
 | Spec ID | S_05 |
 | 状态 | 当前实现的真实描述（含未装配遗留的登记） |
-| 修订日期 | 2026-11-06 |
+| 修订日期 | 2026-11-10 |
 | 关联模块 | `jiuwenswarm/agents/harness/code/rails/code_task_planning_rail.py`（code 侧装配 rail，~290 行）<br>`jiuwenswarm/agents/harness/code/tools/code_todo_tools.py`（四子类，115 行）<br>`jiuwenswarm/agents/harness/code/prompt/code_todo_tool_prompts.py`（CC 对齐描述与 schema，174 行）<br>`jiuwenswarm/agents/harness/flash/tools/flash_todo.py`（UnifiedTodoTool 4 合 1，222 行）<br>`jiuwenswarm/agents/harness/flash/rails/flash_todo_rail.py`（flash 侧挂载 rail，310 行）<br>`jiuwenswarm/agents/harness/flash/permissions/tool_policy_projection.py`（统一名权限投影，~95-126）<br>`jiuwenswarm/agents/harness/common/tools/todo_compat.py`（openjiuwen 兼容 shim + 持久提醒，404 行）<br>`jiuwenswarm/agents/harness/common/tools/todo_resume.py`（持久提醒 / 代际 token / 续跑词汇层，476 行）<br>`jiuwenswarm/agents/harness/common/tools/user_todo_tool.py`（用户个人待办，400 行）<br>`jiuwenswarm/agents/harness/common/tools/todo_toolkits.py`（markdown 行式工具链，**未装配遗留**，367 行） |
 | 装配点 | code：`server/runtime/agent_adapter/interface_code.py` `_build_code_task_planning_rail()`（~885）+ `agents/swarm/providers/code_rails.py`（~434，swarm 编排路径）<br>flash：`server/runtime/agent_adapter/interface_flash.py` `_build_task_planning_rail()`（~994，替换 stock `TaskPlanningRail` 的 4→1 位点）<br>compat：`interface_deep.py` 模块级 `install_todo_modify_compat_patch()`（~744，import 时执行，详见 [[S_01]]）<br>user_todos：`interface_code.py` 工具构建映射 `"user_todos" → _build_user_todos_tool`（~309/~1593）+ `agents/swarm/providers/tools.py` `build_user_todos`（~565）+ `resources/config*.yaml` 三份的工具清单 |
 | 消费点 | 前端 `channels/web/frontend/src/utils/toolProtocol.ts`（工具名白名单 + `todo_` 前缀兜底）、`AvatarPermEditor.tsx`（权限编辑器列五个历史名）、subagent 展示层（`includes('todo')` 宽匹配） |
@@ -32,7 +32,7 @@
 ### 2.1 code profile（CC 对齐层）
 
 **N1 子类只换 card，不改行为**
-`CodeTodoCreateTool` / `CodeTodoListTool` / `CodeTodoGetTool` / `CodeTodoModifyTool` 四子类仅覆写 `__init__` 替换 card（描述与 input schema 全部来自 `CODE_TODO_TOOL_PROMPTS`），`invoke` 与全部执行逻辑继承 openjiuwen stock。CC 对齐是 **prompt 层工程**：复杂度分级（中等 2-3 项 / 复杂最多 4-6 项 / 琐碎工作跳过）、outcome 而非 file 粒度、避免 todo-only 轮次、verification 并入最后里程碑——这些约定只通过工具描述约束模型，不引入行为分叉。
+四个 CodeTodo 子类先执行各自直接父类初始化，再以 CODE_TODO_TOOL_PROMPTS 替换 card；执行行为继承普通 Core 工具，不绕过父类策略/只读属性。Code 英文卡片及原有 CC 任务粒度、避免 todo-only 轮次和 verification 约定保留，不引入 Flash 的创建/初始化规则。
 
 **N2 tool_id 键控与幂等注册键**
 `tool_id = f"{prefix}_{agent_id}"`（agent_id 有则用、无则回退 uuid）。同一进程内多个 code agent 各自的 todo 工具互不冲突；native rebuild 时 `init()` 先按 `isinstance` 扫 `ability_manager` 已注册实例，只补缺失的四个（已注册的复用原实例），不重复注册、不泄漏裸 id。注册统一走 `add_ability`（限定为 `{name}_{owner_id}`，`teardown_tools` 轮末回收）。
@@ -55,6 +55,10 @@
 `_UNIFIED_TODO_NAME = "todo"`（不带前缀）。外层 task-loop 钩子（TaskExecutionRail 系）按 `todo_` 前缀识别 todo 调用，统一名**有意绕过**这些钩子；同时 flash 前端的 todo 刷新链路工具名常量已包含 `todo`（docstring 登记）。改动统一名或拆回四工具，必须同步核对这些前缀判定与前端常量，否则外层钩子会静默漏判 / 误判。前端 `toolProtocol.ts` 的内联协议清洗白名单列五个**历史名**（todo_create/complete/insert/remove/list）+ `todo_` 前缀兜底（review 意见：新增 `todo_*` 工具无需同步白名单）。
 
 **N8 FlashTodoRail 独立继承，不继承 TaskPlanningRail**
+创建引擎显式开启 require_explicit_plan_action，并绑定会话 lifecycle guard。FlashAdapter 的宿主修改获取同一 engines["modify"]，不得另建无 guard 引擎；统一入口仅转发原字段，结果内部属性不进入工具返回 JSON，事件版本元信息按接入策略输出。
+
+拒答后的取消更新优先使用修改引擎返回的提交快照，不重新读取另一并发提交。默认 legacy 保持原字段与展示；显式 versioned 时连同该快照的 todo_meta 发送，无法确认快照时不发送无版本替代包。提交结果标记 unknown 的异常不得转换成“校验拒绝、未提交”提示。
+
 直接继承 `DeepAgentRail`（priority=90，替换旧的 `ConcurrentSafeTaskPlanningRail`）：**不做 TaskPlan 同步、不实现 after_task_iteration**——TaskPlan 同步与推进提醒在 flash 有意丢弃；但 **close nudge（[[S_03]] 机制）已接入**：构造 `TodoCloseGate(_UNIFIED_TODO_NAME)`（@60），before_invoke 重置 gate → before_model_call `_close_gate.arm` → after_model_call `_close_gate.attach`（文本收尾被替换为一次内部 todo 调用）→ before_tool_call 拦截 nudge 工具调用并注入消息 → after_tool_call 加载 in_progress 条目。挂载面 = init 建引擎并注册统一工具、before/after_model_call 提示注入与 nudge 装挂、before/after_tool_call nudge 拦截与加载、uninit 反注册。
 
 **N9 四引擎共享一把锁，引擎永不单独注册**
