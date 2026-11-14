@@ -2198,8 +2198,14 @@ def raw_api_keys_by_model_id() -> dict[str, str]:
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
+            # Damaged legacy YAML can hold a non-dict model_client_config
+            # (recovery repairs it only on write, not on read) — skip instead
+            # of letting `.get` raise inside models.list.
+            client = entry.get("model_client_config")
+            if not isinstance(client, dict):
+                continue
             model_id = str(entry.get("model_id") or "").strip()
-            key = str((entry.get("model_client_config") or {}).get("api_key") or "")
+            key = str(client.get("api_key") or "")
             if model_id and key.startswith(EXEC_PREFIX):
                 result[model_id] = key
     return result

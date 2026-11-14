@@ -923,3 +923,72 @@ class TestTuiSaveTrackHeaders:
         assert "persisted_custom_headers" in block, (
             "TUI update save track does not iterate persisted_custom_headers"
         )
+
+
+class TestRawMapDamagedConfig:
+    """The raw echo map must survive damaged legacy YAML (CI failure in
+    test_model_config_null_recovery): a non-dict model_client_config is
+    skipped, not a crash inside models.list."""
+
+    def test_non_dict_client_config_skipped(self, tmp_path, monkeypatch):
+        import yaml as _yaml
+
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        config_file = config_dir / "config.yaml"
+        ref = _echo_command("sk-ref")
+        config_file.write_text(_yaml.dump({"models": {"defaults": [
+            {"model_id": "mdl-bad-mcc", "model_client_config": 7},
+            {"model_id": "mdl-ok", "model_client_config": {"api_key": ref}},
+        ]}}), encoding="utf-8")
+        import jiuwenswarm.common.config as m
+
+        monkeypatch.setattr(m, "CONFIG_YAML_PATH", config_file)
+        monkeypatch.setattr(m, "get_config_file", lambda: config_file)
+        assert m.raw_api_keys_by_model_id() == {"mdl-ok": ref}
+
+    def test_models_list_survives_damaged_entries(self, tmp_path, monkeypatch):
+        """The full models.list handler must not fail on a damaged entry —
+        the exact CI scenario (7-model_client_config parametrization)."""
+        import yaml as _yaml
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        config_file = config_dir / "config.yaml"
+
+        def _model(mid, name):
+            return {
+                "model_id": mid,
+                "model_client_config": {
+                    "model_name": name, "api_base": "https://model.test/v1",
+                    "client_provider": "OpenAI", "api_key": "test-secret",
+                },
+                "model_config_obj": None,
+            }
+
+        healthy = _model("mdl_existing", "existing")
+        healthy["model_config_obj"] = {"temperature": 0.4}
+        damaged = _model("mdl_damaged", "damaged")
+        damaged["model_client_config"] = 7
+        config_file.write_text(_yaml.dump(
+            {"models": {"defaults": ["invalid-entry", healthy, damaged]}}
+        ), encoding="utf-8")
+        import jiuwenswarm.common.config as m
+        from jiuwenswarm.common.config_panel import models_handlers
+
+        monkeypatch.setattr(m, "CONFIG_YAML_PATH", config_file)
+        monkeypatch.setattr(m, "get_config_file", lambda: config_file)
+        monkeypatch.setattr(m, "get_crypto_provider", lambda: None)
+        monkeypatch.setattr(models_handlers, "_get_crypto_provider", lambda: None)
+
+        from jiuwenswarm.common.auth.model_catalog import is_login_model  # noqa: F401
+
+        channel = SimpleNamespace(send_response=AsyncMock())
+        import asyncio
+
+        asyncio.run(models_handlers.models_list_handler(channel, SimpleNamespace(), "r", {}, "s"))
+        response = channel.send_response.call_args.kwargs
+        assert response["ok"], response
+        assert [row["model_id"] for row in response["payload"]["models"]] == ["mdl_existing", "mdl_damaged"]
