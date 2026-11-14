@@ -73,8 +73,8 @@ async def test_cancelled_consumer_preserves_one_usage_record_without_yielding_af
     assert len(rows) == 1
     assert rows[0]["request_id"] == request.request_id
     assert rows[0]["metadata"]["usage_metadata"]["total_tokens"] == 12
-    if boundary == "yielding_end":
-        assert rows[0]["metadata"]["usage_metadata"]["payload_refs"] == refs
+    usage = rows[0]["metadata"]["usage_metadata"]
+    assert "prompt" not in usage and "payload_refs" not in usage
     assert not any(event.get("event_type") == "chat.usage_metadata" for event in events)
 
 
