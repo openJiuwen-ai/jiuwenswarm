@@ -415,6 +415,7 @@ class WorkspaceFileAdapter(GatewayAdapter):
         resolved_path = str(params.get("resolved_path") or "").strip()
         raw_chunk = params.get("data")
         is_final = bool(params.get("final", False))
+        prepare_only = params.get("prepare_only") is True
         if not upload_id or not rel_path or not isinstance(raw_chunk, str):
             return build_error_response(request, "upload_id, target_rel_path and data are required", code="BAD_REQUEST")
         if rel_path.startswith("/") or ".." in rel_path.split("/"):
@@ -423,8 +424,10 @@ class WorkspaceFileAdapter(GatewayAdapter):
             chunk = base64.b64decode(raw_chunk, validate=True)
         except Exception as exc:  # noqa: BLE001
             return build_error_response(request, f"invalid base64 data: {exc}", code="BAD_REQUEST")
-        if not chunk:
+        if not chunk and not prepare_only:
             return build_error_response(request, "data is empty", code="BAD_REQUEST")
+        if prepare_only and (chunk or resolved_path):
+            return build_error_response(request, "invalid upload preparation", code="BAD_REQUEST")
 
         target = (
             Path(resolved_path).resolve(strict=False)
@@ -436,7 +439,14 @@ class WorkspaceFileAdapter(GatewayAdapter):
         try:
             if not resolved_path:
                 target = unique_upload_path(target)
-            await asyncio.to_thread(_append_upload_chunk, target, chunk)
+            if prepare_only:
+                # Reserve using exclusive creation; content stays on the native
+                # ADX channel while path authority remains in this AgentServer.
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with target.open('xb'):
+                    pass
+            else:
+                await asyncio.to_thread(_append_upload_chunk, target, chunk)
             size = target.stat().st_size
         except OSError as exc:
             logger.warning("[WorkspaceFileAdapter] file.upload_chunk write failed: %s", exc)
