@@ -152,7 +152,18 @@ def test_reconcile_gates_browser_routing_on_subagent_types() -> None:
     assert "browser_agent" not in result.content["cn"]
     assert "浏览器任务强制路由" not in result.content["cn"]
 
-    # 默认上下文（含 browser_agent）：browser_agent 路由保留。
+    # task_tool 被禁用、但子代理配置里仍有 browser_agent：
+    # 340 不得要求调用已被禁用的 task_tool。
+    disabled_task_tool = reconcile(PromptRenderContext(
+        lang="cn",
+        enabled_tools=frozenset(),
+        subagent_types=frozenset({"browser_agent"}),
+    ))
+    result = next(s for s in disabled_task_tool if s.name == "tool_result")
+    assert "browser_agent" not in result.content["cn"]
+    assert "浏览器任务强制路由" not in result.content["cn"]
+
+    # 默认上下文（task_tool + browser_agent 都在）：browser_agent 路由保留。
     full = reconcile(build_default_context("cn"))
     result = next(s for s in full if s.name == "tool_result")
     assert "browser_agent" in result.content["cn"]

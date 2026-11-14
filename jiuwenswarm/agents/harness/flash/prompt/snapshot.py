@@ -209,10 +209,11 @@ def _snapshot_section(section: Any, language: str) -> PromptSectionSnapshot:
 
 def _render_section_text(content: Any, language: str) -> str:
     if isinstance(content, dict):
-        value = content.get(language)
-        if not value:
-            value = next((item for item in content.values() if item), "")
-        return str(value or "")
+        # 键存在但值为空（如 {"cn": "", "en": "X"}）时返回空，不跨语言回退——
+        # 对齐 SDK 的取值语义（该语言显式为空即跳过该段）。
+        if language in content:
+            return str(content[language] or "")
+        return str(next((item for item in content.values() if item), ""))
     return str(content or "")
 
 

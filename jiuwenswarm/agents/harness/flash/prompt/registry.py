@@ -140,13 +140,12 @@ def _resolve_language(language: str) -> str:
 
 
 def _section_text(section, language: str) -> str:
-    """从 PromptSection 取指定语言正文；无该键时回退第一个非空值。"""
+    """从 PromptSection 取指定语言正文；键存在但值为空时返回空，不跨语言回退。"""
     content = getattr(section, "content", None)
     if isinstance(content, dict):
-        value = content.get(language)
-        if not value:
-            value = next((v for v in content.values() if v), "")
-        return str(value)
+        if language in content:
+            return str(content[language] or "")
+        return str(next((v for v in content.values() if v), ""))
     return str(content or "")
 
 
@@ -195,13 +194,13 @@ def _render_response(ctx: PromptRenderContext) -> tuple[PromptSection, ...]:
 def _render_tools(ctx: PromptRenderContext) -> tuple[PromptSection, ...]:
     """300/330/340 三段的 06 目标正文（content.tools 硬编码，无动态源）。
 
-    340 的「浏览器任务强制路由」子节依赖 browser_agent 子代理类型在位；
-    task_tool 已启用但未注册 browser_agent 时也剔除，避免提示词要求调用
-    不存在的浏览器子代理类型。
+    340 的「浏览器任务强制路由」子节同时依赖两个条件：task_tool 在启用工具面，
+    且 browser_agent 在可用子代理类型里——任一缺失都剔除，避免提示词要求调用
+    不可见/不存在的浏览器子代理。
     """
     cn = ctx.is_cn
     result = _RESULT_BASE_CN if cn else _RESULT_BASE_EN
-    if "browser_agent" in ctx.subagent_types:
+    if "task_tool" in ctx.enabled_tools and "browser_agent" in ctx.subagent_types:
         result += "\n" + (_BROWSER_ROUTING_CN if cn else _BROWSER_ROUTING_EN)
     targets = (
         (_NAME_SELECTION, _PRIO_SELECTION, _SELECTION_CN if cn else _SELECTION_EN),

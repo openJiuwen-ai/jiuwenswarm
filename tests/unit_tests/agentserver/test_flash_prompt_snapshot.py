@@ -87,6 +87,18 @@ def test_prefix_hash_skips_empty_sections() -> None:
     assert snapshot.prefix_hash == hashlib.sha256("A\n\nB".encode("utf-8")).hexdigest()
 
 
+def test_section_text_does_not_fallback_when_language_empty() -> None:
+    """单语言空正文（{"cn": "", "en": "X"}）不跨语言回退，中文渲染跳过该段。"""
+    sections = [
+        _Section("A", 0, {"cn": "A", "en": "A"}),
+        _Section("空cn", 10, {"cn": "", "en": "X"}),
+        _Section("B", 20, {"cn": "B", "en": "B"}),
+    ]
+    snapshot = build_prompt_snapshot(sections, language="cn")
+    assert snapshot.prefix_chars == len("A\n\nB")
+    assert snapshot.prefix_hash == hashlib.sha256("A\n\nB".encode("utf-8")).hexdigest()
+
+
 def test_unknown_priority_is_visible_and_unbanded() -> None:
     snapshot = build_prompt_snapshot(
         [_Section("遗留段", 42, {"cn": "旧规则", "en": "legacy"})],
