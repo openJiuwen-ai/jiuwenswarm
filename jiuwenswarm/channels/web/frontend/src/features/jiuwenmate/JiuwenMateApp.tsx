@@ -83,12 +83,12 @@ import type {
 } from './types';
 import { useGroupDirectory } from '../groupChat/useGroupDirectory';
 import { useModelRefreshStatus } from '../settings/modules/models/useModelRefreshStatus';
-import { requestSettingsModule } from '../settings/settingsNavigation';
+import { requestSettingsModule, SETTINGS_MODULE_NAVIGATION_EVENT, type SettingsModuleTarget } from '../settings/settingsNavigation';
 import './jiuwenmate.css';
 
 export interface JiuwenMateAppProps {
   onExit: () => void;
-  renderExistingPage: (nav: JiuwenMateExistingPage) => ReactNode;
+  renderExistingPage: (nav: JiuwenMateExistingPage, initialSettingsModuleId?: SettingsModuleTarget) => ReactNode;
   confirmDiscardSettings?: () => boolean;
   /** Plaza "use" on an installed expert opens the employee creation page for that package. */
   useInstalledExpertRef?: MutableRefObject<(packageName: string) => void>;
@@ -159,6 +159,7 @@ export function JiuwenMateApp({
   const [modelCatalog, setModelCatalog] = useState<JiuwenMateModelCatalog>(EMPTY_MODEL_CATALOG);
   const [activeRailView, setActiveRailView] = useState<JiuwenMateRailView>('office');
   const [existingPage, setExistingPage] = useState<JiuwenMateExistingPage | null>(null);
+  const [requestedSettingsModuleId, setRequestedSettingsModuleId] = useState<SettingsModuleTarget>();
   const [installedExperts, setInstalledExperts] = useState<readonly JiuwenMateTemplate[]>([]);
   const visibleInstalledExperts = useMemo(
     () =>
@@ -408,10 +409,10 @@ export function JiuwenMateApp({
     requestSettingsModule('models');
   };
 
-  const canLeaveSettings = (nextPage: JiuwenMateExistingPage | null) => {
+  const canLeaveSettings = useCallback((nextPage: JiuwenMateExistingPage | null) => {
     if (existingPage !== 'settings' || nextPage === 'settings') return true;
     return confirmDiscardSettings?.() ?? true;
-  };
+  }, [confirmDiscardSettings, existingPage]);
 
   const showFeature = (railView: JiuwenMateRailView, update: (current: JiuwenMateState) => JiuwenMateState) => {
     if (!canLeaveSettings(null)) return;
@@ -426,11 +427,24 @@ export function JiuwenMateApp({
     showFeature(view, view === 'office' ? openOffice : openColleagueMessages);
   };
 
-  const handleOpenExistingPage = (nav: JiuwenMateExistingPage, labelKey: string) => {
-    if (!canLeaveSettings(nav)) return;
-    setExistingPage(nav);
-    setPublicLabel(labelKey);
-  };
+  const handleOpenExistingPage = useCallback(
+    (nav: JiuwenMateExistingPage, labelKey: string, settingsModuleId?: SettingsModuleTarget) => {
+      if (!canLeaveSettings(nav)) return;
+      setExistingPage(nav);
+      setPublicLabel(labelKey);
+      setRequestedSettingsModuleId(settingsModuleId);
+    },
+    [canLeaveSettings],
+  );
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const moduleId = (event as CustomEvent<SettingsModuleTarget>).detail;
+      handleOpenExistingPage('settings', 'jiuwenmate.nav.settings', moduleId);
+    };
+    window.addEventListener(SETTINGS_MODULE_NAVIGATION_EVENT, handler);
+    return () => window.removeEventListener(SETTINGS_MODULE_NAVIGATION_EVENT, handler);
+  }, [handleOpenExistingPage]);
 
   const openPlaza = () => handleOpenExistingPage('agents', 'jiuwenmate.nav.plaza');
   const startCreation = () => {
@@ -1054,7 +1068,7 @@ export function JiuwenMateApp({
       >
         {existingPage ? (
           <div className="jiuwenmate-reused-page" data-testid="jiuwenmate-reused-page" data-variant={existingPage}>
-            {renderExistingPage(existingPage)}
+            {renderExistingPage(existingPage, requestedSettingsModuleId)}
           </div>
         ) : (
           renderFeature()
