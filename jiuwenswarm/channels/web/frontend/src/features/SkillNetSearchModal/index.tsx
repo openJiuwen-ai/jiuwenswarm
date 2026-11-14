@@ -610,7 +610,7 @@ export function SkillNetSearchModal({
             <div data-testid="skill-net-search-modal-loading" className="flex items-center justify-center h-full text-text-muted">{t("common.loading")}</div>
           )}
           {loadState === "error" && (
-            <div data-testid="skill-net-search-modal-search-failed" className="text-sm text-text-muted">{t("skills.skillNet.searchFailed")}</div>
+            <div data-testid="skill-net-search-modal-search-failed" className="text-sm text-text-muted">{t("skills.skillNet.errors.searchFailedFallback")}</div>
           )}
           {loadState === "success" && (
             <div data-testid="skill-net-search-modal-results" data-variant="embedded" className={`mt-4 flex-1 min-h-0 overflow-y-auto ${viewMode === "grid" ? "flex flex-wrap gap-4 content-start" : "space-y-3"}`}>

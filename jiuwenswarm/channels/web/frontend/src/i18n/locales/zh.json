@@ -1902,6 +1902,7 @@
   },
   "chat": {
     "recordingInProgress": "正在录音，点击停止后转写。",
+    "toolResultLabel": "工具结果",
     "duplexControls": {
       "sharingVideo": "WorkSwarm 正在接收共享画面",
       "screenOrWindow": "屏幕或窗口",
@@ -2269,7 +2270,8 @@
     "empty": "暂无任务",
     "inProgress": "进行中",
     "pending": "待处理",
-    "completed": "已完成"
+    "completed": "已完成",
+    "cancelled": "已取消"
   },
   "plan": {
     "toolbarTag": "计划",

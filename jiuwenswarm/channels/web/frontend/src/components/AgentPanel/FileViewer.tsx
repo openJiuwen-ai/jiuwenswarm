@@ -414,10 +414,10 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
 
                 return (
                   <>
-                    {renderGroup('进行中', inProgress, 'text-accent', '▶')}
-                    {renderGroup('待处理', pending, 'text-text-muted', '○')}
-                    {renderGroup('已完成', completed, 'text-green-600', '✓')}
-                    {renderGroup('已取消', cancelled, 'text-danger', '×')}
+                    {renderGroup(t('todoList.inProgress'), inProgress, 'text-accent', '▶')}
+                    {renderGroup(t('todoList.pending'), pending, 'text-text-muted', '○')}
+                    {renderGroup(t('todoList.completed'), completed, 'text-green-600', '✓')}
+                    {renderGroup(t('todoList.cancelled'), cancelled, 'text-danger', '×')}
                   </>
                 );
               })()}

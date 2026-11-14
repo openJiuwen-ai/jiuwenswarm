@@ -1133,7 +1133,7 @@ export const MessageItem = memo(function MessageItem({
             data-state={isStreaming ? 'streaming' : 'final'}
           >
             {!isUser && message.presentation === 'tool_result' && (
-              <div className="chat-bubble__result-label">{t('chat.toolResultLabel', '工具结果')} · Jiuwen Core Agent</div>
+              <div className="chat-bubble__result-label">{t('chat.toolResultLabel')} · Jiuwen Core Agent</div>
             )}
             {isStreaming ? (
               isUser ? (

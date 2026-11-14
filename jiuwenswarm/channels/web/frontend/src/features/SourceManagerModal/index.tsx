@@ -78,7 +78,7 @@ export function SourceManagerModal({
         withSession({ token })
       );
       if (!data.success) {
-        throw new Error(data.detail || t("skills.clawhub.errors.saveFailed"));
+        throw new Error(data.detail || t("skills.clawhub.errors.saveTokenFailed"));
       }
       setHasToken(!!token);
     } catch (error) {
