@@ -102,17 +102,9 @@ def _stage_request_mcp_tools(
 def _office_claw_thread_id_from_tools(
     tools: list[RequestScopedOfficeClawMcpTool],
 ) -> str:
-    for tool in tools:
-        params = getattr(tool, "_params", None)
-        if not isinstance(params, dict):
-            continue
-        env = params.get("env")
-        if not isinstance(env, dict):
-            continue
-        thread_id = str(env.get("OFFICE_CLAW_THREAD_ID") or "").strip()
-        if thread_id:
-            return thread_id
-    return ""
+    from jiuwenswarm.common.mcp_config import office_claw_thread_id_from_tools
+
+    return office_claw_thread_id_from_tools(tools)
 
 
 def _is_sandbox_bound_rail(rail: Any) -> bool:
