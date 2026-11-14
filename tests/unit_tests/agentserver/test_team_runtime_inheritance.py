@@ -16,6 +16,7 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     TeamWorkspaceInfo,
     _build_context_processor_rail,
     build_evolution_llm,
+    build_extension_rails,
     build_member_rails,
     build_skill_evolution_rail,
     filter_inheritable_ability_cards,
@@ -588,3 +589,104 @@ def test_build_member_rails_env_skill_create_does_not_override_canonical_config(
     )
 
     assert any(isinstance(rail, _FakeTeamSkillCreateRail) for rail in rails)
+
+
+# --------------------------------------------------------------------------
+# Extension rails (RailManager) mounting for team members
+# --------------------------------------------------------------------------
+
+
+class _FakeRailManager:
+    """RailManager double: enabled/disabled extensions + fresh-instance counter."""
+
+    def __init__(self, extensions):
+        self._extensions = extensions
+        self.fresh_calls: list[str] = []
+
+    def list_extensions(self):
+        return self._extensions
+
+    def get_registered_rail_names(self):
+        # Empty on purpose: mirrors the real manager at member-assembly time,
+        # where registration state was cleared by the agent-instance swap.
+        return set()
+
+    def create_fresh_rail_instance(self, name):
+        self.fresh_calls.append(name)
+        if name == "broken":
+            raise RuntimeError("boom")
+        return SimpleNamespace(_name=name)
+
+
+def _patch_rail_manager(monkeypatch, extensions):
+    manager = _FakeRailManager(extensions)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_runtime_inheritance.get_rail_manager",
+        lambda: manager,
+    )
+    return manager
+
+
+def test_build_extension_rails_mounts_enabled_only(monkeypatch):
+    """Enabled extensions are mounted; disabled ones are skipped entirely."""
+    manager = _patch_rail_manager(monkeypatch, [
+        {"name": "token_meter", "enabled": True},
+        {"name": "self_check", "enabled": True},
+        {"name": "off_rail", "enabled": False},
+    ])
+
+    rails = build_extension_rails()
+
+    assert [rail._name for rail in rails] == ["token_meter", "self_check"]
+    assert manager.fresh_calls == ["token_meter", "self_check"]
+
+
+def test_build_extension_rails_uses_fresh_instances(monkeypatch):
+    """Members must not share rail instances — rails hold per-agent state."""
+    _patch_rail_manager(monkeypatch, [{"name": "token_meter", "enabled": True}])
+
+    first = build_extension_rails()
+    second = build_extension_rails()
+
+    assert first[0] is not second[0]
+
+
+def test_build_extension_rails_skips_broken_extension(monkeypatch):
+    """A failing extension is skipped, never fatal to member assembly."""
+    _patch_rail_manager(monkeypatch, [
+        {"name": "broken", "enabled": True},
+        {"name": "token_meter", "enabled": True},
+    ])
+
+    rails = build_extension_rails()
+
+    assert [rail._name for rail in rails] == ["token_meter"]
+
+
+def test_build_extension_rails_survives_manager_failure(monkeypatch):
+    """get_rail_manager blowing up degrades to no extension rails, not a crash."""
+    def _boom():
+        raise RuntimeError("no manager")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_runtime_inheritance.get_rail_manager",
+        _boom,
+    )
+
+    assert build_extension_rails() == []
+
+
+def test_build_member_rails_includes_extension_rails(monkeypatch):
+    """End-to-end: extension rails reach the member rail list.
+
+    Regression guard for the defect where extension rails were registered to
+    the top-level agent only, so their hooks never fired for team members.
+    """
+    _patch_rail_manager(monkeypatch, [{"name": "token_meter", "enabled": True}])
+
+    rails = build_member_rails(
+        member_info=MemberInfo(role="teammate"),
+        runtime=RuntimeInfo(language="cn"),
+    )
+
+    assert any(getattr(rail, "_name", None) == "token_meter" for rail in rails)
