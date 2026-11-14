@@ -2020,3 +2020,50 @@ for (const [language, expected] of [['zh', '已过期'], ['en', 'Expired']]) {
     } finally { await view.close(); await i18n.changeLanguage('zh'); }
   });
 }
+
+const dashboardActivity = {
+  generatedAt: '2026-10-19T04:00:00+00:00',
+  members: [{
+    agentId: 'agent-1',
+    calls: 2,
+    tokens: 120,
+    tasks: 2,
+    replies: 2,
+    failures: 0,
+    companionDays: 1,
+    lastResponseAt: '2026-10-18T03:00:00+00:00',
+    days: [{ date: '2026-10-18', tasks: 2, minutes: 30, calls: 2, tokens: 120 }],
+    kinds: [{ date: '2026-10-18', conversation: 1, channel: 0, schedule: 1 }],
+    history: [],
+    hours: [{ date: '2026-10-18', hour: 9, minutes: 30, tasks: 2, tokens: 120 }],
+    channels: [{ channel: 'web', calls: 2, tokens: 120, tasks: 2, replies: 2, failures: 0 }],
+    groups: [],
+  }],
+};
+
+test('clearing a data overview period date keeps the field empty', async () => {
+  const view = await mountDashboard({ today: new Date(2026, 9, 19, 12), activity: dashboardActivity });
+  try {
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="activity"]'));
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="period"]'));
+    const start = view.find('[data-testid="jiuwenmate-office-period-start"]');
+    const end = view.find('[data-testid="jiuwenmate-office-period-end"]');
+    assert.equal(start.value, '2026-10-13');
+    assert.equal(end.value, '2026-10-19');
+    assert.equal(view.find('[data-testid="jiuwenmate-period-empty"]'), null);
+
+    await changeScheduleField(view, '[data-testid="jiuwenmate-office-period-start"]', '');
+    assert.equal(start.value, '');
+    const empty = view.find('[data-testid="jiuwenmate-period-empty"]');
+    assert.ok(empty, 'Clearing a date must leave the period grid empty instead of snapping the date back');
+    assert.equal(empty.textContent.trim(), '暂无数据');
+
+    await changeScheduleField(view, '[data-testid="jiuwenmate-office-period-start"]', '2026-10-14');
+    assert.equal(start.value, '2026-10-14');
+    assert.equal(view.find('[data-testid="jiuwenmate-period-empty"]'), null);
+
+    await changeScheduleField(view, '[data-testid="jiuwenmate-office-period-end"]', '');
+    assert.equal(end.value, '');
+    assert.ok(view.find('[data-testid="jiuwenmate-period-empty"]'));
+  } finally { await view.close(); }
+});
