@@ -31,13 +31,22 @@ _PHRASES: dict[str, dict[str, str]] = {
         "setting_is_empty": "The setting is empty.",
         "visible_props": "Visible props: {props}.",
         "one_clear_image": "One clear image.",
-        "one_person": "One person only: {name}, full or three-quarter body on a plain empty studio backdrop.",
+        "one_person": (
+            "One person only: {name}, as a three-view turnaround with a head close-up — four "
+            "views in one row from left to right on one continuous pure white background: a "
+            "head-and-shoulders close-up of the face (front view, as tall as the sheet), then "
+            "full-body front, side, and back views at one scale; the side view is a profile "
+            "facing the left edge of the image; open white space between the figures; the "
+            "background is one unbroken white field, borderless, with no frames and no dividing "
+            "lines."
+        ),
         "one_group": (
             "One group only: {name}, {count} distinct people — varied faces, ages, and "
-            "postures within one shared wardrobe family, full bodies, on a plain empty "
-            "studio backdrop. No two share the same face."
+            "postures within one shared wardrobe family, full bodies, on a plain blank "
+            "background. No two share the same face."
         ),
         "neutral_backdrop": "Solid neutral background, identity and costume only.",
+        "identity_only": "Identity and costume only.",
         "wearing": "Wearing {costume}.",
         "the_character": "the character",
     },
@@ -50,12 +59,17 @@ _PHRASES: dict[str, dict[str, str]] = {
         "setting_is_empty": "场景中空无一人。",
         "visible_props": "可见道具：{props}。",
         "one_clear_image": "画面清晰，单张图像。",
-        "one_person": "画面中仅一人：{name}，全身或七分身，站在纯净空白的影棚背景前。",
+        "one_person": (
+            "只画一个人：{name}，三视图加头部特写——从左到右排成一行，站在同一块连续的纯白背景上："
+            "正面头部特写（头到胸口，与整张图同高）、正面全身、侧面全身（脸朝画面左侧）、背面全身；"
+            "三个全身像比例一致，人物之间只留白色空隙，背景连成一整块白，没有分格线和边框。"
+        ),
         "one_group": (
             "画面中只有一群人：{name}，共{count}人，面孔、年龄与姿态各不相同，但属于"
-            "统一的着装体系；全员全身，站在纯净空白的影棚背景前。没有两个人共用同一张脸。"
+            "统一的着装体系；全员全身，纯色空白背景。没有两个人共用同一张脸。"
         ),
         "neutral_backdrop": "纯色中性背景，只呈现人物身份与服装。",
+        "identity_only": "只呈现人物身份与服装。",
         "wearing": "身穿{costume}。",
         "the_character": "该角色",
     },
@@ -258,6 +272,25 @@ def compose_scene_specs_prompt(
     return re.sub(r"\s+", " ", text).strip()
 
 
+_REFERENCE_SHEET_TASKS = frozenset({"character_specs", "medium_change"})
+
+
+def is_reference_led_sheet(cfg: dict[str, Any] | None) -> bool:
+    """A sheet re-drawn from a user upload, which keeps that upload's framing and style."""
+    return str(_cfg(cfg).get("reference_image_task") or "").strip() in _REFERENCE_SHEET_TASKS
+
+
+def is_turnaround_sheet(cfg: dict[str, Any] | None) -> bool:
+    """A solo character sheet drawn as front/side/back views of one person.
+
+    Group plates and combined casts hold several people.
+    """
+    cfg = _cfg(cfg)
+    if cfg.get("combined_cast") or is_reference_led_sheet(cfg):
+        return False
+    return str(cfg.get("cast_form") or "").strip().lower() != "group"
+
+
 def compose_character_sheet_prompt(
     *,
     cfg: dict[str, Any] | None,
@@ -294,7 +327,7 @@ def compose_character_sheet_prompt(
         opening = phrase(_PHRASES, lang, "one_person", name=name)
     bits = [
         opening,
-        phrase(_PHRASES, lang, "neutral_backdrop"),
+        phrase(_PHRASES, lang, "neutral_backdrop" if is_group else "identity_only"),
     ]
     if costume and not _BAD.search(costume):
         bits.append(phrase(_PHRASES, lang, "wearing", costume=costume))

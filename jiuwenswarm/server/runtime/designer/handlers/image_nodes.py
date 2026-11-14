@@ -26,6 +26,7 @@ from jiuwenswarm.server.runtime.designer.user_references import (
 )
 from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext, NodeResult
 from jiuwenswarm.server.runtime.designer.media_settings import image_settings
+from jiuwenswarm.server.runtime.designer.pipeline.image_prompt_practice import is_turnaround_sheet
 
 
 logger = logging.getLogger(__name__)
@@ -43,20 +44,62 @@ def _drop_story_context(source: str) -> str:
     return "\n".join(kept).strip()
 
 
-def _character_prompt(source: str, *, combined_cast: bool = False) -> str:
+def _character_prompt(
+    source: str,
+    *,
+    combined_cast: bool = False,
+    group: bool = False,
+    style: str = "",
+) -> str:
+    """Host frame for a character sheet: shared film style first, then the sheet layout.
+
+    Every sheet of one film opens with the same style sentence, so the image model
+    reads one art direction instead of each leaf agent's paraphrase of it. Style is
+    carried in words only: another character's sheet given as a reference image
+    hands its face to this one.
+    """
     cleaned = _drop_story_context(source)
+    lines: list[str] = []
+    look = str(style or "").strip().rstrip("。.;；")
+    if look:
+        lines.append(f"Art style shared by every character in this film: {look}.")
     if combined_cast:
-        return (
+        lines.append(
             "Combined cast postcard: all listed characters side-by-side on one sheet, "
             "full or three-quarter body each, consistent scale, plain empty backdrop. "
-            "Clear identity for each person. One clear image.\n"
-            f"{cleaned}"
+            "Clear identity for each person. One clear image."
         )
-    return (
-        "One person only on a plain empty studio backdrop, solid neutral background. "
-        "Full or three-quarter body. Identity and costume only.\n"
-        f"{cleaned}"
+    elif group:
+        lines.append(
+            "Group sheet: the listed people side by side on one sheet, full bodies, "
+            "plain blank background. Identity and costume only."
+        )
+    else:
+        lines.append(
+            "Character reference sheet of one person only, four views in one row from left "
+            "to right on one continuous pure white background: (1) a head-and-shoulders "
+            "close-up of the face, front view, as tall as the sheet; (2) full-body front view; "
+            "(3) full-body side view, a profile facing the left edge of the image; (4) full-body "
+            "back view. The three full-body views share one height and scale, feet at the same "
+            "level, with open white space between the figures. The background is one unbroken "
+            "white field, borderless, with no frames and no dividing lines. Identity and costume "
+            "only."
+        )
+    lines.append(cleaned)
+    return "\n".join(lines)
+
+
+def _film_style(ctx: NodeExecutionContext, cfg: dict) -> str:
+    """The Brief's own Visual Style wording, else the node's style lock."""
+    from jiuwenswarm.server.runtime.designer.media_model_playbook import (
+        authored_visual_style,
     )
+
+    authored = authored_visual_style(role_output_text(ctx, NODE_ROLE_BRIEF))
+    if authored:
+        return authored
+    style = cfg.get("style_lock") if isinstance(cfg.get("style_lock"), dict) else {}
+    return str(style.get("look") or "").strip()
 
 
 def _scene_prompt(source: str, *, derive_from_master: bool = False, composed: bool = True) -> str:
@@ -72,7 +115,9 @@ def _scene_prompt(source: str, *, derive_from_master: bool = False, composed: bo
         return (
             "COMPOSED SCENE MASTER: generate the SETTING and put ALL listed characters "
             "into it at opening blocking. Identity from attached character specs "
-            "(Image 1, Image 2, …). People are IN the scene — not an empty room and "
+            "(Image 1, Image 2, …); a spec may show one person from front, side, "
+            "and back with a head close-up. "
+            "People are IN the scene — not an empty room and "
             "not a studio lineup. One instance per person. One clear image.\n"
             f"{source}"
         )
@@ -271,7 +316,12 @@ class CharacterDesignNodeHandler:
             if user_prompt:
                 prompt = user_prompt
             else:
-                prompt = _character_prompt(f"{name}\n{source}", combined_cast=combined)
+                prompt = _character_prompt(
+                    f"{name}\n{source}",
+                    combined_cast=combined,
+                    group=not combined and not is_turnaround_sheet(cfg),
+                    style=_film_style(ctx, cfg),
+                )
             # No hard-coded ensure_still rewrite — user/LLM text is authority.
             try:
                 from jiuwenswarm.server.runtime.designer.pipeline.wan_call_locks import (
