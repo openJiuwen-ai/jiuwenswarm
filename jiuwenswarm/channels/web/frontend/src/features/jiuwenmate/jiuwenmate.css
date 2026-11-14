@@ -4650,6 +4650,7 @@
 
 .jiuwenmate-profile__description {
   margin-top: -4px;
+  overflow-wrap: anywhere;
   color: var(--jm-text-2);
   font-size: 12px;
   line-height: 1.8;
