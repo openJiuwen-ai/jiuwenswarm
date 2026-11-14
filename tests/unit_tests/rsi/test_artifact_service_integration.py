@@ -6,11 +6,14 @@ import contextlib
 import json
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from jiuwenswarm.agents.harness.common.rsi import build_rsi_service_context
+from jiuwenswarm.agents.harness.common.rsi.artifact_adapter import ArtifactEngineAdapter
 from jiuwenswarm.agents.harness.common.rsi.mock_artifact_provider import MockArtifactProvider
+from jiuwenswarm.agents.harness.common.rsi.paper_provider import PaperProvider
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.rsi import RsiAgentServerHandlers
 
@@ -168,8 +171,47 @@ async def test_paper_instruction_only_and_control_boundary(artifact_context):
 
 
 @pytest.mark.asyncio
-async def test_paper_provider_closes_instruction_only_service_loop(artifact_context):
+@pytest.mark.parametrize("valid", [True, False])
+async def test_paper_provider_closes_instruction_only_service_loop(
+    artifact_context, monkeypatch: pytest.MonkeyPatch, valid: bool
+):
+    """Exercise the real Provider/Worker/APG with a synthetic Manager result."""
     context, handlers, _ = artifact_context
+    provider = PaperProvider(context.store.tasks_root, poll_interval=0.05)
+
+    def manager_fixture(request, *, run_dir, manager_run_id, **kwargs):
+        del kwargs
+        assert request.optimization_instruction == "improve the abstract"
+        manager_dir = run_dir / "experiments" / manager_run_id / "manager"
+        paper_dir = manager_dir.parent / "paper"
+        paper_dir.mkdir(parents=True)
+        (paper_dir / "main.pdf").write_bytes(b"%PDF-1.7\nsynthetic paper\n")
+        manager_dir.mkdir()
+        (manager_dir / "state.json").write_text(
+            json.dumps({"reports": [{
+                "report_id": "reporting:1:1",
+                "module": "reporting",
+                "mode": "run",
+                "outcome": "succeeded",
+                "artifact_paths": [paper_dir.relative_to(run_dir).as_posix()],
+            }]}),
+            encoding="utf-8",
+        )
+        if valid:
+            (run_dir / "model_calls.jsonl").write_text(
+                json.dumps({
+                    "call_id": "synthetic-manager-call",
+                    "model_call": {"tokens": {"input": 11, "output": 7}},
+                }) + "\n",
+                encoding="utf-8",
+            )
+        return SimpleNamespace(status="complete", summary="synthetic Manager result")
+
+    monkeypatch.setattr(provider, "_run_manager", manager_fixture)
+    context.register_adapters({"ARTIFACT:PAPER": ArtifactEngineAdapter(
+        "PAPER", provider, model_resolver=lambda _: object(),
+        tasks_root=context.store.tasks_root,
+    )})
     created = handlers.handle(FakeRequest(ReqMethod.RSI_TASK_CREATE, {
         "scenario": "artifact",
         "artifact_type": "paper",
@@ -183,16 +225,20 @@ async def test_paper_provider_closes_instruction_only_service_loop(artifact_cont
 
     started = handlers.handle(FakeRequest(ReqMethod.RSI_TRAINING_START, {"task_id": task_id}))
     assert started["ok"] is True
-    await _wait_for_status(context, task_id, "COMPLETED")
+    await _wait_for_status(context, task_id, "COMPLETED" if valid else "FAILED")
 
     detail = handlers.handle(FakeRequest(ReqMethod.RSI_TASK_GET, {"task_id": task_id}))
     assert detail["ok"] is True
     assert detail["payload"]["config"]["optimization_instruction"] == "improve the abstract"
-    assert detail["payload"]["best_artifact"]["artifact_id"].endswith(":artifact:1")
+    assert detail["payload"]["best_artifact"]["artifact_id"].endswith(
+        ":package:paper-optimization-001"
+    )
 
     report = handlers.handle(FakeRequest(ReqMethod.RSI_REPORT_GET, {"task_id": task_id}))
     assert report["ok"] is True
-    assert report["payload"]["status"] == "COMPLETED"
+    assert report["payload"]["status"] == ("COMPLETED" if valid else "FAILED")
+    if not valid:
+        assert "APG004" in report["payload"]["failure_reason"]
 
     downloaded = handlers.handle(FakeRequest(ReqMethod.RSI_ARTIFACT_DOWNLOAD, {"task_id": task_id}))
     assert downloaded["ok"] is True
@@ -200,6 +246,16 @@ async def test_paper_provider_closes_instruction_only_service_loop(artifact_cont
     assert downloaded["payload"]["is_directory"] is True
     assert Path(downloaded["payload"]["path"]).is_dir()
     assert "download_url" not in downloaded["payload"]
+    package = Path(downloaded["payload"]["path"])
+    audit = json.loads((package / "audit.json").read_text(encoding="utf-8"))
+    assert audit["decision"] == ("PASS" if valid else "BLOCKED")
+    assert (package / "paper" / "main.pdf").is_file()
+    if not valid:
+        task = context.store.get(task_id)
+        assert task.config["results"]["error_code"] == "PAPER_PROVENANCE_BLOCKED"
+        assert next(check for check in audit["checks"] if check["id"] == "APG004")[
+            "status"
+        ] == "FAIL"
     await _stop_worker(context)
 
 
