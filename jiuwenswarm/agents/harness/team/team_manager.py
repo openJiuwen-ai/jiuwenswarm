@@ -1384,7 +1384,12 @@ class TeamManager:
         """
         return self._background_task_controllers.get(session_id)
 
-    def has_swarmflow_runs(self, session_id: str) -> bool:
+    def has_swarmflow_runs(
+        self,
+        session_id: str,
+        *,
+        include_paused_runs: bool = True,
+    ) -> bool:
         """Whether the session's controller still holds active or paused runs.
 
         A swarmflow background run outlives the leader round: after the round
@@ -1392,13 +1397,19 @@ class TeamManager:
         burning tokens. Lifecycle short-circuits keyed only on the foreground
         round would silently skip these runs, so this is the "background work
         exists" leg of those checks.
+
+        Args:
+            session_id: Session whose controller registry to inspect.
+            include_paused_runs: Count parked runs too. Pause passes False so a
+                ticket that is already parked cannot on its own justify
+                entering the pause path (and calling ``Runner.pause_agent_team``).
         """
         controller = self._background_task_controllers.get(session_id)
         if controller is None:
             return False
-        return bool(getattr(controller, "_active", None)) or bool(
-            getattr(controller, "_paused", None)
-        )
+        if getattr(controller, "_active", None):
+            return True
+        return include_paused_runs and bool(getattr(controller, "_paused", None))
 
     def is_runtime_active(self, session_id: str) -> bool:
         """Return whether a Runner-owned runtime is active for the session."""
@@ -3129,6 +3140,52 @@ class TeamManager:
         """Return whether the session should use the legacy in-memory TeamAgent path."""
         return self._is_distributed_mode(get_config()) and session_id in self._team_agents
 
+    def _has_live_team_runtime(
+        self,
+        session_id: str,
+        *,
+        include_paused_runs: bool = True,
+        include_runner_mirror: bool = True,
+    ) -> bool:
+        """Whether any handle of the session's team runtime is still live.
+
+        The single predicate behind the lifecycle early exits: a foreground
+        round, a local TeamAgent, the Runner-owned TeamAgent mirror, the
+        monitor/workflow handles, the active/pending markers, and background
+        swarmflow runs. Each of those independently outlives a finished round,
+        so a check that knows only some of them silently skips real work.
+
+        Args:
+            session_id: Session whose handles to inspect.
+            include_paused_runs: Count parked swarmflow runs too. Pause passes
+                False so a ticket that is already parked cannot on its own
+                justify entering the pause path.
+            include_runner_mirror: Count the Runner-owned TeamAgent mirror. It
+                outlives a pause by design, so pause passes False to ask whether
+                anything besides that mirror is still live.
+
+        Only the early-exit legs differ per path, and only on purpose: cancel
+        always keeps the mirror leg out (an idle disconnect must keep a resident
+        runtime), pause additionally ignores parked runs and asks the pool
+        whether the session already rests in PAUSED, stop and terminate take the
+        full predicate. Everything after the early exit is shared: the pool
+        fallback and ownership guard (``_find_runner_team_name`` /
+        ``_runner_pool_has_session_runtime``) are used by pause, stop and
+        terminate alike — pause asks the guard to ignore PAUSED entries, because
+        parking the runtime is what it set out to do.
+        """
+        return (
+            self._has_local_team_runtime(session_id)
+            or (include_runner_mirror and session_id in self._runner_team_agents)
+            or session_id in self._team_monitors
+            or self.is_runtime_active(session_id)
+            or self.is_runtime_pending(session_id)
+            or self.has_swarmflow_runs(
+                session_id,
+                include_paused_runs=include_paused_runs,
+            )
+        )
+
     async def attach_distributed_hooks_for_runner_runtime(
         self,
         team_name: str,
@@ -3547,17 +3604,28 @@ class TeamManager:
         This stops the foreground stream/monitor owned by claw and then asks the
         Runner-owned team runtime to enter the stop state. Used for explicit
         team stop so the same session can resume later.
+
+        Returns:
+            True when the foreground teardown ran and no Runtime of this session
+            is left in the Runner pool. False when the session had nothing to
+            stop, or when a Runtime of this session is still pooled afterwards.
+            The latter covers a stop that failed, a pool entry that carries no
+            team name to stop, and a Runner pool that could not be listed (its
+            entries are then assumed to still be there); in all three cases the
+            A2X reservations and coordination/messager transport are kept so
+            the runtime stays resumable instead of becoming a zombie.
         """
         async with self._get_lifecycle_lock(session_id):
             has_stream_task = session_id in self._stream_tasks
             has_local_team_runtime = self._has_local_team_runtime(session_id)
-            has_team_runtime = (
-                has_local_team_runtime
-                or session_id in self._team_monitors
-                or self.is_runtime_active(session_id)
-                or self.is_runtime_pending(session_id)
-            )
+            has_team_runtime = self._has_live_team_runtime(session_id)
             if not has_stream_task and not has_team_runtime:
+                logger.info(
+                    "[TeamManager] %s terminate skipped: no live team runtime "
+                    "handles, session_id=%s",
+                    reason,
+                    session_id,
+                )
                 await self.release_current_round(session_id)
                 self._clear_terminal_session_markers(session_id)
                 return False
@@ -3572,24 +3640,82 @@ class TeamManager:
 
             await self._report_session_inactive(session_id)
 
+            # Same ordering rationale as the cancel/stop paths: drive the
+            # controller BEFORE Runner.stop tears the leader harness down, or
+            # the swarmflow coroutine dies as a plain cancel — no abort reason,
+            # so the engine writes neither the seal record nor the terminal
+            # progress event, and run_background's finally deregisters the
+            # handle before the controller ever sees it.
+            await self._dispatch_swarmflow_controller(session_id, action="stop")
+
+            # A pooled runtime is still this session's work after pause already
+            # cleared the active/pending markers and the session metadata no
+            # longer names its team (#6275's fallback shape), so resolve it from
+            # the Runner pool before giving up on the stop. Any state counts:
+            # a RUNNING entry (never paused, or a pause that did not land) is
+            # exactly the case where matching only PAUSED would leave the team
+            # running while every cancel reports False.
+            if not team_name:
+                team_name = await self._find_runner_team_name(session_id)
+
             # Stop Runner-owned runtime first before cleaning locals
             # to avoid gate/teardown races
+            runner_stopped = False
             if team_name:
-                await self._stop_runner_team_runtime(session_id, team_name, "terminate")
+                runner_stopped = await self._stop_runner_team_runtime(
+                    session_id,
+                    team_name,
+                    "terminate",
+                )
 
+            terminated = True
             if has_local_team_runtime:
                 cleaned = await self._destroy_team(session_id)
             else:
+                # The stop result alone cannot gate the mirror cleanup: it is
+                # False both when the pool held no entry at all and when the
+                # stop failed, and only the pool snapshot separates the two.
                 cleaned = False
+                if await self._runner_pool_has_session_runtime(session_id):
+                    # The runtime is still owned by the pool and must stay
+                    # resumable, so its A2X reservations and coordination /
+                    # messager transport stay alive with it.
+                    terminated = False
+                    logger.warning(
+                        "[TeamManager] terminate left a Runner runtime in the pool, "
+                        "keeping its A2X reservations and transport: "
+                        "session_id=%s team_name=%s runner_stopped=%s",
+                        session_id,
+                        team_name,
+                        runner_stopped,
+                    )
+                else:
+                    # Mirrors the Runner branch of stop_session_runtime: dropping the
+                    # Runner-owned TeamAgent mirror also has to release the A2X
+                    # reservations it holds, or they leak with the mirror.
+                    try:
+                        team_agent = self._runner_team_agents.get(session_id)
+                        await release_a2x_reservations_for_session(
+                            session_id,
+                            team_agent=team_agent,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[TeamManager] release A2X reservations failed: session_id=%s error=%s",
+                            session_id,
+                            exc,
+                        )
+                    await self._stop_runner_team_agent_transport(session_id)
 
             await self._finalize_runtime_cleanup(session_id, "terminate")
-        logger.info(
-            "[TeamManager] %steam session terminated: session_id=%s cleaned=%s",
-            reason,
-            session_id,
-            cleaned,
-        )
-        return True
+        if terminated:
+            logger.info(
+                "[TeamManager] %s team session terminated: session_id=%s cleaned=%s",
+                reason,
+                session_id,
+                cleaned,
+            )
+        return terminated
 
     async def cancel_session_runtime(
         self,
@@ -3647,18 +3773,16 @@ class TeamManager:
             self._cancel_requested.pop(session_id, None)
 
             has_stream_task = session_id in self._stream_tasks
-            has_local_team_runtime = self._has_local_team_runtime(session_id)
-            has_team_runtime = (
-                has_local_team_runtime
-                or session_id in self._team_monitors
-                or self.is_runtime_active(session_id)
-                or self.is_runtime_pending(session_id)
+            # The mirror leg stays out on purpose: the idle disconnect fallback
+            # cancel relies on this early exit to keep a resident Runner runtime
+            # alive when only its TeamAgent mirror is left (interface.py's
+            # client_disconnect branch pauses rather than evicts). Counting the
+            # mirror would stop that runtime and flip the result to success.
+            has_team_runtime = self._has_live_team_runtime(
+                session_id,
+                include_runner_mirror=False,
             )
-            if (
-                not has_stream_task
-                and not has_team_runtime
-                and not self.has_swarmflow_runs(session_id)
-            ):
+            if not has_stream_task and not has_team_runtime:
                 await self.release_current_round(session_id)
                 self._clear_terminal_session_markers(session_id)
                 return False
@@ -3723,6 +3847,13 @@ class TeamManager:
         Permanent delete callers leave the Runner runtime alive until
         ``Runner.delete_agent_team(force=True)`` so agent-core can snapshot its
         member bindings before performing the equivalent stop itself.
+
+        Returns:
+            True when live work matched and the teardown ran. False when nothing
+            was live, or when a Runtime of this session is still pooled after a
+            stop that was supposed to remove it: its A2X reservations and
+            coordination/messager transport are then kept so it stays resumable,
+            the same convention ``terminate_session_runtime`` follows.
         """
         if not self.generation_matches(session_id, generation):
             return False
@@ -3742,18 +3873,8 @@ class TeamManager:
             try:
                 has_stream_task = session_id in self._stream_tasks
                 has_local_team_runtime = self._has_local_team_runtime(session_id)
-                has_team_runtime = (
-                    has_local_team_runtime
-                    or session_id in self._runner_team_agents
-                    or session_id in self._team_monitors
-                    or self.is_runtime_active(session_id)
-                    or self.is_runtime_pending(session_id)
-                )
-                if (
-                    not has_stream_task
-                    and not has_team_runtime
-                    and not self.has_swarmflow_runs(session_id)
-                ):
+                has_team_runtime = self._has_live_team_runtime(session_id)
+                if not has_stream_task and not has_team_runtime:
                     await self.release_current_round(session_id)
                     self._clear_terminal_session_markers(session_id)
                     return False
@@ -3776,6 +3897,10 @@ class TeamManager:
                     stopped = await self._stop_local_team_runtime(session_id, team_agent)
 
                 team_name = self._resolve_session_team_name(session_id)
+                if not team_name and stop_runner:
+                    # Same pool fallback as terminate: a parked or otherwise
+                    # unnamed pooled runtime is still this session's.
+                    team_name = await self._find_runner_team_name(session_id)
 
                 if team_name and stop_runner:
                     try:
@@ -3788,22 +3913,47 @@ class TeamManager:
                             team_name,
                             exc,
                         )
+
+                terminated = True
                 if not has_local_team_runtime:
-                    try:
-                        team_agent = self._runner_team_agents.get(session_id)
-                        await release_a2x_reservations_for_session(session_id, team_agent=team_agent)
-                    except Exception as exc:
-                        logger.warning(
-                            "[TeamManager] release A2X reservations failed: session_id=%s error=%s",
-                            session_id,
-                            exc,
-                        )
                     if stop_runner:
-                        await self._stop_runner_team_agent_transport(session_id)
+                        # Same convention as terminate: only the pool can say
+                        # whether the stop took, and a surviving runtime keeps
+                        # its reservations and transport.
+                        runtime_gone = stopped or not await self._runner_pool_has_session_runtime(
+                            session_id
+                        )
                     else:
                         # Runner.delete_agent_team(force=True) still owns the
-                        # actual TeamAgent stop; drop only Jiuwenswarm's mirror.
-                        self._runner_team_agents.pop(session_id, None)
+                        # actual TeamAgent stop, so the entry staying pooled is
+                        # expected here and not a failed stop.
+                        runtime_gone = True
+
+                    if runtime_gone:
+                        try:
+                            team_agent = self._runner_team_agents.get(session_id)
+                            await release_a2x_reservations_for_session(session_id, team_agent=team_agent)
+                        except Exception as exc:
+                            logger.warning(
+                                "[TeamManager] release A2X reservations failed: session_id=%s error=%s",
+                                session_id,
+                                exc,
+                            )
+                        if stop_runner:
+                            await self._stop_runner_team_agent_transport(session_id)
+                        else:
+                            # Runner.delete_agent_team(force=True) still owns the
+                            # actual TeamAgent stop; drop only Jiuwenswarm's mirror.
+                            self._runner_team_agents.pop(session_id, None)
+                    else:
+                        terminated = False
+                        logger.warning(
+                            "[TeamManager] stop left a Runner runtime in the pool, "
+                            "keeping its A2X reservations and transport: "
+                            "session_id=%s team_name=%s",
+                            session_id,
+                            team_name,
+                        )
 
                 self.clear_active_runtime(session_id)
                 self.clear_pending_runtime(session_id)
@@ -3814,13 +3964,14 @@ class TeamManager:
                 if expected_request_id:
                     self._end_request_stop(session_id)
 
-        logger.info(
-            "[TeamManager] %steam session stopped: session_id=%s stopped=%s",
-            reason,
-            session_id,
-            stopped,
-        )
-        return True
+        if terminated:
+            logger.info(
+                "[TeamManager] %s team session stopped: session_id=%s stopped=%s",
+                reason,
+                session_id,
+                stopped,
+            )
+        return terminated
 
     async def quiesce_for_delete(
         self,
@@ -3882,8 +4033,19 @@ class TeamManager:
         self._terminal_delete_sessions.discard(target.descriptor.session_id)
 
     @staticmethod
-    async def _find_paused_runner_team_name(session_id: str) -> str | None:
-        """Return the paused Runner team name for a session using the public facade."""
+    async def _find_runner_team_name(
+        session_id: str,
+        *,
+        state: RuntimeState | None = None,
+    ) -> str | None:
+        """Return a Runner team name owned by a session using the public facade.
+
+        Args:
+            session_id: Session whose pool entry to look up.
+            state: Only match an entry in this state. The default matches the
+                first entry of the session regardless of state, so a caller
+                that has to stop the runtime never loses it to a state filter.
+        """
         normalized_session_id = str(session_id or "").strip()
         if not normalized_session_id:
             return None
@@ -3892,7 +4054,7 @@ class TeamManager:
             active_teams = await Runner.list_active_teams()
         except Exception as exc:
             logger.warning(
-                "[TeamManager] list active teams failed before paused lookup: session_id=%s error=%s",
+                "[TeamManager] list active teams failed before team name lookup: session_id=%s error=%s",
                 session_id,
                 exc,
             )
@@ -3900,10 +4062,66 @@ class TeamManager:
 
         for info in active_teams:
             current_session_id = str(info.current_session_id or "").strip()
-            if current_session_id == normalized_session_id and info.state == RuntimeState.PAUSED:
-                team_name = str(info.team_name or "").strip()
-                return team_name or None
+            if current_session_id != normalized_session_id:
+                continue
+            if state is not None and info.state != state:
+                continue
+            team_name = str(info.team_name or "").strip()
+            return team_name or None
         return None
+
+    @staticmethod
+    async def _find_paused_runner_team_name(session_id: str) -> str | None:
+        """Return the paused Runner team name for a session using the public facade."""
+        return await TeamManager._find_runner_team_name(
+            session_id,
+            state=RuntimeState.PAUSED,
+        )
+
+    @staticmethod
+    async def _runner_pool_has_session_runtime(
+        session_id: str,
+        *,
+        include_paused: bool = True,
+    ) -> bool:
+        """Whether the Runner pool still holds a runtime owned by this session.
+
+        Every state counts by default: a runtime whose stop failed is still
+        owned by the pool (agent-core keeps the entry so callers can retry), so
+        its mirror must not be torn down. A pool that cannot be listed is
+        reported as owning the session, which keeps the runtime resumable rather
+        than releasing resources underneath it.
+
+        Args:
+            session_id: Session whose pool entries to inspect.
+            include_paused: Count an entry parked in PAUSED too. Stop and
+                terminate keep the default: a parked entry that outlived their
+                teardown is still a runtime they failed to remove. Pause passes
+                False, because a parked entry is the outcome it wanted — only an
+                entry that is still unpaused means the pause did not land.
+        """
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return False
+
+        try:
+            active_teams = await Runner.list_active_teams()
+        except Exception as exc:
+            logger.warning(
+                "[TeamManager] list active teams failed before pool ownership check: "
+                "session_id=%s error=%s",
+                session_id,
+                exc,
+            )
+            return True
+
+        for info in active_teams:
+            if str(info.current_session_id or "").strip() != normalized_session_id:
+                continue
+            if not include_paused and getattr(info, "state", None) == RuntimeState.PAUSED:
+                continue
+            return True
+        return False
 
     async def stop_paused_session_runtime(
         self,
@@ -4012,20 +4230,59 @@ class TeamManager:
         Team runtimes are persistent. The current implementation pauses by
         tearing down the foreground stream task and parking the Runner-owned
         runtime in paused state so a later `chat.send` can resume it.
+
+        Returns:
+            True once the foreground round is torn down and no unpaused Runtime
+            of this session is left in the Runner pool, including the case where
+            the session already rests in PAUSED and there was nothing to do.
+            False when nothing was live at all, or when a Runtime stayed
+            unpaused (the pool then owns its reservations and transport, the
+            same convention stop and terminate follow).
         """
         if not self.generation_matches(session_id, generation):
             return False
         async with self._get_lifecycle_lock(session_id):
             has_stream_task = session_id in self._stream_tasks
             has_local_team_runtime = self._has_local_team_runtime(session_id)
-            has_team_runtime = (
-                has_local_team_runtime
-                or session_id in self._team_monitors
-                or self.is_runtime_active(session_id)
-                or self.is_runtime_pending(session_id)
+            # A parked run does not justify entering pause on its own, so only
+            # active background runs count here.
+            has_team_runtime = self._has_live_team_runtime(
+                session_id,
+                include_paused_runs=False,
             )
             if not has_stream_task and not has_team_runtime:
+                logger.info(
+                    "[TeamManager] %s pause skipped: no live team runtime "
+                    "handles, session_id=%s",
+                    reason,
+                    session_id,
+                )
                 return False
+
+            # A session already resting in the paused state has nothing left for
+            # pause to do. The mirror handle outlives a pause by design, so
+            # counting it as live would re-enter here on every repeated stop and
+            # pause the same Runner runtime again.
+            if not has_stream_task and not self._has_live_team_runtime(
+                session_id,
+                include_paused_runs=False,
+                include_runner_mirror=False,
+            ):
+                if await self._find_runner_team_name(
+                    session_id,
+                    state=RuntimeState.PAUSED,
+                ):
+                    # True, not False: one web stop reaches pause twice
+                    # (AgentRuntime.cancel_request pauses, then the team
+                    # interrupt pauses again), and the frontend reads False as a
+                    # failed stop. The session is paused either way.
+                    logger.info(
+                        "[TeamManager] %s pause skipped: runtime already parked, "
+                        "session_id=%s",
+                        reason,
+                        session_id,
+                    )
+                    return True
 
             # 如果 cancel 请求已到达，中止 pause 并让 cancel 执行
             if self._cancel_requested.get(session_id):
@@ -4042,27 +4299,37 @@ class TeamManager:
             )
 
             team_name = self._resolve_session_team_name(session_id)
+            if not team_name:
+                # Same pool fallback as terminate: after the markers were
+                # cleared and the metadata stopped naming the team, a pooled
+                # runtime is still this session's, whatever state it is in.
+                team_name = await self._find_runner_team_name(session_id)
             runner_paused = False
+
+            # Park swarmflow runs BEFORE Runner.pause, and independently of
+            # team_name: a session can be left with only background runs when
+            # neither the local runtime nor a resolvable team name remains.
+            # Runner.pause tears down the leader harness, whose async-tool
+            # runtime cancels the swarmflow coroutine as a plain cancel — no
+            # abort reason, no pause record, and run_background's finally
+            # deregisters the handle. Pausing first lets the controller's
+            # three-step abort (reason=pause) unwind the engine so it writes the
+            # pause record, emits WORKFLOW_PAUSED while the workflow handler is
+            # still alive, and parks the relaunch ticket.
+            await self._pause_swarmflow_runs(session_id)
+
+            # Parking the runs awaited, so a cancel that arrived meanwhile must
+            # own the teardown instead of a pause that parks the runtime while
+            # cancel wants it gone.
+            if self._cancel_requested.get(session_id):
+                logger.info(
+                    "[TeamManager] %s pause aborted before Runner.pause: session_id=%s",
+                    reason, session_id,
+                )
+                return False
+
             if team_name:
                 try:
-                    # 再次检查 cancel 标志，避免在等待 Runner.pause 时 cancel 已到达
-                    if self._cancel_requested.get(session_id):
-                        logger.info(
-                            "[TeamManager] %s pause aborted before Runner.pause: session_id=%s",
-                            reason, session_id,
-                        )
-                        return False
-
-                    # Park swarmflow runs BEFORE Runner.pause. Runner.pause tears
-                    # down the leader harness, whose async-tool runtime cancels
-                    # the swarmflow coroutine as a plain cancel — no abort reason,
-                    # no pause record, and run_background's finally deregisters
-                    # the handle. Pausing first lets the controller's three-step
-                    # abort (reason=pause) unwind the engine so it writes the
-                    # pause record, emits WORKFLOW_PAUSED while the workflow
-                    # handler is still alive, and parks the relaunch ticket.
-                    await self._pause_swarmflow_runs(session_id)
-
                     # 注册当前 pause 任务，供 cancel 抢占取消
                     self._active_pause_tasks[session_id] = asyncio.current_task()
                     try:
@@ -4102,13 +4369,37 @@ class TeamManager:
             self.clear_active_runtime(session_id)
             self.clear_pending_runtime(session_id)
 
-        logger.info(
-            "[TeamManager] %steam session paused: session_id=%s runner_paused=%s",
-            reason,
-            session_id,
-            runner_paused,
-        )
-        return True
+            # Same convention as terminate: what the pool still holds decides
+            # whether the call may report success. A runtime we failed to pause
+            # (or could not name) stays live and must not be reported as paused.
+            # The guard ignores PAUSED entries: parking the runtime is what this
+            # call set out to do, so an entry already resting in PAUSED (a stale
+            # team name no longer matching it, or a pause another path landed
+            # first) is success, not a failed pause. Counting every state would
+            # report that entry as a runtime the pause left running.
+            paused = runner_paused
+            if not paused:
+                paused = not await self._runner_pool_has_session_runtime(
+                    session_id,
+                    include_paused=False,
+                )
+            if not paused:
+                logger.warning(
+                    "[TeamManager] %s pause left a Runner runtime unpaused: "
+                    "session_id=%s team_name=%s",
+                    reason,
+                    session_id,
+                    team_name,
+                )
+
+        if paused:
+            logger.info(
+                "[TeamManager] %s team session paused: session_id=%s runner_paused=%s",
+                reason,
+                session_id,
+                runner_paused,
+            )
+        return paused
 
     async def _cancel_stream_task(self, session_id: str, reason: str) -> None:
         """Cancel one stream task while serializing its lifecycle operations."""
