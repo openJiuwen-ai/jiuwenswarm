@@ -817,6 +817,12 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         lazy_config["eager_tools"] = eager_tools
         return super()._build_progressive_tool_rail(flash_config)
 
+    def _plan_eager_tools_applicable(self) -> bool:
+        # flash 白名单（_FLASH_RAIL_KEEP）裁掉 _work_agent_mode_rail /
+        # _work_plan_approval_rail，无审批链；钉 eager 只会让 plan 工具
+        # 外泄到 schema（deep 侧默认按 mode 集判定，见同名片方法）。
+        return False
+
     # ── 宿主方法覆盖 ──────────────────────────────────────────────
 
     async def create_instance(

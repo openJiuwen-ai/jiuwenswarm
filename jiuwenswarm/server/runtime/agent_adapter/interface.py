@@ -4576,6 +4576,25 @@ class JiuWenSwarm:
             return None
         return getter(session_id)
 
+    async def ensure_session_adapter(
+        self, session_id: str | None, request: AgentRequest | None = None
+    ):
+        """Ensure the session-owned child adapter exists and return it.
+
+        Creation half of ``get_live_session_instance`` (same per-sid lock,
+        no LLM turn, no history write): callers that mutate session state
+        outside a chat turn — plan mode sync — must pin the adapter first,
+        or the serving turn primes its own adapter from the pre-change
+        snapshot and keeps reading stale state (issue 5223).
+        """
+        adapter = self._adapter
+        if adapter is None:
+            return None
+        getter = getattr(adapter, "_get_or_create_session_adapter", None)
+        if getter is None:
+            return None
+        return await getter(session_id, request=request)
+
     async def apply_package_change_to_session_adapters(
         self,
         operation: str,

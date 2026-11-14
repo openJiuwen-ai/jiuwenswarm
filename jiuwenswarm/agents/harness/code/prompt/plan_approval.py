@@ -62,14 +62,22 @@ PLAN_SKIP_TURN_OUTPUT = {
 
 # ── Plan approval execute（Web 专用："执行"按钮）────────────────────────────
 # Web 的执行分成两次请求：本次只负责让 ``exit_plan_mode`` 真正跑完（退出 plan
-# 模式），跑完立刻结束本轮、不再调模型；随后前端补发一条普通非 plan 消息，由那
-# 条消息作为用户提问开启全新一轮来执行计划。
+# 模式），跑完立刻结束本轮、不再调模型；随后由服务端幂等续跑（issue 5223 方案
+# A，见 server/docs/features/F_02_plan-execute-continuation.md）代发执行消息，
+# 作为用户提问开启全新一轮来执行计划。
 #
 # 因此 Web 用独立取值 ``plan_execute``，而不是复用 ``approve``：TUI 发的仍是
 # ``approve``，批准后照旧在同一轮里继续实现，行为完全不变。
 PLAN_EXECUTE_PAYLOAD_KEY = "plan_execute"
 
 PLAN_EXECUTE_OPTION_VALUES: frozenset[str] = frozenset({"plan_execute"})
+
+# 服务端续跑代发的执行消息文案（issue 5223）。与前端 i18n ``plan.executePrompt``
+# 逐字一致，保证续跑开启的对话内容与旧补发行为相同。
+PLAN_EXECUTE_PROMPT_OUTPUT = {
+    "cn": "计划已批准，请按计划开始执行。",
+    "en": "The plan is approved. Start executing it.",
+}
 
 # ``ctx.extra`` 标记：PlanApprovalInterruptRail 在恢复中断时设置，
 # CodeAgentModeRail 在 exit_plan_mode 跑完后据此结束本轮。
@@ -349,6 +357,7 @@ __all__ = [
     "PLAN_EXECUTE_CTX_KEY",
     "PLAN_EXECUTE_OPTION_VALUES",
     "PLAN_EXECUTE_PAYLOAD_KEY",
+    "PLAN_EXECUTE_PROMPT_OUTPUT",
     "PLAN_SKIP_FEEDBACK",
     "PLAN_SKIP_OPTION_VALUES",
     "PLAN_REMINDER_ORIGINAL_QUERY_KEY",

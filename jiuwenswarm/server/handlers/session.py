@@ -33,6 +33,9 @@ from jiuwenswarm.server.handlers._shared import (
     _plan_exited_sessions,
     send_error_wire,
 )
+from jiuwenswarm.server.runtime.plan_execute_continuation import (
+    cancel_plan_execute_continuation,
+)
 from jiuwenswarm.server.runtime.session.session_history import (
     enrich_history_messages_session_id,
     history_exists,
@@ -542,6 +545,8 @@ async def handle_session_delete(ctx: RequestContext) -> None:
                     shutil.rmtree(session_dir)
                     _plan_exited_sessions.discard(target)
                     _plan_active_sessions.discard(target)
+                    # 会话已删，待执行的 plan_execute 续跑一并作废（issue 5223）。
+                    cancel_plan_execute_continuation(target, reason="session.delete")
                     remove_session_metadata_cache(
                         target,
                         sessions_root=sessions_root,
@@ -636,6 +641,8 @@ async def handle_session_rewind_full(ctx: RequestContext, restore_files: bool = 
         # 进入（/plan、开关）会先 discard 退出标记，不受影响。
         _plan_active_sessions.discard(target_sid)
         _plan_exited_sessions.add(target_sid)
+        # 回滚视同作废待执行的 plan_execute 续跑（issue 5223，同 CR-9 语义）。
+        cancel_plan_execute_continuation(target_sid, reason="session.rewind")
 
         # Step 3: Truncate context_engine in-place + persist to checkpointer.
         # rewind_session_context reads the already-truncated history.json and
@@ -835,6 +842,8 @@ async def handle_session_rewind_context(ctx: RequestContext) -> None:
         # stale plan token 经延续放行拉回 plan。
         _plan_active_sessions.discard(target_sid)
         _plan_exited_sessions.add(target_sid)
+        # 回滚视同作废待执行的 plan_execute 续跑（issue 5223，同 CR-9 语义）。
+        cancel_plan_execute_continuation(target_sid, reason="session.rewind.context")
         context_ok = await rewind_session_context(
             deep_agent=deep_agent,
             session_id=target_sid,

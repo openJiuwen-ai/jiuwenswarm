@@ -506,11 +506,42 @@ def test_work_plan_whitelist_excludes_side_effect_tools():
     assert {"ask_user", "read_file", "write_file", "exit_plan_mode"} <= allowed
     # Deep 模式实际注册的联网工具名，缺了 plan 阶段只能搜索、无法读取结果页。
     assert {"web_search", "fetch_webpage"} <= allowed
+    # ttse_consult 必须在白名单：TTSE rail 提示词点名要求 plan 阶段先 consult，
+    # 缺了会制造"提示词要求调用、schema 看不见"的矛盾（issue 5223 复跑实证）。
+    assert "ttse_consult" in allowed
     # task_tool 不得进白名单：子 agent 有独立 session 与 plan_mode 状态，
     # 父 agent 的 plan 约束不传播，委派即可绕开只读约束（评审定论）。
     assert "task_tool" not in allowed
     for forbidden in ("send_file_to_user", "cron_create", "switch_mode"):
         assert forbidden not in allowed
+
+
+@pytest.mark.asyncio
+async def test_work_rail_plan_mode_keeps_ttse_consult_visible():
+    """plan 态白名单过滤后 ttse_consult 仍对模型可见（TTSE 提示词点名要求调用）。
+
+    白名单漏放时模型只见提示词不见工具，转而 bash 探测命令并循环检索，
+    触发 RAS 无进展断路器（issue 5223 复跑实证）。
+    """
+    visible = await _work_rail_visible_tools(
+        "plan",
+        [
+            "enter_plan_mode",
+            "exit_plan_mode",
+            "ask_user",
+            "web_search",
+            "ttse_consult",
+            "task_tool",
+            "switch_mode",
+            "subagent_spawn",
+            "invoke_tool",
+        ],
+    )
+
+    assert "ttse_consult" in visible
+    assert {"enter_plan_mode", "exit_plan_mode", "ask_user", "web_search"} <= set(visible)
+    # 委派/延迟/模式切换类工具维持排除：plan 约束不随委派传播（评审定论）。
+    assert {"task_tool", "switch_mode", "subagent_spawn", "invoke_tool"}.isdisjoint(visible)
 
 
 # ── 非 plan 能力渠道的 plan token 归一（评审 CR-1）──────────────────────────

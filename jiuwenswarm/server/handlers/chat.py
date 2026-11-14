@@ -33,6 +33,9 @@ from jiuwenswarm.server.handlers._shared import (
     resolve_request_project_dir,
 )
 from jiuwenswarm.server.handlers.team import _create_generated_team_binding
+from jiuwenswarm.server.runtime.plan_execute_continuation import (
+    cancel_plan_execute_continuation,
+)
 from jiuwenswarm.server.utils.utils import is_team_params
 
 logger = logging.getLogger(__name__)
@@ -392,6 +395,11 @@ async def handle_chat_cancel_dispatch(ctx: RequestContext) -> None:
     # pause/resume 不取消，因为任务仍在运行（pause 在 checkpoint 阻塞，resume 解除阻塞）
     stream_tasks: list[asyncio.Task] = []
     if intent in ("cancel", "supplement"):
+        if not cleanup_after_cancel:
+            # 显式中断（停止/补充输入）取消该会话待执行的 plan 续跑（评审
+            # CR-3）：取消后不应再代发执行消息。客户端断连形态不取消——
+            # 断连兜底续跑正是本特性的存在理由（保持既定语义）。
+            cancel_plan_execute_continuation(sid, reason=f"chat.interrupt:{intent}")
         entries = ctx.services.session_stream_tasks.get(sid, {})
         for stream_task, stream_stop_event in list(entries.items()):
             if stream_task.done():

@@ -1035,9 +1035,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   // 已经为哪些计划审批落过正文气泡。同一个 request_id 可能被重复推送
   // （重连补发 / 历史恢复），去重后才不会出现两条一样的计划。
   const planBubbleRequestIdsRef = useRef<Set<string>>(new Set());
-  // 点了「执行」、等待补发执行消息的会话。批准那一轮只负责退出计划模式，必须等它
-  // 真正跑完（processing_status=false）才能发下一条，否则两条消息会同时打到后端。
-  const pendingPlanExecuteRef = useRef<Set<string>>(new Set());
   const recentEventRef = useRef<Map<string, number>>(new Map());
   const teamToolCallMemberRef = useRef<Map<string, string>>(new Map());
   const shutdownMemberToolCallRef = useRef<Map<string, string>>(new Map());
@@ -2299,7 +2296,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       source?: string,
       status?: UserAnswerStatus,
     ) => {
-      // 「执行」分支会在请求发出前先乐观地关掉 Plan 开关并登记补发标记，失败时要撤回。
+      // 「执行」分支会在请求发出前先乐观地关掉 Plan 开关，失败时要复位回开。
       let planExecuteOptimistic = false;
       try {
         const pendingQuestion = useChatStore.getState().getRuntime(sessionId)?.pendingQuestion;
@@ -2333,7 +2330,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             }
           : {};
         // 「执行」分两步：这次 resume 只让后端跑完 exit_plan_mode 退出计划模式，
-        // 本轮到此为止；真正的执行由紧接着补发的普通消息开启新一轮。
+        // 本轮到此为止；真正的执行由服务端幂等续跑代发（issue 5223 方案 A），
+        // 前端不再补发。这里只保留乐观开关状态供失败复位。
         const isPlanExecute =
           isPlanApproval && answers.some((a) => a.selected_options?.includes('plan_execute'));
         const approvalTransport =
@@ -2354,15 +2352,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             sessionId,
             resolveInterruptResumeMode(sessionId)
           );
-          // 必须在请求发出**之前**登记：本次请求的 mode 已经定格在
-          // resolvedResumeMode 里，不再看 Plan 开关；而后端很可能在 await 挂起期间
-          // 就推完 processing_status=false，那一刻若 pendingPlanExecuteRef 里还没有
-          // 这个 session，补发执行消息的逻辑会被跳过——用户点了「执行」，计划批准了
-          // 却永远不会真正开始跑。
+          // 「执行」请求发出前先乐观关掉 Plan 开关：请求的 mode 已定格在
+          // resolvedResumeMode 里不再看开关；失败时在 catch 复位回开。
+          // 执行轮由服务端续跑开启，这里不再登记任何补发标记。
           if (isPlanExecute) {
             planExecuteOptimistic = true;
             usePlanStore.getState().setActive(sessionId, false);
-            pendingPlanExecuteRef.current.add(sessionId);
           }
           // 与普通 sendMessage 一样挂上 client request id，便于流式事件对齐；
           // cron 审批续跑可能数十秒，必须保持 isProcessing，避免时间线先收成「已完成」。
@@ -2439,9 +2434,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         return true;
       } catch (error) {
         if (planExecuteOptimistic) {
-          // 请求没送出去，后端仍停在计划模式：撤回乐观更新，否则会留下一个标记，
-          // 在这个会话下一次结束处理时凭空补发一条执行消息。
-          pendingPlanExecuteRef.current.delete(sessionId);
+          // 请求没送出去（或超时未确认）：先复位乐观更新回计划模式。若后端实际
+          // 已处理并续跑，随后到达的 plan.mode_exited 会把开关再次关掉，状态自愈。
           usePlanStore.getState().setActive(sessionId, true);
         }
         const webError = error as WebError;
@@ -3916,6 +3910,29 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           }
         }
 
+        // 方案 A（issue 5223）：服务端幂等续跑代发的执行消息回显。批准轮结束后
+        // server 自行开启执行轮，processing_status=true 带
+        // source=plan_execute_continuation + content，据此 upsert 用户气泡
+        // （heartbeat automation 回显同款）；前端不再补发执行消息。历史行由
+        // server 落盘，重连/刷新经历史恢复收敛，无需本地持久化。
+        if (isProcessingNow && payload.source === 'plan_execute_continuation') {
+          const planPrompt = typeof payload.content === 'string' ? payload.content : '';
+          if (planPrompt) {
+            const planMsgId = `plan-continuation-user-${typeof event.request_id === 'string' ? event.request_id : ''}`;
+            const existingPlanMsg = useChatStore
+              .getState()
+              .getRuntime(sessionId)?.messages.find((m) => m.id === planMsgId);
+            if (!existingPlanMsg) {
+              useChatStore.getState().addMessage(sessionId, {
+                id: planMsgId,
+                role: 'user',
+                content: planPrompt,
+                timestamp: new Date().toISOString(),
+              });
+            }
+          }
+        }
+
         // 后端确认 processing=true 时清除本地发送标记——新任务已由后端接管
         if (isProcessingNow) {
           localSendPendingRef.current.delete(sessionId);
@@ -4027,13 +4044,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           if (skipAutoDrain) {
             localSendPendingRef.current.delete(sessionId);
           }
-          // 批准计划那一轮刚结束（计划模式已退出）。现在补发执行消息：它以普通
-          // 模式发送，因此会像用户手打的提问一样进对话，并开启全新一轮来执行计划。
-          if (pendingPlanExecuteRef.current.has(sessionId)) {
-            pendingPlanExecuteRef.current.delete(sessionId);
-            sendMessageRef.current?.(t('plan.executePrompt'), sessionId);
-            return;
-          }
+          // 批准计划的执行轮已改由服务端幂等续跑代发（issue 5223 方案 A），
+          // 前端不再在此补发；执行消息经 processing_status 回显分支落到时间线。
           if (
             !skipAutoDrain &&
             currentMode === 'agent' &&
@@ -5105,12 +5117,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         lastError: null,
       });
       if (!connected && (state === 'reconnecting' || state === 'closed')) {
-        // 补发标记随连接作废：点「执行」登记后若后端崩溃/断连，批准轮的
-        // processing_status=false 不会再送达，残留标记会让重连后下一条
-        // 普通消息完成时凭空补发一条执行消息。断线即失配，统一清掉；
-        // plan.mode_exited 里不能清——它先于 processing_status=false 到达，
-        // 提前删会杀掉正常补发。
-        pendingPlanExecuteRef.current.clear();
+        // 前端补发已移除（issue 5223 方案 A）：执行轮由服务端续跑兜底，
+        // 断连不影响"已批准"计划的执行，重连后经 processing_status 回显与
+        // 历史恢复收敛状态。
         streamDeltaBatcherRef.current?.flushAll();
         onDisconnectRef.current?.();
       }

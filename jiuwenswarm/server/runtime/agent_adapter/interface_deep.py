@@ -963,6 +963,21 @@ _AGENT_CARD_ID = "jiuwenswarm"
 _SYS_OPERATION_REFCOUNTS: dict[str, int] = {}
 _SYS_OPERATION_REFCOUNT_LOCK = threading.Lock()
 
+# plan 生命周期工具与 code 侧 _CODE_EAGER_TOOLS 对齐钉 eager（plan 是会话
+# 运行期状态，非 plan 态由 AgentModeRail._HIDDEN_IN_NORMAL 滤掉 enter/
+# exit_plan_mode，不会外泄）。否则 plan 态下它们沦为 deferred，模型只能经
+# tools_search→invoke_tool 调用，而 ProgressiveToolRail 的嵌套 invoke 不经过
+# before_tool_call 链路，PlanApprovalInterruptRail 永远拦不到 exit_plan_mode，
+# 审批卡静默缺失（issue 5223 E2E 实证）。
+#
+# work 装配不钉 switch_mode（评审 CR-1，2026-11-10）：WorkAgentModeRail 在
+# normal 态按 _HIDDEN_IN_NORMAL_EXTRA、plan 态按 WORK_PLAN_ALLOWED_TOOLS
+# （不含 switch_mode）双态过滤，钉了也永远不可见，只会喂 ②号防线每轮假
+# 阳性。code 装配仍钉三件套——normal 态 switch_mode 是唯一 plan 入口
+# （enter_plan_mode 在 normal 态被 mode rail 拒绝），须保持 schema 可见。
+_WORK_PLAN_EAGER_TOOLS = ("enter_plan_mode", "exit_plan_mode")
+_PLAN_MODE_EAGER_TOOLS = ("switch_mode", *_WORK_PLAN_EAGER_TOOLS)
+
 
 _RESOLVED_ARTIFACT_DIRS: dict[str, str] = {}
 
@@ -8094,12 +8109,64 @@ class JiuWenSwarmDeepAdapter:
             deepresearch_context_provider=self._get_deepresearch_tool_context,
             active_skill_provider=self._get_progressive_active_skill,
         )
+        if rail is not None and self._plan_eager_tools_applicable():
+            rail.eager_tools = list(
+                dict.fromkeys([*rail.eager_tools, *self._plan_mode_eager_tools()])
+            )
+            # ②号防线 plan 态校验按装配方 plan 白名单收敛（评审 CR-1，
+            # 2026-11-10）：白名单外的 eager 成员（tools_search/invoke_tool
+            # 等 lazy 支柱）由 WorkAgentModeRail 设计性过滤，缺席非异常。
+            rail.plan_check_allowed_tools = self._plan_check_allowed_tools()
         if rail is not None:
             logger.info(
                 "[JiuWenSwarmDeepAdapter] ProgressiveToolRail mounted mode=%s",
                 "progressive" if rail.enabled else "skill-gate-only",
             )
         return rail
+
+    def _plan_eager_tools_applicable(self) -> bool:
+        """plan 生命周期工具钉 eager 仅适用于实际挂载 plan rails 的装配。
+
+        plan rails 按 mode 跳过集挂载（见 _build_agent_rails 内注释）；team
+        装配无审批链，钉 eager 只会让 enter/exit_plan_mode 外泄到 schema。
+        子类裁掉 plan rails 时须覆写为 False（见 flash）。
+        """
+        mode = getattr(self, "_session_instance_mode", None) or "agent"
+        return mode not in {"team", "team.plan", "code.team"}
+
+    def _plan_mode_eager_tools(self) -> tuple[str, ...]:
+        """本装配的 plan eager 钉扎名单（评审 CR-1，2026-11-10 拆分）。
+
+        work 装配只钉 enter/exit_plan_mode（switch_mode 双态被
+        WorkAgentModeRail 过滤，见 _WORK_PLAN_EAGER_TOOLS 注释）；code
+        装配保持三件套（normal 态 switch_mode 是唯一 plan 入口）。本类
+        只服务 work/team 装配，code 适配器覆写 _build_progressive_tool_rail
+        不经此路径，"code" 分支仅为防御性兜底。
+        """
+        if (getattr(self, "_session_instance_mode", None) or "agent") == "code":
+            return _PLAN_MODE_EAGER_TOOLS
+        return _WORK_PLAN_EAGER_TOOLS
+
+    @staticmethod
+    def _plan_check_allowed_tools() -> frozenset[str] | None:
+        """②号防线 plan 态校验的设计可见集（None=全量校验）。
+
+        work 装配 plan 态走 WORK_PLAN_ALLOWED_TOOLS 白名单过滤，白名单外的
+        eager 成员设计性缺席，校验按白名单收敛防每轮假阳性（评审 CR-1，
+        2026-11-10）。
+        """
+        try:
+            from jiuwenswarm.agents.harness.work.prompt.work_plan_prompts import (
+                WORK_PLAN_ALLOWED_TOOLS,
+            )
+
+            return frozenset(WORK_PLAN_ALLOWED_TOOLS)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] WORK_PLAN_ALLOWED_TOOLS import failed: %s",
+                exc,
+            )
+            return None
 
     def _get_progressive_active_skill(self) -> str | None:
         """Return active-skill state for this adapter's current session."""
