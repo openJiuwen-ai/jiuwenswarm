@@ -60,6 +60,17 @@
   gap: 8px;
 }
 
+.setting-row__unavailable-switch {
+  display: inline-flex;
+  cursor: not-allowed;
+}
+
+.setting-row__unavailable-switch > .ui-switch:disabled {
+  border-color: var(--color-switch-track-off);
+  background: var(--color-switch-track-off);
+  pointer-events: none;
+}
+
 .setting-row__sub-settings {
   position: relative;
 }

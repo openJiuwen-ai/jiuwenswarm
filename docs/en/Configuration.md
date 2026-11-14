@@ -253,7 +253,7 @@ TTSE is independent of Skill-body evolution and is controlled by `react.ttse` (a
 
 | Setting | Path | Default | Description |
 |---------|------|---------|-------------|
-| **Enable TTSE** | `react.ttse.enabled` | `false` | Mount `TTSERail` (Host skips if agent-core lacks it); also auto-acquires `agent_observability` for trajectory capture |
+| **Enable TTSE** | `react.ttse.enabled` | `false` | Mount `TTSERail` (Host skips if agent-core lacks it); also auto-acquires `observability.agent` for trajectory capture |
 | **Induce** | `react.ttse.evolve_enabled` | `true` | Induce FACT/TIP from trajectories |
 | **Inject** | `react.ttse.inject_enabled` | `true` | Inject system-prompt guidance |
 | **Auto-dream** | `react.ttse.dream_enabled` | `true` | Silent bank hygiene |
@@ -420,7 +420,7 @@ settings are mapped by the JiuwenSwarm Adapter to agent-core's
 | --- | --- | --- |
 | `symphony.paths.skills_root` | Empty string | Skill source directory; empty means the runtime default is used |
 | `symphony.paths.graph_dir` | Empty string | Skill score artifact directory; empty means the runtime default is used |
-| `symphony.fingerprint.scan.max_depth` | Empty | Maximum skill-file scan depth mapped to agent-core `SkillFolderScanner`; empty means the runtime default is used |
+| `symphony.fingerprint.scan.max_depth` | `1` | Skill entry-point discovery depth. `1` checks the skill root and its direct subdirectories. An empty value allows discovery at any depth. |
 | `symphony.fingerprint.extraction.workers` | `4` | Fingerprint extraction concurrency mapped to agent-core `FingerprintService` |
 | `symphony.fingerprint.extraction.batch_size` | `2` | Fingerprint extraction batch size mapped to agent-core `FingerprintService` |
 | `symphony.fingerprint.extraction.body_limit` | Empty | Body length limit mapped to agent-core `FingerprintService`; empty means the runtime default is used |

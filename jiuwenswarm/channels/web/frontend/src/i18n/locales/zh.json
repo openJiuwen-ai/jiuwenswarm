@@ -1,7 +1,30 @@
 {
+  "pluginReplacement": {
+    "title": "插件已存在",
+    "message": "本地已存在插件 {{id}}（版本 {{localVersion}}）。是否使用广场版本 {{hubVersion}} 替换？本地修改将被覆盖。",
+    "confirm": "替换本地版本",
+    "busy": "旧版插件正在执行任务或关闭资源，待空闲后重新进行替换。",
+    "stale": "本地插件已发生变化，请重新安装并确认替换。",
+    "unknownVersion": "未知"
+  },
+  "userLogin": {
+    "language": "界面语言",
+    "title": "JiuwenSwarm 登录",
+    "username": "用户名",
+    "password": "密码",
+    "signIn": "登录",
+    "signingIn": "登录中…",
+    "enterprise": "或使用企业账号",
+    "signInWith": "使用 {{name}} 登录",
+    "failed": "登录失败，请重试。",
+    "back": "返回登录"
+  },
   "enterpriseEntry": {
     "invalidIdentity": "Identity 未返回用户标识。",
-    "noContext": "当前账号没有可用的 Agent，请先在管理面完成授权。",
+    "emptyTitle": "暂无可用 Agent",
+    "backToLogin": "返回登录页",
+    "language": "界面语言",
+    "noContext": "当前账号没有可用的Agent，请先在管理面完成授权。",
     "loadFailed": "加载 Agent 上下文失败。",
     "switchFailed": "切换身份失败。",
     "errorTitle": "无法进入工作空间",
@@ -74,7 +97,6 @@
     "work": "任务",
     "agent": "专家",
     "design": "设计",
-    "teams": "团队",
     "experiments": "RSI",
     "sessions": "会话",
     "cron": "定时任务",
@@ -138,11 +160,13 @@
       "send": "发送",
       "running": "设计团长正在执行…",
       "stop": "停止",
+      "stopping": "正在停止…",
       "stopError": "停止失败，请稍后重试。",
       "attach": "添加参考素材",
       "removeAttachment": "移除参考素材",
       "attachHint": "支持图片、视频、音频。最多 5 张图、1 个视频、1 段音频。",
       "limitImages": "最多只能附 5 张参考图。",
+      "multipleMentions": "暂不支持在一条消息中 @ 多个节点，请每次只引用一个节点。",
       "limitVideo": "最多只能附 1 个参考视频。",
       "limitAudio": "最多只能附 1 段参考音频。",
       "tooLarge": "文件超过 6MB，请改用更小的文件，或从本机路径添加。",
@@ -864,10 +888,6 @@
       "teamOrganization": "Team Organization",
       "teamScheduledDispatch": "调度模式",
       "skillPack": "技能包",
-      "proactive": "主动推荐",
-      "proactiveLimits": "推荐频率限制",
-      "proactiveLimitsDescription": "每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
-      "proactiveLimitsDisabledDescription": "开启主动推荐后可设置。当前保存值：每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
       "multiModelCollaboration": "多模型协同",
       "toolOptimize": "工具检索优化",
       "designMode": "设计模式",
@@ -1145,7 +1165,13 @@
       },
       "cua_agent_enabled": {
         "title": "启用电脑操控",
-        "description": "允许智能体通过桌面子代理查看和操作本机应用窗口，需要支持图片输入的模型和相应系统权限。"
+        "description": "允许智能体通过桌面子代理查看和操作本机应用窗口，需要支持图片输入的模型和相应系统权限。",
+        "unavailableDescription": "当前环境不支持电脑操控。",
+        "unavailableReasons": {
+          "native_build_failed": "电脑操作暂不可用，安装时未能编译 computer-use 驱动。",
+          "backend_missing": "未找到可用的电脑操作驱动。",
+          "unsupported_platform": "当前操作系统或版本不支持电脑操控。"
+        }
       },
       "trajectory_ui_diagnosis_enabled": {
         "title": "启用轨迹诊断",
@@ -1213,20 +1239,6 @@
       "external_cli_agent_codex_cli_path": {
         "title": "Codex CLI 路径"
       },
-      "proactive_recommendation_enabled": {
-        "title": "启用主动推荐",
-        "description": "允许系统在满足条件时主动发送推荐。"
-      },
-      "proactive_recommendation_max_recommend_per_day": {
-        "title": "每日推荐上限",
-        "description": "每个用户每日主动推荐次数上限，防止打扰过多。默认值：10。",
-        "placeholder": "请输入 1–50 的整数"
-      },
-      "proactive_recommendation_max_rounds_per_tick": {
-        "title": "每次检查对话轮数",
-        "description": "每次检查时最多读取的近期对话轮数，用于推断推荐上下文。默认值：20。",
-        "placeholder": "请输入 1–50 的整数"
-      },
       "multi_model_collaboration_enabled": {
         "title": "多模型协同",
         "description": "单 Agent 对话选择模型组后，由组内默认模型聚合其他模型的建议。"
@@ -1253,11 +1265,6 @@
         "title": "API Key",
         "description": "JEV 服务的密钥。",
         "placeholder": "输入 API Key"
-      },
-      "cua_agent_enabled": {
-        "title": "启用电脑操控",
-        "description": "允许智能体通过桌面子代理查看和操作本机应用窗口，需要支持图片输入的模型和相应系统权限。",
-        "unavailableDescription": "当前环境不支持电脑操控。"
       }
     },
     "validation": {
@@ -1564,47 +1571,8 @@
       "showTasks": "展开任务栏"
     }
   },
-  "teams": {
-    "title": "团队管理",
-    "subtitle": "查看已有团队，或停止、删除团队",
-    "teamList": "已有团队",
-    "count": "当前 {{count}} 个团队",
-    "quota": "已用 {{used}} / 上限 {{limit}}（默认 {{default}}）",
-    "orgQuota": "组织已用 {{used}} / 上限 {{limit}}",
-    "quotaUnavailable": "配额状态不可用",
-    "createUserFull": "创建失败，一个用户最多有{{limit}}个团队",
-    "createOrgFull": "创建失败，一个组织最多有{{limit}}个团队",
-    "sessionCount": "{{count}} 个会话",
-    "listLabel": "team 所在会话：{{title}}",
-    "untitledSession": "未命名会话",
-    "createdAt": "创建于 {{time}}",
-    "createdAtWithId": "创建于 {{time}} · …{{suffix}}",
-    "sessionSuffix": "…{{suffix}}",
-    "empty": "暂无团队",
-    "deleteTeam": "删除团队",
-    "deleting": "删除中...",
-    "deleteConfirm": "确认删除团队 {{team}} ?\n将删除团队运行时、关联会话及目录。",
-    "stopTeam": "停止",
-    "stopping": "停止中...",
-    "humanMembers": "{{count}} 位人类成员",
-    "status": {
-      "creating": "创建中",
-      "running": "运行中",
-      "paused": "已暂停",
-      "stopping": "停止中",
-      "stopped": "已停止",
-      "deleted": "已删除"
-    },
-    "errors": {
-      "loadTeams": "团队列表加载失败",
-      "deleteTeam": "删除团队失败：{{team}}",
-      "stopTeam": "停止团队失败"
-    }
-  },
   "team": {
     "members": "团队成员",
-    "quotaUsage": "团队 {{used}}/{{limit}}",
-    "orgQuotaUsage": "组织 {{used}}/{{limit}}",
     "membersTab": "团队",
     "statusTab": "状态",
     "filesTab": "文件",
@@ -2004,11 +1972,11 @@
       "weiboHotList": "微博热搜",
       "baiduHotList": "百度热搜",
       "hotListRank": "第 {{rank}}",
-      "hotListListedAt": "上榜 {{time}}",
+      "hotListListedAt": "上榜于 {{time}}",
       "viewHotListEntry": "看看这条热搜：{{source}}",
       "hotListEntry": "热搜",
-      "openNewsSearch": "打开热搜话题",
-      "searchRelatedNews": "打开热搜",
+      "openNewsSearch": "打开这条热搜相关内容",
+      "searchRelatedNews": "查看相关内容",
       "statusPreparing": "正在准备话题，你也可以直接开始聊。",
       "statusPreparingWithCards": "正在准备话题，你也可以直接开始聊。",
       "statusUpdateIncomplete": "正在准备话题，你也可以直接开始聊。",
@@ -2151,6 +2119,7 @@
     "extension": "扩展",
     "extensionSearchPlaceholder": "请输入关键字搜索",
     "extensionEmpty": "暂无内容",
+    "ttseWorkModeNotice": "ttse经验沉淀功能已内置在work模式中，如需开启，请在设置中打开“<strong>本地环境事实与任务经验自动演进</strong>”开关。",
     "extensionConnect": "连接",
     "extensionManagePlugins": "管理我的插件",
     "extensionManageMcps": "管理我的连接器",
@@ -2241,7 +2210,10 @@
       "readFileFailed": "读取文件失败：{{name}}",
       "readImageFailed": "读取图片失败：{{name}}",
       "filePickerUnsupported": "当前环境无法打开本机文件选择器（请确认 jiuwenswarm 在本机运行且已重启加载最新后端）",
-      "filePickerFailed": "打开文件选择器失败"
+      "filePickerFailed": "打开文件选择器失败",
+      "preparingFiles": "正在准备文件…",
+      "preparingFilesHint": "读取完成前请稍候",
+      "cancelPreparing": "取消等待"
     },
     "uploading": "上传中...",
     "uploadFailed": "上传失败",
@@ -2421,7 +2393,6 @@
       "apply": "应用",
       "switching": "正在切换...",
       "logout": "注销登录",
-      "switchToManager": "进入管理面",
       "customRequired": "请填写 bot_id、group_id、user_id、jiuwenclaw_id",
       "noMatch": "没有匹配项",
       "pleaseSelect": "请选择"
@@ -2753,13 +2724,6 @@
         "failed": "安装失败",
         "running": "正在安装"
       }
-    },
-    "proactive": {
-      "typeLabel": {
-        "skill_recommend": "技能推荐",
-        "task_reminder": "任务提醒",
-        "need_exploration": "探索发现"
-      }
     }
   },
   "cron": {
@@ -2784,9 +2748,7 @@
     "disable": "停用",
     "loading": "正在加载任务列表...",
     "deleteConfirm": "确定要删除这个任务吗？",
-    "autoManaged": "自动维护",
-    "autoManagedHint": "此任务由主动推荐开关自动创建/删除；开关在设置→主动推荐。仅 Cron 表达式与时区可在此面板编辑，其余字段（名称/状态/描述/偏移/频道）不可改；删除请到设置关闭开关。",
-    "autoManagedToggleDisabled": "自动维护任务的开关由设置→主动推荐控制，不可在此切换。",
+    "autoManagedToggleDisabled": "此字段当前不可编辑。",
     "pageTitle": "定时任务",
     "pageSubtitle": "配置和管理按计划执行的自动化任务。",
     "actions": {
@@ -3025,8 +2987,7 @@
       "updated": "任务更新成功",
       "deleted": "任务删除成功",
       "statusUpdated": "任务状态更新成功",
-      "runNow": "任务已触发立即执行",
-      "proactiveRunNow": "推荐任务已在后台启动，将自动判断是否需要推荐，结果稍后提示。"
+      "runNow": "任务已触发立即执行"
     },
     "preview": {
       "loading": "正在加载下次触发时间...",
@@ -3537,6 +3498,7 @@
       "installing": "安装中...",
       "uninstall": "卸载",
       "uninstalling": "卸载中...",
+      "update": "更新",
       "importLocal": "导入本地技能",
       "sourceManager": "源管理",
       "create": "创建",
@@ -4178,7 +4140,15 @@
       "Engineering": "产品研发",
       "Life": "生活方式",
       "Custom": "自定义",
-      "Other": "其他"
+      "Other": "其他",
+      "Office Productivity": "办公效率",
+      "Software Development": "软件开发",
+      "Data Science & Research": "数据与科研",
+      "Multimodal & Media": "多模态媒体",
+      "Content Creation": "内容创作",
+      "Lifestyle & Health": "生活与健康",
+      "Finance & Wealth Management": "金融与理财",
+      "Compliance & Legal": "合规与法律"
     },
     "actions": {
       "working": "处理中",
@@ -4216,6 +4186,7 @@
       "detailError": "专家详情加载失败，请重试。",
       "hubAssetChanged": "该专家已在 Hub 更新或下架，广场正在刷新，请返回后重新选择。",
       "actionError": "操作未完成，请稍后重试。",
+      "agentAccessDenied": "不在授权范围内，操作已拒绝。",
       "duplicateName": "专家名称已存在，请更换名称后重试。",
       "agentUnavailable": "该专家已不存在，请刷新列表后重试。",
       "agentDefinitionUnavailable": "该专家定义不完整，暂时无法使用。",
@@ -5168,7 +5139,15 @@
       "communication": "通话沟通",
       "Engineering": "工程开发",
       "Design": "设计创意",
-      "other": "其他"
+      "other": "其他",
+      "Office Productivity": "办公效率",
+      "Software Development": "软件开发",
+      "Data Science & Research": "数据与科研",
+      "Multimodal & Media": "多模态媒体",
+      "Content Creation": "内容创作",
+      "Lifestyle & Health": "生活与健康",
+      "Finance & Wealth Management": "金融与理财",
+      "Compliance & Legal": "合规与法律"
     },
     "search": {
       "plugin": "搜索插件",
@@ -5842,6 +5821,8 @@
     "clickToViewDetail": "点击查看详情",
     "runIdTooltip": "运行 ID：{{id}}",
     "executorTooltip": "当前由 {{name}} 执行",
+    "forkFromSession": "从会话 {{name}} 分叉",
+    "forkChildSession": "分叉产生的子会话",
     "executorOrchestration": "【{{name}} 的编排 · {{workflow}}】",
     "runFoldDivider": "进行中 {{active}} · 已结束 {{ended}}"
   },
@@ -5991,6 +5972,11 @@
     "chat": {
       "title": "私聊",
       "failed": "消息处理失败：{{reason}}",
+      "modelNotConfigured": "请先在「设置 → 模型」中配置可用模型，配置完成后即可与该员工对话。",
+      "modelPending": "待生效",
+      "modelUnavailable": "请选择模型",
+      "modelUnavailableHint": "原模型已删除或不可用，请为该员工重新选择并保存可用模型后再发送消息。",
+      "notPublished": "请先在员工管理中保存并发布配置，再与该员工对话。",
       "noReply": "员工没有回复消息",
       "file": {
         "download": "下载",
@@ -6115,6 +6101,8 @@
         "knowledge": "添加知识",
         "starterPrompts": "添加快捷问"
       },
+      "starterPromptsLimit": "最多添加 {{count}} 条",
+      "starterPromptDuplicate": "与上面的问题重复，保存时只保留一条",
       "empty": {
         "skills": "暂无技能",
         "connectors": "暂无连接器",
@@ -6146,6 +6134,7 @@
       "clientId": "Client ID",
       "dingtalkHint": "绑定后可通过钉钉单聊分派任务，当前支持文本消息。",
       "isolationHint": "Web、飞书和钉钉共用同一员工与工作空间；各会话独立，跨群分享须按授权处理。",
+      "channelAlreadyBound": "该渠道已绑定其他员工，请先解除原绑定。",
       "robotCode": "Robot Code（可选）",
       "robotCodePlaceholder": "按应用配置填写，留空沿用 Client ID",
       "welinkTitle": "绑定 WeLink",
@@ -6224,29 +6213,33 @@
       "editResources": "编辑技能与连接器",
       "resourcesHint": "从本机已安装的技能和已连接的连接器中选择。保存并发布后，该员工之后的新任务才会使用这次选择。",
       "saveResources": "保存并发布",
+      "saveSuccess": "保存成功",
       "savingResources": "正在保存",
+      "saveSettingsFailed": "配置保存或发布失败，请重试。",
+      "modelEmptyHint": "请先在「设置 → 模型」中添加模型。",
+      "modelUnavailableHint": "原配置的模型已删除或不可用，请重新选择模型并保存。",
       "catalogLoading": "正在读取已安装资源",
       "catalogFailed": "已安装资源加载失败，仍可移除当前选择",
       "catalogEmptySkills": "没有可装载的已安装技能",
       "catalogEmptyConnectors": "没有可装载的已连接连接器",
       "catalogEmptyPlugins": "没有可装载的已安装插件",
-      "catalogEmptyKnowledge": "没有可装载的已发布知识页面。请先在左侧「知识」中添加内容并完成发布。",
+      "catalogEmptyKnowledge": "没有可装载的已发布知识页面。请先在左侧「资产」中添加内容并完成发布。",
       "modelSelection": "选择模型",
       "knowledgeSource": "来源",
       "knowledgeUpdatedAt": "更新时间",
       "knowledgeHint": "从个人上下文已发布的页面中选择。保存并发布后，所选页面会复制到该员工的办公目录，之后的新任务才能读取。未选择的页面不会进入该员工。",
       "joinedAt": "入职时间：{{time}}",
       "mail": {
-        "title": "腾讯 Agent Mail",
-        "description": "为该员工单独连接腾讯邮箱，授权后即可在新对话中使用。",
+        "title": "Agent Mail",
+        "description": "为该员工单独连接邮箱，授权后即可在新对话中使用。",
         "mailboxAddress": "绑定邮箱：",
         "isolationHint": "本机未找到可用的 Node.js npx，无法启动 Agent Mail CLI。",
-        "start": "连接腾讯邮箱",
+        "start": "连接邮箱",
         "authorizing": "等待完成授权…",
         "disconnect": "解除邮箱连接",
         "cancel": "取消授权",
         "popupBlocked": "请允许弹出窗口后重试邮箱授权。",
-        "preparing": "正在准备腾讯邮箱授权…",
+        "preparing": "正在准备邮箱授权…",
         "status": {
           "loading": "正在检查邮箱连接…",
           "unavailable": "本机未找到可用的 Node.js npx，无法启动 Agent Mail CLI。",
@@ -6258,9 +6251,12 @@
       },
       "dingtalkAuth": {
         "title": "钉钉用户账号授权",
-        "description": "为该员工单独授权钉钉用户账号，用于读取已接入群消息、操作在线文档及管理日历日程。实际可用范围取决于账号和组织权限。",
+        "description": "通过钉钉 CLI 发起账号授权，授权信息按员工独立保存。授权后，员工可在账号及组织权限允许的范围内读取已接入群消息、操作在线文档和管理日历日程。",
+        "prerequisite": "首次授权前，请联系组织管理员在钉钉开放平台的「CLI 设置」中开通 CLI 访问，添加该员工绑定的应用，并允许当前授权账号使用。仅创建并发布机器人应用不代表已开通 CLI。",
         "begin": "授权钉钉账号",
         "beginPending": "正在发起授权…",
+        "popupBlocked": "授权页未自动打开或已关闭，请使用下方链接继续本次授权，无需重新发起。",
+        "waitDescription": "正在连接钉钉，获取链接后会自动跳转。首次使用可能需要准备钉钉 CLI，请勿重复点击。",
         "cancel": "取消授权",
         "disconnect": "断开账号",
         "open": "重新打开授权页",
@@ -6270,6 +6266,15 @@
         "accountUnavailable": "账号名暂不可用",
         "organizationUnavailable": "组织名称暂不可用",
         "organization": "所属组织",
+        "groupMonitor": {
+          "discovering": "正在自动发现该员工机器人所在的群并启动监听…",
+          "listening": "正在监听 {{count}} 个群的普通消息，无需先 @。",
+          "no_groups": "未发现该账号和员工机器人共同所在的群，请确认机器人已加入工作群。",
+          "error": "群消息发现或读取暂时异常，正在重试。",
+          "disabled": "员工已停用，普通群消息监听已暂停。",
+          "mentions_only": "当前为被动回复模式，仅处理 @ 员工的群消息。",
+          "unavailable": "群消息监听服务尚未就绪，正在等待启动。"
+        },
         "openAdmin": "前往钉钉开放平台（CLI设置）",
         "failures": {
           "org_access_denied": "钉钉账号已确认，但所选组织未授权此账号通过 CLI 访问数据。请联系组织主管理员开通权限后重新授权，或选择已有权限的组织。",
@@ -6319,10 +6324,12 @@
       "cancelAuthorizationTitle": "取消渠道授权",
       "cancelAuthorizationWarning": "取消后，该同事会停止通过这个渠道接收和回复消息。",
       "cancelAuthorizationMessage": "确定取消「{{channel}}」的授权吗？之后可以重新授权。",
+      "cancelAuthorizationSuccess": "取消授权成功",
       "addConnection": "添加连接",
       "removeConnection": "解除连接",
       "removeConnectionWarning": "解除后，该应用的消息不再交给这位员工；这个连接的工作空间和历史保留，重新绑定同一应用后恢复。",
       "removeConnectionConfirm": "确定解除{{platform}}应用 {{app}} 与 AI 员工的连接：",
+      "removeConnectionSuccess": "解除连接成功",
       "workLog": "工作日志",
       "periods": {
         "7d": "最近7天",
@@ -6441,11 +6448,6 @@
       "webConnection": "网页",
       "connectionHint": "在这里生成的共享文件，{{platform}}用户也能读取。",
       "webResult": "网页工作空间有新结果，点击查看",
-      "defaultPrompts": [
-        "统计今日咨询热点",
-        "复盘群内回复质量",
-        "导出今日对话摘要"
-      ],
       "featuresTitle": "功能特点",
       "features": {
         "chat": {
@@ -6490,7 +6492,7 @@
       "confirm": "确定",
       "executor": "执行者",
       "chooseExecutor": "请选择执行者",
-      "runNow": "立即运行",
+      "runNow": "立即执行",
       "history": "运行历史",
       "edit": "编辑",
       "delete": "删除",
@@ -6530,10 +6532,11 @@
         "paused": "已暂停",
         "failed": "运行失败",
         "completed": "已完成",
-        "queued": "排队中"
+        "queued": "排队中",
+        "expired": "已过期"
       },
       "run": {
-        "success": "运行成功",
+        "success": "已完成",
         "failed": "运行失败",
         "stopped": "停止运行",
         "running": "运行中"
@@ -6545,8 +6548,10 @@
         "running": "运行中"
       },
       "error": {
+        "nameRequired": "请输入任务名称",
+        "promptRequired": "请输入任务描述",
         "required": "请填写任务名称和描述",
-        "executorRequired": "请选择执行者",
+        "executorRequired": "请选择执行此任务的员工",
         "intervalInvalid": "间隔必须是正整数",
         "futureRequired": "单次执行时间必须晚于当前时间",
         "rangeInvalid": "生效结束时间必须晚于开始时间"
@@ -6613,6 +6618,7 @@
       "periodStart": "开始日期",
       "periodEnd": "结束日期",
       "periodTo": "至",
+      "periodLimit": "最多支持查看 {{count}} 天数据，已自动调整开始日期",
       "metrics": {
         "members": "员工数量",
         "activeDays": "活跃天数",
@@ -6690,6 +6696,7 @@
     }
   },
   "groupChat": {
+    "organizationInterrupted": "服务重启或执行进程退出，组织任务已中断。已完成成果保留，请重新发起任务。",
     "externalRuntimeDisabled": "{{agents}} 尚未启用。请在设置的「智能体 → 三方 Agent」中打开对应开关，再重新添加成员。",
     "useTeam": "使用该专家团",
     "teamMembers": "团队成员（{{count}}人）",
@@ -6697,6 +6704,10 @@
     "taskTitle": "任务",
     "unnamedTask": "未命名子任务",
     "noSubtasks": "暂无子任务记录",
+    "expertTasks": "本轮团内任务",
+    "expertTasksProgress": "已完成 {{completed}} / {{total}}",
+    "expertTasksUnavailable": "团内任务暂时无法刷新，已显示的记录可能不是最新状态。",
+    "expertTaskUnassigned": "待分配专家",
     "generatingTasks": "任务生成中",
     "organizationStage": {
       "starting": "专家团启动中",
@@ -6722,6 +6733,11 @@
     "modelLocked": "群聊开始后不可切换模型",
     "processing": "正在处理…",
     "mentionPhase": {
+      "organizationFailed": "本次处理未完成，请重新发送消息。",
+      "organizationPending": "已收到，正在处理中…",
+      "organizationClarification": "等待补充信息…",
+      "organizationReceived": "组织已收到，正在处理中…",
+      "organizationSummarizing": "汇总中…",
       "dispatching": "已收到，正在处理中…",
       "planning": "正在规划任务…",
       "generating": "正在生成任务计划…",
@@ -6763,6 +6779,11 @@
     "download": "下载",
     "quoteToChat": "引用到对话",
     "renameFile": "重命名文件",
+    "renameFileFailed": "重命名失败：{{reason}}",
+    "renameFileExists": "同目录下已有同名文件，请使用其他名称。",
+    "renameFileMissing": "原文件不存在，可能已被移动或删除。",
+    "renameFilePermission": "没有权限修改该文件，或文件正被其他程序占用。",
+    "renameFileForbidden": "只能重命名本群工作区内的普通文件，不支持符号链接或外部文件。",
     "fileName": "文件名",
     "deleteFile": "删除文件",
     "deleteFileWarning": "删除后该文件将从群聊消息和产物列表中移除；位于本群工作区内的文件会同时从磁盘删除。此操作无法撤销。",

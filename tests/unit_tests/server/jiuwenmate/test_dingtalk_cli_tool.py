@@ -700,6 +700,7 @@ async def test_group_document_edit_is_not_available_without_trusted_group_contex
 @pytest.mark.asyncio
 @pytest.mark.parametrize("error_code", [
     "DINGTALK_CLI_EXECUTION_ERROR", "DINGTALK_CLI_API_ERROR", "DINGTALK_CLI_API_FORBIDDEN",
+    "DINGTALK_CLI_PREPARE_FAILED",
 ])
 async def test_cli_failure_stops_repeated_calls_for_the_same_execution(error_code):
     class _FailingService:

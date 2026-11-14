@@ -23,9 +23,25 @@ const LIFECYCLE_ERROR_KEYS: Record<string, string> = {
 // 会话是新建的，在会话里换模型不会回写任务配置。
 const AMBIGUOUS_MODEL_SELECTION_MARKER = 'ambiguous legacy model name';
 
+// Only the generic free-model failure can safely fall back to the credits-used-up hint.
+// `_annotate_model_error` classifies only login (free) model sessions: `classify_model_error`
+// returns None for self-configured providers and marks classified payloads with `upstream: true`.
+// Those providers also return insufficient_quota or 402 for their own billing, so no-code and
+// unknown-code errors must keep their original text.
+// 402 must carry status-code context, mirroring backend `_STATUS_RE`; a bare number would also
+// match timeout seconds or token counts such as "request timed out after 402 seconds".
+const QUOTA_EXHAUSTED_PATTERN =
+  /insufficient[_\s-]*quota|quota[_\s-]*(has been\s*)?(exhausted|used up)|exhausted[_\s-]*quota|exceeded your current quota|out of (free\s*)?credits?|no (free\s*)?credits? (left|remaining)|免费(积分|额度)[^,。;；\n]{0,8}(用完|耗尽|不足)|(积分|额度)[^,。;；\n]{0,8}(已用完|已耗尽)|余额不足|(?:error[_\s-]?code|status(?:[_\s-]?code)?)\s*[:=]?\s*402\b/i;
+
 function withModelNameAmbiguousHint(message: string, t: Translate): string {
   if (!message.includes(AMBIGUOUS_MODEL_SELECTION_MARKER)) return message;
   return `${message}\n${t('chat.modelNameAmbiguousHint')}`;
+}
+
+function withQuotaExhaustedHint(message: string, t: Translate): string | null {
+  if (!QUOTA_EXHAUSTED_PATTERN.test(message)) return null;
+  console.warn('[free-models] quota exhaustion detected from raw error');
+  return t('auth.huawei.quota.exhaustedHint');
 }
 
 export function describeChatError(
@@ -39,6 +55,10 @@ export function describeChatError(
   if (lifecycleKey) return t(lifecycleKey);
   const hintKey = UPSTREAM_HINT_KEYS[code];
   if (!hintKey) return withModelNameAmbiguousHint(rawErrorMsg, t);
+  if (code === 'free_model_unavailable' && payload.upstream === true) {
+    const quotaHint = withQuotaExhaustedHint(rawErrorMsg, t);
+    if (quotaHint) return quotaHint;
+  }
   if (code === 'login_required' && payload.upstream !== true) {
     return withModelNameAmbiguousHint(rawErrorMsg, t);
   }

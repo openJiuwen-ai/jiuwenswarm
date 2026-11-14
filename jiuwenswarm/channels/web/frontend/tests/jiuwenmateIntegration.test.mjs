@@ -13,11 +13,11 @@ test('public rail entries open existing swarm pages and do not create jiuwenmate
   const byLabel = Object.fromEntries(JIUWENMATE_PUBLIC_PAGES.map((item) => [item.labelKey, item.nav]));
   assert.equal(byLabel['jiuwenmate.nav.plaza'], 'agents');
   assert.equal(byLabel['jiuwenmate.nav.assets'], 'personalContext');
-  assert.equal(byLabel['jiuwenmate.nav.knowledge'], 'personalContext');
+  assert.equal(byLabel['jiuwenmate.nav.knowledge'], undefined);
   assert.equal(byLabel['jiuwenmate.nav.skills'], 'skills');
   assert.equal(byLabel['jiuwenmate.nav.extensions'], 'connectorMarket');
   assert.equal(byLabel['jiuwenmate.nav.settings'], 'settings');
-  assert.equal(JIUWENMATE_PUBLIC_PAGES.length, 6);
+  assert.equal(JIUWENMATE_PUBLIC_PAGES.length, 5);
   for (const item of JIUWENMATE_PUBLIC_PAGES) {
     assert.equal(EXISTING_PAGES.has(item.nav), true);
   }

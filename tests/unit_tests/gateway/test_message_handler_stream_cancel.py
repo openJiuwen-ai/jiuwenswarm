@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from sqlalchemy.exc import TimeoutError as DatabaseTimeoutError
-from openjiuwen_protocol.e2a.agent_models import AgentResponseChunk
-from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-from openjiuwen_protocol.message import ReqMethod
+from e2a.agent_models import AgentResponseChunk
+from e2a.gateway_normalize import e2a_from_agent_fields
+from e2a.message import ReqMethod
 from agent_gateway.message_handler.message_handler import ChannelMode, MessageHandler
 from agent_gateway.routing.session_sharing import SubRole
 

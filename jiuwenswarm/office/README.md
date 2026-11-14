@@ -1,24 +1,28 @@
 # Office 后端
 
-PowerPoint 任务窗格在 AgentServer 侧的能力：工具合同、在任务窗格执行的客户端工具、人设与 skills、
+Office 任务窗格在 AgentServer 侧的能力：工具合同、在任务窗格执行的客户端工具、人设与 skills、
 插入用的会话资产。`server/client_attachments/registry.py` 把应用编号 `office-powerpoint`
 登记为包目录 `powerpoint/`；这个目录既是合同，也是对话加载的 agent template（`manifest.json`）。
 
 ## 目录
 
 ```text
-contract.py            读 powerpoint/tools.json，校验 annotations，生成 ToolCard
-client_tools.py        PowerPointTool(ClientTool)：build_request 判断能否执行并给出下载链接，complete 处理截图；
+contract.py            读包目录的 tools.json，校验 annotations，生成 ToolCard
+client_tools.py        TaskPaneTool(ClientTool)：build_request 判断能否执行并给出下载链接，complete 处理截图；
                        VerifySlideVisualTool：verify_slide_visual
 review.py              视觉复核：选审稿模型、审稿调用（60s）、判定、几何摘要、返回给作者的结果
-rails.py               OfficeToolsRail：注册工具、按 supported_tools 过滤每次模型调用
-assets.py              publish_powerpoint_asset 与会话资产（office_assets/，经 /file-api/download 下发）
+rails.py               OfficeToolsRail：注册所在包的工具，第一次模型调用时按 supported_tools 去掉窗格跑不了的
+assets.py              publish_office_asset 与会话资产（office_assets/，经 /file-api/download 下发）
 documents.py           list_open_documents：同一用户其他已连接的文档及其对话
 runtime.py             会话目录、资产允许目录、把图片存进会话 uploads
 powerpoint/            合同 tools.json、profile.json（任务窗格构建时读取）；agent template：
                        manifest.json、persona/（替换默认身份）、rails/（指向 OfficeToolsRail）、skills/；
                        review.md（verify_slide_visual 的审稿清单）
 ```
+
+`contract.py`、`TaskPaneTool`、`rails.py` 不认识 Office：任何在自己包里声明工具、由客户端执行的应用都是
+这一套。现在登记的应用都是 Office 宿主，所以放在这里；出现第一个非 Office 的客户端应用时，把这三块
+挪到 `server/client_attachments/`，Office 专属的东西（视觉复核、素材类型、`list_open_documents`）留下。
 
 ## 何时生效
 
@@ -30,6 +34,8 @@ powerpoint/            合同 tools.json、profile.json（任务窗格构建时�
 - 该对话的每一轮（任务窗格发的消息、别的对话发来的消息、续跑）在加载装备插件的同一步给本对话的
   agent 加载 `powerpoint/` 这个 agent template（人设、`OfficeToolsRail`、skills），每个 agent 实例只加载一次；
   `client_app` 为空的对话不受影响。这类对话不装备专家（`agent_template_name` 被拒绝），也不从预热池领取。
+- `OfficeToolsRail` 从加载它的 template 得知自己的包目录（agent-core 的 `from_plugin_context`，
+  `source_root` 即 `manifest.json` 所在目录），包里的 `rails/office_tools.py` 只是转出这个类。
 - 建这类对话的 agent 时就去掉登记表里该应用 `leaves_out` 的能力：子代理（段落与 `subagent_*` 工具）、
   `send_file_to_user`、input 段、output 段。这些能力不挂上，热更新、每轮补挂和重建 agent 后也不会回来。
 - `client_app` 为已登记应用的对话只在该客户端里显示：不出现在 web/desktop 的 session 列表和项目里，
@@ -43,16 +49,17 @@ powerpoint/            合同 tools.json、profile.json（任务窗格构建时�
   `arguments` 是本次调用的参数，`client_tool.downloads` 是参数里各资产 handle 的下载链接。
   任务窗格执行后用 `chat.send`（`source: "client_tool_interrupt"`）续跑。
 - 审批只在后端：工具和其他工具一样走 permissions 规则，任务窗格不再自己询问。
-- 本文档的 PowerPoint 跑不了的工具不出现在模型的工具列表里；`tool_search` 仍可能找到
-  deferred 工具，调用时直接报错说明原因。文档当前没打开时调用立即失败（可重试），
+- 窗格连上后的第一次模型调用，rail 把窗格跑不了的工具从 agent 上去掉：模型的工具列表、
+  `tool_search` 和 deferred 工具目录都没有它们。之后不再变：一个对话在一个宿主里用。
+  调用途中窗格失去支持时，调用直接报错说明是插件还没有这个工具。文档当前没打开时调用立即失败（可重试），
   不会占住这一轮；已发出的调用若窗格消失，由 attach 的 sweep 答成 `client_gone`。
 - 截图：当前模型能看图时，图片只送进下一次模型调用（`keep_in_context: False`）；
   不能看图时存进本对话 uploads，结果里给出 `visual_attachment.path`。
 - 视觉复核 `verify_slide_visual`：审稿只看清单和这一页，不带对话内容。审稿模型是本对话当前的模型
   （能看图时，判断同上一条），否则是 `models.vision`（与 agent 自己的视觉工具同一门控）；两者都没有时，
-  build_request 在上面的检查之后立即失败、不可重试。通过后 `client_tool.render.width` 为 960。任务窗格在
-  一次答复里给出这一页的截图和几何测量（`{slide_id, slide_index, geometry|null}`）。complete 校验答复
-  （恰好一张图、`slide_id` 一致）后，把审稿清单（`review.md`）、几何摘要和截图交给审稿模型，只有这两条消息；
+  build_request 在上面的检查之后立即失败、不可重试。任务窗格在一次答复里给出这一页的截图和几何测量
+  （`{slide_id, geometry}`）。complete 校验答复（恰好一张图、`slide_id` 一致、带几何）后，把包里的审稿清单
+  （`review.md`）、几何摘要和截图交给审稿模型，只有这两条消息；
   60s 内没有答复、供应商报错或两次空答复时，返回不带 verdict 的结果。作者拿到 `done|needs_work`、
   `hard_defects`/`advisories`/`expected_change_checks` 和同一张截图（截图的去向同上一条）。
   怎么用这个结果（`needs_work` 不算完成、同一页三轮就停、没有 verdict 时自己看图并说明）只写在人设的编辑循环里。
@@ -60,12 +67,12 @@ powerpoint/            合同 tools.json、profile.json（任务窗格构建时�
 
 ## 资产
 
-插入图片、导入 .pptx 时，模型先用 `publish_powerpoint_asset` 发布对话项目目录、agent
+插入图片、导入 .pptx 时，模型先用 `publish_office_asset` 发布对话项目目录、agent
 workspace 或本对话 uploads 里的文件，拿到它的 descriptor（不透明的 handle、大小、SHA-256）；
 各工具的资产参数都直接接收这个 descriptor（`presentation_apply_patch` 另加 `key`）。调用引用本对话的
 handle 时，`build_request` 给出 `/file-api/download` 链接；这个下载接口和 `send_file_to_user`
 的链接一样，不检查过期和对话，任务窗格下载后按 descriptor 的大小和 SHA-256 校验。
-后端不保存演示文稿副本，撤销靠 PowerPoint。
+后端不保存文档副本，撤销靠宿主自己的撤销。
 
 ## 测试
 

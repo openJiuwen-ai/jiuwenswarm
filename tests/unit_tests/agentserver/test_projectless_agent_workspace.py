@@ -306,7 +306,7 @@ async def test_runtime_prompt_describes_projectless_agent_task_dirs(
         lambda: agent_dir,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_domain_data_dir",
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
         lambda: tmp_path,
     )
     monkeypatch.setattr(

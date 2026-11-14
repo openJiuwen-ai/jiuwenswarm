@@ -7,7 +7,6 @@ import { describeChatError } from './free-models/chatError';
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
 import { parseTimestampToMs, timestampMsToIso } from '../utils/timestamp';
 import { extractAutomation } from '../utils/heartbeatAutomation';
-import { proactiveAssistantMessageId } from '../utils/proactiveRecommendation';
 import {
   crossSessionAssistantMessageId,
   crossSessionUserMessageId,
@@ -22,6 +21,7 @@ import {
   isGoalCompletedContent,
 } from '../components/GoalBar/goalCompletedMessage';
 import { HistoryRecordReassembler } from './historyRecordReassembler';
+import { stripMentionAppendix } from './designer/designerMentions';
 import { expertTeamId } from './teamOrganization/conversation';
 import { isTeamOrganizationUiEnabled } from './teamOrganization/featureConfig';
 import { readAgentTemplateName } from './agentIdentity';
@@ -30,8 +30,6 @@ import {
   isTeamLeaderContextUsageSnapshot,
   parseContextUsageSnapshot,
 } from './contextUsage/contextUsageModel';
-import { isEnterprise } from '../edition';
-import { isTeamAgentMode } from './planMode/wireMode';
 
 export { HistoryRecordReassembler };
 
@@ -722,9 +720,7 @@ function safeTimestampMs(value: unknown): number {
 }
 
 function isTeamModeRecord(record: Record<string, unknown>): boolean {
-  const mode = typeof record.mode === 'string' ? record.mode.trim().toLowerCase() : '';
-  if (!isEnterprise()) return mode === 'team';
-  return isTeamAgentMode(mode);
+  return typeof record.mode === 'string' && record.mode.trim().toLowerCase() === 'team';
 }
 
 function isTeamTeammateMessageRecord(record: Record<string, unknown>): boolean {
@@ -1142,7 +1138,8 @@ function parseSessionHistoryTimelineEntry(
         id,
         role: 'user',
         outputOrder: readOutputOrder(record) ?? readOutputOrder(eventPayload),
-        content,
+        // A design "@" mention carries a leader-only appendix; show the user's own text.
+        content: stripMentionAppendix(content),
         timestamp: at,
         ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
         ...(mediaItems.length > 0 ? { mediaItems } : {}),
@@ -1178,34 +1175,6 @@ function parseSessionHistoryTimelineEntry(
         ? 'subagent_activity'
         : 'subagent_message';
     return { kind, at: replay.at, payload: replay.payload };
-  }
-
-  if (eventType === 'chat.notice') {
-    const noticePayload = buildEventPayloadForRecord(record);
-    const noticeType = pickFirstString(noticePayload, ['notice_type', 'type'])
-      ?? pickFirstString(record, ['notice_type', 'type'])
-      ?? '';
-    if (
-      noticeType !== 'requested_team_size'
-      && noticeType !== 'team_quota'
-      && noticeType !== 'team_teammate_quota'
-    ) {
-      return null;
-    }
-    const noticeContent = pickFirstString(noticePayload, ['content', 'message', 'text'])
-      ?? (typeof record.content === 'string' ? record.content : '');
-    if (!noticeContent.trim()) return null;
-    const noticeId = pickFirstString(record, ['id', 'message_id'])
-      ?? `notice-${noticeType}-${sessionId}-${at}`;
-    return {
-      kind: 'message',
-      message: {
-        id: noticeId,
-        role: 'system',
-        content: noticeContent,
-        timestamp: at,
-      },
-    };
   }
 
   if (!ALLOWED_ASSISTANT_EVENT_TYPES.has(eventType)) {
@@ -1329,23 +1298,16 @@ function parseSessionHistoryTimelineEntry(
         },
       };
     }
-    // 主动推荐消息：从历史记录还原 source/proactive_type，使刷新后仍按
-    // ProactiveRecommendationCard 渲染（否则会退化为普通白色气泡）。
-    const histSource = typeof payload.source === 'string' ? payload.source : '';
-    const isProactiveRecommendation = histSource === 'proactive_recommendation';
-    const histProactiveType = typeof payload.proactive_type === 'string' ? payload.proactive_type : '';
-    const agentTemplateName = isProactiveRecommendation
-      ? undefined
-      : readAgentTemplateName(payload) ?? readAgentTemplateName(record);
-    // 刷新后历史里的 proactive 消息也需带 proactiveRecId，否则赞/踩按钮在历史消息上不出现。
-    const histProactiveRecId = typeof payload.proactive_rec_id === 'string' ? payload.proactive_rec_id : '';
+    // Scheduled proactive recommendation history is no longer restored into the chat UI.
+    if (isProactiveRecommendationRecord(record) || isProactiveRecommendationRecord(payload)) {
+      return null;
+    }
+    const agentTemplateName = readAgentTemplateName(payload) ?? readAgentTemplateName(record);
     const assistantCrossSession =
       extractCrossSessionMessage(payload) ?? extractCrossSessionMessage(record);
     const id = assistantCrossSession
       ? crossSessionAssistantMessageId(record.request_id, assistantCrossSession.messageId)
-      : isProactiveRecommendation && histProactiveRecId
-        ? proactiveAssistantMessageId(histProactiveRecId)
-        : restoredId;
+      : restoredId;
     // completed_at：收尾时刻（耗时）；timestamp 已是气泡出现/首包时刻（排序）
     const recordCompletedAtMs = parseTimestampToMs(record.completed_at);
     const completedAtMs = Number.isFinite(recordCompletedAtMs)
@@ -1371,12 +1333,7 @@ function parseSessionHistoryTimelineEntry(
           ? { keepExpanded: true }
           : {}),
         ...(completedAt ? { completedAt, outputReplayUntil: completedAtMs } : {}),
-        ...(isProactiveRecommendation ? { isProactiveRecommendation } : {}),
-        ...(isProactiveRecommendation && histProactiveType
-          ? { proactiveType: histProactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' }
-          : {}),
         ...(agentTemplateName ? { agentTemplateName } : {}),
-        ...(isProactiveRecommendation && histProactiveRecId ? { proactiveRecId: histProactiveRecId } : {}),
         ...(assistantCrossSession ? { crossSession: assistantCrossSession } : {}),
         // §9：Heartbeat 自动轮的 assistant 消息同样带 metadata.automation 落盘，恢复时读回。
         // 优先读 payload（event_payload 已提升），再回退到 record 顶层。

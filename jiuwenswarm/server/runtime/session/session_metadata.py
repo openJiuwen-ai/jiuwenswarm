@@ -2474,7 +2474,7 @@ def _collect_all_sessions_metadata(
         if not _SAFE_USER_ID_RE.match(user_id):
             logger.warning("[session_metadata] invalid user_id rejected: %r", user_id)
             return []
-        sessions_dir = Path("/home") / user_id / ".jiuwenswarm" / "domain" / "agent" / "sessions"
+        sessions_dir = Path("/home") / user_id / ".jiuwenswarm" / "agent" / "sessions"
     else:
         sessions_dir = get_agent_sessions_dir()
     if not sessions_dir.is_dir():
@@ -2560,7 +2560,7 @@ def _collect_all_sessions_metadata(
 def _register_common_provider() -> None:
     import sys
 
-    from openjiuwen_protocol.provider_domains import PROVIDER_DOMAIN_SESSION_METADATA
+    from e2a.provider_domains import PROVIDER_DOMAIN_SESSION_METADATA
 
     from jiuwenswarm.common.external_providers import register
 

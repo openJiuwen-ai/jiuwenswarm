@@ -48,9 +48,12 @@ def _spawn_push_task(coro: Any) -> None:
 def ensure_designer_agent_group_installed() -> None:
     """Install/refresh the in-repo designer AgentGroup (idempotent).
 
-    A built_in install copies the in-repo package once; when the repo copy
-    is newer (role templates added/changed — the manifest-package worker
-    surface lives there), re-copy so the installed tree matches HEAD.
+    A built_in install copies the in-repo package once; when the installed
+    copy no longer matches the repo (role templates, tools or rails added or
+    changed — the manifest-package worker surface lives there), re-copy so the
+    installed tree matches HEAD. Matching is by content, not age: another
+    checkout sharing this data dir may have installed a newer-dated copy whose
+    tools import names this checkout does not have.
     """
     from jiuwenswarm.server.runtime.extension_package_manager import (
         install_agent_group,
@@ -62,11 +65,11 @@ def ensure_designer_agent_group_installed() -> None:
     except Exception:
         installed = None
     if installed is not None:
-        # Refresh when the repo source tree is newer than the installed copy
+        # Refresh when the installed copy differs from the repo source tree
         # (any file added/changed — role templates, tools, rails — not just
         # the manifest; both live under the same built_in root).
         try:
-            if "built_in" in str(installed) and _source_tree_newer(
+            if "built_in" in str(installed) and _installed_tree_stale(
                 _designer_group_source_dir(), installed
             ):
                 import shutil as _shutil
@@ -79,21 +82,23 @@ def ensure_designer_agent_group_installed() -> None:
     install_agent_group({"id": DESIGNER_AGENT_GROUP})
 
 
-def _source_tree_newer(source: Path, installed: Path) -> bool:
-    """Whether any file under source is newer than the installed copy."""
-    def _newest(root: Path) -> float:
-        latest = 0.0
-        if not root.is_dir():
-            return latest
-        for path in root.rglob("*"):
-            if path.is_file():
-                try:
-                    latest = max(latest, path.stat().st_mtime)
-                except OSError:
-                    continue
-        return latest
+def _installed_tree_stale(source: Path, installed: Path) -> bool:
+    """Whether any source file is missing from, or differs in, the installed copy.
 
-    return _newest(source) > _newest(installed) + 1.0
+    Bytecode caches are ignored; extra files in the installed copy are too.
+    """
+    if not source.is_dir():
+        return False
+    for path in source.rglob("*"):
+        if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc":
+            continue
+        copy = installed / path.relative_to(source)
+        try:
+            if not copy.is_file() or copy.read_bytes() != path.read_bytes():
+                return True
+        except OSError:
+            return True
+    return False
 
 
 def _designer_group_source_dir() -> Path:

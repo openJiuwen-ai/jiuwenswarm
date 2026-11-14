@@ -14,20 +14,6 @@ import {
 
 const BASE = '/api/v1';
 
-test('agent group list is a gateway REST route', () => {
-  const listed = assembleWebRest(
-    'agent_groups.list',
-    { filter: 'builtin+hub', query: 'ppt' },
-    BASE,
-  );
-  assert.equal(listed.verb, 'GET');
-  assert.equal(listed.url, `${BASE}/agent-groups`);
-  assert.equal(listed.query.filter, 'builtin+hub');
-  assert.equal(listed.query.query, 'ppt');
-  const shown = assembleWebRest('agent_groups.show', { id: 'g1' }, BASE);
-  assert.equal(shown.url, `${BASE}/agent-groups/g1`);
-});
-
 test('unknown method is null, no rpc fallback', () => {
   assert.equal(assembleWebRest('command.goal', { session_id: 's1' }, BASE), null);
   assert.equal(assembleWebRest('memory.compute', {}, BASE), null);
@@ -42,22 +28,6 @@ test('session.list is GET query, not H1 /api/sessions', () => {
   assert.equal(assembled.url, '/api/v1/sessions');
   assert.deepEqual(assembled.query, { limit: '20' });
   assert.equal(assembled.jsonBody, null);
-});
-
-test('session.switch posts the session id in the path', () => {
-  const assembled = assembleWebRest('session.switch', {
-    session_id: 's',
-    previous_session_id: 'prev',
-    previous_mode: 'agent',
-    mode: 'team',
-    view_id: 'view-1',
-  }, BASE);
-  assert.ok(assembled);
-  assert.equal(assembled.verb, 'POST');
-  assert.equal(assembled.url, '/api/v1/sessions/s/actions/switch');
-  assert.equal(assembled.jsonBody.mode, 'team');
-  assert.equal(assembled.jsonBody.previous_session_id, 'prev');
-  assert.equal(assembled.jsonBody.session_id, undefined);
 });
 
 test('session.create keeps client session_id in body', () => {
@@ -79,6 +49,34 @@ test('chat.send is completions SSE with query dual-write', () => {
   assert.equal(assembled.jsonBody.enable_streaming, true);
   assert.equal(assembled.jsonBody.query, 'hi');
   assert.equal(assembled.jsonBody.content, 'hi');
+});
+
+test('session assets use the dedicated urls', () => {
+  const listed = assembleWebRest('session.assets.list', { session_id: 'sid' }, BASE);
+  assert.ok(listed);
+  assert.equal(listed.verb, 'GET');
+  assert.equal(listed.url, '/api/v1/sessions/sid/assets');
+  assert.equal(listed.jsonBody, null);
+
+  const registered = assembleWebRest(
+    'session.assets.register',
+    { session_id: 'sid', items: [{ path: '/tmp/a.pdf' }] },
+    BASE
+  );
+  assert.ok(registered);
+  assert.equal(registered.verb, 'POST');
+  assert.equal(registered.url, listed.url);
+  assert.deepEqual(registered.jsonBody, { items: [{ path: '/tmp/a.pdf' }] });
+
+  const renamed = assembleWebRest(
+    'session.assets.rename',
+    { session_id: 'sid', asset_id: 'asset_ab', name: 'brief' },
+    BASE
+  );
+  assert.ok(renamed);
+  assert.equal(renamed.verb, 'PATCH');
+  assert.equal(renamed.url, '/api/v1/sessions/sid/assets/asset_ab');
+  assert.deepEqual(renamed.jsonBody, { name: 'brief' });
 });
 
 test('interrupt and answer put session_id in path', () => {
@@ -241,16 +239,10 @@ const ENTERPRISE_ASSEMBLE = [
   ['skills.skillnet.evaluate', 'POST', '/api/v1/skills/skillnet/actions/evaluate', { url: 'http://s' }, 'unary'],
   ['skills.evolution.get', 'GET', '/api/v1/skills/evolution', { name: 'evo-1' }, 'unary'],
   ['skills.evolution.save', 'PUT', '/api/v1/skills/evolution', { name: 'evo-1', entries: [] }, 'unary'],
-  ['team.list', 'GET', '/api/v1/teams', {}, 'unary'],
-  ['team.history.get', 'GET', '/api/v1/sessions/sid/team/history', { session_id: 'sid', cursor: 0, limit: 500 }, 'unary'],
-  ['team.snapshot', 'GET', '/api/v1/sessions/sid/team/snapshot', { session_id: 'sid', team_name: 'alpha' }, 'unary'],
-  ['team.quota.get', 'GET', '/api/v1/teams/quota', {}, 'unary'],
-  ['team.stop', 'POST', '/api/v1/teams/actions/stop', { team_id: 'tid' }, 'unary'],
-  ['team.delete', 'DELETE', '/api/v1/teams/alpha', { team_name: 'alpha', mode: 'team' }, 'unary'],
 ];
 
 test('every enterprise mapped method assembles verb+url+kind', () => {
-  assert.equal(ENTERPRISE_ASSEMBLE.length, 48);
+  assert.equal(ENTERPRISE_ASSEMBLE.length, 42);
   const seen = new Set();
   for (const [method, verb, url, params, kind] of ENTERPRISE_ASSEMBLE) {
     seen.add(method);

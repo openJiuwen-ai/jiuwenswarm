@@ -16,6 +16,7 @@ from jiuwenswarm.server.runtime.session import lifecycle
 
 logger = logging.getLogger(__name__)
 _targets = WeakValueDictionary()
+ORGANIZATION_RESUME_KEY = "_swarm_group_message_id"
 
 
 def register_question_target(group_id: str, session_id: str, member_name: str, agent) -> str:
@@ -86,7 +87,8 @@ class GroupQuestions:
         except Exception:
             logger.warning("Group question push failed group=%s", self.group_id, exc_info=True)
 
-    async def ask(self, payload: dict, target: str, member_name: str, execution_id: str | None) -> None:
+    async def ask(self, payload: dict, target: str, member_name: str, execution_id: str | None,
+                  *, client_message_id: str | None = None) -> None:
         native_id = payload["request_id"]
         request_id = hashlib.sha256(json.dumps([self.group_id, target, execution_id, native_id]).encode()).hexdigest()
         async with group_lock(self.group_id):
@@ -100,6 +102,8 @@ class GroupQuestions:
                 "target": target, "member_name": member_name, "execution_id": execution_id,
                 "created_at": previous["created_at"] if previous else time.time(), "status": "pending",
             }
+            if client_message_id is not None:
+                record["client_message_id"] = client_message_id
             records[request_id] = record
             self.save(records)
         await self.publish({"event_type": "chat.ask_user_question", **self.public(record)})
@@ -137,6 +141,11 @@ class GroupQuestions:
                     raise GroupError("BAD_REQUEST", "answer does not match a pending question")
             native_id = record["native_request_id"]
             query = build_ask_user_interactive_input(native_id, answers)
+            if record.get("client_message_id") and record.get("execution_id") is None:
+                # A routing guard, not authority: the receiver must still
+                # verify the persisted question. Missing storage cannot turn
+                # a known organization answer into an ordinary team request.
+                query.user_inputs[native_id][ORGANIZATION_RESUME_KEY] = record["client_message_id"]
             if not query.user_inputs[native_id]["answers"]:
                 raise GroupError("BAD_REQUEST", "answer must contain nonempty text")
             from jiuwenswarm.server.runtime.group_execution import GroupExecutions
@@ -144,14 +153,22 @@ class GroupQuestions:
             execution_id = record.get("execution_id")
             execution = GroupExecutions(self.group_id).get(execution_id) if execution_id else {}
             session_id = execution.get("team_session_id") or self.group_id
-            token = set_session_id(session_id)
-            try:
-                await target.send(query)
-            finally:
-                reset_session_id(token)
+            # The resumed proxy can call run_team immediately; activation must
+            # see the accepted answers before the native runtime is woken.
             async with group_lock(self.group_id):
                 records = self.read()
                 records[request_id].update(status="answered", answers=answers)
                 self.save(records)
+            token = set_session_id(session_id)
+            try:
+                await target.send(query)
+            except BaseException:
+                async with group_lock(self.group_id):
+                    records = self.read()
+                    records[request_id] = record
+                    self.save(records)
+                raise
+            finally:
+                reset_session_id(token)
         await self.publish({"event_type": "chat.ask_user_answer", "request_id": request_id})
         return {"request_id": request_id, "accepted": True}

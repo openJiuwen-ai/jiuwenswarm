@@ -85,8 +85,8 @@ def _default_sessions_root() -> Path:
     # Fallback: check environment variable or use hardcoded path
     env_workspace = os.getenv("JIUWENSWARM_DATA_DIR")
     if env_workspace:
-        return Path(env_workspace) / "domain" / "agent" / "sessions"
-    return Path.home() / ".jiuwenswarm" / "domain" / "agent" / "sessions"
+        return Path(env_workspace) / "agent" / "sessions"
+    return Path.home() / ".jiuwenswarm" / "agent" / "sessions"
 
 
 def _to_float_ts(v: Any, tz: timezone) -> float | None:

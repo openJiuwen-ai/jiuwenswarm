@@ -2732,3 +2732,112 @@ body.workspace-resize-active iframe {
   line-height: 20px;
   white-space: nowrap;
 }
+
+/* Enterprise entry for an account with no available Agent. */
+.enterprise-entry-empty {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--color-surface-page);
+  color: var(--color-text-primary);
+}
+
+.enterprise-entry-empty__card {
+  width: min(100%, 380px);
+  padding: 32px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 12px;
+  background: var(--color-surface-card);
+  box-shadow: var(--effect-shadow-md);
+}
+
+.enterprise-entry-empty__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 28px;
+}
+
+.enterprise-entry-empty__language {
+  display: flex;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: var(--color-surface-page);
+}
+
+.enterprise-entry-empty__language .ui-button {
+  min-height: 24px;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.enterprise-entry-empty__language .ui-button[aria-pressed='true'] {
+  border-color: transparent;
+  background: var(--color-action-primary);
+  color: var(--color-action-primary-text);
+}
+
+.enterprise-entry-empty__brand {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.enterprise-entry-empty__brand span,
+.enterprise-entry-empty__eyebrow,
+.enterprise-entry-empty p {
+  color: var(--color-text-secondary);
+}
+
+.enterprise-entry-empty__eyebrow {
+  margin-bottom: 8px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+.enterprise-entry-empty h1 {
+  margin: 0 0 8px;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.enterprise-entry-empty p {
+  margin: 0 0 20px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.enterprise-entry-empty__login,
+.enterprise-entry-empty__retry {
+  display: block;
+  margin-inline: auto;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.enterprise-entry-empty__login {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--color-action-primary);
+  color: var(--color-action-primary-text);
+  font-weight: 700;
+}
+
+.enterprise-entry-empty__login:hover {
+  background: var(--color-action-primary-hover);
+}
+
+.enterprise-entry-empty__retry {
+  margin-top: 8px;
+  padding: 6px 12px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.enterprise-entry-empty__retry:hover {
+  text-decoration: underline;
+}

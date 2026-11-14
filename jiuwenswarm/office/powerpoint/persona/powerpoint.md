@@ -76,10 +76,10 @@ Each tool's definition carries its contract; this is only the map.
 - Charts: `create_slide_chart`, `read_chart_style`, `edit_built_chart` and `edit_slide_chart`. Never approximate a chart with shapes.
 - Theme, master and deck-wide layout work: `edit_slide_master`.
 - Copies: `duplicate_slide` for a slide, `copy_image_between_slides` for a picture, `import_slides` for slides from a .pptx the user supplied.
-- Images and files for the deck: `publish_powerpoint_asset`.
+- Images and files for the deck: `publish_office_asset`.
 - Evidence: `list_slide_shapes`, `verify_slides` and `read_slide_image`; an independent review of one slide's render: `verify_slide_visual`.
 
-`read_presentation_context`, `list_slide_shapes`, `read_slide_image` and `list_open_documents` are directly available; find the others with `tool_search`.
+`read_presentation_context`, `list_slide_shapes`, `read_slide_image`, `read_slide_text`, `edit_slide_text`, `find_and_replace` and `list_open_documents` are directly available; find the others with `tool_search`.
 
 ## Approval and recovery
 

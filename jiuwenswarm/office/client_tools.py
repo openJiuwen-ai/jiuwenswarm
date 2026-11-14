@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""The PowerPoint tools the task pane of the attached presentation runs.
+"""The tools of an Office app's contract, which the task pane of the attached document runs.
 
 Each tool of the contract is a ``ClientTool``: once every ``before_tool_call``
 rail (permissions among them) lets a call through, the turn pauses and the
@@ -28,11 +28,11 @@ from openjiuwen.core.foundation.tool import (
 )
 
 from jiuwenswarm.office.assets import OfficeAssetStore, referenced_handles
-from jiuwenswarm.office.contract import POWERPOINT_PACKAGE, load_contract
+from jiuwenswarm.office.contract import load_contract
 from jiuwenswarm.office.review import (
-    REVIEW_RENDER_WIDTH,
     ReviewFailed,
     geometry_summary,
+    review_checklist,
     review_slide,
     verifier_error,
     verifier_result,
@@ -42,13 +42,13 @@ from jiuwenswarm.office.runtime import image_attachment
 
 _VISION_TOOL_HINT = (
     "If a vision tool is configured, call visual_question_answering with visual_attachment.path to inspect the "
-    "pixels. This is a file in this conversation's uploads. Do not use shell to search presentation files or "
+    "pixels. This is a file in this conversation's uploads. Do not use shell to search the user's documents or "
     "another conversation's assets."
 )
 
 
-class PowerPointTool(ClientTool):
-    """A contract tool, sent to the task pane of the presentation attached to the call's conversation."""
+class TaskPaneTool(ClientTool):
+    """A contract tool, sent to the task pane of the document attached to the call's conversation."""
 
     def __init__(self, card: ToolCard, *, native_image_model: Callable[[], Model | None],
                  store: OfficeAssetStore) -> None:
@@ -59,7 +59,7 @@ class PowerPointTool(ClientTool):
     def build_request(self, arguments: dict[str, Any], context: ClientToolContext) -> dict[str, Any]:
         """Refuse a call no task pane can run now; give the task pane the links to the assets it needs.
 
-        A call while the presentation is closed fails at once instead of
+        A call while the document is closed fails at once instead of
         holding the turn until the attachment sweep answers it ``client_gone``.
         """
         from jiuwenswarm.server.client_attachments import get_attachment_directory, load_client_capabilities
@@ -67,18 +67,20 @@ class PowerPointTool(ClientTool):
         session_id = context.session_id
         capabilities = load_client_capabilities(session_id) if session_id else None
         if capabilities is None:
-            raise ClientToolUnavailable("no PowerPoint presentation is attached to this conversation")
+            raise ClientToolUnavailable("no document is attached to this conversation")
         if self.card.name not in (capabilities.get("supported_tools") or ()):
-            raise ClientToolUnavailable(f"this presentation's PowerPoint cannot run {self.card.name}")
+            raise ClientToolUnavailable(
+                f"this add-in does not offer {self.card.name} yet, in any PowerPoint version; do the work with the "
+                "tools you have, or tell the user this add-in cannot do it yet")
         if get_attachment_directory().connection_for_session(session_id) is None:
             raise ClientToolUnavailable(
-                "this conversation's presentation is not open in PowerPoint right now; ask the user to open it "
-                "and continue in the PowerPoint task pane", retryable=True)
+                "this conversation's document is not open right now; ask the user to open it and continue in "
+                "its task pane", retryable=True)
         try:
             downloads = {handle: self._store.download_url(session_id, handle)
                          for handle in sorted(referenced_handles(arguments))}
         except (ValueError, OSError) as exc:
-            raise ClientToolUnavailable(f"{exc}; publish the file with publish_powerpoint_asset first") from exc
+            raise ClientToolUnavailable(f"{exc}; publish the file with publish_office_asset first") from exc
         return {"downloads": downloads}
 
     def complete(self, arguments: dict[str, Any], result: ClientToolResult, context: ClientToolContext) -> ToolOutput:
@@ -108,14 +110,20 @@ class PowerPointTool(ClientTool):
         return output.model_copy(update={"data": data})
 
 
-class VerifySlideVisualTool(PowerPointTool):
+class VerifySlideVisualTool(TaskPaneTool):
     """``verify_slide_visual``: the task pane captures one slide, a model that saw nothing else reviews it.
 
     One pause: the task pane answers with the slide's render and geometry, and
-    ``complete`` runs the review, by this conversation's model when it takes
-    images, else by ``models.vision``. The author gets the verdict with the
-    same render, which reaches it as any other contract tool's image does.
+    ``complete`` runs the review against the checklist of the app's package
+    (``review.md``), by this conversation's model when it takes images, else by
+    ``models.vision``. The author gets the verdict with the same render, which
+    reaches it as any other contract tool's image does.
     """
+
+    def __init__(self, card: ToolCard, *, checklist: str, native_image_model: Callable[[], Model | None],
+                 store: OfficeAssetStore) -> None:
+        super().__init__(card, native_image_model=native_image_model, store=store)
+        self._checklist = checklist
 
     def build_request(self, arguments: dict[str, Any], context: ClientToolContext) -> dict[str, Any]:
         request = super().build_request(arguments, context)
@@ -123,7 +131,7 @@ class VerifySlideVisualTool(PowerPointTool):
             raise ClientToolUnavailable(
                 "verify_slide_visual needs a model that can see images: this conversation's model cannot, "
                 "and the vision model (models.vision) is not configured and enabled")
-        return {**request, "render": {"width": REVIEW_RENDER_WIDTH}}
+        return request
 
     def complete(self, arguments: dict[str, Any], result: ClientToolResult,
                  context: ClientToolContext) -> ToolOutput | Awaitable[ToolOutput]:
@@ -139,8 +147,8 @@ class VerifySlideVisualTool(PowerPointTool):
         except ValueError as exc:
             return ToolOutput(success=False, error=f"verify_slide_visual: {exc}")
         try:
-            review = await review_slide(self._native_image_model(), render, geometry_summary(geometry),
-                                        arguments.get("expected_changes"))
+            review = await review_slide(self._checklist, self._native_image_model(), render,
+                                        geometry_summary(geometry), arguments.get("expected_changes"))
         except ReviewFailed as exc:
             text = verifier_error(slide_id, str(exc))
         else:
@@ -149,18 +157,21 @@ class VerifySlideVisualTool(PowerPointTool):
         return super().complete(arguments, reviewed, context)
 
 
-_TOOL_CLASSES: dict[str, type[PowerPointTool]] = {"verify_slide_visual": VerifySlideVisualTool}
+def build_task_pane_tools(
+    package_dir: Path, native_image_model: Callable[[], Model | None], store: OfficeAssetStore,
+) -> list[TaskPaneTool]:
+    """One tool per contract tool of the app's package, for one agent."""
+    tools: list[TaskPaneTool] = []
+    for tool in load_contract(package_dir):
+        if tool.name == "verify_slide_visual":
+            tools.append(VerifySlideVisualTool(tool.card(), checklist=review_checklist(package_dir),
+                                               native_image_model=native_image_model, store=store))
+        else:
+            tools.append(TaskPaneTool(tool.card(), native_image_model=native_image_model, store=store))
+    return tools
 
 
-def build_powerpoint_tools(
-    native_image_model: Callable[[], Model | None], store: OfficeAssetStore, package_dir: Path = POWERPOINT_PACKAGE,
-) -> list[PowerPointTool]:
-    """One tool per contract tool, for one agent."""
-    return [_TOOL_CLASSES.get(tool.name, PowerPointTool)(
-        tool.card(), native_image_model=native_image_model, store=store) for tool in load_contract(package_dir)]
-
-
-def _slide_capture(result: ClientToolResult, slide_id: str) -> tuple[str, Any]:
+def _slide_capture(result: ClientToolResult, slide_id: str) -> tuple[str, dict[str, Any]]:
     """The render (an image data URL) and the geometry of the slide the task pane captured for review."""
     output = default_client_output(result)
     images = output.data.get("multimodal") or []
@@ -173,7 +184,10 @@ def _slide_capture(result: ClientToolResult, slide_id: str) -> tuple[str, Any]:
     captured = capture.get("slide_id") if isinstance(capture, dict) else None
     if captured != slide_id:
         raise ValueError(f"the task pane captured slide {captured!r} instead of {slide_id!r}")
-    return images[0]["data_url"], capture.get("geometry")
+    geometry = capture.get("geometry")
+    if not isinstance(geometry, dict):
+        raise ValueError("the task pane sent no geometry for the captured slide")
+    return images[0]["data_url"], geometry
 
 
 def _stored_image(session_id: str, data_url: str) -> dict[str, Any]:

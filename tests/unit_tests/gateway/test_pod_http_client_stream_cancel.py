@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
+from e2a.models import E2AEnvelope
 from jiuwenswarm.extensions.runtime_management_extension import pod_http_client as pod_http
 from jiuwenswarm.extensions.runtime_management_extension.pod_http_client import (
     HttpSseAgentServerClient,
@@ -140,7 +140,7 @@ async def test_steer_stream_does_not_supersede_parent_input_received(
             used_rpc_fallback=False,
         )
 
-    monkeypatch.setattr(pod_http, "_assemble_with_allowlist", _assemble)
+    monkeypatch.setattr(pod_http, "_assemble_with_expert_packages", _assemble)
     monkeypatch.setattr(
         client,
         "_request_headers",

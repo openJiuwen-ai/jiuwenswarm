@@ -5,13 +5,13 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from types import SimpleNamespace
 
 import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.worker import dispatcher as worker_dispatcher
+from jiuwenswarm.server.worker.gateway_bridge import ConnHolder, WorkerGatewayBridge
 
 
 def _request() -> AgentRequest:
@@ -30,15 +30,9 @@ def _request() -> AgentRequest:
 def _bare_dispatcher(runtime: object, holder_generation: int = 1) -> worker_dispatcher.WorkerDispatcher:
     """Build a dispatcher with only the attributes ``_run_request`` touches."""
     instance = worker_dispatcher.WorkerDispatcher.__new__(worker_dispatcher.WorkerDispatcher)
-    instance._bridge = SimpleNamespace(
-        events=SimpleNamespace(
-            register=lambda request, dispatch_id: None,
-            complete=lambda dispatch_id, **kwargs: None,
-            finish=lambda dispatch_id: None,
-        ),
-        observe_execution_entry=lambda *args, **kwargs: None,
-        holder=SimpleNamespace(generation=holder_generation, conn=None),
-    )
+    holder = ConnHolder()
+    holder.generation = holder_generation
+    instance._bridge = WorkerGatewayBridge(holder)
     instance._state_lock = asyncio.Lock()
     instance._lock = asyncio.Lock()
     instance._draining = False

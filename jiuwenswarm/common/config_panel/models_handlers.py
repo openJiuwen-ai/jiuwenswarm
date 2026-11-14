@@ -50,6 +50,7 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
 )
 from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.model_config_validation import probe_model_connection, raise_if_invalid
+from jiuwenswarm.common.model_error_messages import user_facing_model_error
 from jiuwenswarm.common.model_errors import ModelSelectionError
 from jiuwenswarm.common.reasoning_config import (
     effective_endpoint_profile,
@@ -786,10 +787,12 @@ async def config_validate_model_handler(
             log_context="config.validate_model",
         )
     except Exception as exc:  # noqa: BLE001
+        # 原始异常（[181001] ... APIStatusError ...）只留在日志里；回给用户的是
+        # 能直接照做的提示，例如账户欠费时明确提示去充值，而不是一串内部报错。
         logger.warning("[config.validate_model] LLM probe failed: %s", exc)
         await channel.send_response(
             ws, req_id, ok=False,
-            error=str(exc).strip() or "LLM request failed",
+            error=user_facing_model_error(exc, api_base=api_base),
             code="LLM_ERROR",
         )
         return

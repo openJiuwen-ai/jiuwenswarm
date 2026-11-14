@@ -48,7 +48,7 @@ const webResult = {
 };
 
 /** Renders the real page with a recording chat API and timers the test drives itself. */
-async function renderWorkspace({ withChannels = false } = {}) {
+async function renderWorkspace({ withChannels = false, ...colleagueOverrides } = {}, initialWebConversations = []) {
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
   const previous = {
     window: globalThis.window,
@@ -67,7 +67,7 @@ async function renderWorkspace({ withChannels = false } = {}) {
   };
   dom.window.clearInterval = (id) => ticks.delete(id);
   dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
-  const state = { webConversations: [], channels: [], channelCalls: [], channelFailure: false };
+  const state = { webConversations: initialWebConversations, channels: [], channelCalls: [], channelFailure: false };
   Object.defineProperty(dom.window.document, 'visibilityState', { configurable: true, get: () => state.hidden ? 'hidden' : 'visible' });
   const channelApi = {
     listChannels: async (agentId) => {
@@ -79,8 +79,13 @@ async function renderWorkspace({ withChannels = false } = {}) {
     channelMessages: async () => ({ messages: [], nextCursor: null }),
     channelTrace: async () => ({ rows: [], startedAt: '' }),
   };
+  let currentColleague = { ...colleague, ...colleagueOverrides };
   const calls = [];
   const chat = {
+    listArtifacts: async (agentId) => {
+      calls.push(['artifacts', agentId]);
+      return state.artifacts?.[agentId] ?? [];
+    },
     listConversations: async (agentId) => {
       calls.push(['list', agentId]);
       if (state.listGate) await state.listGate;
@@ -92,6 +97,7 @@ async function renderWorkspace({ withChannels = false } = {}) {
     },
     sendMessage: async (agentId, conversationId, text, messageId) => {
       calls.push(['send', agentId, conversationId, text]);
+      if (state.sendError) throw state.sendError;
       return {
         request: {
           requestId: `request-${messageId}`, conversationId, messageId, text, receivedAt: '2026-10-26T03:00:00Z',
@@ -117,11 +123,20 @@ async function renderWorkspace({ withChannels = false } = {}) {
   let connectionEpoch = 1;
   const render = () => {
     root.render(React.createElement(ColleagueWorkspacePage, {
-      colleagues: [colleague],
+      colleagues: [currentColleague],
       selectedColleagueId: colleague.id,
       chat,
       channelApi: withChannels ? channelApi : undefined,
       connectionEpoch,
+      modelCatalog: state.modelCatalog ?? { models: [{ id: 'deepseek#0', label: 'DeepSeek', provider: 'OpenAI' },
+        { id: 'kimi#1', label: 'Kimi', provider: 'OpenAI' }], defaultModelId: 'deepseek#0', defaultModelLabel: 'DeepSeek' },
+      onSaveModel: async (agentId, modelId) => {
+        calls.push(['save-model', agentId, modelId]);
+        if (state.modelError) throw state.modelError;
+        currentColleague = { ...currentColleague, hasUnpublishedChanges: false, hasUnpublishedModelChanges: false,
+          capabilities: { ...currentColleague.capabilities, model: modelId } };
+        render();
+      },
       onSelectColleague: () => undefined,
       onCreateSchedule: () => undefined,
       onRenameColleague: async () => undefined,
@@ -153,6 +168,24 @@ async function renderWorkspace({ withChannels = false } = {}) {
     },
     async reconnect() {
       connectionEpoch += 1;
+      await act(async () => render());
+      await flush();
+    },
+    async publish() {
+      currentColleague = {
+        ...currentColleague, currentVersion: 'v1',
+        capabilities: { ...currentColleague.capabilities, model: 'deepseek#0' },
+      };
+      await act(async () => render());
+      await flush();
+    },
+    async setModel(modelId) {
+      currentColleague = { ...currentColleague, capabilities: { ...currentColleague.capabilities, model: modelId } };
+      await act(async () => render());
+      await flush();
+    },
+    async replaceEmployee(changes) {
+      currentColleague = { ...currentColleague, ...changes };
       await act(async () => render());
       await flush();
     },
@@ -194,6 +227,132 @@ async function renderWorkspace({ withChannels = false } = {}) {
     },
   };
 }
+
+test('an unconfigured employee guides model setup, keeps the draft and cannot submit until publication', async () => {
+  const page = await renderWorkspace({ currentVersion: null, capabilities: { ...colleague.capabilities, model: '' } });
+  try {
+    assert.match(page.container.textContent, /请先在「设置 → 模型」中配置可用模型/);
+    await page.send('保留这条草稿');
+    const input = page.container.querySelector('[data-testid="jiuwenmate-composer-input"]');
+    assert.equal(input.value, '保留这条草稿');
+    assert.equal(page.container.querySelector('[data-testid="jiuwenmate-composer-send"]').disabled, true);
+    await act(async () => input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    assert.equal(page.calls.filter(([kind]) => kind === 'send').length, 0);
+
+    await page.publish();
+    assert.doesNotMatch(page.container.textContent, /请先在「设置 → 模型」中配置可用模型/);
+    await page.send('保留这条草稿');
+    assert.equal(page.calls.filter(([kind]) => kind === 'send').length, 1);
+  } finally {
+    await page.close();
+  }
+});
+
+test('the private chat welcome shows exactly the configured starter prompts and none when they were all removed', async () => {
+  const suggestions = (page) =>
+    [...page.container.querySelectorAll('.jiuwenmate-chat-welcome__suggestions button')].map((button) => button.textContent);
+  const configured = await renderWorkspace({
+    capabilities: { ...colleague.capabilities, starterPrompts: ['写周报', '写月报', '总结会议', '第四条'] },
+  });
+  try {
+    assert.deepEqual(suggestions(configured), ['写周报', '写月报', '总结会议']);
+  } finally {
+    await configured.close();
+  }
+  const empty = await renderWorkspace();
+  try {
+    assert.ok(empty.container.querySelector('[data-testid="jiuwenmate-chat-welcome"]'));
+    assert.deepEqual(suggestions(empty), []);
+    assert.ok(empty.container.querySelector('.jiuwenmate-chat-welcome__suggestions'), 'The empty slot keeps the welcome layout height');
+  } finally {
+    await empty.close();
+  }
+});
+
+test('a stale published-state response shows setup guidance instead of the internal exception', async () => {
+  const page = await renderWorkspace();
+  try {
+    page.state.sendError = Object.assign(new Error('colleague has no published configuration'), { code: 'NOT_PUBLISHED' });
+    await page.send('测试消息');
+    assert.match(page.container.textContent, /请先在员工管理中保存并发布配置/);
+    assert.doesNotMatch(page.container.textContent, /colleague has no published configuration/);
+  } finally {
+    await page.close();
+  }
+});
+
+test('chat model selection updates the employee configuration even in an IM workspace and follows external changes', async () => {
+  const page = await renderWorkspace();
+  const selectModel = async (label) => {
+    await act(async () => page.container.querySelector('[data-testid="jiuwenmate-composer-model"]').click());
+    const option = [...window.document.querySelectorAll('[data-testid="jiuwenmate-composer-model-option"]')].find((item) => item.textContent.includes(label));
+    assert.ok(option);
+    await act(async () => option.click());
+    await page.flush();
+  };
+  try {
+    await page.choose('runtime-feishu');
+    await selectModel('Kimi');
+    assert.deepEqual(page.calls.find(([kind]) => kind === 'save-model'), ['save-model', 'config-web', 'kimi#1']);
+    assert.match(page.container.querySelector('[data-testid="jiuwenmate-composer-model"]').textContent, /Kimi/);
+
+    await page.setModel('deepseek#0');
+    assert.match(page.container.querySelector('[data-testid="jiuwenmate-composer-model"]').textContent, /DeepSeek/);
+    page.state.modelError = new Error('模型保存失败');
+    await selectModel('Kimi');
+    assert.match(page.container.querySelector('[data-testid="jiuwenmate-composer-model"]').textContent, /DeepSeek/);
+    assert.match(page.container.textContent, /模型保存失败/);
+    await page.replaceEmployee({ id: 'other-employee', name: '另一位员工' });
+    assert.doesNotMatch(page.container.textContent, /模型保存失败/);
+  } finally {
+    await page.close();
+  }
+});
+
+test('a saved but unpublished model can be selected again to retry publication', async () => {
+  const page = await renderWorkspace({ hasUnpublishedChanges: true, hasUnpublishedModelChanges: true });
+  try {
+    assert.match(page.container.querySelector('[data-testid="jiuwenmate-composer-model"]').textContent, /待生效/);
+    await act(async () => page.container.querySelector('[data-testid="jiuwenmate-composer-model"]').click());
+    const option = [...window.document.querySelectorAll('[data-testid="jiuwenmate-composer-model-option"]')].find((item) => item.textContent.includes('DeepSeek'));
+    await act(async () => option.click());
+    assert.deepEqual(page.calls.find(([kind]) => kind === 'save-model'), ['save-model', 'config-web', 'deepseek#0']);
+    assert.doesNotMatch(page.container.querySelector('[data-testid="jiuwenmate-composer-model"]').textContent, /待生效/);
+  } finally {
+    await page.close();
+  }
+});
+
+test('unpublished persona or skills do not mark the unchanged model pending or republish it', async () => {
+  const page = await renderWorkspace({ hasUnpublishedChanges: true, hasUnpublishedModelChanges: false });
+  try {
+    assert.doesNotMatch(page.container.querySelector('[data-testid="jiuwenmate-composer-model"]').textContent, /待生效/);
+    await act(async () => page.container.querySelector('[data-testid="jiuwenmate-composer-model"]').click());
+    const option = window.document.querySelector('[data-testid="jiuwenmate-composer-model-option"][data-variant="deepseek#0"]');
+    assert.equal(option.getAttribute('aria-current'), 'true');
+    await act(async () => option.click());
+    assert.equal(page.calls.some(([kind]) => kind === 'save-model'), false);
+  } finally {
+    await page.close();
+  }
+});
+
+test('artifact panel shows existing outputs from Web and IM sessions with empty chat history', async () => {
+  const page = await renderWorkspace();
+  try {
+    page.state.artifacts = {
+      'config-web': [{ outputId: 'existing-md', name: '已有知识摘要.md', path: 'sessions/old/output/已有知识摘要.md', size: 20 }],
+      'runtime-feishu': [{ outputId: 'existing-docx', name: '已有报告.docx', path: 'sessions/group/output/已有报告.docx', size: 40 }],
+    };
+    await act(async () => page.container.querySelector('[data-testid="jiuwenmate-open-artifacts-panel"]').click());
+    await page.flush();
+    const items = [...page.container.querySelectorAll('[data-testid="jiuwenmate-artifact-item"]')];
+    assert.equal(items.length, 2);
+    assert.ok(items.some((item) => item.textContent.includes('已有知识摘要.md')));
+    assert.ok(items.some((item) => item.textContent.includes('已有报告.docx')));
+    assert.equal(page.calls.filter(([kind]) => kind === 'artifacts').length, 3);
+  } finally { await page.close(); }
+});
 
 test('a Web result found while an IM workspace is chosen is offered, and messages still go to the IM agent', async () => {
   const page = await renderWorkspace();
@@ -399,5 +558,72 @@ test('reconnect discovers Web results created offline while preserving the selec
     await page.poll();
     assert.equal(page.select().value, 'runtime-feishu');
     assert.ok(page.container.querySelector('[data-testid="jiuwenmate-workspace-web-result"]'));
+  } finally { await page.close(); }
+});
+
+
+test('a newly created employee has a visible conversation before sending any message', async () => {
+  const initial = { ...webResult, id: 'initial-empty', title: '新对话', lastMessage: '' };
+  const page = await renderWorkspace({}, [initial]);
+  try {
+    const records = page.container.querySelectorAll('[data-testid="jiuwenmate-conversation-record"]');
+    assert.equal(records.length, 1);
+    assert.match(records[0].textContent, /测试同事/);
+    assert.ok(page.calls.some(([kind, agentId, conversationId]) =>
+      kind === 'history' && agentId === 'config-web' && conversationId === initial.id));
+    assert.equal(page.calls.filter(([kind]) => kind === 'send').length, 0);
+    await page.reconnect();
+    assert.ok(page.calls.some(([kind, , conversationId]) => kind === 'history' && conversationId === initial.id));
+    assert.equal(page.calls.filter(([kind]) => kind === 'send').length, 0);
+  } finally {
+    await page.close();
+  }
+});
+
+
+test('the employee chat model picker does not present a deleted model or default as its selection', async () => {
+  const page = await renderWorkspace({
+    capabilities: { ...colleague.capabilities, model: 'removed#9' },
+    hasUnpublishedModelChanges: true,
+  });
+  try {
+    const picker = page.container.querySelector('[data-testid="jiuwenmate-composer-model"]');
+    assert.doesNotMatch(picker.textContent, /removed#9|DeepSeek|Kimi/);
+    assert.equal(page.container.querySelector('[data-testid="jiuwenmate-composer-model-pending"]'), null);
+    await act(async () => picker.click());
+    assert.equal(window.document.querySelector('[data-testid="jiuwenmate-composer-model-option"][data-variant="removed#9"]'), null);
+    assert.equal(window.document.querySelector('[data-testid="jiuwenmate-composer-model-option"][aria-current="true"]'), null);
+  } finally { await page.close(); }
+});
+
+
+test('deleting the last real model disables sending, preserves the draft and recovers after configuration', async () => {
+  const page = await renderWorkspace();
+  try {
+    await page.send('删除模型前的消息');
+    assert.equal(page.calls.filter(([kind]) => kind === 'send').length, 1);
+    page.state.modelCatalog = { models: [], defaultModelId: '', defaultModelLabel: '' };
+    await page.reconnect();
+    await page.send('删除模型后的草稿');
+    const input = page.container.querySelector('[data-testid="jiuwenmate-composer-input"]');
+    assert.equal(input.value, '删除模型后的草稿');
+    assert.equal(page.container.querySelector('[data-testid="jiuwenmate-composer-send"]').disabled, true);
+    await act(async () => input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    assert.equal(page.calls.filter(([kind]) => kind === 'send').length, 1);
+    assert.match(page.container.textContent, /请先在「设置 → 模型」中配置可用模型/);
+    page.state.modelCatalog = undefined;
+    await page.reconnect();
+    assert.equal(input.value, '删除模型后的草稿');
+    await page.send('删除模型后的草稿');
+    assert.equal(page.calls.filter(([kind]) => kind === 'send').length, 2);
+  } finally { await page.close(); }
+});
+
+test('a deleted employee model cannot send through another models catalog', async () => {
+  const page = await renderWorkspace({ capabilities: { ...colleague.capabilities, model: 'removed#9' } });
+  try {
+    await page.send('保留草稿');
+    assert.equal(page.calls.filter(([kind]) => kind === 'send').length, 0);
+    assert.equal(page.container.querySelector('[data-testid="jiuwenmate-composer-input"]').value, '保留草稿');
   } finally { await page.close(); }
 });

@@ -25,7 +25,7 @@ Report these defects whenever pixels or authoritative measurements show them:
 
 ADVISORY ONLY: margin size, whitespace, density, exact font sizes, colour count, repeated layouts, card fullness and visual-form preference. Report such observations as ADVISORY polish unless they produce one of the defects above. Approximate defaults such as 0.5-inch margins, coverage percentages or 14-point body text are not pass/fail thresholds.
 
-OUT OF SCOPE: subjective taste (font pairing, colour preferences, "could be more interesting"), optional consistency polish, and any spacing or overlap claim that contradicts the measured geometry you are given, unless you can see text clipped inside a box (geometry cannot detect clipping). Measured occlusion and centring lines are supporting candidates only: object bounds do not reveal glyph bounds, and raw alignment enums do not prove visible displacement. Report them as defects only when the pixels visibly confirm the issue or the measurement provides an actual geometric offset.
+OUT OF SCOPE: subjective taste (font pairing, colour preferences, "could be more interesting"), optional consistency polish, and any spacing or overlap claim that contradicts the measured geometry you are given, unless you can see text clipped inside a box (geometry cannot detect clipping).
 
 If none of the listed defects are present, respond with exactly this first line:
 No significant issues found.

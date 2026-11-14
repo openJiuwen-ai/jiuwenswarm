@@ -103,9 +103,9 @@ def _configure_openjiuwen_logging() -> None:
     loggers here, or control-plane failures (``history.get`` included) would
     disappear from Front's logs.
     """
-    from jiuwenswarm.common.utils import get_config_dir, get_logs_dir
+    from jiuwenswarm.common.utils import get_root_dir
 
-    logging_yaml = get_config_dir() / "logging.yaml"
+    logging_yaml = get_root_dir() / "config" / "logging.yaml"
     if logging_yaml.exists():
         try:
             from openjiuwen.core.common.logging.log_config import configure_log
@@ -122,10 +122,15 @@ def _configure_openjiuwen_logging() -> None:
     try:
         from openjiuwen.core.common.logging.log_config import configure_log_config
 
+        home = (
+            os.environ.get("JIUWENSWARM_HOME")
+            or os.environ.get("HOME")
+            or os.path.expanduser("~")
+        )
         configure_log_config({
             "backend": "default",
             "level": "INFO",
-            "log_path": f"{get_logs_dir() / 'core'}/",
+            "log_path": f"{home}/.jiuwenswarm/logs/",
             "log_file": "run/jiuwen.log",
             "output": ["file"],
             "structured_output_format": "json",
@@ -140,21 +145,6 @@ def _configure_openjiuwen_logging() -> None:
         )
 
 
-def _start_team_mysql_before_traffic() -> None:
-    """Create team tables before this process accepts chat.
-
-    Personal edition does not use Gateway MySQL, so this returns immediately.
-    """
-    from jiuwenswarm.infrastructure.db.team_mysql_actor import (
-        get_team_mysql_actor,
-        use_team_mysql,
-    )
-
-    if not use_team_mysql():
-        return
-    get_team_mysql_actor()
-
-
 async def _run(host: str, port: int) -> None:
     _install_common_providers()
     from jiuwenswarm.server.front.server import AgentServerFront
@@ -163,6 +153,24 @@ async def _run(host: str, port: int) -> None:
 
     startup_t0 = time.monotonic()
     logger.info("[AgentServer] starting: ws://%s:%s", host, port)
+
+    # 企业版：冷加载 Manager 下发的日志级别（Pod 拉起/重建时 DB 行生效）。
+    # 放在其余冷加载之前，后续启动日志即按新级别输出。
+    try:
+        from jiuwenswarm.enterprise import is_enterprise
+
+        if is_enterprise():
+            from jiuwenswarm.enterprise.capabilities.logging import (
+                reload_logging_levels_from_gateway_db,
+            )
+
+            await reload_logging_levels_from_gateway_db()
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[AgentServer] logging_config cold load skipped",
+            exc_info=True,
+        )
+
     for import_stage, marked_at in _STARTUP_IMPORT_PHASES:
         logger.info(
             "[AgentServer] startup import stage=%s process_elapsed=%.2fs",
@@ -176,7 +184,6 @@ async def _run(host: str, port: int) -> None:
         time.monotonic() - startup_t0,
     )
 
-    await asyncio.to_thread(_start_team_mysql_before_traffic)
     front = AgentServerFront(host=host, port=port)
     from jiuwenswarm.server.startup_switches import resolve_websocket_enabled, ws_server_config
 

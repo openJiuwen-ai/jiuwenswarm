@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
+import shutil
 import uuid
 from unittest.mock import AsyncMock
 
@@ -21,12 +23,12 @@ from openjiuwen.harness.rails import SkillUseRail
 from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.office.contract import POWERPOINT_PACKAGE
 from jiuwenswarm.office.rails import OfficeToolsRail
+from jiuwenswarm.server.client_attachments import registry
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.server.runtime.session import session_metadata
 from tests.unit_tests.agentserver.client_attachments_support import CLIENT_APP
-from tests.unit_tests.office.conftest import ScriptedModel
+from tests.unit_tests.office.conftest import POWERPOINT_PACKAGE, ScriptedModel
 
 PERSONA = "You are WorkSwarm, a presentation designer"
 DEFAULT_IDENTITY = "You are the general assistant of this test."
@@ -37,7 +39,7 @@ SKILL_DESCRIPTIONS = [
     for name in ("deck-planning", "slide-design", "charts", "themes-and-masters")
 ]
 SUPPORTED = ["read_presentation_context", "presentation_apply_patch"]
-APP_TOOLS = {"list_open_documents", "publish_powerpoint_asset"}
+APP_TOOLS = {"list_open_documents", "publish_office_asset"}
 SYS_OPERATION = SysOperationCard(id="task-pane-conversation", mode=OperationMode.LOCAL,
                                  work_config=LocalWorkConfig(shell_allowlist=None))
 # A direct tool: the model is shown it whenever the presentation's PowerPoint runs it, which this one does not.
@@ -195,3 +197,22 @@ async def test_a_task_pane_conversation_takes_no_expert(tmp_path, monkeypatch, a
         errors = await pane.send(agent_template_name="data-analyst")
         assert len(errors) == 1 and "新建会话" in errors[0]
         assert len(pane.model.seen) == calls
+
+
+async def test_the_rail_takes_the_tools_of_the_package_whose_template_loads_it(
+        tmp_path, monkeypatch, attach_pane) -> None:
+    attach_pane("deck-a", [*SUPPORTED, UNSUPPORTED])
+    importable = tmp_path / "importable"
+    shutil.copytree(POWERPOINT_PACKAGE, importable / "copied_apps" / "powerpoint")
+    (importable / "copied_apps" / "__init__.py").write_text("")
+    tools = json.loads((POWERPOINT_PACKAGE / "tools.json").read_text("utf-8"))
+    (importable / "copied_apps" / "powerpoint" / "tools.json").write_text(
+        json.dumps([tool for tool in tools if tool["name"] != UNSUPPORTED]), "utf-8")
+    monkeypatch.syspath_prepend(str(importable))
+    monkeypatch.setitem(registry.APPS, CLIENT_APP, ("copied_apps/powerpoint", registry.APPS[CLIENT_APP][1]))
+    registry.client_apps.cache_clear()
+
+    async with SessionAdapter(tmp_path, monkeypatch, "deck-a", CLIENT_APP) as pane:
+        offered, _system = await pane.turn()
+    registry.client_apps.cache_clear()
+    assert set(SUPPORTED) <= offered and UNSUPPORTED not in offered

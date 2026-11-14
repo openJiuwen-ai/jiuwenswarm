@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "workswarm"
 version = "0.2.8"
 description = "WorkSwarm"
+readme = "README.md"
 requires-python = ">=3.11,<3.15"
 license = { text = "Apache-2.0" }
 classifiers = [
@@ -14,20 +15,20 @@ classifiers = [
 dependencies = [
     "a2ui-agent-sdk==0.2.1",
     "minio>=7.2,<8",
-    "a4p @ git+https://gitcode.com/openJiuwen/agent-protocol.git@agent-protocol-V0.2.0#subdirectory=A4P",
+    "a4p==0.1.0",
     "chromadb>=1.5.0,<2",
     "ruamel.yaml>=0.18.0,<0.20",
     "lark-oapi>=1.5.3,<2",
     "loguru>=0.7.3,<0.8",
     "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4",
-    "openjiuwen-computeruse @ git+https://gitcode.com/openJiuwen/computer-use.git@96afb268c4c9f835dd1b2300b876d13dd93c982b",
+    "openjiuwen-computeruse @ git+https://gitcode.com/openJiuwen/computer-use.git@2c8171fb6783dba589dd396263b3161186c5f3e4",
     "JiuwenMemory>=0.2.0",
     # openjiuwen's FS read-write lock acquires and releases on different tasks;
     # filelock>=4.0.2 binds async locks to their acquiring task, stranding them.
     "filelock>=3.25.0,<4",
-    "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@4c5f3e9eb41bd33d34d012b06a3e364e8497ac11#subdirectory=openjiuwen-protocol",
+    "e2a @ git+https://gitcode.com/openJiuwen/agent-protocol.git@06a75d66eb011762077e8924d0d1e41791a93034#subdirectory=e2a",
     # Gateway 传输层已拆分为独立仓 agent-gateway
-    "agent-gateway @ git+https://gitcode.com/openJiuwen/agent-gateway.git@435d3323425e1051c6fe2d1feadcba68b4be020d",
+    "agent-gateway @ git+https://gitcode.com/openJiuwen/agent-gateway.git@2c40ac150276477a8079ef7937674b600b6a1420",
     "pgvector>=0.4.2,<0.5",
     "portalocker>=3.2.0,<4",
     "prompt-toolkit>=3.0,<4.0",
@@ -229,29 +230,23 @@ jiuwenswarm = [
 
 [tool.uv]
 default-groups = ['dev']
-# agent-gateway（独立仓）与母仓各自钉 agent-core / 协议的 git rev；
-# 共存解析以母仓直接依赖为准，忽略网关传递的钉（override-dependencies 覆盖
-# 解析中所有来源的约束）。rev 由母仓升级节奏主导，agent-gateway 跟随同步。
-# override 替换的是整条 requirement（含 extras）：裸条目会把 optional-dependencies
-# 里 openjiuwen[cua]/[claude]/[codex]/[postgres,zmq] 的 extras 链一并替换成裸包，
-# 导致 --extra cua 不再引入 pyautogui 等。因此每个带 extras 的 extra 在此按
-# extra 名等价重放；marker 引用的是本仓 extra 名（distribute → openjiuwen[postgres,zmq]）。
+# The root project controls the core and protocol revisions during uv resolution.
+# Overrides replace complete requirements, so preserve each optional core extra.
+# The distribute extra enables both postgres and zmq.
 override-dependencies = [
     "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4",
     "openjiuwen[cua] @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4 ; extra == 'cua'",
     "openjiuwen[claude] @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4 ; extra == 'claude'",
     "openjiuwen[codex] @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4 ; extra == 'codex'",
     "openjiuwen[postgres,zmq] @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4 ; extra == 'distribute'",
-    "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@4c5f3e9eb41bd33d34d012b06a3e364e8497ac11#subdirectory=openjiuwen-protocol",
+    "e2a @ git+https://gitcode.com/openJiuwen/agent-protocol.git@06a75d66eb011762077e8924d0d1e41791a93034#subdirectory=e2a",
 ]
 
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
-agent-gateway = { git = "https://gitcode.com/openJiuwen/agent-gateway.git", rev = "435d3323425e1051c6fe2d1feadcba68b4be020d" }
+agent-gateway = { git = "https://gitcode.com/openJiuwen/agent-gateway.git", rev = "2c40ac150276477a8079ef7937674b600b6a1420" }
 openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "f3f8f576164cc405c046e43079c8ad00ee17f0c4" }
-# uv fetches the upstream PR ref while the wheel metadata pins its exact commit.
-openjiuwen-computeruse = { git = "https://gitcode.com/openJiuwen/computer-use.git", rev = "refs/merge-requests/17/head" }
-openjiuwen-protocol = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", rev = "4c5f3e9eb41bd33d34d012b06a3e364e8497ac11", subdirectory = "openjiuwen-protocol" }
+e2a = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", rev = "06a75d66eb011762077e8924d0d1e41791a93034", subdirectory = "e2a" }
 openjiuwen-runtime-foundation = { git = "https://gitcode.com/openJiuwen/agent-runtime.git", branch = "develop", subdirectory = "foundation" }
 
 [dependency-groups]

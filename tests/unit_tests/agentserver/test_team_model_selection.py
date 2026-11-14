@@ -250,7 +250,7 @@ def test_team_single_model_selection_keeps_every_configured_model_in_pool(
         TeamManager,
         "_resolve_and_compile_team_selection",
         staticmethod(
-            lambda _selection, config_base=None: compile_model_selection(
+            lambda _selection: compile_model_selection(
                 ResolvedModel(
                     model_id="model-ds",
                     model_name="deepseek-v4-flash",
@@ -666,52 +666,6 @@ def test_team_manual_route_without_routing_stays_a_single_model(monkeypatch: pyt
     assert compiled.model_client_config.intelli_router is None
     assert compiled.model_request_config.model_name == "model-two"
 
-def test_team_materializes_model_group_without_routing_as_single_model(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _patch_team_loader(monkeypatch)
-    resolved = SwarmResolvedModelGroup(
-        model_group_id="group-single",
-        routes=[
-            SwarmResolvedRoute(
-                route_id="primary",
-                model=SwarmResolvedModel(
-                    model_id="model-primary",
-                    model_name="primary-model",
-                    provider="OpenAI",
-                    api_key="primary-key",
-                    api_base="https://primary.example",
-                    source="defaults",
-                ),
-            ),
-        ],
-        request_config={"max_tokens": 128},
-        routing={},
-    )
-
-    class _Resolver:
-        def resolve(self, _selection):
-            return resolved
-
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.model_routing_registry.ModelSelectionResolver",
-        lambda: _Resolver(),
-    )
-
-    spec = TeamManager._load_team_spec(
-        "session-single-group",
-        model_selection={"type": "model_group", "id": "group-single"},
-    )
-
-    # Strategy-less groups still materialize as the single logical IntelliRouter entry.
-    assert spec.model_pool_strategy == "intelli_router"
-    assert len(spec.model_pool) == 1
-    assert spec.model_pool[0].model_name == "*"
-    assert spec.model_pool[0].api_provider == "intelli_router"
-    assert spec.leader.model_name == "*"
-    router = spec.model_pool[0].metadata["client"]["intelli_router"]
-    assert router["strategy"] == "ordered-failover"
-    assert [item["model_name"] for item in router["deployments"]] == ["primary-model"]
 
 def test_resolver_returns_no_enabled_routes_for_all_disabled_group_for_compiler_to_reject():
     group = _catalog_group()

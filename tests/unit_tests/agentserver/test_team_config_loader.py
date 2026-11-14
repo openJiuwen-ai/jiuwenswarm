@@ -199,73 +199,6 @@ def test_effective_team_models_select_from_normalized_entries(monkeypatch):
     assert entries[0]["model_client_config"]["custom_headers"] == {"X-Trace-Id": "trace-one"}
 
 
-def test_team_manager_uses_resolved_config_provider_when_yaml_provider_is_blank(monkeypatch):
-    """Cluster assembly must use the same resolved model snapshot as single-agent chat.
-
-    AgentServer config.yaml often still contains an unresolved ``${MODEL_PROVIDER}``.
-    Single-agent chat overlays the enterprise template first; team spec loading has
-    to accept that overlay instead of validating the blank placeholder.
-    """
-    from jiuwenswarm.agents.harness.team import team_manager as team_manager_module
-    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
-
-    yaml_config = {
-        "models": {
-            "defaults": [
-                {
-                    "model_client_config": {
-                        "api_base": "",
-                        "api_key": "",
-                        "model_name": "",
-                        "client_provider": "",
-                    },
-                    "model_config_obj": {},
-                }
-            ]
-        },
-        **_wrap_modes_team(
-            {
-                "demo_team": {
-                    "team_name": "demo_team",
-                    "agents": {"leader": {}, "teammate": {}},
-                }
-            }
-        ),
-    }
-    resolved_config = {
-        "models": {
-            "defaults": [
-                {
-                    "model_id": "default-model",
-                    "model_client_config": {
-                        "api_base": "http://113.46.219.251:8080/v1",
-                        "api_key": "sk-test",
-                        "model_name": "GLM-5.2",
-                        "client_provider": "OpenAI",
-                    },
-                    "model_config_obj": {},
-                    "is_default": True,
-                }
-            ]
-        },
-        **_wrap_modes_team(
-            {
-                "demo_team": {
-                    "team_name": "demo_team",
-                    "agents": {"leader": {}, "teammate": {}},
-                }
-            }
-        ),
-    }
-    monkeypatch.setattr(team_manager_module, "get_config", lambda: yaml_config)
-
-    spec = TeamManager._load_team_spec("session-one", config_base=resolved_config)
-
-    assert spec.model_pool[0].api_provider == "OpenAI"
-    assert spec.model_pool[0].model_name == "GLM-5.2"
-    assert spec.agents["leader"].model.model_client_config.client_provider == "OpenAI"
-
-
 def test_team_manager_builds_pool_for_single_configured_model(monkeypatch):
     """A single configured model remains available to external fallback."""
     from jiuwenswarm.agents.harness.team import team_manager as team_manager_module
@@ -388,7 +321,7 @@ _CONFIGURED_ENTRY = {
 def _login_model_entry():
     from jiuwenswarm.common.auth import login_credentials
     from jiuwenswarm.common.auth.login_credentials import build_login_model_entry
-    from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+    from e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 
     login_credentials.reset_for_test()
     params = {
@@ -1612,6 +1545,92 @@ def test_resolve_team_sqlite_db_path_defaults_to_agent_teams_home(monkeypatch, t
     db_path = resolve_team_sqlite_db_path()
 
     assert db_path == Path(tmp_path / ".agent_teams" / "team.db")
+
+
+def _minimal_team_config() -> dict:
+    return {
+        "models": {
+            "default": {
+                "model_client_config": {
+                    "model_name": "gpt-custom",
+                    "client_provider": "openai",
+                },
+                "model_config_obj": {},
+            }
+        },
+        **_wrap_modes_team({"demo_team": {"team_name": "demo_team", "agents": {"leader": {}}}}),
+    }
+
+
+def _set_gateway_db(monkeypatch, *, db_type: str, host: str = "db.internal") -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setenv("GATEWAY_DB_TYPE", db_type)
+    monkeypatch.setenv("GATEWAY_DB_HOST", host)
+    monkeypatch.setenv("GATEWAY_DB_PORT", "3306" if db_type in {"mysql", "mariadb"} else "5432")
+    monkeypatch.setenv("GATEWAY_DB_USER", "root" if db_type in {"mysql", "mariadb"} else "postgres")
+    monkeypatch.setenv("GATEWAY_DB_PASSWORD", "p@ss")
+    monkeypatch.setenv("GATEWAY_DB_NAME", "gw")
+
+
+def test_personal_team_storage_stays_sqlite_when_gateway_host_is_set(monkeypatch, tmp_path):
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    monkeypatch.setenv("GATEWAY_DB_TYPE", "mariadb")
+    monkeypatch.setenv("GATEWAY_DB_HOST", "db.internal")
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.config_loader.get_agent_teams_home",
+        lambda: tmp_path / ".agent_teams",
+    )
+    config = _minimal_team_config()
+    config["modes"]["team"]["demo_team"]["storage"] = {
+        "type": "sqlite",
+        "params": {"connection_string": ""},
+    }
+    spec = load_team_spec_dict(config_base=config)
+    storage = spec["storage"]
+    assert storage["type"] == "sqlite"
+    assert storage["params"]["connection_string"] == str(tmp_path / ".agent_teams" / "team.db")
+
+
+def test_enterprise_mariadb_team_storage_uses_mysql_url(monkeypatch, tmp_path):
+    _set_gateway_db(monkeypatch, db_type="mariadb")
+    config = _minimal_team_config()
+    config["modes"]["team"]["demo_team"]["storage"] = {
+        "type": "sqlite",
+        "params": {"connection_string": str(tmp_path / "team.db")},
+    }
+    spec = load_team_spec_dict(config_base=config)
+    assert spec["storage"]["type"] == "mysql"
+    assert spec["storage"]["params"]["connection_string"] == (
+        "mysql+aiomysql://root:p%40ss@db.internal:3306/gw?charset=utf8mb4"
+    )
+    assert "team.db" not in spec["storage"]["params"]["connection_string"]
+
+
+def test_enterprise_team_storage_without_yaml_storage_still_uses_deploy_db(monkeypatch):
+    _set_gateway_db(monkeypatch, db_type="postgresql")
+    spec = load_team_spec_dict(config_base=_minimal_team_config())
+    assert spec["storage"]["type"] == "postgresql"
+    assert spec["storage"]["params"]["connection_string"] == (
+        "postgresql+asyncpg://postgres:p%40ss@db.internal:5432/gw"
+    )
+
+
+def test_enterprise_unsupported_team_db_type_does_not_use_sqlite(monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setenv("GATEWAY_DB_TYPE", "sqlite")
+    monkeypatch.setenv("GATEWAY_DB_HOST", "db.internal")
+    with pytest.raises(RuntimeError, match=r"GATEWAY_DB_TYPE=sqlite") as raised:
+        load_team_spec_dict(config_base=_minimal_team_config())
+    assert "team.db" not in str(raised.value)
+
+
+def test_enterprise_team_storage_without_host_does_not_use_sqlite(monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setenv("GATEWAY_DB_TYPE", "mariadb")
+    monkeypatch.setenv("GATEWAY_DB_HOST", "")
+    with pytest.raises(RuntimeError, match=r"GATEWAY_DB_HOST") as raised:
+        load_team_spec_dict(config_base=_minimal_team_config())
+    assert "team.db" not in str(raised.value)
 
 
 def test_load_team_spec_dict_preserves_arbitrary_team_top_level_fields(monkeypatch, tmp_path):

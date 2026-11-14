@@ -98,7 +98,7 @@ async def test_organization_stream_keeps_round_id_through_web_gateway(source: st
     """Transport frames stay unique while browser chunks share one request boundary."""
     import json
 
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+    from e2a.wire_codec import parse_agent_server_wire_chunk
     from agent_gateway.channel_manager.web.web_connect import WebChannel
     from agent_gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
@@ -650,6 +650,58 @@ def test_verify_shared_database_rejects_mismatched_task_manager_db() -> None:
 
 
 @pytest.mark.asyncio
+async def test_organization_turn_rejects_group_outside_current_expansion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openjiuwen.agent_teams.runtime.pool import RuntimeState
+
+    streamed: list[object] = []
+    interacted: list[object] = []
+
+    class _Agent:
+        spec = SimpleNamespace(metadata={
+            "expert_team": True,
+            "agent_group_name": "finance",
+            "channel_id": "web",
+        })
+
+        async def stream(self, inputs, session):
+            streamed.append(inputs)
+            yield SimpleNamespace(payload={"event_type": "chat.final"})
+
+    entry = SimpleNamespace(
+        agent=_Agent(),
+        current_session_id="sess-1",
+        state=RuntimeState.PAUSED,
+    )
+
+    class _Pool:
+        async def get(self, team_id):
+            assert team_id == "expert"
+            return entry
+
+    async def interact(*_args, **kwargs):
+        interacted.append(kwargs)
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.organization_packages.team_package_availability",
+        lambda *_args, **_kwargs: {"available": True, "agent_group_name": "finance"},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.capabilities.experts.request_packages.allows",
+        lambda kind, package_id: False,
+    )
+    launcher = JiuwenExpertTeamLauncher(
+        runtime_manager=SimpleNamespace(pool=_Pool(), interact=interact)
+    )
+
+    assert await launcher.run_organization_turn("expert", "sess-1", {"query": "next"}) is False
+    assert streamed == []
+    assert interacted == []
+
+
+@pytest.mark.asyncio
 async def test_run_organization_turn_falls_back_for_owner_team() -> None:
     """Non-expert (owner) teams must use the default org runner, not return False."""
     from openjiuwen.agent_teams.runtime.pool import RuntimeState
@@ -744,6 +796,34 @@ async def test_build_preserves_bootstrap_capabilities_after_swarm_enrichment(
         "group-member:business",
         "group-coordination",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("group_policy", [False, True])
+async def test_group_lifecycle_rail_is_an_opt_in_leader_spec(monkeypatch, group_policy):
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+    from jiuwenswarm.agents.swarm import assembly
+    from jiuwenswarm.agents.swarm.group_org_lifecycle import organization_lifecycle_spec, POLICY
+    from openjiuwen.harness.schema.deep_agent_spec import RailSpec
+
+    monkeypatch.setattr(TeamManager, "load_default_team_spec", lambda _: _FakeSpec("default"))
+
+    def _enrich(spec, **_kwargs):
+        spec.agents = {
+            "leader": SimpleNamespace(rails=[RailSpec(type="existing-leader")]),
+            "worker": SimpleNamespace(rails=[RailSpec(type="existing-worker")]),
+        }
+
+    monkeypatch.setattr(assembly, "enrich_team_spec_for_swarm", _enrich)
+    spec = await JiuwenExpertTeamLauncher()._build_enriched_spec(
+        team_id="finance", session_id="group", agent_group_name="finance-group",
+        agent_group_package=SimpleNamespace(capabilities=["finance"]), display_name=None,
+        leader_rails=[organization_lifecycle_spec("finance")] if group_policy else None,
+    )
+    assert [rail.type for rail in spec.agents["leader"].rails] == (
+        ["existing-leader", POLICY] if group_policy else ["existing-leader"]
+    )
+    assert [rail.type for rail in spec.agents["worker"].rails] == ["existing-worker"]
 
 
 @pytest.mark.asyncio
@@ -896,7 +976,7 @@ async def test_org_turn_closes_only_owner_processing(
     from openjiuwen.agent_teams.runtime.dispatch import RunActionKind
     from openjiuwen.agent_teams.runtime.pool import RuntimeState
 
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+    from e2a.wire_codec import parse_agent_server_wire_chunk
     from agent_gateway.channel_manager.web.web_connect import WebChannel
     from agent_gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
@@ -977,7 +1057,7 @@ async def test_summary_turn_closes_reasoning_after_an_earlier_final(ending):
     from openjiuwen.agent_teams.runtime.dispatch import RunActionKind
     from openjiuwen.agent_teams.runtime.pool import RuntimeState
 
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+    from e2a.wire_codec import parse_agent_server_wire_chunk
     from agent_gateway.channel_manager.web.web_connect import WebChannel
     from agent_gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire

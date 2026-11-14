@@ -1,10 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
-"""Background pool of sandboxes parked before filesystem setup.
+"""Background pool of sandboxes parked before the request filesystem is applied.
 
-Network, cgroup and seccomp follow the server default policy. Checkout
-bind-mounts the request filesystem and only then drops privileges and
-applies Landlock. ``JIUWENBOX_WARM_POOL`` is the number of parked
-sandboxes. ``0`` turns the pool off. The default is 4.
+Network, cgroup, seccomp and the server default filesystem are applied when
+a slot is parked. Checkout bind-mounts any additional request filesystem and
+only then drops privileges and applies Landlock. ``JIUWENBOX_WARM_POOL`` is
+the number of parked sandboxes. ``0`` turns the pool off. The default is 8.
 """
 
 from __future__ import annotations
@@ -18,12 +18,7 @@ import sys
 import threading
 from typing import TYPE_CHECKING
 
-from jiuwenbox.models.policy import (
-    BindMount,
-    FilesystemPolicy,
-    ProcessPolicy,
-    SecurityPolicy,
-)
+from jiuwenbox.models.policy import ProcessPolicy, SecurityPolicy
 from jiuwenbox.supervisor.bwrap import BwrapConfig
 
 if TYPE_CHECKING:
@@ -32,12 +27,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 ENV_WARM_POOL = "JIUWENBOX_WARM_POOL"
-DEFAULT_WARM_POOL_SIZE = 4
-_INTERPRETER_PATHS = ("/usr", "/lib", "/lib64", "/bin", "/sbin")
+DEFAULT_WARM_POOL_SIZE = 8
 
 
 def warm_pool_size() -> int:
-    """Return the configured pool depth. Unset means 4. ``0`` disables it."""
+    """Return the configured pool depth. Unset means 8. ``0`` disables it."""
     raw = os.environ.get(ENV_WARM_POOL)
     if raw is None or not raw.strip():
         return DEFAULT_WARM_POOL_SIZE
@@ -48,6 +42,35 @@ def warm_pool_size() -> int:
         return 0
 
 
+_COMPARED_POLICIES = ("network", "cgroup", "namespace", "syscall")
+_MISMATCH_VALUE_LIMIT = 180
+
+
+def warm_pool_mismatches(template: SecurityPolicy, request: SecurityPolicy) -> list[str]:
+    """Return why ``request`` cannot take a slot parked from ``template``.
+
+    An empty list means the request is compatible. Each entry names one
+    differing field and both values. Filesystem, run-as and environment are
+    applied at checkout and are not compared.
+    """
+    reasons: list[str] = []
+    request_landlock = request.landlock.compatibility
+    template_landlock = template.landlock.compatibility
+    if request_landlock == "disabled" or request_landlock != template_landlock:
+        note = ""
+        if request_landlock == "disabled":
+            note = " (warm pool cannot serve a sandbox with Landlock disabled)"
+        reasons.append(
+            f"landlock.compatibility request={request_landlock!r} "
+            f"template={template_landlock!r}{note}"
+        )
+    for name in _COMPARED_POLICIES:
+        reasons.extend(
+            _policy_diffs(name, getattr(template, name), getattr(request, name)),
+        )
+    return reasons
+
+
 def warm_pool_compatible(template: SecurityPolicy, request: SecurityPolicy) -> bool:
     """True when a parked slot can serve this request.
 
@@ -55,33 +78,47 @@ def warm_pool_compatible(template: SecurityPolicy, request: SecurityPolicy) -> b
     checkout. The slot's user namespace already identity-maps every id in
     ``0 .. 65535``, so ``setuid`` to the resolved user succeeds.
     Landlock must stay enabled: the parked process already mounted the
-    interpreter paths, and without Landlock those paths would stay visible.
+    server default filesystem, and without Landlock those paths would stay
+    visible.
     """
-    if request.landlock.compatibility == "disabled":
-        return False
-    if request.landlock.compatibility != template.landlock.compatibility:
-        return False
-    return (
-        request.network == template.network
-        and request.cgroup == template.cgroup
-        and request.namespace == template.namespace
-        and request.syscall == template.syscall
-    )
+    return not warm_pool_mismatches(template, request)
+
+
+def _policy_diffs(path: str, template: object, request: object) -> list[str]:
+    if template == request:
+        return []
+    fields = getattr(type(template), "model_fields", None)
+    if fields and type(template) is type(request):
+        found: list[str] = []
+        for name in fields:
+            found.extend(_policy_diffs(
+                f"{path}.{name}",
+                getattr(template, name),
+                getattr(request, name),
+            ))
+        if found:
+            return found
+    return [
+        f"{path} request={_brief(request)} template={_brief(template)}",
+    ]
+
+
+def _brief(value: object) -> str:
+    rendered = getattr(value, "value", None)
+    text = repr(rendered if isinstance(rendered, str) else value)
+    if len(text) <= _MISMATCH_VALUE_LIMIT:
+        return text
+    return text[: _MISMATCH_VALUE_LIMIT - 3] + "..."
 
 
 def boot_policy(template: SecurityPolicy) -> SecurityPolicy:
     """Policy used to start a parked process.
 
-    Only the interpreter directories are mounted. The process stays uid 0
-    inside an identity user-id map until checkout setuid/setgid.
+    The slot keeps the filesystem of the server default policy, so every
+    bind mount loaded with jiuwenbox is present before checkout. The process
+    stays uid 0 inside an identity user-id map until checkout setuid/setgid.
     """
-    binds = [
-        BindMount(host_path=path, sandbox_path=path, mode="ro")
-        for path in _INTERPRETER_PATHS
-        if os.path.isdir(path)
-    ]
     return template.model_copy(deep=True, update={
-        "filesystem_policy": FilesystemPolicy(bind_mounts=binds),
         "process": ProcessPolicy(run_as_user="0", run_as_group="0"),
     })
 
@@ -226,6 +263,16 @@ class WarmPool:
         """Queue a slot id. Tests use this instead of the internal queue."""
         with self._state_lock:
             self._slots.put(slot_id)
+
+    @property
+    def depth(self) -> int:
+        return self._size
+
+    def mismatch_reasons(self, request: SecurityPolicy) -> list[str]:
+        """Name the template fields that keep ``request`` off this pool."""
+        with self._state_lock:
+            template = self._template
+        return warm_pool_mismatches(template, request)
 
     def acquire(self, policy: SecurityPolicy) -> tuple[bool, str | None]:
         """Claim a parked sandbox when ``policy`` matches the current template.

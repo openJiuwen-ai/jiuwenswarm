@@ -83,7 +83,7 @@ def _default_profile_paths() -> list[Path]:
     if env_state:
         paths.append(Path(env_state) / ".browser" / "profiles.json")
     paths.append(Path.home() / ".jiuwenswarm" / ".browser" / "profiles.json")
-    workspace = Path.home() / ".jiuwenswarm" / "domain" / "agent" / "workspace"
+    workspace = Path.home() / ".jiuwenswarm" / "agent" / "workspace"
     paths.append(workspace / "browser-move" / ".browser" / "profiles.json")
     # 去重保序
     seen: set[str] = set()

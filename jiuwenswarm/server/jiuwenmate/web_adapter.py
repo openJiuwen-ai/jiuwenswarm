@@ -19,8 +19,9 @@ import logging
 import threading
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from openjiuwen.harness.persistent_agent import AgentEvent, EventType
 
@@ -34,6 +35,7 @@ from jiuwenswarm.server.jiuwenmate.execution_models import AccessSnapshot, Conve
 from jiuwenswarm.server.jiuwenmate.models import ColleagueSettings, PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.group_access import configure_group_access
 from jiuwenswarm.server.jiuwenmate.model_refresh import ModelRefreshQueue
+from jiuwenswarm.server.jiuwenmate.output_files import WorkspaceOutputFiles
 from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ, WORKSPACE_WRITE
 from jiuwenswarm.server.jiuwenmate.resource_assembly import InstalledResourceCatalog
 from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
@@ -86,6 +88,7 @@ _RUNTIME_METHODS = frozenset(
     {
         ReqMethod.JIUWENMATE_CHAT_SEND.value,
         ReqMethod.JIUWENMATE_CHAT_HISTORY.value,
+        ReqMethod.JIUWENMATE_ARTIFACT_LIST.value,
         ReqMethod.JIUWENMATE_REQUEST_GET.value,
         ReqMethod.JIUWENMATE_REQUEST_ABORT.value,
         ReqMethod.JIUWENMATE_PERMISSION_DECIDE.value,
@@ -129,6 +132,18 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _viewer_zone(params: Mapping[str, Any]) -> tzinfo:
+    """The browser's zone for activity buckets; Windows may lack tzdata, so the offset is the fallback."""
+    name = params.get("timezone")
+    if isinstance(name, str) and name:
+        with suppress(ZoneInfoNotFoundError, ValueError):
+            return ZoneInfo(name)
+    offset = params.get("utc_offset_minutes")
+    if isinstance(offset, int) and not isinstance(offset, bool) and -14 * 60 <= offset <= 14 * 60:
+        return timezone(timedelta(minutes=offset))
+    return timezone.utc
+
+
 def _bound_apps() -> dict[str, set[tuple[str, str]]]:
     """The ``(app, agent)`` pairs the owner's channel configuration binds now, per platform."""
     from jiuwenswarm.server.jiuwenmate.dingtalk_inbound import configured_dingtalk_bindings
@@ -141,6 +156,21 @@ def _bound_apps() -> dict[str, set[tuple[str, str]]]:
         "feishu": {(binding.app_id, binding.agent_id) for binding in configured_feishu_bindings()},
         "dingtalk": {(binding.app_id, binding.agent_id) for binding in configured_dingtalk_bindings()},
     }
+
+
+def _dingtalk_disconnect_bindings() -> set[tuple[str, str]]:
+    """A saved owner may revoke private login even when its robot is disabled."""
+    from jiuwenswarm.common.config import get_config
+    from agent_gateway.channel_manager.im_platforms.dingtalk.configuration import dingtalk_apps
+
+    apps = dingtalk_apps((get_config().get("channels") or {}).get("dingtalk"))
+    bindings = set()
+    for app in apps:
+        if not app["client_id"] or not app["persistent_agent_id"]:
+            continue
+        if sum(item["client_id"] == app["client_id"] for item in apps) == 1:
+            bindings.add((app["client_id"], app["persistent_agent_id"]))
+    return bindings
 
 
 def _colleague_wire(view, service: PersistentAgentService, bound: Mapping[str, set[tuple[str, str]]]) -> dict[str, Any]:
@@ -179,9 +209,16 @@ def _ignore(event: AgentEvent) -> None:
 def configured_model_catalog() -> dict[str, Any]:
     """The models the colleague service resolves, without connection details."""
     from jiuwenswarm.common.config import get_default_models
-    from jiuwenswarm.runtime.model_catalog import build_model_catalog
+    from jiuwenswarm.server.jiuwenmate.service import ConfiguredModelProvider
 
-    return build_model_catalog(get_default_models()).to_dict()
+    entries = get_default_models()
+    catalog = ConfiguredModelProvider(lambda: entries).catalog().to_dict()
+    for model in catalog["models"]:
+        index = int(model["selection_key"].rpartition("#")[2])
+        vendor_key = entries[index]["model_client_config"].get("vendor_key")
+        if isinstance(vendor_key, str) and vendor_key.strip():
+            model["vendor_key"] = vendor_key.strip()
+    return catalog
 
 
 def _text_param(params: Mapping[str, Any], name: str) -> str:
@@ -331,11 +368,13 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         manager_factory: ManagerFactory = _default_manager,
         push: PushSink | None = None,
         inspect_feishu_group: Callable[..., Awaitable[dict[str, Any]]] | None = None,
+        dingtalk_group_status: Callable[[str, str, str], dict[str, Any]] | None = None,
     ) -> None:
         self._service_factory = service_factory
         self._model_catalog = model_catalog
         self._manager_factory = manager_factory
         self._inspect_feishu_group = inspect_feishu_group
+        self._dingtalk_group_status = dingtalk_group_status
         self._stream = None if push is None else StreamPublisher(push)
         self._service: PersistentAgentService | None = None
         self._service_lock = threading.Lock()
@@ -351,6 +390,10 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             if self._service is None:
                 self._service = self._service_factory()
             return self._service
+
+    async def start(self) -> None:
+        """Start Web schedules and recovery without waiting for a browser connection."""
+        await self._runtime()
 
     async def _runtime(self) -> AgentManager:
         """Start the runtime on first use and recover the Requests a previous process left unfinished.
@@ -547,6 +590,14 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             self._stream.watch(agent_id, request)
 
     async def _run(self, method: str, params: Mapping[str, Any]) -> dict[str, Any]:
+        if method == ReqMethod.JIUWENMATE_ARTIFACT_LIST.value:
+            service = await asyncio.to_thread(self._colleagues)
+            agent_id = _text_param(params, "agent_id")
+            await asyncio.to_thread(service.get_colleague, WEB_NAMESPACE, agent_id)
+            files = await asyncio.to_thread(
+                WorkspaceOutputFiles(service.workspaces).list_artifacts, WEB_NAMESPACE, agent_id
+            )
+            return {"files": files}
         manager = await self._runtime()
         conversations = self._conversations
         if method.startswith("jiuwenmate.welink_office."):
@@ -603,25 +654,59 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             config_id = _text_param(params, "agent_id")
             connection_key = _text_param(params, "connection_key")
             service = await asyncio.to_thread(self._colleagues)
-            await asyncio.to_thread(service.get_colleague, WEB_NAMESPACE, config_id)
-            connection = next((
-                item for item in await asyncio.to_thread(service.connections, WEB_NAMESPACE, config_id)
-                if item.channel == "dingtalk" and item.connection_key == connection_key
-            ), None)
-            if connection is None or (connection_key, connection.agent_id) not in _bound_apps().get("dingtalk", set()):
+            if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_DISCONNECT.value:
+                connection = await asyncio.to_thread(service.connection_of, WEB_NAMESPACE, config_id)
+                if (
+                    connection is not None
+                    and connection.channel == "dingtalk"
+                    and connection.connection_key == connection_key
+                ):
+                    config_id = connection.config_id
+            await asyncio.to_thread(service.get_config, WEB_NAMESPACE, config_id)
+            bindings = (_dingtalk_disconnect_bindings() if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_DISCONNECT.value
+                        else _bound_apps().get("dingtalk", set()))
+            agent_id = config_id if (connection_key, config_id) in bindings else None
+            if agent_id is None:
+                connections = await asyncio.to_thread(service.connections, WEB_NAMESPACE, config_id)
+                for item in connections:
+                    if item.channel != "dingtalk" or item.connection_key != connection_key:
+                        continue
+                    if (connection_key, item.agent_id) in bindings:
+                        agent_id = item.agent_id
+                        break
+            if agent_id is None:
                 raise PersistentAgentError("DingTalk connection is not bound to this employee", code="NOT_FOUND")
             from jiuwenswarm.server.jiuwenmate.dingtalk_cli_runtime import DingTalkCliScope
-            scope = DingTalkCliScope(WEB_NAMESPACE, connection.agent_id)
+            scope = DingTalkCliScope(WEB_NAMESPACE, agent_id, app_id=connection_key)
             runtime = manager.dingtalk_cli_runtime
             if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_STATUS.value:
-                return {"dingtalk_auth": await runtime.dingtalk_auth_status(scope)}
+                status = await runtime.dingtalk_auth_status(scope)
+                if status.get('status') == 'connected' and self._dingtalk_group_status is not None:
+                    status = {
+                        **status,
+                        'group_monitor': self._dingtalk_group_status(WEB_NAMESPACE, agent_id, connection_key),
+                    }
+                return {"dingtalk_auth": status}
             if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_BEGIN.value:
-                return {"authorization": await runtime.dingtalk_auth_begin(scope)}
+                from filelock import Timeout
+                from jiuwenswarm.common.im_binding_lock import im_binding_lock
+                try:
+                    async with im_binding_lock("dingtalk", connection_key):
+                        if (connection_key, agent_id) not in _bound_apps().get("dingtalk", set()):
+                            raise PersistentAgentError("DingTalk connection is no longer bound", code="NOT_FOUND")
+                        return {"authorization": await runtime.dingtalk_auth_begin(scope)}
+                except Timeout as exc:
+                    raise PersistentAgentError("DingTalk application binding is busy", code="CONFLICT") from exc
             if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_POLL.value:
                 operation_id = _text_param(params, "operation_id")
                 status = await runtime.dingtalk_auth_status(scope)
                 if status.get("operation_id") not in (None, operation_id):
                     raise PersistentAgentError("DingTalk authorization operation changed", code="CONFLICT")
+                if status.get('status') == 'connected' and self._dingtalk_group_status is not None:
+                    status = {
+                        **status,
+                        'group_monitor': self._dingtalk_group_status(WEB_NAMESPACE, agent_id, connection_key),
+                    }
                 return {"dingtalk_auth": status}
             if method == ReqMethod.JIUWENMATE_DINGTALK_AUTH_CANCEL.value:
                 return {"dingtalk_auth": await runtime.dingtalk_auth_cancel(scope, _text_param(params, "operation_id"))}
@@ -684,7 +769,11 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             )
             return report
         if method == ReqMethod.JIUWENMATE_ACTIVITY_GET.value:
-            report = await asyncio.to_thread(ActivityQuery(manager.db_path).report, WEB_NAMESPACE, now=_utc_now())
+            report = await asyncio.to_thread(
+                ActivityQuery(manager.db_path).report,
+                WEB_NAMESPACE,
+                now=_utc_now().astimezone(_viewer_zone(params)),
+            )
             return {"activity": report}
         if method == ReqMethod.JIUWENMATE_SCHEDULE_LIST.value:
             agent_id = params.get("agent_id")
@@ -753,6 +842,7 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         conversation = ConversationRef.web(conversation_id)
         if method == ReqMethod.JIUWENMATE_CHAT_SEND.value:
             text = _text_param(params, "text")
+            await asyncio.to_thread(self._colleagues().validate_request_model, WEB_NAMESPACE, agent_id)
             view = await manager.submit_direct_message(
                 WEB_NAMESPACE,
                 agent_id,
@@ -802,6 +892,9 @@ class JiuwenMateWebAdapter(GatewayAdapter):
         bound = _bound_apps()
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT.value:
             view = service.ensure_default_colleague(WEB_NAMESPACE)
+            if view is not None:
+                conversations = self._conversations or WebConversationStore(service.db_path)
+                conversations.ensure_initial(WEB_NAMESPACE, view.agent_id, created_at=view.created_at)
             return {"colleague": None if view is None else _colleague_wire(view, service, bound)}
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_LIST.value:
             return {"colleagues": [
@@ -814,19 +907,17 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             source_template_id = params.get("source_template_id")
             if source_template_id is not None and not isinstance(source_template_id, str):
                 raise PersistentAgentError("source_template_id is required")
-            return {
-                "colleague": _colleague_wire(
-                    service.create_colleague(
-                        WEB_NAMESPACE,
-                        _settings(params),
-                        template_id=template_id or None,
-                        source_template_id=source_template_id or None,
-                        unique_source=params.get("unique_source") is True,
-                    ),
-                    service,
-                    bound,
-                )
-            }
+            created = service.create_colleague(
+                WEB_NAMESPACE,
+                _settings(params),
+                template_id=template_id or None,
+                source_template_id=source_template_id or None,
+                unique_source=params.get("unique_source") is True,
+            )
+            conversations = self._conversations or WebConversationStore(service.db_path)
+            # List the new employee immediately without submitting a Request or starting the runtime.
+            conversations.ensure_initial(WEB_NAMESPACE, created.agent_id, created_at=created.created_at)
+            return {"colleague": _colleague_wire(created, service, bound)}
         # Management works on a colleague's configuration, whose ID is its Web agent's.
         agent_id = _text_param(params, "agent_id")
         if method == ReqMethod.JIUWENMATE_COLLEAGUE_GET.value:

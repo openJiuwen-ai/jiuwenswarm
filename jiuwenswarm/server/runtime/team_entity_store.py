@@ -19,10 +19,10 @@ from jiuwenswarm.common.team_template_config import (
     TeamTemplateNotFoundError,
     get_team_template_snapshot,
 )
-from jiuwenswarm.common.utils import get_domain_data_dir
+from jiuwenswarm.common.utils import get_user_workspace_dir
 from jiuwenswarm.server.runtime.team_binding_store import validate_team_name
 
-configure_openjiuwen_home(get_domain_data_dir())
+configure_openjiuwen_home(get_user_workspace_dir())
 
 TEAM_ENTITY_META_DIR = ".team-meta"
 TEAM_ENTITY_FILE = "team.yaml"
@@ -289,7 +289,7 @@ def ensure_team_entity_for_binding(
 def _register_common_provider() -> None:
     import sys
 
-    from openjiuwen_protocol.provider_domains import PROVIDER_DOMAIN_TEAM_ENTITY_STORE
+    from e2a.provider_domains import PROVIDER_DOMAIN_TEAM_ENTITY_STORE
 
     from jiuwenswarm.common.external_providers import register
 

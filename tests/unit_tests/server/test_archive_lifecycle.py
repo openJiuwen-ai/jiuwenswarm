@@ -105,7 +105,6 @@ async def test_session_delete_forwards_group_and_bot(monkeypatch):
     channel = SimpleNamespace(
         channel_id="web",
         clients=[],
-        connection_user_id=lambda ws: None,
         register_method=lambda name, fn: methods.update({name: fn}),
         send_response=AsyncMock(),
         send_event=AsyncMock(),
@@ -1493,6 +1492,85 @@ async def test_non_terminal_without_waiters_skips_server_push(monkeypatch):
     )
 
     push.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_terminal_team_task_without_waiters_uses_session_live(monkeypatch):
+    """队长流的等待者走了之后，终态子任务仍进团队直播。"""
+    from e2a.wire_codec import parse_agent_server_wire_chunk
+
+    from jiuwenswarm.agents.harness.team import team_manager
+
+    manager = team_manager.TeamManager()
+    monkeypatch.setattr(team_manager, "_team_manager", manager)
+    server_push = AsyncMock()
+    monkeypatch.setattr(manager, "_push_event_without_waiter", server_push)
+    published: list[dict] = []
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.team.push_fanout.publish",
+        published.append,
+    )
+    manager.begin_round("sess_a", "req_1", terminal_armed=True)
+
+    await manager.broadcast_event(
+        "sess_a",
+        {"event_type": "team.task", "event": {
+            "type": "team.task.created", "task_id": "task_1", "status": "pending",
+        }},
+        channel_id="web",
+    )
+    await manager.broadcast_event(
+        "sess_a", {"event_type": "chat.delta", "content": "hi"}, channel_id="web",
+    )
+    completed = {
+        "event_type": "team.task",
+        "event": {
+            "type": "team.task.completed",
+            "task_id": "task_1",
+            "status": "completed",
+        },
+    }
+    await manager.broadcast_event("sess_a", completed, channel_id="web")
+
+    server_push.assert_not_awaited()
+    assert len(published) == 1
+    wire = published[0]
+    assert wire["metadata"]["delivery_scope"] == "session_live"
+    assert wire["session_id"] == "sess_a"
+    chunk = parse_agent_server_wire_chunk(wire)
+    assert chunk.request_id == "team-session-live:sess_a"
+    assert chunk.payload["event_type"] == "team.task"
+    assert chunk.payload["event"]["status"] == "completed"
+    assert chunk.payload["session_id"] == "sess_a"
+
+
+@pytest.mark.asyncio
+async def test_terminal_team_task_with_waiters_stays_on_the_queue(monkeypatch):
+    from jiuwenswarm.agents.harness.team import team_manager
+
+    manager = team_manager.TeamManager()
+    monkeypatch.setattr(team_manager, "_team_manager", manager)
+    published: list[dict] = []
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.team.push_fanout.publish",
+        published.append,
+    )
+    manager.begin_round("sess_a", "req_1", terminal_armed=True)
+    queue = asyncio.Queue()
+    manager.add_waiter("sess_a", "req_1", queue)
+
+    completed = {
+        "event_type": "team.task",
+        "event": {
+            "type": "team.task.completed",
+            "task_id": "task_1",
+            "status": "completed",
+        },
+    }
+    await manager.broadcast_event("sess_a", completed, channel_id="web")
+
+    assert published == []
+    assert queue.get_nowait()["event"]["status"] == "completed"
 
 
 @pytest.mark.asyncio

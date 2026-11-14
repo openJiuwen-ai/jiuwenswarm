@@ -93,7 +93,7 @@ class _LiveRun:
         if persistent.exists():
             return _jsonl(persistent)
         rows = []
-        for path in sorted((self.root / "infra/logs/process_cli").glob("*.log")):
+        for path in sorted((self.root / "agent/process_cli_logs").glob("*.log")):
             for line in path.read_text().splitlines():
                 if "permission_audit " in line:
                     rows.append(json.loads(line.split("permission_audit ", 1)[1]))
