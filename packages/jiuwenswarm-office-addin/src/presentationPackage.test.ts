@@ -2,8 +2,8 @@ import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
 
 import {
-  copyImage, createChart, editBuiltChart, editSlideText, findAndReplace, importedSlides, PackageRefused,
-  readChartStyle, readSlideText, themeOf, type FindOptions,
+  checkEdit, copyImage, createChart, editBuiltChart, editSlideText, findAndReplace, importedSlides,
+  normalizeMasterEdit, PackageRefused, readChartStyle, readSlideText, themeOf, type FindOptions,
 } from './presentationPackage';
 
 const NS = 'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
@@ -299,6 +299,50 @@ describe('charts on a slide', () => {
     expect(() => editBuiltChart(created, COLUMN, 1)).toThrow(/chart_index 1 is past the slide's 1 charts/);
     expect(() => editBuiltChart(created, { ...COLUMN, position: { x: 0, y: 0, w: 914400, h: 914400 } }, 0))
       .toThrow(/keeps the chart where it is.*presentation_apply_patch update_shape/);
+  });
+});
+
+describe('a package code edited', () => {
+  const link = (type: string) => `<Relationship Id="rX" Type="${R}/${type}" Target="https://x.test/a" `
+    + 'TargetMode="External"/>';
+
+  it('may link a page outside the deck, but no other file there', () => {
+    const before = slidePackage();
+    expect(() => checkEdit(before, slidePackage({ rels: link('hyperlink') }))).not.toThrow();
+    expect(() => checkEdit(before, slidePackage({ rels: link('image') })))
+      .toThrow(/links https:\/\/x\.test\/a .*outside/);
+    expect(() => checkEdit(slidePackage({ rels: link('image') }), slidePackage({ rels: link('image') }))).not.toThrow();
+  });
+
+  it('comes in as a master of its own: a theme name of its own, not preserved, its new parts typed and its '
+    + 'layouts numbered after the master', () => {
+    const LAYOUT = 'application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml';
+    const master = (ids: number[]) => `<p:sldMaster ${NS} preserve="1"><p:cSld name="R&D"/><p:sldLayoutIdLst>`
+      + `${ids.map((id, at) => `<p:sldLayoutId id="${id}" r:id="rId${at + 1}"/>`).join('')}`
+      + '</p:sldLayoutIdLst></p:sldMaster>';
+    const edited = withParts(slidePackage({ types: `<Override PartName="/ppt/slideLayouts/slideLayout1.xml" `
+      + `ContentType="${LAYOUT}"/>` }), {
+      'ppt/presentation.xml': `<p:presentation ${NS}><p:sldMasterIdLst><p:sldMasterId id="2147483648"/>`
+        + '</p:sldMasterIdLst></p:presentation>',
+      'ppt/theme/theme1.xml': '<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+        + 'name="Brand [old]"/>',
+      'ppt/slideMasters/slideMaster1.xml': master([2147483649, 2147483649]),
+      'ppt/slideLayouts/slideLayout1.xml': `<p:sldLayout ${NS}/>`,
+      'ppt/slideLayouts/slideLayout2.xml': `<p:sldLayout ${NS}/>`,
+      'ppt/media/logo.svg': '<svg/>',
+    });
+    const normalized = normalizeMasterEdit(edited, 'k1');
+    expect(part(normalized, 'ppt/theme/theme1.xml')).toContain('name="Brand [k1]"');
+    expect(part(normalized, 'ppt/slideMasters/slideMaster1.xml'))
+      .toMatch(/^<p:sldMaster [^>]*"><p:cSld name="R&amp;D"\/>/);
+    expect([...part(normalized, 'ppt/slideMasters/slideMaster1.xml').matchAll(/sldLayoutId id="(\d+)"/g)]
+      .map(match => match[1])).toEqual(['2147483649', '2147483650']);
+    const types = part(normalized, '[Content_Types].xml');
+    expect(types.match(/slideLayout\d\.xml/g)).toEqual(['slideLayout1.xml', 'slideLayout2.xml']);
+    expect(types).toContain('<Default Extension="svg" ContentType="image/svg+xml"/>');
+    expect(types).toContain('/ppt/theme/theme1.xml');
+    expect(() => normalizeMasterEdit(withParts(edited, { 'ppt/theme/theme1.xml': '<a:theme/>' }), 'k1'))
+      .toThrow(PackageRefused);
   });
 });
 

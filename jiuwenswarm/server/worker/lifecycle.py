@@ -150,4 +150,7 @@ async def _start_worker_runtime(
             await start_http_if_enabled(app_services)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[AgentHTTPServer] start failed: %s", exc)
+    from jiuwenswarm.agents.swarm.group_org_recovery import recovery_loop
+
+    runtime.spawn(recovery_loop(runtime.stop_event), name="group-organization-recovery")
     return runtime

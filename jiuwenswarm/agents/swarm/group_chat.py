@@ -168,11 +168,12 @@ def assemble_group_members(spec, members: list[dict]) -> None:
                 "Call run_team when the expert team should do it. That call resumes the same instance "
                 "and loads the context from its earlier child task. "
                 "Results are posted automatically; do not post or submit them twice. "
-                "If the same message mentions multiple expert teams, call run_team and do not reply. "
-                "That call joins your bound instance to one shared Team Organization. "
-                "Only the Owner posts the group reply. A teammate proxy and its expert-team instance "
-                "must not call group_send_message or send_file for that message. "
-                "Use group_send_message only when this message mentions you alone. "
+                "For a message mentioning only multiple expert teams, the first mentioned team is the Owner. "
+                "Only the Owner decides: ordinary conversation uses group_send_message; "
+                "substantive work uses run_team; "
+                "missing requirements use ask_user. A mention alone does not require an organization task. "
+                "Other proxies wait until the Owner accepts a task, then each calls run_team for that message. "
+                "Only the Owner posts the group's reply. "
                 "Do not build the outer group.",
             )
         member_params = dict(
@@ -274,7 +275,7 @@ def track_leader_reply(chunk, reply: list[str]) -> None:
     if getattr(role, "value", role) != TeamRole.LEADER.value:
         return
     chunk_type, payload = getattr(chunk, "type", None), chunk.payload
-    if chunk_type in {"tool_call", "tool_result"}:
+    if chunk_type in {"tool_call", "tool_result"} or payload.get("retrying"):
         reply.clear()
     elif chunk_type == "llm_output" and not payload.get("retrying"):
         content = payload.get("content")
@@ -476,6 +477,11 @@ class RunTeam(_GroupTool):
         if turn is not None and turn.route == "organization":
             if action == "cancel":
                 return ToolOutput(success=False, error="one expert team cannot cancel a Team Organization")
+            from jiuwenswarm.agents.swarm.group_route import activate
+
+            result = await activate(self.context.session_id, turn.client_message_id, self.backend)
+            if result is not None:
+                return result
             return await self._invoke_bound_organization(turn.client_message_id)
         if action in {"update", "cancel"}:
             return await self._adjust({**inputs, "action": action})
@@ -1054,6 +1060,10 @@ class RunTeam(_GroupTool):
                     text = "".join(leader_reply).strip()
                     if not text or future.done():
                         return False
+                    # Some providers return this interruption sentinel as normal
+                    # model text instead of a structured failure frame.
+                    if text.endswith("[Request interrupted by an unexpected error]"):
+                        raise RuntimeError("expert-team response was interrupted by an unexpected error")
                     logger.info("Private team finished without complete_team_run; using its last reply")
                     run = _private_runs.get(team_key, {})
                     attachments = with_output_files(run.get("outputs_dir"), [], since=run.get("started_at"))
@@ -1098,6 +1108,14 @@ class RunTeam(_GroupTool):
                         if getattr(chunk, "type", None) in {"llm_output", "tool_call", "tool_result"}:
                             leave_idle()
                         payload = getattr(chunk, "payload", None)
+                        # Core task_failed uses a typed CustomSchema payload.
+                        # Check it before the dictionary-only progress path.
+                        payload_type = (
+                            payload.get("type") if isinstance(payload, dict)
+                            else getattr(payload, "type", None)
+                        )
+                        if payload_type == "task_failed":
+                            raise RuntimeError("expert-team execution failed")
                         if not isinstance(payload, dict):
                             continue
                         track_leader_reply(chunk, leader_reply)

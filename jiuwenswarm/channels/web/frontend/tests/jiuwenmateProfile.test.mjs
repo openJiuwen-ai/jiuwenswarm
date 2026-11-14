@@ -2020,3 +2020,29 @@ for (const [language, expected] of [['zh', '已过期'], ['en', 'Expired']]) {
     } finally { await view.close(); await i18n.changeLanguage('zh'); }
   });
 }
+
+test('expired schedules open the execution editor without sending an enable request', async () => {
+  const enabled = [];
+  const view = await mountDashboard({
+    schedules: [
+      { ...dashboardPlan, id: 'expired-once', scheduleKind: 'once', enabled: false, nextFireAt: null },
+      { ...dashboardPlan, id: 'valid-periodic', enabled: false, lastStatus: 'paused' },
+    ],
+    onSetScheduleEnabled: (id, value) => enabled.push([id, value]),
+  });
+  try {
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+    const expired = view.find('[data-testid="jiuwenmate-schedule-board-row"][data-variant="expired-once"]');
+    assert.equal(expired.querySelector('[data-testid="jiuwenmate-schedule-toggle"]'), null);
+    const edit = expired.querySelector('[data-testid="jiuwenmate-schedule-edit"]');
+    assert.equal(edit.textContent, i18n.t('jiuwenmate.schedule.editExecutionTime'));
+    await view.click(edit);
+    assert.ok(view.find('[data-testid="jiuwenmate-schedule-dialog"]'));
+    assert.deepEqual(enabled, []);
+    const valid = view.find('[data-testid="jiuwenmate-schedule-board-row"][data-variant="valid-periodic"]');
+    await view.click(valid.querySelector('[data-testid="jiuwenmate-schedule-toggle"]'));
+    assert.deepEqual(enabled, [['valid-periodic', true]]);
+  } finally {
+    await view.close();
+  }
+});

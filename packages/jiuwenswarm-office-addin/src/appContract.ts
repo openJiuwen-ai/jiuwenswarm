@@ -1,16 +1,32 @@
 /**
- * The PowerPoint tool contract, shared with the server: tools.json and
- * profile.json of the ``office-powerpoint`` app's package directory, which
- * the backend loads too (``@contract``, see vite.config.ts). The pane never
- * edits it; it only reports which of its tools it can run in the running
- * PowerPoint.
+ * An app the pane runs in, and its tool contract shared with the server: the
+ * ``tools.json`` and ``profile.json`` of the app's package directory under
+ * ``jiuwenswarm/office/``, which the backend loads too (``@office``, see
+ * vite.config.ts). The pane never edits a contract; it only reports which of
+ * its tools it can run in the running host.
  */
-import contractTools from '@contract/tools.json';
-import contractProfile from '@contract/profile.json';
-
 import type { DocumentId } from './documentIdentity';
 import { isRecord } from './gatewayClient';
-import { PRESENTATION_TOOL_NAMES, type PresentationToolName } from './presentationToolTypes';
+
+/** Who makes the host application; WPS comes as a second platform. */
+export type Platform = 'microsoft';
+/** What the host edits, as the attach names it (``resource.kind``). */
+export type Surface = 'presentation' | 'document' | 'workbook';
+
+/** One host application the pane runs in: a platform's app for a surface. */
+export interface OfficeApp {
+  platform: Platform;
+  surface: Surface;
+  /** The host's name, as the model reads it. */
+  host: string;
+  /** The ``client_app`` the backend registers the app's conversations under. */
+  clientApp: string;
+  /** ``profile.json`` ``app_id``: the app the Gateway connection is for. */
+  appId: string;
+  contract: ToolContract;
+  /** The tools whose answers carry their fields at the top level, as the backend reads them. */
+  flatResults?: ReadonlySet<string>;
+}
 
 /** A node of an ``input_schema``: the part of JSON Schema the contract's tools use. */
 interface Schema {
@@ -38,38 +54,55 @@ const KEYWORDS = new Set(['type', 'properties', 'required', 'additionalPropertie
   'maximum', 'exclusiveMinimum', 'minLength', 'maxLength', 'minItems', 'maxItems', 'pattern', 'items', 'oneOf', 'anyOf',
   'description', 'default']);
 
-interface ContractTool {
+/** What a host must offer to run a tool: every requirement set at its version, and a Worker if ``worker``. */
+interface HostRequirements {
+  sets: Record<string, string>;
+  worker?: boolean;
+}
+
+export interface ContractTool {
   name: string;
   /** A ``Schema``; the JSON's inferred type is a union of every tool's fields, which no one interface matches. */
   input_schema: object;
   annotations: { mutating: boolean };
-  host_requirements: { powerpoint_api: string; worker?: boolean };
+  host_requirements: HostRequirements;
 }
 
-const CONTRACT_TOOLS: readonly ContractTool[] = contractTools;
-const TOOLS_BY_NAME = new Map(CONTRACT_TOOLS.map(tool => [tool.name, tool]));
-
-/** The ``client_app`` of the pane's conversations, as the backend registers the app. */
-export const POWERPOINT_CLIENT_APP = 'office-powerpoint';
-export const CONTRACT_APP_ID: string = contractProfile.app_id;
-
-export function isContractTool(name: string): name is PresentationToolName {
-  return TOOLS_BY_NAME.has(name);
+/** What the running Office host offers the contract's ``host_requirements``. */
+export interface OfficeHost {
+  isSetSupported(name: string, version: string): boolean;
+  worker: boolean;
 }
 
-function contractTool(name: PresentationToolName): ContractTool {
-  const tool = TOOLS_BY_NAME.get(name);
-  if (!tool) throw new Error(`${name} is not part of the PowerPoint contract`);
-  return tool;
-}
+/** An app's ``tools.json``. */
+export class ToolContract {
+  private readonly byName: ReadonlyMap<string, ContractTool>;
 
-export function isMutatingTool(name: PresentationToolName): boolean {
-  return contractTool(name).annotations.mutating;
-}
+  constructor(private readonly tools: readonly ContractTool[]) {
+    this.byName = new Map(tools.map(tool => [tool.name, tool]));
+  }
 
-/** What is wrong with ``input`` by the tool's ``input_schema``, and where; undefined when the schema allows it. */
-export function checkInput(name: PresentationToolName, input: unknown): string | undefined {
-  return problem(contractTool(name).input_schema as Schema, input, '');
+  has(name: string): boolean {
+    return this.byName.has(name);
+  }
+
+  isMutating(name: string): boolean {
+    return this.byName.get(name)?.annotations.mutating === true;
+  }
+
+  /** What is wrong with ``input`` by the tool's ``input_schema``, and where; undefined when the schema allows it. */
+  checkInput(name: string, input: unknown): string | undefined {
+    const tool = this.byName.get(name);
+    if (!tool) throw new Error(`${name} is not part of the contract`);
+    return problem(tool.input_schema as Schema, input, '');
+  }
+
+  /** The tools that are in the contract, implemented by the pane's tool runtime, and supported by the host. */
+  supported(host: OfficeHost, implemented: ReadonlySet<string>): string[] {
+    return this.tools.filter(({ name, host_requirements: { sets, worker } }) => implemented.has(name)
+      && Object.entries(sets).every(([set, version]) => host.isSetSupported(set, version))
+      && (!worker || host.worker)).map(tool => tool.name);
+  }
 }
 
 function problem(schema: Schema, value: unknown, path: string): string | undefined {
@@ -163,34 +196,17 @@ function isType(value: unknown, type: string): boolean {
   }
 }
 
-/** What the running Office host offers the contract's ``host_requirements``. */
-export interface PresentationHost {
-  isSetSupported(name: 'PowerPointApi', version: string): boolean;
-  worker: boolean;
+/** What a task pane sends with ``client.attach``, besides the conversation. */
+export interface AttachDeclaration {
+  resource: { key: DocumentId; display_name: string; kind: Surface; host_vendor: Platform };
+  capabilities: { supported_tools: string[] };
 }
 
-/** The tools that are in the contract, implemented by the pane's tool runtime, and supported by the host. */
-export function supportedContractTools(
-  host: PresentationHost, implemented: ReadonlySet<PresentationToolName>,
-): PresentationToolName[] {
-  return PRESENTATION_TOOL_NAMES.filter(name => {
-    const requirements = TOOLS_BY_NAME.get(name)?.host_requirements;
-    return requirements !== undefined && implemented.has(name)
-      && host.isSetSupported('PowerPointApi', requirements.powerpoint_api) && (!requirements.worker || host.worker);
-  });
-}
-
-/** What a presentation's task pane sends with ``client.attach``, besides the conversation. */
-export interface PresentationAttachDeclaration {
-  resource: { key: DocumentId; display_name: string; kind: 'presentation'; host_vendor: 'microsoft' };
-  capabilities: { supported_tools: PresentationToolName[] };
-}
-
-export function presentationAttachDeclaration({ documentId, displayName, host, implemented }: {
-  documentId: DocumentId; displayName: string; host: PresentationHost; implemented: ReadonlySet<PresentationToolName>;
-}): PresentationAttachDeclaration {
+export function attachDeclaration(app: OfficeApp, { documentId, displayName, host, implemented }: {
+  documentId: DocumentId; displayName: string; host: OfficeHost; implemented: ReadonlySet<string>;
+}): AttachDeclaration {
   return {
-    resource: { key: documentId, display_name: displayName, kind: 'presentation', host_vendor: 'microsoft' },
-    capabilities: { supported_tools: supportedContractTools(host, implemented) },
+    resource: { key: documentId, display_name: displayName, kind: app.surface, host_vendor: app.platform },
+    capabilities: { supported_tools: app.contract.supported(host, implemented) },
   };
 }

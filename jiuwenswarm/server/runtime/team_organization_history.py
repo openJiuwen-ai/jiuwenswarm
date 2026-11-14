@@ -9,7 +9,10 @@ from openjiuwen.agent_teams.organization.task_pool import OrgTaskManager
 from openjiuwen.agent_teams.spawn.shared_resources import get_shared_db
 from openjiuwen.agent_teams.tools.database import DatabaseConfig
 
-from jiuwenswarm.agents.harness.team.config_loader import resolve_team_sqlite_db_path
+from jiuwenswarm.agents.harness.team.config_loader import (
+    resolve_team_runtime_database_config,
+    resolve_team_sqlite_db_path,
+)
 from jiuwenswarm.common.team_template_config import get_team_template_snapshot
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
@@ -22,7 +25,16 @@ def organization_enabled() -> bool:
 
 
 def _history_database(metadata: dict[str, Any], owner_team_id: str) -> Any | None:
-    """Use the saved template's SQLite location before current configuration."""
+    """Use the saved template's SQLite location before current configuration.
+
+    Enterprise reads the deployment database and ignores a snapshot path that
+    still points at the shared-volume SQLite file.
+    """
+    from jiuwenswarm.enterprise.edition import is_enterprise
+
+    if is_enterprise():
+        return get_shared_db(resolve_team_runtime_database_config())
+
     entity = get_team_entity_store().get(owner_team_id)
     snapshot = entity.template_snapshot if entity is not None else metadata.get("team_template_snapshot")
     if not snapshot and metadata.get("team_template_id"):

@@ -262,6 +262,18 @@ def _empty_ledger() -> dict[str, Any]:
     return {"history_revision": 0, "next_behavior_index": 1, "sessions": {}}
 
 
+def load_session_records(session_id: str) -> list[dict[str, Any]]:
+    """Read one session under the history write lock (narrow snapshot read)."""
+
+    sid = str(session_id or "").strip()
+    if not sid:
+        return []
+    _session_history_module.WRITE_QUEUE.join()
+    with _session_history_module.FILE_LOCK:
+        records = load_history_records(sid)
+    return records if isinstance(records, list) else []
+
+
 def load_all_session_records() -> dict[str, list[dict[str, Any]]]:
     """Read every session under the history write lock (narrow snapshot read).
 
@@ -272,16 +284,12 @@ def load_all_session_records() -> dict[str, list[dict[str, Any]]]:
     """
 
     sessions, _ = get_all_sessions_metadata(limit=_ALL_SESSIONS_LIMIT, offset=0)
-    _session_history_module.WRITE_QUEUE.join()
     result: dict[str, list[dict[str, Any]]] = {}
     for metadata in sessions:
         session_id = str(metadata.get("session_id") or "").strip()
         if not session_id:
             continue
-        with _session_history_module.FILE_LOCK:
-            records = load_history_records(session_id)
-        if isinstance(records, list):
-            result[session_id] = records
+        result[session_id] = load_session_records(session_id)
     return result
 
 

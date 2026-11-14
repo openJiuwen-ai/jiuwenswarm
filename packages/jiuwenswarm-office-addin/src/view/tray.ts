@@ -20,6 +20,7 @@ export function trayItems(
   { connection, attachment, alert }: Pick<PaneState, 'connection' | 'attachment' | 'alert'>,
   now: number,
   actions: { continueHere: () => void; dismissAlert: () => void },
+  noun: string,
 ): TrayItem[] {
   const items: TrayItem[] = [];
   if (connection.kind === 'down') {
@@ -29,17 +30,17 @@ export function trayItems(
       text: left ? copy.connectionDown(left, connection.attempt) : copy.reconnecting,
     });
   } else if (attachment.kind === 'detached') {
-    items.push({ key: 'attachment', tone: 'info', icon: 'spinner', text: copy.connecting });
+    items.push({ key: 'attachment', tone: 'info', icon: 'spinner', text: copy.connecting(noun) });
   }
   if (attachment.kind === 'displaced') {
     items.push({
-      key: 'attachment', tone: 'info', icon: 'info', text: copy.displaced,
+      key: 'attachment', tone: 'info', icon: 'info', text: copy.displaced(noun),
       action: { label: copy.continueHere, run: actions.continueHere },
     });
   }
   if (attachment.kind === 'failed') {
     items.push({
-      key: 'attachment', tone: 'error', icon: 'alert', text: copy.failed(reasonOf(attachment.error)),
+      key: 'attachment', tone: 'error', icon: 'alert', text: copy.failed(noun, reasonOf(attachment.error)),
       action: { label: copy.retry, run: actions.continueHere },
     });
   }

@@ -4,11 +4,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 
 from jiuwenswarm.common.auth.model_catalog import LoginModel
 from jiuwenswarm.common.auth import login_credentials
 from jiuwenswarm.common.auth.login_credentials import placeholder_api_key
-from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
 REF = "d8699b326b88c40dc63e2834eb0c74da"

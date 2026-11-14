@@ -9,7 +9,8 @@ import json
 import logging
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -55,7 +56,7 @@ def _is_server_push(payload: dict[str, Any]) -> bool:
     metadata = payload.get("metadata")
     if not isinstance(metadata, dict):
         return False
-    from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+    from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 
     return bool(metadata.get(E2A_WIRE_SERVER_PUSH_KEY))
 
@@ -79,6 +80,7 @@ _FORWARD_DRAIN_TIMEOUT = 1.0
 # the stall is sustained.
 _WORKER_STALL_WARN = 30.0
 _WORKER_STALL_RESTART = 180.0
+_INFLIGHT_RECOVERY_TIMEOUT = 90.0
 
 
 def _bounded_stall_context(value: object) -> dict[str, Any]:
@@ -114,6 +116,14 @@ def _bounded_stall_context(value: object) -> dict[str, Any]:
 
 _GatewayRoute = tuple[Any, asyncio.Lock]
 _ForwardQueue = asyncio.Queue[tuple[dict[str, Any], _GatewayRoute | None]]
+
+
+@dataclass
+class _InflightStream:
+    payload: dict[str, Any]
+    worker: tuple[str, int, float]
+    after: int = 0
+    recovery: asyncio.Task[None] | None = None
 
 # Worker restart + fresh Runtime import budget for the reload-driven recovery.
 # Gateway unary requests default to a 600s timeout, so blocking one reload
@@ -172,6 +182,9 @@ class RuntimeSupervisor:
         self._worker_instance: str | None = None
         self._runtime_loaded = False
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._streams: dict[str, _InflightStream] = {}
+        self._stream_queries: dict[str, str] = {}
+        self._retired_streams: OrderedDict[str, None] = OrderedDict()
         self._routes: dict[str, tuple[Any, asyncio.Lock]] = {}
         self._queries: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._shutdown_done: asyncio.Future[dict[str, Any]] | None = None
@@ -410,14 +423,17 @@ class RuntimeSupervisor:
         worker_id = self._affinity.worker_for(request.session_id)
         # connect() publishes the transport before hello validates its identity
         # and registers the Worker. Requests must wait for that whole barrier.
-        if (self._conn is None or self._registry.get(worker_id) is None) and not self._fatal:
+        connection_pending = (self._conn is None or self._validated_conn is not self._conn
+                              or self._registry.get(worker_id) is None)
+        if connection_pending and not self._fatal:
             try:
                 await asyncio.wait_for(self.run_until_ipc_ready(), timeout=self._connect_timeout)
             except asyncio.TimeoutError:
                 await self._emit_error(ws, request, send_lock, "runtime worker IPC is still warming")
                 return
         slot = self._registry.get(worker_id)
-        if slot is None or self._conn is None:
+        conn = self._conn
+        if slot is None or conn is None or self._validated_conn is not conn:
             await self._emit_error(
                 ws, request, send_lock, self._fatal_reason or "runtime worker is not connected",
                 code="WORKER_UNSTABLE" if self._crash_retry_at > time.monotonic() else "WORKER_CLOSED",
@@ -427,21 +443,35 @@ class RuntimeSupervisor:
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         request_id = str(request.request_id or "")
         dispatch_id = uuid.uuid4().hex
+        payload = dump_agent_request(request)
+        worker = self._stream_worker_identity()
+        stream = None
         if request_id:
             self._pending[dispatch_id] = future
             self._routes[dispatch_id] = (ws, send_lock)
+            if request.is_stream and worker is not None and self._ipc_mode != FRONT_LOOPBACK:
+                stream = _InflightStream(payload, worker)
+                self._streams[dispatch_id] = stream
         try:
-            await self._conn.send(
-                {
-                    "kind": KIND_REQUEST,
-                    "generation": self._peer_generation,
-                    "request_id": request_id,
-                    "dispatch_id": dispatch_id,
-                    "session_id": request.session_id or "",
-                    "worker_id": worker_id,
-                    "payload": dump_agent_request(request),
-                }
-            )
+            try:
+                await conn.send(
+                    {
+                        "kind": KIND_REQUEST,
+                        "generation": self._peer_generation,
+                        "request_id": request_id,
+                        "dispatch_id": dispatch_id,
+                        "session_id": request.session_id or "",
+                        "worker_id": worker_id,
+                        "payload": payload,
+                    }
+                )
+            except (OSError, RuntimeError):
+                if stream is None:
+                    raise
+                # A failed send cannot establish whether the Worker accepted
+                # the request. Query its journal after reconnect; never resend.
+                self._begin_stream_recovery(dispatch_id, stream)
+                await self._close_failed_connection(conn)
             if not request_id:
                 return
             result = await future
@@ -454,6 +484,12 @@ class RuntimeSupervisor:
             if self._pending.get(dispatch_id) is future:
                 self._pending.pop(dispatch_id, None)
                 self._routes.pop(dispatch_id, None)
+            self._streams.pop(dispatch_id, None)
+            self._stream_queries = {key: value for key, value in self._stream_queries.items()
+                                    if value != dispatch_id}
+            if stream is not None and stream.recovery is not None:
+                stream.recovery.cancel()
+                await asyncio.gather(stream.recovery, return_exceptions=True)
         if (
             request_id
             and not result.get("ok", False)
@@ -537,17 +573,31 @@ class RuntimeSupervisor:
             raise shutdown_error
 
     async def _finish_stop(self, conn: IpcConnection | None) -> None:
-        if conn is not None:
-            await conn.close()
-        await self._cancel_side_tasks()
-        task = self._loop_task
-        if task is not None and not task.done():
-            done, _ = await asyncio.wait({task}, timeout=5.0)
-            if task not in done:
-                task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        try:
+            if conn is not None:
+                await conn.close()
+        finally:
+            try:
+                await self._cancel_side_tasks()
+                task = self._loop_task
+                if task is not None and not task.done():
+                    done, _ = await asyncio.wait({task}, timeout=5.0)
+                    if task not in done:
+                        task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+            finally:
+                await self._fail_pending("runtime worker stopped")
 
     async def _supervise(self) -> None:
+        try:
+            await self._supervise_sessions()
+        finally:
+            await self._fail_pending(
+                self._fatal_reason or "runtime worker stopped",
+                code="WORKER_UNSTABLE" if self._crash_retry_at > time.monotonic() else "WORKER_CLOSED",
+            )
+
+    async def _supervise_sessions(self) -> None:
         while not self._stopping:
             try:
                 await self._bring_up()
@@ -621,15 +671,26 @@ class RuntimeSupervisor:
                     self._readiness.mark_runtime_warming()
                 # Complete requests only after publishing the recovery decision.
                 # Retirement can take seconds when a blocked loop ignores SIGTERM.
+                preserve = set()
+                worker_recoverable = (not unhealthy_reason and not exited
+                                      and self._ipc_mode != FRONT_LOOPBACK)
+                if not self._fatal and worker_recoverable:
+                    worker = self._stream_worker_identity()
+                    for dispatch_id, stream in self._streams.items():
+                        pending = self._pending.get(dispatch_id)
+                        if stream.worker == worker and pending is not None and not pending.done():
+                            preserve.add(dispatch_id)
+                            self._begin_stream_recovery(dispatch_id, stream)
                 await self._fail_pending(
                     self._fatal_reason if self._fatal else "runtime worker closed",
                     code="WORKER_UNSTABLE" if self._crash_retry_at > time.monotonic() else "WORKER_CLOSED",
+                    preserve=preserve,
                 )
                 # A failed session owns these tasks and this transport even when
                 # its resident Worker remains alive or the restart budget is gone.
                 await self._cancel_side_tasks()
                 if retired_conn is not None:
-                    await retired_conn.close()
+                    await self._close_failed_connection(retired_conn)
                 if unhealthy_reason or self._ipc_mode == FRONT_LOOPBACK:
                     try:
                         await self._retire_unhealthy_worker()
@@ -903,6 +964,75 @@ class RuntimeSupervisor:
         self._start_side_tasks()
         if self._gateway_ws is not None:
             await conn.send({"kind": KIND_GATEWAY_ATTACH})
+        if self._streams:
+            # Start consuming before subscription writes/replay can fill the
+            # bounded receive queue. This sender belongs to this connection.
+            self._side_tasks.append(asyncio.create_task(
+                self._resume_streams_connected(conn), name="runtime-stream-resubscribe",
+            ))
+
+    async def _resume_streams_connected(self, conn: IpcConnection) -> None:
+        try:
+            await self._resume_streams(conn)
+        except Exception as exc:  # noqa: BLE001 - observe the connection-owned task
+            logger.warning("[Supervisor] stream resubscribe failed: %s", type(exc).__name__)
+            if self._conn is conn:
+                await self._close_failed_connection(conn)
+
+    async def _close_failed_connection(self, conn: IpcConnection) -> None:
+        """Retire broken IPC without discarding the original stream waiters."""
+        try:
+            await conn.close()
+        except Exception:  # noqa: BLE001 - recovery must outlive a broken transport
+            logger.debug("[Supervisor] failed IPC close during recovery", exc_info=True)
+
+    def _stream_worker_identity(self) -> tuple[str, int, float] | None:
+        if (not self._worker_instance or self._worker_pid is None
+                or self._worker_create_time is None):
+            return None
+        return self._worker_instance, self._worker_pid, self._worker_create_time
+
+    def _begin_stream_recovery(self, dispatch_id: str, stream: _InflightStream) -> None:
+        if stream.recovery is None:
+            stream.recovery = asyncio.create_task(
+                self._expire_stream_recovery(dispatch_id, stream), name="runtime-stream-recovery",
+            )
+
+    async def _expire_stream_recovery(self, dispatch_id: str, stream: _InflightStream) -> None:
+        await asyncio.sleep(_INFLIGHT_RECOVERY_TIMEOUT)
+        if self._streams.get(dispatch_id) is stream:
+            self._fail_stream_recovery(dispatch_id, "runtime worker stream recovery timed out")
+
+    def _fail_stream_recovery(self, dispatch_id: str, error: str) -> None:
+        self._routes.pop(dispatch_id, None)
+        self._finish_request({"dispatch_id": dispatch_id, "ok": False, "delivered": False,
+                              "error": error, "code": "WORKER_CLOSED"})
+
+    def _retire_stream(self, dispatch_id: str) -> None:
+        self._retired_streams[dispatch_id] = None
+        if len(self._retired_streams) > 2048:
+            self._retired_streams.popitem(last=False)
+
+    async def _resume_streams(self, conn: IpcConnection) -> None:
+        # IPC serializes writes. Any failed subscription retires the transport
+        # so every preserved stream is retried, including uncertain writes.
+        self._stream_queries.clear()
+        worker = self._stream_worker_identity()
+        for dispatch_id, stream in list(self._streams.items()):
+            pending = self._pending.get(dispatch_id)
+            if pending is None or pending.done():
+                continue
+            if stream.worker != worker:
+                self._fail_stream_recovery(dispatch_id, "runtime worker changed during stream recovery")
+                continue
+            if stream.recovery is None:
+                continue
+            query_id = uuid.uuid4().hex
+            self._stream_queries[query_id] = dispatch_id
+            await conn.send({"kind": KIND_SUBSCRIBE, "generation": self._peer_generation,
+                             "query_id": query_id, "dispatch_id": dispatch_id,
+                             "payload": stream.payload, "subscribe": True, "after": stream.after,
+                             "worker_instance": stream.worker[0]})
 
     async def _migrate_legacy_workers(self, *, deadline: float) -> None:
         """Retire verified predecessors; unrelated historical IPC cannot block boot."""
@@ -1160,7 +1290,22 @@ class RuntimeSupervisor:
         if kind == KIND_SNAPSHOT:
             if not self._accepts_peer_generation(message):
                 return
-            future = self._queries.get(str(message.get("query_id") or ""))
+            query_id = str(message.get("query_id") or "")
+            dispatch_id = self._stream_queries.pop(query_id, None)
+            if dispatch_id is not None:
+                stream = self._streams.get(dispatch_id)
+                payload = message.get("payload") or {}
+                if stream is not None:
+                    if (payload.get("worker_instance") != stream.worker[0]
+                            or payload.get("dispatch_id") != dispatch_id
+                            or payload.get("recovery_error")):
+                        self._fail_stream_recovery(dispatch_id, str(payload.get("recovery_error")
+                            or "runtime worker stream recovery identity mismatch"))
+                    elif stream.recovery is not None:
+                        stream.recovery.cancel()
+                        stream.recovery = None
+                return
+            future = self._queries.get(query_id)
             if future is not None and not future.done():
                 future.set_result(message.get("payload") or {})
             return
@@ -1183,12 +1328,14 @@ class RuntimeSupervisor:
             return None
         request_id = str(message.get("request_id") or payload.get("request_id") or "")
         route_key = str(message.get("dispatch_id") or request_id)
+        if route_key in self._retired_streams:
+            return None
         route = self._routes.get(route_key)
         if route is not None:
             ws, send_lock = route
         elif _is_server_push(payload) or payload.get("is_stream"):
             ws, send_lock = self._gateway_ws, self._gateway_lock
-            from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+            from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 
             payload = dict(payload)
             payload["metadata"] = {**(payload.get("metadata") or {}), E2A_WIRE_SERVER_PUSH_KEY: True}
@@ -1214,13 +1361,20 @@ class RuntimeSupervisor:
         payload = message["payload"]
         request_id = str(message.get("request_id") or payload.get("request_id") or "")
         ws, send_lock = route
+        route_key = str(message.get("dispatch_id") or request_id)
+        stream = self._streams.get(route_key)
+        sequence = message.get("sequence")
+        if stream is not None and type(sequence) is int and sequence <= stream.after:
+            await self._ack_delivery(message, True)
+            return
         self._forward_started = time.monotonic()
         self._forward_request_id = request_id
-        route_key = str(message.get("dispatch_id") or request_id)
         delivered = False
         try:
             async with asyncio.timeout(_FORWARD_TIMEOUT):
                 delivered = await self._forwarder.send(payload, ws=ws, send_lock=send_lock)
+                if delivered is True and stream is not None and type(sequence) is int:
+                    stream.after = max(stream.after, sequence)
         except asyncio.TimeoutError:
             error = "Gateway forwarding timed out"
             logger.warning(
@@ -1280,6 +1434,8 @@ class RuntimeSupervisor:
         if future is None and not message.get("dispatch_id") and len(self._pending) == 1:
             future = next(iter(self._pending.values()))
         if future is not None and not future.done():
+            if not message.get("ok", False) and dispatch_id in self._streams:
+                self._retire_stream(dispatch_id)
             future.set_result(message)
 
     def _apply_readiness(self, message: dict[str, Any]) -> None:
@@ -1412,13 +1568,22 @@ class RuntimeSupervisor:
         await asyncio.sleep(min(2.0, 0.2 * self._restart_count))
         return True
 
-    async def _fail_pending(self, error: str, *, code: str = "WORKER_CLOSED") -> None:
+    async def _fail_pending(
+        self, error: str, *, code: str = "WORKER_CLOSED", preserve: set[str] | None = None,
+    ) -> None:
         pending = list(self._pending.items())
-        self._pending.clear()
-        for _request_id, future in pending:
+        preserve = preserve or set()
+        for dispatch_id, future in pending:
+            if dispatch_id in preserve:
+                continue
+            self._pending.pop(dispatch_id, None)
             if not future.done():
+                if dispatch_id in self._streams:
+                    self._retire_stream(dispatch_id)
                 future.set_result({"ok": False, "delivered": False, "error": error, "code": code})
-        self._routes.clear()
+        for dispatch_id in list(self._routes):
+            if dispatch_id not in preserve:
+                self._routes.pop(dispatch_id, None)
 
     async def _notify_gateway(self, *, attached: bool, remote: Any = None) -> None:
         conn = self._conn

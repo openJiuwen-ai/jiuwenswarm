@@ -212,6 +212,26 @@ describe('undoing a turn', () => {
     expect(snapshots.undoable(['c1'])).toEqual({ slides: 1 });
   });
 
+  it('forgets every turn when told, and the rest of the turn under way, which a rollback still puts back', async () => {
+    const { deck, snapshots, write } = setUp();
+    const [a, b] = deck.ids();
+    await write('t1', { edit: [a] });
+    await snapshots.closeTurn();
+    await write('c2', { edit: [b] });
+    snapshots.forget();
+    const before = deck.content();
+    await (await write('c3', { replace: [a] })).rollback();
+    expect(deck.content()).toEqual(before);
+    await write('c4', { edit: [b] });
+    await snapshots.closeTurn();
+    expect(snapshots.undoable(['t1'])).toBeUndefined();
+    expect(snapshots.undoable(['c2', 'c3', 'c4'])).toBeUndefined();
+
+    await write('t3', { edit: [b] });
+    await snapshots.closeTurn();
+    expect(snapshots.undoable(['t3'])).toEqual({ slides: 1 });
+  });
+
   it('has nothing to undo for a turn that is gone', async () => {
     const { snapshots } = setUp();
     expect(await snapshots.undo(['nothing'])).toEqual({ kind: 'gone' });
