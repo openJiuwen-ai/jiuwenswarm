@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from agent_gateway.common.model_selection import ModelSelection
 from jiuwenswarm.common.config import (
     delete_model_resource,
@@ -68,7 +70,43 @@ async def _resource_payload(operation, params, *, user_id=""):
         return {key: resource_id, "deleted": True}
     if operation == "models.upsert":
         saved = upsert_model_resource(params.get("model") or {})
-        return {"model": ModelCatalog().get_public_model_detail(saved["model_id"])}
+        # Save track: an exec: reference just written must resolve before the
+        # config reload below reads it — otherwise get_config() finds a store
+        # miss, the forwarded snapshot carries an empty api_key, and the model
+        # cache is built (and kept) with an empty key. probe semantics fit the
+        # user action: run now, bypass any failure backoff. Runs off the event
+        # loop. A failed resolve keeps the saved entry but is reported in the
+        # save response (exec_resolve_error) instead of surfacing later as a
+        # model-call 401.
+        payload = {"model": ModelCatalog().get_public_model_detail(saved["model_id"])}
+        saved_mcc = saved.get("model_client_config") or {}
+        # Collect every exec: reference the save just persisted (api_key plus
+        # custom_headers values — the registry covers both), and resolve each
+        # now so the forwarded snapshot below never carries a store miss.
+        refs: list[tuple[str, str]] = []
+        saved_key = str(saved_mcc.get("api_key") or "")
+        if saved_key.startswith("exec:"):
+            refs.append((saved_key, "models.*.model_client_config.api_key"))
+        for header_value in (saved_mcc.get("custom_headers") or {}).values():
+            header_text = str(header_value or "")
+            if header_text.startswith("exec:"):
+                refs.append((header_text, "models.*.model_client_config.custom_headers.*"))
+        failed = False
+        if refs:
+            from jiuwenswarm.common.credentials.resolver import resolve_credential_ref_now
+
+            for ref, field_path in refs:
+                ok, _ = await asyncio.to_thread(
+                    resolve_credential_ref_now, ref, field_path=field_path,
+                )
+                failed = failed or not ok
+        if failed:
+            payload["exec_resolve_error"] = (
+                "the exec: reference was saved, but resolving it failed; "
+                "model calls will use an empty key until it succeeds "
+                "(check the secret-manager command, then re-save or probe)"
+            )
+        return payload
     if operation == "groups.upsert":
         return {"group": upsert_model_group_resource(params.get("group") or {})}
     raise ValueError(f"unsupported model resource operation: {operation}")

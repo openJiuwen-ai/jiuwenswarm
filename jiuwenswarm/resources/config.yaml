@@ -346,6 +346,9 @@ models:
     - model_id: mdl_default_primary
       model_client_config:
         api_base: ${API_BASE}
+        # api_key 支持三种写法：明文、${VAR}（环境变量）、exec: 引用式声明（详见
+        # docs/配置信息.md「引用式密钥声明」）。exec:<命令> 启动时执行一次、取 stdout
+        # 作密钥，明文不落盘；轮换需重启；仅 config.yaml 支持（企业模板不解析）。
         api_key: ${API_KEY}
         model_name: ${MODEL_NAME}
         client_provider: ${MODEL_PROVIDER}

@@ -161,6 +161,19 @@ class ModelCatalog:
         # Normalize only the response; retain the original persisted values.
         client["model_name"] = str(client.get("model_name") or "")
         client["api_base"] = str(client.get("api_base") or "")
+        # The catalog snapshot comes from get_config(), where resolve_env_vars
+        # has already replaced an exec: reference with its resolved plaintext.
+        # Echoing that would leak the secret, and a later save would overwrite
+        # the reference with stale plaintext. For reference entries only, the
+        # api_key shown to the edit dialog comes from the raw file (the
+        # reference string itself); every other form keeps the resolved-chain
+        # display it always had (see raw_api_key_by_model_id).
+        if expose_api_key and "api_key" in client:
+            from jiuwenswarm.common.config import raw_api_key_by_model_id
+
+            raw_key = raw_api_key_by_model_id(model_id)
+            if raw_key is not None:
+                client["api_key"] = raw_key
         entry["model_client_config"] = client
         write_only_fields: list[str] = []
         if isinstance(client, dict):

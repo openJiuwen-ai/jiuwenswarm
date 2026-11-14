@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import copy
+import logging
 from typing import Any
 
 from .schemas import (
     EffectiveEnterpriseConfig,
     TemplateRefSlot,
 )
+
+logger = logging.getLogger(__name__)
+
+EXEC_PREFIX = "exec:"
 
 SLOT_TO_CONFIG_KEY: dict[TemplateRefSlot, str] = {
     TemplateRefSlot.DEFAULT_MODEL: "default",
@@ -49,9 +54,34 @@ def model_entity_to_config_entry(entity: dict[str, Any]) -> dict[str, Any]:
         "timeout": entity.get("timeout", 1800),
         "verify_ssl": bool(entity.get("verify_ssl", False)),
     }
+    # Template api_key is a database plaintext field, not a config.yaml
+    # declaration surface: an "exec:" string here is undefined input that
+    # resolve_env_vars would otherwise treat as a command to run. Reject it
+    # and fall back to an empty key rather than executing DB-sourced text.
+    if mcc["api_key"].startswith(EXEC_PREFIX):
+        logger.warning(
+            "[enterprise] model template %s api_key looks like an exec: reference; "
+            "references only support config.yaml — treating it as empty",
+            str(entity.get("template_name") or entity.get("template_id") or "?"),
+        )
+        mcc["api_key"] = ""
     headers = model_headers_from_data(entity.get("data"))
     if headers:
-        mcc["custom_headers"] = headers
+        # Same trust boundary as api_key above: template headers come from the
+        # database, and the registry routes custom_headers.* values through
+        # resolve_env_vars — an "exec:" string there would be executed. Drop
+        # offending headers with a warning instead.
+        offending = [name for name, value in headers.items() if str(value).startswith(EXEC_PREFIX)]
+        for name in offending:
+            logger.warning(
+                "[enterprise] model template %s header %s looks like an exec: reference; "
+                "references only support config.yaml — dropping the header",
+                str(entity.get("template_name") or entity.get("template_id") or "?"),
+                name,
+            )
+            headers.pop(name)
+        if headers:
+            mcc["custom_headers"] = headers
     retry_count = entity.get("retry_count")
     if retry_count is not None:
         mcc["max_retries"] = retry_count
@@ -131,6 +161,27 @@ def apply_enterprise_models_to_config(
         applied = True
 
     if default_entry is not None:
+        # Template slots replace the same config.yaml sections wholesale; an
+        # exec: reference stored there would be dropped silently while the
+        # user assumes it still applies. Surface the loss before overwriting.
+        for section in ("defaults", "default"):
+            existing = models_section.get(section)
+            entries = (
+                existing if isinstance(existing, list)
+                else ([existing] if isinstance(existing, dict) else [])
+            )
+            for item in entries:
+                if not isinstance(item, dict):
+                    continue
+                mcc = item.get("model_client_config") or {}
+                api_key = str(mcc.get("api_key") or "")
+                if api_key.startswith(EXEC_PREFIX):
+                    logger.warning(
+                        "[enterprise] config.yaml models.%s api_key uses an exec: reference; "
+                        "the enterprise template for the default model slot replaces this section "
+                        "and the reference will not take effect",
+                        section,
+                    )
         models_section["defaults"] = [default_entry]
         models_section["default"] = default_entry
         react = merged.get("react")

@@ -37,6 +37,12 @@ from jiuwenswarm.common.utils import (
 
 logger = logging.getLogger(__name__)
 
+# Prefix of an exec: credential reference (see common/credentials/resolver.py).
+# Declared locally so the hot resolve_env_vars path needs no credentials
+# import to test the prefix; registry/resolver are imported lazily only after
+# the prefix matches.
+EXEC_PREFIX = "exec:"
+
 _CONFIG_MODULE_DIR = Path(__file__).parent
 CONFIG_YAML_PATH = get_config_file()
 SWARMFLOW_ENABLED_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_swarmflow")
@@ -79,16 +85,35 @@ if str(_CONFIG_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(_CONFIG_MODULE_DIR))
 
 
-def resolve_env_vars(value: Any) -> Any:
+def resolve_env_vars(value: Any, *, field_path: str = "") -> Any:
     """递归解析配置中的环境变量替换语法 ${VAR:-default}.
 
     Args:
         value: 配置值，可能是字符串、字典或列表
+        field_path: 当前值在配置树中的点分路径（如
+            ``models.defaults.model_client_config.api_key``）。默认空串时
+            行为与历史版本完全一致；路径命中凭据注册表且值为 ``exec:``
+            引用时查 ``_RESOLVED_SECRETS`` 单例替换（命中即返回，miss
+            则投递后台队列并返回空串——分流分支不执行命令）。
+            传 tuple 形式（每段一个元素）可避免递归中的路径字符串拼接；
+            字符串与 tuple 两种形式等价。
 
     Returns:
         解析后的值
     """
     if isinstance(value, str):
+        # Credential exec: references on registered fields resolve via the
+        # in-memory store (prewarmed at startup / filled by the save path /
+        # the background queue). This branch never runs a subprocess; a miss
+        # degrades to "" + a queued background resolve.
+        if field_path and value.startswith(EXEC_PREFIX):
+            path = ".".join(field_path) if isinstance(field_path, tuple) else field_path
+            from jiuwenswarm.common.credentials.registry import is_credential_field
+
+            if is_credential_field(path):
+                from jiuwenswarm.common.credentials.resolver import resolve_credential_ref
+
+                return resolve_credential_ref(value, field_path=path)
         # 匹配 ${VAR:-default} 格式
         pattern = r'\$\{([^:}]+)(?::-([^}]*))?\}'
 
@@ -138,9 +163,22 @@ def resolve_env_vars(value: Any) -> Any:
                 k: (v if k in mcp_credential_keys else resolve_env_vars(v))
                 for k, v in value.items()
             }
-        return {k: resolve_env_vars(v) for k, v in value.items()}
+        # dict keys extend the field path; list indices are not tracked
+        # (the walk keeps its original list comprehension — a glob `*`
+        # segment matches both bare and indexed forms). The path is carried
+        # as a tuple and joined only at the exec: leaf (see str branch), so
+        # non-credential walks pay no per-key string concatenation.
+        return {
+            k: resolve_env_vars(v, field_path=(*field_path, str(k)) if field_path else (str(k),))
+            for k, v in value.items()
+        }
     elif isinstance(value, list):
-        return [resolve_env_vars(item) for item in value]
+        # list items keep the parent field_path verbatim (no index segment):
+        # the models.defaults list elements produce
+        # ``models.defaults.model_client_config.api_key`` inside, which the
+        # registry glob already matches — and existing callers that never
+        # pass field_path are unaffected (empty default).
+        return [resolve_env_vars(item, field_path=field_path) for item in value]
     else:
         return value
 
@@ -2042,6 +2080,137 @@ def _require_editable_model(models: dict[str, Any], model_id: str) -> None:
         raise ModelSelectionError(MODEL_SELECTION_FORBIDDEN, "AgentOS models are read-only")
 
 
+def _identity_api_key(mcc: dict[str, Any] | None) -> str:
+    """api_key in identity form for equality checks.
+
+    Reference -> returned verbatim (the reference IS the declaration, and is
+    stable across the raw/resolved link split); ciphertext -> decrypted when
+    a provider is installed; plaintext -> verbatim. Every code path that
+    compares api_key for entry identity (duplicate detection, delete
+    matching) must use this form — resolved plaintext drifts with the
+    background resolve, so it cannot serve as identity. The mapping itself
+    is the display form (public_api_key); this wrapper only adapts the
+    model_client_config container.
+    """
+    return public_api_key(str((mcc or {}).get("api_key") or ""))
+
+
+def _duplicate_api_key_matches(stored_mcc: dict[str, Any] | None, incoming_mcc: dict[str, Any] | None) -> bool | None:
+    """Whether two entries' api_keys denote the same credential for dedup.
+
+    Returns tri-state:
+    - None — at least one side resolves to empty; api_key cannot
+      discriminate, the caller must decide by the other fields (model_name,
+      api_base). This keeps an unset ``${KEY_A}`` from colliding with an
+      unset ``${KEY_B}``.
+    - True/False — the resolved credential values are identical/different.
+      ``${VAR}`` forms are expanded before comparing (``${API_KEY}`` and its
+      expanded value are the same credential); ciphertext compares by its
+      decrypted plaintext; an exec: reference compares by its declaration
+      string — two different commands are different entries even if they
+      resolve to the same secret (different rotation semantics), and the
+      reference itself never resolves here.
+    """
+    from jiuwenswarm.common.credentials.resolver import is_reference
+
+    def _form(mcc: dict[str, Any] | None) -> tuple[str, bool]:
+        stored = str((mcc or {}).get("api_key") or "")
+        if not stored:
+            return "", False
+        if is_reference(stored):
+            return stored, True
+        return resolve_env_vars(public_api_key(stored)), False
+
+    stored_form, stored_is_ref = _form(stored_mcc)
+    incoming_form, incoming_is_ref = _form(incoming_mcc)
+    if not stored_form or not incoming_form:
+        return None
+    if stored_is_ref or incoming_is_ref:
+        # A reference only ever equals the same reference string; a reference
+        # never equals a plaintext key even if it resolves to the same value.
+        return stored_is_ref == incoming_is_ref and stored_form == incoming_form
+    return stored_form == incoming_form
+
+
+def public_api_key(stored_api_key: str) -> str:
+    """api_key in the form shown to the frontend.
+
+    Reference -> verbatim (the edit dialog manages the command itself);
+    ciphertext -> decrypted when a provider is installed; plaintext ->
+    verbatim. Every surface that echoes api_key back to a user (models.get,
+    models.list, TUI config.get/models.list) must pass stored values through
+    this before display — and the save path recognizes the echoed reference
+    via ``is_reference`` so a round-trip preserves it.
+    """
+    key = str(stored_api_key or "")
+    if not key:
+        return ""
+    from jiuwenswarm.common.credentials.resolver import is_reference
+
+    if is_reference(key):
+        return key
+    crypto = get_crypto_provider()
+    if crypto is not None:
+        try:
+            return crypto.decrypt(key)
+        except Exception:
+            return key
+    return key
+
+
+def raw_api_key_by_model_id(model_id: str) -> str | None:
+    """Stored exec: reference for ``model_id``, or None for any other form.
+
+    Only exec: references need the raw file: get_config() has already
+    replaced them with resolved plaintext, so echoing the resolved chain
+    leaks the secret and a later save would overwrite the reference.
+    Plaintext / ${VAR} / ciphertext entries keep the resolved-chain display
+    they always had — mapping them raw would show a literal ${VAR}
+    placeholder and (worse) make a re-save compare as "changed" against the
+    resolved snapshot, encrypting the placeholder into ciphertext.
+    Login/free models have no defaults entry on disk; callers treat None as
+    "no raw override" and use the resolved value.
+    """
+    target = str(model_id or "").strip()
+    if not target:
+        return None
+    return raw_api_keys_by_model_id().get(target)
+
+
+def raw_api_keys_by_model_id() -> dict[str, str]:
+    """Batch form of raw_api_key_by_model_id for list endpoints.
+
+    One file read builds the model_id -> reference-string map (references
+    only; see raw_api_key_by_model_id). Covers defaults/default/agentos so
+    an agentos reference does not fall back to its resolved plaintext.
+    """
+    raw = get_config_raw()
+    models = raw.get("models") if isinstance(raw, dict) else None
+    if not isinstance(models, dict):
+        return {}
+    result: dict[str, str] = {}
+    for section in ("defaults", "default", "agentos"):
+        entries = models.get(section)
+        if isinstance(entries, dict):
+            entries = [entries]
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            # Damaged legacy YAML can hold a non-dict model_client_config
+            # (recovery repairs it only on write, not on read) — skip instead
+            # of letting `.get` raise inside models.list.
+            client = entry.get("model_client_config")
+            if not isinstance(client, dict):
+                continue
+            model_id = str(entry.get("model_id") or "").strip()
+            key = str(client.get("api_key") or "")
+            if model_id and key.startswith(EXEC_PREFIX):
+                result[model_id] = key
+    return result
+
+
 def _protect_model_key(update: dict[str, Any], current: dict[str, Any]) -> None:
     """Preserve omitted credentials; encrypt changed keys with the installed provider."""
     client = update.get("model_client_config") or {}
@@ -2050,6 +2219,14 @@ def _protect_model_key(update: dict[str, Any], current: dict[str, Any]) -> None:
     key = client["api_key"]
     previous = (current.get("model_client_config") or {}).get("api_key")
     if key == previous or not key:
+        return
+    from jiuwenswarm.common.credentials.resolver import is_reference
+
+    # An exec: reference is neither plaintext nor ciphertext — store as-is.
+    # This also keeps the re-submitted-unchanged flow intact: the
+    # panel echoes the stored reference, the equality check above matches,
+    # and no encrypt/decrypt round-trip can corrupt it.
+    if is_reference(key):
         return
     crypto = get_crypto_provider()
     if crypto is not None:
