@@ -157,7 +157,7 @@ async function mount(options, run) {
     unsavedChanges,
     request: async (method, params) => {
       calls.push({ method, params });
-      if (method === 'config.get') return options.load ? options.load() : { ...config };
+      if (method === 'config.get') return options.load ? options.load({ ...config }) : { ...config };
       if (method === 'config.save_all') {
         saves.push(params.config);
         if (options.rejectSave) throw new Error('save failed');
@@ -211,6 +211,7 @@ async function mount(options, run) {
       calls,
       saves,
       render,
+      unmountFixture: () => act(async () => root.render(null)),
       services,
       dom,
       unsavedChanges,
@@ -353,6 +354,112 @@ test('empty config defaults to disabled main and expands default verifier values
   });
 });
 
+for (const nextEnabled of [true, false]) {
+  test(`completed collaboration save remains ${nextEnabled ? 'enabled' : 'disabled'} after settings remount`, async () => {
+    await mount(
+      { config: { multi_model_collaboration_enabled: !nextEnabled } },
+      async ({ main, click, unmountFixture, render, config }) => {
+        await click('settings-switch', 'multi-model-collaboration-enabled');
+        assert.equal(config().multi_model_collaboration_enabled, String(nextEnabled));
+        await unmountFixture();
+        await render();
+        assert.equal(main().getAttribute('aria-checked'), String(nextEnabled));
+        assert.equal(isMultiModelCollaborationEnabled(), nextEnabled);
+      },
+    );
+  });
+}
+
+test('a pending collaboration save refreshes settings remounted before the save completes', async () => {
+  let resolveSave;
+  await mount(
+    {
+      config: { multi_model_collaboration_enabled: false },
+      save: () => new Promise((resolve) => { resolveSave = resolve; }),
+    },
+    async ({ main, click, unmountFixture, render, config, calls }) => {
+      await click('settings-switch', 'multi-model-collaboration-enabled');
+      assert.equal(main().getAttribute('aria-checked'), 'true');
+      await unmountFixture();
+      await render();
+      assert.equal(main().getAttribute('aria-checked'), 'false');
+      await act(async () => { resolveSave(); });
+      assert.equal(config().multi_model_collaboration_enabled, 'true');
+      assert.equal(main().getAttribute('aria-checked'), 'true');
+      assert.equal(isMultiModelCollaborationEnabled(), true);
+      assert.equal(calls.filter(({ method }) => method === 'config.get').length, 3);
+    },
+  );
+});
+
+test('a late remount read cannot overwrite the refresh triggered by a completed collaboration save', async () => {
+  let resolveSave;
+  let resolveReload;
+  let loads = 0;
+  await mount(
+    {
+      config: { multi_model_collaboration_enabled: false },
+      load: (config) => {
+        loads += 1;
+        if (loads === 2) return new Promise((resolve) => { resolveReload = resolve; });
+        return config;
+      },
+      save: () => new Promise((resolve) => { resolveSave = resolve; }),
+    },
+    async ({ main, click, unmountFixture, render }) => {
+      await click('settings-switch', 'multi-model-collaboration-enabled');
+      await unmountFixture();
+      await render();
+      await act(async () => { resolveSave(); });
+      assert.equal(main().getAttribute('aria-checked'), 'true');
+      await act(async () => { resolveReload({ multi_model_collaboration_enabled: false }); });
+      assert.equal(main().getAttribute('aria-checked'), 'true');
+      assert.equal(isMultiModelCollaborationEnabled(), true);
+      assert.equal(loads, 3);
+    },
+  );
+});
+
+test('successful collaboration saves broadcast after the confirmed feature state changes', async () => {
+  let resolveSave;
+  await mount(
+    {
+      config: { multi_model_collaboration_enabled: false },
+      save: () => new Promise((resolve) => { resolveSave = resolve; }),
+    },
+    async ({ click, dom, config, main }) => {
+      const notifications = [];
+      dom.window.addEventListener('jiuwen:settings-config-changed', () => {
+        notifications.push({
+          saved: config().multi_model_collaboration_enabled,
+          enabled: isMultiModelCollaborationEnabled(),
+        });
+      });
+      await click('settings-switch', 'multi-model-collaboration-enabled');
+      assert.deepEqual(notifications, []);
+      await act(async () => { resolveSave(); });
+      assert.deepEqual(notifications, [{ saved: 'true', enabled: true }]);
+      assert.equal(main().getAttribute('aria-checked'), 'true');
+    },
+  );
+});
+
+test('failed collaboration saves roll back the switch without broadcasting a config change', async () => {
+  await mount(
+    { config: { multi_model_collaboration_enabled: false }, rejectSave: true },
+    async ({ click, dom, config, main, calls }) => {
+      let notifications = 0;
+      dom.window.addEventListener('jiuwen:settings-config-changed', () => { notifications += 1; });
+      await click('settings-switch', 'multi-model-collaboration-enabled');
+      assert.equal(notifications, 0);
+      assert.equal(config().multi_model_collaboration_enabled, false);
+      assert.equal(main().getAttribute('aria-checked'), 'false');
+      assert.equal(isMultiModelCollaborationEnabled(), false);
+      assert.equal(calls.filter(({ method }) => method === 'config.get').length, 1);
+    },
+  );
+});
+
 test('JEV switch rejects a missing key without opening or saving model configuration', async () => {
   await mount({ config: enabled, save: () => { throw new Error('JEV api_key is required'); } }, async ({ get, click, saves }) => {
     await click('settings-switch', 'collaboration-jev-enabled');
@@ -453,20 +560,20 @@ test('reconnect response cannot overwrite a completed feature save, but a new re
   await mount(
     {
       probe: true,
-      load: () => {
+      load: (config) => {
         loads += 1;
         if (loads === 2)
           return new Promise((resolve) => {
             resolveReload = resolve;
           });
-        return { multi_model_collaboration_enabled: false };
+        return { multi_model_collaboration_enabled: false, ...config };
       },
       save: () =>
         new Promise((resolve) => {
           resolveSave = resolve;
         }),
     },
-    async ({ services, render }) => {
+    async ({ services, render, config }) => {
       let saving;
       await act(async () => {
         saving = globalThis.collaborationFixture.controller.save(
@@ -484,12 +591,13 @@ test('reconnect response cannot overwrite a completed feature save, but a new re
       });
       assert.equal(isMultiModelCollaborationEnabled(), true);
       await act(async () => resolveReload({ multi_model_collaboration_enabled: false }));
-      assert.equal(globalThis.collaborationFixture.controller.config.multi_model_collaboration_enabled, true);
+      assert.equal(globalThis.collaborationFixture.controller.config.multi_model_collaboration_enabled, 'true');
       assert.equal(isMultiModelCollaborationEnabled(), true);
+      config().multi_model_collaboration_enabled = false;
       await act(async () => {
         await globalThis.collaborationFixture.controller.reload();
       });
-      assert.equal(loads, 3);
+      assert.equal(loads, 4);
       assert.equal(isMultiModelCollaborationEnabled(), false);
       assert.equal(globalThis.collaborationFixture.controller.config.multi_model_collaboration_enabled, false);
     },
@@ -561,7 +669,7 @@ test('shared JEV key save and clear survive stale config reloads', async () => {
   await mount(
     {
       probe: true,
-      load: () => {
+      load: (config) => {
         loads += 1;
         if (loads === 2)
           return new Promise((resolve) => {
@@ -570,6 +678,7 @@ test('shared JEV key save and clear survive stale config reloads', async () => {
         return {
           jev_typesafe_api_key: '',
           moa_jev_enabled: false,
+          ...config,
         };
       },
       save: () =>
