@@ -1,11 +1,17 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""JiuwenSwarm request methods copied from ``agent-protocol`` ``e2a.message``."""
+"""JiuwenSwarm request methods copied from ``agent-protocol`` ``e2a.message``.
+
+The catalog is maintained locally. Values remain strings on E2A/IPC transports;
+new Swarm methods do not require changing or patching the protocol enum.
+"""
 
 from enum import Enum
 
 
 class ReqMethod(str, Enum):
+    """Application method names with string-compatible wire values."""
+
     INITIALIZE = "initialize"
     ACP_TOOL_RESPONSE = "acp.tool_response"
 

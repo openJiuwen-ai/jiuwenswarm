@@ -1,14 +1,12 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Message schema compatibility exports.
-
-``ReqMethod`` is owned by JiuwenSwarm in ``common.schema.req_method``. Other
-message types continue to come from the protocol package.
-"""
+"""Local message model and request methods, with shared events and modes."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum
+from typing import Any, Literal
 
 from e2a.message import (  # noqa: F401
     PROMPT_SUGGESTION_READY_EVENT,
@@ -17,11 +15,40 @@ from e2a.message import (  # noqa: F401
     TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
     TOPIC_STARTERS_READY_EVENT,
     EventType,
-    Message,
     Mode,
 )
 
 from jiuwenswarm.common.schema.req_method import ReqMethod
+
+
+@dataclass
+class Message:
+    """Channel message copied from e2a, using JiuwenSwarm request methods."""
+
+    id: str
+    type: Literal["req", "res", "event"]
+    channel_id: str
+    session_id: str | None
+    params: dict
+    timestamp: float
+    ok: bool
+    provider: str | None = None
+    chat_id: str | None = None
+    user_id: str | None = None
+    bot_id: str | None = None
+    app_id: str | None = None
+    agent_ref: Any = None
+    payload: dict | None = None
+    req_method: ReqMethod | str | None = None
+    event_type: EventType | None = None
+    mode: Mode = Mode.AGENT_WORK_NORMAL
+    is_stream: bool = False
+    stream_seq: int | None = None
+    stream_id: str | None = None
+    metadata: dict[str, Any] | None = None
+    group_digital_avatar: bool = False
+    enable_memory: bool | None = None
+    enable_streaming: bool = True
 
 
 def _ensure_protocol_member(enum_cls: type[Enum], name: str, value: str) -> None:

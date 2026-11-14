@@ -8,7 +8,7 @@ import pytest
 
 from e2a.agent_models import AgentResponse, AgentResponseChunk
 from e2a.message import Message
-from jiuwenswarm.common.schema.req_method import ReqMethod
+from agent_gateway.common.protocol_methods import ReqMethod
 from agent_gateway.message_handler.message_handler import MessageHandler
 
 

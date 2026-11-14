@@ -14,7 +14,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from jiuwenswarm.common.schema.req_method import ReqMethod
+from agent_gateway.common.protocol_methods import ReqMethod
 from agent_gateway import telemetry
 from agent_gateway.routing.agent_client import (
     DuplicateRequestIdError,

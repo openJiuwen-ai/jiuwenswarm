@@ -105,6 +105,8 @@ Hand-built defaults use `source_protocol` = `e2a`. Legacy `binding` migrates to 
 
 At the Gateway-facing WebSocket ingress, AgentServer converts an explicitly supplied method to its own `ReqMethod`. Unknown or non-string methods receive a final error response with `payload.code` set to `METHOD_NOT_FOUND`. Internal requests without a method retain their existing path.
 
+JiuwenSwarm maintains its method catalog in `jiuwenswarm/common/schema/req_method.py`; `schema.message` and `schema.agent` export the same local enum. The dependent `Message`, `AgentRequest`, and request conversions in `common/e2a/gateway_normalize.py` are also maintained locally, without importing or patching the e2a `ReqMethod`. Adding a Swarm method does not require an agent-protocol version bump for the enum, but still requires the corresponding handlers, forwarding configuration, and tests. Methods remain strings on E2A/IPC transports, with unchanged wire fields. The standalone agent-gateway retains its own method type: the boundary is the wire protocol, not Python enum identity. E2A envelopes, responses, and event types remain shared with the protocol package.
+
 **Common `params` keys** (extend as needed; names below cooperate with ACP bridging):
 
 | Key | Purpose |

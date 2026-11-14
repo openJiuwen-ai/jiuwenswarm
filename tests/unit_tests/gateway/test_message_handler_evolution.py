@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from e2a.message import EventType
-from jiuwenswarm.common.schema.req_method import ReqMethod
+from agent_gateway.common.protocol_methods import ReqMethod
 from agent_gateway.message_handler.message_handler import MessageHandler
 
 from jiuwenswarm.common.schema import Message

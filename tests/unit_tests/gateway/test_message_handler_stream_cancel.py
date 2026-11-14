@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy.exc import TimeoutError as DatabaseTimeoutError
 from e2a.agent_models import AgentResponseChunk
 from e2a.gateway_normalize import e2a_from_agent_fields
-from jiuwenswarm.common.schema.req_method import ReqMethod
+from agent_gateway.common.protocol_methods import ReqMethod
 from agent_gateway.message_handler.message_handler import ChannelMode, MessageHandler
 from agent_gateway.routing.session_sharing import SubRole
 

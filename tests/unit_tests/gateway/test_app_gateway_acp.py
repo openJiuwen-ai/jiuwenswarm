@@ -15,7 +15,7 @@ from agent_gateway.app_gateway import (
     _normalize_gateway_message,
 )
 from e2a.message import EventType, Message
-from jiuwenswarm.common.schema.req_method import ReqMethod
+from agent_gateway.common.protocol_methods import ReqMethod
 
 
 class DummyBus:

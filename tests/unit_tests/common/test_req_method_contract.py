@@ -62,7 +62,7 @@ def _contract_method_strings() -> set[str]:
     )
 
 
-def test_forwarded_methods_exist_in_protocol_req_method() -> None:
+def test_forwarded_methods_exist_in_local_req_method() -> None:
     contract_methods = _contract_method_strings()
     assert contract_methods, "未收集到任何转发方法串，检查常量来源是否变更"
 
