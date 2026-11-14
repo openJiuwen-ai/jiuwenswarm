@@ -86,6 +86,7 @@ export interface VideoLivePanelHandle {
   setMicrophoneMuted: (muted: boolean) => void;
   setSpeakerMuted: (muted: boolean) => void;
   stopScreenSharing: () => void;
+  startScreenSharing: () => Promise<void>;
   deliverToolResult: (payload: SearchJobPayload) => void;
   deliverQuestion: (payload: SearchJobPayload) => void;
   /** A typed-chat approval card in this conversation; it has no job, so job_id is "". */
@@ -104,6 +105,22 @@ interface VideoLivePanelProps {
 }
 
 export const SCREEN_SHARE_UNSUPPORTED_NOTICE = '当前环境不支持屏幕共享，已仅开启语音';
+export const SCREEN_SHARE_NO_PERMISSION_NOTICE =
+  '没有屏幕录制权限，已仅开启语音。请在“系统设置 > 隐私与安全性 > 屏幕与系统录音”中允许本应用后重试';
+export const SCREEN_PICKER_TIMEOUT_ERROR = '系统选屏框 60 秒内未选择屏幕，已自动关闭';
+// WebKit closes its system picker after 60 s and rejects with NotAllowedError,
+// the same error as a user cancel; elapsed time is the only difference.
+const SCREEN_PICKER_TIMEOUT_MS = 55_000;
+
+/** The macOS desktop shell sets this to false when WKWebView has no screen picker (macOS < 14). */
+function isDesktopScreenCaptureUnavailable(): boolean {
+  return (window as { __JIUWEN_DESKTOP_SCREEN_CAPTURE__?: boolean }).__JIUWEN_DESKTOP_SCREEN_CAPTURE__ === false;
+}
+
+/** Chromium/Electron reject with "Permission denied by system" when macOS screen recording is off. */
+function isScreenCaptureDeniedBySystem(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'NotAllowedError' && /system/i.test(error.message);
+}
 
 function isScreenCaptureUnsupported(error: unknown): boolean {
   if (error instanceof DOMException && error.name === 'NotSupportedError') return true;
@@ -793,12 +810,14 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
    * Windows desktop WebView rejects getDisplayMedia with "Not supported", #5283).
    * With `allowUnsupported` the caller handles that case instead of an error.
    */
+  const screenFallbackNoticeRef = useRef(SCREEN_SHARE_UNSUPPORTED_NOTICE);
   const startScreen = async (allowUnsupported = false): Promise<boolean | 'unsupported'> => {
+    screenFallbackNoticeRef.current = SCREEN_SHARE_UNSUPPORTED_NOTICE;
     if (screens.length >= MAX_SCREENS) {
       setError(`最多同时读取 ${MAX_SCREENS} 个屏幕。`);
       return false;
     }
-    if (!navigator.mediaDevices?.getDisplayMedia) {
+    if (!navigator.mediaDevices?.getDisplayMedia || isDesktopScreenCaptureUnavailable()) {
       if (allowUnsupported) return 'unsupported';
       setError('当前运行环境不支持屏幕共享。');
       return false;
@@ -836,7 +855,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       }
 
       captureStage = 'attachStream';
-      if (source !== 'screen') {
+      // Only a camera or file source is replaced. With nothing shared, a reset
+      // would also stop the running voice transport and its conversation.
+      if (source && source !== 'screen') {
         resetSource();
       }
 
@@ -866,7 +887,16 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       reportRealtimeEvent('realtime_screen_capture_failed', {
         error_type: errorType, message, latency_ms: elapsedMs, raw_event: captureContext,
       });
-      if (errorType !== 'NotAllowedError' && errorType !== 'AbortError'
+      if (isScreenCaptureDeniedBySystem(screenError)) {
+        if (allowUnsupported) {
+          screenFallbackNoticeRef.current = SCREEN_SHARE_NO_PERMISSION_NOTICE;
+          return 'unsupported';
+        }
+        setError(SCREEN_SHARE_NO_PERMISSION_NOTICE);
+      } else if ((errorType === 'NotAllowedError' || errorType === 'AbortError')
+        && elapsedMs >= SCREEN_PICKER_TIMEOUT_MS) {
+        setError(SCREEN_PICKER_TIMEOUT_ERROR);
+      } else if (errorType !== 'NotAllowedError' && errorType !== 'AbortError'
         && allowUnsupported && isScreenCaptureUnsupported(screenError)) {
         return 'unsupported';
       } else {
@@ -1080,7 +1110,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                   search_session_id: searchSessionId,
                   frame_data_url: framesRef.current.at(-1)?.data_url || '',
                 },
-                { timeoutMs: call.name === 'jiuwen_queue_manage' ? 45_000 : 10_000 },
+                { timeoutMs: 0 },
               )
                 .then((action) => {
                   reportRealtimeEvent('qwen_tool_call_receipt', {
@@ -1221,7 +1251,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         // Fallback, not a root-cause fix: keep voice duplex usable when the
         // runtime cannot share the screen (#5283).
         pendingScreenAutostartRef.current = false;
-        toast.open({ content: SCREEN_SHARE_UNSUPPORTED_NOTICE, variant: 'warning' });
+        toast.open({ content: screenFallbackNoticeRef.current, variant: 'warning' });
         await startRealtime();
         return Boolean(duplexRef.current || joyaiProviderRef.current?.active);
       }
@@ -1241,6 +1271,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       speakerMutedRef.current = muted;
       duplexRef.current?.setSpeakerMuted(muted);
       joyaiProviderRef.current?.setSpeakerMuted(muted);
+    },
+    startScreenSharing: async () => {
+      await startScreen();
     },
     stopScreenSharing: () => {
       [...screenStreamsRef.current.keys()].forEach(removeScreen);

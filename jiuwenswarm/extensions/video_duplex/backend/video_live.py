@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import json
+import logging
 import os
 import re
-import threading
 from pathlib import Path
 from typing import Any
 import uuid
 
+from jiuwenswarm.common.utils import append_jsonl_log, get_user_workspace_dir
 from jiuwenswarm.extensions.video_duplex.backend.error_details import duplex_failure
 from jiuwenswarm.extensions.video_duplex.backend import (
     joyai_action_helper,
@@ -33,7 +34,7 @@ from jiuwenswarm.server.runtime.session.session_metadata import (
     update_session_metadata,
 )
 _ALLOWED_IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
-_LOG_WRITE_LOCK = threading.Lock()
+logger = logging.getLogger(__name__)
 
 
 def _parse_joyai_task_operation(delegation: str, call_id: str):
@@ -89,84 +90,84 @@ _REALTIME_TELEMETRY_FIELDS = {
 
 
 def _append_jsonl(path: Path, event: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
-    # Search completion and router responses can finish on different worker
-    # threads. Serialize each append so one JSON object always occupies one line.
-    with _LOG_WRITE_LOCK:
-        with path.open("a", encoding="utf-8") as stream:
-            stream.write(line)
+    try:
+        append_jsonl_log(path, event)
+    except Exception:
+        logger.warning("Could not write full-duplex diagnostics", exc_info=True)
+
+
+_VERBOSE_REALTIME_EVENTS = {
+    "qwen_vad_candidate_rejected", "qwen_provider_vad",
+    "qwen_audio_blocked_during_speech", "qwen_tool_result_waiting",
+    "search_result_duplicate_ignored",
+}
+_CONTENT_FIELDS = {
+    "instruction", "question", "query", "text", "text_preview", "transcript",
+    "raw_transcript", "response", "delegation", "raw_content", "model_raw_content",
+    "result", "realtime_answer",
+}
+
+
+def _append_realtime_log(source: str, event: dict[str, Any]) -> None:
+    """Keep one bounded diagnostic copy; conversation history owns the full text."""
+    debug = logger.isEnabledFor(logging.DEBUG)
+    name = str(event.get("event") or event.get("stage") or event.get("outcome") or source)
+    failed = bool(event.get("error")) or "fail" in name or "error" in name
+    if name in _VERBOSE_REALTIME_EVENTS and not debug and not failed:
+        return
+
+    def compact(value: Any) -> Any:
+        if isinstance(value, dict):
+            result = {}
+            for key, item in value.items():
+                if key in _CONTENT_FIELDS and isinstance(item, str):
+                    result[key + "_chars"] = len(item)
+                    if debug or (failed and key in {"raw_content", "model_raw_content"}):
+                        result[key] = item[:2_000]
+                elif key in {"search_job", "queue_management"} and isinstance(item, dict):
+                    from .tasks.diagnostics import receipt_state
+
+                    result[key] = receipt_state(item)
+                else:
+                    result[key] = compact(item)
+            return result
+        if isinstance(value, list):
+            return [compact(item) for item in value[:100]]
+        if isinstance(value, str):
+            return value[:8_000]
+        return value
+
+    record = {
+        "server_time": datetime.now(timezone.utc).isoformat(),
+        **compact(event),
+        "component": source,
+        "event": name,
+    }
+    _append_jsonl(get_user_workspace_dir() / "logs" / "duplex-realtime.jsonl", record)
 
 
 def _append_realtime_telemetry(event: dict[str, Any]) -> None:
-    path = Path.home() / ".jiuwenswarm" / "logs" / "realtime-interrupt.jsonl"
-    _append_jsonl(path, event)
+    _append_realtime_log("telemetry", event)
 
 
 def _append_realtime_session_log(event: dict[str, Any]) -> None:
-    path = Path.home() / ".jiuwenswarm" / "logs" / "realtime-session.jsonl"
-    event = {"server_time": datetime.now(timezone.utc).isoformat(), **event}
-    _append_jsonl(path, event)
+    _append_realtime_log("session", event)
 
 
 def _append_qwen_realtime_error_log(event: dict[str, Any]) -> None:
-    path = Path.home() / ".jiuwenswarm" / "logs" / "qwen-realtime-errors.jsonl"
-    event = {"server_time": datetime.now(timezone.utc).isoformat(), **event}
-    _append_jsonl(path, event)
+    _append_realtime_log("qwen", event)
 
 
 def _append_video_event_log(event: dict[str, Any]) -> None:
-    path = Path.home() / ".jiuwenswarm" / "logs" / "video-live-events.jsonl"
-    event = {
-        "server_time": datetime.now(timezone.utc).isoformat(),
-        **event,
-    }
-    _append_jsonl(path, event)
+    _append_realtime_log("video", event)
 
 
 def _append_asr_log(event: dict[str, Any]) -> None:
-    path = Path.home() / ".jiuwenswarm" / "logs" / "asr-results.jsonl"
-    record = {
-        "server_time": datetime.now(timezone.utc).isoformat(),
-        **event,
-    }
-    _append_jsonl(path, record)
+    _append_realtime_log("asr", event)
 
 
 def _append_joyai_log(event: dict[str, Any]) -> None:
-    event = dict(event)
-    model_raw_content = event.pop("model_raw_content", None)
-    path = Path.home() / ".jiuwenswarm" / "logs" / "joyai-video.jsonl"
-    record = {
-        "server_time": datetime.now(timezone.utc).isoformat(),
-        **event,
-    }
-    _append_jsonl(path, record)
-
-    if event.get("stage") != "completed" or event.get("decision") == "silence":
-        return
-    raw_content = (
-        model_raw_content
-        if isinstance(model_raw_content, str)
-        else str(event.get("raw_content") or "")
-    )
-    if not raw_content.strip():
-        return
-    raw_path = Path.home() / ".jiuwenswarm" / "logs" / "joyai-raw-content.jsonl"
-    raw_record = {
-        "server_time": datetime.now(timezone.utc).isoformat(),
-        "request_id": event.get("request_id", ""),
-        "joyai_session_id": event.get("joyai_session_id", ""),
-        "instruction": event.get("instruction", ""),
-        "request_kind": event.get("request_kind", ""),
-        "frame_time_range": event.get("frame_time_range", ""),
-        "decision": event.get("decision", ""),
-        "raw_content": raw_content,
-    }
-    adapter_content = str(event.get("raw_content") or "")
-    if adapter_content != raw_content:
-        raw_record["adapter_content"] = adapter_content
-    _append_jsonl(raw_path, raw_record)
+    _append_realtime_log("joyai", event)
 
 
 def _validate_joyai_result(result: Any) -> None:
@@ -634,14 +635,13 @@ def register_video_live_handler(
         )
 
     async def _realtime_telemetry(ws, req_id, params, session_id):
-        del session_id
         event_name = str(params.get("event") or "").strip() if isinstance(params, dict) else ""
         if not _REALTIME_TELEMETRY_EVENT.fullmatch(event_name):
             await channel.send_response(
                 ws, req_id, ok=False, error="unsupported telemetry event", code="BAD_REQUEST"
             )
             return
-        allowed: dict[str, Any] = {}
+        allowed: dict[str, Any] = {"session_id": session_id}
         for key, value in params.items():
             if key not in _REALTIME_TELEMETRY_FIELDS:
                 continue
@@ -659,9 +659,7 @@ def register_video_live_handler(
         for key in ("result", "realtime_answer"):
             if isinstance(allowed.get(key), str):
                 allowed[key] = allowed[key][:50_000]
-        if event_name.startswith(("task_trace_", "qwen_tool_")) or event_name in {
-            "qwen_realtime_error", "qwen_text_input_dispatched",
-        }:
+        if event_name.startswith("task_trace_"):
             from .tasks.diagnostics import trace_task
 
             if event_name.startswith("task_trace_") and isinstance(params.get("jobs"), list):
@@ -675,7 +673,9 @@ def register_video_live_handler(
                         if isinstance(job.get(key), (str, int, float, bool))
                     })
             trace_task(event_name, **{key: value for key, value in allowed.items() if key != "event"})
-        if event_name in {
+        elif event_name == "qwen_realtime_error":
+            await asyncio.to_thread(_append_qwen_realtime_error_log, allowed)
+        elif event_name in {
             "realtime_answer_final",
             "search_result_received",
             "search_result_duplicate_ignored",
@@ -693,8 +693,6 @@ def register_video_live_handler(
         else:
             allowed["server_time"] = datetime.now(timezone.utc).isoformat()
             await asyncio.to_thread(_append_realtime_telemetry, allowed)
-            if event_name == "qwen_realtime_error":
-                await asyncio.to_thread(_append_qwen_realtime_error_log, allowed)
         await channel.send_response(ws, req_id, ok=True, payload={"logged": True})
 
     async def _append_conversation(ws, req_id, params, session_id):

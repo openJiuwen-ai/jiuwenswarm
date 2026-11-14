@@ -37,13 +37,14 @@ import datetime
 import shutil
 import socket
 import stat
+import threading
 import time
 import zipfile
 from pathlib import Path
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Optional
 import logging
-from logging.handlers import BaseRotatingHandler
+from logging.handlers import BaseRotatingHandler, RotatingFileHandler
 import portalocker
 from ruamel.yaml import YAML
 
@@ -58,6 +59,8 @@ from jiuwenswarm.enterprise import is_enterprise
 
 _LOG_FILE_MAX_BYTES = 20 * 1024 * 1024
 _LOG_FILE_BACKUP_COUNT = 20
+_JSONL_LOG_LOCK = threading.Lock()
+
 
 # gateway 支持独立的日志目录（与其余组件日志分离），轮转归档文件同样落在该目录下。
 # 默认不启用（gateway.log 与其它日志同目录），由环境变量 AGENTOS_GATEWAY_LOG_DIR 指定，
@@ -2487,6 +2490,35 @@ def get_checkpoint_dir() -> Path:
 def get_logs_dir() -> Path:
     _migrate_legacy_checkpoint_and_logs()
     return get_agent_root_dir() / ".logs"
+
+
+def append_jsonl_log(
+    path: Path,
+    record: dict[str, Any],
+    *,
+    max_bytes: int = _LOG_FILE_MAX_BYTES,
+    backup_count: int = _LOG_FILE_BACKUP_COUNT,
+) -> None:
+    """Append one JSON record with bounded backups and cross-process rotation.
+
+    Use the same numbered rotation as Worker logs. Open and close the handler
+    under the file lock so other processes cannot retain a rotated file handle.
+    A single oversized record is kept intact and rotated on the next append.
+    """
+    line = json.dumps(record, ensure_ascii=False, default=str, separators=(",", ":")) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _JSONL_LOG_LOCK, portalocker.Lock(str(path) + ".lock", mode="a", timeout=1):
+        handler = RotatingFileHandler(path, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
+        try:
+            size = path.stat().st_size
+            added_bytes = len(line.encode("utf-8")) + len(os.linesep) - 1
+            rotation_enabled = max_bytes > 0 and backup_count > 0
+            if rotation_enabled and size and size + added_bytes > max_bytes:
+                handler.doRollover()
+            handler.stream.write(line)
+            handler.flush()
+        finally:
+            handler.close()
 
 
 def get_gateway_log_dir() -> Optional[Path]:

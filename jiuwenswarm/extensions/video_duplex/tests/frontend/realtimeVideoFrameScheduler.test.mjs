@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { RealtimeVideoFrameScheduler } from '../../../../channels/web/frontend/node_modules/.cache/video-source/videoSource.js';
+import { loadModules } from './testSupport.mjs';
+const { RealtimeVideoFrameScheduler } = await loadModules([
+  "VideoLivePanel/videoSource.ts",
+]);
 
 const frame = (source, version) => ({
   source_id: source,

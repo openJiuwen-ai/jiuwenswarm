@@ -108,14 +108,14 @@ sequenceDiagram
 4. 对需要外部信息的问题，确认搜索进度和最终回答均返回。
 5. 在 **扩展 → 应用插件** 中禁用，确认全双工入口隐藏，但管理页仍可重新启用。
 
-日志位于 `~/.jiuwenswarm/logs/`：
+诊断日志位于数据目录的 `logs/` 下，默认是 `~/.jiuwenswarm/logs/`：
 
 | 文件 | 内容 |
 |---|---|
-| `joyai-video.jsonl` | 帧请求、原始结果、延迟和限流 |
-| `asr-results.jsonl` | 转写、空结果、噪音过滤和延迟 |
-| `video-task-routing.jsonl` | 搜索、TTS 和工具调用 |
-| `realtime-interrupt.jsonl` | Realtime 状态与打断 |
+| `duplex-realtime.jsonl` | 实时连接、ASR/TTS、JoyAI、工具调用、打断和错误；用 `component` 区分来源 |
+| `duplex-task-trace.jsonl` | 任务控制、派发、状态、取消和失败链路 |
+
+正常正文只记录长度；DEBUG 级别可记录正文片段（每字段最多 2,000 字符），以及 VAD、checkpoint 确认、推送成功等细节。错误和实际取消继续记录。每个文件达到 20 MiB 后轮转，最多保留 20 份备份。旧日志文件保留，但不再追加；会话历史和任务数据库不受影响。
 
 ## 任务页中的停止与重连
 
@@ -168,3 +168,7 @@ flowchart LR
 | 后端编排 | `backend/video_live.py` |
 | ASR/TTS | `backend/video_voice.py` |
 | 搜索 | `backend/video_search.py` |
+
+### 登录免费模型
+
+全双工支持当前聊天选择的登录免费模型，切换至免费模型不会自动挂断。任务入队时从服务端登录会话绑定账号凭据引用；执行与交互续答前取当前凭据并随内部模型请求发送。任务数据库不保存登录会话或模型令牌。
