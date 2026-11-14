@@ -1,6 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Jev clearing through the existing browser and batch configuration methods."""
 
+import base64
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -98,3 +99,66 @@ def test_startup_defaults_keep_existing_model_and_empty_display_name(tmp_path):
     decision = yaml.safe_load(config_path.read_text(encoding="utf-8"))["browser"]["decision"]
     assert decision["model"] == "private-jev-model"
     assert decision["display_name"] == ""
+
+
+class _AesGcmLikeCrypto:
+    """Mirror Aes256GcmAlgorithm: even an empty plaintext yields non-empty ciphertext."""
+
+    def encrypt(self, plaintext: str) -> str:
+        return base64.b64encode(b"n" * 12 + b"c" * 16).decode("ascii")
+
+    def decrypt(self, ciphertext: str) -> str:
+        return ""
+
+
+def test_encrypt_config_params_keeps_clear_semantic(monkeypatch):
+    monkeypatch.setattr(handlers, "_get_crypto_provider", lambda: _AesGcmLikeCrypto())
+    params = {"jev_openrouter_api_key": "", "github_token": None,
+              "other_api_key": "secret", "vision_api_key": "  ", "model": "plain"}
+    encrypted = handlers.encrypt_config_params(params)
+    # Empty / whitespace / None credentials must stay clear so persisting them
+    # really removes the stored value instead of writing an empty ciphertext.
+    assert encrypted["jev_openrouter_api_key"] == ""
+    assert encrypted["github_token"] is None
+    assert encrypted["vision_api_key"] == "  "
+    assert encrypted["other_api_key"] != "secret"
+    assert encrypted["model"] == "plain"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", list(JEV_PROVIDER_DEFAULTS))
+async def test_clear_jev_with_crypto_provider_deletes_model(tmp_path, monkeypatch, provider):
+    """Regression for #6634: with a crypto provider active, deleting the Jev
+    model must clear the credential instead of persisting an empty ciphertext
+    (which kept ``jev_key_configured`` true and the model card undeletable)."""
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    key_env = JEV_PROVIDER_DEFAULTS[provider]["api_key_env"]
+    monkeypatch.setenv(key_env, "synthetic-key")
+    env_path.write_text(f"{key_env}=synthetic-key\n", encoding="utf-8")
+    config_path.write_text(yaml.safe_dump({"browser": {"decision": {
+        **JEV_PROVIDER_DEFAULTS[provider], "provider": provider, "mode": "hybrid",
+        "api_base": "https://jev.example.test/v1", "display_name": "Old Jev",
+    }}}), encoding="utf-8")
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", config_path)
+    monkeypatch.setattr(config_module, "get_config_file", lambda: config_path)
+    monkeypatch.setattr(handlers, "ENV_FILE", env_path)
+    monkeypatch.setattr(handlers, "_get_crypto_provider", lambda: _AesGcmLikeCrypto())
+    adapter = ConfigAdapter(on_config_saved=AsyncMock(return_value=True))
+
+    disabled = await adapter.handle(AgentRequest(
+        request_id="clear-browser", channel_id="web", session_id="session", req_method=ReqMethod.PATH_SET,
+        params={"chrome_path": "", "headless": True, "decision_mode": "llm", "decision_display_name": ""},
+    ))
+    assert disabled.ok is True
+    cleared = await adapter.handle(AgentRequest(
+        request_id="clear-key", channel_id="web", session_id="session", req_method=ReqMethod.CONFIG_SAVE_ALL,
+        params={"config": {f"jev_{provider}_api_key": "", "moa_jev_enabled": "false"}},
+    ))
+    assert cleared.ok is True
+    assert dotenv_values(env_path)[key_env] == ""
+    assert os.environ[key_env] == ""
+    restored = await adapter.handle(AgentRequest(
+        request_id="read-browser", channel_id="web", session_id="session", req_method=ReqMethod.PATH_GET, params={},
+    ))
+    assert restored.payload["jev_key_configured"] is False
