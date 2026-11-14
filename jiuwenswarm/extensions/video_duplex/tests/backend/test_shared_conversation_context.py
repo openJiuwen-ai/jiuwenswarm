@@ -16,7 +16,7 @@ def voice_history_reader(monkeypatch, tmp_path):
 
     def read(sid, *, is_restorable, **_kwargs):
         records = [row for row in sync.session_history.load_history_records(sid) if is_restorable(row)]
-        cursor = HistoryReplayCursor(tmp_path / "history.jsonl", 0, (0, 0, 0, 0, 0), 0)
+        cursor = HistoryReplayCursor(tmp_path / "history.jsonl", 0, (0, 0, 0, 0), 0)
         return HistoryReplayBatch(records, cursor, cursor, 0)
 
     monkeypatch.setattr(sync, "read_history_replay", read)

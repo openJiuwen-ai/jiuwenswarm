@@ -42,7 +42,7 @@ class HistoryReplayLimits:
 class HistoryReplayCursor:
     path: Path
     generation: int
-    identity: tuple[int, int, int, int, int]
+    identity: tuple[int, int, int, int]
     offset: int
 
 
@@ -56,7 +56,7 @@ class HistoryReplayBatch:
 
 @dataclass(frozen=True)
 class _HistoryHead:
-    identity: tuple[int, int, int, int, int]
+    identity: tuple[int, int, int, int]
     voice_end: int
 
 
@@ -70,8 +70,14 @@ _CONTEXT_EVENTS = frozenset({
 })
 
 
-def _identity(stat: os.stat_result) -> tuple[int, int, int, int, int]:
-    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+def _identity(stat: os.stat_result) -> tuple[int, int, int, int]:
+    # st_ctime_ns is deliberately excluded: on Windows, os.stat(path) (directory
+    # metadata cache) and os.fstat(fd) (open file handle) report different values
+    # for the creation-time field once a file has been written after creation,
+    # which made the cross-source comparison in _read_prefix fail randomly with
+    # spurious HISTORY_RESTORE_CHANGED (JW-41). Content changes are already
+    # covered by st_size + st_mtime_ns, so ctime adds nothing.
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
 
 
 def _is_voice(record: dict[str, Any]) -> bool:
@@ -113,8 +119,8 @@ def note_history_append(path: Path, record: dict[str, Any], before: os.stat_resu
 
 
 def _check_cursor(cursor: HistoryReplayCursor, path: Path, generation: int,
-                  identity: tuple[int, int, int, int, int]) -> None:
-    if cursor.generation == generation and cursor.identity == (0, 0, 0, 0, 0) and cursor.offset == 0:
+                  identity: tuple[int, int, int, int]) -> None:
+    if cursor.generation == generation and cursor.identity == (0, 0, 0, 0) and cursor.offset == 0:
         return
     if cursor.path != path or cursor.generation != generation:
         raise HistoryReplayError("History changed after context restore", code="HISTORY_RESTORE_CHANGED")
@@ -150,7 +156,7 @@ def read_history_replay(
             path = get_read_history_path(session_id)
             generation = int(lc.state("session", session_id).get("generation", 0))
             if not path.exists():
-                identity = (0, 0, 0, 0, 0)
+                identity = (0, 0, 0, 0)
                 if cursor is not None:
                     _check_cursor(cursor, path, generation, identity)
                 empty = HistoryReplayCursor(path, generation, identity, 0)
@@ -243,7 +249,7 @@ def latest_completed_request_bounded(session_id: str, *, max_tail_bytes: int = 1
 def _read_prefix(
     path: Path,
     generation: int,
-    identity: tuple[int, int, int, int, int],
+    identity: tuple[int, int, int, int],
     start: int,
     is_restorable: Callable[[dict[str, Any]], bool],
     before_request_id: str | None,

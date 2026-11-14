@@ -641,3 +641,21 @@ async def test_diagnostic_only_legacy_history_preserves_native_checkpoint_window
     assert await migrate_history_context(context_engine=engine, session=stored.session,
                                          processors=[], before_request_id="current")
     assert [message.content for message in engine.get_context(session_id=stored.sid).get_messages()] == ["SDK_ONLY_MEMORY"]
+
+
+def test_cursor_identity_accepts_legacy_and_modern_formats(stored):
+    stored.path.write_text(json.dumps(user("old")) + "\n", encoding="utf-8")
+    stat = stored.path.stat()
+    current = snapshots._identity(stored.path)
+    offset = stat.st_size
+    payload = {"file": stored.path.name, "generation": 0, "offset": offset,
+               "anchor": snapshots._anchor(stored.path, offset)}
+    legacy = dict(payload, identity=[stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, 123456789])
+    modern = dict(payload, identity=list(current))
+    assert snapshots._read_cursor(stored.sid, legacy).identity == current
+    assert snapshots._read_cursor(stored.sid, modern).identity == current
+    for broken in ([stat.st_dev, stat.st_ino, stat.st_size],
+                   [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, 1, 2],
+                   [stat.st_dev, stat.st_ino, stat.st_size, "mtime"]):
+        with pytest.raises(HistoryReplayError, match="Invalid context snapshot boundary"):
+            snapshots._read_cursor(stored.sid, dict(payload, identity=broken))
