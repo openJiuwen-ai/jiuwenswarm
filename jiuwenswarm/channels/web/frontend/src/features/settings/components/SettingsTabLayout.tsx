@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { HelpTips, Tabs } from '../../../components/ui';
 import type { I18nKey } from '../registry/types';
@@ -16,6 +16,7 @@ type SettingsTabLayoutProps<TabId extends string> = {
   className?: string;
   testIdPrefix: string;
   renderPanel: (activeTab: TabId) => ReactNode;
+  requestedTab?: { tabId?: string };
 };
 
 /** Shared settings-page tabs. Module definitions own the tab catalog; pages only render panel content. */
@@ -26,9 +27,16 @@ export function SettingsTabLayout<TabId extends string>({
   className,
   testIdPrefix,
   renderPanel,
+  requestedTab,
 }: SettingsTabLayoutProps<TabId>) {
   const { t } = useTranslation();
-  const [activeTab, setActiveTab] = useState<TabId>(defaultTab);
+  const [activeTab, setActiveTab] = useState<TabId>(() =>
+    tabs.find((tab) => tab.id === requestedTab?.tabId)?.id ?? defaultTab,
+  );
+  useEffect(() => {
+    const requested = tabs.find((tab) => tab.id === requestedTab?.tabId);
+    if (requested) setActiveTab(requested.id);
+  }, [requestedTab, tabs]);
 
   return (
     <>

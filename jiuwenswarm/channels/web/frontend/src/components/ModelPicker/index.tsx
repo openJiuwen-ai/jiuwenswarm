@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import clsx from 'clsx';
 import { useTranslation } from 'react-i18next';
@@ -17,7 +17,16 @@ import {
 import { ModelProviderIcon } from '../ModelProviderIcon';
 import ModelGroupIcon from '../../assets/model-group.svg?react';
 
-interface ModelPickerProps {
+export type ModelPickerPresentation = {
+  triggerPrefix?: ReactNode;
+  renderMenu?: (catalog: ReactNode, close: () => void) => ReactNode;
+  menuClassName?: string;
+  menuLabel?: string;
+  menuMaxHeight?: number;
+  hideAddModel?: boolean;
+};
+
+interface ModelPickerProps extends ModelPickerPresentation {
   value: string | null;
   /** Both conversation and scheduled-task callers receive the canonical model_name. */
   onChange: (modelName: string) => void;
@@ -74,6 +83,12 @@ export default function ModelPicker({
   excludeFreeModels = false,
   testIdPrefix = 'model-picker',
   unavailableSelectionLabel,
+  triggerPrefix,
+  renderMenu,
+  menuClassName,
+  menuLabel,
+  menuMaxHeight = MENU_MAX_HEIGHT,
+  hideAddModel = false,
 }: ModelPickerProps): JSX.Element {
   const { t } = useTranslation();
   const allModels = useSessionStore((state) => state.chatAvailableModels);
@@ -167,6 +182,8 @@ export default function ModelPicker({
     if (nestedCloseTimerRef.current) clearTimeout(nestedCloseTimerRef.current);
   }, []);
 
+  useEffect(() => { setActivePlanKey(null); }, [renderMenu]);
+
   useEffect(() => {
     if (!open) return;
     function handlePointerDown(event: PointerEvent): void {
@@ -187,7 +204,7 @@ export default function ModelPicker({
       if (!rootRef.current || !menuRef.current) return;
       const anchor = rootRef.current.getBoundingClientRect();
       const menu = menuRef.current;
-      const height = Math.min(menu.scrollHeight + menu.offsetHeight - menu.clientHeight, MENU_MAX_HEIGHT);
+      const height = Math.min(menu.scrollHeight + menu.offsetHeight - menu.clientHeight, menuMaxHeight);
       const below = Math.max(0, window.innerHeight - anchor.bottom - MENU_GAP * 2);
       const above = Math.max(0, anchor.top - MENU_GAP * 2);
       const down = below >= height || below >= above;
@@ -195,7 +212,7 @@ export default function ModelPicker({
       setPosition({
         left,
         ...(down ? { top: anchor.bottom + MENU_GAP } : { bottom: window.innerHeight - anchor.top + MENU_GAP }),
-        maxHeight: Math.min(MENU_MAX_HEIGHT, down ? below : above),
+        maxHeight: Math.min(menuMaxHeight, down ? below : above),
       });
     }
     updatePosition();
@@ -205,7 +222,7 @@ export default function ModelPicker({
       window.removeEventListener('resize', updatePosition);
       window.removeEventListener('scroll', updatePosition, true);
     };
-  }, [open, disabled, models, modelGroups, includeModelGroups, t, onAddModel]);
+  }, [open, disabled, models, modelGroups, includeModelGroups, t, onAddModel, renderMenu, menuMaxHeight]);
 
   function handleTriggerClick(): void {
     setPosition(null);
@@ -264,6 +281,235 @@ export default function ModelPicker({
     });
   }
 
+  const catalog = (
+    <>
+      {models.length === 0 && enabledGroups.length === 0 && !showFreeModelsCta && (
+        <div className="px-2 py-2 text-xs text-text-muted" role="status" data-testid={`${testIdPrefix}-empty`}>
+          {t('chat.modelSelector.empty')}
+        </div>
+      )}
+      {groups
+        .filter(
+          (group) =>
+            group.alwaysShow ||
+            group.models.length > 0 ||
+            group.modelGroups.length > 0 ||
+            (group.id === 'configured' && planModelGroups.length > 0) ||
+            (group.id === 'free' && showFreeModelsCta),
+        )
+        .map((group) => (
+          <Fragment key={group.id}>
+            <div
+              className="model-select__section-header"
+              data-testid={`${testIdPrefix}-section-header`}
+              data-variant={group.id}
+            >
+              {group.label}
+            </div>
+            {group.id === 'free' && showFreeModelsCta && (
+              <button
+                type="button"
+                className="model-select__free-cta"
+                data-testid={`${testIdPrefix}-free-cta`}
+                onClick={() => {
+                  setOpen(false);
+                  if (campaign.state === 'active') requestLogin();
+                  else requestSettingsModule('models');
+                }}
+              >
+                <span className="model-select__free-cta-main">
+                  <span className="model-select__free-cta-icon" aria-hidden="true">
+                    <svg viewBox="0 0 20 20" fill="currentColor" width={12} height={12}>
+                      <path d="M10 2.5l1.7 4.3 4.3 1.7-4.3 1.7L10 14.5l-1.7-4.3L4 8.5l4.3-1.7L10 2.5z" />
+                    </svg>
+                  </span>
+                  <span className="chat-mode-select__label">{t('chat.modelSelector.getFreeModels')}</span>
+                </span>
+                <svg
+                  className="model-select__free-cta-chevron"
+                  viewBox="0 0 20 20"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={1.8}
+                  aria-hidden="true"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M8 5l4 5-4 5" />
+                </svg>
+              </button>
+            )}
+            {group.modelGroups.map((modelGroup) => {
+              const groupId = modelGroup.model_group_id!;
+              const label = modelGroup.display_name?.trim() || groupId;
+              const active = isSameSelection(selection, { type: 'model_group', id: groupId });
+              const canSelect = Boolean(onSelectionChange);
+              return (
+                <Fragment key={groupId}>
+                  <button
+                  type="button"
+                  disabled={!canSelect}
+                  onClick={() => handleSelectGroup(modelGroup)}
+                  className={clsx(
+                    'chat-mode-select__option',
+                    active && 'chat-mode-select__option--active',
+                    !canSelect && 'chat-mode-select__option--disabled',
+                  )}
+                  role="menuitemradio"
+                  aria-checked={active}
+                  title={!canSelect ? t('chat.modelSelector.selectionFailed') : undefined}
+                  data-testid={`${testIdPrefix}-group-option`}
+                  data-variant={groupId}
+                >
+                  <span className="chat-mode-select__option-main">
+                    <span className="chat-mode-select__icon" aria-hidden="true">
+                      <ModelGroupIcon />
+                    </span>
+                    <span className="chat-mode-select__label">
+                      {label}
+                    </span>
+                  </span>
+                  {active && (
+                    <svg
+                      className="chat-mode-select__check"
+                      viewBox="0 0 20 20"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                      aria-hidden="true"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
+                    </svg>
+                  )}
+                  </button>
+                </Fragment>
+              );
+            })}
+            {group.id === 'configured' && planModelGroups.map((planGroup) => {
+              const active = planGroup.models.some((model) => {
+                const modelSelection = model.model_id?.trim()
+                  ? ({ type: 'model', id: model.model_id.trim() } as const)
+                  : null;
+                return modelSelection
+                  ? isSameSelection(selection, modelSelection)
+                  : model === selected && selection?.type !== 'model_group';
+              });
+              return (
+                <button
+                  key={planGroup.key}
+                  type="button"
+                  className={clsx(
+                    'chat-mode-select__option',
+                    'model-select__nested-trigger',
+                    active && 'chat-mode-select__option--active',
+                    activePlanKey === planGroup.key && 'model-select__nested-trigger--open',
+                  )}
+                  role="menuitem"
+                  aria-haspopup="menu"
+                  aria-expanded={activePlanKey === planGroup.key}
+                  onMouseEnter={(event) => openPlanMenu(planGroup, event.currentTarget)}
+                  onMouseLeave={schedulePlanMenuClose}
+                  onFocus={(event) => openPlanMenu(planGroup, event.currentTarget)}
+                  onClick={(event) => openPlanMenu(planGroup, event.currentTarget)}
+                  data-testid={`${testIdPrefix}-plan-option`}
+                  data-variant={planGroup.key}
+                >
+                  <span className="chat-mode-select__option-main">
+                    <span className="chat-mode-select__icon" aria-hidden="true">
+                      <ModelProviderIcon model={planGroup.models[0]} />
+                    </span>
+                    <span className="chat-mode-select__label">{planGroup.label}</span>
+                  </span>
+                  <span className="model-select__nested-actions" aria-hidden="true">
+                    {active && (
+                      <svg className="chat-mode-select__check" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
+                      </svg>
+                    )}
+                    <svg className="model-select__nested-chevron" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.8}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M8 5l4 5-4 5" />
+                    </svg>
+                  </span>
+                </button>
+              );
+            })}
+            {group.models.map((model, index) => {
+              const modelSelection = model.model_id?.trim()
+                ? ({ type: 'model', id: model.model_id.trim() } as const)
+                : null;
+              const active = modelSelection
+                ? isSameSelection(selection, modelSelection)
+                : model === selected && selection?.type !== 'model_group';
+              const displayName = getModelDisplayName(model);
+              const metadata = formatModelMetadata(model, t);
+              return (
+                <button
+                  key={`${model.model_id ?? model.model_name}-${index}`}
+                  type="button"
+                  onClick={() => handleSelectModel(model)}
+                  className={clsx(
+                    'chat-mode-select__option',
+                    active && 'chat-mode-select__option--active',
+                  )}
+                  role="menuitemradio"
+                  aria-checked={active}
+                  data-testid={`${testIdPrefix}-option`}
+                  data-variant={model.model_id ?? model.model_name}
+                >
+                  <span className="chat-mode-select__option-main">
+                    <span className="chat-mode-select__icon" aria-hidden="true">
+                      <ModelProviderIcon model={model} />
+                    </span>
+                    <span
+                      className="chat-mode-select__label"
+                      data-tooltip={metadata}
+                      {...optionTooltipHandlers}
+                    >
+                      {displayName}
+                    </span>
+                  </span>
+                  {active && (
+                    <svg
+                      className="chat-mode-select__check"
+                      viewBox="0 0 20 20"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                      aria-hidden="true"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
+                    </svg>
+                  )}
+                </button>
+              );
+            })}
+          </Fragment>
+        ))}
+      {onAddModel && !hideAddModel && (
+        <button
+          type="button"
+          className="model-select__add-btn"
+          data-testid={`${testIdPrefix}-add`}
+          onClick={() => {
+            setOpen(false);
+            onAddModel();
+          }}
+        >
+          <svg
+            viewBox="0 0 20 20"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            width={14}
+            height={14}
+            aria-hidden="true"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M10 4v12M4 10h12" />
+          </svg>
+          {t('chat.modelSelector.addModel')}
+        </button>
+      )}
+    </>
+  );
+
   return (
     <div
       ref={rootRef}
@@ -282,7 +528,7 @@ export default function ModelPicker({
         className="chat-mode-select__trigger"
         onClick={handleTriggerClick}
         disabled={disabled}
-        aria-haspopup="menu"
+        aria-haspopup={renderMenu ? 'dialog' : 'menu'}
         aria-expanded={open && !disabled}
         data-tooltip={
           selected && selection?.type !== 'model_group'
@@ -293,6 +539,7 @@ export default function ModelPicker({
         data-testid={`${testIdPrefix}-trigger`}
       >
         <span className="chat-mode-select__value">
+          {triggerPrefix}
           {selection?.type === 'model_group' && (
             <span className="chat-mode-select__icon" aria-hidden="true">
               <ModelGroupIcon />
@@ -332,8 +579,9 @@ export default function ModelPicker({
         createPortal(
           <div
             ref={menuRef}
-            className="chat-mode-select__menu model-select__menu"
-            role="menu"
+            className={clsx('chat-mode-select__menu model-select__menu', menuClassName)}
+            role={renderMenu ? 'dialog' : 'menu'}
+            aria-label={menuLabel}
             data-testid={`${testIdPrefix}-menu`}
             style={{ position: 'fixed', zIndex: 9999, visibility: position ? 'visible' : 'hidden', ...position }}
             onKeyDown={(event) => {
@@ -358,230 +606,7 @@ export default function ModelPicker({
               }
             }}
           >
-            {models.length === 0 && enabledGroups.length === 0 && !showFreeModelsCta && (
-              <div className="px-2 py-2 text-xs text-text-muted" role="status" data-testid={`${testIdPrefix}-empty`}>
-                {t('chat.modelSelector.empty')}
-              </div>
-            )}
-            {groups
-              .filter(
-                (group) =>
-                  group.alwaysShow ||
-                  group.models.length > 0 ||
-                  group.modelGroups.length > 0 ||
-                  (group.id === 'configured' && planModelGroups.length > 0) ||
-                  (group.id === 'free' && showFreeModelsCta),
-              )
-              .map((group) => (
-                <Fragment key={group.id}>
-                  <div
-                    className="model-select__section-header"
-                    data-testid={`${testIdPrefix}-section-header`}
-                    data-variant={group.id}
-                  >
-                    {group.label}
-                  </div>
-                  {group.id === 'free' && showFreeModelsCta && (
-                    <button
-                      type="button"
-                      className="model-select__free-cta"
-                      data-testid={`${testIdPrefix}-free-cta`}
-                      onClick={() => {
-                        setOpen(false);
-                        if (campaign.state === 'active') requestLogin();
-                        else requestSettingsModule('models');
-                      }}
-                    >
-                      <span className="model-select__free-cta-main">
-                        <span className="model-select__free-cta-icon" aria-hidden="true">
-                          <svg viewBox="0 0 20 20" fill="currentColor" width={12} height={12}>
-                            <path d="M10 2.5l1.7 4.3 4.3 1.7-4.3 1.7L10 14.5l-1.7-4.3L4 8.5l4.3-1.7L10 2.5z" />
-                          </svg>
-                        </span>
-                        <span className="chat-mode-select__label">{t('chat.modelSelector.getFreeModels')}</span>
-                      </span>
-                      <svg
-                        className="model-select__free-cta-chevron"
-                        viewBox="0 0 20 20"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth={1.8}
-                        aria-hidden="true"
-                      >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M8 5l4 5-4 5" />
-                      </svg>
-                    </button>
-                  )}
-                  {group.modelGroups.map((modelGroup) => {
-                    const groupId = modelGroup.model_group_id!;
-                    const label = modelGroup.display_name?.trim() || groupId;
-                    const active = isSameSelection(selection, { type: 'model_group', id: groupId });
-                    const canSelect = Boolean(onSelectionChange);
-                    return (
-                      <Fragment key={groupId}>
-                        <button
-                        type="button"
-                        disabled={!canSelect}
-                        onClick={() => handleSelectGroup(modelGroup)}
-                        className={clsx(
-                          'chat-mode-select__option',
-                          active && 'chat-mode-select__option--active',
-                          !canSelect && 'chat-mode-select__option--disabled',
-                        )}
-                        role="menuitemradio"
-                        aria-checked={active}
-                        title={!canSelect ? t('chat.modelSelector.selectionFailed') : undefined}
-                        data-testid={`${testIdPrefix}-group-option`}
-                        data-variant={groupId}
-                      >
-                        <span className="chat-mode-select__option-main">
-                          <span className="chat-mode-select__icon" aria-hidden="true">
-                            <ModelGroupIcon />
-                          </span>
-                          <span className="chat-mode-select__label">
-                            {label}
-                          </span>
-                        </span>
-                        {active && (
-                          <svg
-                            className="chat-mode-select__check"
-                            viewBox="0 0 20 20"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth={2}
-                            aria-hidden="true"
-                          >
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
-                          </svg>
-                        )}
-                        </button>
-                      </Fragment>
-                    );
-                  })}
-                  {group.id === 'configured' && planModelGroups.map((planGroup) => {
-                    const active = planGroup.models.some((model) => {
-                      const modelSelection = model.model_id?.trim()
-                        ? ({ type: 'model', id: model.model_id.trim() } as const)
-                        : null;
-                      return modelSelection
-                        ? isSameSelection(selection, modelSelection)
-                        : model === selected && selection?.type !== 'model_group';
-                    });
-                    return (
-                      <button
-                        key={planGroup.key}
-                        type="button"
-                        className={clsx(
-                          'chat-mode-select__option',
-                          'model-select__nested-trigger',
-                          active && 'chat-mode-select__option--active',
-                          activePlanKey === planGroup.key && 'model-select__nested-trigger--open',
-                        )}
-                        role="menuitem"
-                        aria-haspopup="menu"
-                        aria-expanded={activePlanKey === planGroup.key}
-                        onMouseEnter={(event) => openPlanMenu(planGroup, event.currentTarget)}
-                        onMouseLeave={schedulePlanMenuClose}
-                        onFocus={(event) => openPlanMenu(planGroup, event.currentTarget)}
-                        onClick={(event) => openPlanMenu(planGroup, event.currentTarget)}
-                        data-testid={`${testIdPrefix}-plan-option`}
-                        data-variant={planGroup.key}
-                      >
-                        <span className="chat-mode-select__option-main">
-                          <span className="chat-mode-select__icon" aria-hidden="true">
-                            <ModelProviderIcon model={planGroup.models[0]} />
-                          </span>
-                          <span className="chat-mode-select__label">{planGroup.label}</span>
-                        </span>
-                        <span className="model-select__nested-actions" aria-hidden="true">
-                          {active && (
-                            <svg className="chat-mode-select__check" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
-                            </svg>
-                          )}
-                          <svg className="model-select__nested-chevron" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.8}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M8 5l4 5-4 5" />
-                          </svg>
-                        </span>
-                      </button>
-                    );
-                  })}
-                  {group.models.map((model, index) => {
-                    const modelSelection = model.model_id?.trim()
-                      ? ({ type: 'model', id: model.model_id.trim() } as const)
-                      : null;
-                    const active = modelSelection
-                      ? isSameSelection(selection, modelSelection)
-                      : model === selected && selection?.type !== 'model_group';
-                    const displayName = getModelDisplayName(model);
-                    const metadata = formatModelMetadata(model, t);
-                    return (
-                      <button
-                        key={`${model.model_id ?? model.model_name}-${index}`}
-                        type="button"
-                        onClick={() => handleSelectModel(model)}
-                        className={clsx(
-                          'chat-mode-select__option',
-                          active && 'chat-mode-select__option--active',
-                        )}
-                        role="menuitemradio"
-                        aria-checked={active}
-                        data-testid={`${testIdPrefix}-option`}
-                        data-variant={model.model_id ?? model.model_name}
-                      >
-                        <span className="chat-mode-select__option-main">
-                          <span className="chat-mode-select__icon" aria-hidden="true">
-                            <ModelProviderIcon model={model} />
-                          </span>
-                          <span
-                            className="chat-mode-select__label"
-                            data-tooltip={metadata}
-                            {...optionTooltipHandlers}
-                          >
-                            {displayName}
-                          </span>
-                        </span>
-                        {active && (
-                          <svg
-                            className="chat-mode-select__check"
-                            viewBox="0 0 20 20"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth={2}
-                            aria-hidden="true"
-                          >
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
-                          </svg>
-                        )}
-                      </button>
-                    );
-                  })}
-                </Fragment>
-              ))}
-            {onAddModel && (
-              <button
-                type="button"
-                className="model-select__add-btn"
-                data-testid={`${testIdPrefix}-add`}
-                onClick={() => {
-                  setOpen(false);
-                  onAddModel();
-                }}
-              >
-                <svg
-                  viewBox="0 0 20 20"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                  width={14}
-                  height={14}
-                  aria-hidden="true"
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M10 4v12M4 10h12" />
-                </svg>
-                {t('chat.modelSelector.addModel')}
-              </button>
-            )}
+            {renderMenu ? renderMenu(catalog, () => { setOpen(false); setActivePlanKey(null); }) : catalog}
           </div>,
           document.body,
         )}

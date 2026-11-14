@@ -123,6 +123,25 @@
     "noSettings": "此插件未提供设置页面。"
   },
   "designer": {
+    "modelConfiguration": {
+      "title": "模型配置",
+      "help": "选择对话模型，以及任务中可调用的生成模型。",
+      "bindingHint": "使用「设置 → 智能体 → 工具」当前绑定的模型。此处仅展示，更换请前往该设置。",
+      "bindingModel": "当前绑定的模型",
+      "chat": "对话",
+      "video_gen": "视频生成",
+      "visual_gen": "图片生成",
+      "missing": "未配置",
+      "incomplete": "缺少必填字段",
+      "disabled": "未启用",
+      "problem": "{{name}}{{status}}",
+      "separator": "；",
+      "configure": "去配置",
+      "enable": "去开启",
+      "retry": "重新读取",
+      "loading": "正在读取模型配置…",
+      "loadFailed": "生成模型配置读取失败，请重试。"
+    },
     "loading": "正在加载设计工作流…",
     "emptyTitle": "还没有设计工作流",
     "emptyDescription": "描述你的项目，创建独立的设计工作区与工作流。",
@@ -468,6 +487,57 @@
     "qwenOnly": "当前仅支持 Qwen 全双工，请前往设置配置 Qwen Omni Realtime。"
   },
   "settingsPanel": {
+    "multimodal": {
+      "tab": "多模态模型",
+      "tabHelp": "统一管理图片、音频、视频理解及图像、视频生成模型。模型的使用开关和绑定关系可在「设置 → 智能体 → 工具」中调整。",
+      "purpose": "模型用途",
+      "capabilities": "模型能力",
+      "understanding": "多模态理解",
+      "generation": "多模态生成",
+      "selectCapabilities": "请选择模型能力",
+      "capabilityHint": "请仅勾选该模型实际支持的能力。",
+      "displayName": "模型展示名称",
+      "displayNamePlaceholder": "默认使用模型名称，可自行修改",
+      "nameInvalid": "请输入 1–100 个字符的模型展示名称",
+      "completeFields": "请完善模型配置中的必填项。",
+      "add": "添加多模态模型",
+      "edit": "编辑多模态模型",
+      "deleteTitle": "删除模型？",
+      "changeTitle": "确认修改模型能力？",
+      "confirmDelete": "确认删除",
+      "confirmChanges": "确认修改",
+      "deleteReferences": "该模型已被以下工具绑定：{{tools}}。",
+      "editReferences": "本次修改将影响以下工具的模型绑定：{{tools}}。",
+      "replacementRule": "确认后，相关工具将自动切换到其他可用模型，并保留当前开关状态；没有可用模型的工具将关闭并清空模型配置。",
+      "deleteUnbound": "删除后，该模型将从多模态模型列表中移除。",
+      "applyFailed": "已保存，应用失败，请重试。",
+      "shortcutChanged": "模型已添加；未包含{{tool}}能力，该工具设置保持不变。",
+      "separator": "、",
+      "empty": "尚未配置多模态模型",
+      "emptyDescription": "添加模型并选择其支持的能力后，尚未配置模型的对应工具将自动启用。",
+      "tools": {
+        "vision": "图片处理",
+        "audio": "音频处理",
+        "video": "视频理解",
+        "visual_gen": "图像生成",
+        "video_gen": "视频生成"
+      },
+      "errors": {
+        "MM_VALIDATION_FAILED": "请检查模型配置，确保所有必填项符合要求。",
+        "MM_CONFIRM_REQUIRED": "模型绑定发生变化，请重新确认受影响的工具。",
+        "MM_MODEL_NOT_FOUND": "该模型已不存在，请重新选择。",
+        "MM_MODEL_ID_CONFLICT": "模型标识冲突，请重新打开添加弹框。",
+        "MM_CAPABILITY_MISMATCH": "所选模型不支持当前工具，请重新选择。",
+        "MM_MODEL_REQUIRED": "请先添加对应能力的模型。",
+        "MM_STORAGE_FAILED": "配置保存失败，请重试。",
+        "MM_RECOVERY_REQUIRED": "配置事务无法恢复，请检查配置文件后重试。",
+        "MM_CONFIG_READ_FAILED": "模型配置读取失败，请检查配置文件及凭据。",
+        "MM_UNSUPPORTED_SCHEMA": "当前组件不支持此配置版本，请更新组件。",
+        "MM_LEGACY_WRITE_UNSUPPORTED": "请通过多模态模型设置修改这些配置。",
+        "METHOD_NOT_FOUND": "组件版本不匹配，请更新 Gateway、协议和 AgentServer。",
+        "unknown": "操作失败，请重试。"
+      }
+    },
     "voice": {
       "connectionFailed": "连接失败，请检查接口地址、API Key 和模型后重试。",
       "connectionSuccess": "模型连接验证成功",
@@ -937,6 +1007,38 @@
       "requiredFields": "带 * 的项目为必填项，填写完整后才能保存。已保存的 API 密钥无需重新输入。"
     },
     "fields": {
+      "vision_enabled": {
+        "title": "图片处理",
+        "description": "启用后使用所选模型处理对应媒体；关闭后保留模型选择。"
+      },
+      "audio_enabled": {
+        "title": "音频处理",
+        "description": "启用后使用所选模型处理对应媒体；关闭后保留模型选择。"
+      },
+      "video_enabled": {
+        "title": "视频理解",
+        "description": "启用后使用所选模型处理对应媒体；关闭后保留模型选择。"
+      },
+      "vision_model_id": {
+        "title": "选择模型",
+        "description": "选择支持此能力的多模态模型"
+      },
+      "audio_model_id": {
+        "title": "选择模型",
+        "description": "选择支持此能力的多模态模型"
+      },
+      "video_model_id": {
+        "title": "选择模型",
+        "description": "选择支持此能力的多模态模型"
+      },
+      "visual_gen_model_id": {
+        "title": "选择模型",
+        "description": "选择支持此能力的多模态模型"
+      },
+      "video_gen_model_id": {
+        "title": "选择模型",
+        "description": "选择支持此能力的多模态模型"
+      },
       "preferred_language": {
         "title": "Language",
         "description": "设置应用程序界面的显示语言。"

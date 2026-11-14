@@ -18,7 +18,7 @@ import {
   useSessionStore,
 } from '../../stores/sessionStore';
 import type { ModelSelection } from '../../types';
-import ModelPicker from '../ModelPicker';
+import ModelPicker, { type ModelPickerPresentation } from '../ModelPicker';
 import { isEnterprise } from '../../edition';
 import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
@@ -42,6 +42,8 @@ export default function ChatModelSelector({
   includeModelGroups: modelGroupsOverride,
   testIdPrefix = 'chat-panel-model-selector',
   allowModelGroups = true,
+  pickerPresentation,
+  showWhenEmpty = false,
 }: {
   disabled?: boolean;
   /** Blocks picking another model while keeping the deleted-model fallback
@@ -57,6 +59,8 @@ export default function ChatModelSelector({
   allowModelGroups?: boolean;
   includeModelGroups?: boolean;
   testIdPrefix?: string;
+  pickerPresentation?: ModelPickerPresentation;
+  showWhenEmpty?: boolean;
 }): JSX.Element | null {
   const disabled = disabledByParent || isEnterprise();
   const { t } = useTranslation();
@@ -161,7 +165,7 @@ export default function ChatModelSelector({
       : healedSelection;
   const hasSelectableGroup =
     includeModelGroups && selectableGroups.some((group) => group.enabled !== false && Boolean(group.model_group_id));
-  if (!selected && !pickerSelection && models.length === 0 && !hasSelectableGroup && !singleAgent) return null;
+  if (!showWhenEmpty && !selected && !pickerSelection && models.length === 0 && !hasSelectableGroup && !singleAgent) return null;
 
   const persistSelection = async (next: ModelSelection) => {
     if (selectedChildTeam) return;
@@ -185,6 +189,7 @@ export default function ChatModelSelector({
     <div className="chat-model-selector" data-testid={`${testIdPrefix}-wrap`}
       title={pickLocked ? lockedTitle : undefined} data-locked={pickLocked || undefined}>
       <ModelPicker
+        {...pickerPresentation}
         testIdPrefix={testIdPrefix}
         value={selectedChildTeam?.execution_model_name ?? selected?.model_name ?? selectedModelName}
         selection={selectedChildTeam?.execution_model_selection ?? pickerSelection}
