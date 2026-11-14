@@ -30,26 +30,35 @@ export function JevKeySettings({ disabled }: SettingsCustomItemProps) {
     if (next.api_key.trim() !== config[keyField]) {
       await saveConfigFields({ [keyField]: next.api_key.trim() }, 'settingsPanel.browser.jevConfig');
     }
-    await save({
-      decision_provider: next.provider,
-      decision_model: next.model.trim(),
-      decision_display_name: next.display_name.trim(),
-      decision_api_base: next.api_base.trim(),
-    }, 'settingsPanel.browser.jevConfig');
+    await save(
+      {
+        decision_provider: next.provider,
+        decision_model: next.model.trim(),
+        decision_display_name: next.display_name.trim(),
+        decision_api_base: next.api_base.trim(),
+      },
+      'settingsPanel.browser.jevConfig',
+    );
     await refresh();
   };
   const confirmClear = async () => {
     setClearingBusy(true);
     setClearError('');
     try {
-      await save({
-        decision_mode: 'llm',
-        decision_display_name: '',
-      }, 'settingsPanel.browser.jevConfig');
-      await saveConfigFields({
-        [JEV_PRESETS[draft.provider].keyField]: '',
-        moa_jev_enabled: 'false',
-      }, 'settingsPanel.browser.jevConfig');
+      await save(
+        {
+          decision_mode: 'llm',
+          decision_display_name: '',
+        },
+        'settingsPanel.browser.jevConfig',
+      );
+      await saveConfigFields(
+        {
+          [JEV_PRESETS[draft.provider].keyField]: '',
+          moa_jev_enabled: 'false',
+        },
+        'settingsPanel.browser.jevConfig',
+      );
       await refresh();
       window.dispatchEvent(new window.Event(SETTINGS_CONFIG_CHANGED_EVENT));
       setClearing(false);
@@ -59,9 +68,8 @@ export function JevKeySettings({ disabled }: SettingsCustomItemProps) {
       setClearingBusy(false);
     }
   };
-  const providerName = draft.provider === 'custom'
-    ? t('settingsPanel.browser.providerCustom')
-    : JEV_PRESETS[draft.provider].label;
+  const providerName =
+    draft.provider === 'custom' ? t('settingsPanel.browser.providerCustom') : JEV_PRESETS[draft.provider].label;
   // path.get's jev_key_configured is answered from the Gateway process env,
   // which is frozen at its startup: credentials saved afterwards through
   // config.save_all (Runtime process) stay invisible until a Gateway restart
@@ -72,17 +80,16 @@ export function JevKeySettings({ disabled }: SettingsCustomItemProps) {
   const metadata = `${providerName} · ${draft.model}`;
   return (
     <>
-      <SettingsSection
-        title={t('settingsPanel.models.jevModels')}
-        separatedRows
-      >
+      <SettingsSection title={t('settingsPanel.models.jevModels')} separatedRows>
         {loading ? (
           <div className="settings-page__loading" data-testid="settings-models-jev-loading">
             <Loading aria-label={t('common.loading')} />
           </div>
         ) : null}
         {error ? (
-          <div className="settings-page__error" role="alert" data-testid="settings-browser-jev-load-error">{error}</div>
+          <div className="settings-page__error" role="alert" data-testid="settings-browser-jev-load-error">
+            {error}
+          </div>
         ) : null}
         {!loading && !error && !configured ? (
           <div className="settings-models__empty" data-testid="settings-models-jev-empty">
@@ -110,9 +117,13 @@ export function JevKeySettings({ disabled }: SettingsCustomItemProps) {
               />
               <div className="settings-model-card__copy">
                 <div className="settings-model-card__title-row">
-                  <h3 title={draft.display_name} data-testid="settings-models-jev-card-title">{draft.display_name}</h3>
+                  <h3 title={draft.display_name} data-testid="settings-models-jev-card-title">
+                    {draft.display_name}
+                  </h3>
                 </div>
-                <p title={metadata} data-testid="settings-models-jev-card-metadata">{metadata}</p>
+                <p title={metadata} data-testid="settings-models-jev-card-metadata">
+                  {metadata}
+                </p>
               </div>
               <div className="settings-model-card__actions">
                 <Button
@@ -129,7 +140,10 @@ export function JevKeySettings({ disabled }: SettingsCustomItemProps) {
                   aria-label={t('common.delete')}
                   title={t('common.delete')}
                   disabled={actionsDisabled}
-                  onClick={() => { setClearError(''); setClearing(true); }}
+                  onClick={() => {
+                    setClearError('');
+                    setClearing(true);
+                  }}
                   data-testid="settings-models-jev-delete-btn"
                 />
               </div>
@@ -156,7 +170,9 @@ export function JevKeySettings({ disabled }: SettingsCustomItemProps) {
         confirmLabel={t('common.delete')}
         confirmVariant="danger"
         onConfirm={() => void confirmClear()}
-        onCancel={() => { if (!clearingBusy) setClearing(false); }}
+        onCancel={() => {
+          if (!clearingBusy) setClearing(false);
+        }}
       />
     </>
   );
