@@ -87,6 +87,11 @@ class WorkerEventStore:
         self._max_events = max_events
         self._max_bytes = max_bytes
         self._expired_sequence = 0
+        # Per-request eviction watermark (replay_gapped): the global
+        # _expired_sequence advances on ANY request's eviction, so keying the
+        # gap check on it would turn any eviction into a false gap for every
+        # other request. Keyed by (scope, request_id).
+        self._expired_by_request: "OrderedDict[tuple, int]" = OrderedDict()
         self.records: OrderedDict[str, DispatchRecord] = OrderedDict()
         self._active: dict[tuple[str, ...], str] = {}
 
@@ -121,7 +126,10 @@ class WorkerEventStore:
                               if not value.active and not value.is_processing and not value.interactions), None)
             if removable is None:
                 break
-            del self.records[removable]
+            self.records.pop(removable)
+            # 重放缺口水位（_expired_by_request）不随记录修剪清理：水位生命周期
+            # 跟随 _frames（帧淘汰时写入），记录重建后 replay_gapped 仍需水位
+            # 判定缺口；有界性由写入侧容量上限保证（见 append 帧淘汰段）。
 
     def internal_record(self, request: AgentRequest) -> DispatchRecord:
         """Track an authorized server execution, including mailbox background work."""
@@ -211,10 +219,22 @@ class WorkerEventStore:
         while self._frames and (len(self._frames) > self._max_events or self._bytes > self._max_bytes):
             _expired_scope, expired, expired_size = self._frames.popleft()
             self._expired_sequence = expired["sequence"]
+            rid = str(expired.get("request_id") or "")
+            if rid:
+                key = (_expired_scope, rid)
+                if expired["sequence"] > self._expired_by_request.get(key, 0):
+                    self._expired_by_request[key] = expired["sequence"]
+                self._expired_by_request.move_to_end(key)
             self._bytes -= expired_size
             expired_record = self.records.get(expired["dispatch_id"])
             if expired_record is not None:
                 expired_record.expired_sequence = expired["sequence"]
+        # 水位图容量上限（防无界增长；AIReview SF-1 关注点）——
+        # 生命周期跟随帧淘汰（不随记录修剪提前清空，atomgit 判词 199763306）；
+        # LRU 触碰保证活跃请求的水位不被误清（atomgit 9707 id=199769142-⑤），
+        # 超限淘汰最久未触碰条目（只影响已整体淘汰出保留窗的请求）。
+        while len(self._expired_by_request) > 1024:
+            self._expired_by_request.popitem(last=False)
         if record:
             body = wire.get("body") or wire.get("payload") or {}
             if isinstance(body, dict):
@@ -324,3 +344,21 @@ class WorkerEventStore:
         scope = request_scope(request)
         return [copy.deepcopy(frame) for owner, frame, _ in self._frames
                 if owner == scope and frame["sequence"] > after]
+
+    def replay_by_request(
+        self, scope: tuple[str, ...], request_id: str, *, after: int = 0
+    ) -> list[dict[str, Any]]:
+        """P6 身份型重放：按 (scope, request_id) 取单请求保留帧（游标之后）。"""
+        rid = str(request_id or "")
+        return [copy.deepcopy(frame) for owner, frame, _ in self._frames
+                if owner == scope and frame["request_id"] == rid and frame["sequence"] > after]
+
+    def replay_gapped(self, scope: tuple[str, ...], request_id: str, after: int) -> bool:
+        """True 若该请求自身的保留帧已被淘汰至 after 之下（重放会静默跳帧）。
+
+        以 (scope, request_id) 级水位判定，而非全店共享的 _expired_sequence：
+        全局水位在任意请求淘汰时前移，用它判缺口会把别的请求的淘汰误报成
+        本请求的缺口，让身份型重放退化为占位卡。
+        """
+        rid = str(request_id or "")
+        return after < self._expired_by_request.get((scope, rid), 0)

@@ -33,6 +33,8 @@ from jiuwenswarm.server.ipc.protocol import (
     KIND_REQUEST_DONE,
     KIND_SHUTDOWN,
     KIND_SUBSCRIBE,
+    KIND_SUBSCRIBE_BY_ID,
+    KIND_WIRE,
     KIND_SNAPSHOT,
     cancel_request,
     load_agent_request,
@@ -53,6 +55,32 @@ from jiuwenswarm.server.worker.gateway_bridge import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _question_body_matches(body: Any, response_kind: Any = None) -> dict[str, Any] | None:
+    """提问 body 判定核心：展平 delta/result 嵌套后，event_type 缺失回落 response_kind。"""
+    if not isinstance(body, dict):
+        return None
+    nested = body.get("delta") if isinstance(body.get("delta"), dict) else body.get("result")
+    if isinstance(nested, dict):
+        body = {**body, **nested}
+    return body if (body.get("event_type") or response_kind) == "chat.ask_user_question" else None
+
+
+def _question_frame_body(wire: Any) -> dict[str, Any] | None:
+    """wire 顶层帧 → 提问 body（同源判据：_question_recovery_filter 与
+    subscribe_by_id 重放共用；atomgit 9707 id=200332185）。response_kind 与
+    提问标识穿透保留帧包装层（外层 wire 或内层壳均可携带）。"""
+    if not isinstance(wire, dict):
+        return None
+    shell = wire.get("body") or wire.get("payload")
+    if not isinstance(shell, dict):
+        return None
+    response_kind = wire.get("response_kind", shell.get("response_kind"))
+    inner = shell.get("body") if isinstance(shell.get("body"), dict) else None
+    body = {**shell, **inner} if inner else shell
+    return _question_body_matches(body, response_kind)
+
 
 _MAX_QUEUED_REQUESTS = 32
 _DRAIN_TIMEOUT = 5.0
@@ -172,6 +200,9 @@ class WorkerDispatcher:
             return True
         if kind == KIND_SUBSCRIBE:
             self._spawn(self._subscribe(message, conn, generation), generation)
+            return True
+        if kind == KIND_SUBSCRIBE_BY_ID:
+            self._spawn(self._subscribe_by_id(message, conn, generation), generation)
             return True
         if kind == KIND_SHUTDOWN:
             self.shutdown_requested = True
@@ -653,11 +684,8 @@ class WorkerDispatcher:
         session_id = request.params.get("session_id") or request.session_id or ""
 
         def question(body: Any, event: str | None = "") -> dict[str, Any] | None:
-            if not isinstance(body, dict):
-                return None
-            nested = body.get("delta") if isinstance(body.get("delta"), dict) else body.get("result")
-            body = {**body, **nested} if isinstance(nested, dict) else body
-            return body if (body.get("event_type") or event) == "chat.ask_user_question" else None
+            # 同源判据：委托模块级 _question_body_matches（atomgit 9707 id=200332185）。
+            return _question_body_matches(body, event)
 
         def owner(body: dict[str, Any], dispatch_id: str) -> tuple[int, str, str] | None:
             if not callable(resolve):
@@ -828,6 +856,133 @@ class WorkerDispatcher:
             await self._done(conn, str(record.request.request_id or ""), generation=generation,
                              dispatch_id=dispatch_id, ok=result["ok"], error=result["error"],
                              delivered=result["delivered"])
+
+
+    def _replayed_question_expired(self, record: "DispatchRecord", body: dict[str, Any]) -> bool:
+        """待重放提问帧是否已失效——按 control 本体有效性判定，与
+        ``_question_recovery_filter`` 的 authority 同源（``recoverable_control``）。
+
+        ``record.interactions`` 是混合交互字典（waiting 控制集 ∪ 提问帧，:759-760），
+        非空≠提问在飞：残留其它控制时旧代理判据会把已终结提问误判在飞重投
+        （atomgit 9707 id=200318358）。authority/标识不可达时回退旧启发式
+        （字典空判），保守维持原重放行为。
+        """
+        runtime_getter = getattr(self._runtime, "_execution_runtime", None)
+        runtime = runtime_getter() if callable(runtime_getter) else self._runtime
+        resolve = getattr(runtime, "recoverable_control", None)
+        control_id = str(body.get("interaction_id") or body.get("control_id")
+                         or body.get("request_id") or "")
+        execution_id = str(body.get("execution_id") or record.last_execution_id or "")
+        if not callable(resolve) or not control_id or not execution_id:
+            return not record.interactions
+        session_id = (str(record.scope[4]) if len(record.scope) > 4
+                      else str(record.request.session_id or ""))
+        return resolve(session_id, control_id, execution_id) is None
+
+    async def _subscribe_by_id(self, message: dict[str, Any], conn: IpcConnection, generation: int) -> None:
+        """P6 身份型重放：按台账身份键反查单请求保留帧并回放（携 wire_id 回执链）。
+
+        反查键=(scope[:4], request_id)（与 ``WorkerEventStore._active`` 同键构造）；
+        miss → status=miss；worker_instance 不匹配（worker 重启丢保留帧）→
+        status=history_required；命中 → status=ok 后逐帧 KIND_WIRE 回放。
+        supervisor 侧对 miss/history_required 转占位卡路径。
+        """
+        rid = str(message.get("request_id") or "")
+        identity = message.get("payload") if isinstance(message.get("payload"), dict) else {}
+        after = max(0, int(message.get("after") or 0))
+        query_id = message.get("query_id")
+
+        async def _reply(status: str, **extra: Any) -> None:
+            frame: dict[str, Any] = {"kind": KIND_SUBSCRIBE_BY_ID, "query_id": query_id,
+                                     "request_id": rid, "status": status, "generation": generation}
+            frame.update(extra)
+            try:
+                await conn.send(frame)
+            except (OSError, RuntimeError):
+                logger.info("[Worker] subscribe_by_id reply lost on IPC detach")
+
+        if not rid:
+            await _reply("miss")
+            return
+        channel = str(identity.get("channel_id") or "")
+        user = str(identity.get("user_id") or "")
+        # request_scope 真源口径：identity 四元组由 supervisor 台账（request_scope
+        # 归一化结果）透传，open_id 私改回落会造成两口径各自演化（atomgit 08:27 评）。
+        app = str(identity.get("app_id") or "")
+        agent_ref = identity.get("agent_ref")
+        if agent_ref is not None and not isinstance(agent_ref, str):
+            agent_ref = json.dumps(agent_ref, sort_keys=True, default=str)
+        agent_ref_json = agent_ref or json.dumps(
+            {"mode": "agent", "id": "default"}, sort_keys=True, default=str)
+        identity_key = (channel, user, app, str(agent_ref_json), rid)
+
+        record: DispatchRecord | None = None
+        dispatch_hint = str(message.get("dispatch_id") or "")
+        hinted = self._bridge.events.records.get(dispatch_hint) if dispatch_hint else None
+        if hinted is not None and (*hinted.scope[:4], str(hinted.request.request_id or "")) == identity_key:
+            record = hinted
+        if record is None:
+            for candidate in reversed(self._bridge.events.records.values()):
+                if (*candidate.scope[:4], str(candidate.request.request_id or "")) == identity_key:
+                    record = candidate
+                    break
+        if record is None:
+            # 反查 miss：记录已完成被修剪或键不符 → supervisor 转占位卡路径。
+            await _reply("miss")
+            return
+        if message.get("worker_instance") not in {None, "", self._bridge.events.instance}:
+            # worker 重启过（保留帧已失）：supervisor 直接占位卡，不做全量 history 重放。
+            await _reply("history_required", dispatch_id=record.dispatch_id)
+            return
+        # 重放帧与该 scope 的实时帧共用发布锁（同 _subscribe 重放先例）：先持锁再判
+        # 缺口并取快照、逐帧 send——缺口判定留在锁外会有 TOCTOU 窗口（检查与取帧
+        # 之间并发 append 淘汰保留帧，静默跳帧）；同锁保证重放与实时帧对同一 scope
+        # 的到达顺序有全序。
+        async with self._bridge.publication_lock(record.scope):
+            # 回执前复校验 generation/连接：连接已换代则不回执不重放——
+            # 空帧集也回 ok 会把「未送达」记账成已送达（atomgit 9722 id=199769146-④）。
+            if self._bridge.holder.generation != generation or self._bridge.holder.conn is None:
+                return
+            if self._bridge.events.replay_gapped(record.scope, rid, after):
+                # 该请求自身的保留帧已被淘汰至游标之下：重放会静默跳帧，
+                # status=ok 会掩盖缺口 → supervisor 占位卡路径。水位按
+                # (scope, request_id) 判定，别的请求的淘汰不误报本请求缺口。
+                await _reply("history_required", dispatch_id=record.dispatch_id)
+                return
+            frames = self._bridge.events.replay_by_request(record.scope, rid, after=after)
+            # ok 回执先行是 test_e 锁定的契约：supervisor 对 ok 零消费（只处理
+            # miss/history_required），重放中断的兜底＝supervisor sweep 重试＋
+            # 占位卡到期，不依赖 ok 语义（atomgit 06:53 评「ok 记成成功」前提
+            # 不成立，回执时序维持原契约）。
+            await _reply("ok", dispatch_id=record.dispatch_id, count=len(frames))
+            for index, frame in enumerate(frames):
+                if self._bridge.holder.generation != generation or self._bridge.holder.conn is None:
+                    return
+                payload = frame["payload"]
+                if isinstance(payload, dict):
+                    qbody = _question_frame_body(payload)
+                    if qbody is not None and self._replayed_question_expired(record, qbody):
+                        # 失效提问卡不随重放重投（判据与 _question_recovery_filter 同源；
+                        # atomgit 9707 id=199769142 / id=200318358 / id=200332185）。
+                        continue
+                    # 浅拷贝隔离后注入 replayed 标记：不得写回 event_store 保留帧
+                    # （原地写会污染日志对象，其后真实首投被消费侧误认已重放帧——
+                    # atomgit 9722 id=200375260 同型面在 9707 的对应修复）。
+                    payload = {**payload}
+                    metadata = dict(payload.get("metadata") or {})
+                    runtime_event = dict(metadata.get("runtime_event") or {})
+                    runtime_event["replayed"] = True
+                    metadata["runtime_event"] = runtime_event
+                    payload["metadata"] = metadata
+                try:
+                    await conn.send({**frame, "payload": payload, "kind": KIND_WIRE,
+                                     "wire_id": uuid.uuid4().hex,
+                                     "generation": generation, "replayed": True})
+                except (OSError, RuntimeError):
+                    logger.info("[Worker] subscribe_by_id replay lost on IPC detach")
+                    return
+                if index % 32 == 0:
+                    await asyncio.sleep(0)
 
 
 def _is_session_work_request(request: AgentRequest) -> bool:
