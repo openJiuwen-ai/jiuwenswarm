@@ -105,12 +105,14 @@ class PromptRenderContext:
     """轻量只读渲染上下文（对应 1.md 隐患 2 修正版）。
 
     ``lang`` 恒为规范化后的 ``cn`` / ``en``；``enabled_tools`` 是当前工具面的冻结集合，
-    供 ``enabled_when`` 门控；``skill_catalog`` / ``persona_override`` 为 7xx/010 动态域
+    供 ``enabled_when`` 门控；``subagent_types`` 是当前可用的子代理类型集合（供 340
+    浏览器路由等按类型门控）；``skill_catalog`` / ``persona_override`` 为 7xx/010 动态域
     预留（Step 4 后填充），``extra`` 承载平台注入（供 persona 域未来纳入快照）。
     """
 
     lang: Literal["cn", "en"] = "cn"
     enabled_tools: frozenset[str] = frozenset()
+    subagent_types: frozenset[str] = frozenset()
     skill_catalog: str | None = None
     persona_override: str | None = None
     extra: Mapping[str, Any] = field(default_factory=dict)
@@ -193,12 +195,13 @@ def _render_response(ctx: PromptRenderContext) -> tuple[PromptSection, ...]:
 def _render_tools(ctx: PromptRenderContext) -> tuple[PromptSection, ...]:
     """300/330/340 三段的 06 目标正文（content.tools 硬编码，无动态源）。
 
-    340 的「浏览器任务强制路由」子节依赖 task_tool(browser_agent) 在位；
-    task_tool 被禁用时剔除该子节，避免提示词要求调用不可见的浏览器子代理。
+    340 的「浏览器任务强制路由」子节依赖 browser_agent 子代理类型在位；
+    task_tool 已启用但未注册 browser_agent 时也剔除，避免提示词要求调用
+    不存在的浏览器子代理类型。
     """
     cn = ctx.is_cn
     result = _RESULT_BASE_CN if cn else _RESULT_BASE_EN
-    if "task_tool" in ctx.enabled_tools:
+    if "browser_agent" in ctx.subagent_types:
         result += "\n" + (_BROWSER_ROUTING_CN if cn else _BROWSER_ROUTING_EN)
     targets = (
         (_NAME_SELECTION, _PRIO_SELECTION, _SELECTION_CN if cn else _SELECTION_EN),
@@ -282,10 +285,14 @@ FLASH_PROMPT_REGISTRY: tuple[FlashPromptBlock, ...] = (
 
 
 def build_default_context(language: str = "cn") -> PromptRenderContext:
-    """构建离线/默认渲染上下文：两工具域（todo/subagent）全开，语言规范化。"""
+    """构建离线/默认渲染上下文：两工具域（todo/subagent）全开，语言规范化。
+
+    ``subagent_types`` 默认含 general-purpose + browser_agent（flash 默认子代理面）。
+    """
     return PromptRenderContext(
         lang=_resolve_language(language),
         enabled_tools=frozenset({"todo", "task_tool"}),
+        subagent_types=frozenset({"general-purpose", "browser_agent"}),
     )
 
 

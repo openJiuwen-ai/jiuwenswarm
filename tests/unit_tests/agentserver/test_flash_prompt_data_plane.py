@@ -134,14 +134,25 @@ def test_reconcile_gates_tool_domains() -> None:
     assert "task_tool" not in names
 
 
-def test_reconcile_gates_browser_routing_on_task_tool() -> None:
-    # 关 task_tool：340 仍产出，但不得残留 browser_agent 强制路由指令。
+def test_reconcile_gates_browser_routing_on_subagent_types() -> None:
+    # 空工具集（task_tool 也未启用）：340 仍产出，但不得残留 browser_agent 路由。
     empty = reconcile(PromptRenderContext(lang="cn", enabled_tools=frozenset()))
     result = next(s for s in empty if s.name == "tool_result")
     assert "browser_agent" not in result.content["cn"]
     assert "浏览器任务强制路由" not in result.content["cn"]
 
-    # 开 task_tool（默认上下文）：browser_agent 路由保留。
+    # task_tool 启用、但可用子代理类型里没有 browser_agent（只注册 general-purpose）：
+    # 340 不得要求调用不存在的 browser_agent。
+    no_browser = reconcile(PromptRenderContext(
+        lang="cn",
+        enabled_tools=frozenset({"task_tool"}),
+        subagent_types=frozenset({"general-purpose"}),
+    ))
+    result = next(s for s in no_browser if s.name == "tool_result")
+    assert "browser_agent" not in result.content["cn"]
+    assert "浏览器任务强制路由" not in result.content["cn"]
+
+    # 默认上下文（含 browser_agent）：browser_agent 路由保留。
     full = reconcile(build_default_context("cn"))
     result = next(s for s in full if s.name == "tool_result")
     assert "browser_agent" in result.content["cn"]

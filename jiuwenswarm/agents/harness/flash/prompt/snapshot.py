@@ -144,7 +144,9 @@ def build_prompt_snapshot(
         section for section in section_snapshots if section.carrier == "system"
     )
 
-    prefix_text = "\n\n".join(section.text for section in static_sections)
+    prefix_text = "\n\n".join(
+        section.text for section in static_sections if section.text.strip()
+    )
     return PromptSnapshot(
         language=normalized_language,
         sections=section_snapshots,

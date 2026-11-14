@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 
@@ -71,6 +72,19 @@ def test_static_hash_excludes_dynamic_region() -> None:
 
     assert static.static_hash == with_dynamic.static_hash
     assert static.full_hash != with_dynamic.full_hash
+
+
+def test_prefix_hash_skips_empty_sections() -> None:
+    """空段/纯空白段不参与前缀拼接，对齐 SDK 的 part.strip() 过滤。"""
+    sections = [
+        _Section("A", 0, {"cn": "A", "en": "A"}),
+        _Section("空", 10, {"cn": "", "en": ""}),
+        _Section("空格", 20, {"cn": " ", "en": " "}),
+        _Section("B", 30, {"cn": "B", "en": "B"}),
+    ]
+    snapshot = build_prompt_snapshot(sections, language="cn")
+    assert snapshot.prefix_chars == len("A\n\nB")
+    assert snapshot.prefix_hash == hashlib.sha256("A\n\nB".encode("utf-8")).hexdigest()
 
 
 def test_unknown_priority_is_visible_and_unbanded() -> None:
