@@ -27,6 +27,9 @@ from openjiuwen.agent_teams.schema.team import TeamRole
 from jiuwenswarm.server.runtime.agent_adapter import evolution_helpers
 from jiuwenswarm.server.runtime.agent_adapter import team_helpers
 from jiuwenswarm.server.runtime.agent_adapter import team_stall_watchdog
+from jiuwenswarm.server.runtime.agent_adapter.round_terminal_arbiter import (
+    RoundTerminalArbiter,
+)
 
 build_team_request_metadata = team_helpers.build_team_request_metadata
 
@@ -7448,6 +7451,28 @@ class _ProbeFakeManager:
         return self._monitor_handler
 
 
+def _make_probe_arbiter(broadcasted: list[dict]) -> RoundTerminalArbiter:
+    """探针/看门狗直调测试的最小裁决器（design/team/24 接线后终态由裁决器
+    发帧）：终态帧落入 broadcasted（与旧 broadcast 注入的断言面一致）。"""
+
+    async def _rec(payload: dict) -> None:
+        broadcasted.append(payload)
+
+    async def _unsettled():
+        return None
+
+    return RoundTerminalArbiter(
+        session_id="s1",
+        round_id=1,
+        broadcast=_rec,
+        settled_check=_unsettled,
+        has_stream_task=lambda: True,
+        is_pause_in_progress=lambda: False,
+        mark_round_terminal=lambda: None,
+        clear_round_terminal=lambda: None,
+    )
+
+
 @pytest.mark.asyncio
 async def test_leader_round_death_probe_fires_on_silence(monkeypatch: pytest.MonkeyPatch) -> None:
     """错误后窗口内零产出且无收尾信号 → 补发 processing_status(error) 终态。"""
@@ -7457,6 +7482,7 @@ async def test_leader_round_death_probe_fires_on_silence(monkeypatch: pytest.Mon
     )
     broadcasted: list[dict] = []
     monkeypatch.setattr(team_helpers, "_broadcast_event", _broadcast_recorder(broadcasted))
+    arbiter = _make_probe_arbiter(broadcasted)
 
     task = team_helpers._schedule_leader_round_death_probe(
         "desktop",
@@ -7466,6 +7492,7 @@ async def test_leader_round_death_probe_fires_on_silence(monkeypatch: pytest.Mon
         liveness=lambda: 10,
         completion_signals=lambda: 0,
         previous=None,
+        propose=arbiter.propose,
     )
     await task
     assert len(broadcasted) == 1
@@ -7485,6 +7512,7 @@ async def test_leader_round_death_probe_skipped_when_recovered(monkeypatch: pyte
     )
     broadcasted: list[dict] = []
     monkeypatch.setattr(team_helpers, "_broadcast_event", _broadcast_recorder(broadcasted))
+    arbiter = _make_probe_arbiter(broadcasted)
 
     chunks = {"n": 10}
 
@@ -7501,6 +7529,7 @@ async def test_leader_round_death_probe_skipped_when_recovered(monkeypatch: pyte
         liveness=lambda: chunks["n"],
         completion_signals=lambda: 0,
         previous=None,
+        propose=arbiter.propose,
     )
     await asyncio.gather(task, producer)
     assert broadcasted == []
@@ -7515,6 +7544,7 @@ async def test_leader_round_death_probe_skipped_when_round_completed(monkeypatch
     )
     broadcasted: list[dict] = []
     monkeypatch.setattr(team_helpers, "_broadcast_event", _broadcast_recorder(broadcasted))
+    arbiter = _make_probe_arbiter(broadcasted)
 
     signals = {"n": 0}
 
@@ -7531,6 +7561,7 @@ async def test_leader_round_death_probe_skipped_when_round_completed(monkeypatch
         liveness=lambda: 10,
         completion_signals=lambda: signals["n"],
         previous=None,
+        propose=arbiter.propose,
     )
     await asyncio.gather(task, completer)
     assert broadcasted == []
@@ -7545,6 +7576,7 @@ async def test_leader_round_death_probe_skipped_when_stream_gone(monkeypatch: py
     )
     broadcasted: list[dict] = []
     monkeypatch.setattr(team_helpers, "_broadcast_event", _broadcast_recorder(broadcasted))
+    arbiter = _make_probe_arbiter(broadcasted)
 
     task = team_helpers._schedule_leader_round_death_probe(
         "desktop",
@@ -7554,6 +7586,7 @@ async def test_leader_round_death_probe_skipped_when_stream_gone(monkeypatch: py
         liveness=lambda: 10,
         completion_signals=lambda: 0,
         previous=None,
+        propose=arbiter.propose,
     )
     await task
     assert broadcasted == []
@@ -7568,14 +7601,17 @@ async def test_leader_round_death_probe_reschedule_cancels_previous(monkeypatch:
     )
     broadcasted: list[dict] = []
     monkeypatch.setattr(team_helpers, "_broadcast_event", _broadcast_recorder(broadcasted))
+    arbiter = _make_probe_arbiter(broadcasted)
 
     first = team_helpers._schedule_leader_round_death_probe(
         "desktop", "s1", 1,
         error_text="第一次", liveness=lambda: 10, completion_signals=lambda: 0, previous=None,
+        propose=arbiter.propose,
     )
     second = team_helpers._schedule_leader_round_death_probe(
         "desktop", "s1", 1,
         error_text="第二次", liveness=lambda: 10, completion_signals=lambda: 0, previous=first,
+        propose=arbiter.propose,
     )
     await asyncio.gather(first, second, return_exceptions=True)
     assert first.done()
@@ -7599,13 +7635,13 @@ async def test_leader_round_death_probe_waits_while_members_busy(monkeypatch: py
     )
     broadcasted: list[dict] = []
     monkeypatch.setattr(team_helpers, "_broadcast_event", _broadcast_recorder(broadcasted))
+    arbiter = _make_probe_arbiter(broadcasted)
 
     async def _settle() -> None:
         await asyncio.sleep(0.025)  # 第一次醒来（busy→警告+续探）之后落定
         handler._members = [{"member_id": "m1", "status": "ready", "execution_status": "idle"}]
 
     settler = asyncio.create_task(_settle())
-    on_fired = {"n": 0}
     task = team_helpers._schedule_leader_round_death_probe(
         "desktop",
         "s1",
@@ -7614,7 +7650,7 @@ async def test_leader_round_death_probe_waits_while_members_busy(monkeypatch: py
         liveness=lambda: 10,
         completion_signals=lambda: 0,
         previous=None,
-        on_fired=lambda: on_fired.__setitem__("n", on_fired["n"] + 1),
+        propose=arbiter.propose,
     )
     await asyncio.gather(task, settler)
 
@@ -7628,7 +7664,10 @@ async def test_leader_round_death_probe_waits_while_members_busy(monkeypatch: py
     assert terminals[0]["error"] == "[181001] model call failed"
     # 广播顺序：先等待警告，后终态
     assert broadcasted.index(warnings[0]) < broadcasted.index(terminals[0])
-    assert on_fired["n"] == 1
+    # 终态发射点统一复位（原 on_fired 回调语义收编进裁决器）：
+    # 错误史已清，再提案不携带陈旧 error
+    assert arbiter._ledger.unrecovered_error is None
+    assert arbiter.completion_signals == 1
 
 
 @pytest.mark.asyncio
@@ -7646,6 +7685,7 @@ async def test_leader_round_death_probe_extension_cap_forces_terminal(monkeypatc
     )
     broadcasted: list[dict] = []
     monkeypatch.setattr(team_helpers, "_broadcast_event", _broadcast_recorder(broadcasted))
+    arbiter = _make_probe_arbiter(broadcasted)
 
     task = team_helpers._schedule_leader_round_death_probe(
         "desktop",
@@ -7655,6 +7695,7 @@ async def test_leader_round_death_probe_extension_cap_forces_terminal(monkeypatc
         liveness=lambda: 10,
         completion_signals=lambda: 0,
         previous=None,
+        propose=arbiter.propose,
     )
     await task
 
@@ -7864,7 +7905,8 @@ async def test_team_stall_watchdog_fires_after_confirmed_idle(monkeypatch: pytes
 
     task = team_stall_watchdog.schedule_team_stall_watchdog(
         "web", "s-stall", 1, liveness=lambda: 0, completion_signals=lambda: 0,
-        broadcast=_broadcast_recorder(broadcasted),
+        # 判死提案入裁决器（终态帧落入同一 broadcasted 断言面）
+        propose=_make_probe_arbiter(broadcasted).propose,
     )
     await asyncio.sleep(0.12)
     task.cancel()
@@ -7889,7 +7931,8 @@ async def test_team_stall_watchdog_quiet_when_members_in_flight(monkeypatch: pyt
 
     task = team_stall_watchdog.schedule_team_stall_watchdog(
         "web", "s-busy", 1, liveness=lambda: 0, completion_signals=lambda: 0,
-        broadcast=_broadcast_recorder(broadcasted),
+        # 判死提案入裁决器（终态帧落入同一 broadcasted 断言面）
+        propose=_make_probe_arbiter(broadcasted).propose,
     )
     await asyncio.sleep(0.12)
     task.cancel()
@@ -7906,7 +7949,8 @@ async def test_team_stall_watchdog_quiet_when_no_pending_tasks(monkeypatch: pyte
 
     task = team_stall_watchdog.schedule_team_stall_watchdog(
         "web", "s-done", 1, liveness=lambda: 0, completion_signals=lambda: 0,
-        broadcast=_broadcast_recorder(broadcasted),
+        # 判死提案入裁决器（终态帧落入同一 broadcasted 断言面）
+        propose=_make_probe_arbiter(broadcasted).propose,
     )
     await asyncio.sleep(0.12)
     task.cancel()
@@ -7930,7 +7974,8 @@ async def test_team_stall_watchdog_resets_on_stream_activity(monkeypatch: pytest
 
     task = team_stall_watchdog.schedule_team_stall_watchdog(
         "web", "s-active", 1, liveness=lambda: chunks[0], completion_signals=lambda: 0,
-        broadcast=_broadcast_recorder(broadcasted),
+        # 判死提案入裁决器（终态帧落入同一 broadcasted 断言面）
+        propose=_make_probe_arbiter(broadcasted).propose,
     )
     bumper = asyncio.create_task(_bump())
     await asyncio.sleep(0.12)
@@ -7956,7 +8001,8 @@ async def test_team_stall_watchdog_quiet_when_members_starting(monkeypatch: pyte
 
     task = team_stall_watchdog.schedule_team_stall_watchdog(
         "web", "s-starting", 1, liveness=lambda: 0, completion_signals=lambda: 0,
-        broadcast=_broadcast_recorder(broadcasted),
+        # 判死提案入裁决器（终态帧落入同一 broadcasted 断言面）
+        propose=_make_probe_arbiter(broadcasted).propose,
     )
     await asyncio.sleep(0.12)
     task.cancel()
@@ -7976,7 +8022,8 @@ async def test_team_stall_watchdog_quiet_when_recent_task_activity(monkeypatch: 
 
     task = team_stall_watchdog.schedule_team_stall_watchdog(
         "web", "s-recent", 1, liveness=lambda: 0, completion_signals=lambda: 0,
-        broadcast=_broadcast_recorder(broadcasted),
+        # 判死提案入裁决器（终态帧落入同一 broadcasted 断言面）
+        propose=_make_probe_arbiter(broadcasted).propose,
     )
     await asyncio.sleep(0.12)
     task.cancel()
@@ -7998,7 +8045,8 @@ async def test_team_stall_watchdog_quiet_when_db_shows_in_flight(monkeypatch: py
     monkeypatch.setattr(team_stall_watchdog, "team_progress_snapshot_db", _db_in_flight)
     task = team_stall_watchdog.schedule_team_stall_watchdog(
         "web", "s-dbcheck", 1, liveness=lambda: 0, completion_signals=lambda: 0,
-        broadcast=_broadcast_recorder(broadcasted),
+        # 判死提案入裁决器（终态帧落入同一 broadcasted 断言面）
+        propose=_make_probe_arbiter(broadcasted).propose,
     )
     await asyncio.sleep(0.12)
     task.cancel()
@@ -8020,7 +8068,8 @@ async def test_team_stall_watchdog_fires_when_db_unavailable(monkeypatch: pytest
     monkeypatch.setattr(team_stall_watchdog, "team_progress_snapshot_db", _db_none)
     task = team_stall_watchdog.schedule_team_stall_watchdog(
         "web", "s-dbfail", 1, liveness=lambda: 0, completion_signals=lambda: 0,
-        broadcast=_broadcast_recorder(broadcasted),
+        # 判死提案入裁决器（终态帧落入同一 broadcasted 断言面）
+        propose=_make_probe_arbiter(broadcasted).propose,
     )
     await asyncio.sleep(0.12)
     task.cancel()
@@ -8046,7 +8095,8 @@ async def test_team_stall_watchdog_quiet_when_leader_kernel_running(monkeypatch:
     monkeypatch.setattr(team_stall_watchdog, "team_runtime_liveness", _alive)
     task = team_stall_watchdog.schedule_team_stall_watchdog(
         "web", "s-kernel", 1, liveness=lambda: 0, completion_signals=lambda: 0,
-        broadcast=_broadcast_recorder(broadcasted),
+        # 判死提案入裁决器（终态帧落入同一 broadcasted 断言面）
+        propose=_make_probe_arbiter(broadcasted).propose,
     )
     await asyncio.sleep(0.12)
     task.cancel()
@@ -8068,7 +8118,8 @@ async def test_team_stall_watchdog_fires_when_leader_kernel_stopped(monkeypatch:
     monkeypatch.setattr(team_stall_watchdog, "team_runtime_liveness", _stopped)
     task = team_stall_watchdog.schedule_team_stall_watchdog(
         "web", "s-kstopped", 1, liveness=lambda: 0, completion_signals=lambda: 0,
-        broadcast=_broadcast_recorder(broadcasted),
+        # 判死提案入裁决器（终态帧落入同一 broadcasted 断言面）
+        propose=_make_probe_arbiter(broadcasted).propose,
     )
     await asyncio.sleep(0.12)
     task.cancel()

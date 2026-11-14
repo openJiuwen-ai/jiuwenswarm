@@ -1024,17 +1024,6 @@ async def test_no_forced_terminal_when_pause_in_progress(monkeypatch) -> None:
     manager = _PauseInFlightManager()
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda _cid: manager)
 
-    forced_calls: list = []
-    real_emit = team_helpers._emit_forced_terminal_at_stream_end
-
-    async def _spy_emit(*args, **kwargs):
-        forced_calls.append((args, kwargs))
-        await real_emit(*args, **kwargs)
-
-    monkeypatch.setattr(
-        team_helpers, "_emit_forced_terminal_at_stream_end", _spy_emit
-    )
-
     def _fake_parse(chunk):
         if getattr(chunk, "type", None) == "team.member":
             return {
@@ -1052,12 +1041,11 @@ async def test_no_forced_terminal_when_pause_in_progress(monkeypatch) -> None:
     await team_helpers._consume_stream_with_query(
         "web", "sess-pause", SimpleNamespace(team_name="spec-team"), "问", round_id=1,
     )
-    # 强制补终态未被调用（pause 守卫在 settle 复核前短路）
-    assert forced_calls == []
     terminals = [
         e for e in manager.events
         if e.get("event_type") == "chat.processing_status" and e.get("is_complete") is True
     ]
+    # pause 守卫（裁决器 STREAM_END 前置闸）：零终态帧
     assert terminals == []
     # 回合挂起待续：不得标记轮次终态（下一条消息按 RESUME_FROM_PAUSE 新流处理）
     assert manager.is_stream_round_terminal("sess-pause") is False
@@ -1295,22 +1283,34 @@ async def test_final_emits_error_terminal_and_cascades_when_team_not_established
 @pytest.mark.asyncio
 async def test_forced_terminal_at_stream_end_carries_not_established_reason(monkeypatch) -> None:
     """流末强制补终态撞上团队从未建立：异常不得逃出（finally 路径），
-    且 error 带具体原因而非通用不明文案。"""
+    且 error 带具体原因而非通用不明文案。（裁决器 STREAM_END 口径）"""
+    from jiuwenswarm.server.runtime.agent_adapter.round_terminal_arbiter import (
+        ProposalSource,
+        RoundTerminalArbiter,
+    )
 
-    async def _raise(_cid, _sid):
+    async def _raise():
         raise TeamNotEstablishedError("team_info has no row for team 't'")
 
-    monkeypatch.setattr(team_helpers, "_team_round_settled", _raise)
     broadcasted: list[dict] = []
 
-    async def _rec(_cid, _sid, event):
+    async def _rec(event):
         broadcasted.append(event)
 
-    monkeypatch.setattr(team_helpers, "_broadcast_event", _rec)
-
-    await team_helpers._emit_forced_terminal_at_stream_end(
-        "web", "s1", 1, unrecovered_error=None
+    arbiter = RoundTerminalArbiter(
+        session_id="s1",
+        round_id=1,
+        broadcast=_rec,
+        settled_check=_raise,
+        has_stream_task=lambda: True,
+        is_pause_in_progress=lambda: False,
+        mark_round_terminal=lambda: None,
+        clear_round_terminal=lambda: None,
     )
+    # 本轮试过建团（否则四岔按「纯单干轮」软收口——旧测默认
+    # build_attempted=True 同语义）
+    arbiter.note_build_attempt()
+    await arbiter.propose({"source": ProposalSource.STREAM_END})
     assert len(broadcasted) == 1
     terminal = broadcasted[0]
     assert terminal["is_complete"] is True
@@ -1321,28 +1321,39 @@ async def test_forced_terminal_at_stream_end_carries_not_established_reason(monk
 @pytest.mark.asyncio
 async def test_forced_terminal_degraded_zero_content_carries_error(monkeypatch) -> None:
     """流末兜底 + 降级会话 + 零产出：不得补干净终态（空回合记已完成）——
-    error 复用降级告警详情（检视意见第四轮）。"""
+    error 复用降级告警详情（检视意见第四轮）。（裁决器 STREAM_END 口径）"""
     from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
         TeamNotEstablishedError,
     )
+    from jiuwenswarm.server.runtime.agent_adapter.round_terminal_arbiter import (
+        ProposalSource,
+        RoundTerminalArbiter,
+    )
 
-    async def _raise(_cid, _sid):
+    async def _raise():
         raise TeamNotEstablishedError("team_info has no row for team 't'")
 
-    monkeypatch.setattr(team_helpers, "_team_round_settled", _raise)
-    manager = _SettleRecordingManager()
-    manager.mark_session_degraded("s1", "[132001] build_team failed: db locked")
-    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _cid: manager)
     broadcasted: list[dict] = []
 
-    async def _rec(_cid, _sid, event):
+    async def _rec(event):
         broadcasted.append(event)
 
-    monkeypatch.setattr(team_helpers, "_broadcast_event", _rec)
+    def _build() -> RoundTerminalArbiter:
+        return RoundTerminalArbiter(
+            session_id="s1",
+            round_id=1,
+            broadcast=_rec,
+            settled_check=_raise,
+            has_stream_task=lambda: True,
+            is_pause_in_progress=lambda: False,
+            mark_round_terminal=lambda: None,
+            clear_round_terminal=lambda: None,
+            has_session_degraded=lambda: True,
+            session_degraded_detail=lambda: "[132001] build_team failed: db locked",
+        )
 
-    await team_helpers._emit_forced_terminal_at_stream_end(
-        "web", "s1", 1, unrecovered_error=None, round_produced_content=False
-    )
+    arbiter = _build()
+    await arbiter.propose({"source": ProposalSource.STREAM_END})
     assert len(broadcasted) == 1
     terminal = broadcasted[0]
     assert terminal["is_complete"] is True
@@ -1350,9 +1361,9 @@ async def test_forced_terminal_degraded_zero_content_carries_error(monkeypatch) 
 
     # 对照：降级会话但有实质产出 → 干净终态（不误伤正常降级轮）
     broadcasted.clear()
-    await team_helpers._emit_forced_terminal_at_stream_end(
-        "web", "s1", 1, unrecovered_error=None, round_produced_content=True
-    )
+    arbiter2 = _build()
+    arbiter2.note_leader_output("有内容")
+    await arbiter2.propose({"source": ProposalSource.STREAM_END})
     assert len(broadcasted) == 1
     assert "error" not in broadcasted[0]
 

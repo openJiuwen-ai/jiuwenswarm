@@ -8,7 +8,7 @@
 
 判定（每个窗口）：流存活 + 无任何流帧活动 + 零在途成员 + 有未终态任务
 + 窗口内无任务流转（updated_at 判活）+ DB 快照对照同样零在途，
-连续 _TEAM_STALL_CONFIRM_WINDOWS 个窗口成立 → 广播 processing_status 失败终态。
+连续 _TEAM_STALL_CONFIRM_WINDOWS 个窗口成立 → 向裁决器提交判死提案。
 
 背景：
 1. 在途口径含 starting/restarting——成员进程拉起/重启耗时（模型客户端初始化、
@@ -24,7 +24,7 @@
 退化方向与死亡探针一致：快照不可用/有任何活动迹象都按"不停摆"处理。
 跨轮存活：收尾信号变化不终止看门狗，只重置计数（长寿命流多轮复用）。
 
-broadcast 由调用方注入（team_helpers._broadcast_event），避免对本模块的
+propose 由调用方注入（team_helpers 侧裁决器的 propose），避免对本模块的
 循环依赖（team_helpers 是本模块的调用方）。
 """
 
@@ -58,8 +58,6 @@ MEMBER_IN_FLIGHT_STATUSES = frozenset({"busy", "starting", "restarting"})
 
 # 判定"成员仍在工作"的执行中状态（生命周期之外的旁证）
 MEMBER_IN_FLIGHT_EXEC_STATUSES = frozenset({"starting", "running", "completing"})
-
-BroadcastFn = Callable[[str | None, str, dict[str, Any]], Awaitable[None]]
 
 
 def _member_is_in_flight(member: dict[str, Any]) -> bool:
@@ -304,16 +302,16 @@ def schedule_team_stall_watchdog(
         *,
         liveness: Callable[[], int],
         completion_signals: Callable[[], int],
-        broadcast: BroadcastFn,
-        on_terminal: Callable[[], None] | None = None,
+        propose: Callable[[dict[str, Any]], Awaitable[None]],
 ) -> asyncio.Task:
     """启动停摆看门狗，返回任务供调用方持有/随流取消。
 
     liveness / completion_signals: 零参数可调用，分别返回本流已消费 chunk 数
     （停摆语义的活性口径是全量流帧——任何成员/团队事件都算活动，与死亡探针
     "只数 leader 帧"不同）与已广播的回合收尾信号数。
-    on_terminal: 判死终态广播后的零参数回调（调用方注入级联收流，本模块不
-    反向依赖 team_helpers，防循环依赖）。
+    propose: 裁决器提案入口（RoundTerminalArbiter.propose）——判死提案的
+    去重/发帧/级联收流由裁决器单点收口，本模块不反向
+    依赖 team_helpers/裁决器，防循环依赖。
     """
 
     async def _watchdog() -> None:
@@ -410,34 +408,26 @@ def schedule_team_stall_watchdog(
                     pending,
                     stall_windows,
                 )
-                await broadcast(
-                    channel_id,
-                    session_id,
+                # 判死提案交裁决器：去重/终态发帧/级联收流（追问按新首请求
+                # 走 RESUME_FROM_PAUSE，帧带新 request_id，前端归属链不断）
+                # 单点收口；source 字符串与裁决器决策矩阵对齐
+                outcome = await propose(
                     {
-                        "event_type": "chat.processing_status",
-                        "session_id": session_id,
-                        "rid": round_id,
-                        "is_processing": False,
-                        "is_complete": True,
+                        "source": "stall_watchdog",
                         "error": (
                             f"团队任务停摆：{pending} 个任务已下发但无成员执行，"
                             "请追问推动或重新发起"
                         ),
-                    },
+                    }
                 )
-                # 判死级联收流 + park 运行时（调用方注入），
-                # 追问才能按新首请求走 RESUME_FROM_PAUSE，而非进旧流断归属
-                if callable(on_terminal):
-                    try:
-                        on_terminal()
-                    except Exception:
-                        logger.debug(
-                            "[TeamStallWatchdog] on_terminal hook failed: "
-                            "session_id=%s",
-                            session_id,
-                            exc_info=True,
-                        )
-                return
+                # 提案被否决 ≠ 已收口：去重命中（终态帧已发出、信号已递增）
+                # 才可退出；若只是另一终态源瞬时占位后广播失败回滚
+                # （completion_signals 仍为 0），退出即零收口——重置计数
+                # 继续守后续窗口重试。
+                if outcome != "suppressed" or completion_signals() > 0:
+                    return
+                stall_windows = 0
+                continue
             except asyncio.CancelledError:
                 raise
             except Exception:
