@@ -1902,6 +1902,7 @@
   },
   "chat": {
     "recordingInProgress": "正在录音，点击停止后转写。",
+    "toolResultLabel": "工具结果",
     "duplexControls": {
       "sharingVideo": "WorkSwarm 正在接收共享画面",
       "screenOrWindow": "屏幕或窗口",
@@ -4473,6 +4474,8 @@
     "saveSkillSuccess": "保存成功",
     "saveSkillNoSession": "当前无活跃会话，无法保存 Skill",
     "saveSkillOverwriteConfirm": "{{message}}\n是否覆盖保存？",
+    "sessionTaskCompleted": "会话任务：【{{name}}】已完成",
+    "receiving": "正在接收中...",
     "fileTypeDocument": "文档",
     "fileTypeSpreadsheet": "电子表格",
     "fileTypePresentation": "演示文件",

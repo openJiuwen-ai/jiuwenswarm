@@ -1902,6 +1902,7 @@
   },
   "chat": {
     "recordingInProgress": "Recording. Select Stop to transcribe.",
+    "toolResultLabel": "Tool result",
     "duplexControls": {
       "sharingVideo": "WorkSwarm is receiving shared video",
       "screenOrWindow": "Screen or window",
@@ -4476,6 +4477,8 @@
     "saveSkillSuccess": "Saved successfully",
     "saveSkillNoSession": "No active conversation. The Skill cannot be saved.",
     "saveSkillOverwriteConfirm": "{{message}}\nOverwrite the existing Skill?",
+    "sessionTaskCompleted": "Session task: 【{{name}}】 completed",
+    "receiving": "Receiving...",
     "fileTypeDocument": "Document",
     "fileTypeSpreadsheet": "Spreadsheet",
     "fileTypePresentation": "Presentation",

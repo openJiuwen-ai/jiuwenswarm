@@ -1083,6 +1083,7 @@ async def test_apply_strict_success_and_idempotent(
     )
     assert status == 409
     assert payload["code"] == ERROR_SKILL_ALREADY_EXISTS
+    assert payload["message"] == "Skill ppt already exists. Confirm overwrite."
 
     # best_effort：同名冲突落 skipped，幂等无副作用
     content_type, form = _apply_form(package, mode="best_effort")

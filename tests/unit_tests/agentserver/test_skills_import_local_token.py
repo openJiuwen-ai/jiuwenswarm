@@ -329,6 +329,7 @@ async def test_import_local_overwrite_preserves_archive(
     with pytest.raises(SkillRpcError) as exc:
         await manager.handle_skills_import_local({"path": str(_zip_skill(tmp_path, name="document-review"))})
     assert exc.value.code == ERROR_SKILL_IMPORT_OVERWRITE_REQUIRED
+    assert exc.value.message == "Skill document-review already exists. Confirm overwrite."
 
     pkg = _zip_skill(tmp_path, name="document-review", filename="new.zip")
     # 更新包描述

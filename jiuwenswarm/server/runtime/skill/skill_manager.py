@@ -6188,7 +6188,7 @@ class SkillManager:
             if not force:
                 raise SkillRpcError(
                     conflict_code or ERROR_SKILL_IMPORT_OVERWRITE_REQUIRED,
-                    f"skill {skill_name} 已存在，需确认覆盖",
+                    f"Skill {skill_name} already exists. Confirm overwrite.",
                 )
             preserved_source = self._resolve_display_source_for_import(skill_name)
             try:
@@ -6575,7 +6575,7 @@ class SkillManager:
                 if not force:
                     raise SkillRpcError(
                         ERROR_SKILL_IMPORT_OVERWRITE_REQUIRED,
-                        f"skill {skill_name} 已存在，需确认覆盖（force=true）",
+                        f"Skill {skill_name} already exists. Confirm overwrite (force=true).",
                     )
                 # 单文件覆盖：保留 .archive，仅替换该 md
                 preserved_version = None
@@ -7014,13 +7014,11 @@ class SkillManager:
 
     @staticmethod
     def _apply_skill_display(meta: dict, skill_dir: Path) -> None:
-        """将 skill_display.md 展示字段合并进 meta（原地修改）.
+        """Apply UI metadata in the configured preferred language, in place.
 
-        - 始终填充 display_name_zh / description_zh（缺失时回退 SKILL.md 的 name / description）
-        - 英文字段可空
-        - 仅当 skill_display.md 提供了对应中文字段时，覆盖响应层的 display_name / description
-          （避免无展示文件时冲掉 ClawHub 等来源的 display_name）
-        - 本地已安装副本若缺少 skill_display.md，回退读取同名内置源中的展示文件
+        Keep both language variants in the response. Missing selected-language
+        fields preserve the original display name and description. Older local
+        installs can reuse display metadata from the corresponding builtin skill.
         """
         display = SkillManager._parse_skill_display_md(skill_dir)
         if not display:
@@ -7049,10 +7047,24 @@ class SkillManager:
         meta["display_name_en"] = display.get("display_name_en", "")
         meta["description_en"] = display.get("description_en", "")
 
-        if zh_name:
-            meta["display_name"] = zh_name
-        if zh_desc:
-            meta["description"] = zh_desc
+        if not display:
+            return
+
+        try:
+            from jiuwenswarm.common.config import get_config
+
+            config = get_config() or {}
+            language = str(config.get("preferred_language") or "en").strip().lower()
+        except Exception:
+            logger.debug("Unable to read skill display language; using English", exc_info=True)
+            language = "en"
+        language = "zh" if language.startswith("zh") or language == "cn" else "en"
+        display_name = display.get(f"display_name_{language}", "")
+        description = display.get(f"description_{language}", "")
+        if display_name:
+            meta["display_name"] = display_name
+        if description:
+            meta["description"] = description
 
     @staticmethod
     def _try_find_skill_file(directory: Path) -> Path | None:
@@ -10408,7 +10420,7 @@ class SkillManager:
             if item["existing"] and not overwrite:
                 raise SkillRpcError(
                     ERROR_SKILL_ALREADY_EXISTS,
-                    f"skill {item['name']} 已存在，需确认覆盖",
+                    f"Skill {item['name']} already exists. Confirm overwrite.",
                 )
             if item["builtin"]:
                 raise SkillRpcError(

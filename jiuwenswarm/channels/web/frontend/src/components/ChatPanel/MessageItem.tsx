@@ -854,7 +854,9 @@ export const MessageItem = memo(function MessageItem({
  	                   </svg>
  	                 </span>
  	                 <span className="font-mono text-sm font-medium text-text" data-testid="chat-panel-session-result-card-title">
- 	                   会话任务：【{description || '未知任务'}】已完成
+                       {t('chatUi.sessionTaskCompleted', {
+                         name: description || t('chatUi.toolGroup.sessionTaskUnknown'),
+                       })}
  	                 </span>
  	                 <span className="text-text-muted text-sm">
  	                   {isExpanded ? '▼' : '▶'}
@@ -865,7 +867,12 @@ export const MessageItem = memo(function MessageItem({
  	               <div className="mt-2 p-2 rounded-md bg-card border border-border" data-testid="chat-panel-session-result-card-details">
  	                 {description && (
  	                   <div className="mb-2" data-testid="chat-panel-session-result-card-description">
- 	                     <div className="font-mono text-xs text-text-muted mb-1">Description:</div>
+                       <div
+                         className="font-mono text-xs text-text-muted mb-1"
+                         data-testid="chat-panel-session-description-label"
+                       >
+                         {t('chatUi.toolGroup.sessionDescription')}:
+                       </div>
  	                     <pre className="font-mono text-sm text-text overflow-x-auto whitespace-pre-wrap">
  	                       {description}
  	                     </pre>
@@ -873,7 +880,12 @@ export const MessageItem = memo(function MessageItem({
  	                 )}
  	                 {result && (
  	                   <div data-testid="chat-panel-session-result-card-result">
- 	                     <div className="font-mono text-xs text-text-muted mb-1">Result:</div>
+                       <div
+                         className="font-mono text-xs text-text-muted mb-1"
+                         data-testid="chat-panel-session-result-label"
+                       >
+                         {t('chatUi.toolGroup.sessionResult')}:
+                       </div>
  	                     <pre className="font-mono text-sm text-text overflow-x-auto whitespace-pre-wrap max-h-60">
  	                       {result}
  	                     </pre>
@@ -981,7 +993,7 @@ export const MessageItem = memo(function MessageItem({
 	       return (
 	         <TeamLeaderPlainTextMessage
 	           member="team_leader"
-	           content={messageContent || (isStreaming ? '正在接收中...' : '')}
+	           content={messageContent || (isStreaming ? t('chatUi.receiving') : '')}
 	           messageId={id}
 	           timestamp={timestamp}
 	           isStreaming={isStreaming}
@@ -1004,7 +1016,7 @@ export const MessageItem = memo(function MessageItem({
 	         <TeamLeaderPlainTextMessage
 	           member={teamMemberName}
               timestamp={timestamp}
-	           content={content || (isStreaming ? '正在接收中...' : '')}
+	           content={content || (isStreaming ? t('chatUi.receiving') : '')}
 	           messageId={id}
 	           isStreaming={isStreaming}
 	           showAvatar={showAvatar}
@@ -1133,7 +1145,9 @@ export const MessageItem = memo(function MessageItem({
             data-state={isStreaming ? 'streaming' : 'final'}
           >
             {!isUser && message.presentation === 'tool_result' && (
-              <div className="chat-bubble__result-label">{t('chat.toolResultLabel', '工具结果')} · Jiuwen Core Agent</div>
+              <div className="chat-bubble__result-label" data-testid="chat-panel-tool-result-label">
+                {t('chat.toolResultLabel')} · Jiuwen Core Agent
+              </div>
             )}
             {isStreaming ? (
               isUser ? (
@@ -1526,10 +1540,14 @@ export function FileDownloadList({
             {isSkill ? (
               <div className="flex-shrink-0 flex items-center gap-2">
                 {saveSuccessIndex === index && (
-                  <span className="text-xs font-medium text-green-600 whitespace-nowrap">{t('chatUi.saveSkillSuccess')}</span>
+                  <span className="text-xs font-medium text-ok whitespace-nowrap" data-testid="chat-panel-skill-save-success">
+                    {t('chatUi.saveSkillSuccess')}
+                  </span>
                 )}
                 <button
                   type="button"
+                  data-testid="chat-panel-skill-save-btn"
+                  data-variant={isSaving ? 'saving' : isSaved ? 'saved' : 'idle'}
                   className={clsx(
                     'flex-shrink-0 px-3 h-8 rounded-lg flex items-center justify-center text-sm font-medium transition-colors',
                     expired || isSaved
