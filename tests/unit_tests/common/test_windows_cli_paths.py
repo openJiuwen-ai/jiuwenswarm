@@ -17,6 +17,18 @@ ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "scripts" / "preserve-windows-cli.ps1"
 
 
+def _inno_setup_compiler() -> Path | None:
+    candidates = [
+        Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Inno Setup 7/ISCC.exe",
+        Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Inno Setup 7/ISCC.exe",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs/Inno Setup 7/ISCC.exe",
+        Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Inno Setup 6/ISCC.exe",
+        Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Inno Setup 6/ISCC.exe",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs/Inno Setup 6/ISCC.exe",
+    ]
+    return next((path for path in candidates if path.is_file()), None)
+
+
 @pytest.fixture
 def windows_environment(tmp_path, monkeypatch):
     root = tmp_path / "data" / "runtime" / "npm"
@@ -920,8 +932,8 @@ def test_installers_preserve_before_delete_and_old_uninstall():
 @pytest.mark.skipif(sys.platform != "win32", reason="requires the Windows installer compiler")
 @pytest.mark.parametrize("name", ["installer.iss", "installer-electron.iss"])
 def test_inno_compiles_preservation_hooks(tmp_path, monkeypatch, name):
-    compiler = Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Inno Setup 6/ISCC.exe"
-    if not compiler.is_file():
+    compiler = _inno_setup_compiler()
+    if compiler is None:
         pytest.skip("Inno Setup is not installed")
     monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
     import platform

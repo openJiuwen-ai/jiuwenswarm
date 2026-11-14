@@ -498,6 +498,7 @@ if ($DoSign) {
 #    （resources\backend），冻结入口 jiuwenswarm_exe_entry.py 会在
 #    <后端 exe 目录>\runtime\ 下查找并前置 PATH，Agent 技能（ppt-creation
 #    等 node 脚本）因此不依赖用户机器的 Node.js。
+Import-Module (Join-Path $PSScriptRoot "build-inno-setup.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "build-runtimes.psm1") -Force
 $ElectronMinimumNodeVersion = [version]"22.12.0"
 $RuntimeSettings = Get-RuntimeBundleSettings -DefaultNodeVersion "v22.12.0"
@@ -921,36 +922,21 @@ if ($SkipInstaller) {
 # ── 6. Build installer (Inno Setup) ───────────────────────────────────────────
 Write-Host "`n[6/6] Building installer (Inno Setup)..." -ForegroundColor Yellow
 
-$IsccPaths = @(
-    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
-    "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
-    "C:\Program Files\Inno Setup 6\ISCC.exe"
-)
-$Iscc = $IsccPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+# Compiler discovery and the SHA-256-verified Inno Setup 7 bootstrap are shared
+# with build-exe.ps1 through build-inno-setup.psm1.
+$Iscc = Resolve-InnoSetupCompiler
 if (-not $Iscc) {
-    $Iscc = Get-Command iscc -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+    Install-InnoSetup7
+    $Iscc = Resolve-InnoSetupCompiler
+    if (-not $Iscc) {
+        throw "ISCC.exe was not found after installing Inno Setup 7. Install Inno Setup 7 and rerun the build."
+    }
 }
-if (-not $Iscc) {
-    $Winget = Get-Command winget -CommandType Application -ErrorAction SilentlyContinue
-    if (-not $Winget) {
-        throw "Inno Setup was not found and winget is unavailable. Install Inno Setup 6.7.1 and rerun the build."
-    }
-    # Use the versioned winget manifest and its installer SHA-256 verification.
-    # Never bypass a hash failure or execute an unverified direct download.
-    Write-Host "Installing Inno Setup 6.7.1 through winget..." -ForegroundColor Yellow
-    & $Winget.Source install --id JRSoftware.InnoSetup --exact --version 6.7.1 `
-        --source winget --scope user --silent --disable-interactivity `
-        --accept-package-agreements --accept-source-agreements
-    if ($LASTEXITCODE -ne 0) {
-        throw "Inno Setup installation failed (winget exit code: $LASTEXITCODE)."
-    }
-    $Iscc = $IsccPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $Iscc) {
-        $Iscc = Get-Command iscc -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
-    }
-    if (-not $Iscc) {
-        throw "winget completed but ISCC.exe was not found. Install Inno Setup 6.7.1 and rerun the build."
-    }
+if (-not (Test-InnoSetup7OrNewer -IsccPath $Iscc)) {
+    Write-Host (
+        "Warning: Inno Setup 7 was not detected; Inno Setup 6 cannot handle paths longer than " +
+        "MAX_PATH. Install Inno Setup 7 when the build tree uses long paths."
+    ) -ForegroundColor Yellow
 }
 
 Write-Host "Using ISCC: $Iscc" -ForegroundColor Gray

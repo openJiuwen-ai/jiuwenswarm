@@ -101,6 +101,7 @@ uv run pyinstaller scripts/jiuwenswarm.spec
 
 ## 给 Inno Setup 的产物约定
 
+- `scripts/build-exe.ps1` 优先使用 Inno Setup 7（支持扩展长度路径，不受 `MAX_PATH` 限制），未检测到时回退 Inno Setup 6；两者都未安装时会下载并校验 Inno Setup 7.1.1 x64 后静默安装。该发现与安装逻辑位于 `scripts/build-inno-setup.psm1`，与 Electron 构建共用
 - 安装源目录使用整个 `dist/jiuwenswarm/`
 - 主程序入口使用 `dist/jiuwenswarm/jiuwenswarm.exe`
 - 首次初始化可由安装完成页触发 `jiuwenswarm.exe init`
