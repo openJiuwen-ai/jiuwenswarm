@@ -22,6 +22,7 @@ if _KV_CACHE_MOD not in sys.modules:
 from e2a.models import E2AEnvelope
 from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
     HttpMethodNotHandled,
+    REST_ROUTES,
     assemble_rest_request,
 )
 
@@ -273,6 +274,63 @@ def test_session_pin_uses_the_dedicated_url() -> None:
     dispatch = Path(__file__).resolve().parents[3] / "jiuwenswarm" / "server" / "dispatch.py"
     text = dispatch.read_text(encoding="utf-8")
     assert "ReqMethod.SESSION_PIN: handle_gateway_adapter" in text
+
+
+def test_session_asset_routes_are_declared_rows() -> None:
+    assert REST_ROUTES["session.assets.list"] == ("GET", "/sessions/{session_id}/assets")
+    assert REST_ROUTES["session.assets.register"] == ("POST", "/sessions/{session_id}/assets")
+    assert REST_ROUTES["session.assets.rename"] == (
+        "PATCH",
+        "/sessions/{session_id}/assets/{asset_id}",
+    )
+
+    listed = assemble_rest_request(
+        E2AEnvelope(
+            request_id="req-1",
+            channel="web",
+            method="session.assets.list",
+            session_id="sess-1",
+            params={"session_id": "sess-1"},
+        ),
+        base_url="http://10.0.0.8:8766",
+    )
+    registered = assemble_rest_request(
+        E2AEnvelope(
+            request_id="req-1",
+            channel="web",
+            method="session.assets.register",
+            session_id="sess-1",
+            params={"session_id": "sess-1", "items": [{"path": "/tmp/a.pdf"}]},
+        ),
+        base_url="http://10.0.0.8:8766",
+    )
+    renamed = assemble_rest_request(
+        E2AEnvelope(
+            request_id="req-1",
+            channel="web",
+            method="session.assets.rename",
+            session_id="sess-1",
+            params={"session_id": "sess-1", "asset_id": "asset_ab", "name": "brief"},
+        ),
+        base_url="http://10.0.0.8:8766",
+    )
+    assert listed.verb == "GET"
+    assert listed.url == "http://10.0.0.8:8766/api/v1/sessions/sess-1/assets"
+    assert listed.json_body is None
+    assert registered.verb == "POST"
+    assert registered.url == listed.url
+    assert registered.json_body == {"items": [{"path": "/tmp/a.pdf"}]}
+    assert renamed.verb == "PATCH"
+    assert renamed.url == "http://10.0.0.8:8766/api/v1/sessions/sess-1/assets/asset_ab"
+    assert renamed.json_body == {"name": "brief"}
+    dispatch = Path(__file__).resolve().parents[3] / "jiuwenswarm" / "server" / "dispatch.py"
+    text = dispatch.read_text(encoding="utf-8")
+    for member in (
+        "SESSION_ASSETS_LIST",
+        "SESSION_ASSETS_REGISTER",
+        "SESSION_ASSETS_RENAME",
+    ):
+        assert f"ReqMethod.{member}: handle_session_assets_request" in text
 
 
 def test_session_delete_is_registered_for_rpc() -> None:
