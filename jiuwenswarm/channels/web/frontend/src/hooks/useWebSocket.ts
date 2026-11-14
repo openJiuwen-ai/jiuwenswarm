@@ -143,6 +143,7 @@ import {
   withUploadDocumentBlock,
 } from '../utils/documentMessage';
 import { useSubagentStore } from '../stores/subagentStore';
+import { useConnectorStore } from '../stores/connectorStore';
 import { expertTeamId, organizationOwnerStopTarget, selectedExpertTeamId, sendExpertMessage } from '../features/teamOrganization/conversation';
 import { isTeamOrganizationUiEnabled } from '../features/teamOrganization/featureConfig';
 import { useOrganizationEvents } from '../features/teamOrganization/useOrganizationEvents';
@@ -5119,6 +5120,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }),
       webClient.on('task.global_running', ({ payload }) => {
         useChatStore.getState().setGlobalTaskRunning(Boolean(payload?.running));
+      }),
+      // 后端 MCP 调用超时后确认连接回不来，会把 state.json 改成断开（issue #5711）。
+      // 网关压缩了这个事件的 payload（只剩 session_id/content），事件本身就是"去刷新"
+      // 信号：整表重拉，避免徽标停在"已连接"。
+      webClient.on('mcp.connection_changed', () => {
+        useConnectorStore.getState().refreshConnections();
       }),
       webClient.on('chat.error', ({ payload }) => {
         if (shouldIgnoreSessionOutput(payload)) return;

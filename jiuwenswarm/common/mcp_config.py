@@ -23,6 +23,13 @@ from jiuwenswarm.common.mcp_dynamic_token_patch import SSL_VERIFY_ENTRY_KEY
 
 _HTTP_MCP_TRANSPORTS = frozenset({"sse", "http", "streamable-http", "streamable_http"})
 
+#: Attribute stamped on the throwaway clients created just to list an MCP's
+#: tools (``fetch_mcp_tools_via_temp_connection``). The per-call MCP timeout
+#: patch reads it and never persists a lost connection for such a client: it
+#: is not the client the session registered, so its timeout must not detach a
+#: healthy MCP (opening a detail page would otherwise grey out the MCP).
+TEMP_PROBE_CLIENT_ATTR = "_jws_temp_probe"
+
 # Prewarm 是后台 fire-and-forget 任务，不阻塞任何服务路径。真正的连接
 # 失败由 probe 内部自保护（HTTP preflight 默认 10s、stdio SDK connect
 # 自行失败）兜底，所以这里不设激进超时——npx 首次安装要几十秒，砍超时
@@ -480,6 +487,9 @@ async def fetch_mcp_tools_via_temp_connection(entry: dict[str, Any]) -> list[dic
         logger.debug("[mcp-config] fetch skipped: invalid entry name=%r", name)
         return []
     client = ToolMgr._create_client(cfg)
+    # One-shot probe: see TEMP_PROBE_CLIENT_ATTR. Its list_tools timeout must
+    # not be reported as the MCP's connection being lost.
+    setattr(client, TEMP_PROBE_CLIENT_ATTR, True)
     try:
         connected = await client.connect()
         if not connected:

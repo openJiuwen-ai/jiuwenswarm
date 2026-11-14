@@ -119,6 +119,8 @@ interface ConnectorState {
     timeoutS?: number;
   }) => Promise<ConnectorConnectResponse | null>;
   saveCredentialsAndConnect: (name: string, tokens: Record<string, string>) => Promise<ConnectorConnectResponse | null>;
+  // 后端推送 mcp.connection_changed 时调用：整表重拉 MCP 列表并清详情缓存。
+  refreshConnections: () => void;
   clearError: () => void;
   clearSuccess: () => void;
   clearNotice: () => void;
@@ -669,6 +671,17 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
       scheduleQuickRefresh(get);
       return null;
     }
+  },
+
+  // 后端发现某个 MCP 的连接真的回不来了（超时断开后懒重连被放弃 / 客户端被拆掉），
+  // 会持久化状态并推一条 mcp.connection_changed。网关会把非白名单事件的 payload 压成
+  // {session_id, content}，所以这里拿不到 name，只能整表重拉：详情缓存整体失效，两份
+  // 原始列表按服务端结果刷新（loadList 自带按 filter 的序号防乱序，见其注释）。
+  // 不做单条乐观改写——状态机只有后端权威。
+  refreshConnections: () => {
+    set({ detailCache: {} });
+    void get().loadList('builtin', { silent: true });
+    void get().loadList('local', { silent: true });
   },
 
   clearError: () => set({ error: null }),

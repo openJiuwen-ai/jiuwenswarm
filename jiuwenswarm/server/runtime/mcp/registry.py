@@ -1464,6 +1464,63 @@ def disconnect_mcp(name: str) -> dict[str, Any]:
     return removed if removed is not None else {"name": n, "removed": False}
 
 
+def mark_mcp_connection_lost(name: str) -> dict[str, Any] | None:
+    """Persist the state of an MCP whose transport really cannot come back.
+
+    Called from the per-call MCP timeout patch (``call_timeout_patch``), and
+    only on evidence the connection is gone for good — the patch tore the
+    client down (SSE) or the lazy reconnect was abandoned ("Not connected").
+    A plain slow call must never land here: ``state.json`` drives both the
+    frontend badge and the registration/skill surfaces, so a false flip
+    detaches a healthy MCP from the session.
+
+    Idempotent: only a record currently ``connected`` is flipped. The target
+    value mirrors each kind's existing "no live server" value so the entry
+    stays visible and re-connectable:
+
+    * marketplace package -> ``disconnected`` (same degrade value as
+      ``interface_deep`` uses when a startup register fails)
+    * custom MCP -> ``registered`` (same soft-disconnect value as
+      :func:`disconnect_mcp`, so it stays listed under "my MCPs")
+
+    Returns the event fields for the caller's log/notification, or ``None``
+    when there was nothing to flip (absent record, already lost, or never
+    connected — e.g. a config.yaml-only MCP or one still ``connecting``).
+    """
+    n = str(name or "").strip()
+    if not n:
+        return None
+    from jiuwenswarm.server.runtime.mcp.state_store import (
+        get_mcp_record,
+        set_mcp_state,
+    )
+    rec = get_mcp_record(n)
+    if not isinstance(rec, dict) or str(rec.get("state", "") or "").strip() != "connected":
+        return None
+    # A damaged package manifest can make resolution raise; the soft custom
+    # value keeps the entry listed and re-connectable, which is what we want
+    # when the kind cannot be determined (see is_stale_marketplace_record).
+    try:
+        is_marketplace = _resolve_package(n) is not None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[mcp.registry] package resolution for '%s' failed (%s); "
+            "treating it as a custom MCP",
+            n,
+            exc,
+        )
+        is_marketplace = False
+    lost_state = "disconnected" if is_marketplace else "registered"
+    set_mcp_state(n, state=lost_state)
+    logger.warning(
+        "[mcp.registry] '%s' marked %s: the MCP call timeout left the "
+        "transport unrecoverable (persisted state was 'connected')",
+        n,
+        lost_state,
+    )
+    return {"name": n, "connection_state": "disconnected", "persisted_state": lost_state}
+
+
 def register_custom_mcp(name: str, config: dict[str, Any]) -> dict[str, Any]:
     """Register a user-defined MCP server into state.json.
 
@@ -1609,6 +1666,7 @@ __all__ = [
     "build_config_entry",
     "connect_mcp",
     "disconnect_mcp",
+    "mark_mcp_connection_lost",
     "complete_cli_auth",
     "complete_oauth_callback",
     "complete_host_oauth_auth",
