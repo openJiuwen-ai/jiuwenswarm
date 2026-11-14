@@ -1469,6 +1469,19 @@ _PLUGIN_ROUTES: dict[ReqMethod, str] = {
 }
 
 # Catalog + lifecycle: method → package_manager callable.
+# One install RPC (expert, plugin, expert team) walks two serial Hub requests
+# plus a package download and extraction, so a slow link can legitimately take
+# minutes. All three kinds share this cap, and the frontend budgets the same
+# three kinds with ``INSTALL_REQUEST_TIMEOUT_MS`` (240s), so the server always
+# answers with a structured result instead of letting the client timer win
+# (#6426).
+#
+# 220s covers the internal floor of two 60s Hub calls plus a bounded download
+# (``_MAX_DOWNLOAD_BYTES``) and extraction. That floor grows if a deployment
+# raises ``TEAM_SKILLS_HUB_TIMEOUT`` (hub_client.py) above its 60s default: a
+# value of N seconds pushes the worst case to 2N plus the download, which can
+# exceed this cap. Keep the cap above 2N + download time when tuning it.
+_EQUIPMENT_INSTALL_TIMEOUT_SECONDS = 220
 _PACKAGE_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.AGENT_GROUPS_LIST: "list_agent_groups",
     ReqMethod.AGENT_GROUPS_SHOW: "show_agent_group",
@@ -3087,7 +3100,10 @@ class JiuWenSwarm:
             elif method == ReqMethod.AGENT_GROUPS_IMPORT_LOCAL:
                 payload = package_manager.import_agent_group(params)
             elif method == ReqMethod.AGENT_GROUPS_INSTALL:
-                await package_manager.install_agent_group_with_hub(params)
+                await asyncio.wait_for(
+                    package_manager.install_agent_group_with_hub(params),
+                    timeout=_EQUIPMENT_INSTALL_TIMEOUT_SECONDS,
+                )
                 payload = {}
             elif method == ReqMethod.AGENT_GROUPS_UNINSTALL:
                 from jiuwenswarm.server.runtime.organization_packages import (
@@ -3133,7 +3149,7 @@ class JiuWenSwarm:
             elif method == ReqMethod.AGENT_TEMPLATES_INSTALL:
                 ok, payload = await asyncio.wait_for(
                     package_manager.install_equipment_from_hub_gated("agent_templates", params),
-                    timeout=120,
+                    timeout=_EQUIPMENT_INSTALL_TIMEOUT_SECONDS,
                 )
                 if not ok:
                     return AgentResponse(
@@ -3149,7 +3165,7 @@ class JiuWenSwarm:
                         "plugin_packages", params,
                         before_replace=self._prepare_live_plugin_replacement,
                     ),
-                    timeout=120,
+                    timeout=_EQUIPMENT_INSTALL_TIMEOUT_SECONDS,
                 )
                 if not ok:
                     return AgentResponse(

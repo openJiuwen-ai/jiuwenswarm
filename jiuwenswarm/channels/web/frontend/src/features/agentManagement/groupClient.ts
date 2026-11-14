@@ -1,5 +1,6 @@
 import { webRequest } from '../../services/webClient';
 import { withCatalogCache } from '../catalogCache';
+import { INSTALL_REQUEST_TIMEOUT_MS } from '../../services/installTimeouts';
 import { getAgentManagementLocale } from './locale';
 import {
   normalizeAgentGroupDetail,
@@ -120,7 +121,10 @@ export function createLiveAgentGroupManagementClient(): AgentGroupManagementClie
     },
     async installGroup(id) {
       try {
-        await webRequest('agent_groups.install', { id });
+        // Same budget as an expert install: a Hub group install walks two
+        // serial Hub requests plus a download, so the 15s default timeout
+        // made it look failed while the server kept installing (#6426).
+        await webRequest('agent_groups.install', { id }, { timeoutMs: INSTALL_REQUEST_TIMEOUT_MS });
       } catch (error) {
         return rethrowGroupError(error);
       }

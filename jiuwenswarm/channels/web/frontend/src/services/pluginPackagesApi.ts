@@ -1,4 +1,5 @@
 import { withCatalogCache, type CatalogItems, type CatalogCacheMetadata } from '../features/catalogCache';
+import { INSTALL_REQUEST_TIMEOUT_MS } from './installTimeouts';
 import { webRequest } from './webClient';
 import type { WebError } from '../types/websocket';
 import type {
@@ -178,7 +179,10 @@ export const pluginPackagesApi = {
   // 续跑；不带 pending_connectors 的纯硬失败原样上抛。
   install: async (id: string, options: PluginInstallOptions = {}): Promise<void> => {
     try {
-      await webRequest<void>('plugin_packages.install', { id, ...options }, { timeoutMs: 180000 });
+      // Same install budget as expert / expert-team installs: the server caps
+      // a plugin install at the same 220s, and a smaller client budget would
+      // time the request out while the server keeps installing (#6426).
+      await webRequest<void>('plugin_packages.install', { id, ...options }, { timeoutMs: INSTALL_REQUEST_TIMEOUT_MS });
     } catch (error) {
       const payload = (error as WebError | undefined)?.payload as
         { error_code?: string; conflict?: PluginReplacementConflict } | undefined;
