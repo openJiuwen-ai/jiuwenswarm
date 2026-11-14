@@ -130,7 +130,10 @@ async def test_tool_context_snapshot_survives_new_input_and_parallel_calls(monke
     release = asyncio.Event()
 
     async def call(turn, failure):
-        ctx = SimpleNamespace(inputs=SimpleNamespace(tool_name="run_team"), extra={turns.TURN_KEY: turn})
+        ctx = SimpleNamespace(
+            inputs=SimpleNamespace(tool_name="run_team", tool_result={"success": True, "data": {"accepted": True}}),
+            extra={turns.TURN_KEY: turn},
+        )
         await rail.before_tool_call(ctx)
         if turn is a:
             entered.set()
@@ -271,3 +274,93 @@ def test_terminal_plan_never_holds_later_organization(monkeypatch, status):
     monkeypatch.setattr(bootstrap, "recorded_organization_plan", lambda *_: {"status": status})
     monkeypatch.setattr(bootstrap, "organization_plan_accepted", lambda *_: False)
     assert not turns._unaccepted_organization(turns.GroupTurn("session", "business", "old", "organization"))
+
+
+def inbound(message_id):
+    from openjiuwen.agent_teams.inbound_render import render_inbound
+
+    return render_inbound(content='User request, not routing metadata', sender='user',
+                          message_id=message_id, msg_type='broadcast', time_info='2026-11-09 16:05')
+
+
+async def mailbox_backend(tmp_path, monkeypatch, rows):
+    from unittest.mock import AsyncMock
+    from openjiuwen.agent_teams.group_chat import handler
+
+    source = backend(tmp_path, rows)
+    conversation = await source.group_conversation()
+    conversation.session_id = 'session'
+    source.group_conversation = AsyncMock(return_value=conversation)
+    source.team_name = 'outer-team'
+    messages = [SimpleNamespace(
+        message_id=r['message_id'], team_name=source.team_name, from_member_name='user',
+        broadcast=True, content='User request', timestamp=100 + i,
+        meta=json.dumps(dict(type='group_chat', client_message_id=r['client_message_id'],
+                             mentions=r['mentions'], sender_name='user', attachments=[])),
+    ) for i, r in enumerate(rows)]
+    source.db = SimpleNamespace(message=SimpleNamespace(
+        get_message=AsyncMock(side_effect=lambda key: next((m for m in messages if m.message_id == key), None)),
+        get_broadcast_read_at=AsyncMock(return_value=0),
+    ))
+    source.message_manager = object()
+    source.group_chat_spec = SimpleNamespace(language='cn')
+    monkeypatch.setattr(handler, 'sync_history', AsyncMock(return_value=[
+        handler.conversation_message(m, 'session') for m in messages
+    ]))
+    return source, messages
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mentions,expected', [
+    (['business', 'architecture'], 'organization'),
+    (['business'], 'direct'), (['writer'], 'direct'),
+    (['business', 'writer'], 'direct'),
+    (['business', 'architecture', 'writer'], 'direct'),
+])
+async def test_public_mailbox_envelope_uses_verified_mentions(tmp_path, monkeypatch, mentions, expected):
+    source, _ = await mailbox_backend(tmp_path, monkeypatch, [row('a', mentions), row('later')])
+    member = mentions[0]
+    ctx = AgentCallbackContext(agent=None, inputs=UserMessageInputs(parts=[inbound('a')]))
+    await turns.bind_consumed_group_turn(ctx, source, 'session', member, GROUP)
+    turn = ctx.extra[turns.TURN_KEY]
+    assert (turn.client_message_id, turn.route) == ('client-a', expected)
+    assert turns.is_group_notice(ctx.inputs.parts[0])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('bad', ['missing', 'team', 'sender', 'broadcast', 'meta', 'mentions', 'client'])
+async def test_unverified_mailbox_cannot_reuse_old_binding(tmp_path, monkeypatch, bad):
+    source, messages = await mailbox_backend(tmp_path, monkeypatch, [row('a')])
+    message = messages[0]
+    if bad == 'team':
+        message.team_name = 'other-team'
+    elif bad == 'sender':
+        message.from_member_name = 'peer'
+    elif bad == 'broadcast':
+        message.broadcast = False
+    elif bad in {'meta', 'mentions', 'client'}:
+        meta = json.loads(message.meta)
+        if bad == 'meta':
+            meta['type'] = 'ordinary'
+        elif bad == 'mentions':
+            meta['mentions'] = ['writer']
+        else:
+            meta['client_message_id'] = None
+        message.meta = json.dumps(meta)
+    ctx = AgentCallbackContext(agent=None, inputs=UserMessageInputs(parts=[inbound('missing' if bad == 'missing' else 'a')]))
+    ctx.extra[turns.TURN_KEY] = turns.GroupTurn('session', 'business', 'old', 'organization')
+    await turns.bind_consumed_group_turn(ctx, source, 'session', 'business', GROUP)
+    assert ctx.extra[turns.TURN_KEY].route == 'unknown'
+    assert ctx.extra[turns.TURN_KEY].client_message_id is None
+
+
+@pytest.mark.asyncio
+async def test_mailbox_organizations_keep_batch_order_and_do_not_parse_body(tmp_path, monkeypatch):
+    source, _ = await mailbox_backend(tmp_path, monkeypatch, [row('a'), row('b')])
+    ctx = AgentCallbackContext(agent=None, inputs=UserMessageInputs(parts=[inbound('a'), notice('b')]))
+    await turns.bind_consumed_group_turn(ctx, source, 'session', 'business', GROUP)
+    assert ctx.extra[turns.TURN_KEY].client_message_id == 'client-a'
+    assert ctx.drain_steering() == [notice('b')]
+    ctx.inputs = UserMessageInputs(parts=['An internal reminder quoting:\n' + inbound('b')])
+    await turns.bind_consumed_group_turn(ctx, source, 'session', 'business', GROUP)
+    assert ctx.extra[turns.TURN_KEY].client_message_id == 'client-a'

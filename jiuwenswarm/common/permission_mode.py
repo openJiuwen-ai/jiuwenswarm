@@ -2,8 +2,8 @@
 
 """Task permission mode checks shared by Gateway config and the agent runtime.
 
-These helpers only read the ``permissions.mode`` string. Runtime normalization
-stays in ``jiuwenswarm.agents``.
+These helpers project permission settings without loading Runtime configuration.
+Runtime normalization stays in ``jiuwenswarm.agents``.
 """
 
 from __future__ import annotations
@@ -33,6 +33,21 @@ def resolve_permission_runtime_mode(permission_config: Mapping[str, Any]) -> str
 def is_auto_permission_mode(permission_config: Mapping[str, Any]) -> bool:
     """Return whether task-level auto permission mode is selected."""
     return resolve_permission_runtime_mode(permission_config) == AUTO_PERMISSION_MODE
+
+
+def permission_profile(permission_config: object) -> str:
+    """Return the Web permission profile shared by config reads and writes."""
+    if not isinstance(permission_config, dict) or permission_config.get("enabled") is not True:
+        return "full_access"
+    return "automatic" if is_auto_permission_mode(permission_config) else "default"
+
+
+def canonical_permission_facade(profile: str) -> dict[str, str]:
+    """Project both Web permission fields from the same canonical profile."""
+    return {
+        "permissions_profile": profile,
+        "permissions_enabled": "false" if profile == "full_access" else "true",
+    }
 
 
 def is_permission_boundary_enabled(permission_config: Mapping[str, Any]) -> bool:

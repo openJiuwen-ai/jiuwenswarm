@@ -288,6 +288,7 @@ for lazy_package in (
     "jiuwenswarm.agents.harness.common.rails",
     "jiuwenswarm.common.auth",
     "jiuwenswarm.agents.swarm",
+    "jiuwenswarm.server.client_attachments",
     # An app template's rail file imports its rail (jiuwenswarm.office.rails) at load time.
     "jiuwenswarm.office",
 ):

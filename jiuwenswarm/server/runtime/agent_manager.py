@@ -26,7 +26,7 @@ from agent_gateway.common.mode_matrix import (
     resolve_new_canonical_mode,
 )
 
-from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
+from e2a.acp.protocol import build_acp_initialize_result
 from jiuwenswarm.common.config import get_available_models, get_config
 from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (

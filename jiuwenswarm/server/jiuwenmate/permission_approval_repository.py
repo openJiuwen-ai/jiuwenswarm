@@ -298,6 +298,11 @@ class PermissionApprovalRepository(SQLiteStore):
             rows = conn.execute(query, values).fetchall()
         return [self._approval(row) for row in rows]
 
+    def for_conversation(self, namespace_id: str, *, channel: str, target_id: str) -> list[PermissionApproval]:
+        """Count active route owners before accepting an unaddressed group shortcut."""
+        return [item for item in self.pending(namespace_id)
+                if item.route is not None and (item.route.channel, item.route.target_id) == (channel, target_id)]
+
     def for_route(
         self, namespace_id: str, agent_id: str, *, principal_ref: str | None,
         channel: str, app_id: str, target_id: str,

@@ -27,6 +27,7 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
     set_default_model_provider_in_entries,
     validate_affinity_invariant,
 )
+from jiuwenswarm.common.observability_config import migrate_legacy_observability_config
 from jiuwenswarm.common.security.base_crypto import get_crypto_provider
 from jiuwenswarm.common.runtime_model_config import apply_runtime_model_config
 from jiuwenswarm.common.utils import (
@@ -338,10 +339,9 @@ def get_skill_evolution_enabled(config: dict[str, Any] | None) -> bool:
 
 
 def get_symphony_evolution_enabled(config: dict[str, Any] | None) -> bool:
-    """Return whether both Symphony and its evolution switch are enabled."""
+    """Read the persisted Discover SkillPack setting without deployment overrides."""
 
     from jiuwenswarm.common.symphony_config import (
-        resolve_symphony_enabled,
         resolve_symphony_evolution_enabled,
     )
 
@@ -358,10 +358,7 @@ def get_symphony_evolution_enabled(config: dict[str, Any] | None) -> bool:
     flow_enabled = flow.get("enabled") if isinstance(flow, dict) else None
     if flow_enabled is None:
         flow_enabled = evolution.get("enabled")
-    return (
-        resolve_symphony_enabled(symphony.get("enabled"))
-        and resolve_symphony_evolution_enabled(flow_enabled)
-    )
+    return resolve_symphony_evolution_enabled(flow_enabled)
 
 
 def coerce_config_bool(value: Any, default: bool) -> bool:
@@ -1094,13 +1091,8 @@ def update_enable_free_models_in_config(value: bool) -> None:
 
 
 def update_proactive_recommendation_in_config(updates: dict[str, Any]) -> None:
-    """更新 proactive_recommendation 配置段并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "proactive_recommendation" not in data or data["proactive_recommendation"] is None:
-        data["proactive_recommendation"] = {}
-    section = data["proactive_recommendation"]
-    _merge_config_dict(section, updates)
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    """No-op: proactive recommendation settings removed."""
+    _ = updates
 
 
 def update_trajectory_ui_in_config(enabled: bool) -> None:
@@ -1950,6 +1942,60 @@ def _merge_model_update(current: dict[str, Any], update: dict[str, Any]) -> dict
     return merged
 
 
+def _remove_initial_model_placeholder(models: dict[str, Any], saved: dict[str, Any]) -> None:
+    """Remove the shipped example when a real model is added."""
+    from jiuwenswarm.common.model_config_validation import (
+        PLACEHOLDER_API_BASES,
+        PLACEHOLDER_API_KEYS,
+        PLACEHOLDER_MODEL_NAMES,
+        is_placeholder_model_entry,
+    )
+
+    client = resolve_env_vars(saved.get("model_client_config") or {})
+    if not str(client.get("model_name") or "").strip() or is_placeholder_model_entry(client):
+        return
+
+    referenced_ids = set()
+    for group in models.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        for route in group.get("routes") or []:
+            if isinstance(route, dict):
+                referenced_ids.add(str(route.get("model_id") or "").strip())
+
+    remaining = []
+    removed_default = False
+    # Unset template variables resolve to empty strings.
+    placeholder_api_bases = PLACEHOLDER_API_BASES | {""}
+    placeholder_api_keys = PLACEHOLDER_API_KEYS | {""}
+    for current in models["defaults"]:
+        # Preserve existing model group routes, even if they point at the example.
+        if current is saved or current.get("model_id") in referenced_ids:
+            remaining.append(current)
+            continue
+        raw_client = current.get("model_client_config")
+        if not isinstance(raw_client, dict):
+            remaining.append(current)
+            continue
+        config = resolve_env_vars(raw_client)
+        model_name = str(config.get("model_name") or "").strip()
+        api_base = str(config.get("api_base") or "").strip()
+        api_key = str(config.get("api_key") or "").strip()
+        if (
+            model_name in PLACEHOLDER_MODEL_NAMES
+            and api_base in placeholder_api_bases
+            and api_key in placeholder_api_keys
+        ):
+            removed_default = removed_default or current.get("is_default") is True
+        else:
+            remaining.append(current)
+
+    if len(remaining) != len(models["defaults"]):
+        models["defaults"] = remaining
+        if removed_default and not any(current.get("is_default") is True for current in remaining):
+            saved["is_default"] = True
+
+
 def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
     saved = _normalize_model_entry(entry)
     model_config = saved.get("model_config_obj")
@@ -1976,10 +2022,11 @@ def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
                 defaults[index] = saved
                 break
         else:
-            _protect_model_key(saved, {})
             defaults.append(saved)
+            _remove_initial_model_placeholder(candidate, saved)
+            _protect_model_key(saved, {})
         if entry.get("is_default") is True:
-            for current in defaults:
+            for current in candidate["defaults"]:
                 current["is_default"] = current["model_id"] == saved["model_id"]
         _validate_model_candidate(candidate)
         return data
@@ -3646,6 +3693,10 @@ def migrate_config_from_template(
         # 必须在 _deep_merge 之前执行，否则旧子节点会被静默丢弃而非迁移。
         _migrate_legacy_agent_submode_memory(user_data)
         _migrate_legacy_kv_cache_affinity_config(user_data)
+        # team_observability / agent_observability -> observability.{team,agent}
+        # 必须在 _deep_merge 之前执行：合并会先按模板塞入默认的 observability 段，
+        # 旧段里用户改过的 exporter / endpoint 等就会被模板默认值挡住。
+        legacy_observability_migrated = migrate_legacy_observability_config(user_data)
 
         # Deep merge: template provides defaults, user values preserved.
         # user_data is updated in place, which keeps comments and formatting.
@@ -3659,6 +3710,8 @@ def migrate_config_from_template(
                 # Environment-driven markers can resolve differently after a child reloads its dotenv files.
                 user_data["extensions"] = {}
         changes = _deep_merge(template_data, user_data, prune=prune)
+        if legacy_observability_migrated:
+            changes += 1
 
         # Guard against an empty result overwriting a valid user config
         if not user_data:
@@ -3726,10 +3779,36 @@ def add_or_update_model_in_config(name: str, model_config: dict[str, Any]) -> No
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def _get_agentos_model(models: dict[str, Any], name: str) -> dict[str, Any] | None:
+    """在 models.agentos 备份模型中按 model_name/alias 查找。
+
+    仅 AgentOS 运行时生效：那类部署会把可用模型放在 models.agentos；
+    其他部署里该段只是只读备份，不参与按名校验。
+    """
+    from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
+
+    if not is_agentos_runtime():
+        return None
+    agentos = models.get("agentos")
+    if not isinstance(agentos, list) or not name:
+        return None
+    for entry in agentos:
+        if not isinstance(entry, dict):
+            continue
+        mcc = entry.get("model_client_config") or {}
+        entry_name = str(resolve_env_vars(mcc.get("model_name")) or "").strip()
+        alias = str(resolve_env_vars(entry.get("alias")) or "").strip()
+        if name in (entry_name, alias):
+            return entry
+    return None
+
+
 def get_model_config(name: str, index: int | None = None) -> dict[str, Any] | None:
     """获取指定模型的原始配置（不解析环境变量）。
 
-    优先从 models.defaults 列表中按 model_name 查找。
+    优先从 models.defaults 列表中按 model_name 查找；AgentOS 运行时未命中时
+    回退到 models.agentos（该部署把可用模型放在这里，仅扫 defaults 会让 cron
+    等按名校验的调用方误报 Unknown model）。
     当存在同名模型时，可通过 index 参数指定第几个匹配项（0-based）。
     若 index 为 None，返回 is_default=True 的条目；若无则返回第一个匹配。
     """
@@ -3752,6 +3831,9 @@ def get_model_config(name: str, index: int | None = None) -> dict[str, Any] | No
                 alias = entry.get("alias", "")
                 if alias and resolve_env_vars(str(alias)) == name:
                     return entry
+            agentos_entry = _get_agentos_model(models, name)
+            if agentos_entry is not None:
+                return agentos_entry
             return models.get(name) if name in models else None
         if index is not None:
             for pos, entry in matches:
@@ -3762,6 +3844,9 @@ def get_model_config(name: str, index: int | None = None) -> dict[str, Any] | No
             if entry.get("is_default") is True:
                 return entry
         return matches[0][1]
+    agentos_entry = _get_agentos_model(models, name)
+    if agentos_entry is not None:
+        return agentos_entry
     return models.get(name) if name in models else None
 
 
@@ -3927,6 +4012,37 @@ def get_sandbox_runtime() -> dict[str, Any]:
     if "enabled" not in raw:
         raw["enabled"] = resolve_sandbox_enabled(sandbox)
     return _ensure_sandbox_runtime_shape(raw)
+
+
+def get_sandbox_team_fail_closed() -> bool:
+    """Read ``sandbox.team_fail_closed`` (default False).
+
+    When True, a distributed teammate whose local sandbox is unavailable is
+    rejected at bootstrap instead of degrading to LOCAL execution (design
+    D-20261105-1041 KD7): security-sensitive deployments refuse unsandboxed
+    remote members rather than warning.
+    """
+    cfg = get_config() or {}
+    sandbox = cfg.get("sandbox")
+    if not isinstance(sandbox, dict):
+        return False
+    return coerce_config_bool(sandbox.get("team_fail_closed"), False)
+
+
+def get_sandbox_network_mode() -> str:
+    """Read ``sandbox.network_mode`` (default empty = do not forward).
+
+    When set (e.g. ``host``), the sandbox card's client policy fragment
+    carries ``network.mode`` explicitly: jiuwenbox's append-merge only keeps
+    fields present in the fragment, so a root-policy-only network mode is
+    lost after merge and creation falls back to isolated networking — which
+    needs ``ip netns`` privileges the host may not have.
+    """
+    cfg = get_config() or {}
+    sandbox = cfg.get("sandbox")
+    if not isinstance(sandbox, dict):
+        return ""
+    return str(sandbox.get("network_mode") or "").strip().lower()
 
 
 # ``preserve_file_sharing_mode`` 当前合法取值集合 = ``{"mount"}``; 空值表示

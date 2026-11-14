@@ -29,7 +29,7 @@ const mentions = evaluate(
 );
 
 function fixture() {
-  const calls = { requests: [], navigations: [], errors: [] };
+  const calls = { requests: [], navigations: [], errors: [], compose: [] };
   const chat = {
     activeSessionId: 'new', runtimes: { new: { messages: [] } },
     ensureRuntime(id) { return this.runtimes[id] ??= { messages: [] }; },
@@ -46,7 +46,13 @@ function fixture() {
     ensureRuntime(id) { return this.runtimes[id] ??= { mode: 'agent' }; },
     getRuntime(id) { return this.runtimes[id]; },
     setMode(id, mode) { this.ensureRuntime(id).mode = mode; },
-    setSelectedModelName(id, name) { this.runtimes[id].selectedModelName = name; },
+    setSelectedModelName(id, name) { this.ensureRuntime(id).selectedModelName = name; },
+    setSelectedModelSelection(id, selection) {
+      const runtime = this.ensureRuntime(id);
+      runtime.selectedModelSelection = selection;
+      const model = this.chatAvailableModels.find((entry) => entry.model_id === selection?.id);
+      if (model) runtime.selectedModelName = model.model_name;
+    },
   };
   const graph = { graph_id: 'design-graph', metadata: { session_id: 'design-session' } };
   const workspace = {
@@ -63,11 +69,19 @@ function fixture() {
     ...mentions,
     designerWorkspaceClient: {
       async createSession() { return { session: { session_id: 'design-session' } }; },
-      async composeSession() { return { graph, messages: [] }; },
+      async composeSession(params) {
+        calls.compose.push(params);
+        return { graph, messages: [] };
+      },
     },
     useDesignerStore: { getState: () => ({ applyGraph() {}, async flushSave() {} }) },
     useDesignerChatStore: { getState: () => ({ replaceMessages() {} }) },
-    buildConversationModelPayload: ({ selectedModelName }) => ({ model_name: selectedModelName }),
+    buildConversationModelPayload: ({ selectedModelName, selectedModelSelection }) => ({
+      ...(selectedModelSelection?.type === 'model' && selectedModelSelection.id
+        ? { model_selection: { type: 'model', id: selectedModelSelection.id } }
+        : {}),
+      ...(selectedModelName ? { model_name: selectedModelName } : {}),
+    }),
     flushApplicationConversationHistory: async () => {},
     webClient: { async request(method, params) { calls.requests.push({ method, params }); } },
   };
@@ -126,6 +140,33 @@ test('a compose failure does not activate the new session or send a leader round
   await assert.rejects(entry.submitDesignComposer({ prompt: 'create' }), /compose failed/);
   assert.equal(chat.activeSessionId, 'new');
   assert.deepEqual(calls.requests, []);
+});
+
+test('a shared model name keeps the landing page stable id after compose clears the runtime', async () => {
+  const { calls, sessions, context, entry } = fixture();
+  sessions.chatAvailableModels = [
+    { model_id: 'mdl-default', model_name: 'shared', alias: 'default-alias' },
+    { model_id: 'mdl-picked', model_name: 'shared', alias: 'picked-alias' },
+  ];
+  sessions.defaultModelName = 'shared';
+  sessions.runtimes.new.selectedModelName = 'shared';
+  sessions.runtimes.new.selectedModelSelection = { type: 'model', id: 'mdl-picked' };
+  context.resolveChatModelSelection = () => sessions.chatAvailableModels[0];
+  const compose = context.designerWorkspaceClient.composeSession;
+  context.designerWorkspaceClient.composeSession = async (params) => {
+    const runtime = sessions.runtimes['design-session'];
+    if (runtime) {
+      runtime.selectedModelSelection = null;
+      runtime.selectedModelName = 'shared';
+    }
+    return compose(params);
+  };
+  await entry.submitDesignComposer({ prompt: 'create a scene' });
+  await settle();
+  assert.equal(calls.compose[0].modelName, 'shared');
+  assert.deepEqual(calls.compose[0].modelSelection, { type: 'model', id: 'mdl-picked' });
+  assert.equal(calls.requests[0].params.model_name, 'shared');
+  assert.deepEqual(calls.requests[0].params.model_selection, { type: 'model', id: 'mdl-picked' });
 });
 
 test('an existing canvas keeps its selected model and session for follow-up messages', async () => {

@@ -31,6 +31,21 @@ _DELEGATED_REPLY_ERROR = (
     "to the group automatically. Do not post an acknowledgement. End your turn."
 )
 
+# An expert-team proxy only relays: files it makes itself never reach the group as attachments.
+_PROXY_DELIVERABLE_TOOLS = frozenset({"write_file", "edit_file", "send_file_to_user"})
+_PROXY_DELIVERABLE_ERROR = (
+    "As an expert-team proxy you do not produce deliverables or send files yourself. "
+    "Delegate the work through run_team: for a follow-up on a finished run use action=continue "
+    "with a new run_id and the earlier execution_id; for new work use action=start. "
+    "Files your private team writes to its outputs directory are attached to the group reply automatically."
+)
+# send_file_to_user emits a direct-chat file event that the group chat never shows.
+_GROUP_SEND_FILE_ERROR = (
+    "send_file_to_user does not reach the group chat. Post the final file with group_send_message, "
+    "passing your task's execution_id and the file in attachments as {name, path}. "
+    "If you have no execution_id, call start_group_task first."
+)
+
 
 def _tool_arguments(ctx) -> dict:
     arguments = getattr(ctx.inputs.tool_call, "arguments", None)
@@ -90,9 +105,11 @@ TASK_RULES = (
     "answer it yourself with group_send_message when one agent can do it, "
     "or call run_team when the expert team should do it. "
     "That run_team resumes the same instance and loads the context from its earlier child task. "
-    "When the same message mentions only multiple expert teams, call run_team for that message's own "
-    "Organization plan and do not reply to that message. Its requirements never update an older Organization. "
-    "Only the Owner posts that organization's reply; your expert-team instance never posts to the group. "
+    "When the same message mentions only multiple expert teams, the first mentioned team is the Owner. "
+    "The Owner chooses group_send_message for ordinary chat, run_team for substantive work, "
+    "or ask_user for missing requirements. Mere greetings or acknowledgements need no organization. "
+    "Other proxies wait for the Owner's task decision and then call run_team for that message. "
+    "Only the Owner posts that organization's reply. Requirements never update an older Organization. "
     "Only for messages not assigned their own Organization plan, decide later mentions by their meaning: "
     "a request about the organization's task is run_team action=update with the organization's execution_id; "
     "an unrelated task is a new run_team start; ordinary chat is a normal group_send_message reply. "
@@ -166,9 +183,15 @@ class GroupMessageTool(GroupSendMessageTool):
             " For a final task result, supply execution_id and optional attachments; "
             "this publishes the result and completes that execution. "
             "Without execution_id this is ordinary chat, requiring client_message_id."
+            " Only for a pure multi-expert-team request, explicitly set organization_reply: "
+            "acknowledgement for an interim receipt (not posted; continue with ask_user or run_team), "
+            "or final_chat only for a complete conversational answer with no remaining question or work. "
+            "Promises to ask questions or start work are acknowledgements, never final_chat. "
+            "Omit this field for single experts, single teams, mixed mentions and execution results."
         )
         self.card.input_params["properties"].update({
             "execution_id": {"type": "string"},
+            "organization_reply": {"type": "string", "enum": ["acknowledgement", "final_chat"]},
             "attachments": {
                 "type": "array",
                 "items": {
@@ -188,6 +211,19 @@ class GroupMessageTool(GroupSendMessageTool):
 
         member_name = str(getattr(self.backend, "member_name", "") or "")
         message_id = await triggering_plan_id(self.backend, member_name)
+        from jiuwenswarm.agents.swarm.group_turn import current_group_turn
+        from jiuwenswarm.agents.swarm.group_route import ordinary_reply
+
+        turn = current_group_turn(self.context.session_id, member_name)
+        if turn is not None and turn.route == "unknown":
+            return ToolOutput(
+                success=False,
+                error="group_send_message requires an unambiguous triggering group message",
+            )
+        if turn is not None and turn.route == "organization":
+            result = await ordinary_reply(self, inputs, turn.client_message_id, super().invoke)
+            if result is not None:
+                return result
         blocked = group_reply_block_reason(
             self.context.session_id,
             member_name,
@@ -243,6 +279,15 @@ class GroupTaskPolicyRail(DeepAgentRail):
 
         turn = getattr(ctx, "extra", {}).get(TURN_KEY)
         if turn is not None and turn.route == "organization" and turn.client_message_id:
+            from jiuwenswarm.agents.swarm.group_route import candidate, set_status, owner_process_fields
+
+            item = candidate(self.context.session_id, turn.client_message_id)
+            if item is not None and item["owner_member"] == self.context.member_name and item["status"] == "pending":
+                await set_status(self.context.session_id, turn.client_message_id, "pending", expected={"pending"},
+                                 **owner_process_fields())
+            if item is not None and item["owner_member"] != self.context.member_name and item["status"] != "task":
+                return
+            ctx.extra.pop("swarm_group_route_waiting", None)
             note_organization_turn_started(
                 self.context.session_id, self.context.member_name, turn.client_message_id,
             )
@@ -251,12 +296,43 @@ class GroupTaskPolicyRail(DeepAgentRail):
         from openjiuwen.harness.prompts import PromptSection
         from jiuwenswarm.agents.swarm.group_turn import TURN_KEY
 
+        turn = getattr(ctx, "extra", {}).get(TURN_KEY)
+        if turn is not None and turn.route == "unknown":
+            ctx.request_force_finish({"output": turn.error or "Cannot verify the triggering group message.",
+                                      "result_type": "error"})
+            return
+
         builder = getattr(ctx.agent, "system_prompt_builder", None)
         if builder is None:
             return
         builder.remove_section("group_current_organization_turn")
         turn = getattr(ctx, "extra", {}).get(TURN_KEY)
         if turn is None or turn.route != "organization":
+            return
+        from jiuwenswarm.agents.swarm.group_route import candidate
+
+        item = candidate(self.context.session_id, turn.client_message_id)
+        if item is not None and item["status"] != "task":
+            if item["owner_member"] != self.context.member_name or item["status"] in {"completed", "failed"}:
+                ctx.extra["swarm_group_route_waiting"] = True
+                ctx.request_force_finish({"output": "", "result_type": "answer"})
+                return
+            content = (
+                "Decide only this original multi-team message: "
+                + json.dumps({"client_message_id": turn.client_message_id})
+                + ". You are its Owner. No organization task exists yet. For greetings, acknowledgements, "
+                "or ordinary conversation, reply on behalf of the mentioned teams using group_send_message. "
+                "For substantive work, call run_team to create this message's organization. "
+                "If requirements need clarification, use ask_user first. Do not treat @mentions alone as a task. "
+                "Do not send an acknowledgement before asking or starting work. If you use group_send_message, "
+                "organization_reply=acknowledgement keeps this request open without posting. "
+                "Only organization_reply=final_chat ends a fully answered ordinary conversation; "
+                "never use it for a promise to ask_user or run_team later. "
+                "Other proxies are waiting for your decision; do not claim they have started."
+            )
+            builder.add_section(PromptSection(
+                name="group_current_organization_turn", content={"en": content, "cn": content}, priority=95,
+            ))
             return
         content = (
             "The current user message has its own Organization plan. Process only this message now: "
@@ -265,6 +341,9 @@ class GroupTaskPolicyRail(DeepAgentRail):
             "Call run_team to accept this plan. An update or continuation must not modify an older "
             "Organization; this plan will wait when its members are occupied."
         )
+        from jiuwenswarm.agents.swarm.group_route import admission_context
+
+        content += admission_context(self.context.session_id, turn.client_message_id, self.context.member_name)
         builder.add_section(PromptSection(
             name="group_current_organization_turn", content={"en": content, "cn": content}, priority=95,
         ))
@@ -382,16 +461,33 @@ class GroupTaskPolicyRail(DeepAgentRail):
 
     async def before_tool_call(self, ctx):
         group = read_group(self.context.session_id)
-        if group is not None and ctx.inputs.tool_name == "run_team":
+        if group is not None:
             from jiuwenswarm.agents.swarm.group_org_bootstrap import note_organization_run_attempt
             from jiuwenswarm.agents.swarm.group_turn import TOKEN_KEY, TURN_KEY, bind_group_turn
 
             turn = ctx.extra.get(TURN_KEY)
-            if turn is not None and turn.route == "organization" and turn.client_message_id:
-                note_organization_run_attempt(
-                    self.context.session_id, self.context.member_name, turn.client_message_id,
+            if ctx.inputs.tool_name == "run_team" and turn is not None:
+                if turn.route == "organization" and turn.client_message_id:
+                    note_organization_run_attempt(
+                        self.context.session_id, self.context.member_name, turn.client_message_id,
+                    )
+            if turn is not None or ctx.inputs.tool_name == "run_team":
+                ctx.extra[TOKEN_KEY] = bind_group_turn(turn)
+            if turn is not None and turn.route == "unknown":
+                _reject_tool(ctx, turn.error or "Cannot verify the triggering group message.")
+                return
+            from jiuwenswarm.agents.swarm.group_route import candidate, block_reason, admission_block_reason
+
+            if turn is not None and turn.route == "organization":
+                item = candidate(self.context.session_id, turn.client_message_id)
+                blocked = block_reason(item, self.context.member_name, ctx.inputs.tool_name)
+                blocked = blocked or admission_block_reason(
+                    self.context.session_id, turn.client_message_id, self.context.member_name, ctx.inputs.tool_name,
                 )
-            ctx.extra[TOKEN_KEY] = bind_group_turn(turn)
+                if blocked:
+                    _reject_tool(ctx, blocked)
+                    return
+
         # Temporary mute: public-group leader role allocation is not designed
         # yet. Revisit once leader responsibilities are explicitly assigned.
         if (
@@ -408,6 +504,19 @@ class GroupTaskPolicyRail(DeepAgentRail):
         ):
             _reject_tool(ctx, _DELEGATED_REPLY_ERROR)
             return
+        member = None
+        if group is not None:
+            member = next(
+                (item for item in group["members"] if item["member_name"] == self.context.member_name),
+                None,
+            )
+        if member is not None:
+            if member["kind"] == "agent_group" and ctx.inputs.tool_name in _PROXY_DELIVERABLE_TOOLS:
+                _reject_tool(ctx, _PROXY_DELIVERABLE_ERROR)
+                return
+            if ctx.inputs.tool_name == "send_file_to_user":
+                _reject_tool(ctx, _GROUP_SEND_FILE_ERROR)
+                return
         if ctx.inputs.tool_name == "send_message":
             group = read_group(self.context.session_id)
             if group is None:
@@ -433,7 +542,8 @@ class GroupTaskPolicyRail(DeepAgentRail):
         member_name = str(
             getattr(backend, "member_name", "") or self.context.member_name or ""
         )
-        message_id = await triggering_plan_id(backend, member_name)
+        message_id = (turn.client_message_id if turn is not None and turn.route == "organization"
+                      else await triggering_plan_id(backend, member_name))
         blocked = group_reply_block_reason(
             self.context.session_id,
             member_name,
@@ -443,6 +553,9 @@ class GroupTaskPolicyRail(DeepAgentRail):
         if blocked:
             _reject_tool(ctx, blocked)
             return
+        if turn is not None and turn.route == "organization":
+            if item is not None and item["status"] != "task":
+                return
         store = GroupExecutions(self.context.session_id)
         active = store.active(self.context.member_name)
         backend = get_team_backend(self.context)
@@ -534,9 +647,20 @@ class GroupTaskPolicyRail(DeepAgentRail):
 
         if read_group(self.context.session_id) is None:
             return
+        if getattr(ctx, "extra", {}).pop("swarm_group_route_waiting", False):
+            return
         if GroupQuestions(self.context.session_id).pending(self.context.member_name):
             return
 
+        from jiuwenswarm.agents.swarm.group_turn import TURN_KEY
+        from jiuwenswarm.agents.swarm.group_route import candidate, set_status
+
+        turn = getattr(ctx, "extra", {}).get(TURN_KEY)
+        item = candidate(self.context.session_id, turn.client_message_id) if turn is not None else None
+        if item is not None and item["owner_member"] == self.context.member_name:
+            await set_status(self.context.session_id, turn.client_message_id, "failed",
+                             expected={"pending", "chat", "clarification"},
+                             error=turn.error if turn.route == "unknown" else "owner_turn_ended_without_reply")
         try:
             await finish_organization_member_turn(self.context.session_id, self.context.member_name)
         except Exception:

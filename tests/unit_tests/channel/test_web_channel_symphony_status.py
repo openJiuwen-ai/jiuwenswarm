@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from openjiuwen_protocol.message import EventType, Message
+from e2a.message import EventType, Message
 from agent_gateway.common.session_message import (
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
     SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,

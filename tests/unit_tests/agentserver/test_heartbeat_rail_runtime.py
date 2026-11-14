@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from e2a.wire_codec import parse_agent_server_wire_unary
 
 from jiuwenswarm.agents.harness.code.rails.heartbeat.execution import (
     HeartbeatExecutionService,
@@ -21,7 +22,6 @@ from jiuwenswarm.agents.harness.code.rails.heartbeat.runtime import (
     HeartbeatRailRuntime,
     HeartbeatRuntimeUnavailableError,
 )
-from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.agents.harness.code.rails.heartbeat.tools import (

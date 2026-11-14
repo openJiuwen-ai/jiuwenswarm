@@ -214,7 +214,9 @@ class WorkerDispatcher:
             dispatch_id = str(message.get("dispatch_id") or uuid.uuid4().hex)
             self._reconcile_execution_state(request)
             try:
-                self._bridge.events.register(request, dispatch_id)
+                record = self._bridge.events.register(request, dispatch_id)
+                if request.is_stream:
+                    record.delivery_generation = generation
             except ValueError as exc:
                 await self._done(conn, str(request.request_id or ""), generation=generation,
                                  dispatch_id=dispatch_id, ok=False, error=str(exc))
@@ -272,8 +274,16 @@ class WorkerDispatcher:
                 # with no remaining owner must not keep a pruned input busy.
                 # Active handlers can still be warming or awaiting admission.
                 if not record.active:
-                    record.is_processing = False
-                    record.interactions.clear()
+                    # An empty ledger only proves the Coordinator stopped
+                    # retaining the execution. A single-agent turn keeps
+                    # streaming after its handler returns, and a freshly
+                    # created session may not have registered its execution
+                    # yet, so pruning must not cancel the stream's own
+                    # processing claim (chat.processing_status). Records whose
+                    # busy flag came from elsewhere keep the old pruning.
+                    if not record.stream_processing_claim:
+                        record.is_processing = False
+                        record.interactions.clear()
                     self._bridge.events.finish(record.dispatch_id)
                 continue
             ongoing = [item for item in executions if not item.state.terminal]
@@ -388,7 +398,9 @@ class WorkerDispatcher:
     async def _dispatch_request(self, request: AgentRequest, generation: int, dispatch_id: str = "") -> None:
         if not dispatch_id:
             dispatch_id = uuid.uuid4().hex
-            self._bridge.events.register(request, dispatch_id)
+            record = self._bridge.events.register(request, dispatch_id)
+            if request.is_stream:
+                record.delivery_generation = generation
         if request.req_method == ReqMethod.CHAT_CANCEL:
             # A session interrupt ends the round it targets. Its pending
             # interactions (an ask_user popup waiting for input, a permission
@@ -539,6 +551,22 @@ class WorkerDispatcher:
         delivered: bool,
         dispatch_id: str = "",
     ) -> None:
+        record = self._bridge.events.records.get(dispatch_id)
+        if record is not None and record.request.is_stream:
+            async with self._bridge.publication_lock(record.scope):
+                # request.done is not a business event, but its outcome must
+                # survive the same detach as the stream it completes.
+                record.completion = {"ok": ok, "error": error[:4096], "delivered": delivered}
+                current = self._bridge.holder.generation
+                conn = self._bridge.holder.conn
+                if conn is None or record.delivery_generation not in {None, current}:
+                    return
+                try:
+                    await self._done(conn, request_id, generation=current, dispatch_id=dispatch_id,
+                                     ok=ok, error=error, delivered=delivered)
+                except (OSError, RuntimeError):
+                    logger.info("[Worker] stream completion retained; supervisor disconnected")
+            return
         if generation != self._bridge.holder.generation:
             logger.info(
                 "[Worker] dropped request.done request_id=%s generation=%s current=%s",
@@ -686,6 +714,9 @@ class WorkerDispatcher:
 
     async def _subscribe_locked(self, message: dict[str, Any], conn: IpcConnection, generation: int) -> None:
         request = load_agent_request(message.get("payload") or {})
+        if message.get("dispatch_id"):
+            await self._resume_dispatch_locked(message, request, conn, generation)
+            return
         after = max(0, int(message.get("after") or 0))
         state = self._reconcile_execution_state(request, across_channels=True)
         snapshot = self._bridge.events.snapshot(request, after=after)
@@ -757,6 +788,46 @@ class WorkerDispatcher:
         await conn.send({"kind": KIND_SNAPSHOT, "query_id": message.get("query_id"),
                          "generation": generation, "payload": snapshot})
         await self._bridge.replay(frames, generation, include=include)
+        if message.get("subscribe"):
+            for record in self._bridge.events.records.values():
+                if record.scope == scope and record.request.is_stream:
+                    record.delivery_generation = generation
+
+    async def _resume_dispatch_locked(
+        self, message: dict[str, Any], request: AgentRequest, conn: IpcConnection, generation: int,
+    ) -> None:
+        """Resume delivery of one accepted stream without dispatching it again."""
+        dispatch_id = str(message["dispatch_id"])
+        after = max(0, int(message.get("after") or 0))
+        record = self._bridge.events.records.get(dispatch_id)
+        error = ""
+        if message.get("worker_instance") != self._bridge.events.instance:
+            error = "runtime worker changed during stream recovery"
+        elif record is None or record.scope != request_scope(request) or not record.request.is_stream:
+            error = "runtime worker no longer retains the original stream"
+        elif after < record.expired_sequence:
+            error = "runtime worker stream replay expired; reload session history"
+        snapshot = {"worker_instance": self._bridge.events.instance,
+                    "dispatch_id": dispatch_id, "recovery_error": error}
+        if not error:
+            state = self._bridge.events.snapshot(request, after=after)
+            frames = self._bridge.events.replay(request, after=0)
+            include = self._question_recovery_filter(request, state, frames)
+            frames = [frame for frame in frames
+                      if frame["dispatch_id"] == dispatch_id and frame["sequence"] > after]
+            await self._bridge.replay(frames, generation, include=include)
+        # The snapshot acknowledges replay, not merely a socket attachment.
+        # The publication lock keeps later live output and completion behind it.
+        await conn.send({"kind": KIND_SNAPSHOT, "query_id": message.get("query_id"),
+                         "generation": generation, "payload": snapshot})
+        if error:
+            return
+        record.delivery_generation = generation
+        if record.completion is not None:
+            result = record.completion
+            await self._done(conn, str(record.request.request_id or ""), generation=generation,
+                             dispatch_id=dispatch_id, ok=result["ok"], error=result["error"],
+                             delivered=result["delivered"])
 
 
 def _is_session_work_request(request: AgentRequest) -> bool:

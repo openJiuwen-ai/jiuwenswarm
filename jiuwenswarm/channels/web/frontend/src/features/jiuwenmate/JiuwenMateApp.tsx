@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ToastStack, toast } from '../../components/ui';
 import { webClient, webRequest } from '../../services/webClient';
 import { ColleagueDeleteDialog } from './components/ColleagueDeleteDialog';
 import { ImAuthorizeDialog } from './components/ImAuthorizeDialog';
 import { WelinkOauthDialog } from './components/WelinkOauthDialog';
 import { JiuwenMateConfirmDialog, JiuwenMateDialog } from './components/JiuwenMateDialog';
 import { JiuwenMateRail, type JiuwenMateRailView } from './components/JiuwenMateRail';
+import { MAX_STARTER_PROMPTS } from './components/StarterPromptsEditor';
 import {
   cancelColleagueCreation,
   closeCustomColleagueDialog,
@@ -171,6 +171,12 @@ export function JiuwenMateApp({
   const [employeeExists, setEmployeeExists] = useState(false);
   const [publicLabel, setPublicLabel] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
+  const [imNotice, setImNotice] = useState<{ platform: 'feishu' | 'dingtalk' | 'welink'; text: string } | null>(null);
+  useEffect(() => {
+    if (!imNotice) return undefined;
+    const timer = window.setTimeout(() => setImNotice(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [imNotice]);
   const [workspaceIntent, setWorkspaceIntent] = useState<{ nonce: number; intent: JiuwenMateWorkspaceIntent | null }>({
     nonce: 0,
     intent: null,
@@ -483,7 +489,7 @@ export function JiuwenMateApp({
           connectors: available.connectors,
           plugins: available.plugins,
           knowledge: available.knowledge,
-          starterPrompts: [...template.capabilities.starterPrompts],
+          starterPrompts: template.capabilities.starterPrompts.slice(0, MAX_STARTER_PROMPTS),
         },
       }),
     );
@@ -618,15 +624,15 @@ export function JiuwenMateApp({
     if (pendingConfirm.kind === 'unbind') {
       setActionError('');
       try {
+        const platform = pendingConfirm.connection.channel;
         await api.unbindConnection(pendingConfirm.connection);
-        if (pendingConfirm.connection.channel === 'feishu') {
-          toast.open({
-            variant: 'success',
-            content: t('jiuwenmate.profile.removeFeishuConnectionSuccess'),
-            testId: 'jiuwenmate-profile-feishu-disconnected-toast',
-          });
+        if (platform === 'feishu') {
+          setImNotice({ platform, text: t('jiuwenmate.profile.removeConnectionSuccess') });
         }
         await refreshColleague(pendingConfirm.colleague.id);
+        if (platform === 'dingtalk') {
+          setImNotice({ platform, text: t('jiuwenmate.profile.removeConnectionSuccess') });
+        }
       } catch (error) {
         setActionError(errorMessage(error));
       }
@@ -910,6 +916,7 @@ export function JiuwenMateApp({
             onUpdateSchedule={updateSchedule}
             onSetScheduleEnabled={setScheduleEnabled}
             onDeleteSchedule={removeSchedule}
+            onRunSchedule={runSchedule}
             onLoadScheduleHistory={loadScheduleHistory}
           />
         );
@@ -956,6 +963,7 @@ export function JiuwenMateApp({
               setAuthorizeConnection(null);
               setState((current) => openColleagueAuthorization(current, selectedColleague.id, 'welink'));
             }}
+            imNotice={imNotice}
             onRevokeChannel={(platform) => {
               const method = platform === 'welink' ? 'channel.welink.revoke' : 'channel.feishu.revoke';
               return webRequest(method, {
@@ -964,15 +972,22 @@ export function JiuwenMateApp({
               })
                 .then(() => {
                   setState((current) => revokeColleagueAuthorization(current, selectedColleague.id, platform));
+                  setImNotice({
+                    platform,
+                    text: t(platform === 'welink'
+                      ? 'jiuwenmate.profile.cancelAuthorizationSuccess'
+                      : 'jiuwenmate.profile.removeConnectionSuccess'),
+                  });
                 })
                 .catch((error: unknown) => {
                   setActionError(errorMessage(error));
                   throw error;
                 });
             }}
-            onRemoveConnection={(connection) =>
-              setPendingConfirm({ kind: 'unbind', colleague: selectedColleague, connection })
-            }
+            onRemoveConnection={(connection) => {
+              setImNotice(null);
+              setPendingConfirm({ kind: 'unbind', colleague: selectedColleague, connection });
+            }}
             onToggleDisabled={() => requestToggleDisabled(selectedColleague.id)}
             onDelete={() => requestDelete(selectedColleague.id)}
           />
@@ -996,6 +1011,7 @@ export function JiuwenMateApp({
             onUpdateSchedule={updateSchedule}
             onSetScheduleEnabled={setScheduleEnabled}
             onDeleteSchedule={removeSchedule}
+            onRunSchedule={runSchedule}
             onLoadScheduleHistory={loadScheduleHistory}
             channelApi={api}
             modelCatalog={modelCatalog}
@@ -1047,7 +1063,6 @@ export function JiuwenMateApp({
           renderFeature()
         )}
       </main>
-      <ToastStack />
       {groupDirectory.dialogs}
       {actionError && !existingPage ? (
         <div className="jiuwenmate-action-error" role="alert" data-testid="jiuwenmate-action-error">

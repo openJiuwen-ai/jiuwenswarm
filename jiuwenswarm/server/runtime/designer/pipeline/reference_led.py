@@ -1687,7 +1687,7 @@ def _prepare_shots(analysis: dict[str, Any], prompt: str) -> list[dict[str, Any]
     shots: list[dict[str, Any]] = []
     cursor = 0.0
     for index, shot in enumerate(raw, start=1):
-        action = str(shot.get("action") or f"beat {index}").strip()
+        action = str(shot.get("action") or f"shot {index}").strip()
         duration = shot.get("duration_sec")
         if duration in (None, ""):
             duration = _duration_from_timeline(str(shot.get("timeline") or "")) or 5

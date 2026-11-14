@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import re
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -19,6 +21,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Awaitable
+
+logger = logging.getLogger(__name__)
 
 # One extra_body for every model. Same trio as Symphony's thinking_disabled_request_overrides:
 # Qwen ignores thinking.type and reads enable_thinking / chat_template_kwargs; Doubao rejects
@@ -31,12 +35,18 @@ _THINKING_DISABLED_EXTRA_BODY = {
     "chat_template_kwargs": {"enable_thinking": False},
 }
 _THINKING_DISABLE_BODY_KEYS = frozenset({"thinking", "enable_thinking", "chat_template_kwargs"})
+# Match Designer structured-output ceilings: reasoning shares max_tokens with content.
+_TOPIC_MAX_TOKENS_CAP = 65536
+_TOPIC_DEFAULT_MAX_TOKENS = 16384
 _ALWAYS_THINK_UNSUPPORTED_MARKERS = (
     "不支持关闭",
     "始终思考",
     "cannot disable",
     "always think",
     "unsupported",
+    "not support",
+    "not supported",
+    "不允许关闭",
 )
 _ALWAYS_THINK_DISABLE_MARKERS = (
     "关闭思考",
@@ -44,7 +54,18 @@ _ALWAYS_THINK_DISABLE_MARKERS = (
     "disabled",
     "thinking.type",
     "enable_thinking",
+    "thinking",
+    "reasoning",
 )
+
+# One repair round after business validation fails: same shape as Eternal call_json.
+_SHAPE_REPAIR_CHECKLIST = """
+Previous output failed host validation (invalid JSON or wrong shape). Return ONE
+corrected JSON value only — no markdown fence, no prose, no thinking text.
+Keep every required id exactly as in the request.
+Do not invent candidates, pairs, or mappings that were not requested.
+Fix only the structural problem named in validation_error.
+"""
 
 # A result whose consumer fails before record_validation keeps its receipt here; bound how many
 # such unconsumed results stay referenced, since a caller is not obliged to call aclose().
@@ -62,11 +83,20 @@ class ArkBackgroundConfig:
     top_p: float = 1.0
     context_window_tokens: int | None = None
     expected_model: str | None = None
+    client_provider: str = "OpenAI"
+    endpoint_profile: str | None = None
 
     def __post_init__(self) -> None:
         # Decoding is part of cache identities: 0 and 0.0 must spell the same.
         object.__setattr__(self, "temperature", float(self.temperature))
         object.__setattr__(self, "top_p", float(self.top_p))
+        object.__setattr__(
+            self,
+            "client_provider",
+            str(self.client_provider or "OpenAI").strip() or "OpenAI",
+        )
+        profile = str(self.endpoint_profile or "").strip() or None
+        object.__setattr__(self, "endpoint_profile", profile)
 
     @property
     def effective_temperature(self) -> float:
@@ -199,7 +229,8 @@ def provider_failure_reason(exc: BaseException) -> str:
     # Ark answers a closed model endpoint with 400 rather than 404.
     if code == "InvalidEndpoint.ClosedEndpoint":
         return "model_unavailable"
-    # A model that rejects the stages' strict structured output cannot serve the chain at all.
+    # Legacy: stages no longer send response_format by default; keep the
+    # mapping only when a caller still attaches one and the provider rejects it.
     if getattr(exc, "status_code", None) == 400 and any(
         "response_format" in str(getattr(exc, field, None) or "") for field in ("param", "message")
     ):
@@ -211,6 +242,102 @@ def provider_failure_reason(exc: BaseException) -> str:
     return reasons.get(getattr(exc, "status_code", None), "provider_request_failed")
 
 
+def _normalize_model_id(value: str) -> str:
+    text = value.strip().lower()
+    for prefix in ("models/", "openai/", "account/", "endpoints/"):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+    return text
+
+
+def model_ids_compatible(actual: Any, expected: str) -> bool:
+    """Providers often rewrite route ids; require a clear link, not character equality."""
+
+    if not isinstance(actual, str) or not actual.strip() or not expected.strip():
+        return False
+    actual_id = _normalize_model_id(actual)
+    expected_id = _normalize_model_id(expected)
+    if actual_id == expected_id:
+        return True
+    return (
+        actual_id.endswith("/" + expected_id)
+        or expected_id.endswith("/" + actual_id)
+        or actual_id.startswith(expected_id)
+        or expected_id.startswith(actual_id)
+    )
+
+
+def _clamp_topic_max_tokens(
+    value: int | None,
+    *,
+    context_window_tokens: int | None = None,
+) -> int:
+    """Bound completion size so ``prompt + max_tokens`` can still fit the window.
+
+    Stage budgets are Designer-sized (16k–65k). Without a context-window cap,
+    small models get ``max_tokens`` larger than the remaining window and many
+    OpenAI-compatible / vLLM gateways reject with HTTP 400 instead of truncating.
+
+    Cap completion at half the window (not ``window - 1``): prompt fit reserves the
+    same budget, and ``window - 1`` would leave only one token for the prompt on
+    small windows, making every non-empty summarizer/RID fit fail closed.
+    """
+
+    try:
+        n = int(value or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n < 1:
+        n = _TOPIC_DEFAULT_MAX_TOKENS
+    capped = max(256, min(_TOPIC_MAX_TOKENS_CAP, n))
+    try:
+        window = int(context_window_tokens or 0)
+    except (TypeError, ValueError):
+        window = 0
+    if window <= 0:
+        return capped
+    room = max(1, window // 2)
+    return max(1, min(capped, room))
+
+
+def _minimal_reasoning(config: ArkBackgroundConfig) -> dict[str, str] | None:
+    """Lowest reasoning setting the model accepts (Designer call_model_tool policy).
+
+    Reasoning shares ``max_tokens`` with the visible JSON reply, so stages turn
+    thinking off where core allows and otherwise pick the lowest listed level.
+    ``None`` means the model exposes no control at all.
+    """
+
+    from openjiuwen.core.foundation.llm import get_reasoning_capability
+
+    from jiuwenswarm.common.reasoning_config import (
+        SUPPORTED_REASONING_LEVELS,
+        effective_endpoint_profile,
+        reasoning_config_for_level,
+        reasoning_level_options,
+    )
+
+    capability = get_reasoning_capability(
+        provider=config.client_provider,
+        model=config.model,
+        protocol=(
+            "anthropic"
+            if str(config.client_provider).strip().lower() == "anthropic"
+            else "openai"
+        ),
+        api_base=config.base_url,
+        endpoint_profile=effective_endpoint_profile(
+            config.base_url, config.endpoint_profile,
+        ),
+    )
+    options = set(reasoning_level_options(capability))
+    for level in SUPPORTED_REASONING_LEVELS:
+        # A bare "on" is a toggle without a lower setting to choose.
+        if level != "on" and level in options:
+            return reasoning_config_for_level(level)
+    return None
+
+
 def _default_model_factory(config: ArkBackgroundConfig) -> Any:
     """Build the same OpenAI-compatible core Model used by settings probes."""
 
@@ -220,6 +347,21 @@ def _default_model_factory(config: ArkBackgroundConfig) -> Any:
         ModelRequestConfig,
     )
 
+    from jiuwenswarm.common.reasoning_config import effective_endpoint_profile
+
+    # Align with Designer structured calls (1200). A previous 120s hard-code
+    # aborted long JSON stages; core ModelClientConfig requires timeout > 0.
+    client_kwargs: dict[str, Any] = {
+        "client_id": "topic-recommendation",
+        "client_provider": config.client_provider,
+        "api_key": config.api_key,
+        "api_base": config.base_url,
+        "timeout": 1200.0,
+        "max_retries": 0,
+    }
+    profile = effective_endpoint_profile(config.base_url, config.endpoint_profile)
+    if profile:
+        client_kwargs["endpoint_profile"] = profile
     return Model(
         model_config=ModelRequestConfig(
             model_name=config.model,
@@ -227,14 +369,7 @@ def _default_model_factory(config: ArkBackgroundConfig) -> Any:
             top_p=config.effective_top_p,
             context_window=config.context_window_tokens,
         ),
-        model_client_config=ModelClientConfig(
-            client_id="topic-recommendation",
-            client_provider="OpenAI",
-            api_key=config.api_key,
-            api_base=config.base_url,
-            timeout=120.0,
-            max_retries=0,
-        ),
+        model_client_config=ModelClientConfig(**client_kwargs),
     )
 
 
@@ -260,6 +395,50 @@ def _content_text(content: Any) -> str:
             if isinstance(part, (str, dict))
         )
     return ""
+
+
+_FENCED_JSON_RE = re.compile(
+    r"```(?:json)?\s*([\s\S]*?)\s*```",
+    flags=re.IGNORECASE,
+)
+
+
+def _parse_stage_json(text: str) -> Any:
+    """Parse stage JSON from chat text the way Designer / prompt-suggestion do.
+
+    Recommendation no longer depends on API ``response_format``; models may wrap
+    JSON in fences or add brief prose. Fail closed when nothing decodes.
+    """
+
+    raw = (text or "").strip()
+    if not raw:
+        raise json.JSONDecodeError("empty stage content", raw, 0)
+    candidates = [raw]
+    fence = _FENCED_JSON_RE.search(raw)
+    if fence:
+        candidates.insert(0, fence.group(1).strip())
+    elif raw.startswith("```"):
+        unfenced = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+        unfenced = re.sub(r"\s*```\s*$", "", unfenced).strip()
+        candidates.insert(0, unfenced)
+    last_error: json.JSONDecodeError | None = None
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+        for opener in ("{", "["):
+            start = candidate.find(opener)
+            if start < 0:
+                continue
+            try:
+                data, _end = json.JSONDecoder().raw_decode(candidate[start:])
+                return data
+            except json.JSONDecodeError as exc:
+                last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise json.JSONDecodeError("unparseable stage content", raw, 0)
 
 
 def _looks_like_always_think_rejection(exc: BaseException) -> bool:
@@ -311,19 +490,58 @@ async def _create_completion_prefer_thinking_disabled(
         return await create(**retry)
 
 
+def _provider_http_status(detail: BaseException) -> int | None:
+    """HTTP status on a provider error, looking through wrapped causes."""
+
+    seen: set[int] = set()
+    current: BaseException | None = detail
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        for candidate in (current, getattr(current, "response", None)):
+            if candidate is None:
+                continue
+            for attr in ("status_code", "status"):
+                code = getattr(candidate, attr, None)
+                try:
+                    return int(code)
+                except (TypeError, ValueError):
+                    continue
+        current = current.__cause__ or current.__context__
+    return None
+
+
 async def _invoke_model_prefer_thinking_disabled(
     model: Any,
     messages: list[dict[str, str]],
     invoke_kwargs: Mapping[str, Any],
-) -> Any:
-    """Production Model path: reuse core's one-shot strip-and-retry for always-think models."""
+) -> tuple[Any, bool]:
+    """Production Model path: disable thinking when possible; drop ``reasoning`` on 400.
+
+    Core's ``disabled_thinking_fallback_scope`` strips thinking-disable
+    ``extra_body`` fields for always-think models. Self-hosted gateways that
+    reject the separate ``reasoning`` kwarg need the Designer-style drop-and-retry
+    (HTTP 400 → omit ``reasoning`` once).
+    """
 
     from openjiuwen.core.foundation.llm.request_context import (
         disabled_thinking_fallback_scope,
     )
 
+    kwargs = dict(invoke_kwargs)
     with disabled_thinking_fallback_scope():
-        return await model.invoke(messages, **dict(invoke_kwargs))
+        try:
+            return await model.invoke(messages, **kwargs), False
+        except Exception as exc:
+            if kwargs.get("reasoning") is None or _provider_http_status(exc) != 400:
+                raise
+            logger.warning(
+                "[Topic] endpoint rejected reasoning=%s; retrying without it. "
+                "Set endpoint_profile on self-hosted gateways. (%s)",
+                kwargs.get("reasoning"),
+                exc,
+            )
+            kwargs.pop("reasoning", None)
+            return await model.invoke(messages, **kwargs), True
 
 
 def build_ark_stage_invoker(
@@ -352,28 +570,31 @@ def build_ark_stage_invoker(
         else client_factory(api_key=config.api_key, base_url=config.base_url)
     )
     model = None if client is not None else (model_factory or _default_model_factory)(config)
+    try:
+        reasoning = _minimal_reasoning(config)
+    except Exception:  # noqa: BLE001 - capability lookup must not block stages
+        logger.warning(
+            "[Topic] reasoning capability lookup failed model=%s",
+            config.model,
+            exc_info=True,
+        )
+        reasoning = None
     invocation_receipts: list[dict[str, Any]] = []
     validation_receipts: dict[int, tuple[Any, dict[str, Any]]] = {}
 
     async def invoke(stage: str, system_prompt: str, payload: str) -> Any:
-        schema = (
-            response_schema_for_stage(stage, payload)
-            if response_schema_for_stage is not None
-            else None
+        # response_schema_for_stage remains on the signature for pipeline/RID
+        # call sites, but structured output is prompt + parse only — same as
+        # designer / proactive / prompt_suggestion — so deepseek-flash and peers
+        # that reject response_format stay usable.
+        _ = response_schema_for_stage
+        requested = (
+            max_tokens_for_stage(stage) if max_tokens_for_stage is not None else None
         )
-        response_format: dict[str, Any]
-        if schema is None:
-            response_format = {"type": "json_object"}
-        else:
-            response_format = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": stage.replace("-", "_")[:64],
-                    "strict": True,
-                    "schema": dict(schema),
-                },
-            }
-        max_tokens = max_tokens_for_stage(stage) if max_tokens_for_stage is not None else None
+        max_tokens = _clamp_topic_max_tokens(
+            requested,
+            context_window_tokens=config.context_window_tokens,
+        )
         started_at = time.perf_counter()
         messages = [
             {"role": "system", "content": system_prompt},
@@ -395,10 +616,11 @@ def build_ark_stage_invoker(
             "stage": stage,
             "provider_response_id": None,
             "usage": None,
-            "structured_output_mode": (
-                "json_schema_strict" if schema is not None else "json_object"
-            ),
+            "structured_output_mode": "prompt_json",
+            "max_tokens": max_tokens,
         }
+        if reasoning is not None:
+            receipt["reasoning"] = dict(reasoning)
         prompt_version = (
             prompt_version_for_stage(stage)
             if prompt_version_for_stage is not None
@@ -431,11 +653,9 @@ def build_ark_stage_invoker(
                     "messages": messages,
                     "temperature": config.effective_temperature,
                     "top_p": config.effective_top_p,
-                    "response_format": response_format,
+                    "max_tokens": max_tokens,
                     "extra_body": dict(_THINKING_DISABLED_EXTRA_BODY),
                 }
-                if max_tokens is not None:
-                    request["max_tokens"] = max_tokens
                 response = await _create_completion_prefer_thinking_disabled(
                     client.chat.completions.create,
                     request,
@@ -459,12 +679,12 @@ def build_ark_stage_invoker(
                 invoke_kwargs: dict[str, Any] = {
                     "temperature": config.effective_temperature,
                     "top_p": config.effective_top_p,
-                    "response_format": response_format,
+                    "max_tokens": max_tokens,
                     "extra_body": dict(_THINKING_DISABLED_EXTRA_BODY),
                 }
-                if max_tokens is not None:
-                    invoke_kwargs["max_tokens"] = max_tokens
-                assistant = await _invoke_model_prefer_thinking_disabled(
+                if reasoning is not None:
+                    invoke_kwargs["reasoning"] = dict(reasoning)
+                assistant, reasoning_dropped = await _invoke_model_prefer_thinking_disabled(
                     model,
                     messages,
                     invoke_kwargs,
@@ -479,6 +699,8 @@ def build_ark_stage_invoker(
                     "finish_reason": getattr(assistant, "finish_reason", None),
                     "usage": _usage_as_dict(usage),
                 })
+                if reasoning_dropped:
+                    receipt["reasoning_dropped"] = True
                 content = getattr(assistant, "content", None)
             status = "received"
             save()
@@ -489,20 +711,49 @@ def build_ark_stage_invoker(
             )
             if require_response_metadata:
                 expected_model = config.expected_model or config.model
+                finish = receipt["finish_reason"]
+                model_ok = model_ids_compatible(
+                    receipt["actual_model"], expected_model
+                )
+                if not model_ok:
+                    logger.warning(
+                        "[Topic] provider model id mismatch expected=%r actual=%r",
+                        expected_model,
+                        receipt["actual_model"],
+                    )
+                if receipt["usage"] is None:
+                    logger.warning(
+                        "[Topic] provider usage missing stage=%s; continuing",
+                        stage,
+                    )
                 rejected = (
                     not isinstance(receipt["provider_response_id"], str)
                     or not receipt["provider_response_id"]
                     or receipt["response_object"] != "chat.completion"
-                    or receipt["actual_model"] != expected_model
-                    or receipt["usage"] is None
-                    or receipt["finish_reason"] != "stop"
+                    or not model_ok
+                    or finish not in {"stop", "length"}
                 )
                 if rejected:
                     raise RuntimeError("recommendation response metadata contract failed")
             status = "json_failed"
             if refusal:
                 status = "refused"
-            result = json.loads(_content_text(content))
+            if receipt["finish_reason"] == "length":
+                logger.warning(
+                    "[Topic] stage=%s finish_reason=length; attempting JSON parse",
+                    stage,
+                )
+            content_text = _content_text(content)
+            try:
+                result = _parse_stage_json(content_text)
+            except json.JSONDecodeError:
+                preview = content_text if len(content_text) <= 800 else f"{content_text[:800]}..."
+                logger.warning(
+                    "[Topic] stage=%s JSON parse failed preview=%r",
+                    stage,
+                    preview,
+                )
+                raise
             status = "lineage_failed"
             lineage = (
                 invocation_lineage_for_stage(stage, payload, result)
@@ -615,3 +866,109 @@ def provider_validation(invoke_stage: Any, response: Any):
         raise
     else:
         record_provider_validation(invoke_stage, response, "business_validated")
+
+
+async def invoke_stage_with_shape_repair(
+    invoke_stage: Callable[[str, str, str], Awaitable[Any]],
+    stage: str,
+    system_prompt: str,
+    payload: str,
+    *,
+    coerce: Callable[[Any], Any] | None = None,
+    validate: Callable[[Any], Any],
+    max_repairs: int = 1,
+) -> Any:
+    """Coerce, validate, then one Eternal-style repair retry.
+
+    Retries once on ``ValueError`` (shape) or ``json.JSONDecodeError`` (unparseable
+    model text). Keeps business fail-closed after the last attempt. Used by
+    utility / diversity so general models can fix parse/shape drift once.
+    """
+
+    def _shape_preview(value: Any) -> str:
+        try:
+            text = json.dumps(value, ensure_ascii=False, default=str)
+        except TypeError:
+            text = repr(value)
+        if len(text) > 800:
+            return f"{text[:800]}..."
+        return text
+
+    def _repair_request_id(original_request: Any) -> str:
+        # Host audit (_audited_ark_stage_invoker) requires top-level request_id.
+        if isinstance(original_request, dict):
+            return str(original_request.get("request_id") or "").strip()
+        return ""
+
+    def _original_request() -> Any:
+        try:
+            return json.loads(payload)
+        except json.JSONDecodeError:
+            return payload
+
+    async def _repair_once(*, validation_error: str, previous_output: Any) -> Any:
+        original_request = _original_request()
+        repair_body: dict[str, Any] = {
+            "validation_error": validation_error,
+            "previous_output": previous_output,
+            "original_request": original_request,
+        }
+        request_id = _repair_request_id(original_request)
+        if request_id:
+            repair_body["request_id"] = request_id
+        repair_payload = json.dumps(repair_body, ensure_ascii=False, default=str)
+        repaired = await invoke_stage(
+            stage,
+            f"{system_prompt.rstrip()}\n{_SHAPE_REPAIR_CHECKLIST}",
+            repair_payload,
+        )
+        if coerce is not None:
+            repaired = coerce(repaired)
+        try:
+            with provider_validation(invoke_stage, repaired):
+                validate(repaired)
+        except ValueError:
+            logger.warning(
+                "[Topic] stage=%s shape repair still invalid preview=%s",
+                stage,
+                _shape_preview(repaired),
+            )
+            raise
+        return repaired
+
+    try:
+        raw = await invoke_stage(stage, system_prompt, payload)
+    except json.JSONDecodeError as exc:
+        if max_repairs <= 0:
+            raise
+        previous = (exc.doc or "")[:800]
+        logger.warning(
+            "[Topic] stage=%s JSON parse failed; repairing once: %s preview=%r",
+            stage,
+            exc,
+            previous,
+        )
+        return await _repair_once(
+            validation_error=f"JSON parse failed: {exc}",
+            previous_output=previous or str(exc),
+        )
+
+    if coerce is not None:
+        raw = coerce(raw)
+    try:
+        with provider_validation(invoke_stage, raw):
+            validate(raw)
+        return raw
+    except ValueError as exc:
+        if max_repairs <= 0:
+            raise
+        logger.warning(
+            "[Topic] stage=%s shape validation failed; repairing once: %s preview=%s",
+            stage,
+            exc,
+            _shape_preview(raw),
+        )
+        return await _repair_once(
+            validation_error=str(exc),
+            previous_output=raw,
+        )

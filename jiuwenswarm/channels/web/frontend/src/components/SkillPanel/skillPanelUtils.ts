@@ -44,6 +44,44 @@ export function isFilePreviewable(entry: { type: string; mime_type: string | nul
   return PREVIEWABLE_FILE_EXTS.includes(ext);
 }
 
+/**
+ * Resolve a relative Markdown file reference against the file currently being previewed.
+ *
+ * External URLs, fragments, and root-relative application routes are not skill files.
+ */
+export function resolveSkillFileReference(currentFilePath: string, href: string): string | null {
+  const trimmedHref = href.trim();
+  const pathHref = trimmedHref.split(/[?#]/, 1)[0];
+  if (
+    !pathHref ||
+    trimmedHref.startsWith('#') ||
+    pathHref.startsWith('/') ||
+    /^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(pathHref)
+  ) {
+    return null;
+  }
+
+  let decodedPath = pathHref;
+  try {
+    decodedPath = decodeURIComponent(pathHref);
+  } catch {
+    // Keep the original path when it contains malformed percent encoding.
+  }
+
+  const resolvedParts = currentFilePath.replace(/\\/g, '/').split('/').filter(Boolean);
+  resolvedParts.pop();
+  for (const part of decodedPath.replace(/\\/g, '/').split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      if (resolvedParts.length === 0) return null;
+      resolvedParts.pop();
+      continue;
+    }
+    resolvedParts.push(part);
+  }
+  return resolvedParts.length > 0 ? resolvedParts.join('/') : null;
+}
+
 /** 与后端一致：tags/allowed_tools 可能是逗号分隔字符串，统一为 string[] */
 export function coerceStringList(val: unknown): string[] {
   if (val == null) return [];

@@ -315,7 +315,7 @@ async def test_checkpoint_ack_can_finish_while_session_is_closing(routed_task, m
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.server.runtime.gateway_adapter.base import AdapterRegistry
     from jiuwenswarm.server.runtime.session import lifecycle
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
+    from e2a.wire_codec import parse_agent_server_wire_unary
 
     r = routed_task
     server = object.__new__(AgentWebSocketServer)

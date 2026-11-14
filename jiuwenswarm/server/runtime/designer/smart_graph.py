@@ -899,7 +899,7 @@ def build_smart_video_graph(
                 "delegate": "agent",
                 "director_task": (
                     "Author a DETAILED creative brief from the user prompt: every named "
-                    "character with wardrobe/face locks, scene geography, language/speech, "
+                    "character with clothing/face locks, scene geography, language/speech, "
                     "opening blocking, motion/consistency rules, shot-view coverage, audio, "
                     "and one explicit visual style. Preserve the user's style wording; if "
                     "none can be inferred, use the cartoonish default. "
@@ -1020,7 +1020,7 @@ def build_smart_video_graph(
                     "director_task": (
                         f"Solo character specs for {display}. "
                         "Write a positive Qwen-ready studio portrait from the locks "
-                        "(face, wardrobe, style) — no LOCK banners or negatives. "
+                        "(face, clothing, style) — no LOCK banners or negatives. "
                         "Then call_image_model with that prompt only."
                     ),
                 },
@@ -1484,7 +1484,7 @@ def build_smart_video_graph(
         )
         if not first_of_setting:
             layout_bits += (
-                f"CONTINUATION of setting {setting_id}: same room, same faces, same wardrobe. "
+                f"CONTINUATION of setting {setting_id}: same room, same faces, same clothing. "
                 "This window continues the story. "
             )
         if show_angle and view_key:

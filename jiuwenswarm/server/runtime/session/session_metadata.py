@@ -2560,7 +2560,7 @@ def _collect_all_sessions_metadata(
 def _register_common_provider() -> None:
     import sys
 
-    from openjiuwen_protocol.provider_domains import PROVIDER_DOMAIN_SESSION_METADATA
+    from e2a.provider_domains import PROVIDER_DOMAIN_SESSION_METADATA
 
     from jiuwenswarm.common.external_providers import register
 

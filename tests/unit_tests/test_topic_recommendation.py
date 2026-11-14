@@ -1679,7 +1679,7 @@ def _register_panel(channel, *, service, store, queue) -> None:
     """Register the panel methods against an AgentServer that owns the stub pipeline."""
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_to_agent_response
-    from jiuwenswarm.common.e2a.models import E2AResponse
+    from e2a.models import E2AResponse
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.server.runtime.recommendation_host import RecommendationHost
 
@@ -1689,7 +1689,6 @@ def _register_panel(channel, *, service, store, queue) -> None:
     host.topic_outcome_queue = queue
     host._services_built = True
     server = AgentWebSocketServer()
-    host.bind_active_requests(server._recommendation_active_request_ids)
     host.bind_push(server._push_recommendation_event)
     server._recommendation_host = host
 
@@ -2229,10 +2228,20 @@ def test_topic_pools_isolate_by_work_mode(tmp_path):
         design_key
     )
     other_model = build_generation_trigger_key(**{**common, "model": "other"}, work_mode="work")
-    assert "model" not in build_serving_compatibility_key(work_key)
+    other_endpoint = build_generation_trigger_key(
+        **{**common, "model": "other", "generation_config_version": "cfg:base_url=https://other.example"},
+        work_mode="work",
+    )
+    serving = build_serving_compatibility_key(work_key)
+    assert "model" not in serving
+    assert "generation_config_version" not in serving
     assert serving_compatibility_keys_match(
-        {**build_serving_compatibility_key(work_key), "model": "legacy"},
+        {**serving, "model": "legacy"},
         build_serving_compatibility_key(other_model),
+    )
+    assert serving_compatibility_keys_match(
+        serving,
+        build_serving_compatibility_key(other_endpoint),
     )
 
     service = TopicService(
@@ -2257,11 +2266,21 @@ def test_topic_pools_isolate_by_work_mode(tmp_path):
         project_id=None,
         work_mode="design",
     )
+    code = service.serve(
+        "session-code",
+        context_scope=GLOBAL_NEW_CHAT_SCOPE,
+        project_id=None,
+        work_mode="code",
+    )
     assert work["available"] is True
-    assert design["available"] is True
     assert work["work_mode"] == "work"
+    # Packaged corpus stand-ins are work-only; design/code wait for personalized pools.
+    assert design["available"] is False
     assert design["work_mode"] == "design"
-    assert work["manifest_id"] != design["manifest_id"]
+    assert design.get("topics") in (None, [])
+    assert code["available"] is False
+    assert code["work_mode"] == "code"
+    assert code.get("topics") in (None, [])
 
 
 @pytest.mark.asyncio
@@ -2913,6 +2932,224 @@ async def test_turning_recommendation_on_prepares_past_the_preset_pool(tmp_path)
             work_mode="design",
         )
         assert design.get("preparation_state") != "preparing"
+        assert design["available"] is False
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_design_and_code_welcome_skip_packaged_presets(tmp_path):
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        GLOBAL_NEW_CHAT_SCOPE,
+        build_cold_start_cards,
+        write_cold_start_pool,
+    )
+
+    clock = [1_700_000_000.0]
+    store = TopicStarterStore(tmp_path / "recommendation.db")
+    service = TopicService(
+        store,
+        generate=None,
+        search_provider_id="test",
+        config_loader=lambda: ArkBackgroundConfig(
+            api_key="test", model="test", context_window_tokens=131072,
+        ),
+        enabled=False,
+        now=lambda: clock[0],
+    )
+    try:
+        work = service.serve(
+            "session-work",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+            work_mode="work",
+        )
+        assert work["available"] is True
+        assert len(work["topics"]) == 4
+
+        # Even a leftover design cold-start pool must not surface on the design welcome page.
+        design_trigger = service._trigger_key(
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+            work_mode="design",
+        )
+        written = write_cold_start_pool(
+            store,
+            build_cold_start_cards(trigger_key=design_trigger, now=clock[0]),
+            trigger_key=design_trigger,
+            created_at=clock[0],
+        )
+        assert written
+        design = service.serve(
+            "session-design",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+            work_mode="design",
+        )
+        code = service.serve(
+            "session-code",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+            work_mode="code",
+        )
+        assert design["available"] is False
+        assert code["available"] is False
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_design_welcome_serves_personalized_pool(tmp_path):
+    """design/code skip packaged presets but must still serve a real personalized pool."""
+
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        GLOBAL_NEW_CHAT_SCOPE,
+        LIST_SEARCH_VERSION,
+        PAYLOAD_VERSION,
+        POLICY_ID,
+        PROFILE_INTEREST_RECEIPT_VERSION,
+        build_serving_compatibility_key,
+    )
+
+    clock = [1_700_000_000.0]
+    store = TopicStarterStore(tmp_path / "recommendation.db")
+    service = TopicService(
+        store,
+        generate=None,
+        search_provider_id="test",
+        config_loader=lambda: ArkBackgroundConfig(
+            api_key="test", model="test", context_window_tokens=131072,
+        ),
+        enabled=False,
+        now=lambda: clock[0],
+    )
+    try:
+        trigger = service._trigger_key(
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+            work_mode="design",
+        )
+        batch_id = "v6-batch-design-personalized"
+        manifest_id = "v6-manifest-design-personalized"
+        revision_id = "v6-revision-design-personalized"
+        snapshot_id = "v6-input:design-personalized"
+        title = "Refine this visual system"
+        prompt = "Propose three layout refinements for the current design system"
+        card = {
+            "card_id": "candidate-design-personalized",
+            "card_revision_id": revision_id,
+            "generation_batch_id": batch_id,
+            "selector_rank": 1,
+            "category": "profile_interest_continuation",
+            "context_scope": GLOBAL_NEW_CHAT_SCOPE,
+            "project_id": None,
+            "work_mode": "design",
+            "interest_summary_id": "long-term-profile:1:unit-0001",
+            "source_starter_id": None,
+            "intent": title,
+            "title": title,
+            "prompt": prompt,
+            "effective_time": clock[0],
+            "expire_time": clock[0] + 7 * 24 * 60 * 60,
+            "evidence_bundle": {
+                "candidate_id": "candidate-design-personalized",
+                "fetch_status": "success",
+                "source_url": "profile://interest/unit-0001",
+                "source_kind": "authoritative",
+                "document_revision_id": "profile:unit-0001",
+                "host_receipt": {
+                    "receipt_version": PROFILE_INTEREST_RECEIPT_VERSION,
+                    "lane": "host_profile_interest_locator",
+                    "input_snapshot_id": snapshot_id,
+                    "interest_summary_id": "long-term-profile:1:unit-0001",
+                },
+            },
+            "search_provider_id": trigger["search_provider_id"],
+            "search_receipt": None,
+            "source_memory_unit_ids": ["unit-0001"],
+            "source_locators": [],
+            "project_source_locators": [],
+            "generation_input_snapshot_id": snapshot_id,
+            "profile_semantic_version": trigger["profile_semantic_version"],
+            "short_intent_version": trigger["short_intent_version"],
+            "component_receipts": {},
+            "component_invocation_receipts": [],
+            "provider_invocation_receipts": [],
+            "generation_config_version": trigger["generation_config_version"],
+            "list_search_version": LIST_SEARCH_VERSION,
+            "policy_id": POLICY_ID,
+            "payload_version": PAYLOAD_VERSION,
+        }
+        manifest = {
+            "manifest_id": manifest_id,
+            "generation_batch_id": batch_id,
+            "card_revision_ids": [revision_id],
+            "trigger_origin": "schedule_successor",
+            "local_date": trigger["local_date"],
+            "context_scope": GLOBAL_NEW_CHAT_SCOPE,
+            "project_id": None,
+            "work_mode": "design",
+            "generation_trigger_key": dict(trigger),
+            "generation_input_snapshot_id": snapshot_id,
+            "serving_compatibility_key": build_serving_compatibility_key(dict(trigger)),
+            "profile_semantic_version": trigger["profile_semantic_version"],
+            "short_intent_version": trigger["short_intent_version"],
+            "negative_preference_version": trigger["negative_preference_version"],
+            "component_receipts": {},
+            "generation_config_version": trigger["generation_config_version"],
+            "search_provider_id": trigger["search_provider_id"],
+            "list_search": {
+                "search_version": LIST_SEARCH_VERSION,
+                "bounded_beam_trace": {"entries": []},
+            },
+            "preference_pairs": [],
+            "policy_id": POLICY_ID,
+            "payload_version": PAYLOAD_VERSION,
+        }
+        assert store.record_events_atomic(
+            [
+                {
+                    "session_id": "v6-pool",
+                    "slate_id": manifest_id,
+                    "event_type": "starter_card",
+                    "topic_id": revision_id,
+                    "position": 1,
+                    "profile_version": card["profile_semantic_version"],
+                    "policy_id": POLICY_ID,
+                    "selection_mode": "pool_generation",
+                    "propensity_reason": "not_estimated",
+                    "payload": card,
+                    "created_at": clock[0],
+                },
+                {
+                    "session_id": "v6-pool",
+                    "slate_id": manifest_id,
+                    "event_type": "starter_slate_manifest",
+                    "topic_id": manifest_id,
+                    "profile_version": manifest["profile_semantic_version"],
+                    "policy_id": POLICY_ID,
+                    "selection_mode": "pool_generation",
+                    "propensity_reason": "not_estimated",
+                    "payload": manifest,
+                    "created_at": clock[0],
+                },
+            ]
+        )
+        design = service.serve(
+            "session-design-personalized",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+            work_mode="design",
+        )
+        assert design["available"] is True
+        assert design["work_mode"] == "design"
+        assert len(design["topics"]) >= 1
+        assert design["topics"][0]["card_revision_id"] == revision_id
+        assert all(
+            not topic.get("cold_start") for topic in design["topics"]
+        )
     finally:
         await service.shutdown()
 
@@ -2987,16 +3224,15 @@ async def test_preset_click_does_not_suppress_other_work_modes(tmp_path):
             topic["source_starter_id"] for topic in work_again["topics"]
         }
 
+        # Design never serves packaged presets, so a work click cannot leak there.
         design = service.serve(
             "session-design",
             context_scope=GLOBAL_NEW_CHAT_SCOPE,
             project_id=None,
             work_mode="design",
         )
-        assert any(
-            topic["source_starter_id"] == clicked["source_starter_id"]
-            for topic in design["topics"]
-        )
+        assert design["available"] is False
+        assert design.get("topics") in (None, [])
     finally:
         await service.shutdown()
 
@@ -3331,6 +3567,237 @@ async def test_recommendation_request_disables_thinking_for_every_model(
         "chat_template_kwargs": {"enable_thinking": False},
     }
     assert "reasoning_effort" not in captured[0]
+    # No stage budget hook → invoker default floor (never omit / never 4k provider default).
+    assert captured[0]["max_tokens"] == 16384
+
+
+def test_v6_max_tokens_matches_designer_structured_budgets() -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
+        _v6_max_tokens,
+    )
+
+    assert _v6_max_tokens("v6_session_summarizer") == 65536
+    assert _v6_max_tokens("v6_utility_scorer") == 32768
+    assert _v6_max_tokens("v6_hot_news_matcher") == 16384
+
+
+def test_clamp_topic_max_tokens_respects_context_window() -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
+        _clamp_topic_max_tokens,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
+        _output_budget_for_stage,
+        _v6_max_tokens,
+    )
+
+    # Half-window room keeps prompt fit from collapsing on small windows.
+    assert _clamp_topic_max_tokens(32768, context_window_tokens=8192) == 4096
+    assert _clamp_topic_max_tokens(16384, context_window_tokens=131072) == 16384
+    assert _output_budget_for_stage("rid_interest_distiller", 32768) == 16384
+    assert _output_budget_for_stage(
+        "v6_session_summarizer", 262144,
+    ) == _v6_max_tokens("v6_session_summarizer")
+
+
+def test_drop_expired_pool_cards_renumbers_live_ranks() -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pool import (
+        drop_expired_pool_cards,
+    )
+
+    now = 1_700_000_000.0
+    cards = [
+        {
+            "card_revision_id": "alive",
+            "selector_rank": 1,
+            "expire_time": now + 60,
+        },
+        {
+            "card_revision_id": "dead",
+            "selector_rank": 2,
+            "expire_time": now - 1,
+        },
+        {
+            "card_revision_id": "also-alive",
+            "selector_rank": 3,
+            "expire_time": now + 120,
+        },
+    ]
+    manifest = {"card_revision_ids": ["alive", "dead", "also-alive"], "other": 1}
+    live, updated = drop_expired_pool_cards(cards, manifest, now=now)
+    assert [card["card_revision_id"] for card in live] == ["alive", "also-alive"]
+    assert [card["selector_rank"] for card in live] == [1, 2]
+    assert updated["card_revision_ids"] == ["alive", "also-alive"]
+    assert updated["other"] == 1
+
+
+def test_topic_minimal_reasoning_prefers_off(monkeypatch) -> None:
+    from jiuwenswarm.agents.harness.common.recommendation import topic_model as tm
+
+    class _Capability:
+        options = ("off", "low", "medium", "high")
+
+    monkeypatch.setattr(
+        "openjiuwen.core.foundation.llm.get_reasoning_capability",
+        lambda **_kwargs: _Capability(),
+    )
+    config = tm.ArkBackgroundConfig(
+        api_key="k",
+        model="glm-4-flash",
+        base_url="https://example.com/v1",
+    )
+    assert tm._minimal_reasoning(config) == {"mode": "disabled"}
+
+
+@pytest.mark.asyncio
+async def test_recommendation_model_path_passes_minimal_reasoning(monkeypatch) -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
+        ArkBackgroundConfig,
+        build_ark_stage_invoker,
+    )
+
+    captured: dict[str, Any] = {}
+
+    class _Assistant:
+        content = "{}"
+        refusal = None
+        response_id = "resp-1"
+        response_model = "glm-4-flash"
+        finish_reason = "stop"
+        usage_metadata = None
+
+    class _Model:
+        async def invoke(self, messages, **kwargs):
+            captured["kwargs"] = kwargs
+            return _Assistant()
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.recommendation.topic_model._minimal_reasoning",
+        lambda _config: {"mode": "disabled"},
+    )
+    invoke = build_ark_stage_invoker(
+        ArkBackgroundConfig(api_key="k", model="glm-4-flash", expected_model="glm-4-flash"),
+        model_factory=lambda _config: _Model(),
+        max_tokens_for_stage=lambda _stage: 32768,
+        require_response_metadata=False,
+    )
+    await invoke("v6_utility_scorer", "system", "{}")
+    assert captured["kwargs"]["max_tokens"] == 32768
+    assert captured["kwargs"]["reasoning"] == {"mode": "disabled"}
+    assert captured["kwargs"]["extra_body"]["thinking"] == {"type": "disabled"}
+
+
+@pytest.mark.asyncio
+async def test_recommendation_model_path_drops_reasoning_on_http_400(monkeypatch) -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
+        ArkBackgroundConfig,
+        build_ark_stage_invoker,
+    )
+
+    calls: list[dict[str, Any]] = []
+
+    class _HttpError(Exception):
+        status_code = 400
+
+    class _Assistant:
+        content = "{}"
+        refusal = None
+        response_id = "resp-retry"
+        response_model = "glm-4-flash"
+        finish_reason = "stop"
+        usage_metadata = None
+
+    class _Model:
+        async def invoke(self, messages, **kwargs):
+            calls.append(dict(kwargs))
+            if "reasoning" in kwargs:
+                raise _HttpError("endpoint rejected reasoning")
+            return _Assistant()
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.recommendation.topic_model._minimal_reasoning",
+        lambda _config: {"mode": "disabled"},
+    )
+    receipts: list[dict[str, Any]] = []
+    invoke = build_ark_stage_invoker(
+        ArkBackgroundConfig(api_key="k", model="glm-4-flash", expected_model="glm-4-flash"),
+        model_factory=lambda _config: _Model(),
+        max_tokens_for_stage=lambda _stage: 4096,
+        require_response_metadata=False,
+        receipt_sink=receipts.append,
+    )
+    result = await invoke("v6_utility_scorer", "system", "{}")
+    assert result == {}
+    assert len(calls) == 2
+    assert "reasoning" in calls[0]
+    assert "reasoning" not in calls[1]
+    assert any(item.get("reasoning_dropped") is True for item in receipts)
+
+
+@pytest.mark.asyncio
+async def test_v6_ark_stage_invoker_caps_parallel_provider_calls() -> None:
+    """Utility/diversity used to fan out past provider max_parallel_requests."""
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
+        ArkBackgroundConfig,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
+        _TOPIC_ARK_STAGE_CONCURRENCY,
+        build_v6_ark_stage_invoker,
+    )
+
+    class _Message:
+        content = "{}"
+        refusal = None
+
+    class _Choice:
+        message = _Message()
+        finish_reason = "stop"
+
+    class _Response:
+        id = "provider-response"
+        object = "chat.completion"
+        model = "Qwen3.8-Flash"
+        usage = None
+        choices = [_Choice()]
+
+    peak = 0
+    inflight = 0
+    lock = asyncio.Lock()
+
+    class _Completions:
+        async def create(self, **_kwargs):
+            nonlocal peak, inflight
+            async with lock:
+                inflight += 1
+                peak = max(peak, inflight)
+            await asyncio.sleep(0.05)
+            async with lock:
+                inflight -= 1
+            return _Response()
+
+    class _Client:
+        class chat:  # noqa: N801 - mimics the OpenAI client shape
+            completions = _Completions()
+
+        async def close(self) -> None:
+            return None
+
+    limit = 2
+    invoke = build_v6_ark_stage_invoker(
+        ArkBackgroundConfig(
+            api_key="test", model="Qwen3.8-Flash", expected_model="Qwen3.8-Flash",
+        ),
+        client_factory=lambda **_kwargs: _Client(),
+        max_concurrency=limit,
+    )
+    assert invoke.max_concurrency == limit
+    assert _TOPIC_ARK_STAGE_CONCURRENCY == 3
+
+    await asyncio.gather(*(
+        invoke("v6_utility_scorer", "system", '{"request_id":"r","candidates":[]}')
+        for _ in range(6)
+    ))
+    assert peak == limit
+    assert inflight == 0
 
 
 @pytest.mark.asyncio
@@ -3435,7 +3902,65 @@ async def test_recommendation_stage_invoker_uses_core_model_factory() -> None:
         "enable_thinking": False,
         "chat_template_kwargs": {"enable_thinking": False},
     }
-    assert captured[0]["response_format"]["type"] == "json_object"
+    assert "response_format" not in captured[0]
+
+
+@pytest.mark.asyncio
+async def test_recommendation_stage_invoker_parses_fenced_json_without_response_format() -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
+        ArkBackgroundConfig,
+        build_ark_stage_invoker,
+    )
+
+    class _Message:
+        content = 'Here you go:\n```json\n{"ok": true, "items": [1]}\n```\n'
+        refusal = None
+
+    class _Choice:
+        message = _Message()
+        finish_reason = "stop"
+
+    class _Response:
+        id = "provider-response"
+        object = "chat.completion"
+        model = "DeepSeek-V4.1-Flash"
+        usage = None
+        choices = [_Choice()]
+
+    captured: list[dict] = []
+    receipts: list[dict] = []
+
+    class _Completions:
+        async def create(self, **kwargs):
+            captured.append(kwargs)
+            return _Response()
+
+    class _Client:
+        class chat:  # noqa: N801 - mimics the OpenAI client shape
+            completions = _Completions()
+
+        async def close(self) -> None:
+            return None
+
+    invoke = build_ark_stage_invoker(
+        ArkBackgroundConfig(
+            api_key="test",
+            model="DeepSeek-V4.1-Flash",
+            expected_model="DeepSeek-V4.1-Flash",
+        ),
+        client_factory=lambda **_kwargs: _Client(),
+        receipt_sink=receipts.append,
+    )
+    assert await invoke("v6_utility_scorer", "system", "{}") == {
+        "ok": True,
+        "items": [1],
+    }
+    assert "response_format" not in captured[0]
+    assert any(
+        receipt.get("structured_output_mode") == "prompt_json"
+        and receipt.get("status") == "parsed"
+        for receipt in receipts
+    )
 
 
 def test_memory_response_schema_omits_array_keywords_dashscope_rejects() -> None:
@@ -3570,7 +4095,7 @@ async def test_recommendation_host_stop_failure_does_not_escape() -> None:
 @pytest.mark.asyncio
 async def test_rebind_reports_success_when_recommendation_hook_fails(monkeypatch) -> None:
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_to_agent_response
-    from jiuwenswarm.common.e2a.models import E2AResponse
+    from e2a.models import E2AResponse
     from jiuwenswarm.common.schema.agent import AgentRequest
     from jiuwenswarm.common.schema.message import ReqMethod
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
@@ -3636,3 +4161,15 @@ async def test_rebind_reports_success_when_recommendation_hook_fails(monkeypatch
     response = e2a_response_to_agent_response(E2AResponse.from_dict(socket.frames[-1]))
     assert response.ok is True
     assert response.payload["project_id"] == "proj-new"
+
+
+def test_topic_service_has_no_pending_hold_or_manual_retry() -> None:
+    """Replenishment uses the durable completed boundary; no inflight hold / retry origin."""
+
+    from jiuwenswarm.agents.harness.common.recommendation import topic_service as ts
+
+    assert "manual_retry" not in ts._ORIGIN_RANK
+    assert "chat_request_inflight" not in ts._QUIET_OUTCOMES
+    assert not hasattr(ts.TopicService, "_held_for_chat")
+    assert not hasattr(ts.TopicService, "_keep_for_chat")
+    assert not hasattr(ts.TopicService, "scope_has_pending_request")

@@ -1,10 +1,12 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
 import time
+
 import pytest
+from e2a.constants import E2A_RESPONSE_KIND_PLAN_APPROVAL_REQUIRED
+from e2a.models import E2AEnvelope, E2AResponse
 
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-from jiuwenswarm.common.e2a.constants import E2A_RESPONSE_KIND_PLAN_APPROVAL_REQUIRED
 from jiuwenswarm.common.e2a.gateway_normalize import (
     E2A_FALLBACK_FAILED_KEY,
     E2A_INTERNAL_CONTEXT_KEY,
@@ -16,7 +18,6 @@ from jiuwenswarm.common.e2a.gateway_normalize import (
     message_to_e2a_or_fallback,
     message_to_legacy_agent_dict,
 )
-from jiuwenswarm.common.e2a.models import E2AEnvelope, E2AResponse
 from jiuwenswarm.common.schema.message import Message, ReqMethod
 
 
@@ -291,8 +292,9 @@ def test_e2a_response_to_agent_chunk_plan_approval_required():
 @pytest.mark.parametrize("event_type", ["chat.delta", "chat.reasoning", "chat.final"])
 @pytest.mark.parametrize("source", ["org_expert_background", "org_summary_background", "org_root_delivery"])
 def test_organization_identity_survives_protocol_package_roundtrip(entrypoint, event_type, source):
-    from jiuwenswarm.common import e2a
-    from jiuwenswarm.common.e2a import gateway_normalize, wire_codec
+    import e2a
+    from jiuwenswarm.common.e2a import gateway_normalize
+    from e2a import wire_codec
     from jiuwenswarm.common.schema.agent import AgentResponseChunk
 
     payload = {
@@ -320,7 +322,7 @@ def test_organization_identity_survives_protocol_package_roundtrip(entrypoint, e
 
 @pytest.mark.parametrize("payload", [None, {}, {"event_type": "chat.delta", "content": "plain"}])
 def test_non_organization_normalization_keeps_protocol_behavior(payload):
-    from openjiuwen_protocol.e2a import gateway_normalize as protocol
+    from e2a import gateway_normalize as protocol
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
     from jiuwenswarm.common.schema.agent import AgentResponseChunk
 

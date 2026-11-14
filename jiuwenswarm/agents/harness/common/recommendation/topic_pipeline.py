@@ -28,7 +28,9 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_audit import (
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
     ArkBackgroundConfig,
+    _clamp_topic_max_tokens,
     build_ark_stage_invoker,
+    invoke_stage_with_shape_repair,
     persist_provider_invocation,
     provider_validation,
     record_provider_validation,
@@ -60,6 +62,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_prepare import (
 from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
     COMPONENT_INVOCATION_RECEIPT_VERSION,
     DEFAULT_TOPIC_WORK_MODE,
+    TOPIC_WORK_MODES,
     GLOBAL_NEW_CHAT_SCOPE,
     GLOBAL_PROJECT_BUCKETS,
     GROUNDING_DECISION_RECEIPT_VERSION,
@@ -128,14 +131,13 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_selection import (
     DiversityScoringResult,
     ListSearchConstraints,
     SelectionCandidate,
+    coerce_diversity_scorer_payload,
+    coerce_utility_scorer_payload,
     hybrid_list_search,
     news_only_search_result,
     score_diversity,
     score_interaction_utility,
     utility_scores_by_id,
-)
-from jiuwenswarm.agents.harness.common.recommendation.topic_service import (
-    V6_BACKGROUND_GENERATION_DEADLINE_SECONDS,
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_short_intent import (
     MIN_DRIFT_SAMPLES,
@@ -196,28 +198,33 @@ _RID_THRESHOLD_VERSION = "icebreaker-api-proxy-threshold-v1"
 _RID_NOTHING_TO_JUDGE = "no_rid_input"
 GLOBAL_INTEREST_PROMPT_VERSION = "topic-starter-v6-global-interest-v26"
 PROJECT_CONTINUATION_PROMPT_VERSION = "topic-starter-v6-project-continuation-v15"
-MEMORY_INCREMENTAL_PROMPT_VERSION = "topic-starter-v6-memory-incremental-v8"
+MEMORY_INCREMENTAL_PROMPT_VERSION = "topic-starter-v6-memory-incremental-v10"
 RECENT_PLANNER_PROMPT_VERSION = "topic-starter-v6-recent-planner-v5"
 RECENT_FINALIZER_PROMPT_VERSION = "topic-starter-v6-recent-finalizer-v2"
 PROJECT_DOMAIN_PROMPT_VERSION = "topic-starter-v6-project-domain-v3"
 HOT_NEWS_MATCHER_PROMPT_VERSION = "topic-starter-v6-hot-news-matcher-v6"
 BEHAVIOR_MAPPING_PROMPT_VERSION = "topic-starter-v6-behavior-mapping-v2"
-MEMORY_INIT_PROMPT_VERSION = "topic-starter-v6-memory-init-v1"
+MEMORY_INIT_PROMPT_VERSION = "topic-starter-v6-memory-init-v3"
 UTILITY_CONFIG_VERSION = "topic-starter-v6-utility-api-v41"
 DIVERSITY_CONFIG_VERSION = "topic-starter-v6-diversity-api-v12"
 # Diversity answers each pair in turn: smaller batches sent together finish sooner.
 DIVERSITY_PAIR_BATCH_SIZE = 5
 DIVERSITY_MARGINAL_BATCH_SIZE = 12
-# Utility judges each card on its own: a few cards per call, all calls sent together.
+# Utility judges each card on its own: a few cards per call; in-flight calls share
+# the stage invoker's concurrency slots with diversity and other Ark stages.
 UTILITY_CANDIDATE_BATCH_SIZE = 3
+# Cap concurrent Ark stage calls for one topic generation. Utility+diversity used
+# to fan out past common provider max_parallel_requests (~10) and fail with 429.
+# Match session-summary / native-search caps in this package.
+_TOPIC_ARK_STAGE_CONCURRENCY = 3
 SHORT_INTENT_SNAPSHOT_PREFIX = "v6-short"
 MAX_FROZEN_DOCUMENT_CHARS = 8_000
 _PROFILE_INTEREST_CATEGORY = "profile_interest_continuation"
-# A retained card is republished when the run that carries it finishes, and the
-# service caps one run at V6_BACKGROUND_GENERATION_DEADLINE_SECONDS. A card with
-# less life left than that would expire inside its own pool write and take the
-# whole pool with it, so it stays in the pool it already has.
-_RETAINED_MINIMUM_REMAINING_SECONDS = V6_BACKGROUND_GENERATION_DEADLINE_SECONDS
+# A retained card is republished when the run that carries it finishes. Plan-time
+# selection keeps a margin at least as large as one long provider call (topic
+# client timeout is 1200s). Write-time still re-checks expire_time so a slow
+# multi-stage run cannot poison the pool with already-expired retained cards.
+_RETAINED_MINIMUM_REMAINING_SECONDS = 1200.0
 # The project domain, global recent and hot-news lanes add cards a pool can do
 # without (D10, D22). Once the mandatory lane is ready they get this much longer,
 # generation and web evidence included; they normally finish within 45 seconds.
@@ -253,6 +260,8 @@ _SUMMARY_MAX_USER_CHARS = 1_500
 _SUMMARY_MAX_ANSWER_CHARS = 1_500
 _SUMMARY_MAX_SESSION_CHARS = 8_000
 _SUMMARY_TRUNCATION_MARKER = "…"
+# Legacy per-session summary padding kept only for call sites that still pass an
+# explicit reserved_output; new fits use ``_output_budget_for_stage``.
 _SUMMARY_RESERVED_OUTPUT_TOKENS = 256
 _SUMMARY_BASE_RESERVED_OUTPUT_TOKENS = 512
 # Batches are independent calls; a first preparation of a long history would
@@ -266,6 +275,7 @@ _SUMMARY_SESSION_LIMIT = 50
 # RID reads a bounded slice of the summaries; the short-delta sessions are always kept.
 _RID_SESSION_SUMMARY_LIMIT = 30
 _RID_FEEDBACK_MESSAGE_CHARS = 800
+# Fallback only; RID fit prefers ``_output_budget_for_stage("rid_interest_distiller", …)``.
 _RID_RESERVED_OUTPUT_TOKENS = 2_048
 
 
@@ -499,12 +509,16 @@ _V6_MEMORY_INIT_SYSTEM_PROMPT = (
     "你是 Topic Starter v6 的 RecGPT-v3 长期画像压缩器。只输出 JSON "
     "{\"units\":[...]}。每个 unit 必须包含且仅包含 behavior_pattern、"
     "preference_summary、representative_behavior_indices、preferred_entities、"
-    "temporal_activity。behavior_pattern 必须逐字复制该 unit 所引用行为已有的同一个"
-    " tag，禁止添加 taxonomy:: 前缀、层级后缀或自造复合标签；同一 unit 只能引用"
-    " tag 相同的行为。representative_behavior_indices 只能使用输入 index，unit 内"
-    "不得重复、unit 之间不得重叠。只压缩用户自有证据，不生成 timestamp。"
+    "temporal_activity。"
+    "behavior_pattern 不是中文兴趣名：必须逐字等于该 unit 所引用行为的同一个输入 "
+    "tag（taxonomy id 或 provisional:<slug>），禁止 taxonomy:: 前缀、层级后缀、"
+    "中文名或自造复合标签。同一 unit 只能引用 tag 相同的行为。"
+    "representative_behavior_indices 只能使用输入 index，unit 内不得重复、"
+    "unit 之间不得重叠。只压缩用户自有证据，不生成 timestamp。"
     "单次今天/明天的安排只描述当次计划，不能归纳成长期习惯；代问不等于"
     "本人兴趣。明确区分稳定偏好、临时目标、已完成事项与暂时暂停。"
+    "对照（非本轮事实）：行为 1、2 的 tag 都是 tech-ai-ml、内容谈 AI 测试 → "
+    "unit.behavior_pattern 必须是 \"tech-ai-ml\"，不能写「人工智能」或「AI测试」。"
 )
 _V6_MEMORY_INCREMENTAL_SYSTEM_PROMPT = (
     "Topic Starter v6 长期画像增量整理。快速决定，只输出 JSON "
@@ -513,13 +527,22 @@ _V6_MEMORY_INCREMENTAL_SYSTEM_PROMPT = (
     "updated_units 覆盖每个旧 unit_id 恰好一次：无关 {unit_id,operation:\"retain\"}；"
     "相关 {unit_id,operation:\"update\",core}。core/new_units 仅含 "
     "behavior_pattern、preference_summary、representative_behavior_indices、"
-    "preferred_entities、temporal_activity；behavior_pattern 逐字用输入 tag，"
-    "禁止 taxonomy::/后缀/复合标签。每个新 index 只能归属一个 update、新 unit 或 "
-    "unmatched；保留旧支撑 index；不生成 timestamp；不能全 retain 后省略 delta。"
+    "preferred_entities、temporal_activity。"
+    "behavior_pattern 不是中文兴趣名：必须逐字等于所引用行为的同一个输入 tag，"
+    "禁止 taxonomy::/后缀/中文名/复合标签；update 时优先沿用该 unit 原有 "
+    "behavior_pattern。"
+    "每个新 index 只能归属一个 update、新 unit 或 unmatched；保留旧支撑 index；"
+    "不生成 timestamp。若本轮 delta 与某 unit 无关，对该 unit 写 retain，"
+    "不要输出空 update。"
     "update 用相关原文刷新目标/纠正/任务状态；单次安排与暂时限制不是永久偏好；"
     "已完成不作待办。暂停/恢复/纠正/完成更新原单元，不另建。只有用户原文进 core；"
     "助手建议/解释/样例进 unmatched。update 支撑=旧支撑∪新引用 index。"
-    "new_units：同 tag 可凭明确目标/纠正单条建单元；其他单条或无关提问进 unmatched。"
+    "new_units 仅用于同 tag 的新兴趣；其他零散行为进 unmatched_behavior_indices。"
+    "对照（非本轮事实）：旧 unit A pattern=tech-ai-ml 支撑 [1,2]；delta 3=用户"
+    "「这两周先不练」、4=助手举例、5=用户明确「想学变魔术」(另一 tag)、6=零散提问。"
+    "正确：A 用 3 update 且 pattern 仍为 tech-ai-ml、支撑 [1,2,3]；5 进 new_units"
+    "且 pattern=该输入 tag；4 与 6 进 unmatched。错误：pattern 写「人工智能」、"
+    "空 update 不带 delta、为助手举例建 unit。"
 )
 _V6_TAG_SCHEMA = {
     "anyOf": [
@@ -857,14 +880,46 @@ def _v6_system_prompt(stage: str, supplied_prompt: str) -> str:
     return supplied_prompt
 
 
-def _v6_max_tokens(stage: str) -> int | None:
-    """Cap the one answer that grows with its input, a scope's summaries, above provider defaults.
+def _v6_max_tokens(stage: str) -> int:
+    """Completion budget for JSON stages (aligned with Designer structured calls).
 
-    Doubao's default 4,096 answer tokens cut a global summary off; every other
-    stage answers well within any default and keeps it.
+    Providers often default near 4,096; always-think models share that budget with
+    reasoning, so truncated JSON fails closed. Never omit ``max_tokens`` — raise
+    it high enough that content can finish after reasoning, matching Designer's
+    16k–65k structured-output practice.
     """
 
-    return 16384 if stage == "v6_session_summarizer" else None
+    if stage == "v6_session_summarizer":
+        return 65536
+    if stage in {
+        "v6_utility_scorer",
+        "v6_diversity_scorer",
+        "v6_global_interest_generator",
+        "v6_recent_candidate_generator",
+        "v6_project_continuation_generator",
+        "v6_project_domain_candidate_generator",
+        "v6_recent_finalizer",
+        "behavior_map_batch",
+        "memory_init",
+        "memory_incremental",
+        "rid_interest_distiller",
+    }:
+        return 32768
+    return 16384
+
+
+def _output_budget_for_stage(stage: str, context_window_tokens: int) -> int:
+    """Completion tokens reserved when fitting prompts into ``context_window_tokens``.
+
+    Must match the ``max_tokens`` the stage invoker will actually send after the
+    context-window clamp (at most half the window), so fit leaves real prompt
+    room and ``prompt + max_tokens`` cannot exceed the window.
+    """
+
+    return _clamp_topic_max_tokens(
+        _v6_max_tokens(stage),
+        context_window_tokens=context_window_tokens,
+    )
 
 
 _V6_PROMPT_VERSIONS = {
@@ -1022,11 +1077,19 @@ def build_v6_ark_stage_invoker(
     *,
     client_factory: Callable[..., Any] | None = None,
     receipt_sink: Callable[[dict[str, Any]], None] | None = None,
+    max_concurrency: int | None = None,
 ) -> StageInvoker:
-    """Use strict JSON Schema and require immutable provider metadata."""
+    """Prompt-json stage invoker with lineage receipts and provider metadata checks.
+
+    One generation run shares a semaphore across every Ark stage call so utility,
+    diversity and other batches cannot open more parallel provider requests than
+    ``max_concurrency`` (default ``_TOPIC_ARK_STAGE_CONCURRENCY``).
+    """
 
     kwargs: dict[str, Any] = {
         "receipt_sink": receipt_sink,
+        # Schema hook kept for call-site compatibility; invoker does not send
+        # API response_format (general models / Flash / DeepSeek).
         "response_schema_for_stage": _v6_response_schema,
         "require_response_metadata": True,
         "max_tokens_for_stage": _v6_max_tokens,
@@ -1039,13 +1102,20 @@ def build_v6_ark_stage_invoker(
         config,
         **kwargs,
     )
+    concurrency = (
+        _TOPIC_ARK_STAGE_CONCURRENCY
+        if max_concurrency is None
+        else max(1, int(max_concurrency))
+    )
+    slots = asyncio.Semaphore(concurrency)
 
     async def invoke(stage: str, system_prompt: str, payload: str) -> Any:
-        return await base_invoke(
-            stage,
-            _v6_system_prompt(stage, system_prompt),
-            payload,
-        )
+        async with slots:
+            return await base_invoke(
+                stage,
+                _v6_system_prompt(stage, system_prompt),
+                payload,
+            )
 
     setattr(invoke, "record_validation", getattr(base_invoke, "record_validation", None))
     receipts = getattr(base_invoke, "invocation_receipts", None)
@@ -1054,6 +1124,7 @@ def build_v6_ark_stage_invoker(
     close = getattr(base_invoke, "aclose", None)
     if callable(close):
         setattr(invoke, "aclose", close)
+    setattr(invoke, "max_concurrency", concurrency)
     return invoke
 
 
@@ -1983,7 +2054,10 @@ Return only {"scores":[{"candidate_id":"...",
 "given_conditions":[{"card_quote":"...","condition":"...","source":"user","source_quote":"..."}],
 "reason":"premise support and specific justification","admitted":true,
 "click_score_nullable":0.0,"depth_score_nullable":0.0,"combined_utility_nullable":0.0}]}.
-Cover every input ID exactly once with finite numbers in [0,1].
+Cover every input ID exactly once. Each score object uses exactly those keys —
+no extras, no markdown fence. admitted must be a JSON boolean (true/false), not a
+string. Score fields must be finite numbers in [0,1] or null. Empty
+assertion_spans / given_conditions are [] when the card asserts nothing.
 
 Keep question_focus within 40 Chinese characters. Keep reason within 140 Chinese
 characters (or 100 English words). Preserve the required closest-question
@@ -1996,7 +2070,9 @@ Estimate uncalibrated semantic diversity only for requested_pairs and
 requested_marginal_candidate_ids. Return only {"pairwise_scores":[{
 "left_candidate_id":"...","right_candidate_id":"...",
 "reason":"the core explanation each answer rests on","compatible":true,"diversity_score_nullable":0.0}],"marginal_scores":[{"candidate_id":"...",
-"marginal_diversity_nullable":0.0}]}. Echo every requested unordered pair and
+"marginal_diversity_nullable":0.0}]}. Use exactly those keys — no extras, no
+markdown fence. compatible must be a JSON boolean; score fields number or null.
+Echo every requested unordered pair and
 marginal ID exactly once, return no unrequested IDs, and return an empty output
 array when its corresponding requested input array is empty.
 For each pair, write reason before compatible: state the core explanation the left
@@ -2171,6 +2247,7 @@ def _validate_diversity_api_batch(
     requested_pairs: Sequence[tuple[str, str]],
     requested_marginal_ids: Sequence[str],
 ) -> dict[str, list[dict[str, Any]]]:
+    raw = coerce_diversity_scorer_payload(raw)
     _rejected2 = (
         not isinstance(raw, dict)
         or set(raw) != {"pairwise_scores", "marginal_scores"}
@@ -2297,33 +2374,44 @@ async def _invoke_batched_diversity_proxy(
         requested_marginal_ids = (
             marginal_batches[index] if index < len(marginal_batches) else []
         )
-        raw = await invoke_stage(
+        request_payload = json.dumps(
+            {
+                "input_snapshot_id": payload.get("input_snapshot_id"),
+                "discussion_coverage": payload.get("discussion_coverage", []),
+                "candidates": candidates,
+                "requested_pairs": [
+                    {
+                        "left_candidate_id": left,
+                        "right_candidate_id": right,
+                    }
+                    for left, right in requested_pairs
+                ],
+                "requested_marginal_candidate_ids": requested_marginal_ids,
+                "request_id": payload.get("request_id"),
+            },
+            ensure_ascii=False,
+        )
+
+        validated: list[dict[str, list[dict[str, Any]]]] = []
+
+        def validate(raw: Any) -> None:
+            validated.append(
+                _validate_diversity_api_batch(
+                    raw,
+                    requested_pairs=requested_pairs,
+                    requested_marginal_ids=requested_marginal_ids,
+                )
+            )
+
+        await invoke_stage_with_shape_repair(
+            invoke_stage,
             "v6_diversity_scorer",
             _DIVERSITY_PROMPT,
-            json.dumps(
-                {
-                    "input_snapshot_id": payload.get("input_snapshot_id"),
-                    "discussion_coverage": payload.get("discussion_coverage", []),
-                    "candidates": candidates,
-                    "requested_pairs": [
-                        {
-                            "left_candidate_id": left,
-                            "right_candidate_id": right,
-                        }
-                        for left, right in requested_pairs
-                    ],
-                    "requested_marginal_candidate_ids": requested_marginal_ids,
-                    "request_id": payload.get("request_id"),
-                },
-                ensure_ascii=False,
-            ),
+            request_payload,
+            coerce=coerce_diversity_scorer_payload,
+            validate=validate,
         )
-        with provider_validation(invoke_stage, raw):
-            return _validate_diversity_api_batch(
-                raw,
-                requested_pairs=requested_pairs,
-                requested_marginal_ids=requested_marginal_ids,
-            )
+        return validated[-1]
 
     batch_tasks = tuple(
         asyncio.create_task(invoke_batch(index)) for index in range(batch_count)
@@ -3545,15 +3633,13 @@ def _fit_summary_session(
 ) -> dict[str, Any] | None:
     """Drop the oldest turns until one session fits the context window."""
 
+    reserved_output = _output_budget_for_stage("v6_session_summarizer", limit)
     while True:
         estimate = _summary_batch_estimate(
             counter,
             snapshot,
             [payload],
-            reserved_output=(
-                _SUMMARY_BASE_RESERVED_OUTPUT_TOKENS
-                + _SUMMARY_RESERVED_OUTPUT_TOKENS
-            ),
+            reserved_output=reserved_output,
         )
         if estimate <= limit:
             return payload
@@ -3590,16 +3676,14 @@ def _plan_summary_batches(
 
     batches: list[list[int]] = []
     current: list[int] = []
+    reserved_output = _output_budget_for_stage("v6_session_summarizer", limit)
     for position in range(len(payloads)):
         candidate = current + [position]
         estimate = _summary_batch_estimate(
             counter,
             snapshot,
             [payloads[index] for index in candidate],
-            reserved_output=(
-                _SUMMARY_BASE_RESERVED_OUTPUT_TOKENS
-                + _SUMMARY_RESERVED_OUTPUT_TOKENS * len(candidate)
-            ),
+            reserved_output=reserved_output,
         )
         if estimate <= limit:
             current = candidate
@@ -3716,7 +3800,7 @@ def _fit_rid_inputs_to_budget(
         return counter.estimate_stage_tokens(
             _RID_API_SYSTEM_PROMPT,
             _rid_request_estimate_payload(rid_inputs),
-            _RID_RESERVED_OUTPUT_TOKENS,
+            _output_budget_for_stage("rid_interest_distiller", limit),
         )
 
     while True:
@@ -4627,12 +4711,10 @@ class TopicPipeline:
         classify_source: SourceClassifier = default_v6_source_classifier,
         news_feed: WebSearchFn | None = None,
         hot_list: HotListFeed | None = None,
-        active_request_ids_loader: Callable[[], Iterable[str]] | None = None,
         now: Callable[[], float] = time.time,
     ) -> None:
         self.store = store
         self._now = now
-        self._active_request_ids_loader = active_request_ids_loader or (lambda: ())
         self._news_feed: WebSearchFn = news_feed or BingNewsFeed(now=now)
         self._hot_list = hot_list or HotListFeed(store, now=now)
         self._records_loader = records_loader or history.load_all_session_records
@@ -4704,69 +4786,6 @@ class TopicPipeline:
         if not reason:
             await self._summarize_completed_sessions(config)
         return reason
-
-    def scope_has_pending_request(
-        self,
-        context_scope: str,
-        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
-    ) -> bool:
-        """A source session of the scope has a request the host is still running.
-
-        The history projection marks a request without its completion row as
-        ``request_pending``; it counts only while the gateway still runs it, so
-        a request lost to a restart cannot hold replenishment.
-        """
-
-        project_id_for_scope(context_scope)
-        normalized_work_mode = normalize_topic_work_mode(work_mode)
-        live = set(self._active_request_ids_loader())
-        if not live:
-            return False
-        records = self.completed_records_loader()
-        metadata, _ = get_all_sessions_metadata(limit=1_000_000, offset=0)
-        project_by_session = {
-            str(item.get("session_id") or ""): (str(item.get("project_id") or "") or None)
-            for item in metadata
-            if str(item.get("session_id") or "")
-        }
-        work_mode_by_session = {
-            str(item.get("session_id") or ""): normalize_topic_work_mode(
-                item.get("work_mode")
-            )
-            for item in metadata
-            if str(item.get("session_id") or "")
-        }
-        for session_id, session_records in records.items():
-            session_project_id = project_by_session.get(session_id)
-            if not (
-                _scope_matches(session_project_id, context_scope)
-                or (
-                    context_scope == GLOBAL_NEW_CHAT_SCOPE
-                    and str(session_project_id or "") not in GLOBAL_PROJECT_BUCKETS
-                )
-            ):
-                continue
-            if not _work_mode_matches(
-                work_mode_by_session.get(session_id),
-                normalized_work_mode,
-            ):
-                continue
-            trailing: dict[str, Any] | None = None
-            for record in reversed(session_records):
-                if not isinstance(record, dict):
-                    continue
-                role = str(record.get("role") or "").casefold()
-                if role not in {"user", "human", "request_pending"}:
-                    continue
-                trailing = record
-                break
-            if (
-                trailing is not None
-                and str(trailing.get("role") or "").casefold() == "request_pending"
-                and str(trailing.get("request_id") or "") in live
-            ):
-                return True
-        return False
 
     def scope_input_revision(
         self,
@@ -5415,11 +5434,20 @@ class TopicPipeline:
                 ]
             return result
         except TerminalGenerationRejection as exc:
-            logger.info(
-                "Topic Starter v6 terminal generation rejected: %s",
-                exc.reason,
-            )
-            return failed_result(
+            cause = exc.__cause__
+            if cause is not None:
+                logger.info(
+                    "Topic Starter v6 terminal generation rejected: %s cause=%s:%s",
+                    exc.reason,
+                    type(cause).__name__,
+                    cause,
+                )
+            else:
+                logger.info(
+                    "Topic Starter v6 terminal generation rejected: %s",
+                    exc.reason,
+                )
+            result = failed_result(
                 exc.reason,
                 grounding_decision_receipt=(
                     exc.grounding_decision_receipt or latest_grounding_receipt
@@ -5430,15 +5458,29 @@ class TopicPipeline:
                 ),
                 rid_result=exc.rid_result,
             )
-        except Exception:  # noqa: BLE001 - no partial cards leave this boundary
-            logger.warning("Topic Starter v6 terminal generation failed", exc_info=True)
-            return failed_result(
+            if cause is not None:
+                result.manifest["failure_cause"] = {
+                    "exc_type": type(cause).__name__,
+                    "message": str(cause)[:500],
+                }
+            return result
+        except Exception as exc:  # noqa: BLE001 - no partial cards leave this boundary
+            logger.warning(
+                "Topic Starter v6 terminal generation failed",
+                exc_info=True,
+            )
+            result = failed_result(
                 "terminal_generation_failed",
                 grounding_decision_receipt=latest_grounding_receipt,
                 grounding_evidence_receipt=(
                     latest_grounding_evidence_receipt
                 ),
             )
+            result.manifest["failure_cause"] = {
+                "exc_type": type(exc).__name__,
+                "message": str(exc)[:500],
+            }
+            return result
         finally:
             if owned_search_provider is not None:
                 close = getattr(owned_search_provider, "aclose", None)
@@ -5473,8 +5515,13 @@ class TopicPipeline:
         if loaded is None:
             return failed("no_news_card_to_replace")
         predecessor, predecessor_cards = loaded
+        work_mode = normalize_topic_work_mode(
+            trigger_key.get("work_mode") if isinstance(trigger_key, Mapping) else None
+        )
         try:
-            snapshot = await asyncio.to_thread(self._context_loader, GLOBAL_NEW_CHAT_SCOPE)
+            snapshot = await asyncio.to_thread(
+                self._context_loader, GLOBAL_NEW_CHAT_SCOPE, work_mode
+            )
         except StateUnavailableError:
             return failed("state_unavailable")
         except Exception:  # noqa: BLE001 - generation input is fail closed
@@ -6048,21 +6095,40 @@ class TopicPipeline:
             logger.warning("Topic Starter v6 summary preparation failed", exc_info=True)
             return
         scopes = sorted(pending_by_scope)
+        jobs = [
+            (scope, work_mode)
+            for scope in scopes
+            for work_mode in TOPIC_WORK_MODES
+        ]
         reasons = await asyncio.gather(*(
-            self._summarize_scope_sessions(config, scope, pending_by_scope[scope]) for scope in scopes
+            self._summarize_scope_sessions(
+                config, scope, pending_by_scope[scope], work_mode=work_mode,
+            )
+            for scope, work_mode in jobs
         ))
-        for scope, reason in zip(scopes, reasons):
+        for (scope, work_mode), reason in zip(jobs, reasons):
             if reason:
-                logger.info("Topic Starter v6 session summaries not written for %s: %s", scope, reason)
+                logger.info(
+                    "Topic Starter v6 session summaries not written for %s work_mode=%s: %s",
+                    scope,
+                    work_mode,
+                    reason,
+                )
 
     async def _summarize_scope_sessions(
         self,
         config: ArkBackgroundConfig,
         context_scope: str,
         session_ids: set[str],
+        *,
+        work_mode: str = DEFAULT_TOPIC_WORK_MODE,
     ) -> str:
         try:
-            snapshot = await asyncio.to_thread(self._context_loader, context_scope)
+            snapshot = await asyncio.to_thread(
+                self._context_loader,
+                context_scope,
+                normalize_topic_work_mode(work_mode),
+            )
         except TerminalGenerationRejection as exc:
             return exc.reason
         except StateUnavailableError:
@@ -6183,7 +6249,6 @@ class TopicPipeline:
         config: ArkBackgroundConfig,
         invoke_stage: StageInvoker,
         decision_time: float | None = None,
-        retry_empty: bool = False,
     ) -> Any:
         binding = _api_binding(
             RID_COMPONENT_ID,
@@ -6290,7 +6355,6 @@ class TopicPipeline:
             reuse_key=reuse_key,
             rid_inputs=rid_inputs,
             invoke_stage=invoke_stage,
-            retry_empty=retry_empty,
         )
         if reused is not None:
             return reused
@@ -6407,7 +6471,6 @@ class TopicPipeline:
         reuse_key: dict[str, Any],
         rid_inputs: Mapping[str, Any],
         invoke_stage: StageInvoker,
-        retry_empty: bool = False,
     ) -> Any:
         """The scope's last RID decision, while everything it judged is unchanged today.
 
@@ -6448,8 +6511,6 @@ class TopicPipeline:
             for interest_id in cached["selected_interest_summary_ids"]
             if interest_id in input_ids
         ]
-        if retry_empty and not kept:
-            return None
 
         async def replay(_payload: dict[str, Any]) -> Any:
             return {
@@ -7150,11 +7211,22 @@ class TopicPipeline:
     ) -> list[dict[str, Any]]:
         if (
             not isinstance(response, dict)
-            or set(response) != {"candidates"}
+            or "candidates" not in response
             or not isinstance(response["candidates"], list)
         ):
             raise TerminalGenerationRejection("global_interest_contract_failed")
         required = set(_GLOBAL_INTEREST_CANDIDATE_ITEM_SCHEMA)
+        # Drop top-level and per-row extras general models often append.
+        response = {
+            "candidates": [
+                (
+                    {key: item[key] for key in required if key in item}
+                    if isinstance(item, dict)
+                    else item
+                )
+                for item in response["candidates"]
+            ]
+        }
         slot_interest_by_id = {
             str(item.get("slot_id") or ""): str(item.get("interest_summary_id") or "")
             for item in candidate_slots
@@ -7234,7 +7306,7 @@ class TopicPipeline:
     ) -> list[dict[str, Any]]:
         if (
             not isinstance(response, dict)
-            or set(response) != {"candidates"}
+            or "candidates" not in response
             or not isinstance(response["candidates"], list)
         ):
             raise TerminalGenerationRejection("recent_candidate_contract_failed")
@@ -7251,6 +7323,16 @@ class TopicPipeline:
         directional = context_scope == GLOBAL_NEW_CHAT_SCOPE and category == "profile_recent_progress"
         if directional:
             required.add("direction")
+        response = {
+            "candidates": [
+                (
+                    {key: item[key] for key in required if key in item}
+                    if isinstance(item, dict)
+                    else item
+                )
+                for item in response["candidates"]
+            ]
+        }
         slot_interest_by_id = {
             str(item.get("slot_id") or ""): str(
                 item.get("interest_summary_id") or ""
@@ -8331,13 +8413,17 @@ class TopicPipeline:
             raise TerminalGenerationRejection("recent_finalization_context_limit")
         try:
             counter = history.StageTokenCounter(config.model)
+            window = int(config.context_window_tokens)
             fitted_candidates = _fit_recent_finalizer_candidates(
                 candidates,
                 counter=counter,
-                limit=int(config.context_window_tokens),
+                limit=window,
                 input_snapshot_id=snapshot.input_snapshot_id,
                 discussion_coverage=plans[0].get("discussion_coverage", []),
                 previously_offered=plans[0].get("previously_offered", []),
+                reserved_output=_output_budget_for_stage(
+                    "v6_recent_finalizer", window,
+                ),
             )
         except history.ContextCountingUnverified as exc:
             raise TerminalGenerationRejection(
@@ -8901,18 +8987,30 @@ class TopicPipeline:
             batches = [candidates[sum(sizes[:index]):sum(sizes[:index + 1])] for index in range(count)]
 
             async def invoke_batch(batch: list[dict[str, Any]]) -> list[Any]:
-                raw = await invoke_stage(
-                    "v6_utility_scorer",
-                    _UTILITY_PROMPT,
-                    json.dumps({
+                candidate_ids = [
+                    str(candidate["candidate_id"]) for candidate in batch
+                ]
+                request_payload = json.dumps(
+                    {
                         **shared,
                         "candidates": batch,
                         "current_time_utc": current_time,
                         "request_id": payload["request_id"],
-                    }, ensure_ascii=False),
+                    },
+                    ensure_ascii=False,
                 )
-                with provider_validation(invoke_stage, raw):
-                    utility_scores_by_id(raw, [str(candidate["candidate_id"]) for candidate in batch])
+
+                def validate(raw: Any) -> None:
+                    utility_scores_by_id(raw, candidate_ids)
+
+                raw = await invoke_stage_with_shape_repair(
+                    invoke_stage,
+                    "v6_utility_scorer",
+                    _UTILITY_PROMPT,
+                    request_payload,
+                    coerce=coerce_utility_scorer_payload,
+                    validate=validate,
+                )
                 return raw["scores"]
 
             batch_tasks = tuple(asyncio.create_task(invoke_batch(batch)) for batch in batches)
@@ -9140,17 +9238,39 @@ class TopicPipeline:
             ))
         return _Scoring(tuple(plans), tuple(projected), utility_receipt, utility, diversity)
 
-    def _latest_scope_manifest_id(self, context_scope: str) -> str | None:
+    def _latest_scope_manifest_id(
+        self,
+        context_scope: str,
+        *,
+        work_mode: Any = DEFAULT_TOPIC_WORK_MODE,
+    ) -> str | None:
+        """Newest global/project pool for this scope × work_mode slot.
+
+        Serve already isolates pools by work_mode via serving_compatibility_key.
+        Short-delta supersedes must follow the same slot; otherwise a design
+        cold-start can become the predecessor of a work personalized write (or
+        the reverse) and novelty / lineage attach to the wrong first screen.
+        Legacy manifests without work_mode count as the default work slot only.
+        """
+
+        normalized = normalize_topic_work_mode(work_mode)
         rows = self.store.query_events(
             event_type="starter_slate_manifest",
             policy_id=POLICY_ID,
             payload_equals={"context_scope": context_scope},
-            limit=1,
+            limit=32,
             newest_first=True,
         )
-        if rows:
-            payload = rows[0].get("payload")
-            if isinstance(payload, dict) and payload.get("manifest_id"):
+        for row in rows:
+            payload = row.get("payload")
+            if not isinstance(payload, dict) or not payload.get("manifest_id"):
+                continue
+            raw_mode = payload.get("work_mode")
+            if raw_mode in (None, ""):
+                matched = normalized == DEFAULT_TOPIC_WORK_MODE
+            else:
+                matched = normalize_topic_work_mode(raw_mode) == normalized
+            if matched:
                 return str(payload["manifest_id"])
         return None
 
@@ -9369,7 +9489,8 @@ class TopicPipeline:
             ],
             "generation_config_version": trigger_key["generation_config_version"],
             "supersedes_manifest_id": self._latest_scope_manifest_id(
-                snapshot.context_scope
+                snapshot.context_scope,
+                work_mode=trigger_key.get("work_mode"),
             ),
             "rid_result": rid.as_downstream_payload(),
             "session_summary_artifacts": [
@@ -9625,7 +9746,6 @@ class TopicPipeline:
             config=config,
             invoke_stage=invoke_stage,
             decision_time=decision_time,
-            retry_empty=trigger_origin == "manual_retry",
         )
         if not rid.trigger_interests:
             # RID judged and released no interest; an admitted news card still makes the pool alone.
@@ -9971,6 +10091,12 @@ class TopicPipeline:
                     grounding_evidence_receipt=grounding_batch.evidence_receipt,
                 ) from exc
             except Exception as exc:
+                logger.warning(
+                    "Topic Starter v6 terminal stage failed: %s: %s",
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )
                 raise TerminalGenerationRejection(
                     "terminal_generation_failed",
                     grounding_decision_receipt=grounding_batch.decision_receipt,

@@ -139,7 +139,13 @@ def symphony_config_from_dict(raw: dict[str, Any] | None) -> SymphonyConfig:
     orchestration = _mapping(data.get("orchestration"))
 
     return SymphonyConfig(
-        enabled=resolve_symphony_enabled(data.get("enabled")),
+        # Discover SkillPack enables its required orchestration infrastructure;
+        # users must not need a second, hidden switch. Disabling discovery does
+        # not disable independently configured Symphony functionality.
+        enabled=(
+            resolve_symphony_enabled(data.get("enabled"))
+            or resolve_symphony_evolution_enabled(flow_enabled)
+        ),
         paths=SymphonyPathsConfig(
             skills_root=_resolve_path(
                 paths.get("skills_root"),

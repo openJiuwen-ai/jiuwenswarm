@@ -58,8 +58,10 @@ def test_app_web_import_does_not_pull_gateway_runtime() -> None:
     output = _run_isolated(code)
     elapsed_text, heavy_text = output.split("|", 1)
     assert heavy_text == "[]"
-    # 惰性导入下实测 ~45ms（暖机）；急切导入回归时为 ~1.5s。阈值留足余量。
-    assert float(elapsed_text) < 1.2, f"app_web import took {elapsed_text}s (lazy-export regression?)"
+    # 惰性导入下实测 ~45ms（暖机），CI 冷启动/高负载下可能到 ~1.3s。
+    # 急切导入回归由上面的 heavy 模块集合断言确定性命中；这里的耗时只作兜底，
+    # 阈值放宽以避免慢机误报。
+    assert float(elapsed_text) < 2.5, f"app_web import took {elapsed_text}s (lazy-export regression?)"
 
 
 def test_lazy_reexports_remain_usable() -> None:

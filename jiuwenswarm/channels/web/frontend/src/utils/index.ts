@@ -10,6 +10,5 @@ export * from './chatFinalProtocol';
 export * from './timestamp';
 export * from './fileDownloadDedup';
 export * from './heartbeatAutomation';
-export * from './proactiveRecommendation';
 export * from './crossSessionMessage';
 export * from './uuid';

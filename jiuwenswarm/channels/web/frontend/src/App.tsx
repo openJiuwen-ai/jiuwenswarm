@@ -44,6 +44,7 @@ import {
   markCronOptimisticProcessing,
   shouldKeepLocalCronProcessing,
 } from './features/cron/cronProcessingGuard';
+import { maySnapshotRelightProcessing } from './features/interruptSettleGuard';
 import { mergeCronRunUserSeed } from './features/cron/cronSeedMessage';
 import HeartbeatPanel from './components/HeartbeatPanel';
 import { ToolPanel } from './components/ToolPanel';
@@ -572,9 +573,7 @@ function AppContent({
   const [restartSeenDisconnect, setRestartSeenDisconnect] = useState(false);
   const [appliedWithoutRestart, setAppliedWithoutRestart] = useState(false);
   const [saveToastVisible, setSaveToastVisible] = useState(false);
-  const [proactiveToastVisible, setProactiveToastVisible] = useState(false);
   const [authToastVisible, setAuthToastVisible] = useState(false);
-  const [proactiveToastMessage, setProactiveToastMessage] = useState('');
   const [securityAlertVisible, setSecurityAlertVisible] = useState(false);
   const [securityAlertContent, setSecurityAlertContent] = useState('');
   const [externalCliInstallStatuses, setExternalCliInstallStatuses] = useState<ExternalCliInstallStatuses>({});
@@ -631,7 +630,8 @@ function AppContent({
     if (activeNav === 'chat') {
       const { defaultModelName, setSelectedModelName } = useSessionStore.getState();
       const runtime = useSessionStore.getState().getRuntime(sessionId);
-      if (defaultModelName && !runtime?.selectedModelName) {
+      const missingModelName = Boolean(defaultModelName && !runtime?.selectedModelName);
+      if (missingModelName && !runtime?.selectedModelSelection) {
         useSessionStore.getState().ensureRuntime(sessionId);
         setSelectedModelName(sessionId, defaultModelName);
       }
@@ -677,7 +677,6 @@ function AppContent({
 
   const restartAutoCloseTimerRef = useRef<number | null>(null);
   const saveToastTimerRef = useRef<number | null>(null);
-  const proactiveToastTimerRef = useRef<number | null>(null);
   const authToastTimerRef = useRef<number | null>(null);
   const settingsHasChangesRef = useRef(false);
   const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
@@ -706,6 +705,11 @@ function AppContent({
   }), []);
   const sessionRestoreQueueRef = useRef<Promise<void>>(Promise.resolve());
   const sessionMetadataRequestsRef = useRef(new Map<string, Promise<Session | null>>());
+  // 断线重连后的首次元数据快照允许纠正运行态：断线期间终态事件可能已经丢失。
+  // 其余场景下快照只能把运行态拉起来，不能把正在跑的轮次压回空闲——worker 的
+  // 运行态快照会滞后于事件流，用滞后快照回落会让发送按钮和任务转圈闪回空闲
+  // （#6196 新建会话首条消息、#6154 code 模式首条消息空白、#6155 切回会话不转圈）。
+  const metadataDowngradeAllowedRef = useRef(new Set<string>());
   const sessionViewIdRef = useRef(generateUuidV4());
   const inputIntentSessionRef = useRef<string | null>(null);
   const historyLoadingSessionsRef = useRef(new Set<string>());
@@ -1280,9 +1284,6 @@ function AppContent({
   const clearTodos = useTodoStore((s) => s.clearTodos);
   const extensionReady = useHarnessStore((s) => s.runtimes[sessionId]?.extensionReady ?? null);
   const resetHarnessStore = useHarnessStore((s) => s.reset);
-  const proactiveNotificationMessage = useHarnessStore((s) => s.proactiveNotificationMessage);
-  const setProactiveNotification = useHarnessStore((s) => s.setProactiveNotification);
-
   const isElectron = Boolean(window.jiuwenDesktop?.isElectron);
   const toolPanelHasContent = useMemo(() => {
     // Electron 下工具面板始终可达（内置浏览器页签等桌面能力），但新建会话首页
@@ -2079,22 +2080,36 @@ function AppContent({
         const localProcessing = Boolean(
           useChatStore.getState().getRuntime(targetSessionId)?.isProcessing,
         );
+        // A pause/cancel ack just settled this turn; the worker snapshot can
+        // lag the teardown (bug1112: pause ack + stale snapshot re-lit the
+        // stop button in a loop). Ignore a busy snapshot until a new round
+        // starts (user send / processing_status(true) clears the marker).
+        const interruptSettled = useChatStore.getState()
+          .getRuntime(targetSessionId)?.interruptSettledEpoch != null;
         const trackedLastRun = Object.values(useCronStore.getState().lastRunSessionId).includes(
           targetSessionId,
         );
-        if (!shouldKeepLocalCronProcessing(
-          targetSessionId,
-          session.is_processing,
-          localProcessing,
-          {
+        const allowDowngrade = metadataDowngradeAllowedRef.current.delete(targetSessionId);
+        const locallyBusy = Boolean(
+          useChatStore.getState().getRuntime(targetSessionId)?.foregroundIsProcessing,
+        );
+        // 快照只能把运行态拉起来，把运行态打回空闲只认终态事件
+        // （processing_status(false) / chat.final / interrupt），或断线重连后的首次
+        // 快照（断线期间终态事件可能丢失）。worker 运行态快照会滞后于事件流，
+        // 用它回落会让新建会话首条消息和切回会话的运行态闪回空闲。
+        const metadataMaySettleProcessing = session.is_processing || allowDowngrade || !locallyBusy;
+        if (
+          metadataMaySettleProcessing
+          && maySnapshotRelightProcessing(session.is_processing, interruptSettled, allowDowngrade)
+          && !shouldKeepLocalCronProcessing(targetSessionId, session.is_processing, localProcessing, {
             // 统一会话未必 cron_ 前缀，靠 cron_id / lastRun 放行
             hasCronMetadata: Boolean(session.cron_id) || trackedLastRun,
             // 组织负责人停止是权威空闲，不能被守卫吞掉
             authoritativeIdle:
               session.organization_owner_stopped === true
               || isOrganizationOwnerStopped(targetSessionId),
-          },
-        )) {
+          })
+        ) {
           setProcessing(targetSessionId, session.is_processing);
           if (!session.is_processing) {
             setThinking(targetSessionId, false);
@@ -2296,13 +2311,6 @@ function AppContent({
     if (saveToastTimerRef.current != null) {
       window.clearTimeout(saveToastTimerRef.current);
       saveToastTimerRef.current = null;
-    }
-  }, []);
-
-  const clearProactiveToastTimer = useCallback(() => {
-    if (proactiveToastTimerRef.current != null) {
-      window.clearTimeout(proactiveToastTimerRef.current);
-      proactiveToastTimerRef.current = null;
     }
   }, []);
 
@@ -2588,22 +2596,8 @@ function AppContent({
     return () => {
       clearRestartAutoCloseTimer();
       clearSaveToastTimer();
-      clearProactiveToastTimer();
     };
-  }, [clearProactiveToastTimer, clearRestartAutoCloseTimer, clearSaveToastTimer]);
-
-  useEffect(() => {
-    const message = proactiveNotificationMessage?.trim();
-    if (!message) return;
-    setProactiveToastMessage(message);
-    setProactiveToastVisible(true);
-    clearProactiveToastTimer();
-    proactiveToastTimerRef.current = window.setTimeout(() => {
-      setProactiveToastVisible(false);
-      setProactiveNotification(null);
-      proactiveToastTimerRef.current = null;
-    }, 8000);
-  }, [clearProactiveToastTimer, proactiveNotificationMessage, setProactiveNotification]);
+  }, [clearRestartAutoCloseTimer, clearSaveToastTimer]);
 
   useEffect(() => {
     if (!isConnected || initialDataLoaded) {
@@ -2656,10 +2650,18 @@ function AppContent({
     };
   }, [initialDataLoaded, isConnected, loadProjects]);
 
+  // 记录连接状态跃迁：断线期间终态事件可能丢失，重连后允许用一次元数据快照
+  // 把残留的运行态纠正回空闲。
+  const prevConnectedRef = useRef(isConnected);
   useEffect(() => {
+    const reconnected = isConnected && prevConnectedRef.current === false;
+    prevConnectedRef.current = isConnected;
     if (!isConnected || !routeSessionId) {
       setMissingSessionId(null);
       return;
+    }
+    if (reconnected) {
+      metadataDowngradeAllowedRef.current.add(routeSessionId);
     }
     void loadSessionMetadata(routeSessionId);
   }, [isConnected, loadSessionMetadata, routeSessionId]);
@@ -5312,17 +5314,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         <div className="app-toast-wrapper app-toast-wrapper--top-center" data-testid="app-auth-toast">
           <div className="app-session-toast animate-rise" data-testid="app-auth-toast-message">
             {t('auth.huawei.loginSuccessToast')}
-          </div>
-        </div>
-      )}
-
-      {proactiveToastVisible && proactiveToastMessage && (
-        <div className="app-toast-wrapper app-toast-wrapper--top-center" data-testid="app-proactive-notification-toast">
-          <div
-            className="max-w-[640px] whitespace-pre-line bg-warn-subtle text-warn px-4 py-3 rounded-lg shadow-lg animate-rise text-sm leading-5"
-            data-testid="app-proactive-notification-toast-message"
-          >
-            {proactiveToastMessage}
           </div>
         </div>
       )}
