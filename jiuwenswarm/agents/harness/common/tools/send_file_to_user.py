@@ -105,8 +105,14 @@ class _SendFileRuntimeEnvelope:
 
 # Session-level dedup for send_file_to_user. Compression may drop prior tool
 # results, so the agent can re-call the same path; IM request-level dedup alone
-# cannot stop cross-turn duplicates.
-_SENT_FILE_PATHS_BY_SESSION: dict[str | tuple[str, str], set[str]] = {}
+# cannot stop cross-turn duplicates. The recorded value is a content fingerprint,
+# not the path alone: an in-place rewrite keeps the path but changes the
+# fingerprint, so the new version is still delivered.
+_SentFileFingerprint = tuple[int, int]
+
+_SENT_FILE_FINGERPRINTS_BY_SESSION: dict[
+    str | tuple[str, str], dict[str, _SentFileFingerprint]
+] = {}
 
 
 def _sent_files_key(session_id: str) -> str | tuple[str, str]:
@@ -122,37 +128,62 @@ def _normalize_sent_file_path(path: str) -> str:
     return os.path.abspath(path).replace("\\", "/").lower()
 
 
+def _sent_file_fingerprint(path: str) -> _SentFileFingerprint | None:
+    """Return a cheap content identity for *path*, or None when it is unreadable.
+
+    ``(st_size, st_mtime_ns)`` changes whenever the file is rewritten in place and
+    costs one metadata ``stat`` instead of hashing the whole file.
+    """
+    try:
+        stat_result = os.stat(path)
+    except OSError:
+        return None
+    return (stat_result.st_size, stat_result.st_mtime_ns)
+
+
 def _partition_sent_files(
     session_id: str,
     paths: list[str],
+    fingerprints: Mapping[str, _SentFileFingerprint],
 ) -> tuple[list[str], list[str]]:
-    """Split *paths* into (new_to_send, already_sent). Does not mutate the registry."""
+    """Split *paths* into (new_to_send, already_sent). Does not mutate the registry.
+
+    *fingerprints* maps ``_normalize_sent_file_path(path)`` to the fingerprint the
+    caller captured, so delivery records exactly the bytes that were checked here.
+    """
     sid = _sent_files_key(session_id)
-    sent = _SENT_FILE_PATHS_BY_SESSION.get(sid) or set()
-    seen = set(sent)
+    recorded = dict(_SENT_FILE_FINGERPRINTS_BY_SESSION.get(sid) or {})
     new_paths: list[str] = []
     skipped: list[str] = []
     for path in paths:
         key = _normalize_sent_file_path(path)
-        if key in seen:
+        fingerprint = fingerprints[key]
+        if recorded.get(key) == fingerprint:
             skipped.append(path)
         else:
             new_paths.append(path)
-            seen.add(key)
+            recorded[key] = fingerprint
     return new_paths, skipped
 
 
-def _mark_files_sent(session_id: str, paths: list[str]) -> None:
+def _mark_files_sent(
+    session_id: str,
+    paths: list[str],
+    fingerprints: Mapping[str, _SentFileFingerprint],
+) -> None:
     sid = _sent_files_key(session_id)
-    sent = _SENT_FILE_PATHS_BY_SESSION.setdefault(sid, set())
+    sent = _SENT_FILE_FINGERPRINTS_BY_SESSION.setdefault(sid, {})
     for path in paths:
-        sent.add(_normalize_sent_file_path(path))
+        key = _normalize_sent_file_path(path)
+        fingerprint = fingerprints.get(key)
+        if fingerprint is not None:
+            sent[key] = fingerprint
 
 
 def clear_sent_files_for_session(session_id: str | None) -> None:
     """Drop session dedup state when the session adapter is cleaned up."""
     sid = _sent_files_key(session_id or "")
-    _SENT_FILE_PATHS_BY_SESSION.pop(sid, None)
+    _SENT_FILE_FINGERPRINTS_BY_SESSION.pop(sid, None)
 
 
 class SendFileToolkit:
@@ -522,6 +553,24 @@ class SendFileToolkit:
                     raise ValueError("send_file_materialized_path_collision")
                 authorized_delivered_paths.add(normalized_path)
 
+        fingerprints: dict[str, _SentFileFingerprint] = {}
+        deliverable_files: list[str] = []
+        for delivered_path in valid_files:
+            fingerprint = _sent_file_fingerprint(delivered_path)
+            if fingerprint is None:
+                # build_file_download_info swallows OSError and would emit a
+                # zero-size card for a file that cannot be read; report it as
+                # missing instead and leave it unrecorded so it can be retried.
+                missing_files.append(delivered_path)
+                logger.warning(
+                    "[SendFileToolkit] 文件无法读取，未发送: %s",
+                    delivered_path,
+                )
+                continue
+            fingerprints[_normalize_sent_file_path(delivered_path)] = fingerprint
+            deliverable_files.append(delivered_path)
+        valid_files = deliverable_files
+
         if not valid_files:
             msg_parts = ["发送文件失败：所有文件均不存在"]
             for mf in missing_files:
@@ -531,6 +580,7 @@ class SendFileToolkit:
         valid_files, skipped_files = _partition_sent_files(
             envelope.session_id,
             valid_files,
+            fingerprints,
         )
         if not valid_files:
             logger.info(
@@ -541,7 +591,7 @@ class SendFileToolkit:
             )
             msg_parts: list[str] = []
             if skipped_files:
-                msg_parts.append("文件已在本次会话发送过，跳过重复投递：")
+                msg_parts.append("文件内容未变化，本次会话已投递过，跳过重复投递：")
                 for sf in skipped_files:
                     msg_parts.append(f"  - {sf}")
             if missing_files:
@@ -613,7 +663,7 @@ class SendFileToolkit:
                             "staged TTL ownership retained asset_id=%s",
                             asset.asset_id,
                         )
-            _mark_files_sent(envelope.session_id, valid_files)
+            _mark_files_sent(envelope.session_id, valid_files, fingerprints)
             try:
                 await run_history_io(append_history_record,
                     session_id=envelope.session_id,
@@ -639,7 +689,7 @@ class SendFileToolkit:
                 for delivered_path in valid_files:
                     result_parts.append(f"  - {delivered_path}")
             if skipped_files:
-                result_parts.append("以下文件已在本次会话发送过，已跳过：")
+                result_parts.append("以下文件内容未变化，本次会话已投递过，已跳过：")
                 for sf in skipped_files:
                     result_parts.append(f"  - {sf}")
             if missing_files:
@@ -830,6 +880,8 @@ class SendFileToolkit:
                     "省略时默认投给最近发起请求的人类成员（按 session 记录的发起者）；web 发起或无人类成员时投 web。"
                     "多 app 场景定向到指定 feishu 用户时，传入该用户的 member_name（不会误投其它 app）；"
                     "跨端投递（如把文件发给飞书用户、或发给 web）时传入对应 member_name 或 'web'。"
+                    "文件被修改后可直接再次调用本工具重新投递，无需改名或另存；"
+                    "文件内容未变化时，本次会话内重复调用会被跳过。"
                 ),
                 input_params={
                     "type": "object",

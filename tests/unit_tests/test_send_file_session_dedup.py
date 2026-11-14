@@ -1,4 +1,5 @@
 import asyncio
+import os
 from unittest.mock import patch
 
 import pytest
@@ -12,24 +13,60 @@ from jiuwenswarm.agents.harness.common.tools.web_file_download import (
 
 @pytest.fixture(autouse=True)
 def _clear_dedup_registry():
-    sfu._SENT_FILE_PATHS_BY_SESSION.clear()
+    sfu._SENT_FILE_FINGERPRINTS_BY_SESSION.clear()
     yield
-    sfu._SENT_FILE_PATHS_BY_SESSION.clear()
+    sfu._SENT_FILE_FINGERPRINTS_BY_SESSION.clear()
 
 
-def test_partition_and_mark_sent_files():
-    new_paths, skipped = sfu._partition_sent_files("s1", [r"C:\tmp\a.md", r"C:\tmp\b.md"])
-    assert new_paths == [r"C:\tmp\a.md", r"C:\tmp\b.md"]
+def test_normalize_sent_file_path_folds_separators_and_case():
+    assert sfu._normalize_sent_file_path(r"C:\tmp\A.md") == sfu._normalize_sent_file_path(
+        r"c:/tmp/a.md"
+    )
+
+
+def test_fingerprint_missing_path_returns_none(tmp_path):
+    assert sfu._sent_file_fingerprint(str(tmp_path / "missing.md")) is None
+    existing = tmp_path / "existing.md"
+    existing.write_text("content", encoding="utf-8")
+    assert sfu._sent_file_fingerprint(str(existing)) == (
+        existing.stat().st_size,
+        existing.stat().st_mtime_ns,
+    )
+
+
+def test_partition_and_mark_sent_files(tmp_path):
+    first = tmp_path / "a.md"
+    second = tmp_path / "b.md"
+    first.write_text("a", encoding="utf-8")
+    second.write_text("b", encoding="utf-8")
+    fingerprints = {
+        sfu._normalize_sent_file_path(str(first)): sfu._sent_file_fingerprint(str(first)),
+        sfu._normalize_sent_file_path(str(second)): sfu._sent_file_fingerprint(str(second)),
+    }
+
+    new_paths, skipped = sfu._partition_sent_files(
+        "s1", [str(first), str(second)], fingerprints
+    )
+    assert new_paths == [str(first), str(second)]
     assert skipped == []
 
-    sfu._mark_files_sent("s1", [r"C:\tmp\a.md"])
-    new_paths, skipped = sfu._partition_sent_files("s1", [r"C:\tmp\a.md", r"C:\tmp\b.md"])
-    assert new_paths == [r"C:\tmp\b.md"]
-    assert skipped == [r"C:\tmp\a.md"]
+    sfu._mark_files_sent("s1", [str(first)], fingerprints)
+    new_paths, skipped = sfu._partition_sent_files(
+        "s1", [str(first), str(second)], fingerprints
+    )
+    assert new_paths == [str(second)]
+    assert skipped == [str(first)]
+
+    # The same path twice in one call is still delivered only once.
+    new_paths, skipped = sfu._partition_sent_files(
+        "s1", [str(second), str(second)], fingerprints
+    )
+    assert new_paths == [str(second)]
+    assert skipped == [str(second)]
 
     sfu.clear_sent_files_for_session("s1")
-    new_paths, skipped = sfu._partition_sent_files("s1", [r"C:\tmp\a.md"])
-    assert new_paths == [r"C:\tmp\a.md"]
+    new_paths, skipped = sfu._partition_sent_files("s1", [str(first)], fingerprints)
+    assert new_paths == [str(first)]
     assert skipped == []
 
 
@@ -98,6 +135,119 @@ def test_history_failure_after_push_does_not_duplicate_delivery(tmp_path):
     assert "成功发送" in first
     assert "跳过重复投递" in second
     assert len(pushed) == 1
+
+
+def test_send_file_resends_after_content_modification(tmp_path):
+    file_path = tmp_path / "handoff.md"
+    file_path.write_text("v1", encoding="utf-8")
+    toolkit = sfu.SendFileToolkit(
+        request_id="r-mod",
+        session_id="sess-mod",
+        channel_id="web",
+    )
+    pushed: list[dict] = []
+
+    async def _push(message: dict) -> bool:
+        pushed.append(message)
+        return True
+
+    with patch.object(sfu, "send_runtime_push", _push), patch(
+        "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+    ):
+        first = asyncio.run(toolkit.send_file(str(file_path)))
+        file_path.write_text("v2 with a longer body", encoding="utf-8")
+        second = asyncio.run(toolkit.send_file(str(file_path)))
+
+    assert "成功发送" in first
+    assert "成功发送" in second
+    assert len(pushed) == 2
+    assert pushed[1]["payload"]["files"][0]["size"] == file_path.stat().st_size
+
+
+def test_send_file_resends_when_only_mtime_changes(tmp_path):
+    file_path = tmp_path / "same-size.md"
+    file_path.write_text("same-size", encoding="utf-8")
+    toolkit = sfu.SendFileToolkit(
+        request_id="r-mtime",
+        session_id="sess-mtime",
+        channel_id="web",
+    )
+    pushed: list[dict] = []
+
+    async def _push(message: dict) -> bool:
+        pushed.append(message)
+        return True
+
+    with patch.object(sfu, "send_runtime_push", _push), patch(
+        "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+    ):
+        asyncio.run(toolkit.send_file(str(file_path)))
+        stat_result = file_path.stat()
+        os.utime(
+            file_path,
+            ns=(stat_result.st_atime_ns, stat_result.st_mtime_ns + 1_000_000),
+        )
+        second = asyncio.run(toolkit.send_file(str(file_path)))
+
+    assert "成功发送" in second
+    assert len(pushed) == 2
+
+
+def test_send_file_mixed_batch_delivers_changed_and_skips_unchanged(tmp_path):
+    changed = tmp_path / "changed.md"
+    unchanged = tmp_path / "unchanged.md"
+    changed.write_text("v1", encoding="utf-8")
+    unchanged.write_text("keep", encoding="utf-8")
+    toolkit = sfu.SendFileToolkit(
+        request_id="r-mixed",
+        session_id="sess-mixed",
+        channel_id="web",
+    )
+    pushed: list[dict] = []
+
+    async def _push(message: dict) -> bool:
+        pushed.append(message)
+        return True
+
+    with patch.object(sfu, "send_runtime_push", _push), patch(
+        "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+    ):
+        asyncio.run(toolkit.send_file([str(changed), str(unchanged)]))
+        changed.write_text("v2 with a longer body", encoding="utf-8")
+        second = asyncio.run(toolkit.send_file([str(changed), str(unchanged)]))
+
+    assert len(pushed) == 2
+    second_paths = [item["path"] for item in pushed[1]["payload"]["files"]]
+    assert second_paths == [str(changed)]
+    assert "成功发送 1 个文件" in second
+    assert "已跳过" in second
+    assert str(unchanged) in second
+
+
+def test_send_file_records_latest_fingerprint(tmp_path):
+    file_path = tmp_path / "latest.md"
+    file_path.write_text("v1", encoding="utf-8")
+    toolkit = sfu.SendFileToolkit(
+        request_id="r-latest",
+        session_id="sess-latest",
+        channel_id="web",
+    )
+    pushed: list[dict] = []
+
+    async def _push(message: dict) -> bool:
+        pushed.append(message)
+        return True
+
+    with patch.object(sfu, "send_runtime_push", _push), patch(
+        "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+    ):
+        asyncio.run(toolkit.send_file(str(file_path)))
+        file_path.write_text("v2 with a longer body", encoding="utf-8")
+        asyncio.run(toolkit.send_file(str(file_path)))
+        third = asyncio.run(toolkit.send_file(str(file_path)))
+
+    assert "跳过重复投递" in third
+    assert len(pushed) == 2
 
 
 def test_send_file_materializes_team_workspace_files_in_project(tmp_path):
