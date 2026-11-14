@@ -24,6 +24,7 @@ export interface Session {
   is_custom_title?: boolean;
   title_source?: 'auto' | 'user';
   model?: string;
+  rsi_harness_installation_id?: string;
   mode: AgentMode;
   status: SessionStatus;
   message_count: number;

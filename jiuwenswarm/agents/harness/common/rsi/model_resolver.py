@@ -144,6 +144,18 @@ class RsiModelConfigResolver:
                 return entry, index
         return matches[0]
 
+    def build_model(self, model_ref: str) -> Any:
+        """为产物优化构造用户选定的模型，与 Harness 共用身份解析规则。"""
+        entry, _ = self.resolve(model_ref)
+        try:
+            return (self._model_builder or _default_model_builder)(
+                deepcopy(entry.get("model_client_config") or {}),
+                deepcopy(entry.get("model_config_obj") or {}),
+            )
+        except Exception as exc:
+            # 模型构造器异常可能包含凭据，沿用任务材料化的脱敏错误边界。
+            raise RsiModelConfigInvalid(f"模型 {model_ref} 无法构造") from exc
+
     def resolve_to_file(
         self,
         model_ref: str,
@@ -293,10 +305,10 @@ def _default_zen_models() -> list[dict[str, Any]]:
 
 def _default_model_builder(mcc: dict[str, Any], mco: dict[str, Any]) -> Any:
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
-        build_model_from_entry,
+        JiuWenSwarmDeepAdapter,
     )
 
-    return build_model_from_entry(mcc, mco)
+    return JiuWenSwarmDeepAdapter.build_model_from_entry(mcc, mco)
 
 
 __all__ = [

@@ -62,11 +62,8 @@ export function RsiSelectedInfo({ taskId }: RsiSelectedInfoProps) {
       })
     : null;
   const stageLabel = nodeStageLocalizedLabel(selected, t) ?? presentation.stageLabel;
-  const artifactSource = resolveRsiArtifactSource(selected, taskId);
-  const canViewArtifact =
-    task.scenario === 'HARNESS'
-      ? selected.type !== 'ROOT' && Boolean(selected.snapshot_artifact_id)
-      : artifactSource !== null;
+  const artifactSource = resolveRsiArtifactSource(selected, taskId, task.scenario);
+  const canViewArtifact = artifactSource !== null;
 
   // Harness 仍然按四个区域展示；产物优化直接展示结构化变更摘要。
   const changes = selected.changes ?? [];
@@ -229,6 +226,9 @@ export function RsiSelectedInfo({ taskId }: RsiSelectedInfoProps) {
             <button type="button" className="rsi-selected-info__detail-btn" onClick={() => setDetailOpen(true)}>
               {t('rsi.detail.viewDetail', { defaultValue: '查看详情' })}
             </button>
+          )}
+          {!canViewArtifact && task.scenario === 'HARNESS' && (
+            <span className="rsi-selected-info__desc">{t('rsi.artifact.noHarnessSnapshot')}</span>
           )}
         </div>
       </div>
