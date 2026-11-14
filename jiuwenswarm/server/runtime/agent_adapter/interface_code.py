@@ -67,6 +67,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _RailBuildInfo,
     _deep_agent_context_engine_config_for_model,
     _deep_agent_kv_cache_affinity_config,
+    _subagent_name,
     parse_int,
     resolve_cron_execution_flag,
 )
@@ -3381,13 +3382,6 @@ def _tool_card_identity(card: Any) -> tuple[str, str]:
         str(getattr(card, "id", "") or ""),
         str(getattr(card, "name", "") or ""),
     )
-
-
-def _subagent_name(spec: Any) -> str:
-    if isinstance(spec, SubAgentConfig):
-        return str(getattr(spec.agent_card, "name", "") or "")
-    card = getattr(spec, "card", None)
-    return str(getattr(card, "name", "") or "")
 
 
 def _iter_agent_rails(agent: Any) -> list[Any]:
