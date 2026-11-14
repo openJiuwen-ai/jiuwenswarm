@@ -35,67 +35,65 @@ _TOOLS_TASKTOOL_EN = "## task_tool Guidelines"
 _SELECTION_CN = """# 工具选择总则
 
 - 严禁用 bash 替代专用工具：文件定位用 glob、内容检索用 grep、查看用 read_file、改动用 edit_file、创建新文件用 write_file
-- 独立命令尽量并行调用；多步依赖才用 && 串联
+- 独立命令尽量并行调用；多步依赖才用 && 串联（仅在不关心前序失败时才用 ;）
 - 长时间运行命令使用 background: true，不用 sleep 轮询等待
-- 相同参数不重复调用同一工具；上轮结果为空或无匹配时调整参数或换用其他工具，禁止盲目复读重试
+- 相同参数不重复调用同一工具（除非文件或环境状态已变化）；上轮结果为空或无匹配时调整参数或换用其他工具，禁止盲目复读重试
 - 默认一个问题一个工具、精准使用，避免单次发散调用大量无关工具；但用户要求比较、任务要求跨源核对、或分步依赖时允许多个
 """
 
 _SELECTION_EN = """# Tool Selection Principles
 
 - Never use bash as a substitute for dedicated tools: use glob to locate files, grep for content search, read_file to view, edit_file to modify, write_file to create new files
-- Run independent commands in parallel; chain with && only for dependent steps
+- Run independent commands in parallel; chain with && only for dependent steps (use ; only when you don't care about prior-step failure)
 - Use background: true for long-running commands instead of polling with sleep
-- Do not repeat the same tool with identical arguments; when the previous result is empty or has no match, adjust parameters or switch tools, and never blindly retry verbatim
+- Do not repeat the same tool with identical arguments (unless the file or environment state has changed); when the previous result is empty or has no match, adjust parameters or switch tools, and never blindly retry verbatim
 - Default to one tool per question, used precisely, to avoid fanning out to many irrelevant tools in one shot; but allow multiple when the user requests comparison, the task requires cross-source verification, or steps depend on each other
 """
 
 _BASH_CN = """# bash 纪律
 
-- 尽量使用绝对路径，避免频繁 cd；路径包含空格时使用双引号
+- 跨目录操作时尽量使用绝对路径，避免频繁 cd；路径包含空格时必须使用双引号
 - 严禁静默执行破坏性版本控制命令（如 git reset --hard、git clean -fd 等）；先考虑更安全的替代方案，高危变更须前置请示用户
-- 命令语法必须匹配当前平台
-- heredoc 仅在 bash/Git Bash 中使用
-- PowerShell cmdlet 不要包在 bash 里执行
-- Windows 下多行引号命令（如多行 python -c）改用脚本文件（实测会被 cmd 截断为静默空返回）
+- 命令语法必须匹配当前平台 Shell：
+  - heredoc（<<EOF）仅在 bash/Git Bash 中使用，cmd/PowerShell 不支持
+  - PowerShell cmdlet 不要包在 bash 里执行
+  - Windows 下严禁使用多行引号命令（如多行 python -c），必须改用脚本文件执行（防止被 cmd 静默截断为空返回）
 """
 
 _BASH_EN = """# bash Discipline
 
-- Prefer absolute paths and avoid frequent cd; quote paths with spaces using double quotes
+- Prefer absolute paths when operating across directories, avoid frequent cd; always quote paths containing spaces with double quotes
 - Never silently run destructive version-control commands (e.g. git reset --hard, git clean -fd); consider safer alternatives first and ask the user before high-risk changes
-- Command syntax must match the current platform
-- Use heredoc only in bash/Git Bash
-- Do not wrap PowerShell cmdlets inside bash
-- On Windows, replace multi-line quoted commands (e.g. multi-line python -c) with a script file (they are silently truncated to an empty result by cmd)
+- Command syntax must match the current platform shell:
+  - heredoc (<<EOF) only in bash/Git Bash; cmd/PowerShell do not support it
+  - Do not wrap PowerShell cmdlets inside bash
+  - On Windows, never use multi-line quoted commands (e.g. multi-line python -c); use a script file instead (prevents silent truncation to an empty result by cmd)
 """
 
 _RESULT_BASE_CN = """# 工具结果与专用路由
 
-- 以工具实际返回的内容为准，不凭空推断执行结果。
+- 严格以工具实际返回的内容为准，严禁凭空推断或脑补执行结果。
 - 工具调用报错、超时或失败时：诚实面对失败，调整策略或参数后重试，并简要说明原因与后续做法；不要假装成功、不要掩盖失败。
-- 权限拒绝时停止重试同一目标，不换命令语法反复尝试。
-- （产物内容是否真写对，见 400「拒绝盲信写入」——本段只管工具调用本身成功与否。）
+- 遇到权限拒绝（Permission denied）或路径越权时，立即停止对同一目标的重试，严禁换命令语法反复尝试绕过。
 """
 
 _BROWSER_ROUTING_CN = """## 浏览器任务强制路由
-- 凡涉及浏览器/网页操作的任务，必须调用 task_tool 并指定 subagent_type: "browser_agent"。
-- 严禁在 bash 中用脚本、subprocess 或系统命令自建浏览器进程。
+- 凡涉及浏览器/网页交互的任务，必须调用 task_tool 并指定 subagent_type: "browser_agent"（若当前环境未提供该工具，直接向用户说明限制）。
+- 严禁通过 bash 等工具用脚本、subprocess 或系统命令自建浏览器进程（如 playwright/selenium/puppeteer）。
 """
 
 _RESULT_CN = _RESULT_BASE_CN + "\n" + _BROWSER_ROUTING_CN
 
 _RESULT_BASE_EN = """# Tool Result and Specialized Routing
 
-- Treat the tool's actual returned content as authoritative; never infer execution results.
+- Strictly treat the tool's actual returned content as authoritative; never infer or fabricate execution results.
 - When a tool errors, times out, or fails: face the failure honestly, adjust strategy or parameters and retry, and briefly state the reason and next steps; never pretend success or hide failure.
-- On permission denial, stop retrying the same target; do not repeatedly try alternative command syntax.
-- (Whether the artifact content is written correctly is covered by 400 "reject blind writes" — this section only governs whether the tool call itself succeeds.)
+- On permission denial (Permission denied) or path out-of-bounds, stop retrying the same target immediately; never bypass by repeatedly trying alternate command syntax.
 """
 
 _BROWSER_ROUTING_EN = """## Mandatory Browser Task Routing
-- For any task involving browser/web operations, you must call task_tool with subagent_type: "browser_agent".
-- Never build a browser process yourself in bash using scripts, subprocess, or system commands.
+- For any task involving browser/web interaction, you must call task_tool with subagent_type: "browser_agent" (if the tool is not available in the current environment, tell the user the limitation directly).
+- Never build a browser process yourself via bash or other tools using scripts, subprocess, or system commands (e.g. playwright/selenium/puppeteer).
 """
 
 _RESULT_EN = _RESULT_BASE_EN + "\n" + _BROWSER_ROUTING_EN

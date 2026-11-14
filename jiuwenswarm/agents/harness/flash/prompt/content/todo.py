@@ -24,16 +24,18 @@ _TODO_DISCIPLINE_CN = """# todo 纪律
 **任务粒度：**
 - 每条 todo 应对应一个需要独立推进或验证的执行阶段，而不是一次工具调用、一个细小动作或最终交付内容的组成部分
 - 逻辑上连续、通常会一起完成的步骤合并为同一条 todo
-- 若某个阶段涉及对多个独立对象进行相同处理，应将其设计为单个"并行批处理"任务并在描述中明确列出所有并行子项（如"并行阅读并分析以下 5 篇论文：[论文A, 论文B, 论文C, 论文D, 论文E]，每篇委派独立子代理处理"），这样执行时才能清楚地为每个子项发出一个 task_tool 调用
+- 若某个阶段涉及对多个独立对象进行相同处理，应将其设计为单个"并行批处理"任务并在描述中必须明确列出所有并行子项（如"并行阅读并分析以下 5 篇论文：[论文A, 论文B, 论文C, 论文D, 论文E]，每篇委派独立子代理处理"），这样执行时才能清楚地为每个子项发出一个 task_tool 调用
 
 **状态纪律：**
 - 新计划用 create，调整用 modify
 - 状态变化时立即更新，不积攒多个后统一更新
 - 每次只传入发生变化的字段（通常只有 id 和 status）
+- 创建或更新任务时严禁填写 selected_model_id 字段（即使工具定义里出现该字段）；统一使用 Agent 默认模型执行
 - 同一时间只能有一个任务处于 in_progress
 - 标记完成前必须仔细验证（如运行测试）；部分实现、测试失败或存在未解决错误时绝不能标记为已完成
 - 标记完成后，检查实现过程中是否发现新的后续任务，及时通过 todo(action=modify) 追加
 - 放弃/跳过某步骤时必须立即标记 cancelled
+- 同一 todo 反复「失败→modify→失败」时不要死循环：重试 2-3 次仍失败就停下分析原因，必要时标记 cancelled 或向用户说明阻塞，不要机械地反复重试
 """
 
 _TODO_DISCIPLINE_EN = """# todo Discipline
@@ -50,16 +52,18 @@ _TODO_DISCIPLINE_EN = """# todo Discipline
 **Task granularity:**
 - Each todo should represent an execution stage that needs to be advanced or verified independently, not a single tool call, a small action, or a component of the final deliverable
 - Merge steps that are logically continuous and normally completed together into one todo
-- If a phase applies the same processing to multiple independent objects, design it as a single "parallel batch" task and clearly list all parallel sub-items in its description (e.g. "Read and analyse the following 5 papers in parallel: [Paper A, Paper B, Paper C, Paper D, Paper E], each delegated to an independent subagent"), so that execution can clearly dispatch one task_tool call per sub-item
+- If a phase applies the same processing to multiple independent objects, design it as a single "parallel batch" task and must clearly list all parallel sub-items in its description (e.g. "Read and analyse the following 5 papers in parallel: [Paper A, Paper B, Paper C, Paper D, Paper E], each delegated to an independent subagent"), so that execution can clearly dispatch one task_tool call per sub-item
 
 **Status discipline:**
 - Use create for a new plan, modify to adjust
 - Update status as soon as it changes; do not accumulate multiple changes and update them all later
 - Each call should only include the fields that changed (usually just id and status)
+- When creating or updating a task, never fill in the selected_model_id field (even if it appears in the tool definition); always use the Agent's default model
 - Only one task can be in_progress at a time
 - Verify carefully before marking complete (e.g., run tests); never mark complete when the work is partial, tests fail, or unresolved errors remain
 - After marking complete, check whether new follow-up tasks surfaced during execution and append them via todo(action=modify)
 - Mark cancelled immediately when abandoning/skipping a step
+- Do not fall into a dead loop of failure → modify → failure on the same todo: if it still fails after 2-3 retries, stop and analyze the cause; mark it cancelled or explain the blocker to the user instead of mechanically retrying
 """
 
 # 待办段目标段号（段号即 priority；SDK 原本是 90，迁到 430 的 4xx 带）。

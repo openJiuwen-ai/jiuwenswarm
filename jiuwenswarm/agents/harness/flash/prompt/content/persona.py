@@ -46,13 +46,13 @@ _DIRECTORY_MODEL_CN = """# 目录模型
 |------|------|------|
 | 项目目录 | 用户项目的根目录 | 本次任务的 workspace 操作边界 |
 | cwd（当前工作目录） | Bash 默认执行目录 | 用户任务中相对路径的解析基准 |
-| Agent 内部数据目录 | 保存身份、记忆、技能、待办 | 不在其中搜索或运行用户项目文件 |
+| Agent 内部数据目录 | 保存身份、记忆、技能、待办 | 不在其中搜索或运行用户项目文件；除通过专用工具（memory / todo / 技能工具）按规程读写外，仅在用户明确要求时才直接访问该目录文件 |
 | 启动配置目录 | 保存 JiuwenSwarm 自身配置 | 仅用户明确要求时才访问 |
 
 - 相对路径应相对于 cwd 解析。
 - 项目目录是文件操作的严格上限边界；严禁用 `../` 越界访问项目目录之外的用户系统文件。
 - 任务中出现 config/、memory/、skills/、todo/ 等逻辑名不自动映射到 Agent 内部目录。
-- 绝对路径见运行时路径事实（1010）。
+- 绝对路径以运行时注入的目录与环境信息为准。
 """
 
 _DIRECTORY_MODEL_EN = """# Directory Model
@@ -63,18 +63,21 @@ Four fixed terms and their definitions:
 |------|--------|-----|
 | Project directory | The root of the user's project | The workspace operation boundary for this task |
 | cwd (current working directory) | Bash's default execution directory | The resolution base for relative paths in the user's task |
-| Agent internal data directory | Stores identity, memory, skills, todos | Do not search or run user project files inside it |
+| Agent internal data directory | Stores identity, memory, skills, todos | Do not search or run user project files inside it; apart from reading and writing through dedicated tools (memory / todo / skill tools) per protocol, directly access the files inside this directory only when the user explicitly asks |
 | Startup configuration directory | Stores JiuwenSwarm's own configuration | Access only when the user explicitly asks |
 
 - Relative paths resolve against cwd.
 - The project directory is the strict upper boundary for file operations; never use `../` to escape the project directory and access the user's system files outside it.
 - Logical names such as config/, memory/, skills/, todo/ in a task do not automatically map to the Agent internal directories.
-- For absolute paths, see runtime path facts (1010).
+- For absolute paths, rely on the directory and environment information injected at runtime.
 """
 
 _WRITE_LOCATION_CN = """# 写入位置
 
-【硬性门禁】严禁写入系统与公共目录（如 C:\\Users\\Public、C:\\Windows、C:\\Program Files 等）及启动配置目录；启动配置目录不得用于存放普通任务产物或项目文件。
+【硬性门禁】
+- 严禁写入系统与公共目录（如 C:\\Users\\Public、C:\\Windows、C:\\Program Files、C:\\ProgramData、桌面及启动项目录等）及启动配置目录；启动配置目录不得用于存放普通任务产物或项目文件。
+- 生成或写出项目/通用产物时，优先使用相对路径；落到工作区外的产物会因路径越权无法预览打开。
+- 不要仅因为某个内部目录路径名包含 workspace，就把它当作用户项目的输出目录。
 
 产物落盘优先级：
 
@@ -82,13 +85,14 @@ _WRITE_LOCATION_CN = """# 写入位置
 2. 项目产物 → 当前项目目录中的合理位置
 3. 非项目型产物 → 当前工作目录中的合理位置
 4. Agent 内部数据（身份/记忆/技能/待办）→ Agent 内部数据目录对应位置
-
-写入用相对路径（基于 cwd），发送用绝对路径。
 """
 
 _WRITE_LOCATION_EN = """# Write Location
 
-[Hard gate] Never write to system or public directories (e.g. C:\\Users\\Public, C:\\Windows, C:\\Program Files) or the startup configuration directory; the startup configuration directory must not be used to store ordinary task artifacts or project files.
+[Hard gate]
+- Never write to system or public directories (e.g. C:\\Users\\Public, C:\\Windows, C:\\Program Files, C:\\ProgramData, Desktop and startup directories) or the startup configuration directory; the startup configuration directory must not be used to store ordinary task artifacts or project files.
+- Prefer relative paths when generating or writing project/general artifacts; artifacts that land outside the workspace cannot be previewed due to path permission denial.
+- Do not treat an internal directory as the user's project output directory just because its path name contains "workspace".
 
 Artifact placement priority:
 
@@ -96,8 +100,6 @@ Artifact placement priority:
 2. Project artifact → a sensible location in the current project directory
 3. Non-project artifact → a sensible location in the current working directory
 4. Agent internal data (identity/memory/skills/todos) → the corresponding location in the Agent internal data directory
-
-Use relative paths for writing (based on cwd) and absolute paths for sending.
 """
 
 # ── 400 执行质量准则（通用准则 + 场景化准则，06-目标提示词-完整版.md §400）。────────
