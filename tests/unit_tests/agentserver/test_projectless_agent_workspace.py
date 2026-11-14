@@ -44,6 +44,16 @@ class _FakeAgent:
         self.system_prompt_builder = builder
         self.prompt_attachment_manager = PromptAttachmentManager()
 
+async def _prompt_and_runtime_state(agent, builder, session_id: str = "session-1") -> str:
+    """The system prompt plus the runtime.setting attachment the model sees after it.
+
+    Per-conversation paths live in the attachment so the system prompt stays the
+    same for every conversation (a shared provider prefix cache).
+    """
+    items = await agent.prompt_attachment_manager.collect_for_session(session_id)
+    return builder.build() + "\n" + agent.prompt_attachment_manager.render(items)
+
+
 
 class _RecordingRuntimeRail:
     def __init__(self) -> None:
@@ -334,7 +344,7 @@ async def test_runtime_prompt_describes_projectless_agent_task_dirs(
 
     await rail.before_model_call(ctx)
 
-    prompt = builder.build()
+    prompt = await _prompt_and_runtime_state(agent, builder)
     assert "# Directory and File-Operation Boundaries" in prompt
     assert "## Current Task Directories" in prompt
     assert f"Current task root: `{task_root}`" in prompt
@@ -755,3 +765,55 @@ async def test_manager_project_identity_respects_explicit_and_admitted_values(
     assert vars(request) == original_fields
     assert request.params is params
     assert params == original_params
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["cn", "en"])
+async def test_conversations_share_one_system_prompt_so_the_provider_cache_is_shared(
+    tmp_path, monkeypatch, language
+):
+    """Per-conversation paths go to runtime.setting; the system prompt is byte-identical.
+
+    Providers cache a prompt by its prefix. Were each conversation's task
+    directory written into the system prompt, a new conversation would miss
+    the cache from that line on, including every tool definition after it.
+    """
+    agent_dir = tmp_path / "agent-workspace"
+    agent_dir.mkdir()
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_agent_workspace_dir",
+        lambda: agent_dir,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_runtime_state_path",
+        lambda _session_id: tmp_path / "absent.yaml",
+    )
+
+    async def conversation(name: str) -> tuple[str, str]:
+        task_root = tmp_path / "2026-10-07" / name
+        (task_root / "work").mkdir(parents=True)
+        (task_root / "outputs").mkdir()
+        builder = SystemPromptBuilder(language=language)
+        agent = _FakeAgent(builder)
+        rail = RuntimePromptRail(language=language, channel="web")
+        rail.init(agent)
+        rail.set_runtime_paths(
+            cwd=str(task_root / "work"), project_dir=None, task_workspace_root=str(task_root),
+            task_work_dir=str(task_root / "work"), task_outputs_dir=str(task_root / "outputs"),
+        )
+        ctx = AgentCallbackContext(
+            agent=agent, inputs=None, session=SimpleNamespace(get_session_id=lambda: name), extra={},
+        )
+        await rail.before_model_call(ctx)
+        items = await agent.prompt_attachment_manager.collect_for_session(name)
+        return builder.build(), agent.prompt_attachment_manager.render(items)
+
+    first_system, first_runtime = await conversation("chat-5")
+    second_system, second_runtime = await conversation("chat-6")
+    assert first_system == second_system
+    assert "chat-5" not in first_system
+    assert "chat-5" in first_runtime and "chat-6" in second_runtime
