@@ -4,15 +4,20 @@
 import i18n from '../i18n';
 
 /**
- * 格式化时间戳
+ * 格式化时间戳，统一显示 MM-DD HH:MM:SS
  */
 export function formatTimestamp(timestamp: string): string {
   const date = new Date(timestamp);
-  return date.toLocaleTimeString(i18n.language, {
+  const dateStr = date.toLocaleDateString(i18n.language, {
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const timeStr = date.toLocaleTimeString(i18n.language, {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
   });
+  return `${dateStr} ${timeStr}`;
 }
 
 /**
