@@ -50,3 +50,20 @@ test('all finished schedule plans are expired while execution outcomes stay inta
   assert.deepEqual(state.filterSchedules(plans, '', '', 'failed').map(p => p.id), ['once-failed']);
   assert.equal(plans[0].lastStatus, 'completed', 'Display filtering must not change the recorded execution outcome');
 });
+
+test('past deadlines block resume and paused plans join the expired filter', () => {
+  const now = Date.parse('2026-11-12T00:00:00Z');
+  const past = '2026-11-12T08:00:00+08:00';
+  const future = '2026-11-13T00:00:00Z';
+  const plan = { ...draft, id: 'recurring', agentId: 'a', lastStatus: 'paused', nextFireAt: future, runCount: 0 };
+  const expired = { ...plan, id: 'expired', endsAt: past, lastStatus: 'completed' };
+  const missed = { ...plan, id: 'missed', scheduleKind: 'once', nextFireAt: past };
+  const completed = { ...plan, id: 'completed', scheduleKind: 'once', nextFireAt: null, runCount: 1, lastStatus: 'completed' };
+  const scheduledOnce = { ...plan, scheduleKind: 'once' };
+
+  assert.equal(state.scheduleResumeBlocked(plan, now), false);
+  assert.equal(state.scheduleResumeBlocked(scheduledOnce, now), false);
+  for (const item of [expired, missed, completed]) assert.equal(state.scheduleResumeBlocked(item, now), true);
+  const plans = [plan, expired, missed, completed];
+  assert.deepEqual(state.filterSchedules(plans, '', 'a', 'expired', now).map(p => p.id), ['expired', 'missed', 'completed']);
+});

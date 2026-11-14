@@ -62,10 +62,20 @@ export function validateDraft(draft: ScheduleDraft, executorId: string): string 
   return null;
 }
 
-type ScheduleStatusSource = Pick<Schedule, 'lastStatus'>;
+type ScheduleTiming = Pick<Schedule, 'endsAt' | 'scheduleKind' | 'nextFireAt'>;
 
-export function scheduleDisplayStatus(plan: ScheduleStatusSource): string {
-  return plan.lastStatus === 'completed' ? 'expired' : plan.lastStatus;
+export function scheduleResumeBlocked(plan: ScheduleTiming, now: number): boolean {
+  return (plan.endsAt !== null && Date.parse(plan.endsAt) <= now)
+    || (plan.scheduleKind === 'once' && (plan.nextFireAt === null || Date.parse(plan.nextFireAt) <= now));
+}
+
+type ScheduleStatusSource = ScheduleTiming & Pick<Schedule, 'lastStatus'>;
+
+export function scheduleDisplayStatus(plan: ScheduleStatusSource, now = Date.now()): string {
+  if (plan.lastStatus === 'completed' || (plan.lastStatus === 'paused' && scheduleResumeBlocked(plan, now))) {
+    return 'expired';
+  }
+  return plan.lastStatus;
 }
 
 export function filterSchedules<T extends ScheduleStatusSource & { name: string; agentId: string }>(
@@ -73,12 +83,13 @@ export function filterSchedules<T extends ScheduleStatusSource & { name: string;
   query: string,
   agentId: string,
   status: string,
+  now = Date.now(),
 ): T[] {
   const keyword = query.trim().toLowerCase();
   return plans.filter((plan) => {
     if (keyword && !plan.name.toLowerCase().includes(keyword)) return false;
     if (agentId && plan.agentId !== agentId) return false;
-    if (status && scheduleDisplayStatus(plan) !== status) return false;
+    if (status && scheduleDisplayStatus(plan, now) !== status) return false;
     return true;
   });
 }
