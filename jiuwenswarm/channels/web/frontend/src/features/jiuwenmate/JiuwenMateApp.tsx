@@ -626,8 +626,11 @@ export function JiuwenMateApp({
       try {
         const platform = pendingConfirm.connection.channel;
         await api.unbindConnection(pendingConfirm.connection);
+        if (platform === 'feishu') {
+          setImNotice({ platform, text: t('jiuwenmate.profile.removeConnectionSuccess') });
+        }
         await refreshColleague(pendingConfirm.colleague.id);
-        if (platform === 'feishu' || platform === 'dingtalk') {
+        if (platform === 'dingtalk') {
           setImNotice({ platform, text: t('jiuwenmate.profile.removeConnectionSuccess') });
         }
       } catch (error) {

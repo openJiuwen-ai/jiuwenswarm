@@ -21,13 +21,16 @@ const svgReact = {
 await esbuild.build({
   absWorkingDir: root,
   entryPoints: [
+    'src/features/jiuwenmate/JiuwenMateApp.tsx',
     'src/features/jiuwenmate/pages/ColleagueProfilePage.tsx',
     'src/features/jiuwenmate/pages/OfficeDashboardPage.tsx',
     'src/features/jiuwenmate/schedules/ScheduleBoard.tsx',
     'src/features/jiuwenmate/components/ColleagueDeleteDialog.tsx',
     'src/features/jiuwenmate/components/ImAuthorizeDialog.tsx',
     'src/features/jiuwenmate/pages/ColleagueWorkspacePage.tsx',
+    { in: 'src/services/webClient.ts', out: 'webClient' },
   ],
+  outbase: 'src/features/jiuwenmate',
   bundle: true,
   splitting: true,
   packages: 'external',
