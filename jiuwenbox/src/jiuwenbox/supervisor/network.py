@@ -40,6 +40,11 @@ IPTABLES_LEGACY_BINARY = "iptables-legacy"
 IP6TABLES_LEGACY_BINARY = "ip6tables-legacy"
 IPTABLES_NFT_BINARY = "iptables-nft"
 IP6TABLES_NFT_BINARY = "ip6tables-nft"
+# Seconds passed to iptables ``-w`` / iptables-restore ``--wait``. Unset means
+# the default; a bounded wait keeps xtables lock contention from failing
+# sandbox creation without hanging the create path forever.
+ENV_IPTABLES_WAIT_SECONDS = "JIUWENBOX_IPTABLES_WAIT_SECONDS"
+DEFAULT_IPTABLES_WAIT_SECONDS = 5
 
 
 class NetworkSetupError(RuntimeError):
@@ -192,6 +197,37 @@ def _existing_binaries(paths: tuple[str, ...]) -> list[str]:
     return result
 
 
+def _iptables_wait_seconds() -> int:
+    """Return how long iptables should wait for ``/run/xtables.lock``.
+
+    A missing or blank ``JIUWENBOX_IPTABLES_WAIT_SECONDS`` uses the default.
+    Non-integer or negative values also fall back, so a bad setting does not
+    fail sandbox creation.
+    """
+    raw = os.environ.get(ENV_IPTABLES_WAIT_SECONDS)
+    if raw is None or not raw.strip():
+        return DEFAULT_IPTABLES_WAIT_SECONDS
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        logger.warning(
+            "%s=%r is not an integer; using default %ds",
+            ENV_IPTABLES_WAIT_SECONDS,
+            raw,
+            DEFAULT_IPTABLES_WAIT_SECONDS,
+        )
+        return DEFAULT_IPTABLES_WAIT_SECONDS
+    if value < 0:
+        logger.warning(
+            "%s=%r must be >= 0; using default %ds",
+            ENV_IPTABLES_WAIT_SECONDS,
+            raw,
+            DEFAULT_IPTABLES_WAIT_SECONDS,
+        )
+        return DEFAULT_IPTABLES_WAIT_SECONDS
+    return value
+
+
 def _iptables_candidates(ip_version: int) -> list[str]:
     if ip_version == 6:
         return _existing_binaries((
@@ -213,7 +249,7 @@ def _run_iptables_binary(
     check: bool = True,
     namespace: str | None = None,
 ) -> subprocess.CompletedProcess:
-    cmd = [binary] + args
+    cmd = [binary, "-w", str(_iptables_wait_seconds()), *args]
     if namespace:
         cmd = [IP_BINARY, "netns", "exec", namespace, *cmd]
     logger.debug("%s: %s", binary, " ".join(cmd))
@@ -430,7 +466,7 @@ def _run_iptables_restore(
     binary = _iptables_restore_binary(ip_version)
     if binary is None:
         raise NetworkSetupError(f"No iptables-restore binary for IPv{ip_version}")
-    cmd = [binary]
+    cmd = [binary, "--wait", str(_iptables_wait_seconds())]
     if noflush:
         cmd.append("--noflush")
     if namespace:
