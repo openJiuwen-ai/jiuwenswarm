@@ -302,6 +302,21 @@ _AGENT_NETWORK_ERROR_TEXT_TOKENS = (
     "connection reset",
 )
 
+def ws_connect_ready_timeout_seconds() -> float:
+    """Return the shared AgentServer WebSocket readiness deadline."""
+    return _WS_CONNECT_READY_TIMEOUT_SECONDS
+
+
+def ws_connect_retry_interval_seconds() -> float:
+    """Return the shared AgentServer WebSocket retry interval."""
+    return _WS_CONNECT_RETRY_INTERVAL_SECONDS
+
+
+def is_ws_connect_retryable(exc: BaseException) -> bool:
+    """Return whether an AgentServer WebSocket connection can be retried."""
+    return _is_ws_connect_retryable(exc)
+
+
 # 断连清理的有限重试：断连后先等 disconnect_cleanup_timeout_seconds，再按固定
 # 间隔最多重试几次，覆盖「chat 尾部 release / 延迟 cancel 的 interrupt 与
 # 「断连+timeout」同秒到期」等短暂竞态；超限后交回 600s idle reaper 兜底。
@@ -450,7 +465,7 @@ def normalize_agent_file_upload_path(
     if is_forbidden_document(filename=safe_name):
         raise AgentOSFileTransferError("forbidden extension", code="BAD_REQUEST")
 
-    path_parent = posix.parent.as_posix().strip(".")
+    path_parent = posix.parent.as_posix()
     prefix = _normalize_upload_dir_prefix(dir_prefix)
     parts: list[str] = []
     if prefix:
@@ -1186,7 +1201,7 @@ class AgentOSRouterClient(AgentServerClient):
             try:
                 existing = await self._agent_manager.get_agent(user_id, agent_type)
                 if existing is not None and existing.is_failed():
-                    await self._agent_manager.pop_agent(
+                    await self._agent_manager.discard_failed(
                         user_id, agent_type, expected_agent_id=existing.info.agent_id,
                     )
             except Exception:
@@ -3285,6 +3300,18 @@ class AgentOSRouterClient(AgentServerClient):
         lifecycle.attempt = None
         return sandbox
 
+    async def _create_sandbox_for_agent(
+        self, agent_info: AgentInfo, *, reuse_existing: bool, **kwargs: Any,
+    ) -> SandboxInfo:
+        """Allow backend-owned persistence without bypassing replacement fencing."""
+        return await self._yuanrong.create_sandbox(**kwargs)
+
+    def _sandbox_instance_id(self, namespace: str, name: str) -> str:
+        return deterministic_agent_instance_id(namespace, name)
+
+    def _sandbox_physical_name(self, agent_info: AgentInfo) -> str:
+        return f"gateway-{agent_info.agent_id}"
+
     async def _create_agent(self, agent_info: AgentInfo) -> AgentInfo:
         operation = start_gateway_trace(
             "gw.agent.create", attributes={"agent_type": agent_info.agent_type, "user_id": agent_info.user_id},
@@ -3358,14 +3385,18 @@ class AgentOSRouterClient(AgentServerClient):
                     "type", "enabled", "startup_mode", "url", "template_name",
                     "user", "group",
                 ))
-                conch = sandbox_config.get("conch")
+                if sandbox_config.get("type") == "adx-environment":
+                    # Static tool settings are persisted by deployment. Only
+                    # select the managed dynamic-connectivity path in Runtime.
+                    deployment = {"type": "adx-environment"}
+                conch = sandbox_config.get("conch") if sandbox_config.get("type") != "adx-environment" else None
                 if isinstance(conch, dict):
                     deployment["conch"] = _pick_keys(conch, (
                         "vcpu_num", "vcpu_max", "ram_mb", "network",
                     ))
                 env_vars["JIUWENSWARM_AGENTOS_SANDBOX_CONFIG"] = json.dumps(deployment)
                 sdk_config = str(sandbox_config.get("conch_sdk_config") or "").strip()
-                if sdk_config:
+                if sdk_config and sandbox_config.get("type") != "adx-environment":
                     env_vars["CONCH_SDK_CONFIG"] = sdk_config
             # create 后 Gateway 通过 frontend WS 代理直连该端口（不走 invoke）。
             extra_metadata: dict[str, Any] = {"agent_port": port}
@@ -3405,11 +3436,12 @@ class AgentOSRouterClient(AgentServerClient):
         # The frontend resolves DELETE by ID at execution time. A new
         # generation must never reuse the ID addressed by a previous DELETE.
         generation = agent_info.agent_id
-        physical_name = f"gateway-{generation}"
+        physical_name = self._sandbox_physical_name(agent_info)
         namespace = self._yuanrong.agent_namespace
 
         async def _create_sandbox_once() -> SandboxInfo:
-            return await self._yuanrong.create_sandbox(
+            return await self._create_sandbox_for_agent(
+                agent_info, reuse_existing=not (lifecycle.retired_instance or lifecycle.attempt),
                 namespace=namespace,
                 name=physical_name,
                 workspace=workspace,
@@ -3438,7 +3470,7 @@ class AgentOSRouterClient(AgentServerClient):
                     sandbox = candidate
                 else:
                     attempt = lifecycle.attempt or _SandboxAttempt(
-                        generation, deterministic_agent_instance_id(namespace, physical_name), _create_sandbox_once,
+                        generation, self._sandbox_instance_id(namespace, physical_name), _create_sandbox_once,
                     )
                     sandbox = await self._provision_sandbox(lifecycle, attempt)
                     lifecycle.shared_sandbox = sandbox if sandbox.sandbox_id == attempt.deterministic_id else None
