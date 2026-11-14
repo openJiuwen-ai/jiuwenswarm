@@ -888,3 +888,38 @@ class TestRegistryFastPath:
         assert REG.is_credential_field("models.x.model_client_config.api_key") is True
         assert lock_acquired, "cold path bypassed the loader lock"
         REG._CACHE = None
+
+
+class TestTuiSaveTrackHeaders:
+    """TUI add/update save tracks must resolve exec: custom_headers values
+    too (PR 10176 CR-002): the registry routes custom_headers.* exactly like
+    api_key."""
+
+    def _source(self):
+        from pathlib import Path
+
+        return Path("jiuwenswarm/common/config_panel/tui_models_handlers.py").read_text(
+            encoding="utf-8"
+        )
+
+    def test_add_track_covers_custom_headers(self):
+        src = self._source()
+        anchor = src.find('"model_added"')
+        assert anchor != -1
+        block = src[max(0, anchor - 3500):anchor]
+        assert "custom_headers" in block, (
+            "TUI add save track does not collect custom_headers references"
+        )
+
+    def test_update_track_covers_custom_headers(self):
+        src = self._source()
+        anchor = src.find("persisted_custom_headers")
+        assert anchor != -1, (
+            "TUI update mutate does not capture persisted custom_headers in-lock"
+        )
+        anchor2 = src.find('"model_updated"')
+        assert anchor2 != -1
+        block = src[max(0, anchor2 - 3500):anchor2]
+        assert "persisted_custom_headers" in block, (
+            "TUI update save track does not iterate persisted_custom_headers"
+        )

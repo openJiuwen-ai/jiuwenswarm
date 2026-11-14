@@ -1343,20 +1343,24 @@ async def command_model_handler(
         except Exception as e:
             await channel.send_response(ws, req_id, ok=False, error=str(e))
             return
-        # Save track: resolve a just-written exec: reference before the config
-        # reload below reads it, so the forwarded snapshot carries the real
-        # key instead of a store miss (empty string). Off the event loop;
-        # probe semantics: run now, bypass failure backoff. A failed resolve
+        # Save track: resolve just-written exec: references before the config
+        # reload below reads them, so the forwarded snapshot carries real
+        # values instead of store misses (empty strings). Off the event loop;
+        # probe semantics: run now, bypass failure backoff. Covers api_key and
+        # custom_headers values — the registry routes both. A failed resolve
         # keeps the saved entry but is surfaced in the response payload.
-        _saved_key = str(client_cfg.get("api_key", ""))
         _exec_resolve_error = ""
-        if _saved_key.startswith("exec:"):
+        _refs = [(str(client_cfg.get("api_key", "")), "models.*.model_client_config.api_key")]
+        _refs.extend(
+            (str(_v), "models.*.model_client_config.custom_headers.*")
+            for _v in (client_cfg.get("custom_headers") or {}).values()
+        )
+        for _ref, _fp in _refs:
+            if not _ref.startswith("exec:"):
+                continue
             from jiuwenswarm.common.credentials.resolver import resolve_credential_ref_now as _resolve_now
 
-            _ok, _ = await asyncio.to_thread(
-                _resolve_now, _saved_key,
-                field_path="models.*.model_client_config.api_key",
-            )
+            _ok, _ = await asyncio.to_thread(_resolve_now, _ref, field_path=_fp)
             if not _ok:
                 _exec_resolve_error = (
                     "model saved, but resolving its exec: reference failed; "
@@ -1490,10 +1494,15 @@ async def command_model_handler(
                 _update_result["updated_name"] = resolve_env_vars(str(_upd_mcc.get("model_name", "")))
                 _cur_mcc = (_raw_defs[0].get("model_client_config") or {}) if _raw_defs else {}
                 _update_result["current_name"] = resolve_env_vars(str(_cur_mcc.get("model_name", "")))
-                # The save track needs the persisted api_key; capture it here
-                # while the lock is already held (same rule as the display
-                # fields above) instead of re-locking after the commit.
+                # The save track needs the persisted api_key and custom_headers;
+                # capture them here while the lock is already held (same rule as
+                # the display fields above) instead of re-locking after the commit.
                 _update_result["persisted_api_key"] = str(_upd_mcc.get("api_key") or "")
+                _persisted_headers = _upd_mcc.get("custom_headers")
+                if isinstance(_persisted_headers, dict):
+                    _update_result["persisted_custom_headers"] = {
+                        str(_k): str(_v) for _k, _v in _persisted_headers.items()
+                    }
                 return data
             update_config(_update_mutate)
         except ModelOpError as _op_err:
@@ -1502,22 +1511,27 @@ async def command_model_handler(
         except Exception as e:
             await channel.send_response(ws, req_id, ok=False, error=str(e))
             return
-        # Save track: resolve a just-written exec: reference before the config
-        # reload below reads it (same rationale as model.add above). The key
-        # was captured inside the write transaction (persisted_api_key), so no
-        # second lock acquisition happens here — update_config already
-        # committed, and the response must not fail after a successful write.
-        # A failed resolve keeps the saved entry and is surfaced in the
-        # response payload.
+        # Save track: resolve just-written exec: references before the config
+        # reload below reads them (same rationale as model.add above). The key
+        # and headers were captured inside the write transaction
+        # (persisted_api_key / persisted_custom_headers), so no second lock
+        # acquisition happens here — update_config already committed, and the
+        # response must not fail after a successful write. A failed resolve
+        # keeps the saved entry and is surfaced in the response payload.
         _exec_resolve_error = ""
-        _upd_saved_key = str(_update_result.get("persisted_api_key") or "")
-        if _upd_saved_key.startswith("exec:"):
+        _upd_refs = [
+            (str(_update_result.get("persisted_api_key") or ""), "models.*.model_client_config.api_key"),
+        ]
+        _upd_refs.extend(
+            (str(_v), "models.*.model_client_config.custom_headers.*")
+            for _v in (_update_result.get("persisted_custom_headers") or {}).values()
+        )
+        for _ref, _fp in _upd_refs:
+            if not _ref.startswith("exec:"):
+                continue
             from jiuwenswarm.common.credentials.resolver import resolve_credential_ref_now as _resolve_now
 
-            _ok, _ = await asyncio.to_thread(
-                _resolve_now, _upd_saved_key,
-                field_path="models.*.model_client_config.api_key",
-            )
+            _ok, _ = await asyncio.to_thread(_resolve_now, _ref, field_path=_fp)
             if not _ok:
                 _exec_resolve_error = (
                     "model updated, but resolving its exec: reference failed; "
