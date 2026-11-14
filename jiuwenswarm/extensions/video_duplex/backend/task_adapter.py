@@ -6,10 +6,11 @@ import logging
 import time
 from typing import Any
 
+from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskModification
 from jiuwenswarm.extensions.video_duplex.backend.tasks.store import task_database
-from .tasks.errors import CancellationSettlementTimeout, QueueVersionConflict, TaskRevisionConflict, TaskNotFound
+from .tasks.errors import QueueVersionConflict, TaskRevisionConflict, TaskNotFound
 from .tasks.interactions import approval_cards, approval_option_labels, voice_approval_answers
 from .tasks.diagnostics import receipt_state, task_state, trace_task
 from .tasks.prompts import (
@@ -24,12 +25,8 @@ from .qwen_omni_tools import delegate_matches_input, parse_qwen_omni_tool_call
 from .core_receipts import receipt_payload
 
 logger = logging.getLogger(__name__)
-AGENT_QUERY_TIMEOUT = 20
 EVENT_SEND_TIMEOUT = 2
-STOP_SETTLEMENT_TIMEOUT = 90
 SCHEDULED_JOBS_LIMIT = 20
-# How long a voice answer to a typed chat card waits for Core to resume the turn.
-CHAT_ANSWER_CONFIRM_TIMEOUT = 10
 
 
 async def gateway_scheduled_jobs(owner):
@@ -38,41 +35,6 @@ async def gateway_scheduled_jobs(owner):
 
     # Empty identity reads anonymous jobs only; None would expose every owner's jobs.
     return await CronController.get_instance().list_jobs(user_id=owner)
-
-
-class AgentRequestTimeoutError(TimeoutError):
-    """AgentServer unary 请求超时（与 gateway.routing.agent_request_timeout 同契约的最小子集）."""
-
-    code = "AGENT_SERVER_TIMEOUT"
-
-
-async def send_agent_request_with_timeout(
-    agent_client: Any,
-    env: Any,
-    *,
-    label: str,
-    timeout_seconds: float,
-) -> Any:
-    """限时等待 AgentServer unary 响应（gateway 薄代理同语义的最小本地实现）。
-
-    task 查询始终显式传 timeout_seconds，不涉及 gateway 的 TUI 通道超时策略；
-    仅依赖注入的 AgentServerClient.send_request，不引用 gateway 树实现。
-    """
-    try:
-        return await asyncio.wait_for(
-            agent_client.send_request(env), timeout=timeout_seconds
-        )
-    except asyncio.TimeoutError as exc:
-        logger.warning(
-            "[%s] AgentServer unary request timed out: request_id=%s method=%s "
-            "channel=%s timeout=%ss",
-            label,
-            getattr(env, "request_id", ""),
-            getattr(env, "method", ""),
-            getattr(env, "channel", ""),
-            timeout_seconds,
-        )
-        raise AgentRequestTimeoutError() from exc
 
 
 def task_identity(ws, scope):
@@ -98,6 +60,25 @@ def task_identity(ws, scope):
     return owner, scope
 
 
+async def task_login_credential_ref(ws: Any, target: dict[str, Any]) -> str:
+    """Bind a login model to this caller without persisting its session or token."""
+    from agent_gateway.auth.passthrough import expired_login_session, normalize_model_auth
+    from agent_gateway.auth.service import get_auth_service
+
+    auth_session = getattr(ws, "_jiuwen_auth_session", None)
+    if not isinstance(auth_session, str) or not auth_session or not target.get("model_name"):
+        return ""
+    params = {"model_name": target["model_name"]}
+    expired = expired_login_session(params, auth_session)
+    if expired is not None:
+        try:
+            await asyncio.to_thread(get_auth_service().try_refresh, expired)
+        except Exception as exc:
+            logger.debug("Task login credential refresh failed: %s", type(exc).__name__)
+    normalize_model_auth(params, session_id=auth_session)
+    return (params.get(E2A_MODEL_AUTH_PARAM_KEY) or {}).get("credential_ref", "")
+
+
 async def task_agent_query(client, method, params, session, owner):
     """Read from the routed AgentServer, never from Gateway's local session tree."""
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
@@ -105,12 +86,12 @@ async def task_agent_query(client, method, params, session, owner):
     client = client.get("value") if isinstance(client, dict) else client
     if client is None:
         raise RuntimeError("AgentServer client is unavailable")
-    response = await send_agent_request_with_timeout(
-        client, e2a_from_agent_fields(
+    response = await client.send_request(
+        e2a_from_agent_fields(
             request_id="task-query-" + str(time.time_ns()),
             req_method=method, params=params, session_id=session,
             user_id=owner or None, channel_id="video_tool", timestamp=time.time(),
-        ), label="voice.task", timeout_seconds=AGENT_QUERY_TIMEOUT,
+        ),
     )
     payload = response.payload or {}
     if not response.ok:
@@ -135,6 +116,20 @@ class AgentTaskExecutor:
             await asyncio.gather(self._readiness_check, return_exceptions=True)
         self.endpoint.close()
         self.reconciliation_outcomes.clear()
+
+    @staticmethod
+    async def _model_auth(task: dict[str, Any]) -> dict[str, Any] | None:
+        """Resolve the bound account through Gateway's existing refresh path."""
+        from agent_gateway.auth.login_credentials import bare_model_name
+        from agent_gateway.auth.session_owners import SessionOwner, login_auth_for_owner
+
+        ref = task["request"].get("login_credential_ref")
+        model_name = task["request"].get("execution_target", {}).get("model_name")
+        if not ref or not model_name:
+            return None
+        return await asyncio.to_thread(
+            login_auth_for_owner, SessionOwner(ref, bare_model_name(model_name)),
+        )
 
     def prune_reconciliation(self, active_requests):
         """Retain one-shot outcomes only while their execution is unresolved."""
@@ -234,30 +229,22 @@ class AgentTaskExecutor:
         return bool(payload.get("pending"))
 
     async def wait_settled(self, task):
-        from jiuwenswarm.extensions.video_duplex.backend.tasks.service import ExecutionUncertain
+        """Retain ownership until Core confirms settlement, including suspended turns."""
+        from .tasks.service import RECONCILE_INTERVAL
 
-        try:
-            async with asyncio.timeout(20):
-                while not self.store.read(task["id"])["execution_settled"]:
-                    await asyncio.sleep(0.05)
-        except TimeoutError as exc:
-            # Ask Core once before declaring the outcome unknown (#5486).
+        next_probe = time.monotonic() + RECONCILE_INTERVAL
+        while not self.store.read(task["id"])["execution_settled"]:
+            await asyncio.sleep(0.05)
+            if time.monotonic() < next_probe:
+                continue
             try:
                 if await self.reconciliation_ready():
-                    outcome = await self.reconcile(task)
-                    if outcome.get("status") != "failed" and (
-                        outcome.get("settled") or outcome.get("status") in {"completed", "cancelled"}
-                    ):
-                        self.store.update(task["id"], lambda t: t.update(
-                            execution_settled=True, checkpoint_open=False,
-                            execution_cancelled=outcome.get("status") == "cancelled" or t["status"] == "cancelling",
-                        ))
-                        return
+                    # A lost push must not strand the queue. Probe only; never stop or replay work.
+                    await self.cancel(task, probe=True)
             except Exception:
-                logger.warning("Execution cleanup reconciliation failed task=%s", task["id"], exc_info=True)
-            raise ExecutionUncertain(
-                "Execution cleanup is unconfirmed; no work was replayed"
-            ) from exc
+                logger.warning("Settlement probe failed for %s; retaining execution ownership", task["id"],
+                               exc_info=True)
+            next_probe = time.monotonic() + RECONCILE_INTERVAL
 
     @staticmethod
     def answer_input(task):
@@ -299,17 +286,25 @@ class AgentTaskExecutor:
         client = (
             self.client.get("value") if isinstance(self.client, dict) else self.client
         )
+        params = {
+            **request.params,
+            "managed_task_request": task["request_id"],
+            "managed_task_binding": self.endpoint.binding(task),
+        }
+        target = task["request"].get("execution_target", {})
+        for key in ("model_name", "model_selection"):
+            if target.get(key) is not None:
+                params[key] = target[key]
+        model_auth = await self._model_auth(task)
+        if model_auth is not None:
+            params[E2A_MODEL_AUTH_PARAM_KEY] = model_auth
         response = await client.send_request(
             e2a_from_agent_fields(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 session_id=request.session_id,
                 req_method=request.req_method,
-                params={
-                    **request.params,
-                    "managed_task_request": task["request_id"],
-                    "managed_task_binding": self.endpoint.binding(task),
-                },
+                params=params,
                 is_stream=False,
                 timestamp=time.time(),
                 user_id=task["owner"] or None,
@@ -345,6 +340,7 @@ class AgentTaskExecutor:
             else None,
             managed_task_binding=self.endpoint.binding(task),
             execution_target=target,
+            model_auth=await self._model_auth(task),
         )
 
     async def reconciliation_ready(self) -> bool:
@@ -416,9 +412,9 @@ class AgentTaskExecutor:
             timestamp=time.time(),
         )
         trace_task("cancel_rpc_sent", task=task_state(task), cancel_request_id=request.request_id, probe=probe)
-        response = await asyncio.wait_for(client.send_request(request), 20)
+        response = await client.send_request(request)
         trace_task("cancel_rpc_response", task=task_state(task),
-                   ok=response.ok, payload=receipt_state(response.payload))
+                   ok=response.ok, probe=probe, payload=receipt_state(response.payload))
         return response
 
     async def cancel(self, task, *, probe=False):
@@ -455,15 +451,7 @@ class AgentTaskExecutor:
             return True
         if probe:
             return False
-        try:
-            async with asyncio.timeout(STOP_SETTLEMENT_TIMEOUT):
-                while not self.store.read(task["id"])["execution_settled"]:
-                    await asyncio.sleep(0.2)
-        except TimeoutError as exc:
-            trace_task("cancel_settlement_timeout", task=task_state(self.store.read(task["id"])))
-            raise CancellationSettlementTimeout(
-                f"Stop accepted, but execution cleanup was not confirmed within {STOP_SETTLEMENT_TIMEOUT} seconds"
-            ) from exc
+        await self.wait_settled(task)
         trace_task("cancel_settled", task=task_state(self.store.read(task["id"])))
         return False
 
@@ -509,7 +497,7 @@ class VideoSearchManager:
                 AgentTaskExecutor(self.client, store, self.normalize_media),
                 on_change=self.changed,
                 concurrency=self.concurrency,
-                notification_timeout=AGENT_QUERY_TIMEOUT + 2 * EVENT_SEND_TIMEOUT + 1,
+                notification_timeout=25,
             )
         return self._service
 
@@ -689,8 +677,6 @@ class VideoSearchManager:
                    queue_version=self.snapshot(task["owner"], task["session"])["queue_version"],
                    subscriber_count=sum(key[:2] == (task["owner"], task["session"])
                                         for key in self.subscribers))
-        if state in {"failed", "completed", "cancelled"}:
-            self.log_event({"stage": "search_" + state, "job_id": task["id"]})
         event = state if state in {"completed", "failed", "cancelled"} else "progress"
 
         async def deliver(key, ws):
@@ -727,26 +713,36 @@ class VideoSearchManager:
         if not session_id:
             return
         if event_name == "chat.ask_user_question":
+            previous = self._chat_cards.get(session_id)
+            if previous and previous.get("request_id") != payload.get("request_id"):
+                self._finish_chat_answer(session_id, False)
             if payload.get("source") == "permission_interrupt":
+                self._finish_chat_answer(session_id, False)
                 self._chat_cards.pop(session_id, None)
                 return
             if payload.get("duplex_job_id") or payload.get("source") != "confirm_interrupt":
                 return
             self._chat_cards[session_id] = {
-                key: payload.get(key) for key in ("request_id", "source", "questions", "approval_schema")
+                key: payload.get(key)
+                for key in ("request_id", "interrupt_id", "source", "questions", "approval_schema")
             }
             if len(self._chat_cards) > 128:
-                self._chat_cards.pop(next(iter(self._chat_cards)))
+                expired = next(iter(self._chat_cards))
+                self._chat_cards.pop(expired)
+                self._finish_chat_answer(expired, False)
         elif event_name == "chat.processing_status":
             if payload.get("is_processing"):
                 # A resumed turn consumed the card, whoever answered it.
                 self._chat_cards.pop(session_id, None)
-                resumed = self._chat_resumed.get(session_id)
-                if resumed is not None:
-                    resumed.set()
+                self._finish_chat_answer(session_id, True)
             elif self._service is not None:
                 # A turn ended: the card was answered or a new one is up; Core decides.
                 self._service.interrupt_settled(session_id)
+
+    def _finish_chat_answer(self, session_id, applied):
+        pending = self._chat_resumed.get(session_id)
+        if pending is not None and not pending.done():
+            pending.set_result(applied)
 
     async def chat_card(self, owner, scope):
         """The typed chat card Core still waits on in this conversation, for voice."""
@@ -767,6 +763,7 @@ class VideoSearchManager:
             return None
         if not payload.get("pending"):
             self._chat_cards.pop(session, None)
+            self._finish_chat_answer(session, False)
             return None
         cards = approval_cards({**card, "state": "pending"}) or []
         # Same shape as a job's interaction; the answer is one of each question's option labels.
@@ -806,26 +803,25 @@ class VideoSearchManager:
             interaction_id=interaction_id,
             answers=tuple({"custom_input": "", **answer} for answer in bound),
             source=payload["source"],
+            interrupt_id=str(payload.get("interrupt_id") or ""),
             approval_schema=payload.get("approval_schema") or "",
             mode=mode,
             work_mode="" if mode == "team.design" else target.get("work_mode", "work"),
             project_dir=target.get("project_dir", ""),
         ).to_agent_request()
-        resumed = self._chat_resumed[session] = asyncio.Event()
+        if session in self._chat_resumed:
+            return {**rejected, "error": "An answer is already pending for this card"}
+        resumed = self._chat_resumed[session] = asyncio.get_running_loop().create_future()
         try:
             await submit(ws, "chat.send", request.params)
             # The web request returns no result; Core resuming the turn is the confirmation.
-            await asyncio.wait_for(resumed.wait(), CHAT_ANSWER_CONFIRM_TIMEOUT)
-        except asyncio.TimeoutError:
-            pass
+            applied = await resumed
         finally:
             if self._chat_resumed.get(session) is resumed:
                 self._chat_resumed.pop(session)
         chosen = [a["selected_options"][0] for a in bound]
-        if not resumed.is_set():
-            return dict(job_id="", interaction_id=interaction_id, state="submitted", applied=False, answers=chosen,
-                        message=("Submitted, but Core has not resumed the task yet; "
-                                 "query again before saying it was approved"))
+        if not applied:
+            return {**rejected, "error": "The card is no longer pending; answer application was not confirmed"}
         self._chat_cards.pop(session, None)
         closed = {"session_id": session, "request_id": interaction_id}
         await asyncio.gather(*(
@@ -893,6 +889,7 @@ class VideoSearchManager:
         from .mode_routing import resolve_execution_target
 
         target = await resolve_execution_target(self.client, owner, scope)
+        credential_ref = await task_login_credential_ref(ws, target)
         request = dict(
             title=title,
             query=query,
@@ -905,6 +902,9 @@ class VideoSearchManager:
         )
         request.update(scheduling or {})
         request["execution_target"] = target
+        request.pop("login_credential_ref", None)
+        if credential_ref:
+            request["login_credential_ref"] = credential_ref
         task = self.service.submit(
             owner, scope, command_id or tool_call_id, question or query, request
         )
@@ -1142,7 +1142,17 @@ class VideoSearchManager:
                 )
             except ValueError as exc:
                 # Explicit receipt so the model cannot mistake a refusal for consent.
-                return dict(task_id=args["job_id"], state="rejected", applied=False, error=str(exc))
+                current = self.service.get(owner, scope, args["job_id"])
+                return dict(
+                    task_id=args["job_id"], state="rejected", applied=False, error=str(exc),
+                    current_task=self.voice_job(self.public(current)),
+                    message=(
+                        "The answer was not applied. Report the current task state from this receipt; "
+                        "do not claim approval, continued execution or completion without evidence. "
+                        "Query the current card before another answer. Do not recreate the task or "
+                        "transfer consent to a different card automatically."
+                    ),
+                )
         else:
             try:
                 result = self.service.modify(
@@ -1253,6 +1263,9 @@ class VideoSearchManager:
         })
 
     async def close(self):
+        for session in list(self._chat_resumed):
+            self._finish_chat_answer(session, False)
+        self._chat_cards.clear()
         pending = [entry[1] for entry in self._queue_requests.values()]
         for task in pending:
             task.cancel()

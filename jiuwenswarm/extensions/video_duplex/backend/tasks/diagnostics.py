@@ -1,18 +1,34 @@
 """Best-effort, correlated task diagnostics shared by Gateway and AgentServer."""
 
 from datetime import datetime, timezone
-import json
 import logging
 import os
-from pathlib import Path
-import threading
+
+from jiuwenswarm.common.utils import append_jsonl_log, get_user_workspace_dir
 
 logger = logging.getLogger(__name__)
-_lock = threading.Lock()
+
+
+_VERBOSE_EVENTS = {
+    "checkpoint_sent", "checkpoint_acknowledged", "task_push_sent",
+    "task_trace_progress_store_observed", "task_trace_queue_store_observed",
+    "task_trace_queue_received", "task_trace_queue_ignored", "task_trace_progress_ignored",
+}
 
 
 def trace_task(event, **fields):
     """Record control metadata, never audio, images, credentials or tool results."""
+    verbose = event in _VERBOSE_EVENTS or (
+        event == "cancel_rpc_sent" and fields.get("probe")
+    ) or (
+        event == "cancel_rpc_response" and fields.get("probe") and fields.get("ok")
+        and isinstance(fields.get("payload"), dict)
+        and fields["payload"].get("managed_task_status") == "running"
+        and fields["payload"].get("success") is not False
+        and not fields["payload"].get("error")
+    )
+    if verbose and not logger.isEnabledFor(logging.DEBUG):
+        return
     record = {
         "server_time": datetime.now(timezone.utc).isoformat(),
         "pid": os.getpid(),
@@ -20,12 +36,8 @@ def trace_task(event, **fields):
         **fields,
     }
     try:
-        line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
-        path = Path.home() / ".jiuwenswarm" / "logs" / "duplex-task-trace.jsonl"
-        with _lock:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as stream:
-                stream.write(line)
+        path = get_user_workspace_dir() / "logs" / "duplex-task-trace.jsonl"
+        append_jsonl_log(path, record)
     except Exception:
         # Diagnostics must never change cancellation or dispatch semantics.
         logger.warning("Could not write duplex task diagnostics", exc_info=True)
@@ -48,6 +60,7 @@ def receipt_state(payload):
     keys = (
         "state", "applied", "code", "error", "queue_version", "call_id",
         "job_id", "task_id", "status", "success", "search_session_id", "revision",
+        "managed_task_status", "managed_task_settled",
     )
     result = {key: payload[key] for key in keys if key in payload}
     for key in ("operation", "tool_result", "search_job", "target"):
