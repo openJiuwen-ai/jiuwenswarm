@@ -964,6 +964,45 @@ def _is_explore_subagent(spec: Any) -> bool:
     )
 
 
+# Factory names a browser sub-agent can be declared under, all lowercase:
+# ``registry`` carries the two this repo builds; the bare names are what
+# agent-core's ``harness/deep_agent.py`` accepts when materializing an inherited
+# spec. Declared names are compared after ``strip().lower()``.
+_BROWSER_SUBAGENT_FACTORIES = frozenset(
+    {
+        registry.BROWSER_AGENT,
+        registry.SWARM_BROWSER_AGENT,
+        "browser_agent",
+        "browser_runtime",
+    }
+)
+
+
+def _is_browser_subagent(spec: Any) -> bool:
+    """Return whether ``spec`` declares a browser sub-agent.
+
+    ``SubAgentSpec`` has no ``subagent_type`` field, so the identity carriers
+    that actually exist are ``factory_name`` and the agent card name;
+    ``subagent_type`` is only consulted for foreign spec objects that still
+    carry it. The factory name is compared the way agent-core normalizes it
+    when materializing a spec (``strip().lower()``), so a differently cased or
+    padded name still matches.
+
+    Args:
+        spec: A sub-agent spec from a base team spec or from
+            :func:`build_member_subagent_specs`.
+
+    Returns:
+        True when the spec declares a browser sub-agent.
+    """
+    factory_name = str(getattr(spec, "factory_name", None) or "").strip().lower()
+    return (
+        getattr(spec, "subagent_type", None) == "browser_agent"
+        or factory_name in _BROWSER_SUBAGENT_FACTORIES
+        or getattr(getattr(spec, "agent_card", None), "name", None) == "browser_agent"
+    )
+
+
 def build_member_subagent_specs(
     config: dict[str, Any],
     mode: str,
@@ -1125,11 +1164,13 @@ def build_member_deep_agent_spec(
     if role != "leader":
         subagent_specs = build_member_subagent_specs(config, mode, role)
 
-    # In team mode, base_spec includes a browser_agent with hardcoded
-    # server_id="playwright_official_stdio". All members share that single
-    # @playwright/mcp subprocess → single Chrome window. Replace it with
-    # SWARM_BROWSER_AGENT which builds a unique server_id per member
-    # (session_id + role), giving each member their own isolated Chrome.
+    # A base spec may itself declare a browser sub-agent — for example an older
+    # team template that pins the shared server_id="playwright_official_stdio"
+    # entry, which every member would then share as one @playwright/mcp
+    # subprocess and one Chrome window. Replace it with SWARM_BROWSER_AGENT,
+    # which builds a unique server_id per member (session_id + role), giving
+    # each member their own isolated Chrome. The shipped config.yaml declares no
+    # base sub-agents, so nothing is replaced unless a deployment opts in.
     # In code mode build_member_subagent_specs already returns SWARM_BROWSER_AGENT,
     # so this branch only runs for non-code modes.
     team_browser_spec: SubAgentSpec | None = None
@@ -1160,13 +1201,11 @@ def build_member_deep_agent_spec(
             ]
         # Remove any browser_agent from base_spec to prevent the shared
         # playwright_official_stdio entry from co-existing with our isolated one.
-        if team_browser_spec or any(
-            getattr(s, "subagent_type", None) == "browser_agent" for s in subagent_specs
-        ):
+        # Match on the carriers a SubAgentSpec actually has (factory_name /
+        # agent card name); ``subagent_type`` is only for foreign spec objects.
+        if team_browser_spec or any(_is_browser_subagent(s) for s in subagent_specs):
             merged_subagents = [
-                s
-                for s in merged_subagents
-                if getattr(s, "subagent_type", None) != "browser_agent"
+                s for s in merged_subagents if not _is_browser_subagent(s)
             ]
         if team_browser_spec:
             merged_subagents.append(team_browser_spec)

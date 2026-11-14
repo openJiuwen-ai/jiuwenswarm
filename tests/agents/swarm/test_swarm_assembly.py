@@ -88,7 +88,6 @@ from jiuwenswarm.agents.swarm.config_specs import (
     build_member_deep_agent_spec,
     build_member_subagent_specs,
 )
-from agent_gateway.common.mode_matrix import NEW_TEAM_DESIGN
 from jiuwenswarm.agents.swarm.providers import (
     code_rails,
     evolution_rails,
@@ -2740,7 +2739,6 @@ def test_leader_deep_agent_spec_pins_subagents_empty(mode: str) -> None:
             SubAgentSpec(
                 agent_card=AgentCard(name="browser_agent"),
                 system_prompt="",
-                subagent_type="browser_agent",
             )
         ]
     )
@@ -3772,31 +3770,104 @@ def test_browser_subagent_teammates_get_distinct_keys(
     assert keys[0] != keys[1], "Teammates must not share a browser_key"
 
 
-def test_team_mode_deep_spec_replaces_shared_browser_agent() -> None:
-    """shared browser_agent is replaced by SWARM_BROWSER_AGENT for each teammate."""
+@pytest.mark.parametrize("mode", ["team", "code.team"])
+@pytest.mark.parametrize(
+    "carrier,factory_name",
+    [
+        pytest.param("agent_card_name", None, id="agent-card-name"),
+        pytest.param("core_factory", "core.browser_agent", id="core-factory"),
+        pytest.param("bare_factory", "browser_agent", id="bare-factory"),
+        pytest.param("runtime_factory", "browser_runtime", id="runtime-factory"),
+        pytest.param("mixed_case_factory", "  Browser_Agent  ", id="mixed-case-factory"),
+    ],
+)
+def test_team_mode_deep_spec_replaces_shared_browser_agent(
+    carrier: str, factory_name: str | None, mode: str
+) -> None:
+    """A browser sub-agent declared on the base spec is replaced by ours.
+
+    ``SubAgentSpec`` has no ``subagent_type`` field, so the shared entry is
+    declared the way a real one is: through the agent card name or the
+    ``factory_name`` carrier. The factory comparison follows agent-core's
+    ``strip().lower()`` normalization, so a differently cased or padded name
+    still matches.
+    """
     register_swarm_providers()
     from openjiuwen.agent_teams.schema.deep_agent_spec import SubAgentSpec
     from openjiuwen.core.single_agent import AgentCard
 
-    shared_browser = SubAgentSpec(
-        agent_card=AgentCard(name="browser_agent"),
-        system_prompt="",
-        subagent_type="browser_agent",
-    )
+    if factory_name is None:
+        shared_browser = SubAgentSpec(
+            agent_card=AgentCard(name="browser_agent"),
+            system_prompt="",
+        )
+    else:
+        shared_browser = SubAgentSpec(
+            agent_card=AgentCard(name="playwright-browser"),
+            system_prompt="",
+            factory_name=factory_name,
+        )
     base = DeepAgentSpec(
         subagents=[shared_browser],
         workspace=WorkspaceSpec(root_path="/tmp/ws"),
     )
     config = {"react": {"subagents": {"browser_agent": {"enabled": True}}}}
-    spec = build_member_deep_agent_spec(config, "team", "teammate", base)
+    spec = build_member_deep_agent_spec(config, mode, "teammate", base)
+    subs = list(spec.subagents or [])
 
-    # The shared entry must be gone and exactly one SWARM_BROWSER_AGENT present.
-    subagent_factories = [
-        getattr(s, "factory_name", None) for s in (spec.subagents or [])
+    # The shared entry itself must be gone, and exactly one isolated entry added.
+    assert shared_browser not in subs, f"base browser entry ({carrier}) must be removed"
+    assert [s.factory_name for s in subs].count(SWARM_BROWSER_AGENT) == 1
+
+    browser_entries = [
+        s
+        for s in subs
+        if getattr(getattr(s, "agent_card", None), "name", None) == "browser_agent"
     ]
-    shared_entries = []
-    for s in (spec.subagents or []):
-        if getattr(s, "factory_name", None) is None and getattr(s, "subagent_type", None) == "browser_agent":
-            shared_entries.append(s)
-    assert not shared_entries, "shared playwright_official_stdio entry must be removed"
-    assert subagent_factories.count(SWARM_BROWSER_AGENT) == 1
+    assert len(browser_entries) == 1, "only the isolated browser sub-agent may remain"
+    assert browser_entries[0].factory_name == SWARM_BROWSER_AGENT
+
+    # Nothing else may survive under any other browser carrier.
+    leftover = [
+        s
+        for s in subs
+        if s is not browser_entries[0]
+        and (
+            getattr(getattr(s, "agent_card", None), "name", None) == "browser_agent"
+            or str(getattr(s, "factory_name", None) or "").strip().lower()
+            in {"core.browser_agent", "browser_agent", "browser_runtime"}
+        )
+    ]
+    assert not leftover, f"shared playwright entry survived as {leftover!r}"
+
+
+def test_team_mode_deep_spec_rebuilds_base_swarm_browser_agent() -> None:
+    """A base entry already using our factory is rebuilt, not preserved.
+
+    The rebuild drops the base entry's tuned ``factory_kwargs`` in favour of
+    this platform's defaults. That is not an equivalent swap; the regression
+    test pins the behaviour so a future change cannot alter it silently.
+    """
+    register_swarm_providers()
+    from openjiuwen.agent_teams.schema.deep_agent_spec import SubAgentSpec
+    from openjiuwen.core.single_agent import AgentCard
+
+    tuned = SubAgentSpec(
+        agent_card=AgentCard(name="browser_agent"),
+        system_prompt="",
+        factory_name=SWARM_BROWSER_AGENT,
+        factory_kwargs={"max_iterations": 7, "language": "cn"},
+    )
+    base = DeepAgentSpec(
+        subagents=[tuned],
+        workspace=WorkspaceSpec(root_path="/tmp/ws"),
+    )
+    config = {"react": {"subagents": {"browser_agent": {"enabled": True}}}}
+    spec = build_member_deep_agent_spec(config, "team", "teammate", base)
+    subs = list(spec.subagents or [])
+
+    assert tuned not in subs
+    rebuilt = [s for s in subs if s.factory_name == SWARM_BROWSER_AGENT]
+    assert len(rebuilt) == 1
+    assert rebuilt[0].factory_kwargs["max_iterations"] == DEFAULT_BROWSER_AGENT_MAX_ITERATIONS
+    assert rebuilt[0].factory_kwargs["language"] == "en"
