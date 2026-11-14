@@ -33,7 +33,7 @@ JiuwenSwarm提供两种安装方式：`pip安装`或`源码安装`。
   source .venv/bin/activate
 
   # 安装 jiuwenswarm
-  pip install jiuwenswarm
+  pip install workswarm
 
   # 安装 jiuwenswarm-tui
   pip install jiuwenswarm-tui

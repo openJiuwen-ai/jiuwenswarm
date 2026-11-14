@@ -130,7 +130,7 @@ await s.send("写第一段", options={"timeout": 60})
 
 ```bash
 # 安装
-pip install jiuwenswarm
+pip install workswarm
 
 # 初始化（首次）
 jiuwenswarm-init
