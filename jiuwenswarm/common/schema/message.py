@@ -1,17 +1,18 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""转发别名：实现已迁 ``e2a.message``。
+"""线上报文与枚举：``ReqMethod`` 由本模块定义，其余转发协议包。
 
-仅保留 ``jiuwenswarm.common.schema.message`` 旧 import 路径兼容，re-export 协议包
-的同一对象——``Message`` / ``ReqMethod`` / ``EventType`` / ``Mode`` 及线协议事件名
-常量。``ReqMethod`` 的成员扩展（``RECOMMENDATION`` / ``TRAJECTORY_*``）现由协议包
-直接提供；仅协议包当前 pin 尚未发布的成员（``SESSION_ASSETS_REMOVE``）保留最小
-运行时补齐，避免两仓各维护一份枚举类。
+``Message`` / ``EventType`` / ``Mode`` 及线协议事件名常量仍来自共享协议包
+``e2a.message``（Gateway 与 AgentServer 都要解析）。
+``ReqMethod`` 是本仓拥有的方法词汇表：Gateway 只按字符串透传、不引用它，
+因此枚举定义留在实现侧，协议包不再持有。
+
+本模块同时保留 ``jiuwenswarm.common.schema.message`` 的旧 import 路径兼容。
 """
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 from e2a.message import (  # noqa: F401
     PROMPT_SUGGESTION_READY_EVENT,
@@ -22,181 +23,548 @@ from e2a.message import (  # noqa: F401
     EventType,
     Message,
     Mode,
-    ReqMethod,
 )
 
 
-def _ensure_protocol_member(enum_cls: type[Enum], name: str, value: str) -> None:
-    """Register a member of a protocol enum the pinned protocol package does not ship yet.
+# Method vocabulary for the AgentServer wire protocol.  Owned by the
+# implementation side; the shared protocol package only carries method values
+# as strings.  Members are strings, so the Gateway can compare wire names
+# directly without importing this enum.
 
-    ``openjiuwen-protocol`` owns the enum; 这里只为协议包尚未发布的成员开一个缺口，
-    待协议包提供同名同值成员后本函数与调用一并删除。
+
+class ReqMethod(StrEnum):
+    """AgentServer wire method vocabulary, owned by the implementation side.
+
+    Gateway only forwards these names as strings; it does not define them.
     """
-    existing = enum_cls.__members__.get(name)
-    if existing is not None:
-        if existing.value != value:
-            raise RuntimeError(
-                f"{enum_cls.__name__}.{name} is {existing.value!r}, expected {value!r}"
-            )
-        return
-    if any(item.value == value for item in enum_cls):
-        raise RuntimeError(f"{enum_cls.__name__} value {value!r} is already registered")
-    # Enum exposes no public API for adding a member, so extending the pinned
-    # protocol enum requires its internal registries. Keep those accesses here.
-    member = object.__new__(enum_cls)
-    member._name_ = name  # pylint: disable=protected-access
-    member._value_ = value  # pylint: disable=protected-access
-    type.__setattr__(enum_cls, name, member)
-    enum_cls._member_map_[name] = member  # pylint: disable=protected-access
-    enum_cls._value2member_map_[value] = member  # pylint: disable=protected-access
-    enum_cls._member_names_.append(name)  # pylint: disable=protected-access
 
+    A4P_AUTHORIZATION_COMPLETE = "a4p.authorization.complete"
+    A4P_AUTHORIZATION_PENDING = "a4p.authorization.pending"
+    A4P_AUTHORIZATION_REJECT = "a4p.authorization.reject"
+    A4P_AUTHORIZATION_REPREPARE = "a4p.authorization.reprepare"
+    A4P_CONFIG_GET = "a4p.config.get"
+    A4P_CONFIG_UPDATE = "a4p.config.update"
+    ACP_TOOL_RESPONSE = "acp.tool_response"
+    AGENTS_CREATE = "agents.create"
+    AGENTS_DELETE = "agents.delete"
+    AGENTS_DISABLE = "agents.disable"
+    AGENTS_ENABLE = "agents.enable"
+    AGENTS_GET = "agents.get"
+    AGENTS_LIST = "agents.list"
+    AGENTS_TOOLS_LIST = "agents.tools_list"
+    AGENTS_UPDATE = "agents.update"
+    AGENT_GROUPS_CREATE = "agent_groups.create"
+    AGENT_GROUPS_FILE_LIST = "agent_groups.file.list"
+    AGENT_GROUPS_FILE_READ = "agent_groups.file.read"
+    AGENT_GROUPS_IMPORT_LOCAL = "agent_groups.import_local"
+    AGENT_GROUPS_INSTALL = "agent_groups.install"
+    AGENT_GROUPS_LIST = "agent_groups.list"
+    AGENT_GROUPS_SHOW = "agent_groups.show"
+    AGENT_GROUPS_UNINSTALL = "agent_groups.uninstall"
+    AGENT_LIST = "3rdagent.list"
+    AGENT_PREWARM_SYNC = "agent.prewarm.sync"
+    AGENT_RELOAD_CONFIG = "agent.reload_config"
+    AGENT_SWITCH = "3rdagent.switch"
+    AGENT_TEMPLATES_CREATE = "agent_templates.create"
+    AGENT_TEMPLATES_DELETE = "agent_templates.delete"
+    AGENT_TEMPLATES_FILE_LIST = "agent_templates.file.list"
+    AGENT_TEMPLATES_FILE_READ = "agent_templates.file.read"
+    AGENT_TEMPLATES_IMPORT_LOCAL = "agent_templates.import_local"
+    AGENT_TEMPLATES_INSTALL = "agent_templates.install"
+    AGENT_TEMPLATES_LIST = "agent_templates.list"
+    AGENT_TEMPLATES_SHOW = "agent_templates.show"
+    AGENT_TEMPLATES_UNINSTALL = "agent_templates.uninstall"
+    AGENT_TEMPLATES_UPDATE = "agent_templates.update"
+    AGENT_WEB = "3rdagent.web"
+    ASSETS_PUBLISH_COMMIT = "assets.publish.commit"
+    ASSETS_PUBLISH_DESCRIBE = "assets.publish.describe"
+    ASSETS_PUBLISH_LOCAL_STATUS = "assets.publish.local_status"
+    ASSETS_PUBLISH_PREPARE = "assets.publish.prepare"
+    ASSETS_PUBLISH_RECORDS = "assets.publish.records"
+    ASSETS_PUBLISH_STATUS = "assets.publish.status"
+    AUTH_CREDENTIALS_UPDATE = "auth.credentials.update"
+    BROWSER_RUNTIME_RESTART = "browser.runtime_restart"
+    CHANNEL_DINGTALK_GET_CONF = "channel.dingtalk.get_conf"
+    CHANNEL_DINGTALK_SET_CONF = "channel.dingtalk.set_conf"
+    CHANNEL_FEISHU_GET_CONF = "channel.feishu.get_conf"
+    CHANNEL_FEISHU_SET_CONF = "channel.feishu.set_conf"
+    CHANNEL_GET = "channel.get"
+    CHANNEL_SLACK_GET_CONF = "channel.slack.get_conf"
+    CHANNEL_SLACK_SET_CONF = "channel.slack.set_conf"
+    CHANNEL_TELEGRAM_GET_CONF = "channel.telegram.get_conf"
+    CHANNEL_TELEGRAM_SET_CONF = "channel.telegram.set_conf"
+    CHANNEL_WECHAT_GET_CONF = "channel.wechat.get_conf"
+    CHANNEL_WECHAT_GET_LOGIN_UI = "channel.wechat.get_login_ui"
+    CHANNEL_WECHAT_SET_CONF = "channel.wechat.set_conf"
+    CHANNEL_WECHAT_UNBIND = "channel.wechat.unbind"
+    CHANNEL_WHATSAPP_GET_CONF = "channel.whatsapp.get_conf"
+    CHANNEL_WHATSAPP_SET_CONF = "channel.whatsapp.set_conf"
+    CHANNEL_XIAOYI_GET_CONF = "channel.xiaoyi.get_conf"
+    CHANNEL_XIAOYI_SET_CONF = "channel.xiaoyi.set_conf"
+    CHAT_ANSWER = "chat.user_answer"
+    CHAT_CANCEL = "chat.interrupt"
+    CHAT_RESUME = "chat.resume"
+    CHAT_SEND = "chat.send"
+    CHAT_SWARMFLOW_REPLY = "chat.swarmflow_reply"
+    CLIENT_ATTACH = "client.attach"
+    CLIENT_CONVERSATIONS = "client.conversations"
+    CLIENT_CONVERSATION_MESSAGES = "client.conversation.messages"
+    CLIENT_LIST = "client.list"
+    CLIENT_RENEW = "client.renew"
+    COMMANDS_LIST = "commands.list"
+    COMMAND_ADD_DIR = "command.add_dir"
+    COMMAND_BTW = "command.btw"
+    COMMAND_CHROME = "command.chrome"
+    COMMAND_COMPACT = "command.compact"
+    COMMAND_COMPACT_PARTIAL = "command.compact_partial"
+    COMMAND_CONTEXT = "command.context"
+    COMMAND_DIFF = "command.diff"
+    COMMAND_GOAL = "command.goal"
+    COMMAND_MCP = "command.mcp"
+    COMMAND_MODEL = "command.model"
+    COMMAND_RECAP = "command.recap"
+    COMMAND_RESUME = "command.resume"
+    COMMAND_SANDBOX = "command.sandbox"
+    COMMAND_SESSION = "command.session"
+    COMMAND_SIMPLIFY = "command.simplify"
+    COMMAND_STATUS = "command.status"
+    COMMAND_WORKFLOWS = "command.workflows"
+    CONFIG_CACHE_CLEAR = "config.cache_clear"
+    CONFIG_GET = "config.get"
+    CONFIG_MOA_STATUS = "config.moa_status"
+    CONFIG_SAVE_ALL = "config.save_all"
+    CONFIG_SET = "config.set"
+    CONFIG_VALIDATE_MODEL = "config.validate_model"
+    CRON_COMMAND_ACK = "cron.command.ack"
+    CRON_JOBS_SYNC = "cron.jobs.sync"
+    CRON_RUN_NOW_ACK = "cron.run_now.ack"
+    CRON_SESSIONS_DELETE = "cron.sessions.delete"
+    DESIGNER_GRAPH_BOOTSTRAP = "designer.graph.bootstrap"
+    DESIGNER_GRAPH_CHAT = "designer.graph.chat"
+    DESIGNER_GRAPH_GET = "designer.graph.get"
+    DESIGNER_GRAPH_LIST = "designer.graph.list"
+    DESIGNER_GRAPH_PATCH = "designer.graph.patch"
+    DESIGNER_GRAPH_SAVE = "designer.graph.save"
+    DESIGNER_MEDIA_CAPABILITIES = "designer.media.capabilities"
+    DESIGNER_RUN_CANCEL = "designer.run.cancel"
+    DESIGNER_RUN_CHOOSE_OUTPUT = "designer.run.choose_output"
+    DESIGNER_RUN_GET = "designer.run.get"
+    DESIGNER_RUN_PAUSE = "designer.run.pause"
+    DESIGNER_RUN_START = "designer.run.start"
+    DESIGNER_WORKSPACE_CREATE = "designer.workspace.create"
+    DESIGNER_WORKSPACE_GET = "designer.workspace.get"
+    DESIGNER_WORKSPACE_SESSION_COMPOSE = "designer.workspace.session.compose"
+    DESIGNER_WORKSPACE_SESSION_CREATE = "designer.workspace.session.create"
+    DIAGNOSIS_CANCEL = "diagnosis.cancel"
+    DIAGNOSIS_DELETE = "diagnosis.delete"
+    DIAGNOSIS_GET = "diagnosis.get"
+    DIAGNOSIS_LIST = "diagnosis.list"
+    DIAGNOSIS_RUN = "diagnosis.run"
+    DIAGNOSIS_TTSE_TRIGGER = "diagnosis.ttse.trigger"
+    DOCUMENT_FORMATS = "document.formats"
+    DOCUMENT_PERSIST = "document.persist"
+    EXTENSIONS_DELETE = "extensions.delete"
+    EXTENSIONS_IMPORT = "extensions.import"
+    EXTENSIONS_LIST = "extensions.list"
+    EXTENSIONS_TOGGLE = "extensions.toggle"
+    FILES_GET = "files.get"
+    FILES_LIST = "files.list"
+    FILE_DOWNLOAD_VERIFIED_CHUNK = "file.download_verified_chunk"
+    FILE_IMPORT_URL = "file.import_url"
+    FILE_READ_UPLOAD_CHUNK = "file.read_upload_chunk"
+    FILE_UPLOAD_CHUNK = "file.upload_chunk"
+    GROUP_CREATE = "group.create"
+    GROUP_DELETE = "group.delete"
+    GROUP_EXECUTION_GET = "group.execution.get"
+    GROUP_EXECUTION_LIST = "group.execution.list"
+    GROUP_FILE_DELETE = "group.file.delete"
+    GROUP_FILE_RENAME = "group.file.rename"
+    GROUP_GET = "group.get"
+    GROUP_HISTORY_CLEAR = "group.history.clear"
+    GROUP_HISTORY_GET = "group.history.get"
+    GROUP_LIST = "group.list"
+    GROUP_MEMBER_ADD = "group.member.add"
+    GROUP_UPDATE = "group.update"
+    HARMONYOS_DEV_INIT = "harmonyos.dev_init"
+    HARMONYOS_PROJECT_INIT = "harmonyos.project_init"
+    HARNESS_PACKAGES_ACTIVATE = "harness.packages.activate"
+    HARNESS_PACKAGES_DEACTIVATE = "harness.packages.deactivate"
+    HARNESS_PACKAGES_DELETE = "harness.packages.delete"
+    HARNESS_PACKAGES_EXPORT = "harness.packages.export"
+    HARNESS_PACKAGES_GET = "harness.packages.get"
+    HARNESS_PACKAGES_IMPORT = "harness.packages.import"
+    HARNESS_PACKAGES_SCAN = "harness.packages.scan"
+    HEALTH_CHECK_GET_CONF = "health_check.get_conf"
+    HEALTH_CHECK_SET_CONF = "health_check.set_conf"
+    HEARTBEAT_GET_CONF = "heartbeat.get_conf"
+    HEARTBEAT_JOB = "heartbeat.job"
+    HEARTBEAT_SET_CONF = "heartbeat.set_conf"
+    HISTORY_APPEND_RECORD = "history.append_record"
+    HISTORY_GET = "history.get"
+    HISTORY_LIST_TURNS = "history.list_turns"
+    HOOKS_LIST = "hooks.list"
+    HUB_EXPERT_PACKAGES_CATALOG = "hub.expert_packages.catalog"
+    IM_FILE_PERSIST = "im.file_persist"
+    INITIALIZE = "initialize"
+    ISSUE_DELETE = "issue.delete"
+    ISSUE_MATRIX = "issue.matrix"
+    ISSUE_STATE_LIST = "issue.state.list"
+    ISSUE_WATCH_ONCE = "issue.watch_once"
+    JIUWENMATE_ACTIVITY_GET = "jiuwenmate.activity.get"
+    JIUWENMATE_AGENT_MAIL_AUTH_BEGIN = "jiuwenmate.agent_mail.auth.begin"
+    JIUWENMATE_AGENT_MAIL_AUTH_CANCEL = "jiuwenmate.agent_mail.auth.cancel"
+    JIUWENMATE_AGENT_MAIL_AUTH_POLL = "jiuwenmate.agent_mail.auth.poll"
+    JIUWENMATE_AGENT_MAIL_DISCONNECT = "jiuwenmate.agent_mail.disconnect"
+    JIUWENMATE_AGENT_MAIL_STATUS = "jiuwenmate.agent_mail.status"
+    JIUWENMATE_ARTIFACT_LIST = "jiuwenmate.artifact.list"
+    JIUWENMATE_CHANNEL_LIST = "jiuwenmate.channel.list"
+    JIUWENMATE_CHANNEL_MESSAGES = "jiuwenmate.channel.messages"
+    JIUWENMATE_CHANNEL_TRACE = "jiuwenmate.channel.trace"
+    JIUWENMATE_CHAT_HISTORY = "jiuwenmate.chat.history"
+    JIUWENMATE_CHAT_SEND = "jiuwenmate.chat.send"
+    JIUWENMATE_COLLEAGUE_CONNECTIONS = "jiuwenmate.colleague.connections"
+    JIUWENMATE_COLLEAGUE_CREATE = "jiuwenmate.colleague.create"
+    JIUWENMATE_COLLEAGUE_DELETE = "jiuwenmate.colleague.delete"
+    JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT = "jiuwenmate.colleague.ensure_default"
+    JIUWENMATE_COLLEAGUE_GET = "jiuwenmate.colleague.get"
+    JIUWENMATE_COLLEAGUE_LIST = "jiuwenmate.colleague.list"
+    JIUWENMATE_COLLEAGUE_PUBLISH = "jiuwenmate.colleague.publish"
+    JIUWENMATE_COLLEAGUE_REMOVE = "jiuwenmate.colleague.remove"
+    JIUWENMATE_COLLEAGUE_SETTINGS_GET = "jiuwenmate.colleague.settings.get"
+    JIUWENMATE_COLLEAGUE_SETTINGS_UPDATE = "jiuwenmate.colleague.settings.update"
+    JIUWENMATE_COLLEAGUE_SET_ENABLED = "jiuwenmate.colleague.set_enabled"
+    JIUWENMATE_CONNECTION_ATTACH = "jiuwenmate.connection.attach"
+    JIUWENMATE_CONVERSATION_DELETE = "jiuwenmate.conversation.delete"
+    JIUWENMATE_CONVERSATION_LIST = "jiuwenmate.conversation.list"
+    JIUWENMATE_CONVERSATION_PIN = "jiuwenmate.conversation.pin"
+    JIUWENMATE_CONVERSATION_RENAME = "jiuwenmate.conversation.rename"
+    JIUWENMATE_DELIVERY_ACK = "jiuwenmate.delivery.ack"
+    JIUWENMATE_DINGTALK_AUTH_BEGIN = "jiuwenmate.dingtalk_auth.begin"
+    JIUWENMATE_DINGTALK_AUTH_CANCEL = "jiuwenmate.dingtalk_auth.cancel"
+    JIUWENMATE_DINGTALK_AUTH_DISCONNECT = "jiuwenmate.dingtalk_auth.disconnect"
+    JIUWENMATE_DINGTALK_AUTH_POLL = "jiuwenmate.dingtalk_auth.poll"
+    JIUWENMATE_DINGTALK_AUTH_STATUS = "jiuwenmate.dingtalk_auth.status"
+    JIUWENMATE_DINGTALK_BINDING_CHECK = "jiuwenmate.dingtalk.binding_check"
+    JIUWENMATE_DINGTALK_INBOUND = "jiuwenmate.dingtalk.inbound"
+    JIUWENMATE_FEISHU_INBOUND = "jiuwenmate.feishu.inbound"
+    JIUWENMATE_FEISHU_PREPARE = "jiuwenmate.feishu.prepare"
+    JIUWENMATE_GROUP_RESPONSE = "jiuwenmate.group.response"
+    JIUWENMATE_KNOWLEDGE_LIST = "jiuwenmate.knowledge.list"
+    JIUWENMATE_MODELS_LIST = "jiuwenmate.models.list"
+    JIUWENMATE_PERMISSION_DECIDE = "jiuwenmate.permission.decide"
+    JIUWENMATE_REQUEST_ABORT = "jiuwenmate.request.abort"
+    JIUWENMATE_REQUEST_GET = "jiuwenmate.request.get"
+    JIUWENMATE_SCHEDULE_CREATE = "jiuwenmate.schedule.create"
+    JIUWENMATE_SCHEDULE_DELETE = "jiuwenmate.schedule.delete"
+    JIUWENMATE_SCHEDULE_HISTORY = "jiuwenmate.schedule.history"
+    JIUWENMATE_SCHEDULE_LIST = "jiuwenmate.schedule.list"
+    JIUWENMATE_SCHEDULE_RUN = "jiuwenmate.schedule.run"
+    JIUWENMATE_SCHEDULE_SET_ENABLED = "jiuwenmate.schedule.set_enabled"
+    JIUWENMATE_SCHEDULE_UPDATE = "jiuwenmate.schedule.update"
+    JIUWENMATE_SHARING_DECIDE = "jiuwenmate.sharing.decide"
+    JIUWENMATE_SHARING_LIST = "jiuwenmate.sharing.list"
+    JIUWENMATE_SHARING_REVOKE = "jiuwenmate.sharing.revoke"
+    JIUWENMATE_THINKING_NOTICE_ACK = "jiuwenmate.thinking_notice.ack"
+    JIUWENMATE_WELINK_INBOUND = "jiuwenmate.welink.inbound"
+    JIUWENMATE_WELINK_OFFICE_CONNECT = "jiuwenmate.welink_office.connect"
+    JIUWENMATE_WELINK_OFFICE_DISCONNECT = "jiuwenmate.welink_office.disconnect"
+    JIUWENMATE_WELINK_OFFICE_STATUS = "jiuwenmate.welink_office.status"
+    LOCALE_GET_CONF = "locale.get_conf"
+    LOCALE_SET_CONF = "locale.set_conf"
+    MCP_APP_CALL_TOOL = "mcp_app.call_tool"
+    MCP_APP_LIST_TOOLS = "mcp_app.list_tools"
+    MCP_APP_READ_RESOURCE = "mcp_app.read_resource"
+    MCP_CANCEL_CONNECT = "mcp.cancel_connect"
+    MCP_CONNECT = "mcp.connect"
+    MCP_DELETE_CUSTOM = "mcp.delete_custom"
+    MCP_DISCONNECT = "mcp.disconnect"
+    MCP_INSTALL = "mcp.install"
+    MCP_LIST = "mcp.list"
+    MCP_OAUTH_START = "mcp.oauth.start"
+    MCP_REGISTER_CUSTOM = "mcp.register_custom"
+    MCP_SAVE_CREDENTIALS = "mcp.save_credentials"
+    MCP_SHOW = "mcp.show"
+    MCP_UNINSTALL = "mcp.uninstall"
+    MCP_WAIT_AUTH = "mcp.wait_auth"
+    MEDIA_DISCARD = "media.discard"
+    MEDIA_PERSIST = "media.persist"
+    MEMORY_COMPUTE = "memory.compute"
+    MEMORY_EDIT = "memory.edit"
+    MEMORY_FORBIDDEN_GET = "memory.forbidden.get"
+    MEMORY_FORBIDDEN_SET = "memory.forbidden.set"
+    MEMORY_LIST = "memory.list"
+    MEMORY_OPEN = "memory.open"
+    MEMORY_STATUS = "memory.status"
+    MEMORY_TOGGLE = "memory.toggle"
+    MODELS_DELETE = "models.delete"
+    MODELS_GET = "models.get"
+    MODELS_LIST = "models.list"
+    MODELS_REFERENCES = "models.references"
+    MODELS_REFRESH_STATUS = "models.refresh_status"
+    MODELS_REPLACE_ALL = "models.replace_all"
+    MODELS_UPSERT = "models.upsert"
+    MODELS_VALIDATE = "models.validate"
+    MODELS_ZEN_ENTRIES = "models.zen_entries"
+    MODELS_ZEN_WARM = "models.zen_warm"
+    MODEL_GROUPS_DELETE = "model_groups.delete"
+    MODEL_GROUPS_LIST = "model_groups.list"
+    MODEL_GROUPS_UPSERT = "model_groups.upsert"
+    ORG_SNAPSHOT = "org.snapshot"
+    PATH_GET = "path.get"
+    PATH_SELECT_DIRECTORY = "path.select_directory"
+    PATH_SELECT_FILES = "path.select_files"
+    PATH_SET = "path.set"
+    PERMISSIONS_APPROVAL_OVERRIDES_DELETE = "permissions.approval_overrides.delete"
+    PERMISSIONS_APPROVAL_OVERRIDES_GET = "permissions.approval_overrides.get"
+    PERMISSIONS_OWNER_SCOPES_GET = "permissions.owner_scopes.get"
+    PERMISSIONS_OWNER_SCOPES_SET = "permissions.owner_scopes.set"
+    PERMISSIONS_RULES_CREATE = "permissions.rules.create"
+    PERMISSIONS_RULES_DELETE = "permissions.rules.delete"
+    PERMISSIONS_RULES_GET = "permissions.rules.get"
+    PERMISSIONS_RULES_UPDATE = "permissions.rules.update"
+    PERMISSIONS_TOOLS_DELETE = "permissions.tools.delete"
+    PERMISSIONS_TOOLS_GET = "permissions.tools.get"
+    PERMISSIONS_TOOLS_SET = "permissions.tools.set"
+    PERMISSIONS_TOOLS_UPDATE = "permissions.tools.update"
+    PERMISSIONS_TOOLS_UPDATE_USER = "permissions.tools.update_user"
+    PERSONAL_CONTEXT_CONTEXT_GET_NODE = "personal_context.context.get_node"
+    PERSONAL_CONTEXT_CONTEXT_GET_SOURCE = "personal_context.context.get_source"
+    PERSONAL_CONTEXT_CONTEXT_SEARCH_PAGES = "personal_context.context.search_pages"
+    PERSONAL_CONTEXT_CONTEXT_STREAM_GRAPH = "personal_context.context.stream_graph"
+    PERSONAL_CONTEXT_CONTEXT_STREAM_TREE = "personal_context.context.stream_tree"
+    PERSONAL_CONTEXT_FETCH_AUTHORIZE_PROVIDER = "personal_context.fetch.authorize_provider"
+    PERSONAL_CONTEXT_FETCH_CREATE_SERVICE = "personal_context.fetch.create_service"
+    PERSONAL_CONTEXT_FETCH_DELETE_SERVICE = "personal_context.fetch.delete_service"
+    PERSONAL_CONTEXT_FETCH_GET_AUTHORIZATION_STATUS = "personal_context.fetch.get_authorization_status"
+    PERSONAL_CONTEXT_FETCH_GET_RUN_STATUS = "personal_context.fetch.get_run_status"
+    PERSONAL_CONTEXT_FETCH_LIST_SERVICES = "personal_context.fetch.list_services"
+    PERSONAL_CONTEXT_FETCH_PATCH_SERVICE = "personal_context.fetch.patch_service"
+    PERSONAL_CONTEXT_FETCH_RUN_ALL = "personal_context.fetch.run_all"
+    PERSONAL_CONTEXT_FETCH_RUN_ONE = "personal_context.fetch.run_one"
+    PERSONAL_CONTEXT_FETCH_START_SERVICE = "personal_context.fetch.start_service"
+    PERSONAL_CONTEXT_FETCH_STOP_RUN = "personal_context.fetch.stop_run"
+    PERSONAL_CONTEXT_FETCH_STOP_SERVICE = "personal_context.fetch.stop_service"
+    PERSONAL_CONTEXT_RUNTIME_GET_CONFIG = "personal_context.runtime.get_config"
+    PERSONAL_CONTEXT_RUNTIME_PATCH_CONFIG = "personal_context.runtime.patch_config"
+    PERSONAL_CONTEXT_RUNTIME_SELECT_MODEL = "personal_context.runtime.select_model"
+    PERSONAL_CONTEXT_RUNTIME_SET_MASTER_ENABLED = "personal_context.runtime.set_master_enabled"
+    PERSONAL_CONTEXT_RUNTIME_START_AGENT_USE = "personal_context.runtime.start_agent_use"
+    PERSONAL_CONTEXT_RUNTIME_START_COLLECTION = "personal_context.runtime.start_collection"
+    PERSONAL_CONTEXT_RUNTIME_STATUS = "personal_context.runtime.status"
+    PERSONAL_CONTEXT_RUNTIME_STOP_AGENT_USE = "personal_context.runtime.stop_agent_use"
+    PERSONAL_CONTEXT_RUNTIME_STOP_COLLECTION = "personal_context.runtime.stop_collection"
+    PLUGINS_DISABLE = "plugins.disable"
+    PLUGINS_ENABLE = "plugins.enable"
+    PLUGINS_INSTALL = "plugins.install"
+    PLUGINS_LIST = "plugins.list"
+    PLUGINS_RELOAD = "plugins.reload"
+    PLUGINS_UNINSTALL = "plugins.uninstall"
+    PLUGIN_PACKAGES_CREATE = "plugin_packages.create"
+    PLUGIN_PACKAGES_IMPORT_LOCAL = "plugin_packages.import_local"
+    PLUGIN_PACKAGES_INSTALL = "plugin_packages.install"
+    PLUGIN_PACKAGES_LIST = "plugin_packages.list"
+    PLUGIN_PACKAGES_SHOW = "plugin_packages.show"
+    PLUGIN_PACKAGES_UNINSTALL = "plugin_packages.uninstall"
+    PROACTIVE_FEEDBACK = "proactive.feedback"
+    PROACTIVE_TICK = "proactive.tick"
+    PROJECT_CREATE = "project.create"
+    PROJECT_CRON_RESOLVE_BINDING = "project.cron.resolve_binding"
+    PROJECT_GET_CRON_SESSIONS = "project.get_cron_sessions"
+    PROJECT_GET_SESSIONS = "project.get_sessions"
+    PROJECT_GIT_COMMIT = "project.git.commit"
+    PROJECT_GIT_CREATE_BRANCH = "project.git.create_branch"
+    PROJECT_GIT_DIFF_STATUS = "project.git.diff_status"
+    PROJECT_GIT_DISCARD_TURN_CHANGES = "project.git.discard_turn_changes"
+    PROJECT_GIT_INIT = "project.git.init"
+    PROJECT_GIT_PROBE = "project.git.probe"
+    PROJECT_GIT_PUSH = "project.git.push"
+    PROJECT_GIT_REDO_TURN_CHANGES = "project.git.redo_turn_changes"
+    PROJECT_GIT_STATUS = "project.git.status"
+    PROJECT_GIT_SWITCH_BRANCH = "project.git.switch_branch"
+    PROJECT_GIT_TURN_DIFF = "project.git.turn_diff"
+    PROJECT_GIT_TURN_DIFF_LIST = "project.git.turn_diff_list"
+    PROJECT_INFO = "project.info"
+    PROJECT_LIFECYCLE = "project.lifecycle"
+    PROJECT_LIST = "project.list"
+    PROJECT_PIN = "project.pin"
+    PROJECT_PINNED_SESSIONS = "project.pinned_sessions"
+    PROJECT_REMOVE = "project.remove"
+    PROJECT_RENAME = "project.rename"
+    PROJECT_RESTORE = "project.restore"
+    PROJECT_SESSIONS_ARCHIVE = "project.sessions.archive"
+    PROJECT_SESSIONS_DELETE_ARCHIVED = "project.sessions.delete_archived"
+    PROMPT_SUGGESTION_CANCEL = "prompt_suggestion.cancel"
+    RECOMMENDATION = "recommendation.job"
+    RSI_ARTIFACT_DOWNLOAD = "rsi.artifact.download"
+    RSI_ARTIFACT_FILES_GET = "rsi.artifact.files.get"
+    RSI_ARTIFACT_FILES_LIST = "rsi.artifact.files.list"
+    RSI_DATASET_VALIDATE = "rsi.dataset.validate"
+    RSI_HARNESS_INSTALL = "rsi.harness.install"
+    RSI_HARNESS_ROLLBACK = "rsi.harness.rollback"
+    RSI_HARNESS_VERSIONS_LIST = "rsi.harness.versions.list"
+    RSI_REPORT_GET = "rsi.report.get"
+    RSI_TASK_CREATE = "rsi.task.create"
+    RSI_TASK_DELETE = "rsi.task.delete"
+    RSI_TASK_GET = "rsi.task.get"
+    RSI_TASK_LIST = "rsi.task.list"
+    RSI_TRAINING_PAUSE = "rsi.training.pause"
+    RSI_TRAINING_RESUME = "rsi.training.resume"
+    RSI_TRAINING_START = "rsi.training.start"
+    RSI_TRAINING_TERMINATE = "rsi.training.terminate"
+    RSI_TREE_GET = "rsi.tree.get"
+    RSI_USAGE_GET = "rsi.usage.get"
+    SCHEDULE_CANCEL = "schedule.cancel"
+    SCHEDULE_CHECK_CONFIG = "schedule.check_config"
+    SCHEDULE_CREATE = "schedule.create"
+    SCHEDULE_DELETE = "schedule.delete"
+    SCHEDULE_LIST = "schedule.list"
+    SCHEDULE_LOGS = "schedule.logs"
+    SCHEDULE_RUN = "schedule.run"
+    SCHEDULE_STATUS = "schedule.status"
+    SCHEDULE_UPDATE_CONFIG = "schedule.update_config"
+    SESSION_ARCHIVE = "session.archive"
+    SESSION_ARCHIVED_LIST = "session.archived.list"
+    SESSION_ASSETS_LIST = "session.assets.list"
+    SESSION_ASSETS_REGISTER = "session.assets.register"
+    SESSION_ASSETS_REMOVE = "session.assets.remove"
+    SESSION_ASSETS_RENAME = "session.assets.rename"
+    SESSION_COLOR_SET = "session.color_set"
+    SESSION_CREATE = "session.create"
+    SESSION_DELETE = "session.delete"
+    SESSION_FORK = "session.fork"
+    SESSION_GET_METADATA = "session.get_metadata"
+    SESSION_INPUT_INTENT = "session.input.intent"
+    SESSION_LIST = "session.list"
+    SESSION_MESSAGE_CONTINUE_QUEUED = "session.message.continue_queued"
+    SESSION_PIN = "session.pin"
+    SESSION_PLAN_STATUS = "session.plan_status"
+    SESSION_PREVIEW = "session.preview"
+    SESSION_REBIND_PROJECT = "session.rebind_project"
+    SESSION_RENAME = "session.rename"
+    SESSION_RESTORE_FILES = "session.restore_files"
+    SESSION_REWIND = "session.rewind"
+    SESSION_REWIND_AND_RESTORE = "session.rewind_and_restore"
+    SESSION_REWIND_COMPACT = "session.rewind_compact"
+    SESSION_REWIND_CONTEXT = "session.rewind_context"
+    SESSION_SELECTION_SET = "session.selection.set"
+    SESSION_SWITCH = "session.switch"
+    SESSION_UNARCHIVE = "session.unarchive"
+    SKILLDEV_CANCEL = "skilldev.cancel"
+    SKILLDEV_DOWNLOAD = "skilldev.download"
+    SKILLDEV_FILE_LIST = "skilldev.file.list"
+    SKILLDEV_FILE_READ = "skilldev.file.read"
+    SKILLDEV_RESPOND = "skilldev.respond"
+    SKILLDEV_START = "skilldev.start"
+    SKILLDEV_STATUS = "skilldev.status"
+    SKILLS_CLAWHUB_DOWNLOAD = "skills.clawhub.download"
+    SKILLS_CLAWHUB_GET_TOKEN = "skills.clawhub.get_token"
+    SKILLS_CLAWHUB_SEARCH = "skills.clawhub.search"
+    SKILLS_CLAWHUB_SET_TOKEN = "skills.clawhub.set_token"
+    SKILLS_CREATE_FROM_KNOWLEDGE = "skills.create_from_knowledge"
+    SKILLS_ENTERPRISE_INSTALL = "skills.enterprise.install"
+    SKILLS_ENTERPRISE_LIST = "skills.enterprise.list"
+    SKILLS_ENTERPRISE_SOURCE_PROVIDERS = "skills.enterprise.source.providers"
+    SKILLS_ENTERPRISE_SOURCE_SEARCH = "skills.enterprise.source.search"
+    SKILLS_ENTERPRISE_UNINSTALL = "skills.enterprise.uninstall"
+    SKILLS_EVOLUTION_GET = "skills.evolution.get"
+    SKILLS_EVOLUTION_SAVE = "skills.evolution.save"
+    SKILLS_EVOLUTION_STATUS = "skills.evolution.status"
+    SKILLS_EXPERIENCE_LIST = "skills.experience.list"
+    SKILLS_EXPERIENCE_REQUEST = "skills.experience.request"
+    SKILLS_FILES_GET = "skills.files.get"
+    SKILLS_FILES_LIST = "skills.files.list"
+    SKILLS_GET = "skills.get"
+    SKILLS_GRAPH_BUILD = "skills.graph.build"
+    SKILLS_GRAPH_CANCEL = "skills.graph.cancel"
+    SKILLS_GRAPH_GET = "skills.graph.get"
+    SKILLS_GRAPH_STATUS = "skills.graph.status"
+    SKILLS_IMPORT_LOCAL = "skills.import_local"
+    SKILLS_IMPORT_UPLOAD = "skills.import_upload"
+    SKILLS_INSTALL = "skills.install"
+    SKILLS_INSTALLED = "skills.installed"
+    SKILLS_LIST = "skills.list"
+    SKILLS_MARKETPLACE_ADD = "skills.marketplace.add"
+    SKILLS_MARKETPLACE_LIST = "skills.marketplace.list"
+    SKILLS_MARKETPLACE_REMOVE = "skills.marketplace.remove"
+    SKILLS_MARKETPLACE_TOGGLE = "skills.marketplace.toggle"
+    SKILLS_ONLINE_SEARCH = "skills.online_search.search"
+    SKILLS_ONLINE_SEARCH_INSTALL = "skills.online_search.install"
+    SKILLS_PACK_MEMBER_INSTALL = "skills.pack_member.install"
+    SKILLS_REBUILD = "skills.rebuild"
+    SKILLS_RETRIEVAL_INDEX_BUILD = "skills.retrieval.index_build"
+    SKILLS_RETRIEVAL_INDEX_CANCEL = "skills.retrieval.index_cancel"
+    SKILLS_RETRIEVAL_SEARCH = "skills.retrieval.search"
+    SKILLS_RETRIEVAL_STATUS = "skills.retrieval.status"
+    SKILLS_RETRIEVAL_TREE = "skills.retrieval.tree"
+    SKILLS_SKILLNET_EVALUATE = "skills.skillnet.evaluate"
+    SKILLS_SKILLNET_INSTALL = "skills.skillnet.install"
+    SKILLS_SKILLNET_INSTALL_STATUS = "skills.skillnet.install_status"
+    SKILLS_SKILLNET_SEARCH = "skills.skillnet.search"
+    SKILLS_SOURCE_INSTALL = "skills.source.install"
+    SKILLS_SOURCE_PROVIDERS = "skills.source.providers"
+    SKILLS_SOURCE_SEARCH = "skills.source.search"
+    SKILLS_SWARMSKILLS_HUB_DETAIL = "skills.swarmskillshub.detail"
+    SKILLS_SWARMSKILLS_HUB_RECOMMEND = "skills.swarmskillshub.recommend"
+    SKILLS_TEAMSKILLS_HUB_DELETE = "skills.teamskillshub.delete"
+    SKILLS_TEAMSKILLS_HUB_INFO = "skills.teamskillshub.info"
+    SKILLS_TEAMSKILLS_HUB_INIT = "skills.teamskillshub.init"
+    SKILLS_TEAMSKILLS_HUB_INSTALL = "skills.teamskillshub.install"
+    SKILLS_TEAMSKILLS_HUB_PACK = "skills.teamskillshub.pack"
+    SKILLS_TEAMSKILLS_HUB_PUBLISH = "skills.teamskillshub.publish"
+    SKILLS_TEAMSKILLS_HUB_SEARCH = "skills.teamskillshub.search"
+    SKILLS_TEAMSKILLS_HUB_VALIDATE = "skills.teamskillshub.validate"
+    SKILLS_TOGGLE = "skills.toggle"
+    SKILLS_UNINSTALL = "skills.uninstall"
+    SKILLS_UPDATE = "skills.update"
+    SKILLS_UPDATES_CHECK = "skills.updates.check"
+    SKILLS_VERSIONS_LIST = "skills.versions.list"
+    SKILLS_VISIBILITY_GET = "skills.visibility.get"
+    SKILLS_VISIBILITY_SET = "skills.visibility.set"
+    SKILLS_VISIBILITY_UPDATE = "skills.visibility.update"
+    SKILL_SYNC_APPLY = "skills.sync.apply"
+    SKILL_SYNC_DIFF = "skills.sync.diff"
+    SKILL_SYNC_PACKAGE = "skills.sync.package"
+    SKILL_SYNC_RELOAD = "skills.sync.reload"
+    SSH_RELAY = "ssh.relay"
+    SWARMFLOW_PAUSE = "swarmflow.pause"
+    SWARMFLOW_RESUME = "swarmflow.resume"
+    SWARMFLOW_STOP = "swarmflow.stop"
+    TEAM_BINDINGS_LIST = "team.bindings.list"
+    TEAM_BINDING_CREATE = "team.binding.create"
+    TEAM_BINDING_GENERATE = "team.binding.generate"
+    TEAM_DELETE = "team.delete"
+    TEAM_HISTORY_GET = "team.history.get"
+    TEAM_LIST = "team.list"
+    TEAM_MEMBERS_GET = "team.members.get"
+    TEAM_MQ_PUBLISH = "team.mq.publish"
+    TEAM_SESSION_BIND = "team.session.bind"
+    TEAM_SNAPSHOT = "team.snapshot"
+    TEAM_TEMPLATES_LIST = "team.templates.list"
+    TRAJECTORY_ARCHIVE_OPEN = "trajectory.archive.open"
+    TRAJECTORY_BLOB_CLOSE = "trajectory.blob.close"
+    TRAJECTORY_BLOB_READ = "trajectory.blob.read"
+    TRAJECTORY_CHECKPOINTS_GET = "trajectory.checkpoints.get"
+    TRAJECTORY_RAW_GET = "trajectory.raw.get"
+    TRAJECTORY_SEQUENCES_GET = "trajectory.sequences.get"
+    TRAJECTORY_STREAM_FRAMES_GET = "trajectory.stream_frames.get"
+    TRAJECTORY_SUBJECTS_LIST = "trajectory.subjects.list"
+    TRAJECTORY_SUBJECT_GET = "trajectory.subject.get"
+    TRAJECTORY_USAGE_GET = "trajectory.usage.get"
+    TTS_SYNTHESIZE = "tts.synthesize"
+    UPDATER_CHECK = "updater.check"
+    UPDATER_DOWNLOAD = "updater.download"
+    UPDATER_GET_CONF = "updater.get_conf"
+    UPDATER_GET_STATUS = "updater.get_status"
+    UPDATER_SET_CONF = "updater.set_conf"
+    VOICE_SESSION_RECEIPTS = "voice.session.receipts"
+    VOICE_TASK_CHECKPOINT_ACK = "voice.task.checkpoint.ack"
+    VOICE_TASK_FILES = "voice.task.files"
+    VOICE_TASK_PENDING_INTERRUPT = "voice.task.pending_interrupt"
+    WORKSPACE_ENTRIES_DELETE = "workspace.entries.delete"
+    WORKSPACE_PREVIEW = "workspace.preview"
+    WORKSPACE_TREE = "workspace.tree"
+    WORKSPACE_USAGE = "workspace.usage"
 
-def _ensure_req_method(name: str, value: str) -> None:
-    _ensure_protocol_member(ReqMethod, name, value)
-
-
-# Published release methods required by JiuwenMate and its existing callers.
-_ensure_req_method("JIUWENMATE_FEISHU_INBOUND", "jiuwenmate.feishu.inbound")
-_ensure_req_method("JIUWENMATE_DINGTALK_INBOUND", "jiuwenmate.dingtalk.inbound")
-_ensure_req_method("JIUWENMATE_DINGTALK_BINDING_CHECK", "jiuwenmate.dingtalk.binding_check")
-_ensure_req_method("JIUWENMATE_WELINK_INBOUND", "jiuwenmate.welink.inbound")
-_ensure_req_method("JIUWENMATE_CONNECTION_ATTACH", "jiuwenmate.connection.attach")
-_ensure_req_method("JIUWENMATE_COLLEAGUE_CONNECTIONS", "jiuwenmate.colleague.connections")
-_ensure_req_method("JIUWENMATE_COLLEAGUE_REMOVE", "jiuwenmate.colleague.remove")
-_ensure_req_method("JIUWENMATE_FEISHU_PREPARE", "jiuwenmate.feishu.prepare")
-_ensure_req_method("JIUWENMATE_DELIVERY_ACK", "jiuwenmate.delivery.ack")
-_ensure_req_method("JIUWENMATE_THINKING_NOTICE_ACK", "jiuwenmate.thinking_notice.ack")
-_ensure_req_method("JIUWENMATE_GROUP_RESPONSE", "jiuwenmate.group.response")
-_ensure_req_method("GROUP_EXECUTION_LIST", "group.execution.list")
-_ensure_req_method("GROUP_EXECUTION_GET", "group.execution.get")
-_ensure_req_method("GROUP_FILE_RENAME", "group.file.rename")
-_ensure_req_method("GROUP_FILE_DELETE", "group.file.delete")
-_ensure_req_method("GROUP_HISTORY_CLEAR", "group.history.clear")
-_ensure_req_method("MODELS_REFRESH_STATUS", "models.refresh_status")
-_ensure_req_method("VOICE_TASK_PENDING_INTERRUPT", "voice.task.pending_interrupt")
-_ensure_req_method("VOICE_SESSION_RECEIPTS", "voice.session.receipts")
-_ensure_req_method("JIUWENMATE_COLLEAGUE_ENSURE_DEFAULT", "jiuwenmate.colleague.ensure_default")
-_ensure_req_method("JIUWENMATE_COLLEAGUE_LIST", "jiuwenmate.colleague.list")
-_ensure_req_method("JIUWENMATE_COLLEAGUE_GET", "jiuwenmate.colleague.get")
-_ensure_req_method("JIUWENMATE_COLLEAGUE_CREATE", "jiuwenmate.colleague.create")
-_ensure_req_method("JIUWENMATE_COLLEAGUE_SETTINGS_GET", "jiuwenmate.colleague.settings.get")
-_ensure_req_method("JIUWENMATE_COLLEAGUE_SETTINGS_UPDATE", "jiuwenmate.colleague.settings.update")
-_ensure_req_method("JIUWENMATE_COLLEAGUE_PUBLISH", "jiuwenmate.colleague.publish")
-_ensure_req_method("JIUWENMATE_COLLEAGUE_SET_ENABLED", "jiuwenmate.colleague.set_enabled")
-_ensure_req_method("JIUWENMATE_COLLEAGUE_DELETE", "jiuwenmate.colleague.delete")
-_ensure_req_method("JIUWENMATE_MODELS_LIST", "jiuwenmate.models.list")
-_ensure_req_method("JIUWENMATE_CHAT_SEND", "jiuwenmate.chat.send")
-_ensure_req_method("JIUWENMATE_CHAT_HISTORY", "jiuwenmate.chat.history")
-_ensure_req_method("JIUWENMATE_ARTIFACT_LIST", "jiuwenmate.artifact.list")
-_ensure_req_method("JIUWENMATE_REQUEST_GET", "jiuwenmate.request.get")
-_ensure_req_method("JIUWENMATE_REQUEST_ABORT", "jiuwenmate.request.abort")
-_ensure_req_method("JIUWENMATE_PERMISSION_DECIDE", "jiuwenmate.permission.decide")
-_ensure_req_method("JIUWENMATE_SHARING_LIST", "jiuwenmate.sharing.list")
-_ensure_req_method("JIUWENMATE_SHARING_DECIDE", "jiuwenmate.sharing.decide")
-_ensure_req_method("JIUWENMATE_SHARING_REVOKE", "jiuwenmate.sharing.revoke")
-_ensure_req_method("JIUWENMATE_CONVERSATION_LIST", "jiuwenmate.conversation.list")
-_ensure_req_method("JIUWENMATE_CONVERSATION_RENAME", "jiuwenmate.conversation.rename")
-_ensure_req_method("JIUWENMATE_CONVERSATION_PIN", "jiuwenmate.conversation.pin")
-_ensure_req_method("JIUWENMATE_CONVERSATION_DELETE", "jiuwenmate.conversation.delete")
-_ensure_req_method("JIUWENMATE_ACTIVITY_GET", "jiuwenmate.activity.get")
-_ensure_req_method("JIUWENMATE_KNOWLEDGE_LIST", "jiuwenmate.knowledge.list")
-_ensure_req_method("JIUWENMATE_SCHEDULE_LIST", "jiuwenmate.schedule.list")
-_ensure_req_method("JIUWENMATE_SCHEDULE_CREATE", "jiuwenmate.schedule.create")
-_ensure_req_method("JIUWENMATE_SCHEDULE_SET_ENABLED", "jiuwenmate.schedule.set_enabled")
-_ensure_req_method("JIUWENMATE_SCHEDULE_DELETE", "jiuwenmate.schedule.delete")
-_ensure_req_method("JIUWENMATE_SCHEDULE_UPDATE", "jiuwenmate.schedule.update")
-_ensure_req_method("JIUWENMATE_SCHEDULE_RUN", "jiuwenmate.schedule.run")
-_ensure_req_method("JIUWENMATE_SCHEDULE_HISTORY", "jiuwenmate.schedule.history")
-_ensure_req_method("JIUWENMATE_CHANNEL_LIST", "jiuwenmate.channel.list")
-_ensure_req_method("JIUWENMATE_CHANNEL_MESSAGES", "jiuwenmate.channel.messages")
-_ensure_req_method("JIUWENMATE_CHANNEL_TRACE", "jiuwenmate.channel.trace")
-_ensure_req_method("JIUWENMATE_WELINK_OFFICE_STATUS", "jiuwenmate.welink_office.status")
-_ensure_req_method("JIUWENMATE_WELINK_OFFICE_CONNECT", "jiuwenmate.welink_office.connect")
-_ensure_req_method("JIUWENMATE_WELINK_OFFICE_DISCONNECT", "jiuwenmate.welink_office.disconnect")
-_ensure_req_method("JIUWENMATE_AGENT_MAIL_STATUS", "jiuwenmate.agent_mail.status")
-_ensure_req_method("JIUWENMATE_AGENT_MAIL_AUTH_BEGIN", "jiuwenmate.agent_mail.auth.begin")
-_ensure_req_method("JIUWENMATE_AGENT_MAIL_AUTH_POLL", "jiuwenmate.agent_mail.auth.poll")
-_ensure_req_method("JIUWENMATE_AGENT_MAIL_AUTH_CANCEL", "jiuwenmate.agent_mail.auth.cancel")
-_ensure_req_method("JIUWENMATE_AGENT_MAIL_DISCONNECT", "jiuwenmate.agent_mail.disconnect")
-_ensure_req_method("JIUWENMATE_DINGTALK_AUTH_STATUS", "jiuwenmate.dingtalk_auth.status")
-_ensure_req_method("JIUWENMATE_DINGTALK_AUTH_BEGIN", "jiuwenmate.dingtalk_auth.begin")
-_ensure_req_method("JIUWENMATE_DINGTALK_AUTH_POLL", "jiuwenmate.dingtalk_auth.poll")
-_ensure_req_method("JIUWENMATE_DINGTALK_AUTH_CANCEL", "jiuwenmate.dingtalk_auth.cancel")
-_ensure_req_method("JIUWENMATE_DINGTALK_AUTH_DISCONNECT", "jiuwenmate.dingtalk_auth.disconnect")
-
-_ensure_req_method("PROMPT_SUGGESTION_CANCEL", "prompt_suggestion.cancel")
-_ensure_req_method("RECOMMENDATION", "recommendation.job")
-# Dispatch compares this member on every request. The pinned protocol package
-# does not define it, so a missing attribute fails chat and session creation
-# before their own handlers run.
-_ensure_req_method("MCP_OAUTH_START", "mcp.oauth.start")
-# Trajectory reads are served by the AgentServer. The pinned protocol package
-# does not define these members yet; registration leaves a matching upstream
-# member in place once that package ships the same name and value.
-_ensure_req_method("TRAJECTORY_SUBJECTS_LIST", "trajectory.subjects.list")
-_ensure_req_method("TRAJECTORY_STREAM_FRAMES_GET", "trajectory.stream_frames.get")
-_ensure_req_method("TRAJECTORY_SEQUENCES_GET", "trajectory.sequences.get")
-_ensure_req_method("TRAJECTORY_CHECKPOINTS_GET", "trajectory.checkpoints.get")
-_ensure_req_method("TRAJECTORY_USAGE_GET", "trajectory.usage.get")
-_ensure_req_method("TRAJECTORY_SUBJECT_GET", "trajectory.subject.get")
-_ensure_req_method("TRAJECTORY_RAW_GET", "trajectory.raw.get")
-_ensure_req_method("TRAJECTORY_ARCHIVE_OPEN", "trajectory.archive.open")
-_ensure_req_method("TRAJECTORY_BLOB_READ", "trajectory.blob.read")
-_ensure_req_method("TRAJECTORY_BLOB_CLOSE", "trajectory.blob.close")
-# Enterprise verify still registers these wire methods in HANDLERS / adapters,
-# but the pinned openjiuwen-protocol revision does not ship them yet. Without
-# ensure, importing dispatch crashes the runtime worker and HTTP :8766 never
-# binds (readiness stays connection-refused).
-_ensure_req_method("FILE_READ_UPLOAD_CHUNK", "file.read_upload_chunk")
-_ensure_req_method("WORKSPACE_TREE", "workspace.tree")
-_ensure_req_method("WORKSPACE_PREVIEW", "workspace.preview")
-_ensure_req_method("WORKSPACE_USAGE", "workspace.usage")
-_ensure_req_method("WORKSPACE_ENTRIES_DELETE", "workspace.entries.delete")
-_ensure_req_method("SKILLS_SOURCE_PROVIDERS", "skills.source.providers")
-_ensure_req_method("SKILLS_SOURCE_SEARCH", "skills.source.search")
-_ensure_req_method("SKILLS_SOURCE_INSTALL", "skills.source.install")
-_ensure_req_method("SKILLS_UPDATES_CHECK", "skills.updates.check")
-_ensure_req_method("SKILLS_UPDATE", "skills.update")
-_ensure_req_method("SKILLS_ENTERPRISE_LIST", "skills.enterprise.list")
-_ensure_req_method("SKILLS_ENTERPRISE_INSTALL", "skills.enterprise.install")
-_ensure_req_method("SKILLS_ENTERPRISE_UNINSTALL", "skills.enterprise.uninstall")
-_ensure_req_method("SKILLS_ENTERPRISE_SOURCE_PROVIDERS", "skills.enterprise.source.providers")
-_ensure_req_method("SKILLS_ENTERPRISE_SOURCE_SEARCH", "skills.enterprise.source.search")
-_ensure_req_method("SKILLDEV_START", "skilldev.start")
-_ensure_req_method("SKILLDEV_RESPOND", "skilldev.respond")
-_ensure_req_method("SKILLDEV_STATUS", "skilldev.status")
-_ensure_req_method("SKILLDEV_DOWNLOAD", "skilldev.download")
-_ensure_req_method("SKILLDEV_CANCEL", "skilldev.cancel")
-_ensure_req_method("SKILLDEV_FILE_LIST", "skilldev.file.list")
-_ensure_req_method("SKILLDEV_FILE_READ", "skilldev.file.read")
-# Removing a composer attachment chip should also drop the session-asset
-# registry entry it created (see session_assets.py). The pinned protocol
-# package does not define this member yet.
-_ensure_req_method("SESSION_ASSETS_REMOVE", "session.assets.remove")
-# Hub expert/equipment catalog served by AgentServer (dispatch.py / methods.py /
-# http_invoke.py reference this member); 协议包当前 pin 尚未定义。
-_ensure_req_method("HUB_EXPERT_PACKAGES_CATALOG", "hub.expert_packages.catalog")
-# MCP Apps host bridge (io.modelcontextprotocol/ui); 协议包当前 pin 尚未定义。
-_ensure_req_method("MCP_APP_LIST_TOOLS", "mcp_app.list_tools")
-_ensure_req_method("MCP_APP_READ_RESOURCE", "mcp_app.read_resource")
-_ensure_req_method("MCP_APP_CALL_TOOL", "mcp_app.call_tool")
-# The Gateway forwards an event only when the protocol EventType knows it; the
-# pinned protocol package does not define this one yet.
-_ensure_protocol_member(EventType, "CHAT_CLIENT_TOOL_REQUEST", "chat.client_tool_request")
-# Client attachments (e.g. the Office add-in task pane): a client attaches the
-# resource it edits to a conversation, renews the attachment's lease, and reads
-# the other attachments and their conversations. The pinned protocol package
-# does not define these members yet.
-_ensure_req_method("CLIENT_ATTACH", "client.attach")
-_ensure_req_method("CLIENT_RENEW", "client.renew")
-_ensure_req_method("CLIENT_LIST", "client.list")
-_ensure_req_method("CLIENT_CONVERSATION_MESSAGES", "client.conversation.messages")
-_ensure_req_method("CLIENT_CONVERSATIONS", "client.conversations")
-_ensure_protocol_member(EventType, "CLIENT_ATTACHMENTS_CHANGED", "client.attachments_changed")
-
-_ensure_req_method("VOICE_SESSION_RECEIPTS", "voice.session.receipts")
-_ensure_req_method("VOICE_TASK_PENDING_INTERRUPT", "voice.task.pending_interrupt")
 
 __all__ = [
     "PROMPT_SUGGESTION_READY_EVENT",

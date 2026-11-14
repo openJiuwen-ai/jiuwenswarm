@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy.exc import TimeoutError as DatabaseTimeoutError
 from e2a.agent_models import AgentResponseChunk
 from e2a.gateway_normalize import e2a_from_agent_fields
-from e2a.message import ReqMethod
+
 from agent_gateway.message_handler.message_handler import ChannelMode, MessageHandler
 from agent_gateway.routing.session_sharing import SubRole
 
@@ -144,7 +144,7 @@ async def test_permission_resume_releases_hold_independently_of_session_prefix(m
     monkeypatch.setattr(handler, "_notify_chat_completed", Mock())
     envelope = e2a_from_agent_fields(
         request_id="approval-reply", channel_id="web", session_id=session_id,
-        req_method=ReqMethod.CHAT_SEND, is_stream=True,
+        req_method='chat.send', is_stream=True,
         params={"source": "permission_interrupt", "request_id": "approval", "answers": ["allow"]},
     )
     await handler.process_stream(envelope, session_id, None)
@@ -164,7 +164,7 @@ async def test_background_cron_cleanup_preserves_newer_stream_processing(monkeyp
     monkeypatch.setattr(handler, "_send_processing_status", AsyncMock())
     monkeypatch.setattr(handler, "_broadcast_task_global_running", AsyncMock())
     envelope = e2a_from_agent_fields(
-        request_id="cron-first", channel_id="web", session_id="session", req_method=ReqMethod.CHAT_SEND,
+        request_id="cron-first", channel_id="web", session_id="session", req_method='chat.send',
         params={"mode": "agent"}, metadata={"app_id": "default"}, is_stream=True,
     )
     await handler.register_background_stream(envelope, "session")
@@ -191,7 +191,7 @@ async def test_background_cron_sends_only_one_processing_terminal(monkeypatch, t
     monkeypatch.setattr(handler, "_handle_evolution_chunk", AsyncMock(return_value=True))
     monkeypatch.setattr(handler, "publish_robot_messages", AsyncMock())
     envelope = e2a_from_agent_fields(
-        request_id="cron-first", channel_id="web", session_id="session", req_method=ReqMethod.CHAT_SEND,
+        request_id="cron-first", channel_id="web", session_id="session", req_method='chat.send',
         params={"mode": "agent"}, metadata={"app_id": "default", "source": "cron", "cron": {"job_id": "job"}},
         is_stream=True,
     )
@@ -216,7 +216,7 @@ async def test_new_chat_is_registered_before_processing_true_is_published(monkey
     monkeypatch.setattr(handler, "_broadcast_task_global_running", AsyncMock())
     monkeypatch.setattr(handler, "process_stream", AsyncMock())
     first = e2a_from_agent_fields(
-        request_id="cron-first", channel_id="web", session_id="session", req_method=ReqMethod.CHAT_SEND,
+        request_id="cron-first", channel_id="web", session_id="session", req_method='chat.send',
         params={"mode": "agent"}, is_stream=True,
     )
     monkeypatch.setattr(handler, "_send_processing_status", AsyncMock())
@@ -232,7 +232,7 @@ async def test_new_chat_is_registered_before_processing_true_is_published(monkey
     msg = _chat_send_message(channel_id="web", session_id="session")
     msg.id = "next"
     envelope = e2a_from_agent_fields(
-        request_id="next", channel_id="web", session_id="session", req_method=ReqMethod.CHAT_SEND,
+        request_id="next", channel_id="web", session_id="session", req_method='chat.send',
         params={"mode": "agent"}, is_stream=True,
     )
     await handler._start_stream_task(msg, envelope, "next")
@@ -255,13 +255,13 @@ def _chat_send_message(
         params={"mode": mode, "query": "hello"},
         timestamp=0.0,
         ok=True,
-        req_method=ReqMethod.CHAT_SEND,
+        req_method='chat.send',
         is_stream=True,
     )
 
 
 def _team_transport_message(
-    *, request_id: str, method: ReqMethod, ws_id: str, mode: str = "team"
+    *, request_id: str, method: str, ws_id: str, mode: str = "team"
 ) -> Message:
     return Message(
         id=request_id,
@@ -272,7 +272,7 @@ def _team_transport_message(
         timestamp=0.0,
         ok=True,
         req_method=method,
-        is_stream=method == ReqMethod.CHAT_SEND,
+        is_stream=method == 'chat.send',
         metadata={"ws_id": ws_id, "user_id": "web-user"},
     )
 
@@ -329,14 +329,14 @@ async def test_tui_non_stream_request_times_out_before_frontend_request(monkeypa
         params={"value": "check"},
         timestamp=0.0,
         ok=True,
-        req_method=ReqMethod.COMMAND_STATUS,
+        req_method='command.status',
         is_stream=False,
     )
     env = e2a_from_agent_fields(
         request_id=msg.id,
         channel_id=msg.channel_id,
         session_id=msg.session_id,
-        req_method=ReqMethod.COMMAND_STATUS,
+        req_method='command.status',
         params=msg.params,
         is_stream=False,
         timestamp=0.0,
@@ -443,7 +443,7 @@ async def test_expert_stream_lifecycle_preserves_request_and_team_route(ending):
     msg.params["target_team_id"] = "expert"
     env = e2a_from_agent_fields(
         request_id=msg.id, channel_id="web", session_id="session",
-        req_method=ReqMethod.CHAT_SEND, params=msg.params, is_stream=True, timestamp=0.0,
+        req_method='chat.send', params=msg.params, is_stream=True, timestamp=0.0,
     )
     try:
         await handler._start_stream_task(msg, env, msg.id)
@@ -545,7 +545,7 @@ async def test_targeted_interrupt_bypasses_session_wide_cancel(monkeypatch, inte
         lambda _: SimpleNamespace(get_session_metadata_async=_metadata),
     )
     msg = _chat_send_message(channel_id="web", session_id="session", mode="team")
-    msg.req_method = ReqMethod.CHAT_CANCEL
+    msg.req_method = 'chat.interrupt'
     msg.is_stream = False
     target = "owner" if owner_flag else "expert"
     msg.params.update({"target_team_id": target, "intent": intent})
@@ -633,7 +633,7 @@ async def test_targeted_cancel_stays_targeted_when_metadata_unavailable(monkeypa
         lambda _: SimpleNamespace(get_session_metadata_async=_unavailable),
     )
     msg = _chat_send_message(channel_id="web", session_id="session", mode="team")
-    msg.req_method = ReqMethod.CHAT_CANCEL
+    msg.req_method = 'chat.interrupt'
     msg.is_stream = False
     msg.params.update({"target_team_id": "expert", "intent": "cancel"})
 
@@ -677,7 +677,7 @@ async def test_stream_failure_is_visible_and_later_requests_are_isolated(failure
         msg.metadata = {"ws_id": "ws-4720"}
         env = e2a_from_agent_fields(
             request_id=request_id, channel_id="web", session_id=session_id,
-            req_method=ReqMethod.CHAT_SEND, params=msg.params, is_stream=True,
+            req_method='chat.send', params=msg.params, is_stream=True,
             timestamp=0.0,
         )
         await handler._start_stream_task(msg, env, request_id)
@@ -1240,7 +1240,7 @@ async def test_manual_cancel_does_not_forward_client_disconnect_source() -> None
         },
         timestamp=0.0,
         ok=True,
-        req_method=ReqMethod.CHAT_CANCEL,
+        req_method='chat.interrupt',
         is_stream=False,
         metadata={"_jiuwenswarm_cancel_source": "client_disconnect"},
     )
@@ -1268,7 +1268,7 @@ async def test_cancel_preserves_runtime_work_mode_and_project_identity() -> None
         },
         timestamp=0.0,
         ok=True,
-        req_method=ReqMethod.CHAT_CANCEL,
+        req_method='chat.interrupt',
         is_stream=False,
     )
 
@@ -1372,7 +1372,7 @@ async def test_team_mq_publish_does_not_register_publisher_as_godview() -> None:
     await handler._maybe_register_godview(
         _team_transport_message(
             request_id="publisher-request",
-            method=ReqMethod.TEAM_MQ_PUBLISH,
+            method='team.mq.publish',
             ws_id="publisher-ws",
         )
     )
@@ -1387,12 +1387,12 @@ async def test_godview_registration_is_unique_per_websocket() -> None:
 
     first = _team_transport_message(
         request_id="web-request-1",
-        method=ReqMethod.CHAT_SEND,
+        method='chat.send',
         ws_id="web-ws-1",
     )
     second = _team_transport_message(
         request_id="web-request-2",
-        method=ReqMethod.CHAT_SEND,
+        method='chat.send',
         ws_id="web-ws-2",
     )
     await handler._maybe_register_godview(first)
@@ -1413,7 +1413,7 @@ async def test_godview_registers_for_two_segment_team_work_mode() -> None:
     await handler._maybe_register_godview(
         _team_transport_message(
             request_id="web-team-work",
-            method=ReqMethod.CHAT_SEND,
+            method='chat.send',
             ws_id="web-ws-team-work",
             mode="team.work",
         )

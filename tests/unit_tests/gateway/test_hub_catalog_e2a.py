@@ -11,9 +11,9 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from agent_gateway.enterprise.config.manager_config.routers.application_config_routers import application_config_router
-from e2a.message import ReqMethod
 
-from e2a.models import E2AEnvelope
+
+from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.extensions.runtime_management_extension.pod_http_client import HttpSseAgentServerClient
 from jiuwenswarm.extensions.runtime_management_extension.runtime_routed_client import RuntimeRoutedAgentClient
 from jiuwenswarm.server.agent_http_routes import build_http_app
@@ -86,7 +86,7 @@ async def test_catalog_runtime_uses_default_http_without_routing(monkeypatch):
     http = SimpleNamespace(send_request=AsyncMock(return_value=response))
     client = RuntimeRoutedAgentClient(route_client=route, http_client=http)
     await client.connect("")
-    envelope = E2AEnvelope(request_id="catalog", channel="gateway", method=ReqMethod.HUB_EXPERT_PACKAGES_CATALOG.value, params={})
+    envelope = E2AEnvelope(request_id="catalog", channel="gateway", method='hub.expert_packages.catalog', params={})
     assert await client.send_request(envelope) is response
     http.send_request.assert_awaited_once_with(envelope, base_url="http://management-server:8766")
     route.route.assert_not_awaited()
@@ -97,8 +97,8 @@ def test_hub_catalog_method_available_without_application_imports():
     """A standalone Gateway can use the pinned protocol without Server shims."""
     script = (
         "import sys; "
-        "from e2a.message import ReqMethod; "
-        "assert ReqMethod('hub.expert_packages.catalog') is ReqMethod.HUB_EXPERT_PACKAGES_CATALOG; "
+        "from e2a.models import E2AEnvelope; "
+        "assert E2AEnvelope(method='hub.expert_packages.catalog').method == 'hub.expert_packages.catalog'; "
         "assert not any(name.split('.')[0] in ('jiuwenswarm', 'gateway') for name in sys.modules)"
     )
     subprocess.run([sys.executable, "-I", "-c", script], check=True)

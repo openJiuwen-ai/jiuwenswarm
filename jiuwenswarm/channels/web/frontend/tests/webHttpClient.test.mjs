@@ -14,10 +14,15 @@ import {
 
 const BASE = '/api/v1';
 
-test('unknown method is null, no rpc fallback', () => {
-  assert.equal(assembleWebRest('command.goal', { session_id: 's1' }, BASE), null);
-  assert.equal(assembleWebRest('memory.compute', {}, BASE), null);
-  assert.equal(assembleWebRest('files.list', { session_id: 's1' }, BASE), null);
+test('unknown method uses the generic RPC endpoint without changing params', () => {
+  const params = { session_id: 's1', opaque: { values: [1, false, null] } };
+  assert.deepEqual(assembleWebRest('future.execute', params, BASE), {
+    method: 'future.execute', verb: 'POST', url: '/api/v1/rpc', query: null,
+    jsonBody: { method: 'future.execute', params, is_stream: false }, kind: 'unary',
+  });
+  const stream = assembleWebRest('future.stream', params, BASE, true);
+  assert.equal(stream.kind, 'rpc-stream');
+  assert.deepEqual(stream.jsonBody, { method: 'future.stream', params, is_stream: true });
   assert.equal(lookupWebRestRoute('tts.synthesize'), null);
 });
 
@@ -315,7 +320,7 @@ test('skills static prefixes are not /skills/{name}', () => {
   }
 });
 
-test('unmapped A2 and personal methods stay null', () => {
+test('unmapped A2 and personal methods use RPC, not a forwarding whitelist', () => {
   const unmapped = [
     'memory.compute',
     'files.list',
@@ -328,7 +333,10 @@ test('unmapped A2 and personal methods stay null', () => {
     'harness.packages',
   ];
   for (const method of unmapped) {
-    assert.equal(assembleWebRest(method, { session_id: 's', id: '1', name: 'n' }, BASE), null, method);
+    const params = { session_id: 's', id: '1', name: 'n' };
+    const assembled = assembleWebRest(method, params, BASE);
+    assert.equal(assembled.url, '/api/v1/rpc', method);
+    assert.deepEqual(assembled.jsonBody, { method, params, is_stream: false });
     assert.equal(lookupWebRestRoute(method), null, method);
   }
 });

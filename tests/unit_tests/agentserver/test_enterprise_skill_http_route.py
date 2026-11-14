@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import asyncio
 import importlib.util
 import sys
@@ -35,20 +34,6 @@ def _assigned_handler(source: Path, enum_name: str) -> str:
     raise AssertionError(f"{enum_name} is not in _SKILL_ROUTES")
 
 
-def _forward_sets_contain(method: str) -> bool:
-    source = _GATEWAY_ROOT / "channel_manager/web/app_web_handlers.py"
-    tree = ast.parse(source.read_text(encoding="utf-8"))
-    found = {name: False for name in ("_FORWARD_REQ_METHODS", "_FORWARD_NO_LOCAL_HANDLER_METHODS")}
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
-            continue
-        for target in node.targets:
-            if isinstance(target, ast.Name) and target.id in found:
-                blob = ast.get_source_segment(source.read_text(encoding="utf-8"), node.value) or ""
-                found[target.id] = method in blob
-    return all(found.values())
-
-
 def test_enterprise_install_http_route_reaches_web_install_handler(tmp_path) -> None:
     method = "skills.enterprise.install"
     interface = _ROOT / "jiuwenswarm/server/runtime/agent_adapter/interface.py"
@@ -56,7 +41,8 @@ def test_enterprise_install_http_route_reaches_web_install_handler(tmp_path) -> 
     from jiuwenswarm.common.schema.message import ReqMethod
     assert ReqMethod.SKILLS_ENTERPRISE_INSTALL.value == method
     assert handler_name == "handle_skills_web_install"
-    assert _forward_sets_contain(method)
+    from tests.unit_tests.gateway.method_passthrough_harness import assert_web_method_forwarded
+    asyncio.run(assert_web_method_forwarded(method))
     matched = [
         route for route in _mapped_routes()
         if route.rpc_method == method and route.path == "/skills/enterprise/actions/install"

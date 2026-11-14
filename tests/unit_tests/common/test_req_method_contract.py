@@ -1,85 +1,80 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+"""Implementation-owned methods resolve only at the AgentServer boundary."""
 
-"""ReqMethod 协议契约：转发方法串必须能被协议枚举解析。
+import json
+import asyncio
+from enum import StrEnum
+from typing import get_type_hints
+from unittest.mock import AsyncMock
 
-Gateway 发往 AgentServer 的方法串会在服务端直接走 ``ReqMethod(str)``
-（``server/agent_ws_server._payload_to_request``、``server/front/protocol``、
-``server/ipc/protocol``），未知串会抛 ``ValueError`` 导致整个请求失败。
-因此凡是进入转发名单、或作为 Gateway 出站请求携带的方法串，都必须存在于
-``e2a 协议包`` 的 ``ReqMethod`` 中。
+import pytest
 
-不覆盖 ``channel.register_method(...)`` 注册的本地方法：``cron.*`` /
-``heartbeat.*`` / ``vendors.*`` / ``external_cli.*`` 等只由 Gateway 本地
-handler 处理，不跨进程发送，也不参与线上枚举解析。需要跨进程的方法应登记到
-``_FORWARD_REQ_METHODS`` / ``CLI_FORWARD_REQ_METHODS``，本测试会自动纳入。
-"""
-
-from __future__ import annotations
-
-import ast
-from pathlib import Path
-
-import agent_gateway
-import e2a.message as protocol_message
-from agent_gateway.channel_manager.tui.tui_connect import CLI_FORWARD_REQ_METHODS
-from agent_gateway.channel_manager.web.app_web_handlers import (
-    _FORWARD_REQ_METHODS,
-)
-
-from jiuwenswarm.common.schema import agent as schema_agent
-from jiuwenswarm.common.schema import message as schema_message
+import e2a
+from e2a.gateway_normalize import e2a_from_agent_fields
+from e2a.models import E2AEnvelope
+from jiuwenswarm.common.schema import agent, message
 from jiuwenswarm.common.schema.message import ReqMethod
-
-_GATEWAY_ROOT = Path(agent_gateway.__file__).resolve().parent
-_REQ_METHOD_VALUES = frozenset(method.value for method in ReqMethod)
+from jiuwenswarm.server.front.protocol import parse_raw_message
 
 
-def _gateway_req_method_literals() -> set[str]:
-    """收集 gateway 源码中 ``req_method="..."`` 关键字实参字面量。"""
-    found: set[str] = set()
-    gateway_root = _GATEWAY_ROOT
-    assert gateway_root.is_dir(), f"Gateway source directory does not exist: {gateway_root}"
-    for path in gateway_root.rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            for keyword in node.keywords:
-                if (
-                    keyword.arg == "req_method"
-                    and isinstance(keyword.value, ast.Constant)
-                    and isinstance(keyword.value.value, str)
-                ):
-                    found.add(keyword.value.value)
-    return found
+def test_method_vocabulary_is_owned_by_swarm():
+    assert not hasattr(e2a, "ReqMethod")
+    assert not hasattr(__import__("e2a.message", fromlist=["Message"]), "ReqMethod")
+    assert agent.ReqMethod is message.ReqMethod is ReqMethod
+    assert issubclass(ReqMethod, StrEnum)
+    assert get_type_hints(agent.AgentRequest)["req_method"] == str | None
 
 
-def _contract_method_strings() -> set[str]:
-    return (
-        set(_FORWARD_REQ_METHODS)
-        | set(CLI_FORWARD_REQ_METHODS)
-        | _gateway_req_method_literals()
+def test_every_swarm_method_survives_wire_and_resolves_at_front():
+    for method in ReqMethod:
+        envelope = e2a_from_agent_fields(
+            request_id="method-contract", channel_id="web", req_method=method,
+            params={"nested": [1, False, None]}, is_stream=False,
+        )
+        wire = json.loads(json.dumps(envelope.to_dict()))
+        assert type(wire["method"]) is str
+        assert wire["method"] == method.value
+        request = parse_raw_message(json.dumps(wire))
+        assert request.req_method is method
+        assert request.params == {"nested": [1, False, None]}
+
+
+def test_unimplemented_method_reaches_front_and_returns_method_not_found():
+    envelope = E2AEnvelope(
+        request_id="future-request", channel="web", method="future.not_implemented",
+        params={"opaque": {"value": 42}},
     )
+    wire = json.dumps(envelope.to_dict())
+    assert E2AEnvelope.from_dict(json.loads(wire)).method == "future.not_implemented"
+    response = parse_raw_message(wire)
+    assert response["request_id"] == "future-request"
+    assert "METHOD_NOT_FOUND" in json.dumps(response)
 
 
-def test_forwarded_methods_exist_in_protocol_req_method() -> None:
-    contract_methods = _contract_method_strings()
-    assert contract_methods, "未收集到任何转发方法串，检查常量来源是否变更"
+@pytest.mark.parametrize("method", ["client.attach", "future.not_implemented"])
+async def test_gateway_bus_reaches_swarm_front_without_method_registration(method):
+    from agent_gateway.channel_manager.base import RobotMessageRouter
+    from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+    from e2a.gateway_normalize import message_to_e2a
 
-    unknown = sorted(contract_methods - _REQ_METHOD_VALUES)
-    assert not unknown, (
-        "以下方法串会转发到 AgentServer，但 e2a 协议包 的 ReqMethod "
-        f"未定义，服务端 ReqMethod(str) 会抛 ValueError：{unknown}。"
-        "请在 agent-protocol 仓补齐后更新 pyproject/uv.lock 的 pin。"
-    )
-
-
-def test_gateway_literal_scan_is_not_empty() -> None:
-    assert _gateway_req_method_literals(), "Gateway literal scan must inspect the current source directory"
-
-
-def test_req_method_reexports_are_identical() -> None:
-    """schema.message / schema.agent 必须复用协议枚举，避免双重定义。"""
-    assert schema_message.ReqMethod is protocol_message.ReqMethod
-    assert schema_agent.ReqMethod is protocol_message.ReqMethod
-    assert ReqMethod is protocol_message.ReqMethod
+    bus = RobotMessageRouter()
+    channel = WebChannel(WebChannelConfig(enabled=True), bus)
+    channel.send_response = AsyncMock()
+    peer = type("Peer", (), {"remote_address": ("127.0.0.1", 1), "closed": False})()
+    params = {"session_id": "contract-session", "opaque": {"values": [1, False, None]}}
+    try:
+        await channel._handle_raw_message(peer, json.dumps({
+            "type": "req", "id": "contract", "method": method, "params": params,
+        }), {})
+        forwarded = await asyncio.wait_for(bus.wait_for_user_message(), timeout=1)
+        assert type(forwarded.req_method) is str
+        assert forwarded.params == params
+        channel.send_response.assert_not_awaited()
+        response = parse_raw_message(json.dumps(message_to_e2a(forwarded).to_dict()))
+        if method == "client.attach":
+            assert response.req_method is ReqMethod.CLIENT_ATTACH
+            assert response.params == params
+        else:
+            assert response["request_id"] == "contract"
+            assert "METHOD_NOT_FOUND" in json.dumps(response)
+    finally:
+        await channel.unregister_ws(peer)

@@ -20,7 +20,8 @@ from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapProp
 from e2a.agent_models import AgentResponse, AgentResponseChunk
 from e2a.models import E2AEnvelope
 from e2a.wire_codec import encode_agent_response_for_wire, encode_agent_chunk_for_wire
-from e2a.message import ReqMethod
+
+
 from agent_gateway import app_gateway, telemetry
 from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.channel_manager import ChannelManager
@@ -29,10 +30,9 @@ from agent_gateway.message_handler.message_handler import MessageHandler
 from agent_gateway.routing.agent_client import WebSocketAgentServerClient
 from agent_gateway.routing.e2a_proxy import proxy_unary_request
 from agent_gateway.routing.keys import AgentRef, RoutingKey
-from agent_gateway.extensions.yuanrong_frontend_client import YuanrongFrontendAgentClient
-
 from jiuwenswarm.common import utils
 from jiuwenswarm.common.utils import mask_sensitive
+from agent_gateway.extensions.yuanrong_frontend_client import YuanrongFrontendAgentClient
 
 
 @pytest.fixture(autouse=True)
@@ -184,7 +184,7 @@ async def wait_finished(operation):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("response_ok", [True, False])
 @pytest.mark.parametrize("req_method", [
-    ReqMethod.MODELS_LIST, ReqMethod.SESSION_LIST, ReqMethod.CONFIG_GET,
+    'models.list', 'session.list', 'config.get',
 ])
 @pytest.mark.parametrize("incoming", [
     {"traceparent": "00-11111111111111111111111111111111-2222222222222222-01"},
@@ -223,9 +223,9 @@ async def test_registered_unary_exports_after_actual_client_write(
             req_method=req_method,
         )
 
-    channel.register_method(req_method.value, proxy_request)
+    channel.register_method(req_method, proxy_request)
     task = asyncio.create_task(channel._handle_raw_message(socket, json.dumps({
-        "type": "req", "id": "rpc-example", "method": req_method.value, "params": {},
+        "type": "req", "id": "rpc-example", "method": req_method, "params": {},
         "trace_context": incoming,
     }), {}))
     try:
@@ -263,7 +263,7 @@ async def test_registered_unary_exports_after_actual_client_write(
             assert root.parent_span_id == b""
         attributes = {item.key: item.value.string_value for item in root.attributes}
         assert attributes["request_id"] == "rpc-example"
-        assert attributes["method"] == req_method.value
+        assert attributes["method"] == req_method
         assert attributes["gateway.outcome"] == ("success" if response_ok else "failed")
         assert "alice" not in attributes["user_id"]
         assert "fp:" in attributes["user_id"]
@@ -672,7 +672,7 @@ async def test_three_provider_wire_acceptance_and_request_isolation(collector, m
     async def list_models(ws, req_id, params, session_id, *, user_id=None):
         await proxy_unary_request(channel=channel, agent_client=client, ws=ws, req_id=req_id,
                                   params=params, session_id=session_id, user_id=user_id,
-                                  req_method=ReqMethod.MODELS_LIST)
+                                  req_method='models.list')
 
     channel.register_method('models.list', list_models)
     try:
@@ -792,7 +792,7 @@ async def test_collector_failure_does_not_block_web_messages(monkeypatch, failur
     async def list_models(ws, req_id, params, session_id, *, user_id=None):
         await proxy_unary_request(channel=channel, agent_client=client, ws=ws, req_id=req_id,
                                   params=params, session_id=session_id, user_id=user_id,
-                                  req_method=ReqMethod.MODELS_LIST)
+                                  req_method='models.list')
 
     channel.register_method('models.list', list_models)
 

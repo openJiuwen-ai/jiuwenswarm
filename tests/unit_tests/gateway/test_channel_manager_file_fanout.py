@@ -1,4 +1,4 @@
-﻿"""Unit tests for cross-channel file delivery fan_out injection.
+"""Unit tests for cross-channel file delivery fan_out injection.
 
 Covers ``ChannelManager._inject_file_delivery_fanout`` and
 ``SendFileToolkit._normalize_target_channels`` — the core of the fix that

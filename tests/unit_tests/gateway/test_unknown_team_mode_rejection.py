@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 
 from agent_gateway.common.mode_matrix import is_team_mode
-from e2a.message import EventType, Message, ReqMethod
+from e2a.message import EventType, Message
 from agent_gateway.message_handler.message_handler import (
     _KNOWN_TEAM_MODE_INPUTS,
     MessageHandler,
@@ -20,7 +20,7 @@ def _chat_send(*, mode: str) -> Message:
         type="request",
         channel_id="web",
         session_id="sess-team",
-        req_method=ReqMethod.CHAT_SEND,
+        req_method='chat.send',
         params={"content": "拆解一下这个需求", "mode": mode},
         timestamp=0.0,
         ok=True,
@@ -67,7 +67,7 @@ def test_missing_mode_is_untouched():
 
 def test_non_chat_request_is_untouched():
     msg = _chat_send(mode="team.foo")
-    msg.req_method = ReqMethod.CHAT_CANCEL
+    msg.req_method = 'chat.interrupt'
 
     assert MessageHandler._is_unknown_team_mode_send(msg) is False
 
