@@ -516,12 +516,6 @@ def _wrap_subagent_session_context(subagent: Any) -> None:
 
 _PARENT_REQ_BY_SESSION: dict[str, tuple[str, str, str]] = {}
 
-# Prompt of the most recent sub-agent LLM call per session. ``_on_input`` sees
-# the model messages; ``_on_output`` needs the same prompt for the
-# usage_metadata record (Logger renders ``um.prompt``). Calls inside a
-# sub-agent run are sequential, so a single slot per sub-session is enough.
-_LAST_PROMPT_BY_SESSION: dict[str, str] = {}
-
 # Wall-clock start of the most recent sub-agent LLM call per session, so
 # ``_on_output`` can stamp the real call duration on the usage_metadata record
 # (Logger's Latency / LLM-call latency) instead of leaving it empty.
@@ -548,72 +542,6 @@ def _subagent_from_session_id(session_id: str) -> tuple[str, str] | None:
     if not parent or not rest:
         return None
     return parent, rest.split("_")[0]
-
-
-def _subagent_prompt_preview(messages: Any, max_chars: int = 4000) -> str | None:
-    """Minimal serialization of the messages sent to the model (system included).
-
-    The actual query is the FIRST user message — a huge system prompt must never
-    push it out of the preview, and the harness may append a runtime-state
-    reminder as a trailing user message, so the last one is not the task.
-    """
-    if not messages:
-        return None
-    segs: list[tuple[str, str]] = []
-    for msg in messages:
-        if isinstance(msg, dict):
-            role = str(msg.get("role") or "?")
-            content = msg.get("content")
-        else:
-            role = str(getattr(msg, "role", None) or "?")
-            content = getattr(msg, "content", None)
-        if isinstance(content, str):
-            text = content
-        elif isinstance(content, list):
-            text = "\n".join(
-                str(p.get("text", "")) for p in content
-                if isinstance(p, dict) and p.get("type") == "text"
-            )
-        else:
-            text = str(content) if content else ""
-        if "data:image" in text:
-            text = "[image]"
-        segs.append((role, text))
-
-    first_user = -1
-    for i, (role, _) in enumerate(segs):
-        if role.lower() == "user":
-            first_user = i
-            break
-
-    def _trunc(seg: str, limit: int) -> str:
-        if len(seg) <= limit:
-            return seg
-        return seg[: max(0, limit)] + "\n… (truncated)"
-
-    user_seg = ""
-    if first_user >= 0:
-        user_budget = min(max_chars // 2, 1500)
-        user_seg = _trunc(f"<user>\n{segs[first_user][1]}", user_budget)
-
-    head = ""
-    remaining = max_chars - len(user_seg)
-    if remaining > 0:
-        head_parts: list[str] = []
-        head_total = 0
-        for role, text in segs[:first_user]:
-            seg = f"<{role}>\n{text}"
-            if head_total + len(seg) > remaining:
-                head_parts.append(_trunc(seg, max(0, remaining - head_total)))
-                head_total = remaining
-                break
-            head_parts.append(seg)
-            head_total += len(seg)
-        head = "\n\n".join(head_parts)
-
-    if head and user_seg:
-        return head + "\n\n" + user_seg
-    return head or user_seg or None
 
 
 def _is_image_probe_call(messages: Any) -> bool:
@@ -784,31 +712,10 @@ def install_subagent_llm_history_forwarder() -> None:
             if not active:
                 return
             parent_id, sub_type, ctx = active
-            from jiuwenswarm.server.runtime.session.history_artifacts import put_prompt
-            from jiuwenswarm.server.runtime.session.history_io import run_history_io
-
-            prompt_ref: dict[str, Any] | None = None
-            try:
-                prompt_ref = await run_history_io(
-                    put_prompt, parent_id, kwargs.get("messages") or [], kwargs.get("tools") or [],
-                )
-            except OSError as exc:
-                server_logger.warning(
-                    "[AgentObservability] subagent prompt artifact unavailable; "
-                    "forwarding preview: session=%s subagent=%s err=%s",
-                    parent_id, sub_type, exc,
-                )
-            prompt = _subagent_prompt_preview(kwargs.get("messages"))
-            if prompt:
-                _LAST_PROMPT_BY_SESSION[sid] = prompt
             _LAST_CALL_START_BY_SESSION[sid] = time.time()
-            extra: dict[str, Any] = {"prompt": prompt or ""}
-            if prompt_ref is not None:
-                extra["payload_refs"] = {"prompt": prompt_ref}
             _append_subagent_llm_record(
                 parent_id=parent_id, subagent_type=sub_type, ctx=ctx,
                 event_type="chat.llm_call_start",
-                extra=extra,
             )
         except Exception as exc:
             server_logger.warning("[AgentObservability] subagent llm_start forward failed: %s", exc)
@@ -838,7 +745,6 @@ def install_subagent_llm_history_forwarder() -> None:
             usage_meta["err_msg"] = ""
             from openjiuwen.agent_teams.context import get_session_id as _ctx_session_id2
 
-            usage_meta["prompt"] = _LAST_PROMPT_BY_SESSION.get(_ctx_session_id2(), "")
             if usage is not None:
                 um = usage.model_dump() if hasattr(usage, "model_dump") else (
                     usage if isinstance(usage, dict) else {}

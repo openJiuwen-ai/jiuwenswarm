@@ -144,6 +144,28 @@ async def test_dropped_empty_answer_synthesizes_final_with_delta_text(monkeypatc
     assert finals[0]["content"] == "好的，没问题"
 
 
+async def test_llm_status_without_prompt_keeps_call_timing_and_token_usage(monkeypatch):
+    events = await _run_stream(_adapter_ready(monkeypatch), [
+        SimpleNamespace(type="llm_call_start", payload={"member_name": "worker", "role": "assistant"}),
+        _usage_chunk(output_tokens=4),
+        SimpleNamespace(type="llm_call_end", payload={}),
+        SimpleNamespace(type="answer", payload={
+            "output": {"output": "done"}, "result_type": "answer",
+        }),
+    ])
+    start = next(event for event in events if event.get("event_type") == "chat.llm_call_start")
+    usage = next(event for event in events if event.get("event_type") == "chat.usage_metadata")
+    summary = next(event for event in events if event.get("event_type") == "chat.usage_summary")
+    assert start["llm_start_ts"] > 0
+    assert usage["llm_start_ts"] == start["llm_start_ts"]
+    assert start["member_name"] == "worker"
+    assert usage["metadata"]["usage_metadata"] == {
+        "input_tokens": 10, "output_tokens": 4, "total_tokens": 14,
+    }
+    assert summary["usage"]["input_tokens"] == 10
+    assert summary["usage"]["output_tokens"] == 4
+
+
 @pytest.mark.asyncio
 async def test_usage_summary_includes_cumulative_session_snapshot_when_total_is_absent(monkeypatch):
     from jiuwenswarm.server.runtime.session import session_token_usage
