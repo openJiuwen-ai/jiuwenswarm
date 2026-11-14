@@ -682,7 +682,7 @@ load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
 reset_free_search_runtime_flags()
 
 
-def _trigger_auto_memory_extraction(
+async def _trigger_auto_memory_extraction(
     adapter: Any,
     request: AgentRequest,
     session_id: str,
@@ -705,10 +705,10 @@ def _trigger_auto_memory_extraction(
 
     messages = None
 
-    # Directly read messages from session history file
+    # Directly read messages from session history file (off event loop: may sleep-retry on PVC).
     try:
         from jiuwenswarm.server.runtime.session.session_history import read_session_history_records
-        history_records = read_session_history_records(session_id)
+        history_records = await asyncio.to_thread(read_session_history_records, session_id)
 
         # Convert history records to message format for memory extraction
         # Each history record has: role, content, timestamp, etc.
@@ -3328,7 +3328,7 @@ class JiuWenSwarm:
                 mode = request.params.get("mode", "code") if isinstance(request.params, dict) else "code"
                 config = get_config()
                 if is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
-                    _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=False)
+                    await _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=False)
             elif not result.ok and is_enterprise():
                 # 失败时也当普通 assistant 回复追加进历史（event_type=chat.final），
                 # 与成功回复走同一条历史恢复链路，刷新后即可在前端看到错误提示。
@@ -4517,7 +4517,7 @@ class JiuWenSwarm:
         mode = request.params.get("mode", "code") if isinstance(request.params, dict) else "code"
         config = get_config()
         if is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
-            _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=True)
+            await _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=True)
 
         _schedule_symphony_session_feedback(session_id, rid)
         await self._try_apply_adapter_pending_reload()

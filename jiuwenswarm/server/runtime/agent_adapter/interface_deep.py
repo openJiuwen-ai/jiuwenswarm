@@ -12,6 +12,7 @@ import asyncio
 import copy
 import hashlib
 import importlib
+import inspect
 import json
 import logging
 import operator
@@ -213,8 +214,8 @@ from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import (
     _push_skill_sleep_published,
     _push_skill_sleep_suggest,
     _push_team_skill_evolve_resolution_status,
-    _record_goal_completed_history_if_needed,
     _record_goal_set_history_if_needed,
+    _schedule_goal_completed_history_if_needed,
     _reset_deepresearch_route_context,
     _reset_runtime_cron_context,
     _resolve_enable_task_loop,
@@ -16778,7 +16779,9 @@ class JiuWenSwarmDeepAdapter:
                     self._runtime_prompt_rail.set_model_name(self._resolve_model_name())
                     self._runtime_prompt_rail.set_mode(mode)
                     self._runtime_prompt_rail.set_session_id(session_id)
-                self._write_runtime_state(
+                # Offload git/subprocess + file write like the configure path so
+                # streaming turns do not stall the Worker event loop (/health).
+                self._schedule_runtime_state_write(
                     mode=mode,
                     language=resolved_language,
                     channel=resolved_channel,
@@ -17173,7 +17176,7 @@ class JiuWenSwarmDeepAdapter:
             # without touching the pure payload parser.
             if event_type == GOAL_UPDATED_EVENT_TYPE:
                 goal_obj = payload.get("goal")
-                _record_goal_completed_history_if_needed(
+                _schedule_goal_completed_history_if_needed(
                     session_id=session_id,
                     channel_id=cid,
                     channel_metadata=request.metadata if isinstance(request.metadata, dict) else None,
@@ -19337,6 +19340,8 @@ class JiuWenSwarmDeepAdapter:
         )
 
         messages = self._get_recent_messages(session_id, window=RECENT_MESSAGE_WINDOW)
+        if inspect.isawaitable(messages):
+            messages = await messages
         if not messages:
             return {"status": "no_turn"}
 
@@ -19350,7 +19355,38 @@ class JiuWenSwarmDeepAdapter:
 
         return {"status": "ok", "summary": summary_text.strip()}
 
-    def _get_recent_messages(self, session_id: str, window: int = 30) -> list[Any]:
+    @staticmethod
+    def _filter_recapworthy_history_records(records: list[Any]) -> list[Any]:
+        """Filter disk history records into recap/btw-worthy messages."""
+        from types import SimpleNamespace
+
+        if not records:
+            return []
+
+        # 只保留 user 消息和 assistant 的最终回复 / compact summary
+        recapworthy = []
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            role = rec.get("role")
+            content = rec.get("content")
+            if not isinstance(content, str) or not content.strip():
+                continue
+
+            if role == "user":
+                recapworthy.append(SimpleNamespace(role="user", content=content))
+            elif role == "assistant":
+                # Goal-completed cards are UI-only history facts; never feed them
+                # back into model recap context.
+                if rec.get("is_goal_completed_message"):
+                    continue
+                event_type = rec.get("event_type")
+                # 只包含 assistant 的最终回复和 compact summary
+                if event_type in ("chat.final", "context.compact_summary") or not event_type:
+                    recapworthy.append(SimpleNamespace(role="assistant", content=content))
+        return recapworthy
+
+    async def _get_recent_messages(self, session_id: str, window: int = 30) -> list[Any]:
         """从当前 agent 对话上下文中提取最近N条消息。
 
         查找顺序：
@@ -19358,7 +19394,7 @@ class JiuWenSwarmDeepAdapter:
         2. 父 adapter 查找 session-scoped child adapter 的 context_engine
            （解决 /btw 等侧查询在 parent adapter 上执行时，会话上下文在 child adapter
            中而 parent 的 context_engine 未加载该 session 的问题）
-        3. 回退到从磁盘读取兼容格式的 history 文件
+        3. 回退到从磁盘读取兼容格式的 history 文件（``asyncio.to_thread``）
         """
         # --- 快速路径：当前 adapter 的 context_engine 已加载 ---
         if self._instance is not None and self._instance.react_agent is not None:
@@ -19402,13 +19438,11 @@ class JiuWenSwarmDeepAdapter:
                                 exc,
                             )
 
-        # --- 回退路径：从磁盘读取兼容格式 history ---
+        # --- 回退路径：从磁盘读取兼容格式 history（off event loop）---
         # 典型场景：/resume 之后，context_engine 还未加载新 session 的上下文，
         # 但磁盘上已有该 session 的历史消息。
         try:
-            from types import SimpleNamespace
-
-            records = load_history_records(session_id)
+            records = await asyncio.to_thread(load_history_records, session_id)
             if not records:
                 logger.debug(
                     "[JiuWenSwarmDeepAdapter] _get_recent_messages: no history records on disk for session %s",
@@ -19416,29 +19450,7 @@ class JiuWenSwarmDeepAdapter:
                 )
                 return []
 
-            # 过滤出适合 recap 的消息记录
-            # 只保留 user 消息和 assistant 的最终回复 / compact summary
-            recapworthy = []
-            for rec in records:
-                if not isinstance(rec, dict):
-                    continue
-                role = rec.get("role")
-                content = rec.get("content")
-                if not isinstance(content, str) or not content.strip():
-                    continue
-
-                if role == "user":
-                    recapworthy.append(SimpleNamespace(role="user", content=content))
-                elif role == "assistant":
-                    # Goal-completed cards are UI-only history facts; never feed them
-                    # back into model recap context.
-                    if rec.get("is_goal_completed_message"):
-                        continue
-                    event_type = rec.get("event_type")
-                    # 只包含 assistant 的最终回复和 compact summary
-                    if event_type in ("chat.final", "context.compact_summary") or not event_type:
-                        recapworthy.append(SimpleNamespace(role="assistant", content=content))
-
+            recapworthy = self._filter_recapworthy_history_records(records)
             if not recapworthy:
                 logger.debug(
                     "[JiuWenSwarmDeepAdapter] _get_recent_messages: no recap-worthy records on disk for session %s",
@@ -19651,6 +19663,8 @@ class JiuWenSwarmDeepAdapter:
 
         # 2) 获取最近对话消息（保持原始格式，不做 str() 转换）
         messages = self._get_recent_messages(session_id, window=RECENT_MESSAGE_WINDOW)
+        if inspect.isawaitable(messages):
+            messages = await messages
         if not messages and not system_prompt:
             return {"status": "no_context"}
 
