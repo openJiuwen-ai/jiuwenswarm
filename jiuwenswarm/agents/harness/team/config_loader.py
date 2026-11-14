@@ -17,6 +17,7 @@ from jiuwenswarm.common.model_identity import (
     MODEL_IDENTITY_REFERENCE_PREFIX,
     build_model_identity_reference,
 )
+from jiuwenswarm.common.stream_timeout_defaults import apply_stream_timeout_defaults
 
 logger = logging.getLogger(__name__)
 
@@ -390,8 +391,10 @@ def _build_default_model_dict(
         requested_model_name=requested_model_name,
         requested_model_ref=requested_model_ref,
     )
-    model_client_config = merge_tip_default_headers(
-        dict(model_config.get("model_client_config", {}))
+    model_client_config = apply_stream_timeout_defaults(
+        merge_tip_default_headers(
+            dict(model_config.get("model_client_config", {}))
+        )
     )
     model_request_config = dict(model_config.get("model_config_obj", {}))
 
@@ -527,6 +530,13 @@ def _build_agent_spec_dict(
 ) -> dict[str, Any]:
     merged = deepcopy(agent_config)
     merged.setdefault("model", deepcopy(default_model))
+    # Inline ``model: { model_client_config: {...} }`` (no ``ref``) skips
+    # ``_resolve_agent_model_reference``; still normalize stream timeouts here.
+    model_spec = merged.get("model")
+    if isinstance(model_spec, dict) and isinstance(model_spec.get("model_client_config"), dict):
+        model_spec["model_client_config"] = apply_stream_timeout_defaults(
+            model_spec["model_client_config"]
+        )
     merged.setdefault("workspace", deepcopy(default_workspace))
     merged.setdefault("max_iterations", max_iterations)
     merged.setdefault("completion_timeout", completion_timeout)
@@ -646,8 +656,10 @@ def _resolve_agent_model_reference(
 
     entry = resolve_team_model_reference(model_raw.get("ref"), config_base)
 
-    model_client_config = merge_tip_default_headers(
-        deepcopy(entry.get("model_client_config") or {})
+    model_client_config = apply_stream_timeout_defaults(
+        merge_tip_default_headers(
+            deepcopy(entry.get("model_client_config") or {})
+        )
     )
     actual_name = str(model_client_config.get("model_name") or "").strip()
     model_request_config = deepcopy(entry.get("model_config_obj") or {})

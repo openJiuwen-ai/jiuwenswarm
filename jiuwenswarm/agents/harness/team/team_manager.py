@@ -46,6 +46,7 @@ from jiuwenswarm.agents.harness.team.config_loader import (
     load_team_spec_dict,
     merge_tip_default_headers,
 )
+from jiuwenswarm.common.stream_timeout_defaults import apply_stream_timeout_defaults
 from jiuwenswarm.agents.harness.team.distributed_runtime import (
     ensure_postgresql_for_leader,
     extract_pg_endpoint,
@@ -829,7 +830,9 @@ class TeamManager:
 
             pool_entries: list[dict] = []
             for entry in default_models:
-                mcc = merge_tip_default_headers(entry.get("model_client_config") or {})
+                mcc = apply_stream_timeout_defaults(
+                    merge_tip_default_headers(entry.get("model_client_config") or {})
+                )
                 mco = entry.get("model_config_obj") or {}
                 if not mcc.get("model_name"):
                     continue
