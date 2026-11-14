@@ -3055,6 +3055,10 @@ class JiuWenSwarmDeepAdapter:
         if connector_error is not None:
             return self._equipment_error_response(request, connector_error)
 
+        skills_available, skills_error = self._requested_skill_availability(params)
+        if skills_error is not None:
+            return self._equipment_error_response(request, skills_error)
+
         # Rule3: can only load package at fresh turn(no peer in-flight turn / goal attached).
         # The current chat.send may already be reserved as busy for permission reload;
         # that self-reservation is not a conflicting turn.
@@ -3082,6 +3086,14 @@ class JiuWenSwarmDeepAdapter:
                 await self._load_client_app_template(app_package)
         except (ValueError, RuntimeError, AgentError, OSError, RsiError) as exc:
             return self._equipment_error_response(request, str(exc))
+
+        # After the package loads: an agent_template binds its own skill roots,
+        # so narrowing earlier would be reversed by the load that follows it.
+        if skills_available is not None:
+            skills_error = await self._apply_skill_availability(skills_available)
+            if skills_error is not None:
+                return self._equipment_error_response(request, skills_error)
+
         from jiuwenswarm.server.runtime.session.session_metadata import (
             save_session_equipment,
         )
@@ -3092,6 +3104,82 @@ class JiuWenSwarmDeepAdapter:
             plugin_names=params.get("plugin_names"),
             mcp=params.get("mcp"),
         )
+        return None
+
+    @staticmethod
+    def _requested_skill_availability(
+        params: dict,
+    ) -> tuple[set[str] | None, str | None]:
+        """Read ``params.agent_skills_available`` into ``(allow-list, error)``.
+
+        Tri-state like ``agent_template_name`` / ``plugin_names``: omitted
+        keeps the session's current roster, an empty list drops the
+        restriction, a name list is the roster.
+
+        A name that is not installed stays in the allow-list and has no
+        effect. The roster is rebuilt from the filesystem on every invoke, so
+        a name unknown here can become known during the turn.
+        ``_apply_skill_availability`` logs the unaccounted names.
+
+        A value that is not a list of strings is an error: a caller asking
+        for a restriction must not be served an unrestricted turn.
+        """
+        if "agent_skills_available" not in params:
+            return None, None
+        raw = params.get("agent_skills_available")
+        if not isinstance(raw, list) or any(
+            not isinstance(item, str) for item in raw
+        ):
+            return None, "agent_skills_available must be a list of skill names"
+        return {item.strip() for item in raw if item.strip()}, None
+
+    async def _apply_skill_availability(self, allowed: set[str]) -> str | None:
+        """Narrow the live Skill rail to ``allowed``. Empty lifts the ceiling.
+
+        Returns an error message when the rail cannot apply ``allowed``; the
+        rail then keeps its previous allow-list.
+
+        ``SkillUseRail.enabled_skills`` is the rail's own allow-list, and the
+        rail re-applies it in the ``_prepare_skills`` it runs before every
+        invoke. The ceiling therefore survives a reload and binds both readers
+        of the roster: the Skills prompt section, and the
+        ``get_skills_for_session`` lookup ``skill_tool`` / ``list_skill``
+        resolve a name through. A model that learns an excluded name some
+        other way still cannot dispatch it.
+
+        An empty ``allowed`` is the rail's "no allow-list" state, the same
+        rule ``_apply_skill_visibility`` states for the swarm Skill view. That
+        is why an empty list clears the restriction instead of emptying the
+        roster: the rail cannot express an empty roster.
+        """
+        rail = self._skill_rail
+        if rail is None:
+            return None
+        previous = getattr(rail, "enabled_skills", None)
+        if previous == allowed:
+            return None
+        rail.enabled_skills = set(allowed)
+        try:
+            await rail.reload_skills()
+        except Exception as exc:  # noqa: BLE001
+            # The roster was not rebuilt, so the restriction is not in force:
+            # refuse the turn rather than serve it unrestricted.
+            rail.enabled_skills = previous
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] skill availability reload failed: %s", exc
+            )
+            return f"agent_skills_available could not be applied: {exc}"
+        # The session snapshots the roster on first use and
+        # get_skills_for_session merges that snapshot back, so without this a
+        # Skill excluded mid-session stays reachable through skill_tool.
+        self._clear_skill_session_baseline()
+        missing = sorted(allowed - {skill.name for skill in rail.skills_meta})
+        if missing:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] agent_skills_available names are not "
+                "installed and have no effect: %s",
+                missing,
+            )
         return None
 
     @staticmethod
