@@ -97,6 +97,8 @@ export interface TeamTrajectoryWorkspaceProps {
   };
 }
 
+type DisplayLane = TeamMemberLaneModel & { ordinal?: number };
+
 function MemberToolbarControl({
   lane,
   expanded,
@@ -108,7 +110,7 @@ function MemberToolbarControl({
   canSelectAll,
   selectAllActive,
 }: {
-  lane: TeamMemberLaneModel;
+  lane: DisplayLane;
   expanded: boolean;
   onClick: () => void;
   included?: boolean;
@@ -119,9 +121,11 @@ function MemberToolbarControl({
   selectAllActive?: boolean;
 }) {
   const { t } = useTranslation();
-  const fullLabel = 'fullLabel' in lane && typeof lane.fullLabel === 'string'
+  const baseLabel = 'fullLabel' in lane && typeof lane.fullLabel === 'string'
     ? lane.fullLabel
     : lane.label;
+  const ordinal = lane.ordinal === undefined ? '' : `#${lane.ordinal}`;
+  const fullLabel = ordinal ? `${baseLabel} ${ordinal}` : baseLabel;
   const scheduledLane = 'taskId' in lane ? lane as ScheduledReviewerLane : undefined;
   const decision = scheduledLane?.decision;
   const pendingDecisionLabel = scheduledLane?.reviewer.toLowerCase().includes('inspector')
@@ -155,6 +159,9 @@ function MemberToolbarControl({
     >
       <span className={`${css.statusDot} ${css[`status_${lane.status}`]}`} aria-hidden="true" />
       <span className={css.memberName} title={fullLabel}>{lane.label}</span>
+      {ordinal && (
+        <span className={css.workflowGroupShortId} data-testid="team-trajectory-lane-ordinal">{ordinal}</span>
+      )}
       {decisionLabel === undefined ? null : (
         <span
           className={css.reviewDecision}
@@ -313,7 +320,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
     lanesElement.scrollTop += rowBounds.top - lanesBounds.top;
   }, [pinToken, selectedSubjectId]);
 
-  const renderLane = (lane: TeamMemberLaneModel) => {
+  const renderLane = (lane: DisplayLane) => {
     const expanded = lane.subjectId === selectedSubjectId;
     const select = () => onSelectSubject(expanded ? null : lane.subjectId);
     const expand = () => {
@@ -503,6 +510,17 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
     // behind a collapse the toggle cannot undo.
     const selected = group.lanes.some((lane) => lane.subjectId === selectedSubjectId);
     const expanded = expandedGroups.has(group.runId) || selected;
+    const labelTotals = new Map<string, number>();
+    for (const lane of group.lanes) {
+      labelTotals.set(lane.label, (labelTotals.get(lane.label) ?? 0) + 1);
+    }
+    const labelOrdinals = new Map<string, number>();
+    const displayLanes = group.lanes.map((lane) => {
+      if (labelTotals.get(lane.label) === 1) return lane;
+      const ordinal = (labelOrdinals.get(lane.label) ?? 0) + 1;
+      labelOrdinals.set(lane.label, ordinal);
+      return { ...lane, ordinal };
+    });
     const toggle = () => {
       setExpandedGroups((current) => {
         const next = new Set(current);
@@ -552,7 +570,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
         </button>
         {expanded ? (
           <div className={css.workflowGroupLanes} role="list">
-            {group.lanes.map(renderLane)}
+            {displayLanes.map(renderLane)}
           </div>
         ) : null}
       </div>
