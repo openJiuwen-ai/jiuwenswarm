@@ -1,6 +1,6 @@
 # E2A (Everything-to-Agent) Protocol
 
-> **Implementation**: `e2a/` (`models.py`, `adapters.py`, `constants.py`, `__init__.py`). **Version**: `E2A_PROTOCOL_VERSION` (default `1.0`). **On conflict**: treat the dataclass fields in `models.py` as the source of truth and update this document accordingly. Requests: `E2AEnvelope`; responses: `E2AResponse`.  
+> **Implementation**: protocol package `e2a` owns the wire models and shared channel events; `jiuwenswarm/common/schema/message.py` owns the Swarm-side `ReqMethod`. **Version**: `E2A_PROTOCOL_VERSION` (default `1.0`). **On conflict**: treat the dataclass fields in protocol `models.py` as the source of truth and update this document accordingly. Requests: `E2AEnvelope`; responses: `E2AResponse`.
 > **中文版**：[../zh/E2A-protocol.md](../zh/E2A-protocol.md)
 
 ---
@@ -15,6 +15,8 @@
 | `e2a/constants.py` | **`E2A_SOURCE_PROTOCOL_*`**, **`E2A_RESPONSE_KINDS`**, **`E2A_RESPONSE_STATUS_*`**, ACP method names and SessionUpdate strings (runtime: use tuples in code) |
 | `e2a/adapters.py` | ACP / A2A → E2A; E2A → ACP JSON-RPC; **`E2AResponse` → ACP / A2A projections** (§8) |
 | `e2a/__init__.py` | Public exports |
+| `jiuwenswarm/common/schema/message.py` | Single Swarm-side `ReqMethod` implementation and business-method resolution |
+| `jiuwenswarm/common/e2a/__init__.py` | Local protocol boundary kept by this repository |
 
 ---
 
@@ -23,6 +25,13 @@
 - Payloads sent to AgentServer **after Gateway normalization** are expressed as E2A. Raw channel fields are **mapped at the Gateway edge** into normalized fields (`user_id`, `message_id`, `params`, etc.); the full channel JSON is **not** required to be the E2A primary path.
 - **`channel_context`**: optional; transitional or residual keys that do not fit normalized fields; `from_dict` may migrate legacy `metadata` for compatibility.
 - E2A **does not** specify the transport (WebSocket, HTTP, etc.).
+
+### Method ownership and dispatch
+
+- The business `method` in an E2A envelope is always a wire string; the protocol package does not define `ReqMethod`.
+- `ReqMethod`, business-method resolution, and Swarmflow / enterprise / skills validation belong to this repository in `jiuwenswarm/common/schema/message.py` and `jiuwenswarm/server/request_policy.py`.
+- The Gateway executes only its actually registered local handlers; methods without a local handler are forwarded as strings and it does not maintain the Swarm method vocabulary.
+- Swarm Front returns `payload.code = METHOD_NOT_FOUND` for unknown or non-string methods.
 
 `config.moa_status` always runs on the target AgentServer through E2A, including
 single-user WebSocket deployments and AgentOS routing. The Gateway forwards
@@ -103,7 +112,7 @@ Hand-built defaults use `source_protocol` = `e2a`. Legacy `binding` migrates to 
 | `session_update_kind` | For ACP `session/update` bridge; values match `constants.ACP_SESSION_UPDATE_KINDS` |
 | `expected_output_modes` | A2A `acceptedOutputModes` |
 
-At the Gateway-facing WebSocket ingress, AgentServer converts an explicitly supplied method to its own `ReqMethod`. Unknown or non-string methods receive a final error response with `payload.code` set to `METHOD_NOT_FOUND`. Internal requests without a method retain their existing path.
+At the Gateway-facing WebSocket ingress, AgentServer converts an explicitly supplied string to `ReqMethod` from `jiuwenswarm/common/schema/message.py`. Unknown or non-string methods receive a final error response with `payload.code` set to `METHOD_NOT_FOUND`. Internal requests without a method retain their existing path.
 
 **Common `params` keys** (extend as needed; names below cooperate with ACP bridging):
 
@@ -494,8 +503,8 @@ clients use their existing connection.
 The management response remains `{code: 200, message: "success", data: {items: [...],
 error: ""}}`. An unavailable Server, transport failure or Hub lookup failure produces
 empty `items` and an error message, without a local Gateway fallback. Existing Server
-cold-cache and background-refresh semantics remain in place. The pinned
-`openjiuwen-protocol` package defines `hub.expert_packages.catalog`; no application-side
+cold-cache and background-refresh semantics remain in place. This repository's
+`ReqMethod` defines `hub.expert_packages.catalog`; no application-side
 enum registration is required.
 
 ## History payload references and chunk retrieval

@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from agent_gateway.channel_manager.web import app_web_handlers
+from tests.unit_tests.gateway.method_passthrough_harness import assert_web_method_forwarded
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server.jiuwenmate import web_adapter
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
@@ -586,10 +586,9 @@ async def test_welink_mail_settings_follow_colleague_connection_and_are_live(hos
     assert not missing.ok
 
 
-def test_welink_office_rpcs_are_forwarded_to_runtime():
+async def test_welink_office_rpcs_are_forwarded_to_runtime():
     for method in (ReqMethod.JIUWENMATE_WELINK_OFFICE_STATUS,
                    ReqMethod.JIUWENMATE_WELINK_OFFICE_CONNECT,
                    ReqMethod.JIUWENMATE_WELINK_OFFICE_DISCONNECT):
         assert method.value in JiuwenMateWebAdapter.methods
-        assert method.value in app_web_handlers._FORWARD_REQ_METHODS
-        assert method.value in app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
+        await assert_web_method_forwarded(method.value)

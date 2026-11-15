@@ -435,7 +435,7 @@ async def test_multi_question_partial_answer_does_not_submit(channel):
 
     assert len(channel.published) == 1
     message = channel.published[0]
-    assert message.req_method.value == "chat.send"
+    assert message.req_method == "chat.send"
     assert message.params["source"] == "ask_user_interrupt"
     assert message.params["answers"] == [
         {"question": "Q1", "selected_options": ["a1"]},
@@ -456,7 +456,7 @@ async def test_permission_answer_submits_chat_send_with_card_id(channel, card_id
 
     assert len(channel.published) == 1
     message = channel.published[0]
-    assert message.req_method.value == "chat.send"
+    assert message.req_method == "chat.send"
     assert message.params["source"] == "permission_interrupt"
     assert message.params["answers"] == [{"selected_options": ["allow_once"], "card_id": card_id}]
     assert message.session_id == "oc_chat"

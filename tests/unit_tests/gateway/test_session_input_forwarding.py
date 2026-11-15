@@ -7,14 +7,14 @@ from unittest.mock import AsyncMock
 import pytest
 
 from e2a.agent_models import AgentResponse, AgentResponseChunk
-from e2a.message import Message, ReqMethod
+from e2a.message import Message
 from agent_gateway.message_handler.message_handler import MessageHandler
 
 
 def message(rid, *, stream=False, mode=None, channel="web", **params):
     return Message(
         id=rid, type="req", channel_id=channel, session_id="sess-input-gateway",
-        req_method=ReqMethod.CHAT_SEND, is_stream=stream, timestamp=0, ok=True,
+        req_method='chat.send', is_stream=stream, timestamp=0, ok=True,
         params={"query": rid, "mode": "agent", **({"input_mode": mode} if mode else {}), **params},
         metadata={"ws_id": "original-connection", "user_id": "test-user"},
     )
@@ -151,7 +151,7 @@ async def test_unary_active_and_queued_tasks_are_cleaned_up(gateway, action):
         await handler.stop_forwarding()
     else:
         cancel = message("cancel")
-        cancel.req_method = ReqMethod.CHAT_CANCEL
+        cancel.req_method = 'chat.interrupt'
         cancel.params = {"intent": "cancel"}
         await handler.publish_user_messages(cancel)
         await receive(handler, "cancel", event_type="chat.interrupt_result")

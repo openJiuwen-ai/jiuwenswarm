@@ -16,15 +16,12 @@ from jiuwenswarm.server.runtime.marketplace.hub_asset_port import (
 from jiuwenswarm.server.runtime.mcp import marketplace
 
 
-def test_mcp_hub_lifecycle_methods_are_forwarded_by_web_gateway() -> None:
-    from agent_gateway.channel_manager.web.app_web_handlers import (
-        _FORWARD_NO_LOCAL_HANDLER_METHODS,
-        _FORWARD_REQ_METHODS,
-    )
+async def test_mcp_hub_lifecycle_methods_are_forwarded_by_web_gateway() -> None:
+    from tests.unit_tests.gateway.method_passthrough_harness import assert_web_method_forwarded
 
     methods = {"mcp.install", "mcp.uninstall"}
-    assert methods <= _FORWARD_REQ_METHODS
-    assert methods <= _FORWARD_NO_LOCAL_HANDLER_METHODS
+    for method in methods:
+        await assert_web_method_forwarded(method)
 
 
 class FakeHub:

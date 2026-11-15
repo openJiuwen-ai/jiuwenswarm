@@ -130,6 +130,12 @@ class MethodRouter:
         request: AgentRequest,
         send_lock: Any,
     ) -> None:
+        from jiuwenswarm.server.request_policy import request_policy_error
+
+        error = request_policy_error(request)
+        if error is not None:
+            await self._send(ws, send_lock, encode_response(error, response_id=request.request_id))
+            return
         if is_control_method(request):
             if request.req_method.value in CONTROL_HUB_METHODS:
                 await self._dispatch_hub_catalog(ws, request, send_lock)

@@ -157,14 +157,11 @@ async def test_chat_checks_group_ownership_and_rejects_session_mismatch(host):
     assert "BAD_REQUEST" in ws.send.await_args.args[0]
 
 
-def test_group_methods_are_forwarded_by_gateway_and_no_remove_method():
-    from agent_gateway.channel_manager.web.app_web_handlers import (
-        _FORWARD_REQ_METHODS,
-        _FORWARD_NO_LOCAL_HANDLER_METHODS,
-    )
+async def test_group_methods_are_forwarded_by_gateway_and_no_remove_method():
+    from tests.unit_tests.gateway.method_passthrough_harness import assert_web_method_forwarded
 
-    assert GROUP_METHODS <= _FORWARD_REQ_METHODS
-    assert GROUP_METHODS <= _FORWARD_NO_LOCAL_HANDLER_METHODS
+    for method in GROUP_METHODS:
+        await assert_web_method_forwarded(method)
     assert "group.member.remove" not in {method.value for method in ReqMethod}
 
 

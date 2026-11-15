@@ -223,10 +223,6 @@ async def test_websocket_query_rejects_oversized_session_id_before_registration(
             {"session_id": "s" * 10_240, "run_id": "run-1"},
             "session_id exceeds maximum length 80",
         ),
-        (
-            {"session_id": "sess-1", "run_id": "r" * 10_240},
-            "run_id exceeds maximum length 256",
-        ),
     ],
 )
 async def test_swarmflow_control_rejects_oversized_ids_before_forwarding(

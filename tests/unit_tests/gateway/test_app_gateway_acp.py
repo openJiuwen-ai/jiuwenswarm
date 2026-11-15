@@ -14,7 +14,7 @@ from agent_gateway.app_gateway import (
     RouteConfig,
     _normalize_gateway_message,
 )
-from e2a.message import EventType, Message, ReqMethod
+from e2a.message import EventType, Message
 
 
 class DummyBus:
@@ -121,12 +121,10 @@ def build_server() -> GatewayServerProbe:
             "/acp": RouteConfig(
                 path="/acp",
                 channel_id="acp",
-                forward_methods=frozenset({ReqMethod.CHAT_SEND.value, ReqMethod.HISTORY_GET.value}),
             ),
             "/tui": RouteConfig(
                 path="/tui",
                 channel_id="tui",
-                forward_methods=frozenset({ReqMethod.CHAT_SEND.value, ReqMethod.HISTORY_GET.value}),
             ),
         },
     )
@@ -143,12 +141,12 @@ def test_normalize_gateway_message_maps_chat_resume_to_interrupt_resume():
         params={"session_id": "sess-1"},
         timestamp=time.time(),
         ok=True,
-        req_method=ReqMethod.CHAT_RESUME,
+        req_method='chat.resume',
     )
 
     normalized = _normalize_gateway_message(msg)
 
-    assert normalized.req_method == ReqMethod.CHAT_CANCEL
+    assert normalized.req_method == 'chat.interrupt'
     assert normalized.params["intent"] == "resume"
     assert normalized.session_id == "sess-1"
 
@@ -162,7 +160,7 @@ def test_normalize_gateway_message_preserves_user_id():
         params={"session_id": "sess-1", "content": "hi"},
         timestamp=time.time(),
         ok=True,
-        req_method=ReqMethod.CHAT_SEND,
+        req_method='chat.send',
         user_id="testuser",
     )
 
@@ -772,7 +770,7 @@ async def test_gateway_server_defers_end_turn_until_pending_client_rpc_resolves(
 
     async def on_message(msg):
         seen.append(msg)
-        if msg.req_method != ReqMethod.CHAT_SEND:
+        if msg.req_method != 'chat.send':
             return
         await server.send(
             Message(
@@ -886,7 +884,7 @@ async def test_gateway_server_defers_end_turn_until_pending_client_rpc_resolves(
             "userMessageId": "user-msg-pending-rpc",
         },
     }
-    assert any(msg.req_method == ReqMethod.ACP_TOOL_RESPONSE for msg in seen)
+    assert any(msg.req_method == 'acp.tool_response' for msg in seen)
 
 
 @pytest.mark.asyncio
@@ -897,7 +895,7 @@ async def test_gateway_server_expired_pending_rpc_does_not_block_end_turn(monkey
                         -1.0)
 
     async def on_message(msg):
-        if msg.req_method != ReqMethod.CHAT_SEND:
+        if msg.req_method != 'chat.send':
             return
         await server.send(
             Message(
@@ -1043,7 +1041,7 @@ async def test_gateway_server_handle_raw_jsonrpc_response_forwards_acp_tool_resp
     msg = seen[0]
     assert msg.channel_id == "acp"
     assert msg.session_id == "sess-tool"
-    assert msg.req_method == ReqMethod.ACP_TOOL_RESPONSE
+    assert msg.req_method == 'acp.tool_response'
     assert msg.params == {
         "jsonrpc_id": "tool-1",
         "response": {
@@ -1160,7 +1158,7 @@ async def test_gateway_server_handles_acp_jsonrpc_prompt_and_streams_back_jsonrp
     )
 
     assert len(seen) == 1
-    assert seen[0].req_method == ReqMethod.CHAT_SEND
+    assert seen[0].req_method == 'chat.send'
     assert seen[0].session_id == "sess-jsonrpc"
     assert seen[0].params["query"] == "hello"
 
@@ -1867,7 +1865,7 @@ async def test_gateway_server_handle_raw_message_forwards_request():
     assert msg.id == "req-3"
     assert msg.channel_id == "acp"
     assert msg.session_id == "sess-3"
-    assert msg.req_method == ReqMethod.CHAT_SEND
+    assert msg.req_method == 'chat.send'
     assert msg.params.get("content") == "hello"
     # P2 起 Mode.from_raw 经 DEPRECATION_MAP 静默映射:agent.fast → agent.work.normal。
     assert msg.mode.value == "agent.work.normal"
@@ -1877,7 +1875,6 @@ async def test_gateway_server_handle_raw_message_forwards_request():
 @pytest.mark.asyncio
 async def test_gateway_server_forwards_tui_client_timeout_as_metadata_only():
     server = build_server()
-    server.config.routes["/tui"].forward_no_local_handler_methods = frozenset({"chat.send"})
     ws = FakeWebSocket()
     seen = []
 
@@ -1914,9 +1911,11 @@ async def test_gateway_server_forwards_tui_client_timeout_as_metadata_only():
 
 
 @pytest.mark.asyncio
-async def test_gateway_server_handle_raw_message_rejects_unknown_method():
+async def test_gateway_server_handle_raw_message_forwards_unknown_method():
     server = build_server()
     ws = FakeWebSocket()
+    seen = []
+    server.on_message(seen.append)
 
     await server.handle_raw_message_public(
         ws,
@@ -1931,12 +1930,10 @@ async def test_gateway_server_handle_raw_message_rejects_unknown_method():
         ),
     )
 
-    assert len(ws.sent_frames) == 1
-    frame = ws.sent_frames[0]
-    assert frame["type"] == "res"
-    assert frame["id"] == "req-4"
-    assert frame["ok"] is False
-    assert frame["error"] == "unknown method: unknown.method"
+    assert ws.sent_frames == []
+    assert len(seen) == 1
+    assert seen[0].req_method == "unknown.method"
+    assert seen[0].params == {"session_id": "sess-4"}
 
 
 @pytest.mark.asyncio
@@ -2199,11 +2196,6 @@ def _build_tui_server_with_agent_switch() -> GatewayServerProbe:
             "/tui": RouteConfig(
                 path="/tui",
                 channel_id="tui",
-                forward_methods=frozenset(
-                    {
-                        ReqMethod.CHAT_SEND.value,
-                    }
-                ),
             ),
         },
     )

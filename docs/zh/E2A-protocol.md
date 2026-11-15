@@ -1,6 +1,6 @@
 # E2A（Everything-to-Agent）协议说明
 
-> **实现**：`e2a/`（`models.py`、`adapters.py`、`constants.py`、`__init__.py`）。**版本**：`E2A_PROTOCOL_VERSION`（默认 `1.0`）。**冲突时**：以 `models.py` 中 dataclass 字段为最终实现源，并回头修正本文。请求：`E2AEnvelope`；响应：`E2AResponse`。  
+> **实现**：协议包 `e2a` 持有线上模型与两侧共同解读的通道事件；本仓 `jiuwenswarm/common/schema/message.py` 持有 Swarm 侧 `ReqMethod`。**版本**：`E2A_PROTOCOL_VERSION`（默认 `1.0`）。**冲突时**：以协议包 `models.py` 中 dataclass 字段为最终实现源，并回头修正本文。请求：`E2AEnvelope`；响应：`E2AResponse`。
 > **English**：[../en/E2A-protocol.md](../en/E2A-protocol.md)
 
 ---
@@ -15,6 +15,8 @@
 | `e2a/constants.py` | **`E2A_SOURCE_PROTOCOL_*`**、**`E2A_RESPONSE_KINDS`**、**`E2A_RESPONSE_STATUS_*`**、ACP 方法名与 SessionUpdate 字符串（运行时以元组为准） |
 | `e2a/adapters.py` | ACP / A2A → E2A；E2A → ACP JSON-RPC；**`E2AResponse` → ACP / A2A 投影**（见 §8） |
 | `e2a/__init__.py` | 对外导出 |
+| `jiuwenswarm/common/schema/message.py` | Swarm 侧 `ReqMethod` 单一实现与业务方法解析 |
+| `jiuwenswarm/common/e2a/__init__.py` | 本仓保留的协议边界 |
 
 ---
 
@@ -23,6 +25,13 @@
 - **经 Gateway 规范化之后**发往 AgentServer 的载荷，用 E2A 表达；通道原始字段在 **Gateway 入口映射**到规范化字段（`user_id`、`message_id`、`params` 等），**不要求**把整包 channel JSON 当作 E2A 主路径。
 - **`channel_context`**：可选；仅过渡或无法落入规范化字段的残余键；`from_dict` 可将旧 `metadata` 迁入以兼容历史。
 - E2A **不规定**传输层（WebSocket、HTTP 等）。
+
+### 方法归属与分发
+
+- E2A 信封中的业务 `method` 线上始终为字符串；协议包不定义 `ReqMethod`。
+- `ReqMethod`、业务方法解析及 Swarmflow / enterprise / skills 等业务校验由本仓 `jiuwenswarm/common/schema/message.py` 与 `jiuwenswarm/server/request_policy.py` 持有。
+- Gateway 只执行实际注册的本地 handler；未命中的 method 按字符串原样透传，不维护 Swarm 方法全集。
+- Swarm Front 收到未知或非字符串方法时返回 `payload.code = METHOD_NOT_FOUND`。
 
 `config.moa_status` 始终经 E2A 在目标 AgentServer 执行，包括单用户 WebSocket
 部署和 AgentOS 路由。Gateway 转发 `params.model_selection` 和已认证用户身份，
@@ -101,7 +110,7 @@
 | `session_update_kind` | 桥接 ACP `session/update` 时，与 `constants.ACP_SESSION_UPDATE_KINDS` 一致 |
 | `expected_output_modes` | A2A `acceptedOutputModes` |
 
-AgentServer 的 Gateway WebSocket 入口将显式传入的方法名转换为本服务的 `ReqMethod`；未知或非字符串方法返回终态错误响应，`payload.code` 为 `METHOD_NOT_FOUND`。未传方法的内部请求保持原有处理路径。
+AgentServer 的 Gateway WebSocket 入口将显式传入的字符串转换为本仓 `jiuwenswarm/common/schema/message.py` 中的 `ReqMethod`；未知或非字符串方法返回终态错误响应，`payload.code` 为 `METHOD_NOT_FOUND`。未传方法的内部请求保持原有处理路径。
 
 **`params` 常用键约定**（可按业务扩展，以下为与 ACP 桥接协作的推荐名）：
 
@@ -433,7 +442,7 @@ Server 自己的 `TEAM_SKILLS_HUB_BASE_URL` 决定查询哪个 Hub。WebSocket �
 管理接口保持 `{code: 200, message: "success", data: {items: [...], error: ""}}`
 结构；Server 不可用、传输失败或 Hub 查询失败时，返回空 `items` 与错误说明。
 不回退到 Gateway 本地查询。缓存冷启动与后台刷新语义沿用 Server 现有实现。
-`hub.expert_packages.catalog` 由锁定版本的 `openjiuwen-protocol` 正式定义，无需应用侧临时注册。
+`hub.expert_packages.catalog` 由本仓 `ReqMethod` 正式定义，无需应用侧临时注册。
 
 ## 历史原文引用与分块读取
 

@@ -11,7 +11,7 @@ from agent_gateway.auth import login_credentials as lc
 from agent_gateway.auth.login_credentials import credential_ref_for_user
 from e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 from e2a.agent_models import AgentRequest
-from e2a.message import ReqMethod
+
 from agent_gateway.message_handler.message_handler import MessageHandler
 
 REF = "abe633f3a47a2758174eabe9160daf36"
@@ -54,7 +54,7 @@ async def test_refresh_request_is_answered_with_an_update(monkeypatch):
 
     assert seen_refs == [REF]
     assert len(sent) == 1
-    assert sent[0].method == ReqMethod.AUTH_CREDENTIALS_UPDATE.value
+    assert sent[0].method == 'auth.credentials.update'
     assert sent[0].params == {"credential_ref": REF, "api_key": "id-new"}
 
 
@@ -112,7 +112,7 @@ async def test_agent_server_applies_the_pushed_update():
         request = AgentRequest(
             request_id="auth-1",
             channel_id="",
-            req_method=ReqMethod.AUTH_CREDENTIALS_UPDATE,
+            req_method='auth.credentials.update',
             timestamp=time.time(),
             params=params,
         )

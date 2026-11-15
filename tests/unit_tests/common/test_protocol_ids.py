@@ -5,11 +5,11 @@ import pytest
 from agent_gateway.common.protocol_ids import (
     InvalidProtocolId,
     SESSION_ID_MAX_LEN,
-    WORKFLOW_RUN_ID_MAX_LEN,
     is_valid_session_id,
     validate_session_id,
-    validate_workflow_run_id,
 )
+from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.server.request_policy import request_policy_error
 
 
 def test_session_id_boundary_matches_persistent_session_contract() -> None:
@@ -29,13 +29,16 @@ def test_session_id_rejects_invalid_values_without_echoing_input(value) -> None:
 
 
 def test_workflow_run_id_is_bounded() -> None:
-    valid = "run-" + "x" * (WORKFLOW_RUN_ID_MAX_LEN - 4)
-    assert validate_workflow_run_id(valid) == valid
-    with pytest.raises(InvalidProtocolId, match="exceeds maximum length"):
-        validate_workflow_run_id(valid + "x")
+    valid = "run-" + "x" * 252
+    request = AgentRequest(request_id="run", req_method="swarmflow.pause", params={"run_id": valid})
+    assert request_policy_error(request) is None
+    request.params["run_id"] += "x"
+    response = request_policy_error(request)
+    assert response.payload["code"] == "BAD_REQUEST"
+    assert "exceeds maximum length" in response.payload["error"]
 
 
 @pytest.mark.parametrize("value", (None, 1, "", " run-1", "run-1 ", "run\n1"))
 def test_workflow_run_id_rejects_invalid_values(value) -> None:
-    with pytest.raises(InvalidProtocolId):
-        validate_workflow_run_id(value)
+    request = AgentRequest(request_id="run", req_method="swarmflow.pause", params={"run_id": value})
+    assert request_policy_error(request).payload["code"] == "BAD_REQUEST"

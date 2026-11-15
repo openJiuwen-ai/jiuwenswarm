@@ -25,10 +25,7 @@ from openjiuwen.harness.rails.evolution import (
     project_symphony_execution_fragments,
 )
 from openjiuwen.symphony.flow import SkillPackAdapter, SkillPackNotInstallableError
-from agent_gateway.channel_manager.web.app_web_handlers import (
-    _FORWARD_NO_LOCAL_HANDLER_METHODS,
-    _FORWARD_REQ_METHODS,
-)
+from tests.unit_tests.gateway.method_passthrough_harness import assert_web_method_forwarded
 
 from jiuwenswarm.common.host_services import (
     install_runtime_push_handler,
@@ -303,7 +300,7 @@ def test_evolution_is_the_only_core_experience_switch(tmp_path: Path) -> None:
     assert not hasattr(config, "flow")
 
 
-def test_experience_candidate_server_methods_are_routable() -> None:
+async def test_experience_candidate_server_methods_are_routable() -> None:
     expected = {
         ReqMethod.SKILLS_EXPERIENCE_LIST: "handle_skills_experience_list",
         ReqMethod.SKILLS_EXPERIENCE_REQUEST: "handle_skills_experience_request",
@@ -311,8 +308,7 @@ def test_experience_candidate_server_methods_are_routable() -> None:
 
     for method, handler in expected.items():
         assert _SKILL_ROUTES[method] == handler
-        assert method.value in _FORWARD_REQ_METHODS
-        assert method.value in _FORWARD_NO_LOCAL_HANDLER_METHODS
+        await assert_web_method_forwarded(method.value)
 
 
 def test_target_adapter_adds_installable_frontmatter(tmp_path: Path) -> None:

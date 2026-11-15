@@ -248,8 +248,6 @@ def test_client_attach_methods_are_plain_forwards_to_agent_server() -> None:
 
     # A client's attach requests are answered by AgentServer, never by a local handler.
     methods = {"client.attach", "client.renew", "client.list", "client.conversation.messages"}
-    assert methods <= app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
-    assert methods <= app_web_handlers._FORWARD_REQ_METHODS
     assert not methods & channel.methods.keys()
 
 
@@ -2418,10 +2416,8 @@ def test_task_chat_uses_general_asr_config_independent_from_joyai():
 async def test_task_asr_rpc_returns_transcript(monkeypatch):
     channel = FakeWebChannel()
 
-    async def fake_transcribe(params, *, environ):
+    async def fake_transcribe(params):
         assert params == {"audio_base64": "YXVkaW8=", "mime_type": "audio/webm"}
-        # 8ce9b60d 起远端配置路径会把 AgentServer 的 ASR 配置透传进来
-        assert set(environ) >= {"ASR_API_BASE", "ASR_API_KEY", "ASR_MODEL_NAME"}
         return "transcribed speech"
 
     monkeypatch.setattr(app_web_handlers, "transcribe_task_audio", fake_transcribe)
@@ -4726,18 +4722,18 @@ def test_web_retains_mainline_group_and_session_asset_forwarding(method):
     channel = FakeWebChannel()
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
     assert method not in channel.methods
-    assert method in app_web_handlers._FORWARD_REQ_METHODS
-    assert method in app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
 
 
-def test_web_exposes_graph_methods_and_rejects_legacy_symphony_methods():
+def test_web_leaves_graph_and_legacy_symphony_methods_to_agent_server():
     skill_graph_methods = {
         "skills.graph.build",
         "skills.graph.status",
         "skills.graph.get",
         "skills.graph.cancel",
     }
-    assert skill_graph_methods.issubset(app_web_handlers._FORWARD_REQ_METHODS)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
+    assert skill_graph_methods.isdisjoint(channel.methods)
 
     legacy_symphony_methods = {
         "symphony.build_score",
@@ -4749,7 +4745,7 @@ def test_web_exposes_graph_methods_and_rejects_legacy_symphony_methods():
         "symphony.evolution_record_outcome",
         "symphony.evolution_rebuild",
     }
-    assert legacy_symphony_methods.isdisjoint(app_web_handlers._FORWARD_REQ_METHODS)
+    assert legacy_symphony_methods.isdisjoint(channel.methods)
 
 
 def test_web_forwards_only_canonical_personal_context_rpc_methods():
@@ -4781,19 +4777,9 @@ def test_web_forwards_only_canonical_personal_context_rpc_methods():
         "personal_context.context.get_node",
         "personal_context.context.get_source",
     }
-    forwarded = {
-        method
-        for method in app_web_handlers._FORWARD_REQ_METHODS
-        if method.startswith("personal_context.")
-    }
-    no_local = {
-        method
-        for method in app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
-        if method.startswith("personal_context.")
-    }
-
-    assert forwarded == methods
-    assert no_local == methods
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
+    assert methods.isdisjoint(channel.methods)
     assert len(methods) == 26
 
 
@@ -5706,9 +5692,9 @@ async def test_pre_persist_large_media_splits_or_keeps_oversized_images(
 
 def _a4p_config_request(method, params, channel="web", session="session"):
     from e2a.agent_models import AgentRequest
-    from e2a.message import ReqMethod
+
     return AgentRequest(request_id="rpc", channel_id=channel, session_id=session,
-                        req_method=ReqMethod(method), params=params)
+                        req_method=method, params=params)
 
 
 @pytest.mark.asyncio

@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 from e2a.agent_models import AgentResponse
-from e2a.message import ReqMethod
+
 from agent_gateway.common.config_panel import tui_models_handlers
 from agent_gateway.channel_manager.tui import tui_connect as tui_connect_module
 from agent_gateway.channel_manager.tui.tui_connect import (
@@ -242,7 +242,7 @@ async def test_memory_list_forwards_to_agentserver_with_routing_user(monkeypatch
 
     assert len(calls) == 1
     call = calls[0]
-    assert call["req_method"] == ReqMethod.MEMORY_LIST
+    assert call["req_method"] == 'memory.list'
     assert call["user_id"] == "user-a"
     assert call["params"] == {"mode": "code"}
     assert call["label"] == "memory.list"
@@ -328,7 +328,7 @@ async def test_harmonyos_dev_init_cancel_waits_for_background_cleanup(monkeypatc
     await asyncio.wait_for(started.wait(), timeout=1)
     assert len(received_envs) == 1
     env, label = received_envs[0]
-    assert env.method == ReqMethod.HARMONYOS_DEV_INIT.value
+    assert env.method == 'harmonyos.dev_init'
     assert env.params == {"skipDevecocliUpdate": True}
     assert label == "tui harmonyos.dev_init"
     assert all(response["id"] != "req-init" for response in server.responses)
@@ -708,10 +708,6 @@ def test_build_cli_route_binding_creates_route_and_install_hook():
 
     assert binding.path == "/tui"
     assert binding.channel_id == "tui"
-    assert "chat.send" in binding.forward_methods
-    assert "history.get" in binding.forward_methods
-    assert "team.mq.publish" in binding.forward_methods
-    assert "team.mq.publish" in binding.forward_no_local_handler_methods
     assert binding.install is not None
 
     binding.install(server)

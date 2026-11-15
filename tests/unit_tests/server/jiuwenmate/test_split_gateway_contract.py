@@ -3,11 +3,11 @@
 from datetime import datetime, timezone
 
 import pytest
-from e2a.message import ReqMethod as WireMethod
-from e2a.models import E2AEnvelope
 
-from jiuwenswarm.common.schema.message import ReqMethod
+
+
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.server.jiuwenmate.dingtalk_inbound import DingTalkInboundEvent as HostDingTalkEvent
 from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import FeishuInboundEvent as HostFeishuEvent
 
@@ -36,5 +36,5 @@ def test_gateway_group_event_and_receipt_decode_on_host(channel):
     assert parse(inbound.params["event"]).to_payload() == source.to_payload()
     receipt = request("jiuwenmate.delivery.ack", {"delivery_id": "delivery", "stage": "send",
                                                  "outcome": "delivered", "external_message_id": "sent"})
-    assert receipt.req_method is ReqMethod.JIUWENMATE_DELIVERY_ACK
+    assert receipt.req_method is 'jiuwenmate.delivery.ack'
     assert receipt.params["delivery_id"] == "delivery"

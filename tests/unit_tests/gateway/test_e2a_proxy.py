@@ -14,7 +14,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from e2a.message import ReqMethod
+
 from agent_gateway import telemetry
 from agent_gateway.routing.agent_client import (
     DuplicateRequestIdError,
@@ -72,7 +72,7 @@ class FakeAgentClient:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", [ReqMethod.SESSION_LIST, ReqMethod.FILE_IMPORT_URL])
+@pytest.mark.parametrize("method", ['session.list', 'file.import_url'])
 async def test_proxy_preserves_authoritative_routing_metadata(method):
     from types import SimpleNamespace
     from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import identity_headers
@@ -105,7 +105,7 @@ async def test_metadata_proxy_preserves_web_application_for_runtime_replay(app_i
     await proxy_unary_request(
         channel=channel, agent_client=client, ws=SimpleNamespace(_jiuwen_app_id=app_id),
         req_id="metadata", params={"session_id": "session"}, session_id="session",
-        user_id="owner", req_method=ReqMethod.SESSION_GET_METADATA,
+        user_id="owner", req_method='session.get_metadata',
     )
     assert client.envelopes[0].channel_context["app_id"] == expected
     assert client.envelopes[0].user_id == "owner"
@@ -120,7 +120,7 @@ async def _invoke(channel, agent_client, **overrides):
         "params": {"limit": 5},
         "session_id": "current-session",
         "user_id": "user-42",
-        "req_method": ReqMethod.SESSION_LIST,
+        "req_method": 'session.list',
         "label": "session.list",
     }
     kwargs.update(overrides)
@@ -206,7 +206,7 @@ async def test_proxy_forwards_control_methods_after_failed_ack(monkeypatch) -> N
     await _invoke(
         channel,
         client,
-        req_method=ReqMethod.HEALTH_CHECK_GET_CONF,
+        req_method='health_check.get_conf',
         params={},
         label="health_check.get_conf",
     )
@@ -227,7 +227,7 @@ async def test_proxy_offline_session_delete_is_unavailable() -> None:
     await _invoke(
         channel,
         local_client,
-        req_method=ReqMethod.SESSION_DELETE,
+        req_method='session.delete',
         params={"session_id": "legacy"},
         session_id="legacy",
     )
@@ -243,7 +243,7 @@ async def test_proxy_offline_permissions_is_unavailable() -> None:
     local_client = WebSocketAgentServerClient()  # server_ready defaults to False
     channel = FakeChannel()
 
-    await _invoke(channel, local_client, req_method=ReqMethod.PERMISSIONS_TOOLS_GET)
+    await _invoke(channel, local_client, req_method='permissions.tools.get')
 
     assert channel.responses[-1]["ok"] is False
     assert channel.responses[-1]["code"] == SERVICE_UNAVAILABLE_CODE
@@ -309,7 +309,7 @@ async def test_fetch_agent_unary_retries_with_new_request_id_on_duplicate() -> N
 
     ok, payload = await fetch_agent_unary(
         agent_client=agent,
-        req_method=ReqMethod.PROJECT_SESSIONS_ARCHIVE,
+        req_method='project.sessions.archive',
         params={"project_id": "p1"},
         session_id=None,
         user_id="u1",
@@ -328,7 +328,7 @@ async def test_fetch_agent_unary_gives_up_after_single_retry() -> None:
 
     ok, payload = await fetch_agent_unary(
         agent_client=agent,
-        req_method=ReqMethod.PROJECT_SESSIONS_ARCHIVE,
+        req_method='project.sessions.archive',
         params={"project_id": "p1"},
         session_id=None,
         user_id="u1",
@@ -479,7 +479,7 @@ async def test_background_fetch_does_not_create_message_trace(proxy_trace_export
 
     ok, payload = await fetch_agent_unary(
         agent_client=agent,
-        req_method=ReqMethod.SESSION_LIST,
+        req_method='session.list',
         params={},
         session_id=None,
         user_id="user-42",
@@ -545,7 +545,7 @@ async def test_fetch_agent_unary_forwards_reported_http_status() -> None:
 
     ok, payload = await fetch_agent_unary(
         agent_client=_Client(),
-        req_method=ReqMethod.DIAGNOSIS_GET,
+        req_method='diagnosis.get',
         params={"session_id": "s1"},
         session_id="s1",
         user_id=None,

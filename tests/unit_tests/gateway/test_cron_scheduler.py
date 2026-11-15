@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from e2a.agent_models import AgentResponse, AgentResponseChunk
-from e2a.message import EventType, ReqMethod
+from e2a.message import EventType
 
 from agent_gateway.cron.models import CronJob, CronRunState
 from agent_gateway.cron.scheduler import (
@@ -582,7 +582,7 @@ async def test_lifecycle_cancel_does_not_persist_a_failure(tmp_path, targets):
     assert [item for item in payloads if item.get("event_type") == "chat.final"] == []
     assert [
         env for env in client.unary_requests
-        if env.method == ReqMethod.HISTORY_APPEND_RECORD.value
+        if env.method == 'history.append_record'
     ] == []
     assert [
         item for item in payloads
@@ -2920,7 +2920,7 @@ class TestSingleAgentCronStream:
         assert completed is False
         assert text == CRON_INTERRUPT_RESULT_TEXT
         assert len(agent_client.cancel_requests) == 1
-        assert agent_client.cancel_requests[0].method == ReqMethod.CHAT_CANCEL.value
+        assert agent_client.cancel_requests[0].method == 'chat.interrupt'
         assert agent_client.cancel_requests[0].session_id == state.exec_session_id
 
     @pytest.mark.asyncio

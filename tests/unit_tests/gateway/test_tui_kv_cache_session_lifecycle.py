@@ -5,8 +5,6 @@ from types import SimpleNamespace
 import pytest
 
 from agent_gateway.channel_manager.tui.tui_connect import (
-    CLI_FORWARD_NO_LOCAL_HANDLER_METHODS,
-    CLI_FORWARD_REQ_METHODS,
     CliHandlersBindParams,
     register_cli_handlers,
 )
@@ -138,8 +136,6 @@ def test_session_switch_is_forwarded_without_a_tui_local_handler() -> None:
         CliHandlersBindParams(channel=channel, agent_client=None, path="/tui")
     )
 
-    assert "session.switch" in CLI_FORWARD_REQ_METHODS
-    assert "session.switch" in CLI_FORWARD_NO_LOCAL_HANDLER_METHODS
     assert "session.switch" not in channel.local_handlers.get("/tui", {})
 
 

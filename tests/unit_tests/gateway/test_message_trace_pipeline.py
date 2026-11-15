@@ -10,7 +10,7 @@ import pytest
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from e2a.message import Message, ReqMethod
+from e2a.message import Message
 
 from agent_gateway import telemetry
 from agent_gateway.channel_manager.channel_manager import ChannelManager
@@ -31,8 +31,8 @@ def operation(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("channel, method", [
-    ("tui", ReqMethod.CHAT_SEND),
-    ("feishu", ReqMethod.HISTORY_GET),
+    ("tui", 'chat.send'),
+    ("feishu", 'history.get'),
 ])
 async def test_non_web_user_queue_starts_and_reuses_request_trace(monkeypatch, channel, method):
     exporter = InMemorySpanExporter()
@@ -49,14 +49,14 @@ async def test_non_web_user_queue_starts_and_reuses_request_trace(monkeypatch, c
         handler.publish_user_messages_nowait(msg)
         op = telemetry.get_message_trace(msg)
         assert op is not None and op.accepted and not op.finished
-        assert op.channel == channel and op.method == method.value
+        assert op.channel == channel and op.method == method
         assert op.connection_id == "connection"
         handler.publish_user_messages_nowait(msg)
         assert telemetry.get_message_trace(msg) is op
         assert await handler.consume_user_messages() is msg
         assert await handler.consume_user_messages() is msg
 
-        env = SimpleNamespace(request_id=msg.id, channel=channel, method=method.value)
+        env = SimpleNamespace(request_id=msg.id, channel=channel, method=method)
         with telemetry.bind_message_trace(msg):
             with telemetry.bind_agent_request_trace(env) as owner:
                 assert owner is op
@@ -79,9 +79,9 @@ async def test_non_web_user_queue_starts_and_reuses_request_trace(monkeypatch, c
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("enabled, kind, method", [
-    (True, "event", ReqMethod.CHAT_SEND),
+    (True, "event", 'chat.send'),
     (True, "req", None),
-    (False, "req", ReqMethod.CHAT_SEND),
+    (False, "req", 'chat.send'),
 ])
 async def test_non_web_queue_does_not_start_unrelated_or_disabled_trace(monkeypatch, enabled, kind, method):
     exporter = InMemorySpanExporter()
