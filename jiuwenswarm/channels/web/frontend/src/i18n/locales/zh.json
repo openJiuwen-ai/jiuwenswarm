@@ -606,7 +606,7 @@
       "topicModelProtocol": "话题推荐仅支持 OpenAI 兼容协议的模型。",
       "topicModelDelete": "将删除话题推荐模型配置并关闭话题推荐。",
       "preferences": "界面与连接",
-      "language": "Language",
+      "language": "显示语言",
       "languageDescription": "设置应用程序界面的界面显示语言。",
       "chinese": "中文（简体）",
       "english": "English",
@@ -885,7 +885,7 @@
       "rsi": "RSI 递归自我改进",
       "trajectoryUi": "轨迹诊断",
       "kvCacheAffinity": "算力亲和",
-      "teamOrganization": "Team Organization",
+      "teamOrganization": "团队组织",
       "teamScheduledDispatch": "调度模式",
       "skillPack": "技能包",
       "multiModelCollaboration": "多模型协同",
@@ -938,7 +938,7 @@
     },
     "fields": {
       "preferred_language": {
-        "title": "Language",
+        "title": "显示语言",
         "description": "设置应用程序界面的显示语言。"
       },
       "chrome_path": {
@@ -1178,7 +1178,7 @@
         "description": "在会话中显示「诊断与归因」视图，分析执行失败的原因并给出优化建议。开启后会自动记录轨迹数据；仅能诊断开启之后产生的记录。关闭后不再显示轨迹相关页面。"
       },
       "team_organization_ui_enabled": {
-        "title": "启用 Team Organization 界面",
+        "title": "启用团队组织界面",
         "description": "显示实验性的多 Team 视图和组织任务池。此开关不关闭后端组织能力。"
       },
       "comfyui_workflow_enabled": {
