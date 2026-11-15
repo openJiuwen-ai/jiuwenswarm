@@ -6111,6 +6111,7 @@
       "namePlaceholder": "例如：售后服务助手",
       "description": "能力介绍",
       "descriptionPlaceholder": "描述这位员工擅长什么、负责什么，以及期望的工作方式",
+      "descriptionTooLong": "能力介绍最多 {{limit}} 个字符，请缩减后再保存。",
       "role": "工作领域",
       "preview": "员工名片预览",
       "previewName": "新员工",
@@ -6153,7 +6154,9 @@
         "starterPrompts": "添加快捷问"
       },
       "starterPromptsLimit": "最多添加 {{count}} 条",
-      "starterPromptDuplicate": "与上面的问题重复，保存时只保留一条",
+      "starterPromptDuplicate": "与上面的问题重复，请修改或删除",
+      "starterPromptsDuplicateTitle": "推荐短句重复",
+      "starterPromptsDuplicateMessage": "推荐短句不能重复，请修改或删除重复项后再创建。",
       "empty": {
         "skills": "暂无技能",
         "connectors": "暂无连接器",
@@ -6516,6 +6519,11 @@
       }
     },
     "schedule": {
+      "save": "保存",
+      "saveAndEnable": "保存并启用",
+      "pausedEditHint": "当前任务已暂停，保存修改后仍保持暂停；选择“保存并启用”可恢复自动执行。",
+      "actionFailed": "定时任务操作失败",
+      "resumeExpired": "启用（请先修改执行时间）",
       "add": "添加",
       "createTitle": "新增定时任务",
       "editTitle": "编辑定时任务",
@@ -6599,6 +6607,7 @@
         "running": "运行中"
       },
       "error": {
+        "enableExpired": "任务已过期，请先调整执行时间后再启用。",
         "nameRequired": "请输入任务名称",
         "promptRequired": "请输入任务描述",
         "required": "请填写任务名称和描述",

@@ -5,7 +5,7 @@ import scheduleEmpty from '../../../assets/jiuwenmate/illustrations/schedule-emp
 import { ActionMenu } from '../components/ActionMenu';
 import { ScheduleDialog } from './ScheduleDialog';
 import { ScheduleHistory } from './ScheduleHistory';
-import { scheduleSummary } from './state';
+import { canEnableSchedule, scheduleSummary } from './state';
 import type { Schedule, ScheduleDraft, ScheduleRun } from './types';
 
 export function ScheduleSection({
@@ -82,6 +82,8 @@ export function ScheduleSection({
                   className="jiuwenmate-switch"
                   role="switch"
                   aria-checked={plan.enabled}
+                  disabled={!onSetEnabled || (!plan.enabled && !canEnableSchedule(plan))}
+                  title={!plan.enabled && !canEnableSchedule(plan) ? t('jiuwenmate.schedule.error.enableExpired') : undefined}
                   aria-label={plan.enabled ? t('jiuwenmate.schedule.pause') : t('jiuwenmate.schedule.resume')}
                   onClick={() => void onSetEnabled?.(plan.id, !plan.enabled)}
                 >
@@ -101,6 +103,10 @@ export function ScheduleSection({
           saving={saving}
           onClose={() => setEditing(undefined)}
           onSubmit={(_executor, draft) => (editing ? onUpdate?.(editing.id, draft) : onCreate?.(draft))}
+          onSubmitAndEnable={editing && onUpdate && onSetEnabled ? async (_executor, draft) => {
+            await onUpdate(editing.id, draft);
+            await onSetEnabled(editing.id, true);
+          } : undefined}
         />
       ) : null}
     </div>
