@@ -115,8 +115,10 @@ def _business_params(params: dict[str, Any]) -> dict[str, Any]:
 
 
 async def dispatch_a4p_request(request: AgentRequest) -> AgentResponse:
-    raw_params = request.params if isinstance(request.params, dict) else {}
-    params = _business_params(raw_params)
+    # 洗净后写回 request.params，避免 _dispatch_config 等仍读到企业租户字段。
+    if isinstance(request.params, dict):
+        request.params = _business_params(request.params)
+    params = request.params if isinstance(request.params, dict) else {}
     method = request.req_method
 
     if method in {ReqMethod.A4P_CONFIG_GET, ReqMethod.A4P_CONFIG_UPDATE}:

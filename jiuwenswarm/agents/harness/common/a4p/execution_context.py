@@ -84,16 +84,39 @@ class AuthorizationExecutionContextStore:
         return self._contexts.get(str(session_id or "").strip())
 
     def get_by_request_id(
-        self, request_id: str | None,
+        self,
+        request_id: str | None,
+        *,
+        session_id: str | None = None,
+        user_id: str | None = None,
     ) -> AuthorizationExecutionContext | None:
-        """Fallback lookup when session_id from the tool ctx does not match."""
+        """Fallback lookup when tool ctx session_id diverges from the host.
+
+        Scans a snapshot so concurrent activate/release cannot raise
+        ``dictionary changed size during iteration``. Optional ``session_id`` /
+        ``user_id`` narrow the hit; ambiguous request_id collisions fail closed.
+        """
         rid = str(request_id or "").strip()
         if not rid:
             return None
-        for context in self._contexts.values():
-            if context.request_id == rid:
-                return context
-        return None
+        expected_sid = str(session_id or "").strip()
+        expected_uid = str(user_id or "").strip()
+        matches: list[AuthorizationExecutionContext] = []
+        for context in tuple(self._contexts.values()):
+            if context.request_id != rid:
+                continue
+            if expected_sid and context.session_id != expected_sid:
+                continue
+            if (
+                expected_uid
+                and context.user_id
+                and context.user_id != expected_uid
+            ):
+                continue
+            matches.append(context)
+        if len(matches) != 1:
+            return None
+        return matches[0]
 
     def release(self, session_id: str | None, request_id: str | None) -> None:
         sid = str(session_id or "").strip()
@@ -131,10 +154,26 @@ AUTHORIZATION_EXECUTION_CONTEXTS = AuthorizationExecutionContextStore()
 
 
 def _agent_ref_parts(agent_ref: Any, mode: str) -> tuple[str, str]:
+    """Resolve agent_ref mode/id for an authorizer route.
+
+    An explicit empty ``mode``/``id`` (HTTP callers that omit routing dims) is
+    preserved so ``_route_matches`` can skip those dimensions. Missing refs
+    still fall back to ``mode`` / ``default`` for ordinary chat requests.
+    """
     if isinstance(agent_ref, dict):
+        if "mode" in agent_ref or "id" in agent_ref:
+            return (
+                str(agent_ref.get("mode") or "").strip(),
+                str(agent_ref.get("id") or "").strip(),
+            )
         return (
-            str(agent_ref.get("mode") or mode or "agent").strip() or "agent",
-            str(agent_ref.get("id") or "default").strip() or "default",
+            str(mode or "agent").strip() or "agent",
+            "default",
+        )
+    if agent_ref is None:
+        return (
+            str(mode or "agent").strip() or "agent",
+            "default",
         )
     return (
         str(getattr(agent_ref, "mode", None) or mode or "agent").strip() or "agent",
@@ -171,9 +210,9 @@ def _merge_cron_metadata(
         rid = str(request_id or merged.get("request_id") or "").strip()
         # cron-{job_id}:{unix_ts} / cron-session-create-{job_id}:{unix_ts}
         if rid.startswith("cron-"):
-            body = rid[len("cron-") :]
+            body = rid[len("cron-"):]
             if body.startswith("session-create-"):
-                body = body[len("session-create-") :]
+                body = body[len("session-create-"):]
             job_part, sep, ts = body.rpartition(":")
             if sep and ts.isdigit() and job_part.strip():
                 cron_id = job_part.strip()
@@ -192,7 +231,12 @@ def build_authorization_execution_context(
     metadata = dict(getattr(request, "metadata", None) or {})
     session_id = str(getattr(request, "session_id", None) or "").strip()
     channel_id = str(getattr(request, "channel_id", None) or "").strip()
-    app_id = str(metadata.get("app_id") or "default").strip() or "default"
+    # Preserve explicit empty app_id so HTTP can omit the dimension; absent key
+    # still defaults for chat / WS routes.
+    if "app_id" in metadata:
+        app_id = str(metadata.get("app_id") or "").strip()
+    else:
+        app_id = "default"
     ref_mode, ref_id = _agent_ref_parts(
         getattr(request, "agent_ref", None) or metadata.get("agent_ref"),
         mode,

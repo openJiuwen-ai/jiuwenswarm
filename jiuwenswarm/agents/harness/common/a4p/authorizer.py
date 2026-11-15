@@ -100,9 +100,34 @@ class WebAuthorizerBroker:
         pending: _PendingAuthorization,
         route: AuthorizerRoute,
     ) -> bool:
-        # requestId 已唯一锁定待授权项；企业版 HTTP 无 WS routing key 时
-        # app_id/agent_ref 可能与发单时不一致，只按 session 防跨会话点授权。
-        return pending.request.route.session_id == route.session_id
+        """Match pending auth to an inbound route.
+
+        Full ``logical_key`` match always wins. Otherwise session must match;
+        ``app_id`` / ``agent_ref_*`` bind when the inbound field is non-empty and
+        are skipped when missing so pure-HTTP callers can omit dimensions they
+        do not know — never a blanket same-session allow.
+        """
+        from agent_gateway.common.mode_matrix import deprecate_mode
+
+        pending_route = pending.request.route
+        if pending_route.logical_key == route.logical_key:
+            return True
+        if pending_route.session_id != route.session_id:
+            return False
+
+        inbound_app = str(route.app_id or "").strip()
+        if inbound_app and inbound_app != pending_route.app_id:
+            return False
+        inbound_ref_id = str(route.agent_ref_id or "").strip()
+        if inbound_ref_id and inbound_ref_id != pending_route.agent_ref_id:
+            return False
+        inbound_mode = str(route.agent_ref_mode or "").strip()
+        if inbound_mode and (
+            deprecate_mode(inbound_mode)
+            != deprecate_mode(pending_route.agent_ref_mode)
+        ):
+            return False
+        return True
 
 
     @staticmethod

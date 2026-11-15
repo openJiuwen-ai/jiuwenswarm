@@ -2849,6 +2849,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             a4p_config_base,
             resolved_channel,
             runtime_config.session_id,
+            request_id=runtime_config.request_id,
         )
         if self._runtime_prompt_rail:
             from jiuwenswarm.agents.harness.common.a4p.runtime import (

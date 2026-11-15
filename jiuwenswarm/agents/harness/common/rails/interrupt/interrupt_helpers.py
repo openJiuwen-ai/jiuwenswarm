@@ -362,9 +362,9 @@ def build_permission_rail(
             rid = str(request_id or "").strip()
             if not rid.startswith("cron-"):
                 return ""
-            body = rid[len("cron-") :]
+            body = rid[len("cron-"):]
             if body.startswith("session-create-"):
-                body = body[len("session-create-") :]
+                body = body[len("session-create-"):]
             job_part, sep, ts = body.rpartition(":")
             if sep and ts.isdigit() and job_part.strip():
                 return job_part.strip()
@@ -412,9 +412,18 @@ def build_permission_rail(
             if execution_context is None:
                 # Tool ctx session_id can diverge from the host request session;
                 # fall back to the host request id stamped on this asyncio task.
+                # Do not pass the divergent tool session_id as a filter — that
+                # would reject the only correct host context. Colliding
+                # request_ids across sessions fail closed inside the lookup.
                 execution_context = AUTHORIZATION_EXECUTION_CONTEXTS.get_by_request_id(
                     TOOL_PERMISSION_REQUEST_ID.get()
                 )
+            # A4P gate / attempt / intent tokens are bound on the host session.
+            host_session_id = (
+                execution_context.session_id
+                if execution_context is not None
+                else _effective_session_id(session_id)
+            )
             channel = (
                 execution_context.channel_id
                 if execution_context is not None
@@ -434,7 +443,7 @@ def build_permission_rail(
                 )
 
             def _matching_a4p_attempt() -> Any | None:
-                attempt = AUTHORIZATION_EXECUTION_CONTEXTS.get_attempt(session_id)
+                attempt = AUTHORIZATION_EXECUTION_CONTEXTS.get_attempt(host_session_id)
                 if attempt is None or execution_context is None:
                     return None
                 if attempt.request_id != execution_context.request_id or attempt.status == "not_requested":
@@ -503,21 +512,28 @@ def build_permission_rail(
             if is_cron or is_interactive_web:
                 try:
                     from jiuwenswarm.agents.harness.common.a4p.runtime import (
-                        get_a4p_config,
                         get_a4p_runtime,
                         is_a4p_preauthorization_active,
                         resolve_a4p_identity,
                     )
 
-                    a4p_cfg = installed_a4p_config[0] or get_a4p_config(
-                        session_id=session_id
+                    # Start from process get_config() (patchable); overlay rail
+                    # snapshot / session bind only when they actually carry a4p.
+                    process_cfg = get_config()
+                    process_cfg = (
+                        dict(process_cfg) if isinstance(process_cfg, dict) else {}
                     )
                     config = {
-                        **get_config(),
-                        "a4p": a4p_cfg,
-                        "permissions": _get_installed_permissions(session_id),
+                        **process_cfg,
+                        "permissions": _get_installed_permissions(host_session_id),
                     }
-                    if is_a4p_preauthorization_active(config):
+                    inline_a4p = installed_a4p_config[0]
+                    if isinstance(inline_a4p, dict) and inline_a4p:
+                        config["a4p"] = dict(inline_a4p)
+                    if is_a4p_preauthorization_active(
+                        config,
+                        session_id=host_session_id,
+                    ):
                         agent_name = (
                             execution_context.agent_id
                             if execution_context is not None
@@ -561,13 +577,13 @@ def build_permission_rail(
                                 "请求 metadata.cron.job_id 缺失，无法定位 job 授权"
                             )
 
-                        if not session_id:
+                        if not host_session_id:
                             logger.warning(
                                 "[InterruptHelpers] A4P intent token check skipped: session_id missing"
                             )
                             return "interrupt"
                         token = await runtime.find_valid_intent_token(
-                            session_id=session_id,
+                            session_id=host_session_id,
                             identity=identity,
                             action=tool_name,
                             params=tool_args,
@@ -576,7 +592,7 @@ def build_permission_rail(
                             logger.info(
                                 "[InterruptHelpers] A4P intent token approved tool=%s session=%s",
                                 tool_name,
-                                session_id,
+                                host_session_id,
                             )
                             return PermissionConfirmResponse(
                                 approved=True,

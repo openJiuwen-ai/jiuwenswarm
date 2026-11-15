@@ -245,10 +245,10 @@ async def request_a4p_intent_authorization(
 ) -> dict[str, Any]:
     """Request a user-authorized A4P intent token for future tool calls."""
     session_id = str(_session_id or "").strip()
-    # Enterprise: prefer session-bound a4p+permissions from config_base; process
-    # get_config() often still has a4p/permissions disabled.
+    # Prefer session-bound gate when present; else this module's get_config()
+    # (tests commonly monkeypatch it).
     if not is_a4p_preauthorization_active(
-        None if session_id else get_config(),
+        get_config(),
         session_id=session_id or None,
     ):
         return {

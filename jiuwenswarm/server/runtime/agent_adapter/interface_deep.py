@@ -8330,6 +8330,7 @@ class JiuWenSwarmDeepAdapter:
         config_base: dict[str, Any],
         channel: str,
         session_id: str | None,
+        request_id: str | None = None,
     ) -> None:
         """Expose A4P only when this session has an interactive Web authorizer."""
         from jiuwenswarm.agents.harness.common.a4p.runtime import (
@@ -8352,7 +8353,12 @@ class JiuWenSwarmDeepAdapter:
             if isinstance(config_base.get("permissions"), dict)
             else None
         )
-        bind_session_a4p_config(session_id, a4p_slice, permissions=perm_slice)
+        bind_session_a4p_config(
+            session_id,
+            a4p_slice,
+            permissions=perm_slice,
+            request_id=request_id,
+        )
         self._a4p_tools, self._a4p_tools_registered = self._sync_tool_group(
             current_tools=self._a4p_tools,
             registered=self._a4p_tools_registered,
@@ -15315,6 +15321,7 @@ class JiuWenSwarmDeepAdapter:
             a4p_config_base,
             resolved_channel,
             runtime_config.session_id,
+            request_id=runtime_config.request_id,
         )
 
         if self._runtime_prompt_rail:
@@ -19203,15 +19210,18 @@ class JiuWenSwarmDeepAdapter:
                 authorization_context.session_id,
                 authorization_context.request_id,
             )
-            from jiuwenswarm.agents.harness.common.a4p.runtime import (
-                unbind_session_a4p_config,
-            )
-
-            unbind_session_a4p_config(authorization_context.session_id)
             # Attach subscriptions never marked the session active; skip the
-            # unmark symmetrically so a concurrent stream's counter entry and
-            # rail state are not wiped.
+            # unmark / a4p unbind symmetrically so a concurrent stream's
+            # counter entry, rail state, and session a4p gate are not wiped.
             if not _is_attach_only_subscription(request.params):
+                from jiuwenswarm.agents.harness.common.a4p.runtime import (
+                    unbind_session_a4p_config,
+                )
+
+                unbind_session_a4p_config(
+                    authorization_context.session_id,
+                    authorization_context.request_id,
+                )
                 self._unmark_session_active(session_id)
 
         content = "".join(collected_content) if collected_content else ""
@@ -19878,11 +19888,15 @@ class JiuWenSwarmDeepAdapter:
                     authorization_context.session_id,
                     authorization_context.request_id,
                 )
-                from jiuwenswarm.agents.harness.common.a4p.runtime import (
-                    unbind_session_a4p_config,
-                )
+                if not _is_attach_only_subscription(request.params):
+                    from jiuwenswarm.agents.harness.common.a4p.runtime import (
+                        unbind_session_a4p_config,
+                    )
 
-                unbind_session_a4p_config(authorization_context.session_id)
+                    unbind_session_a4p_config(
+                        authorization_context.session_id,
+                        authorization_context.request_id,
+                    )
             return
 
         # Auto-Harness 模式处理
@@ -21340,13 +21354,16 @@ class JiuWenSwarmDeepAdapter:
                 # _abort_requested / _pause_events entries on long-lived adapters.
                 # Attach subscriptions never marked the session active; skipping
                 # symmetrically avoids popping another stream's counter entry and
-                # wiping its rail state.
-                from jiuwenswarm.agents.harness.common.a4p.runtime import (
-                    unbind_session_a4p_config,
-                )
-
-                unbind_session_a4p_config(authorization_context.session_id)
+                # wiping its rail state / session a4p gate.
                 if not attach_subscription:
+                    from jiuwenswarm.agents.harness.common.a4p.runtime import (
+                        unbind_session_a4p_config,
+                    )
+
+                    unbind_session_a4p_config(
+                        authorization_context.session_id,
+                        authorization_context.request_id,
+                    )
                     self._unmark_session_active(
                         session_id,
                         cleanup_rail=True,

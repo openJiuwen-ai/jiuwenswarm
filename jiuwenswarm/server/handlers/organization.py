@@ -540,3 +540,6 @@ async def handle_org_snapshot(ctx: RequestContext) -> None:
         )
     )
 
+
+# 兼容旧 import 路径：handle_a4p_request 已迁到 handlers.a4p
+from jiuwenswarm.server.handlers.a4p import handle_a4p_request  # noqa: F401

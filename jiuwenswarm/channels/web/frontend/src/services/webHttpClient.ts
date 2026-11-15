@@ -211,7 +211,7 @@ const ROUTES: Record<string, RouteRow> = {
   'im.hosting.login.start': { verb: 'POST', path: '/im/hosting/login/start', kind: 'unary' },
   'im.hosting.login.status': { verb: 'GET', path: '/im/hosting/login/status', kind: 'unary' },
   'a4p.config.get': { verb: 'GET', path: '/a4p/config', kind: 'unary' },
-  'a4p.config.update': { verb: 'PATCH', path: '/a4p/config', kind: 'unary' },
+  'a4p.config.update': { verb: 'PUT', path: '/a4p/config', kind: 'unary' },
   'a4p.authorization.pending': { verb: 'GET', path: '/a4p/authorization/pending', kind: 'unary' },
   'a4p.authorization.complete': {
     verb: 'POST',

@@ -240,7 +240,7 @@ const ENTERPRISE_ASSEMBLE = [
   ['skills.evolution.get', 'GET', '/api/v1/skills/evolution', { name: 'evo-1' }, 'unary'],
   ['skills.evolution.save', 'PUT', '/api/v1/skills/evolution', { name: 'evo-1', entries: [] }, 'unary'],
   ['a4p.config.get', 'GET', '/api/v1/a4p/config', { session_id: 'sid' }, 'unary'],
-  ['a4p.config.update', 'PATCH', '/api/v1/a4p/config', { session_id: 'sid', enabled: true }, 'unary'],
+  ['a4p.config.update', 'PUT', '/api/v1/a4p/config', { session_id: 'sid', enabled: true }, 'unary'],
   ['a4p.authorization.pending', 'GET', '/api/v1/a4p/authorization/pending', { session_id: 'sid' }, 'unary'],
   [
     'a4p.authorization.complete',
