@@ -3,7 +3,7 @@
 """Flash 安全域段正文 + 拆分/改写纯函数（自 flash_safety_rail 抽离）。
 
 持有安全域源段名、目标段名/段号、拆分锚点（CN/EN）与 ``_transform_safety``
-纯函数，供声明式注册表（registry）与 FlashSafetyRail 消费。
+纯函数，供声明式注册表（registry）与 FlashSafetyRail 消费使用。
 """
 
 from __future__ import annotations
