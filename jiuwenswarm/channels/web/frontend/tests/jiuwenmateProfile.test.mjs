@@ -2142,3 +2142,41 @@ test('a failed schedule save keeps its reason while unrelated fields are edited'
     assert.equal(dialog(), null, 'A successful retry closes the dialog and with it the hint');
   } finally { await view.close(); }
 });
+
+test('a live validation hint outranks the retained save failure reason', async () => {
+  const attempts = [];
+  const view = await mountDashboard({
+    onCreateSchedule: (...args) => {
+      attempts.push(args);
+      return attempts.length === 1 ? Promise.reject(new Error('任务未保存')) : Promise.resolve();
+    },
+  });
+  try {
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+    await view.click(view.find('.jiuwenmate-schedule-board .jiuwenmate-dark-button'));
+    await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-executor"]', 'agent-1');
+    await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-name"]', 'Drink water');
+    await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-prompt"]', 'Take a short break');
+    const alerts = () => view.find('[data-testid="jiuwenmate-schedule-dialog"]').querySelectorAll('[role="alert"]');
+    await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+    await act(async () => undefined);
+    assert.equal(alerts().length, 1);
+    assert.equal(alerts()[0].textContent, '任务未保存');
+    // A zero interval fails validation without any field-level red box, so the dialog-level hint
+    // is the only place its reason can appear.
+    const intervalTab = [...view.find('[data-testid="jiuwenmate-schedule-dialog"]').querySelectorAll('[role="tab"]')]
+      .find((tab) => tab.textContent === i18n.t('jiuwenmate.schedule.mode.interval'));
+    await view.click(intervalTab);
+    await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-interval"]', '0');
+    assert.equal(alerts().length, 1, 'The live reason replaces the stale one rather than stacking on it');
+    assert.equal(alerts()[0].textContent, i18n.t('jiuwenmate.schedule.error.intervalInvalid'));
+    // With valid input again there is no live reason, so the retained save reason resumes.
+    await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-interval"]', '2');
+    assert.equal(alerts()[0].textContent, '任务未保存');
+    assert.equal(attempts.length, 1, 'Editing fields must not resubmit');
+    await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+    await act(async () => undefined);
+    assert.equal(attempts.length, 2);
+    assert.equal(view.find('[data-testid="jiuwenmate-schedule-dialog"]'), null);
+  } finally { await view.close(); }
+});

@@ -306,7 +306,9 @@ export function ScheduleDialog({
               </span>
             ) : null}
           </div>
-          {submitError || validationMessage ? <p role="alert">{submitError || validationMessage}</p> : null}
+          {/* The live validation reason describes the current input, so it outranks the reason a
+              previous save left behind; that one returns as soon as the input validates again. */}
+          {validationMessage || submitError ? <p role="alert">{validationMessage || submitError}</p> : null}
         </div>
         <div className="jiuwenmate-dialog__footer">
           <button type="button" className="jiuwenmate-outline-button" onClick={onClose}>{t('jiuwenmate.schedule.cancel')}</button>
