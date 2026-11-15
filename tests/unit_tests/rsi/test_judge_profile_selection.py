@@ -76,9 +76,19 @@ async def test_selected_judger_evaluates_response_with_configured_threshold(tmp_
     )
     invoke.assert_awaited_once()
     assert result.method == "llm_as_judge"
+<<<<<<< RELEASE
     # The judge keeps the continuous score and derives the verdict from the
     # configured threshold.
     assert result.score == score
+||||||| BEFORE_PR_9610
+    # openjiuwen 0.1.18 exposes the thresholded verdict as ``score`` and
+    # preserves the continuous model score in optimization signals.
+    assert result.score == float(passed)
+=======
+    # Older SDKs expose the thresholded verdict; newer ones honor continuous mode.
+    continuous = getattr(evaluator_config, "score_mode", "binary") == "continuous"
+    assert result.score == (score if continuous else float(passed))
+>>>>>>> DEVELOP
     assert result.passed is passed
     assert result.metadata["optimization_signals"]["continuous_score"]["value"] == score
     assert result.metadata["pass_threshold"] == 0.8

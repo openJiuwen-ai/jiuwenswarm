@@ -21,6 +21,7 @@ from weakref import WeakValueDictionary
 
 from openjiuwen.core.common.logging import server_logger
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
+<<<<<<< RELEASE
 
 from jiuwenswarm.server.runtime.session.history_io import run_history_io
 from jiuwenswarm.server.runtime.session.workspace_files import SessionWorkspaceFiles
@@ -35,6 +36,27 @@ from jiuwenswarm.common.utils import (
     get_agent_sessions_dir,
     get_config_file,
     mask_sensitive,
+||||||| BEFORE_PR_9610
+
+from jiuwenswarm.server.runtime.session.history_io import run_history_io
+
+from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService, reset_harness_packages_state
+from jiuwenswarm.agents.harness.code.rails.heartbeat.runtime import HeartbeatRailRuntime
+from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+from jiuwenswarm.server.ws_send import send_wire_payload
+from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_acp_output_manager
+from jiuwenswarm.common.utils import (
+    get_agent_root_dir,
+    get_agent_sessions_dir,
+    get_config_file,
+    mask_sensitive,
+=======
+from agent_gateway.common.mode_matrix import (
+    deprecate_mode,
+    is_plan_mode,
+    is_single_agent_mode,
+    is_team_mode,
+>>>>>>> DEVELOP
 )
 from jiuwenswarm.common.session_message import (
     SESSION_MESSAGE_INTERNAL_KEY,
@@ -207,8 +229,60 @@ from jiuwenswarm.server.runtime.gateway_adapter import (
 from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import (
     reload_runtime_after_config_save,
 )
+<<<<<<< RELEASE
 from jiuwenswarm.extensions_v2.webui.adapter import WebUIDispatchAdapter
 from jiuwenswarm.extensions_v2.management.adapter import PackageManagementAdapter
+||||||| BEFORE_PR_9610
+=======
+from jiuwenswarm.server.runtime.session.history_io import run_history_io
+from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter
+from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
+from jiuwenswarm.server.utils.utils import is_team_params
+from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported for tests / handlers
+    _HISTORY_PAGE_SIZE,
+    _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES,
+    _HISTORY_WIRE_DEPTH_LIMIT,
+    _HISTORY_WIRE_LIST_LIMIT,
+    _HISTORY_WIRE_METADATA_STRING_LIMIT,
+    _HISTORY_WIRE_RECORD_MAX_BYTES,
+    _HISTORY_WIRE_STRING_LIMIT,
+    _SPLITTABLE_AGENT_FIELDS,
+    _TEAM_HISTORY_DEFAULT_LIMIT,
+    _TEAM_HISTORY_DEFAULT_MAX_BYTES,
+    _TEAM_HISTORY_FRAME_OVERHEAD_BYTES,
+    _TEAM_HISTORY_MAX_LIMIT,
+    _TEAM_HISTORY_MAX_MAX_BYTES,
+    _TEAM_HISTORY_MIN_MAX_BYTES,
+    _WORKFLOW_AGENT_DEFAULT_LIMIT,
+    _WORKFLOW_AGENT_FIELD_PART_BYTES,
+    _WORKFLOW_AGENT_MAX_LIMIT,
+    _WORKFLOW_LIST_DEFAULT_LIMIT,
+    _WORKFLOW_LIST_MAX_LIMIT,
+    _WORKFLOW_PHASE_DEFAULT_LIMIT,
+    _WORKFLOW_PHASE_MAX_LIMIT,
+    _build_agent_detail,
+    _build_phase_detail_paginated,
+    _build_workflow_detail_paginated,
+    _build_workflow_list_payload,
+    _coerce_int,
+    _collapse_oversized_history_record,
+    _compact_wire_metadata_value,
+    _find_agent,
+    _find_phase,
+    _json_wire_size,
+    _minimal_history_record_for_wire,
+    _sanitize_history_record_for_wire,
+    _sanitize_history_wire_value,
+    _select_history_record_page,
+    _split_oversized_agent_fields,
+    _truncate_string_by_bytes,
+    _workflow_list_summary_item,
+    _workflow_phase_summary,
+    _workflow_run_meta,
+    split_history_record_for_stream,
+)
+from jiuwenswarm.server.ws_send import send_wire_payload
+>>>>>>> DEVELOP
 
 logger = logging.getLogger(__name__)
 _MANUAL_COMPACT_PROCESSOR_TYPES = [
@@ -1205,8 +1279,13 @@ class AgentWebSocketServer:
             DesignerAdapter(),
             HarmonyOSAdapter(),
             ConfigAdapter(on_config_saved=self._reload_after_config_save),
+<<<<<<< RELEASE
             WebUIDispatchAdapter(),
             PackageManagementAdapter(),
+||||||| BEFORE_PR_9610
+=======
+            self._jiuwenmate_web,
+>>>>>>> DEVELOP
         ):
             self._adapter_registry.register(adapter)
         # AgentServer-side tokenizer cache/download service. The Gateway only
@@ -2094,8 +2173,13 @@ class AgentWebSocketServer:
                     DesignerAdapter(),
                     HarmonyOSAdapter(),
                     ConfigAdapter(on_config_saved=self._reload_after_config_save),
+<<<<<<< RELEASE
                     WebUIDispatchAdapter(),
                     PackageManagementAdapter(),
+||||||| BEFORE_PR_9610
+=======
+                    self._jiuwenmate_web,
+>>>>>>> DEVELOP
                 ):
                     self._adapter_registry.register(adapter)
 
@@ -2156,12 +2240,17 @@ class AgentWebSocketServer:
         """Build every AgentServer Runtime through one product composition root."""
         from jiuwenswarm.agents.harness.team import get_team_manager
         from jiuwenswarm.runtime.session_lifecycle import RuntimeParticipantRegistry
+<<<<<<< RELEASE
         from jiuwenswarm.server.runtime.session.attach_notifications import (
             ExtensionSessionAttachParticipant,
         )
         from jiuwenswarm.server.runtime.session.end_notifications import (
             ExtensionSessionEndParticipant,
         )
+||||||| BEFORE_PR_9610
+=======
+        from jiuwenswarm.runtime.team_controller import process_team_controller
+>>>>>>> DEVELOP
         from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_owner import (
             get_kv_cache_application_owner,
         )
@@ -2516,10 +2605,16 @@ class AgentWebSocketServer:
             unguarded_methods = {
                 "session.list", "project.list", "project.info", "project.get_sessions",
                 "project.get_cron_sessions", "project.pinned_sessions", "chat.cancel",
+<<<<<<< RELEASE
                 "session.stop", "voice.task.checkpoint.ack",
                 # A released view only cleans up its existing association;
                 # its exact identity is checked even if the Session archived.
                 "session.detach",
+||||||| BEFORE_PR_9610
+                "session.stop", "voice.task.checkpoint.ack",
+=======
+                "session.stop", "voice.task.checkpoint.ack", "recommendation.job",
+>>>>>>> DEVELOP
             }
             # 仅广场/目录只读 RPC 跳过会话存活校验（#5886）。不要复用
             # _is_stateless_method_request：其前缀含 skills.toggle / rebuild 等写操作。

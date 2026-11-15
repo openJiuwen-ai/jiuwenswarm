@@ -179,4 +179,12 @@
   flex: 1;
   overflow-y: auto;
   padding: 0.5rem;
+<<<<<<< RELEASE
 }
+||||||| BEFORE_PR_9610
+}
+=======
+}
+.organization-tree { container: organization-tree / inline-size; }
+
+>>>>>>> DEVELOP

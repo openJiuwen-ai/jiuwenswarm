@@ -23,10 +23,23 @@ def restore_process_state():
     without restoration, later tests in the same process would inherit them.
     """
     policy = asyncio.get_event_loop_policy()
+<<<<<<< RELEASE
     try:
         previous_loop = policy.get_event_loop()
     except RuntimeError:
         previous_loop = None
+||||||| BEFORE_PR_9610
+    previous_loop = policy.get_event_loop()
+=======
+    try:
+        previous_loop = policy.get_event_loop()
+    except RuntimeError:
+        # A previous asyncio.run() (any earlier test in this xdist worker)
+        # leaves the thread with no current loop; capturing None here keeps
+        # teardown's set_event_loop(previous_loop) restoring that exact state
+        # instead of blowing up the same way get_event_loop() just did.
+        previous_loop = None
+>>>>>>> DEVELOP
     previous_handlers = {
         sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)
     }

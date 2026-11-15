@@ -1,4 +1,9 @@
+<<<<<<< RELEASE
 import { gatewayFetch } from '../services/gatewayFetch';
+||||||| BEFORE_PR_9610
+=======
+import logoUrl from '/logo.svg';
+>>>>>>> DEVELOP
 import { forwardRef, useEffect, useMemo, useRef, useState } from 'react';
 import { applyStyle } from 'html-to-image/es/apply-style';
 import { cloneNode as cloneHtmlNode } from 'html-to-image/es/clone-node';

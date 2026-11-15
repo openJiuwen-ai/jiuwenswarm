@@ -6,7 +6,13 @@ from dataclasses import dataclass
 import re
 from typing import Literal
 
+<<<<<<< RELEASE
 PublishAssetKind = Literal["skill", "agent_template", "agent_group", "plugin", "mcp", "system_plugin"]
+||||||| BEFORE_PR_9610
+PublishAssetKind = Literal["skill", "agent_template", "agent_group", "plugin", "mcp"]
+=======
+PublishAssetKind = Literal["skill", "skillpack", "agent_template", "agent_group", "plugin", "mcp"]
+>>>>>>> DEVELOP
 
 
 class PublishProtocolError(ValueError):

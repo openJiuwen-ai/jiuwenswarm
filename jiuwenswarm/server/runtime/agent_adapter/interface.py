@@ -28,6 +28,7 @@ from jiuwenswarm.common.session_message import (
     SESSION_MESSAGE_INTERNAL_KEY,
     with_cross_session_history_metadata,
 )
+<<<<<<< RELEASE
 
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
     SKILLS_REBUILD_SILENT,
@@ -69,6 +70,50 @@ from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.runtime_workspace import RuntimeWorkspacePaths
 from jiuwenswarm.common.e2a.constants import (
+||||||| BEFORE_PR_9610
+
+from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
+    SKILLS_REBUILD_SILENT,
+)
+from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import (
+    AgentAdapter,
+    create_adapter,
+    resolve_sdk_choice,
+)
+from jiuwenswarm.agents.harness.common.memory.config import get_memory_mode, is_auto_memory_enabled, is_memory_enabled
+from jiuwenswarm.server.runtime.session.history_io import run_history_io as _run_history_io
+from jiuwenswarm.server.runtime.session.session_history import (
+    append_compact_history_records,
+    append_history_record,
+    collapse_file_content_blocks,
+    resolve_final_record_timestamp,
+)
+from jiuwenswarm.server.runtime.agent_adapter.team_member_stream_history import (
+    MEMBER_SEGMENT_BOUNDARY_EVENTS,
+    TeamMemberStreamHistory,
+    team_member_stream_key,
+)
+from jiuwenswarm.server.runtime.agent_adapter.user_turn import TEAM_USER_TURN_KEY, UserTurn
+from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
+    STATUSLINE_SETUP_SYSTEM_PROMPT,
+    build_statusline_setup_dispatch,
+)
+from jiuwenswarm.server.runtime.session.session_manager import SessionManager
+from jiuwenswarm.runtime.session.model import (
+    TEAM_ATTACH_ONLY_PARAM,
+    TEAM_EXECUTION_CONTEXT_METADATA_KEY,
+)
+from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager, SkillRpcError
+from jiuwenswarm.server.runtime.session_assets import get_session_asset_manager
+from jiuwenswarm.server.runtime.skill.archive_store import ARCHIVE_DIRNAME
+from jiuwenswarm.server.utils.utils import is_team_params
+from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.e2a.constants import (
+=======
+from agent_gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
+from agent_gateway.extensions.registry import ExtensionRegistry
+from e2a.constants import (
+>>>>>>> DEVELOP
     E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
 )
@@ -3247,7 +3292,16 @@ class JiuWenSwarm:
         )
 
         try:
+<<<<<<< RELEASE
             inputs, memory_mode, user_turn = await self._build_inputs_async(request)
+||||||| BEFORE_PR_9610
+            inputs, memory_mode, user_turn = self._build_inputs(request)
+=======
+            inputs, memory_mode, user_turn = self._build_inputs(request)
+        except asyncio.CancelledError:
+            _schedule_feedback_once("cancelled")
+            raise
+>>>>>>> DEVELOP
         except _TeamPlanApprovalPayloadError as exc:
             return AgentResponse(
                 request_id=request.request_id,
@@ -3864,7 +3918,16 @@ class JiuWenSwarm:
         cid = request.channel_id
 
         try:
+<<<<<<< RELEASE
             inputs, memory_mode, user_turn = await self._build_inputs_async(request)
+||||||| BEFORE_PR_9610
+            inputs, memory_mode, user_turn = self._build_inputs(request)
+=======
+            inputs, memory_mode, user_turn = self._build_inputs(request)
+        except asyncio.CancelledError:
+            _schedule_feedback_once("cancelled")
+            raise
+>>>>>>> DEVELOP
         except _TeamPlanApprovalPayloadError as exc:
             yield AgentResponseChunk(
                 request_id=rid,
@@ -5654,11 +5717,19 @@ class JiuWenSwarm:
         checker = getattr(self._adapter, "has_active_goal", None)
         return bool(callable(checker) and checker(session_id))
 
+<<<<<<< RELEASE
     def get_session_workspace_paths(self, session_id: str) -> RuntimeWorkspacePaths | None:
         """Inspect an already-bound session without initializing an adapter."""
         getter = getattr(self._adapter, "get_session_workspace_paths", None)
         return getter(session_id) if callable(getter) else None
 
+||||||| BEFORE_PR_9610
+=======
+    async def pending_interactions(self, session_id: str) -> list[dict[str, Any]]:
+        """What this Session's paused turn still asks, as the events that asked it."""
+        return await self._adapter.pending_interactions(session_id) if self._adapter is not None else []
+
+>>>>>>> DEVELOP
     def has_auto_permission_session(self, session_id: str | None) -> bool:
         adapter = self._adapter
         checker = getattr(adapter, "has_auto_permission_session", None)

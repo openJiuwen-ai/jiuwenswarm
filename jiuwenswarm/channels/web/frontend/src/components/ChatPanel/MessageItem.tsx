@@ -1148,7 +1148,13 @@ function FileDownloadList({
     let cancelled = false;
     files.forEach((file, index) => {
       if (!file.download_url) return;
+<<<<<<< RELEASE
       gatewayFetch(file.download_url, { method: 'HEAD' })
+||||||| BEFORE_PR_9610
+      fetch(file.download_url, { method: 'HEAD' })
+=======
+      fileDownloadHead(file.download_url)
+>>>>>>> DEVELOP
         .then((res) => {
           if (!cancelled && !res.ok) {
             setExpiredSet((prev) => new Set(prev).add(index));
@@ -1177,11 +1183,19 @@ function FileDownloadList({
 
   const handleDownload = async (file: FileDownloadItem, index: number) => {
     if (expiredSet.has(index) || !file.download_url) return;
+<<<<<<< RELEASE
     if (needsGatewayResource(file.download_url)) {
       try { await downloadGatewayResource(file.download_url, file.name || 'download'); }
       catch { window.alert(t('artifacts.downloadFailed', { name: file.name })); }
       return;
     }
+||||||| BEFORE_PR_9610
+=======
+    if (isEnterprise() && !(await prepareFileDownload(file.download_url))) {
+      window.alert(t('artifacts.downloadFailed', { name: file.name }));
+      return;
+    }
+>>>>>>> DEVELOP
 
     const pywebviewApi = (window as Window & { pywebview?: { api?: { download_file?: (url: string, filename: string) => DesktopSaveApiResult } } }).pywebview?.api;
     if (pywebviewApi?.download_file) {

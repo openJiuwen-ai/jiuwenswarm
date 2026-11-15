@@ -297,7 +297,13 @@ class AssetPublishAPI:
             raise PublishAPIError("INVALID_PARAMETERS")
         if method == "local_status":
             kind, local_id = params.get("kind"), _safe_id(params.get("local_id"))
+<<<<<<< RELEASE
             if kind not in {"skill", "agent_template", "agent_group", "plugin", "mcp", "system_plugin"}:
+||||||| BEFORE_PR_9610
+            if kind not in {"skill", "agent_template", "agent_group", "plugin", "mcp"}:
+=======
+            if kind not in {"skill", "skillpack", "agent_template", "agent_group", "plugin", "mcp"}:
+>>>>>>> DEVELOP
                 raise PublishAPIError("INVALID_KIND")
             # Workspace access remains enforced by the Web/Gateway route and local
             # resolver. This read-only summary never grants Hub account access.
@@ -314,7 +320,13 @@ class AssetPublishAPI:
         try:
             if method in {"describe", "prepare", "records"}:
                 kind, local_id = params.get("kind"), _safe_id(params.get("local_id"))
+<<<<<<< RELEASE
                 if kind not in {"skill", "agent_template", "agent_group", "plugin", "mcp", "system_plugin"}:
+||||||| BEFORE_PR_9610
+                if kind not in {"skill", "agent_template", "agent_group", "plugin", "mcp"}:
+=======
+                if kind not in {"skill", "skillpack", "agent_template", "agent_group", "plugin", "mcp"}:
+>>>>>>> DEVELOP
                     raise PublishAPIError("INVALID_KIND")
                 if method == "records":
                     return {

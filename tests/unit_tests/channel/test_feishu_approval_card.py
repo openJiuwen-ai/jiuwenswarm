@@ -20,8 +20,20 @@ from unittest.mock import AsyncMock
 
 import pytest
 from openjiuwen.harness.rails.interrupt.confirm_rail import ConfirmPayload
+<<<<<<< RELEASE
 from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
 from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import (
+||||||| BEFORE_PR_9610
+from openjiuwen_protocol.message import EventType, Message
+
+from gateway.channel_manager.base import RobotMessageRouter
+from gateway.channel_manager.im_platforms.feishu.feishu_connect import (
+=======
+from e2a.message import EventType, Message
+
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import (
+>>>>>>> DEVELOP
     FeishuChannel,
     FeishuConfig,
     _ApprovalCardContext,

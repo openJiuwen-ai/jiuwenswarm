@@ -2856,7 +2856,13 @@ async def test_config_set_appends_replaced_path_when_switching_to_builtin(monkey
         lambda cli_agent, cli_path="": pytest.fail("built-in mode must not validate cli_path"),
     )
     monkeypatch.setattr(
+<<<<<<< RELEASE
         "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+||||||| BEFORE_PR_9610
+        "gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+=======
+        "agent_gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+>>>>>>> DEVELOP
         lambda: None,
     )
     monkeypatch.setattr(
@@ -2928,7 +2934,13 @@ async def test_config_set_appends_replaced_cli_path_to_history(monkeypatch):
         },
     )
     monkeypatch.setattr(
+<<<<<<< RELEASE
         "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+||||||| BEFORE_PR_9610
+        "gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+=======
+        "agent_gateway.channel_manager.web.app_web_handlers._ensure_codex_dependency_available_or_start_install",
+>>>>>>> DEVELOP
         lambda: None,
     )
     monkeypatch.setattr(

@@ -271,7 +271,13 @@ function translationAt(locale, key) {
   return key.split('.').reduce((value, part) => value?.[part], locale);
 }
 
+<<<<<<< RELEASE
 test('registry definition preserves the module order and fails invalid registrations', () => {
+||||||| BEFORE_PR_9610
+test('registry definition preserves the nine-module order and fails invalid registrations', () => {
+=======
+test('registry definition preserves module order and fails invalid registrations', () => {
+>>>>>>> DEVELOP
   const definition = source('src/features/settings/registry/openSourceDefinition.ts');
   assert.match(
     definition,

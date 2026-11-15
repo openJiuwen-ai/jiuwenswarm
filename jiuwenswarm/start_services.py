@@ -618,17 +618,35 @@ def _start_process(
 
 
 def _terminate_processes(processes: dict[str, subprocess.Popen[bytes]]) -> None:
+<<<<<<< RELEASE
     """Terminate all running processes gracefully."""
     process_trees: dict[str, list[Any] | None] = {}
+||||||| BEFORE_PR_9610
+    """Terminate all running processes gracefully."""
+=======
+    """Stop owned Front/service trees without killing their resident Workers."""
+    errors = []
+>>>>>>> DEVELOP
     for name, proc in processes.items():
         if proc.poll() is None:
             logging.info(f"[start_services] terminating {name} (pid={proc.pid})")
+<<<<<<< RELEASE
             targets = _capture_process_tree(proc)
             process_trees[name] = targets
             if targets is None:
                 proc.terminate()
             else:
                 _signal_process_tree(targets)
+||||||| BEFORE_PR_9610
+            proc.terminate()
+=======
+            try:
+                terminate_service_tree(proc.pid, timeout=8.0)
+            except (OSError, RuntimeError) as exc:
+                errors.append(exc)
+    if errors:
+        raise RuntimeError("Service tree cleanup incomplete") from errors[0]
+>>>>>>> DEVELOP
 
     deadline = time.time() + 8
     while time.time() < deadline:
@@ -636,6 +654,7 @@ def _terminate_processes(processes: dict[str, subprocess.Popen[bytes]]) -> None:
             return
         time.sleep(0.2)
 
+<<<<<<< RELEASE
     for name, proc in processes.items():
         if proc.poll() is None:
             logging.info(f"[start_services] killing {name} (pid={proc.pid})")
@@ -677,6 +696,35 @@ def _terminate_process_tree(process: subprocess.Popen[bytes], *, force: bool = F
         return False
     _signal_process_tree(targets, force=force)
     return True
+||||||| BEFORE_PR_9610
+    for name, proc in processes.items():
+        if proc.poll() is None:
+            logging.info(f"[start_services] killing {name} (pid={proc.pid})")
+            proc.kill()
+=======
+def _shutdown_services(processes: dict[str, subprocess.Popen[bytes]],
+                       commands: list[tuple[str, list[str], Path]], workspace: Path) -> bool:
+    from jiuwenswarm.server.supervisor.shutdown import shutdown_application_worker
+
+    try:
+        _terminate_processes(processes)
+    except (OSError, RuntimeError) as exc:
+        logging.error("[start_services] Cannot retire Worker while Front cleanup is incomplete: %s", exc)
+        return False
+    if any(name == "app" for name, _, _ in commands):
+        return shutdown_application_worker(workspace=workspace)
+    return True
+
+
+def _wait_for_process_exit(processes: dict[str, subprocess.Popen[bytes]]) -> int:
+    while True:
+        for name, proc in processes.items():
+            code = proc.poll()
+            if code is not None:
+                logging.info(f"[start_services] {name} exited with code {code}")
+                return code
+        time.sleep(0.5)
+>>>>>>> DEVELOP
 
 
 def _resolve_runtime_ports() -> dict[str, int]:

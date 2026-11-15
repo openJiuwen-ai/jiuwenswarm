@@ -27,7 +27,15 @@ from jiuwenswarm.common.mode_matrix import (
     normalize_work_mode,
     resolve_new_canonical_mode,
 )
+<<<<<<< RELEASE
 from jiuwenswarm.common.runtime_workspace import RuntimeWorkspacePaths
+||||||| BEFORE_PR_9610
+=======
+
+from e2a.acp.protocol import build_acp_initialize_result
+from jiuwenswarm.common.config import get_available_models, get_config
+from jiuwenswarm.common.version import get_runtime_version
+>>>>>>> DEVELOP
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
     is_auto_permission_enabled,
     resolve_declared_auto_workspace,
@@ -1456,6 +1464,7 @@ class AgentManager:
                 )
         return None
 
+<<<<<<< RELEASE
     def get_session_workspace_paths(self, channel_id: str, session_id: str) -> RuntimeWorkspacePaths | None:
         """Inspect cached session paths without borrowing or allocating an Agent."""
         sid = str(session_id or "").strip()
@@ -1470,6 +1479,15 @@ class AgentManager:
                     return paths
         return None
 
+||||||| BEFORE_PR_9610
+=======
+    def borrow_agent_nowait(self, agent: "JiuWenSwarm") -> "JiuWenSwarm | None":
+        """Borrow ``agent`` while it is still cached; None once it was retired or recreated."""
+        if any(agent is cached for channel_agents in self.agents.values() for cached in channel_agents.values()):
+            return self._borrow_agent(agent)
+        return None
+
+>>>>>>> DEVELOP
     def get_auto_permission_agent_for_session_nowait(
         self,
         channel_id: str,

@@ -56,6 +56,7 @@ class HistorySnapshotChanged(RuntimeError):
     """The history file was replaced or truncated after the snapshot began."""
 
 
+<<<<<<< RELEASE
 @dataclass(frozen=True)
 class PreparedHistoryRecord:
     """A canonical record and host-only facts for its metadata update."""
@@ -73,6 +74,254 @@ class HistoryAppendOutcomeUnknown(OSError):
     """A failed write could not be rolled back to its original length."""
 
 
+||||||| BEFORE_PR_9610
+=======
+@dataclass(frozen=True, slots=True)
+class SessionCompletionBoundary:
+    """Exact durable history row that closes a completed session prefix."""
+
+    session_id: str
+    event_id: str
+    request_id: str
+    ordinal: int
+    completed_at: float
+    status: str
+
+    def __post_init__(self) -> None:
+        _rejected = (
+            not self.session_id
+            or not self.event_id
+            or not self.request_id
+            or type(self.ordinal) is not int
+            or self.ordinal < 0
+            or type(self.completed_at) not in (int, float)
+            or not math.isfinite(float(self.completed_at))
+            or self.completed_at < 0
+            or self.status not in SESSION_REQUEST_TERMINAL_STATUSES
+        )
+        if (
+            _rejected
+        ):
+            raise ValueError("invalid session completion boundary")
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "event_id": self.event_id,
+            "request_id": self.request_id,
+            "ordinal": self.ordinal,
+            "completed_at": self.completed_at,
+            "status": self.status,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> SessionCompletionBoundary:
+        if not isinstance(payload, dict) or set(payload) != {
+            "session_id",
+            "event_id",
+            "request_id",
+            "ordinal",
+            "completed_at",
+            "status",
+        }:
+            raise ValueError("invalid session completion boundary payload")
+        return cls(**payload)
+
+
+@dataclass(frozen=True, slots=True)
+class CompletedSessionPrefix:
+    """Contiguous request-complete user history for one session revision."""
+
+    boundary: SessionCompletionBoundary
+    completed_request_ids: tuple[str, ...]
+    completed_user_ordinals: tuple[int, ...]
+
+
+def is_agent_initiated_record(record: dict[str, Any]) -> bool:
+    """The row belongs to a turn another Session's Agent or a Heartbeat started.
+
+    Such a turn is stored with a ``user`` row, but the person did not type it.
+    """
+
+    metadata = record.get("metadata")
+    automation = metadata.get("automation") if isinstance(metadata, dict) else None
+    return record.get("message_origin") == SESSION_MESSAGE_ORIGIN or (
+        isinstance(automation, dict) and automation.get("kind") == "heartbeat"
+    )
+
+
+def _is_terminal_completion_row(
+    *,
+    request_id: str,
+    completion_ordinal: Any,
+    last_ordinal: Any,
+    completion: dict[str, Any],
+    event_id: str,
+    status: str,
+    completed_at: Any,
+) -> bool:
+    """The row closes its request only when it is the group's last, fully shaped one."""
+
+    return (
+        completion_ordinal == last_ordinal
+        and completion.get("role") == "assistant"
+        and completion.get("feedback_only") is True
+        and event_id == f"{request_id}:request_completed"
+        and status in SESSION_REQUEST_TERMINAL_STATUSES
+        and type(completed_at) in (int, float)
+        and math.isfinite(float(completed_at))
+        and completed_at >= 0
+    )
+
+
+def project_completed_session_prefix(
+    session_id: str,
+    records: list[dict[str, Any]],
+    *,
+    allow_gaps: bool = False,
+) -> CompletedSessionPrefix | None:
+    """Return the exact completed request prefix without inferring quiescence.
+
+    A request is complete only when its group ends in a valid
+    ``chat.request_completed`` row; a request closed more than once is judged
+    by its last such row in write order.  A later completed request cannot
+    leapfrog an earlier user request that has no durable completion row.
+    Recommendation consumers may explicitly allow gaps; invalid requests remain
+    excluded.
+    """
+
+    sid = str(session_id or "").strip()
+    if not sid:
+        return None
+
+    groups: dict[str, dict[str, Any]] = {}
+    for ordinal, record in enumerate(records):
+        if not isinstance(record, dict):
+            continue
+        request_id = str(record.get("request_id") or "").strip()
+        role = str(record.get("role") or "").strip().lower()
+        if not request_id:
+            if role not in {"user", "human"}:
+                continue
+            request_id = f"__missing_request_id__:{ordinal}"
+        group = groups.setdefault(
+            request_id,
+            {
+                "last_ordinal": ordinal,
+                "user_ordinals": [],
+                "completion_rows": [],
+            },
+        )
+        group["last_ordinal"] = ordinal
+        if role in {"user", "human"} and not record.get("is_goal_objective_message"):
+            group["user_ordinals"].append(ordinal)
+        if record.get("event_type") == SESSION_REQUEST_COMPLETED_EVENT:
+            group["completion_rows"].append((ordinal, record))
+
+    completed_request_ids: list[str] = []
+    completed_user_ordinals: list[int] = []
+    boundaries: list[SessionCompletionBoundary] = []
+    for request_id, group in groups.items():
+        user_ordinals = group["user_ordinals"]
+        if not user_ordinals:
+            continue
+        completion_rows = group["completion_rows"]
+        if not completion_rows:
+            if allow_gaps:
+                continue
+            break
+        completion_ordinal, completion = completion_rows[-1]
+        status = str(completion.get("status") or "").strip().lower()
+        event_id = str(completion.get("id") or "").strip()
+        completed_at = completion.get("timestamp")
+        _closes_request = _is_terminal_completion_row(
+            request_id=request_id,
+            completion_ordinal=completion_ordinal,
+            last_ordinal=group["last_ordinal"],
+            completion=completion,
+            event_id=event_id,
+            status=status,
+            completed_at=completed_at,
+        )
+        if not _closes_request:
+            if allow_gaps:
+                continue
+            break
+        completed_request_ids.append(request_id)
+        completed_user_ordinals.extend(user_ordinals)
+        boundaries.append(
+            SessionCompletionBoundary(
+                session_id=sid,
+                event_id=event_id,
+                request_id=request_id,
+                ordinal=completion_ordinal,
+                completed_at=float(completed_at),
+                status=status,
+            )
+        )
+
+    if not boundaries:
+        return None
+    boundary = max(boundaries, key=lambda item: item.ordinal)
+    return CompletedSessionPrefix(
+        boundary=boundary,
+        completed_request_ids=tuple(completed_request_ids),
+        completed_user_ordinals=tuple(completed_user_ordinals),
+    )
+
+
+def project_completed_session_prefixes(
+    session_id: str,
+    records: list[dict[str, Any]],
+    *,
+    allow_gaps: bool = False,
+) -> tuple[CompletedSessionPrefix, ...]:
+    """Return every immutable completed-prefix revision in physical row order.
+
+    A request closed again starts a revision of its own, ending on its later row.
+    """
+
+    revisions: list[CompletedSessionPrefix] = []
+    for ordinal, record in enumerate(records):
+        if (
+            not isinstance(record, dict)
+            or record.get("event_type") != SESSION_REQUEST_COMPLETED_EVENT
+        ):
+            continue
+        prefix = project_completed_session_prefix(session_id, records[: ordinal + 1], allow_gaps=allow_gaps)
+        if prefix is None or prefix.boundary.ordinal != ordinal:
+            continue
+        revisions.append(prefix)
+    return tuple(revisions)
+
+
+def project_completed_session_records(
+    session_id: str,
+    records: list[dict[str, Any]],
+    *,
+    allow_gaps: bool = False,
+) -> list[dict[str, Any]]:
+    """Preserve physical ordinals while hiding non-completed user requests."""
+
+    prefix = project_completed_session_prefix(session_id, records, allow_gaps=allow_gaps)
+    completed_ordinals = (
+        set(prefix.completed_user_ordinals) if prefix is not None else set()
+    )
+    projected: list[dict[str, Any]] = []
+    for ordinal, record in enumerate(records):
+        if not isinstance(record, dict):
+            continue
+        role = str(record.get("role") or "").strip().lower()
+        if role in {"user", "human"} and ordinal not in completed_ordinals:
+            hidden = dict(record)
+            hidden["role"] = "request_pending"
+            projected.append(hidden)
+        else:
+            projected.append(record)
+    return projected
+
+
+>>>>>>> DEVELOP
 def collapse_file_content_blocks(content: str) -> str:
     """Replace inlined ``<file-content>`` bodies with ``@path`` references.
 
