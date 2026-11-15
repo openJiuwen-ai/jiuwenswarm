@@ -1424,12 +1424,21 @@ test('multimodal dialogs reuse provider-first model configuration; topic probes 
   const agentSettings = source('src/features/settings/modules/agent/AgentSettings.tsx');
   const dialog = source('src/features/settings/modules/agent/MediaModelConfigDialog.tsx');
   const mediaConfig = source('src/features/settings/modules/agent/mediaModelConfig.ts');
+  const customCatalog = source('src/features/settings/modules/models/customModelCatalog.ts');
   assert.match(agentSettings, /<MediaModelConfigDialog/);
   assert.match(dialog, /<ModelProviderSelect/);
   assert.match(dialog, /includeOpenAIAccount=\{false\}/);
   assert.match(dialog, /<ModelNameField/);
   assert.match(dialog, /'vendors\.list'/);
   assert.match(dialog, /'vendors\.fetch_models'/);
+  // The custom-catalogue method name lives in the module shared with ModelDialog.
+  assert.match(dialog, /CUSTOM_FETCH_METHOD/);
+  assert.match(customCatalog, /'vendors\.fetch_custom_models'/);
+  // Only the custom branch accepts values outside the list, and the reason copy
+  // comes from the shared mapping instead of being inlined here.
+  assert.match(dialog, /allowCustomValue=\{custom\}/);
+  assert.doesNotMatch(dialog, /FETCH_REASON_KEYS/);
+  assert.match(dialog, /describeFetchReason\(result\.reason, t\)/);
   assert.match(dialog, /showOptional=\{false\}/);
   // Vision/audio/video stay form-only; topic chat LLMs reuse config.validate_model.
   assert.match(dialog, /probeBeforeSave = modality === 'topic'/);
@@ -1448,7 +1457,9 @@ test('legacy multimodal configuration remains custom while provider selections p
   };
   const legacyDraft = createMediaModelDraft(legacy, 'vision');
   assert.equal(legacyDraft.vendor_selection, 'custom');
-  assert.equal(legacyDraft.model_input_mode, 'manual');
+  // Custom endpoints keep the dropdown so their own catalogue can be fetched;
+  // manual entry stays available through allowCustomValue.
+  assert.equal(legacyDraft.model_input_mode, 'options');
   assert.equal(legacyDraft.api_base, legacy.vision_api_base);
   assert.equal(legacyDraft.api_key, legacy.vision_api_key);
   assert.equal(legacyDraft.model_name, legacy.vision_model);

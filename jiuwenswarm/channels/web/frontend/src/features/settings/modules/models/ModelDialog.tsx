@@ -28,38 +28,20 @@ import {
 import { validateModelDraft } from './modelValidation';
 import { buildReasoningOptions, resolveModelReasoning } from './modelReasoning';
 import { ContextWindowField } from './ContextWindowField';
+import {
+  CUSTOM_FETCH_METHOD,
+  describeFetchReason,
+  getCustomModelFetchKey,
+  getCustomStatusKey,
+  getModelFetchKey,
+  getPresetStatusKey,
+  isHttpApiBase,
+} from './customModelCatalog';
 
 type ConnectionFailure = {
   error: string;
   snapshot: ModelEntry;
 };
-
-const FETCH_REASON_KEYS: Record<string, string> = {
-  'no remote models endpoint': 'noEndpoint',
-  'api_key required for fetch': 'apiKeyRequired',
-  'remote fetch failed or empty': 'remoteFailed',
-  'remote returned HTTP 401': 'remoteAuthFailed',
-  'remote returned HTTP 403': 'remoteAuthFailed',
-  'remote returned HTTP 429': 'remoteRateLimited',
-};
-
-function getPresetStatusKey(
-  preset: VendorPreset | undefined,
-  apiKey: string,
-  options: readonly string[],
-): string | undefined {
-  if (!preset) return undefined;
-  if (preset.models_needs_key && !apiKey.trim()) return 'settingsPanel.models.noPresetModelsApiKeyRequired';
-  if (!preset.models_endpoint)
-    return options.length > 0
-      ? 'settingsPanel.models.fetchReasons.noEndpoint'
-      : 'settingsPanel.models.noPresetModelsNoEndpoint';
-  return options.length > 0 ? undefined : 'settingsPanel.models.noPresetModels';
-}
-
-function getModelFetchKey(preset: VendorPreset, apiKey: string): string {
-  return JSON.stringify([preset.plan, preset.vendor_key, apiKey.trim()]);
-}
 
 export function ModelDialog({
   model,
@@ -92,9 +74,16 @@ export function ModelDialog({
   const [fetching, setFetching] = useState(false);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [fetchStatus, setFetchStatus] = useState(() => {
-    const preset = findVendorPreset(catalog, initialValues.vendor_selection);
     const options: string[] = [];
-    const statusKey = getPresetStatusKey(preset, initialValues.api_key, options);
+    const statusKey =
+      initialValues.vendor_selection === CUSTOM_VENDOR_SELECTION
+        ? getCustomStatusKey(initialValues.api_base, initialValues.api_key, options)
+        : getPresetStatusKey(
+            findVendorPreset(catalog, initialValues.vendor_selection),
+            initialValues.api_key,
+            options,
+            'fetched',
+          );
     return statusKey ? t(statusKey) : '';
   });
   const [validationFailure, setValidationFailure] = useState<ConnectionFailure | null>(null);
@@ -158,9 +147,26 @@ export function ModelDialog({
     },
   });
 
+  // This dialog only ever lists models it fetched, so an empty list means
+  // "nothing fetched yet" rather than "provider defaults on screen".
   const describePresetStatus = (targetPreset: VendorPreset | undefined, apiKey: string, options: readonly string[]) => {
-    const statusKey = getPresetStatusKey(targetPreset, apiKey, options);
+    const statusKey = getPresetStatusKey(targetPreset, apiKey, options, 'fetched');
     return statusKey ? t(statusKey) : '';
+  };
+
+  const describeCustomStatus = (apiBase: string, apiKey: string, options: readonly string[]) => {
+    const statusKey = getCustomStatusKey(apiBase, apiKey, options);
+    return statusKey ? t(statusKey) : '';
+  };
+
+  const describeSelectionStatus = (
+    selection: string,
+    apiBase: string,
+    apiKey: string,
+    options: readonly string[],
+  ) => {
+    if (selection === CUSTOM_VENDOR_SELECTION) return describeCustomStatus(apiBase, apiKey, options);
+    return describePresetStatus(findVendorPreset(catalog, selection), apiKey, options);
   };
 
   const updateModelOptions = (options: readonly string[]) => {
@@ -216,7 +222,13 @@ export function ModelDialog({
     invalidateConnectionState();
     const next = applyModelProtocol(form.getValues(), protocol, catalog);
     applyModelDraft(next);
-    setFetchStatus(describePresetStatus(findVendorPreset(catalog, next.vendor_selection), next.api_key, modelOptions));
+    // The dedupe key includes protocol for custom endpoints, so options fetched
+    // with the previous protocol are no longer valid. Drop the dedupe entries too:
+    // a key kept from the previous protocol would make the next open short-circuit
+    // and leave the list empty while the hint still says a fetch is possible.
+    if (next.vendor_selection === CUSTOM_VENDOR_SELECTION) fetchedModelLists.current.clear();
+    const nextOptions = next.vendor_selection === CUSTOM_VENDOR_SELECTION ? updateModelOptions([]) : modelOptions;
+    setFetchStatus(describeSelectionStatus(next.vendor_selection, next.api_base, next.api_key, nextOptions));
   };
 
   const updateVendor = (selection: string) => {
@@ -238,12 +250,11 @@ export function ModelDialog({
     } else {
       aliasSyncedFromModelName.current = next.model_name;
     }
-    const nextPreset = findVendorPreset(catalog, selection);
     const nextOptions: string[] = [];
     applyModelDraft(next);
     form.clearValidate(['api_key', 'model_name', 'alias']);
     setModelOptions(nextOptions);
-    setFetchStatus(describePresetStatus(nextPreset, next.api_key, nextOptions));
+    setFetchStatus(describeSelectionStatus(selection, next.api_base, next.api_key, nextOptions));
   };
 
   const buildEntry = () => modelDraftToEntry(form.getValues(), model, catalog, connectionChanged.current);
@@ -296,10 +307,67 @@ export function ModelDialog({
     }
   };
 
+  const fetchCustomModels = async (currentValues: ModelDraft): Promise<void> => {
+    const apiBase = currentValues.api_base.trim();
+    const apiKey = currentValues.api_key.trim();
+    if (!apiBase || !apiKey) {
+      updateModelOptions([]);
+      setFetchStatus(describeCustomStatus(apiBase, apiKey, []));
+      return;
+    }
+    if (!isHttpApiBase(apiBase)) {
+      // Unusable scheme: report locally instead of sending a request the plugin
+      // can only reject.
+      updateModelOptions([]);
+      setFetchStatus(describeCustomStatus(apiBase, apiKey, []));
+      return;
+    }
+    const currentRequestId = ++fetchRequestId.current;
+    setFetching(true);
+    setFetchStatus(t('settingsPanel.models.fetchModelsLoading'));
+    try {
+      const result = await request<VendorFetchModelsResult>(
+        CUSTOM_FETCH_METHOD,
+        { api_base: apiBase, api_key: apiKey, protocol: currentValues.protocol },
+        { timeoutMs: 30_000 },
+      );
+      if (currentRequestId !== fetchRequestId.current) return;
+      if (!Array.isArray(result.models) || !result.models.every((name) => typeof name === 'string')) {
+        throw new Error(t('settingsPanel.models.fetchModelsInvalidResponse'));
+      }
+      const nextOptions = normalizeModelOptions(result.models);
+      if (result.source === 'remote') {
+        if (nextOptions.length === 0) throw new Error(t('settingsPanel.models.fetchModelsInvalidResponse'));
+        updateModelOptions(nextOptions);
+        fetchedModelLists.current.add(getCustomModelFetchKey(apiBase, apiKey, currentValues.protocol));
+        setFetchStatus(t('settingsPanel.models.fetchModelsRemote', { count: nextOptions.length }));
+      } else if (result.source === 'unavailable') {
+        // Custom endpoints have no preset fallback: report why and keep manual entry.
+        updateModelOptions([]);
+        setFetchStatus(describeFetchReason(result.reason, t));
+      } else {
+        throw new Error(t('settingsPanel.models.fetchModelsUnrecognizedResult'));
+      }
+    } catch (error) {
+      if (currentRequestId === fetchRequestId.current) {
+        updateModelOptions([]);
+        const message = error instanceof Error ? error.message : t('settingsPanel.models.fetchModelsFailed');
+        setFetchStatus(message);
+      }
+    } finally {
+      if (currentRequestId === fetchRequestId.current) setFetching(false);
+    }
+  };
+
   const fetchModels = async () => {
     const currentValues = form.getValues();
+    if (fetching) return;
+    if (currentValues.vendor_selection === CUSTOM_VENDOR_SELECTION) {
+      await fetchCustomModels(currentValues);
+      return;
+    }
     const currentPreset = findVendorPreset(catalog, currentValues.vendor_selection);
-    if (!currentPreset || fetching) return;
+    if (!currentPreset) return;
     if (!currentPreset.models_endpoint || (currentPreset.models_needs_key && !currentValues.api_key.trim())) {
       updateModelOptions([]);
       setFetchStatus(describePresetStatus(currentPreset, currentValues.api_key, []));
@@ -330,8 +398,7 @@ export function ModelDialog({
         setFetchStatus(t('settingsPanel.models.fetchModelsRemote', { count: nextOptions.length }));
       } else if (result.source === 'preset' && result.reason) {
         updateModelOptions([]);
-        const reasonKey = FETCH_REASON_KEYS[result.reason];
-        setFetchStatus(reasonKey ? t(`settingsPanel.models.fetchReasons.${reasonKey}`) : result.reason);
+        setFetchStatus(describeFetchReason(result.reason, t));
       } else {
         throw new Error(t('settingsPanel.models.fetchModelsUnrecognizedResult'));
       }
@@ -348,6 +415,19 @@ export function ModelDialog({
 
   const openModelList = () => {
     const currentValues = form.getValues();
+    if (currentValues.vendor_selection === CUSTOM_VENDOR_SELECTION) {
+      const apiBase = currentValues.api_base.trim();
+      const apiKey = currentValues.api_key.trim();
+      if (!apiBase || !apiKey) {
+        updateModelOptions([]);
+        setFetchStatus(describeCustomStatus(apiBase, apiKey, []));
+        return;
+      }
+      const customFetchKey = getCustomModelFetchKey(apiBase, apiKey, currentValues.protocol);
+      if (fetchedModelLists.current.has(customFetchKey)) return;
+      void fetchModels();
+      return;
+    }
     const currentPreset = findVendorPreset(catalog, currentValues.vendor_selection);
     if (!currentPreset) return;
     if (!currentPreset.models_endpoint || (currentPreset.models_needs_key && !currentValues.api_key.trim())) {
@@ -416,9 +496,16 @@ export function ModelDialog({
         component: 'input',
         required: true,
         placeholder: t('settingsPanel.fields.api_base.placeholder'),
-        onChange: () => {
+        onChange: (_apiBase, nextValues) => {
           connectionChanged.current = true;
           invalidateConnectionState();
+          fetchedModelLists.current.clear();
+          // Fetched options belong to the previous endpoint; drop them like the
+          // api_key handler does so stale models cannot be selected.
+          const nextOptions = updateModelOptions([]);
+          setFetchStatus(
+            describeSelectionStatus(nextValues.vendor_selection, nextValues.api_base, nextValues.api_key, nextOptions),
+          );
         },
       });
     }
@@ -436,10 +523,10 @@ export function ModelDialog({
       onChange: (_apiKey, nextValues) => {
         invalidateConnectionState();
         fetchedModelLists.current.clear();
-        const nextPreset = findVendorPreset(catalog, nextValues.vendor_selection);
-        if (!nextPreset) return;
         const nextOptions = updateModelOptions([]);
-        setFetchStatus(describePresetStatus(nextPreset, nextValues.api_key, nextOptions));
+        setFetchStatus(
+          describeSelectionStatus(nextValues.vendor_selection, nextValues.api_base, nextValues.api_key, nextOptions),
+        );
       },
     });
   }
@@ -467,14 +554,14 @@ export function ModelDialog({
         id={id}
         value={String(value ?? '')}
         mode={values.model_input_mode}
-        allowCustomValue={Boolean(preset)}
+        allowCustomValue={Boolean(preset) || custom}
         options={account ? openAIAccount.modelOptions : modelOptions}
         disabled={disabled || (account ? !openAIAccount.authenticated : !model && !values.vendor_selection)}
         invalid={Boolean(error)}
         fetchStatus={account ? openAIAccount.modelStatus : fetchStatus}
         fetchStatusTone={account ? openAIAccount.modelStatusTone : 'neutral'}
         fetching={account ? openAIAccount.loadingModels : fetching}
-        showRefresh={account || Boolean(preset)}
+        showRefresh={account || Boolean(preset) || custom}
         fetchDisabled={
           account
             ? !isConnected ||
@@ -484,8 +571,9 @@ export function ModelDialog({
               submitting ||
               saving
             : !isConnected ||
-              !preset?.models_endpoint ||
-              (Boolean(preset?.models_needs_key) && !values.api_key.trim()) ||
+              (custom
+                ? !isHttpApiBase(values.api_base) || !values.api_key.trim()
+                : !preset?.models_endpoint || (Boolean(preset?.models_needs_key) && !values.api_key.trim())) ||
               testing ||
               fetching ||
               submitting ||
@@ -498,9 +586,11 @@ export function ModelDialog({
                   ? 'config.openaiAccount.noModelsAvailable'
                   : 'config.openaiAccount.needLoginForModel',
               )
-            : preset
-              ? t(getPresetStatusKey(preset, values.api_key, []) ?? 'settingsPanel.models.noModelResults')
-              : t('settingsPanel.models.noModelResults')
+            : custom
+              ? t(getCustomStatusKey(values.api_base, values.api_key, []) ?? 'settingsPanel.models.noModelResults')
+              : preset
+                ? t(getPresetStatusKey(preset, values.api_key, [], 'fetched') ?? 'settingsPanel.models.noModelResults')
+                : t('settingsPanel.models.noModelResults')
         }
         onOpen={account ? () => undefined : openModelList}
         onFetch={() => void (account ? openAIAccount.refreshModels() : fetchModels())}

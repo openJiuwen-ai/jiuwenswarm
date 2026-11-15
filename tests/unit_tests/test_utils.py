@@ -1062,3 +1062,29 @@ def test_gateway_logger_propagates_into_jiuwenswarm_handlers(tmp_path, monkeypat
     assert "agent_gateway.app_gateway" in captured
     assert "agent_gateway.channel_manager.web.app_web_handlers" in captured
     del root
+
+
+def test_init_user_workspace_persists_an_absolute_extension_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A standalone Gateway never runs prepare_runtime_workspace.
+
+    ``jiuwenswarm-gateway`` prepares its own workspace through agent_gateway, so
+    the migration wired into prepare_runtime_workspace is not reached on that
+    deployment.  ``jiuwenswarm-init`` is the step every deployment runs, so the
+    absolute path has to be in place by the time init returns.
+    """
+    from dotenv import dotenv_values
+
+    from jiuwenswarm.common.extension_dir_config import EXTENSION_DIRS_ENV, packaged_extensions_dir
+
+    workspace_dir = tmp_path / ".jiuwenswarm"
+    monkeypatch.setattr(utils, "_is_interactive", lambda: False)
+    monkeypatch.setattr(utils, "prompt_preferred_language", lambda: "en")
+    monkeypatch.delenv(EXTENSION_DIRS_ENV, raising=False)
+
+    assert utils.init_user_workspace(overwrite=False, workspace_dir=workspace_dir) == workspace_dir
+
+    persisted = dotenv_values(workspace_dir / "config" / ".env")
+    assert persisted[EXTENSION_DIRS_ENV] == str(packaged_extensions_dir())
+    assert Path(persisted[EXTENSION_DIRS_ENV]).is_absolute()
