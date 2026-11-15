@@ -44,6 +44,11 @@ _A4P_MANAGEMENT_METHODS: frozenset[ReqMethod] = frozenset(
 
 _CONFIG_LOCK = asyncio.Lock()
 _CONFIG_FIELDS = frozenset({"enabled"})
+# 企业版北向 HTTP 会把 X-User-Id / X-Group-Id / X-Bot-Id 等并进 params；
+# 这些是租户路由身份，不是 A4P 业务字段，字段白名单校验前先剥掉。
+_HTTP_ROUTING_PARAM_KEYS = frozenset(
+    {"user_id", "group_id", "bot_id", "gateway_id"}
+)
 
 
 async def _dispatch_config(request: AgentRequest) -> AgentResponse:
@@ -100,8 +105,18 @@ def _err(request: AgentRequest, message: str, *, code: str = "BAD_REQUEST") -> A
     )
 
 
+def _business_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Drop enterprise HTTP tenant-routing keys before A4P field checks."""
+    return {
+        key: value
+        for key, value in params.items()
+        if key not in _HTTP_ROUTING_PARAM_KEYS
+    }
+
+
 async def dispatch_a4p_request(request: AgentRequest) -> AgentResponse:
-    params = request.params if isinstance(request.params, dict) else {}
+    raw_params = request.params if isinstance(request.params, dict) else {}
+    params = _business_params(raw_params)
     method = request.req_method
 
     if method in {ReqMethod.A4P_CONFIG_GET, ReqMethod.A4P_CONFIG_UPDATE}:

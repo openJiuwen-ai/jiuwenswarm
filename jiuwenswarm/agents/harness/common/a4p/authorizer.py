@@ -100,7 +100,10 @@ class WebAuthorizerBroker:
         pending: _PendingAuthorization,
         route: AuthorizerRoute,
     ) -> bool:
-        return pending.request.route.logical_key == route.logical_key
+        # requestId 已唯一锁定待授权项；企业版 HTTP 无 WS routing key 时
+        # app_id/agent_ref 可能与发单时不一致，只按 session 防跨会话点授权。
+        return pending.request.route.session_id == route.session_id
+
 
     @staticmethod
     def _valid_selection_indexes(indexes: Any, action_count: int) -> bool:
