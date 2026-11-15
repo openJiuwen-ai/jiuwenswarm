@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import socket
 import sys
@@ -837,6 +838,12 @@ async def test_real_missing_heartbeats_triggers_transport_watchdog(
 
     monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", transport)
+    # P3 busy-grace: with in-flight dispatch the verdict defers to the
+    # stall window; pin it small so the frozen-worker kill stays at ~30s.
+    monkeypatch.setattr(
+        "jiuwenswarm.server.supervisor.runtime_supervisor._WORKER_STALL_RESTART", 2.0
+    )
+
     async with _worker("heartbeat-loss", tmp_path, monkeypatch) as (supervisor, process):
         async with _gateway(supervisor) as (url, gateway, attached):
             async with ws_connect(url) as client:
@@ -895,8 +902,128 @@ async def test_real_missing_heartbeats_triggers_transport_watchdog(
                 )
 
 
+
+
 @pytest.mark.asyncio
 @pytest.mark.slow
+@pytest.mark.timeout(60)
+async def test_real_busy_grace_defers_verdict_until_stall_window(
+    tmp_path, monkeypatch, caplog,
+):
+    """Transport silence with an in-flight dispatch defers the verdict to
+    the stall window (busy-grace): the worker survives past the heartbeat
+    deadline, then is retired once the grace upper bound passes."""
+    from websockets.asyncio.client import connect as ws_connect
+
+    monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", "resident")
+    # The watchdog schedules its next wakeup with the module constant, so the
+    # faster tick must be installed before the task starts (bring-up does not
+    # share this constant); the deadline constants stay real until the worker
+    # is up because bring-up shares them.
+    monkeypatch.setattr(
+        "jiuwenswarm.server.supervisor.runtime_supervisor._WATCHDOG_INTERVAL", 0.25
+    )
+
+    async with _worker("heartbeat-loss", tmp_path, monkeypatch) as (supervisor, process):
+        async with _gateway(supervisor) as (url, gateway, attached):
+            async with ws_connect(url) as client:
+                await asyncio.wait_for(attached.wait(), 2)
+                # Deadline constants patched only after bring-up, which shares
+                # them and needs the real timeouts.
+                monkeypatch.setattr(
+                    "jiuwenswarm.server.supervisor.runtime_supervisor._HEARTBEAT_TIMEOUT", 0.5
+                )
+                monkeypatch.setattr(
+                    "jiuwenswarm.server.supervisor.runtime_supervisor._WORKER_STALL_RESTART", 4.0
+                )
+                # _WATCHDOG_INTERVAL is already pinned to 0.25 above (before
+                # bring-up); re-pinning it here would be a no-op. Raise the
+                # capture level explicitly so the busy-grace INFO assertion
+                # cannot depend on ambient pytest log configuration.
+                caplog.set_level(
+                    logging.INFO,
+                    logger="jiuwenswarm.server.supervisor.runtime_supervisor",
+                )
+                dispatch = asyncio.create_task(
+                    supervisor.dispatch_parsed_request(
+                        gateway["ws"],
+                        _request(1),
+                        gateway["lock"],
+                    )
+                )
+                assert (
+                    json.loads(await asyncio.wait_for(client.recv(), 3))["phase"]
+                    == "heartbeats_muted"
+                )
+                # Past the heartbeat deadline (0.5s) but inside the grace
+                # window (4.0s pin): worker alive and grace granted.
+                await asyncio.sleep(2.5)
+                assert process.returncode is None, (
+                    "busy-grace must keep a busy worker alive past the deadline"
+                )
+                assert "heartbeat busy-grace" in caplog.text
+                # Past the grace upper bound: verdict fires, worker retired.
+                await asyncio.wait_for(dispatch, 20)
+                assert "runtime worker heartbeat timed out" in caplog.text
+                assert supervisor._readiness.state is ReadinessState.FAILED
+                assert await process.wait(timeout=10) is not None, (
+                    "A confirmed unhealthy Worker must be retired after grace"
+                )
+
+
+@pytest.mark.asyncio
+@pytest.mark.slow
+@pytest.mark.asyncio
+@pytest.mark.slow
+@pytest.mark.timeout(150)
+async def test_real_busy_grace_second_grace_logs_info_again(tmp_path, monkeypatch, caplog):
+    """第二次宽限转态必须再次 INFO（openjiuwen-AIReview 9706 id=200410191）：
+    `_busy_grace_noted` 若只在超时后重查窄分支复位，健康心跳 tick 过后标志滞留
+    True，同一 Worker 第二次宽限起 INFO 永久降为 DEBUG——运维再也看不到第二次
+    进入宽限的转态记录。"""
+    from websockets.asyncio.client import connect as ws_connect
+
+    monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", "resident")
+    monkeypatch.setattr(
+        "jiuwenswarm.server.supervisor.runtime_supervisor._WATCHDOG_INTERVAL", 0.25
+    )
+    async with _worker("heartbeat-loss", tmp_path, monkeypatch) as (supervisor, process):
+        async with _gateway(supervisor) as (url, gateway, attached):
+            async with ws_connect(url) as client:
+                await asyncio.wait_for(attached.wait(), 2)
+                monkeypatch.setattr(
+                    "jiuwenswarm.server.supervisor.runtime_supervisor._HEARTBEAT_TIMEOUT", 0.5
+                )
+                monkeypatch.setattr(
+                    "jiuwenswarm.server.supervisor.runtime_supervisor._WORKER_STALL_RESTART", 8.0
+                )
+                caplog.set_level(
+                    logging.INFO,
+                    logger="jiuwenswarm.server.supervisor.runtime_supervisor",
+                )
+                dispatch = asyncio.create_task(
+                    supervisor.dispatch_parsed_request(gateway["ws"], _request(1), gateway["lock"])
+                )
+                assert json.loads(await asyncio.wait_for(client.recv(), 3))["phase"] == "heartbeats_muted"
+                base = caplog.text.count("heartbeat busy-grace")
+                await asyncio.sleep(1.2)
+                first = caplog.text.count("heartbeat busy-grace")
+                assert first - base >= 1, f"首次宽限应 INFO，实际增量 {first - base}"
+                # 心跳恢复：健康 tick 必须复位宽限转态标志（AIReview 指出的缺失复位点）。
+                supervisor._last_rx = time.monotonic()
+                await asyncio.sleep(1.0)
+                # 再次超时：第二次进入宽限须再 INFO 一条（修复前滞留 True → 仅 DEBUG，红）。
+                supervisor._last_rx = time.monotonic() - 1.0
+                await asyncio.sleep(1.0)
+                second = caplog.text.count("heartbeat busy-grace")
+                assert second - first >= 1, (
+                    f"第二次宽限必须再次 INFO（id=200410191），实际增量 {second - first}"
+                )
+                dispatch.cancel()
+
+
 @pytest.mark.timeout(150)
 @pytest.mark.parametrize("transport", ["resident", "front_loopback"])
 async def test_real_worker_keeps_heartbeat_with_requests_queued_during_stall(
