@@ -162,7 +162,6 @@ def test_cancel_with_legacy_request_id_param_retires_only_that_round() -> None:
     assert popup("expert", request("expert-turn")) == []
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "real_state", [None, "succeeded", "running", "waiting_for_input", "waiting_for_control", "queued"],
 )
@@ -202,7 +201,6 @@ async def test_restored_session_queries_and_observers_do_not_create_work(real_st
     assert all(bridge.events.records[f"observer-{index}"].active for index in range(3))
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("team_running", [True, False])
 async def test_inspection_transport_cannot_hide_registered_background_execution(team_running: bool) -> None:
     """Team lifecycle, not a read RPC's context, owns actual background activity."""
@@ -232,7 +230,6 @@ async def test_inspection_transport_cannot_hide_registered_background_execution(
     assert context.generation == 1
 
 
-@pytest.mark.asyncio
 async def test_duplicate_is_scoped_and_late_cleanup_cannot_remove_replacement():
     registry = RequestRegistry()
     first = await registry.register(request())
@@ -266,7 +263,6 @@ def test_worker_duplicate_guard_spans_caller_sessions_and_preserves_new_owner():
     assert store.snapshot(second_session)["dispatches"][0]["dispatch_id"] == "replacement"
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("delivered", [True, False])
 async def test_unary_reply_waits_for_real_gateway_delivery(delivered):
     holder = ConnHolder()
@@ -296,7 +292,6 @@ async def test_unary_reply_waits_for_real_gateway_delivery(delivered):
         end_request_dispatch(token)
 
 
-@pytest.mark.asyncio
 async def test_critical_reply_aborts_on_transport_detach():
     holder = ConnHolder()
     conn = Connection()
@@ -365,7 +360,6 @@ async def test_accepted_execution_survives_detach_and_replays_before_live_delive
     assert await dispatcher.drain(timeout=1)
 
 
-@pytest.mark.asyncio
 async def test_warming_queue_survives_reconnection():
     holder = ConnHolder()
     first = Connection()
@@ -394,7 +388,6 @@ async def test_warming_queue_survives_reconnection():
     assert await dispatcher.drain(timeout=1)
 
 
-@pytest.mark.asyncio
 async def test_resident_gateway_binding_keeps_mailbox_gated_until_runtime_ready():
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
@@ -409,7 +402,6 @@ async def test_resident_gateway_binding_keeps_mailbox_gated_until_runtime_ready(
     server._session_message_service.set_available.assert_awaited_once_with(True)
 
 
-@pytest.mark.asyncio
 async def test_empty_execution_snapshot_does_not_hide_accepted_warming_work():
     holder = ConnHolder()
     conn = Connection()
@@ -470,7 +462,6 @@ def test_passive_team_subscription_is_not_session_work(attach_only):
     assert store.snapshot(observer)["is_processing"] is True
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("real_state", [None, "succeeded", "running", "waiting_for_input", "queued"])
 async def test_resume_does_not_treat_attach_execution_as_busy(real_state):
     from jiuwenswarm.runtime.session.model import SessionExecutionHandle, SessionExecutionState, SessionWorkKind
@@ -577,7 +568,6 @@ def test_unspecified_and_resolved_default_agent_have_same_scope():
     assert request_scope(request()) == request_scope(replace(request(), agent_ref={"mode": "agent", "id": "default"}))
 
 
-@pytest.mark.asyncio
 async def test_warming_cancel_returns_response_without_waiting_for_runtime():
     holder = ConnHolder()
     conn = Connection()
@@ -610,7 +600,6 @@ async def test_warming_cancel_returns_response_without_waiting_for_runtime():
     assert queued["terminal"]["state"] == "cancelled"
 
 
-@pytest.mark.asyncio
 async def test_runtime_failure_completes_accepted_warming_requests():
     holder = ConnHolder()
     conn = Connection()
@@ -628,7 +617,6 @@ async def test_runtime_failure_completes_accepted_warming_requests():
     assert conn.frames[-1]["error"] == "configuration failed"
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("first_hello_fails", [False, True])
 @pytest.mark.parametrize("disconnect_error", [OSError, service.IpcError])
 async def test_resident_service_pins_identity_even_after_failed_first_hello(
@@ -713,7 +701,6 @@ async def test_resident_service_pins_identity_even_after_failed_first_hello(
     assert connections[1].frames[-1] == {"kind": KIND_SHUTDOWN_DONE, "ok": True}
 
 
-@pytest.mark.asyncio
 async def test_standalone_hello_without_pinned_value_keeps_legacy_current_identity(monkeypatch):
     hash_current_disk = Mock(return_value="standalone-current-code")
     connection = SimpleNamespace(send=AsyncMock())
@@ -724,7 +711,6 @@ async def test_standalone_hello_without_pinned_value_keeps_legacy_current_identi
     assert connection.send.await_args.args[0]["code_identity"] == "standalone-current-code"
 
 
-@pytest.mark.asyncio
 async def test_stub_pins_identity_across_front_reconnections(monkeypatch):
     disk = {"identity": "stub-launch-code"}
     hash_current_disk = Mock(side_effect=lambda: disk["identity"])
@@ -769,7 +755,6 @@ async def test_stub_pins_identity_across_front_reconnections(monkeypatch):
     assert closed == [0, 1]
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("ipc_opens", [True, False])
 async def test_resident_worker_startup_window_retries_without_spawning(monkeypatch, tmp_path, ipc_opens):
     from jiuwenswarm.server.lifecycle import Readiness
@@ -808,3 +793,73 @@ async def test_resident_worker_startup_window_retries_without_spawning(monkeypat
     process.assert_not_called()
     connect.assert_awaited_once()
     assert 0 < connect.call_args.kwargs["timeout"] <= .5
+
+
+def test_replay_gapped_reports_eviction_watermark() -> None:
+    """after 落在该请求自身的淘汰水位之下必须报缺口（MF-001）。
+
+    水位按 (scope, request_id) 判定：全局水位在任意请求淘汰时都前移，
+    用它判缺口会把保留窗完好的请求误报成缺口、身份型重放退化成占位卡。
+    """
+    store = WorkerEventStore(max_events=4)
+    store.register(request("req-1"), "d-1")
+    store.register(request("req-2"), "d-2")
+    for index in range(4):
+        store.append({"request_id": "req-1", "body": {"event_type": "chat.delta", "index": index}}, "d-1")
+    scope1 = store.records["d-1"].scope
+    # req-1 的帧尚未淘汰：无缺口。
+    assert store.replay_gapped(scope1, "req-1", 0) is False
+    # 继续产帧触发淘汰，req-1 自身水位前移：after=0 报缺口。
+    for index in range(4, 10):
+        store.append({"request_id": "req-1", "body": {"event_type": "chat.delta", "index": index}}, "d-1")
+    assert store.replay_gapped(scope1, "req-1", 0) is True
+    # 其他请求（req-2 帧在淘汰阶段之后追加、仍在保留窗内）：不误报。
+    store.append({"request_id": "req-2", "body": {"event_type": "chat.delta", "index": 0}}, "d-2")
+    scope2 = store.records["d-2"].scope
+    assert store.replay_gapped(scope2, "req-2", 0) is False
+    assert store.replay_gapped(scope1, "req-1", 10**9) is False
+
+
+def test_watermark_resets_on_same_rid_reregistration() -> None:
+    """同 (scope, request_id) 重新登记（轮次复用）必须复位淘汰水位
+    （atomgit 9722 id=199422840）：旧轮水位带入新轮时，新轮帧一张未淘汰也会
+    被 after=0<旧水位 误报缺口，身份型重放退化占位卡。"""
+    store = WorkerEventStore(max_events=4)
+    store.register(request("req-1"), "d-1")
+    for index in range(10):
+        store.append({"request_id": "req-1", "body": {"event_type": "chat.delta",
+                      "index": index}}, "d-1")
+    scope = store.records["d-1"].scope
+    assert store.replay_gapped(scope, "req-1", 0) is True  # 旧轮已留水位
+    store.complete("d-1", state="done")
+    store.register(request("req-1"), "d-2")  # 同 rid 新一轮
+    assert store.replay_gapped(store.records["d-2"].scope, "req-1", 0) is False
+
+
+def test_watermark_cap_eviction_reports_conservative_gap() -> None:
+    """水位图超限裁剪不得让 replay_gapped 静默失明：被裁键保守报缺口
+    （history_required 回落占位卡安全面），杜绝「账本丢失→误报无缺口→静默
+    跳帧」（atomgit 9722 id=200378287）。"""
+    # 构造必须让**每个** rid 都真实发生帧淘汰（atomgit 9722 id=200435186）：
+    # max_events=1 使自第 2 帧起 FIFO 逐帧淘汰，4 个 rid 全部留痕水位 →
+    # 键数 4 > 上限 2，强制进入 _watermark_lost 保守分支；旧构造（max_events=8）
+    # 仅 2 个 rid 留痕＝恰好等于上限，一次裁剪都不发生，断言走的是常规分支，
+    # 保守分支整段删除也全绿（无回归保护）。
+    store = WorkerEventStore(max_events=1)
+    store._max_watermark_keys = 2
+    rids = ["req-a", "req-b", "req-c", "req-d"]
+    scopes = {}
+    for i, rid in enumerate(rids):
+        store.register(request(rid), f"d-{i}")
+        scopes[rid] = store.records[f"d-{i}"].scope
+        for index in range(2):
+            store.append({"request_id": rid, "body": {"event_type": "chat.delta",
+                          "index": index}}, f"d-{i}")
+    # 分支路径锁：必须真实发生了水位键裁剪，否则本用例退化为常规分支断言。
+    assert store._watermark_lost, "构造未触发水位键裁剪——须走保守报缺分支而非常规分支"
+    # 水位键 4 个 > 上限 2：最早留痕的 req-a/req-b 被裁 → 保守报缺（after 低于
+    # 各自真实水位，若不留痕则 get→0 误报无缺口）。
+    assert store.replay_gapped(scopes["req-a"], "req-a", 0) is True
+    assert store.replay_gapped(scopes["req-b"], "req-b", 0) is True
+    # 水位仍在账内的键：判定不受影响。
+    assert store.replay_gapped(scopes["req-d"], "req-d", 10**9) is False
