@@ -1454,6 +1454,55 @@ test('the overview shows the employee activity instead of an empty log', () => {
   assert.doesNotMatch(markup, /暂无执行记录/);
 });
 
+test('a legacy long description stays intact and must be shortened to 200 characters before saving', async () => {
+  const description = '1'.repeat(2000);
+  const saved = [];
+  const view = await mountProfile({
+    colleague: { ...colleague, description },
+    initialSection: 'overview',
+    onSaveSettings: async (edit) => { saved.push(edit); },
+  });
+  try {
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__description').textContent, description);
+    await view.click('edit');
+    const editor = view.find('identity-editor');
+    const input = editor.querySelector('textarea');
+    assert.equal(input.value, description);
+    assert.equal(input.hasAttribute('maxlength'), false, 'Legacy descriptions must remain editable above the save limit');
+    const save = editor.querySelector('.jiuwenmate-dark-button');
+    assert.equal(save.disabled, true);
+    assert.equal(input.getAttribute('aria-invalid'), 'true');
+    assert.match(view.find('description-limit-error').textContent, /200/);
+    assert.equal(view.find('description-count').textContent, '2000/200');
+    await act(async () => save.click());
+    assert.equal(saved.length, 0);
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__description'), null);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(input, description + ' edited');
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+    assert.equal(input.value, description + ' edited', 'Editing must not silently truncate legacy content');
+    assert.equal(save.disabled, true, 'Editing over-limit content must not bypass save validation');
+    const updated = '2'.repeat(200);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(input, `  ${updated}  `);
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+    assert.equal(view.find('description-count').textContent, '200/200');
+    assert.equal(view.find('description-limit-error'), null);
+    assert.equal(input.getAttribute('aria-invalid'), 'false');
+    assert.equal(save.disabled, false);
+    await act(async () => save.click());
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].description, updated);
+    assert.equal(view.find('identity-editor'), null);
+    await view.rerender({ colleague: { ...colleague, description: saved[0].description } });
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__description').textContent, updated);
+  } finally {
+    await view.close();
+  }
+});
+
 test('the pencil edits the current page and stays there', () => {
   const overview = renderProfile({ initialSection: 'overview', initialEditing: true });
   assert.match(overview, /aria-current="true"[^>]*data-variant="overview"/);
@@ -1510,7 +1559,7 @@ test('channel reply mode renders a compact selected state and disables changes w
 });
 
 
-test('each bound app is listed with its own platform, and another app can be added', () => {
+test('each bound app is listed with its own platform without an add connection action', () => {
   const dingtalk = { channel: 'dingtalk', connectionKey: 'ding-app', agentId: 'agent-ding', workspaceDir: null };
   const markup = renderProfile({
     initialSection: 'channels',
@@ -1522,12 +1571,48 @@ test('each bound app is listed with its own platform, and another app can be add
   assert.match(markup, /data-testid="jiuwenmate-profile-connection" data-variant="cli-app"/);
   assert.match(markup, /data-testid="jiuwenmate-profile-connection" data-variant="ding-app"/);
   assert.equal(markup.match(/data-testid="jiuwenmate-profile-im-remove"/g).length, 2);
-  assert.match(markup, /data-testid="jiuwenmate-profile-im-add"/);
+  assert.doesNotMatch(markup, /data-testid="jiuwenmate-profile-im-add"/);
+  assert.equal(markup.match(/data-testid="jiuwenmate-profile-im-modify"/g).length, 2);
   assert.doesNotMatch(markup, /data-testid="jiuwenmate-profile-quick-im"/);
 
   const unbound = renderProfile({ initialSection: 'channels' });
   assert.doesNotMatch(unbound, /data-testid="jiuwenmate-profile-connection"/);
   assert.match(unbound, />授权</);
+});
+
+test('a bound platform hides authorization while other platforms remain available', () => {
+  const markup = renderProfile({
+    initialSection: 'channels',
+    colleague: { ...colleague, connections: [...colleague.connections, feishuConnection] },
+  });
+  const document = new JSDOM(markup).window.document;
+  const platform = (name) => document.querySelector('[data-testid="jiuwenmate-profile-im-platform"][data-variant="' + name + '"]');
+  assert.equal(platform('feishu').querySelector('[data-testid="jiuwenmate-profile-im-add"]'), null);
+  assert.equal(platform('feishu').querySelector('[data-testid="jiuwenmate-profile-im-authorize"]'), null);
+  assert.ok(platform('feishu').querySelector('[data-testid="jiuwenmate-profile-im-modify"]'));
+  assert.ok(platform('feishu').querySelector('[data-testid="jiuwenmate-profile-im-remove"]'));
+  assert.ok(platform('dingtalk').querySelector('[data-testid="jiuwenmate-profile-im-authorize"]'));
+
+  const unbound = new JSDOM(renderProfile({ initialSection: 'channels' })).window.document;
+  assert.ok(unbound.querySelector('[data-variant="feishu"] [data-testid="jiuwenmate-profile-im-authorize"]'));
+});
+
+test('duplicate starter prompts prevent saving a changed prompt list', async () => {
+  const view = await mountProfile({
+    initialSection: 'persona',
+    colleague: { ...colleague, capabilities: { ...colleague.capabilities, starterPrompts: ['写周报', '写月报'] } },
+  });
+  try {
+    const input = view.container.querySelectorAll('[data-testid="jiuwenmate-starter-prompt-input"]')[1];
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, ' 写周报 ');
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+    assert.ok(view.container.querySelector('[data-testid="jiuwenmate-starter-prompt-duplicate"]'));
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__save-button').disabled, true);
+  } finally {
+    await view.close();
+  }
 });
 
 
