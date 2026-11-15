@@ -57,7 +57,7 @@ test('aligns the panel left edge with the trigger and clamps at the right edge',
   assert.equal(position.left, VIEWPORT.width - 200 - VIEWPORT_MARGIN);
 });
 
-test('floating panel stays inside its root, updates on trigger layout, and dismisses on outer scroll and resize', async () => {
+test('floating panel follows the trigger on scroll and resize instead of closing', async () => {
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
   // This case swaps four globals; keep each one as a plain entry so a single
   // loop can put them all back afterwards.
@@ -143,17 +143,38 @@ test('floating panel stays inside its root, updates on trigger layout, and dismi
     assert.equal(list.style.left, '420px');
     assert.equal(list.style.top, `${174 + MENU_GAP}px`);
 
-    // Scrolling inside a tall menu must keep it open and selectable.
+    // A scroll event does not bubble, so only the window's capture-phase
+    // listener can catch the pane scrolling under the trigger.
+    rects.set(trigger, rectOf(300, 100, 400, 124));
+    await act(async () => {
+      scroller.dispatchEvent(new dom.window.Event('scroll'));
+    });
+    assert.equal(list.style.left, '400px');
+    assert.equal(list.style.top, `${124 + MENU_GAP}px`);
+    assert.equal(container.querySelector('[data-testid="jiuwenmate-menu-list"]'), list);
+    assert.equal(observers[0].disconnected, false);
+
+    // A window resize re-places the panel too, instead of dismissing it.
+    rects.set(trigger, rectOf(340, 60, 440, 84));
+    await act(async () => {
+      dom.window.dispatchEvent(new dom.window.Event('resize'));
+    });
+    assert.equal(list.style.left, '440px');
+    assert.equal(list.style.top, `${84 + MENU_GAP}px`);
+    assert.equal(container.querySelector('[data-testid="jiuwenmate-menu-list"]'), list);
+
+    // Scrolling inside a tall menu re-places to the same spot and keeps it
+    // open, so a long list stays selectable.
     await act(async () => list.dispatchEvent(new dom.window.Event('scroll')));
     assert.equal(container.querySelector('[role="menu"]'), list);
-    await act(async () => scroller.dispatchEvent(new dom.window.Event('scroll')));
-    assert.equal(container.querySelector('[role="menu"]'), null);
-    assert.equal(observers[0].disconnected, true);
+    assert.equal(list.style.left, '440px');
+    assert.equal(list.style.top, `${84 + MENU_GAP}px`);
 
-    await act(async () => trigger.click());
-    await act(async () => dom.window.dispatchEvent(new dom.window.Event('resize')));
-    assert.equal(container.querySelector('[role="menu"]'), null);
-    assert.equal(observers[1].disconnected, true);
+    await act(async () => {
+      trigger.click();
+    });
+    assert.equal(container.querySelector('[data-testid="jiuwenmate-menu-list"]'), null);
+    assert.equal(observers[0].disconnected, true);
 
     // Preserve upstream's opt-in floating behavior for ordinary menus.
     await act(async () => root.render(React.createElement(ActionMenu, {
@@ -161,7 +182,7 @@ test('floating panel stays inside its root, updates on trigger layout, and dismi
     })));
     await act(async () => container.querySelector('button').click());
     assert.equal(container.querySelector('[role="menu"]').style.position, '');
-    assert.equal(observers.length, 2);
+    assert.equal(observers.length, 1);
   } finally {
     await act(async () => root.unmount());
     dom.window.close();
