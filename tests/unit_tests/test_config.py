@@ -74,31 +74,6 @@ def test_config_refreshes_same_version_build_date_and_preserves_user_values(tmp_
     assert yaml.safe_load(config.read_text(encoding="utf-8"))["config_version"] == "0.2.8.dev20261026"
 
 
-def test_config_refreshes_same_version_build_date_and_preserves_user_values(tmp_path, monkeypatch):
-    from jiuwenswarm.common import version
-
-    monkeypatch.setattr(version, "get_runtime_version", lambda: "0.2.8.dev20261026")
-    monkeypatch.setattr(version, "get_runtime_build_date", lambda: "2026-10-26")
-    template = tmp_path / "template.yaml"
-    config = tmp_path / "config.yaml"
-    template.write_text('config_version: ""\nsetting: default\nnew_option: true\n', encoding="utf-8")
-    config.write_text('# Keep this comment\nconfig_version: "0.2.8.dev20261026 · 2026-10-20"\nsetting: custom\n', encoding="utf-8")
-
-    assert migrate_config_from_template(template, config) is True
-    migrated = yaml.safe_load(config.read_text(encoding="utf-8"))
-    assert migrated["config_version"] == "0.2.8.dev20261026 · 2026-10-26"
-    assert migrated["new_option"] is True
-    assert migrated["setting"] == "custom"
-    assert "app_version" not in migrated
-    assert "build_date" not in migrated
-    assert "# Keep this comment" in config.read_text(encoding="utf-8")
-    assert migrate_config_from_template(template, config) is False
-
-    monkeypatch.setattr(version, "get_runtime_build_date", lambda: "")
-    assert migrate_config_from_template(template, config) is True
-    assert yaml.safe_load(config.read_text(encoding="utf-8"))["config_version"] == "0.2.8.dev20261026"
-
-
 @pytest.mark.parametrize(
     ("team", "extensions", "expected_dir"),
     [

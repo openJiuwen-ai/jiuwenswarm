@@ -8,18 +8,19 @@ import json
 import logging
 from typing import Any
 
+from e2a.constants import E2A_WIRE_INTERNAL_METADATA_KEYS
+from e2a.models import E2AEnvelope
+from e2a.wire_codec import (
+    encode_agent_chunk_for_wire,
+    encode_agent_response_for_wire,
+    encode_json_parse_error_wire,
+)
+
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-from jiuwenswarm.common.e2a.constants import E2A_WIRE_INTERNAL_METADATA_KEYS
 from jiuwenswarm.common.e2a.gateway_normalize import (
     E2A_FALLBACK_FAILED_KEY,
     E2A_INTERNAL_CONTEXT_KEY,
     E2A_LEGACY_AGENT_REQUEST_KEY,
-)
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.e2a.wire_codec import (
-    encode_agent_chunk_for_wire,
-    encode_agent_response_for_wire,
-    encode_json_parse_error_wire,
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod

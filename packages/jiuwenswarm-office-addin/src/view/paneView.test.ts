@@ -3,8 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { SessionId } from '../clientAttachment';
 import { applyEvent, emptyConversation, type Conversation } from '../conversationModel';
+import { documentCopy } from '../copy';
 import type { GatewayEvent, JsonObject } from '../gatewayClient';
 import type { PaneState } from '../paneController';
+import { POWERPOINT } from '../powerPointApp';
 import { ENTER_GUARD_MS } from './interaction';
 import { mountPane } from './paneView';
 
@@ -25,7 +27,8 @@ const PERMISSION: JsonObject = {
 };
 
 function conversationOf(...events: [string, JsonObject][]): Conversation {
-  return events.map(([event, payload]): GatewayEvent => ({ event, payload })).reduce(applyEvent, emptyConversation);
+  return events.map(([event, payload]): GatewayEvent => ({ event, payload }))
+    .reduce((conversation, event) => applyEvent(conversation, event, POWERPOINT.contract), emptyConversation);
 }
 
 let ticks: (() => void)[];
@@ -69,7 +72,8 @@ function mounted(initial: Partial<PaneState> = {}) {
   };
   const root = document.createElement('div');
   document.body.replaceChildren(root);
-  mountPane(root, controller, { now: () => clockNow, every: (_ms, tick) => ticks.push(tick) });
+  mountPane(root, controller, documentCopy.presentation,
+    { now: () => clockNow, every: (_ms, tick) => ticks.push(tick) });
   const set = (change: Partial<PaneState>): void => {
     state = { ...state, ...change };
     listeners.forEach(listener => listener(state));
@@ -339,7 +343,7 @@ describe('the tool timeline', () => {
     expect(text('.step:last-child .step-time')).toBe('2 秒');
 
     set({ conversation: applyEvent(running, { event: 'chat.tool_result', payload: { tool_result: {
-      tool_call_id: 'c2', status: 'success' } } }) });
+      tool_call_id: 'c2', status: 'success' } } }, POWERPOINT.contract) });
     expect(text('.activity-summary')).toBe('查看过程');
     expect(root.querySelector('.activity-steps')!.hasAttribute('hidden')).toBe(false);
     root.querySelector<HTMLButtonElement>('.activity-head')!.click();

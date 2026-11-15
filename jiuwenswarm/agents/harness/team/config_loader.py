@@ -121,6 +121,32 @@ def resolve_team_sqlite_db_path(config_base: dict[str, Any] | None = None) -> Pa
     return get_agent_teams_home() / conn_str
 
 
+def resolve_team_runtime_database_config(config_base: dict[str, Any] | None = None):
+    """Database handle for team runtime reads outside a live TeamAgent.
+
+    Enterprise uses the deployment database. Personal edition uses the sqlite
+    file from team config. ``None`` means that sqlite path cannot be resolved.
+    """
+    from openjiuwen.agent_teams.schema.blueprint import StorageSpec
+    from openjiuwen.agent_teams.tools.database.config import DatabaseConfig
+
+    from jiuwenswarm.enterprise.team.runtime_storage import enterprise_team_runtime_storage
+
+    deployed = enterprise_team_runtime_storage()
+    if deployed is not None:
+        return StorageSpec(
+            type=str(deployed["type"]),
+            params=dict(deployed.get("params") or {}),
+        ).build()
+
+    if config_base is None:
+        config_base = get_config()
+    db_path = resolve_team_sqlite_db_path(config_base)
+    if db_path is None:
+        return None
+    return DatabaseConfig(db_type="sqlite", connection_string=str(db_path))
+
+
 def _entry_model_name(entry: dict[str, Any] | None) -> str:
     if not isinstance(entry, dict):
         return ""
@@ -691,9 +717,15 @@ def load_team_spec_dict(
     elif "predefined_members" in spec_dict:
         spec_dict.pop("predefined_members", None)
 
-    storage_raw = team_raw.get("storage", {})
-    if storage_raw:
-        spec_dict["storage"] = _resolve_storage_config(storage_raw)
+    from jiuwenswarm.enterprise.team.runtime_storage import enterprise_team_runtime_storage
+
+    deployed = enterprise_team_runtime_storage()
+    if deployed is not None:
+        spec_dict["storage"] = deployed
+    else:
+        storage_raw = team_raw.get("storage", {})
+        if storage_raw:
+            spec_dict["storage"] = _resolve_storage_config(storage_raw)
 
     logger.info(
         "[TeamConfigLoader] team config loaded: team_name=%s, lifecycle=%s, agents=%s, predefined_members=%s",

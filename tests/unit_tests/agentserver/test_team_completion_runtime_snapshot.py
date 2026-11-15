@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from jiuwenswarm.common.e2a.wire_codec import encode_agent_chunk_for_wire
+from e2a.wire_codec import encode_agent_chunk_for_wire
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.session.model import (

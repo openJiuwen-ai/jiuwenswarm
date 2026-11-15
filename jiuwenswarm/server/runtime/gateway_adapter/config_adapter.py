@@ -15,8 +15,9 @@ import sys
 from types import SimpleNamespace
 from typing import Any
 
+from e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
+
 from jiuwenswarm.common.config import resolve_env_vars
-from jiuwenswarm.common.e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.gateway_adapter.base import GatewayAdapter, build_error_response

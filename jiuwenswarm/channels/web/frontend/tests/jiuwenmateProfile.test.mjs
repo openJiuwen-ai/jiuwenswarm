@@ -13,11 +13,13 @@ globalThis.window = browser.window;
 globalThis.document = browser.window.document;
 const { createRoot } = await import('react-dom/client');
 
+const { JiuwenMateApp } = await import('../node_modules/.cache/jiuwenmate-profile/JiuwenMateApp.js');
 const { ColleagueProfilePage } = await import('../node_modules/.cache/jiuwenmate-profile/pages/ColleagueProfilePage.js');
 const { OfficeDashboardPage } = await import('../node_modules/.cache/jiuwenmate-profile/pages/OfficeDashboardPage.js');
 const { ScheduleBoard } = await import('../node_modules/.cache/jiuwenmate-profile/schedules/ScheduleBoard.js');
 const { ColleagueDeleteDialog } = await import('../node_modules/.cache/jiuwenmate-profile/components/ColleagueDeleteDialog.js');
 const { ImAuthorizeDialog } = await import('../node_modules/.cache/jiuwenmate-profile/components/ImAuthorizeDialog.js');
+const { webClient } = await import('../node_modules/.cache/jiuwenmate-profile/webClient.js');
 
 const zh = JSON.parse(readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8'));
 const en = JSON.parse(readFileSync(new URL('../src/i18n/locales/en.json', import.meta.url), 'utf8'));
@@ -49,6 +51,88 @@ const colleague = {
 const feishuConnection = { channel: 'feishu', connectionKey: 'cli-app', agentId: 'agent-feishu', workspaceDir: null };
 
 const noop = () => undefined;
+
+for (const { language, expectedMessage, rejects } of [
+  { language: 'zh', expectedMessage: '解除连接成功' },
+  { language: 'en', expectedMessage: 'Disconnected' },
+  { language: 'zh', rejects: true },
+]) {
+  test(`Feishu unbind ${rejects ? 'shows only the error when rejected' : `confirms success before refreshing the profile in ${language}`}`, async (t) => {
+    const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
+    const { window: previousWindow, document: previousDocument, IS_REACT_ACT_ENVIRONMENT: previousAct } = globalThis;
+    globalThis.window = dom.window;
+    globalThis.document = dom.window.document;
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const root = createRoot(document.getElementById('root'));
+    const find = (id) => document.querySelector(`[data-testid="${id}"]`);
+    const click = async (selector) => {
+      const button = document.querySelector(selector);
+      assert.ok(button, `Missing ${selector}`);
+      await act(async () => button.click());
+    };
+    const { promise: unbindResult, resolve: finishUnbind, reject: rejectUnbind } = deferred();
+    const { promise: refreshResult, resolve: finishRefresh } = deferred();
+    const wireColleague = { agent_id: 'agent-1', config_id: 'agent-1', name: 'Test colleague' };
+    const unbindMethod = 'channel.feishu.unbind_agent';
+    const refreshMethod = 'jiuwenmate.colleague.get';
+    const request = t.mock.method(webClient, 'request', async (method) => {
+      if (method === 'group.list') return { groups: [], total: 0 };
+      if (method === 'jiuwenmate.colleague.list') {
+        return { colleagues: [{
+          ...wireColleague,
+          connections: [{ channel: 'feishu', connection_key: 'cli-app', agent_id: 'agent-feishu' }],
+        }] };
+      }
+      if (method === unbindMethod) return unbindResult;
+      if (method === refreshMethod) return refreshResult;
+      return {};
+    });
+    const noticeId = 'jiuwenmate-profile-im-notice';
+    try {
+      await i18n.changeLanguage(language);
+      await act(async () => root.render(React.createElement(JiuwenMateApp, { onExit: noop, renderExistingPage: noop })));
+      await click('.jiuwenmate-colleague-card__action--primary');
+      await click('[data-testid="jiuwenmate-profile-section"][data-variant="channels"]');
+      await click('[data-testid="jiuwenmate-profile-im-remove"]');
+      await click('[data-testid="jiuwenmate-confirm-button"]');
+
+      const callsFor = (method) => request.mock.calls.filter(({ arguments: args }) => args[0] === method);
+      assert.deepEqual(callsFor(unbindMethod).map(({ arguments: args }) => args[1]), [{ app_id: 'cli-app' }]);
+      assert.equal(find(noticeId), null);
+      assert.equal(callsFor(refreshMethod).length, 0);
+
+      if (rejects) {
+        await act(async () => rejectUnbind(new Error('Unbind rejected')));
+        assert.equal(find(noticeId), null);
+        assert.match(find('jiuwenmate-action-error').textContent, /Unbind rejected/);
+        assert.ok(find('jiuwenmate-profile-im-remove'));
+        assert.equal(callsFor(refreshMethod).length, 0);
+      } else {
+        await act(async () => finishUnbind({ unbound: true }));
+        const notification = find(noticeId);
+        assert.ok(notification);
+        assert.equal(notification.getAttribute('role'), 'status');
+        assert.equal(notification.textContent, expectedMessage);
+        assert.ok(find('jiuwenmate-profile-im-remove'));
+        assert.equal(callsFor(refreshMethod).length, 1);
+        await act(async () => finishRefresh({ colleague: wireColleague }));
+        assert.equal(find('jiuwenmate-profile-im-remove'), null);
+      }
+    } finally {
+      await act(async () => {
+        root.unmount();
+        t.mock.timers.tick(1000);
+      });
+      dom.window.close();
+      globalThis.window = previousWindow;
+      globalThis.document = previousDocument;
+      globalThis.IS_REACT_ACT_ENVIRONMENT = previousAct;
+      await i18n.changeLanguage('zh');
+    }
+  });
+}
 
 const catalog = {
   skills: [{ name: 'report-writer', label: '报告', description: '整理周报' }],
@@ -324,8 +408,12 @@ test('DingTalk CLI is automatic and has no per-employee authorization page', () 
 
 function deferred() {
   let resolve;
-  const promise = new Promise((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject;
+  const promise = new Promise((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
 }
 
 const dingtalkConnection = { channel: 'dingtalk', connectionKey: 'ding-app', agentId: 'agent-ding', workspaceDir: null };
@@ -1973,6 +2061,50 @@ for (const language of ['zh', 'en']) {
       assert.deepEqual(created, []);
       await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
       assert.equal(created.length, 1);
+    } finally { await view.close(); await i18n.changeLanguage('zh'); }
+  });
+}
+
+for (const [language, expected] of [['zh', '已过期'], ['en', 'Expired']]) {
+  test(`finished schedule plans are expired and successful history records remain completed in ${language}`, async () => {
+    await i18n.changeLanguage(language);
+    const view = await mountDashboard({ schedules: [
+      { ...dashboardPlan, id: 'once-done', name: 'One-off', scheduleKind: 'once', runCount: 1, enabled: false, nextFireAt: null },
+      { ...dashboardPlan, id: 'period-done', name: 'Periodic', runCount: 1, enabled: false, nextFireAt: null },
+      { ...dashboardPlan, id: 'interval-done', name: 'Interval', scheduleKind: 'interval', intervalSeconds: 60, runCount: 1, enabled: false, nextFireAt: null },
+      { ...dashboardPlan, id: 'period-active', name: 'Active periodic', lastStatus: 'running', runCount: 1 },
+      { ...dashboardPlan, id: 'interval-active', name: 'Active interval', scheduleKind: 'interval', intervalSeconds: 60, lastStatus: 'running', runCount: 1 },
+    ], onLoadScheduleHistory: async () => ({ plan: dashboardPlan, runs: [
+      { requestId: 'run-ok', scheduledFor: '2026-11-10T01:00:00Z', status: 'completed', description: '' },
+      { requestId: 'run-failed', scheduledFor: '2026-11-09T01:00:00Z', status: 'failed', description: '' },
+    ] }) });
+    try {
+      await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+      const row = view.find('[data-testid="jiuwenmate-schedule-board-row"][data-variant="once-done"]');
+      assert.equal(row.querySelector('.jiuwenmate-schedule-board__status').textContent, expected);
+      for (const id of ['period-done', 'interval-done']) {
+        assert.equal(view.find(`[data-variant="${id}"] .jiuwenmate-schedule-board__status`).textContent,
+          expected);
+      }
+      for (const id of ['period-active', 'interval-active']) {
+        assert.equal(view.find(`[data-variant="${id}"] .jiuwenmate-schedule-board__status`).textContent,
+          language === 'zh' ? '运行中' : 'Running');
+      }
+      const status = view.find('select[aria-label="' + i18n.t('jiuwenmate.schedule.runStatus') + '"]');
+      assert.ok(status.querySelector('option[value="expired"]'));
+      assert.equal(status.querySelector('option[value="completed"]'), null);
+      await act(async () => {
+        status.value = 'expired';
+        status.dispatchEvent(new window.Event('change', { bubbles: true }));
+      });
+      assert.deepEqual([...view.container.querySelectorAll('[data-testid="jiuwenmate-schedule-board-row"]')]
+        .map(item => item.dataset.variant), ['once-done', 'period-done', 'interval-done']);
+      await view.click(view.find('[data-variant="once-done"] .jiuwenmate-menu__trigger'));
+      await view.click(view.find('[role="menuitem"][data-variant="history"]'));
+      const history = view.find('[data-testid="jiuwenmate-schedule-history"]');
+      assert.ok(history);
+      assert.deepEqual([...history.querySelectorAll('.jiuwenmate-schedule-history__status')].map(item => item.textContent),
+        language === 'zh' ? ['已完成', '运行失败'] : ['Completed', 'Failed']);
     } finally { await view.close(); await i18n.changeLanguage('zh'); }
   });
 }

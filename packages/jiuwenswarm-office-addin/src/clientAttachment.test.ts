@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { attachDeclaration } from './appContract';
 import { ClientAttachment, type SessionId } from './clientAttachment';
+import { ClientToolDispatcher, type ClientToolResponse, type ClientToolRuntime } from './clientToolDispatcher';
 import type { DocumentId } from './documentIdentity';
 import { GatewayRequestError, type GatewayEvent, type JsonObject } from './gatewayClient';
 import { HostWriteQueue } from './hostWriteQueue';
-import { PowerPointToolDispatcher, type PresentationToolRuntime } from './powerPointToolDispatcher';
-import { presentationAttachDeclaration } from './presentationContract';
-import { PRESENTATION_TOOL_NAMES, type ClientToolResponse } from './presentationToolTypes';
+import { POWERPOINT, PRESENTATION_TOOL_NAMES } from './powerPointApp';
 import type { Timer } from './workerTimer';
 
 const DOCUMENT = '3f1c2a9e-7b4d-4e8a-9c21-5d6f7a8b9c0d' as DocumentId;
@@ -87,14 +87,14 @@ const settle = () => vi.advanceTimersByTimeAsync(0);
 
 describe('ClientAttachment', () => {
   let gateway: FakeGateway;
-  let runtime: { tools: typeof ALL_TOOLS; execute: ReturnType<typeof vi.fn<PresentationToolRuntime['execute']>> };
+  let runtime: { tools: typeof ALL_TOOLS; execute: ReturnType<typeof vi.fn<ClientToolRuntime['execute']>> };
   let displayName: string;
   let createSession: ReturnType<typeof vi.fn<() => Promise<SessionId>>>;
   let attachment: ClientAttachment;
   const attachmentWith = (renewTimer: Timer) => new ClientAttachment({
     gateway,
-    executor: new PowerPointToolDispatcher(runtime, new HostWriteQueue()),
-    declaration: async () => presentationAttachDeclaration(
+    executor: new ClientToolDispatcher(POWERPOINT, runtime, new HostWriteQueue()),
+    declaration: async () => attachDeclaration(POWERPOINT,
       { documentId: DOCUMENT, displayName, host: POWERPOINT_1_4, implemented: ALL_TOOLS }),
     createSession,
     renewTimer,
@@ -108,7 +108,7 @@ describe('ClientAttachment', () => {
     gateway.answer('chat.send', { accepted: true });
     runtime = {
       tools: ALL_TOOLS,
-      execute: vi.fn<PresentationToolRuntime['execute']>(async () => ({ ok: true, result: { slide_count: 3 } })),
+      execute: vi.fn<ClientToolRuntime['execute']>(async () => ({ ok: true, result: { slide_count: 3 } })),
     };
     displayName = 'Deck.pptx';
     createSession = vi.fn(async () => S2);
@@ -275,11 +275,11 @@ describe('ClientAttachment', () => {
     let reads = 0;
     attachment = new ClientAttachment({
       gateway,
-      executor: new PowerPointToolDispatcher(runtime, new HostWriteQueue()),
+      executor: new ClientToolDispatcher(POWERPOINT, runtime, new HostWriteQueue()),
       declaration: async () => {
         reads += 1;
         if (reads === 2) throw new Error('Office settings unavailable');
-        return presentationAttachDeclaration(
+        return attachDeclaration(POWERPOINT,
           { documentId: DOCUMENT, displayName, host: POWERPOINT_1_4, implemented: ALL_TOOLS });
       },
       createSession,

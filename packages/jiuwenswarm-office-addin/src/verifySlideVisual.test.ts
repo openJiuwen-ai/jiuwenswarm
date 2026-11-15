@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { HostWriteQueue } from './hostWriteQueue';
-import { PowerPointToolDispatcher, type PresentationToolRuntime } from './powerPointToolDispatcher';
-import { PRESENTATION_TOOL_NAMES } from './presentationToolTypes';
+import { ClientToolDispatcher, type ClientToolRuntime } from './clientToolDispatcher';
+import { POWERPOINT, PRESENTATION_TOOL_NAMES } from './powerPointApp';
 
-vi.mock('@contract/tools.json', async importOriginal => {
+vi.mock('@office/powerpoint/tools.json', async importOriginal => {
   const { default: tools } = await importOriginal<{ default: object[] }>();
   return { default: [...tools, {
     name: 'verify_slide_visual', annotations: { mutating: false }, host_requirements: { powerpoint_api: '1.8' },
@@ -14,9 +14,9 @@ vi.mock('@contract/tools.json', async importOriginal => {
 describe('verify_slide_visual, with the contract of the backend review', () => {
   it('answers the capture with slide_id and geometry at the top level and one render', async () => {
     const geometry = { width: 960, height: 540, shapes: [{ id: '2', left: 40, top: 30, width: 880, height: 80 }] };
-    const execute = vi.fn<PresentationToolRuntime['execute']>(async () => (
+    const execute = vi.fn<ClientToolRuntime['execute']>(async () => (
       { ok: true, result: { slide_id: '256', geometry }, imageBase64: 'iVBORw0KGgo=' }));
-    const dispatcher = new PowerPointToolDispatcher(
+    const dispatcher = new ClientToolDispatcher(POWERPOINT,
       { tools: new Set(PRESENTATION_TOOL_NAMES), execute }, new HostWriteQueue());
 
     const result = await dispatcher.execute({

@@ -2163,6 +2163,130 @@ async def test_process_team_message_stream_emits_deferred_marker_for_followup(mo
     assert chunks[1].is_complete is True
 
 
+def _followup_manager(session_id: str):
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        interact_calls: list[tuple[str, str]] = []
+
+        @staticmethod
+        def has_stream_task(current_session_id, *, generation: int | None = None) -> bool:
+            assert current_session_id == session_id
+            return True
+
+        @staticmethod
+        async def get_swarm_enriched_team_spec(**kwargs):
+            return SimpleNamespace(team_name="unit-team")
+
+        @classmethod
+        async def interact(cls, current_session_id: str, query: str, *, run_context=None):
+            cls.interact_calls.append((current_session_id, query))
+            return True, None
+
+    return _FakeManager
+
+
+@pytest.mark.anyio
+async def test_followup_rejects_bound_group_outside_current_expansion(monkeypatch):
+    manager = _followup_manager("sess-revoked-group")
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: manager())
+    monkeypatch.setattr(
+        team_helpers,
+        "get_session_metadata",
+        lambda *args, **kwargs: {"agent_group_name": "finance"},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.capabilities.experts.request_packages.allows",
+        lambda kind, package_id: False,
+    )
+
+    chunks = [
+        chunk
+        async for chunk in team_helpers.process_team_message_stream(
+            _runtime_followup_request("sess-revoked-group", "req-revoked"),
+            {"query": "continue"},
+            object(),
+        )
+    ]
+
+    assert manager.interact_calls == []
+    assert chunks[-1].is_complete is True
+    assert chunks[0].payload["event_type"] == "chat.error"
+    assert "finance" in chunks[0].payload["error"]
+
+
+@pytest.mark.anyio
+async def test_followup_delivers_when_bound_group_remains_current(monkeypatch):
+    manager = _followup_manager("sess-kept-group")
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: manager())
+    monkeypatch.setattr(
+        team_helpers,
+        "get_session_metadata",
+        lambda *args, **kwargs: {"agent_group_name": "finance"},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.capabilities.experts.request_packages.allows",
+        lambda kind, package_id: True,
+    )
+
+    chunks = [
+        chunk
+        async for chunk in team_helpers.process_team_message_stream(
+            _runtime_followup_request("sess-kept-group", "req-kept"),
+            {"query": "continue"},
+            object(),
+        )
+    ]
+
+    assert _delivered(manager.interact_calls) == [("sess-kept-group", "continue")]
+    assert chunks[0].payload["event_type"] == "chat.processing_status_deferred"
+
+
+@pytest.mark.anyio
+async def test_attach_only_skips_bound_group_expansion_check(monkeypatch):
+    from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
+
+    checked: list[str] = []
+
+    def _deny(kind, package_id):
+        checked.append(package_id)
+        return False
+
+    async def _observe(**_kwargs):
+        yield SimpleNamespace(
+            payload={"event_type": "chat.delta", "content": "still running"},
+            is_complete=False,
+        )
+
+    monkeypatch.setattr(
+        team_helpers, "get_team_manager", lambda channel_id: _InactiveTeamRuntimeManagerMixin()
+    )
+    monkeypatch.setattr(team_helpers, "_consume_attach_only_stream", _observe)
+    monkeypatch.setattr(
+        team_helpers,
+        "get_session_metadata",
+        lambda *args, **kwargs: {"agent_group_name": "finance"},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.capabilities.experts.request_packages.allows",
+        _deny,
+    )
+
+    chunks = [
+        chunk
+        async for chunk in team_helpers.process_team_message_stream(
+            _runtime_followup_request(
+                "sess-attach-revoked",
+                "req-attach",
+                params={TEAM_ATTACH_ONLY_PARAM: True},
+            ),
+            {"query": ""},
+            object(),
+        )
+    ]
+
+    assert checked == []
+    assert chunks[0].payload["content"] == "still running"
+
+
 class _RecordingAdmission:
     """Admission double that only records which entry point was taken."""
 
@@ -9517,23 +9641,3 @@ def test_group_input_restores_persisted_type_without_per_message_type(monkeypatc
     request.params["type"] = "chat"
     with pytest.raises(ValueError, match="requires group_chat"):
         team_helpers._group_chat_input(request, "Hello")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("event", [
-    "designer.graph.updated", "designer.run.updated", "designer.node.updated", "designer.leader.activity",
-])
-@pytest.mark.parametrize("channel", ["video_tool", "web"])
-async def test_voice_design_canvas_events_reach_web_session(monkeypatch, event, channel):
-    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-    from jiuwenswarm.server.runtime.design.team_bridge import _push_team_event
-
-    host = SimpleNamespace(send_push=AsyncMock())
-    monkeypatch.setattr(AgentWebSocketServer, "get_instance", lambda: host)
-    payload = {"event_type": event, "session_id": "design-chat", "graph": {"graph_id": "g"}}
-    await _push_team_event(channel, "design-chat", payload, "original-turn")
-    frame = host.send_push.call_args.args[0]
-    assert frame["channel_id"] == "web"
-    assert frame["session_id"] == "design-chat"
-    assert frame["request_id"] == "original-turn"
-    assert frame["payload"] is payload

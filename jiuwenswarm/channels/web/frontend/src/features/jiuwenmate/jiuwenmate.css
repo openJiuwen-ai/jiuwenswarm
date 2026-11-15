@@ -640,6 +640,8 @@
 }
 
 .jiuwenmate-menu__list {
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   position: absolute;
   z-index: 40;
   top: calc(100% + 4px);
@@ -3234,6 +3236,10 @@
 
 .jiuwenmate-schedule-board__status {
   gap: 6px;
+}
+
+.jiuwenmate-schedule-board__status[data-tone='expired'] i {
+  background: var(--jm-text-3);
 }
 
 .jiuwenmate-schedule-board__status[data-tone='completed'] i {

@@ -6,14 +6,14 @@
 
 | 目录 | 用途 | 说明 |
 |---|---|---|
-| `tests/unit_tests/` | 单元测试 | 主力目录，约 980 个测试文件 |
-| `tests/unit/` | 早期单元测试 | 8 个测试文件，`make test-unit` 不包含 |
-| `tests/integration/` | 集成测试 | 5 个测试文件，`make test-integration` 的筛选目录 |
+| `tests/unit_tests/` | 单元测试 | 主力目录，约 1180 个测试文件 |
+| `tests/unit/` | 早期单元测试 | 7 个测试文件，`make test-unit` 不包含 |
+| `tests/integration/` | 集成测试 | 8 个测试文件，`make test-integration` 的筛选目录 |
 | `tests/system_tests/` | 系统测试 | 需要完整运行环境 |
 | `tests/ui_e2e/` | UI 端到端 | 需要 Playwright 和已启动的服务 |
 | `tests/electron/` | Electron 桌面端 | Node/CJS 用例 |
 | `tests/frontend/` | 前端单点用例 | `.mjs` 文件，由 Node 运行 |
-| `tests/agents/`、`tests/auth/`、`tests/symphony/` | 模块级测试 | 按领域划分 |
+| `tests/agents/`、`tests/symphony/` | 模块级测试 | 按领域划分 |
 
 运行前请注意两点：
 

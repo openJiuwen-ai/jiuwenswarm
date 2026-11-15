@@ -39,6 +39,11 @@ from agent_gateway.common.session_message import (
 )
 from agent_gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
 from agent_gateway.extensions.registry import ExtensionRegistry
+from e2a.constants import (
+    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
+    E2A_INTERNAL_CANCEL_SOURCE_KEY,
+)
+
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_EXECUTE_OPTION_VALUES,
     PLAN_REMINDER_ORIGINAL_QUERY_KEY,
@@ -83,10 +88,6 @@ from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.context_keys import (
     JIUWENSWARM_CHANNEL_CONTEXT_KEY,
     JIUWENSWARM_SKIP_A2UI_CONTEXT_KEY,
-)
-from jiuwenswarm.common.e2a.constants import (
-    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
-    E2A_INTERNAL_CANCEL_SOURCE_KEY,
 )
 from jiuwenswarm.common.hook_event import AgentServerHookEvents
 from jiuwenswarm.common.hooks_context import MemoryHookContext
@@ -621,6 +622,30 @@ def _resolve_final_record_timestamp(
     if isinstance(extra_fields, dict):
         extra_fields.setdefault("completed_at", completed_at)
     return segment_started_at
+
+
+async def persist_cancelled_llm_usage(
+    chunk: AgentResponseChunk, *, request: AgentRequest, session_id: str,
+) -> None:
+    """Preserve an accepted usage event when its output consumer has closed."""
+    payload = chunk.payload
+    extra = {key: value for key, value in payload.items() if key not in ("event_type", "content")}
+    params = request.params if isinstance(request.params, dict) else {}
+    extra = with_cross_session_history_metadata(
+        _with_heartbeat_history_metadata(
+            _with_web_agent_template_metadata(
+                extra, params, request.channel_id, event_type="chat.usage_metadata", payload=payload,
+            ), params,
+        ), _cross_session_marker_from_params(params),
+    ) or {}
+    timestamp = resolve_final_record_timestamp(
+        event_type="chat.usage_metadata", segment_started_at=None, extra_fields=extra,
+    )
+    await _run_history_io(
+        append_history_record, session_id=session_id, request_id=request.request_id,
+        channel_id=request.channel_id, role="assistant", event_type="chat.usage_metadata",
+        content="", timestamp=timestamp, extra=extra, mode=params.get("mode", "unknown"),
+    )
 
 
 def _history_media_string(item: dict[str, Any], *keys: str) -> str | None:

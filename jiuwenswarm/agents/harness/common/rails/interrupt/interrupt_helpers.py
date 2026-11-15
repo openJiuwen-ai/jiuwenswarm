@@ -235,7 +235,7 @@ def build_permission_rail(
         AUTHORIZATION_EXECUTION_CONTEXTS,
     )
     from jiuwenswarm.common.config import get_config
-    from jiuwenswarm.common.e2a.acp.acp_tool_updates import build_acp_tool_descriptor
+    from e2a.acp.acp_tool_updates import build_acp_tool_descriptor
     from jiuwenswarm.common.utils import get_config_file
 
     from jiuwenswarm.agents.harness.common.a4p.preflight import unregister_preflight_rail

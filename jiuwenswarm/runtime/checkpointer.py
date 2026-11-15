@@ -279,6 +279,9 @@ async def ensure_persistent_checkpointer() -> None:
             checkpointer = await CheckpointerFactory.create(
                 CheckpointerConfig(type="persistence", conf=conf),
             )
+            from jiuwenswarm.runtime.context_checkpointer import ContextCheckpointer
+
+            checkpointer = ContextCheckpointer(checkpointer)
             _shared_checkpointer = checkpointer
             CheckpointerFactory.set_default_checkpointer(checkpointer)
             _PERSISTENT_CHECKPOINTER_READY = True

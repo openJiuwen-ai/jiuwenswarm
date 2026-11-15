@@ -762,9 +762,7 @@ class TeamManager:
                     task_id = str(task["task_id"])
                     status = task.get("status")
                     task_type = str(task.get("type") or "")
-                    if status in {"completed", "cancelled", "failed"} or task_type.endswith(
-                        (".completed", ".cancelled", ".verified")
-                    ):
+                    if self._is_terminal_team_task(event):
                         current_round.open_archive_tasks.discard(task_id)
                     elif status or task_type.endswith((".created", ".started", ".claimed")):
                         current_round.open_archive_tasks.add(task_id)
@@ -792,6 +790,12 @@ class TeamManager:
                 # opens the workflows view. Fall back to the gateway server-push
                 # side channel, which delivers events without a chat stream.
                 await self._push_event_without_waiter(
+                    session_id, event, channel_id=channel_id
+                )
+            elif self._is_terminal_team_task(event):
+                # 队长流结束时直播等待者已经摘掉。之后才到终态的子任务
+                # 进了历史，打开着的团队页收不到这帧。沿直播用的 session_live 推出去。
+                self._publish_terminal_team_task_live(
                     session_id, event, channel_id=channel_id
                 )
             elif terminal:
@@ -889,6 +893,59 @@ class TeamManager:
                 event,
             )
         return bool(waiters)
+
+    @staticmethod
+    def _is_terminal_team_task(event: dict[str, Any]) -> bool:
+        """team.task 是否把卡片收口。和回合里从进行中名单去掉任务用同一套状态。"""
+        if str(event.get("event_type") or "") != "team.task":
+            return False
+        task = event.get("event")
+        if not isinstance(task, dict):
+            return False
+        status = task.get("status")
+        task_type = str(task.get("type") or "")
+        return status in {"completed", "cancelled", "failed"} or task_type.endswith(
+            (".completed", ".cancelled", ".verified")
+        )
+
+    @staticmethod
+    def _publish_terminal_team_task_live(
+        session_id: str,
+        event: dict[str, Any],
+        *,
+        channel_id: str | None = None,
+    ) -> None:
+        """没有等待者时，把终态 team.task 推到企业版团队直播。"""
+        from jiuwenswarm.enterprise.team.push_fanout import publish
+        from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+        from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+            _build_team_event_chunk_meta,
+        )
+
+        payload = dict(event)
+        payload.setdefault("session_id", session_id)
+        try:
+            agent_ref, metadata = _build_team_event_chunk_meta(payload)
+            wire_metadata = dict(metadata or {})
+            wire_metadata["delivery_scope"] = "session_live"
+            publish(
+                build_server_push_wire(
+                    {
+                        "request_id": f"team-session-live:{session_id}",
+                        "channel_id": str(channel_id or ""),
+                        "session_id": session_id,
+                        "payload": payload,
+                        "is_complete": False,
+                        "agent_ref": agent_ref,
+                        "metadata": wire_metadata,
+                    }
+                )
+            )
+        except Exception:
+            logger.exception(
+                "[TeamManager] failed to publish terminal team.task session_id=%s",
+                session_id,
+            )
 
     @staticmethod
     def _is_workflow_terminal_event(event: dict[str, Any]) -> bool:

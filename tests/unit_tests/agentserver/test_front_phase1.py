@@ -538,7 +538,7 @@ async def test_front_history_restores_durable_usage_without_usage_records(
     monkeypatch: pytest.MonkeyPatch,
     query: dict,
 ) -> None:
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+    from e2a.wire_codec import parse_agent_server_wire_chunk
     from jiuwenswarm.server.front import router as router_module
     from jiuwenswarm.server.runtime.session import session_history
     from jiuwenswarm.server.runtime.session.session_token_usage import SessionTokenUsageLedger

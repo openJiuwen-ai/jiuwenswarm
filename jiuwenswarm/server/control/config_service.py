@@ -22,6 +22,8 @@ from dotenv import dotenv_values
 
 from jiuwenswarm.common.browser_settings import project_browser_decision
 from jiuwenswarm.common.cua_config import cua_backend_settings, is_cua_agent_enabled
+from jiuwenswarm.common.moa_config import flatten_moa_for_config_panel
+from jiuwenswarm.common.permission_mode import canonical_permission_facade, permission_profile
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_config_file, get_env_file
@@ -78,6 +80,9 @@ _CONFIG_SET_ENV_MAP = {
     "audio_vendor_key": "AUDIO_VENDOR_KEY",
     "audio_plan": "AUDIO_PLAN",
     "audio_enabled": "AUDIO_ENABLED",
+    "asr_api_base": "ASR_API_BASE",
+    "asr_api_key": "ASR_API_KEY",
+    "asr_model": "ASR_MODEL_NAME",
     "vision_api_base": "VISION_API_BASE",
     "vision_api_key": "VISION_API_KEY",
     "vision_model": "VISION_MODEL_NAME",
@@ -417,6 +422,21 @@ def get_panel() -> dict[str, Any]:
         param_key: (environment.get(env_key) or "")
         for param_key, env_key in _CONFIG_SET_ENV_MAP.items()
     }
+    # Decrypt at the configuration owner; Gateway may use a different provider.
+    asr_key = payload.get("asr_api_key")
+    if asr_key:
+        from jiuwenswarm.common.security.base_crypto import get_crypto_provider
+
+        crypto = get_crypto_provider()
+        if crypto is not None:
+            try:
+                payload["asr_api_key"] = str(crypto.decrypt(asr_key))
+            except Exception:
+                payload["asr_api_key"] = ""
+                payload["asr_credential_error"] = "ASR credential decryption failed at AgentServer"
+            else:
+                payload["asr_api_key_decrypted"] = True
+
     payload["app_version"] = get_runtime_version()
     runtime_platform = (
         (os.getenv("JIUWENSWARM_RUNTIME_PLATFORM") or "").strip().lower() or "default"
@@ -426,6 +446,7 @@ def get_panel() -> dict[str, Any]:
     payload.update(cua_backend_settings())
     try:
         raw = _read_raw_config()
+        payload.update(flatten_moa_for_config_panel(raw))
         setup_guide_cfg = raw.get("setup_guide") or {}
         payload["setup_guide_enabled"] = _bool_text(
             setup_guide_cfg.get("enabled", True), True
@@ -440,11 +461,13 @@ def get_panel() -> dict[str, Any]:
             "true" if _affinity_enabled(raw) else "false"
         )
         perm_cfg = raw.get("permissions") or {}
-        payload["permissions_enabled"] = _bool_text(perm_cfg.get("enabled"), False)
+        payload.update(canonical_permission_facade(permission_profile(perm_cfg)))
         evolution_cfg = (raw.get("react") or {}).get("evolution") or {}
         payload["skill_evolution"] = _bool_text(
             evolution_cfg.get("skill_evolution"), False
         )
+        ttse_cfg = react_cfg.get("ttse") or {}
+        payload["ttse_enabled"] = _bool_text(ttse_cfg.get("enabled"), False)
         memory_cfg = (raw.get("memory") or {}).get("forbidden_memory_definition") or {}
         payload["memory_forbidden_enabled"] = _bool_text(memory_cfg.get("enabled"), False)
         payload["memory_forbidden_description"] = memory_cfg.get("description") or {}
@@ -507,12 +530,16 @@ def get_panel() -> dict[str, Any]:
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[config_service] panel yaml merge failed: %s", exc)
+        for key, value in flatten_moa_for_config_panel({}).items():
+            payload.setdefault(key, value)
         payload.setdefault("context_engine_enabled", "false")
         payload.setdefault("cua_agent_enabled", "true" if is_cua_agent_enabled(None) else "false")
         payload.setdefault("kv_cache_affinity_enabled", "false")
         payload.setdefault("permissions_enabled", "false")
+        payload.setdefault("permissions_profile", "full_access")
         payload.setdefault("setup_guide_enabled", "true")
         payload.setdefault("skill_evolution", "false")
+        payload.setdefault("ttse_enabled", "false")
         payload.setdefault("memory_forbidden_enabled", "false")
         payload.setdefault("memory_forbidden_description", "")
         payload.setdefault("a2ui_enabled", "false")

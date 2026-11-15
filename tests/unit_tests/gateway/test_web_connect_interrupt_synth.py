@@ -19,7 +19,7 @@ import pytest
 
 from agent_gateway.channel_manager.web.web_connect import WebChannel
 from agent_gateway.routing.keys import AgentRef, RoutingKey
-from openjiuwen_protocol.message import EventType, Message
+from e2a.message import EventType, Message
 
 SESSION_ID = "sess-synth"
 
