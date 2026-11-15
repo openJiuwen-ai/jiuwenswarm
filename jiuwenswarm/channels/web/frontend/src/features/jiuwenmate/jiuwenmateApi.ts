@@ -554,7 +554,7 @@ export function toWireSettings(
       connectors: filled(capabilities.connectors),
       plugins: filled(capabilities.plugins),
       knowledge: filled(capabilities.knowledge),
-      starter_prompts: filled(capabilities.starterPrompts),
+      starter_prompts: [...new Set(filled(capabilities.starterPrompts))],
     },
   };
 }

@@ -4338,7 +4338,8 @@
         "idInvalid": "Use only letters, numbers, dots, underscores and hyphens",
         "nameRequired": "Enter an Expert name",
         "descriptionRequired": "Enter a capability description",
-        "personaRequired": "Enter a persona"
+        "personaRequired": "Enter a persona",
+        "promptDuplicateAt": "Duplicates the recommended prompt at position {{index}}"
       }
     },
     "group": {
@@ -4431,7 +4432,8 @@
           "descriptionRequired": "Enter an Expert Team capability description",
           "personaRequired": "Enter an Expert Team introduction",
           "leaderRequired": "Choose a leader Expert",
-          "membersRequired": "Choose at least one member Expert"
+          "membersRequired": "Choose at least one member Expert",
+          "promptDuplicateAt": "Duplicates the recommended prompt at position {{index}}"
         }
       },
       "picker": {
@@ -6106,6 +6108,7 @@
       },
       "starterPromptsLimit": "Up to {{count}} prompts",
       "starterPromptDuplicate": "Duplicates an earlier prompt; only one is kept when saved",
+      "duplicatePromptSummary": "Duplicate quick asks exist. Edit them before creating.",
       "empty": {
         "skills": "No skills",
         "connectors": "No connectors",

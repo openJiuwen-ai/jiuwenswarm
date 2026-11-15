@@ -4335,7 +4335,8 @@
         "idInvalid": "只能使用字母、数字、点、下划线和连字符",
         "nameRequired": "请输入专家名称",
         "descriptionRequired": "请输入能力介绍",
-        "personaRequired": "请输入专家人设"
+        "personaRequired": "请输入专家人设",
+        "promptDuplicateAt": "与第 {{index}} 条推荐短语重复"
       }
     },
     "group": {
@@ -4428,7 +4429,8 @@
           "descriptionRequired": "请输入专家团能力介绍",
           "personaRequired": "请输入专家团介绍",
           "leaderRequired": "请选择负责人",
-          "membersRequired": "请至少选择一名成员"
+          "membersRequired": "请至少选择一名成员",
+          "promptDuplicateAt": "与第 {{index}} 条推荐短语重复"
         }
       },
       "picker": {
@@ -6103,6 +6105,7 @@
       },
       "starterPromptsLimit": "最多添加 {{count}} 条",
       "starterPromptDuplicate": "与上面的问题重复，保存时只保留一条",
+      "duplicatePromptSummary": "存在重复的快捷问，请修改后再创建",
       "empty": {
         "skills": "暂无技能",
         "connectors": "暂无连接器",
