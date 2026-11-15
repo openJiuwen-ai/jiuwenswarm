@@ -114,7 +114,10 @@ async def dispatch_a4p_request(request: AgentRequest) -> AgentResponse:
             )
         return await _dispatch_config(request)
 
-    enabled = is_a4p_enabled()
+    session_id = str(
+        params.get("session_id") or getattr(request, "session_id", "") or ""
+    ).strip()
+    enabled = is_a4p_enabled(session_id=session_id)
     if not enabled and method == ReqMethod.A4P_AUTHORIZATION_PENDING:
         return _ok(request, {"ok": True, "pending": None})
     if not enabled and method not in _A4P_MANAGEMENT_METHODS:

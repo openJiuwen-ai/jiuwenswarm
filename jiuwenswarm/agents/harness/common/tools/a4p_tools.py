@@ -244,13 +244,18 @@ async def request_a4p_intent_authorization(
     _session_id: str | None = None,
 ) -> dict[str, Any]:
     """Request a user-authorized A4P intent token for future tool calls."""
-    if not is_a4p_preauthorization_active(get_config()):
+    session_id = str(_session_id or "").strip()
+    # Enterprise: prefer session-bound a4p+permissions from config_base; process
+    # get_config() often still has a4p/permissions disabled.
+    if not is_a4p_preauthorization_active(
+        None if session_id else get_config(),
+        session_id=session_id or None,
+    ):
         return {
             "ok": False,
             "error": "A4P preauthorization is available only in default permission mode with A4P enabled",
             "code": "A4P_DISABLED",
         }
-    session_id = str(_session_id or "").strip()
     execution_context = AUTHORIZATION_EXECUTION_CONTEXTS.get(session_id)
     if execution_context is not None and execution_context.is_cron_execution:
         return {

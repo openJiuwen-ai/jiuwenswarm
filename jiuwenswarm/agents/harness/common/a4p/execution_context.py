@@ -83,6 +83,18 @@ class AuthorizationExecutionContextStore:
     def get(self, session_id: str | None) -> AuthorizationExecutionContext | None:
         return self._contexts.get(str(session_id or "").strip())
 
+    def get_by_request_id(
+        self, request_id: str | None,
+    ) -> AuthorizationExecutionContext | None:
+        """Fallback lookup when session_id from the tool ctx does not match."""
+        rid = str(request_id or "").strip()
+        if not rid:
+            return None
+        for context in self._contexts.values():
+            if context.request_id == rid:
+                return context
+        return None
+
     def release(self, session_id: str | None, request_id: str | None) -> None:
         sid = str(session_id or "").strip()
         current = self._contexts.get(sid)
@@ -130,6 +142,47 @@ def _agent_ref_parts(agent_ref: Any, mode: str) -> tuple[str, str]:
     )
 
 
+def _merge_cron_metadata(
+    metadata: dict[str, Any],
+    params: dict[str, Any],
+    *,
+    request_id: str = "",
+) -> dict[str, Any]:
+    """Ensure metadata.cron.job_id is present for A4P cron token lookup.
+
+    Gateway puts cron both on params and channel_context; some AS paths only
+    keep params. Also parse ``cron-{job_id}:{ts}`` request ids as a last resort.
+    """
+    merged = dict(metadata)
+    cron = merged.get("cron")
+    cron_dict = dict(cron) if isinstance(cron, dict) else {}
+    params_cron = params.get("cron")
+    if isinstance(params_cron, dict):
+        for key, value in params_cron.items():
+            cron_dict.setdefault(key, value)
+    cron_id = str(
+        cron_dict.get("job_id")
+        or cron_dict.get("jobId")
+        or params.get("cron_id")
+        or merged.get("cron_id")
+        or ""
+    ).strip()
+    if not cron_id:
+        rid = str(request_id or merged.get("request_id") or "").strip()
+        # cron-{job_id}:{unix_ts} / cron-session-create-{job_id}:{unix_ts}
+        if rid.startswith("cron-"):
+            body = rid[len("cron-") :]
+            if body.startswith("session-create-"):
+                body = body[len("session-create-") :]
+            job_part, sep, ts = body.rpartition(":")
+            if sep and ts.isdigit() and job_part.strip():
+                cron_id = job_part.strip()
+    if cron_id:
+        cron_dict["job_id"] = cron_id
+        merged["cron"] = cron_dict
+    return merged
+
+
 def build_authorization_execution_context(
     request: Any,
     *,
@@ -150,6 +203,8 @@ def build_authorization_execution_context(
         if isinstance(getattr(request, "params", None), dict)
         else {}
     )
+    request_id = str(getattr(request, "request_id", None) or "").strip()
+    metadata = _merge_cron_metadata(metadata, params, request_id=request_id)
     req_method = getattr(request, "req_method", None)
     req_method_value = str(getattr(req_method, "value", req_method) or "").strip()
     is_background_request = (
@@ -167,7 +222,7 @@ def build_authorization_execution_context(
             ws_id=ws_id,
         )
     return AuthorizationExecutionContext(
-        request_id=str(getattr(request, "request_id", None) or "").strip(),
+        request_id=request_id,
         session_id=session_id,
         channel_id=channel_id,
         agent_id=str(agent_id or "").strip(),
