@@ -52,7 +52,7 @@ class AppMarketPlugin(ApplicationPluginExtension):
         )
 
         def owner(ws):
-            from gateway.channel_manager.web.web_connect import WebChannel
+            from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
             return WebChannel.connection_user_id(ws) or ""
 
         async def handle_publish(ws, req_id, params, session_id):  # noqa: ANN001
@@ -133,7 +133,7 @@ class AppMarketPlugin(ApplicationPluginExtension):
             await channel.send_response(ws, req_id, ok=ok, payload={"deleted": ok})
 
         async def handle_edit_session(ws, req_id, params, session_id):
-            from gateway.routing.e2a_proxy import fetch_agent_unary
+            from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
 
             del session_id
             params = params if isinstance(params, dict) else {}
