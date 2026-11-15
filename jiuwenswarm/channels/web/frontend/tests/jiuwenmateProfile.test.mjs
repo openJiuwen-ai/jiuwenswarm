@@ -2108,3 +2108,37 @@ for (const [language, expected] of [['zh', '已过期'], ['en', 'Expired']]) {
     } finally { await view.close(); await i18n.changeLanguage('zh'); }
   });
 }
+
+test('a failed schedule save keeps its reason while unrelated fields are edited', async () => {
+  const attempts = [];
+  const view = await mountDashboard({
+    onCreateSchedule: (...args) => {
+      attempts.push(args);
+      return attempts.length === 1 ? Promise.reject(new Error('任务未保存')) : Promise.resolve();
+    },
+  });
+  try {
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+    await view.click(view.find('.jiuwenmate-schedule-board .jiuwenmate-dark-button'));
+    await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-executor"]', 'agent-1');
+    await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-name"]', 'Drink water');
+    await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-prompt"]', 'Take a short break');
+    const dialog = () => view.find('[data-testid="jiuwenmate-schedule-dialog"]');
+    const alerts = () => dialog().querySelectorAll('[role="alert"]');
+    await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+    // The rejection lands in ScheduleDialog.save()'s catch after the click's act callback has
+    // returned, so flush the pending microtasks before reading the DOM.
+    await act(async () => undefined);
+    assert.equal(alerts().length, 1, 'A failed save shows exactly one hint');
+    assert.equal(alerts()[0].textContent, '任务未保存');
+    await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-name"]', 'Drink more water');
+    await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-prompt"]', 'Take a longer break');
+    assert.equal(alerts().length, 1, 'Editing unrelated fields must not drop the failed-save reason');
+    assert.equal(alerts()[0].textContent, '任务未保存');
+    assert.equal(attempts.length, 1, 'Editing fields must not resubmit');
+    await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+    await act(async () => undefined);
+    assert.equal(attempts.length, 2);
+    assert.equal(dialog(), null, 'A successful retry closes the dialog and with it the hint');
+  } finally { await view.close(); }
+});

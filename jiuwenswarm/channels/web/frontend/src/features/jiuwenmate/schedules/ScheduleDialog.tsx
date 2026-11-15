@@ -157,10 +157,9 @@ export function ScheduleDialog({
         setSubmitError(message || t('jiuwenmate.schedule.error.required'));
       });
   };
-  const patch = (next: Partial<FormState>) => {
-    setForm((current) => ({ ...current, ...next }));
-    setSubmitError('');
-  };
+  // A failed save keeps the server's reason until the next explicit save, so field edits must
+  // not touch submitError; only save() clears or replaces it.
+  const patch = (next: Partial<FormState>) => setForm((current) => ({ ...current, ...next }));
   return (
     <div className="jiuwenmate-dialog-backdrop" data-testid="jiuwenmate-schedule-dialog">
       <div className="jiuwenmate-dialog jiuwenmate-schedule-dialog" role="dialog" aria-modal="true" aria-labelledby="jiuwenmate-schedule-dialog-title">
@@ -182,10 +181,7 @@ export function ScheduleDialog({
                 aria-label={t('jiuwenmate.schedule.executor')}
                 aria-invalid={executorInvalid || undefined}
                 aria-describedby={executorInvalid ? executorErrorId : undefined}
-                onChange={(event) => {
-                  setChosenExecutor(event.target.value);
-                  setSubmitError('');
-                }}
+                onChange={(event) => setChosenExecutor(event.target.value)}
                 data-testid="jiuwenmate-schedule-executor"
               >
                 <option value="">{t('jiuwenmate.schedule.chooseExecutor')}</option>
