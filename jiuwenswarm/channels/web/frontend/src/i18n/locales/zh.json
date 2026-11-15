@@ -756,6 +756,9 @@
         "zhipu": "智谱 GLM",
         "unrecognized": "未识别提供商（{{vendor}}）"
       },
+      "apiBasePlaceholders": {
+        "opencode-go": "例如：https://opencode.ai/zen/go/v1"
+      },
       "protocols": {
         "openai": "OpenAI",
         "anthropic": "Anthropic",

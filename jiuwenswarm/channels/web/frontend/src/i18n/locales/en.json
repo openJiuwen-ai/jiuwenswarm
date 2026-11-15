@@ -756,6 +756,9 @@
         "zhipu": "Zhipu GLM",
         "unrecognized": "Unrecognized provider ({{vendor}})"
       },
+      "apiBasePlaceholders": {
+        "opencode-go": "e.g. https://opencode.ai/zen/go/v1"
+      },
       "protocols": {
         "openai": "OpenAI",
         "anthropic": "Anthropic",

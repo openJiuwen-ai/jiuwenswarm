@@ -286,6 +286,18 @@ test('opencode-go vendor label resolves in both locales and falls back to a cust
   const providerSelect = source('src/features/settings/modules/models/ModelProviderSelect.tsx');
   assert.match(providerSelect, /getVendorLogoUrl\(selected\.preset\.vendor_key\) \?\? settingsCustomModelIcon/);
   assert.match(providerSelect, /getVendorLogoUrl\(option\.preset\.vendor_key\) \?\? settingsCustomModelIcon/);
+
+  // The address field is empty for OpenCode Go, so the placeholder is the only
+  // thing telling the user what to type. The generic hint names api.openai.com.
+  assert.deepEqual(zh.settingsPanel.models.apiBasePlaceholders, {
+    'opencode-go': '例如：https://opencode.ai/zen/go/v1',
+  });
+  assert.deepEqual(en.settingsPanel.models.apiBasePlaceholders, {
+    'opencode-go': 'e.g. https://opencode.ai/zen/go/v1',
+  });
+
+  const dialog = source('src/features/settings/modules/models/ModelDialog.tsx');
+  assert.match(dialog, /getPresetApiBasePlaceholder\(preset\.vendor_key, t\)/);
 });
 
 test('model context windows stay editable and expose common presets', () => {

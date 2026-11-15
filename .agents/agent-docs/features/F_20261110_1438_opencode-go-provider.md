@@ -114,7 +114,7 @@ design_note: 需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-prov
 `.specify/memory/constitution.md` 原则 IV 明确"MUST NOT 额外添加
 `@pytest.mark.asyncio`"，补标记反而与仓库约束冲突。
 
-## Web 界面验证期的两处调整
+## Web 界面验证期的三处调整
 
 本地 Web 走查暴露两个问题，一个在本仓、一个在上游预设，处理方式不同：
 
@@ -125,6 +125,12 @@ design_note: 需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-prov
   什么都不画。`icon_key` 不参与前端渲染（`settingsRefactor.test.mjs` 明令
   `doesNotMatch(modelProviderSelect, /preset\.icon_key/)`），所以按 vendor_key 兜底
   是唯一可行的修法；`modelSettings.test.mjs` 补了两条断言锁住这个兜底。
+- **地址占位符（本仓，已提交）**：地址留空的预设，输入框原先只显示通用提示
+  「例如：https://api.openai.com/v1」，对 OpenCode Go 是错的示例，而地址正是
+  FR-002 要求用户填的那一项。新增 `getPresetApiBasePlaceholder`：按 vendorKey 取
+  `settingsPanel.models.apiBasePlaceholders.<vendor>`，取不到退回通用提示，因此后续
+  新增预设不加文案也不会比改动前差。文案放在 `vendors` 的兄弟键而不是嵌套进
+  `vendors`，避免"遍历 vendors 取厂商列表"这类用法误把占位符当厂商名。
 - **预设形状（上游，本地覆盖，不提交）**：`validate` 用的 `opencode-go` 预设在本地被
   临时改成 `CODING_PLAN` + 预填地址 + 6 个模型 + `/v1/models` 拉取端点，与
   `contracts/vendors-list.md`（`CUSTOM_API` / `api_base=""` / `model_options=()` /
