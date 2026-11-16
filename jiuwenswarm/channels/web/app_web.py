@@ -727,17 +727,13 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             conn.request(self.command, path or self.path, body=body, headers=forward_headers)
 >>>>>>> DEVELOP
             resp = conn.getresponse()
-<<<<<<< RELEASE
-||||||| BEFORE_PR_9610
-            resp_body = resp.read()
-=======
+
             streaming = (
                 stream_sse
                 and self.command != "HEAD"
                 and resp.getheader("Content-Type", "").startswith("text/event-stream")
             )
             resp_body = b"" if streaming else resp.read()
->>>>>>> DEVELOP
 
             self.send_response(resp.status, resp.reason)
             for key, value in resp.getheaders():
