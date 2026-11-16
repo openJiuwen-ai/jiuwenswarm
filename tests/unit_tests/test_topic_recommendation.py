@@ -2750,6 +2750,22 @@ def test_corpus_avoids_anecdote_hunting_starters():
         assert "哪一次迷路" not in starter.text
 
 
+def test_card_copy_allows_abbreviation_periods_in_a_question():
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        card_copy_rejection_reason,
+    )
+
+    assert card_copy_rejection_reason(
+        "What voting rights do Washington D.C. residents have?"
+    ) is None
+    assert card_copy_rejection_reason(
+        "How does U.S. federalism work?"
+    ) is None
+    assert card_copy_rejection_reason(
+        "First sentence. Second question?"
+    ) == "multiple_sentences"
+
+
 def test_corpus_versions_select_language_files():
     from collections import Counter
 
