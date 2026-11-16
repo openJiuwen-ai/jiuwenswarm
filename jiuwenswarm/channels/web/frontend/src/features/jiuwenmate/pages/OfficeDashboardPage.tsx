@@ -431,8 +431,9 @@ function ActivityAllTab({
                   {t(periodLimited === 'end' ? 'jiuwenmate.office.periodLimitEnd' : 'jiuwenmate.office.periodLimit', { count: MAX_PERIOD_DAYS })}
                 </small>
               ) : null}
-              <span aria-label={t('jiuwenmate.office.periodStart')} data-testid="jiuwenmate-office-period-start">
+              <span data-testid="jiuwenmate-office-period-start">
                 <DatePicker
+                  ariaLabel={t('jiuwenmate.office.periodStart')}
                   value={state.periodStart}
                   maxDate={toIsoDate(today)}
                   onChange={(value) => changePeriod(value, state.periodEnd, 'start')}
@@ -440,8 +441,9 @@ function ActivityAllTab({
                 />
               </span>
               <span>{t('jiuwenmate.office.periodTo')}</span>
-              <span aria-label={t('jiuwenmate.office.periodEnd')} data-testid="jiuwenmate-office-period-end">
+              <span data-testid="jiuwenmate-office-period-end">
                 <DatePicker
+                  ariaLabel={t('jiuwenmate.office.periodEnd')}
                   value={state.periodEnd}
                   maxDate={toIsoDate(today)}
                   onChange={(value) => changePeriod(state.periodStart, value, 'end')}

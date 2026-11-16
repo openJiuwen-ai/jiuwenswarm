@@ -2365,6 +2365,8 @@ test('activity period dates use the schedule calendar without a clear button and
     const end = field('jiuwenmate-office-period-end').value;
     assert.equal(end, '2026-11-16');
     assert.equal(field('jiuwenmate-office-period-start').value, '2026-11-10');
+    assert.equal(field('jiuwenmate-office-period-start').getAttribute('aria-label'), '开始日期');
+    assert.equal(field('jiuwenmate-office-period-end').getAttribute('aria-label'), '结束日期');
 
     await view.click(view.find('[data-testid="jiuwenmate-office-period-start"] [data-testid="cron-date-picker"] > div'));
     const days = [...view.container.querySelectorAll('[data-testid="cron-date-picker-day"]')];
