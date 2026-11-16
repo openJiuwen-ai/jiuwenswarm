@@ -6,8 +6,6 @@ missing from the ``UpdateStatus`` dataclass, so ``asdict`` silently dropped
 them and the UpdatePanel frontend read perpetual blanks.
 """
 
-from dataclasses import asdict
-
 from jiuwenswarm.common import updater
 
 
