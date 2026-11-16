@@ -1100,13 +1100,13 @@ async def test_management_budgets_are_bounded(monkeypatch, proposal, decisions, 
 
 
 @pytest.mark.parametrize(
-    "model_name,login",
-    [("glm-5#3", "login-session"), ("glm-5#3", None),
-     ("configured", "login-session"), ("glm-5#3", "expired-session"),
-     ("glm-5#3", "revoked-session")],
+    "model_name,login,model_field",
+    [("glm-5#3", "login-session", "model"), ("glm-5#3", None, "model"),
+     ("configured", "login-session", "model"), ("glm-5#3", "expired-session", "model"),
+     ("glm-5#3", "revoked-session", "model"), ("glm-5#3", "login-session", "model_name")],
 )
 async def test_duplex_login_auth_is_bound_to_caller_and_sent_on_each_model_request(
-    monkeypatch, tmp_path, model_name, login,
+    monkeypatch, tmp_path, model_name, login, model_field,
 ):
     from agent_gateway.auth import apig, login_credentials, model_catalog, passthrough, service
     from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
@@ -1140,7 +1140,7 @@ async def test_duplex_login_auth_is_bound_to_caller_and_sent_on_each_model_reque
         payload = {}
         if envelope.method == ReqMethod.SESSION_GET_METADATA.value:
             payload = {
-                "user_id": "alice", "mode": "agent", "model_name": model_name,
+                "user_id": "alice", "mode": "agent", model_field: model_name,
                 "model_selection": {"type": "model", "id": "selected-login-model"},
             }
         elif envelope.method == ReqMethod.CHAT_SEND.value:
