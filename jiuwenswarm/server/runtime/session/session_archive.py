@@ -735,6 +735,14 @@ class SessionArchiveService:
         await asyncio.to_thread(
             lc.complete, "session", session_id, deleted=True, result=payload
         )
+        # Fixed-format audit line: deletion success is silent otherwise, and
+        # both the live finalizer and the runtime_deleted recovery path
+        # converge here, so every completed delete logs exactly once.
+        logger.info(
+            "session delete completed: session_id=%s project_id=%s",
+            session_id,
+            project_id,
+        )
         from jiuwenswarm.server.runtime.recommendation_host import (
             active_recommendation_host,
         )
