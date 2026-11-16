@@ -1334,6 +1334,7 @@ export const ChatPanel = React.memo(function ChatPanel({
     exposureAcknowledged: boolean;
   } | null>(null);
   const [recommendationState, setRecommendationState] = useState("");
+  const [topicStarterRead, setTopicStarterRead] = useState<{ visitId: string; pending: boolean } | null>(null);
   const [recommendationRefresh, setRecommendationRefresh] = useState(0);
   const keepSlateOnRefreshRef = useRef(false);
   // The switch event lands before the re-read. Hold that state across the refresh so the
@@ -1348,6 +1349,10 @@ export const ChatPanel = React.memo(function ChatPanel({
   const visibleTopicSlate = dynamicSlate?.visitId === topicStarterVisitId
     ? dynamicSlate.slate : null;
   const visibleTopicSlateId = visibleTopicSlate?.slateId;
+  const topicStarterLoading = Boolean(
+    isConnected && activeSessionId && !hasConversation && !visibleTopicSlate &&
+    (topicStarterRead?.visitId !== topicStarterVisitId || topicStarterRead.pending),
+  );
   const acceptingDynamicRef = useRef(false);
   const interactedRecommendationVisitRef = useRef<string | null>(null);
   const topicStarterClickLatchRef = useRef<string | null>(null);
@@ -1867,6 +1872,7 @@ export const ChatPanel = React.memo(function ChatPanel({
       return;
     }
     const requestSessionId = activeSessionId;
+    setTopicStarterRead({ visitId: topicStarterVisitId, pending: true });
     const requestParams = buildTopicStarterRequest(requestSessionId, topicStarterProjectId, workMode);
     let active = true;
     let receivedScopeState = false;
@@ -1952,6 +1958,9 @@ export const ChatPanel = React.memo(function ChatPanel({
           setRecommendationState("failed");
         }
         console.error('topic_starters.get failed:', error);
+      })
+      .finally(() => {
+        if (active) setTopicStarterRead({ visitId: topicStarterVisitId, pending: false });
       });
     return () => {
       active = false;
@@ -2601,7 +2610,16 @@ export const ChatPanel = React.memo(function ChatPanel({
                 />
               </div>
               <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
-                {recommendationState !== 'disabled' && topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? (
+                {topicStarterLoading ? (
+                  <div
+                    className="chat-suggestions__title"
+                    role="status"
+                    aria-live="polite"
+                    data-testid="chat-panel-topic-loading"
+                  >
+                    {t('chat.topicStarter.statusLoading')}
+                  </div>
+                ) : recommendationState !== 'disabled' && topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? (
                   <div
                     className="chat-suggestions__title"
                     role="status"
