@@ -4,6 +4,7 @@ import {
   ChartLine,
   ChartNoAxesColumn,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   CirclePause,
   CirclePlay,
@@ -15,7 +16,7 @@ import {
   UsersRound,
   type LucideIcon,
 } from 'lucide-react';
-import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ActionMenu } from '../components/ActionMenu';
 import { ActivityHeatmap, HeatmapLegend } from '../components/ActivityHeatmap';
@@ -28,6 +29,9 @@ import type { Schedule, ScheduleDraft, ScheduleRun } from '../schedules/types';
 import {
   activeChannelCount,
   activitySummary,
+  carouselCardsPerView,
+  carouselEdges,
+  CAROUSEL_GAP,
   createOfficeState,
   formatMonthDay,
   formatSummaryTokens,
@@ -556,6 +560,30 @@ function ActivityIndividualTab({
   const [period, setPeriod] = useState<JiuwenMateWorkPeriod>('7d');
   const [query, setQuery] = useState('');
   const carouselRef = useRef<HTMLDivElement>(null);
+  const [cardsPerView, setCardsPerView] = useState(4);
+  const [edges, setEdges] = useState({ atStart: true, atEnd: true });
+  const syncEdges = useCallback(() => {
+    const el = carouselRef.current;
+    if (el) setEdges(carouselEdges(el.scrollLeft, el.clientWidth, el.scrollWidth));
+  }, []);
+  useEffect(() => {
+    const el = carouselRef.current;
+    if (!el) return undefined;
+    const measure = () => {
+      setCardsPerView(carouselCardsPerView(el.clientWidth));
+      syncEdges();
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [syncEdges]);
+  useEffect(syncEdges, [syncEdges, colleagues.length, cardsPerView]);
+  const page = (direction: 1 | -1) => {
+    const el = carouselRef.current;
+    el?.scrollBy({ left: direction * (el.clientWidth + CAROUSEL_GAP), behavior: 'smooth' });
+  };
   const keyword = query.trim();
   const usage = usageChange(member?.days ?? [], period, today);
   const groups = (member?.groups ?? []).filter((group) => !keyword || group.name.includes(keyword));
@@ -564,7 +592,12 @@ function ActivityIndividualTab({
   return (
     <div className="jiuwenmate-office__individual" data-testid="jiuwenmate-office-individual">
       <div className="jiuwenmate-office__carousel-frame">
-        <div className="jiuwenmate-office__carousel" ref={carouselRef}>
+        <div
+          className="jiuwenmate-office__carousel"
+          ref={carouselRef}
+          onScroll={syncEdges}
+          style={{ '--jm-carousel-cards': cardsPerView } as CSSProperties}
+        >
           {colleagues.map((colleague) => (
             <div key={colleague.id} className="jiuwenmate-office__member">
               {memberCard(t, colleague, handlers, {
@@ -574,14 +607,28 @@ function ActivityIndividualTab({
             </div>
           ))}
         </div>
-        <button
-          type="button"
-          className="jiuwenmate-office__carousel-next"
-          aria-label={t('jiuwenmate.office.next')}
-          onClick={() => carouselRef.current?.scrollBy({ left: 320, behavior: 'smooth' })}
-        >
-          <ChevronRight aria-hidden />
-        </button>
+        {!edges.atStart ? (
+          <button
+            type="button"
+            className="jiuwenmate-office__carousel-nav jiuwenmate-office__carousel-nav--prev"
+            aria-label={t('jiuwenmate.office.previous')}
+            onClick={() => page(-1)}
+            data-testid="jiuwenmate-office-carousel-prev"
+          >
+            <ChevronLeft aria-hidden />
+          </button>
+        ) : null}
+        {!edges.atEnd ? (
+          <button
+            type="button"
+            className="jiuwenmate-office__carousel-nav jiuwenmate-office__carousel-nav--next"
+            aria-label={t('jiuwenmate.office.next')}
+            onClick={() => page(1)}
+            data-testid="jiuwenmate-office-carousel-next"
+          >
+            <ChevronRight aria-hidden />
+          </button>
+        ) : null}
       </div>
       <div className="jiuwenmate-office__section-head">
         <h2>{t('jiuwenmate.office.workRecord')}</h2>
