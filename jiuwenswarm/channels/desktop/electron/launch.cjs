@@ -4,6 +4,11 @@ const electronExecutable = require('electron');
 
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
+// IDEs built on Electron (VS Code / Trae) inject ELECTRON_FORCE_IS_PACKAGED=1 into
+// their own process so extensions cannot detect dev builds. Terminals spawned from
+// the IDE inherit it, which makes app.isPackaged lie in dev mode and the shell goes
+// hunting for a packaged backend exe. Dev launch must always look unpackaged.
+delete env.ELECTRON_FORCE_IS_PACKAGED;
 
 let child = null;
 
