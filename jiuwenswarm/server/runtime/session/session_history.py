@@ -190,6 +190,8 @@ def project_completed_session_prefix(
     for ordinal, record in enumerate(records):
         if not isinstance(record, dict):
             continue
+        if record.get("transcript_only") is True:
+            continue
         request_id = str(record.get("request_id") or "").strip()
         role = str(record.get("role") or "").strip().lower()
         if not request_id:
@@ -816,7 +818,7 @@ def read_committed_main_history(session_id: str) -> list[dict[str, Any]] | None:
         raise ValueError("invalid session_id")
     if not flush_pending_writes():
         raise TimeoutError("session history write boundary timed out")
-    with _FILE_LOCK:
+    with FILE_LOCK:
         path = get_read_history_path(session_id)
         if not path.parent.is_dir():
             return None
