@@ -2337,6 +2337,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }
       if (currentMode === 'team') {
         useChatStore.getState().setPaused(sessionId, false);
+        useSessionStore.getState().thawRunningTeamTasks(sessionId);
         // 执行中追问：先收尾上一轮仍在 streaming 的 leader，避免新一轮气泡/头像挂错簇
         closeActiveTeamLeaderMessages(sessionId);
         useChatStore.getState().closeReasoning(sessionId);
@@ -2603,6 +2604,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }
       if (currentMode === 'team') {
         useChatStore.getState().setPaused(sessionId, false);
+        useSessionStore.getState().thawRunningTeamTasks(sessionId);
       }
       try {
         const outgoingMode = resolveOutgoingMode(sessionId, currentMode);
@@ -5511,27 +5513,34 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
 
         if (resultPayload.intent === 'pause') {
+          // 企业临时团队停止也走 pause。AS 已 settle/stop 时 Gateway 仍可能回
+          // success=False（#70 斐波那契复现）；仍要收 processing、冻任务板，
+          // 否则右侧 in_progress 一直转。setPaused 仅在 success 时写入，避免
+          // 真失败时误开「已暂停可续跑」。
           if (resultPayload.success) {
             useChatStore.getState().setPaused(
               sessionId,
               hasActiveTask,
               hasActiveTask ? resultPayload.paused_task : undefined,
             );
-            useChatStore.getState().setProcessing(sessionId, false);
-            useChatStore.getState().setThinking(sessionId, false);
-            // 暂停时生成已被掐断，思考段收不到后续 delta/final 兜底：这里显式收尾，
-            // 让「思考中」冻结为已完成；恢复后新到的 reasoning 会另起一段。
-            useChatStore.getState().closeReasoning(sessionId);
-            const sessionPatch: Partial<Session> = {
-              is_processing: false,
-              updated_at: new Date().toISOString(),
-            };
-            updateSession(sessionId, sessionPatch);
-            useWorkspaceStore.getState().patchSession(sessionId, sessionPatch);
-            // 个人版团队停止走 pause。team-leader 的 isStreaming 不经过 currentStreamId，
-            // 这里显式收尾，避免光标一直闪。企业版团队走下面的 cancel 分支。
-            closeActiveTeamLeaderMessages(sessionId);
           }
+          useChatStore.getState().setProcessing(sessionId, false);
+          useChatStore.getState().setThinking(sessionId, false);
+          // 暂停时生成已被掐断，思考段收不到后续 delta/final 兜底：这里显式收尾，
+          // 让「思考中」冻结为已完成；恢复后新到的 reasoning 会另起一段。
+          useChatStore.getState().closeReasoning(sessionId);
+          // pause 不改任务 status（便于续跑），但立刻冻结进度条/停转圈，
+          // 否则右侧 in_progress 会一直转，看起来像中断失败（issue #90 / #70）。
+          useSessionStore.getState().freezeRunningTeamTasks(sessionId);
+          const sessionPatch: Partial<Session> = {
+            is_processing: false,
+            updated_at: new Date().toISOString(),
+          };
+          updateSession(sessionId, sessionPatch);
+          useWorkspaceStore.getState().patchSession(sessionId, sessionPatch);
+          // 个人版与企业版临时团队停止都走 pause。team-leader 的 isStreaming
+          // 不经过 currentStreamId，这里显式收尾，避免光标一直闪。
+          closeActiveTeamLeaderMessages(sessionId);
         } else if (resultPayload.intent === 'resume') {
           if (resultPayload.success) {
             setOrganizationOwnerStopped(sessionId, false);
@@ -5540,10 +5549,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               useChatStore.getState().setPaused(sessionId, false);
               useChatStore.getState().setProcessing(sessionId, true, { newTurn: true });
               useChatStore.getState().setThinking(sessionId, true);
+              useSessionStore.getState().thawRunningTeamTasks(sessionId);
             } else {
               useChatStore.getState().setPaused(sessionId, false);
               useChatStore.getState().setProcessing(sessionId, false);
               useChatStore.getState().setThinking(sessionId, false);
+              useSessionStore.getState().thawRunningTeamTasks(sessionId);
               // 任务已完成时，检查并触发队列中的下一个任务
               const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
               const runtime = useChatStore.getState().getRuntime(sessionId);
@@ -5569,6 +5580,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           // 用户主动点了停止/删除就该让当前气泡收尾，不再等一个可能被误判、永远不会来的
           // 真正 chat.final。
           useChatStore.getState().stopStreaming(sessionId);
+          // cancel 路径原先只清 processing，未冻任务板；终态 team.task 丢帧时
+          // 右侧 in_progress 会继续转（#70）。与 pause 对齐立刻 freeze。
+          useSessionStore.getState().freezeRunningTeamTasks(sessionId);
           // 集群模式下 team-leader 消息的 isStreaming 不经过 currentStreamId 收尾，
           // stopStreaming 对它无效；取消后本该到来的 chat.final 也不会再来兜底，
           // 这里显式收尾，避免 team-leader 气泡的光标永久闪烁（bug001）。
