@@ -27,6 +27,9 @@ KIND_REQUEST_DONE = "request.done"
 KIND_WIRE = "wire"
 KIND_DELIVERY_ACK = "wire.ack"
 KIND_SUBSCRIBE = "execution.subscribe"
+# P6 身份型重放：supervisor 按台账身份键（不含用户正文）向 worker 反查单请求帧；
+# worker 回执同 kind（status=ok/miss/history_required），重放帧走 KIND_WIRE（携 wire_id 回执链）。
+KIND_SUBSCRIBE_BY_ID = "execution.subscribe_by_id"
 KIND_SNAPSHOT = "execution.snapshot"
 KIND_SHUTDOWN_DONE = "shutdown.done"
 KIND_READINESS = "readiness"

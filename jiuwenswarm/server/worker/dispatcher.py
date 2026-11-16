@@ -8,13 +8,11 @@ import asyncio
 import inspect
 import json
 import logging
-import os
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from enum import Enum
 from typing import Any
-
 from jiuwenswarm.common.external_cli_runtime import activate_external_cli_runtime_paths
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -33,6 +31,8 @@ from jiuwenswarm.server.ipc.protocol import (
     KIND_REQUEST_DONE,
     KIND_SHUTDOWN,
     KIND_SUBSCRIBE,
+    KIND_SUBSCRIBE_BY_ID,
+    KIND_WIRE,
     KIND_SNAPSHOT,
     cancel_request,
     load_agent_request,
@@ -56,6 +56,34 @@ logger = logging.getLogger(__name__)
 
 _MAX_QUEUED_REQUESTS = 32
 _DRAIN_TIMEOUT = 5.0
+
+
+def _question_body_matches(body: Any, response_kind: Any = None) -> dict[str, Any] | None:
+    """Question-body detector: flatten delta/result nesting; fall back to response_kind when event_type is missing.
+
+    Shared by _question_recovery_filter and identity replay (atomgit 9722 id=200378287,
+    9707 id=199769142-④) — the two detectors share one source; they must not drift apart."""
+    if not isinstance(body, dict):
+        return None
+    nested = body.get("delta") if isinstance(body.get("delta"), dict) else body.get("result")
+    if isinstance(nested, dict):
+        body = {**body, **nested}
+    return body if (body.get("event_type") or response_kind) == "chat.ask_user_question" else None
+
+
+def _question_frame_body(wire: Any) -> dict[str, Any] | None:
+    """Top-level wire frame -> question body (same-source criteria). response_kind and the question marker pass
+    through
+    the retained-frame wrapper (either the outer wire or the inner shell may carry them)."""
+    if not isinstance(wire, dict):
+        return None
+    shell = wire.get("body") or wire.get("payload")
+    if not isinstance(shell, dict):
+        return None
+    response_kind = wire.get("response_kind", shell.get("response_kind"))
+    inner = shell.get("body") if isinstance(shell.get("body"), dict) else None
+    body = {**shell, **inner} if inner else shell
+    return _question_body_matches(body, response_kind)
 
 
 class WorkerDispatcher:
@@ -172,6 +200,9 @@ class WorkerDispatcher:
             return True
         if kind == KIND_SUBSCRIBE:
             self._spawn(self._subscribe(message, conn, generation), generation)
+            return True
+        if kind == KIND_SUBSCRIBE_BY_ID:
+            self._spawn(self._subscribe_by_id(message, conn, generation), generation)
             return True
         if kind == KIND_SHUTDOWN:
             self.shutdown_requested = True
@@ -653,11 +684,7 @@ class WorkerDispatcher:
         session_id = request.params.get("session_id") or request.session_id or ""
 
         def question(body: Any, event: str | None = "") -> dict[str, Any] | None:
-            if not isinstance(body, dict):
-                return None
-            nested = body.get("delta") if isinstance(body.get("delta"), dict) else body.get("result")
-            body = {**body, **nested} if isinstance(nested, dict) else body
-            return body if (body.get("event_type") or event) == "chat.ask_user_question" else None
+            return _question_body_matches(body, event)
 
         def owner(body: dict[str, Any], dispatch_id: str) -> tuple[int, str, str] | None:
             if not callable(resolve):
@@ -828,6 +855,154 @@ class WorkerDispatcher:
             await self._done(conn, str(record.request.request_id or ""), generation=generation,
                              dispatch_id=dispatch_id, ok=result["ok"], error=result["error"],
                              delivered=result["delivered"])
+
+
+    def _replayed_question_expired(self, record: "DispatchRecord", body: dict[str, Any]) -> bool:
+        """Whether a pending-replay question frame is expired — judged by the control payload itself, aligned with
+        the ``_question_recovery_filter`` authority (``recoverable_control``).
+
+        ``record.interactions`` is the mixed interactions dict (waiting control set + question frames); non-empty does
+        not imply
+        an in-flight question: with other controls remaining, the old coarse heuristic misjudged a finished question
+        as in-flight and redelivered it
+        (openjiuwen-AIReview 9722 id=200409667 — port of the 9707 authority-judgment alignment
+        fix). When authority/marker are unreachable, fall back to the old heuristic (empty-dict check) to
+        conservatively keep the original replay behavior.
+        """
+        runtime_getter = getattr(self._runtime, "_execution_runtime", None)
+        runtime = runtime_getter() if callable(runtime_getter) else self._runtime
+        resolve = getattr(runtime, "recoverable_control", None)
+        control_id = str(body.get("interaction_id") or body.get("control_id")
+                         or body.get("request_id") or "")
+        execution_id = str(body.get("execution_id") or record.last_execution_id or "")
+        if not callable(resolve) or not control_id or not execution_id:
+            return not record.interactions
+        session_id = (str(record.scope[4]) if len(record.scope) > 4
+                      else str(record.request.session_id or ""))
+        return resolve(session_id, control_id, execution_id) is None
+
+    async def _subscribe_by_id(self, message: dict[str, Any], conn: IpcConnection, generation: int) -> None:
+        """P6 identity replay: reverse-lookup the retained frames of one request via the ledger identity key and
+        replay them (with the wire_id ack chain).
+
+        Lookup key = (scope[:4], request_id) (same key shape as ``WorkerEventStore._active``);
+        miss -> status=miss; worker_instance mismatch (worker restart lost retained frames) ->
+        status=history_required; hit -> status=ok then replay frame by frame over KIND_WIRE.
+        On the supervisor side, miss/history_required turn into the placeholder-card path.
+        """
+        rid = str(message.get("request_id") or "")
+        identity = message.get("payload") if isinstance(message.get("payload"), dict) else {}
+        after = max(0, int(message.get("after") or 0))
+        query_id = message.get("query_id")
+
+        async def _reply(status: str, **extra: Any) -> None:
+            frame: dict[str, Any] = {"kind": KIND_SUBSCRIBE_BY_ID, "query_id": query_id,
+                                     "request_id": rid, "status": status, "generation": generation}
+            frame.update(extra)
+            try:
+                await conn.send(frame)
+            except (OSError, RuntimeError):
+                logger.info("[Worker] subscribe_by_id reply lost on IPC detach")
+
+        if not rid:
+            await _reply("miss")
+            return
+        channel = str(identity.get("channel_id") or "")
+        user = str(identity.get("user_id") or "")
+        # Canonical request_scope source: the identity tuple comes from the supervisor ledger (the normalized
+        # request_scope result); a private open_id fallback would let the two sources drift (atomgit 08:27 review).
+        app = str(identity.get("app_id") or "")
+        agent_ref = identity.get("agent_ref")
+        if agent_ref is not None and not isinstance(agent_ref, str):
+            agent_ref = json.dumps(agent_ref, sort_keys=True, default=str)
+        agent_ref_json = agent_ref or json.dumps(
+            {"mode": "agent", "id": "default"}, sort_keys=True, default=str)
+        identity_key = (channel, user, app, str(agent_ref_json), rid)
+
+        record: DispatchRecord | None = None
+        dispatch_hint = str(message.get("dispatch_id") or "")
+        hinted = self._bridge.events.records.get(dispatch_hint) if dispatch_hint else None
+        if hinted is not None and (*hinted.scope[:4], str(hinted.request.request_id or "")) == identity_key:
+            record = hinted
+        if record is None:
+            for candidate in reversed(self._bridge.events.records.values()):
+                if (*candidate.scope[:4], str(candidate.request.request_id or "")) == identity_key:
+                    record = candidate
+                    break
+        if record is None:
+            # Lookup miss: record finished/pruned or key mismatch -> supervisor turns it into the placeholder-card
+            #  path.
+            await _reply("miss")
+            return
+        if message.get("worker_instance") not in {None, "", self._bridge.events.instance}:
+            # Worker restarted (retained frames lost): supervisor goes straight to the placeholder card, no full
+            #  history replay.
+            await _reply("history_required", dispatch_id=record.dispatch_id)
+            return
+        # Replay frames share the publication lock with live frames of the same scope (same as the _subscribe replay
+        #  precedent): take the lock first, then judge
+        # the gap and snapshot, then send frame by frame — judging the gap outside the lock leaves a TOCTOU window
+        #  (concurrent append evicting
+        # retained frames between the check and the snapshot would silently skip frames); the same lock guarantees a
+        #  total order between replay and live frames of the same scope
+        # in arrival order.
+        async with self._bridge.publication_lock(record.scope):
+            # Re-verify generation/connection before acking: on a generation change, no ack and no replay —
+            # acking ok even for an empty frame set would book undelivered as delivered (atomgit 9722 id=199769146-④).
+            if self._bridge.holder.generation != generation or self._bridge.holder.conn is None:
+                return
+            if self._bridge.events.replay_gapped(record.scope, rid, after):
+                # The retained frames of this request were evicted below the cursor: replay would silently skip
+                #  frames,
+                # status=ok would mask the gap -> supervisor placeholder-card path. The watermark is judged per
+                # (scope, request_id); another request eviction must not misreport this request as gapped.
+                await _reply("history_required", dispatch_id=record.dispatch_id)
+                return
+            # Filter by dispatch generation: `record` is the current round's
+            # dispatch record; previous-round leftover frames (same-rid re-
+            # register / reaped entry) must not flow back with identity
+            # replay (200876804).
+            frames = self._bridge.events.replay_by_request(
+                record.scope, rid, after=after, dispatch_id=record.dispatch_id)
+            # The ok-first ack is the contract locked by test_e: the supervisor consumes ok as a no-op (it only
+            #  handles
+            # miss/history_required); the fallback for a replay interruption = supervisor sweep retry +
+            # placeholder expiry, not the ok semantics (atomgit 06:53 review: the "ok booked as success" premise
+            # does not hold; the ack timing keeps the original contract).
+            await _reply("ok", dispatch_id=record.dispatch_id, count=len(frames))
+            for index, frame in enumerate(frames):
+                if self._bridge.holder.generation != generation or self._bridge.holder.conn is None:
+                    return
+                payload = frame["payload"]
+                if isinstance(payload, dict):
+                    qbody = _question_frame_body(payload)
+                    if qbody is not None and self._replayed_question_expired(record, qbody):
+                        # Expired question cards are not redelivered with the replay (authority = recoverable_control
+                        #  judged
+                        # per control; leftover other control interactions no longer get misjudged as in-flight;
+                        # openjiuwen-AIReview 9722 id=200409667 = port of the 9707 authority alignment,
+                        # following atomgit id=200378287, 9707 id=199769142-④ / the 06:53 review).
+                        continue
+                    # Inject the replayed marker on a shallow-copy isolation: never write back to the event_store
+                    #  retained frame
+                    # (writing in place pollutes the logged object, and later the real first delivery would be
+                    #  mistaken by the consumer as an already-replayed frame —
+                    # exactly the silent-reply-swallowing failure this PR fixes; atomgit 9722 id=200375260).
+                    payload = {**payload}
+                    metadata = dict(payload.get("metadata") or {})
+                    runtime_event = dict(metadata.get("runtime_event") or {})
+                    runtime_event["replayed"] = True
+                    metadata["runtime_event"] = runtime_event
+                    payload["metadata"] = metadata
+                try:
+                    await conn.send({**frame, "payload": payload, "kind": KIND_WIRE,
+                                     "wire_id": uuid.uuid4().hex,
+                                     "generation": generation, "replayed": True})
+                except (OSError, RuntimeError):
+                    logger.info("[Worker] subscribe_by_id replay lost on IPC detach")
+                    return
+                if index % 32 == 0:
+                    await asyncio.sleep(0)
 
 
 def _is_session_work_request(request: AgentRequest) -> bool:

@@ -31,6 +31,7 @@ from jiuwenswarm.server.ipc.protocol import (
     KIND_SHUTDOWN,
     KIND_SHUTDOWN_DONE,
     KIND_SUBSCRIBE,
+    KIND_SUBSCRIBE_BY_ID,
     KIND_SNAPSHOT,
     KIND_WIRE,
     PROTOCOL_VERSION,
@@ -41,6 +42,15 @@ from jiuwenswarm.server.ipc.loopback import FrontLoopbackListener
 from jiuwenswarm.server.ipc.session import FRONT_LOOPBACK, runtime_ipc_mode
 from jiuwenswarm.server.lifecycle import Readiness, ReadinessState
 from jiuwenswarm.server.supervisor.affinity import SessionAffinity
+from jiuwenswarm.server.supervisor.delivery_ledger import (
+    DeliveryLedger,
+    PLACEHOLDER_FAILED,
+    PLACEHOLDER_PENDING_FLUSH,
+    PLACEHOLDER_SENT,
+    PLACEHOLDER_TERMINAL_STATES,
+    build_placeholder_wire,
+    wire_event,
+)
 from jiuwenswarm.server.supervisor.diagnostics import dump_runtime_state
 from jiuwenswarm.server.supervisor.identity import WorkerIdentityError
 from jiuwenswarm.server.supervisor.worker_process import (
@@ -74,6 +84,14 @@ _SNAPSHOT_WAIT_ATTEMPTS = 3
 _WATCHDOG_INTERVAL = 5.0
 _FORWARD_QUEUE_SIZE = 256
 _FORWARD_TIMEOUT = 10.0
+# P6 delivery ledger: idle deadline (starts at dispatch accept, reset on user-visible frame delivery) and the sweep
+#  period.
+# The sweep is independent of the Front lifecycle: not in _start_side_tasks/_cancel_side_tasks,
+# not cancelled with worker generations, cancelled only at _finish_stop (a stalled watchdog loop would
+# skip judgment rounds; the sweep does not hang off that loop).
+_DELIVERY_IDLE_DEADLINE = 600.0
+_DELIVERY_SWEEP_INTERVAL = 30.0
+_DELIVERY_EXPIRE_SECONDS = 24 * 3600.0
 _FORWARD_DRAIN_TIMEOUT = 1.0
 # Transport stays alive (pongs flow) but the Worker's business loop has not
 # run: warn once it outlasts a heartbeat window, replace the Worker only when
@@ -222,6 +240,16 @@ class RuntimeSupervisor:
         self._session_lock = asyncio.Lock()
         self._forward_bytes = 0
         self._recover_lock = asyncio.Lock()
+        # P6 delivery ledger (independent of the Front lifecycle, lives with the supervisor).
+        self._delivery_ledger: DeliveryLedger | None = None
+        self._delivery_sweep_task: asyncio.Task[None] | None = None
+        self._delivery_replay_routes: set[str] = set()
+        self._delivery_replay_route_stamps: dict[str, tuple] = {}
+        self._delivery_unrecoverable: set[str] = set()
+        self._delivery_replay_retry = False
+        self._delivery_replay_lock = asyncio.Lock()
+        self._delivery_replay_requested = False
+        self._delivery_reloaded = False
 
     accepts_warming = True
 
@@ -301,6 +329,10 @@ class RuntimeSupervisor:
         """Connect to a resident Worker, or spawn one, then return."""
         if self._loop_task is None:
             self._loop_task = asyncio.create_task(self._supervise(), name="runtime-supervisor")
+        if not self._delivery_reloaded:
+            self._delivery_reloaded = True
+            self._reload_delivery_ledger()
+        self._ensure_delivery_sweep()
         await self._ipc_ready.wait()
         if self._fatal and self._conn is None:
             raise RuntimeError(self._fatal_reason or "runtime worker failed to start")
@@ -309,6 +341,8 @@ class RuntimeSupervisor:
         """Remember the Front-owned Gateway socket. The Worker never sees it."""
         self._gateway_ws = ws
         self._gateway_lock = send_lock
+        self._ensure_delivery_sweep()
+        self._schedule(self._replay_delivery_entries())
         self._schedule(self._notify_gateway(attached=True))
 
     async def on_gateway_disconnect(self, ws: Any, remote: Any) -> None:
@@ -454,6 +488,12 @@ class RuntimeSupervisor:
                 self._streams[dispatch_id] = stream
         try:
             try:
+                if request_id:
+                    # Register the ledger entry at dispatch accept, BEFORE the send — a worker frame arriving in the
+                    #  window after the send
+                    # would be dropped by on_wire_delivered for a missing entry (atomgit 09:27 review).
+                    # The timing anchor is flushed synchronously so an abnormal Front exit does not lose it.
+                    self._delivery_register(request, dispatch_id)
                 await conn.send(
                     {
                         "kind": KIND_REQUEST,
@@ -579,6 +619,11 @@ class RuntimeSupervisor:
         finally:
             try:
                 await self._cancel_side_tasks()
+                sweep = self._delivery_sweep_task
+                if sweep is not None and not sweep.done():
+                    sweep.cancel()
+                    await asyncio.gather(sweep, return_exceptions=True)
+                self._delivery_sweep_task = None
                 task = self._loop_task
                 if task is not None and not task.done():
                     done, _ = await asyncio.wait({task}, timeout=5.0)
@@ -1320,6 +1365,9 @@ class RuntimeSupervisor:
             return
         if kind == KIND_HELLO:
             return
+        if kind == KIND_SUBSCRIBE_BY_ID:
+            self._delivery_subscribe_by_id_reply(message)
+            return
         logger.info("[Supervisor] ignored ipc kind=%s", kind)
 
     def _wire_route(self, message: dict[str, Any]) -> _GatewayRoute | None:
@@ -1396,7 +1444,90 @@ class RuntimeSupervisor:
         finally:
             self._forward_started = 0.0
             self._forward_request_id = ""
-            await self._ack_delivery(message, delivered is True)
+            try:
+                await self._ack_delivery(message, delivered is True)
+            finally:
+                # CR-1: ack exception/cancellation (CancelledError, IPC-layer
+                # bugs) must not swallow the ledger update — the delivered
+                # frame's deadline reset and replay-route cleanup are
+                # unconditional, otherwise the entry fires a false card at
+                # its deadline, contradicting the P7 goal.
+                self._delivery_note_forward(message, delivered is True)
+
+    def _delivery_note_forward(self, message: dict[str, Any], delivered: bool) -> None:
+        """Whitelisted frame delivered -> reset deadline and cancel the undelivered placeholder; also a new
+        replay-route cleanup point.
+
+        The cleanup point is new code (not the :413-415 dispatch finally / :1015 _fail_forwarding /
+        :1283 _fail_pending request-lifecycle / failure-path cleanups): replay terminal
+        (chat.final/chat.error) delivery or delivered=False pops the replay route.
+        """
+        ledger = self._delivery_ledger
+        payload = message.get("payload")
+        rid = str(message.get("request_id") or (payload.get("request_id") if isinstance(payload, dict) else "") or "")
+        if ledger is not None and isinstance(payload, dict) and rid:
+            try:
+                if delivered:
+                    ledger.on_wire_delivered(request_id=rid, payload=payload)
+                # delivered=False: do not advance the cursor — mark_sequence_only is "transport success" semantics;
+                # advancing the cursor for a failed frame would make replay after=sequence skip that frame forever
+                #  (CR-2);
+                # keep it inside the replay window; the reconnect attach replays it later.
+            except Exception:
+                logger.warning(
+                    "[Supervisor] delivery ledger update failed request_id=%s", rid, exc_info=True
+                )
+        dispatch_id = str(message.get("dispatch_id") or "")
+        if not dispatch_id or dispatch_id not in self._delivery_replay_routes:
+            return
+        terminal = isinstance(payload, dict) and wire_event(payload) in {"chat.final", "chat.error"}
+        if delivered and not terminal:
+            entry = ledger.entry(rid) if ledger is not None else None
+            if entry is not None and entry.placeholder_state in PLACEHOLDER_TERMINAL_STATES:
+                # AIReview 9722 id=200846554 face A: the delivered visible
+                # non-terminal frame closed the entry terminal (chat.ask_user_
+                # question closes it retracted); if the user never replies, no
+                # further frame ever uses this dispatch's replay route again.
+                # Pop the trio here (stamp-guarded, same shape as the terminal
+                # face below) so the old (ws, send_lock) tuple stops pinning
+                # the old gateway ws against GC. A mid-turn question (deltas
+                # or terminal frames still coming) keeps the entry pending →
+                # route kept.
+                self._discard_delivery_replay_route(dispatch_id)
+            return
+        if not delivered:
+            self._delivery_replay_retry = True
+        # New cleanup point: pop the replay route when used up (terminal delivery or a failure established by the ack
+        #  chain).
+        # NH-003 (atomgit 9707 id=200388789): clean the stamp map in sync so the happy path no longer accumulates.
+        # CR-2: coexists idempotently with the _delivery_note_forward cleanup — compare the stamp before popping,
+        # so a route already rebound (value != the registered stamp) is never cleared by an old terminal frame.
+        _route_stamp = self._delivery_replay_route_stamps.get(dispatch_id)
+        if _route_stamp is None or self._routes.get(dispatch_id) == _route_stamp:
+            self._routes.pop(dispatch_id, None)
+        self._delivery_replay_routes.discard(dispatch_id)
+        self._delivery_replay_route_stamps.pop(dispatch_id, None)
+
+    def _discard_delivery_replay_route(self, dispatch_id: str) -> None:
+        """Pop the replay-route trio for a dispatch, stamp-guarded.
+
+        Close-out faces that previously had no cleanup (AIReview 9722
+        id=200846554): a delivered visible non-terminal frame that closes the
+        entry terminal (chat.ask_user_question closes it retracted; if the
+        user never replies, no further frame ever uses this dispatch's replay
+        route) and the placeholder-card SENT close-out (replay ok then worker
+        fully silent). Each residual trio pins an old (ws, send_lock) tuple
+        so the old gateway ws can never be GC'd. Idempotent with the existing
+        cleanup in _delivery_note_forward via the stamp comparison — a newer
+        rebinding (value != stamp) is never popped by an older close-out.
+        """
+        if not dispatch_id or dispatch_id not in self._delivery_replay_routes:
+            return
+        stamp = self._delivery_replay_route_stamps.get(dispatch_id)
+        if stamp is None or self._routes.get(dispatch_id) == stamp:
+            self._routes.pop(dispatch_id, None)
+        self._delivery_replay_routes.discard(dispatch_id)
+        self._delivery_replay_route_stamps.pop(dispatch_id, None)
 
     async def _ack_delivery(self, message: dict[str, Any], delivered: bool) -> None:
         if not message.get("wire_id") or self._conn is None:
@@ -1620,7 +1751,33 @@ class RuntimeSupervisor:
             return
         try:
             async with asyncio.timeout(_FORWARD_TIMEOUT):
-                await self._forwarder.send(wire, ws=ws, send_lock=send_lock)
+                delivered = await self._forwarder.send(wire, ws=ws, send_lock=send_lock)
+                if not delivered:
+                    # When send returns False (gateway detached / oversized fallback) instead of raising,
+                    # the ledger entry must stay pending: the sweep still fires the card at expiry; the error path
+                    #  must not
+                    # replicate "silently swallowing the reply".
+                    logger.warning(
+                        "[Supervisor] error frame not delivered; placeholder path kept "
+                        "request_id=%s",
+                        request.request_id,
+                    )
+                if (
+                    delivered
+                    and self._delivery_ledger is not None
+                    and request.request_id
+                ):
+                    try:
+                        self._delivery_ledger.on_wire_delivered(
+                            request_id=request.request_id,
+                            payload={"payload": {"event_type": "chat.error"}},
+                        )
+                    except Exception:
+                        logger.warning(
+                            "[Supervisor] delivery ledger update failed request_id=%s",
+                            request.request_id,
+                            exc_info=True,
+                        )
         except Exception:  # noqa: BLE001
             logger.warning(
                 "[Supervisor] Gateway error delivery failed; request_id=%s error=%s",
@@ -1637,6 +1794,257 @@ class RuntimeSupervisor:
             coro.close()
             return
         loop.create_task(coro)
+
+    def _delivery_ledger_or_init(self) -> DeliveryLedger | None:
+        if self._delivery_ledger is None:
+            try:
+                self._delivery_ledger = DeliveryLedger(
+                    idle_seconds=_DELIVERY_IDLE_DEADLINE,
+                    expire_seconds=_DELIVERY_EXPIRE_SECONDS,
+                )
+            except Exception:
+                logger.warning("[Supervisor] delivery ledger init failed", exc_info=True)
+        return self._delivery_ledger
+
+    def _delivery_register(self, request: AgentRequest, dispatch_id: str) -> None:
+        ledger = self._delivery_ledger_or_init()
+        if ledger is None:
+            return
+        try:
+            ledger.register(
+                request,
+                dispatch_id=dispatch_id,
+                worker_instance=self._worker_instance or "",
+                deadline=time.time() + _DELIVERY_IDLE_DEADLINE,
+            )
+        except Exception:
+            logger.warning(
+                "[Supervisor] delivery ledger register failed request_id=%s",
+                request.request_id,
+                exc_info=True,
+            )
+
+    def _delivery_subscribe_by_id_reply(self, message: dict[str, Any]) -> None:
+        """Ack from the worker for KIND_SUBSCRIBE_BY_ID: miss/history_required -> placeholder-card path."""
+        ledger = self._delivery_ledger
+        if ledger is None:
+            return
+        status = str(message.get("status") or "")
+        rid = str(message.get("request_id") or "")
+        entry = ledger.entry(rid)
+        if entry is None:
+            return
+        if status in {"miss", "history_required"}:
+            # Treat as unrecoverable: stop retrying replay; the sweep fires the card directly at expiry.
+            self._delivery_unrecoverable.add(rid)
+            dispatch_id = str(message.get("dispatch_id") or entry.dispatch_id)
+            self._delivery_replay_routes.discard(dispatch_id)
+            # Paired with the _delivery_note_forward cleanup: popping _routes keeps the entry from accumulating
+            # unbounded old gateway socket references (CR-3).
+            stamp = self._delivery_replay_route_stamps.pop(dispatch_id, None)
+            if stamp is not None and self._routes.get(dispatch_id) == stamp:
+                self._routes.pop(dispatch_id, None)
+            logger.info(
+                "[Supervisor] replay unrecoverable status=%s request_id=%s",
+                status, rid,
+            )
+
+    def _reload_delivery_ledger(self) -> None:
+        """Front-startup ledger reload: judge expiry by wall-clock deadline (the sweep performs expiry actions)."""
+        ledger = self._delivery_ledger_or_init()
+        if ledger is None:
+            return
+        try:
+            count = ledger.load()
+        except Exception:
+            logger.warning("[Supervisor] delivery ledger reload failed", exc_info=True)
+            return
+        if count:
+            logger.info("[Supervisor] delivery ledger reloaded entries=%s", count)
+        if self._ipc_mode == FRONT_LOOPBACK:
+            # LOOPBACK not covered in this batch: the startup reload skips replay; leftover entries are audit-expired
+            #  in place (no hanging).
+            for entry in ledger.entries():
+                if entry.placeholder_state not in PLACEHOLDER_TERMINAL_STATES:
+                    ledger.transition(entry.request_id, PLACEHOLDER_FAILED,
+                                      audit="front_loopback_reload_skip")
+            return
+        # Non-LOOPBACK: the startup reload is one of the replay triggers (the docstring declares two triggers,
+        # atomgit 199696791) — when the reload finishes before attach, the scheduling at attach would idle because
+        # the ledger is still None; here we fire it once for real; when the entry retained frames were already
+        #  evicted,
+        # the worker replies history_required -> placeholder-card path, never silent.
+        self._schedule(self._replay_delivery_entries())
+
+    def _ensure_delivery_sweep(self) -> None:
+        if self._delivery_sweep_task is not None and not self._delivery_sweep_task.done():
+            return
+        try:
+            self._delivery_sweep_task = asyncio.create_task(
+                self._delivery_sweep(), name="delivery-ledger-sweep")
+        except RuntimeError:
+            self._delivery_sweep_task = None
+
+    async def _delivery_sweep(self) -> None:
+        # Independent of the Front lifecycle: cancelled only at _finish_stop; not cancelled with worker generations
+        #  (generation
+        # increments, recovery, restart, FAILED).
+        while not self._stopping:
+            try:
+                await self._delivery_sweep_once()
+            except Exception:
+                logger.warning("[Supervisor] delivery sweep iteration failed", exc_info=True)
+            await asyncio.sleep(_DELIVERY_SWEEP_INTERVAL)
+
+    async def _delivery_sweep_once(self) -> None:
+        ledger = self._delivery_ledger
+        if ledger is None:
+            return
+        now = time.time()
+        for entry in ledger.expired_entries(now):
+            ledger.transition(entry.request_id, PLACEHOLDER_FAILED, audit="t+24h_expired_audit")
+        ledger.reap_terminal(now)
+        ws, lock = self._gateway_ws, self._gateway_lock
+        attached = ws is not None and lock is not None
+        if attached and self._delivery_replay_retry:
+            self._delivery_replay_retry = False
+            await self._replay_delivery_entries()
+        if self._conn is not None and self._delivery_replay_requested:
+            # Deferred-replay consumer: the flag set when the previous round had no conn is consumed here — with conn
+            #  present,
+            # _replay_delivery_entries clears it itself, the flag does not linger (atomgit ids 200378287 batch).
+            await self._replay_delivery_entries()
+        for entry in ledger.due_entries(now):
+            try:
+                if not attached:
+                    # Gateway not attached: no online push; the sweep re-pushes after attach.
+                    ledger.transition(entry.request_id, PLACEHOLDER_PENDING_FLUSH)
+                    continue
+                fresh = ledger.entry(entry.request_id)
+                if (fresh is None
+                        or fresh.placeholder_state in PLACEHOLDER_TERMINAL_STATES
+                        or fresh.deadline > now):
+                    # Re-check before send: two race paths between snapshot and send skip the card —
+                    # (1) the real reply retracted the card (on_wire_delivered set the entry retracted, terminal);
+                    # (2) a liveness frame only resets the deadline (chat.delta etc. keep streaming; state still
+                    # pending; a terminal-only re-check would miss this shape and misfire the card). Combined with
+                    # the ledger.transition terminal-absorb guard as a double lock. Multiple due entries still send
+                    #  one by one
+                    # (gateway sends already serialize on the shared send_lock); the re-check zeroes the race surface
+                    #  within the per-entry 10s
+                    # timeout window.
+                    continue
+                wire = build_placeholder_wire(fresh)
+                delivered = False
+                if self._forwarder is not None:
+                    try:
+                        async with asyncio.timeout(_FORWARD_TIMEOUT):
+                            # Placeholder outbound delivery is independent of the worker state (FAILED sticky state
+                            #  still sends):
+                            # only the gateway socket presence matters.
+                            delivered = await self._forwarder.send(wire, ws=ws, send_lock=lock)
+                    except asyncio.TimeoutError:
+                        delivered = False
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "[Supervisor] placeholder send failed request_id=%s",
+                            entry.request_id, exc_info=True,
+                        )
+                        delivered = False
+                if delivered:
+                    ledger.transition(entry.request_id, PLACEHOLDER_SENT)
+                    # AIReview 9722 id=200846554 face B: the placeholder card
+                    # is the final act for this dispatch (replay ok then the
+                    # worker went fully silent) — pop the replay-route trio so
+                    # the old (ws, send_lock) tuple stops pinning the old
+                    # gateway ws; no path re-touches it before the entry is
+                    # reaped an hour later.
+                    self._discard_delivery_replay_route(entry.dispatch_id)
+                elif ledger.note_push_failure(entry.request_id):
+                    self._delivery_unrecoverable.add(entry.request_id)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "[Supervisor] delivery sweep entry failed request_id=%s",
+                    entry.request_id, exc_info=True,
+                )
+                continue
+
+    async def _replay_delivery_entries(self) -> None:
+        """Send KIND_SUBSCRIBE_BY_ID for ledger entries awaiting replay (identity contract, identity-only payload).
+
+        Triggers: attach_gateway_connection (attach/reconnect) and the sweep
+        _delivery_replay_retry retry. Concurrency guard = _delivery_replay_lock: the two paths interleave
+        via await on the same event loop; serialization prevents duplicated KIND_SUBSCRIBE_BY_ID (the query_id is
+        regenerated each time; the worker cannot dedupe). Main path = rebind routes to the currently attached (ws,
+        send_lock);
+        replayed frames fall back through _wire_route for the server-push marker only when the route is missing.
+        Cleanup points: see _delivery_note_forward (new).
+        """
+        ledger = self._delivery_ledger
+        if ledger is None:
+            return
+        if self._ipc_mode == FRONT_LOOPBACK:
+            return
+        async with self._delivery_replay_lock:
+            conn = self._conn
+            if conn is None:
+                # Never silently swallow replay requests: set the deferred flag (consumed by the sweep re-replay
+                #  path),
+                # observable (atomgit 9722 id=200378287 batch / 9707 id=200332185).
+                self._delivery_replay_requested = True
+                logger.info("[Supervisor] delivery replay deferred: no IPC connection")
+                return
+            self._delivery_replay_requested = False
+            await self._replay_delivery_entries_locked(ledger, conn)
+
+    async def _replay_delivery_entries_locked(
+        self, ledger: DeliveryLedger, conn: IpcConnection
+    ) -> None:
+        for entry in ledger.entries():
+            if entry.placeholder_state in PLACEHOLDER_TERMINAL_STATES:
+                continue
+            if entry.request_id in self._delivery_unrecoverable:
+                continue
+            dispatch_id = entry.dispatch_id
+            if dispatch_id and self._gateway_ws is not None:
+                existing = self._routes.get(dispatch_id)
+                # After a gateway reconnect, a lingering old route must also rebind to the current socket: replay
+                #  frames hit the route table first via _wire_route,
+                # and a route pinned to the old ws would silently drop the replay
+                # (atomgit 9722 id=199785194 / the 19:12 verdict :1699).
+                if existing is None or existing[0] is not self._gateway_ws:
+                    stamp = (self._gateway_ws, self._gateway_lock)
+                    self._routes[dispatch_id] = stamp
+                    self._delivery_replay_route_stamps[dispatch_id] = stamp
+                    self._delivery_replay_routes.add(dispatch_id)
+            try:
+                await conn.send({
+                    "kind": KIND_SUBSCRIBE_BY_ID,
+                    "generation": self._peer_generation,
+                    "request_id": entry.request_id,
+                    "dispatch_id": dispatch_id,
+                    "query_id": uuid.uuid4().hex,
+                    "worker_instance": entry.worker_instance,
+                    "after": entry.sequence,
+                    "payload": {
+                        "channel_id": entry.channel_id,
+                        "user_id": entry.user_id,
+                        "app_id": entry.app_id,
+                        "agent_ref": entry.agent_ref_json,
+                        "session_id": entry.session_id,
+                    },
+                })
+            except (OSError, RuntimeError):
+                self._delivery_replay_retry = True
+                logger.info("[Supervisor] subscribe_by_id lost on IPC detach")
+                return
+            # one construction/send failure must not spill into the whole replay round (atomgit 199428673)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "[Supervisor] subscribe_by_id entry failed request_id=%s",
+                    entry.request_id, exc_info=True,
+                )
+                continue
 
     def _start_side_tasks(self) -> None:
         generation = self._generation

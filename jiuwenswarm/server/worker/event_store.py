@@ -87,6 +87,21 @@ class WorkerEventStore:
         self._max_events = max_events
         self._max_bytes = max_bytes
         self._expired_sequence = 0
+        # Per-request eviction watermark (replay_gapped): the global
+        # _expired_sequence advances on ANY request's eviction, so keying the
+        # gap check on it would turn any eviction into a false gap for every
+        # other request. Keyed by (scope, request_id).
+        self._expired_by_request: "OrderedDict[tuple, int]" = OrderedDict()
+        # Watermark cap eviction ledger (atomgit 9722 id=200378287): if a key
+        # evicted by the LRU were silently absent, replay_gapped would report
+        # "no gap" for requests whose watermark once existed -> silently skip
+        # frames. Evicted keys leave a tombstone here so replay_gapped reports
+        # a gap conservatively (falls back to the history_required /
+        # placeholder-card safe face). Same-cap LRU: both surfaces must exceed
+        # the cap and the request stays idle for two full windows before
+        # pruning.
+        self._watermark_lost: "OrderedDict[tuple, None]" = OrderedDict()
+        self._max_watermark_keys = 1024
         self.records: OrderedDict[str, DispatchRecord] = OrderedDict()
         self._active: dict[tuple[str, ...], str] = {}
 
@@ -103,6 +118,13 @@ class WorkerEventStore:
             raise ValueError("worker dispatch limit reached")
         if len(self.records) >= 2048:
             raise ValueError("worker retained interaction limit reached")
+        # Re-registering the same (scope, request_id) = a new round: the old
+        # round's eviction watermark must reset, otherwise the new round's
+        # after=0 hits the stale watermark, gets falsely reported as a gap and
+        # identity replay degrades into a placeholder card (atomgit 9722
+        # id=199422840).
+        self._expired_by_request.pop((scope, str(request.request_id or "")), None)
+        self._watermark_lost.pop((scope, str(request.request_id or "")), None)
         record = DispatchRecord(dispatch_id, request, scope)
         self.records[dispatch_id] = record
         self._active[key] = dispatch_id
@@ -121,7 +143,12 @@ class WorkerEventStore:
                               if not value.active and not value.is_processing and not value.interactions), None)
             if removable is None:
                 break
-            del self.records[removable]
+            self.records.pop(removable)
+            # Replay-gap watermarks (_expired_by_request) do not clear on
+            # record pruning: their lifecycle follows _frames (written on
+            # frame eviction) so replay_gapped can still judge gaps after
+            # records are rebuilt; boundedness comes from the writer-side
+            # capacity cap (see the append frame-eviction segment).
 
     def internal_record(self, request: AgentRequest) -> DispatchRecord:
         """Track an authorized server execution, including mailbox background work."""
@@ -211,10 +238,34 @@ class WorkerEventStore:
         while self._frames and (len(self._frames) > self._max_events or self._bytes > self._max_bytes):
             _expired_scope, expired, expired_size = self._frames.popleft()
             self._expired_sequence = expired["sequence"]
+            rid = str(expired.get("request_id") or "")
+            if rid:
+                key = (_expired_scope, rid)
+                if expired["sequence"] > self._expired_by_request.get(key, 0):
+                    self._expired_by_request[key] = expired["sequence"]
+                self._expired_by_request.move_to_end(key)
+                # Watermark regained = loss ledger cleared (atomgit 9722 id=200378287).
+                self._watermark_lost.pop(key, None)
             self._bytes -= expired_size
             expired_record = self.records.get(expired["dispatch_id"])
             if expired_record is not None:
                 expired_record.expired_sequence = expired["sequence"]
+        # Watermark-map capacity cap (guards unbounded growth; AIReview SF-1
+        # concern) — lifecycle follows frame eviction (not cleared early on
+        # record pruning, atomgit verdict 199763306); the LRU touch keeps
+        # active requests' watermarks from being cleared by mistake (atomgit
+        # 9707 id=199769142-⑤), over-cap evicts the least-recently-touched
+        # entries (only affects requests already fully evicted out of the
+        # retention window).
+        while len(self._expired_by_request) > self._max_watermark_keys:
+            lost_key, lost_watermark = self._expired_by_request.popitem(last=False)
+            if lost_watermark > 0:
+                # Tombstone on cap eviction: absent no longer means "no gap"
+                # (atomgit 9722 id=200378287).
+                self._watermark_lost[lost_key] = None
+                self._watermark_lost.move_to_end(lost_key)
+                while len(self._watermark_lost) > self._max_watermark_keys:
+                    self._watermark_lost.popitem(last=False)
         if record:
             body = wire.get("body") or wire.get("payload") or {}
             if isinstance(body, dict):
@@ -324,3 +375,53 @@ class WorkerEventStore:
         scope = request_scope(request)
         return [copy.deepcopy(frame) for owner, frame, _ in self._frames
                 if owner == scope and frame["sequence"] > after]
+
+    def replay_by_request(
+        self, scope: tuple[str, ...], request_id: str, *, after: int = 0,
+        dispatch_id: str = "",
+    ) -> list[dict[str, Any]]:
+        """Identity replay: retained frames of one request after the cursor.
+
+        With ``dispatch_id`` set, only frames of that dispatch generation are
+        returned: a new round reusing the same rid (process_cli cancel reuses
+        the original rid, reaped entries restart ``after`` from 0) must not
+        replay the previous round's leftover frames as the new round's reply —
+        the bare cursor alone cannot block cross-generation frames; frames
+        already carry ``metadata.runtime_event.dispatch_id`` injected at
+        append (atomgit-bot 10206 id=200876804), so filtering by generation
+        switches rounds precisely.
+        """
+        rid = str(request_id or "")
+        wanted = str(dispatch_id or "")
+        frames = []
+        for owner, frame, _ in self._frames:
+            if owner != scope or frame["request_id"] != rid:
+                continue
+            if frame["sequence"] <= after:
+                continue
+            if wanted:
+                got = str(((frame.get("payload") or {}).get("metadata") or {})
+                          .get("runtime_event", {}).get("dispatch_id") or "")
+                if got != wanted:
+                    continue
+            frames.append(copy.deepcopy(frame))
+        return frames
+
+    def replay_gapped(self, scope: tuple[str, ...], request_id: str, after: int) -> bool:
+        """True if this request's own retained frames were evicted below ``after``.
+
+        Judged by the (scope, request_id)-level watermark rather than the
+        store-wide ``_expired_sequence``: the global watermark advances when
+        ANY request evicts, so a global watermark would misreport other
+        requests' evictions as this request's gap and degrade identity replay
+        into a placeholder card.
+        """
+        rid = str(request_id or "")
+        key = (scope, rid)
+        if key in self._expired_by_request:
+            return after < self._expired_by_request[key]
+        # Watermark once recorded but evicted by the cap: cannot prove "no
+        # gap" -> report the gap conservatively; replay falls back to the
+        # history_required / placeholder-card safe face, never silently skips
+        # frames (atomgit id=200378287).
+        return key in self._watermark_lost
