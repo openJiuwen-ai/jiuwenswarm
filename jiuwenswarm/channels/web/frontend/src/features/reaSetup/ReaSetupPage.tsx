@@ -11,6 +11,7 @@ import detectArt from '../../assets/rea/detect.png';
 import SkillIcon from '../../assets/agent-management/agent-skill.svg?react';
 import { reaSetupApi } from './reaSetupApi';
 import {
+  estimatePaceRemainingSeconds,
   estimateRemainingSeconds,
   formatProgressDuration,
   messageWithoutEta,
@@ -31,12 +32,11 @@ import type {
 } from './types';
 import './reaSetup.css';
 
-const SCAN_CACHE_KEY = 'reaSetup.scan.v3';
+const SCAN_CACHE_KEY = 'reaSetup.scan.v4';
 
 type VisualState =
   | 'available'
   | 'installing'
-  | 'detecting'
   | 'needsAction'
   | 'detected'
   | 'unsupported'
@@ -53,6 +53,7 @@ interface ReaSetupPageProps {
 
 interface GroupStats {
   total: number;
+  available: number;
   installed: number;
   installing: number;
   notInstalled: number;
@@ -168,20 +169,27 @@ function mergePlan(
   });
 }
 
-function groupStats(items: Array<{ visualState: VisualState }>): GroupStats {
+function groupStats(
+  items: Array<{ visualState: VisualState }>,
+  includePartialAsInstalled = false,
+): GroupStats {
   return {
     total: items.length,
-    installed: items.filter((item) => item.visualState === 'available').length,
-    installing: items.filter(
-      (item) => item.visualState === 'installing' || item.visualState === 'detecting',
+    available: items.filter((item) => item.visualState === 'available').length,
+    installed: items.filter(
+      (item) => (
+        item.visualState === 'available'
+        || (includePartialAsInstalled && item.visualState === 'partial')
+      ),
     ).length,
+    installing: items.filter((item) => item.visualState === 'installing').length,
     notInstalled: items.filter(
       (item) => (
         item.visualState === 'notInstalled'
         || item.visualState === 'needsAction'
         || item.visualState === 'detected'
         || item.visualState === 'downloaded'
-        || item.visualState === 'partial'
+        || (!includePartialAsInstalled && item.visualState === 'partial')
         || item.visualState === 'unsupported'
       ),
     ).length,
@@ -244,13 +252,15 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     () => mergePlan(scan?.enhanced_plan ?? [], scan?.enhanced ?? []),
     [scan?.enhanced, scan?.enhanced_plan],
   );
-  const resultById = useMemo(
-    () =>
-      new Map(
-        (enhancedResult?.enhanced_install_results ?? []).map((item) => [item.id, item]),
-      ),
-    [enhancedResult?.enhanced_install_results],
-  );
+  const resultById = useMemo(() => {
+    const results = new Map(
+      Object.entries(job?.component_results ?? {}).map(([id, item]) => [id, item]),
+    );
+    for (const item of enhancedResult?.enhanced_install_results ?? []) {
+      results.set(item.id, item);
+    }
+    return results;
+  }, [enhancedResult?.enhanced_install_results, job?.component_results]);
 
   const applyScan = useCallback((next: ReaSetupScan) => {
     scanRef.current = next;
@@ -258,7 +268,7 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     writeCachedScan(next);
   }, []);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (scope: 'all' | GroupKind = 'all') => {
     if (refreshInFlightRef.current) return;
     refreshInFlightRef.current = true;
     const hasSnapshot = scanRef.current !== null;
@@ -267,8 +277,20 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     setRefreshing(hasSnapshot);
     setScanStartedAt(Date.now());
     try {
-      const next = await reaSetupApi.status();
-      applyScan(next);
+      const next = await reaSetupApi.status(scope);
+      const previous = scanRef.current;
+      applyScan(
+        scope === 'base' && previous && next.ready
+          ? {
+              ...previous,
+              ...next,
+              enhanced: previous.enhanced,
+              enhanced_plan: previous.enhanced_plan,
+              capability_cards: previous.capability_cards,
+              rea_inventory_diagnostics: previous.rea_inventory_diagnostics,
+            }
+          : next,
+      );
       if (!next.ready) {
         setEnhancedResult(null);
       }
@@ -465,7 +487,7 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     (id: string, ok: boolean): VisualState => {
       const stepIds =
         id === 'node_npx'
-          ? ['node_npx']
+          ? ['node_npx', 'node_runtime_download']
           : id === 'rea_dependencies'
             ? ['rea_package']
             : ['verify_mcp'];
@@ -551,8 +573,8 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     const members: CapabilityMemberView[] = spec.memberIds.map((id) => {
       const item = memberItems.find((candidate) => candidate.id === id);
       const liveMember = liveMemberById.get(id);
-      const memberState = enhancedScanPending
-        ? 'detecting'
+    const memberState = enhancedScanPending
+        ? 'installing'
         : item?.visualState
           || (liveMember ? capabilityCardState(liveMember.state) : 'notInstalled');
       return {
@@ -564,7 +586,7 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     });
     let visualState: VisualState;
     if (enhancedScanPending) {
-      visualState = 'detecting';
+      visualState = 'installing';
     } else if (memberItems.some((item) => item.visualState === 'failed')) {
       visualState = 'failed';
     } else if (memberItems.some((item) => item.visualState === 'installing')) {
@@ -612,7 +634,7 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     };
   });
   const baseStats = groupStats(baseDisplayItems);
-  const enhancedStats = groupStats(capabilityCards);
+  const enhancedStats = groupStats(capabilityCards, true);
   const componentSteps = (job?.steps ?? []).filter((step) => (step.id || '').startsWith('component_'));
   const componentStepGroups = new Map<string, ReaSetupStep[]>();
   componentSteps.forEach((step) => {
@@ -683,8 +705,20 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
       ? stableRemainingRef.current.seconds
       : null;
   const downloadRemainingSeconds = estimateRemainingSeconds(job, previousRemainingSeconds);
+  const paceRemainingSeconds = estimatePaceRemainingSeconds(
+    job,
+    displayPercent,
+    elapsedSeconds,
+  );
+  const plannedRemainingSeconds = displayPercent >= 10
+    ? paceRemainingSeconds ?? weightedRemainingSeconds
+    : weightedRemainingSeconds;
   const candidateRemainingSeconds = downloadRemainingSeconds
-    ?? (displayPercent >= 10 ? weightedRemainingSeconds : previousRemainingSeconds);
+    ? Math.max(
+        downloadRemainingSeconds,
+        plannedRemainingSeconds ?? previousRemainingSeconds ?? 0,
+      )
+    : plannedRemainingSeconds ?? previousRemainingSeconds;
   const remainingSeconds = stabilizeRemainingSeconds(
     job,
     candidateRemainingSeconds,
@@ -746,10 +780,15 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
   };
 
   const renderCapabilityCard = (item: CapabilityCardView, compact: boolean) => {
-    const showConfigure =
-      item.visualState === 'needsAction' || item.visualState === 'detected';
+    const singleMember = item.members.length <= 1;
+    const showConfigure = singleMember && (
+      item.visualState === 'needsAction' || item.visualState === 'detected'
+    );
     const showGuide =
       item.visualState === 'partial'
+      || (!singleMember && (
+        item.visualState === 'needsAction' || item.visualState === 'detected'
+      ))
       || item.visualState === 'unsupported'
       || item.visualState === 'failed';
     return (
@@ -811,7 +850,8 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
     onToggle: () => void,
     children: ReactNode,
   ) => {
-    const badgeState = stats.installed === stats.total ? 'complete' : 'partial';
+    const showBadge = !installing && stats.installed > 0;
+    const badgeState = stats.available === stats.total ? 'complete' : 'partial';
     return (
       <section className="rea-group">
         <div className="rea-group__header">
@@ -823,11 +863,13 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
           >
             <span className="rea-group__title">
               <strong>{title}</strong>
-              <span className={`rea-group__badge is-${badgeState}`}>
-                {badgeState === 'complete'
-                  ? t('reaSetup.groupState.complete')
-                  : t('reaSetup.groupState.partial')}
-              </span>
+              {showBadge && (
+                <span className={`rea-group__badge is-${badgeState}`}>
+                  {badgeState === 'complete'
+                    ? t('reaSetup.groupState.complete')
+                    : t('reaSetup.groupState.partial')}
+                </span>
+              )}
             </span>
           </button>
         <span className="rea-group__stats">
@@ -841,7 +883,7 @@ export function ReaSetupPage({ onUseRea }: ReaSetupPageProps) {
             type="button"
             className="rea-group__check"
             disabled={loading || refreshing || installing}
-            onClick={() => void refresh()}
+            onClick={() => void refresh(kind)}
             data-testid={`rea-check-${kind}`}
           >
             <img className="rea-group__check-icon" src={detectArt} alt="" aria-hidden />

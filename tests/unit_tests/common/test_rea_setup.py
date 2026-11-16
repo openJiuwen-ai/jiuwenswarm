@@ -130,6 +130,39 @@ def test_scan_requires_base_rea_mcp(tmp_path: Path, monkeypatch) -> None:
     assert scan["enhanced_blocked_by_base"] is True
 
 
+def test_base_only_scan_skips_enhanced_probes(tmp_path: Path, monkeypatch) -> None:
+    runtime = _runtime(tmp_path)
+    monkeypatch.setattr(rea_setup, "resolve_node_runtime", lambda *_args: runtime)
+    monkeypatch.setattr(rea_setup, "_installed_rea_version", lambda _runtime: "6.8.0")
+    monkeypatch.setattr(
+        rea_setup,
+        "_mcp_registration_check",
+        lambda *_args: {
+            "id": "rea_mcp",
+            "label": "REA MCP",
+            "ok": True,
+            "required": True,
+            "state": "connected",
+            "detail": "verified",
+        },
+    )
+    monkeypatch.setattr(rea_setup, "ensure_rea_skill", lambda *_args: {})
+    monkeypatch.setattr(
+        rea_setup,
+        "_scan_enhancements",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("base-only scans must not probe enhanced components")
+        ),
+    )
+
+    scan = rea_setup.scan_rea_setup(tmp_path / "workspace", include_enhanced=False)
+
+    assert scan["ready"] is True
+    assert scan["base"]
+    assert scan["enhanced"] == []
+    assert scan["enhanced_plan"] == []
+
+
 def test_component_inventory_distinguishes_detection_states(
     tmp_path: Path,
     monkeypatch,
@@ -781,7 +814,13 @@ def test_enhanced_install_parallelizes_independent_wave_then_java_dependents(
     )
     monkeypatch.setattr(rea_setup, "scan_rea_setup", lambda _workspace=None: {"ready": True})
 
-    result = rea_setup.install_enhanced_components(workspace)
+    progress_events: list[tuple[str, dict[str, object]]] = []
+    result = rea_setup.install_enhanced_components(
+        workspace,
+        progress_callback=lambda stage, _percent, _message, details=None: (
+            progress_events.append((stage, dict(details or {})))
+        ),
+    )
 
     assert {"java", "adb", "apktool"}.issubset(set(started))
     assert started.index("ghidra") > started.index("java")
@@ -790,6 +829,12 @@ def test_enhanced_install_parallelizes_independent_wave_then_java_dependents(
     assert by_id["java"]["state"] == "installed"
     assert by_id["ghidra"]["state"] == "installed"
     assert by_id["ida"]["state"] == "needs_action"
+    completed_ids = {
+        str((details.get("component_result") or {}).get("id"))
+        for _stage, details in progress_events
+        if isinstance(details.get("component_result"), dict)
+    }
+    assert {"java", "adb", "apktool", "ghidra"}.issubset(completed_ids)
     written = json.loads(state_path.read_text(encoding="utf-8"))
     assert written["mcp"]["rea"]["env"]["JAVA_HOME"] == "D:/tools/java"
     assert written["mcp"]["rea"]["env"]["GHIDRA_INSTALL_DIR"] == "D:/tools/ghidra"
