@@ -15,11 +15,17 @@ from jiuwenswarm.server.runtime.agent_adapter.steering import rejected
 from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
 
 
+_MAX_STEER_IMAGE_FILES = 16
+
+
 def _validate(params: dict[str, Any], *, query: bool) -> str | None:
     allowed = {"session_id", "invocation_id", "active_request_id", "input_id"}
     if not query:
-        allowed.update({"client_message_id", "content"})
-    if set(params) & {"attachments", "files", "images", "media_items", "documents"}:
+        allowed.update({"client_message_id", "content", "files"})
+    # files 是 relay 团队补充图片的受控透传通道（SteeringSession 合并进活跃轮次
+    # 图片清单）；其余附件形态（attachments/images/media_items/documents）仍整体
+    # 拒绝——它们没有消费方，放行只会被静默丢弃。
+    if set(params) & {"attachments", "images", "media_items", "documents"}:
         return "CONTENT_UNSUPPORTED"
     if set(params) - allowed:
         return "INVALID_REQUEST"
@@ -38,6 +44,18 @@ def _validate(params: dict[str, Any], *, query: bool) -> str | None:
         content = params.get("content")
         if not isinstance(content, str) or not content.strip() or len(content) > 32000:
             return "CONTENT_UNSUPPORTED"
+        files = params.get("files")
+        if files is not None:
+            if not isinstance(files, list) or len(files) > _MAX_STEER_IMAGE_FILES:
+                return "CONTENT_UNSUPPORTED"
+            for item in files:
+                path = item.get("path") if isinstance(item, dict) else None
+                if (
+                    not isinstance(path, str)
+                    or not path.strip()
+                    or len(path) > 512
+                ):
+                    return "CONTENT_UNSUPPORTED"
     return None
 
 
