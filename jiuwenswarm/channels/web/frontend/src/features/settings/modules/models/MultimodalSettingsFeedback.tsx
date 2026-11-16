@@ -22,17 +22,38 @@ export function MultimodalReferenceMessage({ tools, operation }: { tools: Multim
 export function MultimodalSettingsFeedback() {
   const { t } = useTranslation();
   const { error, saving, store, snapshot, lastChange, notice } = useMultimodalSettings();
-  const code = multimodalErrorDetails(error).code;
+  const code = multimodalErrorDetails(error?.cause).code;
   const visibleError = error && code !== 'MM_CONFIRM_REQUIRED';
   const unapplied = lastChange && !lastChange.applied_without_restart;
   if (!visibleError && !unapplied && !notice) return null;
-  return <div className={visibleError || unapplied ? 'settings-page__error' : 'settings-page__notice'}
-    role={visibleError || unapplied ? 'alert' : 'status'} data-testid="settings-multimodal-feedback">
-    {visibleError ? multimodalErrorMessage(error, t) : unapplied ? t('settingsPanel.multimodal.applyFailed') : null}
-    {notice ? <p data-testid="settings-multimodal-shortcut-notice">{t('settingsPanel.multimodal.shortcutChanged', { tool: t(`settingsPanel.multimodal.tools.${notice.tool}`) })}</p> : null}
-    {visibleError || unapplied ? <Button disabled={saving} onClick={() => {
-      if (unapplied && snapshot) void store.write('config.apply', {}).catch(() => undefined);
-      else void store.load(true);
-    }} data-testid="settings-multimodal-retry-btn">{t('settingsPanel.feedback.retry')}</Button> : null}
-  </div>;
+  return (
+    <div
+      className={visibleError || unapplied ? 'settings-page__error' : 'settings-page__notice'}
+      role={visibleError || unapplied ? 'alert' : 'status'}
+      data-testid="settings-multimodal-feedback"
+    >
+      {visibleError
+        ? multimodalErrorMessage(error?.cause, t)
+        : unapplied
+          ? t('settingsPanel.multimodal.applyFailed')
+          : null}
+      {notice ? (
+        <p data-testid="settings-multimodal-shortcut-notice">
+          {t('settingsPanel.multimodal.shortcutChanged', { tool: t(`settingsPanel.multimodal.tools.${notice.tool}`) })}
+        </p>
+      ) : null}
+      {visibleError || unapplied ? (
+        <Button
+          disabled={saving}
+          onClick={() => {
+            if (unapplied && snapshot) void store.write('config.apply', {}).catch(() => undefined);
+            else void store.load(true);
+          }}
+          data-testid="settings-multimodal-retry-btn"
+        >
+          {t('settingsPanel.feedback.retry')}
+        </Button>
+      ) : null}
+    </div>
+  );
 }

@@ -299,6 +299,38 @@ def test_web_model_settings_preserve_deployment_import_roots(tmp_path, monkeypat
     assert "local_media_roots" not in media
 
 
+@pytest.mark.parametrize("deployment_source", ["inline", "env", "workspace"])
+def test_video_upload_root_preserves_effective_import_roots(tmp_path, monkeypatch, deployment_source):
+    local_media = pytest.importorskip("jiuwen_memory.common.security.protection.local_media")
+    from jiuwen_memory.api import Scope
+    from jiuwen_memory.common.errors import PermissionDeniedError
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    uploads = tmp_path / "web_session" / "uploads"
+    uploads.mkdir(parents=True)
+    scope = {"org": "org", "space": "space", "user": "user", "agent": "run-agent", "session": "memory-session"}
+    roots = [{"scope": scope, "root": str(workspace)}]
+    jiuwen = {"mode": "sdk", "scope_id": "org", "space": "space", "user_id": "user", "session_id": "memory-session"}
+    if deployment_source == "inline":
+        jiuwen["sdk"] = {"globals": {"local_media_roots": roots}}
+    elif deployment_source == "env":
+        monkeypatch.setenv("JIUWEN_MEMORY_VIDEO_ROOTS", json.dumps(roots))
+    media = jrb.get_jiuwen_sdk_media_globals(
+        _cfg(jiuwen), _web_tool_config(), workspace=str(workspace), agent_name="run-agent",
+        session_upload_root=uploads,
+    )
+    assert media["local_media_roots"] == [*roots, {"scope": scope, "root": str(uploads)}]
+    imports = local_media.LocalMediaImports(media["local_media_roots"])
+    uploaded = uploads / "demo.mp4"
+    uploaded.touch()
+    unrelated = tmp_path / "unrelated.mp4"
+    unrelated.touch()
+    assert imports.preflight_video(uploaded.as_uri(), Scope(**scope)) == uploaded.as_uri()
+    with pytest.raises(PermissionDeniedError):
+        imports.preflight_video(unrelated.as_uri(), Scope(**scope))
+
+
 @pytest.mark.parametrize(("disabled_kind", "prefix"), [("audio", "asr"), ("video", "video")])
 def test_web_model_settings_can_use_deployment_fallback(tmp_path, disabled_kind, prefix):
     pytest.importorskip("jiuwen_memory.common.security.protection.local_media")
@@ -396,6 +428,17 @@ async def test_memory_rail_rebuilds_for_web_media_settings_and_permission_change
         assert media["video_api_key"] == "new-video-key"
         assert media["asr_api_key"] == "rotated"
     adapter._instance_overrides.clear()
+
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    adapter._memory_media_upload_root = uploads
+    adapter._enable_auto_permission = False
+    adapter._config_base_cache["permissions"]["enabled"] = True
+    assert "local_media_roots" not in adapter._jiuwen_memory_media_globals(config)
+    adapter._config_base_cache["permissions"]["enabled"] = False
+    media = adapter._jiuwen_memory_media_globals(config)
+    assert media["local_media_roots"][-1]["root"] == str(uploads)
+    adapter._memory_media_upload_root = None
 
     adapter._config_base_cache["models"]["video"]["enabled"] = False
     adapter._config_base_cache["models"]["audio"]["enabled"] = False

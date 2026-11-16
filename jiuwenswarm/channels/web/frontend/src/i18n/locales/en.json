@@ -468,7 +468,6 @@
       "displayName": "Model display name",
       "displayNamePlaceholder": "Defaults to the model name; you can change it",
       "nameInvalid": "Enter a model display name between 1 and 100 characters",
-      "completeFields": "Complete the required model configuration fields.",
       "add": "Add multimodal model",
       "edit": "Edit multimodal model",
       "deleteTitle": "Delete model?",
@@ -492,7 +491,7 @@
         "video_gen": "Video generation"
       },
       "errors": {
-        "MM_VALIDATION_FAILED": "Check the model configuration and complete all required fields.",
+        "MM_VALIDATION_FAILED": "Model configuration validation failed. Check the configuration and try again.",
         "MM_CONFIRM_REQUIRED": "Model references have changed. Confirm the affected tools again.",
         "MM_MODEL_NOT_FOUND": "This model no longer exists. Select another model.",
         "MM_MODEL_ID_CONFLICT": "The model ID is already in use. Reopen the add dialog.",
@@ -1780,6 +1779,14 @@
     "planning": {
       "tab": "Task Planning",
       "progressTitle": "Task Progress",
+      "taskCompletion": "Tasks completed",
+      "executionProgress": "Execution progress",
+      "estimatedProgress": "Execution progress (estimated)",
+      "agentProgress": "Loaded workflow nodes: {{ended}} / {{total}} ended",
+      "phaseAgentProgress": "Phase nodes: {{ended}} / {{total}} ended",
+      "agentProgressUnavailable": "Loaded workflow nodes: some workflow node counts are unavailable",
+      "teamMetricScope": "Task counts include team tasks and workflow phases, excluding application tasks. Progress combines ordinary tasks and workflows, using workflow node counts when available.",
+      "teamBoardMetricScope": "Progress includes team tasks and workflows only. Status counts include all board tasks, including application tasks.",
       "token": "Token",
       "taskList": "Task List",
       "taskListAria": "{{task}} task list",
@@ -2022,6 +2029,7 @@
     "topicStarter": {
       "statusMissingConfiguration": "Topic recommendations are unavailable. Check Settings.",
       "recommendedForYou": "Recommended for you",
+      "statusLoading": "Loading…",
       "heading": "What would you like to explore today?",
       "notInterested": "Skip for now",
       "dateAndVersion": "See this day",
@@ -5371,7 +5379,7 @@
       "saving": "Saving...",
       "name": "Name",
       "type": "Type",
-      "typeStdio": "STUDIO",
+      "typeStdio": "STDIO",
       "typeHttp": "Streamable HTTP",
       "command": "Startup command",
       "args": "Arguments",

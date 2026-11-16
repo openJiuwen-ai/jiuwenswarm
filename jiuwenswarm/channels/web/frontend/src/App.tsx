@@ -2366,6 +2366,7 @@ function AppContent({
       cli_agent: ExternalCliAgentKind;
       status: "ok" | "warning" | "missing" | "unsupported" | "unavailable";
       path?: string;
+      builtin_path?: string;
       version?: string;
       reference_version?: string;
       message?: string;
@@ -3602,6 +3603,7 @@ function AppContent({
           toast.open({
             content: referenceError || (code && code !== 'empty' ? code : t('designer.chat.bootstrapError')),
             variant: 'error',
+            wide: true,
           });
         } finally {
           creatingSessionRef.current = false;

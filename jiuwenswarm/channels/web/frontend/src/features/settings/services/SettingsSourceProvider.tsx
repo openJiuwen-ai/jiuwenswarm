@@ -11,8 +11,10 @@ import { applyBrowserDisplaySettings, browserDisplayRevision } from '../../deskt
 import { usePersonalContextStore } from '../../../stores/personalContextStore';
 import { parseContextCapacity } from '../modules/personalContext/capacitySetting';
 
+export type SettingsSourceOption = { value: SettingValue; label: string; title?: string };
+
 export type SettingsSourceController = {
-  optionsFor?: (key: string) => readonly { value: SettingValue; label: string }[];
+  optionsFor?: (key: string) => readonly SettingsSourceOption[];
   requiresConfiguration?: (key: string) => boolean;
   values: Readonly<Record<string, unknown>>;
   savingKeys: ReadonlySet<string>;
@@ -297,7 +299,8 @@ function PersonalContextSourceProvider({ children }: { children: ReactNode }) {
 }
 
 function MultimodalSourceProvider({ children }: { children: ReactNode }) {
-  const { snapshot, saving, store } = useMultimodalSettings();
+  const { snapshot, store } = useMultimodalSettings();
+  const [savingKeys, setSavingKeys] = useState<ReadonlySet<string>>(() => new Set());
   const values = useMemo(() => Object.fromEntries(MULTIMODAL_CAPABILITIES.flatMap((tool) => [
     [`${tool}_enabled`, snapshot?.tools[tool].enabled ?? false],
     [`${tool}_model_id`, snapshot?.tools[tool].model_id ?? ''],
@@ -310,11 +313,17 @@ function MultimodalSourceProvider({ children }: { children: ReactNode }) {
     const params: Record<string, unknown> = { tool_id: tool };
     if (`${tool}_enabled` in updates) params.enabled = updates[`${tool}_enabled`];
     if (`${tool}_model_id` in updates) params.model_id = updates[`${tool}_model_id`];
-    return store.write('tools.update', params);
+    const keys = [`${tool}_enabled`, `${tool}_model_id`];
+    setSavingKeys((current) => addSavingKeys(current, keys));
+    try {
+      return await store.write('tools.update', params);
+    } finally {
+      setSavingKeys((current) => removeSavingKeys(current, keys));
+    }
   }, [store]);
   const controller = useMemo<SettingsSourceController>(() => ({
     values,
-    savingKeys: new Set(saving || !snapshot ? Object.keys(values) : []),
+    savingKeys: snapshot ? savingKeys : new Set(Object.keys(values)),
     save,
     patchLocal: () => undefined,
     requiresConfiguration: (key) => !snapshot?.tools[key.replace(/_enabled$/, '') as MultimodalCapability]?.model_id,
@@ -322,7 +331,7 @@ function MultimodalSourceProvider({ children }: { children: ReactNode }) {
       const tool = key.replace(/_model_id$/, '') as MultimodalCapability;
       return multimodalModelOptions(snapshot?.models ?? [], tool);
     },
-  }), [save, saving, snapshot, values]);
+  }), [save, savingKeys, snapshot, values]);
   return <SettingsSourceContext.Provider value={controller}>{children}</SettingsSourceContext.Provider>;
 }
 

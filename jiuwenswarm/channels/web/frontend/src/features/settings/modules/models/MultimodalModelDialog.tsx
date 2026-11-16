@@ -38,7 +38,6 @@ export function MultimodalModelDialog({
   const nameSyncedFromModel = useRef(model?.connection.model_name ?? '');
   const connection = useRef<Record<string, unknown>>({ ...model?.connection });
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const onDraftChange = useCallback((updates: Record<string, string>) => {
     const prefix = Object.keys(updates).find((key) => key.endsWith('_api_base'))?.replace(/_api_base$/, '');
     if (!prefix) return;
@@ -59,8 +58,8 @@ export function MultimodalModelDialog({
     if (previousModelName !== undefined) form.clearValidate('display_name');
     else form.validate('display_name');
   }, [form]);
-  // Reuse the connection draft when changing purpose. Each purpose retains its
-  // existing editor/validation; capability changes do not reset its form.
+  // Purpose changes start with an empty connection draft; capability changes
+  // retain the current editor and its validation.
   const config = useMemo(() => Object.fromEntries(MULTIMODAL_CAPABILITIES.flatMap((tool) =>
     Object.entries(connection.current).map(([key, value]) => [`${tool}_${key === 'model_name' ? 'model' : key}`, value]),
   )), [values.purpose]);
@@ -68,16 +67,22 @@ export function MultimodalModelDialog({
     {
       name: 'purpose', label: t('settingsPanel.multimodal.purpose'), component: 'select', required: true,
       options: (['understanding', 'generation'] as const).map((purpose) => ({ value: purpose, label: t(`settingsPanel.multimodal.${purpose}`) })),
-      onChange: () => form.setFieldValue('capabilities', []),
+      onChange: (purpose) => {
+        if (purpose === values.purpose) return;
+        connection.current = {};
+        nameSyncedFromModel.current = '';
+        form.setValues({ capabilities: [], display_name: '' });
+        form.clearValidate();
+      },
     },
     {
       name: 'capabilities', label: t('settingsPanel.multimodal.capabilities'), component: 'custom', required: true,
       helpTips: t('settingsPanel.multimodal.capabilityHint'),
-      render: ({ id, value, disabled, error, onBlur }) => (
+      render: ({ id, value, disabled, error, onChange, onBlur }) => (
         <Select id={id} multiple value={Array.isArray(value) ? value : []} disabled={disabled} invalid={Boolean(error)}
           options={capabilitiesFor(values.purpose).map((tool) => ({ value: tool, label: t(`settingsPanel.multimodal.tools.${tool}`) }))}
           placeholder={t('settingsPanel.multimodal.selectCapabilities')}
-          onChange={(selected) => form.setFieldValue('capabilities', selected as MultimodalCapability[])}
+          onChange={(selected) => onChange(selected as MultimodalCapability[])}
           onBlur={onBlur} data-testid="settings-multimodal-capabilities-select" />
       ),
     },
@@ -87,8 +92,7 @@ export function MultimodalModelDialog({
     },
   ];
   const save = async (updates: Record<string, string>) => {
-    const metadata = form.validate();
-    if (!metadata.valid) throw new Error(t('settingsPanel.multimodal.completeFields'));
+    const metadata = form.getValues();
     const prefix = values.purpose === 'understanding' ? 'vision' : slot;
     const read = (key: string) => updates[`${prefix}_${key}`] ?? '';
     const nextConnection: MultimodalConnection = {
@@ -100,24 +104,13 @@ export function MultimodalModelDialog({
       } : {}),
     };
     const params = { mode: model ? 'update' : 'create', model: {
-      model_id: modelId, ...metadata.values, display_name: metadata.values.display_name.trim(), connection: nextConnection,
+      model_id: modelId, ...metadata, display_name: metadata.display_name.trim(), connection: nextConnection,
     } };
     let result;
     try {
       result = await store.write('models.upsert', params);
     } catch (error) {
       const details = multimodalErrorDetails(error);
-      if (details.field_errors) {
-        const connectionErrors: Record<string, string> = {};
-        const metadataErrors: Partial<Record<keyof Metadata, string>> = {};
-        for (const field of details.field_errors) {
-          const message = t('settingsPanel.multimodal.completeFields');
-          if (field.field.startsWith('connection.')) connectionErrors[field.field.slice('connection.'.length)] = message;
-          else if (field.field === 'display_name' || field.field === 'purpose' || field.field === 'capabilities') metadataErrors[field.field] = message;
-        }
-        setFieldErrors(connectionErrors);
-        form.setErrors(metadataErrors);
-      }
       if (details.code !== 'MM_CONFIRM_REQUIRED' || !details.affected_tools) {
         throw new Error(multimodalErrorMessage(error, t));
       }
@@ -130,7 +123,7 @@ export function MultimodalModelDialog({
         throw new Error(multimodalErrorMessage(error, t));
       }
     }
-    if (defaultCapability && !metadata.values.capabilities.includes(defaultCapability)) store.announceShortcutChange(defaultCapability);
+    if (defaultCapability && !metadata.capabilities.includes(defaultCapability)) store.announceShortcutChange(defaultCapability);
     return result;
   };
   const slot = values.capabilities.includes('video_gen') && !values.capabilities.includes('visual_gen') ? 'video_gen' : 'visual_gen';
@@ -138,12 +131,18 @@ export function MultimodalModelDialog({
     <Form form={form} items={items} renderFields={renderFields} disabled={disabled} optionalText={t('common.optional')}
       showOptional={false} testIdPrefix="settings-multimodal-metadata"
       rules={{
-        display_name: [{ validator: (value) => typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 100 ? undefined : t('settingsPanel.multimodal.nameInvalid') }],
+        display_name: [
+          { validator: (value) => typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 100 ? undefined : t('settingsPanel.multimodal.nameInvalid') },
+          { validator: (value) => store.getSnapshot().snapshot?.models.some((candidate) =>
+            candidate.model_id !== modelId && candidate.display_name.trim() === value.trim(),
+          ) ? t('settingsPanel.models.validation.aliasConflict') : undefined },
+        ],
         capabilities: [{ validator: (value) => Array.isArray(value) && value.length > 0 ? undefined : t('settingsPanel.multimodal.selectCapabilities') }],
       }} />
   );
   const extension = {
-    dirty: hasUnsavedChanges, onDraftChange, onModelNameCommit, fieldErrors,
+    dirty: hasUnsavedChanges, onDraftChange, onModelNameCommit,
+    validate: () => form.validate().valid,
     render: (disabled: boolean) => (
       <div className="settings-multimodal-model-metadata" data-testid="settings-multimodal-model-dialog" data-variant={model ? 'edit' : 'add'}>
         {renderMetadata(disabled, ['purpose', 'capabilities'])}

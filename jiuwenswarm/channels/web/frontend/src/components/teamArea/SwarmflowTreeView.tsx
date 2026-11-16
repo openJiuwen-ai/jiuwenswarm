@@ -133,8 +133,8 @@ function statusText(status: WorkflowStatus, t: (k: string) => string): string {
 function ProgressBar({ completed, total }: { completed: number; total: number }) {
   const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
   return (
-    <div className="flex items-center gap-2 shrink-0">
-      <div className="swarmflow-run-progress-track w-16 h-1.5 rounded-full bg-secondary overflow-hidden">
+    <div className="flex items-center gap-2 shrink-0 whitespace-nowrap">
+      <div className="swarmflow-run-progress-track w-16 h-1.5 shrink-0 rounded-full bg-secondary overflow-hidden">
         <div
           className="h-full rounded-full bg-blue-500 transition-all"
           style={{ width: `${pct}%` }}
@@ -1436,7 +1436,7 @@ function RunNode({
   useLayoutEffect(() => {
     setExpanded(!ended);
   }, [ended]);
-  // Folded terminal runs compress to a single header row: the summary and the
+  // Folded terminal runs show only the header: the summary and the
   // result / error detail rows stay hidden until the card is expanded again.
   const compressed = ended && !expanded;
   // Control request in-flight flag: clicking pause/resume/stop immediately
@@ -1599,7 +1599,7 @@ function RunNode({
         </div>
         {/* 指标簇 + 控制按钮。整簇作为一个 grid item：宽档与名称同排贴右，窄档由
             grid 模板换到第二行、左沿对齐名称轨。 */}
-        <div className="swarmflow-run-metrics flex min-w-0 items-center gap-x-2 gap-y-1">
+        <div className="swarmflow-run-metrics flex min-w-0 items-center gap-x-2 gap-y-2" data-testid="team-area-swarmflow-run-metrics">
           {waitingCount > 0 && (
             <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500 shrink-0 animate-pulse" data-testid="team-area-swarmflow-run-waiting-badge" data-variant={run.id}>
               {t('swarmflow.waitingForHuman', { count: waitingCount })}
