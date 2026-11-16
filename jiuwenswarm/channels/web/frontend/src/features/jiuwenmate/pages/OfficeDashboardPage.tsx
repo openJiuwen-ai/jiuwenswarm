@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import DatePicker from '../../../components/CronPanel/DatePicker';
 import { ActionMenu } from '../components/ActionMenu';
 import { ActivityHeatmap, HeatmapLegend } from '../components/ActivityHeatmap';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
@@ -54,7 +55,8 @@ import {
   usageChange,
   yearHeatmap,
   MAX_PERIOD_DAYS,
-  exceedsActivityPeriod,
+  adjustedPeriodEdge,
+  type JiuwenMatePeriodEdge,
   type JiuwenMateActivityRange,
   type JiuwenMateActivityScope,
   type JiuwenMateOfficeState,
@@ -340,11 +342,11 @@ function ActivityAllTab({
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
-  const [periodLimited, setPeriodLimited] = useState(false);
-  const changePeriod = (periodStart: string, periodEnd: string) => {
+  const [periodLimited, setPeriodLimited] = useState<JiuwenMatePeriodEdge | null>(null);
+  const changePeriod = (periodStart: string, periodEnd: string, edited: JiuwenMatePeriodEdge) => {
     if (!periodStart || !periodEnd) return;
-    setPeriodLimited(exceedsActivityPeriod(periodStart, periodEnd));
-    setState((current) => setActivityPeriod(current, periodStart, periodEnd));
+    setPeriodLimited(adjustedPeriodEdge(periodStart, periodEnd, edited));
+    setState((current) => setActivityPeriod(current, periodStart, periodEnd, edited, toIsoDate(today)));
   };
   const daily = useMemo(() => mergeDailyActivity(members), [members]);
   const heatmap = useMemo(() => yearHeatmap(state.year, today, daily), [state.year, today, daily]);
@@ -412,26 +414,26 @@ function ActivityAllTab({
             <span className="jiuwenmate-office__period">
               {periodLimited ? (
                 <small className="jiuwenmate-office__period-limit" role="status" data-testid="jiuwenmate-office-period-limit">
-                  {t('jiuwenmate.office.periodLimit', { count: MAX_PERIOD_DAYS })}
+                  {t(periodLimited === 'end' ? 'jiuwenmate.office.periodLimitEnd' : 'jiuwenmate.office.periodLimit', { count: MAX_PERIOD_DAYS })}
                 </small>
               ) : null}
-              <input
-                type="date"
-                value={state.periodStart}
-                max={toIsoDate(today)}
-                aria-label={t('jiuwenmate.office.periodStart')}
-                onChange={(event) => changePeriod(event.target.value, state.periodEnd)}
-                data-testid="jiuwenmate-office-period-start"
-              />
+              <span aria-label={t('jiuwenmate.office.periodStart')} data-testid="jiuwenmate-office-period-start">
+                <DatePicker
+                  value={state.periodStart}
+                  maxDate={toIsoDate(today)}
+                  onChange={(value) => changePeriod(value, state.periodEnd, 'start')}
+                  className="jiuwenmate-office__date"
+                />
+              </span>
               <span>{t('jiuwenmate.office.periodTo')}</span>
-              <input
-                type="date"
-                value={state.periodEnd}
-                max={toIsoDate(today)}
-                aria-label={t('jiuwenmate.office.periodEnd')}
-                onChange={(event) => changePeriod(state.periodStart, event.target.value)}
-                data-testid="jiuwenmate-office-period-end"
-              />
+              <span aria-label={t('jiuwenmate.office.periodEnd')} data-testid="jiuwenmate-office-period-end">
+                <DatePicker
+                  value={state.periodEnd}
+                  maxDate={toIsoDate(today)}
+                  onChange={(value) => changePeriod(state.periodStart, value, 'end')}
+                  className="jiuwenmate-office__date"
+                />
+              </span>
             </span>
           )}
         </div>
