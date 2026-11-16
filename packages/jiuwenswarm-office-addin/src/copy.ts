@@ -20,8 +20,8 @@ export const documentCopy: Record<Surface, DocumentCopy> = {
   },
   workbook: {
     noun: '工作簿',
-    welcomeBody: '我可以直接读取、修改和检查这个工作簿。',
-    suggestions: ['说明这个工作簿的结构', '给这张表加一行合计', '检查公式有没有错误值'],
+    welcomeBody: '我可以在这个工作簿里读数据、写公式、整理格式和做图表。',
+    suggestions: ['总结选中区域的数据', '给这张表加合计行', '检查公式里的错误值'],
   },
 };
 
@@ -97,7 +97,9 @@ export const copy = {
   approvalKeys: { reject: 'Esc', allow_once: 'Enter' } as Record<string, string>,
   approvalArguments: '查看完整参数',
   /** The names of the arguments an approval shows in words; the others show in the full arguments only. */
-  payloadLabels: { target_session_id: '目标文档', message: '内容', slide_id: '页面', ref: '位置' } as Record<string, string>,
+  payloadLabels: {
+    target_session_id: '目标文档', message: '内容', slide_id: '页面', ref: '位置', explanation: '说明',
+  } as Record<string, string>,
   approvalNeeded: '需要你的授权才能继续',
   questionAsked: '智能体在等你回答问题',
   askTitle: '请回答问题',
@@ -144,6 +146,12 @@ export const copy = {
     duplicate_slide: '复制页面',
     import_slides: '导入页面',
     copy_image_between_slides: '复制图片到其他页面',
+    get_cell_ranges: '读取单元格',
+    get_range_as_csv: '读取表格数据',
+    set_cell_range: '写入单元格',
+    copy_paste_range: '复制区域',
+    execute_office_js: '运行代码',
+    read_surface_context: '读取当前选区',
     list_open_documents: '查看打开的文档',
     publish_office_asset: '准备素材文件',
     session_send_message: '发送任务给另一份文档',

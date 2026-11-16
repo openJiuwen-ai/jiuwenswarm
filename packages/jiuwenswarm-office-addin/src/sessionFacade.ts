@@ -16,6 +16,15 @@ export interface ResourceConversation {
   lastMessageAt: number;
 }
 
+/**
+ * The document's state a message carries (``text``), and ``sent``, which the app runs once ``chat.send`` took the
+ * message: what the state lists as new (the user's changes, their decisions) is then told and not listed again.
+ */
+export interface ClientState {
+  text: string;
+  sent(): void;
+}
+
 interface PersistedImageAttachment {
   type: 'image';
   filename: string;
@@ -29,8 +38,16 @@ interface PersistedImageAttachment {
  * its context; which conversation the pane shows is the attachment's.
  */
 export class SessionFacade {
-  /** ``clientApp``: the app whose conversations these are, as the backend registers it. */
-  constructor(private readonly gateway: Pick<GatewayClient, 'request'>, private readonly clientApp: string) {}
+  /**
+   * ``clientApp``: the app whose conversations these are, as the backend registers it. ``clientState``: the
+   * document's state as the app's ``read_surface_context`` gives it, which each message carries
+   * (``chat.send`` ``client_state``) for the backend to show the model with the message.
+   */
+  constructor(
+    private readonly gateway: Pick<GatewayClient, 'request'>,
+    private readonly clientApp: string,
+    private readonly clientState?: (sessionId: SessionId) => Promise<ClientState>,
+  ) {}
 
   /** A new conversation of the app (``client_app``), which shows only in this client. */
   async create(modelName: string): Promise<SessionId> {
@@ -117,6 +134,7 @@ export class SessionFacade {
     const mediaItems = images.length ? await this.persistImages(sessionId, images) : undefined;
     const uploadedImages = mediaItems?.map(({ filename, path, mime_type, size_bytes }) => (
       { filename, path, mime_type, size_bytes }));
+    const state = this.clientState ? await this.clientState(sessionId) : undefined;
     await this.gateway.request(
       'chat.send',
       {
@@ -126,9 +144,11 @@ export class SessionFacade {
         work_mode: 'work',
         ...(modelName ? { model_name: modelName } : {}),
         ...(mediaItems ? { media_items: mediaItems, files: { uploaded_images: uploadedImages } } : {}),
+        ...(state === undefined ? {} : { client_state: state.text }),
       },
       { stream: true, timeoutMs: 60_000 },
     );
+    state?.sent();
   }
 
   /** Stop the running turn; a supplement starts the next one on ``modelName``, as ``chat.send`` does. */

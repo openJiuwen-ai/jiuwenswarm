@@ -3139,6 +3139,13 @@ class JiuWenSwarmDeepAdapter:
             plugin_names=params.get("plugin_names"),
             mcp=params.get("mcp"),
         )
+        if app_package is not None and "client_state" in params:
+            from jiuwenswarm.server.client_attachments import save_client_state
+
+            try:
+                await asyncio.to_thread(save_client_state, request.session_id, params["client_state"])
+            except (ValueError, OSError) as exc:
+                return self._equipment_error_response(request, str(exc))
         return None
 
     @staticmethod
