@@ -2,8 +2,10 @@
 from unittest.mock import AsyncMock
 
 import pytest
+from openjiuwen.core.session.checkpointer import NoopCheckpointer
 
 from jiuwenswarm.runtime import checkpointer
+from jiuwenswarm.runtime.context_checkpointer import ContextCheckpointer
 
 
 @pytest.mark.asyncio
@@ -17,13 +19,17 @@ async def test_checkpoint_journal_mode_reaches_core_provider(monkeypatch, tmp_pa
     monkeypatch.setattr(checkpointer, "get_checkpoint_dir", lambda: tmp_path)
     monkeypatch.setattr(checkpointer, "get_config", lambda: config, raising=False)
     monkeypatch.setattr(checkpointer, "PersistenceCheckpointerProvider", lambda: None)
-    create = AsyncMock(return_value=object())
+    checkpoint_store = NoopCheckpointer()
+    create = AsyncMock(return_value=checkpoint_store)
     monkeypatch.setattr(checkpointer.CheckpointerFactory, "create", create)
-    monkeypatch.setattr(checkpointer.CheckpointerFactory, "set_default_checkpointer", lambda _: None)
+    monkeypatch.setattr(checkpointer.CheckpointerFactory, "_default_checkpointer", None)
 
     await checkpointer.ensure_persistent_checkpointer()
 
     assert create.await_args.args[0].conf["db_journal_mode"] == "DELETE"
+    registered = checkpointer.CheckpointerFactory.get_checkpointer()
+    assert isinstance(registered, ContextCheckpointer)
+    assert registered.delegate is checkpoint_store
 
 
 @pytest.mark.asyncio

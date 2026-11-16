@@ -299,6 +299,14 @@ def patched_sessions(monkeypatch: pytest.MonkeyPatch):
 
 
 class TestSessionAdapter:
+    @pytest.fixture(autouse=True)
+    def checkpoint_store(self, monkeypatch):
+        """Session cleanup owns its checkpoint state, including the real release hook."""
+        from openjiuwen.core.session.checkpointer import CheckpointerFactory
+        from openjiuwen.core.session.checkpointer.inmemory import InMemoryCheckpointer
+
+        monkeypatch.setattr(CheckpointerFactory, "_default_checkpointer", InMemoryCheckpointer())
+
     async def test_history_list_turns_is_handled_as_session_rpc(self, monkeypatch) -> None:
         from jiuwenswarm.agents.harness.common import session_ops_service
 

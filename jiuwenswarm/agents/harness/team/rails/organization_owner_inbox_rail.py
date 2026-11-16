@@ -44,8 +44,6 @@ class OrganizationOwnerInboxRail(DeepAgentRail):
         if owner_is_stopped(self.session_id, self.team_id):
             return
         store = owner_inbox()
-        if await asyncio.to_thread(store.enabled_at, self.session_id, self.team_id) is None:
-            return
         token = ctx.extra.get("organization_owner_inbox_delivery")
         if token is None:
             from openjiuwen.core.runner.runner import GLOBAL_RUNNER
@@ -54,6 +52,11 @@ class OrganizationOwnerInboxRail(DeepAgentRail):
             entry = await runtime.pool.get(self.team_id) if runtime is not None else None
             backend = getattr(getattr(entry, "agent", None), "team_backend", None)
             manager = getattr(backend, "org_task_manager", None)
+            if await asyncio.to_thread(store.enabled_at, self.session_id, self.team_id) is None:
+                if manager is None:
+                    return
+                # Backfill completed tasks on an ordinary Owner's next invocation too.
+                await asyncio.to_thread(store.enable, self.session_id, self.team_id, 0.0)
             if manager is not None:
                 await capture_task_results(self.session_id, backend)
                 await capture_leader_messages(self.session_id, self.team_id, manager)
