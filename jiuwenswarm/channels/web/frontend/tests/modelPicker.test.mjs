@@ -52,6 +52,8 @@ try {
     vite.ssrLoadModule('/src/stores/workspaceStore.ts'),
     vite.ssrLoadModule('/src/components/ui/Toast/Toast.tsx'),
     vite.ssrLoadModule('/src/components/ui/Toast/toastStore.ts'),
+    vite.ssrLoadModule('/src/features/designer/designerStore.ts'),
+    vite.ssrLoadModule('/src/assets/providers/index.ts'),
   ]);
 } finally {
   await vite.close();
@@ -91,6 +93,8 @@ const [
   { useWorkspaceStore },
   { ToastStack },
   { toast, toastStore, TOAST_EXIT_ANIMATION_MS },
+  { useDesignerStore },
+  { getModelLogoUrl },
 ] = modules;
 
 const resources = Object.fromEntries(
@@ -1699,6 +1703,51 @@ test('canvas model configuration keeps chat locked and still changes generation 
     assert.equal(byId('designer-model-config-add').textContent, copy.designer.modelConfiguration.addModel);
     assert.equal(useSessionStore.getState().getRuntime(sessionId).selectedModelName, 'configured-a');
   }, 'zh');
+});
+
+test('canvas label follows the selected model id when names collide', async (t) => {
+  t.mock.method(webClient, 'request', async () => generationSnapshot());
+  const sharedName = 'deepseek-chat';
+  const official = {
+    model_id: 'official-ds', model_name: sharedName, alias: 'Official DeepSeek',
+    vendor_key: 'deepseek', model_provider: 'DeepSeek',
+  };
+  const customOpenAI = {
+    model_id: 'custom-oai', model_name: sharedName, alias: 'Custom OpenAI DeepSeek',
+    model_provider: 'OpenAI',
+  };
+  const customAnthropic = {
+    model_id: 'custom-ant', model_name: sharedName, alias: 'Custom Anthropic DeepSeek',
+    model_provider: 'Anthropic',
+  };
+  await withFixture(async ({ mount, click, byId }) => {
+    resetGenerationStore();
+    useDesignerStore.setState({ domainGraph: null });
+    useSessionStore.getState().setAvailableModels([official, customOpenAI, customAnthropic], sharedName);
+    useSessionStore.getState().setSelectedModelSelection(sessionId, { type: 'model', id: customAnthropic.model_id });
+    await mount(createElement(DesignerModelSelector, { sessionId, readOnly: true }));
+    const trigger = byId('designer-model-selector-trigger');
+    const label = byId('designer-model-selector-label');
+    assert.equal(label.textContent, customAnthropic.alias);
+    assert.equal(trigger.querySelector('[data-testid="model-provider-icon"]').getAttribute('src'),
+      getModelLogoUrl(customAnthropic));
+    assert.notEqual(getModelLogoUrl(customAnthropic), getModelLogoUrl(official));
+    await click(trigger);
+    assert.match(byId('designer-model-config-locked-chat').textContent, new RegExp(customAnthropic.alias));
+    assert.equal(byId('designer-model-config-locked-chat').textContent.includes(official.alias), false);
+
+    await act(async () => {
+      useDesignerStore.setState({
+        domainGraph: { metadata: { model_id: official.model_id } },
+      });
+      useSessionStore.getState().setSelectedModelSelection(sessionId, null);
+    });
+    await mount(createElement(DesignerModelSelector, { sessionId, readOnly: true }));
+    assert.equal(byId('designer-model-selector-label').textContent, official.alias);
+    assert.equal(byId('designer-model-selector-trigger').querySelector('[data-testid="model-provider-icon"]').getAttribute('src'),
+      getModelLogoUrl(official));
+  });
+  useDesignerStore.setState({ domainGraph: null });
 });
 
 test('settings tab navigation applies fresh requests while allowing subsequent manual tab selection', async () => {
