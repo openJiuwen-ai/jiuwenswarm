@@ -67,7 +67,14 @@ export function JevKeySettings({ disabled }: SettingsCustomItemProps) {
   // config.save_all (Runtime process) stay invisible until a Gateway restart
   // (#6542). The config panel reads the persisted .env first and stays fresh,
   // so derive the configured state from the credential value itself.
-  const configured = draft.api_key.trim() !== '';
+  // When the config panel does not expose the credential field at all (e.g.
+  // process-env injected deployments), fall back to the path.get verdict
+  // instead of forcing "not configured"; an explicit empty string still wins
+  // so the card disappears right after a delete (review follow-up).
+  const configKey = config[JEV_PRESETS[draft.provider].keyField];
+  const configured = configKey === undefined
+    ? values.jev_key_configured === true
+    : String(configKey).trim() !== '';
   const actionsDisabled = disabled || !isConnected || loading || Boolean(error) || clearingBusy;
   const metadata = `${providerName} · ${draft.model}`;
   return (

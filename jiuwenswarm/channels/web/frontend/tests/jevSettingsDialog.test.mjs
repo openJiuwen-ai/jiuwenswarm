@@ -129,12 +129,14 @@ async function mount(run, rejectSave = false, options = {}) {
       }
       if (method === 'path.get' || method === 'path.set') return {
         ...browser,
-        jev_key_configured: options.stalePathGet
-          // The real Gateway answers from its own process env captured at
-          // startup, so the flag lags behind Runtime-process credential
-          // writes until the Gateway restarts (issue #6542).
-          ? initialKeyConfigured
-          : Boolean(browser.decision_provider && config[JEV_PRESETS[browser.decision_provider].keyField]),
+        jev_key_configured: options.pathKeyConfigured !== undefined
+          ? options.pathKeyConfigured
+          : options.stalePathGet
+            // The real Gateway answers from its own process env captured at
+            // startup, so the flag lags behind Runtime-process credential
+            // writes until the Gateway restarts (issue #6542).
+            ? initialKeyConfigured
+            : Boolean(browser.decision_provider && config[JEV_PRESETS[browser.decision_provider].keyField]),
       };
       throw new Error(`Unexpected ${method}`);
     },
@@ -463,6 +465,21 @@ test('card disappears right after deleting even while path.get env stays stale',
     assert.equal(get('settings-models-jev-card'), null);
     assert.ok(get('settings-models-jev-empty'));
   }, false, { stalePathGet: true });
+});
+
+test('env-injected credentials without a config field still show configured (review P2)', async () => {
+  // Deployments that inject the key through the process env may not expose
+  // the credential field through config.get at all; then the card falls back
+  // to the path.get verdict instead of forcing "not configured".
+  await mount(async () => {
+    assert.ok(get('settings-models-jev-card'));
+    assert.equal(get('settings-models-jev-empty'), null);
+    assert.equal(get('settings-models-jev-card-title').textContent, 'Shared Jev');
+  }, false, {
+    config: { jev_openrouter_api_key: undefined },
+    pathKeyConfigured: true,
+    openDialog: false,
+  });
 });
 
 test.after(() => dom.window.close());
