@@ -67,6 +67,48 @@ _ORDER_SIDE = (
 _CLAUSE_SPLIT = ("\uff1b", ";", "\u3002", "\uff0c", ",")
 _ORDER_JOINERS = ("\u2014", "\u2013", "-", "\u2192", "\uff0c", ",", "\u3001")
 
+# A seat named by the side of a table is still a camera-dependent claim: once the
+# camera crosses the room that side of the table is on the other side of frame. When
+# the sentence also says what the person faces, the facing is the part that reads the
+# same from every camera.
+_SEAT_SIDE = (
+    "\u5de6\u4fa7",
+    "\u53f3\u4fa7",
+    "\u5de6\u7aef",
+    "\u53f3\u7aef",
+    "\u5de6\u9762",
+    "\u53f3\u9762",
+    "left side",
+    "right side",
+    "left-hand side",
+    "right-hand side",
+    "left end",
+    "right end",
+)
+_FACING = ("\u9762\u5411", "\u9762\u671d", "\u671d\u5411", "facing")
+# Where the person part of a seat clause ends ("Grandma sits | on the left of the table").
+_CLAUSE_STOPS = (
+    "\u5750",
+    "\u7ad9",
+    "\u5728",
+    "\u9760",
+    "\u501a",
+    "\u8e72",
+    "\u8eba",
+    "\u8dea",
+    "\u5750\u5b9a",
+    "\u3001",
+    "\uff0c",
+    ",",
+    "\uff1b",
+    ";",
+    "\uff1a",
+    ":",
+    "\n",
+    " ",
+    ".",
+)
+
 
 def _sentences(text: str) -> list[str]:
     parts = [text]
@@ -80,7 +122,7 @@ def _sentences(text: str) -> list[str]:
 
 def _phrases(sentence: str) -> list[str]:
     parts = [sentence]
-    for sep in ("\uff0c", ","):
+    for sep in ("\uff0c", ",", "\u3001"):
         expanded: list[str] = []
         for part in parts:
             expanded.extend(part.split(sep))
@@ -134,6 +176,53 @@ def _ordered_sequence(sentence: str) -> list[str]:
     return cleaned if len(cleaned) >= 2 else []
 
 
+def _facing_seat(sentence: str, lang: str) -> str:
+    """Name a seat by what it faces instead of by the side of the table it is on.
+
+    "Grandma sits on the left of the table facing the stove" is only true for the
+    camera it was written for: a shot from the far side puts that seat on the other
+    side of frame, and the model then either keeps the framing or moves Grandma.
+    Facing the stove reads the same from every camera, so it replaces the side.
+    """
+    low = sentence.lower()
+    facing_at, facing_word = -1, ""
+    for word in _FACING:
+        index = low.find(word.lower())
+        if index >= 0 and (facing_at < 0 or index < facing_at):
+            facing_at, facing_word = index, word
+    if facing_at < 0:
+        return ""
+    side_at = -1
+    for word in _SEAT_SIDE:
+        index = low.find(word.lower())
+        if index >= 0 and (side_at < 0 or index < side_at):
+            side_at = index
+    if side_at < 0 or side_at > facing_at:
+        return ""
+    target = sentence[facing_at + len(facing_word):].strip(" \t\u3002\uff1b\uff0c,.;")
+    if not target:
+        return ""
+    if lang == "en":
+        words = sentence[:side_at].split(" ")
+        keep = -1
+        for index, word in enumerate(words):
+            if word.lower().startswith("sit"):
+                keep = index
+        if keep < 0:
+            return ""
+        return f"{' '.join(words[: keep + 1])} on the side {facing_word} {target}"
+    # Cut back to the last verb or delimiter: everything after it is the furniture
+    # the side belonged to, not the person.
+    end = side_at
+    while end > 0 and sentence[end - 1] not in _CLAUSE_STOPS:
+        end -= 1
+    head = sentence[:end].strip(" \t\u3001\uff0c,")
+    head = head.rstrip("\u5750\u5728\u7ad9\u9760\u501a\u8e72\u8eba\u8dea")
+    if not head:
+        return ""
+    return f"{head}\u5750\u5728{facing_word}{target}\u4e00\u4fa7\u7684\u5ea7\u4f4d"
+
+
 def room_relative(text: str, lang: str = "en") -> str:
     """Drop the camera-dependent parts of a layout sentence, keep the room's own terms.
 
@@ -157,6 +246,10 @@ def room_relative(text: str, lang: str = "en") -> str:
             )
             continue
         for phrase in _phrases(sentence):
+            facing = _facing_seat(phrase, lang)
+            if facing:
+                kept.append(facing)
+                continue
             if _is_screen_side(phrase):
                 continue
             kept.append(phrase)

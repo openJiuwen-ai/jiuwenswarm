@@ -271,19 +271,67 @@ def test_a_layout_written_for_one_camera_loses_its_frame_sides() -> None:
     layout = (
         "镜1从门口向屋内看：左墙灶台在画面左、"
         "右墙窗户在画面右；"
-        "四人座位全片不变：祖母桌左侧面朝灶台、"
-        "父亲桌右侧面朝窗户"
+        "四人座位全片不变：祖母坐圆桌左侧面向灶台、"
+        "父亲坐圆桌右侧面向窗户"
     )
     cfg = _cfg(blocking=None, spatial_lock={"layout": layout})
 
     lock = build_lock(cfg=cfg, names=NAMES, lang="zh")
 
-    # The seat map survives; the frame-side claims do not. (The closing geometry clause
-    # says frame sides follow the camera, so only the arrangement line is checked.)
+    # The seat map survives; the frame-side claims and the table sides do not. (The
+    # closing geometry clause says frame sides follow the camera, so only the
+    # arrangement line is checked.)
     arrangement = lock.split("\n")[0]
-    assert "祖母桌左侧面朝灶台" in arrangement
+    assert "祖母坐在面向灶台一侧的座位" in arrangement
+    assert "父亲坐在面向窗户一侧的座位" in arrangement
+    assert "桌左侧" not in arrangement
+    assert "桌右侧" not in arrangement
     assert "画面左" not in arrangement
     assert "画面右" not in arrangement
+
+
+def test_a_seat_side_is_replaced_by_what_the_seat_faces() -> None:
+    # A live kitchen run: "Grandma sits on the left of the round table facing the stove"
+    # survived into the reverse shot, so the model kept her on frame-left and moved her
+    # to the window side of the room instead of crossing the camera over.
+    cfg = _cfg(
+        blocking=None,
+        spatial_lock={
+            "layout": "\u5976\u5976\u5750\u5706\u684c\u5de6\u4fa7\u9762\u5411\u7076\u53f0"
+        },
+    )
+
+    arrangement = build_lock(cfg=cfg, names=NAMES, lang="zh").split("\n")[0]
+
+    assert "\u5976\u5976\u5750\u5728\u9762\u5411\u7076\u53f0\u4e00\u4fa7\u7684\u5ea7\u4f4d" in arrangement
+    assert "\u5de6\u4fa7" not in arrangement
+
+
+def test_the_english_seat_side_reads_as_a_facing() -> None:
+    cfg = _cfg(
+        blocking=None,
+        spatial_lock={
+            "layout": "Grandma sits on the left side of the table facing the stove"
+        },
+    )
+
+    arrangement = build_lock(cfg=cfg, names=NAMES, lang="en").split("\n")[0]
+
+    assert "Grandma sits on the side facing the stove" in arrangement
+    assert "left side" not in arrangement
+
+
+def test_a_wall_side_keeps_its_place_when_nothing_is_faced() -> None:
+    # "Works at the stove on the left wall" is room-relative already: the wall is the
+    # anchor, so nothing is rewritten.
+    cfg = _cfg(
+        blocking=None,
+        spatial_lock={"layout": "\u6bcd\u4eb2\u5728\u5de6\u5899\u7076\u53f0\u5de5\u4f5c"},
+    )
+
+    arrangement = build_lock(cfg=cfg, names=NAMES, lang="zh").split("\n")[0]
+
+    assert "\u6bcd\u4eb2\u5728\u5de6\u5899\u7076\u53f0\u5de5\u4f5c" in arrangement
 
 
 def test_a_row_stated_as_a_screen_order_becomes_an_invariant_order() -> None:
