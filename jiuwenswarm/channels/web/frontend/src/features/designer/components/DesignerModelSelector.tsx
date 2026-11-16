@@ -6,13 +6,15 @@ import ModelPicker, { type ModelPickerPresentation } from '../../../components/M
 import { Tabs } from '../../../components/ui';
 import { useAdaptiveTooltip } from '../../../hooks/useAdaptiveTooltip';
 import { useChatStore } from '../../../stores/chatStore';
-import { resolveChatModelSelection, useSessionStore } from '../../../stores/sessionStore';
+import { useSessionStore } from '../../../stores/sessionStore';
 import { requestSettingsModule } from '../../settings/settingsNavigation';
 import {
   DESIGN_GENERATION_SLOTS,
   modelsForSlot,
   type DesignGenerationSlot,
 } from '../designerModelConfiguration';
+import { resolveDesignerDisplayedModel } from '../designerModelLabel';
+import { useDesignerStore } from '../designerStore';
 import { useDesignerModelConfiguration } from '../useDesignerModelConfiguration';
 import DesignGenerationModelList from './DesignGenerationModelList';
 import './DesignerModelSelector.css';
@@ -62,8 +64,21 @@ export default function DesignerModelSelector({
   const boundSessionId = sessionId || activeSessionId || '';
   const models = useSessionStore((state) => state.chatAvailableModels);
   const modelName = useSessionStore((state) => state.runtimes[boundSessionId]?.selectedModelName ?? null);
+  const selectedModelId = useSessionStore((state) => {
+    const selection = state.runtimes[boundSessionId]?.selectedModelSelection;
+    return selection?.type === 'model' ? selection.id : null;
+  });
+  const graphModelId = useDesignerStore((state) => {
+    const raw = state.domainGraph?.metadata?.model_id;
+    return typeof raw === 'string' ? raw : null;
+  });
   const defaultModel = useSessionStore((state) => state.defaultModelName);
-  const selected = resolveChatModelSelection(models, modelName, defaultModel);
+  // Same-name rows differ by protocol. The canvas label and logo follow the
+  // stable id stored on the session, or on the graph when the session has not caught up.
+  const selected = resolveDesignerDisplayedModel(models, modelName, defaultModel, selectedModelId || graphModelId);
+  const pickerSelection = selected?.model_id?.trim()
+    ? { type: 'model' as const, id: selected.model_id.trim() }
+    : null;
   const catalogue = snapshot?.models ?? [];
   const key = 'designer.modelConfiguration';
   const emptySlots = failed || loading || !snapshot
@@ -150,8 +165,9 @@ export default function DesignerModelSelector({
           else if (emptySlots.length > 0) openModelSettings(emptySlots[0]);
         }} />}
       {readOnly ? (
-        <ModelPicker {...presentation} value={selected?.model_name ?? modelName} onChange={() => undefined}
-          includeModelGroups={false} disabled={disabled} testIdPrefix="designer-model-selector" />
+        <ModelPicker {...presentation} value={selected?.model_name ?? modelName} selection={pickerSelection}
+          onChange={() => undefined} includeModelGroups={false} disabled={disabled}
+          testIdPrefix="designer-model-selector" />
       ) : (
         <ChatModelSelector sessionId={sessionId} disabled={disabled} allowModelGroups={false}
           includeModelGroups={false} showWhenEmpty pickerPresentation={presentation} testIdPrefix="designer-model-selector" />
