@@ -22,6 +22,7 @@
     "test:jev-settings": "node --test tests/jevSettings.test.mjs tests/jevSettingsDialog.test.mjs tests/multiModelCollaborationSettings.test.mjs tests/browserSettingsFeedback.test.mjs",
     "test:multi-model-collaboration-settings": "node --test tests/multiModelCollaborationSettings.test.mjs",
     "test:team-organization": "esbuild tests/fixtures/teamOrganizationExports.ts --bundle --platform=node --format=esm --packages=external --outfile=node_modules/.cache/team-organization/organization.mjs --define:import.meta.env={} && node --test tests/teamOrganization.test.mjs",
+    "test:team-task-progress": "node --test tests/teamTaskProgress.test.mjs tests/teamProgressAnimation.test.mjs tests/teamTaskPlanningPanel.test.mjs",
     "test:organization-leader-identity": "node --test tests/organizationLeaderIdentity.test.mjs",
     "test:jiuwenmate-mode": "esbuild src/features/jiuwenmate/modeState.ts src/features/jiuwenmate/components/JiuwenMateModeSwitch.tsx --bundle --splitting --packages=external --platform=node --format=esm --outdir=node_modules/.cache/jiuwenmate-mode --loader:.css=empty && node --test tests/jiuwenmateMode.test.mjs",
     "test:chat-layout-reference": "node --test tests/chatLayoutReference.test.mjs",
