@@ -285,15 +285,21 @@ test('installed cards keep the detect+install pair and not-installed ones show t
   // The path dropdown merges the persisted backend history between the saved
   // path and the PATH-detected candidate, so switching addresses never loses
   // the previous ones; explicit actions prune stale entries via
-  // external_cli.validate_paths (backend history, not localStorage).
+  // external_cli.validate_paths (backend history, not localStorage). The
+  // built-in (managed) CLI path reported by every detection result is offered
+  // last and stays constant across local-path switches (#6647) — switching to
+  // a local executable must not wipe the built-in entry from the dropdown.
   assert.match(
     sectionSource,
-    /for \(const path of \[cliPath, \.\.\.historyPaths, pathCandidates\[cliAgent\] \|\| '', detectedPath\]\)/,
+    /for \(const path of \[\s+cliPath,\s+\.\.\.historyPaths,\s+pathCandidates\[cliAgent\] \|\| '',\s+detectedPath,\s+builtinPaths\[cliAgent\] \|\| '',\s+\]\)/,
   );
   assert.match(
     sectionSource,
     /parseExternalCliPathHistories\(draftValues\[externalCliKey\(cliAgent, 'path_histories'\)\]\)/,
   );
+  // Built-in paths come from the detection payload (builtin_path), tracked
+  // per agent; no localStorage history may reappear here.
+  assert.match(sectionSource, /builtin_path \|\| prev\[cliAgent\]/);
   assert.doesNotMatch(sectionSource, /rememberBuiltinPath|removePathHistory|PATH_HISTORY/);
   assert.doesNotMatch(sectionSource, /config\.externalCli\.removePath/);
 });
