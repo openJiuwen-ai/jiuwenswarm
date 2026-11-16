@@ -22,6 +22,8 @@ export type ExternalCliDetectResult = {
   cli_agent: ExternalCliAgentKind;
   status: 'ok' | 'warning' | 'missing' | 'unsupported' | 'unavailable';
   path?: string;
+  /** 内置（托管安装）CLI 的可执行文件路径；未安装时为空。每次探测都携带（#6647） */
+  builtin_path?: string;
   version?: string;
   reference_version?: string;
   reason?: string;
@@ -377,6 +379,16 @@ export function ExternalCliAgentsSection({
   const commitEchoAgentsRef = useRef<Set<ExternalCliAgentKind>>(new Set());
   // PATH discovery is independent of the executable currently selected.
   const [pathCandidates, setPathCandidates] = useState<Record<string, string>>({});
+  // 内置 CLI 路径来自任意一次探测响应的 builtin_path（托管路径由安装器管理）。
+  // 记住最近一次非空值：依赖安装期间内置文件可能短暂缺失，避免下拉框闪烁。
+  const [builtinPaths, setBuiltinPaths] = useState<Record<string, string>>({});
+  const trackBuiltinPath = useCallback(
+    (cliAgent: ExternalCliAgentKind, result: ExternalCliDetectResult | undefined) => {
+      if (!result) return;
+      setBuiltinPaths((prev) => ({ ...prev, [cliAgent]: result.builtin_path || prev[cliAgent] || '' }));
+    },
+    [],
+  );
   const visibleAgentsSignature = JSON.stringify(visibleAgentKinds);
   useEffect(() => {
     if (!onDetect) return;
@@ -387,12 +399,13 @@ export function ExternalCliAgentsSection({
       void onDetect(agent, '', false).then((result) => {
         if (cancelled) return;
         setPathCandidates((prev) => ({ ...prev, [agent]: result.path || '' }));
+        trackBuiltinPath(agent, result);
       }).catch(() => {
         // Keep the last known PATH candidate when discovery is unavailable.
       });
     }
     return () => { cancelled = true; };
-  }, [onDetect, visibleAgentsSignature]);
+  }, [onDetect, trackBuiltinPath, visibleAgentsSignature]);
 
   // Inline success toast (top-center), mirroring the models settings'
   // connection-test toast; auto-dismisses after 3 seconds.
@@ -446,8 +459,9 @@ export function ExternalCliAgentsSection({
       resultsRef.current = next;
       setResults(next);
       onResultsChange?.(next);
+      trackBuiltinPath(cliAgent, result);
     },
-    [onResultsChange],
+    [onResultsChange, trackBuiltinPath],
   );
 
   // App-layer results can refresh out-of-band (e.g. the post-install re-probe
@@ -458,7 +472,10 @@ export function ExternalCliAgentsSection({
   useEffect(() => {
     resultsRef.current = { ...initialResults };
     setResults({ ...initialResults });
-  }, [initialResults]);
+    for (const [agent, result] of Object.entries(initialResults ?? {})) {
+      trackBuiltinPath(agent as ExternalCliAgentKind, result);
+    }
+  }, [initialResults, trackBuiltinPath]);
 
   // Returns the detection result when it settles for the current request, so
   // manual callers can toast the outcome; undefined on races or failures.
@@ -1085,8 +1102,11 @@ export function ExternalCliAgentsSection({
         const copyablePath = displayResult?.path && !cliPath ? displayResult.path : '';
         // Dropdown choices: active path first, then the persisted path
         // history, then the PATH-detected one, then the path from the latest
-        // detection result. Trigger, edit field and panel are capped at
-        // max-w-[55rem] (880px); longer paths truncate with a tooltip.
+        // detection result, then the built-in (managed) CLI path. The built-in
+        // entry stays constant across local-path switches so the dropdown
+        // keeps offering the built-in CLI (#6647). Trigger, edit field and
+        // panel are capped at max-w-[55rem] (880px); longer paths truncate
+        // with a tooltip.
         const historyPaths = parseExternalCliPathHistories(draftValues[externalCliKey(cliAgent, 'path_histories')]);
         const pathOptions: SelectOption[] = [];
         {
@@ -1103,7 +1123,13 @@ export function ExternalCliAgentsSection({
               ),
             });
           };
-          for (const path of [cliPath, ...historyPaths, pathCandidates[cliAgent] || '', detectedPath]) {
+          for (const path of [
+            cliPath,
+            ...historyPaths,
+            pathCandidates[cliAgent] || '',
+            detectedPath,
+            builtinPaths[cliAgent] || '',
+          ]) {
             pushPathOption(path);
           }
         }
