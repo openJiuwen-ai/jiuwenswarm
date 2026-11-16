@@ -581,6 +581,19 @@ def build_clip_prompt(
         f"{label} ({path.name})"
         for label, path in connected_clip_extra_images(ctx, node if isinstance(node, dict) else None)
     ]
+    # The clip agent's own prompt is authority when it already satisfies the gate:
+    # it saw the sheets, the shot and the previous story state. Only a prompt that
+    # breaks the practice rules (or the budget) is replaced by the composed one.
+    agent_prompt = str(cfg.get("prompt") or "").strip()
+    if agent_prompt and not str(cfg.get("user_edit_prompt") or "").strip():
+        from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
+            prompt_respects_practice,
+            resolve_clip_prompt_budget,
+        )
+
+        issues = prompt_respects_practice(agent_prompt, cfg=cfg, graph=graph)
+        if not issues and len(agent_prompt) <= resolve_clip_prompt_budget():
+            return agent_prompt
     approved, _notes = director_approve_video_prompt(
         action or "",
         cfg=cfg,

@@ -525,6 +525,8 @@ def build_node_user_query(node: DesignerGraphNode, ctx: NodeExecutionContext) ->
     if not spatial:
         meta = graph.get("metadata") if isinstance(graph.get("metadata"), dict) else {}
         spatial = meta.get("spatial_lock") if isinstance(meta.get("spatial_lock"), dict) else {}
+    role_key = str(cfg.get("skill_id") or cfg.get("role") or cfg.get("pipeline") or "").strip()
+    clip_scope = role_key in {"clip", "video"}
     locks = {
         "setting_id": cfg.get("setting_id") or identity.get("setting_id"),
         "clip_strategy": cfg.get("clip_strategy") or identity.get("clip_strategy"),
@@ -559,6 +561,21 @@ def build_node_user_query(node: DesignerGraphNode, ctx: NodeExecutionContext) ->
         "prompt_char_limit": cfg.get("prompt_char_limit"),
         "media_prompt_limits": cfg.get("media_prompt_limits"),
     }
+    if clip_scope:
+        # A clip's visual authority is the attached sheets: the character sheets show
+        # face and wardrobe from several angles and the scene sheet shows the room.
+        # Restating either in words gives the model a second, weaker source of truth
+        # and spends a budget that belongs to action, framing, seats and speech.
+        for key in (
+            "costume_lock",
+            "spatial_lock",
+            "style_lock",
+            "time_of_day_lock",
+            "axis_clause",
+            "continuity_lock",
+            "director_lock_gate",
+        ):
+            locks.pop(key, None)
     extra: dict[str, Any] = {}
     try:
         from jiuwenswarm.server.runtime.designer.pipeline.leaf_agent_consistency import (
@@ -606,6 +623,13 @@ def build_node_user_query(node: DesignerGraphNode, ctx: NodeExecutionContext) ->
             else None,
             meta=graph.get("metadata") if isinstance(graph.get("metadata"), dict) else cfg,
         )
+        if clip_scope:
+            # The production bible, style/stage/wardrobe locks author the image nodes;
+            # a clip needs the shot, the seats and the lines, not the appearance essay.
+            packet = extra.get("lock_packet")
+            if isinstance(packet, dict):
+                for key in ("style_lock", "spatial_lock", "wardrobe_lock", "production_specs_excerpt"):
+                    packet.pop(key, None)
         extra["same_scene_prompt_gate"] = same_scene_prompt_gate_clause(
             clip_index=int(cfg.get("clip_index") or 0),
             this_action=str(cfg.get("clip_action") or ""),
@@ -653,12 +677,18 @@ def build_node_user_query(node: DesignerGraphNode, ctx: NodeExecutionContext) ->
         "seat_anchors": cfg.get("seat_anchors"),
         "forbidden_speech": cfg.get("forbidden_speech"),
         "end_state": cfg.get("end_state"),
-        "scene_specs": cfg.get("scene_specs"),
+        "scene_specs": (
+            {"scene_name": (cfg.get("scene_specs") or {}).get("scene_name")}
+            if clip_scope and isinstance(cfg.get("scene_specs"), dict)
+            else cfg.get("scene_specs")
+        ),
         "previous_clip_prompt": str(cfg.get("previous_clip_prompt") or ""),
         # Do NOT pass raw previous_clip_wan_prompt to the leaf — contamination source.
         "previous_clip_action": str(cfg.get("previous_clip_action") or ""),
         "previous_clip_finished_events": cfg.get("previous_clip_finished_events"),
-        "scene_architecture_clause": str(cfg.get("scene_architecture_clause") or ""),
+        "scene_architecture_clause": (
+            "" if clip_scope else str(cfg.get("scene_architecture_clause") or "")
+        ),
         "locks": locks,
         "director_prompt_reviewed": locks["director_prompt_reviewed"],
     }
@@ -679,6 +709,24 @@ def build_node_user_query(node: DesignerGraphNode, ctx: NodeExecutionContext) ->
             "from CONTINUITY STATE above. Never restate forbidden_speech or restage "
             "already_done shots unless THIS row asks.\n\n"
         )
+    if clip_scope:
+        locks_clause = (
+            "BINDING (clips): the attached character sheets and the scene sheet are the "
+            "visual authority for faces, wardrobe and the room. Bind them by slot "
+            "(Image 1 = X, Image 2 = Y, Image N = the room) and do not describe their "
+            "wardrobe or architecture in words. In a clip prompt state only: this shot's "
+            "action and camera, who is in frame, where each of them sits or stands, the "
+            "exact speech lines, and what changed since the previous shot (wardrobe "
+            "delta, prop, light).\n"
+        )
+    else:
+        locks_clause = (
+            "LOCKS (must keep in every tool prompt before image/video calls): "
+            "obey PRODUCTION LOCK BIBLE + costume_lock, positioning_lock, language_lock, "
+            "speech_line, occupancy, spatial_lock, and character specs — never invent "
+            "new faces/clothing/architecture. Every clip uses character sheets plus the "
+            "scene specs, and keeps the film STYLE LOCK.\n"
+        )
     return (
         "执行当前设计节点。先看 JSON 上下文，用工具完成本节点产物，最后 "
         "designer_node_complete。\n"
@@ -693,13 +741,9 @@ def build_node_user_query(node: DesignerGraphNode, ctx: NodeExecutionContext) ->
         "for images (configured image model); call_video_model for clips (configured "
         "video model); ffmpeg_compose / mix_audio for film assemble; read_upstream "
         "for prior outputs. Prefer tool-produced file URIs in designer_node_complete.\n"
-        "LOCKS (must keep in every tool prompt before image/video calls): "
-        "obey PRODUCTION LOCK BIBLE + costume_lock, positioning_lock, language_lock, "
-        "speech_line, occupancy, spatial_lock, and character specs — never invent "
-        "new faces/clothing/architecture. Every clip uses character sheets plus the "
-        "scene specs, and keeps the film STYLE LOCK.\n"
-        "SAME-SCENE PROMPT GATE: the video prompt MUST agree with THIS storyboard shot "
-        "(action/camera/speech). Continue from structured continuity "
+        + locks_clause
+        + "SAME-SCENE PROMPT GATE: the video prompt MUST agree with THIS storyboard shot "
+        "(action/camera/speech). Continue from structured continuity "         "(already_done / pose_holds / seat_anchors / forbidden_speech / end_state) — "
         "(already_done / pose_holds / seat_anchors / forbidden_speech / end_state) — "
         "do not restage finished onsets/exits/dialogue unless THIS row asks. "
         "Keep character consistency (same faces/costumes) on every clip call.\n"
