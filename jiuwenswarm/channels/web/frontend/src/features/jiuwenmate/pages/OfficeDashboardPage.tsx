@@ -55,7 +55,8 @@ import {
   setActivityScope,
   setActivityYear,
   toIsoDate,
-  usageChange,
+  periodUsage,
+  weeklyUsageChange,
   yearHeatmap,
   MAX_PERIOD_DAYS,
   adjustedPeriodEdge,
@@ -600,9 +601,10 @@ function ActivityIndividualTab({
     el?.scrollBy({ left: direction * (el.clientWidth + CAROUSEL_GAP), behavior: 'smooth' });
   };
   const keyword = query.trim();
-  const usage = usageChange(member?.days ?? [], period, today);
+  const tokens = periodUsage(member?.days ?? [], period, today);
+  const change = weeklyUsageChange(member?.days ?? [], today);
   const groups = (member?.groups ?? []).filter((group) => !keyword || group.name.includes(keyword));
-  const percent = usage.percent === null ? '—' : `${usage.percent}%`;
+  const percent = change === null ? '—' : `${change}%`;
 
   return (
     <div className="jiuwenmate-office__individual" data-testid="jiuwenmate-office-individual">
@@ -670,7 +672,7 @@ function ActivityIndividualTab({
             value: (
               <>
                 {percent}
-                {usage.percent !== null && usage.percent > 0 ? <ArrowUp aria-hidden className="jiuwenmate-trend-up" /> : null}
+                {change !== null && change > 0 ? <ArrowUp aria-hidden className="jiuwenmate-trend-up" /> : null}
               </>
             ),
             icon: ChartLine,
@@ -679,7 +681,7 @@ function ActivityIndividualTab({
             key: 'resources',
             value: (
               <>
-                {formatSummaryTokens(usage.tokens)}
+                {formatSummaryTokens(tokens)}
                 <small>tokens</small>
               </>
             ),
