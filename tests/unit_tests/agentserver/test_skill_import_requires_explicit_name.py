@@ -88,7 +88,11 @@ def test_assert_package_safe_distinguishes_fallback_name(manager: SkillManager, 
 
 
 def test_skill_md_declares_explicit_name_edge_cases(tmp_path: Path) -> None:
-    """辅助函数覆盖：无 frontmatter / 缺 name / 非字符串 name / 显式 name。"""
+    """辅助函数覆盖：无 frontmatter / 缺 name / 列表与日期型 name / 显式 name.
+
+    判定链须与 ``_parse_skill_md_uncached`` 一致（审查 SF-1）：YAML 解析失败
+    回退逐行解析、日期字面量经归一后非空即声明——避免"meta.name 非空却被拒"。
+    """
     bare = tmp_path / "barefile"
     bare.mkdir()
     (bare / "SKILL.md").write_text("# 无 frontmatter 正文\n", encoding="utf-8")
@@ -98,10 +102,53 @@ def test_skill_md_declares_explicit_name_edge_cases(tmp_path: Path) -> None:
     _write_skill_md(noname, "description: 缺 name")
     assert SkillManager._skill_md_declares_explicit_name(noname / "SKILL.md") is False
 
+    # 列表型 name 与 meta 链一致：str() 归一后非空 → 视为已声明
     weird = tmp_path / "weird"
     _write_skill_md(weird, "name:\n  - not\n  - a string\ndescription: 列表型 name")
-    assert SkillManager._skill_md_declares_explicit_name(weird / "SKILL.md") is False
+    assert SkillManager._skill_md_declares_explicit_name(weird / "SKILL.md") is True
+
+    # 日期字面量 name：经 _convert_yaml_date 归一为非空字符串 → 已声明
+    dated = tmp_path / "dated"
+    _write_skill_md(dated, "name: 2026-11-16\ndescription: 日期型 name")
+    assert SkillManager._skill_md_declares_explicit_name(dated / "SKILL.md") is True
 
     named = tmp_path / "named2"
     _write_skill_md(named, "name: ok-name\ndescription: 正常")
     assert SkillManager._skill_md_declares_explicit_name(named / "SKILL.md") is True
+
+
+@pytest.mark.asyncio
+async def test_import_upload_accepts_lenient_yaml_with_explicit_name(
+    manager: SkillManager, tmp_path: Path
+) -> None:
+    """非严格 YAML（未闭合列表 / 值内未加引号的冒号）但逐行可解析出 name 的包
+    仍可安装——与 _parse_skill_md_uncached 的行级回退语义对齐（审查 SF-1）。"""
+    skill_md = (
+        "---\n"
+        "name: fallback-skill\n"
+        "foo: [1, 2\n"            # 未闭合列表：safe_load 抛异常
+        "description: tips: hello\n"  # 值内未加引号的冒号：同样不是严格 YAML
+        "---\n"
+        "正文。\n"
+    )
+    zip_path = _build_zip(tmp_path / "lenient.zip", skill_md)
+
+    result = await manager.handle_skills_import_upload({"path": str(zip_path), "overwrite": False})
+
+    assert result["success"] is True
+    assert (manager._skills_dir / "fallback-skill" / "SKILL.md").is_file()
+
+
+@pytest.mark.asyncio
+async def test_import_upload_accepts_date_literal_name(
+    manager: SkillManager, tmp_path: Path
+) -> None:
+    """``name: 2026-11-16``（YAML 日期字面量）经归一为非空字符串，仍可安装——
+    与 base 的 meta.name 判定语义一致（审查 PoC 场景二）。"""
+    skill_md = "---\nname: 2026-11-16\ndescription: 日期型 name\n---\n正文。\n"
+    zip_path = _build_zip(tmp_path / "dated.zip", skill_md)
+
+    result = await manager.handle_skills_import_upload({"path": str(zip_path), "overwrite": False})
+
+    assert result["success"] is True
+    assert (manager._skills_dir / "2026-11-16" / "SKILL.md").is_file()

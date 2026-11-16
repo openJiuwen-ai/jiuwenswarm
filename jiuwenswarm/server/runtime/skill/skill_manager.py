@@ -6124,24 +6124,38 @@ class SkillManager:
     def _skill_md_declares_explicit_name(md: Path) -> bool:
         """判断 SKILL.md frontmatter 是否显式声明了非空 name（#6688）.
 
-        ``_parse_skill_md`` 对缺 name 的 frontmatter 会以文件名兜底，导入校验
-        需要识别这种兜底来源；无 frontmatter 或 YAML 解析失败同样视为未声明。
+        判定链与 ``_parse_skill_md_uncached`` 完全一致，避免"meta.name 非空却
+        被拒"的判定源分裂：yaml.safe_load 成 dict 时经 ``_convert_yaml_date``
+        归一后按 ``str(value).strip()`` 判空；YAML 解析失败或非 dict 时回退
+        逐行 ``key: value`` 解析（含引号剥离）。无 frontmatter 视为未声明。
         """
         try:
             text = _read_text_long(md)
-        except OSError:
+        except Exception:
             return False
         fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)", text, re.DOTALL)
         if not fm_match:
             return False
+        fm_text = fm_match.group(1)
         try:
-            loaded = yaml.safe_load(fm_match.group(1))
+            loaded = yaml.safe_load(fm_text)
         except Exception:
-            return False
-        if not isinstance(loaded, dict):
-            return False
-        value = loaded.get("name")
-        return isinstance(value, str) and bool(value.strip())
+            loaded = None
+        if isinstance(loaded, dict):
+            value = SkillManager._convert_yaml_date(loaded).get("name")
+            return value is not None and bool(str(value).strip())
+        # 与 _parse_skill_md_uncached 一致：YAML 不可用时回退逐行 key: value 解析
+        for line in fm_text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            m = re.match(r"^(\w[\w_-]*)\s*:\s*(.*)", line)
+            if m and m.group(1) == "name":
+                val = m.group(2).strip()
+                if val.startswith(("'", '"')) and val.endswith(("'", '"')):
+                    val = val[1:-1]
+                return bool(val)
+        return False
 
     def _install_imported_skill_dir(
         self,
