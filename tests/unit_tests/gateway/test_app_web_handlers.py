@@ -27,6 +27,7 @@ from agent_gateway.channel_manager.web.app_web_handlers import (
     _register_web_handlers,
     _validate_wechat_numeric_params,
 )
+from agent_gateway.channel_manager.web.web_connect import WebChannel
 from agent_gateway.heartbeat import HeartbeatServiceUnavailableError
 from agent_gateway.runtime.cron import factory as _cron_factory_module
 
@@ -61,6 +62,8 @@ from agent_gateway.routing.keys import AgentRef, RoutingKey  # pylint: disable=w
 
 
 class FakeWebChannel:
+    connection_user_id = staticmethod(WebChannel.connection_user_id)
+
     def __init__(self):
         self.channel_id = "web"
         self.methods: dict[str, object] = {}
@@ -70,6 +73,7 @@ class FakeWebChannel:
         self.routing_keys: list[RoutingKey] = []
         self.rebounds: list[tuple[str | None, str]] = []
         self.cleared: list[str | None] = []
+        self.forgotten_routes: list[tuple[RoutingKey, str]] = []
 
     def register_method(self, name, handler, *, local_only=False):
         self.methods[name] = handler
@@ -99,6 +103,9 @@ class FakeWebChannel:
 
     def clear_a4p_rebound(self, session_id):
         self.cleared.append(session_id)
+
+    def forget_a4p_route(self, route, request_id):
+        self.forgotten_routes.append((route, request_id))
 
 
 @pytest.mark.asyncio
@@ -144,8 +151,10 @@ async def test_a4p_rpc_uses_current_websocket_route(method) -> None:
     if method == "a4p.authorization.complete":
         # 完成授权时把恢复 turn 的输出改绑到当前连接（当前 ws_id 覆盖授权方冻结的旧 ws）。
         assert channel.rebounds == [("session-1", "ws-1")]
+        assert channel.forgotten_routes == [(channel.routing_keys[0], "intent-1")]
     else:
         assert channel.rebounds == []
+        assert channel.forgotten_routes == []
 
 
 class FakeAgentClient:
