@@ -163,8 +163,13 @@ export function CompactTaskList({
               </span>
             </ApplicationTaskControls>
             {phase && typeof phase.agent_count === 'number' && typeof phase.completed_agent_count === 'number' && (
-              <span className="shrink-0 text-xs text-text-muted" data-testid="team-area-task-agent-progress">
-                {t('team.planning.agentProgress', { ended: phase.completed_agent_count, total: phase.agent_count })}
+              <span
+                className="shrink-0 text-xs text-text-muted"
+                data-testid="team-area-task-agent-progress"
+                title={t('team.planning.phaseAgentProgress', { ended: phase.completed_agent_count, total: phase.agent_count })}
+                aria-label={t('team.planning.phaseAgentProgress', { ended: phase.completed_agent_count, total: phase.agent_count })}
+              >
+                {phase.completed_agent_count}/{phase.agent_count}
               </span>
             )}
             {statusIconAtEnd && statusIcon}
