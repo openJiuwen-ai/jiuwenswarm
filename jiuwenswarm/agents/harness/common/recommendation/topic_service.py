@@ -82,7 +82,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_short_intent import 
     ShortIntentStateStore,
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_sources import (
-    CORPUS_VERSION,
+    corpus_version_for_language,
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
     TopicStarterStore,
@@ -191,10 +191,14 @@ class TopicService:
         coordinator: BackgroundGenerationCoordinator | None = None,
         enabled: bool = True,
         history_project_ids_loader: Callable[[], list[str]] = lambda: [],
+        records_loader: Callable[[], dict[str, list[dict]]] | None = None,
+        language_loader: Callable[[], str] = lambda: "zh",
         refresh_news: RefreshNewsFn | None = None,
         hot_list: HotListFeed | None = None,
     ) -> None:
         self.store = store
+        self._language_loader = language_loader
+        self._records_loader = records_loader
         self._generate = generate
         self._refresh_news = refresh_news
         self._hot_list = hot_list if hot_list is not None else HotListFeed(store, now=now)
@@ -715,7 +719,7 @@ class TopicService:
             },
             model=model,
             generation_config_version=self._generation_config_version(),
-            corpus_version=CORPUS_VERSION,
+            corpus_version=corpus_version_for_language(self._language_loader()),
             document_snapshot_version=f"documents:{local_date}:v2",
             retrieval_config_version=RETRIEVAL_CONFIG_VERSION,
             evidence_extractor_version=EVIDENCE_EXTRACTOR_VERSION,
@@ -1097,7 +1101,15 @@ class TopicService:
 
         attempt_id = f"background-attempt-{uuid.uuid4().hex}"
         context_token = _GENERATION_ATTEMPT_ID.set(attempt_id)
+        records_token = None
         try:
+            if self._ark_config is not None and self._records_loader is not None:
+                from . import topic_history as history
+
+                # Pin one history snapshot for revision, summaries, short intent
+                # and generation; model stages can separate those reads by minutes.
+                records = await asyncio.to_thread(self._records_loader)
+                records_token = history.set_run_records_snapshot(records)
             return await self._serve_request(
                 slot,
                 request,
@@ -1107,6 +1119,10 @@ class TopicService:
                 answered=answered,
             )
         finally:
+            if records_token is not None:
+                from . import topic_history as history
+
+                history.reset_run_records_snapshot(records_token)
             _GENERATION_ATTEMPT_ID.reset(context_token)
 
     async def _serve_request(
@@ -1652,6 +1668,8 @@ class TopicService:
 
         normalized_work_mode = normalize_topic_work_mode(work_mode)
         try:
+            # The store rate-limits itself to one prune per hour; keep its single
+            # throttle rather than a second drifting interval here.
             self.store.prune(now=self._now())
         except Exception:  # noqa: BLE001 - serving must not fail on maintenance
             logger.warning("[Topic] store prune failed", exc_info=True)

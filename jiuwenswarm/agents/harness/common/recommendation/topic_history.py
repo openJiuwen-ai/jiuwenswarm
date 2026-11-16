@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from contextvars import ContextVar
 import logging
 import math
 import re
@@ -104,6 +105,20 @@ _MAX_RETAINED_CONTENT_CHARS = 32_768
 _SESSION_WINDOW_TTL_SECONDS = 2.0
 _SESSION_WINDOW_CACHE: dict[tuple[str, int], tuple[float, tuple[str, ...]]] = {}
 _SESSION_WINDOW_LOCK = threading.Lock()
+# One burst (one run, or the enable seed fanning out to every scope) reads the
+# same histories several times: revision, state preparation, summaries, short
+# intent. Hold the projected records for the same short window; row dicts are
+# shared read-only, list containers are copied per caller.
+_SESSION_RECORDS_CACHE: dict[
+    tuple[str, int], tuple[float, dict[str, list[dict[str, Any]]]]
+] = {}
+_SESSION_RECORDS_LOCK = threading.Lock()
+# One successor run must see one history snapshot from revision through
+# summaries, short intent and generation. The TTL cache below only covers
+# calls that start together; model stages can put minutes between them.
+_RUN_RECORDS: ContextVar[dict[str, list[dict[str, Any]]] | None] = ContextVar(
+    "topic_run_records", default=None
+)
 
 TAXONOMY_VERSION = "v4-conversation-taxonomy-1"
 _MAPPING_PROMPT_VERSION = "v4-mapping-prompt-3"
@@ -135,6 +150,26 @@ TAXONOMY_TAGS: dict[str, str] = {
     "society-news-current": "社会时事与新闻",
     "language-writing": "语言与写作表达",
     "psychology-self": "心理与自我成长",
+}
+TAXONOMY_TAGS_EN: dict[str, str] = {
+    "tech-ai-ml": "AI and machine learning",
+    "tech-software-dev": "Software development and engineering",
+    "tech-hardware-devices": "Hardware and smart devices",
+    "science-math-research": "Mathematics and basic research",
+    "science-life-medicine": "Life sciences and medicine",
+    "finance-investment": "Finance and investing",
+    "business-career": "Business and career",
+    "education-learning": "Learning and education",
+    "culture-history-humanities": "History and humanities",
+    "arts-media-entertainment": "Arts, media and entertainment",
+    "gaming-interactive": "Games and interactive media",
+    "sports-fitness": "Sports and fitness",
+    "travel-outdoor": "Travel and the outdoors",
+    "food-cooking": "Food and cooking",
+    "home-lifestyle": "Home and lifestyle",
+    "society-news-current": "Society and current news",
+    "language-writing": "Language and writing",
+    "psychology-self": "Psychology and self-growth",
 }
 _ACTION_TYPES = (
     "natural_question",
@@ -453,9 +488,21 @@ def load_session_records(session_id: str) -> list[dict[str, Any]]:
         return _read_recommendation_jsonl(path)
 
 
-def clear_session_window_cache() -> None:
-    """Drop the cached newest-session window; a completion makes it stale."""
+def set_run_records_snapshot(records: dict[str, list[dict[str, Any]]]) -> object:
+    """Pin one history snapshot for the current run's copied contexts."""
 
+    return _RUN_RECORDS.set(records)
+
+
+def reset_run_records_snapshot(token: object) -> None:
+    _RUN_RECORDS.reset(token)  # type: ignore[arg-type]
+
+
+def clear_session_window_cache() -> None:
+    """Drop the short-window session ids and records; a completion makes them stale."""
+
+    with _SESSION_RECORDS_LOCK:
+        _SESSION_RECORDS_CACHE.clear()
     with _SESSION_WINDOW_LOCK:
         _SESSION_WINDOW_CACHE.clear()
 
@@ -507,31 +554,43 @@ def load_all_session_records(
         cap = _ALL_SESSIONS_LIMIT
     if cap < 0:
         cap = 0
-    result: dict[str, list[dict[str, Any]]] = {}
-    scanned_bytes = 0
-    for session_id in _newest_session_ids(cap):
-        try:
-            size = get_read_history_path(session_id).stat().st_size
-        except OSError:
-            size = 0
-        if size > _MAX_SESSION_FILE_BYTES:
-            logger.warning(
-                "[Topic] history skipped as oversized: session_id=%s bytes=%d limit=%d",
-                session_id,
-                size,
-                _MAX_SESSION_FILE_BYTES,
-            )
-            continue
-        if result and scanned_bytes + size > _MAX_SCAN_BYTES:
-            logger.info(
-                "[Topic] history scan budget reached: sessions=%d bytes=%d",
-                len(result),
-                scanned_bytes,
-            )
-            break
-        scanned_bytes += size
-        result[session_id] = load_session_records(session_id)
-    return result
+    run_snapshot = _RUN_RECORDS.get()
+    if run_snapshot is not None:
+        return {
+            session_id: list(rows) for session_id, rows in run_snapshot.items()
+        }
+    key = (str(get_agent_sessions_dir()), cap)
+    now = time.monotonic()
+    with _SESSION_RECORDS_LOCK:
+        cached = _SESSION_RECORDS_CACHE.get(key)
+        if cached is not None and now - cached[0] < _SESSION_WINDOW_TTL_SECONDS:
+            return {session_id: list(rows) for session_id, rows in cached[1].items()}
+        result: dict[str, list[dict[str, Any]]] = {}
+        scanned_bytes = 0
+        for session_id in _newest_session_ids(cap):
+            try:
+                size = get_read_history_path(session_id).stat().st_size
+            except OSError:
+                size = 0
+            if size > _MAX_SESSION_FILE_BYTES:
+                logger.warning(
+                    "[Topic] history skipped as oversized: session_id=%s bytes=%d limit=%d",
+                    session_id,
+                    size,
+                    _MAX_SESSION_FILE_BYTES,
+                )
+                continue
+            if result and scanned_bytes + size > _MAX_SCAN_BYTES:
+                logger.info(
+                    "[Topic] history scan budget reached: sessions=%d bytes=%d",
+                    len(result),
+                    scanned_bytes,
+                )
+                break
+            scanned_bytes += size
+            result[session_id] = load_session_records(session_id)
+        _SESSION_RECORDS_CACHE[key] = (now, result)
+        return {session_id: list(rows) for session_id, rows in result.items()}
 
 
 def _upto_boundary_ordinals(records: list[dict[str, Any]]) -> list[dict[str, Any]]:

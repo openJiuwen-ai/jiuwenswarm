@@ -140,6 +140,31 @@ class RecommendationConsentStore:
         return {"history_after": history_after, "deleted_at": deleted_at}
 
 
+# ``get_config`` re-reads and parses config.yaml; the stage invoker asks for the
+# language on every model call. Cache it briefly and clear it on a locale save.
+_LANGUAGE_CACHE: tuple[float, str] | None = None
+_LANGUAGE_CACHE_TTL_SECONDS = 2.0
+
+
+def clear_recommendation_language_cache() -> None:
+    global _LANGUAGE_CACHE
+    _LANGUAGE_CACHE = None
+
+
+def recommendation_language() -> str:
+    """The language user-visible recommendation copy must use."""
+
+    global _LANGUAGE_CACHE
+    now = time.monotonic()
+    cached = _LANGUAGE_CACHE
+    if cached is not None and now - cached[0] < _LANGUAGE_CACHE_TTL_SECONDS:
+        return cached[1]
+    raw = str(get_config().get("preferred_language") or "zh").strip().lower()
+    language = "en" if raw == "en" else "zh"
+    _LANGUAGE_CACHE = (now, language)
+    return language
+
+
 def load_recommendation_controls(store: Any = None) -> dict[str, Any]:
     """The switches as resolved, plus the recorded consent boundary and deletion epoch."""
 

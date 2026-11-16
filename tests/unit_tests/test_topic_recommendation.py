@@ -2750,12 +2750,184 @@ def test_corpus_avoids_anecdote_hunting_starters():
         assert "哪一次迷路" not in starter.text
 
 
+def test_corpus_versions_select_language_files():
+    from collections import Counter
+
+    from jiuwenswarm.agents.harness.common.recommendation.topic_sources import (
+        CORPUS_VERSION_EN,
+        CORPUS_VERSION_ZH,
+        load_fixed_starter_corpus,
+    )
+
+    zh = load_fixed_starter_corpus(CORPUS_VERSION_ZH)
+    en = load_fixed_starter_corpus(CORPUS_VERSION_EN)
+
+    assert len(zh) == len(en) == 100
+    for rows in (zh, en):
+        counts = Counter(starter.topic for starter in rows)
+        assert set(counts) == {"生活", "科学", "文化", "实用", "好奇"}
+        assert all(count == 20 for count in counts.values())
+    assert all(
+        not any("一" <= ch <= "鿿" for ch in starter.text) for starter in en
+    )
+    assert any("一" <= ch <= "鿿" for ch in zh[0].text)
+
+    removed = {
+        "culture-022", "practical-021", "curiosity-021",
+        "life-016", "life-020", "science-006", "science-015",
+        "culture-014", "practical-014", "curiosity-007",
+    }
+    assert not removed & {starter.starter_id for starter in zh}
+
+
+def test_cold_start_cards_follow_language():
+    from datetime import datetime, timezone
+
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        GLOBAL_NEW_CHAT_SCOPE,
+        build_cold_start_cards,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_sources import (
+        CORPUS_VERSION_EN,
+        CORPUS_VERSION_ZH,
+    )
+
+    now = datetime(2026, 11, 16, tzinfo=timezone.utc).timestamp()
+
+    def trigger(version):
+        return {
+            "local_date": "2026-11-16",
+            "context_scope": GLOBAL_NEW_CHAT_SCOPE,
+            "project_id": None,
+            "profile_semantic_version": 0,
+            "short_intent_version": 0,
+            "search_provider_id": "test",
+            "generation_config_version": "test",
+            "corpus_version": version,
+            "document_snapshot_version": "documents:2026-11-16:v2",
+            "retrieval_config_version": "test",
+            "evidence_extractor_version": "test",
+            "input_revision_receipt": {"receipt_id": "r1"},
+        }
+
+    def has_cjk(text):
+        return any("一" <= ch <= "鿿" for ch in text)
+
+    en_cards = build_cold_start_cards(
+        trigger_key=trigger(CORPUS_VERSION_EN), now=now, target_count=4,
+    )
+    zh_cards = build_cold_start_cards(
+        trigger_key=trigger(CORPUS_VERSION_ZH), now=now, target_count=4,
+    )
+
+    assert len(en_cards) == 4
+    assert all(not has_cjk(card["title"] + card["prompt"]) for card in en_cards)
+    assert len(zh_cards) == 4
+    assert any(has_cjk(card["title"]) for card in zh_cards)
+
+
+def test_generated_stage_prompts_carry_output_language():
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
+        _v6_system_prompt,
+    )
+
+    english = _v6_system_prompt("v6_global_interest_generator", "base", "en")
+    chinese = _v6_system_prompt("v6_global_interest_generator", "base", "zh")
+    scorer = _v6_system_prompt("v6_utility_scorer", "base", "en")
+
+    assert "OUTPUT LANGUAGE" in english and "English" in english
+    assert "OUTPUT LANGUAGE" in chinese and "Chinese" in chinese
+    assert "OUTPUT LANGUAGE" not in scorer
+
+
+def test_language_change_invalidates_pool_identity():
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        build_serving_compatibility_key,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_sources import (
+        CORPUS_VERSION_EN,
+        CORPUS_VERSION_ZH,
+        corpus_version_for_language,
+    )
+
+    assert corpus_version_for_language("en") == CORPUS_VERSION_EN
+    assert corpus_version_for_language("EN") == CORPUS_VERSION_EN
+    assert corpus_version_for_language("zh") == CORPUS_VERSION_ZH
+    assert corpus_version_for_language("fr") == CORPUS_VERSION_ZH
+    assert build_serving_compatibility_key(
+        {"corpus_version": CORPUS_VERSION_EN}
+    ) != build_serving_compatibility_key({"corpus_version": CORPUS_VERSION_ZH})
+
+
+def test_recommendation_language_normalizes_preferred_language(monkeypatch):
+    from jiuwenswarm.agents.harness.common.recommendation import topic_controls
+
+    for raw, expected in (
+        ("en", "en"), ("EN", "en"), ("zh", "zh"), ("fr", "zh"), (None, "zh"),
+    ):
+        monkeypatch.setattr(
+            topic_controls, "get_config", lambda _raw=raw: {"preferred_language": _raw},
+        )
+        topic_controls.clear_recommendation_language_cache()
+        assert topic_controls.recommendation_language() == expected
+
+
+def test_deprojected_profile_uses_english_taxonomy():
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
+        _deprojected_long_profile,
+    )
+
+    state = {
+        "memory": {
+            "units": [
+                {
+                    "core": {"behavior_pattern": "tech-ai-ml"},
+                    "companion": {"unit_id": "unit-1"},
+                }
+            ]
+        }
+    }
+
+    english = _deprojected_long_profile(
+        state,
+        profile_semantic_version=1,
+        project_by_session={},
+        project_identifiers_by_session={},
+        language="en",
+    )
+    chinese = _deprojected_long_profile(
+        state,
+        profile_semantic_version=1,
+        project_by_session={},
+        project_identifiers_by_session={},
+        language="zh",
+    )
+
+    assert english[0].summary_text == "AI and machine learning"
+    assert chinese[0].summary_text == "人工智能与机器学习"
+
+
+def test_hot_list_templates_follow_language():
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
+        _has_cjk,
+        _hot_list_title,
+    )
+
+    assert _hot_list_title("topic", "en").startswith("What is")
+    assert "热搜" in _hot_list_title("话题", "zh")
+    assert _has_cjk("话题") is True
+    assert _has_cjk("topic") is False
+
+
 def test_cold_start_prefers_live_timely_corpus_cards():
     from datetime import datetime, timezone
 
     from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
         GLOBAL_NEW_CHAT_SCOPE,
         build_cold_start_cards,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_sources import (
+        CORPUS_VERSION,
     )
 
     now = datetime(2026, 10, 21, tzinfo=timezone.utc).timestamp()
@@ -2768,7 +2940,7 @@ def test_cold_start_prefers_live_timely_corpus_cards():
             "short_intent_version": 0,
             "search_provider_id": "test",
             "generation_config_version": "test",
-            "corpus_version": "topic-starter-corpus-v1",
+            "corpus_version": CORPUS_VERSION,
             "document_snapshot_version": "documents:2026-10-21:v2",
             "retrieval_config_version": "test",
             "evidence_extractor_version": "test",
@@ -3895,6 +4067,60 @@ def test_history_scan_budget_keeps_newest_sessions(monkeypatch, tmp_path) -> Non
 
     assert read == ["newest"]
     assert result == {"newest": []}
+
+
+def test_run_snapshot_serves_one_history_across_the_run(monkeypatch) -> None:
+    from jiuwenswarm.agents.harness.common.recommendation import topic_history as history
+
+    reads: list[str] = []
+    monkeypatch.setattr(
+        history, "load_session_records", lambda sid: reads.append(sid) or [],
+    )
+    token = history.set_run_records_snapshot({"s1": [{"id": "s1"}]})
+    try:
+        first = history.load_all_session_records()
+        second = history.load_all_session_records()
+        first["s1"].append({"id": "mutated"})
+        third = history.load_all_session_records()
+
+        assert reads == []
+        assert second == {"s1": [{"id": "s1"}]}
+        assert third == {"s1": [{"id": "s1"}]}
+    finally:
+        history.reset_run_records_snapshot(token)
+
+
+def test_session_records_are_read_once_per_burst(monkeypatch, tmp_path) -> None:
+    """Revision, summaries and short intent in one run share one history read."""
+
+    from jiuwenswarm.agents.harness.common.recommendation import topic_history as history
+
+    reads: list[str] = []
+    path = tmp_path / "s1.jsonl"
+    path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        history, "get_all_sessions_metadata",
+        lambda **_kwargs: ([{"session_id": "s1"}], 1),
+    )
+    monkeypatch.setattr(history, "get_read_history_path", lambda _sid: path)
+
+    def fake_load(session_id):
+        reads.append(session_id)
+        return [{"id": session_id}]
+
+    monkeypatch.setattr(history, "load_session_records", fake_load)
+    history.clear_session_window_cache()
+    try:
+        first = history.load_all_session_records()
+        second = history.load_all_session_records()
+        first["s1"].append({"id": "mutated"})
+        third = history.load_all_session_records()
+
+        assert reads == ["s1"]
+        assert [row["id"] for row in second["s1"]] == ["s1"]
+        assert [row["id"] for row in third["s1"]] == ["s1"]
+    finally:
+        history.clear_session_window_cache()
 
 
 def test_newest_session_window_is_shared_within_ttl(monkeypatch, tmp_path) -> None:

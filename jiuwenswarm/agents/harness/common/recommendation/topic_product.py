@@ -1531,7 +1531,9 @@ def build_cold_start_cards(
     )
     live = [
         starter
-        for starter in load_fixed_starter_corpus(CORPUS_VERSION)
+        for starter in load_fixed_starter_corpus(
+            str(trigger_key.get("corpus_version") or CORPUS_VERSION)
+        )
         if _corpus_starter_is_live(starter, now)
     ]
     by_topic: dict[str, list[Any]] = {}

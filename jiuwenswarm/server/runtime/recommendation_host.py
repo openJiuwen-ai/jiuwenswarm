@@ -49,6 +49,7 @@ def _build_topic_starter_services(
     from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
         load_recommendation_controls,
         permitted_recommendation_history,
+        recommendation_language,
         recommendation_model_config,
     )
     from jiuwenswarm.agents.harness.common.recommendation.topic_history import (
@@ -97,6 +98,7 @@ def _build_topic_starter_services(
     topic_pipeline = TopicPipeline(
         topic_starter_store,
         records_loader=permitted_records,
+        language_loader=recommendation_language,
     )
     try:
         search_provider_id = topic_pipeline.search_provider_id
@@ -136,6 +138,7 @@ def _build_topic_starter_services(
         generate=topic_pipeline.generate,
         refresh_news=topic_pipeline.refresh_news,
         history_project_ids_loader=history_project_ids,
+        records_loader=load_all_session_records,
         search_provider_id=search_provider_id,
         prepare_state=topic_pipeline.refresh_state,
         prepare_short_intent=topic_pipeline.refresh_short_intent,
@@ -145,6 +148,7 @@ def _build_topic_starter_services(
         input_revision_loader=topic_pipeline.scope_input_revision,
         config_loader=recommendation_model_config,
         enabled=bool(load_recommendation_controls()["enabled"]),
+        language_loader=recommendation_language,
     )
     topic_pipeline.on_candidates_ready = topic_service.candidate_generation_ready
     return (
@@ -297,6 +301,30 @@ class RecommendationHost:
             project_id=None,
             work_mode=work_mode,
             visit_id=request_id,
+        )
+
+    async def on_language_changed(self, language: str) -> None:
+        """Serve the new language immediately and rebuild pools in the background."""
+
+        self.ensure_services()
+        from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
+            clear_recommendation_language_cache,
+        )
+        from jiuwenswarm.agents.harness.common.recommendation.topic_history import (
+            clear_session_window_cache,
+        )
+        from jiuwenswarm.common.schema.message import (
+            TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
+        )
+
+        clear_recommendation_language_cache()
+        clear_session_window_cache()
+        service = self.topic_service
+        if service is not None and service.configuration_status().get("enabled"):
+            service.schedule_seed("recommendation-language-changed")
+        await self.emit(
+            TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
+            {"preferred_language": language},
         )
 
     async def session_left_project(self, project_id: str, session_id: str) -> None:
