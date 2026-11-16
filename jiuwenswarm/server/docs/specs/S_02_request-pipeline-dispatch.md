@@ -56,7 +56,7 @@
 - file_transfer（3）：按 event_type 分派
 - team ：TEAM_* 全域
 - commands ：COMMAND_* + COMMAND_MCP / COMMAND_SANDBOX（外借）
-- mcp_servers ：MCP_SERVER_ADD / REMOVE / UPDATE / LIST / GET
+- mcp_servers ：MCP_SERVER_ADD / REMOVE / UPDATE / LIST / GET / RESCAN
 - agents ：AGENTS_*
 - extensions ：EXTENSIONS_* + HOOKS_LIST + HARNESS_PACKAGES_*
 - schedule ：SCHEDULE_CHECK_CONFIG / UPDATE_CONFIG / CREATE / RUN / LIST / STATUS / LOGS / CANCEL / DELETE + ISSUE_WATCH_ONCE / ISSUE_STATE_LIST / ISSUE_DELETE / ISSUE_MATRIX（共用 handle_schedule_request）
