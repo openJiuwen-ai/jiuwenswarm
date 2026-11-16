@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -130,3 +130,51 @@ async def test_imported_speech_survives_next_react_context_initialization(monkey
     ]
     await sync.sync_conversation_context(agent, "web-chat")
     assert len(restored.get_messages()) == 3
+
+
+async def test_foreign_cursor_on_context_is_treated_as_absent(monkeypatch):
+    """陌生游标（外部写入的任意对象）按"无游标"处理，全量重读而非拒绝请求.
+
+    回归背景：``getattr(context, "duplex_history_cursor", None)`` 在 context 被
+    测试替身替换时会返回非 None 的陌生对象，原样传入 read_history_replay 后
+    在 _check_cursor 必抛 HISTORY_RESTORE_CHANGED，把整条非流式请求打挂。
+    """
+    from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayCursor
+
+    records = [
+        dict(id="voice-user", channel_id="video_duplex", role="user", content="语音输入"),
+    ]
+    messages = []
+    context = SimpleNamespace(
+        get_messages=lambda: messages,
+        add_messages=AsyncMock(side_effect=messages.append),
+        duplex_history_cursor={"path": "not-a-real-cursor"},
+    )
+    agent = SimpleNamespace(react_agent=SimpleNamespace(
+        context_engine=SimpleNamespace(
+            get_context=lambda **_: context, save_contexts=AsyncMock(),
+        ),
+    ), _interaction_session=SimpleNamespace(get_session_id=lambda: "web-chat"))
+    monkeypatch.setattr(sync.session_history, "flush_pending_writes", lambda **_: True)
+    monkeypatch.setattr(sync.session_history, "load_history_records", lambda _: records)
+
+    await sync.sync_conversation_context(agent, "web-chat")
+
+    # 陌生游标未触发 HISTORY_RESTORE_CHANGED，语音记录按全量重读导入
+    assert [m.content for m in messages] == ["语音输入"]
+    # 重读完成后游标被替换为真实游标
+    assert isinstance(context.duplex_history_cursor, HistoryReplayCursor)
+
+
+async def test_mock_agent_magic_attributes_do_not_fail_the_sync(monkeypatch):
+    """MagicMock 自动填充的 agent（!10206 新增用例形态）不再整条请求失败.
+
+    MagicMock 的魔术属性使 ``get_context()`` 返回 truthy mock、
+    ``getattr(context, "duplex_history_cursor", None)`` 返回 mock 游标；
+    守卫须把这类假游标按"无游标"处理，而不是让其进入游标校验。
+    """
+    monkeypatch.setattr(sync.session_history, "flush_pending_writes", lambda **_: True)
+    monkeypatch.setattr(sync.session_history, "load_history_records", lambda _: [])
+    agent = MagicMock()
+
+    await sync.sync_conversation_context(agent, "web-chat")  # 修复前在此必抛
