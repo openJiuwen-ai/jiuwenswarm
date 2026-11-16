@@ -5157,6 +5157,21 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
             />
           </div>
         )}
+        {activeNav === 'rea' && (
+          <div className="app-section">
+            <ReaSetupPage
+              onUseRea={(prompt) =>
+                requestSessionNavigation('new', {
+                  initialInputValue: prompt,
+                  initialSelectedSkills: ['reverse-engineer-anything'],
+                  initialEnabledMcps: ['rea'],
+                  forceMode: 'agent.code.normal',
+                  metadata: { prefer_mcp: 'rea' },
+                })
+              }
+            />
+          </div>
+        )}
         {hasVisitedAgents && (
           <div className={`app-section min-h-0 ${activeNav === 'agents' ? '' : 'is-hidden'}`}>
             <AgentManagementPanel

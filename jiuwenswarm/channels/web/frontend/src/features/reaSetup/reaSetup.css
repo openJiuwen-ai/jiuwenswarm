@@ -423,12 +423,8 @@ button.rea-step-card:hover img {
 .rea-group__badge.is-complete::before {
   width: 16px;
   height: 16px;
-  border: 1px solid #419d42;
-  border-radius: 50%;
-  content: "✓";
-  font-size: 11px;
-  line-height: 14px;
-  text-align: center;
+  background: url("../../assets/rea/status-group-complete.svg") center / contain no-repeat;
+  content: "";
 }
 
 .rea-group__badge.is-partial {
@@ -437,12 +433,10 @@ button.rea-step-card:hover img {
 }
 
 .rea-group__badge.is-partial::before {
-  width: 14px;
-  height: 14px;
-  border: 1.5px solid var(--rea-primary);
-  border-right-color: #bed5fa;
-  border-bottom-color: #bed5fa;
-  border-radius: 50%;
+  width: 16px;
+  height: 16px;
+  border: 0;
+  background: url("../../assets/rea/status-group-partial.svg") center / contain no-repeat;
   content: "";
 }
 
@@ -656,20 +650,9 @@ button.rea-step-card:hover img {
 }
 
 .rea-status.is-available i {
-  border-color: #4caf50;
-  background: #fff;
-}
-
-.rea-status.is-available i::after {
-  position: absolute;
-  top: 1px;
-  left: 4px;
-  width: 4px;
-  height: 8px;
-  border: solid #4caf50;
-  border-width: 0 1.5px 1.5px 0;
-  content: "";
-  transform: rotate(45deg);
+  border: 0;
+  border-radius: 0;
+  background: url("../../assets/rea/status-card-installed.png") center / contain no-repeat;
 }
 
 .rea-status.is-installing {
@@ -679,53 +662,7 @@ button.rea-step-card:hover img {
 .rea-status.is-installing i {
   border: 0;
   border-radius: 0;
-}
-
-.rea-status.is-installing i::before,
-.rea-status.is-installing i::after {
-  position: absolute;
-  left: 3px;
-  width: 10px;
-  height: 4px;
-  border-radius: 2px;
-  background: #0bb8b2;
-  content: "";
-}
-
-.rea-status.is-installing i::before {
-  top: 3px;
-}
-
-.rea-status.is-installing i::after {
-  bottom: 3px;
-}
-
-.rea-status.is-detecting {
-  color: #595959;
-}
-
-.rea-status.is-detecting i {
-  border: 0;
-  border-radius: 0;
-}
-
-.rea-status.is-detecting i::before,
-.rea-status.is-detecting i::after {
-  position: absolute;
-  left: 3px;
-  width: 10px;
-  height: 4px;
-  border-radius: 2px;
-  background: #3c86ef;
-  content: "";
-}
-
-.rea-status.is-detecting i::before {
-  top: 3px;
-}
-
-.rea-status.is-detecting i::after {
-  bottom: 3px;
+  background: url("../../assets/rea/status-installing.svg") center / contain no-repeat;
 }
 
 .rea-status.is-needsAction {
@@ -735,20 +672,7 @@ button.rea-step-card:hover img {
 .rea-status.is-needsAction i {
   border: 0;
   border-radius: 0;
-  background: var(--rea-orange);
-  clip-path: polygon(50% 5%, 96% 94%, 4% 94%);
-}
-
-.rea-status.is-needsAction i::after {
-  position: absolute;
-  top: 5px;
-  left: 7px;
-  width: 2px;
-  height: 6px;
-  border-radius: 1px;
-  background: #fff;
-  box-shadow: 0 8px 0 -0.5px #fff;
-  content: "";
+  background: url("../../assets/rea/status-needs-action.svg") center / contain no-repeat;
 }
 
 .rea-status.is-detected {
@@ -784,7 +708,9 @@ button.rea-step-card:hover img {
 }
 
 .rea-status.is-unsupported i {
-  border-color: #b8b8b8;
+  border: 0;
+  border-radius: 0;
+  background: url("../../assets/rea/status-card-unsupported.png") center / contain no-repeat;
 }
 
 .rea-status.is-partial {
@@ -792,8 +718,9 @@ button.rea-step-card:hover img {
 }
 
 .rea-status.is-partial i {
-  border: 2px solid #0bb8b2;
-  background: transparent;
+  border: 0;
+  border-radius: 0;
+  background: url("../../assets/rea/status-card-partial.png") center / contain no-repeat;
 }
 
 .rea-status.is-downloaded {
