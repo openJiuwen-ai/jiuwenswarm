@@ -247,6 +247,11 @@ class AgentManager:
     - "default": 默认通道
     """
 
+    # 类级兜底：测试可用 object.__new__ 绕过 __init__ 构造实例（见
+    # test_facade_mode_compatibility 的 fixture），此类实例视为未启用驱逐。
+    # 真实实例由 __init__ 用环境变量解析结果覆盖。
+    _session_agent_max_live = 0
+
     def __init__(
         self,
         *,
@@ -423,7 +428,10 @@ class AgentManager:
         if task is None:
             return agent
         agent_id = id(agent)
-        self._agent_last_used[agent_id] = time.monotonic()
+        # 未跑 __init__ 的实例（object.__new__ 构造的测试替身）不记账。
+        last_used = getattr(self, "_agent_last_used", None)
+        if last_used is not None:
+            last_used[agent_id] = time.monotonic()
         borrowers = self._agent_borrowers.setdefault(agent_id, set())
         if task in borrowers:
             return agent
@@ -808,6 +816,7 @@ class AgentManager:
             if "acp" in self.agents:
                 logger.info("[AgentManager] Resetting ACP agent")
                 for agent in self.agents.get("acp", {}).values():
+                    self._agent_last_used.pop(id(agent), None)
                     if hasattr(agent, "cleanup"):
                         try:
                             await agent.cleanup()
@@ -897,11 +906,27 @@ class AgentManager:
                     cap,
                 )
             except Exception:
-                channel_agents[cache_key] = agent
-                if create_params is not None:
-                    self._agent_create_params.setdefault(channel_key, {})[
-                        cache_key
-                    ] = create_params
+                # 驱逐不持创建锁，cleanup 挂起期间同 session 可能已并发重建
+                # 新 Agent：键被占用时丢弃失败实例，绝不覆盖（对齐
+                # _retire_tui_agent_if_idle_locked 的既有防护）。
+                if cache_key not in channel_agents:
+                    channel_agents[cache_key] = agent
+                    channel_params = self._agent_create_params.setdefault(
+                        channel_key, {}
+                    )
+                    if create_params is not None and cache_key not in channel_params:
+                        channel_params[cache_key] = create_params
+                    # 回插时间戳记为当前时刻：缺省会按 0.0 排到最旧，被每个
+                    # 超额请求反复选中重试。
+                    self._agent_last_used[id(agent)] = time.monotonic()
+                else:
+                    logger.warning(
+                        "[AgentManager] LRU session agent cleanup failed; "
+                        "keeping concurrently rebuilt agent: "
+                        "channel_id=%s cache_key=%s",
+                        channel_key,
+                        cache_key,
+                    )
                 logger.exception(
                     "[AgentManager] LRU session agent cleanup failed: "
                     "channel_id=%s cache_key=%s",
@@ -993,9 +1018,16 @@ class AgentManager:
                     try:
                         await agent.cleanup()
                     except Exception:
-                        channel_agents[cache_key] = agent
-                        if create_params is not None:
-                            self._agent_create_params.setdefault(channel_key, {})[cache_key] = create_params
+                        # 与 LRU 驱逐回插同样的并发防护：cleanup 挂起期间
+                        # 同 session 可能已重建新 Agent，键被占用时不覆盖。
+                        if cache_key not in channel_agents:
+                            channel_agents[cache_key] = agent
+                            channel_params = self._agent_create_params.setdefault(
+                                channel_key, {}
+                            )
+                            if create_params is not None and cache_key not in channel_params:
+                                channel_params[cache_key] = create_params
+                            self._agent_last_used[id(agent)] = time.monotonic()
                         failed_agents += 1
                         logger.exception(
                             "[AgentManager] projectless session agent cleanup failed: "
@@ -2004,6 +2036,8 @@ class AgentManager:
                         mode_key,
                         exc,
                     )
+        for agent in agents.values():
+            self._agent_last_used.pop(id(agent), None)
         del self.agents[channel_key]
         self._agent_create_params.pop(channel_key, None)
         logger.info(

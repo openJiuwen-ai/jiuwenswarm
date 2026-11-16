@@ -546,12 +546,98 @@ async def test_lru_cap_restores_agent_when_cleanup_fails() -> None:
     cache_key = "agent:::session:session-fail"
     manager.agents["web"] = {cache_key: failing}
     manager._agent_create_params["web"] = {cache_key: {"mode": "agent"}}
+    manager._agent_last_used[id(failing)] = 1.0
+    # 陪衬 agent 使池内 :session: 计数(2)超过 cap(1)，驱逐才会真正触发。
+    _seed_session_agent(manager, "web", "agent:::session:session-other", last_used=2.0)
 
     await manager._evict_lru_session_agents_if_over_cap("web")
 
     assert manager.agents["web"][cache_key] is failing
     assert manager._agent_create_params["web"][cache_key] == {"mode": "agent"}
     assert failing.cleaned is False
+    # 回插时间戳记为当前时刻，失败实例不得以缺省 0.0 插队被反复选中。
+    assert id(failing) in manager._agent_last_used
+
+
+class _BlockingThenFailingCleanupAgent(_SessionRuntimeAgent):
+    def __init__(self) -> None:
+        super().__init__(has_session_runtime=False)
+        self.cleanup_started = asyncio.Event()
+        self.allow_cleanup = asyncio.Event()
+
+    async def cleanup(self) -> None:
+        self.cleanup_started.set()
+        await self.allow_cleanup.wait()
+        raise RuntimeError("late cleanup failure")
+
+
+@pytest.mark.asyncio
+async def test_lru_cap_cleanup_failure_keeps_concurrently_rebuilt_agent() -> None:
+    manager = AgentManager()
+    manager._session_agent_max_live = 1
+    failing = _BlockingThenFailingCleanupAgent()
+    key = "agent:::session:session-race"
+    manager.agents["web"] = {key: failing}
+    manager._agent_create_params["web"] = {key: {"mode": "agent"}}
+    manager._agent_last_used[id(failing)] = 1.0
+    _seed_session_agent(manager, "web", "agent:::session:session-other", last_used=2.0)
+
+    evict_task = asyncio.create_task(
+        manager._evict_lru_session_agents_if_over_cap("web")
+    )
+    await failing.cleanup_started.wait()
+    # 模拟 cleanup 挂起期间同 session 并发重建：新 Agent 已进缓存并记录参数。
+    rebuilt = _SessionRuntimeAgent(has_session_runtime=False)
+    manager.agents["web"][key] = rebuilt
+    manager._agent_create_params["web"][key] = {"mode": "agent", "config": "rebuilt"}
+    failing.allow_cleanup.set()
+    await asyncio.wait_for(evict_task, timeout=2)
+
+    # 失败实例必须被丢弃，绝不覆盖并发重建的新 Agent。
+    assert manager.agents["web"][key] is rebuilt
+    assert manager._agent_create_params["web"][key] == {"mode": "agent", "config": "rebuilt"}
+
+
+@pytest.mark.asyncio
+async def test_lru_cap_skips_agent_with_live_borrower() -> None:
+    manager = AgentManager()
+    manager._session_agent_max_live = 1
+    busy = _seed_session_agent(
+        manager, "web", "agent:::session:session-busy", last_used=1.0
+    )
+    holder = asyncio.create_task(asyncio.sleep(60))
+    manager._agent_borrowers[id(busy)] = {holder}
+    fallback = _seed_session_agent(
+        manager, "web", "agent:::session:session-idle", last_used=2.0
+    )
+
+    try:
+        await manager._evict_lru_session_agents_if_over_cap("web")
+    finally:
+        holder.cancel()
+
+    # 最旧但 borrower 存活的 agent 被跳过，超额由次旧兜底。
+    assert busy.cleaned is False
+    assert fallback.cleaned is True
+
+
+@pytest.mark.asyncio
+async def test_lru_cap_never_evicts_the_requested_key() -> None:
+    manager = AgentManager()
+    manager._session_agent_max_live = 1
+    keep = _seed_session_agent(
+        manager, "web", "agent:::session:session-keep", last_used=1.0
+    )
+    old = _seed_session_agent(
+        manager, "web", "agent:::session:session-old", last_used=2.0
+    )
+
+    await manager._evict_lru_session_agents_if_over_cap(
+        "web", skip_cache_key="agent:::session:session-keep"
+    )
+
+    assert keep.cleaned is False
+    assert old.cleaned is True
 
 
 @pytest.mark.asyncio
