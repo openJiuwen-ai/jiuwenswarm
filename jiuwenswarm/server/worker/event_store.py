@@ -92,10 +92,14 @@ class WorkerEventStore:
         # gap check on it would turn any eviction into a false gap for every
         # other request. Keyed by (scope, request_id).
         self._expired_by_request: "OrderedDict[tuple, int]" = OrderedDict()
-        # 水位上限裁剪的丢失账（atomgit 9722 id=200378287）：被 LRU 裁掉的键若
-        # 静默缺位，replay_gapped 会把「水位曾存在」的请求误报无缺口→静默跳帧。
-        # 被裁键在此留痕，replay_gapped 对留痕键保守报缺（history_required 回落
-        # 占位卡安全面）。同上限 LRU，残余面需双重超限且请求闲置两段窗口。
+        # Watermark cap eviction ledger (atomgit 9722 id=200378287): if a key
+        # evicted by the LRU were silently absent, replay_gapped would report
+        # "no gap" for requests whose watermark once existed -> silently skip
+        # frames. Evicted keys leave a tombstone here so replay_gapped reports
+        # a gap conservatively (falls back to the history_required /
+        # placeholder-card safe face). Same-cap LRU: both surfaces must exceed
+        # the cap and the request stays idle for two full windows before
+        # pruning.
         self._watermark_lost: "OrderedDict[tuple, None]" = OrderedDict()
         self._max_watermark_keys = 1024
         self.records: OrderedDict[str, DispatchRecord] = OrderedDict()
@@ -114,9 +118,11 @@ class WorkerEventStore:
             raise ValueError("worker dispatch limit reached")
         if len(self.records) >= 2048:
             raise ValueError("worker retained interaction limit reached")
-        # 同 (scope, request_id) 重新登记＝新一轮轮次：旧轮淘汰水位必须复位，
-        # 否则新轮 after=0 撞旧水位被误报缺口、身份型重放退化占位卡
-        # （atomgit 9722 id=199422840）。
+        # Re-registering the same (scope, request_id) = a new round: the old
+        # round's eviction watermark must reset, otherwise the new round's
+        # after=0 hits the stale watermark, gets falsely reported as a gap and
+        # identity replay degrades into a placeholder card (atomgit 9722
+        # id=199422840).
         self._expired_by_request.pop((scope, str(request.request_id or "")), None)
         self._watermark_lost.pop((scope, str(request.request_id or "")), None)
         record = DispatchRecord(dispatch_id, request, scope)
@@ -138,9 +144,11 @@ class WorkerEventStore:
             if removable is None:
                 break
             self.records.pop(removable)
-            # 重放缺口水位（_expired_by_request）不随记录修剪清理：水位生命周期
-            # 跟随 _frames（帧淘汰时写入），记录重建后 replay_gapped 仍需水位
-            # 判定缺口；有界性由写入侧容量上限保证（见 append 帧淘汰段）。
+            # Replay-gap watermarks (_expired_by_request) do not clear on
+            # record pruning: their lifecycle follows _frames (written on
+            # frame eviction) so replay_gapped can still judge gaps after
+            # records are rebuilt; boundedness comes from the writer-side
+            # capacity cap (see the append frame-eviction segment).
 
     def internal_record(self, request: AgentRequest) -> DispatchRecord:
         """Track an authorized server execution, including mailbox background work."""
@@ -236,20 +244,24 @@ class WorkerEventStore:
                 if expired["sequence"] > self._expired_by_request.get(key, 0):
                     self._expired_by_request[key] = expired["sequence"]
                 self._expired_by_request.move_to_end(key)
-                # 重新获得水位＝丢失面消除（atomgit 9722 id=200378287）。
+                # Watermark regained = loss ledger cleared (atomgit 9722 id=200378287).
                 self._watermark_lost.pop(key, None)
             self._bytes -= expired_size
             expired_record = self.records.get(expired["dispatch_id"])
             if expired_record is not None:
                 expired_record.expired_sequence = expired["sequence"]
-        # 水位图容量上限（防无界增长；AIReview SF-1 关注点）——
-        # 生命周期跟随帧淘汰（不随记录修剪提前清空，atomgit 判词 199763306）；
-        # LRU 触碰保证活跃请求的水位不被误清（atomgit 9707 id=199769142-⑤），
-        # 超限淘汰最久未触碰条目（只影响已整体淘汰出保留窗的请求）。
+        # Watermark-map capacity cap (guards unbounded growth; AIReview SF-1
+        # concern) — lifecycle follows frame eviction (not cleared early on
+        # record pruning, atomgit verdict 199763306); the LRU touch keeps
+        # active requests' watermarks from being cleared by mistake (atomgit
+        # 9707 id=199769142-⑤), over-cap evicts the least-recently-touched
+        # entries (only affects requests already fully evicted out of the
+        # retention window).
         while len(self._expired_by_request) > self._max_watermark_keys:
             lost_key, lost_watermark = self._expired_by_request.popitem(last=False)
             if lost_watermark > 0:
-                # 裁剪留痕：缺位不再等于「无缺口」（atomgit 9722 id=200378287）。
+                # Tombstone on cap eviction: absent no longer means "no gap"
+                # (atomgit 9722 id=200378287).
                 self._watermark_lost[lost_key] = None
                 self._watermark_lost.move_to_end(lost_key)
                 while len(self._watermark_lost) > self._max_watermark_keys:
@@ -365,24 +377,45 @@ class WorkerEventStore:
                 if owner == scope and frame["sequence"] > after]
 
     def replay_by_request(
-        self, scope: tuple[str, ...], request_id: str, *, after: int = 0
+        self, scope: tuple[str, ...], request_id: str, *, after: int = 0,
+        dispatch_id: str = "",
     ) -> list[dict[str, Any]]:
-        """P6 身份型重放：按 (scope, request_id) 取单请求保留帧（游标之后）。"""
+        """Identity replay: retained frames of one request after the cursor.
+
+        With ``dispatch_id`` set, only frames of that dispatch generation are
+        returned: a new round reusing the same rid (process_cli cancel reuses
+        the original rid, reaped entries restart ``after`` from 0) must not
+        replay the previous round's leftover frames as the new round's reply —
+        the bare cursor alone cannot block cross-generation frames; frames
+        already carry ``metadata.runtime_event.dispatch_id`` injected at
+        append (atomgit-bot 10206 id=200876804), so filtering by generation
+        switches rounds precisely.
+        """
         rid = str(request_id or "")
-        return [copy.deepcopy(frame) for owner, frame, _ in self._frames
-                if owner == scope and frame["request_id"] == rid and frame["sequence"] > after]
+        frames = [copy.deepcopy(frame) for owner, frame, _ in self._frames
+                  if owner == scope and frame["request_id"] == rid and frame["sequence"] > after]
+        wanted = str(dispatch_id or "")
+        if not wanted:
+            return frames
+        return [frame for frame in frames
+                if str(((frame.get("payload") or {}).get("metadata") or {})
+                       .get("runtime_event", {}).get("dispatch_id") or "") == wanted]
 
     def replay_gapped(self, scope: tuple[str, ...], request_id: str, after: int) -> bool:
-        """True 若该请求自身的保留帧已被淘汰至 after 之下（重放会静默跳帧）。
+        """True if this request's own retained frames were evicted below ``after``.
 
-        以 (scope, request_id) 级水位判定，而非全店共享的 _expired_sequence：
-        全局水位在任意请求淘汰时前移，用它判缺口会把别的请求的淘汰误报成
-        本请求的缺口，让身份型重放退化为占位卡。
+        Judged by the (scope, request_id)-level watermark rather than the
+        store-wide ``_expired_sequence``: the global watermark advances when
+        ANY request evicts, so a global watermark would misreport other
+        requests' evictions as this request's gap and degrade identity replay
+        into a placeholder card.
         """
         rid = str(request_id or "")
         key = (scope, rid)
         if key in self._expired_by_request:
             return after < self._expired_by_request[key]
-        # 水位曾被记录但被上限裁掉：无法证明无缺口 → 保守报缺，重放回落
-        # history_required/占位卡安全面，不静默跳帧（atomgit id=200378287）。
+        # Watermark once recorded but evicted by the cap: cannot prove "no
+        # gap" -> report the gap conservatively; replay falls back to the
+        # history_required / placeholder-card safe face, never silently skips
+        # frames (atomgit id=200378287).
         return key in self._watermark_lost

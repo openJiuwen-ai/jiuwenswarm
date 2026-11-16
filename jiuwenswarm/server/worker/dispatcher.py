@@ -59,10 +59,10 @@ _DRAIN_TIMEOUT = 5.0
 
 
 def _question_body_matches(body: Any, response_kind: Any = None) -> dict[str, Any] | None:
-    """提问 body 判定核心：展平 delta/result 嵌套后，event_type 缺失回落 response_kind。
+    """Question-body detector: flatten delta/result nesting; fall back to response_kind when event_type is missing.
 
-    与 _question_recovery_filter 及身份型重放共用（atomgit 9722 id=200378287、
-    9707 id=199769142-④）——两处判据同源，禁止各自演化。"""
+    Shared by _question_recovery_filter and identity replay (atomgit 9722 id=200378287,
+    9707 id=199769142-④) — the two detectors share one source; they must not drift apart."""
     if not isinstance(body, dict):
         return None
     nested = body.get("delta") if isinstance(body.get("delta"), dict) else body.get("result")
@@ -72,8 +72,8 @@ def _question_body_matches(body: Any, response_kind: Any = None) -> dict[str, An
 
 
 def _question_frame_body(wire: Any) -> dict[str, Any] | None:
-    """wire 顶层帧 → 提问 body（同源判据）。response_kind 与提问标识穿透
-    保留帧包装层（外层 wire 或内层壳均可携带）。"""
+    """Top-level wire frame -> question body (same-source criteria). response_kind and the question marker pass through
+    the retained-frame wrapper (either the outer wire or the inner shell may carry them)."""
     if not isinstance(wire, dict):
         return None
     shell = wire.get("body") or wire.get("payload")
@@ -857,13 +857,13 @@ class WorkerDispatcher:
 
 
     def _replayed_question_expired(self, record: "DispatchRecord", body: dict[str, Any]) -> bool:
-        """待重放提问帧是否已失效——按 control 本体有效性判定，与
-        ``_question_recovery_filter`` 的 authority 同源（``recoverable_control``）。
+        """Whether a pending-replay question frame is expired — judged by the control payload itself, aligned with
+        the ``_question_recovery_filter`` authority (``recoverable_control``).
 
-        ``record.interactions`` 是混合交互字典（waiting 控制集 ∪ 提问帧），非空≠
-        提问在飞：残留其它控制时旧粗启发式会把已终结提问误判在飞重投
-        （openjiuwen-AIReview 9722 id=200409667——与 9707 authority 判定分叉的移植
-        修复）。authority/标识不可达时回退旧启发式（字典空判），保守维持原重放行为。
+        ``record.interactions`` is the mixed interactions dict (waiting control set + question frames); non-empty does not imply
+        an in-flight question: with other controls remaining, the old coarse heuristic misjudged a finished question as in-flight and redelivered it
+        (openjiuwen-AIReview 9722 id=200409667 — port of the 9707 authority-judgment alignment
+        fix). When authority/marker are unreachable, fall back to the old heuristic (empty-dict check) to conservatively keep the original replay behavior.
         """
         runtime_getter = getattr(self._runtime, "_execution_runtime", None)
         runtime = runtime_getter() if callable(runtime_getter) else self._runtime
@@ -878,12 +878,12 @@ class WorkerDispatcher:
         return resolve(session_id, control_id, execution_id) is None
 
     async def _subscribe_by_id(self, message: dict[str, Any], conn: IpcConnection, generation: int) -> None:
-        """P6 身份型重放：按台账身份键反查单请求保留帧并回放（携 wire_id 回执链）。
+        """P6 identity replay: reverse-lookup the retained frames of one request via the ledger identity key and replay them (with the wire_id ack chain).
 
-        反查键=(scope[:4], request_id)（与 ``WorkerEventStore._active`` 同键构造）；
-        miss → status=miss；worker_instance 不匹配（worker 重启丢保留帧）→
-        status=history_required；命中 → status=ok 后逐帧 KIND_WIRE 回放。
-        supervisor 侧对 miss/history_required 转占位卡路径。
+        Lookup key = (scope[:4], request_id) (same key shape as ``WorkerEventStore._active``);
+        miss -> status=miss; worker_instance mismatch (worker restart lost retained frames) ->
+        status=history_required; hit -> status=ok then replay frame by frame over KIND_WIRE.
+        On the supervisor side, miss/history_required turn into the placeholder-card path.
         """
         rid = str(message.get("request_id") or "")
         identity = message.get("payload") if isinstance(message.get("payload"), dict) else {}
@@ -904,8 +904,8 @@ class WorkerDispatcher:
             return
         channel = str(identity.get("channel_id") or "")
         user = str(identity.get("user_id") or "")
-        # request_scope 真源口径：identity 四元组由 supervisor 台账（request_scope
-        # 归一化结果）透传，open_id 私改回落会造成两口径各自演化（atomgit 08:27 评）。
+        # Canonical request_scope source: the identity tuple comes from the supervisor ledger (the normalized
+        # request_scope result); a private open_id fallback would let the two sources drift (atomgit 08:27 review).
         app = str(identity.get("app_id") or "")
         agent_ref = identity.get("agent_ref")
         if agent_ref is not None and not isinstance(agent_ref, str):
@@ -925,33 +925,38 @@ class WorkerDispatcher:
                     record = candidate
                     break
         if record is None:
-            # 反查 miss：记录已完成被修剪或键不符 → supervisor 转占位卡路径。
+            # Lookup miss: record finished/pruned or key mismatch -> supervisor turns it into the placeholder-card path.
             await _reply("miss")
             return
         if message.get("worker_instance") not in {None, "", self._bridge.events.instance}:
-            # worker 重启过（保留帧已失）：supervisor 直接占位卡，不做全量 history 重放。
+            # Worker restarted (retained frames lost): supervisor goes straight to the placeholder card, no full history replay.
             await _reply("history_required", dispatch_id=record.dispatch_id)
             return
-        # 重放帧与该 scope 的实时帧共用发布锁（同 _subscribe 重放先例）：先持锁再判
-        # 缺口并取快照、逐帧 send——缺口判定留在锁外会有 TOCTOU 窗口（检查与取帧
-        # 之间并发 append 淘汰保留帧，静默跳帧）；同锁保证重放与实时帧对同一 scope
-        # 的到达顺序有全序。
+        # Replay frames share the publication lock with live frames of the same scope (same as the _subscribe replay precedent): take the lock first, then judge
+        # the gap and snapshot, then send frame by frame — judging the gap outside the lock leaves a TOCTOU window (concurrent append evicting
+        # retained frames between the check and the snapshot would silently skip frames); the same lock guarantees a total order between replay and live frames of the same scope
+        # in arrival order.
         async with self._bridge.publication_lock(record.scope):
-            # 回执前复校验 generation/连接：连接已换代则不回执不重放——
-            # 空帧集也回 ok 会把「未送达」记账成已送达（atomgit 9722 id=199769146-④）。
+            # Re-verify generation/connection before acking: on a generation change, no ack and no replay —
+            # acking ok even for an empty frame set would book undelivered as delivered (atomgit 9722 id=199769146-④).
             if self._bridge.holder.generation != generation or self._bridge.holder.conn is None:
                 return
             if self._bridge.events.replay_gapped(record.scope, rid, after):
-                # 该请求自身的保留帧已被淘汰至游标之下：重放会静默跳帧，
-                # status=ok 会掩盖缺口 → supervisor 占位卡路径。水位按
-                # (scope, request_id) 判定，别的请求的淘汰不误报本请求缺口。
+                # The retained frames of this request were evicted below the cursor: replay would silently skip frames,
+                # status=ok would mask the gap -> supervisor placeholder-card path. The watermark is judged per
+                # (scope, request_id); another request eviction must not misreport this request as gapped.
                 await _reply("history_required", dispatch_id=record.dispatch_id)
                 return
-            frames = self._bridge.events.replay_by_request(record.scope, rid, after=after)
-            # ok 回执先行是 test_e 锁定的契约：supervisor 对 ok 零消费（只处理
-            # miss/history_required），重放中断的兜底＝supervisor sweep 重试＋
-            # 占位卡到期，不依赖 ok 语义（atomgit 06:53 评「ok 记成成功」前提
-            # 不成立，回执时序维持原契约）。
+            # Filter by dispatch generation: `record` is the current round's
+            # dispatch record; previous-round leftover frames (same-rid re-
+            # register / reaped entry) must not flow back with identity
+            # replay (200876804).
+            frames = self._bridge.events.replay_by_request(
+                record.scope, rid, after=after, dispatch_id=record.dispatch_id)
+            # The ok-first ack is the contract locked by test_e: the supervisor consumes ok as a no-op (it only handles
+            # miss/history_required); the fallback for a replay interruption = supervisor sweep retry +
+            # placeholder expiry, not the ok semantics (atomgit 06:53 review: the "ok booked as success" premise
+            # does not hold; the ack timing keeps the original contract).
             await _reply("ok", dispatch_id=record.dispatch_id, count=len(frames))
             for index, frame in enumerate(frames):
                 if self._bridge.holder.generation != generation or self._bridge.holder.conn is None:
@@ -960,14 +965,14 @@ class WorkerDispatcher:
                 if isinstance(payload, dict):
                     qbody = _question_frame_body(payload)
                     if qbody is not None and self._replayed_question_expired(record, qbody):
-                        # 失效提问卡不随重放重投（authority＝recoverable_control 按
-                        # control 逐个判，残留其它控制交互不再误判在飞；
-                        # openjiuwen-AIReview 9722 id=200409667＝9707 判定同源化移植，
-                        # 承接 atomgit id=200378287、9707 id=199769142-④／06:53 评）。
+                        # Expired question cards are not redelivered with the replay (authority = recoverable_control judged
+                        # per control; leftover other control interactions no longer get misjudged as in-flight;
+                        # openjiuwen-AIReview 9722 id=200409667 = port of the 9707 authority alignment,
+                        # following atomgit id=200378287, 9707 id=199769142-④ / the 06:53 review).
                         continue
-                    # 浅拷贝隔离后注入 replayed 标记：不得写回 event_store 保留帧
-                    # （原地写会污染日志对象，其后真实首投被消费侧误认已重放帧——
-                    # 恰为本 PR 要修的静默吞回复类失效；atomgit 9722 id=200375260）。
+                    # Inject the replayed marker on a shallow-copy isolation: never write back to the event_store retained frame
+                    # (writing in place pollutes the logged object, and later the real first delivery would be mistaken by the consumer as an already-replayed frame —
+                    # exactly the silent-reply-swallowing failure this PR fixes; atomgit 9722 id=200375260).
                     payload = {**payload}
                     metadata = dict(payload.get("metadata") or {})
                     runtime_event = dict(metadata.get("runtime_event") or {})

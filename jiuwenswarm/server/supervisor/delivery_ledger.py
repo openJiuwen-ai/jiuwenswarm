@@ -1,16 +1,16 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""交付台账与占位卡（P6 静默吞回复兜底）。
+"""Delivery ledger and placeholder card (P6 silent-reply-swallowing backstop).
 
-supervisor 在派发接受时刻登记台账（deadline 墙钟），任意送达帧即重置
-（P7 活性语义：帧流在推进＝worker 未中断；可见白名单帧额外记
-``last_visible_output_ts``）；到期未冲刷时按占位帧线缆五要素（构造先例
-``server/gateway_push/wire.py`` ``build_server_push_wire``）经网关 socket
-直发 ``chat.error`` 占位卡。控制面请求（``__cron__``/``__health_check__``
-渠道、``interrupt_`` 前缀）零可见回复属设计使然，登记时刻直接跳过。
-台账只存投递身份与游标，不存用户正文。
+The supervisor registers the ledger entry at dispatch accept (wall-clock deadline); any delivered frame resets
+it (P7 liveness semantics: advancing frame flow = worker alive; visible-whitelisted frames additionally record
+``last_visible_output_ts``); on expiry without settlement the placeholder card is built per the five-element wire contract (precedent
+``server/gateway_push/wire.py`` ``build_server_push_wire``) and delivered directly over the gateway socket as a chat.error placeholder.
+Control-plane requests (``__cron__``/``__health_check__`` channels and the interrupt_ prefix) have zero visible replies by design, skipped at register time.
+The ledger stores only delivery identity and cursors, never user content.
+See the spec for the full contract.
 
-契约全文见
+The full contract lives in the spec S_01_delivery-ledger.md.
 ``.agents/agent-docs/specs/jiuwenswarm/server/supervisor/S_01_delivery-ledger.md``。
 """
 
@@ -30,11 +30,11 @@ from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 
 logger = logging.getLogger(__name__)
 
-# 占位卡线缆顶层 request_id 后缀（与真实回复天然不同键，网关按该键独立建流）。
+# Placeholder top-level request_id suffix (a key distinct from real replies; the gateway builds an independent stream per key).
 PLACEHOLDER_REQUEST_SUFFIX = ":p6"
 
-# 占位状态机：pending → pending_flush → sent（吸收终态）；
-# pending/pending_flush → retracted（取消未送达占位，无线缆动作）/ failed。
+# Placeholder state machine: pending -> pending_flush -> sent (absorbing terminal);
+# pending/pending_flush -> retracted (cancel an undelivered placeholder, no wire action) / failed.
 PLACEHOLDER_PENDING = "pending"
 PLACEHOLDER_PENDING_FLUSH = "pending_flush"
 PLACEHOLDER_SENT = "sent"
@@ -42,23 +42,23 @@ PLACEHOLDER_RETRACTED = "retracted"
 PLACEHOLDER_FAILED = "failed"
 PLACEHOLDER_TERMINAL_STATES = frozenset({PLACEHOLDER_SENT, PLACEHOLDER_RETRACTED, PLACEHOLDER_FAILED})
 
-# 用户可见白名单：send True 即重置 deadline；流式模式 chat.delta 也计。
+# User-visible whitelist: a hit resets the deadline; in streaming mode chat.delta also counts.
 VISIBLE_EVENT_WHITELIST = frozenset({"chat.final", "chat.error", "chat.ask_user_question"})
 STREAM_VISIBLE_EVENT_WHITELIST = VISIBLE_EVENT_WHITELIST | {"chat.delta"}
 
-# 控制面请求豁免（P7 误报根治）：这些请求的用户可见回复为零帧属设计使然
-# （cron 调度/健康探测无用户渠道可回，interrupt 中断控制操作无回复语义），
-# 登记台账只会恒发占位卡——登记时刻直接跳过。
+# Control-plane exemption (P7 misfire root fix): these requests have zero visible replies by design
+# (cron scheduling / health probes have no user channel to reply to; interrupt control ops have no reply semantics),
+# so registering them would always fire a card — skip them at register time.
 CONTROL_CHANNEL_IDS = frozenset({"__cron__", "__health_check__"})
 CONTROL_REQUEST_ID_PREFIXES = ("interrupt_", "interrupt-",
-                               # cron 派发的中间控制请求（命令回执/内部取数）：
-                               # worker 从不回帧，登记台账只会到期误发占位卡
-                               # （GMK 实锚 2026-11-11 上午 2 次：cron-command-ack-*/fetch-*
-                               #   条目 state=sent seq=0，channel=web 逃过 __cron__ 渠道豁免）。
+                               # Intermediate control requests dispatched by cron (command acks / internal fetches):
+                               # the worker never replies with frames, so registering would always fire a card at expiry
+                               # (two live occurrences on 2026-11-11 morning: cron-command-ack-*/fetch-*
+                               #   entries state=sent seq=0, channel=web escaped the __cron__ channel exemption).
                                "cron-command-ack-", "fetch-")
 
-# 投递身份键（网关 message_handler._DELIVERY_IDENTITY_METADATA_KEYS 的镜像；
-# 单测断言两侧同值防漂移）。台账只允许存这些键的交集，绝不存用户正文。
+# Delivery identity keys (mirror of the gateway message_handler._DELIVERY_IDENTITY_METADATA_KEYS;
+# unit tests assert both sides equal to prevent drift). The ledger stores only the intersection of these keys, never user content.
 DELIVERY_IDENTITY_METADATA_KEYS = frozenset({
     "app_id",
     "chat_type",
@@ -70,11 +70,11 @@ DELIVERY_IDENTITY_METADATA_KEYS = frozenset({
     "im_thread_id",
 })
 
-# 分级落盘：sequence 游标与 last_visible_output_ts 批量写阈值（50 帧/2s）。
+# Graded persistence: batched-write thresholds for the sequence cursor and last_visible_output_ts (50 frames / 2s).
 _BATCH_FRAMES = 50
 _BATCH_SECONDS = 2.0
 
-# 终态回收：条目进入终态后保留窗（sweep 周期回收内存与磁盘副本，日志留痕）。
+# Terminal-entry reaping: retention window after an entry goes terminal (the sweep reclaims memory and disk copies, logging for audit).
 _REAP_SECONDS = 3600.0
 
 _PLACEHOLDER_ERROR_TEXT = "长时间未收到回复，本次处理可能已中断"
@@ -83,7 +83,7 @@ _PLACEHOLDER_RESEND_HINT = "请重新发送该消息重试；如持续无响应�
 
 @dataclass
 class LedgerEntry:
-    scope: list[str] = field(default_factory=list)  # request_scope 五元组（含 session）
+    scope: list[str] = field(default_factory=list)  # request_scope five-tuple (includes session)
     channel_id: str = ""
     user_id: str = ""
     app_id: str = ""
@@ -107,7 +107,7 @@ class LedgerEntry:
 
 
 class DeliveryLedger:
-    """请求交付台账：墙钟 deadline + 分级落盘 + 占位状态机。"""
+    """Request delivery ledger: wall-clock deadline + graded persistence + placeholder state machine."""
 
     def __init__(
         self,
@@ -144,23 +144,23 @@ class DeliveryLedger:
         deadline: float,
         dump_ref: str = "",
     ) -> LedgerEntry | None:
-        """派发接受时刻登记（同步写）。控制面请求跳过（零可见回复占位卡无意义）。"""
+        """Register at dispatch accept (sync write). Control-plane requests are skipped (zero visible replies make a placeholder card meaningless)."""
         from jiuwenswarm.common.schema.message import ReqMethod
 
         if getattr(request, "req_method", None) == ReqMethod.CHAT_CANCEL:
-            # 取消/中断请求豁免（AIReview SF-4）：取消零可见回复（chat.interrupt_result
-            # 不在可见白名单），process_cli 取消还复用原 rid——登记只会导致取消后
-            # 600s 误发占位卡＋游标清零。
+# Cancel/interrupt exemption (AIReview SF-4): a cancel has zero visible replies (chat.interrupt_result
+# is not in the visible whitelist) and process_cli cancel reuses the original rid — registering would only cause
+# a false card 600s later plus a cursor wipe.
             return None
         params = getattr(request, "params", None) or {}
         if params.get("attach_goal") is True or (
             getattr(request, "req_method", None) == ReqMethod.COMMAND_GOAL
             and str(params.get("action", "get")).strip().lower() not in {"set", "resume"}
         ):
-            # 页面恢复（attach_goal）与被动 Goal 订阅按设计零用户可见帧——判据与
-            # worker 侧 _is_session_work_request 对齐（atomgit id=200347100）：
-            # 这类 web 渠道请求登记后必然 600s 到期，向用户误发「处理可能已中断」
-            # 占位卡。active Goal（set/resume）有可见回复，照常登记。
+# Page restore (attach_goal) and passive goal subscription have zero visible frames by design — the criteria align with
+# the worker-side _is_session_work_request (atomgit id=200347100):
+# these web-channel requests would always hit the 600s expiry with a false "process may have been interrupted"
+# card. An active goal command (set/resume) has visible replies and registers normally.
             logger.info(
                 "[DeliveryLedger] non-session-work request skipped request_id=%s",
                 request.request_id,
@@ -200,8 +200,8 @@ class DeliveryLedger:
         )
         prev_entry = self._entries.get(entry.request_id)
         if prev_entry is not None:
-            # 同 rid 重登记：游标取 max——process_cli 取消复用原 rid 覆盖条目时
-            # 游标被清零会破坏 after=sequence 重放契约（AIReview SF-4-③）。
+# Same-rid re-register: take the max cursor — when process_cli cancel reuses the original rid and overwrites the entry,
+# a wiped cursor would break the after=sequence replay contract (AIReview SF-4-③).
             entry.sequence = max(entry.sequence, prev_entry.sequence)
         self._entries[entry.request_id] = entry
         self._flush(entry)
@@ -218,10 +218,10 @@ class DeliveryLedger:
     def on_wire_delivered(
         self, *, request_id: str, payload: dict[str, Any], now: float | None = None
     ) -> None:
-        """任意送达帧：重置 deadline（同步，活性语义见模块头注释）；pending/pending_flush 转 retracted。
+        """Any delivered frame: reset the deadline (synchronous; liveness semantics in the module header); pending/pending_flush turn retracted.
 
-        sent 为吸收终态：占位卡已送达后真实回复迟到仅更新簿记，不再重置 deadline、
-        不改状态（互斥语义=不压制，迟到真实回复照常送达）。
+        sent is an absorbing terminal: a late real reply after the card was sent only updates bookkeeping, no deadline reset,
+        no state change (mutual exclusion = no suppression; the late real reply is still delivered).
         """
         entry = self._entries.get(str(request_id or ""))
         if entry is None:
@@ -234,17 +234,17 @@ class DeliveryLedger:
             entry.dirty_at = entry.dirty_at or now
         event = wire_event(payload)
         if event is None or event not in STREAM_VISIBLE_EVENT_WHITELIST:
-            # 非白名单帧同样是活性信号（P7）：纯工具执行的长轮次零可见帧属
-            # 健康形态，帧流在推进即证明 worker 未中断——deadline 随任意
-            # 送达帧重置，占位卡只对「管线整体静默」报警。落盘仍走分级
-            # 批量（该链跑在 supervisor 事件循环线程上，禁逐帧 fsync）。
+            # Non-whitelisted frames are also a liveness signal (P7): long tool-only rounds with zero visible frames are
+            # healthy as long as the frame flow advances — the deadline resets on any delivered frame; the card only fires for
+            # a fully silent pipeline. Persistence stays graded/batched (this chain runs on the supervisor event-loop thread,
+            # per-frame fsync is forbidden).
             #
-            # 显式取舍（atomgit 199642764）：worker 侧 keepalive 保活帧
-            # （agent_ws_server._activity_event）也落入本分支重置 deadline，
-            # 因此「可见静默」（last_visible_output_ts 长期无白名单帧）不参与
-            # 占位卡判定——本 PR 的报警语义收敛为「管线整体静默（帧流停止）」，
-            # 长工具轮零可见输出视为健康形态。last_visible_output_ts 仅作
-            # 簿记保留，为后续独立可见静默看门狗留数据面。
+            # Explicit trade-off (atomgit 199642764): worker keepalive frames (agent_ws_server._activity_event) also land in
+            # this branch and reset the deadline; therefore "visible silence" (no whitelisted frame for a long while) is NOT part of
+            # the card judgment — this PR alarm semantics converge to "pipeline fully silent (frame flow stopped)"; zero visible
+            # output during long tool rounds is treated as healthy. last_visible_output_ts is kept as bookkeeping for a future
+            # standalone visible-silence watchdog.
+
             entry.deadline = now + self._idle_seconds
             entry.dirty_deadline = True
             entry.dirty_at = entry.dirty_at or now
@@ -252,9 +252,9 @@ class DeliveryLedger:
             return
         entry.last_visible_output_ts = now
         if entry.placeholder_state in PLACEHOLDER_TERMINAL_STATES:
-            # 终态条目（retracted/sent）：迟到帧只更新内存簿记，deadline/游标随
-            # 批量落盘（分级阈值），禁止每帧 fsync——该链跑在 supervisor 事件
-            # 循环线程上，逐帧 fsync 会阻塞同 loop 的 IPC 收发。
+            # Terminal entries (retracted/sent): late frames only update in-memory bookkeeping; deadline/cursor go through batched
+            # persistence (graded thresholds) — no per-frame fsync; that chain runs on the supervisor event-loop thread and
+            # per-frame fsync would block IPC traffic on the same loop.
             if entry.placeholder_state == PLACEHOLDER_RETRACTED:
                 entry.deadline = now + self._idle_seconds
                 entry.dirty_deadline = True
@@ -266,9 +266,9 @@ class DeliveryLedger:
         entry.dirty_at = entry.dirty_at or now
         if entry.placeholder_state in {PLACEHOLDER_PENDING, PLACEHOLDER_PENDING_FLUSH}:
             if event in VISIBLE_EVENT_WHITELIST:
-                # 仅终态帧（final/error/question）取消占位卡兜底；chat.delta
-                # 只重置 deadline——流式中断（worker 卡死未崩）时条目仍留在
-                # pending，sweep 到期照发占位卡，用户有错误兜底。
+                # Only terminal frames (final/error/question) cancel the card backstop; chat.delta only resets the deadline —
+                # a mid-stream interruption (worker stuck, not crashed) leaves the entry pending and the card still fires at expiry,
+                # giving the user an error backstop.
                 entry.placeholder_state = PLACEHOLDER_RETRACTED
                 entry.terminal_at = now
                 self._flush(entry)
@@ -280,7 +280,7 @@ class DeliveryLedger:
         if entry is None or entry.placeholder_state == state:
             return False
         if entry.placeholder_state in PLACEHOLDER_TERMINAL_STATES:
-            # 终态吸收：终态不可迁出（sweep 快照竞态下防 SENT 覆盖 RETRACTED）。
+            # Terminal absorb: terminal states cannot migrate out (prevents SENT overwriting RETRACTED under a sweep snapshot race).
             logger.info(
                 "[DeliveryLedger] transition rejected from terminal state=%s request_id=%s audit=%s",
                 entry.placeholder_state, entry.request_id, audit,
@@ -298,7 +298,7 @@ class DeliveryLedger:
         return True
 
     def note_push_failure(self, request_id: str) -> bool:
-        """连续发送失败留痕；达到阈值转 failed。返回是否转终态。"""
+        """Record consecutive send failures; converts to failed at the threshold. Returns whether it went terminal."""
         entry = self._entries.get(str(request_id or ""))
         if entry is None:
             return False
@@ -310,7 +310,7 @@ class DeliveryLedger:
         return False
 
     def mark_sequence_only(self, request_id: str, payload: dict[str, Any], now: float | None = None) -> None:
-        """非白名单帧传输成功：只推进游标（批量），不重置 deadline。"""
+        """Non-whitelisted frame transported OK: advance the cursor only (batched), no deadline reset."""
         entry = self._entries.get(str(request_id or ""))
         if entry is None:
             return
@@ -347,10 +347,10 @@ class DeliveryLedger:
         return expired
 
     def reap_terminal(self, now: float | None = None) -> int:
-        """终态条目回收：超过保留窗的 sent/retracted/failed 删除内存与磁盘副本。
+        """Reap terminal entries: sent/retracted/failed older than the retention window get their memory and disk copies deleted.
 
-        终态时间取 terminal_at（旧盘档缺省回退 registered_at）；回收前日志留痕
-        （request_id/终态/终态龄期），保留审计线索于日志面。返回回收条数。
+        Terminal time comes from terminal_at (older on-disk entries fall back to registered_at); log before reaping
+        (request_id / terminal state / terminal age) to keep the audit trail in the log face. Returns the reaped count.
         """
         now = time.time() if now is None else now
         reaped = 0
@@ -375,7 +375,7 @@ class DeliveryLedger:
 
     # ----------------------------------------------------------- persistence
     def load(self) -> int:
-        """Front 启动重载：逐条读盘，按墙钟判定（deadline 原样保留，由 sweep 判到期）。"""
+        """Front-startup reload: read entries one by one, judged by wall clock (deadline kept as-is; the sweep judges expiry)."""
         self._entries.clear()
         directory = self.directory
         if not directory.is_dir():
@@ -399,7 +399,7 @@ class DeliveryLedger:
         return self.directory / f"{_safe_name(request_id)}.json"
 
     def _flush(self, entry: LedgerEntry) -> None:
-        """同步写（注册/deadline/状态转移）。"""
+        """Synchronous write (register / deadline / state transitions)."""
         entry.dirty_frames = 0
         entry.dirty_at = 0.0
         entry.dirty_deadline = False
@@ -424,7 +424,7 @@ class DeliveryLedger:
                 pass
 
     def _flush_batched(self, entry: LedgerEntry, now: float) -> None:
-        """游标/可见时间戳批量落盘：满 50 帧/2s 阈值，deadline-only 变更同样进窗口。"""
+        """Batched flush for cursor / visible timestamps: 50 frames / 2s thresholds; deadline-only changes enter the window too."""
         if entry.dirty_frames == 0 and not entry.dirty_deadline:
             return
         if entry.dirty_frames >= _BATCH_FRAMES or now - (entry.dirty_at or now) >= _BATCH_SECONDS:
@@ -465,13 +465,13 @@ def placeholder_request_id(request_id: str) -> str:
 
 
 def build_placeholder_wire(entry: LedgerEntry) -> dict[str, Any]:
-    """按占位帧线缆五要素构造 wire（build_server_push_wire chunk 分支先例）。
+    """Build the wire per the five-element placeholder contract (build_server_push_wire chunk-branch precedent).
 
-    1. 顶层 metadata 含 E2A_WIRE_SERVER_PUSH_KEY（网关 push 分支受理面）；
-    2. 顶层 request_id=rid+":p6"（线缆顶层字段，网关 Message.id 取该值）；
-    3. 顶层 session_id/channel_id；
-    4. payload=chat.error（含原始 rid 与重发建议文案）；
-    5. metadata 携 request.metadata 投递身份键（DELIVERY_IDENTITY_METADATA_KEYS）与 app_id。
+    1. Top-level metadata carries E2A_WIRE_SERVER_PUSH_KEY (the gateway push-branch acceptance face);
+    2. Top-level request_id = rid + ":p6" (top-level wire field; the gateway Message.id takes this value);
+    3. Top-level session_id / channel_id;
+    4. payload = chat.error (with the original rid and resend-hint copy);
+    5. metadata carries the request.metadata delivery-identity keys (DELIVERY_IDENTITY_METADATA_KEYS) and app_id.
     """
     push_rid = placeholder_request_id(entry.request_id)
     payload = {
