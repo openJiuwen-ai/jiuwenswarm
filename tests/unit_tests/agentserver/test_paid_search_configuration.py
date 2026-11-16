@@ -211,7 +211,15 @@ async def test_existing_mcp_agent_refreshes_model_tools_on_enable_change_and_dis
     mcp_toolkits.refresh_mcp_paid_search_tools()
     assert manager.get("mcp_paid_search") is None
     assert not any(item.name == "mcp_paid_search" for item in await manager.list_tool_info())
-    assert resource_add.call_count == 2
+    # Runner.resource_mgr.add_tool 是全局单例方法，todo/多会话/所有权注册等
+    # 无关后台路径也可能在同一进程窗口内调用它（CI 全量分片下实测出现
+    # 3 次串扰）；本用例只关心 paid_search 的重注册次数，按被测对象过滤。
+    paid_search_adds = [
+        c for c in resource_add.call_args_list
+        if c.args and c.args[0] is mcp_paid_search
+    ]
+    assert len(paid_search_adds) == 2
+    assert all(c.kwargs.get("skip_if_exists") is True for c in paid_search_adds)
 
 
 @pytest.mark.asyncio
