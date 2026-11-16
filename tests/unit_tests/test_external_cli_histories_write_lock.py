@@ -157,3 +157,70 @@ def test_write_lock_held_during_load_and_dump(
         "load/dump executed outside the write lock"
     )
     assert _load_history(temp_config_file) == ["p0", "p1"]
+
+
+def test_sibling_writers_also_hold_the_lock(
+    monkeypatch: pytest.MonkeyPatch,
+    temp_config_file: Path,
+) -> None:
+    """Review SF-1 (PR 10313): the sibling writers in one panel save must lock too.
+
+    One config panel save calls update_external_cli_agents_in_config, then the
+    history update, then refresh_external_cli_builtin_models -> the builtin
+    models updater. If any sibling loads-dumps outside the lock, a gateway
+    prune landing between its load and dump is rolled back by the stale
+    snapshot — the same lost update this PR fixes for the history functions.
+    """
+    from jiuwenswarm.common.config import (
+        update_external_cli_agents_in_config,
+        update_external_cli_builtin_models_in_config,
+    )
+
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", temp_config_file)
+    _write_history(temp_config_file, ["p0"])
+    temp_config_file.write_text(
+        yaml.safe_dump(
+            {
+                "modes": {
+                    "team": {
+                        "jiuwen_team": {
+                            "external_cli_agents": [
+                                {"cli_agent": "codex", "enabled": True},
+                            ],
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    observations: list[bool] = []
+    real_load = config_module.load_yaml_round_trip
+    real_dump = config_module.dump_yaml_round_trip
+
+    def probe_held() -> None:
+        observations.append(config_module._CONFIG_WRITE_LOCK.acquire(blocking=False))  # pylint: disable=protected-access
+        if observations[-1]:
+            config_module._CONFIG_WRITE_LOCK.release()  # pylint: disable=protected-access
+
+    def probing_load(path):
+        probe_held()
+        return real_load(path)
+
+    def probing_dump(path, data):
+        probe_held()
+        return real_dump(path, data)
+
+    monkeypatch.setattr(config_module, "load_yaml_round_trip", probing_load)
+    monkeypatch.setattr(config_module, "dump_yaml_round_trip", probing_dump)
+
+    update_external_cli_agents_in_config(
+        [{"cli_agent": "codex", "enabled": True}], publish_url="ws://127.0.0.1:19000/ws"
+    )
+    update_external_cli_builtin_models_in_config({"codex": [{"name": "gpt-4"}]})
+
+    # Every load/dump in both sibling writers ran under the lock.
+    assert observations and all(held is False for held in observations), (
+        f"sibling writer executed load/dump outside the write lock: {observations}"
+    )

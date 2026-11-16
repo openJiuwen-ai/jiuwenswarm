@@ -2993,47 +2993,51 @@ def _carry_over_builtin_models(agents: list[dict[str, Any]], existing: Any) -> N
 
 def update_external_cli_agents_in_config(agents: list[str | dict[str, Any]], publish_url: str | None = None) -> None:
     """Update the external CLI agent switches for the default team."""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    current = data
-    path_so_far: list[str] = []
-    for segment in EXTERNAL_CLI_AGENTS_CONFIG_PATH[:-1]:
-        path_so_far.append(segment)
-        current = _ensure_config_object(current, segment, ".".join(path_so_far))
+    # Same cross-process write boundary as the sibling history functions:
+    # one config panel save calls this, then the history update, then the
+    # builtin-models refresh — each must serialize against the gateway prune.
+    with config_write_lock():
+        data = load_yaml_round_trip(CONFIG_YAML_PATH)
+        current = data
+        path_so_far: list[str] = []
+        for segment in EXTERNAL_CLI_AGENTS_CONFIG_PATH[:-1]:
+            path_so_far.append(segment)
+            current = _ensure_config_object(current, segment, ".".join(path_so_far))
 
-    normalized_agents = _normalize_external_cli_agents(agents, "external_cli_agents")
-    # The switch payload only names the CLI kinds, so the built-in model
-    # catalog already configured for a kind must survive the rewrite.
-    _carry_over_builtin_models(normalized_agents, current.get(EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1]))
-    if normalized_agents:
-        current[EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1]] = normalized_agents
-    else:
-        current.pop(EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1], None)
-
-    if _requires_external_transport(normalized_agents):
-        external_transport = current.get(EXTERNAL_TRANSPORT_CONFIG_PATH[-1])
-        if isinstance(external_transport, dict):
-            transport_type = str(external_transport.get("type") or "").strip()
-            params = external_transport.get("params")
-            params = dict(params) if isinstance(params, dict) else {}
+        normalized_agents = _normalize_external_cli_agents(agents, "external_cli_agents")
+        # The switch payload only names the CLI kinds, so the built-in model
+        # catalog already configured for a kind must survive the rewrite.
+        _carry_over_builtin_models(normalized_agents, current.get(EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1]))
+        if normalized_agents:
+            current[EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1]] = normalized_agents
         else:
-            transport_type = ""
-            params = {}
-        if transport_type and transport_type != "hybrid":
-            raise ValueError(
-                "external_cli_agents needs a cross-process agent but external_transport.type must be hybrid"
-            )
-        if not params.get("external_publish_url"):
-            url = str(publish_url or "").strip()
-            if not url:
-                raise ValueError(
-                    "external_cli_agents needs a cross-process agent but external_cli_publish_url is empty"
-                )
-            params["external_publish_url"] = url
-        current[EXTERNAL_TRANSPORT_CONFIG_PATH[-1]] = {"type": "hybrid", "params": params}
-    else:
-        current.pop(EXTERNAL_TRANSPORT_CONFIG_PATH[-1], None)
+            current.pop(EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1], None)
 
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+        if _requires_external_transport(normalized_agents):
+            external_transport = current.get(EXTERNAL_TRANSPORT_CONFIG_PATH[-1])
+            if isinstance(external_transport, dict):
+                transport_type = str(external_transport.get("type") or "").strip()
+                params = external_transport.get("params")
+                params = dict(params) if isinstance(params, dict) else {}
+            else:
+                transport_type = ""
+                params = {}
+            if transport_type and transport_type != "hybrid":
+                raise ValueError(
+                    "external_cli_agents needs a cross-process agent but external_transport.type must be hybrid"
+                )
+            if not params.get("external_publish_url"):
+                url = str(publish_url or "").strip()
+                if not url:
+                    raise ValueError(
+                        "external_cli_agents needs a cross-process agent but external_cli_publish_url is empty"
+                    )
+                params["external_publish_url"] = url
+            current[EXTERNAL_TRANSPORT_CONFIG_PATH[-1]] = {"type": "hybrid", "params": params}
+        else:
+            current.pop(EXTERNAL_TRANSPORT_CONFIG_PATH[-1], None)
+
+        dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def update_external_cli_path_histories_in_config(histories: dict[str, list[str]]) -> None:
@@ -3085,31 +3089,35 @@ def update_external_cli_builtin_models_in_config(catalogs: dict[str, list[dict[s
     """
     if not catalogs:
         return
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    current = data
-    for segment in EXTERNAL_CLI_AGENTS_CONFIG_PATH[:-1]:
-        nested = current.get(segment) if isinstance(current, dict) else None
-        if not isinstance(nested, dict):
+    # Same cross-process write boundary as the sibling history functions:
+    # one config panel save triggers this right after the history update,
+    # so its load-dump must serialize against the gateway prune too.
+    with config_write_lock():
+        data = load_yaml_round_trip(CONFIG_YAML_PATH)
+        current = data
+        for segment in EXTERNAL_CLI_AGENTS_CONFIG_PATH[:-1]:
+            nested = current.get(segment) if isinstance(current, dict) else None
+            if not isinstance(nested, dict):
+                return
+            current = nested
+        entries = current.get(EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1])
+        if not isinstance(entries, list):
             return
-        current = nested
-    entries = current.get(EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1])
-    if not isinstance(entries, list):
-        return
 
-    changed = False
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        catalog = catalogs.get(str(entry.get("cli_agent") or "").strip())
-        if catalog is None:
-            continue
-        if catalog:
-            entry["builtin_models"] = catalog
-        else:
-            entry.pop("builtin_models", None)
-        changed = True
-    if changed:
-        dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+        changed = False
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            catalog = catalogs.get(str(entry.get("cli_agent") or "").strip())
+            if catalog is None:
+                continue
+            if catalog:
+                entry["builtin_models"] = catalog
+            else:
+                entry.pop("builtin_models", None)
+            changed = True
+        if changed:
+            dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def reset_external_cli_agents_in_config() -> None:
