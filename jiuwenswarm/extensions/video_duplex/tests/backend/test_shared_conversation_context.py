@@ -48,8 +48,8 @@ async def test_voice_history_never_reads_unflushed_records(monkeypatch):
 def test_saved_chat_tasks_share_session_but_have_distinct_execution_ids():
     # Verify the internal scheduler predicates without starting its worker loop.
     # pylint: disable=protected-access
-    first = TaskService._new("alice", "task-duplex:web-chat", "one", {})
-    second = TaskService._new("alice", "task-duplex:web-chat", "two", {"independent": True})
+    first = TaskService.new_task("alice", "task-duplex:web-chat", "one", {})
+    second = TaskService.new_task("alice", "task-duplex:web-chat", "two", {"independent": True})
     assert first["core_session_id"] == second["core_session_id"] == "web-chat"
     assert first["request_id"] != second["request_id"]
     scheduler = TaskService.__new__(TaskService)
@@ -59,7 +59,7 @@ def test_saved_chat_tasks_share_session_but_have_distinct_execution_ids():
     first["status"] = "completed"
     assert scheduler._ready(second, [first, second], [])
     # Separate saved conversations still permit concurrent execution.
-    other = TaskService._new("alice", "task-duplex:other", "three", {"independent": True})
+    other = TaskService.new_task("alice", "task-duplex:other", "three", {"independent": True})
     first["status"] = "running"
     assert scheduler._ready(other, [first, other], [first])
 
