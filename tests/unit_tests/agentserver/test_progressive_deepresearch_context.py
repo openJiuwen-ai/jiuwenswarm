@@ -215,6 +215,7 @@ async def test_deferred_deepresearch_rebinds_trusted_adapter_context():
         assert dt._get_effective_request_output_dir() == Path(output_dir).resolve()
         assert dt._todo_workspace_key(dt._get_route()) == "tenant-workspace"
         assert dt._deepresearch_route_ctx.get()["todo_tool_provider"]() is todo_tool
+        assert dt._deepresearch_route_ctx.get()["todo_owner_required"] is True
         return "ok"
 
     target.invoke.side_effect = _invoke
@@ -229,6 +230,7 @@ async def test_deferred_deepresearch_rebinds_trusted_adapter_context():
             "agent_id": agent_id,
             "workspace_key": "tenant-workspace",
             "todo_tool_provider": lambda: todo_tool,
+            "todo_owner_required": True,
             "output_dir": output_dir,
         },
     )

@@ -200,6 +200,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
 
     # Keep image SDK initialization out of Flash's first model call path.
     _defer_image_sdk_imports = True
+    _deepresearch_requires_todo_owner = True
 
     # ── flash 行为定义（类常量，仿 CodeAdapter._FIXED_RAIL_NAMES） ─────────
     # react/evolution 覆盖：深合并进 config_base 的 react 段。这些是 flash

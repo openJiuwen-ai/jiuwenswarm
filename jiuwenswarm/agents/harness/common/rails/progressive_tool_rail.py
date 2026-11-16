@@ -438,6 +438,7 @@ class ProgressiveToolRail(DeepAgentRail):
                 agent_id=agent_id,
                 workspace_key=workspace_key,
                 todo_tool_provider=route.get("todo_tool_provider"),
+                todo_owner_required=route.get("todo_owner_required", False),
                 output_dir=str(route.get("output_dir") or ""),
             )
             cleanup.callback(reset_deepresearch_route, route_token)

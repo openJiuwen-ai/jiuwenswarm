@@ -276,6 +276,7 @@ async def test_adapter_history_read_uses_session_owned_tool_path_and_backend():
     )
     parent = object.__new__(JiuWenSwarmDeepAdapter)
     parent._get_or_create_session_adapter = AsyncMock(return_value=session_adapter)
+    parent._evict_idle_session_adapters = AsyncMock()
     token = _BINDING.set(None)
     try:
         snapshot, generation_token = await parent.read_todo_snapshot("s")
@@ -285,6 +286,7 @@ async def test_adapter_history_read_uses_session_owned_tool_path_and_backend():
     assert generation_token == "owner-generation"
     assert snapshot.todos[0]["content"] == "Current remote"
     parent._get_or_create_session_adapter.assert_awaited_once_with("s", request=None)
+    parent._evict_idle_session_adapters.assert_awaited_once()
     assert read.call_args.args[0] == "/owned/remote/todo/s/todo.json"
 
 

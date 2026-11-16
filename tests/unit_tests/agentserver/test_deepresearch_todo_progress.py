@@ -682,26 +682,27 @@ async def test_existing_untrusted_todo_leaf_does_not_block_safe_publish(
 
 @pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])
 @pytest.mark.asyncio
-async def test_persist_cleans_owned_temp_after_serialization_baseexception(
+async def test_persist_serialization_failure_does_not_publish(
     error_type, tmp_path, monkeypatch
 ):
+    from openjiuwen.harness.tools import todo_store
+
     todo_path = tmp_path / "todo" / "session-1" / "todo.json"
     _seed_plan(todo_path)
+    before = todo_path.read_bytes()
 
     def fail_dump(*_args, **_kwargs):
         raise error_type("failed")
 
-    monkeypatch.setattr(
-        "openjiuwen.harness.tools.todo_store._serialize_snapshot",
-        fail_dump,
-    )
+    monkeypatch.setattr(todo_store, "json", SimpleNamespace(loads=json.loads, dumps=fail_dump))
+    assert json.loads(json.dumps({"unrelated": True})) == {"unrelated": True}
 
     with pytest.raises(error_type):
         await _persist(
             _stage_snapshot(active_stage=None),
             todo_path=todo_path,
         )
-    assert list(todo_path.parent.glob(".todo.json-*.tmp")) == []
+    assert todo_path.read_bytes() == before
 
 
 @pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])

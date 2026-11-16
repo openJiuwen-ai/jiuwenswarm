@@ -356,6 +356,40 @@ async def test_flash_todo_capture_failure_does_not_start_research():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("required", [False, True])
+@pytest.mark.parametrize("provider_raises", [False, True])
+@pytest.mark.parametrize("stale_binding", [False, True])
+async def test_missing_provider_obeys_the_current_host_todo_policy(required, provider_raises, stale_binding):
+    proc = _Proc([])
+    spawn = AsyncMock(return_value=proc)
+    consume = AsyncMock(return_value={"status": "interrupted"})
+    provider = Mock(side_effect=RuntimeError("owner unavailable")) if provider_raises else Mock(return_value=None)
+    stale_tool = SimpleNamespace(snapshot_guard=object()) if stale_binding else None
+    token = dt._deepresearch_route_ctx.set({
+        "todo_tool_provider": provider, "todo_owner_required": required,
+    })
+    try:
+        with ExitStack() as stack:
+            for item in _stream_patches(proc, route={"session_id": "current"}):
+                stack.enter_context(item)
+            stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
+                                      return_value=(stale_tool, "old")))
+            stack.enter_context(patch.object(dt, "_consume_stream", consume))
+            stack.enter_context(patch("asyncio.create_subprocess_exec", spawn))
+            result = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
+        if required:
+            assert result["status"] == "error" and result["error_code"] == "stream_failed"
+            spawn.assert_not_awaited()
+            consume.assert_not_awaited()
+        else:
+            assert result["status"] == "interrupted"
+            assert consume.await_args.kwargs["todo_context"] == (None, None)
+            spawn.assert_awaited_once()
+    finally:
+        dt._deepresearch_route_ctx.reset(token)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("framework_error", [False, True])
 async def test_ordinary_todo_capture_failure_does_not_block_research(framework_error):
     from openjiuwen.core.common.exception.codes import StatusCode

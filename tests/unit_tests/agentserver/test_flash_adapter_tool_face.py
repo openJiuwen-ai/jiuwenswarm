@@ -35,6 +35,24 @@ def _bare_adapter(cls) -> object:
     return object.__new__(cls)
 
 
+@pytest.mark.parametrize("adapter_cls,required", [
+    (JiuWenSwarmDeepAdapter, False), (JiuwenSwarmFlashAdapter, True),
+])
+@pytest.mark.parametrize("has_route", [False, True])
+def test_research_todo_policy_survives_an_unavailable_engine(adapter_cls, required, has_route, tmp_path):
+    adapter = _bare_adapter(adapter_cls)
+    adapter._current_request_route = {"session_id": "s"} if has_route else {}
+    adapter._runtime_cron_tool_context = SimpleNamespace(session_id="s", channel_id="officeclaw", metadata={})
+    adapter._env_service_id = "default"
+    adapter._env_agent_id = "office"
+    adapter._workspace_dir = str(tmp_path)
+    adapter._deepresearch_artifact_output_dir = lambda _workspace: str(tmp_path)
+    adapter._get_todo_modify_tool = lambda _session_id: None
+    context = adapter._get_deepresearch_tool_context()
+    assert context["todo_owner_required"] is required
+    assert context["todo_tool_provider"]() is None
+
+
 class _StubTodoEngine:
     """Records forwarded inputs/kwargs in place of a stock Todo engine."""
 

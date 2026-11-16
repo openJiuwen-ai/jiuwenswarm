@@ -4,7 +4,7 @@
 |---|---|
 | Spec ID | S_06 |
 | 状态 | 当前实现的真实描述 |
-| 修订日期 | 2026-11-09 |
+| 修订日期 | 2026-11-12 |
 | 关联模块 | `jiuwenswarm/agents/harness/common/tools/deepresearch/todo_progress.py`（落盘件：路径解析 + 安全校验 + 原子写，313 行）<br>`jiuwenswarm/agents/harness/common/tools/deepresearch/tools.py`（两处 send 通道调用点：~3230 race-completed 通道、~3476 主 push 通道）<br>`jiuwenswarm/agents/harness/common/tools/deepresearch/stream_router.py`（`DEEPRESEARCH_STAGES` 四阶段常量 ~94、节点→阶段映射 `_NODE_STAGE`、task.update 生产侧） |
 | 消费点 | 落盘文件即 [[S_01]] 布局的标准 `{workspace}/todo/{session_id}/todo.json`——`TaskExecutionRail._load_todo_from_json` / `_format_tasks_for_update`（[[S_02]]）可直接读，供历史 / 恢复视图展示 |
 | 测试锚点 | `tests/unit_tests/agentserver/test_deepresearch_todo_progress.py`（全量）；`test_deepresearch_stream_tool.py`（~1913 路径异常容忍、~4468/~5153 persist mock） |
@@ -43,6 +43,8 @@
 
 **N6 落盘 fail-open，不牺牲主链路**
 普通模式缺少所属目标时跳过持久化，报告继续；Flash 启动前不能确认目标时沿原工具错误通路返回。回写阶段异常记录类型并保持报告推送，不能把回写失败说成保存成功。
+
+Flash 宿主通过现有研究上下文显式传递内部 `todo_owner_required=True`，普通/Code 为 False；取得工具返回 None 或抛异常，不能因此丢失宿主策略。有 provider 时不借用旧 worker 绑定决定策略或目标；未提供 provider 的原入口仍按绑定工具的 guard 判断。该标记只在 Python 内部传递，不进入模型工具参数、`_get_route()` 五字段投影或 E2A 请求。
 
 **N7 路径分量不透明校验**
 实际宿主 provider 优先于 worker 的历史绑定，即使 session 字符串相同也不能借用其他工作区。只在实际对象键匹配时复用批次冻结的 plan；绑定尚未指定工具但已有同对象冻结引用时，同样不能换绑新计划。工具参数指定的路径来自可信宿主，模型不提供此引擎或回写目标。

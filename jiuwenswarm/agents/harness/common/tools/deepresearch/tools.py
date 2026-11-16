@@ -371,6 +371,7 @@ def push_deepresearch_route(
     workspace_key: str = "default",
     output_dir: str = "",
     todo_tool_provider: Callable[[], Any] | None = None,
+    todo_owner_required: bool = False,
 ) -> contextvars.Token:
     """Bind request routing and its trusted DeepResearch artifact root."""
     return _deepresearch_route_ctx.set(
@@ -383,6 +384,7 @@ def push_deepresearch_route(
             "workspace_key": (workspace_key or "default").strip() or "default",
             "output_dir": str(output_dir or "").strip(),
             "todo_tool_provider": todo_tool_provider,
+            "todo_owner_required": todo_owner_required,
         }
     )
 
@@ -3235,28 +3237,33 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
     bound_tool, bound_session = bound_todo_tool()
     todo_context = None
     provider = (_deepresearch_route_ctx.get() or {}).get("todo_tool_provider")
-    if bound_tool is not None or callable(provider):
-        selected_tool = bound_tool
+    todo_required = (_deepresearch_route_ctx.get() or {}).get("todo_owner_required", False)
+    if bound_tool is not None or callable(provider) or todo_required:
+        selected_tool = None
         try:
             if callable(provider):
                 selected_tool = provider()
-            elif bound_session != str(route.get("session_id") or "") and route.get("session_id"):
-                if getattr(selected_tool, "snapshot_guard", None) is not None:
-                    raise ValueError("Flash Todo binding does not match the request session")
-                selected_tool = None
+            else:
+                selected_tool = bound_tool
+                todo_required = todo_required or getattr(selected_tool, "snapshot_guard", None) is not None
+                if bound_session != str(route.get("session_id") or "") and route.get("session_id"):
+                    if todo_required:
+                        raise ValueError("Flash Todo binding does not match the request session")
+                    selected_tool = None
+            todo_required = todo_required or getattr(selected_tool, "snapshot_guard", None) is not None
             if selected_tool is not None:
                 todo_path = _research_todo_path(route, selected_tool)
                 todo_target = await _capture_todo_target(
                     todo_path, str(route.get("session_id") or ""), todo_tool=selected_tool,
                 )
-                if todo_target is None and getattr(selected_tool, "snapshot_guard", None) is not None:
+                if todo_target is None and todo_required:
                     raise ValueError("Flash Todo owner is unavailable")
                 todo_context = (todo_path, todo_target)
             else:
-                todo_context = (None, None)
+                raise ValueError("Todo owner is unavailable")
         except (BaseError, OSError, ValueError, RuntimeError, TypeError) as exc:
             logger.warning("[deepresearch_stream] Todo owner unavailable type=%s", type(exc).__name__)
-            if getattr(selected_tool, "snapshot_guard", None) is not None:
+            if todo_required:
                 return json.dumps({"status": "error", "error_code": "stream_failed",
                                    "error": f"DeepResearch stream failed: {type(exc).__name__}"}, ensure_ascii=False)
             todo_context = (None, None)
