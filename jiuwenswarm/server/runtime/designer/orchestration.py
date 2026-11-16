@@ -20,8 +20,12 @@ from jiuwenswarm.server.runtime.designer.continuity import (
 )
 from jiuwenswarm.server.runtime.designer.feedback import suggestion_for_node
 from jiuwenswarm.server.runtime.designer.model_tools import (
+    _DESIGNER_MAX_TOKENS_CAP,
+    DesignerLlmError,
+    LLM_API_ERROR,
     call_model_tool,
     list_configured_models,
+    reply_exhausted_budget,
 )
 from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import CLOTHING_PARTS_RULE
 from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
@@ -910,27 +914,63 @@ _JSON_RETRY_RULE = (
 )
 
 
+def _reask_budget(budget: int, result: dict[str, Any]) -> int:
+    """A reply cut off by the output budget gets twice the budget on the re-ask."""
+    if not reply_exhausted_budget(result):
+        return budget
+    return min(budget * 2, _DESIGNER_MAX_TOKENS_CAP)
+
+
+def _json_failure_message(label: str, result: dict[str, Any]) -> str:
+    """Name the real reason a phase produced no JSON object."""
+    if reply_exhausted_budget(result):
+        return (
+            f"Chat model ran out of output budget before answering the {label}: the whole "
+            "budget went to its reasoning and no JSON followed (finish_reason=length). "
+            "Retry the step or raise the token budget for this call."
+        )
+    return f"Chat model did not return a usable {label}."
+
+
 async def _model_json_object(
-    *, phase: str, prompt: str, system: str, max_tokens: int
+    *,
+    phase: str,
+    prompt: str,
+    system: str,
+    max_tokens: int,
+    error_label: str | None = None,
 ) -> dict[str, Any] | None:
-    """Ask the chat model for a JSON object, re-asking once when the reply does not parse."""
+    """Ask the chat model for a JSON object, re-asking once when the reply does not parse.
+
+    A thinking model shares ``max_tokens`` between its reasoning and the visible
+    reply, so a truncated call leaves only reasoning text behind. The re-ask gets
+    a bigger budget in that case, and ``error_label`` turns a second failure into
+    an error that names the reason.
+    """
     from jiuwenswarm.server.runtime.designer.model_tools import model_text_or_raise
 
+    result: dict[str, Any] = {}
+    budget = max_tokens
     for attempt in (1, 2):
         result = await call_model_tool(
             prompt=prompt,
             system=system if attempt == 1 else system + _JSON_RETRY_RULE,
-            max_tokens=max_tokens,
+            max_tokens=budget,
         )
         parsed = _extract_json_object(model_text_or_raise(result))
         if parsed is not None:
             return parsed
         logger.warning(
-            "Director %s reply was not a JSON object (attempt %d, finish=%s)",
+            "Director %s reply was not a JSON object (attempt %d, finish=%s, source=%s)",
             phase,
             attempt,
             result.get("finish_reason"),
+            result.get("text_source"),
         )
+        if attempt == 1:
+            budget = _reask_budget(budget, result)
+    if error_label:
+        raise DesignerLlmError(_json_failure_message(error_label, result), code=LLM_API_ERROR)
     return None
 
 
@@ -1240,18 +1280,16 @@ class Director:
             },
             ensure_ascii=False,
         )
-        result = await call_model_tool(
-            prompt=prompt,
-            system=system,
-            max_tokens=32768,
-        )
-        text = model_text_or_raise(result)
-        parsed = _extract_json_object(text) or {}
-        if not parsed:
-            raise DesignerLlmError(
-                "Chat model did not return a usable director plan.",
-                code=LLM_API_ERROR,
+        parsed = (
+            await _model_json_object(
+                phase="director plan",
+                prompt=prompt,
+                system=system,
+                max_tokens=32768,
+                error_label="director plan",
             )
+            or {}
+        )
         directives: dict[str, Any] = {}
         raw_dirs = parsed.get("node_directives") if isinstance(parsed, dict) else None
         if isinstance(raw_dirs, dict):
@@ -3773,18 +3811,16 @@ class Director:
             ensure_ascii=False,
         )
         try:
-            result = await call_model_tool(
-                prompt=prompt,
-                system=system,
-                max_tokens=32768,
-            )
-            text = model_text_or_raise(result)
-            parsed = _extract_json_object(text) or {}
-            if not parsed:
-                raise DesignerLlmError(
-                    "Chat model did not return a usable plan validation.",
-                    code=LLM_API_ERROR,
+            parsed = (
+                await _model_json_object(
+                    phase="plan validation",
+                    prompt=prompt,
+                    system=system,
+                    max_tokens=32768,
+                    error_label="plan validation",
                 )
+                or {}
+            )
         except DesignerLlmError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -3989,18 +4025,16 @@ class Director:
             },
             ensure_ascii=False,
         )
-        result = await call_model_tool(
-            prompt=prompt,
-            system=system,
-            max_tokens=32768,
-        )
-        text = model_text_or_raise(result)
-        parsed = _extract_json_object(text) or {}
-        if not parsed:
-            raise DesignerLlmError(
-                "Chat model did not return a usable director review.",
-                code=LLM_API_ERROR,
+        parsed = (
+            await _model_json_object(
+                phase="director review",
+                prompt=prompt,
+                system=system,
+                max_tokens=32768,
+                error_label="director review",
             )
+            or {}
+        )
         scores_raw = parsed.get("scores") if isinstance(parsed.get("scores"), dict) else {}
         scores: dict[str, int] = {}
         for node in graph.get("nodes") or []:
@@ -4076,18 +4110,16 @@ class Director:
             },
             ensure_ascii=False,
         )
-        result = await call_model_tool(
-            prompt=prompt,
-            system=system,
-            max_tokens=32768,
-        )
-        text = model_text_or_raise(result)
-        parsed = _extract_json_object(text) or {}
-        if not parsed:
-            raise DesignerLlmError(
-                "Chat model did not return a usable director finalize report.",
-                code=LLM_API_ERROR,
+        parsed = (
+            await _model_json_object(
+                phase="director finalize",
+                prompt=prompt,
+                system=system,
+                max_tokens=32768,
+                error_label="director finalize report",
             )
+            or {}
+        )
         scores_raw = parsed.get("scores") if isinstance(parsed.get("scores"), dict) else {}
         scores: dict[str, int] = {}
         self_scores: list[int] = []

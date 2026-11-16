@@ -122,8 +122,8 @@ def _minimal_reasoning(client_config: dict[str, Any], model_name: str) -> dict[s
     return None
 
 
-def _message_text(msg: AssistantMessage) -> str:
-    """Prefer visible content; fall back to reasoning_content if content is empty."""
+def _visible_text(msg: AssistantMessage) -> str:
+    """The reply the model actually addressed to the user."""
     content = msg.content
     if isinstance(content, list):
         parts: list[str] = []
@@ -133,7 +133,12 @@ def _message_text(msg: AssistantMessage) -> str:
             elif isinstance(block, dict) and block.get("text"):
                 parts.append(str(block["text"]))
         content = "".join(parts)
-    text = str(content or "").strip()
+    return str(content or "").strip()
+
+
+def _message_text(msg: AssistantMessage) -> str:
+    """Prefer visible content; fall back to reasoning_content if content is empty."""
+    text = _visible_text(msg)
     if text:
         return text
     # Thinking models that cannot be switched off may put usable text only in
@@ -389,15 +394,33 @@ def require_media_models(*, image: bool = False, video: bool = False) -> None:
     )
 
 
+def reply_exhausted_budget(result: dict[str, Any]) -> bool:
+    """True when the model spent its whole output budget before answering."""
+    finish = str(result.get("finish_reason") or "").strip().lower()
+    return finish == "length" or bool(result.get("visible_empty"))
+
+
+def _empty_reply_message(result: dict[str, Any]) -> str:
+    """Name the reason no reply text came back."""
+    if reply_exhausted_budget(result):
+        return (
+            "Chat model ran out of output budget: its reasoning used every token and no "
+            "reply followed (finish_reason=length). Retry with a larger max_tokens."
+        )
+    return "Chat model returned an empty response"
+
+
 def model_text_or_raise(result: dict[str, Any] | None) -> str:
     """Return model text from ``call_model_tool``, or raise ``DesignerLlmError``."""
     if not isinstance(result, dict):
         raise DesignerLlmError("Chat model returned an empty response", code=LLM_API_ERROR)
     if result.get("unavailable") or result.get("ok") is False or result.get("fallback"):
+        if result.get("error") == "empty_model_response":
+            raise DesignerLlmError(_empty_reply_message(result), code=LLM_API_ERROR)
         raise DesignerLlmError.from_call_result(result)
     text = str(result.get("text") or "").strip()
     if not text:
-        raise DesignerLlmError("Chat model returned an empty response", code=LLM_API_ERROR)
+        raise DesignerLlmError(_empty_reply_message(result), code=LLM_API_ERROR)
     if text.startswith("[local-tool-fallback]"):
         raise DesignerLlmError(
             "Chat model credentials are missing; local fallback is disabled.",
@@ -582,12 +605,13 @@ async def call_model_tool(
     try:
         model = _build_chat_model(client_config, request_config)
         reasoning = _minimal_reasoning(client_config, model_name)
+        budget = max_tokens
 
         async def _once(*, temperature: float, attempt: int) -> dict[str, Any]:
-            nonlocal reasoning
+            nonlocal reasoning, budget
             request: dict[str, Any] = {
                 "messages": messages,
-                "max_tokens": max_tokens,
+                "max_tokens": budget,
                 "timeout": _DESIGNER_REQUEST_TIMEOUT_SEC,
             }
             if not fixed_sampling:
@@ -628,6 +652,7 @@ async def call_model_tool(
                     span_payload["reasoning_dropped"] = True
                     msg = await model.invoke(**request)
                 text = _message_text(msg)
+                visible = _visible_text(msg)
                 finish = "" if msg.finish_reason in (None, "", "null") else str(msg.finish_reason)
                 span_payload["output"] = text
                 span_payload["finish_reason"] = finish or None
@@ -647,6 +672,8 @@ async def call_model_tool(
                     "text": "",
                     "finish_reason": finish or None,
                     "max_tokens": max_tokens,
+                    "visible_empty": True,
+                    "text_source": "none",
                 }
             return {
                 "ok": True,
@@ -656,6 +683,8 @@ async def call_model_tool(
                 "text": text,
                 "finish_reason": finish or None,
                 "max_tokens": max_tokens,
+                "visible_empty": not visible,
+                "text_source": "content" if visible else "reasoning",
             }
 
         first = await _once(
@@ -667,11 +696,13 @@ async def call_model_tool(
             clear_chat_model_billing_block()
             return first
         if first.get("error") == "empty_model_response":
+            if reply_exhausted_budget(first):
+                budget = _clamp_max_tokens(budget * 2)
             logger.warning(
                 "call_model_tool empty response model=%s finish=%s max_tokens=%s; retrying once",
                 model_name,
                 first.get("finish_reason"),
-                max_tokens,
+                budget,
             )
             second = await _once(temperature=0.2, attempt=2)
             if second.get("ok"):

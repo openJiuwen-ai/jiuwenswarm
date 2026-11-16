@@ -5,10 +5,11 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.server.runtime.designer import orchestration
+from jiuwenswarm.server.runtime.designer import model_tools, orchestration
 from jiuwenswarm.server.runtime.designer.model_tools import DesignerLlmError
 from jiuwenswarm.server.runtime.designer.script_analysis import _extract_json_object
 
@@ -154,3 +155,126 @@ async def test_execution_graph_still_fails_when_replies_never_parse(
     with pytest.raises(DesignerLlmError, match="execution graph JSON"):
         await orchestration.Director().design_execution_graph(graph)
     assert len(systems) == 2
+
+
+def _budget_model(monkeypatch: pytest.MonkeyPatch, replies: list[dict]) -> list[int]:
+    """Model double that records the output budget each ask was given."""
+    budgets: list[int] = []
+
+    async def fake_model_call(**kwargs: object) -> dict:
+        budgets.append(int(kwargs["max_tokens"]))
+        return replies[len(budgets) - 1]
+
+    monkeypatch.setattr(orchestration, "call_model_tool", fake_model_call)
+    return budgets
+
+
+_TRUNCATED_REPLY = {
+    "ok": True,
+    "text": "The plan looks fine, let me check the shots first.",
+    "finish_reason": "length",
+    "visible_empty": True,
+    "text_source": "reasoning",
+}
+_JSON_REPLY = {"ok": True, "text": '{"ok":true,"notes":"kept"}', "finish_reason": "stop"}
+
+
+@pytest.mark.asyncio
+async def test_a_reply_cut_off_by_the_budget_is_reasked_with_twice_the_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    budgets = _budget_model(monkeypatch, [_TRUNCATED_REPLY, _JSON_REPLY])
+
+    parsed = await orchestration._model_json_object(
+        phase="plan validation",
+        prompt="p",
+        system="s",
+        max_tokens=4096,
+        error_label="plan validation",
+    )
+
+    assert parsed == {"ok": True, "notes": "kept"}
+    assert budgets == [4096, 8192]
+
+
+@pytest.mark.asyncio
+async def test_a_reply_that_was_not_cut_off_keeps_its_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    budgets = _budget_model(
+        monkeypatch,
+        [{"ok": True, "text": "Let me think about the shots."}, _JSON_REPLY],
+    )
+
+    parsed = await orchestration._model_json_object(
+        phase="plan validation",
+        prompt="p",
+        system="s",
+        max_tokens=4096,
+        error_label="plan validation",
+    )
+
+    assert parsed == {"ok": True, "notes": "kept"}
+    assert budgets == [4096, 4096]
+
+
+def test_the_reask_budget_stops_at_the_cap() -> None:
+    assert orchestration._reask_budget(40000, {"finish_reason": "length"}) == 65536
+    assert orchestration._reask_budget(65536, {"visible_empty": True}) == 65536
+
+
+@pytest.mark.asyncio
+async def test_an_exhausted_budget_names_the_real_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _budget_model(monkeypatch, [_TRUNCATED_REPLY, _TRUNCATED_REPLY])
+
+    with pytest.raises(DesignerLlmError, match="ran out of output budget") as caught:
+        await orchestration._model_json_object(
+            phase="plan validation",
+            prompt="p",
+            system="s",
+            max_tokens=4096,
+            error_label="plan validation",
+        )
+
+    assert "plan validation" in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_a_prose_reply_still_names_the_phase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _budget_model(
+        monkeypatch,
+        [{"ok": True, "text": "not json"}, {"ok": True, "text": "still not json"}],
+    )
+
+    with pytest.raises(DesignerLlmError, match="usable plan validation"):
+        await orchestration._model_json_object(
+            phase="plan validation",
+            prompt="p",
+            system="s",
+            max_tokens=4096,
+            error_label="plan validation",
+        )
+
+
+def test_an_empty_reply_names_the_budget() -> None:
+    empty = {
+        "ok": False,
+        "error": "empty_model_response",
+        "text": "",
+        "finish_reason": "length",
+    }
+
+    with pytest.raises(DesignerLlmError, match="out of output budget"):
+        model_tools.model_text_or_raise(empty)
+
+
+def test_reasoning_only_replies_are_not_visible_text() -> None:
+    message = SimpleNamespace(content="", reasoning_content="Considering the shots.")
+
+    assert model_tools._visible_text(message) == ""
+    assert model_tools._message_text(message) == "Considering the shots."
+    assert model_tools.reply_exhausted_budget({"visible_empty": True}) is True
