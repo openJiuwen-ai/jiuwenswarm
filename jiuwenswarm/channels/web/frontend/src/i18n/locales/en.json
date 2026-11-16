@@ -130,9 +130,9 @@
     "models": {
       "chatMissing": "Chat model is not configured. Configure a model in Settings before using Design.",
       "videoOff": "Video generation is switched off in Settings > Agent.",
-      "videoMissing": "No video generation model yet. Add one in Settings → Models → Multimodal before using Design.",
+      "videoMissing": "No supported video generation model yet. Add one in Settings → Models → Multimodal before using Design.",
       "imageOff": "Image generation is switched off in Settings > Agent.",
-      "imageMissing": "No image generation model yet. Add one in Settings → Models → Multimodal before using Design.",
+      "imageMissing": "No supported image generation model yet. Add one in Settings → Models → Multimodal before using Design.",
       "protocolUnsupported": "Design does not support the {{protocol}} protocol.",
       "protocolUnsupportedEmpty": "Design does not support a generation model with no protocol.",
       "lockedHint": "This design runs on the model it was started with. Switching the model is not available on the canvas.",
