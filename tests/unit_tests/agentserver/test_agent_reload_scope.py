@@ -1343,6 +1343,63 @@ async def test_deep_adapter_existing_session_lazy_reload_once(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_goal_get_does_not_apply_pending_session_reload(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+
+    parent = JiuWenSwarmDeepAdapter()
+    child = JiuWenSwarmDeepAdapter()
+    child._is_session_scoped_adapter = True
+    child._parent_session_id = "session-a"
+    child._instance = MagicMock()
+    goal_manager = MagicMock()
+    goal_manager.peek.return_value = None
+    monkeypatch.setattr(child, "_get_goal_manager", lambda: goal_manager)
+    monkeypatch.setattr(child, "reload_agent_config", AsyncMock())
+    monkeypatch.setattr(parent, "_evict_idle_session_adapters", AsyncMock())
+    parent._session_adapters["session-a"] = child
+    parent._mark_session_adapters_stale_for_reload({}, {"FREE_SEARCH_BING_ENABLED": "true"})
+
+    result = await parent.dispatch_goal_control(action="get", session_id="session-a")
+
+    assert result["result_type"] == "goal_control"
+    goal_manager.peek.assert_called_once_with()
+    child.reload_agent_config.assert_not_awaited()
+    assert parent._session_adapter_versions.get("session-a", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_lazy_reload_waits_until_running_session_settles(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+
+    parent = JiuWenSwarmDeepAdapter()
+    child = JiuWenSwarmDeepAdapter()
+    child._is_session_scoped_adapter = True
+    child._parent_session_id = "session-a"
+    monkeypatch.setattr(child, "reload_agent_config", AsyncMock())
+    parent._session_adapters["session-a"] = child
+    env_delta = {"FREE_SEARCH_BING_ENABLED": "true"}
+    parent._mark_session_adapters_stale_for_reload({}, env_delta)
+
+    child._mark_session_active("session-a")
+    try:
+        assert await parent._get_or_create_session_adapter("session-a") is child
+        child.reload_agent_config.assert_not_awaited()
+        assert parent._session_adapter_versions.get("session-a", 0) == 0
+    finally:
+        child._unmark_session_active("session-a")
+
+    assert await parent._get_or_create_session_adapter("session-a") is child
+    child.reload_agent_config.assert_awaited_once_with(
+        {}, env_delta, target_session_id="session-a", reload_scopes=None
+    )
+    assert parent._session_adapter_versions["session-a"] == 1
+
+
+@pytest.mark.asyncio
 async def test_session_admission_reservation_does_not_double_active_count():
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
         JiuWenSwarmDeepAdapter,

@@ -3595,6 +3595,10 @@ class JiuWenSwarmDeepAdapter:
             if smart_lifecycle and host_external_input:
                 raise RuntimeError("permission_session_busy:retry_after_settlement")
             return
+        # The running round can still retry or make another model call.
+        # Leave the pending version unapplied until its execution settles.
+        if not permission_delta and adapter._is_session_live(session_id):  # pylint: disable=protected-access
+            return
         try:
             await adapter.reload_agent_config(
                 config_base,
@@ -4100,6 +4104,7 @@ class JiuWenSwarmDeepAdapter:
         model_selection: Any = None,
         moa_can_access: Callable[[str, str], bool] | None = None,
         retain_moa_snapshot: bool = False,
+        reuse_without_reload: bool = False,
     ) -> "JiuWenSwarmDeepAdapter":
         """Return the session-owned adapter, creating and initializing it once."""
         if moa_enabled is not None and not isinstance(moa_enabled, bool):
@@ -4115,6 +4120,13 @@ class JiuWenSwarmDeepAdapter:
         lock = self._session_adapter_locks.setdefault(sid, asyncio.Lock())
         async with lock:
             existing = self._session_adapters.get(sid)
+            if (
+                reuse_without_reload
+                and existing is not None
+                and not existing._permission_state.permission_isolated  # pylint: disable=protected-access
+            ):
+                self._touch_session_adapter(sid)
+                return existing
             cron_execution = getattr(self, "_channel_id", None) == "__cron__" or bool(
                 execution_request is not None and (execution_request.metadata or {}).get("cron")
             )
@@ -18179,8 +18191,12 @@ class JiuWenSwarmDeepAdapter:
         session_id: str = "default",
     ) -> dict[str, Any] | None:
         """Map JiuwenSwarm protocol fields to the independent Goal methods."""
+        normalized_action = action.strip().lower()
         if not self._is_session_scoped_adapter:
-            session_adapter = await self._get_or_create_session_adapter(session_id)
+            session_adapter = await self._get_or_create_session_adapter(
+                session_id,
+                reuse_without_reload=normalized_action == "get",
+            )
             try:
                 return await session_adapter.dispatch_goal_control(
                     action=action,
@@ -18195,7 +18211,6 @@ class JiuWenSwarmDeepAdapter:
         if self._instance is None:
             return None
 
-        normalized_action = action.strip().lower()
         goal_manager = self._get_goal_manager()
         if goal_manager is None:
             return {
