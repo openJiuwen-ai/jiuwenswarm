@@ -5253,6 +5253,30 @@ class SkillManager:
             "referencing_skillpacks": protected_packs,
         }
 
+    def _find_builtin_skill_path(self, name: str) -> Path | None:
+        """返回打包内置目录中与 ``name`` 匹配的技能目录，未命中返回 None.
+
+        同时接受两种匹配：目录名与 name 一致的直接命中，以及目录名与
+        SKILL.md frontmatter 中 name 不一致时的间接命中（解析 SKILL.md）。
+        """
+        builtin_dir = get_builtin_skills_dir()
+        if not _exists_long(builtin_dir):
+            return None
+        direct_builtin = _safe_child_path(builtin_dir, name, "skill")
+        if _is_dir_long(direct_builtin):
+            return direct_builtin
+        # 遍历 builtin 目录，通过解析 SKILL.md 查找匹配的技能
+        for child in builtin_dir.iterdir():
+            if not _is_dir_long(child) or child.name.startswith("_"):
+                continue
+            md = self._try_find_skill_file(child)
+            if md is None:
+                continue
+            meta = self._parse_skill_md(md)
+            if meta and meta.get("name") == name:
+                return child
+        return None
+
     def _uninstall_skill_body(self, params: dict) -> dict:
         raw_name = params.get("name", "")
         if not raw_name:
@@ -5281,6 +5305,10 @@ class SkillManager:
         # 使用 _resolve_local_skill_dir 正确解析技能目录（处理 name 与文件夹名称不一致的情况）
         dest = self._resolve_local_skill_dir(name)
         if dest is None:
+            # 未装入用户目录的内置技能（skills.list 中 is_builtin=true 的卡片）此前
+            # 被误报为"未找到 skill"；应明确返回"内置技能不允许删除"（#6690）
+            if self._find_builtin_skill_path(name) is not None:
+                return {"success": False, "detail": "内置技能不允许删除"}
             return {"success": False, "detail": f"未找到 skill: {name}"}
         affected_skillpacks = referencing_skillpacks(self._skills_dir, name)
         protected = self._referenced_member_uninstall_error(name)
@@ -5288,29 +5316,10 @@ class SkillManager:
             return protected
 
         # 检查是否为真正的内置技能（源码目录中的，不允许删除）
-        builtin_dir = get_builtin_skills_dir()
-        if _exists_long(builtin_dir):
-            # 检查 builtin 技能目录中是否有该技能
-            builtin_skill_path = None
-            direct_builtin = _safe_child_path(builtin_dir, name, "skill")
-            if _is_dir_long(direct_builtin):
-                builtin_skill_path = direct_builtin
-            else:
-                # 遍历 builtin 目录，通过解析 SKILL.md 查找匹配的技能
-                for child in builtin_dir.iterdir():
-                    if not _is_dir_long(child) or child.name.startswith("_"):
-                        continue
-                    md = self._try_find_skill_file(child)
-                    if md is None:
-                        continue
-                    meta = self._parse_skill_md(md)
-                    if meta and meta.get("name") == name:
-                        builtin_skill_path = child
-                        break
-
-            if builtin_skill_path:
-                if dest.resolve() == builtin_skill_path.resolve():
-                    return {"success": False, "detail": "内置技能不允许删除"}
+        builtin_skill_path = self._find_builtin_skill_path(name)
+        if builtin_skill_path:
+            if dest.resolve() == builtin_skill_path.resolve():
+                return {"success": False, "detail": "内置技能不允许删除"}
 
         # 内置技能拒绝校验通过后才备份，避免拒绝路径留下无意义备份文件
         member_backup = self._capture_container_member_backup(name, dest)
