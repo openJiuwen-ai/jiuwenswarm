@@ -2133,3 +2133,42 @@ def test_a4p_legacy_signature_config_is_kept_but_server_stays_unsigned(tmp_path)
     assert runtime.config == {"enabled": True, "require_user_signature": True}
     assert not runtime.server.require_user_signature
     assert credential_path.read_text() == "existing credentials"
+
+
+def test_web_cron_authorizer_is_request_scoped() -> None:
+    request = SimpleNamespace(
+        request_id="cron-run", session_id="same-session", channel_id="web",
+        req_method=ReqMethod.CHAT_SEND, params={},
+        metadata={"cron": {"job_id": "job-1"}, "ws_id": "connected-browser"},
+    )
+    cron = build_authorization_execution_context(request, agent_id="main", mode="agent")
+    assert cron.is_cron_execution
+    assert cron.authorizer_route is None
+    assert not cron.is_interactive_web
+    request.request_id = "user-follow-up"
+    request.metadata = {"ws_id": "connected-browser"}
+    follow_up = build_authorization_execution_context(request, agent_id="main", mode="agent")
+    assert not follow_up.is_cron_execution
+    assert follow_up.authorizer_route is not None
+    assert follow_up.is_interactive_web
+
+
+@pytest.mark.asyncio
+async def test_web_cron_cannot_request_authorization_even_with_stale_route(monkeypatch):
+    monkeypatch.setattr(a4p_tools_module, "get_config", lambda: {"a4p": {"enabled": True}})
+    monkeypatch.setattr(
+        a4p_tools_module, "get_a4p_runtime",
+        lambda: pytest.fail("cron must not reach the interactive authorization runtime"),
+    )
+    _activate_execution_context(session_id="cron-guard", metadata={"cron": {"job_id": "job-1"}})
+    try:
+        context = AUTHORIZATION_EXECUTION_CONTEXTS.get("cron-guard")
+        assert context.authorizer_route is not None
+        assert not context.is_interactive_web
+        result = await request_a4p_intent_authorization(
+            actions=[{"name": "bash", "params": {"command": "echo cron"}}],
+            _session_id="cron-guard",
+        )
+        assert result["code"] == "A4P_CRON_AUTHORIZATION_UNAVAILABLE"
+    finally:
+        AUTHORIZATION_EXECUTION_CONTEXTS.clear()

@@ -39,6 +39,7 @@ import {
 import { SessionsPanel } from './components/SessionsPanel';
 import CronPanel from './components/CronPanel';
 import { watchCronExecutionSessions, watchCronRunUpdates } from './features/cron/cronSessionLive';
+import { maySnapshotRelightProcessing } from './features/interruptSettleGuard';
 import { mergeCronRunUserSeed } from './features/cron/cronSeedMessage';
 import HeartbeatPanel from './components/HeartbeatPanel';
 import { ToolPanel } from './components/ToolPanel';
@@ -53,6 +54,7 @@ import {
   SETTINGS_MODULE_NAVIGATION_EVENT,
   requestSettingsModule,
   type SettingsModuleTarget,
+  type SettingsNavigationTarget,
 } from './features/settings/settingsNavigation';
 import { ConnectorMarketPanel } from './components/ConnectorMarket';
 import { LoginDialog } from './components/LoginDialog';
@@ -586,7 +588,7 @@ function AppContent({
     useState<Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>>({});
   const [hasVisitedSkills, setHasVisitedSkills] = useState(false);
   const [hasVisitedPersonalContext, setHasVisitedPersonalContext] = useState(false);
-  const [requestedSettingsModuleId, setRequestedSettingsModuleId] = useState<SettingsModuleTarget | null>(null);
+  const [requestedSettingsNavigation, setRequestedSettingsNavigation] = useState<SettingsNavigationTarget | null>(null);
   const {
     isMobile,
     isToolPanelAutoHideViewport,
@@ -624,7 +626,8 @@ function AppContent({
     if (activeNav === 'chat') {
       const { defaultModelName, setSelectedModelName } = useSessionStore.getState();
       const runtime = useSessionStore.getState().getRuntime(sessionId);
-      if (defaultModelName && !runtime?.selectedModelName) {
+      const missingModelName = Boolean(defaultModelName && !runtime?.selectedModelName);
+      if (missingModelName && !runtime?.selectedModelSelection) {
         useSessionStore.getState().ensureRuntime(sessionId);
         setSelectedModelName(sessionId, defaultModelName);
       }
@@ -660,8 +663,8 @@ function AppContent({
 
   useEffect(() => {
     const handler = (event: Event) => {
-      const moduleId = (event as CustomEvent<SettingsModuleTarget>).detail;
-      setRequestedSettingsModuleId(moduleId);
+      const target = (event as CustomEvent<SettingsModuleTarget | SettingsNavigationTarget>).detail;
+      setRequestedSettingsNavigation(typeof target === 'string' ? { moduleId: target } : target);
       setActiveNav('settings');
     };
     window.addEventListener(SETTINGS_MODULE_NAVIGATION_EVENT, handler);
@@ -2073,7 +2076,15 @@ function AppContent({
       if (typeof session.is_processing === 'boolean') {
         const allowDowngrade = metadataDowngradeAllowedRef.current.delete(targetSessionId);
         const locallyBusy = useChatStore.getState().getRuntime(targetSessionId)?.foregroundIsProcessing === true;
-        if (session.is_processing || allowDowngrade || !locallyBusy) {
+        // A pause/cancel ack just settled this turn; a lagging worker snapshot
+        // must not relight processing until a new round starts (user send or a
+        // real processing_status(true) wire frame clears the marker).
+        const interruptSettled = useChatStore.getState()
+          .getRuntime(targetSessionId)?.interruptSettledEpoch != null;
+        if (
+          (session.is_processing || allowDowngrade || !locallyBusy)
+          && maySnapshotRelightProcessing(session.is_processing, interruptSettled, allowDowngrade)
+        ) {
           setProcessing(targetSessionId, session.is_processing);
           if (!session.is_processing) {
             setThinking(targetSessionId, false);
@@ -4256,7 +4267,7 @@ function AppContent({
       else closeSidebarPeek();
       // 创建对话框信号一次性消费：归零避免携带旧 nonce 重进实验页时误开对话框
       setRsiOpenCreateNonce(0);
-      if (nav !== 'settings') setRequestedSettingsModuleId(null);
+      if (nav !== 'settings') setRequestedSettingsNavigation(null);
       setActiveNav(nav);
       if (nav === 'chat') {
         if (route.kind === 'group-chat') navigate({ kind: 'chat-new' });
@@ -4267,7 +4278,7 @@ function AppContent({
         }
       }
       if (modelSetupGuideStep === 1 && nav === 'settings') {
-        setRequestedSettingsModuleId('models');
+        setRequestedSettingsNavigation({ moduleId: 'models' });
         setModelSetupGuideStep(2);
       }
       if (nav === 'agents') setHasVisitedAgents(true);
@@ -4289,7 +4300,7 @@ function AppContent({
       modelSetupGuideStep,
       setSingleAgentPanelExpanded,
       setHasVisitedPersonalContext,
-      setRequestedSettingsModuleId,
+      setRequestedSettingsNavigation,
       setTeamAreaExpanded,
       setToolPanelHidden,
     ],
@@ -4752,7 +4763,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           onExternalCliPendingChoicesChange={setExternalCliPendingChoices}
           externalCliDetectResults={externalCliDetectResults}
           onExternalCliDetectResultsChange={setExternalCliDetectResults}
-          initialModuleId={requestedSettingsModuleId ?? undefined}
+          initialModuleId={requestedSettingsNavigation?.moduleId}
+          navigationTarget={requestedSettingsNavigation ?? undefined}
         />
       </div>
     );
@@ -4773,7 +4785,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           confirmDiscardSettings={() => {
             if (!settingsHasChangesRef.current) return true;
             if (!window.confirm(t('settingsPanel.dialog.discardConfirm'))) return false;
-            setRequestedSettingsModuleId(null);
+            setRequestedSettingsNavigation(null);
             return true;
           }}
         />
@@ -5179,7 +5191,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               onExternalCliPendingChoicesChange={setExternalCliPendingChoices}
               externalCliDetectResults={externalCliDetectResults}
               onExternalCliDetectResultsChange={setExternalCliDetectResults}
-              initialModuleId={requestedSettingsModuleId ?? undefined}
+              initialModuleId={requestedSettingsNavigation?.moduleId}
+              navigationTarget={requestedSettingsNavigation ?? undefined}
               sidebar={{
                 isActive: activeNav === 'settings',
                 collapsed: isSettingsNarrowViewport,

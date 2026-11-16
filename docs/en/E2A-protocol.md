@@ -498,9 +498,9 @@ enum registration is required.
 
 ## History payload references and chunk retrieval
 
-Large tool results retain a short preview and may include `payload_refs`. For the main agent, `chat.llm_call_start` carries a pre-call preview; `chat.llm_call_end.payload_refs.prompt` references the complete model input (messages and tools) after Core finalizes prompt injection and context processing. Subagents captured by model-input callbacks may still reference their complete input in `chat.llm_call_start`. Each reference contains `sha256`, `bytes`, `media_type`, and a host path. Clients retrieve content by session and digest rather than opening the host path.
+Large tool results retain a short preview and may include `payload_refs`. Each reference contains `sha256`, `bytes`, `media_type`, and a host path. Clients retrieve content by session and digest. Previously stored prompt references remain readable through the same interface.
 
-`text/plain` identifies an original string; `application/json` identifies the complete structured value. `raw_output_truncated=true` means the inline preview was reduced; a corresponding `payload_refs` entry provides the complete artifact. If artifact storage fails, model/tool events still carry bounded previews without unavailable references, and the failure is logged. Existing small results and inline history keep their semantics.
+`text/plain` identifies an original string; `application/json` identifies the complete structured value. `raw_output_truncated=true` means the inline preview was reduced; a corresponding `payload_refs` entry provides the complete artifact. If artifact storage fails, tool events still carry bounded previews without unavailable references, and the failure is logged. Existing small results and inline history keep their semantics.
 
 Use a unary `history.get` request with these `params`:
 
@@ -511,3 +511,37 @@ Use a unary `history.get` request with these `params`:
 The response payload contains `content`, `offset`, `next_offset`, `eof`, `bytes`, and `sha256`. The session is taken from `params.session_id`, falling back to the request envelope's `session_id`. Offsets are UTF-8 byte positions and must align with character boundaries; each read is limited to 64 KiB. Continue from the returned `next_offset` until `eof=true`. Digests are resolved within the selected session; arbitrary file paths are not accepted. Invalid digests, ranges, encoding boundaries, or missing artifacts produce `HISTORY_ARTIFACT_FAILED`.
 
 Omitting `artifact_sha256` preserves existing history paging/streaming behavior. The E2A envelope and protocol version are unchanged.
+
+Legacy `page_idx` paging scans history in blocks and retains only the requested page, preserving newest-first order and exact `total_pages`. Old JSON arrays are also streamed. Each scan is limited to 8 GiB / 120 seconds, and the retained page to 16 MiB; giant diagnostic fields are not loaded in full. Budget or allocation failures return an explicit `HISTORY_RESTORE_LIMIT`; replacement or truncation returns `HISTORY_RESTORE_CHANGED`, rather than a successful empty history.
+
+Legacy context recovery retains its scan budget. Time spent waiting for model compression between recovery batches does not consume scanning time; actual disk reads and parsing remain time-limited.
+
+Legacy page reads preserve `event_payload`, `usage`, and `session_usage` for tool replay and usage summaries. These fields remain subject to semantic-field and page budgets; context recovery keeps its separate diagnostic projection.
+
+Each page uses a committed byte-length boundary. Concurrent appends become visible to later page requests; file replacement or truncation returns a history-change error. Page scans allow history writes to continue, and both unary and streamed history queries keep the Front event loop responsive.
+
+When the SDK emits usage first, the adapter retains at most one usage event until call-end. Missing call-end events drain at the next call, answer, or stream completion.
+
+When an output consumer is cancelled or closed, pending usage is saved to the session audit. Normally delivered usage follows the existing history writer.
+
+Externalized tool results retain known rich-display fields (`skill_tree`, `beam_search`, `planned_graph`, `graph_status`, and `graph_build`) within the existing 1 MiB raw-output budget; MCP Apps keep their existing projection. Complete originals remain in `payload_refs`. Live delivery and history replay preserve these references in the current product session, including forked sessions.
+
+For Gateway routes that forward history cursors, clients may request `history.get` with `cursor: "history-artifact:v1:<sha256>:<offset>"` and `limit: 1`. The response contains one `history.artifact` record with the same chunk fields as unary artifact retrieval, followed by the normal history done frame. Each cursor request reads at most 8 KiB on a UTF-8 boundary. Invalid or missing artifacts return `HISTORY_ARTIFACT_FAILED`; no arbitrary file path is accepted. Ordinary history subscribers ignore these artifact cursors. The unary `artifact_sha256` interface remains available.
+
+Web loads originals only on request, retains one window of at most 64 KiB locally, and offers previous/next parts. Closing the view or changing its session/reference aborts pending reads and releases the displayed original; full originals are not copied into the chat store.
+
+## Model call status and incremental history
+
+`chat.llm_call_start` and `chat.llm_call_end` record the model call lifecycle with
+member and role attribution. Start events are durable even with empty content.
+Each call start assigns `llm_start_ts` to associate its start and usage events.
+
+Session history appends new messages and events. Main-agent and sub-agent call
+events omit the input prompt and its artifact reference. User messages, tool calls,
+tool results and replies are persisted through their respective events. Clients must
+accept an absent `prompt` and degrade the full-input details view accordingly.
+
+`chat.usage_metadata` continues to report input, output and cache tokens, costs and
+latencies. Context occupancy uses `context.usage`, and cumulative usage uses the
+existing session usage snapshot. Readers continue to accept older records with
+`prompt` fields.

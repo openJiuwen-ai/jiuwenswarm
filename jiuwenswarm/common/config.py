@@ -634,6 +634,9 @@ def config_write_lock(*, lock_timeout: float = 10.0, config_path: Path | None = 
         with portalocker.Lock(
             str(_config_lock_path(config_path or CONFIG_YAML_PATH)), timeout=lock_timeout
         ):
+            from jiuwenswarm.common.config_persistence import recover_multimodal_transaction
+
+            recover_multimodal_transaction(config_path or CONFIG_YAML_PATH)
             yield
     finally:
         _CONFIG_WRITE_LOCK.release()
@@ -1903,18 +1906,12 @@ def _normalize_model_entry(entry: dict[str, Any]) -> dict[str, Any]:
         mcc["timeout"] = saved.pop("timeout")
     if "verify_ssl" in saved:
         mcc["verify_ssl"] = bool(saved.pop("verify_ssl"))
-    if "endpoint_profile" in saved:
-        val = saved.pop("endpoint_profile")
-        if val:
-            mcc["endpoint_profile"] = str(val)
-    if "vendor_key" in saved:
-        val = saved.pop("vendor_key")
-        if val:
-            mcc["vendor_key"] = str(val)
-    if "plan" in saved:
-        val = saved.pop("plan")
-        if val:
-            mcc["plan"] = str(val)
+    for key in ("endpoint_profile", "vendor_key", "plan"):
+        if key not in saved:
+            continue
+        value = saved.pop(key)
+        if value or value in (None, ""):
+            mcc[key] = str(value) if value else value
     temp = saved.pop("temperature", None)
     if temp is not None:
         mco["temperature"] = float(temp)
@@ -1941,6 +1938,60 @@ def _merge_model_update(current: dict[str, Any], update: dict[str, Any]) -> dict
     return merged
 
 
+def _remove_initial_model_placeholder(models: dict[str, Any], saved: dict[str, Any]) -> None:
+    """Remove the shipped example when a real model is added."""
+    from jiuwenswarm.common.model_config_validation import (
+        PLACEHOLDER_API_BASES,
+        PLACEHOLDER_API_KEYS,
+        PLACEHOLDER_MODEL_NAMES,
+        is_placeholder_model_entry,
+    )
+
+    client = resolve_env_vars(saved.get("model_client_config") or {})
+    if not str(client.get("model_name") or "").strip() or is_placeholder_model_entry(client):
+        return
+
+    referenced_ids = set()
+    for group in models.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        for route in group.get("routes") or []:
+            if isinstance(route, dict):
+                referenced_ids.add(str(route.get("model_id") or "").strip())
+
+    remaining = []
+    removed_default = False
+    # Unset template variables resolve to empty strings.
+    placeholder_api_bases = PLACEHOLDER_API_BASES | {""}
+    placeholder_api_keys = PLACEHOLDER_API_KEYS | {""}
+    for current in models["defaults"]:
+        # Preserve existing model group routes, even if they point at the example.
+        if current is saved or current.get("model_id") in referenced_ids:
+            remaining.append(current)
+            continue
+        raw_client = current.get("model_client_config")
+        if not isinstance(raw_client, dict):
+            remaining.append(current)
+            continue
+        config = resolve_env_vars(raw_client)
+        model_name = str(config.get("model_name") or "").strip()
+        api_base = str(config.get("api_base") or "").strip()
+        api_key = str(config.get("api_key") or "").strip()
+        if (
+            model_name in PLACEHOLDER_MODEL_NAMES
+            and api_base in placeholder_api_bases
+            and api_key in placeholder_api_keys
+        ):
+            removed_default = removed_default or current.get("is_default") is True
+        else:
+            remaining.append(current)
+
+    if len(remaining) != len(models["defaults"]):
+        models["defaults"] = remaining
+        if removed_default and not any(current.get("is_default") is True for current in remaining):
+            saved["is_default"] = True
+
+
 def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
     saved = _normalize_model_entry(entry)
     model_config = saved.get("model_config_obj")
@@ -1954,6 +2005,8 @@ def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
         # PyYAML reads unquoted on/off as booleans; keep the editable DTO stable.
         model_config["reasoning_level"] = DoubleQuotedScalarString(level or "")
     saved.setdefault("model_id", _new_business_id("mdl"))
+    # Only an explicit empty value in the incoming payload clears a field.
+    client_update = saved.get("model_client_config") or {}
 
     def _mutate(data):
         nonlocal saved
@@ -1967,10 +2020,15 @@ def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
                 defaults[index] = saved
                 break
         else:
-            _protect_model_key(saved, {})
             defaults.append(saved)
+            _remove_initial_model_placeholder(candidate, saved)
+            _protect_model_key(saved, {})
+        for key in ("vendor_key", "plan"):
+            if key in client_update and client_update[key] in (None, ""):
+                saved.pop(key, None)
+                saved["model_client_config"].pop(key, None)
         if entry.get("is_default") is True:
-            for current in defaults:
+            for current in candidate["defaults"]:
                 current["is_default"] = current["model_id"] == saved["model_id"]
         _validate_model_candidate(candidate)
         return data
@@ -3717,10 +3775,36 @@ def add_or_update_model_in_config(name: str, model_config: dict[str, Any]) -> No
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def _get_agentos_model(models: dict[str, Any], name: str) -> dict[str, Any] | None:
+    """在 models.agentos 备份模型中按 model_name/alias 查找。
+
+    仅 AgentOS 运行时生效：那类部署会把可用模型放在 models.agentos；
+    其他部署里该段只是只读备份，不参与按名校验。
+    """
+    from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
+
+    if not is_agentos_runtime():
+        return None
+    agentos = models.get("agentos")
+    if not isinstance(agentos, list) or not name:
+        return None
+    for entry in agentos:
+        if not isinstance(entry, dict):
+            continue
+        mcc = entry.get("model_client_config") or {}
+        entry_name = str(resolve_env_vars(mcc.get("model_name")) or "").strip()
+        alias = str(resolve_env_vars(entry.get("alias")) or "").strip()
+        if name in (entry_name, alias):
+            return entry
+    return None
+
+
 def get_model_config(name: str, index: int | None = None) -> dict[str, Any] | None:
     """获取指定模型的原始配置（不解析环境变量）。
 
-    优先从 models.defaults 列表中按 model_name 查找。
+    优先从 models.defaults 列表中按 model_name 查找；AgentOS 运行时未命中时
+    回退到 models.agentos（该部署把可用模型放在这里，仅扫 defaults 会让 cron
+    等按名校验的调用方误报 Unknown model）。
     当存在同名模型时，可通过 index 参数指定第几个匹配项（0-based）。
     若 index 为 None，返回 is_default=True 的条目；若无则返回第一个匹配。
     """
@@ -3743,6 +3827,9 @@ def get_model_config(name: str, index: int | None = None) -> dict[str, Any] | No
                 alias = entry.get("alias", "")
                 if alias and resolve_env_vars(str(alias)) == name:
                     return entry
+            agentos_entry = _get_agentos_model(models, name)
+            if agentos_entry is not None:
+                return agentos_entry
             return models.get(name) if name in models else None
         if index is not None:
             for pos, entry in matches:
@@ -3753,6 +3840,9 @@ def get_model_config(name: str, index: int | None = None) -> dict[str, Any] | No
             if entry.get("is_default") is True:
                 return entry
         return matches[0][1]
+    agentos_entry = _get_agentos_model(models, name)
+    if agentos_entry is not None:
+        return agentos_entry
     return models.get(name) if name in models else None
 
 

@@ -275,6 +275,7 @@ async def test_moa_close_failure_preserves_owner_cleanup(
     output.close = AsyncMock()
     monkeypatch.setattr(adapter, "_attach_and_send_inputs", AsyncMock(return_value=(output, False)))
     close_started = asyncio.Event()
+    close_release = asyncio.Event()
     native_stream = progress.stream
 
     class FailingCloseStream:
@@ -288,7 +289,7 @@ async def test_moa_close_failure_preserves_owner_cleanup(
             await self.source.aclose()
             close_started.set()
             if cancel_close:
-                await asyncio.Event().wait()
+                await close_release.wait()
             raise RuntimeError("MoA close failed")
 
     monkeypatch.setattr(progress, "stream", FailingCloseStream)
@@ -326,10 +327,13 @@ async def test_moa_close_failure_preserves_owner_cleanup(
         if cancel_close:
             consumer.cancel("cancel during MoA close")
             with pytest.raises(asyncio.CancelledError, match="cancel during MoA close"):
-                await consumer
+                await asyncio.wait_for(consumer, 2)
         else:
             await asyncio.wait_for(consumer, 2)
     finally:
+        # A startup timeout can cancel the consumer before it enters aclose().
+        # Release the fake close first so that cancellation cannot strand gather().
+        close_release.set()
         if not consumer.done():
             consumer.cancel()
         await asyncio.gather(consumer, return_exceptions=True)

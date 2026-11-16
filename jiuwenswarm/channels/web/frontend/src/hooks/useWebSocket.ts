@@ -6,6 +6,7 @@
 
 import { isConversationModelGroupBlocked } from '../multi-session/state/conversationModelSelection';
 import { parseModelSelection } from '../features/settings/modules/models/modelGroupAdapters';
+import { mayProcessingTrueFrameRelight } from '../features/interruptSettleGuard';
 import { isMultiModelCollaborationEnabled } from '../features/multiModelCollaboration/featureConfig';
 import { isRestoredOutputReplay, readOutputOrder } from '../features/sessionOutput';
 import { isEnterprise } from '../edition';
@@ -797,6 +798,11 @@ interface PersistMediaResponse {
 
 function isPersistedMediaItem(item: MediaItem): boolean {
   return typeof item.path === 'string' && item.path.trim().length > 0;
+}
+
+function toChatUploadItem(item: MediaItem): MediaItem {
+  // The document transport persists the original video bytes.
+  return item.type === 'video' ? { ...item, type: 'document' } : item;
 }
 
 function getMediaMimeType(item: MediaItem): string {
@@ -2109,11 +2115,19 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           const attachments: Record<string, unknown> = {};
           let query = content;
           if (mediaItems.length) {
-            const imageItems = mediaItems.filter((item) => item.type !== 'document');
-            const documentItems = mediaItems.filter((item) => item.type === 'document');
+            const persistedVideos = mediaItems.filter((item) => item.type === 'video' && isPersistedMediaItem(item));
+            const uploadItems = mediaItems
+              .filter((item) => item.type !== 'video' || !isPersistedMediaItem(item))
+              .map(toChatUploadItem);
+            const imageItems = uploadItems.filter((item) => item.type !== 'document');
+            const documentItems = uploadItems.filter((item) => item.type === 'document');
             const persisted: PersistMediaResponse = imageItems.length ? await persistMedia(content, sessionId, imageItems) : {};
             const documents: PersistMediaResponse = documentItems.length ? await persistDocuments(content, sessionId, documentItems) : {};
-            const items = [...(persisted.media_items ?? []), ...(documents.media_items ?? [])];
+            const items = [
+              ...(persisted.media_items ?? []),
+              ...(documents.media_items ?? []),
+              ...persistedVideos.map(toPersistedMediaRecord),
+            ];
             attachments.media_items = items;
             attachments.files = { ...persisted.files, ...documents.files };
             query = withUploadDocumentBlock(persisted.content ?? persisted.query ?? content, toUploadDocumentHints(documents.media_items));
@@ -2278,6 +2292,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }
       useChatStore.getState().setProcessing(sessionId, true);
       useChatStore.getState().setThinking(sessionId, true);
+      // A fresh user send starts a new turn: the previous interrupt settle
+      // window no longer applies.
+      useChatStore.getState().clearInterruptSettled(sessionId);
       // 标记本地发起的发送，用于 processing_status 处理器区分"旧任务被打断"
       // 和"任务正常结束"——前者跳过自动排空
       localSendPendingRef.current.add(sessionId);
@@ -2301,11 +2318,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           const mergedItems: Record<string, unknown>[] = [];
           // 新会话的附件尚未落盘。每次只上传一项，既不触发批量数量限制，
           // 也不把多份大文件的 base64 拼进同一条 WebSocket 消息。
-          for (const item of mediaItems) {
-            if (isPersistedMediaItem(item)) {
-              mergedItems.push(toPersistedMediaRecord(item));
+          for (const mediaItem of mediaItems) {
+            if (isPersistedMediaItem(mediaItem)) {
+              mergedItems.push(toPersistedMediaRecord(mediaItem));
               continue;
             }
+            const item = toChatUploadItem(mediaItem);
             const persist = item.type === 'document' ? persistDocuments : persistMedia;
             const persisted = await persist('', sessionId, [item]);
             const stored = persisted.media_items?.[0];
@@ -2524,6 +2542,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }
       useChatStore.getState().setProcessing(sessionId, true);
       useChatStore.getState().setThinking(sessionId, true);
+      useChatStore.getState().clearInterruptSettled(sessionId);
 
       const currentSessionState = useSessionStore.getState();
       const currentRuntime = currentSessionState.getRuntime(sessionId);
@@ -4780,7 +4799,20 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       // 归档相关事件：集中在此分发，刷新活跃工作区数据（项目/会话/置顶）；
       // 归档管理页自行订阅同名事件刷新归档列表。项目归档事件已随协议移除。
       // 事件可能早于响应到达，去抖合并后按当前状态幂等刷新。
-      webClient.on<ArchiveResourceEventPayload>('session.archived', () => {
+      webClient.on<ArchiveResourceEventPayload>('session.archived', ({ payload }) => {
+        const sessionId = typeof payload.session_id === 'string' ? payload.session_id : '';
+        if (sessionId) {
+          // Archive stops a live turn in the backend without terminal wire
+          // frames. Settle the local runtime here so an undo/restore in this
+          // tab does not resume a phantom "processing" turn (GitCode #6533).
+          useChatStore.getState().settleLifecycleStoppedSession(sessionId);
+          const sessionPatch: Partial<Session> = {
+            is_processing: false,
+            updated_at: new Date().toISOString(),
+          };
+          updateSession(sessionId, sessionPatch);
+          useWorkspaceStore.getState().patchSession(sessionId, sessionPatch);
+        }
         scheduleArchiveWorkspaceRefresh(false);
       }),
       webClient.on<ArchiveResourceEventPayload>('session.unarchived', () => {
@@ -4885,9 +4917,21 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           }
         }
 
+        // A pause/cancel ack settled this turn; a synthetic resume event from
+        // webClient (no event_type — it is not a wire frame) must not relight
+        // processing. Genuine wire frames carry event_type and clear the
+        // marker below to let a real new round start.
+        if (isProcessingNow
+          && !mayProcessingTrueFrameRelight(
+            typeof payload.event_type === 'string',
+            useChatStore.getState().getRuntime(sessionId)?.interruptSettledEpoch != null,
+          )) {
+          return;
+        }
         // 后端确认 processing=true 时清除本地发送标记——新任务已由后端接管
         if (isProcessingNow) {
           localSendPendingRef.current.delete(sessionId);
+          useChatStore.getState().clearInterruptSettled(sessionId);
         }
         // 如果 interrupt_result 指示任务已完成，忽略 processing_status=true
         const interruptResult = useChatStore.getState().getRuntime(sessionId)?.interruptResult;
@@ -5323,6 +5367,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             clearPendingContextCompressionStart(sessionId);
             useChatStore.getState().setContextCompressionStatus(sessionId, undefined);
           }
+          // The ack authoritatively settled this turn. Until a new real
+          // processing_status(true) frame or a fresh user send arrives, a
+          // lagging runtime snapshot (session.get_metadata) must not relight
+          // processing (bug1112: pause ack + stale worker snapshot kept the
+          // stop button alive forever).
+          useChatStore.getState().markInterruptSettled(sessionId);
         }
 
         if (resultPayload.intent === 'pause') {

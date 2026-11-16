@@ -590,7 +590,56 @@ def parse_remote_bootstrap_ack_json(content: str) -> dict[str, Any] | None:
     return data
 
 
-def _swarm_assembly_hint(team_agent: Any) -> dict[str, Any]:
+def _persisted_cron_session(session_id: str | None) -> dict[str, Any] | None:
+    """Resolve the session-level cron ownership from a persisted ``cron_id``.
+
+    Web cron execution sessions use ordinary ``web_<ts>_<rand>`` ids and the
+    scheduler marker only exists on the request that fired the run. When the
+    Team is rebuilt for a later turn of that session (user follow-up, cold
+    recovery) the leader's own build context has no ``cron`` in its request
+    metadata, but the session is still a cron execution session. Remote
+    teammates rebuild from the bootstrap hints alone and may run where the
+    session metadata is unavailable, so they cannot resolve it themselves
+    (issue #6188).
+
+    Returns a session-marked payload for the ``cron_session`` hint. It is
+    deliberately *not* shaped like the scheduler marker: downstream consumers
+    of ``request_metadata["cron"]`` (interactive approvals, A4P scope, prompt
+    time rendering) must keep treating it as "this round was triggered by the
+    scheduler", which is false for a user follow-up.
+    """
+    sid = str(session_id or "").strip()
+    if not sid:
+        return None
+    try:
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+
+        metadata = get_session_metadata(sid, cache_bust=True, enable_writeback=False)
+    except Exception as exc:  # noqa: BLE001 - bootstrap must not fail on this
+        # Fail-open would silently re-expose cron tools on the remote member, so
+        # keep the failure visible instead of hiding it behind a debug log.
+        logger.warning(
+            "[RemoteMemberBootstrap] persisted cron session lookup failed; "
+            "remote members may re-expose cron tools session_id=%s: %s",
+            sid,
+            exc,
+        )
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    cron_id = str(metadata.get("cron_id") or "").strip()
+    if not cron_id:
+        return None
+    return {"job_id": cron_id, "source": "session_metadata"}
+
+
+def _swarm_assembly_hint(
+    team_agent: Any,
+    *,
+    session_id: str | None = None,
+) -> dict[str, Any]:
     """Extract provider-assembly hints (mode / project_dir / cron) from a leader spec.
 
     Reads the serializable ``build_context_seed`` the swarm enrichment leaves on
@@ -602,6 +651,12 @@ def _swarm_assembly_hint(team_agent: Any) -> dict[str, Any]:
     remote teammate rebuilds its spec from these hints alone, and without the
     marker the rebuilt members would re-expose cron tools inside a cron
     execution session (nested cron creation, issue #5116).
+
+    When the request carries no marker (later turns of a Web cron execution
+    session), *session_id* resolves the persisted ``cron_id`` on the leader side
+    and forwards it as the separate ``cron_session`` hint, keeping the
+    "scheduler triggered this round" meaning of ``cron`` intact; see
+    :func:`_persisted_cron_session`.
     """
     spec = getattr(team_agent, "spec", None)
     if spec is None:
@@ -626,6 +681,10 @@ def _swarm_assembly_hint(team_agent: Any) -> dict[str, Any]:
     )
     if isinstance(cron_meta, dict) and cron_meta:
         hint["cron"] = dict(cron_meta)
+    else:
+        cron_session = _persisted_cron_session(session_id)
+        if isinstance(cron_session, dict) and cron_session:
+            hint["cron_session"] = dict(cron_session)
     return hint
 
 
@@ -665,8 +724,9 @@ def build_bootstrap_envelope(
     }
     # Carry provider-assembly hints so the remote teammate rebuilds with the
     # same request mode / project dir, and keeps the cron execution marker for
-    # team cron runs (empty dict for the legacy path).
-    envelope.update(_swarm_assembly_hint(team_agent))
+    # team cron runs (empty dict for the legacy path). The session id lets the
+    # leader resolve a persisted cron_id when this turn has no scheduler marker.
+    envelope.update(_swarm_assembly_hint(team_agent, session_id=session_id))
     return envelope
 
 
@@ -2389,6 +2449,41 @@ async def _initialize_team_agent_db(
         return False
 
 
+def _kickoff_request_metadata(
+    *,
+    assembly_mode: str,
+    assembly_project_dir: str,
+    assembly_cron_meta: dict[str, Any] | None,
+    assembly_cron_session: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Build the rebuilt leader's request metadata from the bootstrap hints.
+
+    ``cron`` and ``cron_session`` stay separate: the former means the current
+    round was triggered by the scheduler (approvals are skipped, A4P scope is
+    applied), the latter only marks the session as a cron execution session so
+    tool gating holds on a user follow-up turn (issue #6188).
+    """
+    request_metadata: dict[str, Any] | None = None
+    if assembly_mode:
+        request_metadata = {"mode": assembly_mode}
+        if assembly_project_dir:
+            request_metadata["project_dir"] = assembly_project_dir
+    if isinstance(assembly_cron_meta, dict) and assembly_cron_meta:
+        # Cluster team cron runs: the cron marker must survive the bootstrap
+        # boundary, otherwise the rebuilt remote members re-expose cron
+        # tools inside a cron execution session (nested cron, issue #5116).
+        request_metadata = dict(request_metadata or {})
+        request_metadata["cron"] = dict(assembly_cron_meta)
+    if isinstance(assembly_cron_session, dict) and assembly_cron_session:
+        # The session belongs to a cron run, but this turn was not fired by
+        # the scheduler (user follow-up / cold rebuild). Keep the ownership
+        # in its own key: consumers of ``cron`` (approvals, A4P scope,
+        # prompt time) must not treat this round as unattended (#6188).
+        request_metadata = dict(request_metadata or {})
+        request_metadata["cron_session"] = dict(assembly_cron_session)
+    return request_metadata
+
+
 async def _ensure_dynamic_member_execution_loop(
     *,
     session_id: str,
@@ -2400,6 +2495,7 @@ async def _ensure_dynamic_member_execution_loop(
     assembly_mode: str = "",
     assembly_project_dir: str = "",
     assembly_cron_meta: dict[str, Any] | None = None,
+    assembly_cron_session: dict[str, Any] | None = None,
     agent_manager: Any | None = None,
 ) -> tuple[bool, bool]:
     """Best-effort bootstrap for teammate runtime loop after dynamic member takeover.
@@ -2410,6 +2506,9 @@ async def _ensure_dynamic_member_execution_loop(
     build context — no customizer closure crosses the process boundary.
     ``assembly_cron_meta`` restores the scheduler's cron execution marker into
     that seed so members of a team cron run stay cron-gated (issue #5116).
+    ``assembly_cron_session`` carries session-level cron ownership for rebuilt
+    sessions whose current turn was not triggered by the scheduler; it is kept
+    apart from ``cron`` so interactive approvals stay available (issue #6188).
     """
     sid = str(session_id or "").strip()
     member = str(target_member or "").strip()
@@ -2469,17 +2568,12 @@ async def _ensure_dynamic_member_execution_loop(
             return False, False
 
         team_manager = get_team_manager(channel_id)
-        request_metadata: dict[str, Any] | None = None
-        if assembly_mode:
-            request_metadata = {"mode": assembly_mode}
-            if assembly_project_dir:
-                request_metadata["project_dir"] = assembly_project_dir
-        if isinstance(assembly_cron_meta, dict) and assembly_cron_meta:
-            # Cluster team cron runs: the cron marker must survive the bootstrap
-            # boundary, otherwise the rebuilt remote members re-expose cron
-            # tools inside a cron execution session (nested cron, issue #5116).
-            request_metadata = dict(request_metadata or {})
-            request_metadata["cron"] = dict(assembly_cron_meta)
+        request_metadata = _kickoff_request_metadata(
+            assembly_mode=assembly_mode,
+            assembly_project_dir=assembly_project_dir,
+            assembly_cron_meta=assembly_cron_meta,
+            assembly_cron_session=assembly_cron_session,
+        )
         leader_team_agent = await team_manager.get_or_create_team(
             sid,
             deep_agent,
@@ -2747,9 +2841,12 @@ async def apply_bootstrap_envelope_from_control_plane(
     # teammate's auxiliary leader is rebuilt provider-style with the same mode.
     # ``cron`` is the scheduler's cron execution marker: it must reach the
     # kickoff loop so a remote member of a team cron run stays cron-gated.
+    # ``cron_session`` is the session-level ownership for turns not fired by the
+    # scheduler; it gates cron tools without claiming this round is unattended.
     assembly_mode = str(envelope.get("mode", "")).strip()
     assembly_project_dir = str(envelope.get("project_dir", "")).strip()
     assembly_cron_meta = envelope.get("cron")
+    assembly_cron_session = envelope.get("cron_session")
 
     logger.info(
         "[RemoteMemberBootstrap] teammate received direct bootstrap team=%s session_id=%s "
@@ -2799,6 +2896,7 @@ async def apply_bootstrap_envelope_from_control_plane(
                 assembly_mode=assembly_mode,
                 assembly_project_dir=assembly_project_dir,
                 assembly_cron_meta=assembly_cron_meta,
+                assembly_cron_session=assembly_cron_session,
                 **manager_kwargs,
             )
             if kicked:

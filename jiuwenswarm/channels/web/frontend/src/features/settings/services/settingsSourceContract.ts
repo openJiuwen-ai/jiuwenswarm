@@ -1,5 +1,6 @@
 import type { SettingValue, SettingsSource } from '../registry/types';
 import { SETTINGS_CONFIG_FIELD_BY_KEY } from './settingsContract';
+import { MULTIMODAL_CAPABILITIES } from './multimodalSettings';
 
 type SimpleSettingComponent = 'switch' | 'select' | 'input';
 
@@ -12,10 +13,11 @@ const BROWSER_SETTING_COMPONENTS = new Map<string, SimpleSettingComponent>([
 const LOCALE_SETTING_COMPONENTS = new Map<string, SimpleSettingComponent>([['preferred_language', 'select']]);
 
 export function isSettingsSource(value: unknown): value is SettingsSource {
-  return value === 'config' || value === 'browser' || value === 'locale' || value === 'personalContext';
+  return value === 'config' || value === 'browser' || value === 'locale' || value === 'personalContext' || value === 'multimodal';
 }
 
 export function isSettingsSourceKey(source: SettingsSource, key: string): boolean {
+  if (source === 'multimodal') return MULTIMODAL_CAPABILITIES.some((tool) => key === `${tool}_enabled` || key === `${tool}_model_id`);
   if (source === 'config') return SETTINGS_CONFIG_FIELD_BY_KEY.has(key);
   if (source === 'browser') return BROWSER_SETTING_COMPONENTS.has(key);
   if (source === 'locale') return LOCALE_SETTING_COMPONENTS.has(key);
@@ -28,6 +30,8 @@ export function isSettingsSourceComponent(
   key: string,
   component: SimpleSettingComponent,
 ): boolean {
+  if (source === 'multimodal') return isSettingsSourceKey(source, key)
+    && ((key.endsWith('_enabled') && component === 'switch') || (key.endsWith('_model_id') && component === 'select'));
   if (source === 'browser') return BROWSER_SETTING_COMPONENTS.get(key) === component;
   if (source === 'locale') return LOCALE_SETTING_COMPONENTS.get(key) === component;
   if (source === 'personalContext') return key === 'max_context_size_mb' && component === 'input';

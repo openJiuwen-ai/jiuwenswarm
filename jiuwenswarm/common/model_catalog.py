@@ -161,6 +161,9 @@ class ModelCatalog:
         # Normalize only the response; retain the original persisted values.
         client["model_name"] = str(client.get("model_name") or "")
         client["api_base"] = str(client.get("api_base") or "")
+        for key in ("vendor_key", "plan"):
+            if not client.get(key) and key in entry:
+                client[key] = entry[key]
         entry["model_client_config"] = client
         write_only_fields: list[str] = []
         if isinstance(client, dict):

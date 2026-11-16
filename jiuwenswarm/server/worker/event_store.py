@@ -53,6 +53,9 @@ class DispatchRecord:
     entered_at_ns: int | None = None
     interactions: dict[str, dict[str, Any]] = field(default_factory=dict)
     terminal: dict[str, Any] | None = None
+    delivery_generation: int | None = None
+    completion: dict[str, Any] | None = None
+    expired_sequence: int = 0
 
     @property
     def is_passive_subscription(self) -> bool:
@@ -209,6 +212,9 @@ class WorkerEventStore:
             _expired_scope, expired, expired_size = self._frames.popleft()
             self._expired_sequence = expired["sequence"]
             self._bytes -= expired_size
+            expired_record = self.records.get(expired["dispatch_id"])
+            if expired_record is not None:
+                expired_record.expired_sequence = expired["sequence"]
         if record:
             body = wire.get("body") or wire.get("payload") or {}
             if isinstance(body, dict):

@@ -707,12 +707,20 @@ def runtime_owner_alive(owner: dict) -> bool:
                     "OPERATION_IN_PROGRESS",
                     "cannot verify the previous runtime owner",
                 )
-            return int(current_start_ticks) == int(owner_start_ticks)
-        if "started_at" in owner:
-            return abs(process.create_time() - owner["started_at"]) < 0.01
-        raise LifecycleError(
-            "OPERATION_IN_PROGRESS", "cannot verify the previous runtime owner"
-        )
+            if int(current_start_ticks) != int(owner_start_ticks):
+                return False
+        elif "started_at" in owner:
+            if abs(process.create_time() - owner["started_at"]) >= 0.01:
+                return False
+        else:
+            raise LifecycleError(
+                "OPERATION_IN_PROGRESS", "cannot verify the previous runtime owner"
+            )
+        status = process.status()
+        if status == psutil.STATUS_ZOMBIE:
+            # A zombie group leader may still have threads owning writers.
+            return process.num_threads() > 1
+        return status != psutil.STATUS_DEAD
     except psutil.NoSuchProcess:
         return False
     except psutil.AccessDenied as exc:

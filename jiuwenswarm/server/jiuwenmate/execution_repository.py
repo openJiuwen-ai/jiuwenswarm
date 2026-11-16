@@ -91,6 +91,13 @@ CREATE TABLE IF NOT EXISTS executions (
     PRIMARY KEY (namespace_id, execution_id)
 );
 CREATE INDEX IF NOT EXISTS executions_by_request ON executions (namespace_id, request_id, started_at);
+CREATE TABLE IF NOT EXISTS execution_runtime_specs (
+    namespace_id TEXT NOT NULL,
+    execution_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    PRIMARY KEY (namespace_id, execution_id)
+);
 CREATE TABLE IF NOT EXISTS execution_events (
     namespace_id TEXT NOT NULL,
     event_id TEXT NOT NULL,
@@ -259,6 +266,37 @@ class ExecutionRepository(SQLiteStore):
         return ExecutionRecord(
             request_id=row["request_id"], execution_id=row["execution_id"], recovery_ref=row["recovery_ref"]
         )
+
+    def bind_runtime_fingerprint(self, namespace_id: str, request_id: str, execution_id: str,
+                                 fingerprint: str) -> None:
+        """Pin the validated runtime Spec, independently of the published configuration identity."""
+        if not isinstance(fingerprint, str) or re.fullmatch(r"[a-f0-9]{64}", fingerprint) is None:
+            raise PersistentAgentError("invalid runtime fingerprint")
+        with self._transaction() as conn:
+            execution = conn.execute(
+                "SELECT 1 FROM executions WHERE namespace_id=? AND request_id=? AND execution_id=?",
+                (namespace_id, request_id, execution_id),
+            ).fetchone()
+            if execution is None:
+                raise PersistentAgentError("runtime Spec does not belong to this Execution", code="NOT_FOUND")
+            conn.execute("INSERT OR IGNORE INTO execution_runtime_specs VALUES (?, ?, ?, ?)",
+                         (namespace_id, execution_id, request_id, fingerprint))
+            row = conn.execute(
+                "SELECT request_id,fingerprint FROM execution_runtime_specs WHERE namespace_id=? AND execution_id=?",
+                (namespace_id, execution_id),
+            ).fetchone()
+            if (row["request_id"], row["fingerprint"]) != (request_id, fingerprint):
+                raise PersistentAgentError("Execution runtime Spec changed", code="CONFLICT")
+
+    def runtime_fingerprint(self, namespace_id: str, request_id: str, execution_id: str) -> str | None:
+        """Read only the Spec bound to the exact original request and execution."""
+        with self._transaction(write=False) as conn:
+            row = conn.execute(
+                "SELECT fingerprint FROM execution_runtime_specs "
+                "WHERE namespace_id=? AND request_id=? AND execution_id=?",
+                (namespace_id, request_id, execution_id),
+            ).fetchone()
+        return row["fingerprint"] if row is not None else None
 
     def resolve_session(
         self, namespace_id: str, agent_id: str, conversation: ConversationRef, *, now: datetime
@@ -1164,6 +1202,8 @@ class ExecutionRepository(SQLiteStore):
                 raise PersistentAgentError("result delivery not found", code="NOT_FOUND")
             if row["status"] not in {"pending", "sending", "unknown", "delivered"}:
                 raise PersistentAgentError("result delivery cannot be replaced", code="CONFLICT")
+            if row["notice_text"] == notice_text and row["file_key"] is None and row["handoff_done"] == 1:
+                return
             snapshot = (
                 json.dumps(_notice_delivery_job(json.loads(row["job_json"]), notice_text), ensure_ascii=False)
                 if row["job_json"] else None

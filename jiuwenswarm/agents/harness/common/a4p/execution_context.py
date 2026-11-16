@@ -43,8 +43,13 @@ class AuthorizationExecutionContext:
     user_id: str = ""
 
     @property
+    def is_cron_execution(self) -> bool:
+        """Identify unattended execution from current request metadata."""
+        return bool(self.metadata.get("cron"))
+
+    @property
     def is_interactive_web(self) -> bool:
-        return self.channel_id == "web" and self.authorizer_route is not None
+        return not self.is_cron_execution and self.channel_id == "web" and self.authorizer_route is not None
 
 
 @dataclass(frozen=True)
@@ -148,7 +153,8 @@ def build_authorization_execution_context(
     req_method = getattr(request, "req_method", None)
     req_method_value = str(getattr(req_method, "value", req_method) or "").strip()
     is_background_request = (
-        req_method_value in {"command.goal", "proactive.tick"}
+        bool(metadata.get("cron"))
+        or req_method_value in {"command.goal", "proactive.tick"}
         or params.get("attach_goal") is True
     )
     route = None

@@ -623,6 +623,30 @@ def _resolve_final_record_timestamp(
     return segment_started_at
 
 
+async def persist_cancelled_llm_usage(
+    chunk: AgentResponseChunk, *, request: AgentRequest, session_id: str,
+) -> None:
+    """Preserve an accepted usage event when its output consumer has closed."""
+    payload = chunk.payload
+    extra = {key: value for key, value in payload.items() if key not in ("event_type", "content")}
+    params = request.params if isinstance(request.params, dict) else {}
+    extra = with_cross_session_history_metadata(
+        _with_heartbeat_history_metadata(
+            _with_web_agent_template_metadata(
+                extra, params, request.channel_id, event_type="chat.usage_metadata", payload=payload,
+            ), params,
+        ), _cross_session_marker_from_params(params),
+    ) or {}
+    timestamp = resolve_final_record_timestamp(
+        event_type="chat.usage_metadata", segment_started_at=None, extra_fields=extra,
+    )
+    await _run_history_io(
+        append_history_record, session_id=session_id, request_id=request.request_id,
+        channel_id=request.channel_id, role="assistant", event_type="chat.usage_metadata",
+        content="", timestamp=timestamp, extra=extra, mode=params.get("mode", "unknown"),
+    )
+
+
 def _history_media_string(item: dict[str, Any], *keys: str) -> str | None:
     for key in keys:
         value = item.get(key)
@@ -2081,11 +2105,16 @@ class JiuWenSwarm:
         # One turn, one renderer: single-agent and team both deliver
         # ``turn.render()``. The team path additionally keeps ``turn.text`` to
         # parse directives / ``$member`` routing before it renders.
+        files = params.get("files") or {}
+        if request_channel == "web" and not cross_session_turn and isinstance(files, dict):
+            from jiuwenswarm.server.runtime.attachments.video_attachments import video_upload_prompt_files
+
+            files = video_upload_prompt_files(files, request.session_id)
         turn = UserTurn(
             text=query,
             channel=channel,
             language=language,
-            files=params.get("files", {}) or {},
+            files=files,
             trusted_dirs=trusted_dirs,
             skills=skills,
             metadata=metadata,
@@ -2177,6 +2206,10 @@ class JiuWenSwarm:
         # Only Host-authenticated provenance may select Agent/tool input. Never
         # trust a client-supplied copy inside the SDK's extensible run context.
         run_extra = inputs["run"]["context"]["extra"]
+        # Explicit selectors belong to this turn, not history or a reused run
+        # context. Keep the prompt and routing on the same parsing rules, and
+        # clear stale nested selections even when this turn selects nothing.
+        run_extra["skills"] = turn.resolved_skills
         run_extra.pop(SESSION_MESSAGE_INTERNAL_KEY, None)
         cross_session = metadata.get(SESSION_MESSAGE_INTERNAL_KEY)
         if isinstance(cross_session, dict):

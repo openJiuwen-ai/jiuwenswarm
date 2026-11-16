@@ -286,6 +286,7 @@ for lazy_package in (
     "jiuwenswarm.agents.harness.common.rails",
     "jiuwenswarm.common.auth",
     "jiuwenswarm.agents.swarm",
+    "jiuwenswarm.server.client_attachments",
 ):
     lazy_runtime_submodules += collect_submodules(lazy_package)
 

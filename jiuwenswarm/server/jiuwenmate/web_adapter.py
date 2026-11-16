@@ -19,8 +19,9 @@ import logging
 import threading
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from openjiuwen.harness.persistent_agent import AgentEvent, EventType
 
@@ -129,6 +130,18 @@ _RUNTIME_METHODS = frozenset(
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _viewer_zone(params: Mapping[str, Any]) -> tzinfo:
+    """The browser's zone for activity buckets; Windows may lack tzdata, so the offset is the fallback."""
+    name = params.get("timezone")
+    if isinstance(name, str) and name:
+        with suppress(ZoneInfoNotFoundError, ValueError):
+            return ZoneInfo(name)
+    offset = params.get("utc_offset_minutes")
+    if isinstance(offset, int) and not isinstance(offset, bool) and -14 * 60 <= offset <= 14 * 60:
+        return timezone(timedelta(minutes=offset))
+    return timezone.utc
 
 
 def _bound_apps() -> dict[str, set[tuple[str, str]]]:
@@ -756,7 +769,11 @@ class JiuwenMateWebAdapter(GatewayAdapter):
             )
             return report
         if method == ReqMethod.JIUWENMATE_ACTIVITY_GET.value:
-            report = await asyncio.to_thread(ActivityQuery(manager.db_path).report, WEB_NAMESPACE, now=_utc_now())
+            report = await asyncio.to_thread(
+                ActivityQuery(manager.db_path).report,
+                WEB_NAMESPACE,
+                now=_utc_now().astimezone(_viewer_zone(params)),
+            )
             return {"activity": report}
         if method == ReqMethod.JIUWENMATE_SCHEDULE_LIST.value:
             agent_id = params.get("agent_id")

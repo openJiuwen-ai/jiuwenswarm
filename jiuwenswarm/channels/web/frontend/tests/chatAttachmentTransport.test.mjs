@@ -41,7 +41,10 @@ for (const [key, value] of Object.entries({
 after(() => dom.window.close());
 
 const { useWebSocket } = await import('../node_modules/.cache/permission-answer-transport/hooks/useWebSocket.js');
-const { useChatStore, useSessionStore } = await import('../node_modules/.cache/permission-answer-transport/stores/index.js');
+const { useChatStore, useSessionStore, useTeamSelectorStore } = await import('../node_modules/.cache/permission-answer-transport/stores/index.js');
+const { setTeamOrganizationUiEnabled } = await import(
+  '../node_modules/.cache/permission-answer-transport/features/teamOrganization/featureConfig.js'
+);
 const { default: i18n } = await import('../node_modules/.cache/permission-answer-transport/i18n/index.js');
 const { webClient } = await import('../node_modules/.cache/permission-answer-transport/services/webClient.js');
 const { registerMcpAppInstance, updateMcpAppContext } =
@@ -132,6 +135,77 @@ for (const kinds of [Array(20).fill('image'), Array(20).fill('document'), ['imag
     assert.deepEqual(observed.errors, []);
   }));
 }
+test('an explicit video attachment is persisted as a file before chat.send', async () => mounted(async ({ observed, socket }) => {
+  const video = item('video', 1, { filename: 'demo.mp4', mimeType: 'video/mp4', base64Data: 'AAECAw==', sizeBytes: 4 });
+  let result;
+  await act(async () => { result = observed.api.sendMessage('请记住这个视频', sessionId, [video]); });
+  const upload = socket.requests.at(-1);
+  assert.equal(upload.method, 'document.persist');
+  assert.equal(upload.params.documents[0].base64_data, video.base64Data);
+  assert.equal(upload.params.documents[0].mime_type, 'video/mp4');
+  await respond(socket, upload, persisted(upload));
+  const send = socket.requests.at(-1);
+  assert.equal(send.method, 'chat.send');
+  assert.deepEqual(send.params.files.uploaded_documents, [{
+    filename: 'demo.mp4', path: '/uploads/demo.mp4', mime_type: 'video/mp4', size_bytes: 4,
+  }]);
+  assert.ok(!('base64_data' in send.params.media_items[0]));
+  assert.ok(!('base64Data' in send.params.media_items[0]));
+  await respond(socket, socket.requests.find(r => r.method === 'session.assets.register'), { items: [] });
+  await respond(socket, send, { accepted: true });
+  assert.equal(await result, true);
+}));
+test('ordinary chat preserves the type of videos with an existing path', async () => mounted(async ({ observed, socket }) => {
+  const video = item('video', 1, { filename: 'demo.mp4', mimeType: 'video/mp4', path: '/local/demo.mp4', base64Data: undefined });
+  let result;
+  await act(async () => { result = observed.api.sendMessage('inspect', sessionId, [video]); });
+  const send = socket.requests.at(-1);
+  assert.equal(send.method, 'chat.send');
+  assert.equal(send.params.media_items[0].type, 'video');
+  assert.equal(send.params.media_items[0].path, video.path);
+  assert.equal(send.params.files?.uploaded_documents, undefined);
+  assert.equal(send.params.content, 'inspect');
+  assert.ok(!socket.requests.some(request => request.method.endsWith('.persist')));
+  await respond(socket, socket.requests.find(r => r.method === 'session.assets.register'), { items: [] });
+  await respond(socket, send, { accepted: true });
+  assert.equal(await result, true);
+}));
+
+test('expert chat uploads pending videos and preserves videos already on disk', async () => mounted(async ({ observed, socket }) => {
+  const teamId = 'expert-video-team';
+  const initialRuntimes = useTeamSelectorStore.getState().runtimes;
+  setTeamOrganizationUiEnabled(true);
+  useTeamSelectorStore.setState({
+    runtimes: { ...initialRuntimes, [sessionId]: { selectedTeamId: teamId, teams: [{ team_id: teamId }] } },
+  });
+  try {
+    const pending = item('video', 1, { filename: 'demo.mp4', mimeType: 'video/mp4' });
+    const ready = item('video', 2, { filename: 'ready.mp4', mimeType: 'video/mp4', path: '/local/ready.mp4' });
+    let result;
+    await act(async () => { result = observed.api.sendMessage('inspect', sessionId, [pending, ready]); });
+    const upload = socket.requests.at(-1);
+    assert.equal(upload.method, 'document.persist');
+    assert.equal(upload.params.documents.length, 1);
+    assert.equal(upload.params.documents[0].base64_data, pending.base64Data);
+    const reply = persisted(upload);
+    const uploaded = reply.media_items[0];
+    await respond(socket, upload, { ...reply, files: { uploaded_documents: [uploaded] } });
+    const send = socket.requests.at(-1);
+    assert.equal(send.method, 'chat.send');
+    assert.equal(send.params.target_team_id, teamId);
+    assert.deepEqual(send.params.files.uploaded_documents, [uploaded]);
+    assert.equal(send.params.media_items[1].type, 'video');
+    assert.equal(send.params.media_items[1].path, ready.path);
+    assert.ok(send.params.content.includes(uploaded.path));
+    assert.ok(!send.params.content.includes(ready.path));
+    await respond(socket, send, { accepted: true });
+    assert.equal(await result, true);
+  } finally {
+    setTeamOrganizationUiEnabled(false);
+    useTeamSelectorStore.setState({ runtimes: initialRuntimes });
+  }
+}));
+
 test('ready local paths are reused while unpersisted content is uploaded', async () => mounted(async ({ observed, socket }) => {
   const items = [item('document', 1, { path: '/local/large.txt', base64Data: undefined, sizeBytes: 101 * 1024 ** 2 }), item('image', 2)];
   let result;

@@ -204,12 +204,50 @@ test('the persona save button stays mounted after saving and permits retry after
     assert.deepEqual(saved, [{ persona: '更新后的人设' }]);
     assert.equal(view.container.querySelector('.jiuwenmate-profile__save-button'), button);
     assert.equal(button.disabled, true);
+    assert.equal(button.previousElementSibling?.dataset.testid, 'jiuwenmate-profile-saved-notice');
     fail = true;
     await changePersona('再次修改的人设');
     await act(async () => button.click());
+    assert.equal(view.container.querySelector('[data-testid="jiuwenmate-profile-saved-notice"]'), null);
     assert.equal(button.disabled, false);
     assert.match(view.find('settings-error').textContent, /Persona save failed/);
     assert.equal(view.container.querySelector('.jiuwenmate-profile__persona-editor textarea').value, '再次修改的人设');
+  } finally {
+    await view.close();
+  }
+});
+
+test('starter prompts are edited on the persona page with a limit of three and duplicate hints', async () => {
+  const saved = [];
+  const view = await mountProfile({
+    colleague: { ...colleague, capabilities: { ...colleague.capabilities, starterPrompts: ['写周报'] } },
+    initialSection: 'persona',
+    onSaveSettings: async (edit) => { saved.push(edit); },
+  });
+  const inputs = () => [...view.container.querySelectorAll('[data-testid="jiuwenmate-starter-prompt-input"]')];
+  const type = async (input, value) => {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, value);
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+  };
+  const add = () => view.container.querySelector('[data-testid="jiuwenmate-starter-prompts-add"]');
+  const save = () => view.container.querySelector('.jiuwenmate-profile__save-button');
+  try {
+    assert.deepEqual(inputs().map((input) => input.value), ['写周报']);
+    await act(async () => add().click());
+    await type(inputs()[1], ' 写周报 ');
+    assert.ok(view.container.querySelector('[data-testid="jiuwenmate-starter-prompt-duplicate"]'));
+    assert.equal(save().disabled, true, 'A duplicate that collapses to the saved list is not a change');
+
+    await type(inputs()[1], '写月报');
+    assert.equal(view.container.querySelector('[data-testid="jiuwenmate-starter-prompt-duplicate"]'), null);
+    await act(async () => add().click());
+    await type(inputs()[2], '总结会议');
+    assert.equal(add().disabled, true);
+    assert.equal(save().disabled, false);
+    await act(async () => save().click());
+    assert.deepEqual(saved.at(-1)?.starterPrompts, ['写周报', '写月报', '总结会议']);
   } finally {
     await view.close();
   }
@@ -234,6 +272,16 @@ test('the overview keeps DingTalk setup until DingTalk is also configured', () =
   assert.doesNotMatch(channels, /data-testid="jiuwenmate-profile-im-revoke"[^>]*data-variant="feishu"/);
   assert.match(channels, /data-testid="jiuwenmate-profile-im-revoke"[^>]*data-variant="welink"/);
   assert.match(channels, />取消授权</);
+
+  const withNotice = renderProfile({
+    initialSection: 'channels',
+    colleague: authorized,
+    imNotice: { platform: 'feishu', text: '解除连接成功' },
+  });
+  assert.match(
+    withNotice,
+    /data-testid="jiuwenmate-profile-im-notice"[^>]*data-variant="feishu"[^>]*>解除连接成功<\/small>\s*<button[^>]*data-testid="jiuwenmate-profile-im-authorize"/,
+  );
 
   const pendingDingTalk = renderProfile({ colleague: authorized });
   assert.match(pendingDingTalk, /data-testid="jiuwenmate-profile-quick-im"/);
@@ -1318,12 +1366,63 @@ test('the overview shows the employee activity instead of an empty log', () => {
   assert.doesNotMatch(markup, /暂无执行记录/);
 });
 
+test('a legacy long description stays intact and must be shortened to 200 characters before saving', async () => {
+  const description = '1'.repeat(2000);
+  const saved = [];
+  const view = await mountProfile({
+    colleague: { ...colleague, description },
+    initialSection: 'overview',
+    onSaveSettings: async (edit) => { saved.push(edit); },
+  });
+  try {
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__description').textContent, description);
+    await view.click('edit');
+    const editor = view.find('identity-editor');
+    const input = editor.querySelector('textarea');
+    assert.equal(input.value, description);
+    assert.equal(input.hasAttribute('maxlength'), false, 'Legacy descriptions must remain editable above the save limit');
+    const save = editor.querySelector('.jiuwenmate-dark-button');
+    assert.equal(save.disabled, true);
+    assert.equal(input.getAttribute('aria-invalid'), 'true');
+    assert.match(view.find('description-limit-error').textContent, /200/);
+    assert.equal(view.find('description-count').textContent, '2000/200');
+    await act(async () => save.click());
+    assert.equal(saved.length, 0);
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__description'), null);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(input, description + ' edited');
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+    assert.equal(input.value, description + ' edited', 'Editing must not silently truncate legacy content');
+    assert.equal(save.disabled, true, 'Editing over-limit content must not bypass save validation');
+    const updated = '2'.repeat(200);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(input, `  ${updated}  `);
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+    assert.equal(view.find('description-count').textContent, '200/200');
+    assert.equal(view.find('description-limit-error'), null);
+    assert.equal(input.getAttribute('aria-invalid'), 'false');
+    assert.equal(save.disabled, false);
+    await act(async () => save.click());
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].description, updated);
+    assert.equal(view.find('identity-editor'), null);
+    await view.rerender({ colleague: { ...colleague, description: saved[0].description } });
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__description').textContent, updated);
+  } finally {
+    await view.close();
+  }
+});
+
 test('the pencil edits the current page and stays there', () => {
   const overview = renderProfile({ initialSection: 'overview', initialEditing: true });
   assert.match(overview, /aria-current="true"[^>]*data-variant="overview"/);
   assert.match(overview, /aria-label="编辑人设"/);
   assert.match(overview, /data-testid="jiuwenmate-profile-name-input"/);
   assert.doesNotMatch(overview, /data-testid="jiuwenmate-profile-detail"/);
+  assert.doesNotMatch(overview, /class="jiuwenmate-profile__description"/);
+  assert.match(renderProfile({ initialSection: 'overview' }), /class="jiuwenmate-profile__description"/);
 
   const model = renderProfile({
     initialSection: 'model',
@@ -1372,7 +1471,7 @@ test('channel reply mode renders a compact selected state and disables changes w
 });
 
 
-test('each bound app is listed with its own platform, and another app can be added', () => {
+test('each bound app is listed with its own platform without an add connection action', () => {
   const dingtalk = { channel: 'dingtalk', connectionKey: 'ding-app', agentId: 'agent-ding', workspaceDir: null };
   const markup = renderProfile({
     initialSection: 'channels',
@@ -1384,12 +1483,48 @@ test('each bound app is listed with its own platform, and another app can be add
   assert.match(markup, /data-testid="jiuwenmate-profile-connection" data-variant="cli-app"/);
   assert.match(markup, /data-testid="jiuwenmate-profile-connection" data-variant="ding-app"/);
   assert.equal(markup.match(/data-testid="jiuwenmate-profile-im-remove"/g).length, 2);
-  assert.match(markup, /data-testid="jiuwenmate-profile-im-add"/);
+  assert.doesNotMatch(markup, /data-testid="jiuwenmate-profile-im-add"/);
+  assert.equal(markup.match(/data-testid="jiuwenmate-profile-im-modify"/g).length, 2);
   assert.doesNotMatch(markup, /data-testid="jiuwenmate-profile-quick-im"/);
 
   const unbound = renderProfile({ initialSection: 'channels' });
   assert.doesNotMatch(unbound, /data-testid="jiuwenmate-profile-connection"/);
   assert.match(unbound, />授权</);
+});
+
+test('a bound platform hides authorization while other platforms remain available', () => {
+  const markup = renderProfile({
+    initialSection: 'channels',
+    colleague: { ...colleague, connections: [...colleague.connections, feishuConnection] },
+  });
+  const document = new JSDOM(markup).window.document;
+  const platform = (name) => document.querySelector('[data-testid="jiuwenmate-profile-im-platform"][data-variant="' + name + '"]');
+  assert.equal(platform('feishu').querySelector('[data-testid="jiuwenmate-profile-im-add"]'), null);
+  assert.equal(platform('feishu').querySelector('[data-testid="jiuwenmate-profile-im-authorize"]'), null);
+  assert.ok(platform('feishu').querySelector('[data-testid="jiuwenmate-profile-im-modify"]'));
+  assert.ok(platform('feishu').querySelector('[data-testid="jiuwenmate-profile-im-remove"]'));
+  assert.ok(platform('dingtalk').querySelector('[data-testid="jiuwenmate-profile-im-authorize"]'));
+
+  const unbound = new JSDOM(renderProfile({ initialSection: 'channels' })).window.document;
+  assert.ok(unbound.querySelector('[data-variant="feishu"] [data-testid="jiuwenmate-profile-im-authorize"]'));
+});
+
+test('duplicate starter prompts prevent saving a changed prompt list', async () => {
+  const view = await mountProfile({
+    initialSection: 'persona',
+    colleague: { ...colleague, capabilities: { ...colleague.capabilities, starterPrompts: ['写周报', '写月报'] } },
+  });
+  try {
+    const input = view.container.querySelectorAll('[data-testid="jiuwenmate-starter-prompt-input"]')[1];
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, ' 写周报 ');
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+    assert.ok(view.container.querySelector('[data-testid="jiuwenmate-starter-prompt-duplicate"]'));
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__save-button').disabled, true);
+  } finally {
+    await view.close();
+  }
 });
 
 
@@ -1768,23 +1903,40 @@ async function mountDashboard(extra = {}) {
   };
 }
 
-test('creating a task center schedule without an executor explains why nothing was saved', async () => {
-  const created = [];
-  const view = await mountDashboard({ onCreateSchedule: (...args) => { created.push(args); } });
-  try {
-    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
-    await view.click(view.find('.jiuwenmate-schedule-board .jiuwenmate-dark-button'));
-    await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
-    assert.deepEqual(created, []);
-    assert.equal(view.find('[data-testid="jiuwenmate-schedule-dialog"] [role="alert"]')?.textContent, '请选择执行者');
-    const executor = view.find('[data-testid="jiuwenmate-schedule-executor"]');
-    await act(async () => {
-      executor.value = 'agent-1';
-      executor.dispatchEvent(new window.Event('change', { bubbles: true }));
-    });
-    assert.equal(view.find('[data-testid="jiuwenmate-schedule-dialog"] [role="alert"]'), null);
-  } finally { await view.close(); }
-});
+for (const [language, message] of [
+  ['zh', '请选择执行此任务的员工'],
+  ['en', 'Select an AI employee to run this task.'],
+]) {
+  test(`a missing schedule executor shows a focused field error and clears after selection in ${language}`, async () => {
+    await i18n.changeLanguage(language);
+    const created = [];
+    const view = await mountDashboard({ onCreateSchedule: (...args) => { created.push(args); } });
+    try {
+      await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+      await view.click(view.find('.jiuwenmate-schedule-board .jiuwenmate-dark-button'));
+      const executor = view.find('[data-testid="jiuwenmate-schedule-executor"]');
+      assert.equal(executor.getAttribute('aria-invalid'), null);
+      await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+      assert.deepEqual(created, []);
+      const error = view.find('[data-testid="jiuwenmate-schedule-executor-error"]');
+      assert.ok(error, 'The missing executor error must be attached to its field');
+      assert.equal(error.textContent, message);
+      assert.equal(error.getAttribute('role'), 'alert');
+      assert.equal(error.parentElement, executor.parentElement);
+      assert.equal(executor.getAttribute('aria-invalid'), 'true');
+      assert.equal(executor.getAttribute('aria-describedby'), error.id);
+      assert.equal(executor.ownerDocument.activeElement, executor);
+      assert.equal(view.container.querySelectorAll('[role="alert"]').length, 1);
+      await act(async () => {
+        executor.value = 'agent-1';
+        executor.dispatchEvent(new window.Event('change', { bubbles: true }));
+      });
+      assert.equal(view.find('[data-testid="jiuwenmate-schedule-executor-error"]'), null);
+      assert.equal(executor.getAttribute('aria-invalid'), null);
+      assert.equal(executor.getAttribute('aria-describedby'), null);
+    } finally { await view.close(); await i18n.changeLanguage('zh'); }
+  });
+}
 
 test('the task center runs the scheduled task whose menu was opened', async () => {
   const runs = [];
@@ -1848,6 +2000,95 @@ for (const [language, expected] of [['zh', '已过期'], ['en', 'Expired']]) {
       assert.ok(history);
       assert.deepEqual([...history.querySelectorAll('.jiuwenmate-schedule-history__status')].map(item => item.textContent),
         language === 'zh' ? ['已完成', '运行失败'] : ['Completed', 'Failed']);
+    } finally { await view.close(); await i18n.changeLanguage('zh'); }
+  });
+}
+
+
+async function changeScheduleField(view, selector, value) {
+  const field = view.find(selector);
+  assert.ok(field, `Missing schedule field ${selector}`);
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field), 'value').set.call(field, value);
+    const Event = field.ownerDocument.defaultView.Event;
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+
+for (const language of ['zh', 'en']) {
+  test(`schedule required fields highlight and independently clear on correction in ${language}`, async () => {
+    await i18n.changeLanguage(language);
+    const created = [];
+    const view = await mountDashboard({ onCreateSchedule: (...args) => { created.push(args); } });
+    try {
+      await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+      await view.click(view.find('.jiuwenmate-schedule-board .jiuwenmate-dark-button'));
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-executor"]', 'agent-1');
+      const name = view.find('[data-testid="jiuwenmate-schedule-name"]');
+      const prompt = view.find('[data-testid="jiuwenmate-schedule-prompt"]');
+      await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+      assert.equal(name.getAttribute('aria-invalid'), 'true');
+      assert.equal(prompt.getAttribute('aria-invalid'), 'true');
+      assert.equal(name.ownerDocument.activeElement, name);
+      const nameError = name.ownerDocument.getElementById(name.getAttribute('aria-describedby'));
+      const promptError = prompt.ownerDocument.getElementById(prompt.getAttribute('aria-describedby'));
+      assert.equal(nameError.textContent, language === 'zh' ? '请输入任务名称' : 'Enter a task name.');
+      assert.equal(promptError.textContent, language === 'zh' ? '请输入任务描述' : 'Enter a task description.');
+      assert.equal(nameError.parentElement, name.parentElement);
+      assert.equal(promptError.parentElement, prompt.parentElement);
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-name"]', '   ');
+      assert.equal(name.getAttribute('aria-invalid'), 'true');
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-name"]', 'Drink water');
+      assert.equal(name.getAttribute('aria-invalid'), null);
+      assert.equal(prompt.getAttribute('aria-invalid'), 'true');
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-prompt"]', 'Take a short break');
+      assert.equal(prompt.getAttribute('aria-invalid'), null);
+      assert.equal(view.find('[data-testid="jiuwenmate-schedule-dialog"] [role="alert"]'), null);
+      assert.deepEqual(created, []);
+      await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+      assert.equal(created.length, 1);
+      assert.equal(created[0][0], 'agent-1');
+    } finally { await view.close(); await i18n.changeLanguage('zh'); }
+  });
+
+  test(`schedule effective range stays highlighted until a valid or open-ended range is entered in ${language}`, async () => {
+    await i18n.changeLanguage(language);
+    const created = [];
+    const view = await mountDashboard({ onCreateSchedule: (...args) => { created.push(args); } });
+    try {
+      await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+      await view.click(view.find('.jiuwenmate-schedule-board .jiuwenmate-dark-button'));
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-executor"]', 'agent-1');
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-name"]', 'Drink water');
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-prompt"]', 'Take a short break');
+      const startSelector = 'input[aria-label="' + i18n.t('jiuwenmate.schedule.startsOn') + '"]';
+      const endSelector = 'input[aria-label="' + i18n.t('jiuwenmate.schedule.endsOn') + '"]';
+      const start = view.find(startSelector);
+      const end = view.find(endSelector);
+      await changeScheduleField(view, startSelector, '2030-02-02');
+      await changeScheduleField(view, endSelector, '2030-02-01');
+      await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+      assert.equal(start.getAttribute('aria-invalid'), 'true');
+      assert.equal(end.getAttribute('aria-invalid'), 'true');
+      assert.equal(end.ownerDocument.activeElement, end);
+      const error = end.ownerDocument.getElementById(end.getAttribute('aria-describedby'));
+      assert.equal(error.textContent, i18n.t('jiuwenmate.schedule.error.rangeInvalid'));
+      await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-name"]', 'Updated reminder');
+      assert.equal(end.getAttribute('aria-invalid'), 'true', 'Unrelated edits must not hide an invalid range');
+      await changeScheduleField(view, startSelector, '2030-01-31');
+      assert.equal(start.getAttribute('aria-invalid'), null);
+      assert.equal(end.getAttribute('aria-invalid'), null);
+      assert.equal(view.find('[data-testid="jiuwenmate-schedule-dialog"] [role="alert"]'), null);
+      await changeScheduleField(view, endSelector, '2029-12-31');
+      assert.equal(end.getAttribute('aria-invalid'), 'true');
+      await changeScheduleField(view, endSelector, '');
+      assert.equal(end.getAttribute('aria-invalid'), null, 'An omitted optional end remains valid');
+      await changeScheduleField(view, endSelector, '2030-01-31');
+      assert.equal(end.getAttribute('aria-invalid'), null, 'The same calendar day ends at 23:59');
+      assert.deepEqual(created, []);
+      await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+      assert.equal(created.length, 1);
     } finally { await view.close(); await i18n.changeLanguage('zh'); }
   });
 }

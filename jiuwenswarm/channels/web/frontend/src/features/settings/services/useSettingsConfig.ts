@@ -99,6 +99,7 @@ export function useSettingsConfig() {
         confirmedUpdates.current.set(key, { revision, value });
       }
       setConfig((current) => ({ ...current, ...visibleUpdates }));
+      window.dispatchEvent(new window.Event(SETTINGS_CONFIG_CHANGED_EVENT));
       return result;
     },
     [onRecommendationEnabledChange, request, saveQueue],

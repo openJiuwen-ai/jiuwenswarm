@@ -16,6 +16,10 @@ from jiuwenswarm.server.runtime.session import lifecycle as lc
 INLINE_BYTES = 64 * 1024
 PREVIEW_CHARS = 2048
 MAX_CHUNK_BYTES = 64 * 1024
+DISPLAY_METADATA_BYTES = 1024 * 1024
+ARTIFACT_CURSOR_PREFIX = "history-artifact:v1:"
+_ARTIFACT_CURSOR = re.compile(r"history-artifact:v1:([0-9a-f]{64}):(0|[1-9][0-9]{0,17})")
+_DISPLAY_FIELDS = ("status", "pending", "skill_tree", "beam_search", "planned_graph", "graph_status", "graph_build")
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 
 
@@ -132,12 +136,43 @@ def externalize_payload(session_id: str, payload: dict[str, Any], *, fields: Ite
             continue
         refs[key] = ref
         if key == "raw_output" and isinstance(value, dict):
-            result[key] = {"mcp_app": value["mcp_app"]} if "mcp_app" in value else {}
+            result[key] = _display_metadata(value)
         else:
             result[key] = f"{preview}\n[Full {key}: {ref['bytes']} bytes; artifact {ref['sha256']}; {ref['path']}]"
     if refs:
         result["payload_refs"] = refs
     return result
+
+
+def _display_metadata(value: dict[str, Any]) -> dict[str, Any]:
+    """Keep rich-tool projections within the existing raw-output wire budget."""
+    result = {"mcp_app": value["mcp_app"]} if "mcp_app" in value else {}
+    used = 2
+    for chunk in json_chunks(result):
+        used += len(chunk)
+        if used > DISPLAY_METADATA_BYTES:
+            return result
+    for key, item in _display_items(value):
+        size = len(key) + 4
+        for chunk in json_chunks(item):
+            size += len(chunk)
+            if used + size > DISPLAY_METADATA_BYTES:
+                break
+        if used + size <= DISPLAY_METADATA_BYTES:
+            result[key] = item
+            used += size
+    return result
+
+
+def _display_items(value: dict[str, Any]) -> Iterable[tuple[str, Any]]:
+    data = value.get("data")
+    if isinstance(data, dict):
+        states = {key: data[key] for key in ("status", "pending") if key in data}
+        if states:
+            yield "data", states
+    for key in _DISPLAY_FIELDS:
+        if key in value:
+            yield key, value[key]
 
 
 def externalize_history_record(session_id: str, record: dict[str, Any]) -> dict[str, Any]:
@@ -190,6 +225,22 @@ def _file_chunks(path: Path) -> Iterable[bytes]:
             if not chunk:
                 return
             yield chunk
+
+
+def read_artifact_cursor(session_id: str, cursor: str) -> dict[str, Any]:
+    """Read a chunk using the cursor field forwarded by existing Gateway routes."""
+    from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
+
+    match = _ARTIFACT_CURSOR.fullmatch(cursor)
+    if match is None:
+        raise HistoryReplayError("Invalid history artifact cursor", code="HISTORY_ARTIFACT_FAILED")
+    try:
+        chunk = read_artifact_chunk(session_id, match[1], offset=int(match[2]), max_bytes=8192)
+    except (OSError, ValueError, TypeError) as exc:
+        raise HistoryReplayError(str(exc), code="HISTORY_ARTIFACT_FAILED") from exc
+    return {"messages": [{"event_type": "history.artifact", **chunk}], "next_cursor": None,
+            "has_more": False, "snapshot_id": chunk["sha256"], "snapshot_end": chunk["bytes"],
+            "total_pages": 1, "page_idx": 1}
 
 
 def copy_history_artifacts(value: dict[str, Any], source_session_id: str, target_session_id: str) -> dict[str, Any]:

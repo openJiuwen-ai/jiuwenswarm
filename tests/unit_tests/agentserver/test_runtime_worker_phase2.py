@@ -218,7 +218,19 @@ async def test_ipc_request_stream_and_cancel() -> None:
 
 
 @pytest.mark.asyncio
-async def test_supervisor_stub_dispatches_stream_and_cancel() -> None:
+@pytest.mark.parametrize("startup_delay", [0, 10], ids=["normal", "slow-start"])
+async def test_supervisor_stub_dispatches_stream_and_cancel(monkeypatch, startup_delay) -> None:
+    from jiuwenswarm.server.supervisor.worker_process import WorkerProcess
+
+    original_spawn = WorkerProcess.spawn
+
+    async def spawn(process):
+        await asyncio.sleep(startup_delay)
+        await original_spawn(process)
+
+    monkeypatch.setattr(WorkerProcess, "spawn", spawn)
+    # Cold process startup has a different budget from dispatch after readiness.
+    startup_timeout = 30
     path = _socket_path()
     capture = _Capture()
     readiness = Readiness()
@@ -230,14 +242,17 @@ async def test_supervisor_stub_dispatches_stream_and_cancel() -> None:
         stub=True,
         stub_ready_delay=0.2,
         max_restarts=0,
+        connect_timeout=15,
     )
-    admission = ExecutionAdmission(readiness, forwarder=capture, wait_seconds=5)  # type: ignore[arg-type]
+    admission = ExecutionAdmission(
+        readiness, forwarder=capture, wait_seconds=startup_timeout,  # type: ignore[arg-type]
+    )
     admission.attach_backend(supervisor)
     boot = asyncio.create_task(supervisor.run_until_ipc_ready())
     chat = _request(ReqMethod.CHAT_SEND, is_stream=True)
     queued = asyncio.create_task(admission.dispatch(object(), chat, asyncio.Lock()))
     try:
-        await asyncio.wait_for(boot, 5)
+        await asyncio.wait_for(boot, startup_timeout)
         await asyncio.wait_for(queued, 5)
         assert readiness.state is ReadinessState.AGENT_READY
         assert supervisor.worker_for_session(chat.session_id) == "primary"

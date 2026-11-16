@@ -100,6 +100,27 @@
     "noSettings": "This plugin does not provide a settings page."
   },
   "designer": {
+    "modelConfiguration": {
+      "title": "Model configuration",
+      "help": "Choose the chat, video and image models for Design. Generation models apply to every design canvas.",
+      "addModel": "Add custom model",
+      "bindingHint": "Uses the model bound in Settings → Agent → Tools. View only; change it there.",
+      "bindingModel": "Currently bound model",
+      "chat": "Chat",
+      "video_gen": "Video generation",
+      "visual_gen": "Image generation",
+      "missing": "Not configured",
+      "incomplete": "Missing required fields",
+      "disabled": "Not enabled",
+      "problem": "{{name}}: {{status}}",
+      "separator": "; ",
+      "configure": "Configure",
+      "enable": "Enable",
+      "retry": "Reload",
+      "loading": "Loading model configuration…",
+      "notConfigured": "Generation models are not configured yet.",
+      "loadFailed": "Could not load generation model configuration. Please retry."
+    },
     "loading": "Loading design workflow…",
     "emptyTitle": "No design workflow yet",
     "emptyDescription": "Describe a project to create a dedicated Design workspace and workflow.",
@@ -109,9 +130,9 @@
     "models": {
       "chatMissing": "Chat model is not configured. Configure a model in Settings before using Design.",
       "videoOff": "Video generation is switched off in Settings > Agent.",
-      "videoMissing": "Video generation is not configured: set the API URL, API key and model in Settings > Agent.",
+      "videoMissing": "No video generation model yet. Add one in Settings → Models → Multimodal before using Design.",
       "imageOff": "Image generation is switched off in Settings > Agent.",
-      "imageMissing": "Image generation is not configured: set the API URL, API key and model in Settings > Agent.",
+      "imageMissing": "No image generation model yet. Add one in Settings → Models → Multimodal before using Design.",
       "lockedHint": "This design runs on the model it was started with. Switching the model is not available on the canvas.",
       "notSelected": "No model",
       "openModelSettings": "Open Settings"
@@ -137,6 +158,7 @@
       "send": "Send",
       "running": "The design leader is working…",
       "stop": "Stop",
+      "stopping": "Stopping…",
       "stopError": "Could not stop. Please try again.",
       "attach": "Add reference media",
       "removeAttachment": "Remove reference",
@@ -434,6 +456,58 @@
     "qwenOnly": "Only Qwen full-duplex is currently supported. Configure Qwen Omni Realtime in Settings."
   },
   "settingsPanel": {
+    "multimodal": {
+      "tab": "Multimodal models",
+      "tabHelp": "Manage models for image, audio and video understanding, and image and video generation. Adjust tool switches and model bindings in Settings → Agent → Tools.",
+      "purpose": "Model purpose",
+      "capabilities": "Model capabilities",
+      "understanding": "Multimodal understanding",
+      "generation": "Multimodal generation",
+      "selectCapabilities": "Select model capabilities",
+      "capabilityHint": "Select only capabilities that this model supports.",
+      "displayName": "Model display name",
+      "displayNamePlaceholder": "Defaults to the model name; you can change it",
+      "nameInvalid": "Enter a model display name between 1 and 100 characters",
+      "completeFields": "Complete the required model configuration fields.",
+      "add": "Add multimodal model",
+      "edit": "Edit multimodal model",
+      "deleteTitle": "Delete model?",
+      "changeTitle": "Change model capabilities?",
+      "confirmDelete": "Delete",
+      "confirmChanges": "Confirm changes",
+      "deleteReferences": "This model is used by: {{tools}}.",
+      "editReferences": "This change affects the model selections for: {{tools}}.",
+      "replacementRule": "After confirmation, affected tools will switch to another matching model and keep their current on/off state. Tools without a matching model will be turned off and their model configuration cleared.",
+      "deleteUnbound": "This model will be removed from the multimodal model list.",
+      "applyFailed": "Saved, but could not be applied. Please retry.",
+      "shortcutChanged": "Model added. It does not include {{tool}}, so this tool’s settings are unchanged.",
+      "separator": ", ",
+      "empty": "No multimodal models configured",
+      "emptyDescription": "Add a model and select its capabilities. Matching tools without a selected model will be enabled automatically.",
+      "tools": {
+        "vision": "Image processing",
+        "audio": "Audio processing",
+        "video": "Video understanding",
+        "visual_gen": "Image generation",
+        "video_gen": "Video generation"
+      },
+      "errors": {
+        "MM_VALIDATION_FAILED": "Check the model configuration and complete all required fields.",
+        "MM_CONFIRM_REQUIRED": "Model references have changed. Confirm the affected tools again.",
+        "MM_MODEL_NOT_FOUND": "This model no longer exists. Select another model.",
+        "MM_MODEL_ID_CONFLICT": "The model ID is already in use. Reopen the add dialog.",
+        "MM_CAPABILITY_MISMATCH": "The selected model does not support this tool. Select another model.",
+        "MM_MODEL_REQUIRED": "Add a model with the required capability first.",
+        "MM_STORAGE_FAILED": "Could not save the configuration. Please retry.",
+        "MM_RECOVERY_REQUIRED": "The configuration transaction could not be recovered. Check the configuration files before retrying.",
+        "MM_NOT_CONFIGURED": "Multimodal models are not configured yet.",
+        "MM_CONFIG_READ_FAILED": "Could not read the model configuration. Check the files and credentials.",
+        "MM_UNSUPPORTED_SCHEMA": "This configuration version is unsupported. Update the components.",
+        "MM_LEGACY_WRITE_UNSUPPORTED": "Use Multimodal models to change this configuration.",
+        "METHOD_NOT_FOUND": "Component versions do not match. Update Gateway, the protocol package, and AgentServer.",
+        "unknown": "The operation failed. Please retry."
+      }
+    },
     "voice": {
       "connectionFailed": "Connection failed. Check the endpoint, API key and model, then try again.",
       "connectionSuccess": "Model connection verified",
@@ -873,6 +947,38 @@
       "requiredFields": "Fields marked * are required. Complete them to save. Saved API keys do not need to be entered again."
     },
     "fields": {
+      "vision_enabled": {
+        "title": "Image processing",
+        "description": "Use the selected model for this media type. Turning this off retains the model selection."
+      },
+      "audio_enabled": {
+        "title": "Audio processing",
+        "description": "Use the selected model for this media type. Turning this off retains the model selection."
+      },
+      "video_enabled": {
+        "title": "Video understanding",
+        "description": "Use the selected model for this media type. Turning this off retains the model selection."
+      },
+      "vision_model_id": {
+        "title": "Selected model",
+        "description": "Select a multimodal model with this capability"
+      },
+      "audio_model_id": {
+        "title": "Selected model",
+        "description": "Select a multimodal model with this capability"
+      },
+      "video_model_id": {
+        "title": "Selected model",
+        "description": "Select a multimodal model with this capability"
+      },
+      "visual_gen_model_id": {
+        "title": "Selected model",
+        "description": "Select a multimodal model with this capability"
+      },
+      "video_gen_model_id": {
+        "title": "Selected model",
+        "description": "Select a multimodal model with this capability"
+      },
       "preferred_language": {
         "title": "Language",
         "description": "Set the display language for the application interface."
@@ -1107,7 +1213,13 @@
       },
       "cua_agent_enabled": {
         "title": "Enable computer control",
-        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions."
+        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions.",
+        "unavailableDescription": "Computer control is unavailable in this environment.",
+        "unavailableReasons": {
+          "native_build_failed": "Computer control is unavailable because the computer-use driver failed to build during installation.",
+          "backend_missing": "No usable computer control driver was found.",
+          "unsupported_platform": "Computer control is unavailable on this operating system or version."
+        }
       },
       "trajectory_ui_diagnosis_enabled": {
         "title": "Enable trajectory diagnosis",
@@ -1197,11 +1309,6 @@
         "title": "API Key",
         "description": "The JEV service credential.",
         "placeholder": "Enter API Key"
-      },
-      "cua_agent_enabled": {
-        "title": "Enable computer control",
-        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions.",
-        "unavailableDescription": "Computer control is unavailable in this environment."
       }
     },
     "validation": {
@@ -1360,6 +1467,7 @@
       "outletsPending": "Suggestions appear here once the diagnosis finishes",
       "detailsPending": "The evaluation and findings show up here",
       "stageStatus": {
+        "degraded": "Degraded",
         "pending": "Waiting",
         "running": "Running",
         "completed": "Done",
@@ -1393,6 +1501,7 @@
       "emptyHint": "No diagnosis yet. Select \"Diagnose trajectory\" at the top right to start.",
       "loadingRecord": "Loading diagnosis…",
       "plannedStage": {
+        "trajectory_summary": "Summarize trajectory",
         "task_parse": "Parse task",
         "diagnose": "Diagnose",
         "attribute": "Attribute causes"
@@ -1450,6 +1559,16 @@
       "objectExcludedRunning": "{{count}} steps were still running when the diagnosis started and are not included",
       "objectTask": "Task",
       "objectSummary": "Trajectory summary",
+      "summaryTree": {
+        "root": "Overall trajectory summary",
+        "agentsHint": "Agent summaries (team leader and members)",
+        "coverage": "Completed segments {{completed}} / {{total}}",
+        "download": "Download full summary JSON",
+        "warnings": "Warnings ({{count}})",
+        "unavailable": "Summary unavailable. See the downloaded file for trajectory details and evidence locations.",
+        "unmerged": "The overall summary could not be merged. Read the agent summaries below; the complete hierarchy remains in the download.",
+        "agentUnmerged": "This agent account could not be merged. All local turn summaries remain available in the full download."
+      },
       "sectionExpand": "Expand",
       "sectionCollapse": "Collapse",
       "findingCauses": "{{count}} artifact finding(s)",
@@ -1794,6 +1913,7 @@
     "previewFailed": "Failed to load the file preview",
     "docxPreviewFailed": "Failed to load the Word document preview",
     "presentationPreviewFailed": "Failed to load the PowerPoint presentation preview",
+    "presentationLoadFailed": "Failed to download the PowerPoint presentation. Please try again.",
     "presentationResourceLimitExceeded": "The PowerPoint presentation content exceeds the browser preview limit. Download the file to view it.",
     "presentationTooLarge": "PowerPoint presentations larger than {{size}} cannot be previewed in the browser. Download the file to view it.",
     "presentationSlides": "Slides",
@@ -4078,7 +4198,15 @@
       "Engineering": "Engineering",
       "Life": "Life",
       "Custom": "Custom",
-      "Other": "Other"
+      "Other": "Other",
+      "Office Productivity": "Office Productivity",
+      "Software Development": "Software Development",
+      "Data Science & Research": "Data Science & Research",
+      "Multimodal & Media": "Multimodal & Media",
+      "Content Creation": "Content Creation",
+      "Lifestyle & Health": "Lifestyle & Health",
+      "Finance & Wealth Management": "Finance & Wealth Management",
+      "Compliance & Legal": "Compliance & Legal"
     },
     "actions": {
       "working": "Working",
@@ -5067,7 +5195,15 @@
       "communication": "Communication",
       "Engineering": "Engineering",
       "Design": "Design",
-      "other": "Other"
+      "other": "Other",
+      "Office Productivity": "Office Productivity",
+      "Software Development": "Software Development",
+      "Data Science & Research": "Data Science & Research",
+      "Multimodal & Media": "Multimodal & Media",
+      "Content Creation": "Content Creation",
+      "Lifestyle & Health": "Lifestyle & Health",
+      "Finance & Wealth Management": "Finance & Wealth Management",
+      "Compliance & Legal": "Compliance & Legal"
     },
     "search": {
       "plugin": "Search plugins",
@@ -5978,6 +6114,7 @@
       "namePlaceholder": "For example: After-sales assistant",
       "description": "Abilities",
       "descriptionPlaceholder": "Describe what this employee is good at, what it owns and how it should work",
+      "descriptionTooLong": "The capability description must be {{limit}} characters or fewer. Shorten it before saving.",
       "role": "Work domains",
       "preview": "Card preview",
       "previewName": "New employee",
@@ -6019,6 +6156,10 @@
         "knowledge": "Add knowledge",
         "starterPrompts": "Add quick prompt"
       },
+      "starterPromptsLimit": "Up to {{count}} prompts",
+      "starterPromptDuplicate": "Duplicates an earlier prompt; edit or remove it.",
+      "starterPromptsDuplicateTitle": "Duplicate starter prompts",
+      "starterPromptsDuplicateMessage": "Starter prompts must be unique. Edit or remove the duplicates before creating the employee.",
       "empty": {
         "skills": "No skills",
         "connectors": "No connectors",
@@ -6129,6 +6270,7 @@
       "editResources": "Edit skills and connectors",
       "resourcesHint": "Choose from skills installed on this machine and connectors that are already connected. A new task uses the selection after it is saved and published.",
       "saveResources": "Save and publish",
+      "saveSuccess": "Saved",
       "savingResources": "Saving",
       "saveSettingsFailed": "Could not save or publish the configuration. Please try again.",
       "modelEmptyHint": "Add a model in Settings → Models.",
@@ -6239,10 +6381,12 @@
       "cancelAuthorizationTitle": "Revoke channel authorization",
       "cancelAuthorizationWarning": "After revoking, this colleague stops receiving and replying on this channel.",
       "cancelAuthorizationMessage": "Revoke the “{{channel}}” authorization? It can be authorized again later.",
+      "cancelAuthorizationSuccess": "Authorization revoked",
       "addConnection": "Add connection",
       "removeConnection": "Disconnect",
       "removeConnectionWarning": "Messages to this app no longer reach the employee. The connection's workspace and history stay and return when the same app is bound again.",
       "removeConnectionConfirm": "Disconnect {{platform}} app {{app}} from the AI employee: ",
+      "removeConnectionSuccess": "Disconnected",
       "workLog": "Work log",
       "periods": {
         "7d": "Last 7 days",
@@ -6361,11 +6505,6 @@
       "webConnection": "Web",
       "connectionHint": "Files shared here can also be read by {{platform}} users.",
       "webResult": "New result in the Web workspace. View it",
-      "defaultPrompts": [
-        "Summarize today's hot questions",
-        "Review group reply quality",
-        "Export today's conversation summary"
-      ],
       "featuresTitle": "Features",
       "features": {
         "chat": {
@@ -6383,6 +6522,11 @@
       }
     },
     "schedule": {
+      "save": "Save",
+      "saveAndEnable": "Save and enable",
+      "pausedEditHint": "This task is paused. Saving keeps it paused; choose Save and enable to resume automatic execution.",
+      "actionFailed": "Scheduled task action failed",
+      "resumeExpired": "Enable (edit schedule first)",
       "add": "Add",
       "createTitle": "New scheduled task",
       "editTitle": "Edit scheduled task",
@@ -6466,8 +6610,11 @@
         "running": "Running"
       },
       "error": {
+        "enableExpired": "This task has expired. Update its schedule before enabling it.",
+        "nameRequired": "Enter a task name.",
+        "promptRequired": "Enter a task description.",
         "required": "Enter a name and a description",
-        "executorRequired": "Choose an executor",
+        "executorRequired": "Select an AI employee to run this task.",
         "intervalInvalid": "The interval must be a positive integer",
         "futureRequired": "A one-time run must be in the future",
         "rangeInvalid": "The effective end must be after the start"
@@ -6534,6 +6681,7 @@
       "periodStart": "Start date",
       "periodEnd": "End date",
       "periodTo": "to",
+      "periodLimit": "Up to {{count}} days can be shown; the start date was adjusted",
       "metrics": {
         "members": "Members",
         "activeDays": "Active days",

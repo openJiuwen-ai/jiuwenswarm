@@ -5,19 +5,20 @@
 from __future__ import annotations
 
 import logging
-import math
 from typing import Any
 
 from agent_gateway.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.server.control.responses import build_error_response
+from jiuwenswarm.server.runtime.session.history_io import run_history_io
 from jiuwenswarm.server.runtime.session.session_history import (
     HistorySnapshotChanged,
     InvalidHistoryCursor,
     history_exists,
-    load_history_records,
     read_history_cursor_page,
+    read_history_index_page,
 )
+from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
 from jiuwenswarm.server.wire_truncate import (
     _HISTORY_PAGE_SIZE,
     _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES,
@@ -82,29 +83,11 @@ def load_history_page(
             }
     elif not history_exists(normalized_session_id):
         return None
-    try:
-        raw = load_history_records(
-            normalized_session_id,
-            subagent_id=normalized_subagent_id,
-        )
-    except Exception:
-        return None
-    if not isinstance(raw, list):
-        return None
-    restorable = [item for item in raw if _is_restorable_history_record(item)]
-    total = len(restorable)
-    total_pages = max(1, math.ceil(total / _HISTORY_PAGE_SIZE))
-    if page_idx > total_pages:
-        return None
-    ordered = list(reversed(restorable))
-    start = (page_idx - 1) * _HISTORY_PAGE_SIZE
-    end = start + _HISTORY_PAGE_SIZE
-    result: dict[str, Any] = {
-        "messages": list(ordered[start:end]),
-        "total_pages": total_pages,
-        "page_idx": page_idx,
-    }
-    if normalized_subagent_id:
+    result = read_history_index_page(
+        normalized_session_id, page_idx=page_idx, page_size=_HISTORY_PAGE_SIZE,
+        is_restorable=_is_restorable_history_record, subagent_id=normalized_subagent_id,
+    )
+    if result is not None and normalized_subagent_id:
         result["subagent_id"] = normalized_subagent_id
     return result
 
@@ -231,7 +214,6 @@ async def handle_history_request(request: AgentRequest) -> AgentResponse:
     params = request.params if isinstance(request.params, dict) else {}
     if "artifact_sha256" in params:
         from jiuwenswarm.server.runtime.session.history_artifacts import read_artifact_chunk
-        from jiuwenswarm.server.runtime.session.history_io import run_history_io
         from jiuwenswarm.server.runtime.session.session_history import is_valid_session_id
 
         session_id = params.get("session_id") or request.session_id
@@ -249,7 +231,9 @@ async def handle_history_request(request: AgentRequest) -> AgentResponse:
             ok=True, payload=data, metadata=request.metadata,
         )
     try:
-        data = load_history_query(params)
+        data = await run_history_io(load_history_query, params)
+    except HistoryReplayError as exc:
+        return build_error_response(request, str(exc), code=exc.code)
     except (InvalidHistoryCursor, HistorySnapshotChanged) as exc:
         error_code = (
             "HISTORY_SNAPSHOT_CHANGED"

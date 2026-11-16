@@ -2420,8 +2420,9 @@ def test_task_chat_uses_general_asr_config_independent_from_joyai():
 async def test_task_asr_rpc_returns_transcript(monkeypatch):
     channel = FakeWebChannel()
 
-    async def fake_transcribe(params):
+    async def fake_transcribe(params, *, environ):
         assert params == {"audio_base64": "YXVkaW8=", "mime_type": "audio/webm"}
+        assert set(environ) == {"ASR_API_BASE", "ASR_API_KEY", "ASR_MODEL_NAME"}
         return "transcribed speech"
 
     monkeypatch.setattr(app_web_handlers, "transcribe_task_audio", fake_transcribe)

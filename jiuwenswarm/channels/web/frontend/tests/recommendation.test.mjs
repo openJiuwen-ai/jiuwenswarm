@@ -442,6 +442,34 @@ function scopeParams(request) {
   return scope;
 }
 
+test('downward slash suggestions raise the input container above welcome topics', async () => {
+  const panel = await mountWelcome('new', { holdResponses: true });
+  try {
+    await react.act(async () => {
+      const input = editor();
+      input.focus();
+      input.textContent = '/';
+      const range = document.createRange();
+      range.selectNodeContents(input);
+      range.collapse(false);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    });
+    await react.act(settle);
+    const menu = document.querySelector('[data-testid="chat-panel-composer-suggestion"]');
+    assert.ok(menu?.classList.contains('chat-composer-suggestion--below'));
+    const container = document.querySelector('[data-testid="chat-panel-input-container"]');
+    assert.ok(container.classList.contains('chat-input-container--suggestion-open'));
+    await pressInComposer('Escape');
+    assert.equal(document.querySelector('[data-testid="chat-panel-composer-suggestion"]'), null);
+    assert.equal(container.classList.contains('chat-input-container--suggestion-open'), false);
+  } finally {
+    await panel.unmount();
+  }
+});
+
 test('a pool that answers at once is shown without a static entrance first', async () => {
   const panel = await mountWelcome('sess-no-flash', { holdResponses: true });
   try {
@@ -594,6 +622,8 @@ test('General renders and persists the topic switch through config while keeping
     assert.equal(storedValue, 'false', 'model deletion must persist the disabled switch on the backend');
     assert.equal(topicSwitch().getAttribute('aria-checked'), 'false', 'a fresh settings page must read the persisted disabled switch');
     assert.equal(document.querySelector('[data-testid="settings-topic-model-summary"]'), null);
+    const clearedSubSettings = topicSwitch().closest('.setting-row').querySelector('.setting-row__sub-settings');
+    assert.ok(clearedSubSettings.matches(':empty'), 'deleting the model must not leave a closed dialog in the spacing container');
   } finally {
     await react.act(async () => root.unmount());
   }
@@ -617,6 +647,9 @@ test('General ignores legacy chat models and opens the connection form without a
     })));
     await react.act(settle);
     assert.equal(document.querySelector('[data-testid="settings-topic-model-summary"]'), null);
+    const topicSwitch = document.querySelector('[data-testid="settings-switch"][data-variant="topic-recommendation-enabled"]');
+    const subSettings = topicSwitch.closest('.setting-row').querySelector('.setting-row__sub-settings');
+    assert.ok(subSettings.matches(':empty'), 'an unconfigured model must not leave hidden dialog content that adds padding');
     await react.act(async () => document.querySelector('[data-testid="settings-switch"][data-variant="topic-recommendation-enabled"]').click());
     await react.act(settle);
     const dialog = document.querySelector('[data-testid="settings-agent-media-config-dialog"]');

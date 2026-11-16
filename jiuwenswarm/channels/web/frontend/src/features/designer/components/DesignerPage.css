@@ -2523,15 +2523,42 @@
   color: var(--color-feedback-danger);
 }
 
-.designer-media-settings__model {
-  flex-shrink: 1;
+.designer-media-settings__model-menu {
+  position: relative;
+  flex: 0 1 auto;
   min-width: 0;
   max-width: 45%;
+}
+
+.designer-media-settings__model-menu .designer-media-settings__trigger {
+  max-width: 100%;
+}
+
+.designer-media-settings__model-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 11;
+  display: flex;
+  flex-direction: column;
+  width: 280px;
+  max-width: calc(100vw - 24px);
+  max-height: 320px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-popover);
+  box-shadow: var(--shadow-lg);
+}
+
+.designer-media-settings__model-popover > :first-child {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.designer-media-settings__model-popover .model-select__add-btn {
+  flex: 0 0 auto;
 }
 
 .designer-media-settings__field {

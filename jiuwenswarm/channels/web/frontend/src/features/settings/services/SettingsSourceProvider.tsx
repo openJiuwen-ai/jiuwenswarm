@@ -2,6 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useTranslation } from 'react-i18next';
 import { Loading } from '../../../components/ui';
 import type { SettingValue, SettingsSource } from '../registry/types';
+import { useMultimodalSettings } from './useMultimodalSettings';
+import { MULTIMODAL_CAPABILITIES, multimodalModelOptions, type MultimodalCapability } from './multimodalSettings';
 import { useSettingsServices } from './SettingsServicesProvider';
 import { serializeConfigSettingValue } from './settingsSourceContract';
 import { useSettingsConfig } from './useSettingsConfig';
@@ -10,6 +12,8 @@ import { usePersonalContextStore } from '../../../stores/personalContextStore';
 import { parseContextCapacity } from '../modules/personalContext/capacitySetting';
 
 export type SettingsSourceController = {
+  optionsFor?: (key: string) => readonly { value: SettingValue; label: string }[];
+  requiresConfiguration?: (key: string) => boolean;
   values: Readonly<Record<string, unknown>>;
   savingKeys: ReadonlySet<string>;
   save: (
@@ -292,10 +296,41 @@ function PersonalContextSourceProvider({ children }: { children: ReactNode }) {
   return <SettingsSourceContext.Provider value={value}>{children}</SettingsSourceContext.Provider>;
 }
 
+function MultimodalSourceProvider({ children }: { children: ReactNode }) {
+  const { snapshot, saving, store } = useMultimodalSettings();
+  const values = useMemo(() => Object.fromEntries(MULTIMODAL_CAPABILITIES.flatMap((tool) => [
+    [`${tool}_enabled`, snapshot?.tools[tool].enabled ?? false],
+    [`${tool}_model_id`, snapshot?.tools[tool].model_id ?? ''],
+  ])), [snapshot]);
+  const save = useCallback(async (updates: Record<string, SettingValue>) => {
+    // A row writes one tool. Binding and enabled are submitted together when
+    // present; the server owns automatic selection, confirmation and projection.
+    const tool = MULTIMODAL_CAPABILITIES.find((id) => `${id}_enabled` in updates || `${id}_model_id` in updates);
+    if (!tool) throw new Error('Unknown multimodal setting');
+    const params: Record<string, unknown> = { tool_id: tool };
+    if (`${tool}_enabled` in updates) params.enabled = updates[`${tool}_enabled`];
+    if (`${tool}_model_id` in updates) params.model_id = updates[`${tool}_model_id`];
+    return store.write('tools.update', params);
+  }, [store]);
+  const controller = useMemo<SettingsSourceController>(() => ({
+    values,
+    savingKeys: new Set(saving || !snapshot ? Object.keys(values) : []),
+    save,
+    patchLocal: () => undefined,
+    requiresConfiguration: (key) => !snapshot?.tools[key.replace(/_enabled$/, '') as MultimodalCapability]?.model_id,
+    optionsFor: (key) => {
+      const tool = key.replace(/_model_id$/, '') as MultimodalCapability;
+      return multimodalModelOptions(snapshot?.models ?? [], tool);
+    },
+  }), [save, saving, snapshot, values]);
+  return <SettingsSourceContext.Provider value={controller}>{children}</SettingsSourceContext.Provider>;
+}
+
 export function SettingsSourceProvider({ source, children }: { source?: SettingsSource; children: ReactNode }) {
   if (source === 'config') return <ConfigSourceProvider>{children}</ConfigSourceProvider>;
   if (source === 'browser') return <BrowserSourceProvider>{children}</BrowserSourceProvider>;
   if (source === 'locale') return <LocaleSourceProvider>{children}</LocaleSourceProvider>;
   if (source === 'personalContext') return <PersonalContextSourceProvider>{children}</PersonalContextSourceProvider>;
+  if (source === 'multimodal') return <MultimodalSourceProvider>{children}</MultimodalSourceProvider>;
   return children;
 }
