@@ -124,7 +124,6 @@ interface CronTaskDrawerProps {
   initial?: CronTaskFormValue;
   projects: ProjectInfo[];
   targetOptions: { value: string; label: string; disabled?: boolean }[];
-  submitError?: string | null;
   onClose: () => void;
   onSubmit: (value: CronTaskFormValue) => void;
   onSwitchToManual?: () => void;
@@ -189,7 +188,6 @@ export default function CronTaskDrawer({
   initial,
   projects,
   targetOptions,
-  submitError,
   onClose,
   onSubmit,
   onSwitchToManual,
@@ -367,7 +365,7 @@ export default function CronTaskDrawer({
           </div>
         </div>
 
-        <div className="-mr-4 min-h-0 flex-1 overflow-y-auto pr-4 [scrollbar-gutter:stable]" data-testid="cron-drawer-scroll-area">
+        <div className="flex-1 overflow-y-auto">
           {/* ── Form body ───────────────────────────────────────── */}
           <div className="flex flex-col gap-5">
             {/* Name */}
@@ -564,11 +562,6 @@ export default function CronTaskDrawer({
           {missingFieldsHint && (
             <p className="text-xs text-danger" data-testid="cron-drawer-missing-hint">
               {missingFieldsHint}
-            </p>
-          )}
-          {submitError && (
-            <p className="max-h-24 max-w-full overflow-y-auto break-words text-sm text-danger" role="alert" data-testid="cron-drawer-submit-error">
-              {submitError}
             </p>
           )}
         </div>
