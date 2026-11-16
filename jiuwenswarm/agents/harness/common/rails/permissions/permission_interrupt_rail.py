@@ -396,20 +396,17 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
             ))
             return attempt.persisted
         except Exception as exc:
-            if (
-                isinstance(exc, PermissionRememberUnavailable)
-                and attempt.approved and attempt.remember_requested
-                and attempt.validation_succeeded
-            ):
-                attempt.remember_unavailable = True
-                logger.info(
-                    "[PermissionInterruptRail] permission.remember.unavailable "
-                    "session_id=%s tool_call_id=%s tool=%s phase=persist "
-                    "request_scope=%s actual_scope=once persisted=false reason_code=%s",
-                    session_id, attempt.tool_call_id, normalized_name,
-                    "session" if attempt.session_only else "user", str(exc),
-                )
-                return False
+            if isinstance(exc, PermissionRememberUnavailable):
+                if attempt.approved and attempt.remember_requested and attempt.validation_succeeded:
+                    attempt.remember_unavailable = True
+                    logger.info(
+                        "[PermissionInterruptRail] permission.remember.unavailable "
+                        "session_id=%s tool_call_id=%s tool=%s phase=persist "
+                        "request_scope=%s actual_scope=once persisted=false reason_code=%s",
+                        session_id, attempt.tool_call_id, normalized_name,
+                        "session" if attempt.session_only else "user", str(exc),
+                    )
+                    return False
             attempt.invalidated = True
             self._log_exact_persist_failure(
                 normalized_name=normalized_name, attempt=attempt,
