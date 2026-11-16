@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 HISTORY_ID = "duplex_history_id"
 
 
+class VoiceHistoryBusyError(RuntimeError):
+    """flush 超时（历史写入器繁忙）——瞬态可重试，聊天派发可安全跳过本轮导入。"""
+
+
 def conversation_record_id(record):
     if record.get("channel_id") != "video_duplex":
         return None
@@ -42,7 +46,7 @@ def _is_voice_input(record):
 
 async def _load_voice_batch(session_id, cursor=None):
     if not await asyncio.to_thread(session_history.flush_pending_writes, timeout=5):
-        raise RuntimeError("Voice history is still saving; retry the request")
+        raise VoiceHistoryBusyError("Voice history is still saving; retry the request")
     return await asyncio.to_thread(read_history_replay, session_id, cursor=cursor,
                                    is_restorable=_is_voice_input, voice_only=True)
 
@@ -69,13 +73,16 @@ async def _load_voice_batch_tolerant(session_id, cursor):
     """Read one voice batch, or ``None`` when the history writer is busy.
 
     Ordinary chat dispatch runs this sync for every message, and the voice
-    import only enriches the context: a flush timeout (RuntimeError raised by
-    ``_load_voice_batch``) must not fail the whole chat request (#6608). The
-    caller leaves its cursor untouched, so a later sync picks the records up.
+    import only enriches the context: a flush timeout (the transient
+    ``VoiceHistoryBusyError``) must not fail the whole chat request (#6608).
+    The caller leaves its cursor untouched, so a later sync picks the records
+    up. Persistent read failures (``HistoryReplayError``: corrupted or
+    unreadable history) are a different class and keep propagating, so they
+    surface instead of being silently skipped on every message.
     """
     try:
         return await _load_voice_batch(session_id, cursor)
-    except RuntimeError as exc:
+    except VoiceHistoryBusyError as exc:
         logger.warning("Skipping voice history import for %s: %s", session_id, exc)
         return None
 
