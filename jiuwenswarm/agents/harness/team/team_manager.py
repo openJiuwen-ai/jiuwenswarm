@@ -427,6 +427,11 @@ class TeamManager(metaclass=_TeamManagerMeta):
         self._runner_team_agents: dict[str, TeamAgent] = {}
         self._team_monitors: dict[str, TeamMonitorHandler] = {}
         self._stream_tasks: dict[str, asyncio.Task] = {}
+        # 本会话最近一次广播给客户端的成员状态（member_id -> status），
+        # 供流末快照补发帧填 old_status。故意不随 _cleanup_runtime_locals
+        # 清理——pause 只是驻留（走 cleanup_locals），跨流跟踪正是所需语义；
+        # 只在会话终毁（_destroy_team / delete_session_runtime）清除。
+        self._member_status_last_seen: dict[str, dict[str, str]] = {}
         self._bootstrap_lock = asyncio.Lock()
         self._distributed_switch_lock = asyncio.Lock()
         self._session_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
@@ -2180,6 +2185,8 @@ class TeamManager(metaclass=_TeamManagerMeta):
 
     async def _destroy_team(self, session_id: str) -> bool:
         await self._cleanup_runtime_locals(session_id)
+        # 会话终毁才清成员状态跟踪表（pause 驻留的 cleanup_locals 不清）
+        self._member_status_last_seen.pop(session_id, None)
 
         team_agent = self._team_agents.pop(session_id, None)
         cleaned = False
@@ -2225,6 +2232,19 @@ class TeamManager(metaclass=_TeamManagerMeta):
 
     def get_monitor_handler(self, session_id: str) -> TeamMonitorHandler | None:
         return self._team_monitors.get(session_id)
+
+    def note_member_status_broadcast(
+        self, session_id: str, member_id: str, status: str
+    ) -> None:
+        """登记本会话最近一次广播给客户端的成员状态。
+
+        流末快照补发帧的 old_status 数据源——old_status 语义是
+        「客户端上次所信状态」，DB 只有当前值，只能靠跟踪已广播帧。
+        """
+        self._member_status_last_seen.setdefault(session_id, {})[member_id] = status
+
+    def get_member_status_last_seen(self, session_id: str) -> dict[str, str]:
+        return self._member_status_last_seen.get(session_id) or {}
 
     def register_monitor(self, session_id: str, handler: TeamMonitorHandler) -> None:
         self._team_monitors[session_id] = handler
@@ -3011,7 +3031,7 @@ class TeamManager(metaclass=_TeamManagerMeta):
                 # 标记须覆盖到 _wait_for_stream_task_exit 之后：流任务 finally 的
                 # 流末强制补终态判定在该等待窗口内执行，须能看到 pause 进行中。
                 self._pause_in_progress.discard(session_id)
-                # PM-63 F3：先摘标记再 pop 最后 set——等待方被唤醒后重读的
+                # 先摘标记再 pop 最后 set——等待方被唤醒后重读的
                 # 必是 pause 完成后的资源现场；pop 之后才进来的等待方查不到
                 # 事件且标记已摘，直接放行，无丢失唤醒窗口。
                 self._pause_done_events.pop(session_id, None)
@@ -3037,6 +3057,7 @@ class TeamManager(metaclass=_TeamManagerMeta):
         team_name = self._resolve_delete_session_team_name(session_id)
         self._degraded_sessions.pop(session_id, None)
         self._user_turn_epochs.pop(session_id, None)
+        self._member_status_last_seen.pop(session_id, None)
         await kv_cache_hooks.stop_runtime_before_terminal_delete(
             self.stop_session_runtime,
             session_id=session_id,
