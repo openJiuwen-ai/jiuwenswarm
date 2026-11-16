@@ -23,6 +23,32 @@ export function isDesignerLeaderBusy(
 }
 
 /**
+ * The chat-dock stop control covers the whole leader turn: streaming
+ * (`isProcessing`) and the canvas autorun that turn started
+ * (`trigger_source === 'leader'`). After ``chat.final``, processing is already
+ * false while child nodes keep running, so the stop button must follow the
+ * leader-triggered run as well. Canvas-initiated runs keep their own toolbar.
+ */
+export function isDesignerChatStoppable(params: {
+  isProcessing: boolean;
+  isRunning: boolean;
+  triggerSource?: string | null;
+}): boolean {
+  if (params.isProcessing) return true;
+  return params.isRunning && params.triggerSource === 'leader';
+}
+
+/** Stop control after a click: spinner until the run or leader turn actually ends. */
+export function designerChatStopControl(params: {
+  canStop: boolean;
+  stopPending: boolean;
+}): 'stopping' | 'stop' | 'send' {
+  if (params.stopPending) return 'stopping';
+  if (params.canStop) return 'stop';
+  return 'send';
+}
+
+/**
  * The workflow stays read-only from the moment a prompt is sent until its
  * first run finishes. While the design leader's round is open
  * (`isDesignerLeaderBusy`), the graph it is about to fill may be empty or only

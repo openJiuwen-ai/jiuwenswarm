@@ -3,11 +3,13 @@
 """Unit tests for the replace_all merge helper preserving YAML env-var placeholders."""
 
 from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
+from jiuwenswarm.common.config_panel import models_handlers
 from jiuwenswarm.common.config_panel.models_handlers import (
     _is_env_var_placeholder,
     _merge_models_for_replace_all,
     _reasoning_level_display,
     _values_match,
+    build_models_defaults_from_frontend,
 )
 
 
@@ -419,11 +421,15 @@ def test_existing_entry_without_context_field_keeps_it_absent_for_compatibility(
     assert "context_window" not in out[0]["model_config_obj"]
 
 
-def test_existing_entry_updates_and_clears_exact_vendor_identity():
+def test_existing_entry_updates_and_clears_exact_vendor_identity(monkeypatch):
     raw = _raw_entry_with_placeholder()
-    raw["model_client_config"].update({"vendor_key": "alibaba", "plan": "token_plan"})
+    raw.update({"vendor_key": "alibaba", "plan": "token_plan"})
+    raw["model_client_config"]["endpoint_profile"] = "dashscope"
     resolved = _resolved_entry_for(raw, api_key_plain="sk-real-secret", api_base="https://api.example.com")
-    parsed = [{
+    monkeypatch.setattr(models_handlers, "get_config_raw", lambda: {"models": {"defaults": [raw]}})
+    monkeypatch.setattr(models_handlers, "get_default_models", lambda: [resolved])
+    monkeypatch.setattr(models_handlers, "_get_crypto_provider", _StubCrypto)
+    item = {
         "model_name": "gpt-4o",
         "api_base": "https://api.example.com",
         "api_key": "sk-real-secret",
@@ -434,22 +440,21 @@ def test_existing_entry_updates_and_clears_exact_vendor_identity():
         "is_default": True,
         "alias": "gpt",
         "origin_index": 0,
-        "vendor_key": "alibaba",
-        "plan": "coding_plan",
-    }]
+    }
+    preserved = build_models_defaults_from_frontend([item])[0]
+    assert preserved["vendor_key"] == "alibaba"
+    assert preserved["plan"] == "token_plan"
+    assert preserved["model_client_config"]["endpoint_profile"] == "dashscope"
 
-    updated = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
-    assert updated[0]["model_client_config"]["vendor_key"] == "alibaba"
-    assert updated[0]["model_client_config"]["plan"] == "coding_plan"
+    updated = build_models_defaults_from_frontend([{**item, "vendor_key": "alibaba", "plan": "coding_plan"}])[0]
+    assert updated["model_client_config"]["vendor_key"] == "alibaba"
+    assert updated["model_client_config"]["plan"] == "coding_plan"
 
-    cleared = _merge_models_for_replace_all(
-        [{**parsed[0], "vendor_key": None, "plan": None}],
-        [raw],
-        [resolved],
-        crypto=_StubCrypto(),
-    )
-    assert "vendor_key" not in cleared[0]["model_client_config"]
-    assert "plan" not in cleared[0]["model_client_config"]
+    cleared = build_models_defaults_from_frontend([{**item, "vendor_key": None, "plan": ""}])[0]
+    assert "vendor_key" not in cleared and "plan" not in cleared
+    assert "vendor_key" not in cleared["model_client_config"]
+    assert "plan" not in cleared["model_client_config"]
+    assert "endpoint_profile" not in cleared["model_client_config"]
 
 
 def test_origin_index_out_of_range_falls_back_to_new_entry():

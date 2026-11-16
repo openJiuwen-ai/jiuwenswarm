@@ -1,13 +1,16 @@
-import { ArrowRightLeft, Check, ChevronDown, Plus, Trash2, X } from 'lucide-react';
+import { ArrowRightLeft, Check, ChevronDown, X } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ActionMenu } from '../components/ActionMenu';
 import { CapabilitySection, CollapsibleSection, type CapabilityKind } from '../components/CapabilitySection';
+import {
+  StarterPromptsAddButton, StarterPromptsEditor, hasDuplicateStarterPrompts,
+} from '../components/StarterPromptsEditor';
 import { ColleagueCard } from '../components/ColleagueCard';
 import { CustomCreateDialog } from '../components/CustomCreateDialog';
 import { JiuwenMateDialog } from '../components/JiuwenMateDialog';
 import { TemplateDetailDrawer } from '../components/TemplateDetailDrawer';
 import { colleaguePortrait, customAvatarHue } from '../colleaguePortraits';
+import { COLLEAGUE_DESCRIPTION_LIMIT } from '../colleagueLimits';
 import type { JiuwenMateModelCatalog } from '../jiuwenmateApi';
 import {
   type ColleagueCapabilityCatalog,
@@ -28,7 +31,6 @@ import type {
   JiuwenMateTemplate,
 } from '../types';
 
-const DESCRIPTION_LIMIT = 200;
 const CAPABILITY_KINDS: readonly CapabilityKind[] = ['skills', 'connectors', 'plugins', 'knowledge'];
 
 export interface ColleagueCreatePageProps {
@@ -165,7 +167,11 @@ function ColleagueRefineForm({
   const { t } = useTranslation();
   const [installingSkill, setInstallingSkill] = useState<string | null>(null);
   const [skillInstallError, setSkillInstallError] = useState<string | null>(null);
-  const canSubmit = !submitting && draft.name.trim().length > 0 && draft.description.trim().length > 0;
+  const [starterPromptsError, setStarterPromptsError] = useState(false);
+  const descriptionLength = draft.description.trim().length;
+  const descriptionTooLong = descriptionLength > COLLEAGUE_DESCRIPTION_LIMIT;
+  const canSubmit = !submitting && draft.name.trim().length > 0 && draft.description.trim().length > 0
+    && !descriptionTooLong;
   const hue = customAvatarHue(draft);
   const updateCapabilities = (patch: Partial<JiuwenMateCapabilities>) =>
     onDraftChange({ capabilities: { ...draft.capabilities, ...patch } });
@@ -224,7 +230,12 @@ function ColleagueRefineForm({
           id="jiuwenmate-refine-form"
           onSubmit={(event) => {
             event.preventDefault();
-            if (canSubmit) onComplete();
+            if (!canSubmit) return;
+            if (hasDuplicateStarterPrompts(draft.capabilities.starterPrompts)) {
+              setStarterPromptsError(true);
+              return;
+            }
+            onComplete();
           }}
           data-testid="jiuwenmate-custom-create-form"
         >
@@ -253,14 +264,19 @@ function ColleagueRefineForm({
               <span className="jiuwenmate-field__textarea">
                 <textarea
                   value={draft.description}
-                  maxLength={DESCRIPTION_LIMIT}
+                  aria-invalid={descriptionTooLong}
                   onChange={(event) => onDraftChange({ description: event.target.value })}
                   placeholder={t('jiuwenmate.create.descriptionPlaceholder')}
                   rows={3}
                   data-testid="jiuwenmate-colleague-description-input"
                 />
-                <small>{`${draft.description.length}/${DESCRIPTION_LIMIT}`}</small>
+                <small>{`${descriptionLength}/${COLLEAGUE_DESCRIPTION_LIMIT}`}</small>
               </span>
+              {descriptionTooLong ? (
+                <span className="jiuwenmate-field__error" role="alert" data-testid="jiuwenmate-colleague-description-limit-error">
+                  {t('jiuwenmate.create.descriptionTooLong', { limit: COLLEAGUE_DESCRIPTION_LIMIT })}
+                </span>
+              ) : null}
             </label>
             <div className="jiuwenmate-field">
               <span>{t('jiuwenmate.create.role')}</span>
@@ -429,52 +445,20 @@ function ColleagueRefineForm({
                 onChange={(items) => updateCapabilities({ [kind]: items })}
               />
             ))}
-            {source === 'template' ? (
-              <CollapsibleSection
-                title={t('jiuwenmate.create.sections.starterPrompts')}
-                action={
-                  <button
-                    type="button"
-                    className="jiuwenmate-collapsible__add-button"
-                    onClick={() => updateCapabilities({ starterPrompts: [...draft.capabilities.starterPrompts, ''] })}
-                  >
-                    <Plus aria-hidden />
-                    <span>{t('jiuwenmate.create.add.starterPrompts')}</span>
-                  </button>
-                }
-              >
-                <div className="jiuwenmate-starter-prompts">
-                  {draft.capabilities.starterPrompts.map((prompt, index) => (
-                    <div key={index}>
-                      <input
-                        value={prompt}
-                        onChange={(event) =>
-                          updateCapabilities({
-                            starterPrompts: draft.capabilities.starterPrompts.map((item, itemIndex) =>
-                              itemIndex === index ? event.target.value : item,
-                            ),
-                          })
-                        }
-                      />
-                      <ActionMenu
-                        label={t('jiuwenmate.workspace.more')}
-                        items={[
-                          {
-                            key: 'delete',
-                            label: t('jiuwenmate.office.delete'),
-                            icon: Trash2,
-                            onSelect: () =>
-                              updateCapabilities({
-                                starterPrompts: draft.capabilities.starterPrompts.filter((_, itemIndex) => itemIndex !== index),
-                              }),
-                          },
-                        ]}
-                      />
-                    </div>
-                  ))}
-                </div>
-              </CollapsibleSection>
-            ) : null}
+            <CollapsibleSection
+              title={t('jiuwenmate.create.sections.starterPrompts')}
+              action={
+                <StarterPromptsAddButton
+                  prompts={draft.capabilities.starterPrompts}
+                  onChange={(starterPrompts) => updateCapabilities({ starterPrompts })}
+                />
+              }
+            >
+              <StarterPromptsEditor
+                prompts={draft.capabilities.starterPrompts}
+                onChange={(starterPrompts) => updateCapabilities({ starterPrompts })}
+              />
+            </CollapsibleSection>
           </div>
         </form>
       </div>
@@ -492,6 +476,27 @@ function ColleagueRefineForm({
           {t('jiuwenmate.common.create')}
         </button>
       </footer>
+      {starterPromptsError ? (
+        <JiuwenMateDialog
+          title={t('jiuwenmate.create.starterPromptsDuplicateTitle')}
+          onClose={() => setStarterPromptsError(false)}
+          testId="jiuwenmate-starter-prompts-error-dialog"
+          footer={
+            <button
+              type="button"
+              className="jiuwenmate-dark-button"
+              onClick={() => setStarterPromptsError(false)}
+              data-testid="jiuwenmate-starter-prompts-error-confirm"
+            >
+              {t('jiuwenmate.common.confirm')}
+            </button>
+          }
+        >
+          <p role="alert" data-testid="jiuwenmate-starter-prompts-error-message">
+            {t('jiuwenmate.create.starterPromptsDuplicateMessage')}
+          </p>
+        </JiuwenMateDialog>
+      ) : null}
       {skillDialogError ? (
         <JiuwenMateDialog
           title={t('jiuwenmate.create.skillInstallErrorTitle')}

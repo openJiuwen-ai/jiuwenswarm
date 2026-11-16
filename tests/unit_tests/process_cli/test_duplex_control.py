@@ -1015,7 +1015,9 @@ async def test_full_output_queue_does_not_block_runtime_cancel_draining_producer
             else:
                 # Runtime cancellation can itself await the stream consumer
                 # draining a final burst; it need not cancel the adapter task.
-                for _ in range(1000):
+                # Exceed the output capacity so forwarding tail events would
+                # still deadlock, without making this a throughput benchmark.
+                for _ in range(2 * output_queues[0].maxsize + 1):
                     self.original.emit(_event("chat.delta", delta="shutdown tail"))
                 self.original.emit(_event("chat.final", content="shutdown tail"))
                 self.original.emit(None)

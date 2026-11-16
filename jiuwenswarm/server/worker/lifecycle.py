@@ -20,6 +20,29 @@ logger = logging.getLogger(__name__)
 _STARTUP_FAILURE_CLEANUP_TIMEOUT = 5.0
 
 
+async def _cold_load_logging_levels() -> None:
+    """企业版：worker 进程冷加载 Manager 下发的日志级别。
+
+    与 front（``app_agentserver``）对齐——worker 是独立解释器进程，模块级
+    ``setup_logger()`` 只给了 config.yaml 默认级别，而运行时日志主力（agent
+    适配器 / harness）都由本进程输出；不冷加载则 Manager 下发的 DB 行对
+    worker 永不生效。必须在 ``preload_runtime_backend``（含 SDK imports 与
+    OpenJiuwen 日志装配）之前应用。失败只告警，保持 yaml 默认，不阻断启动。
+    """
+    try:
+        from jiuwenswarm.enterprise import is_enterprise
+
+        if not is_enterprise():
+            return
+        from jiuwenswarm.enterprise.capabilities.logging import (
+            reload_logging_levels_from_gateway_db,
+        )
+
+        await reload_logging_levels_from_gateway_db()
+    except Exception:  # noqa: BLE001
+        logger.warning("[Worker] logging_config cold load skipped", exc_info=True)
+
+
 async def start_worker_runtime(
     host: str, port: int, signals: RuntimeSignalSink, *, on_constructed: Any = None,
 ) -> WorkerRuntime:
@@ -87,6 +110,7 @@ async def _start_worker_runtime(
     measurements: telemetry.StartupTelemetry | None = None,
 ) -> WorkerRuntime:
     measurements = measurements or telemetry.StartupTelemetry()
+    await _cold_load_logging_levels()
     await asyncio.to_thread(runtime_backend.preload_runtime_backend)
     await asyncio.sleep(0)
     measurements.stage("runtime_imports_ready")
@@ -126,4 +150,7 @@ async def _start_worker_runtime(
             await start_http_if_enabled(app_services)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[AgentHTTPServer] start failed: %s", exc)
+    from jiuwenswarm.agents.swarm.group_org_recovery import recovery_loop
+
+    runtime.spawn(recovery_loop(runtime.stop_event), name="group-organization-recovery")
     return runtime

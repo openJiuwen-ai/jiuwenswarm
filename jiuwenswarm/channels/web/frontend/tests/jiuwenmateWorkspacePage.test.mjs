@@ -48,7 +48,7 @@ const webResult = {
 };
 
 /** Renders the real page with a recording chat API and timers the test drives itself. */
-async function renderWorkspace({ withChannels = false, ...colleagueOverrides } = {}, initialWebConversations = []) {
+async function renderWorkspace({ withChannels = false, schedules = [], ...colleagueOverrides } = {}, initialWebConversations = []) {
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
   const previous = {
     window: globalThis.window,
@@ -67,7 +67,7 @@ async function renderWorkspace({ withChannels = false, ...colleagueOverrides } =
   };
   dom.window.clearInterval = (id) => ticks.delete(id);
   dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
-  const state = { webConversations: initialWebConversations, channels: [], channelCalls: [], channelFailure: false };
+  const state = { webConversations: initialWebConversations, channels: [], channelCalls: [], channelFailure: false, schedules };
   Object.defineProperty(dom.window.document, 'visibilityState', { configurable: true, get: () => state.hidden ? 'hidden' : 'visible' });
   const channelApi = {
     listChannels: async (agentId) => {
@@ -128,6 +128,30 @@ async function renderWorkspace({ withChannels = false, ...colleagueOverrides } =
       chat,
       channelApi: withChannels ? channelApi : undefined,
       connectionEpoch,
+      schedules: state.schedules,
+      onUpdateSchedule: async (id, draft) => {
+        calls.push(['update-schedule', id, draft]);
+        if (state.scheduleSaveError) throw new Error('Schedule save failed');
+        if (state.scheduleSaveGate) await state.scheduleSaveGate;
+        state.schedules = state.schedules.map(plan => plan.id === id ? { ...plan, ...draft } : plan);
+        render();
+      },
+      onSetScheduleEnabled: async (id, enabled) => {
+        calls.push(['enable-schedule', id, enabled]);
+        if (state.scheduleEnableError) throw new Error('Schedule enable failed');
+        state.schedules = state.schedules.map(plan => plan.id === id
+          ? { ...plan, enabled, lastStatus: enabled ? 'running' : 'paused' } : plan);
+        render();
+      },
+      onRunSchedule: async id => {
+        calls.push(['run-schedule', id]);
+        if (state.scheduleRunError) throw new Error('Schedule run failed');
+      },
+      onDeleteSchedule: async id => { calls.push(['delete-schedule', id]); },
+      onLoadScheduleHistory: async id => {
+        calls.push(['schedule-history', id]);
+        return { plan: state.schedules.find(plan => plan.id === id), runs: [] };
+      },
       modelCatalog: state.modelCatalog ?? { models: [{ id: 'deepseek#0', label: 'DeepSeek', provider: 'OpenAI' },
         { id: 'kimi#1', label: 'Kimi', provider: 'OpenAI' }], defaultModelId: 'deepseek#0', defaultModelLabel: 'DeepSeek' },
       onSaveModel: async (agentId, modelId) => {
@@ -245,6 +269,27 @@ test('an unconfigured employee guides model setup, keeps the draft and cannot su
     assert.equal(page.calls.filter(([kind]) => kind === 'send').length, 1);
   } finally {
     await page.close();
+  }
+});
+
+test('the private chat welcome shows exactly the configured starter prompts and none when they were all removed', async () => {
+  const suggestions = (page) =>
+    [...page.container.querySelectorAll('.jiuwenmate-chat-welcome__suggestions button')].map((button) => button.textContent);
+  const configured = await renderWorkspace({
+    capabilities: { ...colleague.capabilities, starterPrompts: ['写周报', '写月报', '总结会议', '第四条'] },
+  });
+  try {
+    assert.deepEqual(suggestions(configured), ['写周报', '写月报', '总结会议']);
+  } finally {
+    await configured.close();
+  }
+  const empty = await renderWorkspace();
+  try {
+    assert.ok(empty.container.querySelector('[data-testid="jiuwenmate-chat-welcome"]'));
+    assert.deepEqual(suggestions(empty), []);
+    assert.ok(empty.container.querySelector('.jiuwenmate-chat-welcome__suggestions'), 'The empty slot keeps the welcome layout height');
+  } finally {
+    await empty.close();
   }
 });
 
@@ -604,5 +649,144 @@ test('a deleted employee model cannot send through another models catalog', asyn
     await page.send('保留草稿');
     assert.equal(page.calls.filter(([kind]) => kind === 'send').length, 0);
     assert.equal(page.container.querySelector('[data-testid="jiuwenmate-composer-input"]').value, '保留草稿');
+  } finally { await page.close(); }
+});
+
+
+const pausedPlan = {
+  id: 'paused-plan', agentId: 'config-web', name: '健身提醒', prompt: '该健身了',
+  cronExpr: '0 9 * * *', timezone: 'Asia/Shanghai', enabled: false,
+  nextFireAt: '2099-01-01T01:00:00Z', scheduleKind: 'cron', intervalSeconds: null,
+  runAt: null, startsAt: null, endsAt: null, conversationId: 'private-test', runCount: 1,
+  lastStatus: 'paused', createdAt: '2026-11-15T00:00:00Z',
+};
+
+async function openSchedulePanel(page) {
+  await page.management();
+  const tabs = page.container.querySelectorAll('[role="tab"]');
+  const schedulesTab = [...tabs].find(tab => tab.textContent === '定时任务');
+  assert.ok(schedulesTab);
+  await act(async () => schedulesTab.click());
+}
+
+async function chooseScheduleAction(page, action) {
+  const panel = page.container.querySelector('[data-testid="jiuwenmate-management-panel"]');
+  await act(async () => panel.querySelector('.jiuwenmate-menu__trigger').click());
+  const button = page.container.querySelector(`[role="menuitem"][data-variant="${action}"]`);
+  assert.ok(button, `Missing schedule ${action} action`);
+  await act(async () => button.click());
+  await page.flush();
+}
+
+test('workspace schedule controls show status and keep manual runs independent of enablement', async () => {
+  const page = await renderWorkspace({ schedules: [pausedPlan] });
+  try {
+    await openSchedulePanel(page);
+    const status = () => page.container.querySelector('[data-testid="jiuwenmate-workspace-schedule-status"]');
+    assert.equal(status()?.textContent, '已暂停');
+    await chooseScheduleAction(page, 'run');
+    assert.equal(page.calls.filter(([kind]) => kind === 'run-schedule').length, 1);
+    assert.equal(page.state.schedules[0].enabled, false);
+    await chooseScheduleAction(page, 'toggle');
+    assert.equal(page.state.schedules[0].enabled, true);
+    assert.equal(status()?.textContent, '运行中');
+    await chooseScheduleAction(page, 'toggle');
+    assert.equal(page.state.schedules[0].enabled, false);
+    await chooseScheduleAction(page, 'history');
+    assert.ok(page.container.querySelector('[data-testid="jiuwenmate-schedule-history"]'));
+  } finally { await page.close(); }
+});
+
+test('saving a paused schedule keeps it paused while save-and-enable updates before enabling', async () => {
+  const page = await renderWorkspace({ schedules: [pausedPlan] });
+  try {
+    await openSchedulePanel(page);
+    await chooseScheduleAction(page, 'edit');
+    assert.match(page.container.querySelector('[data-testid="jiuwenmate-schedule-paused-hint"]').textContent, /当前任务已暂停/);
+    await act(async () => page.container.querySelector('[data-testid="jiuwenmate-schedule-save"]').click());
+    await page.flush();
+    assert.equal(page.state.schedules[0].enabled, false);
+    assert.equal(page.calls.filter(([kind]) => kind === 'enable-schedule').length, 0);
+    await chooseScheduleAction(page, 'edit');
+    const saveAndEnable = page.container.querySelector('[data-testid="jiuwenmate-schedule-save-enable"]');
+    assert.ok(saveAndEnable);
+    assert.equal(saveAndEnable.textContent, '保存并启用');
+    await act(async () => saveAndEnable.click());
+    await page.flush();
+    assert.equal(page.state.schedules[0].enabled, true);
+    assert.deepEqual(page.calls.filter(([kind]) => kind.endsWith('-schedule')).slice(-2).map(([kind]) => kind),
+      ['update-schedule', 'enable-schedule']);
+    assert.equal(page.container.querySelector('[data-testid="jiuwenmate-schedule-dialog"]'), null);
+  } finally { await page.close(); }
+});
+
+test('a failed schedule save never enables the task and enable failure stays visible for retry', async () => {
+  const page = await renderWorkspace({ schedules: [pausedPlan] });
+  try {
+    await openSchedulePanel(page);
+    await chooseScheduleAction(page, 'edit');
+    page.state.scheduleSaveError = true;
+    const button = () => page.container.querySelector('[data-testid="jiuwenmate-schedule-save-enable"]');
+    assert.ok(button());
+    await act(async () => button().click());
+    await page.flush();
+    assert.equal(page.calls.filter(([kind]) => kind === 'enable-schedule').length, 0);
+    assert.match(page.container.querySelector('[data-testid="jiuwenmate-schedule-dialog"]').textContent, /Schedule save failed/);
+    page.state.scheduleSaveError = false;
+    page.state.scheduleEnableError = true;
+    await act(async () => button().click());
+    await page.flush();
+    assert.equal(page.state.schedules[0].enabled, false);
+    assert.match(page.container.querySelector('[data-testid="jiuwenmate-schedule-dialog"]').textContent, /Schedule enable failed/);
+    page.state.scheduleEnableError = false;
+    await act(async () => button().click());
+    await page.flush();
+    assert.equal(page.state.schedules[0].enabled, true);
+  } finally { await page.close(); }
+});
+
+test('an expired workspace schedule cannot enable until its time is edited', async () => {
+  const page = await renderWorkspace({ schedules: [{ ...pausedPlan, lastStatus: 'completed',
+    scheduleKind: 'once', runAt: '2020-01-01T00:00:00Z', nextFireAt: null }] });
+  try {
+    await openSchedulePanel(page);
+    assert.equal(page.container.querySelector('[data-testid="jiuwenmate-workspace-schedule-status"]')?.textContent, '已过期');
+    const panel = page.container.querySelector('[data-testid="jiuwenmate-management-panel"]');
+    await act(async () => panel.querySelector('.jiuwenmate-menu__trigger').click());
+    assert.equal(page.container.querySelector('[data-variant="toggle"][role="menuitem"]')?.disabled, true);
+  } finally { await page.close(); }
+});
+
+
+test('save-and-enable rejects repeated clicks while the save is pending', async () => {
+  const page = await renderWorkspace({ schedules: [pausedPlan] });
+  let release;
+  try {
+    page.state.scheduleSaveGate = new Promise(resolve => { release = resolve; });
+    await openSchedulePanel(page);
+    await chooseScheduleAction(page, 'edit');
+    const button = page.container.querySelector('[data-testid="jiuwenmate-schedule-save-enable"]');
+    await act(async () => { button.click(); button.click(); });
+    await page.flush();
+    assert.equal(button.disabled, true);
+    assert.equal(page.calls.filter(([kind]) => kind === 'update-schedule').length, 1);
+    assert.equal(page.calls.filter(([kind]) => kind === 'enable-schedule').length, 0);
+    await act(async () => release());
+    await page.flush();
+    assert.equal(page.calls.filter(([kind]) => kind === 'enable-schedule').length, 1);
+    assert.equal(page.state.schedules[0].enabled, true);
+  } finally { release?.(); await page.close(); }
+});
+
+test('workspace schedule action failures are visible and keep enablement unchanged', async () => {
+  const page = await renderWorkspace({ schedules: [pausedPlan] });
+  try {
+    await openSchedulePanel(page);
+    page.state.scheduleRunError = true;
+    await chooseScheduleAction(page, 'run');
+    const error = page.container.querySelector('[data-testid="jiuwenmate-workspace-schedule-error-dialog"]');
+    assert.ok(error);
+    assert.match(error.textContent, /Schedule run failed/);
+    assert.equal(page.state.schedules[0].enabled, false);
   } finally { await page.close(); }
 });

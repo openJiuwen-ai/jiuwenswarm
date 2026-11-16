@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.parse import quote, urljoin
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
+from e2a.models import E2AEnvelope
 
 API_PREFIX = "/api/v1"
 DEFAULT_HTTP_PORT = 8766
@@ -28,6 +28,10 @@ _METHODS_WITHOUT_PARAM_SESSION_ID = frozenset({"session.create"})
 _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("media.persist", "POST", "/sessions/{session_id}/media"),
     ("media.discard", "DELETE", "/sessions/{session_id}/media"),
+    # session.assets.remove 暂不提供 HTTP。 gateway中 DELETE 一条因协议枚举缺失不可达
+    ("session.assets.list", "GET", "/sessions/{session_id}/assets"),
+    ("session.assets.register", "POST", "/sessions/{session_id}/assets"),
+    ("session.assets.rename", "PATCH", "/sessions/{session_id}/assets/{asset_id}"),
     ("document.persist", "POST", "/sessions/{session_id}/documents"),
     ("document.formats", "GET", "/documents/formats"),
     ("file.import_url", "POST", "/sessions/{session_id}/files/import"),

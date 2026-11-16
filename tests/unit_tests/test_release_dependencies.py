@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tarfile
 from email.parser import Parser
+from importlib.metadata import distribution
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -336,7 +337,7 @@ def test_build_requirement_discovery_can_bootstrap_before_building(tmp_path, kin
 
 
 def test_repository_editable_metadata_uses_actual_configuration(tmp_path):
-    for name in ("pyproject.toml", "setup.py"):
+    for name in ("pyproject.toml", "setup.py", "README.md"):
         shutil.copyfile(ROOT / name, tmp_path / name)
     for name in ("jiuwenswarm", "jiuwenbox/src/jiuwenbox"):
         package = tmp_path / name
@@ -359,8 +360,13 @@ def test_repository_editable_metadata_uses_actual_configuration(tmp_path):
     parsed = Parser().parsestr(metadata[0].read_text(encoding="utf-8"))
     requirements = [Requirement(raw) for raw in parsed.get_all("Requires-Dist", [])]
     sdk_requirements = [item for item in requirements if item.name == "openjiuwen"]
-    assert sdk_requirements
-    assert all(item.url is None and item.marker is not None for item in sdk_requirements)
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    source = config["tool"]["uv"]["sources"]["openjiuwen"]
+    direct = [item for item in sdk_requirements if item.marker is None]
+    assert len(direct) == 1
+    assert direct[0].url == f"git+{source['git']}@{source['rev']}"
+    optional = [item for item in sdk_requirements if item.marker is not None]
+    assert optional and all(item.url is None for item in optional)
     assert any(item.name == "agent-gateway" and item.url for item in requirements)
 
 
@@ -394,24 +400,27 @@ def test_build_hooks_block_candidate_releases_but_allow_editable_installs(tmp_pa
                 assert len(identity.get(key, "")) == 64
 
 
-def test_gateway_supplies_sdk_without_losing_opt_in_extras():
+def test_official_sdk_pin_preserves_opt_in_extras():
     config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
     sdk = next(package for package in lock["package"] if package["name"] == "openjiuwen")
     gateway = next(package for package in lock["package"] if package["name"] == "agent-gateway")
     swarm = next(package for package in lock["package"] if package["name"] == "workswarm")
     overrides = [Requirement(raw) for raw in config["tool"]["uv"]["override-dependencies"]]
-    assert all(requirement.name != "openjiuwen" for requirement in overrides)
-    assert "openjiuwen" not in config["tool"]["uv"]["sources"]
-    source = config["tool"]["uv"]["sources"]["agent-gateway"]
-    expected_url = f"git+{source['git']}@{source['rev']}"
     requirements = [Requirement(raw) for raw in config["project"]["dependencies"]]
-    assert all(item.name != "openjiuwen" for item in requirements)
-    assert next(item.url for item in requirements if item.name == "agent-gateway") == expected_url
-    expected_lock_url = f"{source['git']}?rev={source['rev']}"
-    assert gateway["source"]["git"] == f"{expected_lock_url}#{source['rev']}"
-    assert all(item["name"] != "openjiuwen" for item in lock["manifest"]["overrides"])
-    assert all(item["name"] != "openjiuwen" for item in swarm["dependencies"])
+    for name, package in (("openjiuwen", sdk), ("agent-gateway", gateway)):
+        source = config["tool"]["uv"]["sources"][name]
+        expected_url = f"git+{source['git']}@{source['rev']}"
+        assert next(item.url for item in requirements if item.name == name) == expected_url
+        expected_lock_url = f"{source['git']}?rev={source['rev']}"
+        assert package["source"]["git"] == f"{expected_lock_url}#{source['rev']}"
+    source = config["tool"]["uv"]["sources"]["openjiuwen"]
+    expected_url = f"git+{source['git']}@{source['rev']}"
+    sdk_overrides = [item for item in overrides if item.name == "openjiuwen"]
+    assert {item.url for item in sdk_overrides} == {expected_url}
+    lock_overrides = [item for item in lock["manifest"]["overrides"] if item["name"] == "openjiuwen"]
+    assert {item["git"] for item in lock_overrides} == {f"{source['git']}?rev={source['rev']}"}
+    assert any(item["name"] == "openjiuwen" for item in swarm["dependencies"])
     assert any(item["name"] == "openjiuwen" for item in gateway["dependencies"])
     for extra, expected in {
         "claude": {"claude"}, "codex": {"codex"}, "cua": {"cua"}, "distribute": {"postgres", "zmq"},
@@ -419,9 +428,23 @@ def test_gateway_supplies_sdk_without_losing_opt_in_extras():
         requirement = Requirement(config["project"]["optional-dependencies"][extra][0])
         assert requirement.name == "openjiuwen" and requirement.url is None
         assert requirement.extras == expected
+        active = [item for item in sdk_overrides if item.marker is None or item.marker.evaluate({"extra": extra})]
+        assert set().union(*(item.extras for item in active)) == expected
         dependency = next(item for item in swarm["optional-dependencies"][extra] if item["name"] == "openjiuwen")
         assert set(dependency["extra"]) == expected
         assert expected <= sdk["optional-dependencies"].keys()
+
+
+def test_installed_gateway_does_not_require_a_conflicting_sdk_revision():
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    source = config["tool"]["uv"]["sources"]["openjiuwen"]
+    expected_url = f"git+{source['git']}@{source['rev']}"
+    requirements = [Requirement(raw) for raw in distribution("agent-gateway").requires or []]
+    sdk_requirements = [item for item in requirements if item.name == "openjiuwen"]
+    assert sdk_requirements
+    for requirement in sdk_requirements:
+        assert requirement.url in (None, expected_url)
+        assert requirement.specifier.contains(distribution("openjiuwen").version)
 
 
 def test_skip_build_cannot_bypass_the_wheel_release_gate(tmp_path):

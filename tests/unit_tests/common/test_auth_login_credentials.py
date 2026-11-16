@@ -11,7 +11,7 @@ from agent_gateway.auth.login_credentials import (
     login_auth_from_params,
     placeholder_api_key,
 )
-from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+from e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 
 API_BASE = "https://apig.example.com/v1"
 REF = "abe633f3a47a2758174eabe9160daf36"

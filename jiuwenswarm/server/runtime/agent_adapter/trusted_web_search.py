@@ -1,6 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Record search provenance without duplicating SDK quality or budget policy."""
+"""Record trusted URL provenance through the pinned core's search-result hook.
+
+Core owns search requests, quality filtering, budgets and rendering. The host only
+records the structured URLs exposed by its successful-result callback.
+"""
 
 from __future__ import annotations
 

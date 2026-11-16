@@ -3,8 +3,8 @@
 import asyncio
 
 import pytest
-from openjiuwen_protocol.e2a.agent_models import AgentResponse
-from openjiuwen_protocol.message import ReqMethod
+from e2a.agent_models import AgentResponse
+from e2a.message import ReqMethod
 from agent_gateway.common.config_panel import tui_models_handlers
 from agent_gateway.channel_manager.tui import tui_connect as tui_connect_module
 from agent_gateway.channel_manager.tui.tui_connect import (
@@ -1526,14 +1526,6 @@ async def test_session_delete_unavailable_when_agent_offline() -> None:
     )
 
     _assert_control_method_unavailable(server)
-
-
-@pytest.mark.asyncio
-async def test_session_rebind_project_falls_back_to_shared_dir_when_agent_offline(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A2g：AgentServer 不可达时报 SERVICE_UNAVAILABLE，不再本地 rebib。"""
-    pytest.skip("A2g deleted legacy local rebind fallback; E2A-only")
 
 
 @pytest.mark.asyncio

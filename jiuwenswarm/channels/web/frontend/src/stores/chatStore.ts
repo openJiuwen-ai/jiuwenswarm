@@ -257,6 +257,13 @@ export interface ChatRuntime {
   evolutionStatusClearTimer: ReturnType<typeof setTimeout> | null;
   /** interruptResult 自动清除定时器，按 session 隔离 */
   interruptResultClearTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * Epoch of the last successful pause/cancel ack that settled this turn.
+   * While set, a lagging runtime-snapshot (session.get_metadata) or a synthetic
+   * resume processing event must not relight foreground processing; the next
+   * real processing_status(true) frame or a new user send clears it.
+   */
+  interruptSettledEpoch: number | null;
 }
 
 function createEmptyRuntime(): ChatRuntime {
@@ -275,6 +282,7 @@ function createEmptyRuntime(): ChatRuntime {
     isPaused: false,
     pausedTask: null,
     interruptResult: null,
+    interruptSettledEpoch: null,
     switchingMode: false,
     isNewSession: false,
     currentStreamContent: '',
@@ -414,6 +422,13 @@ interface ChatState {
     messages: QueuedSessionMessage[]
   ) => void;
   setInterruptResult: (sessionId: string, result: InterruptResultPayload | null) => void;
+  markInterruptSettled: (sessionId: string) => void;
+  clearInterruptSettled: (sessionId: string) => void;
+  /**
+   * 会话生命周期动作（归档/删除）已停掉本轮：后端不会补发终态线帧，
+   * 需要在前端显式收尾，否则恢复会话后会一直显示执行中。
+   */
+  settleLifecycleStoppedSession: (sessionId: string) => void;
   setSwitchingMode: (sessionId: string, switching: boolean) => void;
   setNewSession: (sessionId: string, isNew: boolean) => void;
   addToolCall: (
@@ -1355,6 +1370,64 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         },
       };
     });
+  },
+
+  markInterruptSettled: (sessionId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, interruptSettledEpoch: Date.now() },
+        },
+      };
+    });
+  },
+
+  clearInterruptSettled: (sessionId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime || runtime.interruptSettledEpoch === null) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, interruptSettledEpoch: null },
+        },
+      };
+    });
+  },
+
+  settleLifecycleStoppedSession: (sessionId) => {
+    // Archive/delete cancel the live turn inside the runtime without emitting
+    // the usual terminal frames (chat.processing_status(false) / chat.final).
+    // Close the local turn here, otherwise reopening a restored Session in the
+    // same page keeps its spinner, stop button and open tool cards running
+    // forever (GitCode #6533).
+    if (!get().runtimes[sessionId]) return;
+    // Keep lagging metadata snapshots from relighting the settled turn; the
+    // next real processing_status(true) frame or a new user send clears it.
+    get().markInterruptSettled(sessionId);
+    get().setPaused(sessionId, false);
+    get().setOrganizationProcessing(sessionId, false);
+    get().setProcessing(sessionId, false);
+    get().setThinking(sessionId, false);
+    get().closeReasoning(sessionId);
+    get().stopStreaming(sessionId);
+    // Team-leader bubbles stream outside currentStreamId; stopStreaming does
+    // not close them, so close their cursors explicitly.
+    const messages = get().runtimes[sessionId]?.messages ?? [];
+    for (const message of messages) {
+      if (message.id.startsWith('team-leader-') && message.isStreaming) {
+        get().updateMessage(sessionId, message.id, { isStreaming: false });
+      }
+    }
+    get().clearPermissionQuestions(sessionId);
+    get().clearPendingQuestions(sessionId);
+    // The stopped turn will never deliver a tool_result. Settle its orphan
+    // tool calls now (isProcessing is already false) so they stop rendering as
+    // "执行中"; the next history reload would do the same.
+    get().settleHistoricalToolExecutions(sessionId);
   },
 
   setSwitchingMode: (sessionId, switching) => {

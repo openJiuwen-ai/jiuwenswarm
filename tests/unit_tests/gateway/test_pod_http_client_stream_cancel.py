@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
+from e2a.models import E2AEnvelope
 from jiuwenswarm.extensions.runtime_management_extension import pod_http_client as pod_http
 from jiuwenswarm.extensions.runtime_management_extension.pod_http_client import (
     HttpSseAgentServerClient,

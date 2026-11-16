@@ -522,6 +522,39 @@ Gateway pin 前移后仍须重锁并重新验证普通 pip 安装。
 整套 CI 已通过。Gateway 官方固定提交前移后，需重锁并重跑搜索及 ST，才能交付本 PR 的完整搜索能力。
 主工作区环境和已有三个未提交索引不纳入本次提交。
 
+## 同步官方依赖新方案与合并冲突（2026-11-16）
+
+!9841 以 `b4e2f4f39` 合并官方 develop `15aecfac1`。原分支及三个未提交索引分别备份，
+不将用户索引 WIP 混入合并。冲突涉及 Makefile、pyproject、搜索适配器及四个生成索引。
+
+官方 `6cf813d88` 已恢复根项目固定 SDK；Gateway `2c40ac15` 的发布依赖改为
+`openjiuwen>=0.1.20`，自身 uv source 指向 `2f4bedb9`。后者不会作为传递依赖 source 生效，
+与 11 月 12 日 Gateway 直接依赖 Core Git URL 的前提不同。用户确认跟随最新官方方案，
+本节替代上一节的纯 Gateway 传递决策：
+
+- Swarm 固定官方 Core `2f4bedb9c5d85ab70d7c79d36183e6a98799e94e`，采用官方 Gateway
+  `2c40ac150276477a8079ef7937674b600b6a1420`；保留各 SDK extra，Harmony 不带回旧 `f3f8f576` 直链。
+- 协议迁移跟随官方 E2A `06a75d66` 和 PyPI A4P `0.1.0`，不保留已被替换的 openjiuwen-protocol pin。
+- 两仓 SDK 约束不再是互斥的 Git URL；增加已安装 Gateway 元数据回归，防止未来再次出现该冲突。
+  SDK Web 工具目录和 WebResearchBudgetRail 在 `2f4bedb9` 与此前验证的 `2dc7477a` 间无代码差异。
+- 搜索适配器保留单一 `_on_search_results` 回调、上下文透传、finally lease 清理与旧 SDK 明确错误。
+  删除自动合并产生的重复方法和重复测试日志清理；没有复制 SDK 搜索、质量或预算实现。
+- 文档索引由合并后的源文档重新生成，不直接丢弃任一侧的有效条目。Makefile 明确要求先更新
+  固定 SHA 再重新锁定，避免把 `uv lock --upgrade-package` 描述成自动跟踪 develop。
+
+验证使用独立 `.tmp/pr9841-20261116-venv`，真实安装上述官方 SDK / Gateway / E2A，
+`uv sync --locked --no-default-groups --group test`、`uv pip check` 和
+`uv lock --check --offline` 均通过。锁文件相对官方仅增加本 PR 的构建测试依赖及元数据。
+
+- 后端 12 个相关文件首轮 **407 passed、1 failed、1 skipped**。唯一失败为群续跑用例
+  `test_idle_timeout_releases_the_session_for_a_queued_continuation[True]`：SDK `atomic_write`
+  替换测试临时 `executions.json` 时发生 Windows `PermissionError (WinError 5)`，随后等待超时。
+  不放宽断言或修改生产逻辑，单独重跑整个续跑文件为 **49 passed**；尚不能据此认定该异常已修复。
+  搜索、发布构建、已安装 Gateway 约束和 Worker 回归在首轮均通过。
+- 前端 `npm run test:settings-panel` 为 **69 passed**，未手工改动前端逻辑。
+- 未运行全仓 UT、远端 ST、完整桌面构建或真实搜索 E2E。主工作区环境、用户服务和
+  Gateway 业务代码不变；本地结果不等同于新 CI 已通过。
+
 ## 残余限制
 
 语义评估仍可能误判或不可用，不能把所有相关搜索结果变成实时证据。剩余搜索源和页面布局也可能变动。

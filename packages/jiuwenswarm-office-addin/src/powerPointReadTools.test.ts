@@ -1,10 +1,11 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import contractTools from '@contract/tools.json';
+import contractTools from '@office/powerpoint/tools.json';
 
+import type { ClientToolResponse } from './clientToolDispatcher';
 import { isRecord, type JsonObject } from './gatewayClient';
+import type { PresentationToolName } from './powerPointApp';
 import { DEFAULT_RENDER_WIDTH, powerPointReadRuntime, type PowerPointRun } from './powerPointReadTools';
-import type { ClientToolResponse, PresentationToolName } from './presentationToolTypes';
 
 interface FakeShape {
   id: string;

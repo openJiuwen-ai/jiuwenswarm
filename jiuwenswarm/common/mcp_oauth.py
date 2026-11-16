@@ -2,7 +2,7 @@
 
 """MCP OAuth 回调入口（AgentServer 进程）。
 
-异常类型与 provider 域名取自 ``openjiuwen_protocol.mcp_oauth``（跨进程契约单一
+异常类型与 provider 域名取自 ``e2a.mcp_oauth``（跨进程契约单一
 来源）；本文件只绑定母仓进程自己的 provider 注册表。
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from openjiuwen_protocol.mcp_oauth import (
+from e2a.mcp_oauth import (
     MCP_REGISTRY_PROVIDER_DOMAIN,
     McpOAuthError,  # noqa: F401 — 旧 import 路径兼容
 )

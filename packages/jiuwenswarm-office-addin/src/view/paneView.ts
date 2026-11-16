@@ -1,6 +1,6 @@
 import type { AttachmentState, SessionId } from '../clientAttachment';
 import type { Entry, Prompt } from '../conversationModel';
-import { copy } from '../copy';
+import { copy, type DocumentCopy } from '../copy';
 import type { PaneState, TaskPaneController } from '../paneController';
 import { transcriptFileName, transcriptMarkdown } from '../transcriptMarkdown';
 import { Composer, type Waiting } from './composer';
@@ -26,11 +26,13 @@ export interface PaneClock {
 const wallClock: PaneClock = { now: () => Date.now(), every: (ms, tick) => void setInterval(tick, ms) };
 
 /**
- * Render the pane into ``root`` and keep it in step with the controller. The
- * clock moves the running steps' seconds and the reconnect countdown on once
- * a second.
+ * Render the pane into ``root`` and keep it in step with the controller, in
+ * ``words`` that name the host's document. The clock moves the running steps'
+ * seconds and the reconnect countdown on once a second.
  */
-export function mountPane(root: HTMLElement, controller: Controller, clock: PaneClock = wallClock): void {
+export function mountPane(
+  root: HTMLElement, controller: Controller, words: DocumentCopy, clock: PaneClock = wallClock,
+): void {
   const header = new Header({
     switchTo: sessionId => void controller.switchTo(sessionId),
     newConversation: () => void controller.newConversation(),
@@ -41,10 +43,10 @@ export function mountPane(root: HTMLElement, controller: Controller, clock: Pane
         transcriptMarkdown(name || copy.untitledConversation, conversation.entries, documents));
     },
   });
-  const composer = new Composer({
+  const composer = new Composer(words.noun, {
     send: text => controller.send(text), stop: () => void controller.stop(), chooseModel: model => controller.chooseModel(model),
   });
-  const transcript = new Transcript(text => composer.fill(text), {
+  const transcript = new Transcript(words, text => composer.fill(text), {
     undo: (...choice) => void controller.undo(...choice),
     cancelUndo: () => controller.cancelUndo(),
   });
@@ -62,7 +64,7 @@ export function mountPane(root: HTMLElement, controller: Controller, clock: Pane
   const trayActions = { continueHere: () => void controller.continueHere(), dismissAlert: () => controller.dismissAlert() };
   let announcedTray = new Map<string, string>();
   const paintTray = (state: PaneState, now: number): void => {
-    const items = trayItems(state, now, trayActions);
+    const items = trayItems(state, now, trayActions, words.noun);
     tray.update(items);
     // A line is read out when it appears or says something new; a countdown's ticks are not news.
     const news = items.find(item => announcedTray.get(item.key) !== shape(item));

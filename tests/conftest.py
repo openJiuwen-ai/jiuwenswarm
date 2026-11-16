@@ -31,12 +31,13 @@ for _name, _value in {
 
 
 def pytest_unconfigure(config):
-    _test_environment.undo()
+    # Release log files before removing the isolated home on Windows.
     logger = logging.getLogger("jiuwenswarm")
-    for handler in list(logger.handlers):
+    for handler in logger.handlers[:]:
         logger.removeHandler(handler)
         handler.close()
     logging.shutdown()
+    _test_environment.undo()
     _collection_home.cleanup()
 
 

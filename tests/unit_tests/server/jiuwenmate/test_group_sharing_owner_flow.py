@@ -27,6 +27,7 @@ async def seed_native_waiting_scene(manager, request):
     from openjiuwen.harness.persistent_agent.schema.session_record import SessionStateRecord, encode_interruption, encode_messages
 
     record = manager._sessions.get_request(WEB_NAMESPACE, request["request_id"]).record
+    approval = manager._permission_approvals.get(request["approval"]["approval_id"])
     call = ToolCall(id="sharing-call", name="search_group_messages", arguments='{"query":"launch"}', type="function")
     assistant = AssistantMessage(content="", tool_calls=[call])
     interrupted = ToolInterruptionState(ai_message=assistant, iteration=1, original_query="query",
@@ -37,7 +38,7 @@ async def seed_native_waiting_scene(manager, request):
         interruption=encode_interruption(interrupted), checkpoint=None, last_group_message_id=None,
         current_window_id=None, window_seq=None, last_rollover=None,
         ending={"outcome": "awaiting_confirmation", "request_id": record.request_id,
-                "execution_id": "paused-execution", "spec_fingerprint": record.config_fingerprint})
+                "execution_id": approval.execution_id, "spec_fingerprint": request["_paused_spec_fingerprint"]})
     backend = manager._windows.bind(WEB_NAMESPACE, record.agent_id, record.session_id)
     key = core.session_key_prefix(record.agent_id, record.session_id) + "state"
     await backend.set(key, state.model_dump_json())
@@ -47,9 +48,11 @@ async def seed_native_waiting_scene(manager, request):
 async def start_sharing(host, monkeypatch, *, duplicate_query=False, pause_time=None, unregistered=False):
     agent_id = await host.colleague()
     resumed = []
+    paused_fingerprints = {}
 
     async def execute(spec, context, inputs):
         execution = context.execution
+        paused_fingerprints[execution.request_id] = spec.fingerprint()
         occurred_at = pause_time or datetime.now(timezone.utc)
         message = core.GroupMessage(message_id="secret-1", sender_id="alice", sender_name="Alice",
                                     sender_kind="human", received_at=NOW, text="confidential launch plan")
@@ -89,6 +92,8 @@ async def start_sharing(host, monkeypatch, *, duplicate_query=False, pause_time=
     assert response.ok, response.payload
     initial = response.payload["request"]
     request = await host.settled(initial["request_id"])
+    # Native persistence saves the effective Spec passed to core, including runtime-only tools and rails.
+    request["_paused_spec_fingerprint"] = paused_fingerprints[initial["request_id"]]
     manager = host.managers[0]
     listed = await host.call(ReqMethod.JIUWENMATE_SHARING_LIST, agent_id=agent_id)
     assert listed.ok, listed.payload

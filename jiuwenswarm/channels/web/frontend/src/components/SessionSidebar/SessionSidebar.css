@@ -277,17 +277,23 @@
 }
 .editable-combobox__list {
   position: absolute;
+  box-sizing: border-box;
   z-index: 1;
   top: calc(100% + 4px);
   right: 0;
   left: 0;
-  max-height: 168px;
+  max-height: 178px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 4px;
   border: 1px solid var(--color-border-default);
   border-radius: 7px;
   background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-lg);
+}
+.editable-combobox__list[data-side='top'] {
+  top: auto;
+  bottom: calc(100% + 4px);
 }
 .editable-combobox__option {
   display: block;

@@ -32,7 +32,7 @@ from jiuwenswarm.office.client_tools import build_task_pane_tools
 from jiuwenswarm.office import review
 from jiuwenswarm.office.contract import load_contract
 from jiuwenswarm.office.review import NO_ISSUES_SENTINEL, review_checklist
-from tests.unit_tests.office.conftest import POWERPOINT_PACKAGE
+from tests.unit_tests.office.conftest import POWERPOINT_PACKAGE, WORD_PACKAGE
 
 PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg=="
 REVIEW_CHECKLIST = review_checklist(POWERPOINT_PACKAGE)
@@ -263,8 +263,9 @@ def _evidence(result: str) -> dict:
     return json.loads(result.split("<review-evidence>\n", 1)[1].split("\n</review-evidence>", 1)[0])
 
 
-def test_the_review_checklist_asks_for_the_line_the_verdict_reads() -> None:
-    assert f"respond with exactly this first line:\n{NO_ISSUES_SENTINEL}\n" in REVIEW_CHECKLIST
+@pytest.mark.parametrize("package", [POWERPOINT_PACKAGE, WORD_PACKAGE], ids=["powerpoint", "word"])
+def test_the_review_checklist_asks_for_the_line_the_verdict_reads(package) -> None:
+    assert f"respond with exactly this first line:\n{NO_ISSUES_SENTINEL}\n" in review_checklist(package)
 
 
 def test_the_review_summary_counts_what_the_task_pane_measures_and_nothing_else() -> None:
@@ -308,6 +309,35 @@ async def test_a_visual_review_pauses_once_and_shows_the_conversation_s_model_on
     assert REVIEW_QUERY not in json.dumps(review_messages)
 
 
+@pytest.mark.parametrize(("rendered", "arguments", "sent", "evidence"), [
+    (2, {"page_hint": "the pricing table"}, 2,
+     "The document has 2 pages; the first 2 are attached.\n<focus_area>the pricing table</focus_area>"),
+    (8, {}, 6, "The document has 8 pages; the first 6 are attached.\nNo focus area was named."),
+], ids=["focus-wrapped-as-data", "first-six-pages-of-eight"])
+async def test_a_document_review_shows_the_reviewer_the_word_checklist_the_pages_and_the_focus_only(
+        conversation, attach_pane, vision, rendered, arguments, sent, evidence):
+    attach_pane("doc-a", ["verify_doc_visual"])
+    vision.reply("page 2: the second table runs past the right margin; fit it to the page width.")
+    verify = ToolCall(id="verify-1", type="function", name="verify_doc_visual", arguments=json.dumps(arguments))
+    pages = {"content": [{"type": "text", "text": f"{rendered} pages"},
+                         *({"type": "image", "data_url": RENDER} for _ in range(rendered))]}
+
+    async with conversation([[verify]], session_id="doc-a", package=WORD_PACKAGE) as pane:
+        [request] = await pane.turn(REVIEW_QUERY)
+        await pane.answer((request, pages))
+        result = pane.model.tool_results()["verify-1"]
+
+    assert result.startswith(f'<verifier-result verdict="needs_work" pages_reviewed="{sent} of {rendered}">')
+    assert _evidence(result)["hard_defects"] == [
+        "page 2: the second table runs past the right margin; fit it to the page width."]
+    system, user = vision.requests[0]["messages"]
+    assert system == {"role": "system", "content": review_checklist(WORD_PACKAGE)}
+    focus, *images = user["content"]
+    assert focus == {"type": "text", "text": evidence}
+    assert images == [{"type": "image_url", "image_url": {"url": RENDER}}] * sent
+    assert REVIEW_QUERY not in json.dumps(vision.requests[0])
+
+
 async def test_a_conversation_whose_model_cannot_see_images_has_the_vision_model_review(
         conversation, attach_pane, vision):
     attach_pane("deck-a", REVIEWING)
@@ -321,6 +351,8 @@ async def test_a_conversation_whose_model_cannot_see_images_has_the_vision_model
 
     [sent] = vision.requests
     assert (sent["model"], sent["max_tokens"]) == ("vision-test", review.REVIEW_MAX_TOKENS)
+    # The review only needs a short answer; a model left to think can spend every token on it.
+    assert sent["reasoning_effort"] == "none"
     system, user = sent["messages"]
     assert system == {"role": "system", "content": REVIEW_CHECKLIST}
     assert user["content"][1] == {"type": "image_url", "image_url": {"url": RENDER}}
@@ -410,13 +442,14 @@ async def test_a_visual_review_without_the_requested_slide_s_capture_fails_unrev
     assert vision.requests == []
 
 
-@pytest.mark.parametrize(("replies", "reason"), [
-    ([(200, NO_ISSUES_SENTINEL, 2.0)], "did not answer within"),
-    ([(500, "", 0.0)], "the vision model (vision-test) failed"),
-    ([(200, "", 0.0), (200, "  ", 0.0)], "answered nothing 2 times"),
-])
+@pytest.mark.parametrize(("replies", "reasons"), [
+    # Either the review deadline or the provider's read timeout can fire first.
+    ([(200, NO_ISSUES_SENTINEL, 2.0)], ("did not answer within", "APITimeoutError: Request timed out")),
+    ([(500, "", 0.0)], ("the vision model (vision-test) failed",)),
+    ([(200, "", 0.0), (200, "  ", 0.0)], ("answered nothing 2 times",)),
+], ids=["timeout", "provider-error", "empty-replies"])
 async def test_a_review_that_fails_returns_the_render_without_a_verdict(
-        conversation, attach_pane, vision, monkeypatch, replies, reason):
+        conversation, attach_pane, vision, monkeypatch, replies, reasons):
     attach_pane("deck-a", REVIEWING)
     monkeypatch.setattr(review, "REVIEW_TIMEOUT_SECONDS", 0.5)
     vision.replies = list(replies)
@@ -426,7 +459,8 @@ async def test_a_review_that_fails_returns_the_render_without_a_verdict(
         await pane.answer((request, _capture()))
         result = pane.model.tool_results()["verify-1"]
 
-    assert result.startswith('<verifier-result slide_id="256#1">No verdict: ') and reason in result
+    assert result.startswith('<verifier-result slide_id="256#1">No verdict: ')
+    assert any(reason in result for reason in reasons)
     assert "visual_attachment.path: " in result
     assert len(vision.requests) == len(replies)
 

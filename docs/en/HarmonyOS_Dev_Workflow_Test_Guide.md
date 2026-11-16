@@ -110,7 +110,6 @@ TEST_TMP="$(mktemp -d)"
 JIUWENSWARM_DATA_DIR="$TEST_TMP/data" \
 UV_CACHE_DIR="$TEST_TMP/uv-cache" \
 uv run --no-sync python -m pytest \
-  tests/unit_tests/gateway/test_tui_harmonyos_project.py \
   tests/unit_tests/gateway/test_harmonyos_dev.py \
   tests/unit_tests/gateway/test_cli_channel_handlers.py \
   tests/agents/swarm/test_swarm_assembly.py::test_enrich_team_spec_for_swarm_injects_config_mcp_servers \

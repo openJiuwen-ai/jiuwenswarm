@@ -7,6 +7,7 @@ import copy
 import json
 import os
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -15,12 +16,16 @@ import pytest
 
 from openjiuwen.core.common import RunContext
 from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall, UsageMetadata
+from openjiuwen.core.foundation.tool import ToolExposure
 from openjiuwen.core.foundation.tool.schema import ToolOutput
+from openjiuwen.core.session.agent import Session
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ModelCallInputs, ToolCallInputs
 from openjiuwen.harness import create_deep_agent
+from openjiuwen.harness.prompts import SystemPromptBuilder
 
 from jiuwenswarm.agents.harness.common.rails.ask_user_rail import StructuredAskUserRail
+from jiuwenswarm.agents.harness.common.rails.ask_user_contract import build_ask_user_interactive_input
 from jiuwenswarm.agents.harness.common.rails.symphony import SymphonyOrchestrationRail
 from jiuwenswarm.agents.harness.common.rails.symphony.skillpack_route import (
     COMPOSE_CHOICE, PackRoute, ROUTING_SECTIONS, SkillPackRouter, direct_route_mode,
@@ -38,8 +43,26 @@ def _pack(name: str = "weekly-release-pack") -> dict[str, Any]:
     }
 
 
-def _router(*packs: dict[str, Any]) -> tuple[SkillPackRouter, dict[str, Any]]:
+def _router(*packs: dict[str, Any], skill_root: Path | None = None) -> tuple[SkillPackRouter, dict[str, Any]]:
     snapshot = {"inventory_revision": "revision-1", "skills": list(packs or [_pack()])}
+    skills = []
+    if skill_root is not None:
+        from openjiuwen.core.single_agent.skills.skill_manager import Skill
+        from tests.unit_tests.agentserver.test_skillpack_backend import _write_pack, _write_skill
+
+        for item in snapshot["skills"]:
+            root = skill_root / item["id"]
+            if item.get("skill_type") == "skillpack":
+                _write_pack(root, name=item["id"], members=tuple(item["members"]))
+                document = root / "SKILL.md"
+                text = document.read_text(encoding="utf-8")
+                text = text.replace("description: complete demo workflow", "description: " + item.get("description", "complete demo workflow"))
+                document.write_text(text + "\n" + item.get("content", ""), encoding="utf-8")
+                for member in item["members"]:
+                    _write_skill(skill_root / member, member)
+            else:
+                _write_skill(root, item["id"])
+        skills = [Skill(name=root.name, description="test", directory=root) for root in skill_root.iterdir()]
     environment = SimpleNamespace(
         directory=SimpleNamespace(scoped_records=lambda paths: ["records"]),
         search_content=lambda records, query, **kwargs: tuple(item["id"] for item in snapshot["skills"]),
@@ -47,19 +70,30 @@ def _router(*packs: dict[str, Any]) -> tuple[SkillPackRouter, dict[str, Any]]:
     router = SkillPackRouter(
         manager=lambda: SimpleNamespace(skillpack_inventory_snapshot=lambda **kwargs: copy.deepcopy(snapshot)),
         toolkit=lambda: SimpleNamespace(environment=environment), model=lambda: None,
+        skills_for_session=lambda session: skills,
     )
     router.judge = AsyncMock(side_effect=lambda query, candidates, **kwargs: candidates)
     return router, snapshot
 
 
-async def _active(selected: list[str] | None = None):
+def _config(enabled: bool = True):
+    return {"symphony": {"evolution": {"flow": {"enabled": enabled}}}}
+
+
+async def _active(
+    selected: list[str] | None = None, *, enabled: bool = True, automatic_skillpack_enabled=None,
+    session: Session | None = None,
+):
     router, snapshot = _router()
     rail = SymphonyOrchestrationRail(
-        config_base={"skillpack": {"direct_route_mode": "confirm"}}, skillpack_router=router,
+        config_base=_config(enabled), skillpack_router=router,
+        automatic_skillpack_enabled=automatic_skillpack_enabled,
     )
     outer = _outer_ctx("Write release notes and check risk", run_context=RunContext(extra={
         "capture_mode": "agent", "member_id": "owner-1", "skills": selected or [],
     }))
+    if session is not None:
+        outer.session = session
     await rail.before_invoke(outer)
     model = _model_ctx(outer)
     await rail.before_model_call(model)
@@ -84,11 +118,198 @@ def _tool_ctx(outer, name: str, args: dict[str, Any]):
     )
 
 
-def test_route_mode_defaults_off_and_invalid_off(monkeypatch):
-    monkeypatch.delenv("SKILLPACK_DIRECT_ROUTE_MODE", raising=False)
+@pytest.mark.parametrize("legacy_mode", ["off", "confirm", "shadow", "invalid"])
+def test_route_mode_uses_discovery_setting_not_legacy_env(monkeypatch, legacy_mode):
+    monkeypatch.setenv("SKILLPACK_DIRECT_ROUTE_MODE", legacy_mode)
+    monkeypatch.setenv("SKILLPACK_PRODUCTIZATION_ENABLED", "false")
     assert direct_route_mode(None) == "off"
-    monkeypatch.setenv("SKILLPACK_DIRECT_ROUTE_MODE", "invalid")
+    assert direct_route_mode(_config()) == "confirm"
+    assert direct_route_mode(_config(False)) == "off"
     assert direct_route_mode({"skillpack": {"direct_route_mode": "confirm"}}) == "off"
+
+
+@pytest.mark.asyncio
+async def test_disabled_discovery_keeps_manual_safe_direct_route():
+    rail, router, _, outer, model = await _active(["weekly-release-pack"], enabled=False)
+    route = rail._outer_states[id(outer)].pack_route
+    assert route.token.source == "explicit_picker"
+    router.judge.assert_not_called()
+    assert not any("symphony" in tool["name"] for tool in model.inputs.tools)
+    member = _tool_ctx(outer, "skill_tool", {"skill_name": "release-note"})
+    await rail.before_tool_call(member)
+    assert member.inputs.tool_result["reason"] == "skillpack_root_required"
+
+
+@pytest.mark.asyncio
+async def test_disabled_discovery_does_not_search_or_judge():
+    router, _ = _router()
+    router.snapshot = AsyncMock(side_effect=AssertionError("automatic discovery must be off"))
+    assert await router.choose("task", [], mode="off") is None
+    router.snapshot.assert_not_called()
+    router.judge.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_discovery_disabled_during_match_does_not_offer_confirmation():
+    router, _ = _router()
+    config = _config()
+
+    async def judge(query, candidates, **kwargs):
+        config["symphony"]["evolution"]["flow"]["enabled"] = False
+        return candidates
+
+    router.judge = judge
+    rail = SymphonyOrchestrationRail(config_base=lambda: config, skillpack_router=router)
+    outer = _outer_ctx("Write release notes and check risk", run_context=RunContext(extra={
+        "capture_mode": "agent", "member_id": "owner-1",
+    }))
+    await rail.before_invoke(outer)
+    model = _model_ctx(outer)
+    await rail.before_model_call(model)
+    assert rail._outer_states[id(outer)].pack_route is None
+    assert any(tool["name"] == "symphony_compose_graph" for tool in model.inputs.tools)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_manual_unhealthy_pack_is_not_silently_recomposed(enabled):
+    pack = _pack()
+    pack["blocked_members"] = ["risk-check"]
+    router, _ = _router(pack)
+    route = await router.choose("task", [pack["id"]], mode=direct_route_mode(_config(enabled)))
+    assert route.blocked
+    assert route.token is None
+
+
+@pytest.mark.asyncio
+async def test_confirmed_execution_survives_discovery_switch_off():
+    rail, _, _, outer, _ = await _active(["weekly-release-pack"])
+    rail._config_base = _config(False)
+    root = _tool_ctx(outer, "skill_tool", {"skill_name": "weekly-release-pack"})
+    await rail.before_tool_call(root)
+    assert root.inputs.tool_result is None
+    root.inputs.tool_result = {"success": True}
+    await rail.after_tool_call(root)
+    member = _tool_ctx(outer, "skill_tool", {"skill_name": "release-note"})
+    await rail.before_tool_call(member)
+    assert member.inputs.tool_result is None
+    compose = _tool_ctx(outer, "symphony_compose_graph", {})
+    await rail.before_tool_call(compose)
+    assert compose.inputs.tool_result["reason"] == "skillpack_recomposition_forbidden"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manual", [False, True])
+async def test_pending_choice_checks_switch_except_manual_picker(manual):
+    selected = ["weekly-release-pack", "other"] if manual else []
+    rail, _, _, outer, _ = await _active(selected)
+    state = rail._outer_states[id(outer)]
+    route = state.pack_route
+    route.ask_args()
+    rail._config_base = _config(False)
+    await rail._resume_pack_choice(state, {"call": {"answers": {route.question: "使用 weekly-release-pack"}}})
+    if manual:
+        assert state.pack_route.token.source == "explicit_picker"
+    else:
+        assert state.pack_route is route
+        assert route.blocked
+        assert route.token is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_error", [False, True])
+@pytest.mark.parametrize("manual", [False, True])
+async def test_live_switch_blocks_pending_auto_choice_but_not_manual_with_stale_config(manual, read_error):
+    persisted_enabled = True
+
+    def read_switch():
+        if not persisted_enabled and read_error:
+            raise OSError("settings temporarily unavailable")
+        return persisted_enabled
+
+    selected = ["weekly-release-pack", "other"] if manual else []
+    rail, _, _, outer, _ = await _active(selected, automatic_skillpack_enabled=read_switch)
+    state = rail._outer_states[id(outer)]
+    route = state.pack_route
+    route.ask_args()
+    persisted_enabled = False
+    assert direct_route_mode(rail._resolve_config_base()) == "confirm"
+    await rail._resume_pack_choice(state, {"call": {"answers": {route.question: "使用 weekly-release-pack"}}})
+    if manual:
+        assert route.token.source == "explicit_picker"
+    else:
+        assert route.blocked and route.token is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_error", [False, True])
+async def test_live_switch_read_failure_or_off_keeps_confirmed_execution(read_error):
+    persisted_enabled = True
+
+    def read_switch():
+        if not persisted_enabled and read_error:
+            raise OSError("settings temporarily unavailable")
+        return persisted_enabled
+
+    rail, _, _, outer, _ = await _active(automatic_skillpack_enabled=read_switch)
+    state = rail._outer_states[id(outer)]
+    route = state.pack_route
+    route.ask_args()
+    await rail._resume_pack_choice(state, {"call": {"answers": {route.question: "使用 weekly-release-pack"}}})
+    assert route.token.source == "confirmed_query_match"
+    persisted_enabled = False
+    root = _tool_ctx(outer, "skill_tool", {"skill_name": "weekly-release-pack"})
+    await rail.before_tool_call(root)
+    assert root.inputs.tool_result is None
+    root.inputs.tool_result = {"success": True}
+    await rail.after_tool_call(root)
+    member = _tool_ctx(outer, "skill_tool", {"skill_name": "release-note"})
+    await rail.before_tool_call(member)
+    assert member.inputs.tool_result is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manual", [False, True])
+async def test_live_switch_read_error_disables_only_automatic_discovery(manual):
+    def read_switch():
+        raise OSError("settings temporarily unavailable")
+
+    selected = ["weekly-release-pack"] if manual else []
+    rail, router, _, outer, _ = await _active(selected, automatic_skillpack_enabled=read_switch)
+    route = rail._outer_states[id(outer)].pack_route
+    if manual:
+        assert route.token.source == "explicit_picker"
+    else:
+        assert route is None
+    router.judge.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["model", "tool"])
+async def test_disabling_before_prompt_blocks_new_automatic_confirmation(boundary):
+    rail, _, _, outer, _ = await _active()
+    rail._config_base = _config(False)
+    if boundary == "model":
+        model = _model_ctx(outer)
+        await rail.before_model_call(model)
+        assert model.inputs.tools == []
+    else:
+        ask = _tool_ctx(outer, "ask_user", {"query": "choose"})
+        await rail.before_tool_call(ask)
+        assert ask.inputs.tool_result["reason"] == "skillpack_state_changed"
+    assert rail._outer_states[id(outer)].pack_route.blocked
+
+
+@pytest.mark.asyncio
+async def test_pending_automatic_offer_can_still_decline_after_switch_off():
+    rail, _, _, outer, _ = await _active()
+    state = rail._outer_states[id(outer)]
+    route = state.pack_route
+    route.ask_args()
+    rail._config_base = _config(False)
+    await rail._resume_pack_choice(state, {"call": {"answers": {route.question: COMPOSE_CHOICE}}})
+    assert route.declined
+    assert state.pack_route is None
 
 
 @pytest.mark.asyncio
@@ -192,7 +413,8 @@ async def test_native_model_match_uses_current_model_and_still_requires_confirma
     )
     assert route is not None and route.token is None
     assert [item["id"] for item in route.candidates] == ["weekly-release-pack"]
-    assert len(captured) == 1 and captured[0]["timeout"] == 20
+    assert len(captured) == 1 and captured[0]["timeout"] == 60
+    assert captured[0]["max_tokens"] == 512
     assert [message["role"] for message in captured[0]["messages"]] == ["system", "user"]
     request = json.loads(captured[0]["messages"][1]["content"])
     assert request["query"] == "release notes and risk report"
@@ -463,16 +685,14 @@ async def test_direct_state_survives_permission_pause_without_reauthorizing_acti
 
 @pytest.mark.asyncio
 async def test_rebuilt_adapter_cannot_resume_direct_route_as_ordinary_orchestration():
-    rail, router, _, outer, _ = await _active(["weekly-release-pack"])
-    persisted = {}
-    outer.session.get_state = lambda key: copy.deepcopy(persisted.get(key))
-    outer.session.update_state = lambda values: persisted.update(copy.deepcopy(values))
+    session = Session(session_id="s-1")
+    rail, router, _, outer, _ = await _active(["weekly-release-pack"], session=session)
     route = rail._outer_states[id(outer)].pack_route
     route.root_loaded = True
     route.member_started = True
     outer.inputs.result = {"result_type": "interrupt", "interrupt_ids": ["permission-id"]}
     await rail.after_invoke(outer)
-    assert persisted["_skillpack_direct_route_pending"]
+    assert any(session.get_state("_skillpack_direct_route_pending").values())
 
     rebuilt = SymphonyOrchestrationRail(skillpack_router=router)
     answer = InteractiveInput()
@@ -494,7 +714,202 @@ async def test_rebuilt_adapter_cannot_resume_direct_route_as_ordinary_orchestrat
     fresh.session = outer.session
     await rebuilt.before_invoke(fresh)
     assert rebuilt._outer_states[id(fresh)].pack_route is None
-    assert persisted["_skillpack_direct_route_pending"] == {}
+    assert not any(session.get_state("_skillpack_direct_route_pending").values())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("choice", [COMPOSE_CHOICE, "使用 weekly-release-pack"])
+@pytest.mark.parametrize("rebuild", [False, True])
+async def test_real_session_guard_clears_after_completed_choice(choice, rebuild):
+    session = Session(session_id="s-1")
+    rail, router, _, outer, _ = await _active(session=session)
+    state = rail._outer_states[id(outer)]
+    ask = _tool_ctx(outer, "ask_user", {})
+    await rail.before_tool_call(ask)
+    outer.inputs.result = {"result_type": "interrupt", "interrupt_ids": ["call-1"]}
+    await rail.after_invoke(outer)
+    assert any(session.get_state("_skillpack_direct_route_pending").values())
+
+    answer = build_ask_user_interactive_input("call-1", [{
+        "question": state.pack_route.question, "selected_options": [choice],
+    }])
+    resumed = _outer_ctx(answer)
+    resumed.session = session
+    await rail.before_invoke(resumed)
+    if choice == COMPOSE_CHOICE:
+        assert state.pack_route_declined
+        assert not any(session.get_state("_skillpack_direct_route_pending").values())
+    resumed.inputs.result = {"result_type": "answer", "output": "done"}
+    await rail.after_invoke(resumed)
+    assert not any(session.get_state("_skillpack_direct_route_pending").values())
+
+    next_rail = SymphonyOrchestrationRail(skillpack_router=router) if rebuild else rail
+    fresh = _outer_ctx("Package the session logs")
+    fresh.session = session
+    await next_rail.before_invoke(fresh)
+    assert next_rail._outer_states[id(fresh)].pack_route is None
+    call = _tool_ctx(fresh, "write_file", {})
+    await next_rail.before_tool_call(call)
+    assert call.inputs.tool_result is None
+
+
+@pytest.mark.asyncio
+async def test_real_session_guard_clear_preserves_another_owner():
+    session = Session(session_id="s-1")
+    rail, _, _, outer, _ = await _active(session=session)
+    scope = rail._outer_states[id(outer)].scope
+    own_key = rail._pack_guard_scope(scope)
+    other_key = json.dumps(["s-1", "agent", "other-owner"])
+    session.update_state({"_skillpack_direct_route_pending": {other_key: True}})
+    copied = session.get_state("_skillpack_direct_route_pending")
+    copied.pop(own_key)
+    assert session.get_state("_skillpack_direct_route_pending")[own_key] is True
+
+    rail._save_pack_resume_guard(outer, scope, pending=False)
+    stored = session.get_state("_skillpack_direct_route_pending")
+    assert stored.get(own_key) is not True
+    assert stored[other_key] is True
+    assert not rail._has_pack_resume_guard(outer, scope)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer_text", [
+    COMPOSE_CHOICE, "用户已跳过此题，未选择任何选项。", "用户已取消本次问答，未作答。",
+])
+async def test_declining_pack_exits_only_this_offer_and_limits_guidance(answer_text):
+    session = Session(session_id="s-1")
+    rail, router, _, outer, _ = await _active(session=session)
+    state = rail._outer_states[id(outer)]
+    route = state.pack_route
+    await rail.before_tool_call(_tool_ctx(outer, "ask_user", {}))
+    outer.inputs.result = {"result_type": "interrupt", "interrupt_ids": ["call-1"]}
+    await rail.after_invoke(outer)
+    answer = build_ask_user_interactive_input("call-1", [{
+        "question": route.question, "selected_options": [], "custom_input": answer_text,
+    }])
+    resumed = _outer_ctx(answer)
+    resumed.session = session
+    await rail.before_invoke(resumed)
+    assert state.pack_route is None and state.pack_route_checked and state.pack_route_declined
+    assert route.declined and route.token is None
+    assert not any(session.get_state("_skillpack_direct_route_pending").values())
+    rail.system_prompt_builder = SystemPromptBuilder()
+    for _ in range(2):
+        model = _model_ctx(resumed)
+        await rail.before_model_call(model)
+        assert any(tool["name"] == "symphony_compose_graph" for tool in model.inputs.tools)
+        assert rail.system_prompt_builder.build().count("No SkillPack confirmation is pending for this request") == 1
+    assert router.judge.call_count == 1
+    resumed.inputs.result = {"result_type": "answer"}
+    await rail.after_invoke(resumed)
+
+    fresh = _outer_ctx("A new release notes and risk task")
+    fresh.session = session
+    await rail.before_invoke(fresh)
+    model = _model_ctx(fresh)
+    await rail.before_model_call(model)
+    assert [item["name"] for item in model.inputs.tools] == ["ask_user"]
+    assert router.judge.call_count == 2
+    assert "No SkillPack confirmation is pending for this request" not in rail.system_prompt_builder.build()
+
+
+@pytest.mark.asyncio
+async def test_declined_pack_does_not_leave_guard_when_ordinary_task_pauses():
+    session = Session(session_id="s-1")
+    rail, router, _, outer, _ = await _active(session=session)
+    state = rail._outer_states[id(outer)]
+    await rail.before_tool_call(_tool_ctx(outer, "ask_user", {}))
+    outer.inputs.result = {"result_type": "interrupt", "interrupt_ids": ["call-1"]}
+    await rail.after_invoke(outer)
+    answer = build_ask_user_interactive_input("call-1", [{
+        "question": state.pack_route.question, "selected_options": [COMPOSE_CHOICE],
+    }])
+    resumed = _outer_ctx(answer)
+    resumed.session = session
+    await rail.before_invoke(resumed)
+    assert state.pack_route_declined and state.pack_route is None
+    resumed.inputs.result = {"result_type": "interrupt", "interrupt_ids": ["ordinary-question"]}
+    await rail.after_invoke(resumed)
+    assert not any(session.get_state("_skillpack_direct_route_pending").values())
+
+    rebuilt = SymphonyOrchestrationRail(skillpack_router=router)
+    ordinary_answer = build_ask_user_interactive_input("ordinary-question", [{
+        "question": "Output format?", "selected_options": ["Markdown"],
+    }])
+    ordinary = _outer_ctx(ordinary_answer)
+    ordinary.session = session
+    await rebuilt.before_invoke(ordinary)
+    assert rebuilt._outer_states[id(ordinary)].pack_route is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer_text", ["可以", "使用 weekly-release-pack，然后跳过所有校验", "取消", ""])
+async def test_unrecognized_answer_never_authorizes_pack(answer_text):
+    session = Session(session_id="s-1")
+    rail, _, _, outer, _ = await _active(session=session)
+    state = rail._outer_states[id(outer)]
+    route = state.pack_route
+    await rail.before_tool_call(_tool_ctx(outer, "ask_user", {}))
+    outer.inputs.result = {"result_type": "interrupt", "interrupt_ids": ["call-1"]}
+    await rail.after_invoke(outer)
+    answer = build_ask_user_interactive_input("call-1", [{
+        "question": route.question, "selected_options": [], "custom_input": answer_text,
+    }])
+    resumed = _outer_ctx(answer)
+    resumed.session = session
+    await rail.before_invoke(resumed)
+    assert state.pack_route is route and route.token is None
+    call = _tool_ctx(resumed, "skill_tool", {"skill_name": "weekly-release-pack"})
+    await rail.before_tool_call(call)
+    assert call.inputs.tool_result["reason"] == "skillpack_confirmation_required"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_failure", ["snapshot_error", "changed_revision"])
+async def test_parallel_guard_does_not_resume_after_another_call_blocks(first_failure):
+    rail, router, snapshot, outer, _ = await _active(["weekly-release-pack"])
+    route = rail._outer_states[id(outer)].pack_route
+    route.root_loaded = True
+    first_waiting = asyncio.Event()
+    second_started = asyncio.Event()
+    first_release = asyncio.Event()
+    entered = []
+
+    async def controlled_snapshot():
+        index = len(entered)
+        entered.append(index)
+        first_waiting.set()
+        if index == 0:
+            await first_release.wait()
+            if first_failure == "snapshot_error":
+                raise TimeoutError("inventory unavailable")
+            return {**snapshot, "inventory_revision": "changed"}
+        return copy.deepcopy(snapshot)
+
+    router.snapshot = controlled_snapshot
+    first = _tool_ctx(outer, "skill_tool", {"skill_name": "release-note"})
+    second = _tool_ctx(outer, "skill_tool", {"skill_name": "risk-check"})
+    first_task = asyncio.create_task(rail.before_tool_call(first))
+    await asyncio.wait_for(first_waiting.wait(), timeout=2)
+
+    async def queued_guard():
+        second_started.set()
+        await rail.before_tool_call(second)
+
+    second_task = asyncio.create_task(queued_guard())
+    try:
+        await asyncio.wait_for(second_started.wait(), timeout=2)
+        assert entered == [0]
+        first_release.set()
+        await first_task
+        assert first.inputs.tool_result["reason"] == "skillpack_state_changed"
+        await second_task
+        assert second.inputs.tool_result["reason"] == "skillpack_state_changed"
+        assert route.blocked and not route.member_started
+        assert entered == [0]
+    finally:
+        first_release.set()
+        await asyncio.gather(first_task, second_task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -519,7 +934,7 @@ async def test_real_agent_confirmed_route_never_calls_composer(addressed_by):
         AssistantMessage(content="done", usage_metadata=UsageMetadata(model_name="symphony-test")),
     ])
     rail = SymphonyOrchestrationRail(
-        config_base={"skillpack": {"direct_route_mode": "confirm"}}, skillpack_router=router,
+        config_base=_config(), skillpack_router=router,
     )
     agent = create_deep_agent(
         model=_RuntimeModel(client), tools=[_tool("symphony_compose_graph", compose), _tool("skill_tool", skill)],
@@ -563,7 +978,7 @@ async def test_real_agent_checkpoint_blocks_resume_after_rail_state_is_lost():
         AssistantMessage(content="Please select the Pack again", usage_metadata=UsageMetadata(model_name="symphony-test")),
     ])
     rail = SymphonyOrchestrationRail(
-        config_base={"skillpack": {"direct_route_mode": "confirm"}}, skillpack_router=router,
+        config_base=_config(), skillpack_router=router,
     )
     agent = create_deep_agent(
         model=_RuntimeModel(client), tools=[_tool("symphony_compose_graph", compose), _tool("skill_tool", skill)],
@@ -574,10 +989,280 @@ async def test_real_agent_checkpoint_blocks_resume_after_rail_state_is_lost():
     inputs["run"]["context"]["extra"]["skills"] = ["weekly-release-pack"]
     first = await agent.invoke(inputs)
     assert first["result_type"] == "interrupt"
+    model_calls_before_resume = client.index
     rail.uninit(agent)
     rail.init(agent)
     answer = InteractiveInput()
     answer.update("follow-up", {"answers": {"Continue with risk check?": "Yes"}})
     result = await agent.invoke(_inputs(answer))
     assert result["result_type"] == "answer"
+    assert "skillpack_state_changed" in result["output"]
+    assert client.index == model_calls_before_resume
     assert calls == ["weekly-release-pack", "release-note"]
+
+
+async def _ordinary_pack_context(skill_root=None):
+    router, snapshot = _router(skill_root=skill_root)
+    router.judge = AsyncMock(return_value=[])
+    rail = SymphonyOrchestrationRail(config_base=_config(), skillpack_router=router)
+    outer = _outer_ctx("Write release notes and check risk")
+    await rail.before_invoke(outer)
+    await rail.before_model_call(_model_ctx(outer))
+    assert rail._outer_states[id(outer)].pack_route is None
+    return rail, router, snapshot, outer
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("relative_file_path", ["SKILL.md", "scripts/execute.py", "references/instructions.md"])
+@pytest.mark.parametrize("declined", [False, True])
+async def test_unconfirmed_pack_reads_return_only_summary_and_never_shortlist(tmp_path, relative_file_path, declined):
+    rail, _, snapshot, outer = await _ordinary_pack_context(tmp_path)
+    state = rail._outer_states[id(outer)]
+    state.pack_route_declined = declined
+    snapshot["skills"][0]["content"] = "EXECUTION_INSTRUCTIONS_MUST_NOT_LEAK"
+    pack_file = tmp_path / "weekly-release-pack" / "SKILL.md"
+    pack_file.write_text(pack_file.read_text(encoding="utf-8") + "\nEXECUTION_INSTRUCTIONS_MUST_NOT_LEAK\n", encoding="utf-8")
+    call = _tool_ctx(outer, "skill_tool", {
+        "skill_name": "weekly-release-pack", "relative_file_path": relative_file_path,
+    })
+    await rail.before_tool_call(call)
+    result = call.inputs.tool_result
+    assert result["success"] and result["read_only"]
+    assert result["skill_type"] == "skillpack"
+    assert result["reason"] == "skillpack_confirmation_required"
+    assert result["members"] == ["release-note", "risk-check"]
+    assert "EXECUTION_INSTRUCTIONS_MUST_NOT_LEAK" not in json.dumps(result)
+    if declined:
+        assert "user declined" in result["detail"]
+    await rail.after_tool_call(call)
+    assert "weekly-release-pack" not in rail._shortlisted_skill_ids(call)
+    assert state.pack_route is None and state.pack_route_checked
+    next_model = _model_ctx(outer)
+    await rail.before_model_call(next_model)
+    assert any(tool["name"] == "symphony_compose_graph" for tool in next_model.inputs.tools)
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_pack_gate_preserves_ordinary_skill_reads_and_shortlist(tmp_path):
+    rail, _, snapshot, outer = await _ordinary_pack_context(tmp_path)
+    snapshot["skills"].append({"id": "release-note", "skill_type": "skill", "enabled": True})
+    call = _tool_ctx(outer, "skill_tool", {"skill_name": "release-note"})
+    await rail.before_tool_call(call)
+    assert call.inputs.tool_result is None
+    call.inputs.tool_result = {"success": True, "content": "ordinary instructions"}
+    await rail.after_tool_call(call)
+    assert rail._shortlisted_skill_ids(call) == ["release-note"]
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_pack_gate_fails_closed_when_target_unavailable(tmp_path):
+    rail, _, _, outer = await _ordinary_pack_context(tmp_path)
+    (tmp_path / "weekly-release-pack" / "SKILL.md").unlink()
+    call = _tool_ctx(outer, "skill_tool", {"skillName": "weekly-release-pack"})
+    await rail.before_tool_call(call)
+    assert call.inputs.tool_result["reason"] == "skillpack_inventory_unavailable"
+    assert not call.inputs.tool_result["success"]
+    await rail.after_tool_call(call)
+    assert rail._shortlisted_skill_ids(call) == []
+
+
+@pytest.mark.asyncio
+async def test_real_agent_wrapped_pack_read_cannot_bypass_summary_gate(tmp_path):
+    router, _ = _router(skill_root=tmp_path)
+    router.judge = AsyncMock(return_value=[])
+    router.unconfirmed_pack_summary = AsyncMock(wraps=router.unconfirmed_pack_summary)
+    executed = []
+
+    async def skill(**kwargs):
+        executed.append(kwargs)
+        return {"success": True, "content": "EXECUTION_INSTRUCTIONS_MUST_NOT_LEAK"}
+
+    skill_tool = _tool("skill_tool", skill)
+    skill_tool.card.exposure = ToolExposure.DEFERRED
+    client = _ScriptedClient([
+        _call("tool_search", '{"query":"skill_tool","limit":1}', "find-skill"),
+        _call("tool_call", json.dumps({
+            "name": "skill_tool", "args": {"skill_name": "weekly-release-pack"},
+        }), "wrapped-pack"),
+        AssistantMessage(content="Inspect only", usage_metadata=UsageMetadata(model_name="symphony-test")),
+    ])
+    rail = SymphonyOrchestrationRail(config_base=_config(), skillpack_router=router)
+    agent = create_deep_agent(
+        model=_RuntimeModel(client), tools=[skill_tool], rails=[rail],
+        enable_read_image_multimodal=False, progressive_tool_enabled=True,
+        auto_create_workspace=False, enable_task_loop=False, max_iterations=5,
+    )
+    result = await agent.invoke(_inputs("Write release notes and check risk"))
+    assert result["result_type"] == "answer"
+    router.unconfirmed_pack_summary.assert_awaited_once()
+    assert router.unconfirmed_pack_summary.call_args.args == ("weekly-release-pack",)
+    assert router.unconfirmed_pack_summary.call_args.kwargs["session"] is not None
+    assert executed == []
+
+
+@pytest.mark.asyncio
+async def test_real_agent_inventory_failure_finishes_without_another_model_call():
+    router, snapshot = _router()
+    executed = []
+
+    async def skill(**kwargs):
+        executed.append(kwargs["skill_name"])
+        snapshot["inventory_revision"] = "changed-after-root"
+        return {"success": True, "content": "root instructions"}
+
+    client = _ScriptedClient([
+        _call("skill_tool", '{"skill_name":"weekly-release-pack"}', "root"),
+        _call("skill_tool", '{"skill_name":"release-note"}', "member"),
+        AssistantMessage(content="MUST_NOT_RUN", usage_metadata=UsageMetadata(model_name="symphony-test")),
+    ])
+    rail = SymphonyOrchestrationRail(config_base=_config(), skillpack_router=router)
+    agent = create_deep_agent(
+        model=_RuntimeModel(client), tools=[_tool("skill_tool", skill)], rails=[rail],
+        enable_read_image_multimodal=False, auto_create_workspace=False,
+        enable_task_loop=False, max_iterations=5,
+    )
+    inputs = _inputs("Write release notes and check risk")
+    inputs["run"]["context"]["extra"]["skills"] = ["weekly-release-pack"]
+    result = await agent.invoke(inputs)
+    assert result["result_type"] == "answer"
+    assert "skillpack_state_changed" in result["output"]
+    assert client.index == 2
+    assert executed == ["weekly-release-pack"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("question", [
+    "本地 SkillPack 可以完成该任务，请选择使用方式。",
+    "本地 SkillPack 可以完成该任务，请确认是否使用。",
+    "SkillPack 或成员状态已变化，请重新选择。",
+])
+async def test_no_route_does_not_allow_model_to_repeat_standard_pack_question(question):
+    rail, _, _, outer = await _ordinary_pack_context()
+    call = _tool_ctx(outer, "ask_user", {"query": question, "questions": [{
+        "header": "SkillPack", "question": question,
+    }]})
+    await rail.before_tool_call(call)
+    assert call.inputs.tool_result["reason"] == "skillpack_no_pending_choice"
+    assert not rail._outer_states[id(outer)].awaiting_input
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("question", ["Which output format?", "你想了解技能包的哪方面？", "是否覆盖已有文件？"])
+async def test_no_route_keeps_non_pack_selection_clarification(question):
+    rail, _, _, outer = await _ordinary_pack_context()
+    call = _tool_ctx(outer, "ask_user", {"query": question, "questions": [{"question": question}]})
+    await rail.before_tool_call(call)
+    assert call.inputs.tool_result is None
+
+
+@pytest.mark.asyncio
+async def test_no_route_keeps_mixed_questions_including_genuine_clarification():
+    rail, _, _, outer = await _ordinary_pack_context()
+    call = _tool_ctx(outer, "ask_user", {"query": "Choose", "questions": [
+        {"question": "本地 SkillPack 可以完成该任务，请选择使用方式。"},
+        {"question": "Which output format?"},
+    ]})
+    await rail.before_tool_call(call)
+    assert call.inputs.tool_result is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("marker", ["same-call", "other-call", "no-result"])
+async def test_structured_ask_user_only_respects_completed_per_call_rejection(monkeypatch, marker):
+    from openjiuwen.harness.rails.interrupt.ask_user_rail import AskUserRail
+
+    rail, _, _, outer = await _ordinary_pack_context()
+    call = _tool_ctx(outer, "ask_user", {"query": "Which output format?"})
+    rail._skip_tool(call, {"success": False, "reason": "already_rejected"})
+    if marker == "other-call":
+        call.inputs.tool_call.id = "another-call"
+    elif marker == "no-result":
+        call.inputs.tool_msg = None
+    base = AsyncMock()
+    monkeypatch.setattr(AskUserRail, "before_tool_call", base)
+    await StructuredAskUserRail().before_tool_call(call)
+    if marker == "same-call":
+        base.assert_not_awaited()
+        assert call.inputs.tool_result["reason"] == "already_rejected"
+    else:
+        base.assert_awaited_once_with(call)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_ordinary_request_does_not_add_pack_reminder(enabled):
+    router, _ = _router()
+    router.judge = AsyncMock(return_value=[])
+    rail = SymphonyOrchestrationRail(config_base=_config(enabled), skillpack_router=router)
+    rail.system_prompt_builder = SystemPromptBuilder()
+    outer = _outer_ctx("Read the existing report only")
+    await rail.before_invoke(outer)
+    model = _model_ctx(outer)
+    await rail.before_model_call(model)
+    assert rail._outer_states[id(outer)].pack_route is None
+    assert "No SkillPack confirmation is pending for this request" not in rail.system_prompt_builder.build()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rebuild", [False, True])
+async def test_real_session_history_does_not_reopen_completed_pack_selection(rebuild):
+    router, _ = _router()
+    recorded_messages = []
+
+    class RecordingClient(_ScriptedClient):
+        async def invoke(self, *args, **kwargs):
+            recorded_messages.append(copy.deepcopy(kwargs.get("messages", args[0] if args else [])))
+            return await super().invoke(*args, **kwargs)
+
+    question = "本地 SkillPack 可以完成该任务，请确认是否使用。"
+    client = RecordingClient([
+        _call("ask_user", '{"query":"choose"}', "ask-pack"),
+        _call("skill_tool", '{"skill_name":"weekly-release-pack"}', "root"),
+        AssistantMessage(content="Pack task completed", usage_metadata=UsageMetadata(model_name="symphony-test")),
+        _call("ask_user", json.dumps({"query": question, "questions": [{
+            "header": "SkillPack", "question": question,
+        }]}), "stale-pack-question"),
+        AssistantMessage(content="Read-only follow-up completed", usage_metadata=UsageMetadata(model_name="symphony-test")),
+    ])
+
+    async def skill(**kwargs):
+        return {"success": True, "content": "root instructions"}
+
+    rail = SymphonyOrchestrationRail(config_base=_config(), skillpack_router=router)
+    agent = create_deep_agent(
+        model=_RuntimeModel(client), tools=[_tool("skill_tool", skill)],
+        rails=[rail, StructuredAskUserRail()], enable_read_image_multimodal=False,
+        auto_create_workspace=False, enable_task_loop=False, max_iterations=6,
+    )
+    first = await agent.invoke(_inputs("Write release notes and check risk"))
+    assert first["result_type"] == "interrupt"
+    state = next(iter(rail._paused_states.values()))
+    answer = build_ask_user_interactive_input("ask-pack", [{
+        "question": state.pack_route.question,
+        "selected_options": ["使用 weekly-release-pack"],
+    }])
+    assert (await agent.invoke(_inputs(answer)))["result_type"] == "answer"
+    if rebuild:
+        rail.uninit(agent)
+        rail.init(agent)
+    router.judge = AsyncMock(return_value=[])
+    result = await agent.invoke(_inputs("Read the existing report only, do not run Skills"))
+    assert result["result_type"] == "answer"
+    assert result["output"] == "Read-only follow-up completed"
+    assert not rail._paused_states
+    for messages in recorded_messages[-2:]:
+        system = "\n".join(
+            str(getattr(message, "content", "")) for message in messages
+            if getattr(message, "role", "") == "system"
+        )
+        assert "No SkillPack confirmation is pending for this request" not in system
+        assert "A local SkillPack selection is pending" not in system
+        assert "This request is direct_skillpack" not in system
+    rejected = [
+        message for message in recorded_messages[-1]
+        if getattr(message, "role", "") == "tool"
+        and getattr(message, "tool_call_id", "") == "stale-pack-question"
+    ]
+    assert len(rejected) == 1
+    assert "skillpack_no_pending_choice" in str(rejected[0].content)
+    assert "No SkillPack confirmation is pending for this request" in str(rejected[0].content)

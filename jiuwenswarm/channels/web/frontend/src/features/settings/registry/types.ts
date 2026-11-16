@@ -52,9 +52,13 @@ export type SettingItemDefinition =
   | (SettingItemBase & {
       component: 'switch';
       key: string;
-      /** A false read-only capability prevents enabling the switch. */
+      /** A false read-only capability disables the switch. */
       availableWhen?: string;
-      errorDisplay?: 'inline';
+      /** Read-only reason code for the unavailable tooltip. */
+      unavailableReasonKey?: string;
+      errorDisplay?: 'inline' | 'toast';
+      /** Set false when backend validation must succeed before changing the visible value. */
+      optimistic?: boolean;
       subItems?: SettingSubItems;
       configure?: ComponentType<{ onSave: () => Promise<void>; onClose: () => void }>;
     })

@@ -540,15 +540,9 @@ symphony:
 
 ## SkillPack：Hub 兼容发布
 
-从已有薄 SkillPack 的详情页发起发布，成员必须是独立普通 Skill，不支持 SwarmSkill 或嵌套 Pack。产品发布默认关闭，先使用隔离测试 Hub：
+使用包含 SkillPack 特性的新版 WorkSwarm，在“设置 → 实验功能”开启“发现技能包”，即可从已有薄 SkillPack 的详情页发起发布。成员必须是独立普通 Skill，不支持 SwarmSkill 或嵌套 Pack。
 
-```sh
-export SKILLPACK_PRODUCTIZATION_ENABLED=true
-export SKILLPACK_HUB_DEPLOYMENT_SCOPE=isolated
-export SKILLPACK_HUB_TRANSPORT_PROFILE=legacy_skill_v1
-```
-
-部署范围必须是 `isolated` 或 `version_gated`。后者表示部署方已经限制市场客户端版本；它本身不会替 Hub 建立版本过滤。旧 Hub 按普通 Skill 审核和展示兼容包。`native_skillpack_v1` 仅用于支持该协议的 Hub，网络错误不会自动切换发布方式。
+新发布固定复用普通 Skill 通道，无需配置 `SKILLPACK_HUB_TRANSPORT_PROFILE` 或 `SKILLPACK_HUB_DEPLOYMENT_SCOPE`；这两个环境变量不再控制新发布。历史发布记录仍按原协议恢复。开启功能不等于自动公开发布，仍需用户确认并经过 Hub 审核。
 
 一次预检列出成员的“复用／先发布／阻断”，用户确认后先上传缺失成员并等待审核，再发布 Pack。Pack 失败不删除已经成功发布的独立成员；重新打开面板可继续查询原操作，内容变化必须重新准备并确认。
 
@@ -556,7 +550,7 @@ export SKILLPACK_HUB_TRANSPORT_PROFILE=legacy_skill_v1
 
 Hub 连续三次网络检查失败后停止自动轮询，网络恢复后由用户明确重试原操作，沿用已有上传标识。正常审核等待不算网络失败；轮询逐步放缓至 30 秒，已审核成员不反复查询，Pack 上传前及完成前仍完整检查成员闭包。授权失效或上传结果不明时停止自动推进，用户处理原因后可重试原操作。
 
-本地模拟测试不代替真实 Hub 审核、模型或桌面平台验收，结果应分别记录。关闭产品开关会停止新 Pack 发布，不会下架既有资产。
+本地模拟测试不代替真实 Hub 审核、模型或桌面平台验收，结果应分别记录。关闭“发现技能包”会停止新 Pack 发布，不会下架既有资产，也不会中断已确认开始的发布。
 
 ### 开发与维护边界
 
@@ -574,21 +568,21 @@ SkillPack 是单 Agent 使用的复合 Skill。根 `SKILL.md` 说明成员的执
 
 ### 开启
 
-以下功能默认关闭，先在隔离的测试 Hub 验证：
+在“设置 → 实验功能”开启“发现技能包”，统一启用沉淀、确认复用、安装与发布；对应持久化配置为 `symphony.evolution.flow.enabled`，无需额外开启 Symphony。旧 `SKILLPACK_PRODUCTIZATION_ENABLED`、`SKILLPACK_DIRECT_ROUTE_MODE` 和 `skillpack.direct_route_mode` 不再覆盖页面设置。
 
-```sh
-export SKILLPACK_PRODUCTIZATION_ENABLED=true
-export SKILLPACK_DIRECT_ROUTE_MODE=confirm
-```
-
-`SKILLPACK_DIRECT_ROUTE_MODE` 支持 `off`、`shadow`（只判断和记录，不改变执行）和 `confirm`。也可以设置服务配置中的 `skillpack.direct_route_mode`；环境变量优先。
+关闭后停止新的自动发现、自动复用、沉淀、安装和发布；保留已安装包的查看、卸载、成员引用保护，以及显式选包后的安全执行。已确认开始的执行、安装或发布不因关闭设置而中断；单个技能包的启停及原有权限校验仍生效。
 
 ### 使用
 
 - 对话中请求沉淀已完成的多 Skill 流程，Agent 调用 `skillpack_distill`。候选来自持久化的真实执行记录；查看成员和说明并确认后才安装。
+- 自动发现会检查当前已安装的技能包：已有完整成员及相同有向执行链的包时，不再重复提示创建，跨会话和重启后也生效。禁用已有包不会触发重建；不同执行顺序仍按不同组合处理。显式请求沉淀、安装确认和执行校验保持不变。
 - 安装后在“我的技能”与任务“+ → 技能”中使用，卡片显示 SkillPack 类型。成员状态变化会影响整个 Pack 的可用性。
 - 新 query 完整匹配本地 Pack 时，先确认使用该 Pack；多个匹配由用户选择。确认后直接加载根说明与成员，跳过 Symphony 编排。部分匹配和不确定情况仍走原有流程。执行成员后失败不会自动再编排，以免重复副作用。
 - 显式选择一个 Pack 视为已确认；与普通 Skill 混选时再次选择使用方式。外部写入等权限仍按原有机制确认。
+- 选择“继续智能编排”、跳过或取消本次复用问答，均表示本请求不使用整包，继续普通任务处理，不反复询问。同会话的下一条新消息重新判断，不继承上一任务的确认或阻断状态。
+- 自动匹配判断最多等待 60 秒；超时表示没有得到判定，不等于判定不匹配。超时或未匹配时继续普通流程，不能借普通 `skill_tool` 直接执行未确认的 Pack；该入口仅返回只读摘要。超时原因记录在后台日志，当前页面不单独显示该原因。
+- 未确认读取按 `skill_tool` 当前会话中的实际目录识别目标，包括外置技能和恢复会话；只新读目标根文件，不因无关库存扫描或锁失败阻断普通 Skill，也不靠旧类型缓存放行。目标自身不可读或类型无法可靠识别时保守拒绝；确认后的 Pack 执行仍使用实时库存及成员校验。
+- 已确认的 Pack 执行中若状态变化或校验失败，直接返回停止说明，不再让模型在清空工具后继续生成，也不会自动改为重新编排。
 
 ### 安装和管理
 
@@ -604,6 +598,6 @@ Pack ZIP 只包含外层 `plugin.yaml`、根说明和 `skillpack.lock.json`，�
 
 若事务日志损坏、安装目录归属改变或备份缺失，启动会明确报告待修复的事务路径并停止加载该库存；不会删除事务后强行启动。运维应先保留现场，核对目录标记与状态备份后恢复，避免把半安装结果暴露给 Agent。
 
-安装计划和事务位于当前技能目录的 `.skillpack/`，Hub 来源记录位于各技能 `.archive/hub-provenance.json`。这些文件不随 Pack 发布。关闭产品开关会停止新的沉淀和 Pack 安装；已有普通 Skill 入口保留，直达路由有独立开关。
+安装计划和事务位于当前技能目录的 `.skillpack/`，Hub 来源记录位于各技能 `.archive/hub-provenance.json`。这些文件不随 Pack 发布。关闭产品开关会停止新的沉淀和 Pack 安装；已有普通 Skill 入口及显式选包后的安全执行保留。
 
 部署必须同时使用本特性的 agent-core 和 JiuwenSwarm 改动。依赖与锁文件已使用 Core !3457 合入后的官方提交 `4dbaa84ca568af3f181da4f9cd26b713a5b73039`。真实 Hub 审核、实际模型和各桌面平台的验收结果应单独记录，不能由本地模拟测试替代。

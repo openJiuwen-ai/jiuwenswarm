@@ -21,7 +21,10 @@
   },
   "enterpriseEntry": {
     "invalidIdentity": "Identity 未返回用户标识。",
-    "noContext": "当前账号没有可用的 Agent，请先在管理面完成授权。",
+    "emptyTitle": "暂无可用 Agent",
+    "backToLogin": "返回登录页",
+    "language": "界面语言",
+    "noContext": "当前账号没有可用的Agent，请先在管理面完成授权。",
     "loadFailed": "加载 Agent 上下文失败。",
     "switchFailed": "切换身份失败。",
     "errorTitle": "无法进入工作空间",
@@ -157,6 +160,7 @@
       "send": "发送",
       "running": "设计团长正在执行…",
       "stop": "停止",
+      "stopping": "正在停止…",
       "stopError": "停止失败，请稍后重试。",
       "attach": "添加参考素材",
       "removeAttachment": "移除参考素材",
@@ -464,6 +468,9 @@
     "qwenOnly": "当前仅支持 Qwen 全双工，请前往设置配置 Qwen Omni Realtime。"
   },
   "settingsPanel": {
+    "affinity": {
+      "noSupportingModel": "目前没有支持算力亲和的模型，请先在“模型”中配置。"
+    },
     "voice": {
       "connectionFailed": "连接失败，请检查接口地址、API Key 和模型后重试。",
       "connectionSuccess": "模型连接验证成功",
@@ -622,6 +629,10 @@
       }
     },
     "models": {
+      "affinityCapability": "此服务支持 Ascend KV-Cache 算力亲和",
+      "affinityCapabilityDescription": "仅适用于已适配 agent_hint 协议的自定义服务。此项是人工声明，普通连通性测试不验证亲和能力。",
+      "affinityAutoDisabled": "模型配置已保存；控制模型不再支持算力亲和，已自动关闭。若提示需要重启，请重启后使用。",
+
       "customModels": "自定义模型",
       "tabsLabel": "模型设置分类",
       "modelsTab": "模型",
@@ -1161,7 +1172,13 @@
       },
       "cua_agent_enabled": {
         "title": "启用电脑操控",
-        "description": "允许智能体通过桌面子代理查看和操作本机应用窗口，需要支持图片输入的模型和相应系统权限。"
+        "description": "允许智能体通过桌面子代理查看和操作本机应用窗口，需要支持图片输入的模型和相应系统权限。",
+        "unavailableDescription": "当前环境不支持电脑操控。",
+        "unavailableReasons": {
+          "native_build_failed": "电脑操作暂不可用，安装时未能编译 computer-use 驱动。",
+          "backend_missing": "未找到可用的电脑操作驱动。",
+          "unsupported_platform": "当前操作系统或版本不支持电脑操控。"
+        }
       },
       "trajectory_ui_diagnosis_enabled": {
         "title": "启用轨迹诊断",
@@ -1205,7 +1222,7 @@
       },
       "kv_cache_affinity_enabled": {
         "title": "启用算力亲和",
-        "description": "仅支持使用 Ascend vLLM 推理服务部署的模型，不支持通过第三方 API Key 接入的模型。"
+        "description": "对已声明支持的服务启用亲和；普通云端模型继续使用普通调用。"
       },
       "external_cli_agent_claude_enabled": {
         "title": "启用 Claude",
@@ -1255,11 +1272,6 @@
         "title": "API Key",
         "description": "JEV 服务的密钥。",
         "placeholder": "输入 API Key"
-      },
-      "cua_agent_enabled": {
-        "title": "启用电脑操控",
-        "description": "允许智能体通过桌面子代理查看和操作本机应用窗口，需要支持图片输入的模型和相应系统权限。",
-        "unavailableDescription": "当前环境不支持电脑操控。"
       }
     },
     "validation": {
@@ -1852,6 +1864,7 @@
     "previewFailed": "文件预览加载失败",
     "docxPreviewFailed": "Word 文档预览加载失败",
     "presentationPreviewFailed": "PowerPoint 演示文稿预览加载失败",
+    "presentationLoadFailed": "PowerPoint 演示文稿获取失败，请稍后重试",
     "presentationResourceLimitExceeded": "PowerPoint 演示文稿内容规模超过浏览器预览上限，请下载后查看",
     "presentationTooLarge": "超过 {{size}} 的 PowerPoint 演示文稿无法在浏览器中预览，请下载后查看",
     "presentationSlides": "幻灯片",
@@ -2205,7 +2218,10 @@
       "readFileFailed": "读取文件失败：{{name}}",
       "readImageFailed": "读取图片失败：{{name}}",
       "filePickerUnsupported": "当前环境无法打开本机文件选择器（请确认 jiuwenswarm 在本机运行且已重启加载最新后端）",
-      "filePickerFailed": "打开文件选择器失败"
+      "filePickerFailed": "打开文件选择器失败",
+      "preparingFiles": "正在准备文件…",
+      "preparingFilesHint": "读取完成前请稍候",
+      "cancelPreparing": "取消等待"
     },
     "uploading": "上传中...",
     "uploadFailed": "上传失败",
@@ -4132,7 +4148,15 @@
       "Engineering": "产品研发",
       "Life": "生活方式",
       "Custom": "自定义",
-      "Other": "其他"
+      "Other": "其他",
+      "Office Productivity": "办公效率",
+      "Software Development": "软件开发",
+      "Data Science & Research": "数据与科研",
+      "Multimodal & Media": "多模态媒体",
+      "Content Creation": "内容创作",
+      "Lifestyle & Health": "生活与健康",
+      "Finance & Wealth Management": "金融与理财",
+      "Compliance & Legal": "合规与法律"
     },
     "actions": {
       "working": "处理中",
@@ -4170,6 +4194,7 @@
       "detailError": "专家详情加载失败，请重试。",
       "hubAssetChanged": "该专家已在 Hub 更新或下架，广场正在刷新，请返回后重新选择。",
       "actionError": "操作未完成，请稍后重试。",
+      "agentAccessDenied": "不在授权范围内，操作已拒绝。",
       "duplicateName": "专家名称已存在，请更换名称后重试。",
       "agentUnavailable": "该专家已不存在，请刷新列表后重试。",
       "agentDefinitionUnavailable": "该专家定义不完整，暂时无法使用。",
@@ -5122,7 +5147,15 @@
       "communication": "通话沟通",
       "Engineering": "工程开发",
       "Design": "设计创意",
-      "other": "其他"
+      "other": "其他",
+      "Office Productivity": "办公效率",
+      "Software Development": "软件开发",
+      "Data Science & Research": "数据与科研",
+      "Multimodal & Media": "多模态媒体",
+      "Content Creation": "内容创作",
+      "Lifestyle & Health": "生活与健康",
+      "Finance & Wealth Management": "金融与理财",
+      "Compliance & Legal": "合规与法律"
     },
     "search": {
       "plugin": "搜索插件",
@@ -5796,6 +5829,8 @@
     "clickToViewDetail": "点击查看详情",
     "runIdTooltip": "运行 ID：{{id}}",
     "executorTooltip": "当前由 {{name}} 执行",
+    "forkFromSession": "从会话 {{name}} 分叉",
+    "forkChildSession": "分叉产生的子会话",
     "executorOrchestration": "【{{name}} 的编排 · {{workflow}}】",
     "runFoldDivider": "进行中 {{active}} · 已结束 {{ended}}"
   },
@@ -6033,6 +6068,7 @@
       "namePlaceholder": "例如：售后服务助手",
       "description": "能力介绍",
       "descriptionPlaceholder": "描述这位员工擅长什么、负责什么，以及期望的工作方式",
+      "descriptionTooLong": "能力介绍最多 {{limit}} 个字符，请缩减后再保存。",
       "role": "工作领域",
       "preview": "员工名片预览",
       "previewName": "新员工",
@@ -6074,6 +6110,10 @@
         "knowledge": "添加知识",
         "starterPrompts": "添加快捷问"
       },
+      "starterPromptsLimit": "最多添加 {{count}} 条",
+      "starterPromptDuplicate": "与上面的问题重复，请修改或删除",
+      "starterPromptsDuplicateTitle": "推荐短句重复",
+      "starterPromptsDuplicateMessage": "推荐短句不能重复，请修改或删除重复项后再创建。",
       "empty": {
         "skills": "暂无技能",
         "connectors": "暂无连接器",
@@ -6184,6 +6224,7 @@
       "editResources": "编辑技能与连接器",
       "resourcesHint": "从本机已安装的技能和已连接的连接器中选择。保存并发布后，该员工之后的新任务才会使用这次选择。",
       "saveResources": "保存并发布",
+      "saveSuccess": "保存成功",
       "savingResources": "正在保存",
       "saveSettingsFailed": "配置保存或发布失败，请重试。",
       "modelEmptyHint": "请先在「设置 → 模型」中添加模型。",
@@ -6294,10 +6335,12 @@
       "cancelAuthorizationTitle": "取消渠道授权",
       "cancelAuthorizationWarning": "取消后，该同事会停止通过这个渠道接收和回复消息。",
       "cancelAuthorizationMessage": "确定取消「{{channel}}」的授权吗？之后可以重新授权。",
+      "cancelAuthorizationSuccess": "取消授权成功",
       "addConnection": "添加连接",
       "removeConnection": "解除连接",
       "removeConnectionWarning": "解除后，该应用的消息不再交给这位员工；这个连接的工作空间和历史保留，重新绑定同一应用后恢复。",
       "removeConnectionConfirm": "确定解除{{platform}}应用 {{app}} 与 AI 员工的连接：",
+      "removeConnectionSuccess": "解除连接成功",
       "workLog": "工作日志",
       "periods": {
         "7d": "最近7天",
@@ -6416,11 +6459,6 @@
       "webConnection": "网页",
       "connectionHint": "在这里生成的共享文件，{{platform}}用户也能读取。",
       "webResult": "网页工作空间有新结果，点击查看",
-      "defaultPrompts": [
-        "统计今日咨询热点",
-        "复盘群内回复质量",
-        "导出今日对话摘要"
-      ],
       "featuresTitle": "功能特点",
       "features": {
         "chat": {
@@ -6438,6 +6476,11 @@
       }
     },
     "schedule": {
+      "save": "保存",
+      "saveAndEnable": "保存并启用",
+      "pausedEditHint": "当前任务已暂停，保存修改后仍保持暂停；选择“保存并启用”可恢复自动执行。",
+      "actionFailed": "定时任务操作失败",
+      "resumeExpired": "启用（请先修改执行时间）",
       "add": "添加",
       "createTitle": "新增定时任务",
       "editTitle": "编辑定时任务",
@@ -6505,10 +6548,11 @@
         "paused": "已暂停",
         "failed": "运行失败",
         "completed": "已完成",
-        "queued": "排队中"
+        "queued": "排队中",
+        "expired": "已过期"
       },
       "run": {
-        "success": "运行成功",
+        "success": "已完成",
         "failed": "运行失败",
         "stopped": "停止运行",
         "running": "运行中"
@@ -6520,8 +6564,11 @@
         "running": "运行中"
       },
       "error": {
+        "enableExpired": "任务已过期，请先调整执行时间后再启用。",
+        "nameRequired": "请输入任务名称",
+        "promptRequired": "请输入任务描述",
         "required": "请填写任务名称和描述",
-        "executorRequired": "请选择执行者",
+        "executorRequired": "请选择执行此任务的员工",
         "intervalInvalid": "间隔必须是正整数",
         "futureRequired": "单次执行时间必须晚于当前时间",
         "rangeInvalid": "生效结束时间必须晚于开始时间"
@@ -6588,6 +6635,7 @@
       "periodStart": "开始日期",
       "periodEnd": "结束日期",
       "periodTo": "至",
+      "periodLimit": "最多支持查看 {{count}} 天数据，已自动调整开始日期",
       "metrics": {
         "members": "员工数量",
         "activeDays": "活跃天数",
@@ -6665,6 +6713,7 @@
     }
   },
   "groupChat": {
+    "organizationInterrupted": "服务重启或执行进程退出，组织任务已中断。已完成成果保留，请重新发起任务。",
     "externalRuntimeDisabled": "{{agents}} 尚未启用。请在设置的「智能体 → 三方 Agent」中打开对应开关，再重新添加成员。",
     "useTeam": "使用该专家团",
     "teamMembers": "团队成员（{{count}}人）",
@@ -6672,6 +6721,10 @@
     "taskTitle": "任务",
     "unnamedTask": "未命名子任务",
     "noSubtasks": "暂无子任务记录",
+    "expertTasks": "本轮团内任务",
+    "expertTasksProgress": "已完成 {{completed}} / {{total}}",
+    "expertTasksUnavailable": "团内任务暂时无法刷新，已显示的记录可能不是最新状态。",
+    "expertTaskUnassigned": "待分配专家",
     "generatingTasks": "任务生成中",
     "organizationStage": {
       "starting": "专家团启动中",
@@ -6697,6 +6750,11 @@
     "modelLocked": "群聊开始后不可切换模型",
     "processing": "正在处理…",
     "mentionPhase": {
+      "organizationFailed": "本次处理未完成，请重新发送消息。",
+      "organizationPending": "已收到，正在处理中…",
+      "organizationClarification": "等待补充信息…",
+      "organizationReceived": "组织已收到，正在处理中…",
+      "organizationSummarizing": "汇总中…",
       "dispatching": "已收到，正在处理中…",
       "planning": "正在规划任务…",
       "generating": "正在生成任务计划…",

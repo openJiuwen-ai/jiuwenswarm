@@ -247,6 +247,48 @@ async def test_child_completion_keeps_full_text_and_excludes_owner_tasks(environ
 
 
 @pytest.mark.asyncio
+async def test_never_stopped_owner_captures_delegated_root_and_receives_result(environment):
+    store = environment.store
+    store.disable("session", "owner")
+    root = task("direct-root").model_copy(update={"parent_task_id": None, "root_task_id": "direct-root"})
+    environment.manager.task_pool.list_tasks.return_value = [root]
+    await results.capture_child_completion("session", "child", environment.backend, "P05-QUICK-12: 12")
+    assert store.enabled_at("session", "owner") is not None
+    context = SimpleNamespace(add_messages=AsyncMock())
+    await OrganizationOwnerInboxRail("owner", "session").before_model_call(
+        AgentCallbackContext(agent=SimpleNamespace(), context=context, session=SimpleNamespace()),
+    )
+    received = json.loads(context.add_messages.call_args.args[0][1].content)
+    assert received["payload"]["task"]["task_id"] == "direct-root"
+    assert received["payload"]["task"]["status"] == "COMPLETED"
+    assert not environment.metadata["organization_owner_stopped"]
+
+
+@pytest.mark.asyncio
+async def test_never_stopped_owner_backfills_saved_result_on_next_model_call(environment):
+    environment.store.disable("session", "owner")
+    environment.manager.task_pool.list_tasks.return_value = [task("missed-result")]
+    context = SimpleNamespace(add_messages=AsyncMock())
+    await OrganizationOwnerInboxRail("owner", "session").before_model_call(
+        AgentCallbackContext(agent=SimpleNamespace(), context=context, session=SimpleNamespace()),
+    )
+    context.add_messages.assert_awaited_once()
+    received = json.loads(context.add_messages.call_args.args[0][1].content)
+    assert received["payload"]["task"]["task_id"] == "missed-result"
+
+
+@pytest.mark.asyncio
+async def test_never_stopped_owner_notification_is_durable(environment):
+    environment.store.disable("session", "owner")
+    receipt = await results.queue_owner_notification("session", "owner", "org_root_delivery", {
+        "query": "Delegated root direct-root completed; read its saved result.",
+    })
+    assert receipt is not None
+    reopened = OwnerInbox(environment.store.path)
+    assert reopened.get_result("session", "owner", receipt["message_id"])["acknowledged_at"] is None
+
+
+@pytest.mark.asyncio
 async def test_native_message_and_its_wake_share_one_receipt(environment):
     environment.metadata["organization_owner_stopped"] = True
     queued = await results.queue_owner_notification("session", "owner", "org_root_background", {

@@ -21,7 +21,10 @@
   },
   "enterpriseEntry": {
     "invalidIdentity": "Identity returned no user ID.",
-    "noContext": "No Agent is available for this account. Ask an administrator to grant access.",
+    "emptyTitle": "No Agent Available",
+    "backToLogin": "Back to Sign in",
+    "language": "Interface language",
+    "noContext": "No Agent is available for this account. Please grant access in the Manager console first.",
     "loadFailed": "Failed to load Agent contexts.",
     "switchFailed": "Failed to switch context.",
     "errorTitle": "Unable to enter workspace",
@@ -157,6 +160,7 @@
       "send": "Send",
       "running": "The design leader is working…",
       "stop": "Stop",
+      "stopping": "Stopping…",
       "stopError": "Could not stop. Please try again.",
       "attach": "Add reference media",
       "removeAttachment": "Remove reference",
@@ -464,6 +468,9 @@
     "qwenOnly": "Only Qwen full-duplex is currently supported. Configure Qwen Omni Realtime in Settings."
   },
   "settingsPanel": {
+    "affinity": {
+      "noSupportingModel": "No configured model supports affinity. Configure one in Models first."
+    },
     "voice": {
       "connectionFailed": "Connection failed. Check the endpoint, API key and model, then try again.",
       "connectionSuccess": "Model connection verified",
@@ -622,6 +629,10 @@
       }
     },
     "models": {
+      "affinityCapability": "This service supports Ascend KV-Cache affinity",
+      "affinityCapabilityDescription": "Only for custom services implementing the agent_hint protocol. This is a manual declaration; connection tests do not verify affinity support.",
+      "affinityAutoDisabled": "Model configuration saved. KV-Cache affinity was automatically disabled because a control model no longer supports it. Restart if required.",
+
       "customModels": "Custom models",
       "tabsLabel": "Model settings categories",
       "modelsTab": "Models",
@@ -1161,7 +1172,13 @@
       },
       "cua_agent_enabled": {
         "title": "Enable computer control",
-        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions."
+        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions.",
+        "unavailableDescription": "Computer control is unavailable in this environment.",
+        "unavailableReasons": {
+          "native_build_failed": "Computer control is unavailable because the computer-use driver failed to build during installation.",
+          "backend_missing": "No usable computer control driver was found.",
+          "unsupported_platform": "Computer control is unavailable on this operating system or version."
+        }
       },
       "trajectory_ui_diagnosis_enabled": {
         "title": "Enable trajectory diagnosis",
@@ -1205,7 +1222,7 @@
       },
       "kv_cache_affinity_enabled": {
         "title": "Enable compute affinity",
-        "description": "Supported only for models deployed with Ascend vLLM inference services, not models accessed through third-party API keys."
+        "description": "Use affinity for declared endpoints; ordinary cloud models keep normal requests."
       },
       "external_cli_agent_claude_enabled": {
         "title": "Enable Claude",
@@ -1255,11 +1272,6 @@
         "title": "API Key",
         "description": "The JEV service credential.",
         "placeholder": "Enter API Key"
-      },
-      "cua_agent_enabled": {
-        "title": "Enable computer control",
-        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions.",
-        "unavailableDescription": "Computer control is unavailable in this environment."
       }
     },
     "validation": {
@@ -1852,6 +1864,7 @@
     "previewFailed": "Failed to load the file preview",
     "docxPreviewFailed": "Failed to load the Word document preview",
     "presentationPreviewFailed": "Failed to load the PowerPoint presentation preview",
+    "presentationLoadFailed": "Failed to download the PowerPoint presentation. Please try again.",
     "presentationResourceLimitExceeded": "The PowerPoint presentation content exceeds the browser preview limit. Download the file to view it.",
     "presentationTooLarge": "PowerPoint presentations larger than {{size}} cannot be previewed in the browser. Download the file to view it.",
     "presentationSlides": "Slides",
@@ -2205,7 +2218,10 @@
       "readFileFailed": "Failed to read file: {{name}}",
       "readImageFailed": "Failed to read image: {{name}}",
       "filePickerUnsupported": "Cannot open local file picker in this environment (please ensure jiuwenswarm is running locally and restarted with the latest backend)",
-      "filePickerFailed": "Failed to open file picker"
+      "filePickerFailed": "Failed to open file picker",
+      "preparingFiles": "Preparing files…",
+      "preparingFilesHint": "Please wait while files are read",
+      "cancelPreparing": "Cancel waiting"
     },
     "uploading": "Uploading...",
     "uploadFailed": "Upload failed",
@@ -4135,7 +4151,15 @@
       "Engineering": "Engineering",
       "Life": "Life",
       "Custom": "Custom",
-      "Other": "Other"
+      "Other": "Other",
+      "Office Productivity": "Office Productivity",
+      "Software Development": "Software Development",
+      "Data Science & Research": "Data Science & Research",
+      "Multimodal & Media": "Multimodal & Media",
+      "Content Creation": "Content Creation",
+      "Lifestyle & Health": "Lifestyle & Health",
+      "Finance & Wealth Management": "Finance & Wealth Management",
+      "Compliance & Legal": "Compliance & Legal"
     },
     "actions": {
       "working": "Working",
@@ -4173,6 +4197,7 @@
       "detailError": "Unable to load Expert details. Try again.",
       "hubAssetChanged": "This expert has changed or been removed on Hub. The catalog is refreshing; go back and select it again.",
       "actionError": "The action could not be completed. Try again in a moment.",
+      "agentAccessDenied": "You are outside the authorized scope. The action was denied.",
       "duplicateName": "An Expert with this name already exists. Choose a different name and try again.",
       "agentUnavailable": "This Expert is no longer available. Refresh the list and try again.",
       "agentDefinitionUnavailable": "This Expert definition is incomplete and cannot be used right now.",
@@ -5125,7 +5150,15 @@
       "communication": "Communication",
       "Engineering": "Engineering",
       "Design": "Design",
-      "other": "Other"
+      "other": "Other",
+      "Office Productivity": "Office Productivity",
+      "Software Development": "Software Development",
+      "Data Science & Research": "Data Science & Research",
+      "Multimodal & Media": "Multimodal & Media",
+      "Content Creation": "Content Creation",
+      "Lifestyle & Health": "Lifestyle & Health",
+      "Finance & Wealth Management": "Finance & Wealth Management",
+      "Compliance & Legal": "Compliance & Legal"
     },
     "search": {
       "plugin": "Search plugins",
@@ -5799,6 +5832,8 @@
     "clickToViewDetail": "Click to view details",
     "runIdTooltip": "Run ID: {{id}}",
     "executorTooltip": "currently hosted by {{name}}",
+    "forkFromSession": "Forked from session {{name}}",
+    "forkChildSession": "Forked child session",
     "executorOrchestration": "[{{name}}'s orchestration · {{workflow}}]",
     "runFoldDivider": "In progress {{active}} · Finished {{ended}}"
   },
@@ -6036,6 +6071,7 @@
       "namePlaceholder": "For example: After-sales assistant",
       "description": "Abilities",
       "descriptionPlaceholder": "Describe what this employee is good at, what it owns and how it should work",
+      "descriptionTooLong": "The capability description must be {{limit}} characters or fewer. Shorten it before saving.",
       "role": "Work domains",
       "preview": "Card preview",
       "previewName": "New employee",
@@ -6077,6 +6113,10 @@
         "knowledge": "Add knowledge",
         "starterPrompts": "Add quick prompt"
       },
+      "starterPromptsLimit": "Up to {{count}} prompts",
+      "starterPromptDuplicate": "Duplicates an earlier prompt; edit or remove it.",
+      "starterPromptsDuplicateTitle": "Duplicate starter prompts",
+      "starterPromptsDuplicateMessage": "Starter prompts must be unique. Edit or remove the duplicates before creating the employee.",
       "empty": {
         "skills": "No skills",
         "connectors": "No connectors",
@@ -6187,6 +6227,7 @@
       "editResources": "Edit skills and connectors",
       "resourcesHint": "Choose from skills installed on this machine and connectors that are already connected. A new task uses the selection after it is saved and published.",
       "saveResources": "Save and publish",
+      "saveSuccess": "Saved",
       "savingResources": "Saving",
       "saveSettingsFailed": "Could not save or publish the configuration. Please try again.",
       "modelEmptyHint": "Add a model in Settings → Models.",
@@ -6297,10 +6338,12 @@
       "cancelAuthorizationTitle": "Revoke channel authorization",
       "cancelAuthorizationWarning": "After revoking, this colleague stops receiving and replying on this channel.",
       "cancelAuthorizationMessage": "Revoke the “{{channel}}” authorization? It can be authorized again later.",
+      "cancelAuthorizationSuccess": "Authorization revoked",
       "addConnection": "Add connection",
       "removeConnection": "Disconnect",
       "removeConnectionWarning": "Messages to this app no longer reach the employee. The connection's workspace and history stay and return when the same app is bound again.",
       "removeConnectionConfirm": "Disconnect {{platform}} app {{app}} from the AI employee: ",
+      "removeConnectionSuccess": "Disconnected",
       "workLog": "Work log",
       "periods": {
         "7d": "Last 7 days",
@@ -6419,11 +6462,6 @@
       "webConnection": "Web",
       "connectionHint": "Files shared here can also be read by {{platform}} users.",
       "webResult": "New result in the Web workspace. View it",
-      "defaultPrompts": [
-        "Summarize today's hot questions",
-        "Review group reply quality",
-        "Export today's conversation summary"
-      ],
       "featuresTitle": "Features",
       "features": {
         "chat": {
@@ -6441,6 +6479,11 @@
       }
     },
     "schedule": {
+      "save": "Save",
+      "saveAndEnable": "Save and enable",
+      "pausedEditHint": "This task is paused. Saving keeps it paused; choose Save and enable to resume automatic execution.",
+      "actionFailed": "Scheduled task action failed",
+      "resumeExpired": "Enable (edit schedule first)",
       "add": "Add",
       "createTitle": "New scheduled task",
       "editTitle": "Edit scheduled task",
@@ -6508,10 +6551,11 @@
         "paused": "Paused",
         "failed": "Failed",
         "completed": "Completed",
-        "queued": "Queued"
+        "queued": "Queued",
+        "expired": "Expired"
       },
       "run": {
-        "success": "Succeeded",
+        "success": "Completed",
         "failed": "Failed",
         "stopped": "Stopped",
         "running": "Running"
@@ -6523,8 +6567,11 @@
         "running": "Running"
       },
       "error": {
+        "enableExpired": "This task has expired. Update its schedule before enabling it.",
+        "nameRequired": "Enter a task name.",
+        "promptRequired": "Enter a task description.",
         "required": "Enter a name and a description",
-        "executorRequired": "Choose an executor",
+        "executorRequired": "Select an AI employee to run this task.",
         "intervalInvalid": "The interval must be a positive integer",
         "futureRequired": "A one-time run must be in the future",
         "rangeInvalid": "The effective end must be after the start"
@@ -6591,6 +6638,7 @@
       "periodStart": "Start date",
       "periodEnd": "End date",
       "periodTo": "to",
+      "periodLimit": "Up to {{count}} days can be shown; the start date was adjusted",
       "metrics": {
         "members": "Members",
         "activeDays": "Active days",
@@ -6668,6 +6716,7 @@
     }
   },
   "groupChat": {
+    "organizationInterrupted": "The organization task was interrupted by a service restart or process exit. Completed work is retained. Please submit a new request.",
     "externalRuntimeDisabled": "{{agents}} is not enabled. Enable it in Settings → Agents → External Agents, then add the member again.",
     "useTeam": "Use this team",
     "teamMembers": "Team members ({{count}})",
@@ -6675,6 +6724,10 @@
     "taskTitle": "Task",
     "unnamedTask": "Untitled subtask",
     "noSubtasks": "No subtask records",
+    "expertTasks": "Team tasks for this request",
+    "expertTasksProgress": "Completed {{completed}} / {{total}}",
+    "expertTasksUnavailable": "Team tasks could not be refreshed. Existing records may be out of date.",
+    "expertTaskUnassigned": "Unassigned",
     "generatingTasks": "Generating tasks",
     "organizationStage": {
       "starting": "Starting expert teams",
@@ -6700,6 +6753,11 @@
     "modelLocked": "The model cannot be changed after the group chat starts",
     "processing": "Processing…",
     "mentionPhase": {
+      "organizationFailed": "This request did not complete. Please send it again.",
+      "organizationPending": "Received, processing…",
+      "organizationClarification": "Waiting for clarification…",
+      "organizationReceived": "Organization received your request, processing…",
+      "organizationSummarizing": "Summarizing…",
       "dispatching": "Received, processing…",
       "planning": "Planning tasks…",
       "generating": "Generating task plan…",

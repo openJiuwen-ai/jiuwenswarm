@@ -153,6 +153,24 @@ async def _run(host: str, port: int) -> None:
 
     startup_t0 = time.monotonic()
     logger.info("[AgentServer] starting: ws://%s:%s", host, port)
+
+    # 企业版：冷加载 Manager 下发的日志级别（Pod 拉起/重建时 DB 行生效）。
+    # 放在其余冷加载之前，后续启动日志即按新级别输出。
+    try:
+        from jiuwenswarm.enterprise import is_enterprise
+
+        if is_enterprise():
+            from jiuwenswarm.enterprise.capabilities.logging import (
+                reload_logging_levels_from_gateway_db,
+            )
+
+            await reload_logging_levels_from_gateway_db()
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[AgentServer] logging_config cold load skipped",
+            exc_info=True,
+        )
+
     for import_stage, marked_at in _STARTUP_IMPORT_PHASES:
         logger.info(
             "[AgentServer] startup import stage=%s process_elapsed=%.2fs",

@@ -47,7 +47,7 @@ from logging.handlers import BaseRotatingHandler
 import portalocker
 from ruamel.yaml import YAML
 
-from openjiuwen_protocol.logging_config import (
+from e2a.logging_config import (
     LOGGING_LEVEL_FIELDS,
     LOG_CONFIG_OP_DELETE,
     LOG_CONFIG_OP_FIELD,
@@ -1837,6 +1837,17 @@ def get_default_project_session_workspace_dir(session_id: str | None = None) -> 
     return workspace
 
 
+def get_domain_data_dir() -> Path:
+    """Get the root directory that hosts user-owned business data.
+
+    Sessions, agent workspaces, tenant data and runtime-state snapshots are
+    derived from this root, so it is the parent of :func:`get_agent_root_dir`.
+    Personal edition resolves to the user workspace, enterprise edition to the
+    tenant workspace currently bound in ``TenantContext``.
+    """
+    return get_agent_root_dir().parent
+
+
 def get_agent_root_dir(tenant_key: str | None = None) -> Path:
     """Get the agent root directory path.
 
@@ -1859,6 +1870,11 @@ def get_agent_root_dir(tenant_key: str | None = None) -> Path:
                 "tenant_context unavailable for agent root bind", exc_info=True
             )
     return get_multi_tenant_user_workspace_dir(tenant_key) / "agent"
+
+
+def get_package_avatar_cache_dir() -> Path:
+    """Return the tenant-scoped cache for HTTP-served package avatars."""
+    return get_agent_workspace_dir() / ".cache" / "package-avatars"
 
 
 def get_agent_home_dir() -> Path:

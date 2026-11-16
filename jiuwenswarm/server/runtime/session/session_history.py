@@ -14,6 +14,7 @@ import re
 import tempfile
 import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import Future, InvalidStateError
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,8 @@ _WORKER_LOCK = threading.Lock()
 _LEGACY_HISTORY_FILENAME = "history.json"
 _JSONL_HISTORY_FILENAME = "history.jsonl"
 _LEGACY_HISTORY_ENV = "JIUWENSWARM_USE_LEGACY_HISTORY_JSON"
+_BOOTSTRAP_ERRORS: OrderedDict[Path, tuple[tuple[int, int, int, int, int], str, str]] = OrderedDict()
+_BOOTSTRAP_ERROR_LOCK = threading.Lock()
 _PROBE_OK_TOKENS = {"HEALTH_CHECK_OK", "HEARTBEAT_OK"}
 SESSION_REQUEST_TERMINAL_STATUSES = frozenset({
     "success",
@@ -500,9 +503,8 @@ def _has_persistable_assistant_payload(
     if et == "chat.ask_user_answer":
         answers = payload.get("answers")
         return isinstance(answers, list) and bool(answers)
-    # Prompt / usage capture records — no display content but persisted so
-    # the exact LLM prompt can be retrieved offline.
-    if et == "chat.llm_call_start" and str(payload.get("prompt") or "").strip():
+    # Persist lifecycle and usage records even without a prompt body.
+    if et == "chat.llm_call_start":
         return True
     if et == "chat.usage_metadata" and payload.get("metadata"):
         return True
@@ -822,6 +824,14 @@ def _write_records_unfenced(path: Path, records: list[dict[str, Any]]) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(temporary_path, path)
+    from jiuwenswarm.server.runtime.session.history_replay import invalidate_history_head
+
+    invalidate_history_head(path)
+    sid = _managed_history_session_id(path)
+    if sid is not None:
+        from jiuwenswarm.server.runtime.session.context_snapshot import invalidate_snapshot_hint
+
+        invalidate_snapshot_hint(sid)
 
 
 def _append_record_jsonl(path: Path, record: dict[str, Any]) -> None:
@@ -836,9 +846,18 @@ def _append_record_jsonl(path: Path, record: dict[str, Any]) -> None:
 
 def _append_record_unfenced(path: Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    sid = _managed_history_session_id(path)
+    if sid is not None:
+        from jiuwenswarm.server.runtime.session.history_artifacts import externalize_history_record
+
+        record = externalize_history_record(sid, record)
+    before = path.stat() if path.exists() else None
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False))
         fh.write("\n")
+    from jiuwenswarm.server.runtime.session.history_replay import note_history_append
+
+    note_history_append(path, record, before)
 
 
 def _ensure_jsonl_bootstrap(session_id: str) -> Path:
@@ -848,8 +867,37 @@ def _ensure_jsonl_bootstrap(session_id: str) -> Path:
 
     legacy_path = _history_file(session_id)
     if legacy_path.exists():
-        legacy_records = _read_history(legacy_path)
-        _write_records_to_path(jsonl_path, legacy_records)
+        from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError, _identity
+        from jiuwenswarm.server.runtime.session.history_stream import convert_legacy_jsonl
+
+        identity = _identity(legacy_path.stat())
+        with _BOOTSTRAP_ERROR_LOCK:
+            failure = _BOOTSTRAP_ERRORS.get(legacy_path)
+        if failure is not None and failure[0] == identity:
+            raise HistoryReplayError("Legacy conversion remains blocked until the source changes: " + failure[2],
+                                     code=failure[1])
+        try:
+            convert_legacy_jsonl(session_id, legacy_path, jsonl_path)
+        except HistoryReplayError as exc:
+            if exc.code in {"HISTORY_RESTORE_FAILED", "HISTORY_RESTORE_LIMIT"}:
+                with _BOOTSTRAP_ERROR_LOCK:
+                    _BOOTSTRAP_ERRORS[legacy_path] = (identity, exc.code, str(exc))
+                    _BOOTSTRAP_ERRORS.move_to_end(legacy_path)
+                    while len(_BOOTSTRAP_ERRORS) > 128:
+                        _BOOTSTRAP_ERRORS.popitem(last=False)
+            logger.error("Legacy history conversion failed; original preserved: session=%s code=%s error=%s",
+                         session_id, exc.code, exc)
+            raise
+        except OSError as exc:
+            logger.error(
+                "Legacy history conversion I/O failed; original preserved: "
+                "session=%s code=HISTORY_RESTORE_FAILED",
+                session_id,
+                exc_info=True,
+            )
+            raise HistoryReplayError("Legacy history conversion I/O failed") from exc
+        with _BOOTSTRAP_ERROR_LOCK:
+            _BOOTSTRAP_ERRORS.pop(legacy_path, None)
     else:
         jsonl_path.parent.mkdir(parents=True, exist_ok=True)
     return jsonl_path
@@ -858,6 +906,35 @@ def _ensure_jsonl_bootstrap(session_id: str) -> Path:
 def _cursor_stream_key(session_id: str, subagent_id: str | None) -> str:
     raw = f"{session_id}\0{subagent_id or ''}".encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
+
+
+def read_history_index_page(
+    session_id: str,
+    *,
+    page_idx: int,
+    page_size: int,
+    is_restorable: Callable[[dict[str, Any]], bool],
+    subagent_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Drain writes and read one legacy page without materializing all history."""
+    from jiuwenswarm.server.runtime.session.history_paging import read_indexed_history
+
+    def restorable_record(record: dict[str, Any]) -> bool:
+        content = record.get("content")
+        if record.get("role") in {"user", "human"} and isinstance(content, str):
+            record["content"] = collapse_file_content_blocks(content)
+        return is_restorable(record)
+
+    with _QUEUE_ENQUEUE_LOCK:
+        WRITE_QUEUE.join()
+        with FILE_LOCK:
+            path = get_read_history_path(session_id, subagent_id=subagent_id)
+            source_stat = path.stat()
+    # Release global locks before scanning the committed prefix.
+    return read_indexed_history(
+        path, session_id=session_id, page_idx=page_idx, page_size=page_size,
+        is_restorable=restorable_record, source_stat=source_stat,
+    )
 
 
 def _encode_history_cursor(payload: dict[str, Any]) -> str:
@@ -962,6 +1039,11 @@ def read_history_cursor_page(
         raise InvalidHistoryCursor("history limit must be positive")
     if read_block_bytes <= 0:
         raise InvalidHistoryCursor("history read block size must be positive")
+
+    from jiuwenswarm.server.runtime.session.history_artifacts import ARTIFACT_CURSOR_PREFIX, read_artifact_cursor
+
+    if isinstance(cursor, str) and cursor.startswith(ARTIFACT_CURSOR_PREFIX):
+        return read_artifact_cursor(normalized_session_id, cursor)
 
     stream_key = _cursor_stream_key(normalized_session_id, normalized_subagent_id)
     cursor_payload = _decode_history_cursor(cursor) if cursor is not None else None
@@ -1091,8 +1173,9 @@ def _ensure_legacy_json_bootstrap(session_id: str) -> Path:
 
     jsonl_path = _history_jsonl_file(session_id)
     if jsonl_path.exists():
-        jsonl_records = _read_history_jsonl(jsonl_path)
-        _write_records_to_path(legacy_path, jsonl_records)
+        from jiuwenswarm.server.runtime.session.history_stream import rewrite_legacy_json
+
+        rewrite_legacy_json(session_id, jsonl_path, legacy_path)
     else:
         legacy_path.parent.mkdir(parents=True, exist_ok=True)
     return legacy_path
@@ -1311,15 +1394,17 @@ def _write_item(
 
         if use_legacy_history_json():
             target_path = _ensure_legacy_json_bootstrap(session_id)
-            records = _read_history(target_path)
-            if _is_error_record(item) and _has_request_error(records, item):
-                return
-            records.append(item)
-            _write_records_to_path(target_path, records)
+            from jiuwenswarm.server.runtime.session.history_artifacts import externalize_history_record
+            from jiuwenswarm.server.runtime.session.history_stream import rewrite_legacy_json
+
+            item = externalize_history_record(session_id, item)
+            skip_append = (lambda record: _has_request_error([record], item)) if _is_error_record(item) else None
+            rewrite_legacy_json(session_id, target_path, target_path, append_record=item,
+                                skip_append=skip_append)
             return
 
         target_path = _ensure_jsonl_bootstrap(session_id)
-        if _is_error_record(item) and _has_request_error(_read_history_jsonl(target_path), item):
+        if _is_error_record(item) and _has_request_error(_iter_error_records(target_path), item):
             return
         _append_record_jsonl(target_path, item)
 
@@ -1330,7 +1415,31 @@ def _is_error_record(item: dict[str, Any]) -> bool:
     }
 
 
-def _has_request_error(records: list[dict[str, Any]], item: dict[str, Any]) -> bool:
+def _iter_error_records(path: Path) -> Iterator[dict[str, Any]]:
+    """Error persistence must not load a failing session's full audit history."""
+    if not path.exists():
+        return
+    from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayLimits
+
+    limit = HistoryReplayLimits().max_record_bytes
+    with path.open("rb") as source:
+        while True:
+            raw = source.readline(limit + 1)
+            if not raw:
+                return
+            if len(raw) > limit:
+                while raw and not raw.endswith(b"\n"):
+                    raw = source.readline(64 * 1024)
+                continue
+            try:
+                record = json.loads(raw)
+            except (json.JSONDecodeError, UnicodeError):
+                continue
+            if isinstance(record, dict) and _is_error_record(record):
+                yield record
+
+
+def _has_request_error(records: Iterator[dict[str, Any]] | list[dict[str, Any]], item: dict[str, Any]) -> bool:
     """Deduplicate cron fallback and primary error regardless of write order."""
     if not item.get("request_id") or item.get("role") != "assistant":
         return False

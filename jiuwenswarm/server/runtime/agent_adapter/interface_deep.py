@@ -542,6 +542,8 @@ from jiuwenswarm.agents.harness.common.memory.config import (
 from jiuwenswarm.agents.harness.common.memory.external_memory_config import is_builtin_memory_allowed
 from jiuwenswarm.agents.harness.common.memory.jiuwen_rail_builder import (
     build_jiuwen_memory_rail,
+    get_jiuwen_builtin_mode,
+    get_jiuwen_sdk_media_globals,
     is_jiuwen_builtin_memory,
     jiuwen_builtin_config_fingerprint,
 )
@@ -564,6 +566,7 @@ from jiuwenswarm.agents.harness.common.a4p.execution_context import (
 )
 from jiuwenswarm.server.runtime.session.session_metadata import build_server_push_message
 from jiuwenswarm.server.runtime.session.session_history import append_history_record, load_history_records
+from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
 from jiuwenswarm.server.runtime import extension_package_manager as equipment
 
 # Goal 用户历史：忙碌插队时先挂起，等上一轮→goal 边界（或流结束）再落盘，
@@ -697,6 +700,7 @@ from jiuwenswarm.common.config import (
     get_evolution_auto_save_enabled,
     get_progressive_tool_enabled,
     get_skill_evolution_enabled,
+    get_symphony_evolution_enabled,
     get_sandbox_endpoint,
     get_sandbox_runtime,
     get_sandbox_startup_mode,
@@ -748,6 +752,7 @@ from jiuwenswarm.server.runtime.agent_adapter.browser_runtime_security import (
     apply_browser_runtime_security_profile,
 )
 from jiuwenswarm.server.runtime.agent_adapter.user_turn import TEAM_USER_TURN_KEY, UserTurn
+from jiuwenswarm.server.runtime.agent_adapter.llm_usage_projection import LlmUsageProjection
 from jiuwenswarm.agents.harness.common.auto_harness.service import _HARNESS_PACKAGES_FILE
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
 from jiuwenswarm.runtime.cron import CronTargetChannel
@@ -2079,6 +2084,8 @@ class JiuWenSwarmDeepAdapter:
         self._voice_agent_task_rail = None
         self._project_dir: str | None = None
         self._workspace_dir: str = str(get_agent_workspace_dir())
+        self._memory_media_workspace: str | None = None
+        self._memory_media_upload_root: Path | None = None
         self._permission_workspace_root: Path | None = None
         self._permission_runtime_paths: RuntimeWorkspacePaths | None = None
         self._platform_trusted_root: Path | None = None
@@ -2316,9 +2323,9 @@ class JiuWenSwarmDeepAdapter:
         self._initial_execution_model_name: str = ""
         self._model_selection_can_access: Callable | None = None
         self._stable_selection_cache: dict[str, tuple[str, Model]] = {}
-        # Model the same-class child was built with: a stable selection, or the
-        # ordinary model name when the building request carried only that.
+        # Stable selection installed at build time or accepted while idle.
         self._collaboration_model_selection: ModelSelection | None = None
+        # Legacy model name carried by the building request.
         self._collaboration_model_name: str = ""
         # 全局列表下标 → cache_key。通道侧（Web）用全局 origin_index 拼请求 key，
         # 与后端 per-name 的 cache_key 序号语义分叉；此映射在 _resolve_model_by_name
@@ -4309,6 +4316,25 @@ class JiuWenSwarmDeepAdapter:
                 )
                 if busy:
                     installed_selection = existing._collaboration_model_selection  # pylint: disable=protected-access
+                    legacy_model_requested = selection is None and bool(model_name)
+                    can_normalize_legacy_model = (
+                        legacy_model_requested
+                        and installed_selection is not None
+                        and not getattr(existing, "_moa_enabled", False)
+                    )
+                    if can_normalize_legacy_model:
+                        # Compare legacy transport choices using the same routing as execution.
+                        model_request = execution_request or AgentRequest(
+                            request_id="", session_id=sid, params={"model_name": model_name},
+                        )
+                        reference = existing._requested_model_name(model_request)  # pylint: disable=protected-access
+                        if reference.startswith(("model:", "model_group:")):
+                            kind, identifier, *route = reference.split(":", 2)
+                            selection = ModelSelection(
+                                type=kind, id=identifier, route_id=route[0] if route else None,
+                            )
+                        elif _model_name_names_selection(reference, installed_selection):
+                            selection = installed_selection
                     if (
                         installed_selection is None
                         and selection is not None
@@ -4409,6 +4435,11 @@ class JiuWenSwarmDeepAdapter:
                         await existing.cleanup()
                         self._drop_session_adapter_cache_entry(sid, remove_lock=False)
                         existing = None
+                    elif model_selection is not None and selection is not None:
+                        # A child built without a selection (e.g. by an attach-only
+                        # subscription) must retain the one it accepts while idle;
+                        # later busy turns compare against this snapshot.
+                        existing._collaboration_model_selection = selection  # pylint: disable=protected-access
             # Same-class child cleanup remains serialized by this session lock.
             if (
                 existing is not None and existing._permission_state.permission_isolated  # pylint: disable=protected-access
@@ -4659,6 +4690,8 @@ class JiuWenSwarmDeepAdapter:
                 if history_preparation is not None:
                     try:
                         history_snapshot = await history_preparation
+                    except HistoryReplayError:
+                        raise
                     except Exception as exc:
                         logger.debug(
                             "session history preparation failed for %s: %s", sid, exc
@@ -4683,7 +4716,7 @@ class JiuWenSwarmDeepAdapter:
                     if restoring_permission and not restored:
                         raise RootPermissionQueueError("permission_continuation_context_missing")
                 except Exception as exc:
-                    if restoring_permission:
+                    if restoring_permission or isinstance(exc, (HistoryReplayError, MemoryError)):
                         raise
                     logger.warning(
                         "[JiuWenSwarmDeepAdapter] session context warmup failed: "
@@ -4700,12 +4733,17 @@ class JiuWenSwarmDeepAdapter:
                         sid, adapter, host_external_input=host_external_input, freshly_built=True,
                     )
                     self._session_adapters[sid] = adapter
-            except BaseException:
+            except BaseException as exc:
                 if restoring_permission:
                     await adapter._isolate_permission_instance()  # pylint: disable=protected-access
                     # Publish only an isolated owner, then use the existing cleanup gate.
                     self._session_adapters[sid] = adapter
                     await self._evict_failed_permission_session_adapter(sid, adapter)
+                elif isinstance(exc, (HistoryReplayError, MemoryError, asyncio.CancelledError)):
+                    # A partially restored child must never become a warm cache hit.
+                    if self._session_adapters.get(sid) is adapter:
+                        self._session_adapters.pop(sid, None)
+                    await adapter.cleanup()
                 raise
             finally:
                 await self._drain_history_preparation(history_preparation)
@@ -8262,22 +8300,58 @@ class JiuWenSwarmDeepAdapter:
             self._prioritize_paid_search_tool_card()
 
     def _sync_symphony_tools_for_runtime(self, config_base: dict[str, Any]) -> None:
-        """Sync Symphony tool registration after config reload."""
+        """Reconcile discovery tools without replacing unchanged Symphony tools."""
         try:
             enabled = bool(load_symphony_config(config_base).enabled)
+            desired = mark_stateless(SymphonyToolkit().get_tools(config_base)) if enabled else []
         except Exception as exc:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] symphony config reload failed: %s",
                 exc,
             )
-            enabled = False
-        self._symphony_tools, self._symphony_tools_registered = self._sync_tool_group(
-            current_tools=self._symphony_tools,
-            registered=self._symphony_tools_registered,
-            enabled=enabled,
-            create_fn=lambda: mark_stateless(SymphonyToolkit().get_tools(config_base)),
+            desired = []
+        desired_names = {tool.card.name for tool in desired}
+        removed = [tool for tool in self._symphony_tools if tool.card.name not in desired_names]
+        self._remove_registered_tools(removed)
+        self._prune_tool_cards({tool.card.name for tool in removed})
+        retained = [tool for tool in self._symphony_tools if tool.card.name in desired_names]
+        retained_names = {tool.card.name for tool in retained}
+        missing = [tool for tool in desired if tool.card.name not in retained_names]
+        added, _ = self._sync_tool_group(
+            current_tools=[],
+            registered=False,
+            enabled=bool(missing),
+            create_fn=lambda: missing,
             warn_label="symphony tools",
         )
+        self._symphony_tools = retained + added
+        self._symphony_tools_registered = bool(self._symphony_tools)
+
+    async def _sync_symphony_graph_evolution_rail_for_runtime(self) -> None:
+        """Hot-toggle evidence collection without resetting direct-route authority."""
+        if self._instance is None:
+            return
+        try:
+            config = load_symphony_config(self._config_base_cache)
+            enabled = config.enabled and config.evolution.flow.enabled
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] SymphonyGraphEvolutionRail config reload failed: %s",
+                exc,
+            )
+            enabled = False
+        rail = self._symphony_graph_evolution_rail
+        if not enabled:
+            if rail is not None:
+                await self._instance.unregister_rail(rail)
+                self._symphony_graph_evolution_rail = None
+            return
+        if rail is not None:
+            return
+        rail = self._build_symphony_graph_evolution_rail()
+        if rail is not None:
+            await self._instance.register_rail(rail)
+            self._symphony_graph_evolution_rail = rail
 
     def _sync_a4p_tools_for_runtime(
         self,
@@ -9251,7 +9325,7 @@ class JiuWenSwarmDeepAdapter:
 
     @staticmethod
     def _login_required_message(request: AgentRequest) -> str:
-        from jiuwenswarm.common.e2a.constants import E2A_LOGIN_REQUIRED_HINT_PARAM_KEY
+        from e2a.constants import E2A_LOGIN_REQUIRED_HINT_PARAM_KEY
 
         params = request.params if isinstance(request.params, dict) else {}
         hint = params.get(E2A_LOGIN_REQUIRED_HINT_PARAM_KEY)
@@ -9309,6 +9383,51 @@ class JiuWenSwarmDeepAdapter:
                 exc_info=True,
             )
 
+    def _cron_deleted_model_selection_error(
+        self, request: AgentRequest
+    ) -> tuple[str, str] | None:
+        """Detect a scheduled-task run whose pinned model was deleted (#5229).
+
+        Cron jobs pin a stable ``model_selection`` at creation. When that model
+        is deleted afterwards, the run must stop with an explicit chat.error
+        instead of silently falling back to the current default model, which
+        the user never chose for the task. Personal edition only: enterprise
+        tenants resolve against their own catalogue and keep their path.
+        """
+        from jiuwenswarm.enterprise import is_enterprise
+
+        if is_enterprise():
+            return None
+        if not self._is_cron_execution_session(getattr(request, "session_id", None)):
+            return None
+        params = request.params if isinstance(request.params, dict) else {}
+        raw_selection = params.get("model_selection")
+        if raw_selection is None:
+            # Legacy name-only jobs (login/free models) keep their own path.
+            return None
+        from agent_gateway.common.model_selection import ModelSelection
+
+        try:
+            selection = ModelSelection.model_validate(raw_selection)
+        except ValidationError:
+            # Malformed payloads keep the existing ValueError path in
+            # ``_requested_model_name``.
+            return None
+        from jiuwenswarm.common.model_catalog import ModelCatalog
+
+        if ModelCatalog().has_selection(selection):
+            return None
+        logger.warning(
+            "[JiuWenSwarmDeepAdapter] cron model selection %r no longer exists "
+            "in the catalogue; failing session %s",
+            selection.model_dump(),
+            getattr(request, "session_id", None),
+        )
+        return (
+            "model_selection_not_found",
+            "定时任务指定的模型已被删除，请编辑任务并重新选择模型",
+        )
+
     def _model_config_error(self, request: AgentRequest) -> tuple[str, str] | None:
         if _is_attach_only_subscription(request.params):
             # An attach-only subscription submits no input and creates no
@@ -9322,6 +9441,9 @@ class JiuWenSwarmDeepAdapter:
             # selection, including a saved model/group that no longer exists.
             self._resolve_model_for_request(request)
             return None
+        cron_deleted_model = self._cron_deleted_model_selection_error(request)
+        if cron_deleted_model is not None:
+            return cron_deleted_model
         requested = self._requested_model_name(request)
         scoped = self._scoped_login_auth(request)
         self._note_session_model(request, uses_login_model=scoped is not None)
@@ -9390,8 +9512,8 @@ class JiuWenSwarmDeepAdapter:
         updated = dict(inputs)
         updated["_multimodal_image_files"] = image_files
         logger.info(
-            "[JiuWenSwarmDeepAdapter] Prepared %d image attachment(s) "
-            "for Core multimodal context-window injection",
+            "[JiuWenSwarmDeepAdapter] Extracted %d image attachment(s) from the "
+            "request; routing is decided further down",
             len(image_files),
         )
         return updated
@@ -10757,7 +10879,7 @@ class JiuWenSwarmDeepAdapter:
                 pass
             ttse_rail = TTSERail(
                 llm=self._model,
-                model=self._default_model_name or config.get("model_name", "gpt-4"),
+                model=self._resolve_model_name(),
                 ttse_config=TTSEConfig(**ttse_kwargs),
                 trajectory_span_processor=trajectory_span_processor,
             )
@@ -11283,16 +11405,42 @@ class JiuWenSwarmDeepAdapter:
         resolved_language = getattr(self, "_resolved_language", None) or "zh"
         return Workspace(root_path=self._workspace_dir or "./", language=resolved_language)
 
-    def _build_memory_rail(self, mode: str) -> Any | None:
+    def _jiuwen_memory_media_globals(self, config: dict[str, Any]) -> dict[str, Any]:
+        workspace = getattr(self, "_memory_media_workspace", None)
+        upload_root = getattr(self, "_memory_media_upload_root", None)
+        if not workspace and upload_root is None:
+            return {}
+        if getattr(self._sys_operation_card, "mode", None) != OperationMode.LOCAL:
+            return {}
+        if get_jiuwen_builtin_mode(config) != "sdk":
+            return {}
+
+        runtime_config = self._config_base_cache or {}
+        if (
+            not self._permissions_explicitly_disabled(runtime_config)
+            or self._enable_auto_permission
+            or self._instance_overrides.get("run_permissions_enabled")
+        ):
+            workspace = None
+            upload_root = None
+        return get_jiuwen_sdk_media_globals(
+            config, runtime_config, workspace=workspace, agent_name=self._agent_name,
+            session_upload_root=upload_root,
+        )
+
+    def _build_memory_rail(
+        self, mode: str, config: dict[str, Any], sdk_media_globals: dict[str, Any] | None = None,
+    ) -> Any | None:
         try:
-            config = get_config()
             # jiuwen 变体：memory.builtin.provider=jiuwen 时用 JiuwenMemoryRail +
             # AgentMemoryMemoryProvider（HTTP -> agent-memory 服务）替换原生 MemoryRail。
             # 构建失败返回 None（不静默回退原生文件记忆，避免两套记忆语义混淆）。
             if is_jiuwen_builtin_memory(config):
                 self._is_proactive_memory = is_proactive_memory(mode, config)
                 rail = build_jiuwen_memory_rail(
-                    config, agent_name=getattr(self, "_agent_name", None)
+                    config,
+                    agent_name=getattr(self, "_agent_name", None),
+                    sdk_media_globals=sdk_media_globals,
                 )
                 if rail is not None:
                     logger.info(
@@ -11668,10 +11816,12 @@ class JiuWenSwarmDeepAdapter:
 
             return SymphonyOrchestrationRail(
                 config_base=lambda: self._config_base_cache,
+                automatic_skillpack_enabled=lambda: get_symphony_evolution_enabled(get_config()),
                 skillpack_router=SkillPackRouter(
                     manager=lambda: self._skill_manager,
                     toolkit=lambda: self._get_or_create_skill_retrieval_toolkit(),
                     model=lambda: self._model,
+                    skills_for_session=lambda session: self._skill_rail.get_skills_for_session(session),
                 ),
             )
         except Exception as exc:
@@ -12754,7 +12904,7 @@ class JiuWenSwarmDeepAdapter:
             if callable(update_llm):
                 update_llm(
                     self._model,
-                    self._default_model_name or config.get("model_name", "gpt-4"),
+                    self._resolve_model_name(),
                 )
 
         # Reuse existing SkillUseRail to preserve dynamically loaded skills
@@ -14135,6 +14285,10 @@ class JiuWenSwarmDeepAdapter:
         # ensure_initialized(), so we live-register it here — same pattern
         # memory / task_planning / ask_user / context_* / skill_evolution use.
         await self._ensure_permission_rail_live_registered()
+        # This rail is absent on a discovery-disabled cold start. Mount it
+        # live after configure; never rebuild the orchestration rail, whose
+        # state owns already-confirmed direct routes and pending questions.
+        await self._sync_symphony_graph_evolution_rail_for_runtime()
         await self.install_session_input_guard(reload=True)
         if getattr(self, "_voice_agent_task_rail", None) is not None:
             await self.install_voice_task_rail(reload=True)
@@ -15364,6 +15518,14 @@ class JiuWenSwarmDeepAdapter:
         )
         stage_timer.mark("runtime_state")
 
+        self._memory_media_workspace = (
+            task_workspace if bind_request and runtime_config.channel_id == "web" else None
+        )
+        self._memory_media_upload_root = None
+        if bind_request and runtime_config.channel_id == "web":
+            from jiuwenswarm.server.runtime.attachments.video_attachments import session_video_upload_root
+
+            self._memory_media_upload_root = session_video_upload_root(runtime_config.session_id)
         await self._update_rails_for_mode(runtime_config.mode)
         stage_timer.mark("rails_for_mode")
 
@@ -20018,6 +20180,7 @@ class JiuWenSwarmDeepAdapter:
             "output_cost": 0.0,
             "total_cost": 0.0,
         }
+        usage_projection = LlmUsageProjection()
         emitted_ask_user_events: set[tuple[Any, ...]] = set()
         # The run's final answer for the OTel trace output, kept as the streamed
         # deltas plus the terminal chat.final — see ``_assemble_run_answer``.
@@ -20072,6 +20235,10 @@ class JiuWenSwarmDeepAdapter:
                     payload["steering_generation_start"] = True
             if event_type in ("chat.tool_call", "chat.tool_update", "chat.tool_result"):
                 had_tool_output = True
+            if event_type == "chat.tool_call" or event_type in USER_INTERACTION_EVENTS:
+                # The history writer closes the text segment here; the stream-end
+                # final patches the open segment only.
+                visible_answer_deltas.clear()
             if event_type == "chat.delta":
                 # Single choke point for forwarded text: memo it so a demoted
                 # goal attempt final can skip text the bubble already shows.
@@ -20658,7 +20825,6 @@ class JiuWenSwarmDeepAdapter:
             if moa_progress is not None:
                 moa_stream = moa_progress.stream(interaction_stream)
                 runner_stream = moa_stream
-            last_llm_prompt: str | None = None
             # Call-start time — anchors the chat.usage_metadata record so the LLM
             # Call card renders before the response text (recorded at completion).
             last_llm_start_ts: float | None = None
@@ -20671,6 +20837,10 @@ class JiuWenSwarmDeepAdapter:
                     chunk.get("event_type", chunk.get("type"))
                     if isinstance(chunk, dict) else getattr(chunk, "type", None)
                 )
+                if chunk_type == "answer":
+                    pending_usage = usage_projection.drain()
+                    if pending_usage is not None:
+                        yield pending_usage
                 if chunk_type == "chat.moa_status":
                     # A notice is not evidence of model output or a new round.
                     parsed = parse_common_stream_chunk(chunk)
@@ -20782,17 +20952,19 @@ class JiuWenSwarmDeepAdapter:
 
                 if chunk_type in ("llm_call_start", "llm_call_end"):
                     payload = chunk.payload if isinstance(chunk.payload, dict) else {}
+                    if chunk_type == "llm_call_start":
+                        pending_usage = usage_projection.start()
+                        if pending_usage is not None:
+                            yield pending_usage
+                    else:
+                        usage_projection.end()
                     forward: dict[str, Any] = {
                         "event_type": "chat." + chunk_type,
                         "member_name": payload.get("member_name"),
                         "role": payload.get("role"),
                     }
-                    prompt = payload.get("prompt")
-                    if prompt:
-                        forward["prompt"] = prompt
-                        if chunk_type == "llm_call_start":
-                            last_llm_prompt = str(prompt)
-                            last_llm_start_ts = time.time()
+                    if chunk_type == "llm_call_start":
+                        last_llm_start_ts = time.time()
                     content = payload.get("content")
                     if content:
                         forward["content"] = content
@@ -20807,6 +20979,10 @@ class JiuWenSwarmDeepAdapter:
                         payload=await note_chat_payload(forward),
                         is_complete=False,
                     )
+                    if chunk_type == "llm_call_end":
+                        pending_usage = usage_projection.drain()
+                        if pending_usage is not None:
+                            yield pending_usage
                     continue
 
                 if chunk_type == "llm_usage":
@@ -20826,14 +21002,7 @@ class JiuWenSwarmDeepAdapter:
                             usage_accumulator[token] += usage_meta.get(token, 0) or 0
                         for cost in ("input_cost", "output_cost", "total_cost"):
                             usage_accumulator[cost] += usage_meta.get(cost, 0.0) or 0.0
-                        # agent-core no longer serializes the prompt; carry the one
-                        # captured by the llm_call_start rail event so the final
-                        # prompt stays available for the LLM call.
-                        if last_llm_prompt and not usage_meta.get("prompt"):
-                            usage_meta = {**usage_meta, "prompt": last_llm_prompt}
-                            if isinstance(chunk.payload, dict):
-                                chunk.payload["usage_metadata"] = usage_meta
-                    yield AgentResponseChunk(
+                    ready_usage = usage_projection.accept(AgentResponseChunk(
                         request_id=rid,
                         channel_id=cid,
                         payload={
@@ -20843,7 +21012,9 @@ class JiuWenSwarmDeepAdapter:
                             **({"llm_start_ts": last_llm_start_ts} if last_llm_start_ts is not None else {}),
                         },
                         is_complete=False,
-                    )
+                    ))
+                    if ready_usage is not None:
+                        yield ready_usage
                     continue
 
                 if chunk_type == "llm_reasoning":
@@ -21013,6 +21184,9 @@ class JiuWenSwarmDeepAdapter:
                         is_complete=False,
                     )
 
+            pending_usage = usage_projection.drain()
+            if pending_usage is not None:
+                yield pending_usage
             if accumulated_text:
                 # Same rule as _adapt_goal_intermediate_final: demote host
                 # flush only when the flushed text belonged to a goal round.
@@ -21137,9 +21311,18 @@ class JiuWenSwarmDeepAdapter:
                 else:
                     _debug_logger.end_run(status="ok")
             interaction_stream_abort = run_failure is not None
-        except asyncio.CancelledError as exc:
+        except (asyncio.CancelledError, GeneratorExit) as exc:
             _run_exception = exc
             stream_consumer_cancelled = True
+            pending_usage = usage_projection.drain()
+            if pending_usage is not None:
+                from jiuwenswarm.server.runtime.agent_adapter.interface import persist_cancelled_llm_usage
+
+                try:
+                    await persist_cancelled_llm_usage(pending_usage, request=request, session_id=session_id)
+                except Exception:
+                    logger.warning("Cancelled stream usage could not be persisted: session=%s", session_id,
+                                   exc_info=True)
             logger.info(
                 "[JiuWenSwarmDeepAdapter] 流式任务被取消: request_id=%s session_id=%s",
                 rid,
@@ -21161,6 +21344,9 @@ class JiuWenSwarmDeepAdapter:
                 _debug_logger.end_run(status="error", error=exc)
             if permission_prepare_rejected:
                 raise
+            pending_usage = usage_projection.drain()
+            if pending_usage is not None:
+                yield pending_usage
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=cid,
@@ -21871,6 +22057,8 @@ class JiuWenSwarmDeepAdapter:
                                 result_payload["raw_output"] = raw_output
                             for key in (
                                 "rendered_result",
+                                "payload_refs",
+                                "raw_output_truncated",
                                 "status",
                                 "success",
                                 "is_error",
@@ -22197,10 +22385,12 @@ class JiuWenSwarmDeepAdapter:
             if builtin_on:
                 # 开启记忆
                 new_embed_fp = self._embedding_config_fingerprint(config)
+                sdk_media_globals = None
                 if is_jiuwen_builtin_memory(config):
-                    # jiuwen 变体不走本地 embedding：指纹改用 jiuwen 配置指纹，
-                    # base_url/身份轴等变化即重建 rail；native↔jiuwen 切换同样触发。
-                    new_embed_fp = jiuwen_builtin_config_fingerprint(config)
+                    sdk_media_globals = self._jiuwen_memory_media_globals(config)
+                    new_embed_fp = jiuwen_builtin_config_fingerprint(
+                        config, sdk_media_globals=sdk_media_globals,
+                    )
                 previous_embed_fp = self._memory_embedding_fingerprint
                 if self._memory_rail is not None:
                     cur_memory_type = is_proactive_memory(mode, config)
@@ -22223,7 +22413,7 @@ class JiuWenSwarmDeepAdapter:
                         # 已经注册，且记忆类型与配置指纹均未变，无需其他操作
                         return
                 if self._memory_rail is None:
-                    self._memory_rail = self._build_memory_rail(mode)
+                    self._memory_rail = self._build_memory_rail(mode, config, sdk_media_globals)
                 if self._memory_rail is not None:
                     # 重建（或首次注册）后记录新指纹，作为下次比对的基线
                     self._memory_embedding_fingerprint = new_embed_fp
@@ -22504,6 +22694,15 @@ class JiuWenSwarmDeepAdapter:
         if result == "compressed":
             context = context_engine.get_context(session_id=session_id)
             if context:
+                from jiuwenswarm.server.runtime.session.context_snapshot import save_context_snapshot
+                from jiuwenswarm.agents.harness.common.session_ops_service import resolve_live_agent_session
+
+                effective_session = session or resolve_live_agent_session(self._instance, session_id)
+                if effective_session is None:
+                    effective_session = context.get_session_ref()
+                if effective_session is None:
+                    raise RuntimeError("The compacted context has no persistent session")
+                await save_context_snapshot(context_engine=context_engine, session=effective_session)
                 total_tokens = await self._count_full_context_tokens(
                     context, react_agent, session_id
                 )
