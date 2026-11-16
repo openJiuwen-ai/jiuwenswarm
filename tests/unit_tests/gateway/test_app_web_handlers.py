@@ -3690,8 +3690,8 @@ def test_update_channel_subsection_in_config_overwrites_existing(tmp_path, monke
 
 
 def _a4p_config_request(method, params, channel="web", session="session"):
-    from e2a.agent_models import AgentRequest
-    from e2a.message import ReqMethod
+    from jiuwenswarm.common.schema.agent import AgentRequest
+    from jiuwenswarm.common.schema.message import ReqMethod
     return AgentRequest(request_id="rpc", channel_id=channel, session_id=session,
                         req_method=ReqMethod(method), params=params)
 

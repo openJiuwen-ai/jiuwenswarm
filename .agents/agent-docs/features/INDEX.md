@@ -32,8 +32,11 @@ generated: true
 | [jiuwenswarm/channels/web/frontend/src/features/settings](#module-jiuwenswarm-channels-web-frontend-src-features-settings) |
 | [jiuwenswarm/common](#module-jiuwenswarm-common) |
 | [jiuwenswarm/common/config_panel](#module-jiuwenswarm-common-config_panel) |
+| [jiuwenswarm/common/e2a](#module-jiuwenswarm-common-e2a) |
+| [jiuwenswarm/common/schema](#module-jiuwenswarm-common-schema) |
 | [jiuwenswarm/extensions/app_market](#module-jiuwenswarm-extensions-app_market) |
 | [jiuwenswarm/extensions/sdk](#module-jiuwenswarm-extensions-sdk) |
+| [jiuwenswarm/extensions/video_duplex](#module-jiuwenswarm-extensions-video_duplex) |
 | [jiuwenswarm/resources](#module-jiuwenswarm-resources) |
 | [jiuwenswarm/resources/agent/workspace/skills](#module-jiuwenswarm-resources-agent-workspace-skills) |
 | [jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin](#module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin) |
@@ -204,6 +207,22 @@ generated: true
 | [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 | [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 
+<a id="module-jiuwenswarm-common-e2a"></a>
+
+## jiuwenswarm/common/e2a
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261116_2021_local-req-method](F_20261116_2021_local-req-method.md) | F | ReqMethod 本地维护与 E2A 字符串边界 | mingo007 | 无独立 D：按用户明确要求迁移现有枚举并独立提交 PR，保持线协议兼容，未单独建立设计文档。 |
+
+<a id="module-jiuwenswarm-common-schema"></a>
+
+## jiuwenswarm/common/schema
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261116_2021_local-req-method](F_20261116_2021_local-req-method.md) | F | ReqMethod 本地维护与 E2A 字符串边界 | mingo007 | 无独立 D：按用户明确要求迁移现有枚举并独立提交 PR，保持线协议兼容，未单独建立设计文档。 |
+
 <a id="module-jiuwenswarm-extensions-app_market"></a>
 
 ## jiuwenswarm/extensions/app_market
@@ -220,6 +239,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
+
+<a id="module-jiuwenswarm-extensions-video_duplex"></a>
+
+## jiuwenswarm/extensions/video_duplex
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261116_2021_local-req-method](F_20261116_2021_local-req-method.md) | F | ReqMethod 本地维护与 E2A 字符串边界 | mingo007 | 无独立 D：按用户明确要求迁移现有枚举并独立提交 PR，保持线协议兼容，未单独建立设计文档。 |
 
 <a id="module-jiuwenswarm-resources"></a>
 

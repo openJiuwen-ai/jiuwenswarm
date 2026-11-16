@@ -103,6 +103,8 @@
 
 AgentServer 的 Gateway WebSocket 入口将显式传入的方法名转换为本服务的 `ReqMethod`；未知或非字符串方法返回终态错误响应，`payload.code` 为 `METHOD_NOT_FOUND`。未传方法的内部请求保持原有处理路径。
 
+`ReqMethod` 由 `jiuwenswarm.common.schema.message` 本地定义，`common.schema.agent` 复用该枚举，不再重导出或运行时扩展 `e2a` 的请求枚举。现有方法名及字符串值保持不变；新增 AgentServer 方法在本仓维护，无需仅为枚举成员更新协议依赖。`Message` 和 `AgentRequest` 保留共享模型字段，使用本地请求方法类型。出站请求通过 `jiuwenswarm.common.e2a.gateway_normalize` 将枚举转为字符串，入站 E2A 与 Worker IPC 再解析为本地枚举；跨仓通信不依赖 Python 枚举对象身份。
+
 **`params` 常用键约定**（可按业务扩展，以下为与 ACP 桥接协作的推荐名）：
 
 | 键 | 用途 |

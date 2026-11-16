@@ -769,14 +769,13 @@ async def test_list_and_create_wait_for_startup_sweep_once(
 ) -> None:
     from jiuwenswarm.common.request_identity import apply_routing_metadata
     from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.common.schema.message import ReqMethod, ensure_team_control_req_methods
+    from jiuwenswarm.common.schema.message import ReqMethod
     from jiuwenswarm.enterprise.team import handlers as team_control
     from jiuwenswarm.enterprise.team import session_cleanup as cleanup
     from jiuwenswarm.enterprise.team.control_store import SqliteTeamControlStore
     from jiuwenswarm.server.context import RequestContext
     from jiuwenswarm.server.transports.ws_sink import WSSink
 
-    ensure_team_control_req_methods()
     control = SqliteTeamControlStore(tmp_path / "team_control.db")
     set_team_control_store(control)
     cleanup.reset_startup_sweep()
@@ -893,9 +892,7 @@ async def test_auto_team_name_generation_failure_releases_x_lease(
     from jiuwenswarm.agents.harness.team.team_name_generator import TeamNameGenerationError
     from jiuwenswarm.common.request_identity import apply_routing_metadata
     from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.common.schema.message import ReqMethod, ensure_team_control_req_methods
-
-    ensure_team_control_req_methods()
+    from jiuwenswarm.common.schema.message import ReqMethod
     from jiuwenswarm.server.context import RequestContext
     from jiuwenswarm.enterprise.team import handlers as team_control
     from jiuwenswarm.enterprise.team.control_store import SqliteTeamControlStore

@@ -81,7 +81,7 @@ async def task_login_credential_ref(ws: Any, target: dict[str, Any]) -> str:
 
 async def task_agent_query(client, method, params, session, owner, *, metadata=None):
     """Read from the routed AgentServer, never from Gateway's local session tree."""
-    from e2a.gateway_normalize import e2a_from_agent_fields
+    from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 
     client = client.get("value") if isinstance(client, dict) else client
     if client is None:

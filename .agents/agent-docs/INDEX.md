@@ -45,8 +45,11 @@ generated: true
 | [jiuwenswarm/channels/web/frontend/src/features/settings/modules/models](#module-jiuwenswarm-channels-web-frontend-src-features-settings-modules-models) |
 | [jiuwenswarm/common](#module-jiuwenswarm-common) |
 | [jiuwenswarm/common/config_panel](#module-jiuwenswarm-common-config_panel) |
+| [jiuwenswarm/common/e2a](#module-jiuwenswarm-common-e2a) |
+| [jiuwenswarm/common/schema](#module-jiuwenswarm-common-schema) |
 | [jiuwenswarm/extensions/app_market](#module-jiuwenswarm-extensions-app_market) |
 | [jiuwenswarm/extensions/sdk](#module-jiuwenswarm-extensions-sdk) |
+| [jiuwenswarm/extensions/video_duplex](#module-jiuwenswarm-extensions-video_duplex) |
 | [jiuwenswarm/gateway/channel_manager/web](#module-jiuwenswarm-gateway-channel_manager-web) |
 | [jiuwenswarm/observability](#module-jiuwenswarm-observability) |
 | [jiuwenswarm/resources](#module-jiuwenswarm-resources) |
@@ -391,6 +394,22 @@ generated: true
 | [B_20261117_1727_model-output-token-limit](bugfix/jiuwenswarm/channels/web/frontend/B_20261117_1727_model-output-token-limit.md) | B | 模型单次最大输出配置修复 | lizhiyuan | 无独立 D：用户在本轮会话确认的模型设置范围调整，未形成独立设计文档。 |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
+<a id="module-jiuwenswarm-common-e2a"></a>
+
+## jiuwenswarm/common/e2a
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261116_2021_local-req-method](features/F_20261116_2021_local-req-method.md) | F | ReqMethod 本地维护与 E2A 字符串边界 | mingo007 | 无独立 D：按用户明确要求迁移现有枚举并独立提交 PR，保持线协议兼容，未单独建立设计文档。 |
+
+<a id="module-jiuwenswarm-common-schema"></a>
+
+## jiuwenswarm/common/schema
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261116_2021_local-req-method](features/F_20261116_2021_local-req-method.md) | F | ReqMethod 本地维护与 E2A 字符串边界 | mingo007 | 无独立 D：按用户明确要求迁移现有枚举并独立提交 PR，保持线协议兼容，未单独建立设计文档。 |
+
 <a id="module-jiuwenswarm-extensions-app_market"></a>
 
 ## jiuwenswarm/extensions/app_market
@@ -415,6 +434,14 @@ generated: true
 |---|---|---|---|---|
 | [F_20261027_1843_ttse-plugin-rail](features/F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 | [S_03_native-plugin-runtime](specs/jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | — |
+
+<a id="module-jiuwenswarm-extensions-video_duplex"></a>
+
+## jiuwenswarm/extensions/video_duplex
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261116_2021_local-req-method](features/F_20261116_2021_local-req-method.md) | F | ReqMethod 本地维护与 E2A 字符串边界 | mingo007 | 无独立 D：按用户明确要求迁移现有枚举并独立提交 PR，保持线协议兼容，未单独建立设计文档。 |
 
 <a id="module-jiuwenswarm-gateway-channel_manager-web"></a>
 
