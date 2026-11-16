@@ -15,6 +15,10 @@ sdk 模式的内核配置优先级（2026-10-17 起 builder 不再自行缝合�
 默认装配（裸构造）；``sdk.config_path`` 为历史字段，已不再读取。
 """
 
+import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 
 # Import the adapter EARLY (clean import state, before jiuwenswarm/openjiuwen
@@ -110,6 +114,9 @@ def _stubs(monkeypatch):
         "JIUWEN_MEMORY_MODE",
         "JIUWEN_MEMORY_BASE_URL",
         "JIUWEN_MEMORY_API_KEY",
+        "JIUWEN_MEMORY_VIDEO_ROOTS",
+        "VIDEO_ENABLED",
+        "AUDIO_ENABLED",
     ):
         monkeypatch.delenv(env, raising=False)
     yield
@@ -195,6 +202,207 @@ def test_sdk_agent_name_overrides_agent_id():
     rail = jrb.build_jiuwen_memory_rail(_cfg({"mode": "sdk", "agent_id": "cfg-agent"}), agent_name="run-agent")
     assert isinstance(rail, _FakeJiuwenRail)
     assert _FakeJiuwenRail.last_args["agent_id"] == "run-agent"
+
+
+def test_sdk_portal_video_globals_passthrough(tmp_path):
+    video_settings = {
+        "local_media_roots": [{"scope": {"org": "local"}, "root": str(tmp_path)}],
+        "asr_base_url": "https://asr.example.invalid/v1",
+        "asr_model": "asr-model",
+        "asr_api_key": None,
+        "video_base_url": "https://video.example.invalid/v1",
+        "video_model": "video-model",
+        "video_api_key": "",
+    }
+    config = _cfg({"mode": "sdk", "sdk": {"globals": dict(video_settings)}})
+    rail = jrb.build_jiuwen_memory_rail(config)
+    assert isinstance(rail, _FakeJiuwenRail)
+    forwarded = _FakeAgentMemoryProvider.last_init_kwargs["config_dict"]["globals"]
+    assert {key: forwarded[key] for key in video_settings} == video_settings
+
+
+def _web_tool_config() -> dict:
+    return {
+        "permissions": {"enabled": False, "mode": "manual"},
+        "models": {
+            kind: {
+                "enabled": True,
+                "model_client_config": {
+                    "client_provider": "OpenAI",
+                    "api_base": f"https://{kind}.example.invalid/v1",
+                    "api_key": f"{kind}-test-key",
+                    "model_name": f"{kind}-test-model",
+                },
+            }
+            for kind in ("video", "audio")
+        },
+    }
+
+
+def test_web_settings_assemble_sdk_video_with_exact_scope(tmp_path):
+    local_media = pytest.importorskip("jiuwen_memory.common.security.protection.local_media")
+    from jiuwen_memory.api import Scope
+    from jiuwen_memory.common.errors import PermissionDeniedError
+
+    config = _cfg({
+        "mode": "sdk", "scope_id": "org", "space": "space", "user_id": "user", "session_id": "session",
+    })
+    project = tmp_path / "project"
+    project.mkdir()
+    media = jrb.get_jiuwen_sdk_media_globals(
+        config, _web_tool_config(), workspace=str(project), agent_name="run-agent",
+    )
+    assert jrb.build_jiuwen_memory_rail(config, "run-agent", sdk_media_globals=media)
+    forwarded = _FakeAgentMemoryProvider.last_init_kwargs["config_dict"]
+    assembled = adapter_mod._merge_config_over_default(forwarded)
+    assert assembled["asr"]["video"]["params"] == {
+        "asr_base_url": "https://audio.example.invalid/v1",
+        "asr_api_key": "audio-test-key",
+        "asr_model": "audio-test-model",
+    }
+    video = assembled["llm"]["video_vision"]["params"]
+    assert video["llm_base_url"] == "https://video.example.invalid/v1"
+    assert video["llm_api_key"] == "video-test-key"
+    assert video["llm_model"] == "video-test-model"
+    normalizer = assembled["normalizer"]["default"]["params"]["routes"]["video"]["params"]
+    imports = local_media.LocalMediaImports(normalizer["local_media_roots"])
+    scope = Scope(org="org", space="space", user="user", agent="run-agent", session="session")
+    inside = project / "inside.mp4"
+    outside = tmp_path / "outside.mp4"
+    inside.touch()
+    outside.touch()
+    assert imports.preflight_video(inside.as_uri(), scope) == inside.as_uri()
+    with pytest.raises(PermissionDeniedError):
+        imports.preflight_video(outside.as_uri(), scope)
+    with pytest.raises(PermissionDeniedError):
+        imports.preflight_video(
+            inside.as_uri(), Scope(org="org", space="space", user="user", agent="other", session="session"),
+        )
+
+
+def test_web_model_settings_preserve_deployment_import_roots(tmp_path, monkeypatch):
+    deployed_root = tmp_path / "deployed"
+    deployed_root.mkdir()
+    roots = [{"scope": {"org": "__default__"}, "root": str(deployed_root)}]
+    config = _cfg({"mode": "sdk", "sdk": {"globals": {"local_media_roots": roots}}})
+    media = jrb.get_jiuwen_sdk_media_globals(config, _web_tool_config(), workspace=str(tmp_path), agent_name=None)
+    assert media["video_model"] == "video-test-model"
+    assert "local_media_roots" not in media
+    assert jrb.build_jiuwen_memory_rail(config, sdk_media_globals=media)
+    assert _FakeAgentMemoryProvider.last_init_kwargs["config_dict"]["globals"]["local_media_roots"] == roots
+
+    monkeypatch.setenv("JIUWEN_MEMORY_VIDEO_ROOTS", json.dumps(roots))
+    media = jrb.get_jiuwen_sdk_media_globals(
+        _cfg({"mode": "sdk"}), _web_tool_config(), workspace=str(tmp_path), agent_name=None,
+    )
+    assert media["asr_model"] == "audio-test-model"
+    assert "local_media_roots" not in media
+
+
+@pytest.mark.parametrize(("disabled_kind", "prefix"), [("audio", "asr"), ("video", "video")])
+def test_web_model_settings_can_use_deployment_fallback(tmp_path, disabled_kind, prefix):
+    pytest.importorskip("jiuwen_memory.common.security.protection.local_media")
+    fallback = {
+        f"{prefix}_base_url": "https://deployment.example.invalid/v1",
+        f"{prefix}_model": "deployment-model",
+        f"{prefix}_api_key": "deployment-test-key",
+    }
+    config = _cfg({"mode": "sdk", "sdk": {"globals": fallback}})
+    web_config = _web_tool_config()
+    web_config["models"][disabled_kind]["enabled"] = False
+
+    media = jrb.get_jiuwen_sdk_media_globals(config, web_config, workspace=str(tmp_path), agent_name=None)
+    assert media["local_media_roots"][0]["root"] == str(tmp_path.resolve())
+    assert not fallback.keys() & media.keys()
+    assert jrb.build_jiuwen_memory_rail(config, sdk_media_globals=media)
+    assembled = adapter_mod._merge_config_over_default(_FakeAgentMemoryProvider.last_init_kwargs["config_dict"])
+    audio_model = assembled["asr"]["video"]["params"]["asr_model"]
+    video_model = assembled["llm"]["video_vision"]["params"]["llm_model"]
+    if disabled_kind == "audio":
+        assert (audio_model, video_model) == ("deployment-model", "video-test-model")
+    else:
+        assert (audio_model, video_model) == ("audio-test-model", "deployment-model")
+
+
+@pytest.mark.asyncio
+async def test_memory_rail_rebuilds_for_web_media_settings_and_permission_changes(tmp_path, monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep as deep
+
+    config = _cfg({"mode": "sdk", "sdk": {"globals": {"llm_model": "text-model"}}})
+    monkeypatch.setattr(deep, "get_config", lambda: config)
+    monkeypatch.setattr(deep, "get_memory_mode", lambda _: "local")
+    monkeypatch.setattr(deep, "is_builtin_memory_allowed", lambda _: True)
+    monkeypatch.setattr(deep, "is_memory_enabled", lambda _mode, _config: True)
+
+    adapter = object.__new__(deep.JiuWenSwarmDeepAdapter)
+    adapter._instance = SimpleNamespace(register_rail=AsyncMock(), unregister_rail=AsyncMock())
+    adapter._instance_overrides = {}
+    adapter._enable_auto_permission = False
+    adapter._sys_operation_card = SimpleNamespace(mode=deep.OperationMode.LOCAL)
+    adapter._config_base_cache = _web_tool_config()
+    adapter._agent_name = "run-agent"
+    adapter._memory_media_workspace = str(tmp_path)
+    adapter._memory_rail = None
+    adapter._memory_embedding_fingerprint = ""
+    adapter._drain_jiuwen_memory_rail = AsyncMock()
+
+    await adapter._handle_memory_rail_by_config("agent")
+    first = adapter._memory_rail
+    globals_config = _FakeAgentMemoryProvider.last_init_kwargs["config_dict"]["globals"]
+    assert globals_config["llm_model"] == "text-model"
+    assert globals_config["local_media_roots"][0]["root"] == str(tmp_path.resolve())
+    assert "video-test-key" not in adapter._memory_embedding_fingerprint
+    assert config["memory"]["builtin"]["jiuwen"]["sdk"] == {"globals": {"llm_model": "text-model"}}
+
+    await adapter._handle_memory_rail_by_config("agent")
+    assert adapter._memory_rail is first
+    adapter._config_base_cache["models"]["audio"]["model_client_config"]["api_key"] = "rotated"
+    await adapter._handle_memory_rail_by_config("agent")
+    adapter._instance.unregister_rail.assert_awaited_once_with(first)
+    assert _FakeAgentMemoryProvider.last_init_kwargs["config_dict"]["globals"]["asr_api_key"] == "rotated"
+
+    other_project = tmp_path / "other-project"
+    other_project.mkdir()
+    adapter._memory_media_workspace = str(other_project)
+    await adapter._handle_memory_rail_by_config("agent")
+    bindings = _FakeAgentMemoryProvider.last_init_kwargs["config_dict"]["globals"]["local_media_roots"]
+    assert [binding["root"] for binding in bindings] == [str(other_project.resolve())]
+
+    adapter._config_base_cache["permissions"]["enabled"] = True
+    await adapter._handle_memory_rail_by_config("agent")
+    globals_config = _FakeAgentMemoryProvider.last_init_kwargs["config_dict"]["globals"]
+    assert "local_media_roots" not in globals_config
+    assert globals_config["video_api_key"] == "video-test-key"
+    assert globals_config["asr_api_key"] == "rotated"
+
+    roots = [{"scope": {"org": "__default__"}, "root": str(tmp_path)}]
+    config["memory"]["builtin"]["jiuwen"]["sdk"]["globals"]["local_media_roots"] = roots
+    await adapter._handle_memory_rail_by_config("agent")
+    adapter._config_base_cache["models"]["video"]["model_client_config"]["api_key"] = "new-video-key"
+    previous = adapter._memory_rail
+    await adapter._handle_memory_rail_by_config("agent")
+    assert adapter._memory_rail is not previous
+    globals_config = _FakeAgentMemoryProvider.last_init_kwargs["config_dict"]["globals"]
+    assert globals_config["local_media_roots"] == roots
+    assert globals_config["video_api_key"] == "new-video-key"
+    assert globals_config["asr_api_key"] == "rotated"
+
+    adapter._config_base_cache["permissions"]["enabled"] = False
+    for setting in ("auto_permission", "run_permissions_enabled"):
+        adapter._enable_auto_permission = setting == "auto_permission"
+        adapter._instance_overrides["run_permissions_enabled"] = setting == "run_permissions_enabled"
+        media = adapter._jiuwen_memory_media_globals(_cfg({"mode": "sdk"}))
+        assert "local_media_roots" not in media
+        assert media["video_api_key"] == "new-video-key"
+        assert media["asr_api_key"] == "rotated"
+    adapter._instance_overrides.clear()
+
+    adapter._config_base_cache["models"]["video"]["enabled"] = False
+    adapter._config_base_cache["models"]["audio"]["enabled"] = False
+    assert adapter._jiuwen_memory_media_globals(config) == {}
+    adapter._config_base_cache["models"]["video"]["enabled"] = True
+    adapter._sys_operation_card.mode = deep.OperationMode.SANDBOX
+    assert adapter._jiuwen_memory_media_globals(config) == {}
 
 
 # ---------------------------------------------------------------------------
