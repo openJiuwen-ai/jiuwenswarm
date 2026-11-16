@@ -10,7 +10,7 @@ import { useSessionStore } from '../../../stores/sessionStore';
 import { requestSettingsModule } from '../../settings/settingsNavigation';
 import {
   DESIGN_GENERATION_SLOTS,
-  modelsForSlot,
+  supportedModelsForSlot,
   type DesignGenerationSlot,
 } from '../designerModelConfiguration';
 import { resolveDesignerDisplayedModel } from '../designerModelLabel';
@@ -83,7 +83,7 @@ export default function DesignerModelSelector({
   const key = 'designer.modelConfiguration';
   const emptySlots = failed || loading || !snapshot
     ? []
-    : DESIGN_GENERATION_SLOTS.filter((slot) => modelsForSlot(catalogue, slot).length === 0);
+    : DESIGN_GENERATION_SLOTS.filter((slot) => supportedModelsForSlot(catalogue, slot).length === 0);
   const problemText = emptySlots.map((slot) => t(`designer.models.${slot === 'video_gen' ? 'videoMissing' : 'imageMissing'}`))
     .join(t(`${key}.separator`));
   const nothingConfigured = emptySlots.length === DESIGN_GENERATION_SLOTS.length;

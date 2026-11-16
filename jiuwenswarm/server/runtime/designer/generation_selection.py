@@ -4,9 +4,11 @@
 The choice is global for Design: every canvas uses the same selected model
 for a modality. It is stored beside the multimodal catalogue and resolved
 against that catalogue. Settings → Agent → Tools (the enabled switch and the
-single bound model) is not consulted. When no choice has been saved, or the
-saved model is no longer in the catalogue, the first model of that modality
-is used.
+single bound model) is not consulted. A saved id is used only while that model
+is still listed and its protocol is one Design can call. Otherwise the first
+supported model of that modality is used. Unsupported rows stay in the
+catalogue; they are only left out of this choice. When none are supported,
+the modality resolves to no model.
 """
 
 from __future__ import annotations
@@ -19,6 +21,10 @@ from jiuwenswarm.common.multimodal_store import MultimodalStore
 from jiuwenswarm.common.utils import get_config_file
 
 DESIGN_GENERATION_SLOTS = ("video_gen", "visual_gen")
+# Protocols whose native payload Design can call, including reference images.
+# OpenAI-compatible chat completions are not in this set. Add a protocol here
+# only together with the matching frontend whitelist.
+DESIGN_GENERATION_PROTOCOLS = frozenset({"minimax", "modelark", "dashscope", "vllm-omni"})
 # Flat config.set keys. The gateway already forwards config.set; these names
 # do not match the agent tool slots, so they do not rewrite that binding.
 DESIGN_GENERATION_CONFIG_KEYS = {
@@ -38,7 +44,7 @@ class CatalogueModel:
     ``present`` is false when the catalogue has not been created yet. Callers
     that still have to run without one (unit tests, a process that has not
     migrated settings) keep their previous environment-slot behavior.
-    ``model`` is none when the catalogue exists but has no model for the slot.
+    ``model`` is none when the catalogue exists but has no selectable model for the slot.
     """
 
     present: bool
@@ -67,9 +73,33 @@ def _models_for(state: dict, slot: str) -> list[dict]:
     ]
 
 
+def design_generation_protocol_supported(protocol: object) -> bool:
+    """True when Design can call this generation protocol."""
+    return str(protocol or "").strip().lower() in DESIGN_GENERATION_PROTOCOLS
+
+
+def _connection_protocol(model: dict) -> str:
+    connection = model.get("connection")
+    if not isinstance(connection, dict):
+        return ""
+    return str(connection.get("protocol") or "")
+
+
+def _selectable_models(state: dict, slot: str) -> list[dict]:
+    return [
+        model for model in _models_for(state, slot)
+        if design_generation_protocol_supported(_connection_protocol(model))
+    ]
+
+
 def resolve_model(state: dict, saved: dict[str, str], slot: str) -> dict | None:
-    """The saved model when it is still listed, otherwise the first of that slot."""
-    models = _models_for(state, slot)
+    """The saved model when it is still selectable, otherwise the first selectable one.
+
+    Rows whose protocol Design cannot call stay in the catalogue and keep a
+    previously saved id, but they are not a choice. No selectable row resolves
+    to no model, the same as an empty modality.
+    """
+    models = _selectable_models(state, slot)
     chosen = next((model for model in models if model.get("model_id") == saved.get(slot)), None)
     if chosen is not None:
         return chosen
@@ -151,7 +181,7 @@ def apply_design_generation_config(params: dict) -> list[str]:
 
 
 def set_generation_selection(slot: object, model_id: object) -> dict[str, str | None]:
-    """Remember one design-wide choice. The id must already be in that modality."""
+    """Remember one design-wide choice. The id must be a selectable model of that modality."""
     if slot not in DESIGN_GENERATION_SLOTS:
         raise DesignSelectionError("Unknown design generation slot.")
     if not isinstance(model_id, str) or not valid_model_id(model_id):
@@ -167,6 +197,8 @@ def set_generation_selection(slot: object, model_id: object) -> dict[str, str | 
         match = next((model for model in _models_for(state, slot) if model.get("model_id") == model_id), None)
         if match is None:
             raise DesignSelectionError("That model is not available for this design generation type.")
+        if not design_generation_protocol_supported(_connection_protocol(match)):
+            raise DesignSelectionError("That model's protocol is not supported for Design.")
         block = raw.get("design_generation")
         if not isinstance(block, dict):
             block = {}

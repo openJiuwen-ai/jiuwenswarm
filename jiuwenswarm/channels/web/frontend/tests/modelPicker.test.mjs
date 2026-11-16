@@ -1474,7 +1474,7 @@ function generationSnapshot(models = [], overrides = {}) {
 }
 function generationModel(id, slot, extra = {}) {
   return { model_id: id, display_name: id, purpose: 'generation', capabilities: [slot], references: [slot],
-    provider: 'OpenAI', protocol: 'openai', api_base: 'https://example.invalid', model_name: id,
+    provider: 'DashScope', protocol: 'dashscope', api_base: 'https://example.invalid', model_name: id,
     api_key_configured: true, ...extra };
 }
 
@@ -1777,6 +1777,62 @@ test('design selection keeps a saved model and otherwise uses the first of that 
   assert.equal(resolvedGenerationModelId(models, 'video_gen', null), first.model_id);
   assert.equal(resolvedGenerationModelId([], 'visual_gen', image.model_id), null);
   assert.equal(resolvedGenerationModelId(models, 'visual_gen', ''), image.model_id);
+  const blocked = generationModel('seedream', 'video_gen', { protocol: 'openai' });
+  assert.equal(resolvedGenerationModelId([blocked, first], 'video_gen', blocked.model_id), first.model_id);
+  assert.equal(resolvedGenerationModelId([blocked], 'video_gen', blocked.model_id), null);
+});
+
+test('unsupported generation protocols stay listed and are not a choice', async (t) => {
+  const blocked = generationModel('seedream', 'video_gen', { protocol: 'openai', display_name: 'Seedream' });
+  const allowed = generationModel('wan', 'video_gen', { protocol: 'dashscope', display_name: 'Wan' });
+  const image = generationModel('qwen', 'visual_gen', { protocol: 'ModelArk' });
+  const { requests, saved } = installGenerationApi(t, [blocked, allowed, image], {
+    video_gen: blocked.model_id,
+    visual_gen: null,
+  });
+  await withFixture(async ({ mount, click }) => {
+    resetGenerationStore();
+    await mount(createElement(DesignerModelSelector));
+    await click(document.querySelector('[data-testid="designer-model-selector-trigger"]'));
+    await click(document.querySelector('[data-testid="designer-model-config-tab"][data-variant="video_gen"]'));
+    const options = [...document.querySelectorAll('[data-testid="designer-generation-model-option"]')];
+    assert.deepEqual(options.map((node) => node.getAttribute('data-variant')), [blocked.model_id, allowed.model_id]);
+    const blockedOption = options[0];
+    const allowedOption = options[1];
+    assert.equal(blockedOption.getAttribute('aria-disabled'), 'true');
+    assert.equal(blockedOption.getAttribute('aria-checked'), 'false');
+    assert.equal(allowedOption.getAttribute('aria-checked'), 'true');
+    assert.equal(
+      blockedOption.parentElement.getAttribute('data-tooltip'),
+      'Design does not support the openai protocol.',
+    );
+    assert.equal(
+      document.querySelector(`[data-testid="designer-generation-model-protocol-warning"][data-variant="${blocked.model_id}"]`)?.getAttribute('data-variant'),
+      blocked.model_id,
+    );
+    await click(blockedOption);
+    assert.equal(requests.includes('config.set'), false);
+    assert.equal(saved.video_gen, blocked.model_id);
+  });
+});
+
+test('a modality with only unsupported protocols warns like a missing model', async (t) => {
+  installGenerationApi(t, [
+    generationModel('seedream', 'visual_gen', { protocol: 'openai' }),
+    generationModel('seedance', 'video_gen', { protocol: 'bytedance' }),
+  ]);
+  const copy = generationCopy('en');
+  await withFixture(async ({ mount, click, byId }) => {
+    resetGenerationStore();
+    await mount(createElement(DesignerModelSelector));
+    assert.equal(byId('designer-model-config-trigger-warning').getAttribute('aria-label'), copy.designer.modelConfiguration.notConfigured);
+    await click(byId('designer-model-selector-trigger'));
+    await click(document.querySelector('[data-testid="designer-model-config-tab"][data-variant="video_gen"]'));
+    const option = document.querySelector('[data-testid="designer-generation-model-option"]');
+    assert.equal(option.getAttribute('aria-disabled'), 'true');
+    assert.equal(option.getAttribute('aria-checked'), 'false');
+    assert.ok(document.querySelector('[data-testid="designer-generation-model-protocol-warning"]'));
+  });
 });
 
 for (const language of ['zh', 'en']) {

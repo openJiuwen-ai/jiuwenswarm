@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from jiuwenswarm.common.config import load_yaml_round_trip
+from jiuwenswarm.common.config import dump_yaml_round_trip, load_yaml_round_trip
 from jiuwenswarm.common.config_panel.config_set_handlers import (
     ConfigPanelBadRequest,
     apply_config_payload,
@@ -137,27 +137,39 @@ def test_config_set_records_the_design_choice(monkeypatch: pytest.MonkeyPatch) -
     assert video["model_id"] != other["model_id"]
 
 
-def test_unsupported_catalogue_backend_is_reported_even_when_the_tool_is_off(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_unsupported_catalogue_protocol_is_not_a_choice(monkeypatch: pytest.MonkeyPatch) -> None:
     store = _prepare(monkeypatch)
     monkeypatch.setenv("VIDEO_GEN_ENABLED", "false")
-    video = _model(
+    blocked = _create(store, _model(
         "video_gen",
         "open-video",
         provider="OpenAI",
         protocol="openai",
         api_base="https://example.invalid/v1",
         api_key="sk-open",
-        model_name="open-video",
-    )
-    _create(store, video)
+        model_name="doubao-seedream-test",
+    ))
+    allowed = _create(store, _model("video_gen", "wan-a"))
     _create(store, _model("visual_gen", "qwen-image"))
     store.mutate("tools.update", {"tool_id": "video_gen", "enabled": False})
+    raw = load_yaml_round_trip(get_config_file())
+    raw["design_generation"] = {"video_gen": blocked["model_id"]}
+    dump_yaml_round_trip(get_config_file(), raw)
+
+    assert generation_selection_view()["video_gen"] == allowed["model_id"]
+    assert mg.slot_settings("video").model == "wan-a"
+    assert mg.generation_problem("video") is None
+    assert load_yaml_round_trip(get_config_file())["design_generation"]["video_gen"] == blocked["model_id"]
+    with pytest.raises(DesignSelectionError, match="protocol is not supported"):
+        set_generation_selection("video_gen", blocked["model_id"])
+    assert load_yaml_round_trip(get_config_file())["design_generation"]["video_gen"] == blocked["model_id"]
+
+    store.mutate("models.delete", {"model_id": allowed["model_id"]})
     problem = mg.generation_problem("video") or ""
-    assert "not one of them" in problem
-    assert "Models > Multimodal" in problem
+    assert "add a model" in problem
+    assert "not one of them" not in problem
     assert "switched off" not in problem
+    assert generation_selection_view()["video_gen"] is None
 
 
 def test_vllm_omni_catalogue_model_needs_only_the_url(monkeypatch: pytest.MonkeyPatch) -> None:
