@@ -1,7 +1,9 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 import type { Session } from '../../../types/index.ts';
 import type { ChatRuntime } from '../../../stores/chatStore.ts';
 import { normalizeAgentMode } from '../../../stores/sessionStore.ts';
-import { lastPresentationReply, lastPresentationUserMessage, presentationReplyUserMessage } from './reply.ts';
+import { lastPresentationReply, lastPresentationUserMessage, presentationReplyUserMessage, presentationReplyContent } from './reply.ts';
 import type { PresentationActivity, PresentationConversation } from './protocol.ts';
 
 function pendingTurnTools(runtime: ChatRuntime | undefined) {
@@ -25,7 +27,7 @@ export function presentationConversations(
   sessions: readonly Session[], runtimes: Readonly<Record<string, ChatRuntime>>, newTitle: string,
   identifyReply: (reply: object | null) => number | null = () => null,
 ): PresentationConversation[] {
-  const metadata = new Map(sessions.filter((session) => normalizeAgentMode(session.mode) === 'agent')
+  const metadata = new Map(sessions.filter((session) => ['agent', 'team'].includes(normalizeAgentMode(session.mode)))
     .map((session) => [session.session_id, session]));
   return ['new', ...metadata.keys()].map((key) => {
     const runtime = runtimes[key];
@@ -34,11 +36,12 @@ export function presentationConversations(
     const userText = Array.from(lastUser?.content ?? '');
     const pendingTools = pendingTurnTools(runtime);
     const session = metadata.get(key);
+    const mode = normalizeAgentMode(session?.mode);
     const lastUserMessageAt = session?.last_user_message_at;
     return {
       conversationKey: key, sessionId: key, teamId: null,
       title: session?.display_title || session?.title || newTitle,
-      preview: Array.from(reply?.content ?? '').slice(0, 2000).join(''), replyId: identifyReply(reply),
+      preview: Array.from(presentationReplyContent(reply)).slice(0, 2000).join(''), replyId: identifyReply(reply),
       userMessageId: identifyReply(lastUser),
       inputMessageId: lastUser?.id ?? null,
       replyToMessageId: presentationReplyUserMessage(runtime, reply)?.id ?? null,
@@ -48,8 +51,9 @@ export function presentationConversations(
         ? (lastUserMessageAt < 1e11 ? lastUserMessageAt * 1000 : lastUserMessageAt) : null,
       draft: runtime?.inputValue ?? '', activity: conversationActivity(runtime),
       toolNames: [...new Set(pendingTools.map((tool) => tool.toolCall.name))],
-      canSend: !runtime?.isProcessing && !runtime?.pendingQuestions.length && !runtime?.pendingA4PAuthorization,
-      mode: 'agent', modelId: null,
+      canSend: (mode === 'team' || !runtime?.isProcessing)
+        && !runtime?.pendingQuestions.length && !runtime?.pendingA4PAuthorization,
+      mode, modelId: null,
     };
   });
 }

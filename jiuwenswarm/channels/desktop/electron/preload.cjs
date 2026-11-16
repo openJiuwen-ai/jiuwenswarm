@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args);
@@ -29,6 +30,7 @@ const desktopApi = Object.freeze({
     resize: (key, width, height) => invoke('desktop:presentation:resize', key, width, height),
     move: (key, deltaX, deltaY) => invoke('desktop:presentation:move', key, deltaX, deltaY),
     hitTest: (key, interactive) => invoke('desktop:presentation:hit-test', key, interactive),
+    children: (key, generation, windows) => invoke('desktop:presentation:children', key, generation, windows),
     onRequest: callback => {
       const listener = (_event, payload) => callback(payload);
       ipcRenderer.on('desktop:presentation:request', listener);
