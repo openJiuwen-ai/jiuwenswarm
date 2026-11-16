@@ -2305,7 +2305,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           const mergedItems: Record<string, unknown>[] = [];
           // 新会话的附件尚未落盘。每次只上传一项，既不触发批量数量限制，
           // 也不把多份大文件的 base64 拼进同一条 WebSocket 消息。
-          for (const item of mediaItems) {
+          for (const mediaItem of mediaItems) {
+            // Chat video uploads use the document transport, which persists the original bytes.
+            const item: MediaItem = mediaItem.type === 'video' ? { ...mediaItem, type: 'document' } : mediaItem;
             if (isPersistedMediaItem(item)) {
               mergedItems.push(toPersistedMediaRecord(item));
               continue;
