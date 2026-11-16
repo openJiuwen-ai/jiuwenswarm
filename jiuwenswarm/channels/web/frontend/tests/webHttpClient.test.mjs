@@ -239,10 +239,34 @@ const ENTERPRISE_ASSEMBLE = [
   ['skills.skillnet.evaluate', 'POST', '/api/v1/skills/skillnet/actions/evaluate', { url: 'http://s' }, 'unary'],
   ['skills.evolution.get', 'GET', '/api/v1/skills/evolution', { name: 'evo-1' }, 'unary'],
   ['skills.evolution.save', 'PUT', '/api/v1/skills/evolution', { name: 'evo-1', entries: [] }, 'unary'],
+  ['a4p.config.get', 'GET', '/api/v1/a4p/config', { session_id: 'sid' }, 'unary'],
+  ['a4p.config.update', 'PUT', '/api/v1/a4p/config', { session_id: 'sid', enabled: true }, 'unary'],
+  ['a4p.authorization.pending', 'GET', '/api/v1/a4p/authorization/pending', { session_id: 'sid' }, 'unary'],
+  [
+    'a4p.authorization.complete',
+    'POST',
+    '/api/v1/a4p/authorization/actions/complete',
+    { session_id: 'sid', requestId: 'r1' },
+    'unary',
+  ],
+  [
+    'a4p.authorization.reject',
+    'POST',
+    '/api/v1/a4p/authorization/actions/reject',
+    { session_id: 'sid', requestId: 'r1', reason: 'no' },
+    'unary',
+  ],
+  [
+    'a4p.authorization.reprepare',
+    'POST',
+    '/api/v1/a4p/authorization/actions/reprepare',
+    { session_id: 'sid', requestId: 'r1', selectedActionIndexes: [0] },
+    'unary',
+  ],
 ];
 
 test('every enterprise mapped method assembles verb+url+kind', () => {
-  assert.equal(ENTERPRISE_ASSEMBLE.length, 42);
+  assert.equal(ENTERPRISE_ASSEMBLE.length, 48);
   const seen = new Set();
   for (const [method, verb, url, params, kind] of ENTERPRISE_ASSEMBLE) {
     seen.add(method);
