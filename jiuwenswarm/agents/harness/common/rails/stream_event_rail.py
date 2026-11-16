@@ -826,6 +826,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         # on conv_id naming conventions.
         if ctx.session is None:
             return
+        from jiuwenswarm.agents.harness.team.native_lifecycle import track_native_context_lifecycle
+
+        await track_native_context_lifecycle(self._deep_agent)
         # Use the real conversation_id as the session key; fall back to "default"
         # only for the pause/abort state lookup key (sid).  Do NOT store the
         # "default" sentinel as a conversation_id value — after_tool_call uses

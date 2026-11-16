@@ -684,14 +684,15 @@ async def test_update_evolution_config_skill_create_enabled_mounts_missing_team_
 @pytest.mark.asyncio
 async def test_register_team_rail_context_keeps_leader_context() -> None:
     manager = TeamManager()
+    leader, member = _FakeAgent(), _FakeAgent()
     leader_context = TeamRailMountContext(
-        agent=_FakeAgent(),
+        agent=leader,
         member_info=MemberInfo(role="leader"),
         runtime=RuntimeInfo(channel="web"),
         team_workspace=TeamWorkspaceInfo(team_id="demo-team"),
     )
     member_context = TeamRailMountContext(
-        agent=_FakeAgent(),
+        agent=member,
         member_info=MemberInfo(role="member"),
         runtime=RuntimeInfo(channel="web"),
         team_workspace=TeamWorkspaceInfo(team_id="demo-team"),
