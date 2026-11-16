@@ -129,8 +129,7 @@ def load_trajectory_store_settings(
         Validated settings with conservative defaults from the data contract.
     """
     source = config if config is not None else get_config()
-    source = source if isinstance(source, Mapping) else {}
-    raw_section = source.get("trajectory_ui", {})
+    raw_section = source.get("trajectory_ui", {}) if isinstance(source, Mapping) else {}
     section = raw_section if isinstance(raw_section, Mapping) else {}
     resolved_workspace = workspace if workspace is not None else get_user_workspace_dir()
     return TrajectoryStoreSettings(
@@ -138,9 +137,7 @@ def load_trajectory_store_settings(
         # config without this section keeps the additive data plane disabled.
         # Diagnosis analyses recorded trajectories, so turning it on also turns
         # the data plane on even when the trajectory view itself is off.
-        enabled=source.get("trace_enabled") is not False and (
-            _as_bool(section.get("enabled"), False) or _diagnosis_switch(section)
-        ),
+        enabled=_as_bool(section.get("enabled"), False) or _diagnosis_switch(section),
         database_path=_resolve_database_path(section.get("db_path"), resolved_workspace),
         retention_days=_positive_int(
             section.get("retention_days"),
