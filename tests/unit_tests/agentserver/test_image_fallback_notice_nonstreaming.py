@@ -79,6 +79,9 @@ def _adapter(
     adapter._vision_model_config = SimpleNamespace(model_name="vision-stub")
     adapter._stream_event_rail = None
     adapter._instance = MagicMock()
+    # This runtime stub has no restored conversation context. An unconfigured
+    # MagicMock would fabricate a context and an invalid history cursor.
+    adapter._instance.react_agent.context_engine.get_context.return_value = None
     adapter._instance.attach_output = AsyncMock(
         return_value=_Stream(
             [SimpleNamespace(type="answer", payload={"content": ANSWER})]
