@@ -43,8 +43,14 @@ def _hub_packages_dir() -> Path:
 
 
 # Auth processes started in non-blocking mode (authWaitForExit). Keyed by MCP
-# name; the value is the running Popen. Pollable from complete_cli_auth.
-_PENDING_AUTH_PROCS: dict[str, subprocess.Popen] = {}
+# name; the value is the running Popen, or a cli_sandbox.DetachedAuthProcess
+# when the login runs inside the AgentOS tool sandbox. Both expose
+# ``poll()`` / ``kill()``. Pollable from complete_cli_auth.
+_PENDING_AUTH_PROCS: dict[str, Any] = {}
+
+# How long to watch an authWaitForExit CLI for the URL it prints before
+# handing control back to the frontend.
+_AUTH_URL_WAIT_S = 8.0
 
 
 def _cleanup_stale_auth_proc(name: str) -> None:
@@ -89,6 +95,19 @@ def _pick_per_platform(spec: Any) -> str | None:
 
 
 CommandRunner = Callable[[str], "CommandResult"]
+
+
+def _credential_env(env: dict[str, str] | None) -> dict[str, str] | None:
+    """Return only the entries of *env* that differ from ``os.environ``.
+
+    ``_build_cred_env`` starts from ``dict(os.environ)`` and adds the tokens
+    from the connector's token-schema, so the diff is exactly the credential
+    variables — the part that has to follow the CLI into the sandbox.
+    """
+    if not env:
+        return None
+    diff = {k: v for k, v in env.items() if os.environ.get(k) != v}
+    return diff or None
 
 
 # Injector for authWaitForExit non-blocking start (tests). Returns (proc, initial_output).
@@ -508,8 +527,40 @@ class CliDriver:
                 if cred_env is not None
                 else (lambda cmd: default_runner(cmd))
             )
+        # AgentOS: the CLI must live where the agent will run it, i.e. in the
+        # tool sandbox, not on the AgentServer filesystem. When that sandbox is
+        # enabled every lifecycle command (versionCheck/init/status/auth/
+        # unAuth) is routed there; see cli_sandbox.
+        self._sandbox_env: dict[str, str] | None = None
+        self._sandbox_runner: CommandRunner | None = None
+        if runner is None:
+            self._sandbox_runner = self._build_sandbox_runner(self._cred_env)
+            if self._sandbox_runner is not None:
+                self._runner = self._sandbox_runner
         # Optional injector for authWaitForExit start (tests); default uses real Popen.
         self._proc_runner = proc_runner
+
+    def _build_sandbox_runner(self, cred_env: dict[str, str] | None) -> CommandRunner | None:
+        """Return a runner that executes commands inside the tool sandbox.
+
+        Returns ``None`` when this is not an AgentOS deployment or its tool
+        sandbox is disabled, in which case every command keeps running on the
+        AgentServer exactly as before.
+        """
+        try:
+            from jiuwenswarm.server.runtime.mcp import cli_sandbox
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[cli_driver] sandbox runner unavailable: %s", exc)
+            return None
+        if not cli_sandbox.sandbox_cli_enabled():
+            return None
+        # Only the credential-derived keys travel into the sandbox; the rest of
+        # the parent environ carries host paths that are meaningless there.
+        self._sandbox_env = _credential_env(cred_env)
+        logger.info(
+            "[cli_driver] %s CLI lifecycle commands run inside the tool sandbox", self.name,
+        )
+        return lambda cmd: cli_sandbox.run_in_sandbox(cmd, extra_env=self._sandbox_env)
 
     def _build_cred_env(self) -> dict[str, str] | None:
         """Merge this MCP's CredentialStore tokens (keyed by its token-schema
@@ -592,7 +643,8 @@ class CliDriver:
                 # Package installer needs PowerShell; surface it instead of the
                 # generic "version too low".
                 kind = ERR_INSTALL_SCRIPT_DEP
-            # re-check version after install
+            # re-check version after install (same runner: the binary the init
+            # just produced is only visible where init ran)
             if m.version_cmd:
                 res2 = self._runner(m.version_cmd)
                 version = _parse_version(res2.combined_output)
@@ -681,6 +733,8 @@ class CliDriver:
                 succeeded=True, needs_user_action=True,
                 auth_url=url, auth_domain=domain, output=out
             )
+        if self._sandbox_runner is not None:
+            return self._start_sandbox_auth_proc(index, cmd, domain)
         import time
         try:
             proc = subprocess.Popen(  # noqa: S603 - command from trusted cli.json
@@ -703,7 +757,7 @@ class CliDriver:
         _cleanup_stale_auth_proc(self.name)
         _PENDING_AUTH_PROCS[self.name] = proc
         url: str | None = None
-        deadline = time.time() + 8.0
+        deadline = time.time() + _AUTH_URL_WAIT_S
         chunks: list[str] = []
         while time.time() < deadline:
             line = proc.stdout.readline() if proc.stdout else ""
@@ -724,6 +778,62 @@ class CliDriver:
             name=self.name, step_index=index, command=cmd,
             succeeded=True, needs_user_action=True,
             auth_url=url, auth_domain=domain, output=out
+        )
+
+    def _start_sandbox_auth_proc(self, index: int, cmd: str, domain: str) -> AuthStepResult:
+        """Start an authWaitForExit command detached inside the tool sandbox.
+
+        A sandbox ``execute_cmd`` blocks until the process exits, so the login
+        is launched with :func:`cli_sandbox.start_detached` (own session, pid
+        file, log file) instead of being streamed. The auth URL is read back
+        from the log for a few seconds; liveness afterwards comes from the pid,
+        which keeps :meth:`auth_proc_done` and the cancel path unchanged.
+        """
+        import time
+
+        from jiuwenswarm.server.runtime.mcp import cli_sandbox
+
+        paths = cli_sandbox.auth_paths(self.name)
+        if paths is None:
+            return AuthStepResult(
+                name=self.name, step_index=index, command=cmd,
+                succeeded=False, needs_user_action=False,
+                error="failed to start auth: sandbox runtime dir unavailable",
+            )
+        pid_path, log_path = paths
+        pid = cli_sandbox.start_detached(
+            cmd, pid_path=pid_path, log_path=log_path, extra_env=self._sandbox_env,
+        )
+        if pid is None:
+            return AuthStepResult(
+                name=self.name, step_index=index, command=cmd,
+                succeeded=False, needs_user_action=False,
+                error="failed to start auth in the tool sandbox",
+            )
+        proc = cli_sandbox.DetachedAuthProcess(pid, log_path)
+        _cleanup_stale_auth_proc(self.name)
+        _PENDING_AUTH_PROCS[self.name] = proc
+        url: str | None = None
+        out = ""
+        deadline = time.time() + _AUTH_URL_WAIT_S
+        while time.time() < deadline:
+            text = cli_sandbox.read_text(log_path)
+            if text:
+                out = text
+                if domain:
+                    url = _extract_url(text, domain)
+                    if url:
+                        break
+            if proc.poll() is not None:
+                # The login exited on its own (e.g. it opened the browser
+                # itself); keep whatever the log holds and stop waiting.
+                out = cli_sandbox.read_text(log_path) or out
+                break
+            time.sleep(0.5)
+        return AuthStepResult(
+            name=self.name, step_index=index, command=cmd,
+            succeeded=True, needs_user_action=True,
+            auth_url=url, auth_domain=domain, output=out,
         )
 
     def auth_proc_done(self) -> bool | None:
