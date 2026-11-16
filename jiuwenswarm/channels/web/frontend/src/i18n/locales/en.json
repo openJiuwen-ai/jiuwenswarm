@@ -6639,6 +6639,7 @@
       "periodEnd": "End date",
       "periodTo": "to",
       "periodLimit": "Up to {{count}} days can be shown; the start date was adjusted",
+      "periodLimitEnd": "Up to {{count}} days can be shown; the end date was adjusted",
       "metrics": {
         "members": "Members",
         "activeDays": "Active days",

@@ -2193,3 +2193,27 @@ for (const [language, expected] of [['zh', '已过期'], ['en', 'Expired']]) {
     } finally { await view.close(); await i18n.changeLanguage('zh'); }
   });
 }
+
+test('activity period dates use the schedule calendar without a clear button and no future days', async () => {
+  await i18n.changeLanguage('zh');
+  const view = await mountDashboard({ activity: { members: [] } });
+  try {
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="activity"]'));
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="period"]'));
+    assert.equal(view.find('input[type="date"]'), null);
+    const field = (testId) => view.find(`[data-testid="${testId}"] [data-testid="cron-date-picker-input"]`);
+    const end = field('jiuwenmate-office-period-end').value;
+    assert.match(field('jiuwenmate-office-period-start').value, /^\d{4}-\d{2}-\d{2}$/);
+
+    await view.click(view.find('[data-testid="jiuwenmate-office-period-start"] [data-testid="cron-date-picker"] > div'));
+    const days = [...view.container.querySelectorAll('[data-testid="cron-date-picker-day"]')];
+    assert.ok(days.length > 0);
+    assert.equal(view.container.textContent.includes('清除'), false);
+    for (const day of days) assert.equal(day.disabled, day.dataset.variant > end, day.dataset.variant);
+
+    const firstOfMonth = days[0];
+    await view.click(firstOfMonth);
+    assert.equal(field('jiuwenmate-office-period-start').value, firstOfMonth.dataset.variant);
+    assert.equal(field('jiuwenmate-office-period-end').value, end);
+  } finally { await view.close(); }
+});

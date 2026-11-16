@@ -14,6 +14,7 @@ import {
   selectOfficeTab,
   setActivityPeriod,
   exceedsActivityPeriod,
+  adjustedPeriodEdge,
   setActivityRange,
   setActivityScope,
   taskColumns,
@@ -82,6 +83,25 @@ test('period heatmap lists recent days with relative labels and is capped at 30 
 
   const reversed = setActivityPeriod(createOfficeState(null, today), '2026-10-12', '2026-01-01');
   assert.deepEqual([reversed.periodStart, reversed.periodEnd], ['2026-09-13', '2026-10-12']);
+});
+
+test('an over-long period keeps the date the user just picked and moves the other one', () => {
+  const state = createOfficeState(null, new Date(2026, 10, 16));
+  const range = (next) => [next.periodStart, next.periodEnd];
+
+  assert.equal(adjustedPeriodEdge('2026-09-01', '2026-11-16', 'end'), 'start');
+  assert.deepEqual(range(setActivityPeriod(state, '2026-09-01', '2026-11-16', 'end', '2026-11-16')), ['2026-10-18', '2026-11-16']);
+
+  assert.equal(adjustedPeriodEdge('2026-09-01', '2026-11-16', 'start'), 'end');
+  assert.deepEqual(range(setActivityPeriod(state, '2026-09-01', '2026-11-16', 'start', '2026-11-16')), ['2026-09-01', '2026-09-30']);
+
+  assert.equal(adjustedPeriodEdge('2026-11-01', '2026-11-16', 'start'), null);
+  assert.deepEqual(range(setActivityPeriod(state, '2026-11-01', '2026-11-16', 'start', '2026-11-16')), ['2026-11-01', '2026-11-16']);
+
+  assert.equal(adjustedPeriodEdge('2026-11-16', '2026-09-01', 'start'), 'start');
+  assert.deepEqual(range(setActivityPeriod(state, '2026-11-16', '2026-09-01', 'start', '2026-11-16')), ['2026-10-18', '2026-11-16']);
+
+  assert.deepEqual(range(setActivityPeriod(state, '2026-10-01', '2026-01-01', 'end', '2026-10-20')), ['2026-01-01', '2026-01-30']);
 });
 
 test('period heatmap keeps subminute work visible by using hourly task counts', () => {

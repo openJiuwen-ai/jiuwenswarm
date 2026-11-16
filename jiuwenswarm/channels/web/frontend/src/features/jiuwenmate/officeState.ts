@@ -115,13 +115,44 @@ export function exceedsActivityPeriod(periodStart: string, periodEnd: string): b
   return Math.abs(daysBetween(parseIsoDate(periodStart), parseIsoDate(periodEnd))) >= MAX_PERIOD_DAYS;
 }
 
-export function setActivityPeriod(state: JiuwenMateOfficeState, periodStart: string, periodEnd: string): JiuwenMateOfficeState {
+export type JiuwenMatePeriodEdge = 'start' | 'end';
+
+/**
+ * Which bound `setActivityPeriod` moves to fit the limit: the user's latest pick stays,
+ * so the other bound of the ordered range is adjusted. Null when the range already fits.
+ */
+export function adjustedPeriodEdge(
+  periodStart: string,
+  periodEnd: string,
+  edited: JiuwenMatePeriodEdge,
+): JiuwenMatePeriodEdge | null {
+  if (!exceedsActivityPeriod(periodStart, periodEnd)) return null;
+  const picked = edited === 'start' ? periodStart : periodEnd;
+  const later = periodStart > periodEnd ? periodStart : periodEnd;
+  return picked === later ? 'start' : 'end';
+}
+
+export function setActivityPeriod(
+  state: JiuwenMateOfficeState,
+  periodStart: string,
+  periodEnd: string,
+  edited?: JiuwenMatePeriodEdge,
+  latest?: string,
+): JiuwenMateOfficeState {
   const start = parseIsoDate(periodStart);
   const end = parseIsoDate(periodEnd);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return state;
-  const [from, to] = start > end ? [end, start] : [start, end];
-  const clampedFrom = daysBetween(from, to) >= MAX_PERIOD_DAYS ? addDays(to, -(MAX_PERIOD_DAYS - 1)) : from;
-  return { ...state, periodStart: toIsoDate(clampedFrom), periodEnd: toIsoDate(to), hoveredCellId: null };
+  let [from, to] = start > end ? [end, start] : [start, end];
+  const adjusted = edited
+    ? adjustedPeriodEdge(periodStart, periodEnd, edited)
+    : exceedsActivityPeriod(periodStart, periodEnd) ? 'start' : null;
+  if (adjusted === 'start') from = addDays(to, -(MAX_PERIOD_DAYS - 1));
+  if (adjusted === 'end') {
+    to = addDays(from, MAX_PERIOD_DAYS - 1);
+    const cap = latest ? parseIsoDate(latest) : null;
+    if (cap && !Number.isNaN(cap.getTime()) && to > cap) to = cap;
+  }
+  return { ...state, periodStart: toIsoDate(from), periodEnd: toIsoDate(to), hoveredCellId: null };
 }
 
 export function setActivityColleague(state: JiuwenMateOfficeState, selectedColleagueId: string): JiuwenMateOfficeState {
