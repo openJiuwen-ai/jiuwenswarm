@@ -272,17 +272,6 @@ http2_submodules = [
 ]
 
 # 部分包需要显式声明隐藏导入
-<<<<<<< RELEASE
-hiddenimports = webview_hiddenimports + http2_submodules + [
-    "jiuwenswarm.channels.cli.extension",  # Shared extension command in frozen subprocesses.
-    "jiuwenswarm.common.extension_cli",
-    # Installed Gateway extension packages are executed from their own directory
-    # and import this module, so it never appears in the entry point's import
-    # graph. Keep it explicit or frozen builds fail to activate such packages.
-    "jiuwenswarm.gateway.extensions_v2.webui.ops",
-||||||| BEFORE_PR_9610
-hiddenimports = webview_hiddenimports + http2_submodules + [
-=======
 lazy_runtime_submodules = []
 for lazy_package in (
     "agent_gateway",
@@ -302,7 +291,10 @@ hiddenimports = lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdo
     "jiuwenswarm.server.jiuwenmate.dingtalk_cli_local_provider",
     # Full-duplex Python sources load by path, outside the static import graph.
     "jiuwenswarm.common.asr_client",
->>>>>>> DEVELOP
+    "jiuwenswarm.channels.cli.extension",  # Shared extension command in frozen subprocesses.
+    "jiuwenswarm.common.extension_cli",
+    # Gateway extension packages import ``agent_gateway.extensions_v2.webui.ops``;
+    # ``collect_submodules("agent_gateway")`` below already collects it.
     "matplotlib",  # 论文 reporting 阶段生成结果图
     "pandas",  # pymilvus 依赖
     # ``--doctor`` imports these targets dynamically before business imports.

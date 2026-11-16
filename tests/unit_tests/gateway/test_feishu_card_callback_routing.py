@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from jiuwenswarm.common.schema.message import Message, ReqMethod
-from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import (
+from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import (
     FeishuChannel,
     FeishuConfig,
 )
@@ -56,6 +56,7 @@ def _ask_user_outbound(metadata: dict | None) -> Message:
         app_id=APP_ID,
         payload={
             "request_id": REQUEST_ID,
+            "source": "ask_user_interrupt",
             "questions": [
                 {
                     "question": "晚上想吃哪一类？",
@@ -79,26 +80,11 @@ async def test_card_callback_resumes_paused_turn_via_chat_send() -> None:
             _ask_user_outbound({"feishu_chat_id": ORIGIN_CHAT, "feishu_open_id": OPERATOR})
         )
 
-<<<<<<< RELEASE
-    assert REQUEST_ID in channel._card_contexts
-||||||| BEFORE_PR_9610
-    assert REQUEST_ID in channel._user_question_context
-=======
     assert channel._load_card_context(REQUEST_ID) is not None
->>>>>>> DEVELOP
 
     await channel._handle_card_callback_async(
         token="card-token",
-<<<<<<< RELEASE
-        request_id=REQUEST_ID,
-        index=0,
-        value="中餐",
-        label="中餐",
-||||||| BEFORE_PR_9610
-        action_value={"label": "中餐", "request_id": REQUEST_ID},
-=======
         request_id=REQUEST_ID, index=0, value="中餐", label="中餐",
->>>>>>> DEVELOP
         operator_id=OPERATOR,
     )
 
@@ -122,62 +108,20 @@ async def test_card_callback_resumes_paused_turn_via_chat_send() -> None:
     assert answer.metadata["feishu_chat_id"] == ORIGIN_CHAT
     assert answer.metadata["feishu_open_id"] == OPERATOR
     # 回调消费后应清理上下文，避免泄漏
-<<<<<<< RELEASE
-    assert REQUEST_ID not in channel._card_contexts
-||||||| BEFORE_PR_9610
-    assert REQUEST_ID not in channel._user_question_context
-=======
     assert channel._load_card_context(REQUEST_ID) is None
->>>>>>> DEVELOP
 
 
 @pytest.mark.asyncio
-<<<<<<< RELEASE
-async def test_card_callback_falls_back_to_operator_when_context_missing() -> None:
-    """进程重启等导致上下文丢失时，旧卡不能伪造回执。"""
-||||||| BEFORE_PR_9610
-async def test_card_callback_falls_back_to_operator_when_context_missing() -> None:
-    """进程重启等导致上下文丢失时，不应抛错，退回旧的 user_answer 回执。"""
-=======
 async def test_card_callback_without_context_never_resumes_an_unrelated_turn() -> None:
->>>>>>> DEVELOP
     channel = _make_channel()
     captured: list[Message] = []
     channel.on_message(captured.append)
-<<<<<<< RELEASE
-
-    await channel._handle_card_callback_async(
-        token="card-token",
-        request_id=REQUEST_ID,
-        index=0,
-        value="中餐",
-        label="中餐",
-        operator_id=OPERATOR,
-    )
-
-    assert captured == []
-||||||| BEFORE_PR_9610
-
-    await channel._handle_card_callback_async(
-        token="card-token",
-        action_value={"label": "中餐", "request_id": REQUEST_ID},
-        operator_id=OPERATOR,
-    )
-
-    assert len(captured) == 1
-    answer = captured[0]
-    assert answer.req_method == ReqMethod.CHAT_ANSWER
-    assert answer.session_id == OPERATOR
-    assert answer.chat_id == OPERATOR
-    assert answer.metadata["feishu_open_id"] == OPERATOR
-=======
     with patch.object(channel, "_notify_approval_operator", new=AsyncMock()) as notify:
         await channel._handle_card_callback_async(
             token="card-token", request_id=REQUEST_ID, index=0, value="中餐", label="中餐", operator_id=OPERATOR,
         )
         notify.assert_awaited_once()
     assert not captured
->>>>>>> DEVELOP
 
 
 @pytest.mark.asyncio
@@ -191,16 +135,7 @@ async def test_card_callback_uses_msg_chat_id_when_metadata_lacks_feishu_chat_id
 
     await channel._handle_card_callback_async(
         token="card-token",
-<<<<<<< RELEASE
-        request_id=REQUEST_ID,
-        index=0,
-        value="西餐",
-        label="西餐",
-||||||| BEFORE_PR_9610
-        action_value={"label": "西餐", "request_id": REQUEST_ID},
-=======
         request_id=REQUEST_ID, index=0, value="西餐", label="西餐",
->>>>>>> DEVELOP
         operator_id=OPERATOR,
     )
 
@@ -211,53 +146,10 @@ async def test_card_callback_uses_msg_chat_id_when_metadata_lacks_feishu_chat_id
 
 
 @pytest.mark.asyncio
-<<<<<<< RELEASE
-async def test_card_callback_other_placeholder_does_not_forge_a_resume() -> None:
-    """飞书无法填写 Other，自由输入占位不能伪造中断恢复。"""
-||||||| BEFORE_PR_9610
-async def test_card_callback_empty_answer_keeps_user_answer_fallback() -> None:
-    """无有效选项（answers 为空）时不伪造中断恢复，退回旧回执。"""
-=======
 async def test_unanswerable_card_has_no_active_approval_context() -> None:
->>>>>>> DEVELOP
     channel = _make_channel()
-    captured: list[Message] = []
-    channel.on_message(captured.append)
-
+    message = _ask_user_outbound({"feishu_chat_id": ORIGIN_CHAT})
+    message.payload["questions"] = []
     with patch.object(channel, "_create_and_send_message", new=AsyncMock()):
-<<<<<<< RELEASE
-        await channel._send_ask_user_question_card(
-            _ask_user_outbound({"feishu_chat_id": ORIGIN_CHAT})
-        )
-
-    channel._on_card_action_trigger_sync(
-        SimpleNamespace(
-            event=SimpleNamespace(
-                token="card-token",
-                action=SimpleNamespace(
-                    value={"ref": {"request_id": REQUEST_ID, "index": 0}, "value": "Other"}
-                ),
-                operator=SimpleNamespace(open_id=OPERATOR),
-            )
-        )
-    )
-
-    assert captured == []
-    assert channel._card_contexts[REQUEST_ID].answers == {}
-||||||| BEFORE_PR_9610
-        await channel._send_ask_user_question_card(
-            _ask_user_outbound({"feishu_chat_id": ORIGIN_CHAT})
-        )
-
-    await channel._handle_card_callback_async(
-        token="card-token",
-        action_value={"request_id": REQUEST_ID},
-        operator_id=OPERATOR,
-    )
-
-    answer = captured[0]
-    assert answer.req_method == ReqMethod.CHAT_ANSWER
-=======
         await channel._send_ask_user_question_card(message)
     assert channel._load_card_context(REQUEST_ID) is None
->>>>>>> DEVELOP
