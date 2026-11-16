@@ -214,11 +214,10 @@ class WebFileDownloadManager:
                 # 兼容无 exp 字段的交付令牌：不强制过期；有 exp 则严格校验。
                 if exp is None and not _is_legacy_no_expiration_payload(payload):
                     return None
-                if exp is not None and not reference_only and (
-                    not isinstance(exp, (int, float)) or int(exp) < int(time.time())
-                ):
-                    logger.warning("[WebFileDownload] 令牌已过期")
-                    return None
+                if exp is not None and not reference_only:
+                    if not isinstance(exp, (int, float)) or int(exp) < int(time.time()):
+                        logger.warning("[WebFileDownload] 令牌已过期")
+                        return None
             if session_id is not None and str(session_id).strip():
                 if str(payload.get("sid") or "").strip() != str(session_id).strip():
                     return None
