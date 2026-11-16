@@ -1878,6 +1878,10 @@
     "planning": {
       "tab": "Task Planning",
       "progressTitle": "Task Progress",
+      "taskCompletion": "Tasks completed",
+      "agentProgress": "Loaded workflow nodes: {{ended}} / {{total}} ended",
+      "agentProgressLoading": "Loaded workflow nodes: loading status",
+      "teamMetricScope": "Counts include team tasks and workflow phases, excluding application tasks",
       "token": "Token",
       "taskList": "Task List",
       "taskListAria": "{{task}} task list",

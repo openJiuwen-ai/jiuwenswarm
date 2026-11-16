@@ -1878,6 +1878,10 @@
     "planning": {
       "tab": "任务",
       "progressTitle": "任务进度",
+      "taskCompletion": "任务完成",
+      "agentProgress": "已加载工作流的执行节点：{{ended}} / {{total}} 已结束",
+      "agentProgressLoading": "已加载工作流的执行节点：正在获取状态",
+      "teamMetricScope": "统计包含团队任务和工作流阶段，不含应用任务",
       "token": "Token",
       "taskList": "任务列表",
       "taskListAria": "{{task}} 任务列表",
