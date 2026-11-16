@@ -694,6 +694,7 @@ async def test_persist_serialization_failure_does_not_publish(
     def fail_dump(*_args, **_kwargs):
         raise error_type("failed")
 
+    # 只替换本模块的引用，不修改标准库 json 对象。
     monkeypatch.setattr(todo_store, "json", SimpleNamespace(loads=json.loads, dumps=fail_dump))
     assert json.loads(json.dumps({"unrelated": True})) == {"unrelated": True}
 
