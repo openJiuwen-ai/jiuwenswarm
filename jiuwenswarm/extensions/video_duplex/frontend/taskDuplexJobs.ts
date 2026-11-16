@@ -71,7 +71,7 @@ export class TaskDuplexJobs {
     const payload = job.payload;
     const text =
       payload.status === "cancelled"
-        ? `已停止任务：${payload.question || payload.query || "Core Agent 任务"}。已完成的操作不会自动撤销。`
+        ? `已停止任务：${payload.title?.trim() || payload.question?.trim() || payload.query?.trim() || "Core Agent 任务"}。已完成的操作不会自动撤销。`
         : payload.status === "failed"
           ? `Jiuwen Core Agent 未能完成任务：${payload.error?.trim() || "未知错误"}`
           : payload.display_result?.trim() || payload.result?.trim();
