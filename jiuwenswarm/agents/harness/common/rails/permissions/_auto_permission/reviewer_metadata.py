@@ -183,7 +183,9 @@ def _host_display_reason(
     reason_code = _text(metadata, "manual_reason_code", "reviewer_reason_code", default=reason)
     fallback = _text(metadata, "fallback_reason", "reviewer_fallback_reason")
     source = _text(metadata, "decision_source")
-    if reason_code in {"execution_provider_contract_unverified", "user_rejected", "manual_allow_once_remember_unavailable"}:
+    if reason_code in {
+        "execution_provider_contract_unverified", "user_rejected", "manual_allow_once_remember_unavailable",
+    }:
         key = reason_code
     elif status == "timed_out" or fallback == "reviewer_timeout":
         key = "reviewer_timeout"
