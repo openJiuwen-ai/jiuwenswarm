@@ -1,0 +1,13 @@
+{
+  "package_type": "agent_template",
+  "name": "office-word",
+  "description": "Document editor working in the user's open Word document.",
+  "persona": {"dir": "persona"},
+  "rails": [{"file": "rails/office_tools.py", "class": "OfficeToolsRail"}],
+  "skills": [
+    "skills/document-formatting",
+    "skills/tables",
+    "skills/review-and-revisions",
+    "skills/equations"
+  ]
+}

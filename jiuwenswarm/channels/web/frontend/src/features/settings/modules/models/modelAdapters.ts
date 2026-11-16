@@ -20,6 +20,7 @@ export const OPENAI_ACCOUNT_SELECTION = 'openai-account';
 export const OPENAI_ACCOUNT_DEFAULT_API_BASE = 'https://chatgpt.com/backend-api/codex';
 
 export type ModelDraft = {
+  kv_cache_affinity: boolean;
   alias: string;
   protocol: ModelProtocol;
   vendor_selection: string;
@@ -33,6 +34,7 @@ export type ModelDraft = {
 };
 
 const MODEL_DRAFT_FIELDS: readonly (keyof ModelDraft)[] = [
+  'kv_cache_affinity',
   'alias',
   'protocol',
   'vendor_selection',
@@ -181,6 +183,7 @@ export function resolveModelPreset(model: ModelEntry, catalog: VendorPresetMap):
 export function createModelDraft(model: ModelEntry | undefined, catalog: VendorPresetMap): ModelDraft {
   if (!model) {
     return {
+      kv_cache_affinity: false,
       alias: '',
       protocol: 'openai',
       vendor_selection: '',
@@ -200,6 +203,7 @@ export function createModelDraft(model: ModelEntry | undefined, catalog: VendorP
 
   if (model.model_provider === 'OpenAIAccount') {
     return {
+      kv_cache_affinity: false,
       alias,
       protocol: 'openai',
       vendor_selection: OPENAI_ACCOUNT_SELECTION,
@@ -221,6 +225,7 @@ export function createModelDraft(model: ModelEntry | undefined, catalog: VendorP
       ? ''
       : CUSTOM_VENDOR_SELECTION;
   return {
+    kv_cache_affinity: model.extensions?.kv_cache?.mode === 'affinity' || model.model_provider === 'AscendAffinity',
     alias,
     protocol,
     vendor_selection: vendorSelection,
@@ -237,7 +242,7 @@ export function createModelDraft(model: ModelEntry | undefined, catalog: VendorP
 export function applyVendorSelection(draft: ModelDraft, selection: string, catalog: VendorPresetMap): ModelDraft {
   if (selection === OPENAI_ACCOUNT_SELECTION) {
     return {
-      ...draft,
+      ...draft, kv_cache_affinity: false,
       protocol: 'openai',
       vendor_selection: selection,
       model_name: '',
@@ -249,7 +254,7 @@ export function applyVendorSelection(draft: ModelDraft, selection: string, catal
 
   if (selection === CUSTOM_VENDOR_SELECTION) {
     return {
-      ...draft,
+      ...draft, kv_cache_affinity: false,
       vendor_selection: selection,
       model_name: '',
       model_input_mode: 'manual',
@@ -259,10 +264,10 @@ export function applyVendorSelection(draft: ModelDraft, selection: string, catal
   }
 
   const preset = findVendorPreset(catalog, selection);
-  if (!preset) return { ...draft, vendor_selection: selection };
+  if (!preset) return { ...draft, kv_cache_affinity: false, vendor_selection: selection };
   const anthropic = draft.protocol === 'anthropic' && preset.supports_anthropic;
   return {
-    ...draft,
+    ...draft, kv_cache_affinity: false,
     protocol: anthropic ? 'anthropic' : 'openai',
     vendor_selection: selection,
     model_name: '',
@@ -275,7 +280,7 @@ export function applyVendorSelection(draft: ModelDraft, selection: string, catal
 export function applyModelProtocol(draft: ModelDraft, protocol: ModelProtocol, catalog: VendorPresetMap): ModelDraft {
   const preset = findVendorPreset(catalog, draft.vendor_selection);
   return {
-    ...draft,
+    ...draft, kv_cache_affinity: false,
     protocol,
     api_base: preset ? (protocol === 'anthropic' ? (preset.anthropic_base ?? '') : preset.api_base) : draft.api_base,
   };
@@ -299,13 +304,23 @@ export function modelDraftToEntry(
     is_default: draft.is_default,
   };
 
+  const affinityEditable = draft.vendor_selection === CUSTOM_VENDOR_SELECTION && draft.protocol === 'openai';
+  const wasAffinity = existing?.extensions?.kv_cache?.mode === 'affinity' || existing?.model_provider === 'AscendAffinity';
+  if (existing && wasAffinity && !affinityEditable && !connectionChanged &&
+    draft.vendor_selection === createModelDraft(existing, catalog).vendor_selection &&
+    draft.protocol === displayModelProtocol(existing) &&
+    next.model_name === existing.model_name && next.api_base === existing.api_base) {
+    // Hidden legacy declarations survive unrelated edits, but never a change of service identity.
+    return next;
+  }
+
   if (draft.vendor_selection === OPENAI_ACCOUNT_SELECTION) {
     next.model_provider = 'OpenAIAccount';
     next.api_key = '';
     delete next.vendor_key;
     delete next.plan;
     delete next.endpoint_profile;
-    return next;
+    return applyDraftAffinity(next, draft, existing);
   }
 
   const preset = findVendorPreset(catalog, draft.vendor_selection);
@@ -322,7 +337,7 @@ export function modelDraftToEntry(
       if (preset.endpoint_profile) next.endpoint_profile = preset.endpoint_profile;
       else delete next.endpoint_profile;
     }
-    return next;
+    return applyDraftAffinity(next, draft, existing);
   }
 
   delete next.vendor_key;
@@ -331,9 +346,23 @@ export function modelDraftToEntry(
     next.model_provider = draft.protocol === 'anthropic' ? 'Anthropic' : 'OpenAI';
     delete next.endpoint_profile;
   }
-  return next;
+  return applyDraftAffinity(next, draft, existing);
 }
 
 export function displayModelProtocol(model: ModelEntry): ModelProtocol {
   return model.model_provider === 'Anthropic' ? 'anthropic' : 'openai';
+}
+
+function applyDraftAffinity(next: ModelEntry, draft: ModelDraft, existing: ModelEntry | undefined): ModelEntry {
+  const allowed = draft.vendor_selection === CUSTOM_VENDOR_SELECTION && draft.protocol === 'openai';
+  const enabled = allowed && draft.kv_cache_affinity;
+  const wasAffinity = existing?.extensions?.kv_cache?.mode === 'affinity' || existing?.model_provider === 'AscendAffinity';
+  if (enabled || wasAffinity) {
+    next.extensions = {
+      ...next.extensions,
+      kv_cache: { ...next.extensions?.kv_cache, mode: enabled ? 'affinity' : 'none' },
+    };
+  }
+  if (next.model_provider === 'AscendAffinity' && !enabled) next.model_provider = 'OpenAI';
+  return next;
 }

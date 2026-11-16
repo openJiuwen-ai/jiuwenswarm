@@ -30,6 +30,8 @@ from openjiuwen.core.foundation.llm.utils.provider_utils import is_openai_accoun
 from jiuwenswarm.common.auth.model_catalog import is_login_model
 from jiuwenswarm.common.config import (
     _ensure_model_business_ids,
+    _merge_config_dict,
+    resolve_env_vars,
     _normalize_legacy_model_nulls,
     _recover_existing_model_fields,
     get_config,
@@ -37,16 +39,14 @@ from jiuwenswarm.common.config import (
     get_available_models,
     get_default_models,
     update_default_models_in_config,
-    update_kv_cache_affinity_enabled_in_config,
 )
 from jiuwenswarm.common.context_window import (
     DEFAULT_CONTEXT_WINDOW_TOKENS,
     parse_positive_int,
 )
 from jiuwenswarm.common.kv_cache_affinity_config import (
-    default_model_client_config_from_entries,
-    has_kv_cache_affinity_capability,
-    is_affinity_enabled,
+    prepare_model_affinity_update,
+    get_affinity_status,
 )
 from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.model_config_validation import probe_model_connection, raise_if_invalid
@@ -411,17 +411,15 @@ def _merge_models_for_replace_all(
                 new_mcc["timeout"] = item["timeout"]
             if not _values_match(item["alias"], (resolved_entry or {}).get("alias")):
                 new_entry["alias"] = item["alias"]
-            # vendor_key + plan: persist the exact provider selection identity
-            # into model_client_config (or clear it).
-            previous_vendor = str(new_mcc.get("vendor_key") or "")
-            if item.get("vendor_key"):
-                new_mcc["vendor_key"] = item["vendor_key"]
-            else:
-                new_mcc.pop("vendor_key", None)
-            if item.get("plan"):
-                new_mcc["plan"] = item["plan"]
-            else:
-                new_mcc.pop("plan", None)
+            previous_vendor = str(new_mcc.get("vendor_key") or new_entry.get("vendor_key") or "")
+            for key in ("vendor_key", "plan"):
+                if key not in item:
+                    continue
+                if item[key]:
+                    new_mcc[key] = item[key]
+                else:
+                    new_mcc.pop(key, None)
+                    new_entry.pop(key, None)
             # endpoint_profile: OpenAI 协议端点方言(deepseek/openrouter/dashscope/...)。
             # 编辑表单不暴露该字段(Anthropic 协议下 core 忽略)，payload 缺失不等于
             # 用户要求清空：仅当切到 Anthropic 协议或换用其他供应商预设时丢弃持久化
@@ -431,7 +429,7 @@ def _merge_models_for_replace_all(
                 new_mcc["endpoint_profile"] = item["endpoint_profile"]
             elif (
                 normalize_provider_value(str(item.get("model_provider") or "")) == "Anthropic"
-                or (item.get("vendor_key") or "") != previous_vendor
+                or ("vendor_key" in item and (item["vendor_key"] or "") != previous_vendor)
             ):
                 new_mcc.pop("endpoint_profile", None)
             new_entry["is_default"] = item["is_default"]
@@ -474,6 +472,16 @@ def _merge_models_for_replace_all(
                 "alias": item["alias"],
             }
 
+        patch_client = {}
+        if item.get("extensions") is not None:
+            if not isinstance(item["extensions"], dict):
+                raise ConfigPanelBadRequest("model extensions must be an object")
+            patch_client["extensions"] = item["extensions"]
+            _merge_config_dict(new_entry["model_client_config"], patch_client)
+        try:
+            prepare_model_affinity_update(new_entry, raw_entry or {}, {"model_client_config": patch_client})
+        except ValueError as exc:
+            raise ConfigPanelBadRequest(str(exc)) from exc
         out.append(new_entry)
     return out
 
@@ -604,7 +612,8 @@ def build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]
                 )
             aliases_seen[alias] = idx
 
-        parsed.append({
+        parsed_item = {
+            "extensions": item.get("extensions"),
             "model_id": item.get("model_id"),
             "model_name": model_name,
             "api_base": api_base,
@@ -620,21 +629,17 @@ def build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]
             "context_window_tokens": context_window_tokens,
             "context_window_tokens_provided": context_window_tokens_provided,
             "origin_index": origin_index,
-            # vendor_key is an opaque hint
-            # selector; not validated (the selector only ever emits keys
-            # present in gateway.common.model_vendor_registry). It is
-            # persisted so the UI can match a configured entry back to its
-            # preset for icon display / re-selection. Not required.
-            "vendor_key": vendor_key,
-            # plan is the other half of the provider-selection identity.
-            # Older entries may have vendor_key only; do not infer a plan.
-            "plan": plan,
             # endpoint_profile: OpenAI 协议端点方言(deepseek/openrouter/dashscope/...);
             # opaque passthrough, not validated. Anthropic 协议时 core 忽略此字段。
             # 前端未传时按 api_base host 推断已知自建网关方言(如 vllm)并落库,
             # 否则该类端点的思考开关只会发官方 thinking.type 而被网关忽略。
             "endpoint_profile": effective_endpoint_profile(api_base, item.get("endpoint_profile")),
-        })
+        }
+        if "vendor_key" in item:
+            parsed_item["vendor_key"] = vendor_key
+        if "plan" in item:
+            parsed_item["plan"] = plan
+        parsed.append(parsed_item)
 
     # alias 与其他条目的 model_name 冲突校验
     for i, p in enumerate(parsed):
@@ -872,6 +877,7 @@ async def models_list_handler(
                 "vendor_key": mcc.get("vendor_key") or entry.get("vendor_key") or "",
                 "plan": mcc.get("plan") or entry.get("plan") or "",
                 "endpoint_profile": mcc.get("endpoint_profile") or "",
+                "extensions": mcc.get("extensions") or {},
             }
             # An empty template entry is not a configured model yet; do
             # not surface a synthetic context window until the user saves
@@ -935,14 +941,8 @@ async def models_replace_all_handler(
         await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
         return
     try:
+        before = get_affinity_status(resolve_env_vars(get_config_raw()))
         new_models = build_models_defaults_from_frontend(params.get("models"))
-        if (
-            is_affinity_enabled(get_config_raw())
-            and not has_kv_cache_affinity_capability(
-                default_model_client_config_from_entries(new_models)
-            )
-        ):
-            update_kv_cache_affinity_enabled_in_config(False)
         # Replace only defaults inside a complete candidate so stable IDs,
         # AgentOS entries and model groups are validated and preserved.
         candidate_models = dict((get_config_raw().get("models") or {}))
@@ -953,14 +953,23 @@ async def models_replace_all_handler(
         raise_if_invalid(candidate_models)
         update_default_models_in_config(candidate_models["defaults"], cron_references_checked=True)
 
+        status = get_affinity_status(resolve_env_vars(get_config_raw()))
+        auto_disabled = before["requested_enabled"] and not status["requested_enabled"]
+        changed_keys = ["models.defaults"]
+        if auto_disabled:
+            changed_keys.append("kv_cache_affinity_enabled")
         applied_without_restart = await _apply_models_change(
-            on_config_saved, agent_client, changed_keys=["models.defaults"], force=True
+            on_config_saved, agent_client, changed_keys=changed_keys, force=True
         )
 
-        await channel.send_response(ws, req_id, ok=True, payload={
+        payload = {
             "count": len(new_models),
             "applied_without_restart": applied_without_restart,
-        })
+        }
+        if auto_disabled:
+            payload["kv_cache_affinity_auto_disabled"] = True
+            payload["kv_cache_affinity_status"] = status
+        await channel.send_response(ws, req_id, ok=True, payload=payload)
     except ConfigPanelBadRequest as exc:
         await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
     except ModelSelectionError as exc:

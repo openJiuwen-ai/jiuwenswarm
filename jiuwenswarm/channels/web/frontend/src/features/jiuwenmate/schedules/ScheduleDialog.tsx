@@ -106,6 +106,7 @@ export function ScheduleDialog({
   timezone = 'Asia/Shanghai',
   onClose,
   onSubmit,
+  onSubmitAndEnable,
 }: {
   open: boolean;
   plan?: Schedule | null;
@@ -115,6 +116,7 @@ export function ScheduleDialog({
   timezone?: string;
   onClose: () => void;
   onSubmit: (executorId: string, draft: ScheduleDraft) => void | Promise<void>;
+  onSubmitAndEnable?: (executorId: string, draft: ScheduleDraft) => void | Promise<void>;
 }) {
   const { t } = useTranslation();
   const [form, setForm] = useState<FormState>(() => (plan ? formFromPlan(plan) : blankForm()));
@@ -125,6 +127,8 @@ export function ScheduleDialog({
   const [chosenExecutor, setChosenExecutor] = useState(executorId);
   const [submitError, setSubmitError] = useState('');
   const [validationAttempted, setValidationAttempted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   const errorId = useId();
   const executorErrorId = `${errorId}-executor`;
   const nameErrorId = `${errorId}-name`;
@@ -139,7 +143,9 @@ export function ScheduleDialog({
   const rangeInvalid = validationReason === 'rangeInvalid';
   const hasFieldError = (executorInvalid && executors !== undefined) || nameInvalid || promptInvalid || rangeInvalid;
   const validationMessage = validationReason && !hasFieldError ? t(`jiuwenmate.schedule.error.${validationReason}`) : '';
-  const save = () => {
+  const busy = saving || submitting;
+  const save = (enable = false) => {
+    if (busy || submittingRef.current) return;
     const reason = validateDraft(draft, chosenExecutor);
     setValidationAttempted(true);
     setSubmitError('');
@@ -150,12 +156,19 @@ export function ScheduleDialog({
       else if (reason === 'rangeInvalid') endsOnRef.current?.focus();
       return;
     }
-    void Promise.resolve(onSubmit(chosenExecutor, draft))
+    if (enable && draft.endsAt && Date.parse(draft.endsAt) <= Date.now()) {
+      setSubmitError(t('jiuwenmate.schedule.error.enableExpired'));
+      return;
+    }
+    submittingRef.current = true;
+    setSubmitting(true);
+    void Promise.resolve().then(() => (enable && onSubmitAndEnable ? onSubmitAndEnable : onSubmit)(chosenExecutor, draft))
       .then(() => onClose())
       .catch((failure: unknown) => {
         const message = failure instanceof Error ? failure.message : '';
         setSubmitError(message || t('jiuwenmate.schedule.error.required'));
-      });
+      })
+      .finally(() => { submittingRef.current = false; setSubmitting(false); });
   };
   const patch = (next: Partial<FormState>) => {
     setForm((current) => ({ ...current, ...next }));
@@ -164,13 +177,18 @@ export function ScheduleDialog({
   return (
     <div className="jiuwenmate-dialog-backdrop" data-testid="jiuwenmate-schedule-dialog">
       <div className="jiuwenmate-dialog jiuwenmate-schedule-dialog" role="dialog" aria-modal="true" aria-labelledby="jiuwenmate-schedule-dialog-title">
-        <button type="button" className="jiuwenmate-dialog__close" aria-label={t('jiuwenmate.schedule.cancel')} onClick={onClose}>
+        <button type="button" className="jiuwenmate-dialog__close" aria-label={t('jiuwenmate.schedule.cancel')} onClick={onClose} disabled={busy}>
           <X aria-hidden />
         </button>
         <h2 id="jiuwenmate-schedule-dialog-title" className="jiuwenmate-dialog__title">
           {plan ? t('jiuwenmate.schedule.editTitle') : t('jiuwenmate.schedule.createTitle')}
         </h2>
         <div className="jiuwenmate-dialog__body">
+          {plan && !plan.enabled ? (
+            <p className="jiuwenmate-schedule-dialog__paused-hint" data-testid="jiuwenmate-schedule-paused-hint">
+              {t('jiuwenmate.schedule.pausedEditHint')}
+            </p>
+          ) : null}
           {executors ? (
             <label className="jiuwenmate-field">
               <span>{t('jiuwenmate.schedule.executor')}</span>
@@ -313,10 +331,15 @@ export function ScheduleDialog({
           {submitError || validationMessage ? <p role="alert">{submitError || validationMessage}</p> : null}
         </div>
         <div className="jiuwenmate-dialog__footer">
-          <button type="button" className="jiuwenmate-outline-button" onClick={onClose}>{t('jiuwenmate.schedule.cancel')}</button>
-          <button type="button" className="jiuwenmate-outline-button" onClick={save} disabled={saving} data-testid="jiuwenmate-schedule-save">
-            {t('jiuwenmate.schedule.confirm')}
+          <button type="button" className="jiuwenmate-outline-button" onClick={onClose} disabled={busy}>{t('jiuwenmate.schedule.cancel')}</button>
+          <button type="button" className="jiuwenmate-outline-button" onClick={() => save()} disabled={busy} data-testid="jiuwenmate-schedule-save">
+            {t(plan ? 'jiuwenmate.schedule.save' : 'jiuwenmate.schedule.confirm')}
           </button>
+          {plan && !plan.enabled && onSubmitAndEnable ? (
+            <button type="button" className="jiuwenmate-dark-button" onClick={() => save(true)} disabled={busy} data-testid="jiuwenmate-schedule-save-enable">
+              {t('jiuwenmate.schedule.saveAndEnable')}
+            </button>
+          ) : null}
         </div>
       </div>
     </div>

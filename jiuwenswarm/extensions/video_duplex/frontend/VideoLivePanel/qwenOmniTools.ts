@@ -30,6 +30,7 @@ export function parseQwenOmniFunctionCall(event: Record<string, unknown>): QwenO
   const isDelegate = name === QWEN_OMNI_DELEGATE_TOOL_NAME;
   const isLegacyResearch = name === QWEN_OMNI_LEGACY_RESEARCH_TOOL_NAME;
   const isManagement = [
+    'jiuwen_form_answer',
     'jiuwen_queue_manage',
     'jiuwen_task_query',
     'jiuwen_task_cancel',
@@ -42,6 +43,13 @@ export function parseQwenOmniFunctionCall(event: Record<string, unknown>): QwenO
   try {
     const argumentsObject = asRecord(typeof argumentsValue === 'string' ? JSON.parse(rawArguments) : argumentsValue);
     if (!argumentsObject) return null;
+    if (name === 'jiuwen_form_answer') {
+      const answers = argumentsObject.answers;
+      if (Object.keys(argumentsObject).length !== 1 || !Array.isArray(answers) ||
+        !answers.length || answers.length > 32 || answers.some(answer =>
+          typeof answer !== 'string' || !answer.trim() || answer.length > 4000)) return null;
+      return { name, callId, arguments: rawArguments, task: name };
+    }
     if ('title' in argumentsObject && (
       typeof argumentsObject.title !== 'string' || !argumentsObject.title.trim() ||
       argumentsObject.title.length > 80 || /[\r\n]/.test(argumentsObject.title)

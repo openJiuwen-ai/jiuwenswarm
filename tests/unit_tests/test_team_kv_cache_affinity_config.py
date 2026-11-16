@@ -13,7 +13,7 @@ def _build_member(
     provider: str = "AscendAffinity",
     kv_cache_mode: str | None = None,
 ) -> DeepAgentSpec:
-    model_client_config: dict[str, object] = {"client_provider": provider}
+    model_client_config: dict[str, object] = {"client_provider": provider, "model_name": "test-model"}
     if kv_cache_mode is not None:
         model_client_config["extensions"] = {
             "kv_cache": {"mode": kv_cache_mode},
@@ -94,3 +94,19 @@ def test_team_member_affinity_fails_closed_without_capability() -> None:
     spec = build_member_deep_agent_spec(config, "team", "leader", DeepAgentSpec())
 
     assert spec.kv_cache_affinity_config.enable_kv_cache_affinity is False
+
+
+@pytest.mark.parametrize("mode,role", [("team", "leader"), ("team", "teammate"), ("team.plan", "leader")])
+def test_cloud_default_and_agentos_do_not_veto_capable_backup(mode, role) -> None:
+    cloud = {"is_default": True, "model_client_config": {
+        "client_provider": "OpenAI", "model_name": "cloud",
+    }}
+    affinity = {"is_default": False, "model_client_config": {
+        "client_provider": "OpenAI", "model_name": "local",
+        "extensions": {"kv_cache": {"mode": "affinity"}},
+    }}
+    config = {"models": {"defaults": [cloud, affinity], "agentos": [cloud]},
+              "kv_cache_affinity_config": {"enable_kv_cache_affinity": True}}
+    spec = build_member_deep_agent_spec(config, mode, role, DeepAgentSpec())
+    assert spec.kv_cache_affinity_config.enable_kv_cache_affinity is True
+    assert "extensions" not in cloud["model_client_config"]

@@ -74,7 +74,9 @@ def test_solo_prompt_is_one_person_on_a_plain_backdrop() -> None:
     )
     assert "story context" not in wrapped.lower()
     assert "one person" in wrapped.lower()
-    assert "studio backdrop" in wrapped.lower()
+    assert "four views in one row" in wrapped.lower()
+    assert "no frames and no dividing lines" in wrapped.lower()
+    assert "pure white background" in wrapped.lower()
     graph = build_smart_video_graph(
         project_id="proj_solo",
         prompt=DINNER,
@@ -91,8 +93,11 @@ def test_solo_prompt_is_one_person_on_a_plain_backdrop() -> None:
         low = prompt.lower()
         assert "story context" not in low
         assert "one person only" in low
-        assert "plain empty studio backdrop" in low
-        assert "close-up" not in low
+        assert "three-view turnaround" in low
+        assert "studio" not in low
+        assert "head-and-shoulders close-up" in low
+        assert "pure white background" in low
+        assert "neutral background" not in low
         assert "living room" not in low
         assert "dinner" not in low
 

@@ -5354,7 +5354,7 @@ async def _consume_stream_with_query(
             await _deliver(
                 {
                     "event_type": "chat.error",
-                    "error": str(exc),
+                    "error": mask_sensitive(str(exc)),
                     "session_id": session_id,
                 },
             )

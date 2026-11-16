@@ -3710,7 +3710,7 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
     monkeypatch,
     tmp_path,
 ) -> None:
-    from openjiuwen.core.session.checkpointer import CheckpointerFactory
+    from openjiuwen.core.session.checkpointer import CheckpointerFactory, NoopCheckpointer
 
     from jiuwenswarm.runtime import checkpointer
     from jiuwenswarm.runtime.context_checkpointer import ContextCheckpointer
@@ -3720,7 +3720,7 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
     stale_checkpointer = SimpleNamespace(
         _kv_store=SimpleNamespace(engine=SimpleNamespace(dispose=dispose))
     )
-    replacement_checkpointer = object()
+    replacement_checkpointer = NoopCheckpointer()
     monkeypatch.setattr(checkpointer, "_shared_checkpointer", None, raising=False)
     create_checkpointer = AsyncMock(return_value=replacement_checkpointer)
     installed: list[object | None] = []
