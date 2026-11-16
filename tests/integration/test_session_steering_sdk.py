@@ -358,7 +358,7 @@ async def test_gateway_websocket_runtime_harness_sdk(tmp_path, monkeypatch, orig
     """
     from websockets.legacy.server import serve
     from e2a.models import E2AEnvelope
-    from e2a.agent_compat import e2a_to_agent_request
+    from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
     from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
     from jiuwenswarm.common.schema.message import Message
     from agent_gateway.message_handler.message_handler import MessageHandler

@@ -7,7 +7,7 @@ import types
 import pytest
 from openjiuwen.agent_teams.runtime import RunActionKind
 from e2a.wire_codec import parse_agent_server_wire_unary
-from e2a.gateway_normalize import e2a_from_agent_fields
+from jiuwenswarm.common.e2a.request_wire import e2a_from_agent_fields
 
 from jiuwenswarm.agents.harness.common.rails.symphony.retrieval_context_processor import (
     SymphonyRetrievalCompactProcessorConfig,

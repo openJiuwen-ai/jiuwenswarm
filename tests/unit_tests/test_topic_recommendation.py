@@ -1617,7 +1617,7 @@ def _ui_event(
 
 def _register_panel(channel, *, service, store, queue) -> None:
     """Register the panel methods against an AgentServer that owns the stub pipeline."""
-    from e2a.agent_compat import e2a_to_agent_request
+    from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
     from e2a.gateway_normalize import e2a_response_to_agent_response
     from e2a.models import E2AResponse
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer

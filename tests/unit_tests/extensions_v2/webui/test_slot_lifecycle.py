@@ -10,7 +10,7 @@ import pytest
 
 from openjiuwen.core.events import OPS_BUILD_EVENT_TYPE, Event, ExtensionEventBus, SessionContext
 
-from e2a.agent_compat import e2a_to_agent_request
+from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 
 import jiuwenswarm.extensions_v2.assembly as assembly
 from jiuwenswarm.common.schema.message import ReqMethod

@@ -14,7 +14,7 @@ from agent_gateway.enterprise.capabilities.experts.bound_packages import (
 from agent_gateway.routing.agent_client import _stamp_expert_packages
 from agent_gateway.enterprise.capabilities.experts.allowlist import bind_outbound_allowlist
 
-from e2a.agent_compat import e2a_to_agent_request
+from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.runtime_management_extension.pod_http_client import (
     _assemble_with_expert_packages,
