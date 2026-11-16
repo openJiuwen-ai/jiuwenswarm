@@ -1769,6 +1769,22 @@ def _office_claw_invocation_id_from_params(params: Mapping[str, Any] | None) -> 
     return str(env.get("OFFICE_CLAW_INVOCATION_ID") or "").strip()
 
 
+def office_claw_thread_id_from_tools(tools: Iterable[Any] | None) -> str:
+    """Return the first OFFICE_CLAW_THREAD_ID pinned into request-scoped MCP tools."""
+
+    for tool in tools or ():
+        params = getattr(tool, "_params", None)
+        if not isinstance(params, Mapping):
+            continue
+        env = params.get("env")
+        if not isinstance(env, Mapping):
+            continue
+        thread_id = str(env.get("OFFICE_CLAW_THREAD_ID") or "").strip()
+        if thread_id:
+            return thread_id
+    return ""
+
+
 def resolve_active_office_claw_invocation_id() -> str | None:
     """Return the callback invocation id owned by the active allowlist, if known.
 
@@ -2044,6 +2060,64 @@ def extract_request_mcp_servers(params: Any) -> dict[str, dict[str, Any]] | None
             continue
         cleaned[server_name] = dict(cfg)
     return cleaned or None
+
+
+def filter_request_mcp_servers_by_template(
+    request_mcp_servers: Mapping[str, Mapping[str, Any]] | None,
+    template_entries: Iterable[Mapping[str, Any]],
+) -> tuple[dict[str, dict[str, Any]] | None, dict[str, str]]:
+    """企业版边界：只保留与管理端 MCP 模板一致的请求级连接器。
+
+    匹配规则为「名称精确 + 归一化传输类型一致 + URL（strip 后）完全一致」。
+    名称不在模板中记 ``CONNECTOR_NOT_IN_TEMPLATE``；同名但传输类型或 URL
+    不一致记 ``CONNECTOR_TEMPLATE_MISMATCH``。模板为空时全部拒绝
+    （fail-closed），调用方据此不建立连接、也不暴露任何工具。
+
+    Returns:
+        ``(kept, rejected)``：kept 为空时返回 ``None``，与
+        ``extract_request_mcp_servers`` 的「无连接器」语义一致；
+        rejected 为 ``server_name -> 原因``。
+    """
+    if not request_mcp_servers:
+        return None, {}
+
+    template_matches: dict[str, set[tuple[str, str]]] = {}
+    for entry in template_entries or ():
+        if not isinstance(entry, Mapping):
+            continue
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            continue
+        # 与 build_mcp_server_config 对齐：模板以 ``transport`` 为准，``type`` 仅作兼容。
+        transport = _normalize_mcp_client_type(
+            entry.get("transport") or entry.get("type")
+        )
+        # 企业版模板只支持远程连接器：stdio 条目不参与匹配，避免同名请求以任意
+        # command 借模板名通过（否则匹配键退化为 (name, "stdio")，构成命令执行面）。
+        if transport == "stdio":
+            continue
+        url = str(entry.get("url") or "").strip()
+        template_matches.setdefault(name, set()).add((transport, url))
+
+    kept: dict[str, dict[str, Any]] = {}
+    rejected: dict[str, str] = {}
+    for raw_name, raw_config in request_mcp_servers.items():
+        name = str(raw_name or "").strip()
+        if not name or not isinstance(raw_config, Mapping):
+            continue
+        matches = template_matches.get(name)
+        if not matches:
+            rejected[name] = CONNECTOR_NOT_IN_TEMPLATE
+            continue
+        transport = _normalize_mcp_client_type(
+            raw_config.get("type") or raw_config.get("transport")
+        )
+        url = str(raw_config.get("url") or "").strip()
+        if (transport, url) not in matches:
+            rejected[name] = CONNECTOR_TEMPLATE_MISMATCH
+            continue
+        kept[name] = dict(raw_config)
+    return (kept or None), rejected
 
 
 def _normalized_path(value: str) -> str:
@@ -2560,6 +2634,8 @@ _GET_CONNECTOR_TOOLS_TOOL = "office_claw_get_connector_tools"
 _CONNECTOR_CATALOG_TOOL_NAMES = frozenset({_LIST_CONNECTORS_TOOL, _GET_CONNECTOR_TOOLS_TOOL})
 CONNECTOR_DISCOVERY_FAILED = "工具发现失败（连接器进程未能启动或连接被关闭）"
 CONNECTOR_NO_TOOLS = "未提供任何可用工具（工具可能已全部停用）"
+CONNECTOR_NOT_IN_TEMPLATE = "不在管理端下发的 MCP 模板中，本轮不加载"
+CONNECTOR_TEMPLATE_MISMATCH = "与 MCP 模板的名称、传输类型或地址不一致，本轮不加载"
 
 
 def annotate_connector_catalog_result(
@@ -2723,10 +2799,29 @@ class RequestScopedOfficeClawMcpTool(Tool):
                 # 池化进程可能在请求中途死掉（崩溃/stdin 关闭）：丢弃重建一次再重试。
                 session = await self._acquire_mcp_session(force_rebuild=True)
                 result = await session.call_tool(remote_name, arguments=arguments)
+            result_content = _extract_mcp_result_text(result)
+            is_error = getattr(result, "isError", False) is True
             text = annotate_connector_catalog_result(
-                remote_name, arguments, _extract_mcp_result_text(result),
-                self._unavailable_connectors, is_error=getattr(result, "isError", False) is True,
+                remote_name, arguments, result_content,
+                self._unavailable_connectors, is_error=is_error,
             )
+            if is_error:
+                # T1 统一 schema：框架 extract_mcp_tool_result_content 只取文本
+                # 丢弃 isError，此处在上游包装层补齐失败标记（保留 result 键兼容）。
+                # 失败文本使用上游注解后的 text，保留 connector catalog 提示。
+                failure_text = (
+                    text
+                    if isinstance(text, str) and text.strip()
+                    else "MCP tool reported failure without content"
+                )
+                return {
+                    "status": "error",
+                    "success": False,
+                    "error_code": "mcp_tool_error",
+                    "error_message": failure_text,
+                    "error": failure_text,
+                    "result": text,
+                }
             return {"result": text}
         except Exception as exc:
             raise build_error(
@@ -2741,6 +2836,8 @@ class RequestScopedOfficeClawMcpTool(Tool):
 __all__ = [
     "CONNECTOR_DISCOVERY_FAILED",
     "CONNECTOR_NO_TOOLS",
+    "CONNECTOR_NOT_IN_TEMPLATE",
+    "CONNECTOR_TEMPLATE_MISMATCH",
     "OFFICE_CLAW_EXPECTED_TOOL_IDS_KWARG",
     "OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX",
     "MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX",
@@ -2763,10 +2860,12 @@ __all__ = [
     "extract_enabled_mcp_server_entries",
     "extract_office_claw_mcp",
     "extract_request_mcp_servers",
+    "filter_request_mcp_servers_by_template",
     "get_active_office_claw_mcp_tool_ids",
     "get_live_office_claw_allowlist_for_tool_id",
     "get_live_office_claw_allowlist_for_tool_instance",
     "get_request_scoped_mcp_registration",
+    "office_claw_thread_id_from_tools",
     "invalidate_office_claw_mcp_schema_cache",
     "is_office_claw_tool_name_live_concurrent",
     "list_office_claw_mcp_tools",

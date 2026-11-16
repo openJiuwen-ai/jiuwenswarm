@@ -26,6 +26,34 @@ def serialize_tool_result_value(result_info: Any) -> Any:
     return json.dumps(result_info, ensure_ascii=False, default=str)
 
 
+def build_cancelled_tool_result_payload(tool_info: Any) -> dict[str, Any]:
+    """Build a cancelled tool result frame with legacy-compatible wire status.
+
+    ``status`` remains ``error`` for older consumers; ``cancelled`` /
+    ``cancel_reason`` / ``error_code`` carry the precise cancellation semantics.
+    """
+    info = tool_info if isinstance(tool_info, dict) else {}
+    result = info.get("result", "")
+    message = info.get("error_message")
+    if not isinstance(message, str) or not message.strip():
+        message = result if isinstance(result, str) and result.strip() else "Tool execution cancelled by user."
+    display = info.get("display")
+    if not isinstance(display, str) or not display.strip():
+        display = result if isinstance(result, str) and result.strip() else message
+    return {
+        "tool_name": info.get("tool_name", ""),
+        "tool_call_id": info.get("tool_call_id", ""),
+        "result": result,
+        "status": "error",
+        "success": False,
+        "error_code": info.get("error_code") or "tool_cancelled",
+        "error_message": message,
+        "display": display,
+        "cancelled": True,
+        "cancel_reason": info.get("cancel_reason") or "user_cancelled",
+    }
+
+
 def build_tool_result_payload(result_info: Any) -> dict[str, Any]:
     """Build the common ``chat.tool_result`` payload for every adapter path."""
     result_payload = {"result": serialize_tool_result_value(result_info)}
@@ -48,6 +76,11 @@ def build_tool_result_payload(result_info: Any) -> dict[str, Any]:
         "success",
         "is_error",
         "error",
+        "error_code",
+        "error_message",
+        "display",
+        "cancelled",
+        "cancel_reason",
         "summary",
         "graph_status",
         "graph_build",

@@ -4,6 +4,8 @@ AI coding assistant web UI built with React + TypeScript + Tailwind CSS, with de
 
 ## Features
 
+After switching branches, sync dependencies and run `npm run build` before serving the static frontend with `jiuwenswarm-start`. The local `dist/` output does not change with Git branches. Reusing another branch's bundle can call unsupported backend methods, such as `vendors.list` in the model editor. This branch uses built-in model protocol options instead of `vendors.*`. If `~/.jiuwenswarm/channels/web/frontend/dist/` exists, the static server prefers that directory; update that deployment copy as well. Hard-refresh the browser after rebuilding.
+
 ### Implemented
 
 #### 💬 Chat

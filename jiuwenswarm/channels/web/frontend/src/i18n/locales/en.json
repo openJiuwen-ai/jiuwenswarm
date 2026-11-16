@@ -1,5 +1,6 @@
 {
   "common": {
+    "expandAndPin": "Expand and pin",
     "confirm": "Confirm",
     "cancel": "Cancel",
     "close": "Close",
@@ -3669,6 +3670,11 @@
     }
   },
   "rsi": {
+    "sessionHarness": {
+      "label": "Session Harness",
+      "default": "Use default Harness",
+      "unavailable": "Selected version unavailable"
+    },
     "title": "RSI",
     "createExperiment": "Create RSI Task",
     "empty": {
@@ -3694,6 +3700,7 @@
     "list": {
       "title": "RSI Tasks",
       "loading": "Loading…",
+      "retry": "Retry",
       "error": "Failed to load RSI tasks"
     },
     "createDialog": {
@@ -3758,6 +3765,7 @@
       "readonly": "Read-only"
     },
     "artifact": {
+      "noHarnessSnapshot": "No Harness package has been generated for this node yet",
       "empty": "No artifact files",
       "loadFailed": "Failed to load artifacts",
       "selectFile": "Select a file",
@@ -3770,6 +3778,9 @@
       "optimizationResult": "Optimization result",
       "bestArtifact": "Current best artifact",
       "viewPaper": "View paper",
+      "prunedReason": "Pruned reason",
+      "skippedReason": "Skip reason",
+      "viewDetail": "View details",
       "viewArtifact": "View artifact",
       "baselineScore": "Baseline score",
       "usage": "Usage (tokens)",
@@ -3785,9 +3796,6 @@
       "harnessNodeHint": "Each node is a Harness combination; select one to inspect changes and evaluation",
       "paperNodeHint": "Each node is a paper version; select one to inspect changes and rejection reasons",
       "programNodeHint": "Parallel candidates appear as they finish. Search stops when a candidate reaches the target; evaluations already in progress may finish later.",
-      "prunedReason": "Pruned reason",
-      "skippedReason": "Skip reason",
-      "viewDetail": "View details",
       "estimatedCost": "Estimated cost: ¥ {{cost}}",
       "selectedNode": "Selected",
       "inherit": "inherits",

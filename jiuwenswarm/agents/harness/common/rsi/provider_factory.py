@@ -1,10 +1,4 @@
-"""RSI Provider assembly.
-
-The factory is the only place that chooses mock versus production execution.
-The production Harness implementation is intentionally named
-``HarnessProvider``; callers inject an instance once that implementation is
-available, without adding a separate production-prefix name.
-"""
+"""RSI 三场景 Provider 装配，统一选择生产或 mock 执行模式。"""
 
 from __future__ import annotations
 
@@ -60,18 +54,19 @@ def build_rsi_adapters(
     paper_provider: Any = None,
     model_resolver: Any = None,
 ) -> dict[str, Any]:
-    """Assemble adapters for one AgentServer.
+    """为 AgentServer 装配 Harness、论文、程序适配器。
 
-    ``mode='mock'`` installs Harness, Program, and Paper mock adapters.  In
-    production mode a concrete ``HarnessProvider`` can be injected and is
-    wrapped at the same seam.  The program and paper adapters default to the
-    concrete Providers shipped by the configured agent-core RSI dependency;
-    ``paper_provider`` remains injectable for compatibility and tests.
+    生产模式使用配套 SDK 引擎，保留 Provider 注入和程序达标停止行为。
+    Harness 使用配置解析对象；产物适配器使用解析为 Model 的调用接口。
     """
+    artifact_model_resolver = (
+        model_resolver if callable(model_resolver) or model_resolver is None
+        else model_resolver.build_model
+    )
     normalized_mode = str(mode or "real").strip().lower()
     adapters = dict(artifact_adapters or {})
     if normalized_mode == "mock":
-        adapters.update(build_mock_rsi_adapters(tasks_root, model_resolver=model_resolver))
+        adapters.update(build_mock_rsi_adapters(tasks_root, model_resolver=artifact_model_resolver))
     else:
         if "ARTIFACT:PROGRAM" not in adapters:
             # The public ``program_opt.provider`` module is the Protocol;
@@ -91,7 +86,7 @@ def build_rsi_adapters(
                 adapters["ARTIFACT:PROGRAM"] = ArtifactEngineAdapter(
                     "PROGRAM",
                     ThresholdStoppingProgramProvider(),
-                    model_resolver=model_resolver,
+                    model_resolver=artifact_model_resolver,
                     tasks_root=tasks_root,
                 )
         if paper_provider is None and "ARTIFACT:PAPER" not in adapters:
@@ -114,9 +109,12 @@ def build_rsi_adapters(
             adapters["ARTIFACT:PAPER"] = ArtifactEngineAdapter(
                 "PAPER",
                 paper_provider,
-                model_resolver=model_resolver,
+                model_resolver=artifact_model_resolver,
                 tasks_root=tasks_root,
             )
+    if harness_provider is None and normalized_mode != "mock":
+        from jiuwenswarm.agents.harness.common.rsi.harness_provider import HarnessProvider
+        harness_provider = HarnessProvider(tasks_root, model_resolver=model_resolver)
     if harness_provider is not None:
         adapters["HARNESS"] = HarnessEngineAdapter(harness_provider)
     return adapters

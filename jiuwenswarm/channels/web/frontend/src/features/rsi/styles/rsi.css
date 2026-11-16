@@ -1,5 +1,16 @@
 /* RSI 实验特性样式集中定义（引用语义 token，不硬编码产品色） */
 
+.rsi-rail-peek-host {
+  position: fixed;
+  inset: 0 0 0 72px;
+  z-index: 30;
+  pointer-events: none;
+}
+
+.rsi-rail-peek-host .rsi-rail {
+  pointer-events: auto;
+}
+
 .rsi-page {
   display: flex;
   width: 100%;
@@ -19,7 +30,7 @@
 }
 
 .rsi-page--intro {
-  background: #ffffff;
+  background: var(--color-rsi-surface-43);
 }
 
 /* ── 左侧：实验管理栏 ── */
@@ -32,7 +43,7 @@
   flex: 0 0 var(--rsi-rail-width);
   display: flex;
   flex-direction: column;
-  background: #f5f5f5;
+  background: var(--color-rsi-surface-34);
   min-height: 0;
   min-width: 0;
   overflow: hidden;
@@ -321,9 +332,9 @@
   padding: 10px 12px;
   border: 1px solid #f3b4ae;
   border-radius: 8px;
-  background: #fff8f7;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 14%);
-  color: #a1261c;
+  background: var(--color-rsi-surface-42);
+  box-shadow: 0 8px 24px var(--color-rsi-surface-45);
+  color: var(--color-rsi-surface-21);
   font-size: 12px;
   line-height: 18px;
   white-space: normal;
@@ -377,9 +388,9 @@
   max-width: 420px;
   padding: 8px 12px;
   border-radius: 8px;
-  background: #e6f2d5;
-  border: 1px solid #e6f2d5;
-  box-shadow: -2px 0px 12px 0px #00000028;
+  background: var(--color-rsi-surface-20);
+  border: 1px solid var(--color-rsi-surface-20);
+  box-shadow: -2px 0px 12px 0px var(--color-rsi-surface-2);
   font-size: 12px;
   line-height: 18px;
   color: #191919;
@@ -421,14 +432,8 @@
 }
 
 .rsi-detail__actions .rsi-btn--ghost {
-  background: #ffffff;
+  background: var(--color-rsi-surface-43);
 }
-
-.rsi-detail__actions .rsi-btn--primary {
-  background: #191919;
-  color: #ffffff;
-}
-
 .rsi-detail__actions .rsi-detail__action--delete {
   background: transparent;
   border-color: transparent;
@@ -548,7 +553,7 @@
   font-weight: 400;
   line-height: 22px;
   white-space: nowrap;
-  color: #191919;
+  color: var(--color-rsi-surface-6);
 }
 
 /* 前缀标签：flex 项固定不收缩 */
@@ -1056,7 +1061,7 @@
   min-height: 42px;
   padding: 4px 8px;
   box-sizing: border-box;
-  background: #ffffff26;
+  background: var(--color-rsi-surface-44);
   overflow-y: auto;
   font-size: 12px;
   color: var(--color-text-primary);
@@ -1342,8 +1347,8 @@
 }
 
 .rsi-selected-info__status--pending {
-  background: #fff0bd;
-  color: #805b00;
+  background: var(--color-rsi-surface-40);
+  color: var(--color-rsi-surface-15);
 }
 
 .rsi-selected-info__status--evaluated {
@@ -1357,8 +1362,8 @@
 }
 
 .rsi-selected-info__status--pruned {
-  background: #ececec;
-  color: #666666;
+  background: var(--color-rsi-surface-31);
+  color: var(--color-rsi-surface-11);
 }
 
 .rsi-selected-info__body {
@@ -1387,8 +1392,8 @@
   min-height: 24px;
   padding: 0 9px;
   border-radius: 6px;
-  background: #fff5d4;
-  color: #765400;
+  background: var(--color-rsi-surface-41);
+  color: var(--color-rsi-surface-13);
   font-size: 12px;
   font-weight: 600;
 }
@@ -1566,7 +1571,7 @@
   padding: 0 14px;
   border: 1px solid #595959;
   border-radius: 999px;
-  background: #ffffff;
+  background: var(--color-rsi-surface-43);
   font-size: 12px;
   font-weight: 400;
   cursor: pointer;
@@ -1591,9 +1596,9 @@
   display: flex;
   flex-direction: column;
   border-radius: 16px;
-  background: #ffffff;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.16);
-  color: #191919;
+  background: var(--color-rsi-surface-43);
+  box-shadow: 0 12px 40px var(--color-rsi-surface-49);
+  color: var(--color-rsi-surface-6);
 }
 
 .rsi-artifact-dialog__header {
@@ -1636,7 +1641,7 @@
   min-height: 0;
   border: 1px solid #c9c9c9;
   border-radius: 16px;
-  background: #ffffff;
+  background: var(--color-rsi-surface-43);
   overflow: hidden;
 }
 
@@ -1776,8 +1781,8 @@
   padding: 0 12px;
   border: 1px solid #e8e8e8;
   border-radius: 999px;
-  background: #ffffff;
-  color: #595959;
+  background: var(--color-rsi-surface-43);
+  color: var(--color-rsi-surface-10);
   font-size: 12px;
   line-height: 24px;
   cursor: pointer;
@@ -1799,14 +1804,14 @@
 
 .rsi-latex-preview__markdown {
   padding: 24px 32px;
-  background: #ffffff;
+  background: var(--color-rsi-surface-43);
 }
 
 .rsi-latex-preview__source {
   margin: 0;
   padding: 16px;
-  background: #ffffff;
-  color: #191919;
+  background: var(--color-rsi-surface-43);
+  color: var(--color-rsi-surface-6);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
   line-height: 20px;
@@ -1900,8 +1905,8 @@
   height: 32px;
   border: none;
   border-radius: 999px;
-  background: #000000;
-  color: #ffffff;
+  background: var(--color-rsi-surface-1);
+  color: var(--color-rsi-surface-43);
   font-size: 12px;
   line-height: 22px;
   font-weight: 400;
@@ -2111,9 +2116,13 @@ select.rsi-input {
   border-radius: 8px;
 }
 
-/* 弹窗内下拉统一走 ui/Select：占满整行 */
+/* 弹窗内下拉统一走 ui/Select：占满整行；带图标的选项文案做溢出省略 */
 .rsi-create-dialog__inner .ui-select {
   width: 100%;
+}
+
+.rsi-create-dialog__inner .ui-select .rsi-model-select__value {
+  max-width: 100%;
 }
 
 /* 弹窗内 ui/Select 下拉对齐旧版 chat-mode-select 菜单观感：
@@ -2350,7 +2359,7 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
 }
 
 .rsi-create-dialog__info-bar span {
-  color: #191919;
+  color: var(--color-rsi-surface-6);
   /* 替换为你想要的颜色值 */
 }
 
@@ -2655,7 +2664,7 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
   height: 6px;
   border-radius: 3px;
   background-image: linear-gradient(to right,
-      #1476ff var(--rsi-slider-pct, 0%),
+      var(--color-rsi-surface-4) var(--rsi-slider-pct, 0%),
       var(--color-rsi-canvas-border) var(--rsi-slider-pct, 0%));
 }
 
@@ -2665,9 +2674,9 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--color-rsi-surface-39);
   border: 2px solid var(--color-rsi-canvas-border);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 1px 4px var(--color-rsi-surface-50);
   cursor: grab;
   margin-top: -5px;
   transition: transform 0.1s ease;
@@ -2683,7 +2692,7 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
   height: 6px;
   border-radius: 3px;
   background-image: linear-gradient(to right,
-      #1476ff var(--rsi-slider-pct, 0%),
+      var(--color-rsi-surface-4) var(--rsi-slider-pct, 0%),
       var(--color-rsi-canvas-border) var(--rsi-slider-pct, 0%));
 }
 
@@ -2691,9 +2700,9 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--color-rsi-surface-39);
   border: 2px solid var(--color-rsi-canvas-border);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 1px 4px var(--color-rsi-surface-50);
   cursor: grab;
 }
 
@@ -2718,8 +2727,69 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
 }
 
 .rsi-segmented-slider__label--active {
-  color: #1476ff;
+  color: var(--color-rsi-surface-4);
   font-weight: 600;
+}
+
+/* 模型选择器（复用会话页 chat-mode-select 下拉项样式，在弹窗内绝对定位） */
+.rsi-model-select {
+  position: relative;
+}
+
+.rsi-model-select__trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--color-rsi-border);
+  border-radius: 6px;
+  background: var(--color-rsi-page-bg);
+  color: var(--color-text-primary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.rsi-model-select__trigger:hover {
+  border-color: var(--color-border-focus);
+}
+
+.rsi-model-select__value {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.rsi-model-select__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rsi-model-select__placeholder {
+  color: var(--color-rsi-text-muted);
+}
+
+.rsi-model-select__chevron {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  color: var(--color-rsi-text-muted);
+  transition: transform 0.15s ease;
+}
+
+.rsi-model-select__menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 100;
+  min-width: 220px;
+  max-height: 240px;
+  overflow-y: auto;
 }
 
 /* RSI 任务删除 / 暂停二次确认 */
@@ -2737,8 +2807,8 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
   width: 360px;
   padding: 24px;
   border-radius: 16px;
-  background: #ffffff;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.16);
+  background: var(--color-rsi-surface-43);
+  box-shadow: 0 12px 40px var(--color-rsi-surface-49);
 }
 
 .rsi-confirm__title {

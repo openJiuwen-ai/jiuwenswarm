@@ -53,6 +53,7 @@ from jiuwenswarm.agents.swarm.providers import (
     multimodal as _multimodal,
     runtime_tools as _runtime_tools,
     skills as _skills,
+    team_progressive as _team_progressive,
     tools as _tools,
 )
 from jiuwenswarm.common.config import get_config
@@ -90,6 +91,7 @@ A2A_OUTBOUND_TOOLKIT = _member_rails.A2A_OUTBOUND_TOOLKIT
 DISABLED_TOOLS = _member_rails.DISABLED_TOOLS
 REQUEST_SCOPED_MCP_TOOLS = _member_rails.REQUEST_SCOPED_MCP_TOOLS
 MODEL_ROUTING = _member_rails.MODEL_ROUTING
+TEAM_PROGRESSIVE_TOOL = _team_progressive.TEAM_PROGRESSIVE_TOOL
 # Leader-only native image input (uploaded pixels into the model context).
 MULTIMODAL_IMAGE = _multimodal.MULTIMODAL_IMAGE
 TEAM_PERMISSION = _member_rails.TEAM_PERMISSION
@@ -217,6 +219,7 @@ __all__ = [
     "DISABLED_TOOLS",
     "REQUEST_SCOPED_MCP_TOOLS",
     "MODEL_ROUTING",
+    "TEAM_PROGRESSIVE_TOOL",
     "MULTIMODAL_IMAGE",
     "TEAM_PERMISSION",
     "TEAM_PERMISSION_POLICY",

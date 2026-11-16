@@ -34,7 +34,7 @@ await build({
 });
 const { RsiDetailHeader } = await import('../node_modules/.cache/rsi-plugin-install/header.mjs');
 
-test('Harness refs are installed through RSI, not imported as archives, and refresh only after success', async () => {
+test('Harness refs are installed through RSI, not imported as archives, and mark installed only after success', async () => {
   const dom = new JSDOM('<div id="root"></div>');
   globalThis.window = dom.window;
   globalThis.document = dom.window.document;
@@ -57,7 +57,7 @@ test('Harness refs are installed through RSI, not imported as archives, and refr
     await act(async () => root.render(React.createElement(RsiDetailHeader, props)));
     await act(async () => document.querySelector('[data-testid="rsi-action-install"]').click());
     assert.deepEqual(calls, [
-      ['install', 'task-1'], ['installed', 'task-1'], ['refresh', 'mine', { silent: true }],
+      ['install', 'task-1'], ['installed', 'task-1'],
     ]);
     calls.length = 0;
     globalThis.rsiInstallProbe.install = async () => { throw new Error('activation failed'); };

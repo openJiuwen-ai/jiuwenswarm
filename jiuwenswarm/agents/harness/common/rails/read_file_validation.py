@@ -91,6 +91,15 @@ _BINARY_RESULT_MARKERS = (
     "unsupported file type",
 )
 
+# openjiuwen filesystem read 对空文件返回的是 warning 文本（success=True），
+# 而不是空串；不识别会让"空文件读回"被判成功（CR-8 实跑缺口）。
+_EMPTY_CONTENT_WARNINGS = frozenset(
+    {
+        "warning: the file exists but the contents are empty.",
+        "warning: the document exists but the contents are empty.",
+    }
+)
+
 _PATH_KEYS = ("path", "file_path", "file", "target_file")
 
 # 视觉理解工具：主模型可原生看图时这些工具应被跳过，图片像素已随消息提供。
@@ -349,14 +358,28 @@ def _extract_text_content(result: Any) -> str:
     if isinstance(result, str):
         return result
     if isinstance(result, dict):
-        for key in ("content", "result", "data", "text", "output", "message", "error"):
+        # 统一 schema 前置分支（CR-8）：归一 rail(priority=82) 先于本 rail(80)
+        # 执行，ctx.inputs.tool_result 已是 _ResultDict。必须与
+        # render_tool_result_for_llm 同序取 display → data.content；否则空文件
+        # 会被 str(dict) 的 repr 判成"非空"，NUL/控制字符也会因 repr 转义
+        # 逃过二进制启发式。
+        display = result.get("display")
+        if isinstance(display, str):
+            return display
+        data = result.get("data")
+        if isinstance(data, dict):
+            content = data.get("content")
+            if isinstance(content, str):
+                return content
+        for key in ("content", "result", "data", "text", "output", "message"):
             value = result.get(key)
             if isinstance(value, str):
                 return value
         if result.get("success") is False:
-            err = result.get("error")
-            if isinstance(err, str):
-                return err
+            for key in ("error_message", "error"):
+                value = result.get(key)
+                if isinstance(value, str):
+                    return value
         return str(result)
     unwrapped = _unwrap_tool_output(result)
     if isinstance(unwrapped, dict):
@@ -414,7 +437,7 @@ def validate_read_file_result(path: str, result: Any) -> tuple[bool, str | None]
             return False, err or build_non_text_read_error(path)
 
     text = _extract_text_content(result)
-    if not text.strip():
+    if not text.strip() or text.strip().lower() in _EMPTY_CONTENT_WARNINGS:
         if is_non_text_file_path(path):
             return False, build_non_text_read_error(path)
         return False, (
@@ -461,7 +484,18 @@ def _write_read_file_tool_result(ctx: "AgentCallbackContext", message: str) -> N
     tool_call = ctx.inputs.tool_call
     tool_call_id = getattr(tool_call, "id", "") if tool_call else ""
     text = str(message or "")
-    ctx.inputs.tool_result = text
+    # T1 统一 schema：本函数是 read_file 失败结果的最后一写者——此前写纯文本
+    # 会把归一 rail 产出的成败标记覆盖掉（实测 2026-10-19 会话 f20731340：
+    # read_file 失败帧无 status/success）。前端/断路器读 schema 字段，LLM 视图
+    # （tool_msg.content）保持人读文本不变。
+    ctx.inputs.tool_result = {
+        "status": "error",
+        "success": False,
+        "error_code": "read_file_invalid",
+        "error_message": text,
+        "error": text,
+        "display": text,
+    }
     tool_msg = getattr(ctx.inputs, "tool_msg", None)
     if tool_msg is not None:
         tool_msg.content = text

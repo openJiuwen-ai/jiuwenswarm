@@ -787,6 +787,7 @@ class WebWsTransport(BaseWsChannel):
             event_name in _WEB_FULL_PAYLOAD_EVENT_TYPES
             or event_name.startswith("team.")
             or event_name.startswith("harness.")
+            or event_name.startswith("rsi.")
             or event_name.startswith("personal_context.context.")
         )
 

@@ -369,6 +369,7 @@ class ReqMethod(Enum):
     RSI_HARNESS_INSTALL = "rsi.harness.install"
     RSI_HARNESS_VERSIONS_LIST = "rsi.harness.versions.list"
     RSI_HARNESS_ROLLBACK = "rsi.harness.rollback"
+    RSI_CAPABILITIES = "rsi.capabilities"
 
 
 class EventType(Enum):
