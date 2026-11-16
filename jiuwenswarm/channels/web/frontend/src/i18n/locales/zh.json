@@ -1332,9 +1332,7 @@
       "trajectory": "轨迹"
     },
     "team": {
-      "memberLanes": "成员轨迹泳道",
-      "members": "成员",
-      "workflowGroupAria": "工作流 {{name}}，{{count}} 个算子",
+      "memberLanes": "成员轨迹泳道",      "workflowGroupAria": "工作流 {{name}}，{{count}} 个算子",
       "workflowGroupOperators": "{{count}} 个算子",
       "schedule": {
         "title": "调度控制",
@@ -1353,6 +1351,7 @@
         "expandReviews": "展开评审记录",
         "collapseReviews": "收起评审记录",
         "noReviews": "暂无 Review 记录",
+        "directCompleted": "无需验收，直接完成",
         "reviewCount_one": "{{count}} 次评审",
         "reviewCount_other": "{{count}} 次评审",
         "phase": {
