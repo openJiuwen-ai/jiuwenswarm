@@ -96,7 +96,8 @@ class VerifiedDownloadAssetOwner:
         self.prune()
         asset_id = uuid.uuid4().hex
         suffix = Path(file_name).suffix[:32]
-        sealed_path = source if reference_only else self.root / f"{asset_id}{suffix}"
+        # Keep source unresolved for no-follow checks; register its canonical path.
+        sealed_path = source.resolve(strict=False) if reference_only else self.root / f"{asset_id}{suffix}"
         sidecar_path = self._sidecar_path(asset_id)
         try:
             actual_size, actual_digest = self._copy_verified_source(

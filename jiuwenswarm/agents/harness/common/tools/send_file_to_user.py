@@ -566,6 +566,8 @@ class SendFileToolkit:
                         reference_only=True,
                     )
                     owned_assets.append(asset)
+                    if asset.sealed_path != Path(file_path):
+                        raise ValueError("send_file_asset_path_changed")
                     assets_by_path[_normalize_sent_file_path(file_path)] = asset
             files_payload = self._build_files_payload(
                 envelope,
