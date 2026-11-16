@@ -146,7 +146,7 @@ test('pending information questions are announced once without completing their 
   session.enqueueQuestion('trip', question);
   assert.equal(sent.filter(event => event.type === 'response.create').length, 1);
   assert.match(sent[0].item.content[0].text, /预算是多少/);
-  assert.match(sent[0].item.content[0].text, /call jiuwen_queue_manage/);
+  assert.match(sent[0].item.content[0].text, /call jiuwen_form_answer/);
   assert.doesNotMatch(sent[0].item.content[0].text, /call jiuwen_task_answer/);
   assert.deepEqual(dispatchedToolResults, []);
   assert.equal(session.acceptedToolResultIds.has('trip'), false);
@@ -368,11 +368,84 @@ test('a card that opens while an assistant notice plays leaves the notice alone'
   assert.equal(sent.filter(e => e.type === 'response.cancel').length, 0);
 });
 
-test('information questions do not add approval instructions', () => {
+test('information questions persist until closed and leave approval rules separate', () => {
   const { session, sent } = createSession();
-  session.enqueueQuestion('ask', { id: 'q-a', request_id: 'ask-1', state: 'pending',
-    source: 'ask_user_interrupt', questions: [{ question: '预算多少？' }] });
-  assert.equal(sent.filter(e => e.type === 'session.update').length, 0);
+  const card = { id: 'q-a', request_id: 'ask-1', state: 'pending',
+    source: 'ask_user_interrupt', questions: [{ question: '预算多少？' }] };
+  session.enqueueQuestion('ask', card);
+  const updates = () => sent.filter(e => e.type === 'session.update');
+  assert.match(updates()[0].session.instructions, /Pending information forms.*预算多少/);
+  assert.doesNotMatch(updates()[0].session.instructions, /\[Pending approval cards\]/);
+  assert.equal(updates()[0].session.turn_detection.create_response, false);
+  session.enqueueQuestion('ask', card);
+  assert.equal(updates().length, 1);
+  session.handleEvent({ type: 'response.created', response: { id: 'notice' } });
+  session.handleEvent({ type: 'response.done', response: { id: 'notice', status: 'completed' } });
+  sent.length = 0;
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'answer' });
+  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'answer', transcript: '两百元' });
+  assert.deepEqual(sent.map(e => e.type), ['conversation.item.create', 'response.create']);
+  assert.match(sent[0].item.content[0].text, /预算多少.*jiuwen_form_answer.*两百元/);
+  session.enqueueQuestion('ask', { ...card, state: 'accepted' });
+  assert.equal(updates().at(-1).session.turn_detection.create_response, true);
+  assert.doesNotMatch(updates().at(-1).session.instructions, /Pending information forms/);
+});
+
+const informationCard = (id = 'form') => ({ id, request_id: id, state: 'pending', source: 'ask_user_interrupt',
+  questions: [{ question: '笑话的主题？', multi_select: true, options: [{ label: '程序员/码农' }, { label: '学生/老师' }] }] });
+const spokenTurn = (session, transcript, id = 'answer') => {
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: id });
+  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: id, transcript });
+};
+
+test('a spoken form option submits once without relying on a Qwen call and reports its receipt', () => {
+  const { session, sent, functionCalls } = createSession();
+  session.enqueueQuestion('ask', informationCard());
+  session.handleEvent({ type: 'response.created', response: { id: 'notice' } });
+  session.handleEvent({ type: 'response.done', response: { id: 'notice', status: 'completed' } });
+  sent.length = 0;
+  spokenTurn(session, '程序员吧。');
+  assert.equal(functionCalls.length, 1);
+  assert.equal(functionCalls[0].name, 'jiuwen_form_answer');
+  assert.deepEqual(JSON.parse(functionCalls[0].arguments), { answers: ['程序员/码农'] });
+  assert.equal(sent.length, 0, 'no success speech before the receipt');
+  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'answer', transcript: '程序员吧。' });
+  assert.equal(functionCalls.length, 1, 'duplicate transcription does not resubmit');
+  session.enqueueOperationResult(functionCalls[0].callId, { state: 'accepted' });
+  assert.deepEqual(sent.map(e => e.type), ['conversation.item.create', 'response.create']);
+  assert.equal(sent[0].item.type, 'message', 'client calls have no provider function output');
+  assert.match(sent[0].item.content[0].text, /Information form answer receipt.*"state":"accepted"/);
+});
+
+test('ambiguous forms, new tasks and partial multi-question answers never submit automatically', () => {
+  for (const cards of [[informationCard()], [informationCard(), informationCard('other')],
+    [{ ...informationCard(), questions: [...informationCard().questions, { question: '多长？' }] }]]) {
+    const { session, sent, functionCalls } = createSession();
+    cards.forEach((card, i) => session.enqueueQuestion(`ask-${i}`, card));
+    session.handleEvent({ type: 'response.created', response: { id: 'notice' } });
+    session.handleEvent({ type: 'response.done', response: { id: 'notice', status: 'completed' } });
+    sent.length = 0;
+    spokenTurn(session, cards.length === 1 && cards[0].questions.length === 1 ? '打开微信' : '程序员');
+    assert.equal(functionCalls.length, 0);
+    assert.match(sent[0].item.content[0].text, /Pending information forms.*The user just said/);
+    assert.match(sent[0].item.content[0].text, /New requests are not form answers/);
+    session.cancelToolTask('ask-0', 'cancel');
+    assert.equal(session.sessionUpdate().session.turn_detection.create_response, cards.length === 1);
+  }
+});
+
+test('shared option aliases and concurrent approval cards cannot be auto-answered as an information form', () => {
+  for (const approval of [false, true]) {
+    const { session, functionCalls } = createSession();
+    const card = informationCard();
+    if (!approval) card.questions[0].options.push({ label: '程序员/工程师' });
+    session.enqueueQuestion('ask', card);
+    if (approval) openCard(session);
+    session.handleEvent({ type: 'response.created', response: { id: 'notice' } });
+    session.handleEvent({ type: 'response.done', response: { id: 'notice', status: 'completed' } });
+    spokenTurn(session, '程序员');
+    assert.equal(functionCalls.length, 0);
+  }
 });
 
 test('delegation retains valid scheduling arguments and dispatches only once', () => {

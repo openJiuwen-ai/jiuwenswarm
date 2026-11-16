@@ -1021,6 +1021,26 @@ class VideoSearchManager:
 
     async def operate(self, owner, scope, call, *, ws=None, approvals_only=False, user_instruction=""):
         args = call.arguments
+        if call.name == "jiuwen_form_answer":
+            if approvals_only:
+                raise ValueError("JoyAI voice form answers are disabled; complete the on-screen form")
+            with self.service.store.transaction() as db:
+                tasks = self.service.store.rows(db, owner, scope)
+                replay = [task for task in tasks
+                          if (task.get("interaction") or {}).get("source") == "ask_user_interrupt"
+                          and task["interaction"].get("operation_id") == call.call_id]
+                candidates = replay or [task for task in tasks
+                              if task["status"] == "waiting_user"
+                              and (task.get("interaction") or {}).get("state") == "pending"
+                              and task["interaction"].get("source") == "ask_user_interrupt"]
+            if len(candidates) != 1:
+                raise ValueError("Select exactly one pending information form before answering")
+            task = candidates[0]
+            # Reuse Core validation, pending-card checks and persisted answer receipts.
+            return await self.service.answer(
+                owner, scope, task["id"], call.call_id, task["interaction"]["id"],
+                answers=args["answers"],
+            )
         if args.get("job_id"):
             try:
                 self.service.get(owner, scope, args["job_id"])
