@@ -5,7 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.server.runtime.agent_manager import AgentManager
+from jiuwenswarm.server.runtime.agent_manager import (
+    AgentManager,
+    _session_agent_max_live_default,
+)
 
 
 class _SessionRuntimeAgent:
@@ -421,3 +424,131 @@ async def test_create_session_cron_channel_uses_path_safe_prefix() -> None:
     assert session_id.startswith("cron_")
     assert not session_id.startswith("__cron__")
     assert resolve_session_subdir(session_id) is not None
+
+
+def test_session_agent_max_live_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JIUWENSWARM_SESSION_AGENT_MAX_LIVE", "7")
+    assert _session_agent_max_live_default() == 7
+
+
+def test_session_agent_max_live_env_zero_disables_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JIUWENSWARM_SESSION_AGENT_MAX_LIVE", "0")
+    assert _session_agent_max_live_default() == 0
+
+
+def test_session_agent_max_live_env_invalid_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    for bad in ("abc", "-1", "   "):
+        monkeypatch.setenv("JIUWENSWARM_SESSION_AGENT_MAX_LIVE", bad)
+        assert _session_agent_max_live_default() == 50
+
+
+def test_session_agent_max_live_env_absent_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("JIUWENSWARM_SESSION_AGENT_MAX_LIVE", raising=False)
+    assert _session_agent_max_live_default() == 50
+
+
+def _seed_session_agent(
+    manager: AgentManager,
+    channel_key: str,
+    cache_key: str,
+    *,
+    last_used: float = 0.0,
+) -> _SessionRuntimeAgent:
+    agent = _SessionRuntimeAgent(has_session_runtime=False)
+    manager.agents.setdefault(channel_key, {})[cache_key] = agent
+    manager._agent_create_params.setdefault(channel_key, {})[cache_key] = {
+        "mode": "agent"
+    }
+    manager._agent_last_used[id(agent)] = last_used
+    return agent
+
+
+@pytest.mark.asyncio
+async def test_lru_cap_evicts_least_recently_used_session_agent_only() -> None:
+    manager = AgentManager()
+    manager._session_agent_max_live = 2
+    # 共享项目 agent 时间戳最旧，但键不含 :session:，此 cap 永不触碰它。
+    shared = _seed_session_agent(
+        manager, "web", "agent::/tmp/shared-project", last_used=0.5
+    )
+    old = _seed_session_agent(
+        manager, "web", "agent:::session:session-old", last_used=1.0
+    )
+    _seed_session_agent(manager, "web", "agent:::session:session-mid", last_used=2.0)
+    _seed_session_agent(manager, "web", "agent:::session:session-new", last_used=3.0)
+
+    await manager._evict_lru_session_agents_if_over_cap("web")
+
+    assert old.cleaned is True
+    assert shared.cleaned is False
+    assert set(manager.agents["web"]) == {
+        "agent::/tmp/shared-project",
+        "agent:::session:session-mid",
+        "agent:::session:session-new",
+    }
+    assert id(old) not in manager._agent_last_used
+    assert "agent:::session:session-old" not in manager._agent_create_params["web"]
+
+
+@pytest.mark.asyncio
+async def test_lru_cap_skips_pinned_and_permission_pending_agents() -> None:
+    manager = AgentManager()
+    manager._session_agent_max_live = 2
+    pinned = _seed_session_agent(
+        manager, "web", "agent:::session:session-pinned", last_used=1.0
+    )
+    manager.pin_agent(pinned)
+    permission_pending = _seed_session_agent(
+        manager, "web", "agent:::session:session-perm", last_used=2.0
+    )
+    permission_pending._sessions_awaiting_tool_permission = {"session-perm"}
+    fallback = _seed_session_agent(
+        manager, "web", "agent:::session:session-new", last_used=3.0
+    )
+
+    await manager._evict_lru_session_agents_if_over_cap("web")
+
+    # 钉住与等待工具授权的 agent 都被跳过，超额部分由最年轻的兜底驱逐。
+    assert pinned.cleaned is False
+    assert permission_pending.cleaned is False
+    assert fallback.cleaned is True
+    assert "agent:::session:session-new" not in manager.agents["web"]
+
+
+@pytest.mark.asyncio
+async def test_lru_cap_restores_agent_when_cleanup_fails() -> None:
+    manager = AgentManager()
+    manager._session_agent_max_live = 1
+    failing = _FailingRootCleanupAgent(has_session_runtime=False)
+    cache_key = "agent:::session:session-fail"
+    manager.agents["web"] = {cache_key: failing}
+    manager._agent_create_params["web"] = {cache_key: {"mode": "agent"}}
+
+    await manager._evict_lru_session_agents_if_over_cap("web")
+
+    assert manager.agents["web"][cache_key] is failing
+    assert manager._agent_create_params["web"][cache_key] == {"mode": "agent"}
+    assert failing.cleaned is False
+
+
+@pytest.mark.asyncio
+async def test_get_agent_enforces_session_agent_cap_on_entry() -> None:
+    manager = _SlowCreateAgentManager()
+    manager._session_agent_max_live = 2
+    manager.allow_create.set()
+    first = await manager.get_agent("web", "agent", None, session_id="session-a")
+    second = await manager.get_agent("web", "agent", None, session_id="session-b")
+    third = await manager.get_agent("web", "agent", None, session_id="session-c")
+
+    # 第三次创建后池内 3 个；下一次进入 get_agent 时先驱逐最久未用的 session-a。
+    fourth = await manager.get_agent("web", "agent", None, session_id="session-d")
+
+    assert first.cleaned is True
+    assert second.cleaned is False
+    assert third.cleaned is False
+    assert fourth.cleaned is False
+    assert set(manager.agents["web"]) == {
+        "agent:::session:session-b",
+        "agent:::session:session-c",
+        "agent:::session:session-d",
+    }

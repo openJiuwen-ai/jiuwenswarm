@@ -136,6 +136,41 @@ def _make_agent_cache_key(mode: str | None, sub_mode: str | None, project_dir: s
     return f"{mode_key}:{sub_mode_key}:{project_key}"
 
 
+_SESSION_AGENT_MAX_LIVE_ENV = "JIUWENSWARM_SESSION_AGENT_MAX_LIVE"
+
+
+def _session_agent_max_live_default() -> int:
+    """Cap on live projectless per-session top-level agents (default 50); ``0`` disables.
+
+    Only keys whose cache key embeds ``:session:`` are counted, so shared
+    project agents (a project_dir is set) are never evicted by this cap.
+    Override via ``JIUWENSWARM_SESSION_AGENT_MAX_LIVE`` at process start.
+    Non-numeric or negative values warn and fall back to the default so a bad
+    deploy cannot disable the cap accidentally.
+    """
+    default = 50
+    raw = os.environ.get(_SESSION_AGENT_MAX_LIVE_ENV)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        logger.warning(
+            "[AgentManager] ignoring non-numeric %s=%s",
+            _SESSION_AGENT_MAX_LIVE_ENV,
+            raw,
+        )
+        return default
+    if value < 0:
+        logger.warning(
+            "[AgentManager] ignoring negative %s=%s",
+            _SESSION_AGENT_MAX_LIVE_ENV,
+            raw,
+        )
+        return default
+    return value
+
+
 def _build_acp_agent_config(extra_config: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return the dedicated ACP agent profile config.
 
@@ -285,6 +320,10 @@ class AgentManager:
         # disconnect cleanup cannot tear it down in that gap.
         self._agent_borrowers: dict[int, set[asyncio.Task]] = {}
         self._agent_pins: dict[int, int] = {}
+        # LRU bookkeeping for the per-session agent cap (see
+        # _evict_lru_session_agents_if_over_cap).  Keyed by id(agent).
+        self._agent_last_used: dict[int, float] = {}
+        self._session_agent_max_live = _session_agent_max_live_default()
         self._pending_tui_retirements: set[int] = set()
         self._retirement_tasks: dict[int, asyncio.Task] = {}
         self._agent_create_locks: WeakValueDictionary[
@@ -384,6 +423,7 @@ class AgentManager:
         if task is None:
             return agent
         agent_id = id(agent)
+        self._agent_last_used[agent_id] = time.monotonic()
         borrowers = self._agent_borrowers.setdefault(agent_id, set())
         if task in borrowers:
             return agent
@@ -789,6 +829,85 @@ class AgentManager:
                 except Exception:
                     logger.exception("[AgentManager] cancel_inflight_work failed")
 
+    async def _evict_lru_session_agents_if_over_cap(
+        self,
+        channel_key: str,
+        *,
+        skip_cache_key: str | None = None,
+    ) -> None:
+        """Evict least-recently-used idle per-session agents once the pool exceeds the cap.
+
+        Projectless ``web`` sessions get one top-level agent per session (cache
+        key ``...:session:<sid>``); a session-create churn that never deletes
+        sessions otherwise accumulates these agents without bound. When the live
+        count exceeds the cap, evict the least recently borrowed idle ones —
+        skipping pinned or borrowed agents and sessions awaiting tool permission —
+        until the count drops back to the cap. Mirrors the projectless-session
+        retirement in ``cleanup_session_runtime``.
+        """
+        cap = self._session_agent_max_live
+        if cap <= 0:
+            return
+        channel_agents = self.agents.get(channel_key)
+        if not isinstance(channel_agents, dict):
+            return
+
+        def _session_key_count() -> int:
+            return sum(1 for key in channel_agents if ":session:" in key)
+
+        if _session_key_count() <= cap:
+            return
+
+        current = asyncio.current_task()
+        ordered = sorted(
+            (key for key in channel_agents if ":session:" in key),
+            key=lambda key: self._agent_last_used.get(id(channel_agents[key]), 0.0),
+        )
+        for cache_key in ordered:
+            if _session_key_count() <= cap:
+                break
+            if cache_key == skip_cache_key:
+                continue
+            agent = channel_agents.get(cache_key)
+            if agent is None:
+                continue
+            if self._agent_pins.get(id(agent), 0):
+                continue
+            if self._has_agent_borrowers(agent, exclude=current):
+                continue
+            sid = cache_key.rsplit(":session:", 1)[-1]
+            adapter = getattr(agent, "_adapter", None) or agent
+            awaiting = getattr(adapter, "_sessions_awaiting_tool_permission", None)
+            if isinstance(awaiting, (set, frozenset)) and sid in awaiting:
+                continue
+            channel_agents.pop(cache_key, None)
+            create_params = self._agent_create_params.get(channel_key, {}).pop(
+                cache_key, None
+            )
+            self._agent_last_used.pop(id(agent), None)
+            try:
+                await agent.cleanup()
+                logger.info(
+                    "[AgentManager] LRU session agent evicted over cap: "
+                    "channel_id=%s cache_key=%s live=%d cap=%d",
+                    channel_key,
+                    cache_key,
+                    _session_key_count(),
+                    cap,
+                )
+            except Exception:
+                channel_agents[cache_key] = agent
+                if create_params is not None:
+                    self._agent_create_params.setdefault(channel_key, {})[
+                        cache_key
+                    ] = create_params
+                logger.exception(
+                    "[AgentManager] LRU session agent cleanup failed: "
+                    "channel_id=%s cache_key=%s",
+                    channel_key,
+                    cache_key,
+                )
+
     async def cleanup_session_runtime(self, *, channel_id: str = "", session_id: str) -> bool:
         """Release in-memory runtime for one session across existing channel agents.
 
@@ -1084,6 +1203,13 @@ class AgentManager:
         # 无项目目录的会话有独立任务路径；Agent/rail/prompt builder 不能跨会话复用。
         if not project_key and mode_key in {"agent", "code"} and session_id:
             cache_key = f"{cache_key}:session:{session_id}"
+        # Enforce the live per-session agent cap before growing the pool. Runs
+        # before the per-key create lock so eviction never holds a create lock,
+        # and skips the requested key so a cache hit cannot evict itself.
+        await self._evict_lru_session_agents_if_over_cap(
+            channel_key,
+            skip_cache_key=cache_key,
+        )
         channel_agents = self.agents.get(channel_key, {})
         if cache_key in channel_agents:
             return self._borrow_agent(channel_agents[cache_key])
