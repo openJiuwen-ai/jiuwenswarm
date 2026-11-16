@@ -107,9 +107,9 @@ export function buildModelResourcePayload(model: ModelEntry): Record<string, unk
   };
   if (model.api_key.trim()) client.api_key = model.api_key;
   if (model.timeout !== undefined) client.timeout = model.timeout;
-  if (model.vendor_key) client.vendor_key = model.vendor_key;
-  if (model.plan) client.plan = model.plan;
-  if (model.endpoint_profile) client.endpoint_profile = model.endpoint_profile;
+  client.vendor_key = model.vendor_key ?? null;
+  client.plan = model.plan ?? null;
+  client.endpoint_profile = model.endpoint_profile ?? '';
   const config: Record<string, unknown> = {};
   if (model.temperature !== undefined) config.temperature = model.temperature;
   config.reasoning_level = model.reasoning_level ?? '';
