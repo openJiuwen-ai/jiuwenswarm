@@ -652,16 +652,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(data)
 
-<<<<<<< RELEASE
-    def _proxy_http(self, *, stream_body: bool = False) -> None:
-||||||| BEFORE_PR_9610
-    def _proxy_http(self) -> None:
-=======
     def _proxy_http(
         self, *, target: str | None = None, path: str | None = None,
-        stream_sse: bool = False, login_surface: str | None = None,
+        stream_sse: bool = False, login_surface: str | None = None, stream_body: bool = False,
     ) -> None:
->>>>>>> DEVELOP
         outer_host = self._clean_outer_host()
         if outer_host is None:
             self._write_proxy_error(400, "invalid Host header")
@@ -703,10 +697,12 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 forward_headers[key] = value
             forward_headers["Host"] = outer_host
 
-<<<<<<< RELEASE
+            if login_surface:
+                forward_headers["X-Jiuwen-Web-Surface"] = login_surface
+            request_path = path or self.path
             if stream_body:
                 # Large imports go through in chunks instead of being held in memory.
-                conn.putrequest(self.command, self.path, skip_host=True, skip_accept_encoding=True)
+                conn.putrequest(self.command, request_path, skip_host=True, skip_accept_encoding=True)
                 for key, value in forward_headers.items():
                     conn.putheader(key, value)
                 conn.endheaders()
@@ -718,26 +714,13 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     conn.send(chunk)
                     remaining -= len(chunk)
             else:
-                conn.request(self.command, self.path, body=body, headers=forward_headers)
-||||||| BEFORE_PR_9610
-            conn.request(self.command, self.path, body=body, headers=forward_headers)
-=======
-            if login_surface:
-                forward_headers["X-Jiuwen-Web-Surface"] = login_surface
-            conn.request(self.command, path or self.path, body=body, headers=forward_headers)
->>>>>>> DEVELOP
+                conn.request(self.command, request_path, body=body, headers=forward_headers)
             resp = conn.getresponse()
-<<<<<<< RELEASE
-||||||| BEFORE_PR_9610
-            resp_body = resp.read()
-=======
             streaming = (
                 stream_sse
                 and self.command != "HEAD"
                 and resp.getheader("Content-Type", "").startswith("text/event-stream")
             )
-            resp_body = b"" if streaming else resp.read()
->>>>>>> DEVELOP
 
             self.send_response(resp.status, resp.reason)
             for key, value in resp.getheaders():
@@ -745,19 +728,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     continue
                 self.send_header(key, value)
             self.end_headers()
-<<<<<<< RELEASE
             headers_sent = True
-            if self.command != "HEAD":
-                # Stream the body so large media starts playing before it is fully read.
-                while True:
-                    chunk = resp.read(self._HTTP_PROXY_CHUNK_BYTES)
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-||||||| BEFORE_PR_9610
-            if self.command != "HEAD":
-                self.wfile.write(resp_body)
-=======
             if streaming:
                 try:
                     chunk = resp.read1(65536)
@@ -768,8 +739,12 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 except (OSError, http.client.HTTPException):
                     return
             elif self.command != "HEAD":
-                self.wfile.write(resp_body)
->>>>>>> DEVELOP
+                # Stream the body so large media starts playing before it is fully read.
+                while True:
+                    chunk = resp.read(self._HTTP_PROXY_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
         except Exception as exc:  # noqa: BLE001
             self.log_error("proxy http error: %s", exc)
             if not headers_sent:
