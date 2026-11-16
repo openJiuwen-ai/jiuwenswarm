@@ -256,11 +256,55 @@ async def test_plan_check_skips_whitelist_excluded_eager_tools(caplog):
     assert not any("eager tools missing" in r.message for r in caplog.records)
 
 
+def _member_like_rail() -> ProgressiveToolRail:
+    """未注入白名单的直接建轨（plan_check_allowed_tools=None）。
+
+    eager 形态对齐基线 team 成员轨（!10149）：code 模式三件套 + lazy 支柱 +
+    消息工具；plan 态输入对齐成员 85 号位白名单过滤后形态。
+    """
+    return ProgressiveToolRail(
+        enabled=True,
+        eager_tools=[
+            "tools_search",
+            "invoke_tool",
+            "send_message",
+            "switch_mode",
+            "enter_plan_mode",
+            "exit_plan_mode",
+        ],
+    )
+
+
 @pytest.mark.asyncio
-async def test_plan_check_full_scope_when_no_whitelist_injected(caplog):
-    """未注入白名单的直接建轨（plan_check_allowed_tools=None）保持全量校验。"""
-    rail = ProgressiveToolRail(enabled=True, eager_tools=["read_file"])
-    cards = [_card("read_file")]
+async def test_plan_check_defaults_to_plan_machine_tools_when_no_whitelist_injected(
+    caplog,
+):
+    """未注入白名单（None）兜底只校验 plan 状态机工具（CR-4，2026-11-16）。
+
+    基线 team 成员轨装配未注入 plan_check_allowed_tools：plan 态成员白名单
+    设计性排除 switch_mode/send_message/tools_search/invoke_tool（CR-4 最小
+    复现 missing_eager 四件套），收敛前全量校验每轮误报。
+    """
+    rail = _member_like_rail()
+    cards = [_card("enter_plan_mode"), _card("exit_plan_mode")]
+    ctx = _context_with_plan_state(rail, cards, plan_mode="plan")
+
+    ptr.logger.addHandler(caplog.handler)
+    caplog.set_level(logging.WARNING, logger=ptr.logger.name)
+    try:
+        await rail.before_model_call(ctx)
+    finally:
+        ptr.logger.removeHandler(caplog.handler)
+
+    assert not any("eager tools missing" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_plan_check_default_pair_still_catches_plan_tool_loss(caplog):
+    """未注入白名单时 plan 状态机工具缺席仍告警（只点名 enter/exit 二元集）。"""
+    rail = _member_like_rail()
+    # enter/exit_plan_mode 在 plan 态从过滤输入缺席 = 真注册丢失。
+    cards = [_card("tools_search"), _card("invoke_tool")]
     ctx = _context_with_plan_state(rail, cards, plan_mode="plan")
 
     ptr.logger.addHandler(caplog.handler)
@@ -272,4 +316,11 @@ async def test_plan_check_full_scope_when_no_whitelist_injected(caplog):
 
     warnings = [r for r in caplog.records if "eager tools missing" in r.message]
     assert warnings
-    assert "invoke_tool" in warnings[0].getMessage()
+    message = warnings[0].getMessage()
+    assert "enter_plan_mode" in message
+    assert "exit_plan_mode" in message
+    # 设计性缺席成员（switch_mode/lazy 支柱）不得掺入默认兜底校验。
+    assert "switch_mode" not in message
+    assert "send_message" not in message
+    assert "tools_search" not in message
+    assert "invoke_tool" not in message
