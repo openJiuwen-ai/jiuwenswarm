@@ -2,7 +2,7 @@
 
 import pytest
 
-from e2a.message import ReqMethod as ProtocolReqMethod
+from jiuwenswarm.common.schema.req_method import ReqMethod as LocalReqMethod
 from jiuwenswarm.common.schema.message import ReqMethod
 
 
@@ -10,10 +10,10 @@ from jiuwenswarm.common.schema.message import ReqMethod
     "CHAT_SEND", "A4P_CONFIG_GET", "A4P_CONFIG_UPDATE", "WORKSPACE_TREE",
     "FILE_READ_UPLOAD_CHUNK", "SKILLS_ENTERPRISE_INSTALL",
 ])
-def test_rpc_members_share_identity_across_protocol_consumers(name):
+def test_rpc_members_share_identity_across_local_consumers(name):
     local = getattr(ReqMethod, name)
-    assert ReqMethod is ProtocolReqMethod
-    assert ProtocolReqMethod(local.value) is local
+    assert ReqMethod is LocalReqMethod
+    assert LocalReqMethod(local.value) is local
 
 
 @pytest.mark.asyncio

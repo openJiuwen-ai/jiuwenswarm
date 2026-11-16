@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 from e2a.agent_models import AgentResponse
-from e2a.message import ReqMethod
+from agent_gateway.common.protocol_methods import ReqMethod
 from agent_gateway.common.config_panel import tui_models_handlers
 from agent_gateway.channel_manager.tui import tui_connect as tui_connect_module
 from agent_gateway.channel_manager.tui.tui_connect import (

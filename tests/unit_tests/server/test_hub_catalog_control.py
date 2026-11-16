@@ -11,7 +11,7 @@ import pytest
 
 from e2a.models import E2AEnvelope
 from e2a.wire_codec import parse_agent_server_wire_unary
-from e2a.message import ReqMethod
+from jiuwenswarm.common.schema.req_method import ReqMethod
 from jiuwenswarm.server.front.protocol import parse_raw_message
 from jiuwenswarm.server.front.router import MethodRouter, is_control_method
 from jiuwenswarm.server.http_invoke import _request_tenant_scope

@@ -20,7 +20,7 @@ from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapProp
 from e2a.agent_models import AgentResponse, AgentResponseChunk
 from e2a.models import E2AEnvelope
 from e2a.wire_codec import encode_agent_response_for_wire, encode_agent_chunk_for_wire
-from e2a.message import ReqMethod
+from agent_gateway.common.protocol_methods import ReqMethod
 from agent_gateway import app_gateway, telemetry
 from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.channel_manager import ChannelManager

@@ -11,7 +11,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from agent_gateway.enterprise.config.manager_config.routers.application_config_routers import application_config_router
-from e2a.message import ReqMethod
+from jiuwenswarm.common.schema.req_method import ReqMethod
 
 from e2a.models import E2AEnvelope
 from jiuwenswarm.extensions.runtime_management_extension.pod_http_client import HttpSseAgentServerClient
@@ -93,12 +93,10 @@ async def test_catalog_runtime_uses_default_http_without_routing(monkeypatch):
     route.touch.assert_not_awaited()
 
 
-def test_hub_catalog_method_available_without_application_imports():
-    """A standalone Gateway can use the pinned protocol without Server shims."""
+def test_hub_catalog_method_available_from_local_req_method():
+    """The local method enum includes the Hub catalog method."""
     script = (
-        "import sys; "
-        "from e2a.message import ReqMethod; "
-        "assert ReqMethod('hub.expert_packages.catalog') is ReqMethod.HUB_EXPERT_PACKAGES_CATALOG; "
-        "assert not any(name.split('.')[0] in ('jiuwenswarm', 'gateway') for name in sys.modules)"
+        "from jiuwenswarm.common.schema.req_method import ReqMethod; "
+        "assert ReqMethod('hub.expert_packages.catalog') is ReqMethod.HUB_EXPERT_PACKAGES_CATALOG"
     )
-    subprocess.run([sys.executable, "-I", "-c", script], check=True)
+    subprocess.run([sys.executable, "-c", script], check=True)

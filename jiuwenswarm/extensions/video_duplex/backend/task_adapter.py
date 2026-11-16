@@ -100,7 +100,7 @@ def task_identity(ws, scope):
 
 async def task_agent_query(client, method, params, session, owner):
     """Read from the routed AgentServer, never from Gateway's local session tree."""
-    from e2a.gateway_normalize import e2a_from_agent_fields
+    from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 
     client = client.get("value") if isinstance(client, dict) else client
     if client is None:
