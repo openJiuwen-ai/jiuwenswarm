@@ -141,7 +141,8 @@ def get_jiuwen_sdk_media_globals(
     """Forward Web models and bind a workspace when the host grants access."""
     video = get_enabled_multimodal_model_config(runtime_config, "video")
     audio = get_enabled_multimodal_model_config(runtime_config, "audio")
-    if not video and not audio and session_upload_root is None:
+    has_web_models = bool(video or audio)
+    if not has_web_models and session_upload_root is None:
         return {}
 
     jiuwen = get_jiuwen_builtin_config(config)
@@ -149,7 +150,8 @@ def get_jiuwen_sdk_media_globals(
     configured_roots = sdk_globals.get("local_media_roots") if isinstance(sdk_globals, dict) else None
     globals_config: dict[str, Any] = {}
     env_roots = os.getenv("JIUWEN_MEMORY_VIDEO_ROOTS", "").strip()
-    if workspace and (video or audio) and not configured_roots and not env_roots:
+    deployed_roots = configured_roots or env_roots
+    if workspace and has_web_models and not deployed_roots:
         try:
             root = Path(workspace).expanduser()
             if root.is_absolute():
@@ -161,7 +163,7 @@ def get_jiuwen_sdk_media_globals(
         except (OSError, ValueError, RuntimeError):
             logger.debug("[JiuwenRailBuilder] workspace unavailable for media import")
     if session_upload_root is not None:
-        roots = configured_roots or env_roots or globals_config.get("local_media_roots", [])
+        roots = deployed_roots or globals_config.get("local_media_roots", [])
         if isinstance(roots, str):
             try:
                 roots = json.loads(roots)
