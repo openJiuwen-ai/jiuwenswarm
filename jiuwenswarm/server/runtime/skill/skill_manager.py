@@ -9010,7 +9010,10 @@ class SkillManager:
             raw = (info.filename or "").replace("\\", "/")
             if not raw or raw.startswith("/"):
                 continue
-            if "\0" in raw:
+            # CPython ZipInfo 在首个 NUL 字节处截断 filename（orig_filename 保留原始
+            # 值），因此对 filename 的 NUL 检查永远不可达；须校验原始名，否则含 NUL
+            # 的成员名会被静默改写成截断名落盘（#6689）
+            if "\0" in (info.orig_filename or ""):
                 raise RuntimeError("ZIP 包含非法文件名")
             is_dir = raw.endswith("/") or info.is_dir()
             rel_str = raw.rstrip("/")
