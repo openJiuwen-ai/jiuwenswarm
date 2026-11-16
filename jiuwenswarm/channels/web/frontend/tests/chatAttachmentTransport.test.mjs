@@ -132,6 +132,26 @@ for (const kinds of [Array(20).fill('image'), Array(20).fill('document'), ['imag
     assert.deepEqual(observed.errors, []);
   }));
 }
+test('an explicit video attachment is persisted as a file before chat.send', async () => mounted(async ({ observed, socket }) => {
+  const video = item('video', 1, { filename: 'demo.mp4', mimeType: 'video/mp4', base64Data: 'AAECAw==', sizeBytes: 4 });
+  let result;
+  await act(async () => { result = observed.api.sendMessage('请记住这个视频', sessionId, [video]); });
+  const upload = socket.requests.at(-1);
+  assert.equal(upload.method, 'document.persist');
+  assert.equal(upload.params.documents[0].base64_data, video.base64Data);
+  assert.equal(upload.params.documents[0].mime_type, 'video/mp4');
+  await respond(socket, upload, persisted(upload));
+  const send = socket.requests.at(-1);
+  assert.equal(send.method, 'chat.send');
+  assert.deepEqual(send.params.files.uploaded_documents, [{
+    filename: 'demo.mp4', path: '/uploads/demo.mp4', mime_type: 'video/mp4', size_bytes: 4,
+  }]);
+  assert.ok(!('base64_data' in send.params.media_items[0]));
+  assert.ok(!('base64Data' in send.params.media_items[0]));
+  await respond(socket, socket.requests.find(r => r.method === 'session.assets.register'), { items: [] });
+  await respond(socket, send, { accepted: true });
+  assert.equal(await result, true);
+}));
 test('ready local paths are reused while unpersisted content is uploaded', async () => mounted(async ({ observed, socket }) => {
   const items = [item('document', 1, { path: '/local/large.txt', base64Data: undefined, sizeBytes: 101 * 1024 ** 2 }), item('image', 2)];
   let result;
