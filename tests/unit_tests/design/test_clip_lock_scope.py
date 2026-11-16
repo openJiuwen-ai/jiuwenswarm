@@ -171,6 +171,33 @@ def test_a_clip_prompt_still_survives_the_director_gate() -> None:
     assert json.dumps(notes)  # notes are serialisable for the canvas
 
 
+def test_a_rewritten_wardrobe_is_rejected_when_a_sheet_is_attached() -> None:
+    cfg = _cfg()
+
+    reasons = prompt_respects_practice(
+        "Image 1 is Grandma, Image 2 is Maya. The scene is as in Image 3. "
+        "Grandma from Image 1, wearing a burgundy turtleneck and a long grey skirt, "
+        "seated near the table facing the window.",
+        cfg=cfg,
+        graph=_graph(),
+    )
+
+    assert "wardrobe_restated" in reasons
+
+
+def test_a_stated_wardrobe_delta_is_allowed() -> None:
+    cfg = _cfg()
+
+    reasons = prompt_respects_practice(
+        "Image 1 is Grandma, Image 2 is Maya. The scene is as in Image 3. "
+        "Maya from Image 2, now wearing Grandma's shawl over her dress, sits near the table.",
+        cfg=cfg,
+        graph=_graph(),
+    )
+
+    assert "wardrobe_restated" not in reasons
+
+
 def test_a_compliant_agent_prompt_is_kept_instead_of_recomposed() -> None:
     cfg = _cfg()
     agent_text = (
