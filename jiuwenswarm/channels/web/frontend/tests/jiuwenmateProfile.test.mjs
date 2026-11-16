@@ -2095,14 +2095,15 @@ for (const language of ['zh', 'en']) {
 
 test('activity period dates use the schedule calendar without a clear button and no future days', async () => {
   await i18n.changeLanguage('zh');
-  const view = await mountDashboard({ activity: { members: [] } });
+  const view = await mountDashboard({ activity: { members: [] }, today: new Date(2026, 10, 16) });
   try {
     await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="activity"]'));
     await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="period"]'));
     assert.equal(view.find('input[type="date"]'), null);
     const field = (testId) => view.find(`[data-testid="${testId}"] [data-testid="cron-date-picker-input"]`);
     const end = field('jiuwenmate-office-period-end').value;
-    assert.match(field('jiuwenmate-office-period-start').value, /^\d{4}-\d{2}-\d{2}$/);
+    assert.equal(end, '2026-11-16');
+    assert.equal(field('jiuwenmate-office-period-start').value, '2026-11-10');
 
     await view.click(view.find('[data-testid="jiuwenmate-office-period-start"] [data-testid="cron-date-picker"] > div'));
     const days = [...view.container.querySelectorAll('[data-testid="cron-date-picker-day"]')];
