@@ -419,15 +419,20 @@ async def test_existing_untrusted_todo_leaf_does_not_block_safe_publish(
 async def test_persist_cleans_owned_temp_after_serialization_baseexception(
     error_type, tmp_path, monkeypatch
 ):
+    from openjiuwen.harness.tools import todo_store
+
     todo_path = tmp_path / "todo" / "session-1" / "todo.json"
     _seed_plan(todo_path)
 
     def fail_dump(*_args, **_kwargs):
         raise error_type("failed")
 
+    # Rebind only todo_store.json — patching json.dumps mutates the stdlib module
+    # and breaks snapshot reads under the newer openjiuwen todo path.
     monkeypatch.setattr(
-        "openjiuwen.harness.tools.todo_store.json.dumps",
-        fail_dump,
+        todo_store,
+        "json",
+        SimpleNamespace(loads=json.loads, dumps=fail_dump),
     )
 
     with pytest.raises(error_type):

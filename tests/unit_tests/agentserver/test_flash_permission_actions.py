@@ -409,7 +409,7 @@ async def test_outer_deny_cannot_be_relaxed_by_legacy_allow(permission_adapter):
 
 
 @pytest.mark.asyncio
-async def test_projected_always_allow_uses_stock_persistence(permission_adapter):
+async def test_projected_allow_always_does_not_persist(permission_adapter):
     from openjiuwen.harness.rails.interrupt.interrupt_base import (
         ApproveResult,
         InterruptResult,
@@ -432,11 +432,7 @@ async def test_projected_always_allow_uses_stock_persistence(permission_adapter)
         },
     )
     assert isinstance(decision, ApproveResult)
-    assert len(snapshots) == 1
-    assert (
-        snapshots[0].get("approval_overrides")
-        or snapshots[0]["tools"]["mcp_fetch_webpage"] == "allow"
-    )
+    assert snapshots == []
 
 
 @pytest.mark.asyncio
