@@ -412,15 +412,17 @@ def _merge_models_for_replace_all(
                 new_entry["alias"] = item["alias"]
             # vendor_key + plan: persist the exact provider selection identity
             # into model_client_config (or clear it).
-            previous_vendor = str(new_mcc.get("vendor_key") or "")
+            previous_vendor = str(new_mcc.get("vendor_key") or new_entry.get("vendor_key") or "")
             if item.get("vendor_key"):
                 new_mcc["vendor_key"] = item["vendor_key"]
             else:
                 new_mcc.pop("vendor_key", None)
+                new_entry.pop("vendor_key", None)
             if item.get("plan"):
                 new_mcc["plan"] = item["plan"]
             else:
                 new_mcc.pop("plan", None)
+                new_entry.pop("plan", None)
             # endpoint_profile: OpenAI 协议端点方言(deepseek/openrouter/dashscope/...)。
             # 编辑表单不暴露该字段(Anthropic 协议下 core 忽略)，payload 缺失不等于
             # 用户要求清空：仅当切到 Anthropic 协议或换用其他供应商预设时丢弃持久化

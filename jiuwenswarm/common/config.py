@@ -2020,7 +2020,12 @@ def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
         for index, current in enumerate(defaults):
             if current.get("model_id") == saved["model_id"]:
                 _protect_model_key(saved, current)
+                client_update = saved.get("model_client_config") or {}
                 saved = _merge_model_update(current, saved)
+                # An explicit clear also removes the legacy top-level fallback.
+                for key in ("vendor_key", "plan"):
+                    if key in client_update and client_update[key] in (None, ""):
+                        saved.pop(key, None)
                 defaults[index] = saved
                 break
         else:
