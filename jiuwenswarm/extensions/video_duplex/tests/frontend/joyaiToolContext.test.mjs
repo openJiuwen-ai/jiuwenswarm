@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { loadModules } from './testSupport.mjs';
-const { buildJoyAIToolContextBatch, rememberJoyAIToolContext, removeSentJoyAIToolContext } = await loadModules([
-  "VideoLivePanel/joyaiToolContext.ts",
-]);
+import {
+  buildJoyAIToolContextBatch,
+  rememberJoyAIToolContext,
+  removeSentJoyAIToolContext,
+} from '../../../../channels/web/frontend/node_modules/.cache/joyai-tool-context/joyaiToolContext.js';
 
 function entry(jobId, result = `${jobId} result`) {
   return {

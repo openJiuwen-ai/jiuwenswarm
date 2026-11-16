@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { loadModules } from './testSupport.mjs';
-const { isVideoSourceReady, waitForFirstVideoFrame } = await loadModules([
-  "VideoLivePanel/videoSource.ts",
-]);
+import {
+  isVideoSourceReady,
+  waitForFirstVideoFrame,
+} from '../../../../channels/web/frontend/node_modules/.cache/video-source/videoSource.js';
 
 const stream = (readyState) => ({
   getVideoTracks: () => [{ readyState }],

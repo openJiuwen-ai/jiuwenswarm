@@ -138,7 +138,8 @@ def form_answer_tool():
         ),
         "parameters": {
             "type": "object", "properties": {
-                "answers": {"type": "array", "items": {"type": "string", "maxLength": 4000}, "minItems": 1, "maxItems": 32},
+                "answers": {"type": "array", "items": {"type": "string", "maxLength": 4000},
+                            "minItems": 1, "maxItems": 32},
             },
             "required": ["answers"], "additionalProperties": False,
         },
@@ -186,8 +187,9 @@ def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
     if name == "jiuwen_form_answer":
         answers = arguments.get("answers")
         if (set(arguments) != {"answers"}
-                or not isinstance(answers, list) or not 1 <= len(answers) <= 32
-                or any(not isinstance(a, str) or not a.strip() or len(a) > 4000 for a in answers)):
+                or not isinstance(answers, list) or not 1 <= len(answers) <= 32):
+            raise ValueError("Invalid information form answers")
+        if any(not isinstance(a, str) or not a.strip() or len(a) > 4000 for a in answers):
             raise ValueError("Invalid information form answers")
         return QwenOmniToolCall(name, call_id, arguments, "")
     if name == "jiuwen_queue_manage":

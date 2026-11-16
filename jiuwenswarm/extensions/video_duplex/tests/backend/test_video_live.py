@@ -15,7 +15,6 @@ import wave
 
 import openai
 import pytest
-
 import websockets
 from agent_gateway.channel_manager.web.media.normalizer import (
     normalize_chat_media_attachments,
@@ -23,12 +22,10 @@ from agent_gateway.channel_manager.web.media.normalizer import (
 from websockets.exceptions import ConnectionClosedOK
 from websockets.frames import Close
 
-from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import (
-    empty_task_file_query,  # noqa: F401 -- pytest fixture
-)
 
 from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import (
-    RecordingChannel as FakeChannel,
+    empty_task_file_query,  # noqa: F401 -- pytest fixture
+    RecordingChannel,
     agent_client as make_agent_client,
 )
 
@@ -44,9 +41,6 @@ from jiuwenswarm.extensions.video_duplex.backend import (
 
 
 from jiuwenswarm.extensions.video_duplex.backend.video_search import core_agent_progress
-
-
-
 
 @pytest.fixture(autouse=True)
 def _isolate_video_mode_environment(monkeypatch) -> None:
@@ -195,6 +189,31 @@ def test_plugin_settings_clear_secrets_removes_persisted_secret(
     assert settings.settings_payload(enabled=True)["configured_secret_lengths"] == {}
 
 
+class FakeChannel:
+    request = RecordingChannel.request
+
+    def __init__(self) -> None:
+        self.handlers = {}
+        self.local_only = set()
+        self.responses = []
+        self.events = []
+        self.registration_options = {}
+        self.manager = None
+        self.dispatched = []
+
+    def register_method(self, method, handler, **kwargs) -> None:
+        self.handlers[method] = handler
+        self.registration_options[method] = kwargs
+        if kwargs.get("local_only"):
+            self.local_only.add(method)
+
+    async def send_response(self, ws, req_id, **response) -> None:
+        self.responses.append((req_id, response))
+
+    async def send_event(self, ws, event, payload) -> None:
+        self.events.append((event, payload))
+
+
 def _video_channel(agent_client=None) -> FakeChannel:
     channel = FakeChannel()
     channel.manager = video_live.register_video_live_handler(
@@ -252,14 +271,18 @@ async def test_full_duplex_conversation_events_append_visible_session_history(mo
     records = []
     monkeypatch.setattr(video_live, "append_history_record", lambda **record: records.append(record))
 
-    await channel.request("video.conversation.append", {
+    await channel.handlers["video.conversation.append"](
+        object(),
+        "history-request",
+        {
             "session_id": "visible-session",
             "event_id": "event-1",
             "kind": "assistant",
             "content": "这是全双工回答。",
             "timestamp": 1_700_000_000.25,
         },
-        request_id="history-request", session_id="transport-session")
+        "transport-session",
+    )
 
     assert channel.responses[-1][1]["payload"] == {
         "persisted": True,
@@ -287,13 +310,17 @@ async def test_full_duplex_history_rejects_new_session_placeholder(monkeypatch) 
         lambda **_record: pytest.fail("placeholder session must not be persisted"),
     )
 
-    await channel.request("video.conversation.append", {
+    await channel.handlers["video.conversation.append"](
+        object(),
+        "history-request",
+        {
             "session_id": "new",
             "event_id": "event-1",
             "kind": "user",
             "content": "你好",
         },
-        request_id="history-request", session_id="transport-session")
+        "transport-session",
+    )
 
     assert channel.responses[-1][1]["ok"] is False
     assert channel.responses[-1][1]["code"] == "SESSION_NOT_READY"
@@ -305,11 +332,13 @@ async def test_full_duplex_tool_answer_persists_its_presentation(monkeypatch) ->
     records = []
     monkeypatch.setattr(video_live, "append_history_record", lambda **record: records.append(record))
     for presentation in ("tool_result", "unknown", None):
-        await channel.request("video.conversation.append", {
-            "session_id": "visible-session", "event_id": f"event-{presentation}",
+        await channel.handlers["video.conversation.append"](
+            object(), "history-request",
+            {"session_id": "visible-session", "event_id": f"event-{presentation}",
              "kind": "assistant", "content": "```cpp\nint main() {}\n```",
              "presentation": presentation},
-            request_id="history-request", session_id="transport-session")
+            "transport-session",
+        )
     assert records[0]["extra"] == {"presentation": "tool_result"}
     assert records[0]["content"] == "```cpp\nint main() {}\n```"
     assert records[0]["event_type"] == "chat.final"
@@ -655,8 +684,9 @@ async def test_video_config_selects_joyai_without_realtime_reference_audio(
             "jdopensource/JoyAI-VL-Interaction",
         ),
     )
-    await channel.request("video.realtime.config", {},
-        request_id="config-request", session_id="web-session")
+    await channel.handlers["video.realtime.config"](
+        object(), "config-request", {}, "web-session"
+    )
 
     assert channel.responses[-1][1]["payload"] == {
         "provider": "joyai",
@@ -678,8 +708,9 @@ async def test_video_config_selects_qwen_gateway_without_reference_audio(
     monkeypatch.setenv("QWEN_OMNI_API_KEY", "test-secret")
     monkeypatch.setenv("QWEN_OMNI_MODEL_NAME", "qwen3.5-omni-flash-realtime")
     monkeypatch.setenv("QWEN_OMNI_VOICE", "Ethan")
-    await channel.request("video.realtime.config", {},
-        request_id="config-request", session_id="web-session")
+    await channel.handlers["video.realtime.config"](
+        object(), "config-request", {}, "web-session"
+    )
 
     assert channel.responses[-1][1]["payload"] == {
         "provider": "qwen_omni",
@@ -710,14 +741,16 @@ async def test_realtime_context_restore_requires_conversation_ownership(monkeypa
     monkeypatch.setattr(VideoSearchManager, "authorized_scope", authorize)
     channel = _video_channel()
     ws = object()
-    await channel.request("video.realtime.config", {"search_session_id": "task-duplex:chat-a"},
-        request_id="config-denied", ws=ws, session_id="transport")
+    await channel.handlers["video.realtime.config"](
+        ws, "config-denied", {"search_session_id": "task-duplex:chat-a"}, "transport",
+    )
     assert channel.responses[-1][1]["ok"] is False
     prepare.assert_not_awaited()
     authorize.side_effect = None
     authorize.return_value = ("alice", "task-duplex:chat-a")
-    await channel.request("video.realtime.config", {"search_session_id": "task-duplex:chat-a"},
-        request_id="config-allowed", ws=ws, session_id="transport")
+    await channel.handlers["video.realtime.config"](
+        ws, "config-allowed", {"search_session_id": "task-duplex:chat-a"}, "transport",
+    )
     envelope = channel.responses[-1][1]["payload"]["context_restore"]
     assert json.loads(envelope["instructions"].rsplit("\n", 1)[1])["session_id"] == "chat-a"
     assert envelope["token"]
@@ -746,23 +779,22 @@ async def test_joyai_restores_history_on_user_turns_with_fresh_task_state(monkey
     manager.authorized_scope = AsyncMock(return_value=("alice", "task-duplex:chat-a"))
     manager.snapshot = Mock(return_value={"queue_version": 1, "jobs": [{"job_id": "current-job", "status": "running"}]})
     ws = object()
-    await channel.request("video.realtime.config", {"search_session_id": "task-duplex:chat-a"},
-        request_id="restore-config", ws=ws, session_id="transport")
+    await channel.handlers["video.realtime.config"](
+        ws, "restore-config", {"search_session_id": "task-duplex:chat-a"}, "transport",
+    )
     token = channel.responses[-1][1]["payload"]["context_restore"]["token"]
     provider.assert_not_called()
     request = {"frame_data_url": "data:image/jpeg;base64,ZmFrZQ==", "instruction": "What is my project codename?",
                "question": "What is my project codename?", "request_kind": "user",
                "search_session_id": "task-duplex:chat-a", "joyai_session_id": "media-a", "restore_token": token}
-    await channel.request("video.joyai.frame", request,
-        request_id="question-1", ws=ws, session_id="transport")
+    await channel.handlers["video.joyai.frame"](ws, "question-1", request, "transport")
     assert channel.responses[-1][1]["ok"] is True
     prompt = provider.await_args.args[1]
     assert "My project codename is Cedar" in prompt
     assert "Do not acknowledge this background" in prompt
     assert '"status": "running"' in prompt and "stale-snapshot" not in prompt
     manager.snapshot.return_value = {"queue_version": 2, "jobs": [{"job_id": "current-job", "status": "completed"}]}
-    await channel.request("video.joyai.frame", request,
-        request_id="question-2", ws=ws, session_id="transport")
+    await channel.handlers["video.joyai.frame"](ws, "question-2", request, "transport")
     assert '"status": "completed"' in provider.await_args.args[1]
     assert prepare.await_count == 1
     assert prepared["tasks"]["jobs"][0]["job_id"] == "stale-snapshot", "per-turn refresh must not mutate cached history"
@@ -770,24 +802,24 @@ async def test_joyai_restores_history_on_user_turns_with_fresh_task_state(monkey
     calls = provider.await_count
     for owner, scope in [("alice", "task-duplex:other"), ("bob", "task-duplex:chat-a")]:
         manager.authorized_scope.return_value = (owner, scope)
-        await channel.request("video.joyai.frame", request,
-            request_id="wrong-scope", ws=ws, session_id="transport")
+        await channel.handlers["video.joyai.frame"](ws, "wrong-scope", request, "transport")
         assert channel.responses[-1][1]["ok"] is False
         assert channel.responses[-1][1]["code"] == "CONTEXT_RESTORE_FAILED"
         assert provider.await_count == calls
     manager.authorized_scope.return_value = ("alice", "task-duplex:chat-a")
-    await channel.request("video.joyai.frame", {**request, "instruction": "", "request_kind": "frame"},
-        request_id="frame-with-token", ws=ws, session_id="transport")
+    await channel.handlers["video.joyai.frame"](
+        ws, "frame-with-token", {**request, "instruction": "", "request_kind": "frame"}, "transport",
+    )
     assert channel.responses[-1][1]["ok"] is False
     assert provider.await_count == calls
-    await channel.request("video.joyai.frame", {**request, "restore_token": "expired"},
-        request_id="expired-token", ws=ws, session_id="transport")
+    await channel.handlers["video.joyai.frame"](
+        ws, "expired-token", {**request, "restore_token": "expired"}, "transport",
+    )
     assert channel.responses[-1][1]["code"] == "CONTEXT_RESTORE_EXPIRED"
     assert provider.await_count == calls, "expired restore must fail before provider side effects"
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](ws, "normal-frame", {
         "frame_data_url": request["frame_data_url"], "request_kind": "frame", "joyai_session_id": "media-a",
-    },
-        request_id="normal-frame", ws=ws, session_id="transport")
+    }, "transport")
     assert provider.await_args.args[1] == ""
 
 
@@ -806,14 +838,18 @@ async def test_qwen_tool_rpc_delegates_original_instruction_to_core_agent(
     monkeypatch.setattr(video_live, "_video_live_mode", lambda: "realtime")
     monkeypatch.setattr(video_live, "_append_video_event_log", lambda event: None)
 
-    await channel.request("video.qwen.tool", {
+    await channel.handlers["video.qwen.tool"](
+        object(),
+        "qwen-tool-request",
+        {
             "name": "jiuwen_delegate",
             "call_id": "call-weather",
             "arguments": '{"task":"查询香港天气","title":"查询香港天气与出行建议"}',
             "question": "请查询香港今天的天气，并告诉我出门是否需要带伞",
             "search_session_id": "qwen-search-session",
         },
-        request_id="qwen-tool-request", session_id="web-session")
+        "web-session",
+    )
 
     response = channel.responses[-1][1]
     assert response["ok"] is True, response
@@ -864,12 +900,13 @@ async def test_qwen_tool_rpc_rejects_unrelated_voice_delegation(monkeypatch) -> 
     monkeypatch.setattr(video_live, "_video_live_mode", lambda: "realtime")
     monkeypatch.setattr(video_live, "_append_video_event_log", lambda event: None)
 
-    await channel.request("video.qwen.tool", {
+    await channel.handlers["video.qwen.tool"](
+        object(), "wrong-voice-task", {
             "name": "jiuwen_delegate", "call_id": "call-wrong-task",
             "arguments": '{"task":"查询当前有哪些电影种类或类型。","title":"查询电影种类"}',
             "question": "我定一个闹钟。", "search_session_id": "qwen-wrong-task",
-        },
-        request_id="wrong-voice-task", session_id="web-session")
+        }, "web-session",
+    )
 
     response = channel.responses[-1][1]
     assert response["ok"] is True
@@ -877,12 +914,13 @@ async def test_qwen_tool_rpc_rejects_unrelated_voice_delegation(monkeypatch) -> 
     assert response["payload"]["tool_result"]["code"] == "TASK_INPUT_MISMATCH"
     channel.manager.start.assert_not_awaited()
 
-    await channel.request("video.qwen.tool", {
+    await channel.handlers["video.qwen.tool"](
+        object(), "wrong-voice-title", {
             "name": "jiuwen_delegate", "call_id": "call-wrong-title",
             "arguments": '{"task":"设置十九点闹钟","title":"查询电影种类"}',
             "question": "给我设置十九点闹钟。", "search_session_id": "qwen-wrong-task",
-        },
-        request_id="wrong-voice-title", session_id="web-session")
+        }, "web-session",
+    )
     assert channel.responses[-1][1]["ok"] is True
     assert channel.manager.start.await_args.kwargs["title"] == ""
     assert channel.manager.start.await_args.kwargs["query"] == "设置十九点闹钟"
@@ -914,23 +952,31 @@ async def test_qwen_tasks_use_isolated_executions_with_prior_results_and_run_ser
         "name": "jiuwen_delegate",
         "search_session_id": "shared-video-session",
     }
-    await channel.request("video.qwen.tool", {
+    await channel.handlers["video.qwen.tool"](
+        object(),
+        "first-rpc",
+        {
             **base,
             "call_id": "call-open",
             "turn_id": "turn-open",
             "arguments": '{"task":"打开桌面上的复习提纲"}',
             "question": "打开桌面上的复习提纲",
         },
-        request_id="first-rpc", session_id="web-session")
+        "web-session",
+    )
     await asyncio.wait_for(first_started.wait(), timeout=1)
-    await channel.request("video.qwen.tool", {
+    await channel.handlers["video.qwen.tool"](
+        object(),
+        "second-rpc",
+        {
             **base,
             "call_id": "call-followup",
             "turn_id": "turn-followup",
             "arguments": '{"task":"列举该文档中作者的代码习惯"}',
             "question": "作者有哪些代码习惯？",
         },
-        request_id="second-rpc", session_id="web-session")
+        "web-session",
+    )
 
     await asyncio.sleep(0)
     assert len(requests) == 1
@@ -949,7 +995,6 @@ async def test_qwen_tasks_use_isolated_executions_with_prior_results_and_run_ser
     assert requests[1].params["video_delegation_context"][0]["question"] == (
         "打开桌面上的复习提纲"
     )
-
 
 
 @pytest.mark.asyncio
@@ -978,12 +1023,14 @@ async def test_qwen_repeated_call_id_reuses_one_core_job(monkeypatch) -> None:
         "search_session_id": "dedupe-session",
     }
 
-    await channel.request("video.qwen.tool", params,
-        request_id="first-rpc", session_id="web-session")
+    await channel.handlers["video.qwen.tool"](
+        object(), "first-rpc", params, "web-session"
+    )
     first_job = channel.responses[-1][1]["payload"]["search_job"]
     await asyncio.wait_for(started.wait(), timeout=1)
-    await channel.request("video.qwen.tool", params,
-        request_id="retry-rpc", session_id="web-session")
+    await channel.handlers["video.qwen.tool"](
+        object(), "retry-rpc", params, "web-session"
+    )
     reused_job = channel.responses[-1][1]["payload"]["search_job"]
 
     assert reused_job["id"] == first_job["id"]
@@ -999,23 +1046,31 @@ async def test_qwen_tool_rpc_rejects_invalid_or_inactive_calls(monkeypatch) -> N
     monkeypatch.setattr(video_live, "_append_video_event_log", lambda event: None)
     monkeypatch.setattr(video_live, "_video_live_mode", lambda: "realtime")
 
-    await channel.request("video.qwen.tool", {
+    await channel.handlers["video.qwen.tool"](
+        object(),
+        "invalid-tool",
+        {
             "name": "unsupported",
             "call_id": "call-1",
             "arguments": '{"query":"test"}',
             "search_session_id": "qwen-session",
         },
-        request_id="invalid-tool", session_id="web-session")
+        "web-session",
+    )
     assert channel.responses[-1][1]["code"] == "TASK_REQUEST_REJECTED"
 
     monkeypatch.setattr(video_live, "_video_live_mode", lambda: "joyai")
-    await channel.request("video.qwen.tool", {
+    await channel.handlers["video.qwen.tool"](
+        object(),
+        "inactive-provider",
+        {
             "name": "jiuwen_research",
             "call_id": "call-2",
             "arguments": '{"query":"test"}',
             "search_session_id": "qwen-session",
         },
-        request_id="inactive-provider", session_id="web-session")
+        "web-session",
+    )
     assert channel.responses[-1][1]["code"] == "TASK_REQUEST_REJECTED"
 
 
@@ -1088,13 +1143,14 @@ async def test_joyai_alarm_tool_json_in_speech_is_repaired_and_submitted_once(mo
     monkeypatch.setattr(joyai_action_helper, "request_review", reviewer)
     monkeypatch.setattr(joyai_provider, "request_completion", completion)
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
-    client = make_agent_client({"content": "Core test result"})
+    client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(
+        ok=True, payload={"content": "Core test result"},
+    )))
     channel = _video_channel(client)
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](None, "alarm-command", {
         "frame_data_url": "", "instruction": instruction, "question": instruction,
         "request_kind": "user", "search_session_id": "scope", "joyai_session_id": "media-alarm",
-    },
-        request_id="alarm-command", ws=None, session_id="transport")
+    }, "transport")
     reply = channel.responses[-1][1]
     assert reply["ok"] is True
     assert reply["payload"]["response"] == "请求已提交给 Core，尚未确认执行结果。"
@@ -1128,11 +1184,10 @@ async def test_joyai_action_repair_is_bounded_and_cannot_report_fake_success(mon
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
     client = SimpleNamespace(send_request=AsyncMock())
     channel = _video_channel(client)
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](None, "bad-alarm", {
         "frame_data_url": "", "instruction": "设置今天12点闹钟", "question": "设置今天12点闹钟",
         "request_kind": "user", "search_session_id": "scope", "joyai_session_id": "media-alarm",
-    },
-        request_id="bad-alarm", ws=None, session_id="transport")
+    }, "transport")
     reply = channel.responses[-1][1]
     assert reply["ok"] is False and reply["code"] == "JOYAI_ACTION_HELPER_ERROR"
     assert "payload" not in reply
@@ -1151,11 +1206,10 @@ async def test_joyai_initial_rate_limit_does_not_invoke_reviewer(monkeypatch):
     monkeypatch.setattr(joyai_provider, "request_completion", completion)
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
     channel = _video_channel()
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](None, "limited-repair", {
         "frame_data_url": "", "instruction": "设置闹钟", "request_kind": "user",
         "search_session_id": "scope", "joyai_session_id": "media-alarm",
-    },
-        request_id="limited-repair", ws=None, session_id="transport")
+    }, "transport")
     assert channel.responses[-1][1]["code"] == "JOYAI_RATE_LIMIT"
     assert completion.await_count == 1
     reviewer.assert_not_called()
@@ -1184,12 +1238,13 @@ async def test_joyai_missing_delegation_waits_for_review_and_deduplicates_submis
         "response", response="我来设置闹钟。",
     )))
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
-    client = make_agent_client({"content": "Test result"})
+    client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(
+        ok=True, payload={"content": "Test result"},
+    )))
     channel = _video_channel(client)
     params = {"frame_data_url": "", "instruction": instruction, "question": instruction,
               "request_kind": "user", "search_session_id": "scope", "command_id": "stable-alarm"}
-    request = asyncio.create_task(channel.request("video.joyai.frame", params,
-        request_id="alarm-1", ws=None, session_id="transport"))
+    request = asyncio.create_task(channel.handlers["video.joyai.frame"](None, "alarm-1", params, "transport"))
     await asyncio.wait_for(started.wait(), 1)
     assert channel.responses == [], "no original promise or helper success claim is spoken before acceptance"
     client.send_request.assert_not_called()
@@ -1198,8 +1253,7 @@ async def test_joyai_missing_delegation_waits_for_review_and_deduplicates_submis
     job = channel.responses[-1][1]["payload"]["search_job"]
     assert channel.responses[-1][1]["payload"]["response"] == "请求已提交给 Core，尚未确认执行结果。"
     await _wait_for_event(channel, "video.search.completed")
-    await channel.request("video.joyai.frame", params,
-        request_id="alarm-2", ws=None, session_id="transport")
+    await channel.handlers["video.joyai.frame"](None, "alarm-2", params, "transport")
     replay = channel.responses[-1][1]["payload"]
     assert replay["search_job"]["job_id"] == job["job_id"]
     assert "已有任务记录" in replay["response"]
@@ -1221,13 +1275,14 @@ async def test_joyai_passive_frames_and_native_delegations_skip_helper(monkeypat
         decision, response="Checking.", delegation=json.dumps(operation) if decision == "delegation" else "",
     )))
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
-    client = make_agent_client({"content": "Test result"})
+    client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(
+        ok=True, payload={"content": "Test result"},
+    )))
     channel = _video_channel(client)
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](None, "no-review", {
         "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==", "instruction": "Create report" if kind == "user" else "",
         "request_kind": kind, "search_session_id": "scope",
-    },
-        request_id="no-review", ws=None, session_id="transport")
+    }, "transport")
     assert channel.responses[-1][1]["ok"] is True
     reviewer.assert_not_called()
 
@@ -1243,10 +1298,9 @@ async def test_joyai_helper_can_clarify_without_creating_a_task(monkeypatch):
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
     client = SimpleNamespace(send_request=AsyncMock())
     channel = _video_channel(client)
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](None, "unclear", {
         "frame_data_url": "", "instruction": "处理一下它", "request_kind": "user", "search_session_id": "scope",
-    },
-        request_id="unclear", ws=None, session_id="transport")
+    }, "transport")
     payload = channel.responses[-1][1]["payload"]
     assert payload == {"response": "你指的是哪个闹钟？", "search_job": None}
     client.send_request.assert_not_called()
@@ -1262,10 +1316,9 @@ async def test_joyai_helper_timeout_does_not_return_original_promise_or_limit_jo
     )))
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
     channel = _video_channel()
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](None, "timeout", {
         "frame_data_url": "", "instruction": "设置闹钟", "request_kind": "user", "search_session_id": "scope",
-    },
-        request_id="timeout", ws=None, session_id="transport")
+    }, "transport")
     reply = channel.responses[-1][1]
     assert reply["ok"] is False and reply["code"] == "JOYAI_ACTION_HELPER_ERROR"
     assert "payload" not in reply
@@ -1288,10 +1341,9 @@ async def test_joyai_helper_submission_failure_has_no_success_utterance(monkeypa
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
     channel = _video_channel()
     monkeypatch.setattr(channel.manager, "start", AsyncMock(side_effect=ValueError("Task admission failed")))
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](None, "rejected", {
         "frame_data_url": "", "instruction": "设置闹钟", "request_kind": "user", "search_session_id": "scope",
-    },
-        request_id="rejected", ws=None, session_id="transport")
+    }, "transport")
     reply = channel.responses[-1][1]
     assert reply["ok"] is False and reply["code"] == "TASK_REQUEST_REJECTED"
     assert "payload" not in reply
@@ -1375,8 +1427,6 @@ async def test_request_joyai_frame_uses_stateful_chat_completion(monkeypatch) ->
     assert "memory" not in result
 
 
-
-
 @pytest.mark.asyncio
 async def test_request_joyai_frame_without_instruction_sends_image_and_action_protocol(
     monkeypatch,
@@ -1453,13 +1503,48 @@ async def test_joyai_voice_only_support_still_rejects_empty_polling_and_invalid_
     channel = _video_channel()
     provider = AsyncMock()
     monkeypatch.setattr(joyai_provider, "request_frame", provider)
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](None, "invalid-empty-frame", {
         "frame_data_url": frame, "instruction": instruction, "question": instruction,
         "request_kind": kind, "search_session_id": "scope", "joyai_session_id": "joyai",
-    },
-        request_id="invalid-empty-frame", ws=None)
+    }, None)
     assert channel.responses[-1][1]["ok"] is False
     provider.assert_not_awaited()
+
+
+def test_joyai_content_log_uses_one_compact_stream(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(video_live, "get_user_workspace_dir", lambda: tmp_path / ".jiuwenswarm")
+    monkeypatch.setattr(video_live.logger, "isEnabledFor", lambda level: False)
+
+    video_live._append_joyai_log({
+        "request_id": "request-response",
+        "joyai_session_id": "session-1",
+        "instruction": "搜索今天的天气",
+        "request_kind": "user",
+        "frame_time_range": "1.0 seconds ~ 2.0 seconds",
+        "stage": "completed",
+        "decision": "response",
+        "raw_content": "</response> 我来搜索。",
+        "model_raw_content": "</response> 我来搜索。\n</delegation> 今天的天气",
+    })
+    video_live._append_joyai_log({
+        "request_id": "request-silence",
+        "joyai_session_id": "session-1",
+        "instruction": "",
+        "request_kind": "frame",
+        "stage": "completed",
+        "decision": "silence",
+        "raw_content": "</silence>",
+        "model_raw_content": "</silence>",
+    })
+
+    log_path = tmp_path / ".jiuwenswarm" / "logs" / "duplex-realtime.jsonl"
+    records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == 2
+    assert all(record["component"] == "joyai" for record in records)
+    assert records[0]["model_raw_content_chars"] == len("</response> 我来搜索。\n</delegation> 今天的天气")
+    assert all("model_raw_content" not in record for record in records)
 
 
 @pytest.mark.parametrize(
@@ -1736,9 +1821,11 @@ async def test_joyai_invalid_action_cannot_create_task(monkeypatch, field, inval
         result[field] = invalid
     monkeypatch.setattr(joyai_provider, "request_frame", AsyncMock(return_value=result))
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
-    await channel.request("video.joyai.frame", {
-        "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==", "instruction": "Create a report"},
-        request_id="invalid-action", ws=None, session_id="scope")
+    await channel.handlers["video.joyai.frame"](
+        None, "invalid-action",
+        {"frame_data_url": "data:image/jpeg;base64,ZmFrZQ==", "instruction": "Create a report"},
+        "scope",
+    )
     response = channel.responses[-1][1]
     assert response.get("ok") is False
     assert response.get("code") == "JOYAI_ERROR"
@@ -1760,9 +1847,11 @@ async def test_joyai_invalid_followup_stops_control_loop(monkeypatch):
     ])
     monkeypatch.setattr(joyai_provider, "request_frame", provider)
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
-    await channel.request("video.joyai.frame", {
-        "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==", "instruction": "Find the report"},
-        request_id="invalid-followup", ws=None, session_id="scope")
+    await channel.handlers["video.joyai.frame"](
+        None, "invalid-followup",
+        {"frame_data_url": "data:image/jpeg;base64,ZmFrZQ==", "instruction": "Find the report"},
+        "scope",
+    )
     response = channel.responses[-1][1]
     assert response.get("ok") is False
     assert "invalid action result" in response.get("error", "")
@@ -1799,8 +1888,7 @@ async def test_joyai_queue_manager_reorders_real_queue_without_new_task(monkeypa
     params = {"frame_data_url": "", "instruction": "先打开飞书，再打开微信", "request_kind": "user",
               "search_session_id": "scope", "command_id": "reorder-command"}
     for request_id in ("request-1", "request-2"):
-        await channel.request("video.joyai.frame", params,
-            request_id=request_id, ws=None, session_id="scope")
+        await channel.handlers["video.joyai.frame"](None, request_id, params, "scope")
         response = channel.responses[-1][1]
         assert response["ok"] is True
         payload = response["payload"]
@@ -1826,10 +1914,9 @@ async def test_joyai_queue_manager_failure_withholds_original_success_claim(monk
     managed = AsyncMock(return_value={"state": "incomplete", "receipts": [{"receipt": {"state": "cancelling"}}]})
     monkeypatch.setattr(channel.manager, "manage_queue_call", managed)
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](None, "failed-manager", {
         "instruction": "调整顺序", "request_kind": "user", "reply_language": "en",
-    },
-        request_id="failed-manager", ws=None, session_id="scope")
+    }, "scope")
     payload = channel.responses[-1][1]["payload"]
     assert payload["response"] == (
         "Queue management did not finish. Check the task list and scheduled jobs for any changes already applied."
@@ -1849,10 +1936,9 @@ async def test_joyai_passive_frame_cannot_start_queue_management(monkeypatch):
     managed = AsyncMock()
     monkeypatch.setattr(channel.manager, "manage_queue_call", managed)
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](None, "passive", {
         "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==", "instruction": "", "request_kind": "frame",
-    },
-        request_id="passive", ws=None, session_id="scope")
+    }, "scope")
     assert channel.responses[-1][1]["ok"] is False
     managed.assert_not_called()
 
@@ -1867,9 +1953,11 @@ async def test_joyai_action_without_diagnostic_fields_is_valid(monkeypatch, deci
         "decision": decision, "response": answer, "delegation": "",
     }))
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
-    await channel.request("video.joyai.frame", {
-        "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==", "instruction": "Describe the image"},
-        request_id="no-diagnostics", ws=None, session_id="scope")
+    await channel.handlers["video.joyai.frame"](
+        None, "no-diagnostics",
+        {"frame_data_url": "data:image/jpeg;base64,ZmFrZQ==", "instruction": "Describe the image"},
+        "scope",
+    )
     response = channel.responses[-1][1]
     assert response.get("ok") is True
     assert response.get("payload", {}).get("response") == answer
@@ -1880,17 +1968,21 @@ async def test_joyai_action_without_diagnostic_fields_is_valid(monkeypatch, deci
 async def test_joyai_long_instruction_preserves_constraints_or_rejects_before_execution(monkeypatch, length):
     from unittest.mock import AsyncMock
 
-    client = make_agent_client({"content": "Plan only"})
+    client = SimpleNamespace(send_request=AsyncMock(
+        return_value=SimpleNamespace(ok=True, payload={"content": "Plan only"}),
+    ))
     channel = _video_channel(client)
     tail = "Do not modify any files."
     instruction = "x" * (length - len(tail)) + tail
     provider = AsyncMock(return_value=_joyai_result("delegation", delegation=instruction))
     monkeypatch.setattr(joyai_provider, "request_frame", provider)
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
-    await channel.request("video.joyai.frame", {
-        "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==", "instruction": instruction,
+    await channel.handlers["video.joyai.frame"](
+        None, "long-input",
+        {"frame_data_url": "data:image/jpeg;base64,ZmFrZQ==", "instruction": instruction,
          "question": instruction, "request_kind": "user", "search_session_id": "scope"},
-        request_id="long-input", ws=None, session_id="scope")
+        "scope",
+    )
     response = channel.responses[-1][1]
     if length > 16000:
         assert response.get("ok") is False and response.get("code") == "BAD_REQUEST"
@@ -1929,12 +2021,16 @@ async def test_joyai_frame_handler_returns_action_and_writes_metadata_only(
     monkeypatch.setattr(joyai_provider, "request_frame", fake_request)
     monkeypatch.setattr(video_live, "_append_joyai_log", logs.append)
 
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](
+        object(),
+        "joyai-request-1",
+        {
             "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==",
             "instruction": "持续观察画面变化",
             "joyai_session_id": "joyai-session-1",
         },
-        request_id="joyai-request-1", session_id="web-session")
+        "web-session",
+    )
 
     assert calls == [
         (
@@ -1967,12 +2063,16 @@ async def test_joyai_frame_handler_exposes_rate_limit_code(monkeypatch) -> None:
     monkeypatch.setattr(joyai_provider, "request_frame", fake_request)
     monkeypatch.setattr(video_live, "_append_joyai_log", logs.append)
 
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](
+        object(),
+        "joyai-rate-limit",
+        {
             "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==",
             "request_kind": "frame",
             "joyai_session_id": "joyai-session-rate-limit",
         },
-        request_id="joyai-rate-limit", session_id="web-session")
+        "web-session",
+    )
 
     response = channel.responses[-1][1]
     assert response["ok"] is False
@@ -1999,7 +2099,10 @@ async def test_joyai_user_instruction_preserves_native_silence(monkeypatch) -> N
     monkeypatch.setattr(joyai_provider, "request_frame", fake_request)
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda event: None)
 
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](
+        object(),
+        "joyai-user-question",
+        {
             "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==",
             "instruction": "每当画面出现瓶子时介绍它的样子。",
             "question": "每当画面出现瓶子时介绍它的样子。",
@@ -2009,7 +2112,8 @@ async def test_joyai_user_instruction_preserves_native_silence(monkeypatch) -> N
                 "原问题：香港今天天气如何？\n最终结果：香港今日多云，局部地区有骤雨。"
             ),
         },
-        request_id="joyai-user-question", session_id="web-session")
+        "web-session",
+    )
 
     assert ground_calls == [
         (
@@ -2035,13 +2139,17 @@ async def test_joyai_frame_silence_is_not_retried(monkeypatch) -> None:
     monkeypatch.setattr(joyai_provider, "request_frame", fake_request)
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda event: None)
 
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](
+        object(),
+        "joyai-frame",
+        {
             "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==",
             "instruction": "继续观察",
             "request_kind": "frame",
             "joyai_session_id": "joyai-session-frame",
         },
-        request_id="joyai-frame", session_id="web-session")
+        "web-session",
+    )
 
     assert calls == ["joyai-session-frame"]
     assert channel.responses[-1][1]["payload"] == {
@@ -2101,13 +2209,17 @@ async def test_joyai_accepts_frame_only_request(monkeypatch) -> None:
     monkeypatch.setattr(joyai_provider, "request_frame", fake_request)
     monkeypatch.setattr(video_live, "_append_joyai_log", logs.append)
 
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](
+        object(),
+        "joyai-frame-only",
+        {
             "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==",
             "instruction": "",
             "request_kind": "frame",
             "joyai_session_id": "joyai-session-frame",
         },
-        request_id="joyai-frame-only", session_id="web-session")
+        "web-session",
+    )
 
     assert calls == [
         (
@@ -2164,11 +2276,13 @@ async def test_joyai_delegation_reuses_stable_command_not_matching_text(
         "joyai_session_id": "joyai-session-tool",
         "command_id": "stable-joyai-command",
     }
-    await channel.request("video.joyai.frame", params,
-        request_id="joyai-tool-1", session_id="web-session")
+    await channel.handlers["video.joyai.frame"](
+        object(), "joyai-tool-1", params, "web-session"
+    )
     first = channel.responses[-1][1]["payload"]
-    await channel.request("video.joyai.frame", params,
-        request_id="joyai-tool-2", session_id="web-session")
+    await channel.handlers["video.joyai.frame"](
+        object(), "joyai-tool-2", params, "web-session"
+    )
     second = channel.responses[-1][1]["payload"]
 
     assert first["search_job"]["status"] == "queued"
@@ -2193,9 +2307,12 @@ async def test_joyai_frame_handler_rejects_non_image_payload(monkeypatch) -> Non
         raise AssertionError("invalid frames must not reach JoyAI")
 
     monkeypatch.setattr(joyai_provider, "request_frame", fail_request)
-    await channel.request("video.joyai.frame", {
-        "frame_data_url": "not-an-image", "instruction": "观察画面"},
-        request_id="joyai-request-bad", session_id="web-session")
+    await channel.handlers["video.joyai.frame"](
+        object(),
+        "joyai-request-bad",
+        {"frame_data_url": "not-an-image", "instruction": "观察画面"},
+        "web-session",
+    )
 
     assert channel.responses[-1][1]["code"] == "BAD_REQUEST"
 
@@ -2204,8 +2321,9 @@ async def test_joyai_frame_handler_rejects_non_image_payload(monkeypatch) -> Non
 async def test_realtime_telemetry_rejects_unscoped_events() -> None:
     channel = _video_channel()
 
-    await channel.request("video.realtime.telemetry", {"event": "arbitrary_event"},
-        request_id="telemetry-invalid", session_id="session")
+    await channel.handlers["video.realtime.telemetry"](
+        object(), "telemetry-invalid", {"event": "arbitrary_event"}, "session"
+    )
 
     assert channel.responses[-1][1]["code"] == "BAD_REQUEST"
 
@@ -2273,8 +2391,9 @@ async def test_realtime_telemetry_routes_sanitized_events(
     captured = []
     monkeypatch.setattr(video_live, logger_name, captured.append)
 
-    await channel.request("video.realtime.telemetry", params,
-        request_id="telemetry-valid", session_id="session")
+    await channel.handlers["video.realtime.telemetry"](
+        object(), "telemetry-valid", params, "session"
+    )
 
     assert channel.responses[-1][1]["payload"] == {"logged": True}
     assert expected.items() <= captured[0].items()
@@ -2294,8 +2413,9 @@ async def test_qwen_vad_recovery_diagnostics_include_processing_latency(monkeypa
         "inference_ms": 25,
         "wait_ms": 595,
     }
-    await channel.request("video.realtime.telemetry", params,
-        request_id="vad-recovery-telemetry", session_id="session")
+    await channel.handlers["video.realtime.telemetry"](
+        object(), "vad-recovery-telemetry", params, "session"
+    )
     assert channel.responses[-1][1]["payload"] == {"logged": True}
     assert params.items() <= captured[0].items()
 
@@ -2312,8 +2432,9 @@ async def test_qwen_tool_wait_diagnostics_preserve_task_and_queue_reason(monkeyp
         "queued_count": 2,
         "secret": "discard",
     }
-    await channel.request("video.realtime.telemetry", params,
-        request_id="tool-wait-telemetry", session_id="session")
+    await channel.handlers["video.realtime.telemetry"](
+        object(), "tool-wait-telemetry", params, "session"
+    )
     assert channel.responses[-1][1]["payload"] == {"logged": True}
     assert captured[0]["job_id"] == "earlier-task"
     assert captured[0]["reason"] == "user_speaking"
@@ -2335,7 +2456,10 @@ async def test_qwen_realtime_error_preserves_raw_event_in_dedicated_log(
         '"message":"input is too long"}}'
     )
 
-    await channel.request("video.realtime.telemetry", {
+    await channel.handlers["video.realtime.telemetry"](
+        object(),
+        "telemetry-qwen-error",
+        {
             "event": "qwen_realtime_error",
             "code": "context_length_exceeded",
             "message": "input is too long",
@@ -2343,7 +2467,8 @@ async def test_qwen_realtime_error_preserves_raw_event_in_dedicated_log(
             "raw_event": raw_event,
             "secret": "discard",
         },
-        request_id="telemetry-qwen-error", session_id="session")
+        "session",
+    )
 
     assert channel.responses[-1][1]["payload"] == {"logged": True}
     assert telemetry == []
@@ -2505,18 +2630,54 @@ async def test_execute_core_agent_extracts_generated_brief_protocol() -> None:
     assert result["realtime_brief"]["source"] == "core_agent"
 
 
-@pytest.mark.parametrize("final", ["香港今天有骤雨，外出建议带伞。", ""])
-async def test_execute_core_agent_prefers_final_and_falls_back_to_stream(final):
+@pytest.mark.asyncio
+async def test_execute_core_agent_prefers_chat_final_like_normal_chat() -> None:
+    class FakeAgentClient:
+        async def send_request_stream(self, envelope):
+            del envelope
+            yield SimpleNamespace(
+                payload={"event_type": "chat.delta", "content": "正在查询资料……"},
+            )
+            yield SimpleNamespace(
+                payload={
+                    "event_type": "chat.final",
+                    "content": "香港今天有骤雨，外出建议带伞。",
+                },
+            )
+
     result = await video_search.execute_core_agent(
-        make_agent_client(frames=[
-            {"event_type": "chat.delta", "content": "正在查询资料……"},
-            {"event_type": "chat.delta", "content": "外出建议带伞。"},
-            {"event_type": "chat.final", "content": final},
-        ]),
-        question="香港今天天气如何？", query="香港今日天气",
-        visual_context="室内画面", search_session_id="search-session",
+        FakeAgentClient(),
+        question="香港今天天气如何？",
+        query="香港今日天气",
+        visual_context="室内画面",
+        search_session_id="search-session",
     )
-    assert result["answer"] == (final or "正在查询资料……外出建议带伞。")
+
+    assert result["answer"] == "香港今天有骤雨，外出建议带伞。"
+
+
+@pytest.mark.asyncio
+async def test_execute_core_agent_empty_final_keeps_streamed_answer() -> None:
+    class FakeAgentClient:
+        async def send_request_stream(self, envelope):
+            del envelope
+            yield SimpleNamespace(
+                payload={"event_type": "chat.delta", "content": "香港今天有骤雨，"},
+            )
+            yield SimpleNamespace(
+                payload={"event_type": "chat.delta", "content": "外出建议带伞。"},
+            )
+            yield SimpleNamespace(payload={"event_type": "chat.final", "content": ""})
+
+    result = await video_search.execute_core_agent(
+        FakeAgentClient(),
+        question="香港今天天气如何？",
+        query="香港今日天气",
+        visual_context="室内画面",
+        search_session_id="search-session",
+    )
+
+    assert result["answer"] == "香港今天有骤雨，外出建议带伞。"
 
 
 @pytest.mark.asyncio
@@ -2532,8 +2693,12 @@ async def test_transcribe_handler_returns_verified_text(monkeypatch) -> None:
     asr_logs = []
     monkeypatch.setattr(video_live, "_append_video_event_log", event_logs.append)
     monkeypatch.setattr(video_live, "_append_asr_log", asr_logs.append)
-    await channel.request("video.transcribe", {"audio_data_url": "data:audio/wav;base64,ZmFrZQ=="},
-        request_id="request-1", session_id="session")
+    await channel.handlers["video.transcribe"](
+        object(),
+        "request-1",
+        {"audio_data_url": "data:audio/wav;base64,ZmFrZQ=="},
+        "session",
+    )
 
     assert channel.responses[-1][1]["payload"] == {"transcript": "这个是什么"}
     assert event_logs == []
@@ -2591,8 +2756,12 @@ async def test_transcribe_handler_ignores_filler_only_result(monkeypatch) -> Non
     asr_logs = []
     monkeypatch.setattr(video_live, "_append_video_event_log", event_logs.append)
     monkeypatch.setattr(video_live, "_append_asr_log", asr_logs.append)
-    await channel.request("video.transcribe", {"audio_data_url": "data:audio/wav;base64,ZmFrZQ=="},
-        request_id="filler-request", session_id="session")
+    await channel.handlers["video.transcribe"](
+        object(),
+        "filler-request",
+        {"audio_data_url": "data:audio/wav;base64,ZmFrZQ=="},
+        "session",
+    )
 
     assert channel.responses[-1][1]["payload"] == {
         "transcript": "",
@@ -2617,16 +2786,24 @@ async def test_transcribe_handler_logs_empty_and_failed_results(monkeypatch) -> 
         return ""
 
     monkeypatch.setattr(video_voice, "transcribe_audio", empty_transcribe)
-    await channel.request("video.transcribe", {"audio_data_url": "data:audio/wav;base64,ZmFrZQ=="},
-        request_id="empty-request", session_id="session")
+    await channel.handlers["video.transcribe"](
+        object(),
+        "empty-request",
+        {"audio_data_url": "data:audio/wav;base64,ZmFrZQ=="},
+        "session",
+    )
 
     async def failed_transcribe(audio_inputs, **_kwargs):
         del audio_inputs
         raise RuntimeError("upstream disconnected")
 
     monkeypatch.setattr(video_voice, "transcribe_audio", failed_transcribe)
-    await channel.request("video.transcribe", {"audio_data_url": "data:audio/wav;base64,ZmFrZQ=="},
-        request_id="failed-request", session_id="session")
+    await channel.handlers["video.transcribe"](
+        object(),
+        "failed-request",
+        {"audio_data_url": "data:audio/wav;base64,ZmFrZQ=="},
+        "session",
+    )
 
     assert asr_logs[0]["outcome"] == "empty"
     assert asr_logs[0]["transcript"] == ""
@@ -2642,8 +2819,9 @@ async def test_transcribe_handler_logs_rejected_input(monkeypatch) -> None:
     asr_logs = []
     monkeypatch.setattr(video_live, "_append_asr_log", asr_logs.append)
 
-    await channel.request("video.transcribe", {"audio_data_url": "not-a-data-url"},
-        request_id="bad-request", session_id="session")
+    await channel.handlers["video.transcribe"](
+        object(), "bad-request", {"audio_data_url": "not-a-data-url"}, "session"
+    )
 
     assert asr_logs[0]["outcome"] == "rejected"
     assert asr_logs[0]["error"] == "audio_data_url is invalid"
@@ -2704,14 +2882,18 @@ async def test_video_search_uses_full_core_agent_rpc(monkeypatch) -> None:
     monkeypatch.setattr(video_live, "_video_live_mode", lambda: "realtime")
     monkeypatch.setattr(video_live, "_append_video_event_log", lambda event: None)
 
-    await channel.request("video.qwen.tool", {
+    await channel.handlers["video.qwen.tool"](
+        object(),
+        "official-search-request",
+        {
             "name": "jiuwen_research",
             "call_id": "call-luckin",
             "arguments": '{"query":"Luckin Coffee company profile"}',
             "question": "介绍一下这个牌子",
             "search_session_id": "realtime-session-official",
         },
-        request_id="official-search-request", session_id="session")
+        "session",
+    )
 
     job = channel.responses[-1][1]["payload"]["search_job"]
     completed = await _wait_for_event(channel, "video.search.completed")
@@ -2758,12 +2940,21 @@ async def test_execute_core_agent_streams_every_reasoning_delta() -> None:
     async def collect_progress(item):
         progress.append(item)
 
+    class FakeAgentClient:
+        async def send_request_stream(self, envelope):
+            del envelope
+            for content in ("先检查", "，再核实"):
+                yield SimpleNamespace(
+                    payload={"event_type": "chat.reasoning", "content": content},
+                    is_complete=False,
+                )
+            yield SimpleNamespace(
+                payload={"event_type": "chat.final", "content": "完成"},
+                is_complete=True,
+            )
+
     result = await video_search.execute_core_agent(
-        make_agent_client(frames=[
-            {"event_type": "chat.reasoning", "content": "先检查"},
-            {"event_type": "chat.reasoning", "content": "，再核实"},
-            {"event_type": "chat.final", "content": "完成"},
-        ]),
+        FakeAgentClient(),
         question="测试",
         query="测试",
         visual_context="",
@@ -2840,7 +3031,10 @@ async def test_joyai_delegation_sends_trigger_frame_to_full_core_agent(
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda event: None)
     monkeypatch.setattr(video_live, "_append_video_event_log", lambda event: None)
 
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](
+        object(),
+        "joyai-official-search",
+        {
             "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==",
             "instruction": "介绍一下这个品牌",
             "question": "介绍一下这个品牌",
@@ -2848,7 +3042,8 @@ async def test_joyai_delegation_sends_trigger_frame_to_full_core_agent(
             "joyai_session_id": "joyai-search-session",
             "search_session_id": "search-session-joyai",
         },
-        request_id="joyai-official-search", session_id="session")
+        "session",
+    )
     await _wait_for_event(channel, "video.search.completed")
 
     assert len(requests) == 1
@@ -2878,8 +3073,9 @@ async def test_tts_handler_returns_audio(monkeypatch) -> None:
         return b"audio", "audio/mpeg", "speech-model"
 
     monkeypatch.setattr(video_voice, "synthesize_speech", fake_synthesize)
-    await channel.request("tts.synthesize", {"text": "hello"},
-        request_id="request-3", session_id="session")
+    await channel.handlers["tts.synthesize"](
+        object(), "request-3", {"text": "hello"}, "session"
+    )
 
     assert (
         channel.responses[-1][1]["payload"]["audio_base64"]
@@ -2906,8 +3102,12 @@ async def test_tts_stream_handler_pushes_pcm_before_completion(monkeypatch) -> N
         return sum(map(len, pcm_chunks)), len(pcm_chunks)
 
     monkeypatch.setattr(joyai_provider, "stream_channel_pcm", fake_stream)
-    await channel.request("tts.stream.start", {"text": "流式语音", "stream_id": "stream-1"},
-        request_id="stream-request", session_id="session")
+    await channel.handlers["tts.stream.start"](
+        object(),
+        "stream-request",
+        {"text": "流式语音", "stream_id": "stream-1"},
+        "session",
+    )
 
     assert channel.responses[-1][1]["payload"] == {
         "started": True,
@@ -2947,8 +3147,12 @@ async def test_tts_stream_handler_rejects_openai_voice_protocol(monkeypatch) -> 
         raise AssertionError("OpenAI-compatible TTS must not use the JoyAI stream")
 
     monkeypatch.setattr(joyai_provider, "stream_channel_pcm", fail_stream)
-    await channel.request("tts.stream.start", {"text": "回退到普通语音合成", "stream_id": "stream-openai"},
-        request_id="stream-request", session_id="session")
+    await channel.handlers["tts.stream.start"](
+        object(),
+        "stream-request",
+        {"text": "回退到普通语音合成", "stream_id": "stream-openai"},
+        "session",
+    )
 
     response = channel.responses[-1][1]
     assert response["ok"] is False
@@ -2972,11 +3176,19 @@ async def test_tts_stream_cancel_stops_background_generation(monkeypatch) -> Non
 
     monkeypatch.setattr(joyai_provider, "stream_channel_pcm", blocked_stream)
     ws = object()
-    await channel.request("tts.stream.start", {"text": "很长的语音", "stream_id": "stream-cancel"},
-        request_id="stream-request", ws=ws, session_id="session")
+    await channel.handlers["tts.stream.start"](
+        ws,
+        "stream-request",
+        {"text": "很长的语音", "stream_id": "stream-cancel"},
+        "session",
+    )
     await started.wait()
-    await channel.request("tts.stream.cancel", {"stream_id": "stream-cancel"},
-        request_id="cancel-request", ws=ws, session_id="session")
+    await channel.handlers["tts.stream.cancel"](
+        ws,
+        "cancel-request",
+        {"stream_id": "stream-cancel"},
+        "session",
+    )
 
     async def wait_for_cancelled_event() -> None:
         while not any(event == "video.tts.cancelled" for event, _ in channel.events):
@@ -2995,7 +3207,13 @@ async def test_joyai_task_query_then_revision_uses_shared_service(monkeypatch):
     from unittest.mock import AsyncMock
 
     channel = _video_channel(
-        make_agent_client({"content": "Revised result"})
+        SimpleNamespace(
+            send_request=AsyncMock(
+                return_value=SimpleNamespace(
+                    ok=True, payload={"content": "Revised result"}
+                )
+            )
+        )
     )
     task = await channel.manager.start(
         None,
@@ -3031,7 +3249,10 @@ async def test_joyai_task_query_then_revision_uses_shared_service(monkeypatch):
 
     monkeypatch.setattr(joyai_provider, "request_frame", provider)
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](
+        None,
+        "change",
+        {
             "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==",
             "instruction": "巴黎任务改成法语",
             "question": "巴黎任务改成法语",
@@ -3039,7 +3260,8 @@ async def test_joyai_task_query_then_revision_uses_shared_service(monkeypatch):
             "search_session_id": "scope",
             "joyai_session_id": "joyai",
         },
-        request_id="change", ws=None)
+        None,
+    )
     assert channel.responses[-1][1]["ok"]
     assert channel.responses[-1][1]["payload"]["search_job"] is None
     tasks, _ = channel.manager.service.list("test-user", "scope")
@@ -3051,7 +3273,9 @@ async def test_joyai_voice_form_answer_is_blocked_and_manual_form_resumes_origin
     from unittest.mock import AsyncMock
     from jiuwenswarm.extensions.video_duplex.tests.backend.test_task_interactions import QuestionExecutor, until
 
-    channel = _video_channel(make_agent_client({"user_id": "test-user", "mode": "agent", "work_mode": "work"}))
+    channel = _video_channel(SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(
+        ok=True, payload={"user_id": "test-user", "mode": "agent", "work_mode": "work"},
+    ))))
     service = channel.manager.service
     service.executor = QuestionExecutor(service.store)
     scope = "task-duplex:manual-form"
@@ -3066,26 +3290,22 @@ async def test_joyai_voice_form_answer_is_blocked_and_manual_form_resumes_origin
     provider = AsyncMock(return_value=_joyai_result("delegation", delegation=json.dumps(operation)))
     monkeypatch.setattr(joyai_provider, "request_frame", provider)
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](None, "voice-answer", {
         "frame_data_url": "", "instruction": "5000元", "question": "5000元", "request_kind": "user",
         "search_session_id": scope, "joyai_session_id": "joyai-form",
-    },
-        request_id="voice-answer", ws=None)
+    }, None)
     assert channel.responses[-1][1]["ok"] is False
     assert "voice form answers are disabled" in channel.responses[-1][1]["error"]
     assert service.store.read(job["id"])["interaction"]["state"] == "pending"
     assert provider.await_count == 1
-    await channel.request("video.search.answer", {
+    await channel.handlers["video.search.answer"](None, "manual-answer", {
         "session_id": "manual-form", "job_id": job["id"],
         "request_id": pending["interaction"]["request_id"], "answers": ["5000元"],
-    },
-        request_id="manual-answer", ws=None)
+    }, None)
     assert channel.responses[-1][1]["ok"] is True
     await until(lambda: service.store.read(job["id"])["status"] == "completed")
     tasks, _ = service.list("test-user", scope)
     assert len(tasks) == 1 and tasks[0]["result"]["answer"] == "5000元"
-
-
 
 
 @pytest.mark.parametrize("frame", ["data:image/jpeg;base64,ZmFrZQ==", ""])
@@ -3095,7 +3315,11 @@ async def test_joyai_structured_independent_delegate_reaches_shared_service(
     from unittest.mock import AsyncMock
 
     channel = _video_channel(
-        make_agent_client({"content": "weather"})
+        SimpleNamespace(
+            send_request=AsyncMock(
+                return_value=SimpleNamespace(ok=True, payload={"content": "weather"})
+            )
+        )
     )
     operation = {
         "name": "jiuwen_delegate",
@@ -3109,7 +3333,10 @@ async def test_joyai_structured_independent_delegate_reaches_shared_service(
         ),
     )
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](
+        None,
+        "independent",
+        {
             "frame_data_url": frame,
             "instruction": "weather",
             "question": "weather",
@@ -3117,7 +3344,8 @@ async def test_joyai_structured_independent_delegate_reaches_shared_service(
             "search_session_id": "scope",
             "joyai_session_id": "joyai",
         },
-        request_id="independent", ws=None)
+        None,
+    )
     response = channel.responses[-1][1]
     assert response["ok"]
     job = response["payload"]["search_job"]
@@ -3165,8 +3393,6 @@ def test_core_answer_and_receipt_use_tool_language(monkeypatch, app_language, ex
     assert video_search.full_answer_language_rule().startswith(
         "The complete answer" if app_language == "en" else "标记之前的完整答案"
     )
-
-
 
 
 @pytest.mark.parametrize(
@@ -3265,10 +3491,28 @@ def test_voice_result_preserves_pending_and_blocked_core_outcomes(answer):
     assert presented["realtime_brief"]["source"] == "derived"
 
 
+def test_voice_brief_protocol_allows_unfinished_background_work():
+    prompt = video_search.core_agent_brief_protocol("pending-outcome")
+    assert "Preserve pending, partial, blocked and failed outcomes" in prompt
+    assert "do not claim the task is still unfinished" not in prompt
+
+
+def test_joyai_resource_policy_survives_completed_and_empty_invocation_queries():
+    for message in [joyai_provider.ground_user_instruction("删除这个每天九点的定时提醒")]:
+        assert "Completed Core work can still be revised" in message
+        assert "Further actions on prior results may also be delegated to Core" in message
+        assert "original result and context" in message
+        assert "accepted/submitted is not completion" in message
+        assert "cancel receipt reports completed/stopped=false" in message
+        assert "Cron tools" not in message
+
+
 async def test_joyai_delegates_reminder_deletion_after_completed_creation(monkeypatch):
     from unittest.mock import AsyncMock
 
-    client = make_agent_client({"content": "Reminder deleted"})
+    client = SimpleNamespace(send_request=AsyncMock(
+        return_value=SimpleNamespace(ok=True, payload={"content": "Reminder deleted"}),
+    ))
     channel = _video_channel(client)
     created = await channel.manager.start(
         None, question="创建每天八点的提醒", query="创建每天八点的提醒",
@@ -3299,12 +3543,13 @@ async def test_joyai_delegates_reminder_deletion_after_completed_creation(monkey
 
     monkeypatch.setattr(joyai_provider, "request_frame", provider)
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](
+        None, "delete-reminder", {
             "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==",
             "instruction": "删除这个每天九点的定时提醒", "question": "删除这个每天九点的定时提醒",
             "request_kind": "user", "search_session_id": "scope", "joyai_session_id": "joyai",
-        },
-        request_id="delete-reminder", ws=None)
+        }, None,
+    )
     response = channel.responses[-1][1]
     assert response["ok"] is True
     assert response["payload"]["search_job"]["id"] != created["id"]
@@ -3322,7 +3567,9 @@ async def test_joyai_delegates_reminder_deletion_after_completed_creation(monkey
 async def test_wrong_resource_id_recovers_via_query_and_correct_core_followup(monkeypatch, provider):
     from unittest.mock import AsyncMock
 
-    channel = _video_channel(make_agent_client({"content": "Created external-resource-1"}))
+    channel = _video_channel(SimpleNamespace(send_request=AsyncMock(
+        return_value=SimpleNamespace(ok=True, payload={"content": "Created external-resource-1"}),
+    )))
     original = await channel.manager.start(
         None, question="Create an object", query="Create an object", search_session_id="scope",
         command_id="create-object",
@@ -3340,11 +3587,10 @@ async def test_wrong_resource_id_recovers_via_query_and_correct_core_followup(mo
     if provider == "qwen":
         receipts = []
         for index, operation in enumerate(operations):
-            await channel.request("video.qwen.tool", {
+            await channel.handlers["video.qwen.tool"](None, f"recover-{index}", {
                 **operation, "call_id": f"recover-{index}", "search_session_id": "scope",
                 "question": "Stop this object",
-            },
-                request_id=f"recover-{index}", ws=None)
+            }, None)
             response = channel.responses[-1][1]
             assert response["ok"] is True
             receipts.append(response["payload"]["tool_result"])
@@ -3368,12 +3614,11 @@ async def test_wrong_resource_id_recovers_via_query_and_correct_core_followup(mo
             return _joyai_result("delegation", delegation=json.dumps(operations[len(calls) - 1]))
         monkeypatch.setattr(joyai_provider, "request_frame", request)
         monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
-        await channel.request("video.joyai.frame", {
+        await channel.handlers["video.joyai.frame"](None, "recover", {
             "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==", "instruction": "Stop this object",
             "question": "Stop this object", "request_kind": "user", "search_session_id": "scope",
             "joyai_session_id": "joyai",
-        },
-            request_id="recover", ws=None)
+        }, None)
         assert channel.responses[-1][1]["ok"] is True
         assert channel.responses[-1][1]["payload"]["response"] == "后续处理已提交。"
     tasks, _ = channel.manager.service.list("test-user", "scope")
@@ -3404,6 +3649,7 @@ async def test_missing_task_recovery_never_discloses_or_changes_another_conversa
 
 
 def test_core_progress_preserves_native_skill_metadata():
+    from jiuwenswarm.extensions.video_duplex.backend.video_search import core_agent_progress
 
     call = {
         "event_type": "chat.tool_call",
@@ -3428,14 +3674,14 @@ async def test_invalid_qwen_call_telemetry_retains_bounded_arguments(monkeypatch
     channel = _video_channel()
     events = []
     monkeypatch.setattr(video_live, "_append_realtime_telemetry", events.append)
-    await channel.request("video.realtime.telemetry", {
+    await channel.handlers["video.realtime.telemetry"](
+        None, "invalid-arguments", {
             "event": "qwen_tool_call_invalid", "name": "jiuwen_delegate", "call_id": "invalid-call",
             "arguments": "x" * 3000,
-        },
-        request_id="invalid-arguments", ws=None)
+        }, None,
+    )
     assert events[0]["arguments"] == "x" * 2000
     assert events[0]["call_id"] == "invalid-call"
-
 
 
 @pytest.mark.asyncio
@@ -3446,13 +3692,14 @@ async def test_task_trace_telemetry_retains_queue_identity_but_drops_results(mon
     captured = []
     monkeypatch.setattr(diagnostics, "trace_task", lambda event, **fields: captured.append((event, fields)))
     monkeypatch.setattr(video_live, "_append_realtime_telemetry", lambda event: None)
-    await channel.request("video.realtime.telemetry", {
+    await channel.handlers["video.realtime.telemetry"](
+        object(), "trace-1", {
             "event": "task_trace_queue_received", "search_session_id": "task-duplex:one",
             "queue_version": 8, "secret": "api-key",
             "jobs": [{"job_id": "one", "status": "cancelling", "queue_position": 0,
                       "result": "private output", "api_key": "secret"}],
-        },
-        request_id="trace-1", session_id="session")
+        }, "session",
+    )
     assert channel.responses[-1][1]["payload"] == {"logged": True}
     assert captured[0][0] == "task_trace_queue_received"
     assert captured[0][1]["queue_version"] == 8
@@ -3460,12 +3707,13 @@ async def test_task_trace_telemetry_retains_queue_identity_but_drops_results(mon
     assert "secret" not in captured[0][1]
 
 
-
 @pytest.mark.parametrize("provider", ["qwen", "joyai"])
 async def test_voice_cancel_routes_original_utterance_to_completed_core_followup(monkeypatch, provider):
     from unittest.mock import AsyncMock
 
-    channel = _video_channel(make_agent_client({"content": "Original result with resource-1"}))
+    channel = _video_channel(SimpleNamespace(send_request=AsyncMock(
+        return_value=SimpleNamespace(ok=True, payload={"content": "Original result with resource-1"}),
+    )))
     job = await channel.manager.start(
         None, question="Create result", query="Create result", search_session_id="scope", command_id="create",
     )
@@ -3473,10 +3721,9 @@ async def test_voice_cancel_routes_original_utterance_to_completed_core_followup
     utterance = "取消刚才创建的 resource-1，请核验结果。"
     operation = {"name": "jiuwen_task_cancel", "arguments": {"job_id": job["id"]}}
     if provider == "qwen":
-        await channel.request("video.qwen.tool", {
+        await channel.handlers["video.qwen.tool"](None, "cancel", {
             **operation, "call_id": "cancel-result", "question": utterance, "search_session_id": "scope",
-        },
-            request_id="cancel", ws=None)
+        }, None)
         receipt = channel.responses[-1][1]["payload"]["tool_result"]
         assert receipt["converted_to"] == "modify" and receipt["state"] == "followup"
     else:
@@ -3491,18 +3738,16 @@ async def test_voice_cancel_routes_original_utterance_to_completed_core_followup
             return _joyai_result("response", response="后续处理已受理。")
         monkeypatch.setattr(joyai_provider, "request_frame", request)
         monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
-        await channel.request("video.joyai.frame", {
+        await channel.handlers["video.joyai.frame"](None, "cancel", {
             "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==", "instruction": utterance, "question": utterance,
             "request_kind": "user", "search_session_id": "scope", "joyai_session_id": "joyai",
-        },
-            request_id="cancel", ws=None)
+        }, None)
     assert channel.responses[-1][1]["ok"] is True
     tasks, _ = channel.manager.service.list("test-user", "scope")
     assert len(tasks) == 2
     child = next(task for task in tasks if task["parent_id"] == job["id"])
     assert child["instruction"].endswith("User revision: " + utterance)
     assert child["request"]["prior_result"]["answer"] == "Original result with resource-1"
-
 
 
 @pytest.mark.asyncio
@@ -3536,15 +3781,14 @@ async def test_joyai_operation_limit_allows_final_response_and_rejects_next_oper
 
     monkeypatch.setattr(joyai_provider, "request_frame", provider)
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](None, "operation-limit", {
         "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==",
         "instruction": "查询当前任务",
         "question": "查询当前任务",
         "request_kind": "user",
         "search_session_id": "operation-limit",
         "joyai_session_id": "joyai-operation-limit",
-    },
-        request_id="operation-limit", ws=None)
+    }, None)
 
     response = channel.responses[-1][1]
     assert response.get("ok") is expected_ok, response
@@ -3591,9 +3835,8 @@ async def test_joyai_card_status_only_on_bounded_user_turns(monkeypatch, params)
     channel = _video_channel()
     provider = AsyncMock()
     monkeypatch.setattr(joyai_provider, "request_frame", provider)
-    await channel.request("video.joyai.frame", {
-        "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==", "joyai_session_id": "j", **params},
-        request_id="bad", ws=None)
+    await channel.handlers["video.joyai.frame"](None, "bad", {
+        "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==", "joyai_session_id": "j", **params}, None)
     assert channel.responses[-1][1]["code"] == "BAD_REQUEST"
     assert provider.await_count == 0
 
@@ -3602,7 +3845,9 @@ def _scoped_channel(monkeypatch, card_live=True):
     from unittest.mock import AsyncMock
     from jiuwenswarm.extensions.video_duplex.backend import task_adapter
 
-    channel = _video_channel(make_agent_client({"user_id": "test-user", "mode": "agent", "work_mode": "work"}))
+    channel = _video_channel(SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(
+        ok=True, payload={"user_id": "test-user", "mode": "agent", "work_mode": "work"},
+    ))))
 
     async def query(client, method, params, session, owner):
         if params.get("session_id"):
@@ -3635,11 +3880,10 @@ async def _joyai_turn(channel, monkeypatch, spoken, operation, scope="task-duple
         return _joyai_result("response", response="已提交")
 
     monkeypatch.setattr(joyai_provider, "request_frame", AsyncMock(side_effect=provider))
-    await channel.request("video.joyai.frame", {
+    await channel.handlers["video.joyai.frame"](object(), "turn", {
         "frame_data_url": "", "instruction": spoken, "question": spoken, "request_kind": "user",
         "search_session_id": scope, "joyai_session_id": "joyai", "approval_context": CARD_STATUS,
-    },
-        request_id="turn")
+    }, None)
     return prompts
 
 
@@ -3658,6 +3902,57 @@ async def test_joyai_voice_answers_typed_chat_card_with_empty_job_id(monkeypatch
     assert method == "chat.send" and params["request_id"] == "typed-approval"
     assert params["answers"][0]["selected_options"] == [label]
     assert '"state": "accepted"' in prompts[1]
+
+
+@pytest.mark.parametrize("spoken, label", [("同意", "本次允许"), ("本会话保持同意", "会话内记住")])
+async def test_joyai_voice_answers_managed_task_card(monkeypatch, spoken, label):
+    from unittest.mock import AsyncMock
+
+    channel = _scoped_channel(monkeypatch)
+    service = channel.manager.service
+    owner, scope = await channel.manager.scope(object(), {"search_session_id": "task-duplex:chat"})
+    job = service.submit(owner, scope, "cua", "打开计算器", {"independent": True, "resources": []})
+    service.store.update(job["id"], lambda t: t.update(status="waiting_user", interaction={
+        "id": "card-a", "request_id": "core-approval", "state": "pending", "source": "confirm_interrupt",
+        "questions": [{"question": "打开计算器", "options": PERMISSION_OPTIONS}]}))
+    answer = AsyncMock(return_value={"task_id": job["id"], "state": "accepted", "applied": True})
+    monkeypatch.setattr(service, "answer", answer)
+    await _joyai_turn(channel, monkeypatch, spoken, {"name": "jiuwen_task_answer", "arguments": {
+        "job_id": job["id"], "interaction_id": "card-a", "answers": [label]}})
+    assert channel.responses[-1][1]["ok"], channel.responses[-1]
+    assert answer.await_args.args[4] == "card-a" and answer.await_args.kwargs["answers"] == [label]
+
+
+async def test_joyai_new_request_while_card_waits_is_a_new_task_not_an_answer(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    channel = _scoped_channel(monkeypatch)
+    channel.manager._chat_cards["chat"] = {
+        "request_id": "typed-approval", "source": "confirm_interrupt",
+        "questions": [{"question": "允许执行 rm？", "options": PERMISSION_OPTIONS}],
+    }
+    start = AsyncMock(return_value={"id": "wechat", "status": "queued"})
+    monkeypatch.setattr(channel.manager, "start", start)
+    prompts = await _joyai_turn(channel, monkeypatch, "打开微信", {
+        "name": "jiuwen_delegate", "arguments": {"task": "打开微信", "title": "打开微信"}})
+    assert CARD_STATUS in prompts[0] and len(prompts) == 1
+    assert channel.responses[-1][1]["payload"]["search_job"] == {"id": "wechat", "status": "queued"}
+    assert start.await_args.kwargs["query"] == "打开微信"
+    assert not channel.dispatched, "the card was not answered"
+    assert "chat" in channel.manager._chat_cards
+
+ROSTER = {
+    "event_type": "chat.subtask_update", "session_id": "visible", "subagent_id": "cua-1",
+    "parent_session_id": "visible", "subagent_type": "cua_agent", "display_name": "cua_agent",
+    "task_description": "Open the settings page", "status": "running", "revision": 1,
+}
+
+THINKING = {
+    "event_type": "chat.subagent_activity", "subagent_id": "cua-1", "parent_session_id": "visible",
+    "task_id": "cua-1", "seq": 1, "kind": "thinking", "summary": "Looking for the window", "at_ms": 1000,
+}
+
+TOOL_CALL = {**THINKING, "seq": 2, "kind": "tool_call", "summary": "screenshot()", "tool_name": "screenshot"}
 
 
 @pytest.mark.parametrize("outcome", ["resumed", "replaced", "closed"])
@@ -3706,62 +4001,6 @@ async def test_chat_answer_waits_for_card_lifecycle_without_deadline(monkeypatch
         await asyncio.gather(waiting, return_exceptions=True)
 
 
-@pytest.mark.parametrize("spoken, label", [("同意", "本次允许"), ("本会话保持同意", "会话内记住")])
-async def test_joyai_voice_answers_managed_task_card(monkeypatch, spoken, label):
-    from unittest.mock import AsyncMock
-
-    channel = _scoped_channel(monkeypatch)
-    service = channel.manager.service
-    owner, scope = await channel.manager.scope(object(), {"search_session_id": "task-duplex:chat"})
-    job = service.submit(owner, scope, "cua", "打开计算器", {"independent": True, "resources": []})
-    service.store.update(job["id"], lambda t: t.update(status="waiting_user", interaction={
-        "id": "card-a", "request_id": "core-approval", "state": "pending", "source": "confirm_interrupt",
-        "questions": [{"question": "打开计算器", "options": PERMISSION_OPTIONS}]}))
-    answer = AsyncMock(return_value={"task_id": job["id"], "state": "accepted", "applied": True})
-    monkeypatch.setattr(service, "answer", answer)
-    await _joyai_turn(channel, monkeypatch, spoken, {"name": "jiuwen_task_answer", "arguments": {
-        "job_id": job["id"], "interaction_id": "card-a", "answers": [label]}})
-    assert channel.responses[-1][1]["ok"], channel.responses[-1]
-    assert answer.await_args.args[4] == "card-a" and answer.await_args.kwargs["answers"] == [label]
-
-
-async def test_joyai_new_request_while_card_waits_is_a_new_task_not_an_answer(monkeypatch):
-    from unittest.mock import AsyncMock
-
-    channel = _scoped_channel(monkeypatch)
-    channel.manager._chat_cards["chat"] = {
-        "request_id": "typed-approval", "source": "confirm_interrupt",
-        "questions": [{"question": "允许执行 rm？", "options": PERMISSION_OPTIONS}],
-    }
-    start = AsyncMock(return_value={"id": "wechat", "status": "queued"})
-    monkeypatch.setattr(channel.manager, "start", start)
-    prompts = await _joyai_turn(channel, monkeypatch, "打开微信", {
-        "name": "jiuwen_delegate", "arguments": {"task": "打开微信", "title": "打开微信"}})
-    assert CARD_STATUS in prompts[0] and len(prompts) == 1
-    assert channel.responses[-1][1]["payload"]["search_job"] == {"id": "wechat", "status": "queued"}
-    assert start.await_args.kwargs["query"] == "打开微信"
-    assert not channel.dispatched, "the card was not answered"
-    assert "chat" in channel.manager._chat_cards
-
-
-ROSTER = {
-    "event_type": "chat.subtask_update", "session_id": "visible", "subagent_id": "cua-1",
-    "parent_session_id": "visible", "subagent_type": "cua_agent", "display_name": "cua_agent",
-    "task_description": "Open the settings page", "status": "running", "revision": 1,
-}
-
-
-
-THINKING = {
-    "event_type": "chat.subagent_activity", "subagent_id": "cua-1", "parent_session_id": "visible",
-    "task_id": "cua-1", "seq": 1, "kind": "thinking", "summary": "Looking for the window", "at_ms": 1000,
-}
-
-
-
-TOOL_CALL = {**THINKING, "seq": 2, "kind": "tool_call", "summary": "screenshot()", "tool_name": "screenshot"}
-
-
 @pytest.mark.asyncio
 async def test_every_subagent_frame_reaches_task_progress_in_stream_order():
     frames = [ROSTER, THINKING, TOOL_CALL, {**ROSTER, "status": "idle", "revision": 2},
@@ -3773,7 +4012,8 @@ async def test_every_subagent_frame_reaches_task_progress_in_stream_order():
         progress.append(entry)
 
     await video_search.execute_core_agent(
-        make_agent_client(frames=frames), question="q", query="q", visual_context="", search_session_id="voice", on_progress=record,
+        make_agent_client(frames=frames), question="q", query="q", visual_context="",
+        search_session_id="voice", on_progress=record,
     )
     # Repeated roster/activity frames are distinct facts; none may be deduplicated away.
     forwarded = [entry["subagent_event"] for entry in progress if entry["stage"] == "subagent"]
