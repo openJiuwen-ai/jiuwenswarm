@@ -554,6 +554,16 @@ export type TeamTaskStatus =
   | 'completed'
   | 'cancelled';
 
+const RUNNING_TEAM_BOARD_STATUSES: ReadonlySet<TeamTaskStatus> = new Set([
+  'planning',
+  'in_progress',
+  'in_review',
+]);
+
+function isRunningTeamBoardStatus(status: TeamTaskStatus): boolean {
+  return RUNNING_TEAM_BOARD_STATUSES.has(status);
+}
+
 export interface TeamTask {
   task_id: string;
   title?: string;
@@ -858,6 +868,10 @@ interface SessionState {
   setTaskProgressEstimates: (sessionId: string, estimates: Record<string, number>) => void;
   upsertTeamTask: (sessionId: string, task: TeamTaskUpsert) => void;
   updateTeamTask: (sessionId: string, taskId: string, patch: Partial<TeamTask>) => void;
+  /** Team pause：冻结仍在跑的任务板行，立刻停转圈（不改 status，便于续跑）。 */
+  freezeRunningTeamTasks: (sessionId: string, frozenAt?: number) => void;
+  /** Team resume / 新一轮 processing：解冻此前因 pause 冻结的任务板行。 */
+  thawRunningTeamTasks: (sessionId: string) => void;
   setTeamMembers: (sessionId: string, members: TeamMember[]) => void;
   setTeamDepartedMembers: (sessionId: string, members: TeamMember[]) => void;
   /** 成员离队时把它的身份记进离队目录（同 member_id 覆盖）。 */
@@ -1438,11 +1452,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // leaving an empty title. Fall back to a placeholder built from the
       // task_id tail so the card is not rendered with a bare empty title
       // (matches the precedent in features/teamHistoryPanelRestore.ts upsertTask).
-      const tasks: TeamTask[] = [{
-        ...task,
-        status: task.status ?? 'pending',
-        title: task.title ?? i18n.t('team.taskFallback', { id: String(task.task_id || '').slice(-6) }),
-      }, ...runtime.teamTasks];
+      // Append so the board stays creation order (top-to-bottom execution).
+      const tasks: TeamTask[] = [
+        ...runtime.teamTasks,
+        {
+          ...task,
+          status: task.status ?? 'pending',
+          title: task.title ?? i18n.t('team.taskFallback', { id: String(task.task_id || '').slice(-6) }),
+        },
+      ];
       return {
         runtimes: {
           ...state.runtimes,
@@ -1485,6 +1503,57 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             teamTasks: updatedTasks,
             taskProgressEstimates: retainTaskProgressEstimates(runtime, updatedTasks),
           },
+        },
+      };
+    });
+  },
+
+  freezeRunningTeamTasks: (sessionId, frozenAt) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const at = frozenAt ?? Date.now();
+      let changed = false;
+      const updatedTasks = runtime.teamTasks.map((task) => {
+        if (!isRunningTeamBoardStatus(task.status) || task.progress_frozen) {
+          return task;
+        }
+        changed = true;
+        return {
+          ...task,
+          progress_frozen: true,
+          progress_frozen_at: at,
+        };
+      });
+      if (!changed) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, teamTasks: updatedTasks },
+        },
+      };
+    });
+  },
+
+  thawRunningTeamTasks: (sessionId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      let changed = false;
+      const updatedTasks = runtime.teamTasks.map((task) => {
+        if (!task.progress_frozen) return task;
+        changed = true;
+        return {
+          ...task,
+          progress_frozen: false,
+          progress_frozen_at: undefined,
+        };
+      });
+      if (!changed) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, teamTasks: updatedTasks },
         },
       };
     });
