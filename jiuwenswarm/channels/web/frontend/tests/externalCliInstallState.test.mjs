@@ -632,7 +632,13 @@ test('the detection hint distinguishes PATH lookup from executable validation', 
   assert.match(enLocale, /"redetectHint": "Re-check the current CLI executable and validate its version"/);
   assert.match(section, /title=\{t\('config\.externalCli\.redetectHint'\)\}/);
   assert.match(section, /disabled=\{disabled \|\| !onDetect \|\| editing\[cliAgent\]\}/);
-  assert.match(section, /!onCommitAgent \|\| agentInstalling \|\| editing\[cliAgent\]/);
+  // The install buttons freeze like their siblings while a commit runs or an
+  // install is in flight; the one-click install spinner must only reflect its
+  // own action (installInFlight), never a generic card commit — re-enabling an
+  // already-installed agent toggles the switch, not a re-install (#6620).
+  assert.match(section, /!onCommitAgent \|\| committing\[cliAgent\] \|\| installInFlight\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]/);
+  assert.match(section, /loading=\{installInFlight\[cliAgent\]\}/);
+  assert.doesNotMatch(section, /loading=\{committing\[cliAgent\]\}/);
   // The enable switch is disabled only when the CLI is not installed AND the
   // agent is already disabled — so a page reload (installed=false until the
   // auto-detect runs) does not lock the user out of an enabled agent, and a

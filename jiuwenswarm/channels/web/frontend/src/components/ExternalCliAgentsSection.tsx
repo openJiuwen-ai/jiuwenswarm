@@ -363,6 +363,10 @@ export function ExternalCliAgentsSection({
   const [editDrafts, setEditDrafts] = useState<Record<ExternalCliAgentKind, string>>({});
   const [editValidating, setEditValidating] = useState<Record<ExternalCliAgentKind, boolean>>({});
   const [committing, setCommitting] = useState<Record<ExternalCliAgentKind, boolean>>({});
+  // 一键安装的专属在途标记：开关切换等其它卡片提交也会置 committing，
+  // 若安装按钮的 loading 跟随 committing，重新启用已安装的 agent 时按钮会
+  // 像在重装一样转圈（#6620）。loading 只认这个标记。
+  const [installInFlight, setInstallInFlight] = useState<Record<ExternalCliAgentKind, boolean>>({});
   const [agentErrors, setAgentErrors] = useState<Record<ExternalCliAgentKind, string>>({});
   const detectRequestIdsRef = useRef<Record<ExternalCliAgentKind, number>>({});
   const observedCliPathsRef = useRef<Record<ExternalCliAgentKind, string>>(
@@ -669,6 +673,7 @@ export function ExternalCliAgentsSection({
       const enabledKey = externalCliKey(cliAgent, 'enabled');
       const useBuiltinKey = externalCliKey(cliAgent, 'use_builtin');
       const cliPathKey = externalCliKey(cliAgent, 'cli_path');
+      setInstallInFlight((prev) => ({ ...prev, [cliAgent]: true }));
       // Snapshot the pre-install drafts: the optimistic rewrite below must
       // not survive a failed commit, or the card keeps showing an unpersisted
       // "enabled + built-in" state and the user's external path stays gone.
@@ -726,6 +731,8 @@ export function ExternalCliAgentsSection({
           commitEchoAgentsRef.current.delete(cliAgent);
         }
         setAgentError(cliAgent, error instanceof Error ? error.message : String(error));
+      } finally {
+        setInstallInFlight((prev) => ({ ...prev, [cliAgent]: false }));
       }
     },
     [commit, draftValues, onChange, onInstallStatusChange, onInstallStatusGet, resolveEnabledChoice, setAgentError],
@@ -1179,8 +1186,8 @@ export function ExternalCliAgentsSection({
             <Button
               variant="quiet"
               size="sm"
-              loading={committing[cliAgent]}
-              disabled={disabled || !onCommitAgent || agentInstalling || editing[cliAgent]}
+              loading={installInFlight[cliAgent]}
+              disabled={disabled || !onCommitAgent || committing[cliAgent] || installInFlight[cliAgent] || agentInstalling || editing[cliAgent]}
               onClick={() => void installNow(cliAgent)}
               title={t('config.externalCli.installNow')}
               aria-label={t('config.externalCli.installNow')}
@@ -1576,7 +1583,7 @@ export function ExternalCliAgentsSection({
                       <button
                         type="button"
                         className="rounded font-medium text-accent outline-none hover:underline disabled:cursor-not-allowed disabled:opacity-60"
-                        disabled={disabled || !onCommitAgent || committing[cliAgent] || agentInstalling || editing[cliAgent]}
+                        disabled={disabled || !onCommitAgent || committing[cliAgent] || installInFlight[cliAgent] || agentInstalling || editing[cliAgent]}
                         onClick={() => void installNow(cliAgent)}
                         title={t('config.externalCli.installNow')}
                         aria-label={t('config.externalCli.installNow')}
