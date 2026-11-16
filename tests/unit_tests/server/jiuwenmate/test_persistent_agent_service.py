@@ -52,6 +52,9 @@ class FakeModels:
     def default_selection(self):
         return self.default
 
+    def available_selection(self, selection):
+        return selection if selection in self.selections else self.default
+
     def resolve(self, selection, *, client_id):
         if selection not in self.selections:
             raise PersistentAgentError("model is not available", code="MODEL_NOT_FOUND")
@@ -528,16 +531,61 @@ def test_model_refresh_does_not_initialize_a_user_edited_default(tmp_path):
     assert current.capabilities.model is None
 
 
-def test_missing_real_model_is_not_silently_replaced_by_the_new_default(tmp_path):
+def test_removed_model_switches_published_colleagues_to_the_default(tmp_path):
+    models = FakeModels()
+    service = make_service(tmp_path, models)
+    default = service.ensure_default_colleague(NS)
+    other = service.create_colleague(NS, settings(capabilities=CapabilitySelection(model="kimi#1")))
+    models.selections.remove("kimi#1")
+
+    assert service.refresh_published(NS) is True
+    current = service.get_colleague(NS, other.agent_id)
+    assert current.capabilities.model == "deepseek#0"
+    assert current.current_version == "v2"
+    assert not current.has_unpublished_changes
+    assert service.current_snapshot(NS, other.agent_id).load_spec().model.model_request_config.model_name == "deepseek"
+    assert service.get_colleague(NS, default.agent_id).capabilities.model == "deepseek#0"
+
+
+def test_removed_model_leaves_a_colleague_with_pending_edits_unchanged(tmp_path):
+    models = FakeModels()
+    service = make_service(tmp_path, models)
+    colleague = service.create_colleague(NS, settings(capabilities=CapabilitySelection(model="kimi#1")))
+    service.update_settings(NS, colleague.agent_id, settings(name="Draft", capabilities=CapabilitySelection(model="kimi#1")))
+    models.selections.remove("kimi#1")
+
+    assert service.refresh_published(NS) is False
+    current = service.get_colleague(NS, colleague.agent_id)
+    assert current.capabilities.model == "kimi#1"
+    assert current.current_version == "v1"
+    assert current.has_unpublished_changes
+
+
+def test_removed_model_without_a_replacement_keeps_the_version(tmp_path):
     models = FakeModels()
     service = make_service(tmp_path, models)
     colleague = service.ensure_default_colleague(NS)
-    models.selections.remove("deepseek#0")
-    models.default = "kimi#1"
+    models.selections.clear()
+    models.default = None
 
     assert service.refresh_published(NS) is False
     assert service.get_colleague(NS, colleague.agent_id).capabilities.model == "deepseek#0"
     assert service.get_colleague(NS, colleague.agent_id).current_version == "v1"
+
+
+def test_configured_models_find_the_same_model_after_an_earlier_one_is_removed():
+    def entry(name):
+        return {"model_client_config": {"model_name": name, "client_provider": "OpenAI",
+                "api_base": "https://example.invalid/v1", "api_key": SECRET}}
+
+    entries = [entry("deepseek"), entry("kimi"), entry("qwen")]
+    provider = ConfiguredModelProvider(lambda: entries)
+    assert provider.available_selection("kimi#1") == "kimi#1"
+
+    del entries[0]
+    assert provider.available_selection("kimi#1") == "kimi#0"
+    assert provider.available_selection("deepseek#0") == "kimi#0"
+    assert provider.available_selection("qwen#2") == "qwen#1"
 
 
 def test_initialization_does_not_overwrite_an_edit_made_during_publication(tmp_path, monkeypatch):
