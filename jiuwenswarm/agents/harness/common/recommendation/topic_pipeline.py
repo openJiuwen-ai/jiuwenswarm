@@ -891,7 +891,8 @@ _OUTPUT_LANGUAGE_RULES = {
         "(title, starter_prompt, intent, direction, new_angle, blocked_by) and "
         "every free-text field in English. Ignore any earlier instruction to "
         "follow the user's own language. Search queries (primary_query, "
-        "news_query) may stay in English."
+        "news_query) may stay in English. Keep the exact JSON response "
+        'envelope required above (for example {"candidates": [...]}).'
     ),
     "zh": (
         "OUTPUT LANGUAGE (highest priority): write every user-visible field "
@@ -899,9 +900,16 @@ _OUTPUT_LANGUAGE_RULES = {
         "every free-text field in Chinese. Ignore any earlier instruction to "
         "follow the user's own language. Chinese questions end with a full-width "
         "question mark. Search queries (primary_query, news_query) may stay in "
-        "English."
+        "English. Keep the exact JSON response envelope required above "
+        '(for example {"candidates": [...]}).'
     ),
 }
+
+
+def _candidates_envelope(response: Any) -> Any:
+    """General models sometimes return the candidates array without its envelope."""
+
+    return {"candidates": response} if isinstance(response, list) else response
 
 
 def _v6_system_prompt(
@@ -7334,6 +7342,7 @@ class TopicPipeline:
         candidate_slots: Sequence[Mapping[str, str]],
         now: float,
     ) -> list[dict[str, Any]]:
+        response = _candidates_envelope(response)
         if (
             not isinstance(response, dict)
             or "candidates" not in response
@@ -7429,6 +7438,7 @@ class TopicPipeline:
         minimum: int,
         candidate_slots: Sequence[Mapping[str, str]],
     ) -> list[dict[str, Any]]:
+        response = _candidates_envelope(response)
         if (
             not isinstance(response, dict)
             or "candidates" not in response
@@ -7737,6 +7747,7 @@ class TopicPipeline:
                 "project_continuation_contract_failed"
             )
         required = set(_PROJECT_CONTINUATION_CANDIDATE_ITEM_SCHEMA)
+        response = _candidates_envelope(response)
         # Every slot is decided exactly once; only a written slot becomes a candidate.
         _rejected4 = (
             not isinstance(response, dict)
@@ -8572,6 +8583,7 @@ class TopicPipeline:
             lambda: invoke_stage("v6_recent_finalizer", _RECENT_FINALIZER_PROMPT, payload),
             *{_optional_lane(plan) for plan in finalized},
         )
+        response = _candidates_envelope(response)
         with provider_validation(invoke_stage, response):
             if (
                 not isinstance(response, dict)

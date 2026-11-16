@@ -2840,6 +2840,18 @@ def test_generated_stage_prompts_carry_output_language():
     assert "OUTPUT LANGUAGE" not in scorer
 
 
+def test_candidates_envelope_accepts_a_bare_array():
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
+        _candidates_envelope,
+    )
+
+    items = [{"slot_id": "s1"}]
+
+    assert _candidates_envelope(items) == {"candidates": items}
+    assert _candidates_envelope({"candidates": items}) == {"candidates": items}
+    assert _candidates_envelope("not-json-shape") == "not-json-shape"
+
+
 def test_language_change_invalidates_pool_identity():
     from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
         build_serving_compatibility_key,
