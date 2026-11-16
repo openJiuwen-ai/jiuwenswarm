@@ -171,6 +171,6 @@ def test_electron_persists_session_urls_across_restart() -> None:
     quit_handler = source.index("app.on('before-quit'")
     flush = source.index("saveSessionLastUrls();", quit_handler)
     teardown = source.index(
-        "void Promise.all([abortAllBlobSaves(), stopServices()])", quit_handler
+        "Promise.all([abortAllBlobSaves(), stopServices()])", quit_handler
     )
     assert quit_handler < flush < teardown
