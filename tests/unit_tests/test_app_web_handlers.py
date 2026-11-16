@@ -1,6 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 import asyncio
+import json
 import os
 import threading
 import time
@@ -101,6 +102,100 @@ async def test_cron_run_list_reports_unavailable_controller():
     await channel.methods["cron.run.list"](None, "records", {}, None)
     assert channel.responses[-1]["ok"] is False
     assert channel.responses[-1]["code"] == "INTERNAL_ERROR"
+
+
+# ---------------------------------------------------------------------------
+# cron.job.create 源会话过滤：传输层占位 id 不得写成 job.session_id
+# ---------------------------------------------------------------------------
+@pytest.fixture()
+def isolated_sessions_dir(tmp_path, monkeypatch):
+    d = tmp_path / "sessions"
+    d.mkdir()
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
+        lambda: d,
+    )
+    from jiuwenswarm.server.runtime.session.session_metadata import _METADATA_CACHE
+
+    _METADATA_CACHE.clear()
+    return d
+
+
+class FakeCronScheduler:
+    def __init__(self):
+        self.reload_count = 0
+
+    async def reload(self):
+        self.reload_count += 1
+
+
+def _register_cron_create(channel, path):
+    from jiuwenswarm.gateway.cron.controller import CronController
+    from jiuwenswarm.gateway.cron.store import CronJobStore
+
+    controller = CronController(
+        store=CronJobStore(path=path), scheduler=FakeCronScheduler()
+    )
+    _register_web_handlers(WebHandlersBindParams(channel=channel, cron_controller=controller))
+
+
+def _cron_create_params(**extra):
+    return {
+        "name": "喝水提醒",
+        "description": "每整点提醒喝水",
+        "cron_expr": "0 * * * *",
+        "timezone": "Asia/Shanghai",
+        "targets": "web",
+        **extra,
+    }
+
+
+@pytest.mark.asyncio
+async def test_cron_job_create_skips_transport_placeholder_session(tmp_path, isolated_sessions_dir):
+    channel = FakeWebChannel()
+    _register_cron_create(channel, tmp_path / "cron_jobs.json")
+    placeholder = "sess_1a1cdb385dc_1a4867"
+
+    await channel.methods["cron.job.create"](
+        None, "create", _cron_create_params(), placeholder
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    job = channel.responses[-1]["payload"]["job"]
+    assert not job.get("session_id")
+
+
+@pytest.mark.asyncio
+async def test_cron_job_create_keeps_explicit_session_id(tmp_path, isolated_sessions_dir):
+    channel = FakeWebChannel()
+    _register_cron_create(channel, tmp_path / "cron_jobs.json")
+    placeholder = "sess_1a1cdb385dc_1a4867"
+
+    await channel.methods["cron.job.create"](
+        None, "create", _cron_create_params(session_id="desktop_1a1c8682991_d54031a80499"), placeholder
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    job = channel.responses[-1]["payload"]["job"]
+    assert job.get("session_id") == "desktop_1a1c8682991_d54031a80499"
+
+
+@pytest.mark.asyncio
+async def test_cron_job_create_keeps_transport_session_when_it_exists(tmp_path, isolated_sessions_dir):
+    sid = "desktop_1a1c8682991_d54031a80499"
+    session_dir = isolated_sessions_dir / sid
+    session_dir.mkdir()
+    (session_dir / "metadata.json").write_text(
+        json.dumps({"session_id": sid, "title": "真实会话"}), encoding="utf-8"
+    )
+    channel = FakeWebChannel()
+    _register_cron_create(channel, tmp_path / "cron_jobs.json")
+
+    await channel.methods["cron.job.create"](None, "create", _cron_create_params(), sid)
+
+    assert channel.responses[-1]["ok"] is True
+    job = channel.responses[-1]["payload"]["job"]
+    assert job.get("session_id") == sid
 
 
 class FakeAgentClient:

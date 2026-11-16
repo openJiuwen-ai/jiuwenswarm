@@ -965,6 +965,23 @@ def get_session_metadata(
     return metadata
 
 
+def session_metadata_exists(session_id: str) -> bool:
+    """只读判断会话是否已落盘（``metadata.json`` 存在）。
+
+    传输层 session_id 不一定代表真实会话：连接未携带 session_id 时由
+    ``_make_session_id()`` 铸造的占位 id（如桌面定时任务面板经命名管道建任务）
+    永远不会落盘。调用方（如 ``cron.job.create`` 回填任务源会话）必须先用本
+    函数校验，否则占位 id 会被写成 ``job.session_id``，产物投递兜底再按它
+    append 历史时凭空建出无 query、无项目归属的空会话。
+
+    读路径无副作用（不 mkdir、不写回），可安全用于 RPC handler。
+    """
+    sid = (session_id or "").strip()
+    if not sid or not is_persistable_session_id(sid):
+        return False
+    return bool(_read_metadata(sid, cache_bust=True))
+
+
 # 会话级 pin 重编号全局序列化锁:保障「设置目标 → 收集所有置顶 → 重编号 → 写回」全过程原子性。
 # Gateway 为会话级 pin 的唯一写入方(仅经 Web 本地 handler 处理,不转发 AgentServer)。
 _SESSION_PIN_LOCK = threading.Lock()

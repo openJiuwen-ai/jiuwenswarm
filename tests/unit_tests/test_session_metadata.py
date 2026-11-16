@@ -33,6 +33,46 @@ def _read_json(path: Path) -> dict:
 
 
 # ===========================================================================
+# session_metadata_exists
+# ===========================================================================
+class TestSessionMetadataExists:
+    @staticmethod
+    def test_missing_session_returns_false(sessions_dir):
+        from jiuwenswarm.server.runtime.session.session_metadata import session_metadata_exists
+
+        # 连接占位 id（_make_session_id 铸造）不会落盘
+        assert session_metadata_exists("sess_1a1cdb385dc_1a4867") is False
+
+    @staticmethod
+    def test_existing_session_returns_true(sessions_dir):
+        from jiuwenswarm.server.runtime.session.session_metadata import session_metadata_exists
+
+        sid = "desktop_1a1c8682991_d54031a80499"
+        (sessions_dir / sid).mkdir()
+        (sessions_dir / sid / "metadata.json").write_text(
+            json.dumps({"session_id": sid, "title": "真实会话"}), encoding="utf-8"
+        )
+        assert session_metadata_exists(sid) is True
+
+    @staticmethod
+    def test_empty_or_non_persistable_ids_return_false(sessions_dir):
+        from jiuwenswarm.server.runtime.session.session_metadata import session_metadata_exists
+
+        assert session_metadata_exists("") is False
+        assert session_metadata_exists("   ") is False
+        assert session_metadata_exists("default") is False
+
+    @staticmethod
+    def test_read_path_has_no_side_effects(sessions_dir):
+        from jiuwenswarm.server.runtime.session.session_metadata import session_metadata_exists
+
+        (sessions_dir / "sess_empty_dir").mkdir()
+        assert session_metadata_exists("sess_empty_dir") is False
+        # 只读判定不得 mkdir/metadata 写盘
+        assert not (sessions_dir / "sess_empty_dir" / "metadata.json").exists()
+
+
+# ===========================================================================
 # _auto_title
 # ===========================================================================
 class TestAutoTitle:
