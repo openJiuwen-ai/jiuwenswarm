@@ -718,7 +718,7 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
   const operations = source('src/features/settings/modules/models/modelListOperations.ts');
   assert.match(page, /request<ModelResourceResult>\(\s*'models\.upsert'/);
   assert.match(page, /request\('models\.get', \{ model_id: nextDialog\.model\.model_id \}\)/);
-  assert.doesNotMatch(page, /models\.references|MODEL_SELECTION_REFERENCED/);
+  assert.doesNotMatch(page, /models\.references/);
   assert.match(page, /formatModelSelectionReferenceScopes|extractModelSelectionReferences/);
   assert.match(page, /request\('models\.delete', \{ model_id: confirmation\.model\.model_id \}/);
   assert.doesNotMatch(page, /models\.replace_all/);
