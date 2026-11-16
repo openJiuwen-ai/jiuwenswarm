@@ -16,19 +16,10 @@ import SkillDesignIcon from '../../assets/agent-management/agent-skill.svg?react
 import AgentDesignIcon from '../../assets/智能体.svg?react';
 import PluginIcon from '../../assets/agent-management/extension.svg?react';
 import type { SidebarNavKey } from '../../utils/frontendPlatform';
-<<<<<<< RELEASE
 import type { ApplicationPluginContribution, ApplicationPluginNavKey } from '../../applicationPlugins/types';
 import { WebUIHost, WebUINavigationHost, type WebUIStyleOverrides } from '../../features/webui';
-||||||| BEFORE_PR_9610
-import type { ApplicationPluginContribution, ApplicationPluginNavKey } from '../../applicationPlugins/types';
-=======
-import type {
-  ApplicationPluginContribution,
-  ApplicationPluginNavKey,
-} from '../../applicationPlugins/types';
 import { EnterpriseContextSwitcher } from './EnterpriseContextSwitcher';
 import { JiuwenMateModeSwitch } from '../../features/jiuwenmate/components/JiuwenMateModeSwitch';
->>>>>>> DEVELOP
 
 const pluginNavigationStyles: WebUIStyleOverrides = {
   Button: {

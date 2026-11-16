@@ -87,18 +87,12 @@ export function ExpandedPanel({
     resolveActiveTab(activeTab === 'organization' ? 'planning' : activeTab, artifactsCount, reviewPanel));
 
   const tabs = useExpandedPanelTabs({ middleTab, showMiddleTab, artifactsCount, reviewPanel, showBrowserTab });
-<<<<<<< RELEASE
-  if (showOrganization) tabs.push({ key: 'organization', label: t('team.org.tab') });
-  tabs.push(...additionalPanels);
-||||||| BEFORE_PR_9610
-  if (showOrganization) tabs.push({ key: 'organization', label: t('team.org.tab') });
-=======
   if (showOrganization) tabs.push({
     key: 'organization',
     label: t('team.org.tab'),
     icon: <Building2 size={16} aria-hidden="true" />,
   });
->>>>>>> DEVELOP
+  tabs.push(...additionalPanels);
 
   return (
     <div
