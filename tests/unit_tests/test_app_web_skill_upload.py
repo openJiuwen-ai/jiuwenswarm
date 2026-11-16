@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tempfile
 import threading
+import time
 import zipfile
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
@@ -17,7 +19,12 @@ import pytest
 
 from jiuwenswarm.channels.web.app_web import _SpaStaticHandler
 from jiuwenswarm.server.runtime.skill import skill_manager as skill_manager_module
-from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager, SkillRpcError
+from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
+    SKILL_UPLOAD_ROOT_NAME,
+    cleanup_stale_skill_uploads,
+    discard_skill_upload,
+)
 
 
 @pytest.fixture
@@ -112,6 +119,22 @@ def _post_upload(
         connection.close()
 
 
+def _post_discard(port: int, path_value: str):
+    connection = HTTPConnection("127.0.0.1", port, timeout=10)
+    try:
+        connection.request(
+            "POST",
+            "/file-api/skills/upload-discard",
+            body=json.dumps({"path": path_value}),
+            headers={"Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        assert response.headers["Content-Type"].startswith("application/json")
+        return response.status, json.loads(response.read())
+    finally:
+        connection.close()
+
+
 def _skill_zip(asset: bytes) -> bytes:
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as package:
@@ -154,6 +177,88 @@ async def test_uploaded_zip_remains_available_and_can_be_imported(upload_server,
     workspace = Path(result["skill"]["workspace_path"])
     assert (workspace / "SKILL.md").is_file()
     assert (workspace / "assets" / "数据.bin").read_bytes() == asset
+    # 导入成功后源 zip 及其专属目录被回收；未导入的另一份不受影响
+    assert not uploaded.exists()
+    assert not uploaded.parent.exists()
+    assert second_upload.is_file()
+
+
+@pytest.mark.asyncio
+async def test_conflict_keeps_upload_until_overwrite(upload_server, manager):
+    port, _ = upload_server
+    package = _skill_zip(b"asset")
+
+    status, payload = _post_upload(port, "dup.zip", package)
+    assert status == 200, payload
+    first = Path(payload["path"])
+    await manager.handle_skills_import_upload({"path": str(first), "overwrite": False})
+    assert not first.exists()
+
+    status, payload = _post_upload(port, "dup.zip", package)
+    assert status == 200, payload
+    second = Path(payload["path"])
+    with pytest.raises(SkillRpcError) as exc_info:
+        await manager.handle_skills_import_upload({"path": str(second), "overwrite": False})
+    assert exc_info.value.code == "SKILL_ALREADY_EXISTS"
+    # 同名冲突保留文件，等待覆盖确认后的二次导入
+    assert second.is_file()
+
+    result = await manager.handle_skills_import_upload(
+        {"path": str(second), "overwrite": True}
+    )
+    assert result["success"] is True
+    assert not second.exists()
+    assert not second.parent.exists()
+
+
+def test_upload_discard_removes_uploaded_path(upload_server):
+    port, _ = upload_server
+    status, payload = _post_upload(port, "temp.zip", b"zip-content")
+    assert status == 200, payload
+    uploaded = Path(payload["path"])
+    assert uploaded.is_file()
+
+    status, result = _post_discard(port, str(uploaded))
+    assert status == 200
+    assert result["discarded"] is True
+    assert not uploaded.exists()
+    assert not uploaded.parent.exists()
+
+    # 幂等：重复释放仍返回成功
+    status, result = _post_discard(port, str(uploaded))
+    assert status == 200
+    assert result["discarded"] is False
+
+
+def test_upload_discard_rejects_path_outside_root(upload_server, tmp_path):
+    port, _ = upload_server
+    outside = tmp_path / "outside.zip"
+    outside.write_bytes(b"keep")
+    status, result = _post_discard(port, str(outside))
+    assert status == 200
+    assert result["discarded"] is False
+    assert outside.is_file()
+
+
+def test_stale_upload_dirs_are_cleaned(upload_server):
+    _, upload_root = upload_server
+    root = upload_root / SKILL_UPLOAD_ROOT_NAME
+    fresh = root / "jiuwenswarm_skill_upload_fresh"
+    stale = root / "jiuwenswarm_skill_upload_stale"
+    legacy = upload_root / "jiuwenswarm_skill_upload_legacy"
+    for directory in (fresh, stale, legacy):
+        directory.mkdir(parents=True)
+        (directory / "pkg.zip").write_bytes(b"zip")
+
+    expired = time.time() - 2 * 24 * 60 * 60
+    for directory in (stale, legacy):
+        os.utime(directory, (expired, expired))
+        os.utime(directory / "pkg.zip", (expired, expired))
+
+    assert cleanup_stale_skill_uploads() == 2
+    assert fresh.is_dir()
+    assert not stale.exists()
+    assert not legacy.exists()
 
 
 def test_upload_without_file_returns_actionable_error(upload_server):

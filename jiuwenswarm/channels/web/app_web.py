@@ -2528,6 +2528,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/file-api/skills/upload-temp":
             self._handle_skills_upload_temp()
             return
+        if parsed.path == "/file-api/skills/upload-discard":
+            self._handle_skills_upload_discard()
+            return
         if parsed.path == "/file-api/external-cli/custom-agents":
             self._handle_custom_agent_upload()
             return
@@ -2635,14 +2638,39 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
     def _handle_skills_upload_temp(self) -> None:
         from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
+            SKILL_UPLOAD_MAX_REQUEST_BYTES,
             handle_skills_upload_temp_http,
         )
 
+        length = self._parse_content_length()
+        if length > SKILL_UPLOAD_MAX_REQUEST_BYTES:
+            self._discard_request_body(length)
+            self._write_json(413, {"error": "upload_too_large"})
+            return
         status, payload = handle_skills_upload_temp_http(
             content_type=self.headers.get("Content-Type", ""),
             body=self._read_request_body(),
         )
         self._write_json(status, payload)
+
+    def _handle_skills_upload_discard(self) -> None:
+        from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
+            discard_skill_upload,
+        )
+
+        try:
+            payload = json.loads(self._read_request_body().decode("utf-8") or "{}")
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._write_json(400, {"error": "invalid_json"})
+            return
+        path_value = payload.get("path") if isinstance(payload, dict) else None
+        if not isinstance(path_value, str):
+            self._write_json(400, {"error": "invalid_path"})
+            return
+        self._write_json(
+            200,
+            {"ok": True, "discarded": discard_skill_upload(path_value)},
+        )
 
     def _handle_custom_agent_upload(self) -> None:
         from jiuwenswarm.channels.web.custom_agent_upload_http import (
@@ -3274,6 +3302,27 @@ def main() -> None:
     _ConfiguredHandler.logs_root = logs_root
     _ConfiguredHandler.logger = logger
     handler = partial(_ConfiguredHandler, directory=str(dist_dir))
+
+    def _cleanup_stale_skill_uploads() -> None:
+        try:
+            from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
+                cleanup_stale_skill_uploads,
+            )
+
+            removed = cleanup_stale_skill_uploads()
+            if removed:
+                logger.info(
+                    "[jiuwenswarm-web] removed %s stale skill uploads", removed
+                )
+        except Exception as exc:  # noqa: BLE001 - 清理失败不应阻断启动
+            logger.debug("[jiuwenswarm-web] skill upload cleanup skipped: %s", exc)
+
+    # 技能导入临时上传的兜底回收放到后台线程，避免拖慢 Web 启动。
+    threading.Thread(
+        target=_cleanup_stale_skill_uploads,
+        name="skill-upload-cleanup",
+        daemon=True,
+    ).start()
     server = ThreadingHTTPServer((args.host, args.port), handler)
     office_listener = None
     if desktop_token:
