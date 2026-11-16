@@ -25,7 +25,9 @@ from jiuwenswarm.channels.process_cli.machine_io import OneShotWriter
 from jiuwenswarm.channels.process_cli.protocol import OneShotRunInput, WorkspaceSpec
 from jiuwenswarm.channels.process_cli.session_guard import SessionLease
 from jiuwenswarm.runtime import AgentRuntime
+from jiuwenswarm.runtime.session_catalog import SessionGetInput, get_session
 from jiuwenswarm.server.runtime.agent_adapter.output_handoff import OutputHandoff
+from jiuwenswarm.server.runtime.session.session_metadata import init_session_metadata
 from tests.unit_tests.agentserver.permissions.test_permission_answer_cutover import answer_host, cold
 from tests.unit_tests.process_cli.test_duplex_control import ObservedOutput, QueueReader
 from tests.unit_tests.runtime.test_runtime_service import FakeAgentManager, FakePlanController
@@ -140,6 +142,12 @@ async def cli_host(answer_host, monkeypatch):
         await h.adapter.create_instance({"channel_id": "process_cli", "project_dir": str(h.root)},
                                         mode="agent")
         sid = h.adapter._parent_session_id
+        # This fixture reuses a prebuilt Host rather than the facade's first
+        # history publication. Establish its owned session before control input.
+        init_session_metadata(
+            session_id=sid, channel_id="process_cli", mode="agent.work.normal",
+            project_dir=str(h.root), work_mode="work",
+        )
         await h.adapter.start_interaction(sid)
 
         def proposal(number):
@@ -171,6 +179,7 @@ async def cli_host(answer_host, monkeypatch):
         manager = HostManager()
         runtime = AgentRuntime(agent_manager=manager, initializer=AsyncMock(),
                                plan_controller=FakePlanController())
+        assert get_session(SessionGetInput(channel_id="process_cli", session_id=sid)) is not None
         client = InProcessRuntimeClient(runtime)
         run = _CliRun(h, runtime, client, manager)
         runs.append(run)
