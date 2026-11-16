@@ -8,6 +8,7 @@ import {
 import { ApplicationConversationRuntimes } from './applicationPlugins/ApplicationConversationRuntimes';
 import { AssetPublishHost } from './components/AssetPublishDrawer';
 import { isEnterprise, ENTERPRISE_HIDDEN_NAV_ITEMS } from './edition';
+import { PluginReplacementDialog } from './components/ConnectorMarket/PluginReplacementDialog';
 // Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 /**
@@ -5385,6 +5386,7 @@ function App({
         resolveSettingsRequest={resolveSettingsRequest}
       />
       <AssetPublishHost />
+      <PluginReplacementDialog />
     </ErrorBoundary>
   );
 }

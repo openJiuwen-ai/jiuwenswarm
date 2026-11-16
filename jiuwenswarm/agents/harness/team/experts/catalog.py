@@ -23,8 +23,8 @@ import aiofiles
 import aiofiles.os
 
 from jiuwenswarm.server.runtime.extension_package_manager import (
-    _reject_package_name,
     expert_package_roots,
+    reject_package_name,
 )
 
 if TYPE_CHECKING:
@@ -90,7 +90,7 @@ async def _location(package_type: PackageType, entry: dict) -> "PackageLocation"
     """Resolve one installed marketplace entry; ``ValueError`` when it has no usable directory."""
     from openjiuwen.agent_teams.experts import PackageLocation
 
-    name = _reject_package_name(entry.get("id"), package_type)
+    name = reject_package_name(entry.get("id"), package_type)
     _, local_root, built_in_root = expert_package_roots(package_type)
     local_dir = await _package_dir(local_root, name)
     built_in_dir = await _package_dir(built_in_root, name)
