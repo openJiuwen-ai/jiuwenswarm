@@ -98,7 +98,9 @@ The agent can call `symphony_compose_graph` directly when progressive tool loadi
 
 Skill Orchestration builds a skill chain from the original task, retrieved candidate skills, and their connectable relationships. If the result says no suitable skill is available, install the required skill from the **Skills** page, refresh the skill graph, and compose again.
 
-The agent can plan expert assignments when parallel exploration, context isolation, specialist roles, or independent verification would help. With `type=expert`, one task plan can assign work to installed experts from the published expert layer and to temporary inline roles. The planner follows the session's mode and can define inline roles for work without a suitable installed expert. Each node represents a task, and each dependency names the deliverable and its destination input. The tool returns the plan and the inline role specifications for a later execution stage.
+The agent can plan expert assignments when parallel exploration, context isolation, specialist roles, or independent verification would help. With `type=expert`, one task plan can assign work to installed experts from the published expert layer and to temporary inline roles. The planner follows the session's mode and can define inline roles for work without a suitable installed expert. Each node represents a task, and each dependency names the deliverable and its destination input.
+
+In single-agent work sessions, `symphony_compose_graph` returns the DAG before delegation begins. For a request to perform the work, the main agent calls `task_tool` with the plan ID and node ID of each ready task in the same turn. Inline roles run as temporary general-purpose agents. Installed native experts run with their template's persona, skills, and tools. Up to five independent nodes can run in parallel. Swarm passes completed outputs to dependent tasks and reports failed or blocked nodes to the main agent. Requests to see only the plan display the DAG.
 
 ---
 

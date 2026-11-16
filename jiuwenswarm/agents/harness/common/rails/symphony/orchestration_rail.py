@@ -35,6 +35,7 @@ from jiuwenswarm.runtime.symphony.llm import (
     bind_request_llm_config,
     reset_request_llm_config,
 )
+from .expert_task_plan import ExpertTaskPlan, TASK_PLAN_PROVIDER
 from .skillpack_route import COMPOSE_CHOICE, PackRoute, SkillPackRouter, direct_route_mode
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,7 @@ class _SymphonyInvokeState:
     pack_route_checked: bool = False
     pack_route_declined: bool = False
     pack_route: PackRoute | None = None
+    expert_plans: dict[str, ExpertTaskPlan] = field(default_factory=dict)
 
 
 class SymphonyOrchestrationRail(DeepAgentRail):
@@ -145,11 +147,13 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         self, *, config_base: _ConfigBaseProvider = None,
         skillpack_router: SkillPackRouter | None = None,
         automatic_skillpack_enabled: Callable[[], bool] | None = None,
+        enable_expert_task_dispatch: bool = False,
     ) -> None:
         super().__init__()
         self._config_base = config_base
         self._skillpack_router = skillpack_router
         self._automatic_skillpack_enabled = automatic_skillpack_enabled
+        self._enable_expert_task_dispatch = enable_expert_task_dispatch
         self.system_prompt_builder = None
         self._paused_states: dict[_PausedInvokeKey, _SymphonyInvokeState] = {}
         self._active_states: dict[_InvokeScope, _SymphonyInvokeState] = {}
@@ -161,6 +165,13 @@ class SymphonyOrchestrationRail(DeepAgentRail):
 
     def init(self, agent: Any) -> None:
         self.system_prompt_builder = getattr(agent, "system_prompt_builder", None)
+
+    def fork_for_agent(self) -> SymphonyOrchestrationRail:
+        return SymphonyOrchestrationRail(
+            config_base=self._config_base,
+            skillpack_router=self._skillpack_router,
+            automatic_skillpack_enabled=self._automatic_skillpack_enabled,
+        )
 
     def uninit(self, agent: Any) -> None:
         _ = agent
@@ -287,6 +298,24 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         self._gate_or_rewrite_resumed_tool_call(ctx)
         self._bind_request_model(ctx)
         self._inject_shortlisted_candidates(ctx)
+        if (
+            self._enable_expert_task_dispatch
+            and isinstance(ctx.inputs, ToolCallInputs)
+            and self._tool_name(ctx.inputs) == "task_tool"
+        ):
+            setattr(ctx, TASK_PLAN_PROVIDER, self._expert_plan_for_ctx)
+
+    def _expert_plan_for_ctx(self, ctx: AgentCallbackContext, plan_id: str) -> ExpertTaskPlan | None:
+        state = self._active_state_for_ctx(ctx)
+        if (
+            state is not None
+            and state.scope.capture_mode == "agent"
+            and not state.awaiting_input
+            and not state.pending_recompose
+            and self._orchestration_enabled()
+        ):
+            return state.expert_plans.get(plan_id)
+        return None
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
         try:
@@ -653,12 +682,22 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             state.candidate_ids = normalize_candidate_ids(args.get("candidate_ids", args.get("candidate_skill_ids")))
             state.awaiting_input = True
             state.pending_recompose = False
+            state.expert_plans.clear()
             return
         if state.pending_recompose and status == "ready":
             # Clear the recompose state only after an explicitly ready plan.
             # Other results leave the candidate/query constraints in place.
             state.pending_recompose = False
             state.awaiting_input = False
+        if (
+            self._enable_expert_task_dispatch
+            and state.scope.capture_mode == "agent"
+            and status == "ready"
+        ):
+            query = self._resume_query(state) if state.answers else state.original_query
+            plan = ExpertTaskPlan.from_result(result, query)
+            if plan is not None:
+                state.expert_plans.setdefault(plan.id, plan)
 
     def _reject_compose_until_input(self, ctx: AgentCallbackContext) -> None:
         payload = {
@@ -1155,7 +1194,10 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             if state.pack_route_declined and state.pack_route is None:
                 guidance.append(_NO_PENDING_PACK_GUIDANCE)
         if self._has_compose_tool(ctx) and self._orchestration_enabled():
-            guidance.append(self._build_orchestration_guidance(resumed=self._resume_is_pending(ctx)))
+            guidance.append(self._build_orchestration_guidance(
+                resumed=self._resume_is_pending(ctx),
+                expert_task_dispatch=self._has_expert_task_tool(ctx),
+            ))
         if not guidance:
             builder.remove_section(self.SECTION_NAME)
             return
@@ -1397,8 +1439,19 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         state = self._active_state_for_ctx(ctx)
         return state is not None and state.pending_recompose
 
+    def _has_expert_task_tool(self, ctx: AgentCallbackContext) -> bool:
+        if not self._enable_expert_task_dispatch:
+            return False
+        state = self._active_state_for_ctx(ctx)
+        if state is None or state.scope.capture_mode != "agent":
+            return False
+        manager = getattr(ctx.agent, "ability_manager", None)
+        card = manager.get("task_tool") if manager is not None else None
+        parameters = getattr(card, "input_params", None)
+        return isinstance(parameters, dict) and "plan_id" in parameters.get("properties", {})
+
     @staticmethod
-    def _build_orchestration_guidance(*, resumed: bool = False) -> str:
+    def _build_orchestration_guidance(*, resumed: bool = False, expert_task_dispatch: bool = False) -> str:
         resume_guidance = (
             """
 This invocation resumes a Symphony clarification. Call `symphony_compose_graph`
@@ -1408,6 +1461,21 @@ that shortlist or retry `needs_input` in this loop.
 """
             if resumed
             else ""
+        )
+        expert_guidance = (
+            """For a `ready` graph with `metadata.plan_kind=expert_tasks`, present the plan when the user asks only
+for planning or a diagram. For a request to perform the work, start the assignments
+in the same turn. Call `task_tool` once per executable node with only `plan_id`
+(the returned graph.id) and `node_id` (a key in graph.nodes). Batch up to five
+independent ready nodes in one set of tool calls. A node is ready once all its
+incoming tasks have completed. The tool transfers their named outputs.
+Continue calling `task_tool` as dependencies complete. Skip failed or blocked
+branches and continue independent ones. Use the node results to complete the user's
+request and report any work the plan could not deliver."""
+            if expert_task_dispatch
+            else """Use the expert plan to describe the task assignments and deliverable handoffs
+it supports. Installed expert nodes reference existing experts, and inline
+nodes describe roles for this plan. Present a ready result as a plan."""
         )
         return f"""
 ## Capability Orchestration Contract
@@ -1439,9 +1507,7 @@ with `type=expert` to find candidates when needed or for expert discovery,
 comparison, or recommendation. Omit `mode` to use the session configuration
 for expert planning.
 
-Use the expert plan to describe the task assignments and deliverable handoffs
-it supports. Installed expert nodes reference existing experts, and inline
-nodes describe roles for this plan. Present a ready result as a plan.
+{expert_guidance}
 If the result is `no_plan` or covers only part of the task, handle the uncovered
 work through the normal task flow.
 

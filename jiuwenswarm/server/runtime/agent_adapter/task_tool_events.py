@@ -223,10 +223,16 @@ class _ActivityForwardingSubagent:
         self._emitter = emitter
 
     async def stream(self, inputs: Any, **kwargs: Any) -> AsyncIterator[Any]:
+        stream = self._inner.stream(inputs, **kwargs)
+        scope = (
+            contextlib.aclosing(stream)
+            if callable(getattr(stream, "aclose", None)) else contextlib.nullcontext(stream)
+        )
         try:
-            async for chunk in self._inner.stream(inputs, **kwargs):
-                await self._emitter.forward_chunk(chunk)
-                yield chunk
+            async with scope:
+                async for chunk in stream:
+                    await self._emitter.forward_chunk(chunk)
+                    yield chunk
         finally:
             await self._emitter.flush()
 

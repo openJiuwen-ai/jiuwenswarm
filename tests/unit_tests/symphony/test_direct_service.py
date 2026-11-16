@@ -897,6 +897,7 @@ def test_production_uses_only_stable_openjiuwen_symphony_imports():
         "FingerprintService",
         "FingerprintSettings",
         "GraphArtifactStore",
+        "IONameVocabulary",
         "OrchestrationConfig",
         "ScanResult",
         "SkillFolderScanner",

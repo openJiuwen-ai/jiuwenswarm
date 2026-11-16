@@ -11522,6 +11522,10 @@ class JiuWenSwarmDeepAdapter:
                 cua_agent_enabled=is_cua_agent_enabled(
                     subagents_cfg.get("cua_agent") if isinstance(subagents_cfg, dict) else None
                 ),
+                symphony_tasks_enabled=(
+                    None if is_team_mode(getattr(self, "_session_instance_mode", "agent"))
+                    else lambda: SymphonyToolkit.is_enabled(getattr(self, "_config_base_cache", None) or config_base)
+                ),
             )
             logger.info(
                 "[JiuWenSwarmDeepAdapter] SubagentRail create success "
@@ -12079,6 +12083,7 @@ class JiuWenSwarmDeepAdapter:
             return SymphonyOrchestrationRail(
                 config_base=lambda: self._config_base_cache,
                 automatic_skillpack_enabled=lambda: get_symphony_evolution_enabled(get_config()),
+                enable_expert_task_dispatch=not is_team_mode(getattr(self, "_session_instance_mode", "agent")),
                 skillpack_router=SkillPackRouter(
                     manager=lambda: self._skill_manager,
                     toolkit=lambda: self._get_or_create_skill_retrieval_toolkit(),
