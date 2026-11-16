@@ -88,7 +88,7 @@ test('preset protocol mapping uses only the exact server fields', () => {
     vendorSelectionKey('token_plan', 'alibaba'),
     catalog,
   );
-  assert.equal(draft.model_name, '');
+  assert.equal(draft.model_name, 'qwen-default');
   assert.equal(createModelDraft(undefined, catalog).protocol, 'openai');
   const openAi = modelDraftToEntry({ ...draft, alias: 'qwen-main', api_key: 'secret' }, undefined, catalog, true);
   assert.equal(openAi.model_provider, 'OpenAI');
@@ -187,7 +187,7 @@ test('OpenAI account drafts use OAuth credentials while preserving the shared mo
   assert.equal(entry.api_key, '');
   assert.equal(entry.model_name, 'gpt-5.2-codex');
   assert.equal(entry.alias, 'my-codex');
-  assert.equal(entry.reasoning_level, 'high');
+  assert.equal(entry.reasoning_level, '');
   assert.equal('vendor_key' in entry, false);
   assert.equal('plan' in entry, false);
 });
@@ -647,7 +647,7 @@ test('Anthropic is rejected when the exact vendor preset does not support it', (
   assert.match(validateModelDraft(draft, [], undefined, restrictedCatalog, t).protocol, /anthropicUnavailable/);
 });
 
-test('custom vendor uses server reasoning data even when there are no built-in presets', () => {
+test('custom vendor clears and ignores reasoning data even when the catalog has protocol defaults', () => {
   const emptyCatalog = parseVendorCatalog({ reasoning, token_plan: [], coding_plan: [], custom_api: [] });
   const draft = {
     alias: 'custom-only',
@@ -661,10 +661,13 @@ test('custom vendor uses server reasoning data even when there are no built-in p
     context_window_tokens: '262144',
     is_default: false,
   };
-  assert.deepEqual(validateModelDraft(draft, [], undefined, emptyCatalog, t), {});
-  const entry = modelDraftToEntry(draft, undefined, emptyCatalog, true);
+  const historicalDraft = { ...draft, reasoning_level: 'high' };
+  assert.deepEqual(validateModelDraft(historicalDraft, [], undefined, emptyCatalog, t), {});
+  assert.equal(reconcileModelReasoning(historicalDraft, emptyCatalog).reasoning_level, '');
+  const entry = modelDraftToEntry(historicalDraft, undefined, emptyCatalog, true);
   assert.equal(entry.model_provider, 'Anthropic');
   assert.equal(entry.api_base, 'https://custom.example/v1');
+  assert.equal(entry.reasoning_level, '');
   assert.equal('vendor_key' in entry, false);
   assert.equal('plan' in entry, false);
   assert.match(

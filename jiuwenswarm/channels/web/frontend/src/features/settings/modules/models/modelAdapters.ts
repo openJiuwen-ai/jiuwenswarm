@@ -139,13 +139,17 @@ export function findVendorPreset(catalog: VendorPresetMap, selection: string): V
 
 /** Normalize the draft after capabilities load or the model changes; never persist it here. */
 export function reconcileModelReasoning(draft: ModelDraft, catalog: VendorPresetMap): ModelDraft {
+  if (!catalog.reasoning) return draft;
+  if (draft.vendor_selection === CUSTOM_VENDOR_SELECTION) {
+    return draft.reasoning_level ? { ...draft, reasoning_level: '' } : draft;
+  }
   const capability = resolveModelReasoning(
     catalog,
     findVendorPreset(catalog, draft.vendor_selection),
     draft.model_name,
     draft.protocol,
   );
-  return capability && !isReasoningLevelSupported(draft.reasoning_level, capability)
+  return (!capability || !isReasoningLevelSupported(draft.reasoning_level, capability))
     ? { ...draft, reasoning_level: '' }
     : draft;
 }
@@ -233,7 +237,7 @@ export function createModelDraft(model: ModelEntry | undefined, catalog: VendorP
     model_input_mode: preset ? 'options' : 'manual',
     api_key: model.api_key,
     api_base: model.api_base,
-    reasoning_level: model.reasoning_level ?? '',
+    reasoning_level: vendorSelection === CUSTOM_VENDOR_SELECTION ? '' : (model.reasoning_level ?? ''),
     context_window_tokens: contextWindowTokens,
     is_default: model.is_default ?? false,
   };
@@ -260,6 +264,7 @@ export function applyVendorSelection(draft: ModelDraft, selection: string, catal
       model_input_mode: 'manual',
       api_key: '',
       api_base: '',
+      reasoning_level: '',
     };
   }
 
@@ -270,7 +275,7 @@ export function applyVendorSelection(draft: ModelDraft, selection: string, catal
     ...draft, kv_cache_affinity: false,
     protocol: anthropic ? 'anthropic' : 'openai',
     vendor_selection: selection,
-    model_name: '',
+    model_name: preset.default_model,
     model_input_mode: 'options',
     api_key: '',
     api_base: anthropic ? (preset.anthropic_base ?? '') : preset.api_base,
@@ -292,6 +297,7 @@ export function modelDraftToEntry(
   catalog: VendorPresetMap,
   connectionChanged: boolean,
 ): ModelEntry {
+  const normalizedDraft = reconcileModelReasoning(draft, catalog);
   const next: ModelEntry = {
     ...existing,
     alias: draft.alias.trim(),
@@ -299,7 +305,7 @@ export function modelDraftToEntry(
     api_key: draft.api_key.trim(),
     api_base: draft.api_base.trim(),
     model_provider: existing?.model_provider ?? '',
-    reasoning_level: draft.reasoning_level,
+    reasoning_level: normalizedDraft.reasoning_level,
     context_window_tokens: resolveDraftContextWindowTokens(draft.context_window_tokens),
     is_default: draft.is_default,
   };
