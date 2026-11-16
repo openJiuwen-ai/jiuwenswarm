@@ -92,7 +92,6 @@ def test_upsert_preserves_omitted_secret_and_encrypts_rotation(catalog_state, mo
     assert saved["model_client_config"]["api_key"] == "enc:new"
 
 
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("legacy", [False, True])
 async def test_vendor_reset_survives_list_and_detail(catalog_state, monkeypatch, legacy):
@@ -107,14 +106,17 @@ async def test_vendor_reset_survives_list_and_detail(catalog_state, monkeypatch,
     detail = ModelCatalog().get_public_model_detail("mdl_a")["model_client_config"]
     assert {key: detail[key] for key in metadata} == metadata
 
-    saved = config_module.upsert_model_resource({
-        "model_id": "mdl_a",
-        "model_client_config": {"api_base": "https://custom.test/v1", **dict.fromkeys(metadata, "")},
-    })
+    client_update = {
+        "api_base": "https://custom.test/v1", "vendor_key": None, "plan": "", "endpoint_profile": "",
+    }
+    payload = client_update if legacy else {"model_client_config": client_update}
+    saved = config_module.upsert_model_resource({"model_id": "mdl_a", **payload})
     assert saved["model_client_config"]["api_key"] == "enc:old"
+    assert "vendor_key" not in saved and "plan" not in saved
     detail = ModelCatalog().get_public_model_detail("mdl_a")["model_client_config"]
     assert detail["api_base"] == "https://custom.test/v1"
-    assert all(detail[key] == "" for key in metadata)
+    assert "vendor_key" not in detail and "plan" not in detail
+    assert detail["endpoint_profile"] == ""
 
     monkeypatch.setattr(models_handlers, "get_config", lambda: deepcopy(catalog_state))
     monkeypatch.setattr(models_handlers, "get_default_models", lambda config: config["models"]["defaults"])
@@ -124,6 +126,7 @@ async def test_vendor_reset_survives_list_and_detail(catalog_state, monkeypatch,
     assert response["ok"]
     row = response["payload"]["models"][0]
     assert all(row[key] == "" for key in metadata)
+
 
 @pytest.mark.parametrize("level", ["on", "off", "high", ""])
 def test_reasoning_resource_round_trip_and_reset(catalog_state, level):

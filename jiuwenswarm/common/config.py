@@ -1906,18 +1906,12 @@ def _normalize_model_entry(entry: dict[str, Any]) -> dict[str, Any]:
         mcc["timeout"] = saved.pop("timeout")
     if "verify_ssl" in saved:
         mcc["verify_ssl"] = bool(saved.pop("verify_ssl"))
-    if "endpoint_profile" in saved:
-        val = saved.pop("endpoint_profile")
-        if val:
-            mcc["endpoint_profile"] = str(val)
-    if "vendor_key" in saved:
-        val = saved.pop("vendor_key")
-        if val:
-            mcc["vendor_key"] = str(val)
-    if "plan" in saved:
-        val = saved.pop("plan")
-        if val:
-            mcc["plan"] = str(val)
+    for key in ("endpoint_profile", "vendor_key", "plan"):
+        if key not in saved:
+            continue
+        value = saved.pop(key)
+        if value or value in (None, ""):
+            mcc[key] = str(value) if value else value
     temp = saved.pop("temperature", None)
     if temp is not None:
         mco["temperature"] = float(temp)
@@ -2011,6 +2005,8 @@ def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
         # PyYAML reads unquoted on/off as booleans; keep the editable DTO stable.
         model_config["reasoning_level"] = DoubleQuotedScalarString(level or "")
     saved.setdefault("model_id", _new_business_id("mdl"))
+    # Only an explicit empty value in the incoming payload clears a field.
+    client_update = saved.get("model_client_config") or {}
 
     def _mutate(data):
         nonlocal saved
@@ -2020,18 +2016,17 @@ def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
         for index, current in enumerate(defaults):
             if current.get("model_id") == saved["model_id"]:
                 _protect_model_key(saved, current)
-                client_update = saved.get("model_client_config") or {}
                 saved = _merge_model_update(current, saved)
-                # An explicit clear also removes the legacy top-level fallback.
-                for key in ("vendor_key", "plan"):
-                    if key in client_update and client_update[key] in (None, ""):
-                        saved.pop(key, None)
                 defaults[index] = saved
                 break
         else:
             defaults.append(saved)
             _remove_initial_model_placeholder(candidate, saved)
             _protect_model_key(saved, {})
+        for key in ("vendor_key", "plan"):
+            if key in client_update and client_update[key] in (None, ""):
+                saved.pop(key, None)
+                saved["model_client_config"].pop(key, None)
         if entry.get("is_default") is True:
             for current in candidate["defaults"]:
                 current["is_default"] = current["model_id"] == saved["model_id"]

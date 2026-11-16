@@ -410,19 +410,15 @@ def _merge_models_for_replace_all(
                 new_mcc["timeout"] = item["timeout"]
             if not _values_match(item["alias"], (resolved_entry or {}).get("alias")):
                 new_entry["alias"] = item["alias"]
-            # vendor_key + plan: persist the exact provider selection identity
-            # into model_client_config (or clear it).
             previous_vendor = str(new_mcc.get("vendor_key") or new_entry.get("vendor_key") or "")
-            if item.get("vendor_key"):
-                new_mcc["vendor_key"] = item["vendor_key"]
-            else:
-                new_mcc.pop("vendor_key", None)
-                new_entry.pop("vendor_key", None)
-            if item.get("plan"):
-                new_mcc["plan"] = item["plan"]
-            else:
-                new_mcc.pop("plan", None)
-                new_entry.pop("plan", None)
+            for key in ("vendor_key", "plan"):
+                if key not in item:
+                    continue
+                if item[key]:
+                    new_mcc[key] = item[key]
+                else:
+                    new_mcc.pop(key, None)
+                    new_entry.pop(key, None)
             # endpoint_profile: OpenAI 协议端点方言(deepseek/openrouter/dashscope/...)。
             # 编辑表单不暴露该字段(Anthropic 协议下 core 忽略)，payload 缺失不等于
             # 用户要求清空：仅当切到 Anthropic 协议或换用其他供应商预设时丢弃持久化
@@ -432,7 +428,7 @@ def _merge_models_for_replace_all(
                 new_mcc["endpoint_profile"] = item["endpoint_profile"]
             elif (
                 normalize_provider_value(str(item.get("model_provider") or "")) == "Anthropic"
-                or (item.get("vendor_key") or "") != previous_vendor
+                or ("vendor_key" in item and (item["vendor_key"] or "") != previous_vendor)
             ):
                 new_mcc.pop("endpoint_profile", None)
             new_entry["is_default"] = item["is_default"]
@@ -605,7 +601,7 @@ def build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]
                 )
             aliases_seen[alias] = idx
 
-        parsed.append({
+        parsed_item = {
             "model_id": item.get("model_id"),
             "model_name": model_name,
             "api_base": api_base,
@@ -621,21 +617,17 @@ def build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]
             "context_window_tokens": context_window_tokens,
             "context_window_tokens_provided": context_window_tokens_provided,
             "origin_index": origin_index,
-            # vendor_key is an opaque hint
-            # selector; not validated (the selector only ever emits keys
-            # present in gateway.common.model_vendor_registry). It is
-            # persisted so the UI can match a configured entry back to its
-            # preset for icon display / re-selection. Not required.
-            "vendor_key": vendor_key,
-            # plan is the other half of the provider-selection identity.
-            # Older entries may have vendor_key only; do not infer a plan.
-            "plan": plan,
             # endpoint_profile: OpenAI 协议端点方言(deepseek/openrouter/dashscope/...);
             # opaque passthrough, not validated. Anthropic 协议时 core 忽略此字段。
             # 前端未传时按 api_base host 推断已知自建网关方言(如 vllm)并落库,
             # 否则该类端点的思考开关只会发官方 thinking.type 而被网关忽略。
             "endpoint_profile": effective_endpoint_profile(api_base, item.get("endpoint_profile")),
-        })
+        }
+        if "vendor_key" in item:
+            parsed_item["vendor_key"] = vendor_key
+        if "plan" in item:
+            parsed_item["plan"] = plan
+        parsed.append(parsed_item)
 
     # alias 与其他条目的 model_name 冲突校验
     for i, p in enumerate(parsed):

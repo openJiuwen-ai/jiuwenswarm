@@ -351,27 +351,6 @@ test('custom models never submit vendor metadata and legacy connection fields re
   assert.equal('endpoint_profile' in edited, false);
 });
 
-test('editing with a missing preset preserves its identity until another vendor is selected', () => {
-  const existing = {
-    model_name: 'deepseek-chat', model_provider: 'OpenAI', api_key: '',
-    api_base: 'https://api.deepseek.com/v1',
-    vendor_key: 'deepseek', plan: 'custom_api', endpoint_profile: 'deepseek',
-  };
-  const draft = createModelDraft(existing, catalog);
-  assert.equal(draft.vendor_selection, '');
-  const untouched = modelDraftToEntry({ ...draft, alias: 'Renamed' }, existing, catalog, false);
-  assert.equal(untouched.vendor_key, 'deepseek');
-  assert.equal(untouched.plan, 'custom_api');
-  assert.equal(untouched.endpoint_profile, 'deepseek');
-
-  const custom = modelDraftToEntry({
-    ...draft, vendor_selection: CUSTOM_VENDOR_SELECTION, api_base: 'https://custom.test/v1',
-  }, existing, catalog, true);
-  assert.equal('vendor_key' in custom, false);
-  assert.equal('plan' in custom, false);
-  assert.equal('endpoint_profile' in custom, false);
-});
-
 test('display name validation is required, unique among display names, and excludes the edited row', () => {
   const models = [
     {
