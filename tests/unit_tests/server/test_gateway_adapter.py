@@ -208,9 +208,21 @@ async def test_im_file_persist_concurrent_same_name_does_not_clobber(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reference_only,current_content,expected_content",
+    [
+        (False, b"longer current original content", b"approved-content"),
+        (True, b"longer current original content", b"longer current original content"),
+        (True, b"x", b"x"),
+        (True, b"", b""),
+    ],
+)
 async def test_workspace_verified_download_revalidates_every_bounded_chunk(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    reference_only: bool,
+    current_content: bytes,
+    expected_content: bytes,
 ) -> None:
     from jiuwenswarm.agents.harness.common.tools.verified_download_assets import (
         VerifiedDownloadAssetOwner,
@@ -228,7 +240,8 @@ async def test_workspace_verified_download_revalidates_every_bounded_chunk(
     asset = owner.stage(
         source,
         file_name=source.name,
-        expires_at=10_000_000_000,
+        expires_at=0 if reference_only else 10_000_000_000,
+        reference_only=reference_only,
     )
     manager = WebFileDownloadManager("s" * 32, asset_owner=owner)
     monkeypatch.setattr(WebFileDownloadManager, "_instance", manager)
@@ -238,6 +251,7 @@ async def test_workspace_verified_download_revalidates_every_bounded_chunk(
         session_id="current-session",
     )
     adapter = WorkspaceFileAdapter()
+    source.write_bytes(current_content)
 
     first = await adapter.handle(
         _request(
@@ -246,9 +260,22 @@ async def test_workspace_verified_download_revalidates_every_bounded_chunk(
         )
     )
     assert first.ok is True
-    assert base64.b64decode(first.payload["data_base64"]) == b"approved"
+    assert base64.b64decode(first.payload["data_base64"]) == expected_content[:8]
     assert first.payload["name"] == source.name
-    assert first.payload["size"] == len(b"approved-content")
+    assert first.payload["size"] == len(expected_content)
+    tail = await adapter.handle(_request(
+        ReqMethod.FILE_DOWNLOAD_VERIFIED_CHUNK,
+        {"token": token, "offset": max(0, len(expected_content) - 3), "limit": 8},
+    ))
+    assert tail.ok
+    assert base64.b64decode(tail.payload["data_base64"]) == expected_content[-3:]
+    assert tail.payload["eof"] is True
+    past_end = await adapter.handle(_request(
+        ReqMethod.FILE_DOWNLOAD_VERIFIED_CHUNK,
+        {"token": token, "offset": len(expected_content) + 1, "limit": 8},
+    ))
+    assert not past_end.ok
+    assert past_end.payload["code"] == "BAD_REQUEST"
 
     owner.revoke(asset)
     rejected = await adapter.handle(
@@ -259,6 +286,7 @@ async def test_workspace_verified_download_revalidates_every_bounded_chunk(
     )
     assert rejected.ok is False
     assert rejected.payload["code"] == "FORBIDDEN"
+    assert source.read_bytes() == current_content
 
 
 @pytest.mark.asyncio

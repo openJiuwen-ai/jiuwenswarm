@@ -615,9 +615,11 @@ def test_verified_single_user_upload_persists_without_http_bridge(
     assert handler.response == (200, {"path": str(target), "size": 13})
 
 
-def test_verified_asset_retry_range_and_concurrent_get_use_same_sealed_object(
+@pytest.mark.parametrize("reference_only", [False, True])
+def test_verified_asset_retry_range_and_concurrent_get_use_registered_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    reference_only: bool,
 ) -> None:
     source = tmp_path / "media.bin"
     source.write_bytes(b"0123456789")
@@ -628,7 +630,8 @@ def test_verified_asset_retry_range_and_concurrent_get_use_same_sealed_object(
     asset = owner.stage(
         source,
         file_name=source.name,
-        expires_at=time.time() + 60,
+        expires_at=0 if reference_only else time.time() + 60,
+        reference_only=reference_only,
     )
     manager = WebFileDownloadManager("s" * 32, asset_owner=owner)
     monkeypatch.setattr(WebFileDownloadManager, "_instance", manager)
@@ -638,6 +641,7 @@ def test_verified_asset_retry_range_and_concurrent_get_use_same_sealed_object(
         session_id="session-a",
     )
     source.write_bytes(b"changed-after-capture")
+    expected = b"changed-after-capture" if reference_only else b"0123456789"
 
     def fetch(headers: dict[str, str] | None = None) -> _DownloadHandlerStub:
         handler = _DownloadHandlerStub(command="GET", headers=headers)
@@ -647,16 +651,21 @@ def test_verified_asset_retry_range_and_concurrent_get_use_same_sealed_object(
     first = fetch()
     retry = fetch()
     partial = fetch({"Range": "bytes=2-5"})
+    head = _DownloadHandlerStub(command="HEAD")
+    _SpaStaticHandler._handle_file_download(head, {"token": token})
     with ThreadPoolExecutor(max_workers=4) as executor:
         concurrent_bodies = tuple(
             executor.map(lambda _index: fetch().wfile.getvalue(), range(4))
         )
 
     assert first.status == retry.status == 200
-    assert first.wfile.getvalue() == retry.wfile.getvalue() == b"0123456789"
+    assert first.wfile.getvalue() == retry.wfile.getvalue() == expected
+    assert head.status == 200
+    assert head.response_headers["Content-Length"] == str(len(expected))
+    assert head.wfile.getvalue() == b""
     assert partial.status == 206
-    assert partial.wfile.getvalue() == b"2345"
-    assert concurrent_bodies == (b"0123456789",) * 4
+    assert partial.wfile.getvalue() == expected[2:6]
+    assert concurrent_bodies == (expected,) * 4
 
 
 @pytest.mark.parametrize("command", ["GET", "HEAD"])

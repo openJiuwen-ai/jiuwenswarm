@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import threading
@@ -108,11 +109,15 @@ async def test_authorized_send_captures_delivery_time_bytes(tmp_path: Path) -> N
     )
     assert current_send_file_execution_grant() is None
     payload = server.send_push.await_args.args[0]["payload"]["files"][0]
-    assert payload["path"] != source.as_posix()
+    assert payload["path"] == source.as_posix()
     assert Path(payload["path"]).read_text(encoding="utf-8") == "delivery-time"
     assert history.call_args.kwargs["extra"]["files"][0] == payload
     sidecar = next((tmp_path / "assets").glob("*.json"))
-    assert json.loads(sidecar.read_text(encoding="utf-8"))["state"] == "committed"
+    registration = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert registration["state"] == "committed"
+    assert registration["expires_at"] == 0
+    assert registration["content_digest"] == "sha256:" + hashlib.sha256(b"delivery-time").hexdigest()
+    assert list(owner.root.iterdir()) == [sidecar]
 
 
 @pytest.mark.asyncio
