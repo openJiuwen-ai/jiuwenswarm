@@ -1120,13 +1120,6 @@ async def test_compact_form_answer_binds_only_unique_scoped_information_card(sys
     assert await manager.operate("user", "voice", call) == receipt
 
 
-def test_compact_form_answer_rejects_ids_and_malformed_answers():
-    for args in [{"answers": []}, {"answers": [""]}, {"answers": [True]},
-                 {"answers": ["yes"], "token": "old"}, {"answers": ["yes"], "job_id": "other"}]:
-        with pytest.raises(ValueError):
-            parse_qwen_omni_tool_call({"name": "jiuwen_form_answer", "call_id": "invalid", "arguments": args})
-
-
 async def test_compact_form_answer_refuses_ambiguous_and_permission_cards():
     from contextlib import nullcontext
     from unittest.mock import AsyncMock

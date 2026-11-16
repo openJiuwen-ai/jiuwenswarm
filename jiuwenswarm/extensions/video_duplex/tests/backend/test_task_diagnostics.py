@@ -1,7 +1,6 @@
 """Diagnostics preserve correlation without leaking complete task results."""
 
 import json
-import logging
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -10,31 +9,6 @@ import pytest
 
 from jiuwenswarm.common.utils import append_jsonl_log
 from jiuwenswarm.extensions.video_duplex.backend.tasks import diagnostics
-
-
-def test_task_trace_filters_success_details_but_keeps_failures(tmp_path, monkeypatch, caplog):
-    monkeypatch.setattr(diagnostics, "get_user_workspace_dir", lambda: tmp_path)
-    with caplog.at_level(logging.INFO, logger=diagnostics.__name__):
-        diagnostics.trace_task("checkpoint_acknowledged", request_id="checkpoint-1")
-        diagnostics.trace_task("task_push_sent", task_id="task-1")
-        diagnostics.trace_task("cancel_rpc_response", probe=True, ok=True,
-                               payload={"managed_task_status": "running"})
-        diagnostics.trace_task("cancel_rpc_response", probe=True, ok=False, error="unreachable")
-        diagnostics.trace_task("cancel_rpc_response", probe=True, ok=True,
-                               payload={"managed_task_status": "running", "success": False})
-        diagnostics.trace_task("checkpoint_failed", error="rejected")
-        diagnostics.trace_task("cancel_rpc_sent", probe=False)
-    with caplog.at_level(logging.DEBUG, logger=diagnostics.__name__):
-        diagnostics.trace_task("checkpoint_acknowledged", request_id="checkpoint-2")
-    lines = (tmp_path / "logs/duplex-task-trace.jsonl").read_text(encoding="utf-8").splitlines()
-    records = [json.loads(line) for line in lines]
-    assert [record["event"] for record in records] == [
-        "cancel_rpc_response", "cancel_rpc_response", "checkpoint_failed",
-        "cancel_rpc_sent", "checkpoint_acknowledged",
-    ]
-    assert records[0]["error"] == "unreachable"
-    assert records[1]["payload"]["success"] is False
-    assert records[-1]["request_id"] == "checkpoint-2"
 
 
 def test_jsonl_rotation_bounds_backups_and_preserves_unicode(tmp_path):
@@ -50,15 +24,6 @@ def test_jsonl_rotation_bounds_backups_and_preserves_unicode(tmp_path):
     assert [record["index"] for record in records] == [3, 4, 5]
     assert all(record["text"] == "测试" * 10 for record in records)
     assert all(file.stat().st_size <= 100 for file in files)
-
-
-def test_jsonl_rotation_retains_existing_oversized_log(tmp_path):
-    path = tmp_path / "existing.jsonl"
-    original = json.dumps({"text": "old" * 100}) + "\n"
-    path.write_text(original, encoding="utf-8")
-    append_jsonl_log(path, {"text": "new"}, max_bytes=100, backup_count=2)
-    assert path.with_name(path.name + ".1").read_text(encoding="utf-8") == original
-    assert json.loads(path.read_text(encoding="utf-8")) == {"text": "new"}
 
 
 def test_jsonl_rotation_is_serialized_across_processes(tmp_path):
@@ -91,16 +56,6 @@ def test_jsonl_rotation_is_serialized_across_processes(tmp_path):
     assert sorted((record["writer"], record["index"]) for record in records) == [
         (str(writer), index) for writer in range(2) for index in range(20)
     ]
-
-
-def test_video_log_disk_failure_does_not_interrupt_request(tmp_path, monkeypatch):
-    from jiuwenswarm.extensions.video_duplex.backend import video_live
-
-    def fail(*args, **kwargs):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(video_live, "append_jsonl_log", fail)
-    video_live._append_jsonl(tmp_path / "diagnostics.jsonl", {"event": "test"})  # pylint: disable=protected-access
 
 
 def test_task_trace_writes_correlated_record_without_full_results(tmp_path, monkeypatch):

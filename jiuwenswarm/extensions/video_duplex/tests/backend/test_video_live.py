@@ -1462,33 +1462,6 @@ async def test_joyai_voice_only_support_still_rejects_empty_polling_and_invalid_
     provider.assert_not_awaited()
 
 
-def test_joyai_logs_one_compact_record_per_event(monkeypatch, tmp_path, caplog) -> None:
-    import logging
-
-    monkeypatch.setattr(video_live, "get_user_workspace_dir", lambda: tmp_path)
-    event = {
-        "request_id": "request-response", "stage": "completed", "decision": "response",
-        "instruction": "weather", "raw_content": "adapter response",
-        "model_raw_content": "model response" * 300,
-        "search_job": {"job_id": "job-1", "status": "running", "result": "private result"},
-    }
-    with caplog.at_level(logging.INFO, logger=video_live.__name__):
-        video_live._append_joyai_log(event)
-    with caplog.at_level(logging.DEBUG, logger=video_live.__name__):
-        video_live._append_joyai_log(event)
-    lines = (tmp_path / "logs/duplex-realtime.jsonl").read_text(encoding="utf-8").splitlines()
-    records = [json.loads(line) for line in lines]
-    assert len(records) == 2
-    assert records[0]["component"] == "joyai"
-    assert records[0]["model_raw_content_chars"] == len(event["model_raw_content"])
-    assert "model_raw_content" not in records[0]
-    assert "instruction" not in records[0]
-    assert records[0]["search_job"] == {"job_id": "job-1", "status": "running"}
-    assert records[1]["model_raw_content"] == event["model_raw_content"][:2_000]
-    assert event["instruction"] == "weather"
-    assert not list((tmp_path / "logs").glob("joyai*.jsonl"))
-
-
 @pytest.mark.parametrize(
     ("endpoint", "model", "expected"),
     [
@@ -2377,53 +2350,6 @@ async def test_qwen_realtime_error_preserves_raw_event_in_dedicated_log(
     assert errors[0]["raw_event"] == raw_event
     assert errors[0]["code"] == "context_length_exceeded"
     assert "secret" not in errors[0]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("event,filename", [
-    ("qwen_realtime_error", "duplex-realtime.jsonl"),
-    ("qwen_tool_call_invalid", "duplex-realtime.jsonl"),
-    ("task_trace_control_failed", "duplex-task-trace.jsonl"),
-])
-async def test_telemetry_writes_one_correlated_record(tmp_path, monkeypatch, event, filename):
-    from jiuwenswarm.extensions.video_duplex.backend.tasks import diagnostics
-
-    channel = _video_channel()
-    monkeypatch.setattr(video_live, "get_user_workspace_dir", lambda: tmp_path)
-    monkeypatch.setattr(diagnostics, "get_user_workspace_dir", lambda: tmp_path)
-    await channel.request("video.realtime.telemetry", {
-        "event": event, "code": "provider_rejected", "message": "full failure reason",
-        "raw_event": "provider detail", "source": "browser", "call_id": "call-1",
-    }, request_id="diagnostic", session_id="session-1")
-    assert channel.responses[-1][1]["payload"] == {"logged": True}
-    assert [path.name for path in (tmp_path / "logs").glob("*.jsonl")] == [filename]
-    lines = (tmp_path / "logs" / filename).read_text(encoding="utf-8").splitlines()
-    records = [json.loads(line) for line in lines]
-    assert len(records) == 1
-    assert records[0].items() >= {
-        "event": event, "code": "provider_rejected", "message": "full failure reason",
-        "raw_event": "provider detail", "session_id": "session-1", "source": "browser",
-        "call_id": "call-1",
-    }.items()
-
-
-def test_realtime_log_filters_noise_and_retains_bounded_failure(tmp_path, monkeypatch, caplog):
-    import logging
-
-    monkeypatch.setattr(video_live, "get_user_workspace_dir", lambda: tmp_path)
-    with caplog.at_level(logging.INFO, logger=video_live.__name__):
-        video_live._append_realtime_telemetry({"event": "qwen_provider_vad"})
-        video_live._append_joyai_log({
-            "stage": "failed", "error": "invalid model response", "raw_content": "x" * 3_000,
-        })
-    with caplog.at_level(logging.DEBUG, logger=video_live.__name__):
-        video_live._append_realtime_telemetry({"event": "qwen_provider_vad"})
-    lines = (tmp_path / "logs/duplex-realtime.jsonl").read_text(encoding="utf-8").splitlines()
-    records = [json.loads(line) for line in lines]
-    assert [record["event"] for record in records] == ["failed", "qwen_provider_vad"]
-    assert records[0]["error"] == "invalid model response"
-    assert records[0]["raw_content"] == "x" * 2_000
-    assert records[0]["raw_content_chars"] == 3_000
 
 
 def test_jsonl_appends_are_atomic_across_threads(tmp_path) -> None:

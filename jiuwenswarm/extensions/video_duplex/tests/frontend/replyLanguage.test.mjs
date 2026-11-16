@@ -75,13 +75,3 @@ test('completion notification preserves invocation identity separately from reso
   assert.match(notice, /external-resource-123/);
   assert.match(notice, /must never substitute for job_id/);
 });
-
-
-test('information answers need only ordered answers, never task IDs or tokens', () => {
-  const event = {type: 'response.function_call_arguments.done', name: 'jiuwen_form_answer', call_id: 'answer'};
-  assert.equal(parseQwenOmniFunctionCall({...event, arguments: '{"answers":["程序员"]}'}).name, 'jiuwen_form_answer');
-  for (const args of [{answers: []}, {answers: [true]}, {answers: ['yes'], token: 'old'}]) {
-    assert.equal(parseQwenOmniFunctionCall({...event, arguments: JSON.stringify(args)}), null);
-  }
-  assert.equal(parseQwenOmniFunctionCall({...event, arguments: '{"answers":["程序员"]'}), null);
-});

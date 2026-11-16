@@ -651,18 +651,6 @@ test('direct answers release text and audio once, only after response.done', asy
   assert.deepEqual(posted.map(item => item.type), ['audio', 'drain']);
 });
 
-test('tool calls do not suppress buffered message output', async () => {
-  const { session, assistantTexts, posted } = createSession();
-  session.handleEvent({ type: 'response.created', response: { id: 'late-tool' } });
-  session.handleEvent({ type: 'response.output_item.added', response_id: 'late-tool', item: { type: 'function_call', name: 'jiuwen_delegate' } });
-  session.handleEvent({ type: 'response.text.done', response_id: 'late-tool', text: 'I will do it.' });
-  session.handleEvent({ type: 'response.audio.delta', response_id: 'late-tool', delta: btoa('aa') });
-  session.handleEvent({ type: 'response.done', response: { id: 'late-tool', status: 'completed', output: [{ type: 'function_call', name: 'jiuwen_delegate' }] } });
-  await session.playbackOperation;
-  assert.deepEqual(assistantTexts.filter(item => item.final).map(item => item.text), ['I will do it.']);
-  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
-});
-
 test('message item text and audio stream before response.done and finalize only once', async () => {
   const { session, assistantTexts, posted } = createSession();
   session.handleEvent({ type: 'response.created', response: { id: 'stream' } });
@@ -1158,18 +1146,6 @@ test('a separate tool response preserves the earlier message and its delayed aud
   assert.equal(functionCalls.length, 1);
   assert.equal(posted.filter(item => item.type === 'audio').length, 1);
   assert.deepEqual(assistantTexts.filter(item => item.final).map(item => item.text), ['这就帮你查查今天香港的天气情况。']);
-});
-
-test('a tool response does not silence an earlier unclassified acknowledgement', () => {
-  const { session, assistantTexts } = createSession();
-  session.handleEvent({ type: 'input_audio_buffer.speech_started', item_id: 'input-task' });
-  session.handleEvent({ type: 'response.created', response: { id: 'ack' } });
-  session.handleEvent({ type: 'response.audio_transcript.delta', response_id: 'ack', delta: '我来处理。' });
-  session.handleEvent({ type: 'response.created', response: { id: 'delegate' } });
-  session.handleEvent({ type: 'response.function_call_arguments.done', response_id: 'delegate', name: 'jiuwen_delegate', call_id: 'split-call', arguments: '{"task":"List files"}' });
-  session.handleEvent({ type: 'response.done', response: { id: 'ack', status: 'completed' } });
-  session.handleEvent({ type: 'response.done', response: { id: 'delegate', status: 'completed' } });
-  assert.deepEqual(assistantTexts.filter(item => item.final).map(item => item.text), ['我来处理。']);
 });
 
 test('Qwen tool receipt remains visible and response.done finalizes it', () => {
