@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 
 import pytest
@@ -35,6 +36,34 @@ class ClosingRecvWebSocket:
     async def recv(self) -> str:
         self.recv_calls += 1
         raise ConnectionClosedError(None, None)
+
+
+class DelayedAckWebSocket:
+    """命名管道皮：connection.ack 延迟 delay 秒才到（模拟 AgentServer 冷启动繁忙）。"""
+
+    def __init__(self, delay: float) -> None:
+        self.remote_address = "named-pipe:test"
+        self._delay = delay
+        self._acked = False
+        self._closed = False
+
+    async def recv(self) -> str:
+        if not self._acked:
+            if self._delay:
+                await asyncio.sleep(self._delay)
+            self._acked = True
+            return json.dumps(
+                {"type": "event", "event": "connection.ack", "payload": {"status": "ready"}}
+            )
+        # ack 之后保持挂起：由测试主动取消（模拟连接长期存活）
+        await asyncio.sleep(3600)
+        raise AssertionError("unreachable")
+
+    async def send(self, data: str) -> None:
+        return None
+
+    async def close(self) -> None:
+        self._closed = True
 
 
 class AgentClientHarness(WebSocketAgentServerClient):
@@ -479,3 +508,81 @@ async def test_send_request_clears_connection_when_send_fails():
     response = await asyncio.wait_for(task, timeout=0.1)
     assert response.ok is True
     assert client.has_message_queue_for_test("rid-after-send-close") is False
+
+
+@pytest.mark.asyncio
+async def test_message_receiver_loop_marks_ready_on_late_connection_ack():
+    """迟到的 connection.ack 由接收循环补置就绪。
+
+    回归：connect 里用 wait_for(recv(), 5s) 抢读首帧时，超时只取消等待方，
+    命名管道的底层读线程仍挂在管道上，迟到的 ack 被孤儿读吞掉 → server_ready
+    永久为 False → WebChannel 新连接一直被跳过 connection.ack（本地定时任务
+    报「环境正在准备中」）。
+    """
+    client = AgentClientHarness()
+    client.set_ws_for_test(DelayedAckWebSocket(delay=0.05))
+    client.set_running_for_test(True)
+    client.set_server_ready_for_test(False)
+
+    task = asyncio.create_task(client.run_message_receiver_loop_for_test())
+    try:
+        for _ in range(100):
+            if client.server_ready:
+                break
+            await asyncio.sleep(0.01)
+        assert client.server_ready is True
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_connect_keeps_waiting_window_and_late_ack_still_marks_ready(monkeypatch):
+    """ack 晚于等待窗口：connect 照常返回，随后 ack 到达即置为就绪。"""
+    monkeypatch.setattr(agent_client, "_CONNECTION_ACK_WAIT_SECONDS", 0.02)
+    monkeypatch.setattr(agent_client, "resolve_agent_e2a_pipe_path", lambda: r"\.\pipe\test")
+
+    client = AgentClientHarness()
+    ws = DelayedAckWebSocket(delay=0.1)
+
+    async def fake_open_pipe(pipe_path: str):
+        return ws
+
+    monkeypatch.setattr(client, "_open_pipe_connection", fake_open_pipe)
+
+    try:
+        await asyncio.wait_for(client.connect("ws://agent-server"), timeout=1.0)
+        # 等待窗口已过：此时尚未就绪
+        assert client.server_ready is False
+
+        for _ in range(100):
+            if client.server_ready:
+                break
+            await asyncio.sleep(0.01)
+        assert client.server_ready is True
+    finally:
+        await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_connect_marks_ready_immediately_when_ack_is_in_window(monkeypatch):
+    """ack 在等待窗口内到达：connect 返回时就已就绪（原行为不变）。"""
+    monkeypatch.setattr(agent_client, "_CONNECTION_ACK_WAIT_SECONDS", 5.0)
+    monkeypatch.setattr(agent_client, "resolve_agent_e2a_pipe_path", lambda: r"\.\pipe\test")
+
+    client = AgentClientHarness()
+    ws = DelayedAckWebSocket(delay=0)
+
+    async def fake_open_pipe(pipe_path: str):
+        return ws
+
+    monkeypatch.setattr(client, "_open_pipe_connection", fake_open_pipe)
+
+    try:
+        await asyncio.wait_for(client.connect("ws://agent-server"), timeout=1.0)
+        assert client.server_ready is True
+    finally:
+        await client.disconnect()
