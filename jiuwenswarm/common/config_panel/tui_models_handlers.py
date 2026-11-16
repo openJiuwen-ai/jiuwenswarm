@@ -312,7 +312,7 @@ async def clear_agent_config_cache(
     """写回 config.yaml 后清除 agent 侧配置缓存，使下次读取时得到最新文件内容。"""
     try:
         if agent_client is not None:
-            from e2a.gateway_normalize import e2a_from_agent_fields
+            from jiuwenswarm.common.e2a.request_wire import e2a_from_agent_fields
             from jiuwenswarm.common.schema.message import ReqMethod
             import uuid
 
@@ -1139,7 +1139,7 @@ async def command_model_handler(
     E2A 代理分叉与 ``force_local_config`` 语义由 gateway 侧包装器处理；
     本 handler 假定已在正确的用户目录上下文中执行。
     """
-    from e2a.gateway_normalize import e2a_from_agent_fields
+    from jiuwenswarm.common.e2a.request_wire import e2a_from_agent_fields
     from jiuwenswarm.common.schema.message import ReqMethod
 
     if not isinstance(params, dict):

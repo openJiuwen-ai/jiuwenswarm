@@ -393,7 +393,6 @@ def _register_enterprise_team_handlers() -> None:
 
     if not is_enterprise():
         return
-    from jiuwenswarm.common.schema.message import ensure_team_control_req_methods
     from jiuwenswarm.enterprise.team.handlers import (
         handle_team_create,
         handle_team_get,
@@ -404,7 +403,6 @@ def _register_enterprise_team_handlers() -> None:
         handle_team_stop,
     )
 
-    ensure_team_control_req_methods()
     HANDLERS.update({
         ReqMethod.TEAM_CREATE: handle_team_create,
         ReqMethod.TEAM_GET: handle_team_get,

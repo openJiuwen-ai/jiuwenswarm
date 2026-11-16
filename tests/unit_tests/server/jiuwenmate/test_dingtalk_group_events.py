@@ -221,7 +221,7 @@ async def test_lifecycle_flows_through_gateway_and_agentserver_without_chat_disp
     import asyncio
     from jiuwenswarm.server import agent_ws_server as module
     from agent_gateway.message_handler.message_handler import MessageHandler
-    from e2a.agent_compat import e2a_to_agent_request
+    from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 
     lifecycle = event("chat_disband")
     inbound = SimpleNamespace(handle=AsyncMock(), handle_group_change=AsyncMock(return_value=InboundDisposition.HANDLED))

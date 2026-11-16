@@ -1138,7 +1138,7 @@ async def _apply_models_change(
         if inspect.isawaitable(callback_result):
             return bool(await callback_result)
         return bool(callback_result)
-    from e2a.gateway_normalize import e2a_from_agent_fields
+    from jiuwenswarm.common.e2a.request_wire import e2a_from_agent_fields
     from jiuwenswarm.common.schema.message import ReqMethod
     import uuid as _uuid
 

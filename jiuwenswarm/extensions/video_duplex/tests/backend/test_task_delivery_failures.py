@@ -145,7 +145,7 @@ async def test_core_failure_preserves_error_or_uncertainty(tmp_path, monkeypatch
 
 @pytest.mark.parametrize("earlier_lookup_fails", [False, True])
 async def test_files_survive_multiple_clarification_rounds(tmp_path, monkeypatch, earlier_lookup_fails):
-    from e2a.agent_compat import e2a_to_agent_request
+    from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
     from jiuwenswarm.server.runtime.session import lifecycle, session_history, session_metadata
 
     records, requests, queries = [], [], []

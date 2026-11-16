@@ -302,7 +302,7 @@ async def test_disabled_switch_hides_live_organization_snapshot(restarted_server
 
 async def test_restart_direct_expert_chat_restores_backend_and_reuses_membership(restarted_server, monkeypatch):
     from jiuwenswarm.agents.harness.team.expert_org.launcher import JiuwenExpertTeamLauncher
-    from e2a.gateway_normalize import e2a_from_agent_fields
+    from jiuwenswarm.common.e2a.request_wire import e2a_from_agent_fields
     from jiuwenswarm.common.schema.message import Message, ReqMethod
     from agent_gateway.message_handler.message_handler import MessageHandler
 
