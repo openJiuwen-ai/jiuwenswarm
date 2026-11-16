@@ -684,7 +684,12 @@ function ActivityIndividualTab({
         ))}
       </div>
       <div className="jiuwenmate-office__section-head">
-        <h2>{t('jiuwenmate.office.groupChats', { count: groups.length })}</h2>
+        <h2>
+          {t('jiuwenmate.office.groupChats')}
+          <small className="jiuwenmate-office__section-count" data-testid="jiuwenmate-office-group-count">
+            {t('jiuwenmate.office.groupChatsCount', { count: groups.length })}
+          </small>
+        </h2>
         <SearchField value={query} onChange={setQuery} placeholder={t('jiuwenmate.common.searchPlaceholder')} />
       </div>
       <table className="jiuwenmate-table" data-testid="jiuwenmate-channel-table">

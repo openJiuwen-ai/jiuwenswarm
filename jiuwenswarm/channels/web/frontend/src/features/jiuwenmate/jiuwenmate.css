@@ -5300,6 +5300,13 @@
   font-weight: 600;
 }
 
+.jiuwenmate-office__section-count {
+  margin-left: 8px;
+  color: var(--jm-text-2);
+  font-size: 12px;
+  font-weight: 400;
+}
+
 .jiuwenmate-profile__content[data-section='persona'] .jiuwenmate-profile__block h2 {
   font-size: 16px;
 }
