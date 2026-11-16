@@ -119,6 +119,7 @@ export function MarketplacePage({
   };
 
   const [category, setCategory] = useState<string>('all');
+  const [pluginCategory, setPluginCategory] = useState<string>('all');
   const [query, setQuery] = useState('');
   const [marketConnectorResults, setMarketConnectorResults] = useState<ConnectorSummary[] | null>(null);
   const [marketPluginResults, setMarketPluginResults] = useState<PluginPackageSummary[] | null>(null);
@@ -354,6 +355,31 @@ export function MarketplacePage({
     return tabs;
   }, [builtinConnectors, mcpTopCategories, mcpTopCategorySet, t]);
 
+  const pluginTopCategories = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const pkg of packages) {
+      const cat = pkg.category.trim();
+      if (!cat) continue;
+      counts.set(cat, (counts.get(cat) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([key]) => key)
+      .slice(0, CATEGORY_TOP_N);
+  }, [packages]);
+
+  const pluginTopCategorySet = useMemo(() => new Set(pluginTopCategories), [pluginTopCategories]);
+
+  const pluginCategoryTabs = useMemo(() => {
+    const hasOther = packages.some((pkg) => !pluginTopCategorySet.has(pkg.category.trim()));
+    const tabs = [
+      { value: 'all', label: t('connectorMarket.categories.all') },
+      ...pluginTopCategories.map((key) => ({ value: key, label: t(`connectorMarket.categories.${key}`, key) })),
+    ];
+    if (hasOther) tabs.push({ value: 'other', label: t('connectorMarket.categories.other') });
+    return tabs;
+  }, [packages, pluginTopCategories, pluginTopCategorySet, t]);
+
   const filteredConnectors = useMemo(() => {
     if (topTab === 'my' ? myKind !== 'mcp' : topTab !== 'mcp') return [];
     const q = query.trim().toLowerCase();
@@ -400,23 +426,12 @@ export function MarketplacePage({
         : packages;
     return base.filter((pkg) => {
       if (!matchesInstallation(!!installed[pkg.id], installationFilter)) return false;
-<<<<<<< RELEASE
-      if (topTab === 'my' && !matchesAssetName(query, [localizedText(pkg.displayName, i18n.language) ?? ''])) return false;
-||||||| BEFORE_PR_9610
       if (topTab !== 'my' && pluginCategory !== 'all') {
         const cat = pkg.category.trim();
         if (pluginCategory === 'other' ? pluginTopCategorySet.has(cat) : cat !== pluginCategory) return false;
       }
 
       if (topTab === 'my' && !matchesAssetName(query, [localizedText(pkg.displayName, i18n.language) ?? ''])) return false;
-=======
-      if (topTab !== 'my' && pluginCategory !== 'all') {
-        const cat = pkg.category.trim();
-        if (pluginCategory === 'other' ? pluginTopCategorySet.has(cat) : cat !== pluginCategory) return false;
-      }
-
-      if (topTab === 'my' && !matchesAssetName(query, [localizedText(pkg.displayName, i18n.language)])) return false;
->>>>>>> DEVELOP
       return true;
     });
   }, [
@@ -430,6 +445,8 @@ export function MarketplacePage({
     query,
     marketPluginResults,
     i18n.language,
+    pluginCategory,
+    pluginTopCategorySet,
   ]);
 
   const filteredSystemPlugins = useMemo(() => {
@@ -482,7 +499,7 @@ export function MarketplacePage({
   //（对齐原分页的重置行为，同款处理见 CronPanel/index.tsx 的"搜索内容变化时重置回第 1 页"）。
   useEffect(() => {
     setMarketVisibleCount(MARKET_BATCH_SIZE);
-  }, [topTab, myKind, pluginKind, category, query, installationFilter]);
+  }, [topTab, myKind, pluginKind, category, pluginCategory, query, installationFilter]);
 
   const hasMoreMarketItems = marketVisibleCount < activeList.length;
   const visibleConnectors = filteredConnectors.slice(0, marketVisibleCount);
@@ -679,6 +696,18 @@ export function MarketplacePage({
             onChange={onPluginKindChange}
             wrapperTestId="connector-market-plugin-kind-tabs"
             itemTestId="connector-market-plugin-kind-tab"
+          />
+        </div>
+      )}
+
+      {topTab === 'plugin' && pluginKind === 'agent' && pluginCategoryTabs.length > 1 && (
+        <div className="page-shell">
+          <CategoryTabs
+            items={pluginCategoryTabs}
+            value={pluginCategory}
+            onChange={setPluginCategory}
+            wrapperTestId="connector-market-plugin-category-tabs"
+            itemTestId="connector-market-plugin-category-tab"
           />
         </div>
       )}

@@ -1,9 +1,11 @@
-<<<<<<< RELEASE
-export type PublishAssetKind = 'skill' | 'agent_template' | 'agent_group' | 'plugin' | 'mcp' | 'system_plugin';
-||||||| BEFORE_PR_9610
-export type PublishAssetKind = 'skill' | 'agent_template' | 'agent_group' | 'plugin' | 'mcp';
-=======
-export type PublishAssetKind = 'skill' | 'skillpack' | 'agent_template' | 'agent_group' | 'plugin' | 'mcp';
+export type PublishAssetKind =
+  | 'skill'
+  | 'skillpack'
+  | 'agent_template'
+  | 'agent_group'
+  | 'plugin'
+  | 'mcp'
+  | 'system_plugin';
 export type PackPublishMember = {
   name: string;
   version?: string;
@@ -13,7 +15,6 @@ export type PackPublishMember = {
   review?: string;
   error?: PublishIssue;
 };
->>>>>>> DEVELOP
 export type AssetReference = { kind: PublishAssetKind; local_id: string };
 export type AssetPublishOpenRequest = AssetReference & { avatar_url?: string };
 export type PublishMetadata = {
