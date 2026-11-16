@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -18,6 +19,7 @@ from typing import BinaryIO
 from jiuwenswarm.server.ipc.loopback import FrontLoopbackListener
 
 logger = logging.getLogger(__name__)
+_STDLIB_LOG_PREFIX = re.compile(r"^(DEBUG|INFO|WARNING|ERROR|CRITICAL):[\w.]+:")
 
 
 def _runtime_instance_token() -> str:
@@ -305,7 +307,7 @@ class WorkerProcess:
         stream_name: str,
     ) -> None:
         """Persist one Worker output stream and mirror it to the supervisor log."""
-        log = logger.warning if stream_name == "stderr" else logger.debug
+        default_level = logging.WARNING if stream_name == "stderr" else logging.DEBUG
         try:
             with output_path.open("ab", buffering=0) as output_file:
                 while True:
@@ -316,7 +318,10 @@ class WorkerProcess:
                     output_file.flush()
                     text = chunk.decode("utf-8", errors="replace").rstrip("\r\n")
                     if text:
-                        log("[Worker %s pid=%s] %s", stream_name, pid, text)
+                        # Worker basicConfig writes LEVEL:logger:message to stderr.
+                        match = _STDLIB_LOG_PREFIX.match(text) if stream_name == "stderr" else None
+                        level = logging.getLevelName(match[1]) if match else default_level
+                        logger.log(level, "[Worker %s pid=%s] %s", stream_name, pid, text)
         except (OSError, ValueError) as exc:
             logger.warning(
                 "[Supervisor] worker %s drain failed pid=%s: %s",
