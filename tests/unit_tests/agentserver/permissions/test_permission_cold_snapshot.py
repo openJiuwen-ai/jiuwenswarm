@@ -13,6 +13,8 @@ from openjiuwen.core.foundation.llm.schema.message_chunk import AssistantMessage
 from openjiuwen.core.session.checkpointer import CheckpointerFactory
 from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
 from openjiuwen.core.single_agent.rail.base import AgentCallbackEvent
+from openjiuwen.core.sys_operation.config import LocalWorkConfig
+from openjiuwen.core.sys_operation.sys_operation import SysOperation, SysOperationCard
 
 from jiuwenswarm.agents.harness.common import session_ops_service
 from jiuwenswarm.agents.harness import agent_observability
@@ -35,8 +37,16 @@ pytestmark = pytest.mark.asyncio
 
 @pytest.fixture
 def hosts(cold_hosts, monkeypatch):
+    workspaces = {}
+
     async def make(name, sid, mode="auto"):
         h = await cold_hosts(name, sid, mode=mode)
+        # A cold restart creates a new Host, retaining the session's project.
+        h.root = workspaces.setdefault(sid, h.root)
+        h.raw["react"]["workspace_dir"] = str(h.root)
+        h.sysop = SysOperation(SysOperationCard(
+            id=h.sysop.id, work_config=LocalWorkConfig(sandbox_root=[str(h.root)]),
+        ))
         monkeypatch.setattr(agent_observability, "sync_agent_observability", lambda **_kwargs: None)
         return h
 
