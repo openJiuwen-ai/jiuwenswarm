@@ -592,6 +592,7 @@ class AgentManager:
         create_params = None
         if isinstance(channel_params, dict):
             create_params = channel_params.pop(cache_key, None)
+        self._agent_last_used.pop(agent_id, None)
         self._pending_tui_retirements.discard(agent_id)
         try:
             await agent.cleanup()
@@ -985,6 +986,10 @@ class AgentManager:
                 ):
                     channel_agents.pop(cache_key, None)
                     create_params = self._agent_create_params.get(channel_key, {}).pop(cache_key, None)
+                    # 与 _evict_lru_session_agents_if_over_cap 保持一致：移除
+                    # agent 的所有路径都要清掉 LRU 时间戳，否则 stale 条目随
+                    # 会话删除累积，且 id() 复用会让新 agent 继承旧时间戳。
+                    self._agent_last_used.pop(id(agent), None)
                     try:
                         await agent.cleanup()
                     except Exception:

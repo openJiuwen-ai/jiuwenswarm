@@ -142,10 +142,14 @@ async def test_projectless_session_agent_is_released_after_cleanup() -> None:
     manager = _SlowCreateAgentManager()
     manager.allow_create.set()
     agent = await manager.get_agent("web", "agent", None, session_id="session-a")
+    # borrow 时已写入 LRU 时间戳，显式删除必须同步清掉，否则 stale 条目
+    # 随会话删除累积，且 id() 复用会让新 agent 继承旧时间戳。
+    assert id(agent) in manager._agent_last_used
 
     assert await manager.cleanup_session_runtime(channel_id="web", session_id="session-a")
     assert agent.cleaned is True
     assert not manager.agents.get("web")
+    assert id(agent) not in manager._agent_last_used
 
 
 @pytest.mark.asyncio
@@ -445,6 +449,25 @@ def test_session_agent_max_live_env_invalid_falls_back(monkeypatch: pytest.Monke
 def test_session_agent_max_live_env_absent_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("JIUWENSWARM_SESSION_AGENT_MAX_LIVE", raising=False)
     assert _session_agent_max_live_default() == 50
+
+
+@pytest.mark.asyncio
+async def test_tui_retirement_clears_agent_last_used_entry() -> None:
+    manager = AgentManager()
+    agent = _SessionRuntimeAgent(has_session_runtime=False)
+    cache_key = "agent::/tmp/retire-lru-bookkeeping"
+    manager.agents["tui"] = {cache_key: agent}
+    manager._agent_create_params["tui"] = {cache_key: {"mode": "agent"}}
+    manager._agent_last_used[id(agent)] = 1.0
+
+    assert await manager.cleanup_session_runtime(
+        channel_id="tui",
+        session_id="tui_lru_bookkeeping",
+    )
+
+    assert agent.cleaned is True
+    assert "tui" not in manager.agents
+    assert id(agent) not in manager._agent_last_used
 
 
 def _seed_session_agent(
