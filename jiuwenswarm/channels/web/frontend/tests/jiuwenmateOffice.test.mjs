@@ -9,14 +9,18 @@ import {
   halfYearHeatmap,
   hoverHeatmapCell,
   hourlyActivity,
+  joinedColleagueCount,
   periodHeatmap,
   selectOfficeMember,
   selectOfficeTab,
   setActivityPeriod,
   exceedsActivityPeriod,
   adjustedPeriodEdge,
+  activityRangeBounds,
+  memberRangeTotals,
   setActivityRange,
   setActivityScope,
+  setActivityYear,
   taskColumns,
   responseAge,
   usageChange,
@@ -147,4 +151,35 @@ test('task columns follow the four statuses and filter by keyword', () => {
   ];
   assert.deepEqual(taskColumns(tasks, '').map((column) => column.status), ['waiting', 'running', 'done', 'failed']);
   assert.deepEqual(taskColumns(tasks, '定价').map((column) => column.tasks.length), [0, 1, 0, 0]);
+});
+
+test('overview usage and replies follow the picked year or period instead of all history', () => {
+  const today = new Date(2026, 10, 16);
+  const state = createOfficeState(null, today);
+  const days = [
+    { date: '2025-03-02', tasks: 3, replies: 2, minutes: 0, calls: 3, tokens: 100 },
+    { date: '2025-12-20', tasks: 1, replies: 1, minutes: 0, calls: 1, tokens: 40 },
+    { date: '2026-11-15', tasks: 5, replies: 4, minutes: 0, calls: 5, tokens: 900 },
+  ];
+  const totals = (next) => {
+    const range = activityRangeBounds(next, today);
+    return memberRangeTotals(days, range.start, range.end);
+  };
+
+  assert.deepEqual(activityRangeBounds(state, today), { start: '2025-12-01', end: '2026-11-16' });
+  assert.deepEqual(totals(state), { tokens: 940, replies: 5 });
+  assert.deepEqual(totals(setActivityYear(state, 2025)), { tokens: 140, replies: 3 });
+  assert.deepEqual(totals(setActivityYear(state, 2024)), { tokens: 0, replies: 0 });
+
+  const period = setActivityPeriod(setActivityRange(state, 'period'), '2026-11-10', '2026-11-16');
+  assert.deepEqual(totals(period), { tokens: 900, replies: 4 });
+  assert.deepEqual(memberRangeTotals([{ date: '2026-11-15', tasks: 1, minutes: 0, calls: 1, tokens: 5 }], '2026-11-01', '2026-11-30'), { tokens: 5, replies: 0 });
+});
+
+test('overview member count only includes colleagues who had joined by the end of the range', () => {
+  const joinedAts = [new Date(2025, 5, 1, 10).toISOString(), new Date(2026, 10, 11, 9).toISOString(), ''];
+  assert.equal(joinedColleagueCount(joinedAts, '2026-11-16'), 3);
+  assert.equal(joinedColleagueCount(joinedAts, '2025-12-31'), 2);
+  assert.equal(joinedColleagueCount(joinedAts, '2025-06-01'), 2);
+  assert.equal(joinedColleagueCount(joinedAts, '2024-12-31'), 1);
 });

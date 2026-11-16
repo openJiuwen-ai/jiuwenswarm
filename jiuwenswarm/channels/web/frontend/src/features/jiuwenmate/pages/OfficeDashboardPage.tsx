@@ -29,6 +29,7 @@ import { ScheduleBoard } from '../schedules/ScheduleBoard';
 import type { Schedule, ScheduleDraft, ScheduleRun } from '../schedules/types';
 import {
   activeChannelCount,
+  activityRangeBounds,
   activitySummary,
   carouselCardsPerView,
   carouselEdges,
@@ -39,7 +40,9 @@ import {
   formatTableTokens,
   groupsInPeriod,
   hourlyActivity,
+  joinedColleagueCount,
   hoverHeatmapCell,
+  memberRangeTotals,
   mergeDailyActivity,
   minutesSince,
   responseAge,
@@ -354,21 +357,31 @@ function ActivityAllTab({
     () => periodHeatmap(state.periodStart, state.periodEnd, today, hourlyActivity(members.flatMap((item) => item.hours), state.periodStart, today)),
     [state.periodStart, state.periodEnd, today, members],
   );
-  const summary = activitySummary(
-    heatmap,
-    colleagues.length,
-    members.map((member) => ({ tokens: member.tokens, companionDays: member.companionDays, chats: member.replies, lastResponseMinutes: 0 })),
-  );
+  const range = activityRangeBounds(state, today);
+  const totals = (member: JiuwenMateActivityMember | undefined) =>
+    member ? memberRangeTotals(member.days, range.start, range.end) : { tokens: 0, replies: 0 };
+  const summary = {
+    ...activitySummary(
+      heatmap,
+      colleagues.length,
+      members.map((member) => {
+        const inRange = totals(member);
+        return { tokens: inRange.tokens, companionDays: member.companionDays, chats: inRange.replies, lastResponseMinutes: 0 };
+      }),
+    ),
+    members: joinedColleagueCount(colleagues.map((colleague) => colleague.joinedAt), range.end),
+  };
   const keyword = query.trim();
   const ranked = colleagues
     .map((colleague) => {
       const member = members.find((item) => item.agentId === colleague.id);
+      const inRange = totals(member);
       return {
         colleague,
         stats: {
-          tokens: member?.tokens ?? 0,
+          tokens: inRange.tokens,
           companionDays: member?.companionDays ?? 0,
-          chats: member?.replies ?? 0,
+          chats: inRange.replies,
           lastResponseMinutes: minutesSince(member?.lastResponseAt ?? null, today),
         },
       };

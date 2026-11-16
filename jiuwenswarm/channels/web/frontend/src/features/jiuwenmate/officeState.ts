@@ -179,15 +179,51 @@ export function hourlyLevel(value: number): JiuwenMateHeatLevel {
   return 4;
 }
 
+/** The current year shows the rolling last twelve months; any other year is its calendar year. */
+function yearBounds(year: number, today: Date): { start: Date; end: Date } {
+  const rolling = year === today.getFullYear();
+  return {
+    start: rolling ? new Date(today.getFullYear() - 1, today.getMonth() + 1, 1) : new Date(year, 0, 1),
+    end: rolling ? today : new Date(year, 11, 31),
+  };
+}
+
 export function yearHeatmap(
   year: number,
   today: Date,
   activities: readonly JiuwenMateDailyActivity[],
 ): JiuwenMateYearHeatmap {
-  const rolling = year === today.getFullYear();
-  const rangeStart = rolling ? new Date(today.getFullYear() - 1, today.getMonth() + 1, 1) : new Date(year, 0, 1);
-  const rangeEnd = rolling ? today : new Date(year, 11, 31);
-  return buildHeatmap(rangeStart, rangeEnd, activities);
+  const { start, end } = yearBounds(year, today);
+  return buildHeatmap(start, end, activities);
+}
+
+/** The dates the overview counts: the shown year, or the picked period. */
+export function activityRangeBounds(state: JiuwenMateOfficeState, today: Date): { start: string; end: string } {
+  if (state.activityRange === 'period') return { start: state.periodStart, end: state.periodEnd };
+  const { start, end } = yearBounds(state.year, today);
+  return { start: toIsoDate(start), end: toIsoDate(end) };
+}
+
+/** How many colleagues had joined by `end` (inclusive ISO date); an unreadable join time still counts. */
+export function joinedColleagueCount(joinedAts: readonly string[], end: string): number {
+  return joinedAts.filter((joinedAt) => {
+    const joined = new Date(joinedAt);
+    return Number.isNaN(joined.getTime()) || toIsoDate(joined) <= end;
+  }).length;
+}
+
+/** A member's tokens and successful replies on the days inside `start`..`end` (inclusive ISO dates). */
+export function memberRangeTotals(
+  days: readonly JiuwenMateActivityDay[],
+  start: string,
+  end: string,
+): { tokens: number; replies: number } {
+  return days.reduce(
+    (sum, day) => (day.date >= start && day.date <= end
+      ? { tokens: sum.tokens + day.tokens, replies: sum.replies + (day.replies ?? 0) }
+      : sum),
+    { tokens: 0, replies: 0 },
+  );
 }
 
 export function halfYearHeatmap(
