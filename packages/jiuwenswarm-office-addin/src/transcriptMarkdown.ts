@@ -20,7 +20,8 @@ export function transcriptMarkdown(
     flush();
     switch (entry.kind) {
       case 'user':
-        blocks.push(`**${copy.transcriptUser}**`, entry.text);
+        blocks.push(`**${copy.transcriptUser}**`, [entry.text, ...(entry.images ?? []).map(image => (
+          copy.transcriptImage(image.filename)))].filter(Boolean).join('\n'));
         break;
       case 'assistant':
         if (entry.text) blocks.push(`**${copy.transcriptAssistant}**`, entry.text);
