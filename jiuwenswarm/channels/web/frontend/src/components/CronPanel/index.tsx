@@ -282,6 +282,7 @@ function cronJobToUI(job: CronJobDTO, projects: ProjectInfo[]): CronTaskUI {
     id: job.id,
     name: job.name,
     projectId: job.project_id,
+    workMode: job.work_mode ?? 'work',
     projectName,
     description: job.description,
     modelName: job.model_name ?? null,
@@ -325,11 +326,16 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   // 手动创建未选项目时，后端以此把任务归入 default/default_code（Issue #5713）。
   const currentWorkMode = useWorkspaceStore((s) => s.workMode);
 
-  const [jobs, setJobs] = useState<CronTaskUI[]>([]);
+  const [allJobs, setJobs] = useState<CronTaskUI[]>([]);
+  const jobs = useMemo(
+    () => allJobs.filter((job) => job.workMode === currentWorkMode),
+    [allJobs, currentWorkMode],
+  );
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [enabledChannels, setEnabledChannels] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [drawerError, setDrawerError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<TabKey>('list');
@@ -700,7 +706,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   // 搜索内容变化时重置回第 1 页，避免搜索结果变少后停留在一个已经越界的页码上看到空白
   useEffect(() => {
     setCurrentPage(1);
-  }, [search]);
+  }, [search, currentWorkMode]);
 
   const totalPages = useMemo(
     () => Math.max(1, Math.ceil(filteredJobs.length / pageSize)),
@@ -803,7 +809,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       // 提交时也能看到后端到底为什么拒绝，而不是无从下手。
       const reason = createError instanceof Error ? createError.message.trim() : '';
       const message = reason ? t('cron.errors.createFailedWithReason', { reason }) : t('cron.errors.createFailed');
-      setError(message);
+      setDrawerError(message);
     }
   }
 
@@ -837,7 +843,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       // "更新任务失败"（见 bugfix 2026072401/bug010 第2轮分析）。
       const reason = updateError instanceof Error ? updateError.message.trim() : '';
       const message = reason ? t('cron.errors.updateFailedWithReason', { reason }) : t('cron.errors.updateFailed');
-      setError(message);
+      setDrawerError(message);
     }
   }
 
@@ -1887,21 +1893,30 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
           <CronTaskDrawer
             mode={drawer.mode}
             initial={drawer.initial}
-            projects={projects}
+            projects={projects.filter((project) => (project.work_mode || 'work') === currentWorkMode)}
             targetOptions={targetOptions}
-            onClose={() => setDrawer(null)}
+            submitError={drawerError}
+            onClose={() => {
+              setDrawerError(null);
+              setDrawer(null);
+            }}
             onSwitchToManual={
-              drawer.mode === 'template' ? () => setDrawer({ mode: 'create', initial: drawer.initial }) : undefined
+              drawer.mode === 'template' ? () => {
+                setDrawerError(null);
+                setDrawer({ mode: 'create', initial: drawer.initial });
+              } : undefined
             }
             onSwitchToTemplate={
               drawer.mode === 'create'
                 ? () => {
+                    setDrawerError(null);
                     setDrawer(null);
                     setActiveTab('template');
                   }
                 : undefined
             }
             onSubmit={(value) => {
+              setDrawerError(null);
               if (drawer.mode === 'edit') void handleEditSubmit(drawer.jobId, value);
               else void handleCreateSubmit(value);
             }}
