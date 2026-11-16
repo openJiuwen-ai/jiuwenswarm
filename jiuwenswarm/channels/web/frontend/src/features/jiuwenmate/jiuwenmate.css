@@ -5822,13 +5822,33 @@
   font-size: 12px;
 }
 
-.jiuwenmate-office__period input {
+.jiuwenmate-office__date {
+  width: 136px;
+}
+
+.jiuwenmate-office__date > div:first-child {
   height: 30px;
   padding: 0 8px;
   border: 1px solid var(--jm-border-strong);
   border-radius: 8px;
   background: #fff;
+  color: var(--jm-text);
   font-size: 12px;
+}
+
+.jiuwenmate-office__date > div:first-child input {
+  font-size: 12px;
+}
+
+.jiuwenmate-office__date > div:first-child svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* The calendar opens toward the page body so the right edge cannot clip it. */
+.jiuwenmate-office__date > div + div {
+  right: 0;
+  left: auto;
 }
 
 .jiuwenmate-office__card {
