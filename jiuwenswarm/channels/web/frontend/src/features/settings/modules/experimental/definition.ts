@@ -29,6 +29,23 @@ export const experimentalModule: SettingsModuleDefinition = {
       items: [{ id: 'task-full-duplex-enabled', component: 'custom', render: TaskFullDuplexSetting }],
     },
     {
+      id: 'duplex-backend',
+      titleKey: 'duplexBackend.title',
+      items: [
+        {
+          id: 'duplex-backend-provider', component: 'select', source: 'duplex', key: 'video_live_provider',
+          options: [
+            { value: 'qwen_omni', labelKey: 'duplexBackend.qwen' },
+            { value: 'vllm_omni_ws', labelKey: 'duplexBackend.vllm' },
+          ],
+        },
+        { id: 'duplex-backend-url', component: 'input', source: 'duplex', key: 'vllm_omni_realtime_url' },
+        { id: 'duplex-backend-model', component: 'input', source: 'duplex', key: 'vllm_omni_model' },
+        { id: 'duplex-backend-key', component: 'input', source: 'duplex', key: 'vllm_omni_api_key', inputType: 'password' },
+        { id: 'duplex-backend-timeout', component: 'input', source: 'duplex', key: 'vllm_omni_tool_timeout_s' },
+      ],
+    },
+    {
       id: 'external-cli-custom-agents',
       titleKey: 'settingsPanel.experimental.externalCliAgents',
       items: [{ id: 'external-cli-custom-agents', component: 'custom', render: ExternalCliCustomAgentsItem }],

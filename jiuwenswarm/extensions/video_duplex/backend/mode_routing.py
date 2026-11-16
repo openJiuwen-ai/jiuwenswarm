@@ -36,6 +36,6 @@ async def resolve_execution_target(client, owner: str, scope: str) -> dict:
     session = scope.removeprefix("task-duplex:")
     metadata = await task_agent_query(client, ReqMethod.SESSION_GET_METADATA,
                                      {"session_id": session}, session, owner)
-    if not metadata or str(metadata.get("user_id") or "").strip() != owner:
+    if not metadata or metadata.get("archived") or str(metadata.get("user_id") or "").strip() != owner:
         raise ValueError("Conversation is unavailable to this user")
     return execution_target(metadata)

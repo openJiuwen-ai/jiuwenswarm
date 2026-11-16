@@ -263,18 +263,19 @@ async def test_unavailable_gateway_never_uses_an_agentserver_database(routed_tas
 
 
 @pytest.mark.parametrize("owner", ["alice", "", "mallory"])
-async def test_saved_scope_queries_routed_metadata_and_checks_owner(monkeypatch, owner):
+@pytest.mark.parametrize("archived", [False, True])
+async def test_saved_scope_queries_routed_metadata_and_checks_owner(monkeypatch, owner, archived):
     calls = []
 
     async def send(env):
         calls.append(env)
-        return SimpleNamespace(ok=True, payload={"user_id": "alice"})
+        return SimpleNamespace(ok=True, payload={"user_id": "alice", "archived": archived})
 
     manager = task_adapter.VideoSearchManager(
         None, SimpleNamespace(send_request=send), log_event=lambda _: None, qwen_active=lambda: True,
     )
     ws = SimpleNamespace(_web_connection_user_id=owner)
-    if owner == "alice":
+    if owner == "alice" and not archived:
         assert await manager.scope(ws, {"search_session_id": "task-duplex:saved"}) == (
             "alice", "task-duplex:saved"
         )

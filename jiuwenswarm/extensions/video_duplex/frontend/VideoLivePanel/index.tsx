@@ -963,7 +963,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
           provider: config.provider || 'realtime',
         });
         setModel(config.model);
-        if (config.provider !== 'qwen_omni') {
+        if (config.provider !== 'qwen_omni' && config.provider !== 'vllm_omni_ws') {
           throw new Error(t('videoLive.qwenOnly'));
         }
         const videoFrames = new RealtimeVideoFrameScheduler(1_000);
@@ -971,6 +971,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         const session = createRealtimeDuplexSession(
           {
             url: config.url || '',
+            serverManagedTools: config.provider === 'vllm_omni_ws',
             voice: config.voice,
             tools: config.tools,
             replyLanguage: config.reply_language,

@@ -1,4 +1,5 @@
 {
+  "duplexBackend": { "title": "双工后端", "qwen": "Qwen Omni Realtime", "vllm": "vLLM-Omni WebSocket" },
   "pluginReplacement": {
     "title": "插件已存在",
     "message": "本地已存在插件 {{id}}（版本 {{localVersion}}）。是否使用广场版本 {{hubVersion}} 替换？本地修改将被覆盖。",
@@ -1216,6 +1217,11 @@
         "title": "允许成员拆分子任务",
         "description": "成员可以把正在执行的任务拆成子任务，交给自己或其他已有成员。拆分后原任务暂停，子任务全部结束后带着结果恢复执行。子任务最多嵌套 2 层。"
       },
+      "video_live_provider": { "title": "双工后端", "description": "打开下一次双工会话时生效。" },
+      "vllm_omni_realtime_url": { "placeholder": "ws://localhost:8099/v1/realtime", "title": "vLLM-Omni WebSocket 地址", "description": "填写双工 Realtime 地址，例如 ws://localhost:8099/v1/realtime。" },
+      "vllm_omni_model": { "placeholder": "model", "title": "vLLM-Omni 模型", "description": "填写部署服务的模型标识。" },
+      "vllm_omni_api_key": { "placeholder": "", "title": "vLLM-Omni API 密钥", "description": "无认证部署可留空。空值保存会保留已有密钥。" },
+      "vllm_omni_tool_timeout_s": { "placeholder": "120", "title": "双工工具超时", "description": "单位为秒，须为正数，包含等待审批的时间。" },
       "task_full_duplex_enabled": {
         "title": "启用任务对话全双工入口",
         "description": "全双工仅在单 Agent 模式下生效，集群/团队模式下不显示入口。输入框为空时显示全双工按钮；启动后持续进行语音对话，屏幕共享由下方开关控制。"

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { transform } from 'esbuild';
+import { build, transform } from 'esbuild';
 
 const source = readFileSync('src/features/settings/modules/experimental/videoDuplexSettingsValidation.ts', 'utf8');
 const { code } = await transform(source, { loader: 'ts', format: 'esm' });
@@ -33,6 +33,28 @@ test('Qwen needs its own endpoint, model and key; default voice remains optional
   for (const key of ['qwen_omni_realtime_url', 'qwen_omni_model', 'qwen_omni_api_key']) {
     assert.equal(isConfigured({ ...qwen, [key]: ' \t ' }, {}), false, key);
   }
+});
+
+test('vLLM-Omni accepts explicitly unauthenticated deployments without a Qwen key', () => {
+  const values = { video_live_provider: 'vllm_omni_ws', vllm_omni_realtime_url: 'ws://localhost:8099/v1/realtime',
+    vllm_omni_model: 'model', vllm_omni_api_key: '' };
+  assert.equal(isConfigured(values, {}), true);
+  assert.equal(isConfigured({ ...values, vllm_omni_model: '' }, {}), false);
+});
+
+test('duplex settings participate in the shared source contract and request router', async () => {
+  const result = await build({ entryPoints: ['src/features/settings/services/settingsSourceContract.ts'],
+    bundle: true, platform: 'node', format: 'esm', write: false });
+  const contract = await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`);
+  assert.equal(contract.isSettingsSource('duplex'), true);
+  assert.equal(contract.isSettingsSourceComponent('duplex', 'video_live_provider', 'select'), true);
+  assert.equal(contract.isSettingsSourceComponent('duplex', 'vllm_omni_model', 'input'), true);
+  assert.equal(contract.isSettingsSourceComponent('duplex', 'vllm_omni_model', 'switch'), false);
+  const routed = await build({ entryPoints: ['src/features/settings/services/settingsContract.ts'],
+    bundle: true, platform: 'node', format: 'esm', write: false });
+  const settings = await import(`data:text/javascript;base64,${Buffer.from(routed.outputFiles[0].text).toString('base64')}`);
+  assert.ok(settings.OPEN_SOURCE_SETTINGS_REQUEST_METHODS.includes('video.duplex.settings.get'));
+  assert.ok(settings.OPEN_SOURCE_SETTINGS_REQUEST_METHODS.includes('video.duplex.settings.update'));
 });
 
 test('saved keys count as configured, but keys for another provider do not', () => {

@@ -27,12 +27,14 @@ generated: true
 | [jiuwenswarm/common](#module-10) |
 | [jiuwenswarm/common/config_panel](#module-11) |
 | [jiuwenswarm/extensions/sdk](#module-12) |
-| [jiuwenswarm/resources](#module-13) |
-| [jiuwenswarm/resources/plugins/ttse](#module-14) |
-| [jiuwenswarm/server/control](#module-15) |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-16) |
-| [scripts](#module-17) |
-| [tests](#module-18) |
+| [jiuwenswarm/extensions/video_duplex](#module-13) |
+| [jiuwenswarm/resources](#module-14) |
+| [jiuwenswarm/resources/plugins/ttse](#module-15) |
+| [jiuwenswarm/runtime](#module-16) |
+| [jiuwenswarm/server/control](#module-17) |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-18) |
+| [scripts](#module-19) |
+| [tests](#module-20) |
 
 <a id="module-1"></a>
 
@@ -109,6 +111,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [F_20261110_2026_affinity-settings](F_20261110_2026_affinity-settings.md) | F | 实验功能算力亲和开关与自定义模型能力接入 | MengHan18 | jiuwenswarm/common, jiuwenswarm/channels/web/frontend/src/features/settings | jiuwenswarm/common/kv_cache_affinity_config.py, jiuwenswarm/common/config.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/common/config_panel/model_resource_handlers.py, jiuwenswarm/common/config_panel/models_handlers.py, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/ModelDialog.tsx, jiuwenswarm/channels/web/frontend/src/features/settings/modules/experimental/definition.ts, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/server/runtime/session/kv_cache/kv_cache_model_provider.py, jiuwenswarm/server/runtime/session/kv_cache/kv_cache_application_runtime.py | 无独立 D：外部初始方案为 docs_HM_kvc/E前端开关打开/01 和 02；全局准入和交互按用户确认的 04 小白版文档替代，无仓库内 D 标识。 |
+| [F_20261116_1142_duplex-tool-call-adapter](F_20261116_1142_duplex-tool-call-adapter.md) | F | Duplex WebSocket 工具适配器实施与验证 | chickeyton | jiuwenswarm/runtime, jiuwenswarm/extensions/video_duplex, jiuwenswarm/channels/web/frontend/src/features/settings | jiuwenswarm/runtime/tool_calls/coordinator.py, jiuwenswarm/runtime/tool_calls/types.py, jiuwenswarm/extensions/video_duplex/backend/tool_adapters/vllm_omni.py, jiuwenswarm/extensions/video_duplex/backend/duplex_task_executor.py, jiuwenswarm/extensions/video_duplex/backend/duplex_session_bridge.py, jiuwenswarm/extensions/video_duplex/backend/task_adapter.py, jiuwenswarm/extensions/video_duplex/backend/video_search.py, jiuwenswarm/extensions/video_duplex/backend/video_live.py, jiuwenswarm/extensions/video_duplex/frontend/VideoLivePanel/qwenOmniSession.ts, jiuwenswarm/channels/web/frontend/src/features/settings/services/SettingsSourceProvider.tsx | [D-20261116-1104-duplex-tool-call-adapter](../designs/active/D-20261116-1104-duplex-tool-call-adapter/design.md) |
 
 <a id="module-10"></a>
 
@@ -137,6 +140,14 @@ generated: true
 
 <a id="module-13"></a>
 
+## jiuwenswarm/extensions/video_duplex
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [F_20261116_1142_duplex-tool-call-adapter](F_20261116_1142_duplex-tool-call-adapter.md) | F | Duplex WebSocket 工具适配器实施与验证 | chickeyton | jiuwenswarm/runtime, jiuwenswarm/extensions/video_duplex, jiuwenswarm/channels/web/frontend/src/features/settings | jiuwenswarm/runtime/tool_calls/coordinator.py, jiuwenswarm/runtime/tool_calls/types.py, jiuwenswarm/extensions/video_duplex/backend/tool_adapters/vllm_omni.py, jiuwenswarm/extensions/video_duplex/backend/duplex_task_executor.py, jiuwenswarm/extensions/video_duplex/backend/duplex_session_bridge.py, jiuwenswarm/extensions/video_duplex/backend/task_adapter.py, jiuwenswarm/extensions/video_duplex/backend/video_search.py, jiuwenswarm/extensions/video_duplex/backend/video_live.py, jiuwenswarm/extensions/video_duplex/frontend/VideoLivePanel/qwenOmniSession.ts, jiuwenswarm/channels/web/frontend/src/features/settings/services/SettingsSourceProvider.tsx | [D-20261116-1104-duplex-tool-call-adapter](../designs/active/D-20261116-1104-duplex-tool-call-adapter/design.md) |
+
+<a id="module-14"></a>
+
 ## jiuwenswarm/resources
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
@@ -144,7 +155,7 @@ generated: true
 | [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/resources, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/recommendation, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/rails, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/resources/.env.template, tests/unit_tests/agentserver/permissions/test_trusted_web_search.py, tests/unit_tests/agentserver/permissions/test_deep_required_composition.py, tests/unit_tests/agentserver/permissions/test_permission_cold_build.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, jiuwenswarm/channels/web/frontend/tests/settingsRefactor.test.mjs, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/index.html, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/main.tsx, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/vite.config.ts, tests/unit_tests/common/test_free_search_settings.py, tests/unit_tests/gateway/test_app_web_handlers.py, docs/en/Configuration.md, docs/zh/配置信息.md, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, tests/unit_tests/agentserver/test_browser_search_fallback_prompt.py, tests/unit_tests/test_release_dependencies.py, pyproject.toml, uv.lock, MANIFEST.in, Makefile | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 | [F_20261111_1528_unified-observability-config](F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | jiuwenswarm/common, jiuwenswarm/agents/harness, jiuwenswarm/resources, deploy/yuanrong, scripts | jiuwenswarm/common/observability_config.py, jiuwenswarm/common/config.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/agents/harness/team/team_manager.py, jiuwenswarm/resources/config.yaml, deploy/yuanrong/conf/gateway-config-yuanrong.template.yaml, scripts/reset_trajectory_data.py, tests/unit_tests/common/test_observability_config.py, tests/unit_tests/agentserver/test_trajectory_runtime_wiring.py | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
 
-<a id="module-14"></a>
+<a id="module-15"></a>
 
 ## jiuwenswarm/resources/plugins/ttse
 
@@ -152,7 +163,15 @@ generated: true
 |---|---|---|---|---|---|---|
 | [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness, jiuwenswarm/extensions/sdk, jiuwenswarm/resources/plugins/ttse | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/extensions/sdk/plugin_runtime.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/resources/plugins/ttse/manifest.json, scripts/package_ttse_plugin.py | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 
-<a id="module-15"></a>
+<a id="module-16"></a>
+
+## jiuwenswarm/runtime
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [F_20261116_1142_duplex-tool-call-adapter](F_20261116_1142_duplex-tool-call-adapter.md) | F | Duplex WebSocket 工具适配器实施与验证 | chickeyton | jiuwenswarm/runtime, jiuwenswarm/extensions/video_duplex, jiuwenswarm/channels/web/frontend/src/features/settings | jiuwenswarm/runtime/tool_calls/coordinator.py, jiuwenswarm/runtime/tool_calls/types.py, jiuwenswarm/extensions/video_duplex/backend/tool_adapters/vllm_omni.py, jiuwenswarm/extensions/video_duplex/backend/duplex_task_executor.py, jiuwenswarm/extensions/video_duplex/backend/duplex_session_bridge.py, jiuwenswarm/extensions/video_duplex/backend/task_adapter.py, jiuwenswarm/extensions/video_duplex/backend/video_search.py, jiuwenswarm/extensions/video_duplex/backend/video_live.py, jiuwenswarm/extensions/video_duplex/frontend/VideoLivePanel/qwenOmniSession.ts, jiuwenswarm/channels/web/frontend/src/features/settings/services/SettingsSourceProvider.tsx | [D-20261116-1104-duplex-tool-call-adapter](../designs/active/D-20261116-1104-duplex-tool-call-adapter/design.md) |
+
+<a id="module-17"></a>
 
 ## jiuwenswarm/server/control
 
@@ -160,7 +179,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/resources, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/recommendation, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/rails, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/resources/.env.template, tests/unit_tests/agentserver/permissions/test_trusted_web_search.py, tests/unit_tests/agentserver/permissions/test_deep_required_composition.py, tests/unit_tests/agentserver/permissions/test_permission_cold_build.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, jiuwenswarm/channels/web/frontend/tests/settingsRefactor.test.mjs, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/index.html, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/main.tsx, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/vite.config.ts, tests/unit_tests/common/test_free_search_settings.py, tests/unit_tests/gateway/test_app_web_handlers.py, docs/en/Configuration.md, docs/zh/配置信息.md, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, tests/unit_tests/agentserver/test_browser_search_fallback_prompt.py, tests/unit_tests/test_release_dependencies.py, pyproject.toml, uv.lock, MANIFEST.in, Makefile | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 
-<a id="module-16"></a>
+<a id="module-18"></a>
 
 ## jiuwenswarm/server/runtime/agent_adapter
 
@@ -171,7 +190,7 @@ generated: true
 | [F_20261029_1757_mcp-app-agent-stack-refresh](F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/App.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |
 | [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/resources, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/recommendation, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/rails, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/resources/.env.template, tests/unit_tests/agentserver/permissions/test_trusted_web_search.py, tests/unit_tests/agentserver/permissions/test_deep_required_composition.py, tests/unit_tests/agentserver/permissions/test_permission_cold_build.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, jiuwenswarm/channels/web/frontend/tests/settingsRefactor.test.mjs, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/index.html, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/main.tsx, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/vite.config.ts, tests/unit_tests/common/test_free_search_settings.py, tests/unit_tests/gateway/test_app_web_handlers.py, docs/en/Configuration.md, docs/zh/配置信息.md, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, tests/unit_tests/agentserver/test_browser_search_fallback_prompt.py, tests/unit_tests/test_release_dependencies.py, pyproject.toml, uv.lock, MANIFEST.in, Makefile | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 
-<a id="module-17"></a>
+<a id="module-19"></a>
 
 ## scripts
 
@@ -180,7 +199,7 @@ generated: true
 | [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/resources, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/recommendation, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/rails, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/resources/.env.template, tests/unit_tests/agentserver/permissions/test_trusted_web_search.py, tests/unit_tests/agentserver/permissions/test_deep_required_composition.py, tests/unit_tests/agentserver/permissions/test_permission_cold_build.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, jiuwenswarm/channels/web/frontend/tests/settingsRefactor.test.mjs, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/index.html, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/main.tsx, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/vite.config.ts, tests/unit_tests/common/test_free_search_settings.py, tests/unit_tests/gateway/test_app_web_handlers.py, docs/en/Configuration.md, docs/zh/配置信息.md, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, tests/unit_tests/agentserver/test_browser_search_fallback_prompt.py, tests/unit_tests/test_release_dependencies.py, pyproject.toml, uv.lock, MANIFEST.in, Makefile | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 | [F_20261111_1528_unified-observability-config](F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | jiuwenswarm/common, jiuwenswarm/agents/harness, jiuwenswarm/resources, deploy/yuanrong, scripts | jiuwenswarm/common/observability_config.py, jiuwenswarm/common/config.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/agents/harness/team/team_manager.py, jiuwenswarm/resources/config.yaml, deploy/yuanrong/conf/gateway-config-yuanrong.template.yaml, scripts/reset_trajectory_data.py, tests/unit_tests/common/test_observability_config.py, tests/unit_tests/agentserver/test_trajectory_runtime_wiring.py | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
 
-<a id="module-18"></a>
+<a id="module-20"></a>
 
 ## tests
 

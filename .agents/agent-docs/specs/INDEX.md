@@ -24,11 +24,13 @@ generated: true
 | [jiuwenswarm/common](#module-7) |
 | [jiuwenswarm/common/config_panel](#module-8) |
 | [jiuwenswarm/extensions/sdk](#module-9) |
-| [jiuwenswarm/resources/plugins/ttse](#module-10) |
-| [jiuwenswarm/server/control](#module-11) |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-12) |
-| [scripts](#module-13) |
-| [未分类](#module-14) |
+| [jiuwenswarm/extensions/video_duplex](#module-10) |
+| [jiuwenswarm/resources/plugins/ttse](#module-11) |
+| [jiuwenswarm/runtime](#module-12) |
+| [jiuwenswarm/server/control](#module-13) |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-14) |
+| [scripts](#module-15) |
+| [未分类](#module-16) |
 
 <a id="module-1"></a>
 
@@ -107,13 +109,29 @@ generated: true
 
 <a id="module-10"></a>
 
+## jiuwenswarm/extensions/video_duplex
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [S_01_duplex-tool-calls](jiuwenswarm/runtime/S_01_duplex-tool-calls.md) | S | 双工工具调用与后端接纳规约 | chickeyton | jiuwenswarm/runtime, jiuwenswarm/extensions/video_duplex | jiuwenswarm/runtime/tool_calls/types.py, jiuwenswarm/runtime/tool_calls/coordinator.py, jiuwenswarm/extensions/video_duplex/backend/tool_adapters/vllm_omni.py, jiuwenswarm/extensions/video_duplex/backend/duplex_session_bridge.py | — |
+
+<a id="module-11"></a>
+
 ## jiuwenswarm/resources/plugins/ttse
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [S_02_ttse-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_02_ttse-plugin-runtime.md) | S | TTSE Coding 插件运行契约 | xinyang_bali | jiuwenswarm/resources/plugins/ttse | jiuwenswarm/resources/plugins/ttse/rails/ttse_plugin_rail.py, jiuwenswarm/resources/plugins/ttse/manifest.json | — |
 
-<a id="module-11"></a>
+<a id="module-12"></a>
+
+## jiuwenswarm/runtime
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [S_01_duplex-tool-calls](jiuwenswarm/runtime/S_01_duplex-tool-calls.md) | S | 双工工具调用与后端接纳规约 | chickeyton | jiuwenswarm/runtime, jiuwenswarm/extensions/video_duplex | jiuwenswarm/runtime/tool_calls/types.py, jiuwenswarm/runtime/tool_calls/coordinator.py, jiuwenswarm/extensions/video_duplex/backend/tool_adapters/vllm_omni.py, jiuwenswarm/extensions/video_duplex/backend/duplex_session_bridge.py | — |
+
+<a id="module-13"></a>
 
 ## jiuwenswarm/server/control
 
@@ -121,7 +139,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/agents/harness/common/recommendation, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/prompt/browser_task_prompt.py, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, setup.py, pyproject.toml, uv.lock, MANIFEST.in | — |
 
-<a id="module-12"></a>
+<a id="module-14"></a>
 
 ## jiuwenswarm/server/runtime/agent_adapter
 
@@ -132,7 +150,7 @@ generated: true
 | [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/agents/harness/common/recommendation, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/prompt/browser_task_prompt.py, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, setup.py, pyproject.toml, uv.lock, MANIFEST.in | — |
 | [S_03_native-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/extensions/sdk | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/extensions/sdk/plugin_runtime.py | — |
 
-<a id="module-13"></a>
+<a id="module-15"></a>
 
 ## scripts
 
@@ -140,7 +158,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/agents/harness/common/recommendation, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/prompt/browser_task_prompt.py, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, setup.py, pyproject.toml, uv.lock, MANIFEST.in | — |
 
-<a id="module-14"></a>
+<a id="module-16"></a>
 
 ## 未分类
 

@@ -267,6 +267,8 @@ export const OPENAI_ACCOUNT_RPC = {
 } as const;
 
 export const OPEN_SOURCE_SETTINGS_REQUEST_METHODS = [
+  'video.duplex.settings.get',
+  'video.duplex.settings.update',
   'config.get',
   'config.save_all',
   'config.validate_model',
