@@ -29,6 +29,18 @@ import { PageToolbarSearch, toast } from '../ui';
 const PAGE_SIZE_OPTIONS = [10, 20, 50];
 const DEFAULT_PAGE_SIZE = 20;
 
+function showCronError(message: string) {
+  toast.open({
+    id: 'cron-error',
+    content: message,
+    variant: 'error',
+    wide: true,
+    testId: 'cron-error-toast',
+    duration: 2,
+    closable: false,
+  });
+}
+
 // 页码按钮列表：页数不多时全部展示，页数较多时只展示首页/尾页/当前页前后一页，其余用省略号折叠，
 // 避免页数很多时（比如上百页）把一整行按钮撑爆
 function buildPageList(current: number, total: number): (number | 'ellipsis')[] {
@@ -326,7 +338,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   // 手动创建未选项目时，后端以此把任务归入 default/default_code（Issue #5713）。
   const currentWorkMode = useWorkspaceStore((s) => s.workMode);
 
-  const [allJobs, setJobs] = useState<CronTaskUI[]>([]);
+  const [allJobs, setAllJobs] = useState<CronTaskUI[]>([]);
   const jobs = useMemo(
     () => allJobs.filter((job) => job.workMode === currentWorkMode),
     [allJobs, currentWorkMode],
@@ -334,8 +346,6 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [enabledChannels, setEnabledChannels] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [drawerError, setDrawerError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<TabKey>('list');
@@ -548,7 +558,6 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       const silent = options?.silent ?? false;
       if (!silent) {
         setLoading(true);
-        setError(null);
       }
       try {
         const payload = await webRequest<{ jobs: CronJobDTO[] }>('cron.job.list');
@@ -560,14 +569,14 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         // cron.job.list 请求本身不依赖项目列表（仅本地映射需要）：先发请求再等
         // projects，挂载时才能与 project.list 真正并行；对传数组的调用方是 no-op
         const projectList = await projectListInput;
-        setJobs(allJobs.map((j) => cronJobToUI(j, projectList)));
+        setAllJobs(allJobs.map((j) => cronJobToUI(j, projectList)));
       } catch (loadError) {
         if (silent) {
           return;
         }
         const message = loadError instanceof Error ? loadError.message : t('cron.errors.loadJobs');
-        setError(message);
-        setJobs([]);
+        showCronError(message);
+        setAllJobs([]);
       } finally {
         if (!silent) {
           setLoading(false);
@@ -687,12 +696,6 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     return () => window.clearTimeout(timer);
   }, [success]);
 
-  useEffect(() => {
-    if (!error) return;
-    const timer = window.setTimeout(() => setError(null), 2000);
-    return () => window.clearTimeout(timer);
-  }, [error]);
-
   const filteredJobs = useMemo(
     () =>
       jobs.filter(
@@ -809,7 +812,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       // 提交时也能看到后端到底为什么拒绝，而不是无从下手。
       const reason = createError instanceof Error ? createError.message.trim() : '';
       const message = reason ? t('cron.errors.createFailedWithReason', { reason }) : t('cron.errors.createFailed');
-      setDrawerError(message);
+      showCronError(message);
     }
   }
 
@@ -843,7 +846,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       // "更新任务失败"（见 bugfix 2026072401/bug010 第2轮分析）。
       const reason = updateError instanceof Error ? updateError.message.trim() : '';
       const message = reason ? t('cron.errors.updateFailedWithReason', { reason }) : t('cron.errors.updateFailed');
-      setDrawerError(message);
+      showCronError(message);
     }
   }
 
@@ -859,7 +862,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       void reloadCronStore();
     } catch (toggleError) {
       const message = toggleError instanceof Error ? toggleError.message : t('cron.errors.toggleFailed');
-      setError(message);
+      showCronError(message);
     } finally {
       setConfirmBusy(false);
       setConfirmState(null);
@@ -877,7 +880,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       void reloadCronStore();
     } catch (toggleError) {
       const message = toggleError instanceof Error ? toggleError.message : t('cron.errors.toggleFailed');
-      setError(message);
+      showCronError(message);
     }
   }
 
@@ -939,7 +942,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       }
     } catch (runNowError) {
       const message = runNowError instanceof Error ? runNowError.message : t('cron.errors.runNowFailed');
-      setError(message);
+      showCronError(message);
     } finally {
       setConfirmBusy(false);
       setConfirmState(null);
@@ -959,7 +962,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       const message = code === 'SESSION_BUSY'
         ? t('cron.errors.deleteSessionBusy')
         : (deleteError instanceof Error ? deleteError.message : t('cron.errors.deleteFailed'));
-      setError(message);
+      showCronError(message);
     } finally {
       setConfirmBusy(false);
       setConfirmState(null);
@@ -1050,7 +1053,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       setPreviewRuns((prev) => ({ ...prev, [job.id]: payload.next || [] }));
     } catch (previewError) {
       const message = previewError instanceof Error ? previewError.message : t('cron.errors.previewFailed');
-      setError(message);
+      showCronError(message);
       setPreviewRuns((prev) => ({ ...prev, [job.id]: [] }));
     } finally {
       setPreviewLoading((prev) => ({ ...prev, [job.id]: false }));
@@ -1491,14 +1494,6 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
           <div className="bg-ok px-4 py-2 text-sm text-text-inverse rounded-lg shadow-lg animate-rise">{success}</div>
         </div>
       )}
-      {error && (
-        <div
-          className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 z-20"
-          data-testid="cron-error-toast"
-        >
-          <div className="bg-danger px-4 py-2 text-sm text-text-inverse rounded-lg shadow-lg animate-rise">{error}</div>
-        </div>
-      )}
 
       {/* 宽度跟随主窗口自适应（w-[90%]），但用 max-w 封顶避免超宽屏上被拉得过宽，
           两侧留白也不会随窗口变宽而无限增大 */}
@@ -1895,28 +1890,19 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
             initial={drawer.initial}
             projects={projects.filter((project) => (project.work_mode || 'work') === currentWorkMode)}
             targetOptions={targetOptions}
-            submitError={drawerError}
-            onClose={() => {
-              setDrawerError(null);
-              setDrawer(null);
-            }}
+            onClose={() => setDrawer(null)}
             onSwitchToManual={
-              drawer.mode === 'template' ? () => {
-                setDrawerError(null);
-                setDrawer({ mode: 'create', initial: drawer.initial });
-              } : undefined
+              drawer.mode === 'template' ? () => setDrawer({ mode: 'create', initial: drawer.initial }) : undefined
             }
             onSwitchToTemplate={
               drawer.mode === 'create'
                 ? () => {
-                    setDrawerError(null);
                     setDrawer(null);
                     setActiveTab('template');
                   }
                 : undefined
             }
             onSubmit={(value) => {
-              setDrawerError(null);
               if (drawer.mode === 'edit') void handleEditSubmit(drawer.jobId, value);
               else void handleCreateSubmit(value);
             }}

@@ -50,6 +50,8 @@ try {
     vite.ssrLoadModule('/src/features/designer/designerModelConfiguration.ts'),
     vite.ssrLoadModule('/src/features/designer/useDesignerModelConfiguration.ts'),
     vite.ssrLoadModule('/src/stores/workspaceStore.ts'),
+    vite.ssrLoadModule('/src/components/ui/Toast/Toast.tsx'),
+    vite.ssrLoadModule('/src/components/ui/Toast/toastStore.ts'),
   ]);
 } finally {
   await vite.close();
@@ -87,6 +89,8 @@ const [
   { modelsForSlot, resolvedGenerationModelId },
   { useDesignerGenerationStore },
   { useWorkspaceStore },
+  { ToastStack },
+  { toast, toastStore, TOAST_EXIT_ANIMATION_MS },
 ] = modules;
 
 const resources = Object.fromEntries(
@@ -123,6 +127,9 @@ async function withFixture(run, language = 'en') {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: 'http://localhost/',
   });
+  const toastStyle = dom.window.document.createElement('style');
+  toastStyle.textContent = readFileSync(new URL('../src/components/ui/Toast/Toast.css', import.meta.url), 'utf8');
+  dom.window.document.head.appendChild(toastStyle);
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   if (!dom.window.ResizeObserver) {
@@ -167,7 +174,9 @@ async function withFixture(run, language = 'en') {
   const byId = (id) => document.querySelector(`[data-testid="${id}"]`);
   const mount = async (...children) =>
     act(async () => {
-      root.render(createElement(I18nextProvider, { i18n }, createElement(Fragment, null, ...children)));
+      root.render(
+        createElement(I18nextProvider, { i18n }, createElement(Fragment, null, ...children, createElement(ToastStack))),
+      );
     });
   const click = async (element) => {
     assert.ok(element, 'click target exists');
@@ -185,6 +194,11 @@ async function withFixture(run, language = 'en') {
     await run({ dom, mount, click, byId });
   } finally {
     await act(async () => root.unmount());
+    const activeToasts = toastStore.getSnapshot();
+    for (const record of activeToasts) toast.close(record.key);
+    if (activeToasts.length > 0) {
+      await new Promise((resolve) => setTimeout(resolve, TOAST_EXIT_ANIMATION_MS + 20));
+    }
     useSessionStore.setState(previousSession, true);
     useChatStore.setState(previousChat, true);
     useAuthStore.setState(previousAuth, true);
@@ -459,7 +473,7 @@ test('scheduled tasks follow the selected work mode without mixing status counts
   }
 });
 
-test('create and edit failures stay visible inside the scheduled task drawer', async (t) => {
+test('create and edit failures use a fixed body toast above the scheduled task drawer', async (t) => {
   const job = {
     id: 'edit-job', name: 'Existing task', description: 'Task description', mode: 'agent',
     cron_expr: '0 0 2 * * ? *', timezone: 'Asia/Shanghai', targets: 'web',
@@ -477,13 +491,31 @@ test('create and edit failures stay visible inside the scheduled task drawer', a
   const previousMode = useWorkspaceStore.getState().workMode;
   try {
     useWorkspaceStore.setState({ workMode: 'work' });
-    await withFixture(async ({ mount, click, byId }) => {
+    await withFixture(async ({ dom, mount, click, byId }) => {
       await mount(createElement(CronPanel, { sessionId, onCreateViaChat() {}, onSelectSession() {} }));
+      byId('cron-panel').scrollTop = 500;
       await click(byId('cron-empty-template-card'));
       await click(byId('cron-drawer-submit-btn'));
-      assert.match(byId('cron-drawer-submit-error').textContent, /server rejected request/);
-      assert.ok(byId('cron-drawer').contains(byId('cron-drawer-submit-error')));
-      assert.equal(byId('cron-error-toast'), null);
+      assert.match(byId('cron-error-toast').textContent, /server rejected request/);
+      assert.equal(byId('cron-drawer-submit-error'), null);
+      const stack = byId('ui-toast-stack');
+      assert.equal(stack.parentElement, document.body);
+      assert.equal(byId('cron-panel').contains(byId('cron-error-toast')), false);
+      const stackStyle = dom.window.getComputedStyle(stack);
+      assert.equal(stackStyle.position, 'fixed');
+      assert.equal(stackStyle.top, '16px');
+      assert.ok(Number(stackStyle.zIndex) > 50, 'toast sits above the drawer (40) and confirm dialog (50)');
+      assert.ok(byId('cron-drawer-overlay'));
+      assert.equal(byId('cron-panel').scrollTop, 500);
+      byId('cron-panel').scrollTop = 1000;
+      assert.equal(dom.window.getComputedStyle(stack).top, '16px');
+      assert.match(byId('cron-error-toast').textContent, /server rejected request/);
+      const firstToast = toastStore.getSnapshot().find((record) => record.id === 'cron-error');
+      await click(byId('cron-drawer-submit-btn'));
+      assert.equal(document.querySelectorAll('[data-testid="cron-error-toast"]').length, 1);
+      const retriedToast = toastStore.getSnapshot().find((record) => record.id === 'cron-error');
+      assert.equal(retriedToast.key, firstToast.key);
+      assert.ok(retriedToast.updatedAt > firstToast.updatedAt, 'identical errors refresh the toast lifetime');
       await click(byId('cron-drawer-close-btn'));
       jobs = [job];
     });
@@ -492,13 +524,54 @@ test('create and edit failures stay visible inside the scheduled task drawer', a
       await click(byId('cron-job-edit-btn'));
       assert.equal(byId('cron-drawer-submit-error'), null);
       await click(byId('cron-drawer-submit-btn'));
-      assert.match(byId('cron-drawer-submit-error').textContent, /server rejected request/);
-      assert.ok(byId('cron-drawer').contains(byId('cron-drawer-submit-error')));
+      assert.match(byId('cron-error-toast').textContent, /server rejected request/);
+      assert.equal(byId('cron-drawer-submit-error'), null);
     });
   } finally {
     useWorkspaceStore.setState({ workMode: previousMode });
   }
 });
+
+for (const operation of ['create', 'update']) {
+  test(`a late ${operation} failure remains visible after closing and reopening the drawer`, async (t) => {
+    let rejectRequest;
+    const pendingRequest = new Promise((resolve, reject) => { rejectRequest = reject; });
+    const job = {
+      id: 'edit-job', name: 'Existing task', description: 'Task description', mode: 'agent',
+      cron_expr: '0 0 2 * * ? *', timezone: 'Asia/Shanghai', targets: 'web',
+      enabled: true, expired: false, project_id: 'default', work_mode: 'work', wake_offset_seconds: 0,
+    };
+    t.mock.method(webClient, 'request', async (method) => {
+      if (method === 'cron.job.list') return { jobs: operation === 'update' ? [job] : [] };
+      if (method === 'project.list') return { projects: [] };
+      if (method === 'channel.get') return { channels: [{ channel_id: 'web' }] };
+      if (method === 'channel.xiaoyi.get_conf') return { config: {} };
+      if (method === `cron.job.${operation}`) return pendingRequest;
+      throw new Error(`Unexpected request: ${method}`);
+    });
+    const previousMode = useWorkspaceStore.getState().workMode;
+    try {
+      useWorkspaceStore.setState({ workMode: 'work' });
+      await withFixture(async ({ mount, click, byId }) => {
+        await mount(createElement(CronPanel, { sessionId, onCreateViaChat() {}, onSelectSession() {} }));
+        const openButtonId = operation === 'update' ? 'cron-job-edit-btn' : 'cron-empty-template-card';
+        await click(byId(openButtonId));
+        await click(byId('cron-drawer-submit-btn'));
+        assert.equal(byId('cron-error-toast'), null);
+        await click(byId('cron-drawer-close-btn'));
+        assert.equal(byId('cron-drawer'), null);
+        await act(async () => { rejectRequest(new Error('late server rejection')); });
+        assert.match(byId('cron-error-toast').textContent, /late server rejection/);
+        await click(byId(openButtonId));
+        assert.ok(byId('cron-drawer'));
+        assert.equal(byId('cron-drawer-submit-error'), null);
+        assert.equal(byId('cron-drawer').textContent.includes('late server rejection'), false);
+      });
+    } finally {
+      useWorkspaceStore.setState({ workMode: previousMode });
+    }
+  });
+}
 
 test('a historical chat alias still resolves to the selected model after extraction', async () => {
   await withFixture(async ({ mount, click, byId }) => {
