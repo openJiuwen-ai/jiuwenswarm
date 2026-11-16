@@ -5,10 +5,12 @@
 本模块保留 ``jiuwenswarm.common.e2a.gateway_normalize`` 旧 import 路径兼容；多数符号 re-export
 e2a 协议包 同一对象。``e2a_response_from_agent_chunk`` / ``e2a_response_to_agent_chunk``
 在本仓包装以保留 Team/组织 delta 身份字段（enterprise）。
+请求转换先将本仓 ReqMethod 转为字符串，再交给协议包处理。
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from e2a import gateway_normalize as protocol_normalize
@@ -35,14 +37,57 @@ from e2a.gateway_normalize import (  # noqa: F401
     MAX_LEGACY_AGENT_REQUEST_JSON_BYTES,
     build_fallback_e2a,
     channel_context_for_channel_reply,
-    e2a_from_agent_fields,
     e2a_response_from_agent_response,
     e2a_response_to_agent_response,
-    message_to_e2a,
-    message_to_e2a_or_fallback,
-    message_to_legacy_agent_dict,
     utc_now_iso,
 )
+
+from jiuwenswarm.common.schema.message import Message, ReqMethod
+
+
+def _wire_message(msg: Message) -> Message:
+    """Pass method strings to E2A without mutating the caller's message."""
+    if isinstance(msg.req_method, ReqMethod):
+        return replace(msg, req_method=msg.req_method.value)
+    return msg
+
+
+def message_to_e2a(msg: Message) -> E2AEnvelope:
+    return protocol_normalize.message_to_e2a(_wire_message(msg))
+
+
+def message_to_e2a_or_fallback(msg: Message) -> E2AEnvelope:
+    return protocol_normalize.message_to_e2a_or_fallback(_wire_message(msg))
+
+
+def message_to_legacy_agent_dict(msg: Message) -> dict[str, Any]:
+    return protocol_normalize.message_to_legacy_agent_dict(_wire_message(msg))
+
+
+def e2a_from_agent_fields(
+    *,
+    request_id: str,
+    channel_id: str = "",
+    session_id: str | None = None,
+    req_method: ReqMethod | str | None = None,
+    params: dict[str, Any] | None = None,
+    is_stream: bool = False,
+    timestamp: float = 0.0,
+    metadata: dict[str, Any] | None = None,
+    user_id: str | None = None,
+) -> E2AEnvelope:
+    """Encode local methods as strings at the protocol boundary."""
+    return protocol_normalize.e2a_from_agent_fields(
+        request_id=request_id,
+        channel_id=channel_id,
+        session_id=session_id,
+        req_method=req_method.value if isinstance(req_method, ReqMethod) else req_method,
+        params=params,
+        is_stream=is_stream,
+        timestamp=timestamp,
+        metadata=metadata,
+        user_id=user_id,
+    )
 
 
 def copy_team_delta_identity(source: dict[str, Any], target: dict[str, Any]) -> None:
