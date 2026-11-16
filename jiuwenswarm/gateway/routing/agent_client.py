@@ -56,6 +56,9 @@ _STREAM_IDLE_TIMEOUT_SECONDS: float = 600.0
 # 的 keepalive 间隔），真挂死的流不会永久占住网关转发循环。
 _STREAM_IDLE_GRACE_PROBES: int = 6
 _STREAM_IDLE_GRACE_PROBE_SECONDS: float = 10.0
+# 建连后等待 AgentServer connection.ack 的窗口。超时只影响「启动期是否即时就绪」，
+# 不回滚就绪状态——迟到的回包由接收循环补置（见 _message_receiver_loop）。
+_CONNECTION_ACK_WAIT_SECONDS: float = 5.0
 
 
 class AgentServerUnaryTimeout(RuntimeError):
@@ -241,6 +244,11 @@ class WebSocketAgentServerClient(AgentServerClient):
         self._cancelled_request_ids: set[str] = set()  # 已取消但等待清理的 request_id
         self._receiver_task: asyncio.Task | None = None
         self._running = False
+        # 本轮连接的就绪信号：由接收循环收到 connection.ack 时置位。
+        # connect() 只等它，不在本协程里抢读首帧（见 connect 注释）。
+        self._ready_event: asyncio.Event | None = None
+        # 本轮连接是否已记录过「首帧」诊断日志（原来在 connect 里读首帧时记）
+        self._first_frame_seen = False
         # AgentServer send_push：旁路投递，勿进入与 request_id 绑定的 RPC 等待队列
         self._on_server_push: Callable[[dict[str, Any]], Awaitable[None]] | None = None
         self._server_push_tasks: set[asyncio.Task[Any]] = set()
@@ -318,29 +326,26 @@ class WebSocketAgentServerClient(AgentServerClient):
             )
             logger.info("[WebSocketAgentServerClient] 已连接: %s", uri)
 
-        # 读取 AgentServer 的 connection.ack 事件
-        try:
-            raw = await asyncio.wait_for(self._ws.recv(), timeout=5.0)
-            logger.info("[WebSocketAgentServerClient] connect 首帧(raw): %s", raw)
-            data = json.loads(raw)
-            logger.info("[WebSocketAgentServerClient] connect 首帧(parsed): %s", _to_json(data))
-            if data.get("type") == "event" and data.get("event") == "connection.ack":
-                self._server_ready = True
-                logger.info("[WebSocketAgentServerClient] 收到 connection.ack，AgentServer 已就绪")
-            else:
-                logger.warning(
-                    "[WebSocketAgentServerClient] 首帧非 connection.ack: %s",
-                    data.get("type"),
-                )
-        except asyncio.TimeoutError:
-            logger.warning("[WebSocketAgentServerClient] 等待 connection.ack 超时")
-        except Exception as e:
-            logger.warning("[WebSocketAgentServerClient] 读取 connection.ack 失败: %s", e)
-
-        # 启动消息接收和分发任务
+        # 先起接收循环，再由它独占这条连接的读：connect() 只等就绪信号。
+        # 不能在 connect 里 recv 首帧后再把流交给接收循环——命名管道的阻塞读挂在
+        # asyncio.to_thread 上，wait_for 超时只是取消等待方，底层读线程仍挂在管道上
+        # （见 PipeStream.read 的契约），迟到的 connection.ack 会被这个孤儿读吞掉，
+        # 接收循环再也看不到，于是「Agent 未就绪」被永久钉死。
+        self._ready_event = asyncio.Event()
+        self._first_frame_seen = False
         self._running = True
         self._receiver_task = asyncio.create_task(self._message_receiver_loop())
         logger.info("[WebSocketAgentServerClient] 消息接收任务已启动")
+
+        # 等待 AgentServer 的 connection.ack：5 秒内到 → 启动期即时就绪；
+        # 迟到也仍然有效，接收循环会把它补置为就绪（冷启动忙时常见）。
+        try:
+            await asyncio.wait_for(self._ready_event.wait(), timeout=_CONNECTION_ACK_WAIT_SECONDS)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[WebSocketAgentServerClient] 等待 connection.ack 超时"
+                "（接收任务继续等待，后续到达仍会置为就绪）"
+            )
 
     async def _open_pipe_connection(self, pipe_path: str) -> _PipeWsAdapter:
         """桌面形态建连：open_pipe → auth 首帧（e2aToken，服务端校验失败即断管）。"""
@@ -364,6 +369,33 @@ class WebSocketAgentServerClient(AgentServerClient):
                 try:
                     raw = await self._ws.recv()
                     data = json.loads(raw)
+                    if not self._first_frame_seen:
+                        self._first_frame_seen = True
+                        logger.info("[WebSocketAgentServerClient] connect 首帧(raw): %s", raw)
+                        logger.info(
+                            "[WebSocketAgentServerClient] connect 首帧(parsed): %s",
+                            _to_json(data),
+                        )
+                        if not (
+                            data.get("type") == "event"
+                            and data.get("event") == "connection.ack"
+                        ):
+                            logger.warning(
+                                "[WebSocketAgentServerClient] 首帧非 connection.ack: %s",
+                                data.get("type"),
+                            )
+                    if data.get("type") == "event" and data.get("event") == "connection.ack":
+                        # 就绪回包可能晚于 connect 的 5s 等待窗口（冷启动忙时常见）。
+                        # 必须在这里补置就绪，否则 server_ready 永久为 False，
+                        # WebChannel 的新连接会一直被跳过 connection.ack。
+                        if not self._server_ready:
+                            logger.info(
+                                "[WebSocketAgentServerClient] 收到 connection.ack，AgentServer 已就绪"
+                            )
+                        self._server_ready = True
+                        if self._ready_event is not None:
+                            self._ready_event.set()
+                        continue
                     meta = data.get("metadata")
                     if isinstance(meta, dict) and meta.get(E2A_WIRE_SERVER_PUSH_KEY):
                         response_kind = str(data.get("response_kind") or "")
@@ -461,6 +493,9 @@ class WebSocketAgentServerClient(AgentServerClient):
                     await asyncio.sleep(0.1)  # 避免快速循环
         finally:
             self._server_ready = False
+            # 接收任务已停：唤醒仍在等就绪的 connect()，不必等满 5s
+            if self._ready_event is not None:
+                self._ready_event.set()
             await self._cancel_server_push_tasks()
             logger.info("[WebSocketAgentServerClient] 消息接收任务已停止")
 
