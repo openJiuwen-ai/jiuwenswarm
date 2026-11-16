@@ -800,6 +800,11 @@ function isPersistedMediaItem(item: MediaItem): boolean {
   return typeof item.path === 'string' && item.path.trim().length > 0;
 }
 
+function toChatUploadItem(item: MediaItem): MediaItem {
+  // The document transport persists the original video bytes.
+  return item.type === 'video' ? { ...item, type: 'document' } : item;
+}
+
 function getMediaMimeType(item: MediaItem): string {
   return item.mime_type || item.mimeType;
 }
@@ -2110,11 +2115,19 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           const attachments: Record<string, unknown> = {};
           let query = content;
           if (mediaItems.length) {
-            const imageItems = mediaItems.filter((item) => item.type !== 'document');
-            const documentItems = mediaItems.filter((item) => item.type === 'document');
+            const persistedVideos = mediaItems.filter((item) => item.type === 'video' && isPersistedMediaItem(item));
+            const uploadItems = mediaItems
+              .filter((item) => item.type !== 'video' || !isPersistedMediaItem(item))
+              .map(toChatUploadItem);
+            const imageItems = uploadItems.filter((item) => item.type !== 'document');
+            const documentItems = uploadItems.filter((item) => item.type === 'document');
             const persisted: PersistMediaResponse = imageItems.length ? await persistMedia(content, sessionId, imageItems) : {};
             const documents: PersistMediaResponse = documentItems.length ? await persistDocuments(content, sessionId, documentItems) : {};
-            const items = [...(persisted.media_items ?? []), ...(documents.media_items ?? [])];
+            const items = [
+              ...(persisted.media_items ?? []),
+              ...(documents.media_items ?? []),
+              ...persistedVideos.map(toPersistedMediaRecord),
+            ];
             attachments.media_items = items;
             attachments.files = { ...persisted.files, ...documents.files };
             query = withUploadDocumentBlock(persisted.content ?? persisted.query ?? content, toUploadDocumentHints(documents.media_items));
@@ -2305,11 +2318,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           const mergedItems: Record<string, unknown>[] = [];
           // 新会话的附件尚未落盘。每次只上传一项，既不触发批量数量限制，
           // 也不把多份大文件的 base64 拼进同一条 WebSocket 消息。
-          for (const item of mediaItems) {
-            if (isPersistedMediaItem(item)) {
-              mergedItems.push(toPersistedMediaRecord(item));
+          for (const mediaItem of mediaItems) {
+            if (isPersistedMediaItem(mediaItem)) {
+              mergedItems.push(toPersistedMediaRecord(mediaItem));
               continue;
             }
+            const item = toChatUploadItem(mediaItem);
             const persist = item.type === 'document' ? persistDocuments : persistMedia;
             const persisted = await persist('', sessionId, [item]);
             const stored = persisted.media_items?.[0];

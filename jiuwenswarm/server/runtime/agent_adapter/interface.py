@@ -2105,11 +2105,16 @@ class JiuWenSwarm:
         # One turn, one renderer: single-agent and team both deliver
         # ``turn.render()``. The team path additionally keeps ``turn.text`` to
         # parse directives / ``$member`` routing before it renders.
+        files = params.get("files") or {}
+        if request_channel == "web" and not cross_session_turn and isinstance(files, dict):
+            from jiuwenswarm.server.runtime.attachments.video_attachments import video_upload_prompt_files
+
+            files = video_upload_prompt_files(files, request.session_id)
         turn = UserTurn(
             text=query,
             channel=channel,
             language=language,
-            files=params.get("files", {}) or {},
+            files=files,
             trusted_dirs=trusted_dirs,
             skills=skills,
             metadata=metadata,
