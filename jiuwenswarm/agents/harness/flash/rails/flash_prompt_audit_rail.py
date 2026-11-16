@@ -1,0 +1,359 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import re
+from dataclasses import dataclass, field
+from typing import Any
+
+from openjiuwen.harness.rails.base import DeepAgentRail
+
+from jiuwenswarm.agents.harness.flash.prompt.snapshot import (
+    PromptSnapshot,
+    build_prompt_snapshot,
+)
+from jiuwenswarm.agents.harness.flash.sections import (
+    FLASH_SECTION_REGISTRY,
+    resolve_carrier,
+)
+
+logger = logging.getLogger(__name__)
+
+# 反引号内 snake_case 标识符（工具名候选）。
+_TOOL_TOKEN_RE = re.compile(r"`([a-z][a-z0-9_]{2,40})`")
+
+# 510 输入消息约定段里的 JSON schema 示例占位符——合法保留，不算未渲染变量。
+_KNOWN_SAFE_PLACEHOLDERS = frozenset({
+    "channel",
+    "preferred_response_language",
+    "content",
+    "supplementary_info",
+    "source",
+    "type",
+    "memory_id",
+    "id",
+    "handle",
+    "path",
+    "tool_name",
+    "arguments",
+    "call_goal",
+    "description",
+    "available_agents",
+    "target_channels",
+})
+
+# 未渲染变量：``{...}`` 且花括号内不含已知安全的占位符名，也排除 JSON 对象字面量
+# （含 ``:`` 或嵌套 ``{`` 的形如 ``{"channel": ...}``）。
+_UNRENDERED_VAR_RE = re.compile(r"\{([^{}:]+)\}")
+
+
+@dataclass
+class AuditReport:
+    """一次合规检查的结构化结果。"""
+
+    sections: list[tuple[int, str]] = field(default_factory=list)
+    duplicate_priorities: list[tuple[int, list[str]]] = field(default_factory=list)
+    duplicate_names: list[str] = field(default_factory=list)
+    unrendered_vars: list[tuple[str, str]] = field(default_factory=list)
+    unregistered_priorities: list[int] = field(default_factory=list)
+    ghost_tools: list[str] = field(default_factory=list)
+    static_hash: str = ""
+    static_hash_drift: bool = False
+    prefix_hash: str = ""
+    prefix_chars: int = 0
+    snapshot_full_hash: str = ""
+    snapshot_static_hash: str = ""
+    snapshot_prefix_hash: str = ""
+    snapshot_prefix_chars: int = 0
+    section_hashes: list[tuple[int, str, str]] = field(default_factory=list)
+    band_hashes: dict[str, str] = field(default_factory=dict)
+    skipped_checks: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        """硬违规清零才算通过（advisory 项不计入）。"""
+        return not (
+            self.duplicate_priorities
+            or self.duplicate_names
+            or self.unrendered_vars
+            or self.static_hash_drift
+        )
+
+    def summary(self) -> str:
+        parts = [f"sections={len(self.sections)}"]
+        if self.duplicate_priorities:
+            parts.append(f"撞号={self.duplicate_priorities}")
+        if self.duplicate_names:
+            parts.append(f"重复段={self.duplicate_names}")
+        if self.unrendered_vars:
+            parts.append(f"未渲染变量={self.unrendered_vars}")
+        if self.unregistered_priorities:
+            parts.append(f"未登记段号={self.unregistered_priorities}")
+        if self.ghost_tools:
+            parts.append(f"幽灵工具={self.ghost_tools}")
+        if self.skipped_checks:
+            parts.append(f"跳过={self.skipped_checks}")
+        return " | ".join(parts)
+
+
+class AuditViolation(RuntimeError):
+    """CI 期 fail_closed 时抛出的硬违规。"""
+
+
+class FlashPromptAuditRail(DeepAgentRail):
+    """Last-resort prompt auditor; runs after every other prompt-injecting rail."""
+
+    # 所有段注入之后执行（数值最小 → 最后执行，见 07 §六 priority 语义）。
+    # DisabledToolsRail priority=1（最后注销禁用工具）；audit 需在其之后（取 0）才能
+    # 看到最终工具面，故这里用 0，保证 audit 是真正最后一道检查。
+    priority = 0
+    inherit_to_subagents = False
+
+    def __init__(self, fail_closed: bool = False) -> None:
+        super().__init__()
+        self.system_prompt_builder = None
+        self._agent: Any = None
+        self._ability_manager: Any = None
+        self.fail_closed = fail_closed
+        # 会话内静态区 hash 基线：首次 before_model_call 记为 seed，后续比对。
+        self._static_hash_seed: str | None = None
+
+    def init(self, agent) -> None:
+        self._agent = agent
+        self.system_prompt_builder = getattr(agent, "system_prompt_builder", None)
+        self._ability_manager = getattr(agent, "ability_manager", None)
+
+    def uninit(self, agent) -> None:
+        self._static_hash_seed = None
+        self.system_prompt_builder = None
+        self._agent = None
+        self._ability_manager = None
+
+    async def before_model_call(self, ctx) -> None:
+        report = self.check_compliance()
+        if self._static_hash_seed is None and report.static_hash:
+            self._static_hash_seed = report.static_hash
+        if report.prefix_hash:
+            # 前缀度量打点（点 7 数据源）：字符长度 + 前缀 hash 短值，每轮输出。
+            logger.info(
+                "[FlashPromptAudit] prefix chars=%d hash=%s",
+                report.prefix_chars,
+                report.prefix_hash[:16],
+            )
+        if report.static_hash_drift:
+            logger.warning(
+                "[FlashPromptAudit] 静态区 hash 漂移: %s -> %s",
+                self._static_hash_seed,
+                report.static_hash,
+            )
+        if not report.ok:
+            logger.warning("[FlashPromptAudit] %s", report.summary())
+        elif report.unregistered_priorities or report.ghost_tools:
+            logger.info("[FlashPromptAudit] advisory: %s", report.summary())
+        if self.fail_closed and not report.ok:
+            raise AuditViolation(f"prompt audit failed: {report.summary()}")
+
+    def check_compliance(self) -> AuditReport:
+        """对当前 system_prompt_builder 的段做合规检查（纯函数，不改状态）。"""
+        report = AuditReport()
+        builder = self.system_prompt_builder
+        if builder is None:
+            report.skipped_checks.append("no_system_prompt_builder")
+            return report
+
+        sections = self._collect_sections(builder)
+        report.sections = [(int(s.priority), str(s.name)) for s in sections]
+
+        self._check_duplicates(sections, report)
+        self._check_unrendered_vars(sections, report)
+        self._check_unregistered_priorities(sections, report)
+        self._check_ghost_tools(sections, report)
+        report.static_hash = self._static_hash(sections)
+        report.prefix_hash, report.prefix_chars = self._prefix_metric(sections)
+        snapshot = self.build_snapshot(sections)
+        if snapshot is not None:
+            report.snapshot_full_hash = snapshot.full_hash
+            report.snapshot_static_hash = snapshot.static_hash
+            report.snapshot_prefix_hash = snapshot.prefix_hash
+            report.snapshot_prefix_chars = snapshot.prefix_chars
+            report.section_hashes = list(snapshot.section_hashes)
+            report.band_hashes = snapshot.band_hashes
+        report.static_hash_drift = (
+            self._static_hash_seed is not None
+            and report.static_hash != self._static_hash_seed
+        )
+        return report
+
+    def build_snapshot(self, sections: list[Any] | None = None) -> PromptSnapshot | None:
+        """Return the deterministic offline snapshot for the current sections."""
+        builder = self.system_prompt_builder
+        if sections is None:
+            if builder is None:
+                return None
+            sections = self._collect_sections(builder)
+        language = getattr(builder, "language", None) or "cn"
+        return build_prompt_snapshot(sections, language=language)
+
+    # ── 各检查项 ───────────────────────────────────────────────
+
+    @staticmethod
+    def _collect_sections(builder) -> list[Any]:
+        try:
+            sections = builder.get_all_sections() or []
+        except AttributeError:
+            return []
+        # 真实 SystemPromptBuilder.get_all_sections() 返回 Dict[name, PromptSection]；
+        # list(dict) 会得到 key（段名字符串）而非段对象，必须显式取 values()。单测的
+        # fake builder 返回 list[PromptSection]，这里兼容两种形态。
+        if isinstance(sections, dict):
+            return list(sections.values())
+        return list(sections)
+
+    @staticmethod
+    def _check_duplicates(sections: list[Any], report: AuditReport) -> None:
+        by_priority: dict[int, list[str]] = {}
+        by_name: dict[str, int] = {}
+        for s in sections:
+            name = str(s.name)
+            priority = int(getattr(s, "priority", 0) or 0)
+            by_priority.setdefault(priority, []).append(name)
+            by_name[name] = by_name.get(name, 0) + 1
+        report.duplicate_priorities = [
+            (priority, names) for priority, names in sorted(by_priority.items()) if len(names) > 1
+        ]
+        report.duplicate_names = sorted(name for name, count in by_name.items() if count > 1)
+
+    @staticmethod
+    def _check_unrendered_vars(sections: list[Any], report: AuditReport) -> None:
+        for s in sections:
+            name = str(s.name)
+            content = getattr(s, "content", None)
+            if not isinstance(content, dict):
+                continue
+            for text in content.values():
+                if not isinstance(text, str):
+                    continue
+                for match in _UNRENDERED_VAR_RE.finditer(text):
+                    token = match.group(1).strip()
+                    if token in _KNOWN_SAFE_PLACEHOLDERS:
+                        continue
+                    report.unrendered_vars.append((name, f"{{{token}}}"))
+
+    @staticmethod
+    def _check_unregistered_priorities(sections: list[Any], report: AuditReport) -> None:
+        seen: set[int] = set()
+        for s in sections:
+            priority = int(getattr(s, "priority", 0) or 0)
+            if priority in seen:
+                continue
+            seen.add(priority)
+            if priority not in FLASH_SECTION_REGISTRY:
+                report.unregistered_priorities.append(priority)
+        report.unregistered_priorities.sort()
+
+    def _check_ghost_tools(self, sections: list[Any], report: AuditReport) -> None:
+        manager = self._ability_manager
+        known = self._known_tool_names(manager)
+        if known is None:
+            report.skipped_checks.append("ghost_tools_no_ability_manager")
+            return
+        mentioned: set[str] = set()
+        for s in sections:
+            content = getattr(s, "content", None)
+            if not isinstance(content, dict):
+                continue
+            for text in content.values():
+                if not isinstance(text, str):
+                    continue
+                for token in _TOOL_TOKEN_RE.findall(text):
+                    mentioned.add(token)
+        # 只把「看起来像工具名且工具面确实没有」的记作幽灵工具；反引号里的路径/
+        # 变量/普通标识符不误报——因此额外要求命中一个已知工具名时才视为工具语境。
+        report.ghost_tools = sorted(
+            token for token in mentioned if token not in known and self._looks_like_tool(token, known)
+        )
+
+    @staticmethod
+    def _known_tool_names(manager: Any) -> set[str] | None:
+        if manager is None:
+            return None
+        for attr in ("cards", "_tools", "tools"):
+            value = getattr(manager, attr, None)
+            if isinstance(value, dict):
+                return {str(k) for k in value}
+        names = getattr(manager, "list_tool_names", None)
+        if callable(names):
+            try:
+                result = names()
+                if isinstance(result, (list, set, tuple)):
+                    return {str(n) for n in result}
+            except Exception:
+                logger.debug("[FlashPromptAuditRail] list_tool_names() failed", exc_info=True)
+        return None
+
+    @staticmethod
+    def _looks_like_tool(token: str, known: set[str]) -> bool:
+        """粗略判定：含下划线或命中已知工具名的词干（memory/todo/read/write/edit）。"""
+        if token in known:
+            return False
+        if "_" in token:
+            return True
+        return any(
+            token == stem or token.endswith(f"_{stem}") or token.startswith(f"{stem}_")
+            for stem in ("memory", "todo", "skill", "tool", "read", "write", "edit", "bash", "web")
+        )
+
+    @staticmethod
+    def _static_hash(sections: list[Any]) -> str:
+        static = [
+            s
+            for s in sections
+            if resolve_carrier(
+                int(getattr(s, "priority", 0) or 0),
+                str(getattr(s, "name", "") or ""),
+            ) == "system"
+        ]
+        payload_lines: list[str] = []
+        for s in sorted(static, key=lambda s: int(getattr(s, "priority", 0) or 0)):
+            name = str(s.name)
+            content = getattr(s, "content", None)
+            if isinstance(content, dict):
+                rendered = repr(sorted(content.items()))
+            else:
+                rendered = repr(content)
+            payload_lines.append(f"{int(getattr(s, 'priority', 0) or 0)}\t{name}\t{rendered}")
+        return hashlib.sha256("\n".join(payload_lines).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _prefix_metric(sections: list[Any]) -> tuple[str, int]:
+        """字符级前缀度量：静态区（carrier=system）按升序拼接正文后 hash。
+
+        这是点 7「前缀稳定性」的数据源——前缀 hash 每轮打点，变化即缓存失效信号；
+        ``prefix_chars`` 是静态前缀的字符长度（影响 KV 命中与成本）。
+        """
+        static = sorted(
+            (
+                s
+                for s in sections
+                if resolve_carrier(
+                    int(getattr(s, "priority", 0) or 0),
+                    str(getattr(s, "name", "") or ""),
+                ) == "system"
+            ),
+            key=lambda s: int(getattr(s, "priority", 0) or 0),
+        )
+        parts: list[str] = []
+        for s in static:
+            content = getattr(s, "content", None)
+            if isinstance(content, dict):
+                text = next((v for v in content.values() if v), "")
+            else:
+                text = content or ""
+            parts.append(text)
+        joined = "\n".join(parts)
+        return hashlib.sha256(joined.encode("utf-8")).hexdigest(), len(joined)
+
+
+__all__ = ["AuditReport", "AuditViolation", "FlashPromptAuditRail"]

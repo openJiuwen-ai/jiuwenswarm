@@ -180,7 +180,7 @@ adapter 构建时 `set_global_workspace_dir` + `set_global_channel_id`（cron �
 ## 8. 修改检查单
 
 1. **改 code todo 描述 / schema** → 只动 `code_todo_tool_prompts.py`（四子类与 rail 不动，N1）；跑 `test_code_todo_tool_prompts.py`
-2. **改 flash 统一工具名 / 参数** → 同步：外层 task-loop 的 `todo_` 前缀钩子判定、前端工具名常量（`toolProtocol.ts` 白名单与前缀、`AvatarPermEditor` 五名、todo 刷新链路常量）、`tool_policy_projection` 的 action 白名单、`_TODO_NAME_REPLACEMENTS` 四对——任何一处漏改都是静默行为分叉（N7/N11）
+2. **改 flash 统一工具名 / 参数** → 同步：外层 task-loop 的 `todo_` 前缀钩子判定、前端工具名常量（`toolProtocol.ts` 白名单与前缀、`AvatarPermEditor` 五名、todo 刷新链路常量）、`tool_policy_projection` 的 action 白名单——任何一处漏改都是静默行为分叉（N7/N11）
 3. **flash 新增第五动作** → `engines` dict + `UnifiedTodoTool` 分发 + `_UNIFIED_TODO_ACTIONS` + 权限投影白名单 + 测试
 4. **动 persistent 标记语义** → 同步 `todo_resume` 三判定函数 + `todo_compat` 豁免逻辑 + 双视图过滤 + `test_persistent_todo.py`
 5. **monkeypatch 时序红线** → `install_todo_modify_compat_patch` 必须保持 `interface_deep` 模块级调用；任何在 patch 前实例化 `TodoModifyTool` 的代码都会拿到未打补丁的类（N13）

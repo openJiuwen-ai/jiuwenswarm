@@ -191,7 +191,7 @@ _EXEC_PRIORITY_CN = """# 执行优先级
 1. 安全与合法性（含拒绝）
 2. 用户显式确认的交互闸门（ask_user / 两轮卡）
 3. 外部注入的强制门禁（合规、资质、技能等，按其自身说明执行）
-4. 记忆检索（每轮强制检索，无例外）
+4. 记忆检索（任务开始时检索一次，后续仅在需要新的用户上下文时再检索）
 5. 正常执行
 6. 收尾与最终回复
 
@@ -208,7 +208,7 @@ When multiple rules all demand "do this first", adjudicate in this order:
 1. Safety and legality (including refusal)
 2. User-explicit confirmation gates (ask_user / two-turn confirmation)
 3. Externally injected mandatory gates (compliance, qualification, skills, etc.; follow their own instructions)
-4. Memory retrieval (mandatory every turn, no exceptions)
+4. Memory retrieval (retrieve once at task start, then only when new user context is needed)
 5. Normal execution
 6. Wrap-up and final reply
 
