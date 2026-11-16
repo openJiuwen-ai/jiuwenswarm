@@ -11,14 +11,16 @@ import {
   inspectOoxmlArchive,
 } from '../node_modules/.cache/presentation-preview/ooxmlArchiveLimits.js';
 import { parsePresentation } from '../node_modules/.cache/presentation-preview/pptxPresentationParser.js';
+import { indexOoxmlArchiveParts, normalizeOoxmlPartName } from '../node_modules/.cache/presentation-preview/ooxmlArchiveParts.js';
 import { presentationLineHeight } from '../node_modules/.cache/presentation-preview/pptxPreviewModel.js';
 
 function assertClose(actual, expected) {
   assert.ok(Math.abs(actual - expected) < 1e-9, `expected ${actual} to be close to ${expected}`);
 }
 
-function presentationArchive(slides, additionalFiles = {}) {
+function presentationArchive(slides, additionalFiles = {}, pathSeparator = '/') {
   const archive = new JSZip();
+  const part = (...segments) => segments.join(pathSeparator);
   const slideIds = slides.map((_, index) => `<p:sldId id="${256 + index}" r:id="rId${index + 1}"/>`).join('');
   const relationships = slides
     .map(
@@ -28,11 +30,11 @@ function presentationArchive(slides, additionalFiles = {}) {
     .join('');
 
   archive.file(
-    'ppt/presentation.xml',
+    part('ppt', 'presentation.xml'),
     `<p:presentation xmlns:p="p" xmlns:r="r"><p:sldSz cx="9144000" cy="6858000"/><p:sldIdLst>${slideIds}</p:sldIdLst></p:presentation>`,
   );
-  archive.file('ppt/_rels/presentation.xml.rels', `<Relationships xmlns="r">${relationships}</Relationships>`);
-  slides.forEach((slide, index) => archive.file(`ppt/slides/slide${index + 1}.xml`, slide));
+  archive.file(part('ppt', '_rels', 'presentation.xml.rels'), `<Relationships xmlns="r">${relationships}</Relationships>`);
+  slides.forEach((slide, index) => archive.file(part('ppt', 'slides', `slide${index + 1}.xml`), slide));
   Object.entries(additionalFiles).forEach(([path, contents]) => archive.file(path, contents));
   return archive;
 }
@@ -53,6 +55,7 @@ test('uses font metrics when DrawingML omits explicit line spacing', () => {
 test('keeps presentation preview messages complete in Chinese and English', () => {
   const keys = [
     'presentationPreviewFailed',
+    'presentationLoadFailed',
     'presentationResourceLimitExceeded',
     'presentationTooLarge',
     'presentationSlides',
@@ -308,4 +311,109 @@ test('keeps unsupported objects out of the slide canvas and reports the page in 
   assert.equal(presentation.slides[0].status, 'incomplete');
   assert.equal(presentation.slides[0].nodes.length, 1);
   assert.equal(presentation.slides[0].nodes[0].name, 'Visible');
+});
+
+test('opens a presentation whose ZIP entries use the Windows path separator', async () => {
+  // .NET Framework's ZipFile.CreateFromDirectory and Windows PowerShell 5.1's
+  // Compress-Archive store `ppt\slides\slide1.xml` instead of the OPC form.
+  const archive = presentationArchive(
+    [
+      `<p:sld xmlns:p="p" xmlns:a="a"><p:cSld name="Windows packaged"><p:spTree>
+    <p:nvGrpSpPr/><p:grpSpPr/>
+    <p:sp><p:nvSpPr><p:cNvPr id="2" name="Title"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="914400"/></a:xfrm><a:prstGeom prst="rect"/></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Windows packaged</a:t></a:r></a:p></p:txBody></p:sp>
+  </p:spTree></p:cSld></p:sld>`,
+    ],
+    windowsPackagedParts('/'),
+    '\\',
+  );
+  const presentation = await parsePresentation(await archive.generateAsync({ type: 'arraybuffer' }));
+  assert.equal(presentation.slides.length, 1);
+  assert.equal(presentation.slides[0].status, undefined);
+  assert.equal(presentation.slides[0].name, 'Windows packaged');
+  assert.equal(presentation.slides[0].nodes[0].name, 'Title');
+  assert.equal(presentation.slides[0].nodes[0].text.paragraphs[0].runs[0].text, 'Windows packaged');
+  assert.equal(presentation.slides[0].nodes[0].text.paragraphs[0].runs[0].fontFamily, 'Aptos');
+});
+
+test('rejects archive entries that escape the presentation with either path separator', async () => {
+  const slide = '<p:sld xmlns:p="p" xmlns:a="a"><p:cSld><p:spTree><p:nvGrpSpPr/><p:grpSpPr/></p:spTree></p:cSld></p:sld>';
+  for (const name of ['ppt\\..\\..\\escape.xml', '/root.xml', '\\root.xml']) {
+    const archive = presentationArchive([slide], { [name]: '<escape/>' });
+    await assert.rejects(
+      parsePresentation(await archive.generateAsync({ type: 'arraybuffer' })),
+      error => error instanceof Error && error.message.includes('unsafe path'),
+      `expected ${name} to be rejected`,
+    );
+  }
+});
+
+function windowsPackagedParts(targetSeparator) {
+  const target = (...segments) => segments.join(targetSeparator);
+  return {
+    'ppt\\slides\\_rels\\slide1.xml.rels': `<Relationships xmlns="r"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="${target('..', 'slideLayouts', 'slideLayout1.xml')}"/></Relationships>`,
+    'ppt\\slideLayouts\\slideLayout1.xml':
+      '<p:sldLayout xmlns:p="p"><p:cSld><p:spTree><p:nvGrpSpPr/><p:grpSpPr/></p:spTree></p:cSld></p:sldLayout>',
+    'ppt\\slideLayouts\\_rels\\slideLayout1.xml.rels': `<Relationships xmlns="r"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="${target('..', 'slideMasters', 'slideMaster1.xml')}"/></Relationships>`,
+    'ppt\\slideMasters\\slideMaster1.xml':
+      '<p:sldMaster xmlns:p="p"><p:cSld><p:spTree><p:nvGrpSpPr/><p:grpSpPr/></p:spTree></p:cSld></p:sldMaster>',
+    'ppt\\slideMasters\\_rels\\slideMaster1.xml.rels': `<Relationships xmlns="r"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="${target('..', 'theme', 'theme1.xml')}"/></Relationships>`,
+    'ppt\\theme\\theme1.xml':
+      '<a:theme xmlns:a="a"><a:themeElements><a:clrScheme name="Test"><a:accent1><a:srgbClr val="4F81BD"/></a:accent1></a:clrScheme><a:fontScheme name="Test"><a:majorFont><a:latin typeface="Aptos Display"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont><a:minorFont><a:latin typeface="Aptos"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme></a:themeElements></a:theme>',
+  };
+}
+
+test('resolves relationship targets written with the Windows path separator', async () => {
+  const slide = `<p:sld xmlns:p="p" xmlns:a="a"><p:cSld name="Windows targets"><p:spTree>
+    <p:nvGrpSpPr/><p:grpSpPr/>
+    <p:sp><p:nvSpPr><p:cNvPr id="2" name="Title"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="914400"/></a:xfrm><a:prstGeom prst="rect"/></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Windows targets</a:t></a:r></a:p></p:txBody></p:sp>
+  </p:spTree></p:cSld></p:sld>`;
+  const archive = presentationArchive(
+    [slide],
+    {
+      'ppt\\_rels\\presentation.xml.rels':
+        '<Relationships xmlns="r"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides\\slide1.xml"/></Relationships>',
+      ...windowsPackagedParts('\\'),
+    },
+    '\\',
+  );
+  const presentation = await parsePresentation(await archive.generateAsync({ type: 'arraybuffer' }));
+  assert.equal(presentation.slides.length, 1);
+  // A '\' target must still reach the slide, its layout, its master and the theme;
+  // an unresolved theme leaves the run without the theme font.
+  assert.equal(presentation.slides[0].status, undefined);
+  assert.equal(presentation.slides[0].nodes[0].text.paragraphs[0].runs[0].text, 'Windows targets');
+  assert.equal(presentation.slides[0].nodes[0].text.paragraphs[0].runs[0].fontFamily, 'Aptos');
+});
+
+test('prefers the conforming spelling when both separators address the same part', () => {
+  const backslash = { name: 'ppt\\presentation.xml', dir: false };
+  const conforming = { name: 'ppt/presentation.xml', dir: false };
+  assert.equal(indexOoxmlArchiveParts([backslash, conforming]).get('ppt/presentation.xml'), conforming);
+  assert.equal(indexOoxmlArchiveParts([conforming, backslash]).get('ppt/presentation.xml'), conforming);
+  assert.equal(normalizeOoxmlPartName('ppt\\slides\\slide1.xml'), 'ppt/slides/slide1.xml');
+});
+
+test('names the archive entries when the package has no presentation part', async () => {
+  const archive = new JSZip();
+  archive.file('[Content_Types].xml', '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>');
+  archive.file('word/document.xml', '<w:document xmlns:w="w"/>');
+  await assert.rejects(
+    parsePresentation(await archive.generateAsync({ type: 'arraybuffer' })),
+    error =>
+      error instanceof Error && error.message.includes('not a PPTX or PPTM presentation') && error.message.includes('word/document.xml'),
+  );
+});
+
+test('logs why a slide could not be read instead of dropping the reason', async t => {
+  const warn = t.mock.method(console, 'warn');
+  const archive = presentationArchive([
+    `<p:sld xmlns:p="p" xmlns:a="a"><p:cSld name="Broken"><p:spTree>
+    <p:nvGrpSpPr/><p:grpSpPr/>
+    <p:sp><p:nvSpPr><p:cNvPr id="2" name="Broken"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="914400"/></a:xfrm><a:prstGeom prst="rect"/></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>1 < 2</a:t></a:r></a:p></p:txBody></p:sp>
+  </p:spTree></p:cSld></p:sld>`,
+  ]);
+  const presentation = await parsePresentation(await archive.generateAsync({ type: 'arraybuffer' }));
+  assert.equal(presentation.slides[0].status, 'invalid');
+  assert.equal(warn.mock.callCount(), 1);
+  assert.match(warn.mock.calls[0].arguments[1][0], /slide 1 \(slides\/slide1\.xml\): /);
 });
