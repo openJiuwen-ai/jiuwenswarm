@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import Mock
@@ -34,6 +35,15 @@ def stored(tmp_path, monkeypatch):
 
 def user(text="question", rid="old", channel="web"):
     return {"role": "user", "request_id": rid, "id": rid, "channel_id": channel, "content": text}
+
+
+def test_restore_stable_file_after_modification_time_is_updated(stored):
+    sid, path, write = stored
+    record = user()
+    write([record])
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns - 2_000_000_000))
+    assert replay.read_history_replay(sid).records == [record]
 
 
 def test_large_audit_events_do_not_become_restored_context(stored, monkeypatch):
