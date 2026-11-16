@@ -47,6 +47,7 @@ import logging
 from logging.handlers import BaseRotatingHandler, RotatingFileHandler
 import portalocker
 from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
 
 from e2a.logging_config import (
     LOGGING_LEVEL_FIELDS,
@@ -567,6 +568,18 @@ def _resolve_preferred_language(
         except Exception as e:
             logger.error(f"Failed to load config.yaml: {e}")
     return "zh"
+
+
+def _uses_jiuwen_memory(config_path: Path) -> bool:
+    """Read the builtin memory provider during workspace bootstrap."""
+    if not config_path.is_file():
+        return False
+    try:
+        with config_path.open(encoding="utf-8") as config_file:
+            config = YAML(typ="safe").load(config_file) or {}
+        return str(config["memory"]["builtin"]["provider"]).strip() == "jiuwen"
+    except (KeyError, TypeError, ValueError, OSError, YAMLError):
+        return False
 
 
 def _is_interactive() -> bool:
@@ -1246,8 +1259,9 @@ def prepare_workspace(
         (f"AGENT{suffix}.md", "AGENT.md"),
         (f"IDENTITY{suffix}.md", "IDENTITY.md"),
         (f"SOUL{suffix}.md", "SOUL.md"),
-        (f"memory/MEMORY{suffix}.md", "memory/MEMORY.md"),
     ]
+    if not _uses_jiuwen_memory(config_yaml_dest):
+        multilang_files.append((f"memory/MEMORY{suffix}.md", "memory/MEMORY.md"))
     for src_name, dst_name in multilang_files:
         src_path = template_agent_workspace / src_name
         dst_path = deepagent_workspace / dst_name

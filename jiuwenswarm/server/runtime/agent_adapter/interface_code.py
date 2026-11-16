@@ -2838,6 +2838,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             deep_config.cwd = task_cwd
             deep_config.project_root = str(runtime_paths.project_root)
         self._seed_runtime_cwd(task_cwd, workspace=project_workspace)
+        self._bind_jiuwen_memory_project_dir(runtime_config.project_dir or self._project_dir)
         resolved_language = self._resolve_runtime_language()
         resolved_channel = str(runtime_config.channel_id or
                                self._resolve_prompt_channel(runtime_config.session_id) or "web").strip() or "web"
