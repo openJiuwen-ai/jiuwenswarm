@@ -300,6 +300,13 @@ test('installed cards keep the detect+install pair and not-installed ones show t
   // Built-in paths come from the detection payload (builtin_path), tracked
   // per agent; no localStorage history may reappear here.
   assert.match(sectionSource, /builtin_path \|\| prev\[cliAgent\]/);
+  // Selecting the managed built-in path switches back to built-in mode
+  // (use_builtin=true, no custom path) instead of pinning the installer-
+  // managed path as a custom cli_path, and mirrors the post-commit echo
+  // bookkeeping so the config echo never flashes "not installed" (!10307).
+  assert.match(sectionSource, /next === builtinPaths\[cliAgent\]/);
+  assert.match(sectionSource, /toggleAgentEnabled\(cliAgent, true, true, ''\)/);
+  assert.match(sectionSource, /observedCliPathsRef\.current\[cliAgent\] = ''/);
   assert.doesNotMatch(sectionSource, /rememberBuiltinPath|removePathHistory|PATH_HISTORY/);
   assert.doesNotMatch(sectionSource, /config\.externalCli\.removePath/);
 });

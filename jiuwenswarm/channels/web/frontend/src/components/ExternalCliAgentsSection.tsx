@@ -1486,6 +1486,11 @@ export function ExternalCliAgentsSection({
                         // 清空自定义路径。托管路径由安装器管理（升级/重装会挪位置），
                         // 固化成自定义 cli_path 与内置语义相悖（!10307 检视意见）。
                         if (builtinPaths[cliAgent] && next === builtinPaths[cliAgent]) {
+                          // 内置提交把 cli_path 清空为托管模式：与 validateAndCommitPath
+                          // 相同地登记 echo 豁免与已观察路径，防止配置回显落在探测窗口
+                          // 之外时被草稿同步 effect 当成外部编辑清掉探测结果、闪"未安装"。
+                          observedCliPathsRef.current[cliAgent] = '';
+                          commitEchoAgentsRef.current.add(cliAgent);
                           void toggleAgentEnabled(cliAgent, true, true, '');
                           return;
                         }

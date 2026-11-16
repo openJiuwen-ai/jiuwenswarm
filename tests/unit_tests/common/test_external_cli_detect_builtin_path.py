@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -36,7 +37,11 @@ def builtin_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def test_detect_result_carries_builtin_path_for_missing_local_path(
     tmp_path: Path, builtin_cli: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """配置的本地路径不存在时探测失败，内置路径仍随结果返回。"""
+    """配置的本地路径不存在时探测失败，内置路径仍随结果返回。
+
+    显式传入的缺失路径不会触发 PATH 回退（resolve 对显式路径直接判
+    not_found），因此无需对 shutil.which 打桩即保持确定性。
+    """
     missing = tmp_path / "local" / "claude.exe"
     result = handlers.detect_external_cli_agent("claude", str(missing))
     assert result["status"] == "missing"
@@ -66,7 +71,7 @@ def test_detect_result_builtin_path_empty_when_managed_cli_missing(
     PATH，装有 claude 的机器上会探测成功并破坏 missing 断言（!10307 检视）。
     """
     monkeypatch.setattr(handlers, "external_cli_managed_cli_path", lambda _agent: "")
-    monkeypatch.setattr(shutil, "which", lambda _cmd, path=None: None)
+    monkeypatch.setattr(shutil, "which", lambda _cmd, mode=os.F_OK | os.X_OK, path=None: None)
     result = handlers.detect_external_cli_agent("claude", "")
     assert result["status"] == "missing"
     assert result["path"] == ""
