@@ -468,6 +468,7 @@ function AssetPublishDrawer({
   const accountName = oauthUser?.name || oauthUser?.login || `${providerName} ${text('signedIn')}`;
   const assetType = {
     skill: 'Skill',
+    skillpack: 'SkillPack',
     agent_template: zh ? '专家' : 'Expert',
     agent_group: zh ? '专家团' : 'Expert group',
     plugin: zh ? '插件' : 'Plugin',
@@ -975,13 +976,7 @@ export function AssetPublishHost() {
         if (!value) return;
         const saved = JSON.parse(value);
         if (
-<<<<<<< RELEASE
-          ['skill', 'agent_template', 'agent_group', 'plugin', 'mcp', 'system_plugin'].includes(saved.reference?.kind) &&
-||||||| BEFORE_PR_9610
-          ['skill', 'agent_template', 'agent_group', 'plugin', 'mcp'].includes(saved.reference?.kind) &&
-=======
-          ['skill', 'skillpack', 'agent_template', 'agent_group', 'plugin', 'mcp'].includes(saved.reference?.kind) &&
->>>>>>> DEVELOP
+          ['skill', 'skillpack', 'agent_template', 'agent_group', 'plugin', 'mcp', 'system_plugin'].includes(saved.reference?.kind) &&
           typeof saved.reference?.local_id === 'string'
         )
           setSelection(saved);
