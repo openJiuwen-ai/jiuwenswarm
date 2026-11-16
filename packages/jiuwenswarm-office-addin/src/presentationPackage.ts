@@ -20,6 +20,7 @@ const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 const PR = 'http://schemas.openxmlformats.org/package/2006/relationships';
 const CT = 'http://schemas.openxmlformats.org/package/2006/content-types';
 const CHART_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.drawingml.chart+xml';
+const PML = 'application/vnd.openxmlformats-officedocument.presentationml';
 const TABLE_GRAPHIC_DATA = 'http://schemas.openxmlformats.org/drawingml/2006/table';
 const EMU_PER_POINT = 12_700;
 const MAX_PACKAGE_BYTES = 32 * 1024 * 1024;
@@ -28,7 +29,7 @@ const MAX_PARTS = 4096;
 const SHAPE_ELEMENTS = ['sp', 'graphicFrame', 'pic', 'cxnSp', 'grpSp'];
 
 /** A package's parts by path. */
-type Parts = Record<string, Uint8Array>;
+export type Parts = Record<string, Uint8Array>;
 
 export interface PackageEdit {
   base64: string;
@@ -40,11 +41,11 @@ export interface PackageEdit {
 /** The edit does not hold for this slide; nothing was changed. */
 export class PackageRefused extends Error {}
 
-function decode(base64: string): Uint8Array {
+export function bytesOf(base64: string): Uint8Array {
   return Uint8Array.from(atob(base64), char => char.charCodeAt(0));
 }
 
-function encode(bytes: Uint8Array): string {
+export function base64Of(bytes: Uint8Array): string {
   let binary = '';
   for (let at = 0; at < bytes.length; at += 32768) binary += String.fromCharCode(...bytes.subarray(at, at + 32768));
   return btoa(binary);
@@ -59,7 +60,7 @@ function loadPackage(base64: string): Parts {
   if (base64.length > MAX_PACKAGE_BYTES / 3 * 4 + 4) throw new PackageRefused('The slide package is over 32 MB');
   let parts: Parts;
   try {
-    parts = unzipSync(decode(base64), { filter: file => {
+    parts = unzipSync(bytesOf(base64), { filter: file => {
       count += 1;
       expanded += file.originalSize;
       if (count > MAX_PARTS || expanded > MAX_EXPANDED_BYTES || file.originalSize > MAX_PACKAGE_BYTES) {
@@ -87,7 +88,7 @@ function loadPackage(base64: string): Parts {
 }
 
 function savePackage(parts: Parts): string {
-  return encode(zipSync(parts, { level: 6 }));
+  return base64Of(zipSync(parts, { level: 6 }));
 }
 
 function parseText(xml: string, what: string): Document {
@@ -187,14 +188,21 @@ function shapeTree(slide: Document): Element {
   return trees[0];
 }
 
-/** Shapes given as XML, appended to the slide's shape tree. */
-function appendShapes(slide: Document, xmls: string[]): void {
+/**
+ * Shapes given as XML, added to the slide's shape tree in front of the others, or behind ``before``; the imported
+ * shapes. The tree's ``extLst``, if it has one, stays last.
+ */
+function appendShapes(slide: Document, xmls: string[], before?: Element): Element[] {
   const tree = shapeTree(slide);
-  for (const xml of xmls) {
+  const next = before
+    ?? directElements(tree).find(element => element.namespaceURI === P && element.localName === 'extLst');
+  return xmls.map(xml => {
     const fragment = parseText(`<root xmlns:p="${P}" xmlns:a="${A}" xmlns:c="${CHART_NAMESPACE}" xmlns:r="${R}">`
       + `${xml}</root>`, 'A built shape');
-    tree.appendChild(slide.importNode(directElements(fragment.documentElement!)[0], true));
-  }
+    const shape = slide.importNode(directElements(fragment.documentElement!)[0], true);
+    tree.insertBefore(shape, next ?? null);
+    return shape;
+  });
 }
 
 /** The paragraphs of a shape's text, as read_slide_text gives them, or what the shape holds instead. */
@@ -678,6 +686,109 @@ export function copyImage(sourceBase64: string, targetBase64: string, shapeId: s
   return { base64: savePackage(target), changed: true, result: { shape_id: id } };
 }
 
+/** Parts code may not add or change: macros, ActiveX controls and embedded objects. */
+const ACTIVE_CONTENT = /^ppt\/(?:vbaproject|activex\/|macrosheets\/|embeddings\/)/i;
+
+/**
+ * Whether a package code edited (``after``) may replace the slide exported as ``before``: it still holds that one
+ * slide, adds or changes no active content, and links no new file outside the deck other than by a hyperlink.
+ */
+export function checkEdit(before: string, after: string): void {
+  const [exported, edited] = [loadPackage(before), loadPackage(after)];
+  if (slidePart(edited) !== slidePart(exported)) {
+    throw new PackageRefused(`The code left ${slidePart(edited)} as the slide; edit ${slidePart(exported)} in place`);
+  }
+  const same = (first?: Uint8Array, second?: Uint8Array) => !!first && !!second && first.length === second.length
+    && first.every((byte, at) => byte === second[at]);
+  const active = Object.keys(edited).find(path => ACTIVE_CONTENT.test(path) && !same(exported[path], edited[path]));
+  if (active) {
+    throw new PackageRefused(`The code added or changed ${active}: macros, controls and objects stay as they are`);
+  }
+  const links = (parts: Parts) => new Set(Object.keys(parts).filter(path => path.endsWith('.rels'))
+    .flatMap(path => elements(parseXml(parts, path), PR, 'Relationship')
+      .filter(item => isExternal(item) && !item.getAttribute('Type')?.endsWith('/hyperlink'))
+      .map(item => `${item.getAttribute('Target')} (from ${path})`)));
+  const known = links(exported);
+  const added = [...links(edited)].find(link => !known.has(link));
+  if (added) throw new PackageRefused(`The code links ${added} outside the deck, which the pane does not insert`);
+}
+
+/** The parts of a master edit, and the content type of each. */
+const TEMPLATE_PARTS: [RegExp, string][] = [
+  [/^ppt\/slideMasters\/slideMaster\d+\.xml$/, `${PML}.slideMaster+xml`],
+  [/^ppt\/slideLayouts\/slideLayout\d+\.xml$/, `${PML}.slideLayout+xml`],
+  [/^ppt\/theme\/theme\d+\.xml$/, 'application/vnd.openxmlformats-officedocument.theme+xml'],
+];
+const MEDIA_TYPES: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  bmp: 'image/bmp', svg: 'image/svg+xml', emf: 'image/x-emf', wmf: 'image/x-wmf' };
+const BARE_AMPERSAND = /&(?!amp;|lt;|gt;|apos;|quot;|#\d+;|#x[0-9A-Fa-f]+;)/g;
+/** The lowest id a slide master or layout takes. */
+const FIRST_TEMPLATE_ID = 2_147_483_648;
+
+/**
+ * A package edit_slide_master's code edited, made ready to come in as a master of its own. Its theme is renamed
+ * ``<name> [<marker>]``: a package whose theme a master of the deck has keeps that master, and the edit would be lost.
+ * The master is not preserved, so it goes once no slide uses it. A bare ``&``, a missing content type of a new
+ * layout, master, theme or picture, and layout ids that repeat or fall below the master's are put right.
+ */
+export function normalizeMasterEdit(base64: string, marker: string): string {
+  const parts = loadPackage(base64);
+  const text = (path: string) => strFromU8(parts[path]);
+  for (const path of Object.keys(parts).filter(path => TEMPLATE_PARTS.some(([pattern]) => pattern.test(path)))) {
+    parts[path] = strToU8(text(path).replace(BARE_AMPERSAND, '&amp;'));
+  }
+  const theme = 'ppt/theme/theme1.xml';
+  if (!parts[theme]) throw new PackageRefused(`The code removed ${theme}`);
+  const renamed = text(theme).replace(/(<a:theme\b[^>]*?\bname=")([^"]*)"/,
+    (_match, head: string, name: string) => `${head}${name.replace(/ \[[^\]]*\]$/, '')} [${marker}]"`);
+  if (renamed === text(theme)) throw new PackageRefused(`${theme} has no <a:theme name>, which names the new master`);
+  parts[theme] = strToU8(renamed);
+  const masters = Object.keys(parts).filter(path => TEMPLATE_PARTS[0][0].test(path));
+  for (const path of masters) parts[path] = strToU8(text(path).replace(/\spreserve="(?:1|true)"/, ''));
+
+  const types = parseXml(parts, '[Content_Types].xml');
+  const overrides = new Set(elements(types, CT, 'Override').map(item => item.getAttribute('PartName')));
+  const defaults = new Set(elements(types, CT, 'Default').map(item => item.getAttribute('Extension')?.toLowerCase()));
+  const declare = (name: 'Override' | 'Default', key: [string, string], contentType: string) => {
+    const entry = types.createElementNS(CT, name);
+    entry.setAttribute(...key);
+    entry.setAttribute('ContentType', contentType);
+    types.documentElement!.appendChild(entry);
+  };
+  for (const path of Object.keys(parts)) {
+    const contentType = TEMPLATE_PARTS.find(([pattern]) => pattern.test(path))?.[1];
+    if (contentType && !overrides.has(`/${path}`)) declare('Override', ['PartName', `/${path}`], contentType);
+    const extension = path.startsWith('ppt/media/') ? path.slice(path.lastIndexOf('.') + 1).toLowerCase() : '';
+    if (MEDIA_TYPES[extension] && !defaults.has(extension)) {
+      declare('Default', ['Extension', extension], MEDIA_TYPES[extension]);
+      defaults.add(extension);
+    }
+  }
+  parts['[Content_Types].xml'] = strToU8(serialize(types));
+
+  const floor = Math.max(FIRST_TEMPLATE_ID,
+    ...elements(parseXml(parts, 'ppt/presentation.xml'), P, 'sldMasterId')
+      .map(item => Number(item.getAttribute('id'))));
+  for (const path of masters) {
+    const master = parseXml(parts, path);
+    const layouts = elements(master, P, 'sldLayoutId');
+    const ids = layouts.map(item => Number(item.getAttribute('id')));
+    if (ids.every((id, at) => id > floor && ids.indexOf(id) === at)) continue;
+    let next = floor + 1;
+    layouts.forEach(item => item.setAttribute('id', String(next++)));
+    parts[path] = strToU8(serialize(master));
+  }
+  return savePackage(parts);
+}
+
+/** The ids of the slide's own shapes, as PowerPoint lists them: not those inside a group. */
+export function slideShapeIds(base64: string): string[] {
+  const parts = loadPackage(base64);
+  return directElements(shapeTree(parseXml(parts, slidePart(parts))))
+    .filter(element => element.namespaceURI === P && SHAPE_ELEMENTS.includes(element.localName ?? ''))
+    .map(shape => elements(shape, P, 'cNvPr')[0]?.getAttribute('id') ?? '');
+}
+
 /** The chart parts of a slide package in the order of their numbers, which is what ``chart_index`` counts. */
 function chartParts(parts: Parts): string[] {
   const number = (path: string) => Number(/chart(\d+)\.xml$/.exec(path)![1]);
@@ -790,6 +901,12 @@ function chartStyle(xml: string): JsonObject {
 /** create_slide_chart: the spec's chart part and frame (or big_number's text shapes) added to the slide. */
 export function createChart(base64: string, spec: JsonObject): PackageEdit {
   const parts = loadPackage(base64);
+  const result = insertChartParts(parts, spec);
+  return { base64: savePackage(parts), changed: true, result };
+}
+
+/** The spec's chart added to the parts of a slide package, as create_slide_chart and the sandbox's insertChart do. */
+export function insertChartParts(parts: Parts, spec: JsonObject): { shape_ids: string[]; chart_part?: string } {
   const path = slidePart(parts);
   const slide = parseXml(parts, path);
   const size = elements(parseXml(parts, 'ppt/presentation.xml'), P, 'sldSz')[0];
@@ -815,9 +932,8 @@ export function createChart(base64: string, spec: JsonObject): PackageEdit {
   }
   appendShapes(slide, shapes);
   parts[path] = strToU8(serialize(slide));
-  const shapeIds = shapes.map(xml => /<p:cNvPr id="(\d+)"/.exec(xml)![1]);
-  return { base64: savePackage(parts), changed: true,
-    result: { shape_ids: shapeIds, ...(chartPart ? { chart_part: chartPart } : {}) } };
+  return { shape_ids: shapes.map(xml => /<p:cNvPr id="(\d+)"/.exec(xml)![1]),
+    ...(chartPart ? { chart_part: chartPart } : {}) };
 }
 
 /** edit_built_chart: chart ``chartIndex`` of the slide drawn again from the spec, in its frame. */
@@ -869,6 +985,62 @@ export function editBuiltChart(base64: string, spec: JsonObject, chartIndex: num
   return { base64: savePackage(parts), changed: true, result: { chart_part: chartPart } };
 }
 
+/** A connector to draw, in points: a line from (left, top) across width and height, either of which may be negative. */
+export interface ConnectorShape {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  connectorType: 'Straight' | 'Elbow' | 'Curve';
+  name?: string;
+  line?: { color?: string; weight?: number; transparency?: number; dashStyle?: string; visible?: boolean };
+  /** Whether the line ends in an arrowhead. */
+  endArrow: boolean;
+  /** The id of a top-level shape of the slide the connector goes behind. */
+  before?: string;
+}
+
+const CONNECTOR_PRESETS = { Straight: 'line', Elbow: 'bentConnector3', Curve: 'curvedConnector3' };
+/** DrawingML's preset dashes by PowerPoint's ShapeLineDashStyle; Solid has none. */
+const DASHES: Record<string, string> = { Dash: 'dash', DashDot: 'dashDot', DashDotDot: 'sysDashDotDot',
+  LongDash: 'lgDash', LongDashDot: 'lgDashDot', LongDashDotDot: 'lgDashDotDot', RoundDot: 'sysDot', SquareDot: 'dot',
+  SystemDash: 'sysDash', SystemDot: 'sysDot', SystemDashDot: 'sysDashDot' };
+
+/**
+ * Connectors (``p:cxnSp``) added to a slide package; the id and name of each. The extent is never negative: a line
+ * that runs left or up is flipped, so it starts where it should and its arrowhead (``tailEnd``) is at its end.
+ */
+export function renderConnectors(base64: string, connectors: ConnectorShape[]): { base64: string;
+  shapes: { id: string; name: string }[] } {
+  const parts = loadPackage(base64);
+  const path = slidePart(parts);
+  const slide = parseXml(parts, path);
+  const emu = (points: number) => Math.round(points * EMU_PER_POINT);
+  const shapes = connectors.map(connector => {
+    const { left, top, width, height, line = {} } = connector;
+    const id = String(nextShapeId(slide));
+    const name = connector.name ?? `Connector ${id}`;
+    const alpha = line.transparency === undefined ? ''
+      : `<a:alpha val="${Math.round((1 - line.transparency) * 100_000)}"/>`;
+    const fill = line.visible === false ? '<a:noFill/>'
+      : `<a:solidFill><a:srgbClr val="${(line.color ?? '44546A').replace(/^#/, '').toUpperCase()}">${alpha}`
+        + '</a:srgbClr></a:solidFill>';
+    const dash = DASHES[line.dashStyle ?? 'Solid'];
+    const [shape] = appendShapes(slide, [`<p:cxnSp><p:nvCxnSpPr><p:cNvPr id="${id}" name=""/><p:cNvCxnSpPr/><p:nvPr/>`
+      + `</p:nvCxnSpPr><p:spPr><a:xfrm${width < 0 ? ' flipH="1"' : ''}${height < 0 ? ' flipV="1"' : ''}>`
+      + `<a:off x="${emu(Math.min(left, left + width))}" y="${emu(Math.min(top, top + height))}"/>`
+      + `<a:ext cx="${emu(Math.abs(width))}" cy="${emu(Math.abs(height))}"/></a:xfrm>`
+      + `<a:prstGeom prst="${CONNECTOR_PRESETS[connector.connectorType]}"><a:avLst/></a:prstGeom>`
+      + `<a:ln w="${emu(line.weight ?? 1)}">${fill}${dash ? `<a:prstDash val="${dash}"/>` : ''}`
+      + `${connector.endArrow ? '<a:tailEnd type="triangle"/>' : ''}</a:ln></p:spPr></p:cxnSp>`],
+    connector.before === undefined ? undefined : shapeElement(slide, connector.before));
+    elements(shape, P, 'cNvPr')[0].setAttribute('name', name);
+    return { id, name };
+  });
+  parts[path] = strToU8(serialize(slide));
+  return { base64: savePackage(parts), shapes };
+}
+
 /** The template facts read_presentation_context gives, from a slide package's first theme and master. */
 export function themeOf(base64: string): {
   theme_palette: Record<string, string> | null;
@@ -907,7 +1079,7 @@ export function importedSlides(base64: string, positions?: number[]): { position
   let parts: Parts = {};
   try {
     // Only presentation.xml and the relationships are inflated: the deck may be far larger than a slide package.
-    parts = unzipSync(decode(base64), { filter: file => (file.name === 'ppt/presentation.xml'
+    parts = unzipSync(bytesOf(base64), { filter: file => (file.name === 'ppt/presentation.xml'
       || file.name.endsWith('.rels')) && file.originalSize <= MAX_PACKAGE_BYTES });
   } catch {
     // Not a zip; refused below.

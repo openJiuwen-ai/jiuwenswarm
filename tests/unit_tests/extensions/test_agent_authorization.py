@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
+from e2a.models import E2AEnvelope
+
 from jiuwenswarm.extensions.runtime_management_extension.agent_authorization import (
     authorize_agent,
 )

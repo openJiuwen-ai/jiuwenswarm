@@ -88,6 +88,25 @@ model_provider: SiliconFlow
 
 > 💡 **Tip**: Most model providers offer OpenAI-compatible APIs. You can adjust `api_base` and `model` parameters based on your actual provider.
 
+#### Reference-style key declaration (exec:)
+
+To keep plaintext keys out of `config.yaml`, `api_key` may reference a secret-manager read command: the command runs once at process startup and its stdout becomes the key value. Only the command itself appears in the config file:
+
+```
+api_key: exec:op read "op://Engineering/OpenAI/apiKey"       # 1Password
+api_key: exec:vault kv get -field=key secret/openai          # HashiCorp Vault
+api_key: exec:pass show openai/api-key                       # pass
+```
+
+**Constraints and semantics**:
+
+- **Command requirements**: a single call, no side effects, stdout is the key. No shell interpretation (pipes `|` and redirects `>` do not work); on Windows, wrap backslash paths in quotes or use forward slashes (e.g., `exec:"C:/tools/op.exe" read ...`).
+- **Effect timing and rotation**: resolution happens at process startup and the value stays in process memory. After rotating the key in your secret manager, **restart the service** to pick up the new value.
+- **Failure behavior**: a failing command (timeout, non-zero exit, empty output) degrades the field to an empty key with a warning — model calls report auth errors while everything else keeps working. After the failure the reference enters a 5-minute backoff window during which the command is not re-executed; once the window passes, the next config read triggers a fresh resolve. In practice, once the secret manager is fixed, the reference recovers automatically by the next model call — no restart needed. Clicking "Test" on the settings page retries immediately.
+- **Settings page interaction**: the edit dialog echoes the reference itself (`exec:...`), never the resolved plaintext; saving without edits preserves the reference. You may also type a new reference command and save — the new command runs immediately on save.
+- **Supported scope**: only `models.*.model_client_config.api_key` and `custom_headers` values in `config.yaml` support references; enterprise templates and `${VAR}` env placeholders do not. The dict form of `custom_headers` is supported (the JSON-string form is not).
+- **Gateway forwarding constraint (transitional)**: the Gateway process does not yet resolve `exec:` references (copy sync is planned as a separate change). During the transition, some Gateway-forwarded paths cannot use reference-style keys — verify with an actual Worker session call after configuring a reference `api_key`.
+
 ### 2.3 Multi-Model Management and Aliases
 
 The **Model List** section in the configuration panel supports maintaining multiple models simultaneously for quick switching between different models.
@@ -212,8 +231,16 @@ This section summarizes configuration for search and external services. All item
 Two additional related configuration groups:
 
 - **Free Search Engine Configuration**:
-  - `free_search_ddg_enabled` (DuckDuckGo toggle) and `free_search_bing_enabled` (Bing toggle): control whether the free search engines are enabled. These two toggles are set via the "Configuration" page on the frontend and reset to `false` on every process startup; they must be explicitly enabled in the UI.
+  - Open **Settings > Agent > Web search** to toggle DuckDuckGo and Bing independently. The fields `free_search_ddg_enabled` and `free_search_bing_enabled` persist to `FREE_SEARCH_DDG_ENABLED` and `FREE_SEARCH_BING_ENABLED` in `.env`. Both default to `false`; saved choices survive restart. Changes use the existing search hot-reload path and are read back from the saved configuration.
   - `FREE_SEARCH_PROXY_URL`, `FREE_SEARCH_SSL_VERIFY`, `FREE_SEARCH_DDG_URL`: DuckDuckGo endpoint URL, SSL verification, and proxy URL, written to `.env`. Bing is not enabled by default.
+  - Only one of DuckDuckGo or Bing needs to be enabled for native topic search. With both disabled, preset topics and hot lists remain available, but web-search calls fail without contacting a disabled source. SDK tool input `provider=bing` or `duckduckgo` selects only that enabled provider; `auto` permits configured fallbacks within the budget. The removed 360 source cannot be re-enabled with an old `FREE_SEARCH_360_ENABLED` setting; `provider=360` fails explicitly.
+  - For Work/default Code conversations, when no paid search API key is configured and both free engines are disabled, the main agent gets browser fallback guidance if `browser_agent` is mounted: if you have not specified a search engine or method, it should use synchronous `task_tool` with `subagent_type="browser_agent"` to discover web sources. This does not force a tool call or change paid/free search selection when configured. Known URLs can still use `fetch_webpage`. Your explicit constraints take precedence; unavailable browser tools must be reported. Search failures, access restrictions, and exhausted budgets do not trigger this configuration fallback. It does not apply to background topic search.
+  - Work and default Code agents share an SDK retrieval budget within each invocation: `WEB_RESEARCH_SEARCHES_PER_ENGINE=2`, `WEB_RESEARCH_MAX_ENGINES=2`, `WEB_RESEARCH_MAX_FETCHES=3`, and `WEB_RESEARCH_TIMEOUT_SECONDS=90`. The deadline starts at the first search/fetch. DuckDuckGo and its reader endpoint count as one provider. New invocations get fresh budgets. These limits do not govern custom MCP, browser, or paid-search tools.
+  - SDK Bing markets are configured in `.env`, not the settings panel: `FREE_SEARCH_BING_MARKET=en-US` selects the primary profile independently of query language. Supported profiles are `en-US` and `zh-CN`. `FREE_SEARCH_BING_FALLBACK_MARKET` defaults to the other profile; set it to `none` to disable fallback. Identical profiles are tried only once; unsupported values fail explicitly. Only a nonempty result set rejected for low relevance triggers one alternate-market request. Empty results, access restrictions, transport errors, and accepted provisional candidates do not. The primary request consumes one Bing search slot; its single market fallback costs no additional slot, but still uses the remaining retrieval time. The default two slots allow at most two logical Bing searches, each with up to two market requests; rephrasing starts another logical search and requires another slot. These settings apply to SDK Work/Code search, not the legacy MCP Bing implementation.
+  - Work/Code SDK search assesses each batch of candidates using the current Agent model, without a separate model setting or API key. Backend-only `FREE_SEARCH_ASSESSMENT_TIMEOUT_SECONDS=15` limits each assessment to 1–60 seconds and the remaining retrieval deadline. Results are labeled relevant, uncertain, or rejected. Missing models, timeouts, and invalid model output report `Assessment status: unavailable`, retain at most two unverified leads, and do not trigger market retries. Direct background search without an Agent model preserves this warning rather than creating a hidden model client.
+  - Search rejects structurally invalid targets and candidates assessed as clearly unrelated. Fetch distinguishes `blocked`, `dynamic_shell`, `empty`, and `budget_exhausted` from usable content. HTTP 200 and `Content status: ok` do not prove factual accuracy or freshness. Verify dates and requested fields at the source; report missing fields instead of guessing. No second fetch is mandatory when evidence is sufficient.
+  - These behaviors require the matching agent-core changes and a backend restart. Updating Swarm alone does not update an installed SDK. Rebuild the frontend to remove the retired source from an existing settings bundle.
+  - If the optional SDK budget Rail cannot be loaded or constructed, Work/Code sessions still start and log a warning; this does not mean retrieval budgets are active. An SDK without the search-result hook returns an explicit search error instead of untracked results. Candidate Core/Gateway forks are for editable development only: wheel, sdist, and frozen builds are blocked until dependency declarations and the lockfile use one consistent official commit per dependency.
 - **Other TeamSkillsHub settings**: `teamskills_market_url` (marketplace URL), `teamskills_system_token` (system token), and `teamskills_allowed_download_hosts` (allowed download hosts), configured as needed.
 
 ---
@@ -288,6 +315,11 @@ KV Cache compute affinity manages Session cache through the unified `agent_hint`
 - **Field**: `kv_cache_affinity_config.enable_kv_cache_affinity`
 - **Default**: `false` (disabled)
 - **Purpose**: When enabled, the system prefetches, offloads, and evicts KV Cache along the Session lifecycle.
+
+
+**Enable from the UI**: In Models, select a custom OpenAI-compatible service and turn on “This service supports Ascend KV-Cache affinity”. Save it, then enable “Experimental → Enable KV-Cache affinity”. The model declaration is stored as `model_client_config.extensions.kv_cache.mode: affinity`.
+
+At least one configured inference model must support affinity; the default model may still use a cloud API. Without a supporting model, the switch stays off and a top toast explains why. Removing or revoking the last supporting model turns the global switch off. Disabling the switch preserves model declarations. Actual calls use affinity only for capable models, while cloud models follow their normal request path. Admission reads local declarations without probing the service.
 
 **KV Cache Explanation**:
 - KV Cache is a cache used by large language models during inference to store intermediate computation results

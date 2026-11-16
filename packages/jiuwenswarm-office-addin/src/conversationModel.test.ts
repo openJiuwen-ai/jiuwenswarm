@@ -5,9 +5,12 @@ import {
   type Conversation, type Entry,
 } from './conversationModel';
 import type { JsonObject } from './gatewayClient';
+import { POWERPOINT } from './powerPointApp';
+
 
 function play(events: [string, JsonObject][], from: Conversation = emptyConversation): Conversation {
-  return events.reduce((conversation, [event, payload]) => applyEvent(conversation, { event, payload }), from);
+  return events.reduce(
+    (conversation, [event, payload]) => applyEvent(conversation, { event, payload }, POWERPOINT.contract), from);
 }
 
 /** The transcript without the ids the model hands out. */

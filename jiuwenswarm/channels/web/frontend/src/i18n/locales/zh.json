@@ -21,7 +21,10 @@
   },
   "enterpriseEntry": {
     "invalidIdentity": "Identity 未返回用户标识。",
-    "noContext": "当前账号没有可用的 Agent，请先在管理面完成授权。",
+    "emptyTitle": "暂无可用 Agent",
+    "backToLogin": "返回登录页",
+    "language": "界面语言",
+    "noContext": "当前账号没有可用的Agent，请先在管理面完成授权。",
     "loadFailed": "加载 Agent 上下文失败。",
     "switchFailed": "切换身份失败。",
     "errorTitle": "无法进入工作空间",
@@ -465,6 +468,9 @@
     "qwenOnly": "当前仅支持 Qwen 全双工，请前往设置配置 Qwen Omni Realtime。"
   },
   "settingsPanel": {
+    "affinity": {
+      "noSupportingModel": "目前没有支持算力亲和的模型，请先在“模型”中配置。"
+    },
     "voice": {
       "connectionFailed": "连接失败，请检查接口地址、API Key 和模型后重试。",
       "connectionSuccess": "模型连接验证成功",
@@ -623,6 +629,10 @@
       }
     },
     "models": {
+      "affinityCapability": "此服务支持 Ascend KV-Cache 算力亲和",
+      "affinityCapabilityDescription": "仅适用于已适配 agent_hint 协议的自定义服务。此项是人工声明，普通连通性测试不验证亲和能力。",
+      "affinityAutoDisabled": "模型配置已保存；控制模型不再支持算力亲和，已自动关闭。若提示需要重启，请重启后使用。",
+
       "customModels": "自定义模型",
       "tabsLabel": "模型设置分类",
       "modelsTab": "模型",
@@ -785,6 +795,7 @@
       "catalogLoading": "正在加载模型提供商和推理选项，请稍候。",
       "catalogLoadFailed": "模型提供商和推理选项加载失败，请重试后保存。",
       "saveResponseInvalid": "模型保存响应格式不正确，请重新加载核对。",
+      "execResolveFailed": "模型已保存，但其 exec: 引用命令解析失败；解析成功前模型调用将使用空密钥。请检查密钥管理工具命令后重新保存或测试。",
       "savedApplied": "已保存并生效",
       "savedRestartRequired": "已保存，重启后生效",
       "refreshTitle": "模型后台刷新",
@@ -1212,7 +1223,7 @@
       },
       "kv_cache_affinity_enabled": {
         "title": "启用算力亲和",
-        "description": "仅支持使用 Ascend vLLM 推理服务部署的模型，不支持通过第三方 API Key 接入的模型。"
+        "description": "对已声明支持的服务启用亲和；普通云端模型继续使用普通调用。"
       },
       "external_cli_agent_claude_enabled": {
         "title": "启用 Claude",
@@ -1854,6 +1865,7 @@
     "previewFailed": "文件预览加载失败",
     "docxPreviewFailed": "Word 文档预览加载失败",
     "presentationPreviewFailed": "PowerPoint 演示文稿预览加载失败",
+    "presentationLoadFailed": "PowerPoint 演示文稿获取失败，请稍后重试",
     "presentationResourceLimitExceeded": "PowerPoint 演示文稿内容规模超过浏览器预览上限，请下载后查看",
     "presentationTooLarge": "超过 {{size}} 的 PowerPoint 演示文稿无法在浏览器中预览，请下载后查看",
     "presentationSlides": "幻灯片",
@@ -5312,7 +5324,7 @@
       "saving": "保存中",
       "name": "名称",
       "type": "类型",
-      "typeStdio": "STUDIO",
+      "typeStdio": "STDIO",
       "typeHttp": "流式HTTP",
       "command": "启动命令",
       "args": "参数",
@@ -6057,6 +6069,7 @@
       "namePlaceholder": "例如：售后服务助手",
       "description": "能力介绍",
       "descriptionPlaceholder": "描述这位员工擅长什么、负责什么，以及期望的工作方式",
+      "descriptionTooLong": "能力介绍最多 {{limit}} 个字符，请缩减后再保存。",
       "role": "工作领域",
       "preview": "员工名片预览",
       "previewName": "新员工",
@@ -6099,7 +6112,9 @@
         "starterPrompts": "添加快捷问"
       },
       "starterPromptsLimit": "最多添加 {{count}} 条",
-      "starterPromptDuplicate": "与上面的问题重复，保存时只保留一条",
+      "starterPromptDuplicate": "与上面的问题重复，请修改或删除",
+      "starterPromptsDuplicateTitle": "推荐短句重复",
+      "starterPromptsDuplicateMessage": "推荐短句不能重复，请修改或删除重复项后再创建。",
       "empty": {
         "skills": "暂无技能",
         "connectors": "暂无连接器",
@@ -6462,6 +6477,11 @@
       }
     },
     "schedule": {
+      "save": "保存",
+      "saveAndEnable": "保存并启用",
+      "pausedEditHint": "当前任务已暂停，保存修改后仍保持暂停；选择“保存并启用”可恢复自动执行。",
+      "actionFailed": "定时任务操作失败",
+      "resumeExpired": "启用（请先修改执行时间）",
       "add": "添加",
       "createTitle": "新增定时任务",
       "editTitle": "编辑定时任务",
@@ -6545,6 +6565,7 @@
         "running": "运行中"
       },
       "error": {
+        "enableExpired": "任务已过期，请先调整执行时间后再启用。",
         "nameRequired": "请输入任务名称",
         "promptRequired": "请输入任务描述",
         "required": "请填写任务名称和描述",
@@ -6693,6 +6714,7 @@
     }
   },
   "groupChat": {
+    "organizationInterrupted": "服务重启或执行进程退出，组织任务已中断。已完成成果保留，请重新发起任务。",
     "externalRuntimeDisabled": "{{agents}} 尚未启用。请在设置的「智能体 → 三方 Agent」中打开对应开关，再重新添加成员。",
     "useTeam": "使用该专家团",
     "teamMembers": "团队成员（{{count}}人）",
@@ -6700,6 +6722,10 @@
     "taskTitle": "任务",
     "unnamedTask": "未命名子任务",
     "noSubtasks": "暂无子任务记录",
+    "expertTasks": "本轮团内任务",
+    "expertTasksProgress": "已完成 {{completed}} / {{total}}",
+    "expertTasksUnavailable": "团内任务暂时无法刷新，已显示的记录可能不是最新状态。",
+    "expertTaskUnassigned": "待分配专家",
     "generatingTasks": "任务生成中",
     "organizationStage": {
       "starting": "专家团启动中",
@@ -6725,6 +6751,11 @@
     "modelLocked": "群聊开始后不可切换模型",
     "processing": "正在处理…",
     "mentionPhase": {
+      "organizationFailed": "本次处理未完成，请重新发送消息。",
+      "organizationPending": "已收到，正在处理中…",
+      "organizationClarification": "等待补充信息…",
+      "organizationReceived": "组织已收到，正在处理中…",
+      "organizationSummarizing": "汇总中…",
       "dispatching": "已收到，正在处理中…",
       "planning": "正在规划任务…",
       "generating": "正在生成任务计划…",

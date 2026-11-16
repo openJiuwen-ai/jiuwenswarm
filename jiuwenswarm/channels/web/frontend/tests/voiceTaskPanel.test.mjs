@@ -175,7 +175,7 @@ test('page forwards captured input, acknowledges acceptance once, and delivers c
   });
   assert.equal(outputs().length, 1);
   assert.equal(
-    sent.filter((event) => event.item?.content?.[0]?.text?.includes('Jiuwen result delivery notice')).length,
+    sent.filter((event) => event.item?.content?.[0]?.text?.includes('Background task result for future context only')).length,
     1,
   );
 });
@@ -315,7 +315,7 @@ test('a task accepted before idle renewal is notified once without replaying its
     panel.current.deliverToolResult(result);
   });
   assert.equal(outputs().length, 1, 'old acceptance is never replayed on the new connection');
-  assert.equal(sent.filter(event => event.item?.content?.[0]?.text?.includes('Jiuwen result delivery notice')).length, 1);
+  assert.equal(sent.filter(event => event.item?.content?.[0]?.text?.includes('Background task result for future context only')).length, 1);
 });
 
 test('user cancellation wins over a queued idle-timeout renewal', async () => {
@@ -353,7 +353,8 @@ for (const terminal of ['completed', 'failed', 'cancelled', 'stop']) {
     });
     await act(async () => { resolveConfig({ provider: 'qwen_omni', url: 'ws://127.0.0.1/realtime' }); });
     const notices = sent.filter(event => event.item?.content?.[0]?.text?.includes('Jiuwen result delivery notice'));
-    assert.equal(notices.length, ['completed', 'failed'].includes(terminal) ? 1 : 0);
+    assert.equal(notices.length, terminal === 'failed' ? 1 : 0);
+    assert.equal(sent.filter(event => event.item?.content?.[0]?.text?.includes('Background task result for future context only')).length, terminal === 'completed' ? 1 : 0);
     assert.equal(outputs().length, 1, 'old call ID and acceptance are never replayed');
   });
 }

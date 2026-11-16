@@ -7,8 +7,8 @@ from uuid import uuid4
 
 import pytest
 import websockets
+from e2a.wire_codec import parse_agent_server_wire_unary
 
-from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.server.front.server import AgentServerFront
 from jiuwenswarm.server.runtime.session.history_artifacts import put_text
 from tests.unit_tests.test_context_snapshots import stored, user
@@ -34,7 +34,7 @@ async def _request(socket, session_id, params, *, stream=False):
 @pytest.mark.parametrize("source_format", ["json", "jsonl"])
 @pytest.mark.parametrize("stream", [False, True])
 async def test_front_history_page_retains_tool_payload_and_usage(stored, semantic_records, source_format, stream):
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+    from e2a.wire_codec import parse_agent_server_wire_chunk
 
     path = stored.path.with_suffix("." + source_format)
     if path != stored.path:
@@ -117,7 +117,7 @@ async def test_front_reads_complete_utf8_artifact_in_chunks(stored, explicit_ses
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [False, True])
 async def test_front_index_page_budget_failure_is_an_explicit_error(stored, monkeypatch, stream):
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+    from e2a.wire_codec import parse_agent_server_wire_chunk
     from jiuwenswarm.server.runtime.session import history_paging
 
     stored.write([user("normal", "preserve original")])
@@ -192,7 +192,7 @@ async def test_front_normal_history_paging_still_works(stored):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [False, True])
 async def test_front_cursor_transport_reads_original_and_isolates_artifact_errors(stored, stream):
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+    from e2a.wire_codec import parse_agent_server_wire_chunk
     from jiuwenswarm.server.runtime.session.history_artifacts import ARTIFACT_CURSOR_PREFIX
 
     stored.write([user("normal", "ordinary conversation survives artifact reads")])

@@ -1,6 +1,6 @@
 # E2A（Everything-to-Agent）协议说明
 
-> **实现**：`jiuwenswarm/common/e2a/`（`models.py`、`adapters.py`、`constants.py`、`__init__.py`）。**版本**：`E2A_PROTOCOL_VERSION`（默认 `1.0`）。**冲突时**：以 `models.py` 中 dataclass 字段为最终实现源，并回头修正本文。请求：`E2AEnvelope`；响应：`E2AResponse`。  
+> **实现**：`e2a/`（`models.py`、`adapters.py`、`constants.py`、`__init__.py`）。**版本**：`E2A_PROTOCOL_VERSION`（默认 `1.0`）。**冲突时**：以 `models.py` 中 dataclass 字段为最终实现源，并回头修正本文。请求：`E2AEnvelope`；响应：`E2AResponse`。  
 > **English**：[../en/E2A-protocol.md](../en/E2A-protocol.md)
 
 ---
@@ -11,10 +11,10 @@
 |------|------|
 | **docs/zh/E2A-protocol.md**（本文，中文） | 规范说明、易混点、示例 |
 | **docs/en/E2A-protocol.md** | 同上，英文版 |
-| `jiuwenswarm/common/e2a/models.py` | 请求 `E2AEnvelope`、响应 `E2AResponse` 与子结构；`from_dict` / `to_dict` |
-| `jiuwenswarm/common/e2a/constants.py` | **`E2A_SOURCE_PROTOCOL_*`**、**`E2A_RESPONSE_KINDS`**、**`E2A_RESPONSE_STATUS_*`**、ACP 方法名与 SessionUpdate 字符串（运行时以元组为准） |
-| `jiuwenswarm/common/e2a/adapters.py` | ACP / A2A → E2A；E2A → ACP JSON-RPC；**`E2AResponse` → ACP / A2A 投影**（见 §8） |
-| `jiuwenswarm/common/e2a/__init__.py` | 对外导出 |
+| `e2a/models.py` | 请求 `E2AEnvelope`、响应 `E2AResponse` 与子结构；`from_dict` / `to_dict` |
+| `e2a/constants.py` | **`E2A_SOURCE_PROTOCOL_*`**、**`E2A_RESPONSE_KINDS`**、**`E2A_RESPONSE_STATUS_*`**、ACP 方法名与 SessionUpdate 字符串（运行时以元组为准） |
+| `e2a/adapters.py` | ACP / A2A → E2A；E2A → ACP JSON-RPC；**`E2AResponse` → ACP / A2A 投影**（见 §8） |
+| `e2a/__init__.py` | 对外导出 |
 
 ---
 
@@ -135,7 +135,7 @@ AgentServer 的 Gateway WebSocket 入口将显式传入的方法名转换为本�
 
 ## 6. `constants.py` 中的 ACP 字符串（桥接参考）
 
-以下**仅**用于 ACP 桥接或文档对照，**运行时**以 `jiuwenswarm.common.e2a.constants` 中元组为准：
+以下**仅**用于 ACP 桥接或文档对照，**运行时**以 `e2a.constants` 中元组为准：
 
 - **`ACP_CLIENT_TO_AGENT_METHODS`**：客户端 → Agent 的 JSON-RPC method 名
 - **`ACP_AGENT_TO_CLIENT_METHODS`**、**`ACP_NOTIFICATION_NAMES`**：下行 / 通知
@@ -148,7 +148,7 @@ AgentServer 的 Gateway WebSocket 入口将显式传入的方法名转换为本�
 
 ## 7. `merge_params_to_acp_prompt`
 
-Python：`jiuwenswarm.common.e2a.merge_params_to_acp_prompt(envelope)`。
+Python：`e2a.merge_params_to_acp_prompt(envelope)`。
 
 当且仅当 **`method == "session/prompt"`** 时：
 
@@ -399,7 +399,7 @@ Agent → 网关 → 客户端的**每一条**出站记录（含流式多帧）�
 
 ---
 
-*本文与 `jiuwenswarm/common/e2a/models.py`（`E2AEnvelope`、`E2AResponse`）同步维护。*
+*本文与 `e2a/models.py`（`E2AEnvelope`、`E2AResponse`）同步维护。*
 
 ## 变更记录
 
@@ -437,9 +437,9 @@ Server 自己的 `TEAM_SKILLS_HUB_BASE_URL` 决定查询哪个 Hub。WebSocket �
 
 ## 历史原文引用与分块读取
 
-大型工具结果保留短预览，并可携带 `payload_refs`。主智能体的 `chat.llm_call_start` 只携带调用前预览；Core 完成系统提示词注入和上下文处理后的完整模型输入（messages 和 tools），在 `chat.llm_call_end.payload_refs.prompt` 中引用。子代理在模型输入回调中采集的完整输入仍可随 `chat.llm_call_start` 引用。每个引用包含 `sha256`、`bytes`、`media_type` 和宿主路径；路径供宿主使用，客户端通过会话和摘要读取原文。
+大型工具结果保留短预览，并可携带 `payload_refs`。每个引用包含 `sha256`、`bytes`、`media_type` 和宿主路径。客户端通过会话和摘要读取原文，已保存的 prompt 引用仍可通过同一接口读取。
 
-`text/plain` 表示原始字符串，`application/json` 表示完整结构化值。`raw_output_truncated=true` 表示内联预览已缩减，对应的 `payload_refs` 引用用于读取完整工件。工件存储失败时，模型/工具事件仍发送有界预览，不携带不可用的引用，并记录失败日志。已有小结果和内联历史保持原语义。
+`text/plain` 表示原始字符串，`application/json` 表示完整结构化值。`raw_output_truncated=true` 表示内联预览已缩减，对应的 `payload_refs` 引用用于读取完整工件。工件存储失败时，工具事件仍发送有界预览，不携带不可用的引用，并记录失败日志。已有小结果和内联历史保持原语义。
 
 使用非流式 `history.get` 请求，传入以下 `params`：
 
@@ -459,12 +459,25 @@ Server 自己的 `TEAM_SKILLS_HUB_BASE_URL` 决定查询哪个 Hub。WebSocket �
 
 每页使用已提交历史的字节长度边界，并发追加的记录在后续分页请求中可见；文件替换或截断返回历史变更错误。页面扫描期间允许继续写入历史，普通与流式历史查询均保持 Front 事件循环响应。
 
-每次模型调用的 `chat.usage_metadata.metadata.usage_metadata.payload_refs.prompt` 携带同次 `llm_call_end` 产生的 prompt 引用。SDK 先发 usage 时，适配器最多暂存一条用量事件，等待同次调用结束；缺少结束事件时，在下一次调用、回答或流结束时正常输出。新的 `llm_call_start` 清空上一次调用的引用。
+SDK 先发 usage 时，适配器最多暂存一条用量事件，等待同次调用结束。缺少结束事件时，在下一次调用、回答或流结束时正常输出。
 
-输出消费者取消或关闭时，尚未发出的 usage 保存到会话审计，不向已关闭的流继续 yield。正常发出的 usage 仍由既有历史写入路径保存；在发送 end 标记期间取消，也保留同次调用已经产生的工件引用。
+输出消费者取消或关闭时，待发的 usage 保存到会话审计。正常发出的 usage 仍由既有历史写入路径保存。
 
 大型工具结果工件化后，在既有 1 MiB raw_output 预算内保留 `skill_tree`、`beam_search`、`planned_graph`、`graph_status` 和 `graph_build` 等展示字段；MCP Apps 保持既有投影。完整原文仍由 `payload_refs` 引用。实时消息和历史回放均保留引用，并按当前产品会话读取，fork 后使用目标会话范围。
 
 对于已转发历史游标的 Gateway 路由，可使用 `history.get`，传入 `cursor: "history-artifact:v1:<sha256>:<offset>"` 和 `limit: 1`。响应包含一条 `history.artifact` 记录，字段与普通工件分块读取一致，随后发送既有历史 done 帧。每次最多读取 8 KiB，并保持 UTF-8 字符边界；非法或缺失工件返回 `HISTORY_ARTIFACT_FAILED`，不接受任意文件路径。普通历史订阅忽略这些工件游标；原 `artifact_sha256` 普通接口继续保留。
 
 Web 仅在用户查看原文时读取内容，本地只保留最多 64 KiB 的当前阅读窗口，支持上一段与下一段。关闭视图或切换会话、引用时取消读取并释放原文，不把完整工件回填到全局聊天状态。
+
+## 模型调用状态与增量历史
+
+`chat.llm_call_start` 与 `chat.llm_call_end` 记录模型调用生命周期，携带成员和角色等关联信息。
+调用开始事件可在正文为空时持久化。`llm_start_ts` 在每次调用开始时生成，用于关联开始与用量事件。
+
+会话历史按新增消息和事件追加。主智能体与子智能体的调用事件省略输入 prompt 及其工件引用，
+用户消息、工具调用、工具结果与回复分别通过各自事件保存。
+客户端应允许调用事件缺少 `prompt`，调用详情中的完整输入展示据此降级。
+
+`chat.usage_metadata` 的输入、输出、缓存 token、费用和耗时统计继续上报。
+上下文占用使用 `context.usage`，累计用量使用既有 session usage 快照。
+历史读取兼容已保存的含 `prompt` 记录。

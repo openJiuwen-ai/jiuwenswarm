@@ -13,11 +13,13 @@ globalThis.window = browser.window;
 globalThis.document = browser.window.document;
 const { createRoot } = await import('react-dom/client');
 
+const { JiuwenMateApp } = await import('../node_modules/.cache/jiuwenmate-profile/JiuwenMateApp.js');
 const { ColleagueProfilePage } = await import('../node_modules/.cache/jiuwenmate-profile/pages/ColleagueProfilePage.js');
 const { OfficeDashboardPage } = await import('../node_modules/.cache/jiuwenmate-profile/pages/OfficeDashboardPage.js');
 const { ScheduleBoard } = await import('../node_modules/.cache/jiuwenmate-profile/schedules/ScheduleBoard.js');
 const { ColleagueDeleteDialog } = await import('../node_modules/.cache/jiuwenmate-profile/components/ColleagueDeleteDialog.js');
 const { ImAuthorizeDialog } = await import('../node_modules/.cache/jiuwenmate-profile/components/ImAuthorizeDialog.js');
+const { webClient } = await import('../node_modules/.cache/jiuwenmate-profile/webClient.js');
 
 const zh = JSON.parse(readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8'));
 const en = JSON.parse(readFileSync(new URL('../src/i18n/locales/en.json', import.meta.url), 'utf8'));
@@ -49,6 +51,88 @@ const colleague = {
 const feishuConnection = { channel: 'feishu', connectionKey: 'cli-app', agentId: 'agent-feishu', workspaceDir: null };
 
 const noop = () => undefined;
+
+for (const { language, expectedMessage, rejects } of [
+  { language: 'zh', expectedMessage: '解除连接成功' },
+  { language: 'en', expectedMessage: 'Disconnected' },
+  { language: 'zh', rejects: true },
+]) {
+  test(`Feishu unbind ${rejects ? 'shows only the error when rejected' : `confirms success before refreshing the profile in ${language}`}`, async (t) => {
+    const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
+    const { window: previousWindow, document: previousDocument, IS_REACT_ACT_ENVIRONMENT: previousAct } = globalThis;
+    globalThis.window = dom.window;
+    globalThis.document = dom.window.document;
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const root = createRoot(document.getElementById('root'));
+    const find = (id) => document.querySelector(`[data-testid="${id}"]`);
+    const click = async (selector) => {
+      const button = document.querySelector(selector);
+      assert.ok(button, `Missing ${selector}`);
+      await act(async () => button.click());
+    };
+    const { promise: unbindResult, resolve: finishUnbind, reject: rejectUnbind } = deferred();
+    const { promise: refreshResult, resolve: finishRefresh } = deferred();
+    const wireColleague = { agent_id: 'agent-1', config_id: 'agent-1', name: 'Test colleague' };
+    const unbindMethod = 'channel.feishu.unbind_agent';
+    const refreshMethod = 'jiuwenmate.colleague.get';
+    const request = t.mock.method(webClient, 'request', async (method) => {
+      if (method === 'group.list') return { groups: [], total: 0 };
+      if (method === 'jiuwenmate.colleague.list') {
+        return { colleagues: [{
+          ...wireColleague,
+          connections: [{ channel: 'feishu', connection_key: 'cli-app', agent_id: 'agent-feishu' }],
+        }] };
+      }
+      if (method === unbindMethod) return unbindResult;
+      if (method === refreshMethod) return refreshResult;
+      return {};
+    });
+    const noticeId = 'jiuwenmate-profile-im-notice';
+    try {
+      await i18n.changeLanguage(language);
+      await act(async () => root.render(React.createElement(JiuwenMateApp, { onExit: noop, renderExistingPage: noop })));
+      await click('.jiuwenmate-colleague-card__action--primary');
+      await click('[data-testid="jiuwenmate-profile-section"][data-variant="channels"]');
+      await click('[data-testid="jiuwenmate-profile-im-remove"]');
+      await click('[data-testid="jiuwenmate-confirm-button"]');
+
+      const callsFor = (method) => request.mock.calls.filter(({ arguments: args }) => args[0] === method);
+      assert.deepEqual(callsFor(unbindMethod).map(({ arguments: args }) => args[1]), [{ app_id: 'cli-app' }]);
+      assert.equal(find(noticeId), null);
+      assert.equal(callsFor(refreshMethod).length, 0);
+
+      if (rejects) {
+        await act(async () => rejectUnbind(new Error('Unbind rejected')));
+        assert.equal(find(noticeId), null);
+        assert.match(find('jiuwenmate-action-error').textContent, /Unbind rejected/);
+        assert.ok(find('jiuwenmate-profile-im-remove'));
+        assert.equal(callsFor(refreshMethod).length, 0);
+      } else {
+        await act(async () => finishUnbind({ unbound: true }));
+        const notification = find(noticeId);
+        assert.ok(notification);
+        assert.equal(notification.getAttribute('role'), 'status');
+        assert.equal(notification.textContent, expectedMessage);
+        assert.ok(find('jiuwenmate-profile-im-remove'));
+        assert.equal(callsFor(refreshMethod).length, 1);
+        await act(async () => finishRefresh({ colleague: wireColleague }));
+        assert.equal(find('jiuwenmate-profile-im-remove'), null);
+      }
+    } finally {
+      await act(async () => {
+        root.unmount();
+        t.mock.timers.tick(1000);
+      });
+      dom.window.close();
+      globalThis.window = previousWindow;
+      globalThis.document = previousDocument;
+      globalThis.IS_REACT_ACT_ENVIRONMENT = previousAct;
+      await i18n.changeLanguage('zh');
+    }
+  });
+}
 
 const catalog = {
   skills: [{ name: 'report-writer', label: '报告', description: '整理周报' }],
@@ -324,8 +408,12 @@ test('DingTalk CLI is automatic and has no per-employee authorization page', () 
 
 function deferred() {
   let resolve;
-  const promise = new Promise((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject;
+  const promise = new Promise((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
 }
 
 const dingtalkConnection = { channel: 'dingtalk', connectionKey: 'ding-app', agentId: 'agent-ding', workspaceDir: null };
@@ -1366,6 +1454,55 @@ test('the overview shows the employee activity instead of an empty log', () => {
   assert.doesNotMatch(markup, /暂无执行记录/);
 });
 
+test('a legacy long description stays intact and must be shortened to 200 characters before saving', async () => {
+  const description = '1'.repeat(2000);
+  const saved = [];
+  const view = await mountProfile({
+    colleague: { ...colleague, description },
+    initialSection: 'overview',
+    onSaveSettings: async (edit) => { saved.push(edit); },
+  });
+  try {
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__description').textContent, description);
+    await view.click('edit');
+    const editor = view.find('identity-editor');
+    const input = editor.querySelector('textarea');
+    assert.equal(input.value, description);
+    assert.equal(input.hasAttribute('maxlength'), false, 'Legacy descriptions must remain editable above the save limit');
+    const save = editor.querySelector('.jiuwenmate-dark-button');
+    assert.equal(save.disabled, true);
+    assert.equal(input.getAttribute('aria-invalid'), 'true');
+    assert.match(view.find('description-limit-error').textContent, /200/);
+    assert.equal(view.find('description-count').textContent, '2000/200');
+    await act(async () => save.click());
+    assert.equal(saved.length, 0);
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__description'), null);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(input, description + ' edited');
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+    assert.equal(input.value, description + ' edited', 'Editing must not silently truncate legacy content');
+    assert.equal(save.disabled, true, 'Editing over-limit content must not bypass save validation');
+    const updated = '2'.repeat(200);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(input, `  ${updated}  `);
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+    assert.equal(view.find('description-count').textContent, '200/200');
+    assert.equal(view.find('description-limit-error'), null);
+    assert.equal(input.getAttribute('aria-invalid'), 'false');
+    assert.equal(save.disabled, false);
+    await act(async () => save.click());
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].description, updated);
+    assert.equal(view.find('identity-editor'), null);
+    await view.rerender({ colleague: { ...colleague, description: saved[0].description } });
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__description').textContent, updated);
+  } finally {
+    await view.close();
+  }
+});
+
 test('the pencil edits the current page and stays there', () => {
   const overview = renderProfile({ initialSection: 'overview', initialEditing: true });
   assert.match(overview, /aria-current="true"[^>]*data-variant="overview"/);
@@ -1422,7 +1559,7 @@ test('channel reply mode renders a compact selected state and disables changes w
 });
 
 
-test('only unbound platforms offer authorization', () => {
+test('bound apps offer modification and only unbound platforms offer authorization', () => {
   const dingtalk = { channel: 'dingtalk', connectionKey: 'ding-app', agentId: 'agent-ding', workspaceDir: null };
   const markup = renderProfile({
     initialSection: 'channels',
@@ -1435,6 +1572,7 @@ test('only unbound platforms offer authorization', () => {
   assert.match(markup, /data-testid="jiuwenmate-profile-connection" data-variant="ding-app"/);
   assert.equal(markup.match(/data-testid="jiuwenmate-profile-im-remove"/g).length, 2);
   assert.doesNotMatch(markup, /data-testid="jiuwenmate-profile-im-(?:add|authorize)"/);
+  assert.equal(markup.match(/data-testid="jiuwenmate-profile-im-modify"/g).length, 2);
   assert.doesNotMatch(markup, /data-testid="jiuwenmate-profile-quick-im"/);
 
   const unbound = renderProfile({ initialSection: 'channels' });
@@ -1447,6 +1585,41 @@ test('only unbound platforms offer authorization', () => {
   });
   assert.equal(feishuOnly.match(/data-testid="jiuwenmate-profile-im-authorize"/g).length, 1);
   assert.doesNotMatch(feishuOnly, /data-testid="jiuwenmate-profile-im-add"/);
+});
+
+test('a bound platform hides authorization while other platforms remain available', () => {
+  const markup = renderProfile({
+    initialSection: 'channels',
+    colleague: { ...colleague, connections: [...colleague.connections, feishuConnection] },
+  });
+  const document = new JSDOM(markup).window.document;
+  const platform = (name) => document.querySelector('[data-testid="jiuwenmate-profile-im-platform"][data-variant="' + name + '"]');
+  assert.equal(platform('feishu').querySelector('[data-testid="jiuwenmate-profile-im-add"]'), null);
+  assert.equal(platform('feishu').querySelector('[data-testid="jiuwenmate-profile-im-authorize"]'), null);
+  assert.ok(platform('feishu').querySelector('[data-testid="jiuwenmate-profile-im-modify"]'));
+  assert.ok(platform('feishu').querySelector('[data-testid="jiuwenmate-profile-im-remove"]'));
+  assert.ok(platform('dingtalk').querySelector('[data-testid="jiuwenmate-profile-im-authorize"]'));
+
+  const unbound = new JSDOM(renderProfile({ initialSection: 'channels' })).window.document;
+  assert.ok(unbound.querySelector('[data-variant="feishu"] [data-testid="jiuwenmate-profile-im-authorize"]'));
+});
+
+test('duplicate starter prompts prevent saving a changed prompt list', async () => {
+  const view = await mountProfile({
+    initialSection: 'persona',
+    colleague: { ...colleague, capabilities: { ...colleague.capabilities, starterPrompts: ['写周报', '写月报'] } },
+  });
+  try {
+    const input = view.container.querySelectorAll('[data-testid="jiuwenmate-starter-prompt-input"]')[1];
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, ' 写周报 ');
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+    assert.ok(view.container.querySelector('[data-testid="jiuwenmate-starter-prompt-duplicate"]'));
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__save-button').disabled, true);
+  } finally {
+    await view.close();
+  }
 });
 
 

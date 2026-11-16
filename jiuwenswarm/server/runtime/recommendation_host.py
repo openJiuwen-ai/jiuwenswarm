@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Awaitable, Callable, Iterable
+from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -38,15 +38,9 @@ def deactivate_recommendation_host(host: "RecommendationHost") -> None:
         _ACTIVE_HOST = None
 
 
-def _no_active_request_ids() -> Iterable[str]:
-    """No request stream is bound until the AgentServer binds one."""
-    return ()
-
-
 def _build_topic_starter_services(
     topic_starter_store: Any,
     *,
-    active_request_ids_loader: Callable[[], Iterable[str]] | None = None,
     prepare_service: Any = None,
     outcome_queue: Any = None,
 ) -> tuple[Any, Any | None, Any]:
@@ -103,7 +97,6 @@ def _build_topic_starter_services(
     topic_pipeline = TopicPipeline(
         topic_starter_store,
         records_loader=permitted_records,
-        active_request_ids_loader=active_request_ids_loader,
     )
     try:
         search_provider_id = topic_pipeline.search_provider_id
@@ -150,7 +143,6 @@ def _build_topic_starter_services(
         # out of recommendation.db and investigate generation via process logs.
         prepare_outcomes=None,
         input_revision_loader=topic_pipeline.scope_input_revision,
-        pending_request_loader=topic_pipeline.scope_has_pending_request,
         config_loader=recommendation_model_config,
         enabled=bool(load_recommendation_controls()["enabled"]),
     )
@@ -183,11 +175,7 @@ class RecommendationHost:
         self.legacy_topic_service: Any = None
         self.legacy_tasks: set[asyncio.Task] = set()
         self._services_built = False
-        self._active_request_ids: Callable[[], Iterable[str]] = _no_active_request_ids
         self._push: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
-
-    def bind_active_requests(self, loader: Callable[[], Iterable[str]]) -> None:
-        self._active_request_ids = loader
 
     def bind_push(self, push: Callable[[str, dict[str, Any]], Awaitable[None]]) -> None:
         self._push = push
@@ -220,7 +208,6 @@ class RecommendationHost:
             self.store = TopicStarterStore(get_agent_workspace_dir() / "recommendation.db")
         prepare, service, queue = _build_topic_starter_services(
             self.store,
-            active_request_ids_loader=lambda: self._active_request_ids(),
             prepare_service=self.topic_prepare_service if self._services_built else None,
             outcome_queue=self.topic_outcome_queue if self._services_built else None,
         )
@@ -253,8 +240,8 @@ class RecommendationHost:
         self._services_built = True
 
     async def start(self) -> None:
-        # Pools fill on enable / chat successor / click / manual retry — not on
-        # process boot or a midnight timer.
+        # Pools fill on enable / chat successor / click — not on process boot
+        # or a midnight timer.
         self.ensure_services()
 
     async def shutdown(self) -> None:

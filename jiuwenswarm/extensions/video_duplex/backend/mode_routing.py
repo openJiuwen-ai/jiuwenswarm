@@ -16,11 +16,15 @@ def execution_target(metadata: dict) -> dict:
         if not is_single_agent_mode(mode):
             raise ValueError("Full-duplex supports single-agent Work/Code chats and Design projects")
         work_mode = "code" if is_code_profile_mode(mode) else "work"
-    return {
+    target = {
         "mode": mode, "work_mode": work_mode,
         **{key: metadata[key] for key in ("project_id", "project_dir", "model_name", "model_selection")
            if metadata.get(key)},
     }
+    # Session metadata persists the selected model as "model".
+    if not target.get("model_name") and metadata.get("model"):
+        target["model_name"] = metadata["model"]
+    return target
 
 
 async def resolve_execution_target(client, owner: str, scope: str) -> dict:

@@ -6,9 +6,15 @@ from __future__ import annotations
 
 import pytest
 from starlette.requests import Request
+from e2a.models import E2AEnvelope
+from agent_gateway.enterprise.capabilities.experts.bound_packages import (
+    packages_for_bot,
+    packages_from_template_rows,
+)
+from agent_gateway.routing.agent_client import _stamp_expert_packages
+from agent_gateway.enterprise.capabilities.experts.allowlist import bind_outbound_allowlist
 
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.runtime_management_extension.pod_http_client import (
     _assemble_with_expert_packages,
@@ -16,13 +22,7 @@ from jiuwenswarm.extensions.runtime_management_extension.pod_http_client import 
 from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
     identity_headers,
 )
-from agent_gateway.enterprise.capabilities.experts.bound_packages import (
-    packages_for_bot,
-    packages_from_template_rows,
-)
-from agent_gateway.routing.agent_client import _stamp_expert_packages
 from jiuwenswarm.server.agent_http_routes import _rebuild_identity_from_headers
-from agent_gateway.enterprise.capabilities.experts.allowlist import bind_outbound_allowlist
 from jiuwenswarm.common.schema.expert_packages import (
     HEADER_NAME,
     METADATA_KEY,

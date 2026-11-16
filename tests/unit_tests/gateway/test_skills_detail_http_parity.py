@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 import agent_gateway
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
+from e2a.models import E2AEnvelope
 from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
     REST_ROUTES,
     assemble_rest_request,

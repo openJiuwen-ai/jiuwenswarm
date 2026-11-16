@@ -213,7 +213,8 @@ def test_group_list_externalizes_large_inline_avatars(
 ) -> None:
     from urllib.parse import parse_qs, urlsplit
 
-    from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+    from e2a.wire_codec import encode_agent_response_for_wire
+
     from jiuwenswarm.common.file_download_token import WebFileDownloadManager
     from jiuwenswarm.common.schema.agent import AgentResponse
     from jiuwenswarm.server.ws_send import send_wire_payload

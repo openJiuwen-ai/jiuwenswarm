@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import ast
-import contextlib
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -133,31 +132,29 @@ async def test_start_opens_websocket_without_waiting_for_personal_context(
 
     host.start = _delayed_start  # type: ignore[method-assign]
     monkeypatch.setattr(server_module, "reset_harness_packages_state", lambda: None)
-    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
-
-    async def _checkpointer() -> None:
-        return None
-
-    monkeypatch.setattr(interface_deep, "ensure_persistent_checkpointer", _checkpointer)
+    # Keep the real readiness barrier and isolate the services ahead of it.
+    monkeypatch.setattr(server._runtime, "start", _noop_async)
+    monkeypatch.setattr(server._heartbeat_runtime, "start", _noop_async)
+    monkeypatch.setattr(server._jiuwenmate_web, "start", _noop_async)
+    monkeypatch.setattr(server, "_ensure_persistent_group_fanout", _noop_async)
+    monkeypatch.setattr(
+        "jiuwenswarm.common.mcp_config.prewarm_connected_mcps",
+        AsyncMock(return_value=True),
+    )
     monkeypatch.setattr("websockets.legacy.server.serve", _serve)
     monkeypatch.setattr(server, "_bootstrap_internal_jiuwenbox", _noop_async)
 
-    await server.start(bind_transport=True)
-    task = server._personal_context_start_task  # pylint: disable=protected-access
     try:
-        await asyncio.wait_for(personal_context_started.wait(), timeout=1.0)
-
+        await asyncio.wait_for(server.start(bind_transport=True), timeout=5.0)
         assert events == ["ws-serve"]
+        task = server._personal_context_start_task  # pylint: disable=protected-access
         assert task is not None
+        await asyncio.wait_for(personal_context_started.wait(), timeout=5.0)
+        assert not task.done()
         release_personal_context.set()
-        await task
+        await asyncio.wait_for(task, timeout=5.0)
     finally:
         release_personal_context.set()
-        if task is not None:
-            if not task.done():
-                task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
         await server.stop()
 
 

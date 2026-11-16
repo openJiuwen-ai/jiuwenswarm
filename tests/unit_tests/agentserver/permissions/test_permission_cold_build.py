@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -422,7 +423,7 @@ async def test_manager_canonicalizes_first_workspace_before_real_child_build(col
     assert paths.is_projectless is (declaration is None)
     if declaration:
         assert paths.runtime_workspace_root == project
-        assert h.adapter._project_dir == str(project)
+        assert Path(h.adapter._project_dir) == project
     assert h.helper_calls[0]["workspace_root"] == paths.runtime_workspace_root
     assert h.adapter._permission_rail.workspace_root == paths.runtime_workspace_root
     assert get_workspace() == str(paths.runtime_workspace_root)

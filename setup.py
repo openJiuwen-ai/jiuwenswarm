@@ -5,6 +5,21 @@ import runpy
 
 from setuptools import setup
 from setuptools.command.build_py import build_py
+from setuptools.command.sdist import sdist
+
+try:
+    from setuptools.command.bdist_wheel import bdist_wheel
+except ModuleNotFoundError as exc:
+    if exc.name != "setuptools.command.bdist_wheel":
+        raise
+    # Some CI bootstrap environments load setuptools before 70.1.
+    from wheel.bdist_wheel import bdist_wheel
+
+
+def _validate_release_dependencies() -> None:
+    root = Path(__file__).parent
+    helper = runpy.run_path(str(root / "scripts" / "release_dependencies.py"))
+    helper["validate_release_dependencies"](root)
 
 
 class BuildPy(build_py):
@@ -25,4 +40,16 @@ class BuildPy(build_py):
         )
 
 
-setup(cmdclass={"build_py": BuildPy})
+class BdistWheel(bdist_wheel):
+    def run(self) -> None:
+        _validate_release_dependencies()
+        super().run()
+
+
+class Sdist(sdist):
+    def run(self) -> None:
+        _validate_release_dependencies()
+        super().run()
+
+
+setup(cmdclass={"build_py": BuildPy, "bdist_wheel": BdistWheel, "sdist": Sdist})

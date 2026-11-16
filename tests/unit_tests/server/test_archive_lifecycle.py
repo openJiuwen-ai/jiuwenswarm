@@ -1497,8 +1497,9 @@ async def test_non_terminal_without_waiters_skips_server_push(monkeypatch):
 @pytest.mark.asyncio
 async def test_terminal_team_task_without_waiters_uses_session_live(monkeypatch):
     """队长流的等待者走了之后，终态子任务仍进团队直播。"""
+    from e2a.wire_codec import parse_agent_server_wire_chunk
+
     from jiuwenswarm.agents.harness.team import team_manager
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
 
     manager = team_manager.TeamManager()
     monkeypatch.setattr(team_manager, "_team_manager", manager)

@@ -584,3 +584,126 @@ test('the group chat model is selectable only before the chat starts', async () 
   // Older pages not loaded yet still mean the chat has already run.
   assert.equal(groupModelLocked([], [], true), true);
 });
+
+test('organization mentions show only their owner and follow the exact request through completion', async () => {
+  const { pendingMentionReplies, mentionExecutionPhase } = await import('../node_modules/.cache/group-chat/features/groupChat/state.js');
+  const members = ['finance', 'ppt', 'ops'].map((member_name) => ({ member_name, kind: 'agent_group' }));
+  const ask = (id) => ({ message_id: id, client_message_id: id, sender: 'user', timestamp: 1000,
+    content: 'prepare report', mentions: ['finance', 'ppt', 'ops'] });
+  const run = { execution_id: 'org-run', execution_kind: 'organization', organization_plan_id: 'ask',
+    owner_member: 'finance', created_at: 0.5, status: 'running', tasks: {}, organization_stage: 'starting' };
+  const sent = new Set(['ask', 'next']);
+  const pending = (messages, executions, ids = sent) => pendingMentionReplies(messages, executions, members, ids);
+  const initial = pending([ask('ask')], []).get('ask');
+  assert.equal(initial.length, 1);
+  assert.equal(initial[0].memberName, 'finance');
+  assert.equal(initial[0].organization, true);
+  assert.equal(mentionExecutionPhase(undefined, true).key, 'organizationPending');
+  assert.equal(pending([{ ...ask('ask'), pending: true }], []).size, 0);
+  const refreshed = pending([ask('ask')], [run], new Set()).get('ask');
+  assert.equal(refreshed.length, 1);
+  assert.equal(refreshed[0].execution, run);
+  for (const organization_stage of ['starting', 'processing', 'executing', undefined]) {
+    assert.equal(mentionExecutionPhase({ ...run, organization_stage, progress: { completed: 0, total: 0 } }, true).key,
+      'organizationReceived');
+  }
+  assert.deepEqual(mentionExecutionPhase({ ...run, progress: { completed: 0, total: 3 } }, true),
+    { key: 'executing', completed: 0, total: 3 });
+  assert.deepEqual(mentionExecutionPhase({ ...run, progress: { completed: 1, total: 3 } }, true),
+    { key: 'executing', completed: 1, total: 3 });
+  assert.equal(mentionExecutionPhase({ ...run, organization_stage: 'summarizing' }, true).key, 'organizationSummarizing');
+  const next = pending([ask('ask'), ask('next')], [run]);
+  assert.equal(next.get('ask')[0].execution, run);
+  assert.equal(next.get('next')[0].execution, undefined);
+  for (const sender of ['finance', 'ppt']) {
+    assert.equal(pending([ask('ask'), { ...ask('reply'), sender, timestamp: 2000 }], [run]).get('ask').length, 1);
+  }
+  const result = { ...ask('result'), sender: 'finance', execution_id: run.execution_id, timestamp: 2000 };
+  assert.equal(pending([ask('ask'), result], [run]).size, 0);
+  for (const status of ['completed', 'failed', 'cancelled', 'interrupted', 'timed_out', 'stopped']) {
+    assert.equal(pending([ask('ask')], [{ ...run, status }]).size, 0);
+  }
+  assert.equal(pending([ask('ask')], [{ ...run, owner_member: 'ppt' }]).get('ask')[0].memberName, 'ppt');
+});
+
+test('single experts, single teams and mixed mentions keep their existing per-member bubbles', async () => {
+  const { pendingMentionReplies, mentionExecutionPhase } = await import('../node_modules/.cache/group-chat/features/groupChat/state.js');
+  const members = [{ member_name: 'expert', kind: 'agent_template' },
+    { member_name: 'finance', kind: 'agent_group' }, { member_name: 'ppt', kind: 'agent_group' }];
+  for (const mentions of [['expert'], ['finance'], ['expert', 'finance', 'ppt']]) {
+    const ask = { message_id: 'ask', client_message_id: 'ask', sender: 'user', timestamp: 1000, content: '', mentions };
+    const pending = pendingMentionReplies([ask], [], members, new Set(['ask'])).get('ask');
+    assert.deepEqual(pending.map((item) => item.memberName), mentions);
+    assert.ok(pending.every((item) => !item.organization));
+  }
+  assert.equal(mentionExecutionPhase(undefined).key, 'dispatching');
+  assert.equal(mentionExecutionPhase({ status: 'planning' }).key, 'planning');
+});
+
+test('owner routing restores pending chat and closes only its exact request after reply', async () => {
+  const { pendingMentionReplies, mentionExecutionPhase } = await import('../node_modules/.cache/group-chat/features/groupChat/state.js');
+  const members = ['owner', 'other'].map((member_name) => ({ member_name, kind: 'agent_group' }));
+  const ask = (id) => ({ ...message(id, 1000), client_message_id: id, sender: 'user', mentions: ['owner', 'other'] });
+  const routes = ['one', 'two'].map((plan_id) => ({ plan_id, owner_member: 'owner', members: ['owner', 'other'], status: 'pending' }));
+  const pending = (rs) => pendingMentionReplies([ask('one'), ask('two')], [], members, new Set(), rs);
+  assert.equal(pending(routes).size, 2);
+  assert.equal(pending(routes).get('one')[0].memberName, 'owner');
+  assert.equal(mentionExecutionPhase(undefined, true, routes[0]).key, 'organizationPending');
+  assert.equal(mentionExecutionPhase(undefined, true, { ...routes[0], status: 'clarification' }).key, 'organizationClarification');
+  assert.equal(mentionExecutionPhase(undefined, true, { ...routes[0], status: 'task' }).key, 'organizationReceived');
+  assert.equal(mentionExecutionPhase(undefined, true, { ...routes[0], status: 'failed' }).key, 'organizationFailed');
+  const finished = [{ ...routes[0], status: 'completed', reply_message_id: 'reply' }, routes[1]];
+  assert.deepEqual([...pending(finished).keys()], ['two']);
+  assert.equal(pending([{ ...routes[0], status: 'failed' }]).get('one')[0].route.status, 'failed');
+});
+
+
+test('organization expert boards are collapsed and keep top-level counts unchanged', () => {
+  const details = { chapter: { title: '商业评估', member_id: '商业策划专家团', expert_tasks: [
+    { task_id: 'research', title: '市场调研', assignee: 'market_analyst', status: 'in_progress' },
+    { task_id: 'risk', title: '风险评估', assignee: 'risk_expert', status: 'completed' },
+  ] } };
+  const record = { ...execution('nested', 1), execution_kind: 'organization',
+    tasks: { chapter: 'in_progress' }, task_details: details };
+  const html = renderToStaticMarkup(createElement(ExecutionCard, { execution: record }));
+  assert.match(html, /<details[^>]*data-testid="group-chat-expert-tasks"/);
+  assert.doesNotMatch(html, /<details[^>]*\bopen(?:=|\s|>)/);
+  assert.match(html, /<summary[^>]*data-testid="group-chat-expert-tasks-toggle"/);
+  assert.match(html, /市场调研/);
+  assert.match(html, /market_analyst/);
+  assert.match(html, /group-chat-expert-task-status[^>]*data-variant="in_progress"/);
+  assert.match(html, /group-chat-expert-task-status[^>]*data-variant="completed"/);
+  assert.match(html, /data-variant="total">groupChat.counts.total <b>1/);
+  for (const kind of ['agent', 'team']) {
+    const render = (task_details) => renderToStaticMarkup(createElement(ExecutionCard, {
+      execution: { ...record, execution_kind: kind, task_details },
+    }));
+    assert.equal(render(details), render({ chapter: { title: '商业评估', member_id: '商业策划专家团' } }));
+  }
+});
+
+
+test('empty and unavailable expert boards have distinct messages', () => {
+  const render = (detail) => renderToStaticMarkup(createElement(ExecutionCard, { execution: {
+    ...execution('nested', 1), execution_kind: 'organization', tasks: { chapter: 'in_progress' },
+    task_details: { chapter: detail },
+  } }));
+  assert.match(render({ expert_tasks: [] }), /group-chat-expert-tasks-empty/);
+  const unavailable = render({ expert_tasks: [], expert_tasks_unavailable: true });
+  assert.match(unavailable, /group-chat-expert-tasks-unavailable/);
+  assert.doesNotMatch(unavailable, /group-chat-expert-tasks-empty/);
+  assert.doesNotMatch(render({ title: 'Historical card' }), /group-chat-expert-tasks-toggle/);
+});
+
+test('only interrupted organization cards explain runtime loss', () => {
+  const render = (kind, status) => renderToStaticMarkup(createElement(ExecutionCard, { execution: {
+    execution_id: 'lost', execution_kind: kind, member_name: null, title: 'Task', task: 'Task',
+    status, error_code: 'ORGANIZATION_RUNTIME_LOST', tasks: { child: 'interrupted' },
+    task_details: { child: { title: 'Child', status: 'interrupted' } },
+  } }));
+  assert.match(render('organization', 'interrupted'), /group-chat-organization-interrupted/);
+  assert.doesNotMatch(render('organization', 'running'), /group-chat-organization-interrupted/);
+  for (const kind of ['team', 'agent']) {
+    assert.doesNotMatch(render(kind, 'interrupted'), /group-chat-organization-interrupted/);
+  }
+});

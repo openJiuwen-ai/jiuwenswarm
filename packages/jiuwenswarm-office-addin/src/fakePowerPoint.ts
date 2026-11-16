@@ -12,7 +12,13 @@
  * slide's ``extLst``. Inserting a package keeps the shape ids of its XML and
  * gives the slide a new id: the XML wins where an edit changed it, so a slide
  * inserted from an unedited export is the same slide under a new id. A shape
- * the fake knows only as XML (a picture, a chart, a group) exports as that XML.
+ * the fake knows only as XML (a picture, a chart, a group, a connector) exports
+ * as that XML.
+ *
+ * A package inserted with ``KeepSourceFormatting`` whose theme no master of the
+ * deck has brings its master, with its layouts and theme; one whose theme a
+ * master has keeps that master, as PowerPoint 16.114 was seen to keep it. A
+ * master that is not preserved goes when the last slide of it is deleted.
  */
 import { DOMParser, XMLSerializer, type Document, type Element } from '@xmldom/xmldom';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
@@ -57,10 +63,13 @@ export interface FakeTheme {
 
 export interface FakeLayout { id: string; name: string; placeholders?: number }
 
+/** A slide master; one without a theme of its own has the deck's. */
+export interface FakeMaster { id: string; name: string; layouts: FakeLayout[]; theme?: FakeTheme; preserve?: boolean }
+
 export interface FakeDeckOptions {
   slides?: { id?: string; layoutId?: string; shapes?: Partial<FakeShapeState>[]; notes?: string;
     parts?: Record<string, FakePart> }[];
-  masters?: { id: string; name: string; layouts: FakeLayout[] }[];
+  masters?: FakeMaster[];
   size?: { width: number; height: number };
   /** The highest PowerPointApi version the host has. */
   api?: string;
@@ -77,7 +86,7 @@ const OFFICE_THEME: FakeTheme = { name: 'Office Theme', palette: { dk1: '000000'
 
 export class FakeDeck {
   slides: FakeSlideState[];
-  readonly masters: { id: string; name: string; layouts: FakeLayout[] }[];
+  readonly masters: FakeMaster[];
   readonly size: { width: number; height: number };
   readonly api: string;
   readonly theme: FakeTheme;
@@ -133,6 +142,13 @@ export class FakeDeck {
 
   readonly run: PowerPointRun = async batch => batch(this.context() as unknown as PowerPoint.RequestContext);
 
+  /** The master of a slide and its layout; a slide without a layout has the first master's first layout. */
+  template(slide: FakeSlideState): { master: FakeMaster; layout: FakeLayout } {
+    const master = this.masters.find(item => item.layouts.some(layout => layout.id === slide.layoutId))
+      ?? this.masters[0];
+    return { master, layout: master.layouts.find(layout => layout.id === slide.layoutId) ?? master.layouts[0] };
+  }
+
   private slideId(): string {
     this.nextId += 1;
     return `${this.nextId}#`;
@@ -162,13 +178,26 @@ export class FakeDeck {
         deck.slides.splice(index, 0, state);
       },
       delete: () => {
+        const { master } = deck.template(state);
         deck.slides = deck.slides.filter(slide => slide !== state);
+        if (!master.preserve && !deck.slides.some(slide => deck.template(slide).master === master)) {
+          deck.masters.splice(deck.masters.indexOf(master), 1);
+        }
       },
+      get layout() { return { ...loadable, ...deck.template(state).layout }; },
+      get slideMaster() { return masterApi(deck.template(state).master); },
+      // The host gives the slide back the placeholders of the layout it lacks, as reapplying a layout does.
       applyLayout: (layout: { id: string }) => {
         state.layoutId = layout.id;
+        const { placeholders = 0 } = deck.template(state).layout;
+        for (let at = state.shapes.filter(shape => shape.type === 'Placeholder').length; at < placeholders; at += 1) {
+          state.shapes.push(deck.shapeState({ type: 'Placeholder', name: `Placeholder ${at + 1}` }));
+        }
       },
       exportAsBase64: () => ({ ...loadable, value: exportSlide(state, deck) }),
     });
+    const masterApi = (master: FakeMaster) => ({ ...loadable, id: master.id, name: master.name,
+      layouts: { ...loadable, items: master.layouts } });
     const missing = (what: string): Bag => new Proxy({}, { get: (_target, key) => {
       deck.fail(`ItemNotFound: ${what}`);
       return key === 'load' || key === 'delete' ? () => undefined : missing(what);
@@ -310,8 +339,8 @@ export class FakeDeck {
       presentation: {
         slides: slidesApi,
         pageSetup: { ...loadable, slideWidth: deck.size.width, slideHeight: deck.size.height },
-        slideMasters: { ...loadable, items: deck.masters.map(master => ({ id: master.id, name: master.name,
-          layouts: { ...loadable, items: master.layouts } })) },
+        slideMasters: { ...loadable, get items() { return deck.masters.map(masterApi); },
+          getItem: (id: string) => masterApi(deck.masters.find(master => master.id === id)!) },
         insertSlidesFromBase64: (base64: string, options: PowerPoint.InsertSlideOptions = {}) => {
           deck.insertions.push(options);
           if (deck.insertsBeforeFailure !== undefined && deck.insertsBeforeFailure-- === 0) {
@@ -324,10 +353,20 @@ export class FakeDeck {
             deck.fail(`ItemNotFound: slide ${options.targetSlideId}`);
             return;
           }
-          const inserted = importSlides(base64, options.sourceSlideIds);
-          deck.nextId = Math.max(deck.nextId, ...inserted.flatMap(slide => slide.shapes.map(shape => Number(shape.id)))
-            .filter(Number.isInteger));
-          deck.slides.splice(after + 1, 0, ...inserted.map(slide => ({ ...slide, id: deck.slideId() })));
+          const { slides: inserted, template } = importSlides(base64, options.sourceSlideIds);
+          deck.nextId = Math.max(deck.nextId, ...inserted
+            .flatMap(({ slide }) => slide.shapes.map(shape => Number(shape.id))).filter(Number.isInteger));
+          const themes = deck.masters.map(master => (master.theme ?? deck.theme).name);
+          if (options.formatting === 'KeepSourceFormatting' && template && !themes.includes(template.theme.name)) {
+            const master: FakeMaster = { id: `${deck.slideId()}m`, name: template.theme.name, theme: template.theme,
+              preserve: template.preserve,
+              layouts: template.layouts.map(layout => ({ id: `${deck.slideId()}l`, ...layout })) };
+            deck.masters.push(master);
+            inserted.forEach(item => {
+              item.slide.layoutId = master.layouts.find(layout => layout.name === item.layout)?.id;
+            });
+          }
+          deck.slides.splice(after + 1, 0, ...inserted.map(({ slide }) => ({ ...slide, id: deck.slideId() })));
         },
       },
       sync: async () => {
@@ -422,10 +461,11 @@ function shapeXml(shape: FakeShapeState): string {
  * (the slide's own among them), the theme and the notes.
  */
 function exportSlide(slide: FakeSlideState, deck: FakeDeck): string {
-  const { theme, size } = deck;
-  const { layouts } = deck.masters.find(master => master.layouts.some(layout => layout.id === slide.layoutId))
-    ?? deck.masters[0];
-  const own = Math.max(0, layouts.findIndex(layout => layout.id === slide.layoutId)) + 1;
+  const { size } = deck;
+  const { master, layout } = deck.template(slide);
+  const { layouts } = master;
+  const theme = master.theme ?? deck.theme;
+  const own = layouts.indexOf(layout) + 1;
   const { id: _id, shapes, notes, parts = {}, ...rest } = slide;
   const state = { ...rest, shapes: shapes.filter(shape => shape.xml === undefined) };
   const files: Record<string, string> = {
@@ -448,8 +488,8 @@ function exportSlide(slide: FakeSlideState, deck: FakeDeck): string {
       ...(notes === undefined ? [] : [['rNotes', 'notesSlide', '../notesSlides/notesSlide1.xml'] as [string, string, string]]),
       ...Object.entries(parts).map(([path, part]): [string, string, string] => [part.relationshipId,
         part.relationshipType, `../${path.slice('ppt/'.length)}`])]),
-    'ppt/slideMasters/slideMaster1.xml': `<p:sldMaster ${NS}><p:cSld><p:spTree><p:sp><p:nvSpPr><p:cNvPr id="2" `
-      + 'name="Title Placeholder 1"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/>'
+    'ppt/slideMasters/slideMaster1.xml': `<p:sldMaster ${NS}${master.preserve ? ' preserve="1"' : ''}>`
+      + '<p:cSld><p:spTree><p:sp><p:nvSpPr><p:cNvPr id="2" name="Title Placeholder 1"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/>'
       + `${paragraphsOfText('Click to edit Master title style')}</p:txBody></p:sp></p:spTree></p:cSld><p:sldLayoutIdLst>`
       + `${layouts.map((_layout, at) => `<p:sldLayoutId id="${2147483649 + at}" r:id="rLayout${at + 1}"/>`).join('')}`
       + '</p:sldLayoutIdLst><p:txStyles><p:bodyStyle><a:lvl1pPr>'
@@ -496,8 +536,15 @@ function exportSlide(slide: FakeSlideState, deck: FakeDeck): string {
   return Buffer.from(zipped).toString('base64');
 }
 
-/** The slides of a package, those of ``sourceSlideIds`` (``nnn#``) when given, as the fake keeps them. */
-function importSlides(base64: string, sourceSlideIds?: string[]): Omit<FakeSlideState, 'id'>[] {
+/**
+ * The slides of a package, those of ``sourceSlideIds`` (``nnn#``) when given, as the fake keeps them, with the
+ * name of each one's layout; and the package's first master: its theme, whether it is preserved, the name and
+ * placeholder count of each layout.
+ */
+function importSlides(base64: string, sourceSlideIds?: string[]): {
+  slides: { slide: Omit<FakeSlideState, 'id'>; layout?: string }[];
+  template?: { theme: FakeTheme; preserve: boolean; layouts: { name: string; placeholders: number }[] };
+} {
   const files = unzipSync(Buffer.from(base64, 'base64'));
   const xml = (path: string): Document => new DOMParser().parseFromString(strFromU8(files[path]), 'application/xml');
   const elements = (root: Document | Element, namespace: string, name: string) =>
@@ -514,11 +561,12 @@ function importSlides(base64: string, sourceSlideIds?: string[]): Omit<FakeSlide
   const slidePaths = elements(xml('ppt/presentation.xml'), P, 'sldId')
     .filter(item => !sourceSlideIds || sourceSlideIds.includes(`${item.getAttribute('id')}#`))
     .map(item => presentationTargets.get(item.getAttributeNS(R, 'id'))!);
+  const layoutName = (path: string) => elements(xml(path), P, 'cSld')[0]?.getAttribute('name') ?? '';
   const types = xml('[Content_Types].xml');
   const contentType = (path: string) => (elements(types, TYPES, 'Override')
     .find(item => item.getAttribute('PartName') === `/${path}`) ?? elements(types, TYPES, 'Default')
     .find(item => item.getAttribute('Extension') === path.slice(path.lastIndexOf('.') + 1)))?.getAttribute('ContentType');
-  return slidePaths.map(path => {
+  const slides = slidePaths.map(path => {
     const slide = xml(path);
     const kept = elements(slide, P, 'ext').find(item => item.getAttribute('uri') === STATE_EXTENSION)?.textContent;
     const state = (kept ? JSON.parse(kept) : { shapes: [] }) as Omit<FakeSlideState, 'id'>;
@@ -531,21 +579,42 @@ function importSlides(base64: string, sourceSlideIds?: string[]): Omit<FakeSlide
     });
     const parts: Record<string, FakePart> = {};
     let notes: string | undefined;
+    let layout: string | undefined;
     for (const relationship of targets(path)) {
       const type = relationship.getAttribute('Type') ?? '';
       const target = resolve(path, relationship.getAttribute('Target') ?? '');
-      if (type.endsWith('/notesSlide')) {
+      if (type.endsWith('/slideLayout')) {
+        layout = layoutName(target);
+      } else if (type.endsWith('/notesSlide')) {
         notes = textOfParagraphs(elements(xml(target), A, 'p'));
-      } else if (!type.endsWith('/slideLayout')) {
+      } else {
         parts[target] = { contentType: contentType(target) ?? 'application/octet-stream',
           base64: Buffer.from(files[target]).toString('base64'), relationshipId: relationship.getAttribute('Id')!,
           relationshipType: type };
       }
     }
     const { notes: _notes, parts: _parts, ...rest } = state;
-    return { ...rest, shapes, ...(notes === undefined ? {} : { notes }),
-      ...(Object.keys(parts).length ? { parts } : {}) };
+    return { slide: { ...rest, shapes, ...(notes === undefined ? {} : { notes }),
+      ...(Object.keys(parts).length ? { parts } : {}) }, layout };
   });
+  const [themePath, masterPath] = ['ppt/theme/theme1.xml', 'ppt/slideMasters/slideMaster1.xml'];
+  if (!files[themePath] || !files[masterPath]) return { slides };
+  const theme = xml(themePath);
+  const master = xml(masterPath);
+  const typeface = (font: string) => elements(elements(theme, A, font)[0], A, 'latin')[0]
+    ?.getAttribute('typeface') ?? '';
+  const size = elements(elements(master, P, 'bodyStyle')[0], A, 'defRPr')[0]?.getAttribute('sz');
+  const layouts = new Map(targets(masterPath)
+    .map(item => [item.getAttribute('Id'), item.getAttribute('Target') ?? '']));
+  return { slides, template: {
+    theme: { name: theme.documentElement!.getAttribute('name') ?? '',
+      palette: Object.fromEntries(elements(theme, A, 'srgbClr').filter(color => color.parentElement?.parentElement
+        ?.localName === 'clrScheme').map(color => [color.parentElement!.localName!, color.getAttribute('val')!])),
+      fonts: { major: typeface('majorFont'), minor: typeface('minorFont') }, bodyFontPt: Number(size) / 100 },
+    preserve: /^(1|true)$/.test(master.documentElement!.getAttribute('preserve') ?? ''),
+    layouts: elements(master, P, 'sldLayoutId')
+      .map(item => resolve(masterPath, layouts.get(item.getAttributeNS(R, 'id'))!))
+      .map(path => ({ name: layoutName(path), placeholders: elements(xml(path), P, 'ph').length })) } };
 }
 
 /** The offset and extent of the first ``xfrm`` of a shape element, in points. */

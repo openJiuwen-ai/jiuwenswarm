@@ -489,11 +489,14 @@ def _extract_legacy_params(
             at_raw = str(schedule.get("at") or "").strip()
             if at_raw:
                 try:
-                    from jiuwenswarm.runtime.cron.cron_expr import iso_to_seven_field_cron
-                    cron_expr = iso_to_seven_field_cron(at_raw, timezone=timezone)
+                    from jiuwenswarm.runtime.cron.cron_expr import iso_to_one_shot_cron
+                    # A DST fall-back instant may come back evaluated in UTC;
+                    # then the job must carry that timezone, not the local one.
+                    cron_expr, timezone = iso_to_one_shot_cron(at_raw, timezone=timezone)
                     logger.info(
-                        "[CronRuntimeBridge] _extract_legacy_params: converted kind=at '%s' to cron_expr='%s'",
-                        at_raw, cron_expr,
+                        "[CronRuntimeBridge] _extract_legacy_params: converted kind=at '%s' "
+                        "to cron_expr='%s' timezone='%s'",
+                        at_raw, cron_expr, timezone,
                     )
                 except Exception as conv_exc:
                     raise ValueError(

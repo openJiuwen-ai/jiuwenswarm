@@ -138,6 +138,7 @@ export interface ChatInputProvenance {
 }
 
 export interface ModelEntry {
+  extensions?: { kv_cache?: { mode?: string; [key: string]: unknown }; [key: string]: unknown };
   /** Backend stable model ID. Zen free models may omit this field. */
   model_id?: string;
   model_name: string;
