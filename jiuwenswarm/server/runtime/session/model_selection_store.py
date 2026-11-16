@@ -164,6 +164,7 @@ def get_session_model_info(session_id: str) -> dict[str, object] | None:
 def set_session_model_selection(session_id: str, selection: ModelSelection) -> None:
     shared = _shared_model_selection_store()
     if shared is not None:
+        # The shared store validates the session ID and path before its provider writes.
         shared.set_session_model_selection(session_id, selection)
         return
     from jiuwenswarm.server.runtime.session.session_metadata import update_session_model_selection

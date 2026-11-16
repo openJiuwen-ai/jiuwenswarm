@@ -1663,8 +1663,12 @@ def commit_history_record(
     from jiuwenswarm.server.runtime.session import lifecycle as lc
 
     # Develop exposes these shared handles; older releases keep private names.
-    write_queue = globals().get("WRITE_QUEUE") or _WRITE_QUEUE
-    file_lock = globals().get("FILE_LOCK") or _FILE_LOCK
+    write_queue = globals().get("WRITE_QUEUE")
+    if write_queue is None:
+        write_queue = _WRITE_QUEUE
+    file_lock = globals().get("FILE_LOCK")
+    if file_lock is None:
+        file_lock = _FILE_LOCK
     sid = prepared.session_id
     if prepared.metadata.get("subagent_id"):
         raise ValueError("committed appends only support main session history")

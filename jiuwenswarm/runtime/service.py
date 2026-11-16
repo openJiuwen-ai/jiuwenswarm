@@ -2756,11 +2756,11 @@ class AgentRuntime:
     ) -> bool:
         """Release in-memory resources owned by one Runtime session.
 
-        A tenant-aware host resolves the request's manager, or visits its
-        existing managers when no request is available. A single-manager host
-        keeps using the manager supplied at construction. Cleanup remains
-        available while the first ``start`` is still in progress, without
-        starting Runtime dependencies merely to release stale state.
+        This release owns one Manager, supplied at construction. ``request``
+        is accepted for call compatibility; it does not enable tenant routing.
+        Cleanup remains available while the first ``start`` is still in
+        progress, without starting Runtime dependencies merely to release
+        stale state.
 
         ``reset_plan_state=False`` supports the existing transactional
         ``session.delete`` flow: Runtime work is drained first, while plan
@@ -2774,7 +2774,6 @@ class AgentRuntime:
             return await self._cleanup_session_run(
                 channel_id=channel_id, session_id=session_id,
                 reset_plan_state=reset_plan_state, reason=reason,
-                request=request,
             )
 
     async def _cleanup_session_run(
@@ -2784,7 +2783,6 @@ class AgentRuntime:
         session_id: str,
         reset_plan_state: bool,
         reason: SessionRunEndReason,
-        request: AgentRequest | None = None,
     ) -> bool:
         """Keep a resumed generation out until old-run cleanup finishes."""
         if self._closed:
@@ -2794,23 +2792,10 @@ class AgentRuntime:
             if result.timed_out:
                 raise SessionCloseTimeoutError(session_id, result.timed_out)
         await self._notify_session_run_end(session_id, reason=reason)
-        tenant = getattr(self, "_tenant", None)
-        if tenant is None:
-            managers = [self._agent_manager]
-        elif request is not None:
-            managers = [await self.resolve_manager(request)]
-        else:
-            managers = list(tenant.iter_managers_for_host_event()) or [
-                self.agent_manager
-            ]
-        cleaned = False
-        for manager in managers:
-            cleaned = bool(
-                await manager.cleanup_session_runtime(
-                    channel_id=channel_id,
-                    session_id=session_id,
-                )
-            ) or cleaned
+        cleaned = await self._agent_manager.cleanup_session_runtime(
+            channel_id=channel_id,
+            session_id=session_id,
+        )
         await self._forget_agent_execution_owner(
             channel_id=channel_id,
             session_id=session_id,
