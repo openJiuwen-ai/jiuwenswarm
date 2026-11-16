@@ -4416,24 +4416,13 @@
   font-size: 12px;
 }
 
-.jiuwenmate-starter-prompts button {
-  display: grid;
+.jiuwenmate-starter-prompts .jiuwenmate-menu__trigger {
   width: 28px;
   height: 28px;
-  place-items: center;
   padding: 0;
-  border: 0;
-  border-radius: 6px;
-  color: var(--jm-text-2);
-  background: none;
-  cursor: pointer;
 }
 
-.jiuwenmate-starter-prompts button:hover {
-  background: var(--jm-muted);
-}
-
-.jiuwenmate-starter-prompts svg {
+.jiuwenmate-starter-prompts .jiuwenmate-menu__trigger svg {
   width: 14px;
   height: 14px;
 }
