@@ -82,7 +82,7 @@ Discovery exposes `capability_search`. Skill Retrieval controls whether the taxo
 
 | Tool | What it does | When to use |
 |------|--------------|-------------|
-| `capability_search` | Select a catalog with `type=skill` (default), `expert`, `connector`, or `mcp`. Skill and expert catalogs support `operation=list`, category-scoped search, batches of up to eight queries, and cursor pagination. | Find a capability for a task or the service that provides a matching action |
+| `capability_search` | Select a catalog with `type=skill` (default), `expert`, `connector`, or `mcp`. Skill and expert catalogs support `operation=list`, category-scoped search, batches of up to eight queries, and cursor pagination. | Find a capability or its service. Search with `type=expert` before work that needs independent review, domain or platform expertise, or separate deliverables that can be developed in parallel. |
 
 After Skill Retrieval finds relevant skills, the agent narrows the candidate set by skill name and description. If orchestration is needed later, those candidates help guide skill-chain generation.
 
@@ -90,11 +90,15 @@ After Skill Retrieval finds relevant skills, the agent narrows the candidate set
 
 | Tool | What it does | When to use |
 |------|--------------|-------------|
-| `symphony_read_graph` | Checks whether the skill graph exists and whether it is stale | Before orchestration, when the current graph state needs to be known |
-| `symphony_refresh_graph` | Extracts installed-skill features and refreshes the skill graph | When the graph is missing, stale, or skills were newly installed or changed |
-| `symphony_compose_graph` | Main orchestration entry. Builds an execution graph from the task goal, candidate skills, and skill graph | When the user asks to use skills, or the task needs a skill chain, skill ordering, or a specialized tool chain |
+| `symphony_read_graph` | Checks whether the orchestration graph exists and whether it is stale | Before planning, when the current graph state needs to be known |
+| `symphony_refresh_graph` | Extracts fingerprints for configured skills and experts and refreshes the graph | When the graph is missing, stale, or its sources have changed |
+| `symphony_compose_graph` | Plans within the layer specified by `type=skill` or `type=expert`. `candidate_ids` accepts IDs from that layer. | Planning a skill workflow or expert assignments |
+
+The agent can call `symphony_compose_graph` directly when progressive tool loading is enabled.
 
 Skill Orchestration builds a skill chain from the original task, retrieved candidate skills, and their connectable relationships. If the result says no suitable skill is available, install the required skill from the **Skills** page, refresh the skill graph, and compose again.
+
+The agent can plan expert assignments when parallel exploration, context isolation, specialist roles, or independent verification would help. With `type=expert`, one task plan can assign work to installed experts from the published expert layer and to temporary inline roles. The planner follows the session's mode and can define inline roles for work without a suitable installed expert. Each node represents a task, and each dependency names the deliverable and its destination input. The tool returns the plan and the inline role specifications for a later execution stage.
 
 ---
 
@@ -267,11 +271,11 @@ The user configuration is `~/.jiuwenswarm/config/config.yaml`. The `symphony` no
 - The Discover SkillPack switch saves `orchestration.experience.enabled`. Set `orchestration.plan.dynamic_graph_enabled` independently to use existing dynamic observations in planning.
 - Tree and graph builds use the host default model. Online planning uses the current session model. There is no retrieval-specific `llm` configuration. Fingerprint `max_output_tokens: null` inherits the host model output budget.
 - Discovery derives `retrieval.prompt.context_window_tokens` from the actual session model unless explicitly configured. Saved settings affect new sessions; existing sessions retain their frozen budget and index version. Tools and prompt Rails share one Discovery session.
-- `capability.sources` lists directories by `type` and `root`. Skill and standalone expert directories share one taxonomy. Skill discovery uses the host's session visibility and disabled filters. Expert discovery uses the host's installed catalog in single-agent and team sessions. Explicit expert sources restrict it to installed standalone experts whose actual manifest paths are in those sources. Without expert sources it also includes non-leader members of installed expert groups. Calling an expert requires the session's `spawn_expert` tool. Graph and Flow require exactly one Skill source.
+- `capability.sources` lists directories by `type` and `root`. Skills and standalone experts share one taxonomy. Skill discovery uses session visibility and disabled filters. For explicit expert sources, expert discovery and planning match the installed catalog by manifest path. Without expert sources, discovery also includes non-leader members of installed expert groups. The graph requires one Skill source and can also include configured expert sources.
 
 ### Directories and rebuilding
 
-If `capability.sources` is omitted, Swarm uses the workspace `skills` directory. An explicit list replaces that default. An empty `storage.artifact_root` resolves to workspace `symphony/runtime`. The template supports `SYMPHONY_ARTIFACT_ROOT`. Collections with multiple directories or expert sources build their taxonomy under `taxonomy_collections/<scope_id>`. Build the shared taxonomy once after adding an expert source. The existing single-Skill tree, graph, and Flow retain their original paths.
+If `capability.sources` is omitted, Swarm uses the workspace `skills` directory. An explicit list replaces that default. An empty `storage.artifact_root` resolves to workspace `symphony/runtime`. The template supports `SYMPHONY_ARTIFACT_ROOT`. Collections with multiple directories or expert sources build their taxonomy under `taxonomy_collections/<scope_id>`. Refresh the taxonomy and the orchestration graph after adding an expert source. The graph panel displays Skills as circles and experts as diamonds. A link shows a possible handoff between capabilities of the same type. Expert plans describe those handoffs for the team scheduler.
 
 Old top-level `paths`, `fingerprint`, `build`, `skill_retrieval`, `evolution` and model-backend nodes are rejected. Old signatures and layouts are not reused. Rebuild with the new configuration; old directories are neither migrated nor deleted automatically. Failed refreshes preserve the last published version; cancellation prevents publication.
 

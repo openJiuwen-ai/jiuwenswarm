@@ -41,10 +41,11 @@ from jiuwenswarm.runtime.symphony.skillpack_candidates import (
     trusted_session_user,
 )
 from jiuwenswarm.runtime.symphony.adapter import (
-    candidate_ids_from_skill_ids,
     llm_config_signature,
     model_from_config,
+    normalize_candidate_ids,
 )
+from jiuwenswarm.runtime.symphony.capabilities import expert_candidates
 from jiuwenswarm.runtime.symphony.llm import LLMConfig, probe_model_connection
 from jiuwenswarm.common.symphony_config import (
     SymphonyConfig,
@@ -396,13 +397,19 @@ class SwarmSymphonyService:
         mode: str | None = None,
         candidate_skill_ids: list[str] | None = None,
         *,
+        capability_type: str = "skill",
+        candidate_ids: list[str] | None = None,
         progress: ProgressCallback | None = None,
         llm_config: LLMConfig | None = None,
     ) -> dict[str, Any]:
         query = str(query or "").strip()
         if not query:
             return {"success": False, "detail": "query is required"}
-        candidate_ids = candidate_ids_from_skill_ids(candidate_skill_ids)
+        if capability_type not in {"skill", "expert"}:
+            return {"success": False, "detail": "type must be skill or expert"}
+        if candidate_skill_ids is not None and (capability_type != "skill" or candidate_ids is not None):
+            return {"success": False, "detail": "candidate_skill_ids is a Skill-only alias for candidate_ids"}
+        candidate_ids = normalize_candidate_ids(candidate_ids if candidate_ids is not None else candidate_skill_ids)
         language = _resolve_orchestration_language(
             get_config().get("preferred_language", "zh")
         )
@@ -418,14 +425,16 @@ class SwarmSymphonyService:
                 "detail": str(exc),
             }
 
-        status = await self.graph_status()
+        has_expert_source = any(source.type == "expert" for source in config.capability.sources)
+        requires_graph = capability_type == "skill"
+        status = await self.graph_status() if requires_graph else {"success": True}
         if not status.get("success"):
             return {
                 "success": False,
                 "detail": "Skill Score status check failed before planning",
                 "graph_status": status,
             }
-        if _graph_needs_build(status):
+        if requires_graph and _graph_needs_build(status):
             refresh_kwargs: dict[str, Any] = {"progress": progress}
             graph_build = await self.refresh_graph(**refresh_kwargs)
             if not graph_build.get("success"):
@@ -457,14 +466,26 @@ class SwarmSymphonyService:
                 if llm_config is not None
                 else self._runtime_for(config)
             )
-            skills_root = require_graph_skill_root(config)
-            public_payload = await runtime.orchestration.plan(
+            plan = runtime.orchestration.plan
+            if capability_type == "expert":
+                installed = await expert_candidates(config) if has_expert_source else ()
+                plan_options = {
+                    "expert_manifest_paths": [
+                        item.manifest_path for item in installed if item.descriptor.available and item.manifest_path is not None
+                    ],
+                }
+                plan = runtime.orchestration.plan_expert_tasks
+            else:
+                plan_options = {"disabled_capability_ids": load_execution_disabled_skills(
+                    skills_dir=require_graph_skill_root(config),
+                )}
+            public_payload = await plan(
                 query,
                 candidate_ids=candidate_ids,
                 language=language,
                 progress=progress,
-                disabled_capability_ids=load_execution_disabled_skills(skills_dir=skills_root),
                 mode=requested_mode,
+                **plan_options,
             )
             payload = public_payload.to_dict()
         except Exception as exc:  # noqa: BLE001
@@ -1526,7 +1547,13 @@ def _web_graph_payload(
 ) -> dict[str, Any]:
     """Adapt the public capability graph for the existing Skill Graph panel."""
 
+    mixed = str(artifact.get("schema_version", "")).split(".", 1)[0] == "2"
+
+    def artifact_ref(value: Any) -> str:
+        return str(value or "") if mixed else _capability_id(value)
+
     skills = []
+    web_skill_refs: dict[str, str] = {}
     web_node_refs: dict[str, str] = {}
     web_node_types: dict[str, str] = {}
     disabled_refs = {
@@ -1539,9 +1566,7 @@ def _web_graph_payload(
         if not isinstance(raw_capability, dict):
             continue
         capability = dict(raw_capability)
-        capability_id = _capability_id(
-            capability.get("capability_id") or capability.get("id")
-        )
+        capability_id = artifact_ref(capability.get("capability_id") or capability.get("id"))
         if not capability_id:
             continue
         capability["id"] = capability_id
@@ -1549,25 +1574,25 @@ def _web_graph_payload(
             capability.get("capability_type") or capability.get("type") or "skill"
         )
         capability["type"] = capability_type
-        if (
+        artifact_id = f"{'expert' if capability_type == 'expert' else 'skill'}:{capability_id}" if mixed else capability_id
+        if capability_type != "expert" and (
             _normalize_capability_ref(capability_id) in disabled_refs
             or _normalize_capability_ref(capability.get("name")) in disabled_refs
         ):
-            disabled_ids.add(capability_id)
+            disabled_ids.add(artifact_id)
             continue
-        skills.append(capability)
-        web_node_refs[capability_id] = (
-            f"skill:{capability_id}"
-            if capability_type == "skill"
-            else f"capability:{capability_id}"
-        )
-        web_node_types[capability_id] = capability_type
+        web_ref = f"{capability_type}:{capability_id}" if capability_type in {"skill", "expert"} else f"capability:{capability_id}"
+        web_node_refs[artifact_id] = web_ref
+        web_node_types[artifact_id] = capability_type
+        if capability_type != "expert":
+            skills.append(capability)
+            web_skill_refs[capability_id] = web_ref
 
     nodes: list[dict[str, Any]] = []
     for node in artifact.get("nodes") or []:
         if not isinstance(node, dict):
             continue
-        capability_id = _capability_id(node.get("id"))
+        capability_id = artifact_ref(node.get("id"))
         if capability_id in disabled_ids:
             continue
         web_node = dict(node)
@@ -1580,8 +1605,8 @@ def _web_graph_payload(
     for edge in artifact.get("edges") or []:
         if not isinstance(edge, dict):
             continue
-        source_id = _capability_id(edge.get("source"))
-        target_id = _capability_id(edge.get("target"))
+        source_id = artifact_ref(edge.get("source"))
+        target_id = artifact_ref(edge.get("target"))
         if source_id in disabled_ids:
             continue
         if target_id in disabled_ids:
@@ -1632,7 +1657,7 @@ def _web_graph_payload(
             })
             # Create contains edges from pack to each member
             for member_id in member_ids:
-                member_ref = web_node_refs.get(member_id)
+                member_ref = web_skill_refs.get(member_id)
                 if not member_ref:
                     # Member skill not in main graph, create a node for it
                     member_ref = f"skill:{member_id}"

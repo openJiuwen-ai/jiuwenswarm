@@ -99,6 +99,8 @@ def _tool(name: str, func: Any) -> LocalFunction:
     properties = {
         "symphony_compose_graph": {
             "query": {"type": "string"},
+            "type": {"type": "string", "enum": ["skill", "expert"]},
+            "candidate_ids": {"type": "array", "items": {"type": "string"}},
             "candidate_skill_ids": {"type": "array", "items": {"type": "string"}},
         },
         "skill_tool": {"skill_name": {"type": "string"}},
@@ -215,6 +217,8 @@ async def test_real_deep_agent_routes_needs_input_resume_without_shared_extra(
 ) -> None:
     compose_calls: list[dict] = []
     skill_calls: list[dict] = []
+    capability_type = "expert" if mode == "team" else "skill"
+    candidate = f"{capability_type}-a"
 
     async def compose(**kwargs: Any) -> dict:
         compose_calls.append(kwargs)
@@ -236,7 +240,7 @@ async def test_real_deep_agent_routes_needs_input_resume_without_shared_extra(
         [
             _call(
                 "symphony_compose_graph",
-                '{"query":"task","candidate_skill_ids":["skill-a"]}',
+                json.dumps({"query": "task", "type": capability_type, "candidate_ids": [candidate]}),
                 "compose-1",
             ),
             _call("skill_tool", '{"skill_name":"skill-a"}', "skill-before-answer"),
@@ -248,7 +252,8 @@ async def test_real_deep_agent_routes_needs_input_resume_without_shared_extra(
             _call("skill_tool", '{"skill_name":"skill-a"}', "skill-after-answer"),
             _call(
                 "symphony_compose_graph",
-                '{"query":"drift","candidate_skill_ids":["other"]}',
+                json.dumps({"query": "drift", "type": "expert" if capability_type == "skill" else "skill",
+                            "candidate_ids": ["other"]}),
                 "compose-2",
             ),
             _call("skill_tool", '{"skill_name":"skill-a"}', "skill-allowed"),
@@ -289,7 +294,8 @@ async def test_real_deep_agent_routes_needs_input_resume_without_shared_extra(
         answer.update("ask-1", value)
     resumed = await agent.invoke(_inputs(answer, mode=mode))
     assert resumed["result_type"] == "answer"
-    assert compose_calls[1]["candidate_skill_ids"] == ["skill-a"]
+    assert compose_calls[1]["type"] == capability_type
+    assert compose_calls[1]["candidate_ids"] == [candidate]
     assert compose_calls[1]["query"] == (
         'task\n\n补充信息：\n- Audience: "engineering"\n- api_key: "secret"'
     )
@@ -314,7 +320,7 @@ async def test_real_deep_agent_rekeys_two_needs_input_rounds() -> None:
     client = _ScriptedClient(
         [
             _call(
-                "symphony_compose_graph", '{"candidate_skill_ids":["skill-a"]}', "c1"
+                "symphony_compose_graph", '{"type":"skill","candidate_ids":["skill-a"]}', "c1"
             ),
             _call("skill_tool", '{"skill_name":"skill-a"}', "skill-before-answer-1"),
             _call(
@@ -359,7 +365,7 @@ async def test_real_deep_agent_rekeys_two_needs_input_rounds() -> None:
     second_answer.update("ask-2", {"answers": {"Scope": "platform"}})
     assert (await agent.invoke(_inputs(second_answer)))["result_type"] == "answer"
 
-    assert [call["candidate_skill_ids"] for call in compose_calls] == [
+    assert [call["candidate_ids"] for call in compose_calls] == [
         ["skill-a"],
         ["skill-a"],
         ["skill-a"],
@@ -600,7 +606,7 @@ async def test_late_inner_after_tool_cannot_mutate_new_outer_invocation() -> Non
     await rail.after_tool_call(old_inner)
 
     assert not new_state.awaiting_input
-    assert new_state.candidate_skill_ids == []
+    assert new_state.candidate_ids is None
 
 
 @pytest.mark.asyncio

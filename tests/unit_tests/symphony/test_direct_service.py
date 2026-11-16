@@ -20,12 +20,13 @@ from openjiuwen.symphony import (
     OrchestrationPlan,
     ScanResult,
     SkillFolderScanner,
+    SymphonyGraphEngine,
     SymphonyRuntime,
 )
 
 from jiuwenswarm.runtime.symphony.adapter import (
-    candidate_ids_from_skill_ids,
     llm_config_signature,
+    normalize_candidate_ids,
 )
 from jiuwenswarm.runtime.symphony.build import (
     build_graph,
@@ -189,7 +190,7 @@ def _minimal_planned_graph(status="ready"):
 
 
 def test_adapter_deduplicates_candidate_skill_ids():
-    assert candidate_ids_from_skill_ids(["writer", "writer", "reviewer"]) == [
+    assert normalize_candidate_ids(["writer", "writer", "reviewer"]) == [
         "writer",
         "reviewer",
     ]
@@ -422,6 +423,158 @@ async def test_service_plans_through_public_runtime_with_minimal_jgf(
     assert captured["language"] == "cn"
     assert captured["mode"] == "beam"
     assert captured["progress"] is progress
+
+
+@pytest.mark.asyncio
+async def test_expert_compose_uses_live_catalog_and_shares_the_web_graph(monkeypatch, tmp_path):
+    from openjiuwen.agent_teams.context import reset_session_id, set_session_id
+    from openjiuwen.agent_teams.experts import PackageLocation
+    from openjiuwen.agent_teams.paths import get_agent_teams_home, reset_task_openjiuwen_home, set_task_openjiuwen_home
+    from openjiuwen.agent_teams.tools.database import DatabaseConfig, TeamDatabase
+
+    from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit
+    from jiuwenswarm.agents.harness.team.experts import JiuwenExpertCatalog
+
+    skills = tmp_path / "skills"
+    (skills / "research").mkdir(parents=True)
+    (skills / "research" / "SKILL.md").write_text("---\nname: research\ndescription: Find invoices\n---\nSearch.\n")
+    experts = tmp_path / "experts"
+    descriptions = {"research": "Produces an evidence table as CSV", "report": "Accepts an evidence table as CSV"}
+    for name, description in descriptions.items():
+        package = experts / f"installed-{name}"
+        package.mkdir(parents=True)
+        (package / "manifest.json").write_text(json.dumps({
+            "name": name, "description": description, "package_type": "agent_template",
+        }))
+    installed = [PackageLocation(name=f"installed-{name}", path=experts / f"installed-{name}", source="local")
+                 for name in descriptions]
+
+    async def list_packages(_self):
+        return list(installed)
+
+    class HandoffModel(_FakeGraphModel):
+        async def invoke(self, messages, **kwargs):
+            data = json.loads(messages[-1]["content"])
+            table = {"name": "evidence_table", "type": "csv", "description": "Source evidence table"}
+            if "declared_inputs" in data:
+                result = {}
+                if data["capability_type"] == "expert":
+                    if data["capability_id"] == "research":
+                        result = {"outputs": [table]}
+                    else:
+                        result = {"inputs": [{**table, "required": True}], "outputs": [{"name": "brief", "type": "text"}]}
+            elif "current_skill" in data:
+                result = {"judgements": [
+                    {"candidate_id": item["candidate_id"], "score": 0.95} for item in data["candidates"]
+                ]}
+            elif "candidate_plans" in data:
+                result = {"selected_plan_index": 1, "steps": [{"skill_id": name} for name in descriptions]}
+            elif "published_expert_handoffs" in data:
+                result = self._task_plan(data)
+            elif "query" in data and "can_feed_edges" in data:
+                ids = {item["id"] for item in data["skills"]}
+                result = {"status": "ready", "steps": [{"skill_id": name} for name in descriptions if name in ids]}
+            else:
+                return await super().invoke(messages, **kwargs)
+            return SimpleNamespace(content=json.dumps(result), finish_reason="stop")
+
+        @staticmethod
+        def _task_plan(data):
+            available = {item["id"] for item in data["experts"]}
+            if data["query"] == "Use the installed report expert" and "report" not in available:
+                return {"status": "no_plan", "reason": "The required report expert is unavailable."}
+            evidence = {"name": "evidence_table", "type": "csv"}
+            checked = {"name": "verified_evidence", "type": "csv"}
+            tasks = [
+                {"id": "research", "type": "expert", "expert_id": "research", "title": "Research",
+                 "task": "Collect source evidence.", "outputs": [evidence]},
+                {"id": "verify", "type": "inline", "title": "Verification", "task": "Check each citation.",
+                 "role": {"name": "Citation verifier", "description": "Independently check source evidence."},
+                 "inputs": [evidence], "outputs": [checked]},
+            ]
+            handoffs = [{"source": "research", "target": "verify", "source_output": "evidence_table",
+                         "target_input": "evidence_table"}]
+            if "report" in available:
+                tasks.append({"id": "report", "type": "expert", "expert_id": "report", "title": "Report",
+                              "task": "Write the brief using verified evidence.", "inputs": [evidence],
+                              "outputs": [{"name": "brief", "type": "text"}]})
+                handoffs.append({"source": "verify", "target": "report", "source_output": "verified_evidence",
+                                 "target_input": "evidence_table"})
+            return {"status": "ready", "tasks": tasks, "handoffs": handoffs}
+
+    config = symphony_config_from_dict({
+        "capability": {"sources": [{"type": "skill", "root": skills}, {"type": "expert", "root": experts}]},
+        "storage": {"artifact_root": str(tmp_path / "runtime")},
+        "orchestration": {"enabled": True},
+    })
+    monkeypatch.setattr(JiuwenExpertCatalog, "list_expert_packages", list_packages)
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config)
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.get_config", lambda: {})
+    monkeypatch.setattr("jiuwenswarm.agents.harness.common.tools.symphony_toolkits.load_symphony_config", lambda *_: config)
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda **_: set())
+    model = HandoffModel(confidences=[0.95])
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.build.model_from_config", lambda _: model)
+    result = await build_graph(config, LLMConfig(model="fake-model"))
+    assert result.success and (result.skill_count, result.expert_count) == (1, 2)
+
+    runtime = SymphonyRuntime(model, config)
+    service = SwarmSymphonyService()
+    monkeypatch.setattr(service, "_runtime_for", lambda *_: runtime)
+    published = runtime.orchestration.read().to_dict()
+    compose = next(tool for tool in SymphonyToolkit(service).get_tools() if tool.card.name == "symphony_compose_graph")
+    team_home = set_task_openjiuwen_home(tmp_path / "team-runtime")
+    session = set_session_id("expert-plan-test")
+    database = TeamDatabase(DatabaseConfig(connection_string=str(get_agent_teams_home() / "team.db")))
+    try:
+        await database.initialize()
+        assert await database.team.create_team("planning-team", "Planning Team", "leader")
+        monkeypatch.setattr(service, "refresh_graph", AsyncMock(side_effect=AssertionError("Planning rebuilt graph")))
+        for mode in ("fast", "beam"):
+            planned = await compose.invoke({"query": "write a brief", "type": "expert", "mode": mode,
+                                            "candidate_ids": ["research"]})
+            assert planned["success"], planned
+            graph = planned["planned_graph"]["graph"]
+            assert graph["metadata"]["status"] == "ready"
+            assert graph["metadata"]["plan_kind"] == "expert_tasks"
+            assert [node["metadata"]["type"] for node in graph["nodes"].values()] == ["expert", "inline", "expert"]
+            assert graph["nodes"]["task-1"]["metadata"]["expert_id"] == "research"
+            assert graph["nodes"]["task-2"]["metadata"]["role"]["name"] == "Citation verifier"
+            assert graph["nodes"]["task-3"]["metadata"]["expert_id"] == "report"
+            assert graph["edges"] == [
+                {"source": "task-1", "target": "task-2", "relation": "can_feed",
+                 "source_output": "evidence_table", "target_input": "evidence_table"},
+                {"source": "task-2", "target": "task-3", "relation": "can_feed",
+                 "source_output": "verified_evidence", "target_input": "evidence_table"},
+            ]
+
+        web = await service.graph()
+        assert {node["id"]: node["type"] for node in web["graph"]["nodes"]} == {
+            "skill:research": "skill", "expert:research": "expert", "expert:report": "expert",
+        }
+        assert [(edge["source"], edge["target"]) for edge in web["graph"]["edges"]] == [
+            ("expert:research", "expert:report"),
+        ]
+        assert [item["id"] for item in web["skills"]] == ["research"]
+
+        installed.pop()
+        missing = await compose.invoke({"query": "Use the installed report expert", "type": "expert",
+                                        "candidate_ids": ["report"]})
+        assert missing["planned_graph"]["graph"]["metadata"]["status"] == "no_plan"
+        for mode in ("fast", "beam"):
+            projected = await compose.invoke({"query": "write a brief", "type": "expert", "mode": mode,
+                                              "candidate_ids": ["research"]})
+            graph = projected["planned_graph"]["graph"]
+            assert all(node["metadata"].get("expert_id") != "report" for node in graph["nodes"].values())
+            assert len(graph["edges"]) == 1
+        assert runtime.orchestration.read().to_dict() == published
+        assert await database.member.get_team_members("planning-team") == []
+        assert await database.task.get_team_tasks("planning-team") == []
+    finally:
+        await database.close()
+        reset_session_id(session)
+        reset_task_openjiuwen_home(team_home)
+        await service.close()
+        await runtime.aclose()
 
 
 @pytest.mark.asyncio

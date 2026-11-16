@@ -82,7 +82,7 @@ Discovery 提供 `capability_search`。技能检索开关控制分类树的构�
 
 | 工具 | 作用 | 使用时机 |
 |------|------|----------|
-| `capability_search` | 用 `type` 选择目录，取值为 `skill`（默认）、`expert`、`connector` 或 `mcp`。Skill 和专家支持 `operation=list`、按分类搜索、最多八条查询和游标翻页。 | 按任务找能力，或通过工具动作定位所属服务 |
+| `capability_search` | 用 `type` 选择目录，取值为 `skill`（默认）、`expert`、`connector` 或 `mcp`。Skill 和专家支持 `operation=list`、按分类搜索、最多八条查询和游标翻页。 | 按任务找能力或所属服务。需要独立审查、领域或平台专长，或有可并行完成的独立交付物时，先用 `type=expert` 查找已安装专家。 |
 
 当技能检索找到相关技能后，智能体会根据技能名称和描述缩小候选范围；如果后续需要编排，这些候选技能会作为生成技能链的参考。
 
@@ -90,11 +90,15 @@ Discovery 提供 `capability_search`。技能检索开关控制分类树的构�
 
 | 工具 | 作用 | 使用时机 |
 |------|------|----------|
-| `symphony_read_graph` | 查看技能图谱是否存在、是否过期 | 编排前需要确认图谱状态时使用 |
-| `symphony_refresh_graph` | 抽取已安装技能特征并刷新技能图谱 | 图谱缺失、过期，或安装新技能后需要更新关系图时使用 |
-| `symphony_compose_graph` | 技能编排入口，基于任务目标、候选技能和技能图谱生成执行图 | 用户要求使用技能，或任务需要技能链、技能排序、专门工具链时使用 |
+| `symphony_read_graph` | 查看编排图谱是否存在、是否过期 | 编排前需要确认图谱状态时使用 |
+| `symphony_refresh_graph` | 抽取配置来源的技能和专家指纹并刷新图谱 | 图谱缺失、过期，或来源变更时使用 |
+| `symphony_compose_graph` | 用 `type=skill` 或 `type=expert` 指定规划层，`candidate_ids` 传对应类型的候选 ID | 规划技能链或专家分工时使用 |
+
+开启渐进式工具加载时，智能体可以直接调用 `symphony_compose_graph`。
 
 技能编排会根据原始任务、检索得到的候选技能及其可衔接关系生成技能链。若编排结果提示缺少合适技能，需要先通过 **技能** 页面搜索并安装新技能，再刷新技能图谱并重新编排。
+
+智能体在判断并行探索、上下文隔离、专业分工或独立验证能帮助完成任务时，可以主动规划专家分工。`type=expert` 在同一份任务图中安排已安装专家和临时内联角色，并沿用会话的规划模式。专家从已发布的专家层与实时安装清单的交集中选择。缺少合适专家时，计划可以用内联角色承接相应工作。任务节点标明分工，边标明交接产物和接收方输入。工具返回计划，内联角色规格供后续执行阶段使用。
 
 ---
 
@@ -267,11 +271,11 @@ Symphony 只会使用已安装技能。请先在左侧导航栏 **技能** 页�
 - 面板的「发现技能包」保存 `orchestration.experience.enabled`。规划是否采用已有动态观测由 `orchestration.plan.dynamic_graph_enabled` 独立配置。
 - 分类树和关系图使用宿主默认模型构建；在线编排使用当前会话模型。没有独立检索 `llm` 配置。指纹 `max_output_tokens: null` 沿用宿主模型输出预算。
 - Discovery 的 `retrieval.prompt.context_window_tokens` 缺省由实际会话模型解析，显式值优先。配置保存影响新会话；已建立会话的预算与索引版本保持冻结。工具和提示 Rail 共用一个 Discovery 会话。
-- `capability.sources` 按 `type` 和 `root` 声明目录。Skill 与独立专家包共用一棵分类树。会话 Skill 检索按宿主可见范围和禁用规则过滤。单智能体和团队会话均从宿主已安装目录检索专家。显式配置专家来源时，按已安装独立专家的实际 manifest 路径取交集。省略专家来源时，目录也包含已安装专家组的非队长成员。调用专家需要会话提供 `spawn_expert` 工具。关系图和 Flow 要求恰有一个 Skill 来源。
+- `capability.sources` 按 `type` 和 `root` 声明目录。Skill 与独立专家包共用一棵分类树。会话 Skill 检索按宿主可见范围和禁用规则过滤。单智能体和团队会话均从宿主已安装目录检索专家。显式配置专家来源时，检索和专家规划均按已安装独立专家的实际 manifest 路径取交集。省略专家来源时，检索目录也包含已安装专家组的非队长成员。关系图以一个 Skill 来源为基础，可同时纳入配置的专家来源。
 
 ### 目录与重建
 
-省略 `capability.sources` 时，Swarm 使用工作区 `skills` 目录。显式列表整体替换默认值。`storage.artifact_root` 为空时使用工作区 `symphony/runtime`。模板允许通过 `SYMPHONY_ARTIFACT_ROOT` 设置产物根目录。多目录或含专家的集合在 `taxonomy_collections/<scope_id>` 下构建分类树。添加专家来源后构建一次共用分类树即可，原单 Skill 树、关系图和 Flow 继续使用原路径。
+省略 `capability.sources` 时，Swarm 使用工作区 `skills` 目录。显式列表整体替换默认值。`storage.artifact_root` 为空时使用工作区 `symphony/runtime`。模板允许通过 `SYMPHONY_ARTIFACT_ROOT` 设置产物根目录。多目录或含专家的集合在 `taxonomy_collections/<scope_id>` 下构建分类树。添加专家来源后刷新分类树和编排图，混合图从原图谱入口发布。
 
 旧的 `paths`、`fingerprint`、`build`、`skill_retrieval`、`evolution` 顶层配置以及旧模型后端节点不再接受。旧缓存签名和目录布局不能复用，需要按新配置重新构建；系统不会自动迁移或删除旧目录。刷新失败保留上一可用版本，取消后不发布。
 
