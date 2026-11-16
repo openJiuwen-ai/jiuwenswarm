@@ -114,6 +114,45 @@ design_note: 需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-prov
 `.specify/memory/constitution.md` 原则 IV 明确"MUST NOT 额外添加
 `@pytest.mark.asyncio`"，补标记反而与仓库约束冲突。
 
+## 第二轮检视整改
+
+dev-reviewer 对 head `277a01001` 出具 REWORK 判定（1 Must Fix、1 Should Fix、6 Nice to Have），逐条处理如下。
+
+**MF-1 uv.lock 锁了过期依赖（已修复）**：合并 develop 期间用
+`git checkout HEAD -- uv.lock` 清镜像改写时，`HEAD` 还指向合并前的旧提交，于是整份
+lock 被写回旧版——它 pin `agent-gateway` 54e5330d 与已废止的 `openjiuwen-protocol`
+子目录，而 `pyproject.toml` 要的是 2c40ac15 与 `e2a`。合并后的入库结果因此
+`pyproject` 与 develop 零差异、`uv.lock` 却与 develop 差 +39/−48，属自造的依赖回退。
+修法是取 `upstream/develop` 的 `uv.lock`：本 PR 不改动任何依赖，两个文件都应对
+develop 零差异，这比"重跑 uv lock"更能保证与上游一致。
+
+**SF-1 Web 保存链缺厂商/传输校验（已修复）**：TUI 的 `_vendor_provider_error` 拒绝
+`opencode-go` 配非 OpenAI 传输，Web 的 `models.replace_all` 没有同类校验。运行时
+`is_opencode_go_client_config` 只认 `vendor_key`，所以那种条目会把
+`x-opencode-session` 注入到没请求它的协议上。把校验下沉为
+`model_config_validation.vendor_provider_error`，由 `validate_models_config` 调用——
+Web 与 TUI 都已走这条路径，规则因此只有一份定义。TUI 侧改为转发调用，删掉了不再使用的
+`is_opencode_go_client_config` 导入。
+
+**NTH-1 模块 docstring 与实现不符（已修复）**：概览说所有注入 helper 纯函数、不改入参，
+但 `inject_session_header` 就地写入传入的 mapping（函数自己的 docstring 是对的）。
+改为分别说明 `*_into_selection` 先复制、`inject_session_header` 要求调用方传副本。
+
+**NTH-2 rail 签名只含 `id(llm)`（已修复，但无测试可证）**：签名补入
+`id(llm.model_config)`。CPython 回收后 id 复用的窗口极窄，我尝试写用例复现，发现
+新建 `Model` 实例的 `id` 本身就变，用例在旧签名下同样通过——**它测不到这个风险**，
+因此没有保留该用例。改动属防御性加固，实际收益未经验证。
+
+**NTH-5 MoA 无条件序列化（按驳回处理）**：尝试让 `scope=None` 直接复用 `resolved`
+省去一次 `model_dump`/`model_validate` 往返，`test_fingerprint_ignores_the_request_scope`
+立即失败——两个分支的指纹能相等，正依赖它们**都**经过同一次规范化，绕过它就破坏了这个
+不变量。这是本 PR 自己为修 MF 级问题引入的保证，不能为微优化撤销。已在代码注释写明原因。
+
+**NTH-3 / NTH-4 / NTH-6 不改**：NTH-4 报告的定位（`config.py:1180`）指向 memory 配置，
+实际 `isFreeModelEntry` 在 `modelGroupAdapters.ts`，且已用 `replace(/\/+$/, '')` 归一尾斜杠，
+"带尾斜杠的等价地址不再识别"这一条不成立；NTH-3 与 NTH-6 都描述既存交互模式或刻意设计，
+与本功能无因果关系，留给后续统一处理。
+
 ## Web 界面验证期的三处调整
 
 本地 Web 走查暴露两个问题，一个在本仓、一个在上游预设，处理方式不同：
