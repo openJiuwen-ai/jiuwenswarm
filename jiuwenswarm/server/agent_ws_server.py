@@ -229,11 +229,8 @@ from jiuwenswarm.server.runtime.gateway_adapter import (
 from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import (
     reload_runtime_after_config_save,
 )
-<<<<<<< RELEASE
 from jiuwenswarm.extensions_v2.webui.adapter import WebUIDispatchAdapter
 from jiuwenswarm.extensions_v2.management.adapter import PackageManagementAdapter
-||||||| BEFORE_PR_9610
-=======
 from jiuwenswarm.server.runtime.session.history_io import run_history_io
 from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter
 from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
@@ -282,7 +279,6 @@ from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported fo
     split_history_record_for_stream,
 )
 from jiuwenswarm.server.ws_send import send_wire_payload
->>>>>>> DEVELOP
 
 logger = logging.getLogger(__name__)
 _MANUAL_COMPACT_PROCESSOR_TYPES = [
@@ -1279,13 +1275,9 @@ class AgentWebSocketServer:
             DesignerAdapter(),
             HarmonyOSAdapter(),
             ConfigAdapter(on_config_saved=self._reload_after_config_save),
-<<<<<<< RELEASE
+            self._jiuwenmate_web,
             WebUIDispatchAdapter(),
             PackageManagementAdapter(),
-||||||| BEFORE_PR_9610
-=======
-            self._jiuwenmate_web,
->>>>>>> DEVELOP
         ):
             self._adapter_registry.register(adapter)
         # AgentServer-side tokenizer cache/download service. The Gateway only
@@ -2173,13 +2165,9 @@ class AgentWebSocketServer:
                     DesignerAdapter(),
                     HarmonyOSAdapter(),
                     ConfigAdapter(on_config_saved=self._reload_after_config_save),
-<<<<<<< RELEASE
+                    self._jiuwenmate_web,
                     WebUIDispatchAdapter(),
                     PackageManagementAdapter(),
-||||||| BEFORE_PR_9610
-=======
-                    self._jiuwenmate_web,
->>>>>>> DEVELOP
                 ):
                     self._adapter_registry.register(adapter)
 

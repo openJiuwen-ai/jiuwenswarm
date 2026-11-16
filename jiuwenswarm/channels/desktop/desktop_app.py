@@ -521,15 +521,9 @@ def _build_child_command(name: str, extra_args: list[str] | None = None) -> list
     elif name == "agent":
         base = [sys.executable, "-m", "jiuwenswarm.server.app_agentserver"]
     elif name == "gateway":
-<<<<<<< RELEASE
-        base = [sys.executable, "-m", "jiuwenswarm.gateway.app_gateway"]
+        base = [sys.executable, "-m", "agent_gateway.app_gateway"]
     elif name == "recovery":
         base = [sys.executable, "-m", "jiuwenswarm.common.system_plugin_recovery_sidecar"]
-||||||| BEFORE_PR_9610
-        base = [sys.executable, "-m", "jiuwenswarm.gateway.app_gateway"]
-=======
-        base = [sys.executable, "-m", "agent_gateway.app_gateway"]
->>>>>>> DEVELOP
     elif name == "app":
         base = [sys.executable, "-m", "jiuwenswarm.app"]
     elif name == "web":
@@ -1419,21 +1413,16 @@ class DesktopRuntime:
             gateway_process = self.processes.get("gateway")
             agent_process = self.processes.get("agent")
 
+        from jiuwenswarm.common.process_supervision import terminate_service_tree
+        from jiuwenswarm.common.system_plugin_recovery_restart import stop_recovery_worker
+
         for process in (gateway_process, agent_process):
-            if process is None or process.poll() is not None:
-                continue
-            _terminate_process_tree(process)
-            try:
-                process.wait(timeout=8.0)
-            except subprocess.TimeoutExpired:
-                _kill_process_tree(process)
-                try:
-                    process.wait(timeout=3.0)
-                except subprocess.TimeoutExpired:
-                    logger.warning(
-                        "[desktop] backend process did not exit after forced termination (pid=%s)",
-                        process.pid,
-                    )
+            if process is not None and process.poll() is None:
+                terminate_service_tree(process.pid, timeout=11.0)
+
+        # Front restarts retain the resident Worker. A restore must retire it
+        # only after both old services have exited, before either can respawn.
+        stop_recovery_worker()
 
         self._preflight_gateway_singleton()
         restarted: list[subprocess.Popen[bytes]] = []
@@ -3771,97 +3760,33 @@ if(bridgeNeverResponded||bridgeStoppedResponding){
         self.shutdown()
 
 
-<<<<<<< RELEASE
-def _psutil_terminate(pid: int, force: bool = False) -> bool:
-    """Terminate a process and all its descendants using psutil.
-||||||| BEFORE_PR_9610
-def _psutil_terminate(pid: int, force: bool = False) -> None:
-    """Terminate a process and all its descendants using psutil.
-=======
 def _psutil_terminate(pid: int, force: bool = False) -> None:
     """Signal owned services while preserving resident Worker branches."""
     from jiuwenswarm.common.process_supervision import signal_service_tree
->>>>>>> DEVELOP
 
-<<<<<<< RELEASE
-    Unlike ``taskkill.exe``, this is a pure-Python operation that does not
-    spawn an external console process, avoiding console window flashes on
-    Windows (console=False builds).
-    """
-    try:
-        import psutil
-
-        parent = psutil.Process(pid)
-        # 获取所有子孙进程（在杀父进程之前先拿到完整列表）
-        children = parent.children(recursive=True)
-        kill_fn = (lambda p: p.kill()) if force else (lambda p: p.terminate())
-        # 先杀子孙，再杀父进程，避免子孙变成孤儿。Runtime Worker 会创建
-        # 独立会话，不能只依赖 POSIX 进程组信号来结束它。
-        for child in reversed(children):
-            try:
-                kill_fn(child)
-            except psutil.NoSuchProcess:
-                pass
-        try:
-            kill_fn(parent)
-        except psutil.NoSuchProcess:
-            pass
-        return True
-    except Exception:  # noqa: BLE001
-        return False
-||||||| BEFORE_PR_9610
-    Unlike ``taskkill.exe``, this is a pure-Python operation that does not
-    spawn an external console process, avoiding console window flashes on
-    Windows (console=False builds).
-    """
-    try:
-        import psutil
-
-        parent = psutil.Process(pid)
-        # 获取所有子孙进程（在杀父进程之前先拿到完整列表）
-        children = parent.children(recursive=True)
-        kill_fn = (lambda p: p.kill()) if force else (lambda p: p.terminate())
-        # 先杀子孙，再杀父进程，避免子孙变成孤儿
-        for child in reversed(children):
-            try:
-                kill_fn(child)
-            except psutil.NoSuchProcess:
-                pass
-        try:
-            kill_fn(parent)
-        except psutil.NoSuchProcess:
-            pass
-    except Exception:  # noqa: BLE001
-        pass
-=======
     signal_service_tree(pid, force=force)
->>>>>>> DEVELOP
 
 
 def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
     """Gracefully terminate a process and all its descendants."""
-    if _psutil_terminate(process.pid):
-        return
     if os.name != "nt":
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except OSError:
             process.terminate()
     else:
-        process.terminate()
+        _psutil_terminate(process.pid, force=False)
 
 
 def _kill_process_tree(process: subprocess.Popen[bytes]) -> None:
     """Force kill a process and all its descendants."""
-    if _psutil_terminate(process.pid, force=True):
-        return
     if os.name != "nt":
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except OSError:
             process.kill()
     else:
-        process.kill()
+        _psutil_terminate(process.pid, force=True)
 
 
 def _parse_args() -> argparse.Namespace:

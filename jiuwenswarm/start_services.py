@@ -618,90 +618,19 @@ def _start_process(
 
 
 def _terminate_processes(processes: dict[str, subprocess.Popen[bytes]]) -> None:
-<<<<<<< RELEASE
-    """Terminate all running processes gracefully."""
-    process_trees: dict[str, list[Any] | None] = {}
-||||||| BEFORE_PR_9610
-    """Terminate all running processes gracefully."""
-=======
     """Stop owned Front/service trees without killing their resident Workers."""
     errors = []
->>>>>>> DEVELOP
     for name, proc in processes.items():
         if proc.poll() is None:
             logging.info(f"[start_services] terminating {name} (pid={proc.pid})")
-<<<<<<< RELEASE
-            targets = _capture_process_tree(proc)
-            process_trees[name] = targets
-            if targets is None:
-                proc.terminate()
-            else:
-                _signal_process_tree(targets)
-||||||| BEFORE_PR_9610
-            proc.terminate()
-=======
             try:
                 terminate_service_tree(proc.pid, timeout=8.0)
             except (OSError, RuntimeError) as exc:
                 errors.append(exc)
     if errors:
         raise RuntimeError("Service tree cleanup incomplete") from errors[0]
->>>>>>> DEVELOP
-
-    deadline = time.time() + 8
-    while time.time() < deadline:
-        if all(proc.poll() is not None for proc in processes.values()):
-            return
-        time.sleep(0.2)
-
-<<<<<<< RELEASE
-    for name, proc in processes.items():
-        if proc.poll() is None:
-            logging.info(f"[start_services] killing {name} (pid={proc.pid})")
-            targets = process_trees.get(name)
-            if targets is None:
-                if not _terminate_process_tree(proc, force=True):
-                    proc.kill()
-            else:
-                _signal_process_tree(targets, force=True)
 
 
-def _capture_process_tree(process: subprocess.Popen[bytes]) -> list[Any] | None:
-    """Capture a launcher and its current descendants before ending the launcher."""
-    try:
-        import psutil
-
-        root = psutil.Process(process.pid)
-        return [*reversed(root.children(recursive=True)), root]
-    except psutil.Error:
-        return None
-
-
-def _signal_process_tree(targets: list[Any], *, force: bool = False) -> None:
-    """Signal a previously captured process tree, ignoring already-exited targets."""
-    import psutil
-
-    for target in targets:
-        with contextlib.suppress(psutil.Error):
-            if force:
-                target.kill()
-            else:
-                target.terminate()
-
-
-def _terminate_process_tree(process: subprocess.Popen[bytes], *, force: bool = False) -> bool:
-    """Stop one launcher and every descendant it currently owns."""
-    targets = _capture_process_tree(process)
-    if targets is None:
-        return False
-    _signal_process_tree(targets, force=force)
-    return True
-||||||| BEFORE_PR_9610
-    for name, proc in processes.items():
-        if proc.poll() is None:
-            logging.info(f"[start_services] killing {name} (pid={proc.pid})")
-            proc.kill()
-=======
 def _shutdown_services(processes: dict[str, subprocess.Popen[bytes]],
                        commands: list[tuple[str, list[str], Path]], workspace: Path) -> bool:
     from jiuwenswarm.server.supervisor.shutdown import shutdown_application_worker
@@ -724,7 +653,6 @@ def _wait_for_process_exit(processes: dict[str, subprocess.Popen[bytes]]) -> int
                 logging.info(f"[start_services] {name} exited with code {code}")
                 return code
         time.sleep(0.5)
->>>>>>> DEVELOP
 
 
 def _resolve_runtime_ports() -> dict[str, int]:

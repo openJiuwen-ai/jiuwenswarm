@@ -349,11 +349,13 @@ def supervise(
     *,
     restart_requested: Callable[[], bool] | None = None,
     restart_names: frozenset[str] = frozenset(),
-    terminate_descendants_on_restart: frozenset[str] = frozenset(),
+    before_restart: Callable[[], None] | None = None,
 ) -> int:
     """Run *commands* (spawned in order) until one stops for good; return its exit code.
 
     Returns 130 on KeyboardInterrupt. All children are terminated on return.
+    Explicit restarts call ``before_restart`` after the selected services stop;
+    an exception aborts the restart before any replacement process is spawned.
     """
     children = [_Child(name, command) for name, command in commands.items()]
     try:
@@ -369,7 +371,7 @@ def supervise(
                     children,
                     popen_kwargs,
                     restart_names,
-                    terminate_descendants_on_restart,
+                    before_restart,
                 )
                 if restarted:
                     continue
@@ -411,31 +413,26 @@ def supervise(
     except KeyboardInterrupt:
         return 130
     finally:
-        # Runtime Worker deliberately runs in its own session so an
-        # AgentServer Front restart can reuse it. A complete supervisor
-        # shutdown must nevertheless match a cold start: capture descendants
-        # before ending the Fronts, then reap the detached Worker as well.
-        descendants = _capture_lingering_descendants(children)
         _terminate_all([child.proc for child in children if child.proc is not None])
-        _terminate_lingering_descendants(descendants)
 
 
 def _restart_selected_children(
     children: Sequence[_Child],
     popen_kwargs: Mapping[str, Any],
     names: frozenset[str],
-    terminate_descendants: frozenset[str],
+    before_restart: Callable[[], None] | None,
 ) -> bool:
     """Restart selected healthy children without ending the supervisor."""
     selected = [child for child in children if child.name in names]
     if not selected:
         return False
     logger.info("[app] restarting requested children: %s", ", ".join(child.name for child in selected))
-    descendants = _capture_lingering_descendants(
-        [child for child in selected if child.name in terminate_descendants]
-    )
-    _terminate_all([child.proc for child in selected if child.proc is not None])
-    _terminate_lingering_descendants(descendants)
+    processes = [child.proc for child in selected if child.proc is not None]
+    _terminate_all(processes)
+    if any(process.poll() is None for process in processes):
+        raise RuntimeError("Recovery restart refused while a backend is still running")
+    if before_restart is not None:
+        before_restart()
     for child in selected:
         child.spawn(popen_kwargs)
         logger.info(

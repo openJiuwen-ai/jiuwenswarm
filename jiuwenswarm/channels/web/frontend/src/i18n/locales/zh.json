@@ -1,5 +1,4 @@
 {
-<<<<<<< RELEASE
   "extensionCommand": {
     "invalidArgs": "命令参数有误，用法如下：",
     "singleLineOnly": "扩展包命令每次只能输入一行。请执行 /extension 查看用法。",
@@ -37,8 +36,6 @@
     "currentState": "以下是核对时的当前状态，不代表原操作成功：",
     "queryFailed": "状态核对失败：{{reason}}"
   },
-||||||| BEFORE_PR_9610
-=======
   "pluginReplacement": {
     "title": "插件已存在",
     "message": "本地已存在插件 {{id}}（版本 {{localVersion}}）。是否使用广场版本 {{hubVersion}} 替换？本地修改将被覆盖。",
@@ -89,7 +86,6 @@
     "refreshed": "安装计划已更新，请重新检查成员并确认。",
     "validationFailed": "技能包校验失败，请重新下载并检查成员状态。"
   },
->>>>>>> DEVELOP
   "common": {
     "searchName": "搜索名称",
     "noData": "暂无数据",
@@ -522,13 +518,8 @@
       "channels": "频道",
       "personalContext": "知识",
       "archivedTasks": "已归档的任务",
-<<<<<<< RELEASE
       "experimental": "实验功能",
-      "systemPluginRecovery": "系统插件还原"
-||||||| BEFORE_PR_9610
-      "experimental": "实验功能"
-=======
-      "experimental": "实验功能",
+      "systemPluginRecovery": "系统插件还原",
       "appearance": "外观"
     },
     "appearance": {
@@ -560,7 +551,6 @@
       "resetTitle": "恢复默认外观",
       "resetDescription": "清除本机保存的外观偏好，恢复主题默认字体与字号。",
       "resetButton": "恢复默认"
->>>>>>> DEVELOP
     },
     "feedback": {
       "loadFailed": "设置加载失败",

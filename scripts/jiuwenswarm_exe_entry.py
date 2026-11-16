@@ -623,6 +623,10 @@ def _dispatch() -> int | None:
         from jiuwenswarm.common.system_plugin_recovery_sidecar import main as recovery_main
         recovery_main()
         return None
+    if _pop_flag("--system-plugin-recovery-stop-worker"):
+        from jiuwenswarm.common.system_plugin_recovery_restart import main as recovery_restart_main
+        recovery_restart_main()
+        return None
     if _pop_flag("--desktop-run-web"):
         from jiuwenswarm.channels.web.app_web import main as web_main
         web_main()

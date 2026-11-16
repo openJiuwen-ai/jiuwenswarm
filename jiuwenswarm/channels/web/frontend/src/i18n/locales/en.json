@@ -1,5 +1,4 @@
 {
-<<<<<<< RELEASE
   "extensionCommand": {
     "invalidArgs": "Invalid command arguments. Usage:",
     "singleLineOnly": "Enter one extension command per line. Run /extension for usage.",
@@ -37,8 +36,6 @@
     "currentState": "Current state at reconciliation time; this does not confirm the original operation succeeded:",
     "queryFailed": "State reconciliation failed: {{reason}}"
   },
-||||||| BEFORE_PR_9610
-=======
   "pluginReplacement": {
     "title": "Plugin already exists",
     "message": "Local plugin {{id}} (version {{localVersion}}) already exists. Replace it with marketplace version {{hubVersion}}? Local changes will be overwritten.",
@@ -89,7 +86,6 @@
     "refreshed": "The installation plan has changed. Review the members and confirm again.",
     "validationFailed": "SkillPack validation failed. Download it again and check its members."
   },
->>>>>>> DEVELOP
   "common": {
     "searchName": "Search names",
     "noData": "No data",
@@ -529,13 +525,8 @@
       "channels": "Channels",
       "personalContext": "Knowledge",
       "archivedTasks": "Archived Tasks",
-<<<<<<< RELEASE
       "experimental": "Experimental",
-      "systemPluginRecovery": "System plugin recovery"
-||||||| BEFORE_PR_9610
-      "experimental": "Experimental"
-=======
-      "experimental": "Experimental",
+      "systemPluginRecovery": "System plugin recovery",
       "appearance": "Appearance"
     },
     "appearance": {
@@ -567,7 +558,6 @@
       "resetTitle": "Restore default appearance",
       "resetDescription": "Clears appearance preferences saved on this device and restores theme defaults.",
       "resetButton": "Restore defaults"
->>>>>>> DEVELOP
     },
     "feedback": {
       "loadFailed": "Failed to load settings",

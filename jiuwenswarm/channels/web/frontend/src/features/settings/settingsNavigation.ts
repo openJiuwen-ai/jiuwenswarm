@@ -1,16 +1,11 @@
-<<<<<<< RELEASE
 export type SettingsModuleTarget =
+  | 'general'
   | 'models'
   | 'agent'
   | 'personalContext'
   | 'archivedTasks'
   | 'experimental'
   | 'systemPluginRecovery';
-||||||| BEFORE_PR_9610
-export type SettingsModuleTarget = 'models' | 'agent' | 'personalContext' | 'archivedTasks' | 'experimental';
-=======
-export type SettingsModuleTarget = 'general' | 'models' | 'agent' | 'personalContext' | 'archivedTasks' | 'experimental';
->>>>>>> DEVELOP
 
 export const SETTINGS_MODULE_NAVIGATION_EVENT = 'jiuwen:settings-module';
 
