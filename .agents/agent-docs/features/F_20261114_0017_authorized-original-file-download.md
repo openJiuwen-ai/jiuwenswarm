@@ -126,3 +126,14 @@ UT 在线报告唯一失败为 ASR 配置优先级用例在存在加密 Provider
 唯一跳过为缺少可选 webview。故障定位还对照了原基线和 PR：common 目录各 1184 passed/68 skipped，全 unit 收集但只选 ASR 时各 2 passed；前缀执行两侧均在 4460 passed 后因 macOS sandbox 禁止 sysctl 中断，发生于 ASR 前，不能当作 ASR 基线同败证据。没有把这些结果宣称为 Linux 全量门禁通过。后续 CI 结果由对应新提交重新确认，未合并任何 PR。证据见 [本轮质量与范围判断](../../../task-artifacts/authorized-download-pr-feedback-20261116/quality-review.md)、[迁移必要性](../../../task-artifacts/authorized-download-pr-feedback-20261116/migration-necessity.json) 与 [本轮测试摘要](../../../task-artifacts/authorized-download-pr-feedback-20261116/followup-test-summary.json)。
 
 本轮最终独立只读复核为 **Approve**，三个候选均无未解决阻塞项；核对最终差异、逐文件摘要及 JUnit，未另行重跑测试，详见 [本轮独立复核](../../../task-artifacts/authorized-download-pr-feedback-20261116/independent-review.md)。复核后仅追加本条真实结论，代码及测试不变。
+
+
+## PR #10236 / #10237 冲突解决：2026-11-16
+
+按用户最新要求，保留现有修复分支历史，通过追加目标分支合入提交解决冲突并普通推送。develop 纳入本地及上游一致的 `8f6ffb1194e0`；0.2.9 纳入包含本地 `af98d14b79f5` 的最新上游 `c03a09ef3afe`。本轮仅处理这两个 PR，0.2.8 修复分支保持原状态。
+
+develop 的冲突为三个生成索引及 ASR 用例的重复导入；0.2.9 只有相同的重复导入冲突。索引用现有同步脚本重新生成，核对双方文档条目均保留。两个分支都保留模块顶部导入、已有 Provider 隔离及解密正负断言；develop 新基线的 checkpoint 测试隔离 fixture 也保留。四个下载生产文件与合入前各自已评审修复逐字节一致，继续原文件、不过期登记与首次 SHA-256 方案，token 结构不变。
+
+两分支各按新目标分支原始 uv.lock 建立独立冻结环境，五个实际 Git 依赖 commit 分别匹配各自原锁，pyproject.toml / uv.lock 与目标基线一致。macOS arm64 / Python 3.11.4 下各运行 12 个相关 pytest 文件，均为 **246 passed，1 skipped，0 failed**；唯一跳过为缺少可选 webview。命令、逐文件摘要、JUnit 及环境核验见 [本轮回归摘要](../../../task-artifacts/authorized-download-rebase-20261116/test-summary.json)、[依赖核验](../../../task-artifacts/authorized-download-rebase-20261116/environment-lock-verification.json) 与 [索引条目核验](../../../task-artifacts/authorized-download-rebase-20261116/index-union-verification.json)。未重跑 Windows、浏览器/真实模型 E2E 或全量 CI；此前 Windows 证据仍限定原实测依赖组合。
+
+code-quality-check 未发现本轮范围内阻塞项。冲突解决没有引入职责、生命周期、协议或集成机制变化，架构升级 Not triggered；保留此前生命周期审查的候选范围限定。最终独立只读复核为 **Approve**，无本轮范围内阻塞项，详见 [本轮独立复核](../../../task-artifacts/authorized-download-rebase-20261116/independent-review.md)；评审未独立重跑测试，复核后仅追加此真实结论，技术文件不变。本地通过不代表新提交的远端门禁已通过。

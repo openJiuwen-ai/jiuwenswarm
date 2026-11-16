@@ -8,6 +8,7 @@ import logging
 import asyncio
 import uuid
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from weakref import WeakValueDictionary
 
@@ -15,6 +16,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_context import HOS
 from jiuwenswarm.server.runtime.team_organization_identity_store import save_organization_team_identity
 
 if TYPE_CHECKING:
+    from openjiuwen.agent_teams.experts import ExpertCatalog
     from openjiuwen.agent_teams.interaction import DeliverResult
     from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _UnattendedTeamRoundHistoryWriter
 
@@ -196,6 +198,47 @@ class JiuwenExpertTeamLauncher:
 
         return _runner_team_runtime_manager(GLOBAL_RUNNER)
 
+    @staticmethod
+    def _expert_catalog() -> ExpertCatalog:
+        from openjiuwen.agent_teams.experts import get_process_expert_catalog
+
+        catalog = get_process_expert_catalog()
+        if catalog is None:
+            from jiuwenswarm.server.runtime.extension_package_manager import AgentGroupPackageError
+
+            raise AgentGroupPackageError(
+                "[AGENT_GROUP_CATALOG_NOT_CONFIGURED] expert catalog is not configured; "
+                "run configure_agent_teams_home() in this process and verify the openjiuwen version",
+                "AGENT_GROUP_CATALOG_NOT_CONFIGURED",
+            )
+        return catalog
+
+    async def _locate_group(self, name: str) -> Path:
+        return (await self._expert_catalog().locate_group(name)).path
+
+    async def _legacy_group_name(self, label: str) -> str:
+        """Recover a missing package identity from a unique installed card."""
+        from openjiuwen.agent_teams.experts import read_agent_group_card
+        from openjiuwen.harness.resources.template_card import localized_text
+
+        candidates = []
+        for location in await self._expert_catalog().list_group_packages():
+            try:
+                card = await read_agent_group_card(location.path)
+            except (ValueError, OSError) as exc:
+                logger.warning("[ExpertTeamLauncher] skip unreadable group %s: %s", location.name, exc)
+                continue
+            labels = {location.name, card.name, card.display_label("cn"), card.display_label("en")}
+            if not localized_text(card.display_name, "cn"):
+                leader = card.member("leader")
+                if leader is not None:
+                    labels.update((leader.card.name, leader.display_label("cn"), leader.display_label("en")))
+            if label and label in labels:
+                candidates.append(location.name)
+        if len(candidates) != 1:
+            raise ValueError("historical expert package identity is missing or ambiguous")
+        return candidates[0]
+
     async def _allocate_team_id(self) -> str:
         return f"org-expert-{uuid.uuid4().hex[:12]}"
 
@@ -250,6 +293,26 @@ class JiuwenExpertTeamLauncher:
         return result
 
     async def run_organization_turn(
+        self,
+        team_id: str,
+        session_id: str,
+        inputs: object,
+        *,
+        source: str = "org_expert_background",
+        channel_id: str | None = None,
+        request_id: str | None = None,
+        origin_kind: str = HOST_USER_ORIGIN_INTERNAL,
+    ) -> bool:
+        """Restore session authority before executing an organization background turn."""
+        from jiuwenswarm.enterprise.capabilities.experts.request_packages import bind_background_subject
+
+        async with bind_background_subject(session_id, enabled=source != "org_expert_direct"):
+            return await self._run_organization_turn(
+                team_id, session_id, inputs, source=source, channel_id=channel_id,
+                request_id=request_id, origin_kind=origin_kind,
+            )
+
+    async def _run_organization_turn(
         self,
         team_id: str,
         session_id: str,
@@ -1015,7 +1078,6 @@ class JiuwenExpertTeamLauncher:
         from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
         from jiuwenswarm.server.runtime.team_organization_identity_store import load_organization_team_identity
         from openjiuwen.agent_teams.experts import load_agent_group_package_bundle
-        from jiuwenswarm.server.runtime.extension_package_manager import resolve_agent_group_dir
 
         if not organization_enabled():
             raise ValueError("Team Organization is disabled")
@@ -1062,15 +1124,10 @@ class JiuwenExpertTeamLauncher:
             identity = load_organization_team_identity(team_id)
             group_name = identity.get("agent_group_name", "")
             if not group_name:
-                from jiuwenswarm.agents.harness.team.expert_org.catalog import JiuwenExpertGroupCatalog
-
                 label = str(getattr(team, "display_name", "") or "").strip()
-                candidates = [group for group in JiuwenExpertGroupCatalog.list()
-                              if label and label in (group.agent_group_name, group.display_name)]
-                if len(candidates) != 1:
-                    raise ValueError("historical expert package identity is missing or ambiguous")
-                group_name = candidates[0].agent_group_name
-            package = load_agent_group_package_bundle(resolve_agent_group_dir(group_name))
+                group_name = await self._legacy_group_name(label)
+            package_dir = await self._locate_group(group_name)
+            package = await asyncio.to_thread(load_agent_group_package_bundle, package_dir)
             channel = _resolve_launch_channel_id(channel_id, session_id)
             spec = await self._build_enriched_spec(
                 team_id=team_id, session_id=session_id, agent_group_name=group_name,
@@ -1082,7 +1139,7 @@ class JiuwenExpertTeamLauncher:
                 raise ValueError("Team Organization is disabled")
             try:
                 activation = await runtime.activate(spec, session_id)
-                resolve_agent_group_dir(group_name)
+                await self._locate_group(group_name)
                 agent = getattr(activation, "agent", None)
                 backend = getattr(agent, "team_backend", None)
                 if (
@@ -1130,13 +1187,8 @@ class JiuwenExpertTeamLauncher:
         from openjiuwen.agent_teams.experts import (
             load_agent_group_package_bundle,
         )
-        from jiuwenswarm.server.runtime.extension_package_manager import (
-            resolve_agent_group_dir,
-        )
-
-        agent_group_package = load_agent_group_package_bundle(
-            resolve_agent_group_dir(group_name)
-        )
+        package_dir = await self._locate_group(group_name)
+        agent_group_package = await asyncio.to_thread(load_agent_group_package_bundle, package_dir)
         team_id = str(team_id or "").strip() or await self._allocate_team_id()
         runtime = self._get_runtime()
         resolved_channel = _resolve_launch_channel_id(channel_id, session_id)
@@ -1173,7 +1225,7 @@ class JiuwenExpertTeamLauncher:
             )
             activation_attempted = True
             activation = await runtime.activate(spec, session_id)
-            resolve_agent_group_dir(group_name)
+            await self._locate_group(group_name)
             agent = getattr(activation, "agent", None)
             if agent is None:
                 raise ValueError(f"activate returned no agent for team: {team_id}")

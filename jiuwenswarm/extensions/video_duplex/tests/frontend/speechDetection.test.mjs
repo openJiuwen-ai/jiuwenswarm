@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { SpeechGate } from "../../../../channels/web/frontend/node_modules/.cache/realtime-duplex/speechGate.mjs";
-import { SileroVad } from "../../../../channels/web/frontend/node_modules/.cache/realtime-duplex/sileroVad.mjs";
+import { loadModules, webSource } from './testSupport.mjs';
+const { SpeechGate, SileroVad } = await loadModules([
+  webSource("utils/speechDetection/speechGate.ts"),
+  webSource("utils/speechDetection/sileroVad.ts"),
+]);
+
 
 function feed(gate, probability, frames, level = 1000) {
   return Array.from({ length: frames }, () => gate.process(probability, level));

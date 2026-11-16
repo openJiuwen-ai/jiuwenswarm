@@ -57,7 +57,7 @@ class QwenOmniToolCall:
 
 def qwen_omni_tools(*, queue_manager: bool = False) -> list[dict[str, Any]]:
     """Return fresh Qwen-compatible tool definitions for each session."""
-    return ([queue_management_tool(), next(
+    return ([form_answer_tool(), queue_management_tool(), next(
         tool for tool in task_management_tools() if tool["function"]["name"] == "jiuwen_task_answer"
     )] if queue_manager else task_management_tools()) + [
         {
@@ -127,6 +127,25 @@ def qwen_omni_tools(*, queue_manager: bool = False) -> list[dict[str, Any]]:
     ]
 
 
+def form_answer_tool():
+    """Keep information form calls small; the server resolves the card identity."""
+    return {"type": "function", "function": {
+        "name": "jiuwen_form_answer",
+        "description": (
+            "Answer the single pending information form with explicit user answers in question order. "
+            "If multiple forms are pending, ask the user to use the on-screen form. "
+            "Never use for permissions. Confirm submission only from the receipt."
+        ),
+        "parameters": {
+            "type": "object", "properties": {
+                "answers": {"type": "array", "items": {"type": "string", "maxLength": 4000},
+                            "minItems": 1, "maxItems": 32},
+            },
+            "required": ["answers"], "additionalProperties": False,
+        },
+    }}
+
+
 def _canonical_queue_version(value: Any) -> bool:
     """Recognize decimal queue tokens without coercing other JSON values."""
     if not isinstance(value, str) or len(value) > 16:
@@ -145,7 +164,7 @@ def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
     if (
         name
         not in {QWEN_OMNI_DELEGATE_TOOL_NAME, QWEN_OMNI_RESEARCH_TOOL_NAME}
-        | _TASK_TOOLS | {"jiuwen_queue_manage"}
+        | _TASK_TOOLS | {"jiuwen_queue_manage", "jiuwen_form_answer"}
     ):
         raise ValueError(f"unsupported Qwen tool: {name or '<empty>'}")
 
@@ -165,6 +184,14 @@ def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
         raise ValueError("arguments must be a JSON object")
     if not isinstance(arguments, dict):
         raise ValueError("arguments must be a JSON object")
+    if name == "jiuwen_form_answer":
+        answers = arguments.get("answers")
+        if (set(arguments) != {"answers"}
+                or not isinstance(answers, list) or not 1 <= len(answers) <= 32):
+            raise ValueError("Invalid information form answers")
+        if any(not isinstance(a, str) or not a.strip() or len(a) > 4000 for a in answers):
+            raise ValueError("Invalid information form answers")
+        return QwenOmniToolCall(name, call_id, arguments, "")
     if name == "jiuwen_queue_manage":
         instruction = arguments.get("instruction")
         if set(arguments) != {"instruction"} or not isinstance(instruction, str):

@@ -619,7 +619,7 @@ def test_windows_electron_enforces_its_node_minimum_without_changing_python_defa
     electron_source = _read(BUILD_ELECTRON_PS1)
     python_source = _read(BUILD_EXE_PS1)
     assert '$ElectronMinimumNodeVersion = [version]"22.12.0"' in electron_source
-    assert 'Get-RuntimeBundleSettings -DefaultNodeVersion "v22.12.0"' in electron_source
+    assert 'Get-RuntimeBundleSettings -DefaultNodeVersion "v22.13.0"' in electron_source
     assert "-MinimumVersion $ElectronMinimumNodeVersion" in electron_source
     assert "22.12.0" not in python_source
     assert "Get-NodeRuntimeVersion -RuntimeDir $RuntimeDir" in module_source

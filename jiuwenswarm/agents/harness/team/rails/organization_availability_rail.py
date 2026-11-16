@@ -256,14 +256,57 @@ class OrganizationAvailabilityRail(DeepAgentRail):
             return
         status = await self._team_availability(target)
         if status.get("available") is not False:
-            return
-        error = (
-            "Target expert Team is unavailable or its AgentGroup identity cannot be verified. "
-            "Reinstall its package or restore its identity before retrying."
-        )
+            if inputs.tool_name not in {"org_create_task", "org_delegate_task", "org_send_leader_message"}:
+                return
+            if not status.get("agent_group_name"):
+                return
+            try:
+                await self._restore_dispatch_target(target)
+            except Exception as exc:
+                logger.warning(
+                    "Cannot restore organization dispatch target team=%s session=%s: %s",
+                    target, self.session_id, exc,
+                )
+                error = f"Target expert Team could not be restored; work was not dispatched: {exc}"
+            else:
+                return
+        else:
+            error = (
+                "Target expert Team is unavailable or its AgentGroup identity cannot be verified. "
+                "Reinstall its package or restore its identity before retrying."
+            )
         ctx.extra["_skip_tool"] = True
         inputs.tool_result = {"success": False, "error": error}
         inputs.tool_msg = ToolMessage(content=error, tool_call_id=str(getattr(inputs.tool_call, "id", "")))
+
+    async def _restore_dispatch_target(self, target: str) -> None:
+        """Restore a cold, already invited expert before publishing its next work event."""
+        from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+        from jiuwenswarm.agents.harness.team.expert_org.launcher import JiuwenExpertTeamLauncher
+
+        runtime = getattr(GLOBAL_RUNNER, "_team_runtime_manager", None)
+        if runtime is None or await runtime.pool.get(target) is not None:
+            return
+        owner = await runtime.pool.get(self.team_id)
+        if owner is None or owner.current_session_id != self.session_id:
+            return
+        backend = getattr(owner.agent, "team_backend", None)
+        manager = getattr(backend, "org_task_manager", None)
+        if manager is None:
+            return
+        organization = await manager.get_organization()
+        if organization is None or organization.owner_team_id != self.team_id:
+            return
+        if target == self.team_id or not any(leader.team_id == target for leader in organization.leaders):
+            # Foreign and not-yet-invited targets stay with the original tool's validation.
+            return
+        await JiuwenExpertTeamLauncher(
+            runtime_manager=runtime,
+            organization_runtime=getattr(runtime, "organization_runtime_manager", None),
+        ).restore(
+            team_id=target, session_id=self.session_id, organization=organization, db=backend.db,
+        )
+        logger.info("Restored organization dispatch target team=%s session=%s", target, self.session_id)
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
         if self.builder is None:
