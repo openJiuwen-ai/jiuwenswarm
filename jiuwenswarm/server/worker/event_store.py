@@ -392,14 +392,20 @@ class WorkerEventStore:
         switches rounds precisely.
         """
         rid = str(request_id or "")
-        frames = [copy.deepcopy(frame) for owner, frame, _ in self._frames
-                  if owner == scope and frame["request_id"] == rid and frame["sequence"] > after]
         wanted = str(dispatch_id or "")
-        if not wanted:
-            return frames
-        return [frame for frame in frames
-                if str(((frame.get("payload") or {}).get("metadata") or {})
-                       .get("runtime_event", {}).get("dispatch_id") or "") == wanted]
+        frames = []
+        for owner, frame, _ in self._frames:
+            if owner != scope or frame["request_id"] != rid:
+                continue
+            if frame["sequence"] <= after:
+                continue
+            if wanted:
+                got = str(((frame.get("payload") or {}).get("metadata") or {})
+                          .get("runtime_event", {}).get("dispatch_id") or "")
+                if got != wanted:
+                    continue
+            frames.append(copy.deepcopy(frame))
+        return frames
 
     def replay_gapped(self, scope: tuple[str, ...], request_id: str, after: int) -> bool:
         """True if this request's own retained frames were evicted below ``after``.

@@ -4,9 +4,12 @@
 
 The supervisor registers the ledger entry at dispatch accept (wall-clock deadline); any delivered frame resets
 it (P7 liveness semantics: advancing frame flow = worker alive; visible-whitelisted frames additionally record
-``last_visible_output_ts``); on expiry without settlement the placeholder card is built per the five-element wire contract (precedent
-``server/gateway_push/wire.py`` ``build_server_push_wire``) and delivered directly over the gateway socket as a chat.error placeholder.
-Control-plane requests (``__cron__``/``__health_check__`` channels and the interrupt_ prefix) have zero visible replies by design, skipped at register time.
+``last_visible_output_ts``); on expiry without settlement the placeholder card is built per the five-element wire
+contract (precedent
+``server/gateway_push/wire.py`` ``build_server_push_wire``) and delivered directly over the gateway socket as a
+chat.error placeholder.
+Control-plane requests (``__cron__``/``__health_check__`` channels and the interrupt_ prefix) have zero visible
+replies by design, skipped at register time.
 The ledger stores only delivery identity and cursors, never user content.
 See the spec for the full contract.
 
@@ -30,7 +33,8 @@ from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 
 logger = logging.getLogger(__name__)
 
-# Placeholder top-level request_id suffix (a key distinct from real replies; the gateway builds an independent stream per key).
+# Placeholder top-level request_id suffix (a key distinct from real replies; the gateway builds an independent stream
+#  per key).
 PLACEHOLDER_REQUEST_SUFFIX = ":p6"
 
 # Placeholder state machine: pending -> pending_flush -> sent (absorbing terminal);
@@ -52,13 +56,15 @@ STREAM_VISIBLE_EVENT_WHITELIST = VISIBLE_EVENT_WHITELIST | {"chat.delta"}
 CONTROL_CHANNEL_IDS = frozenset({"__cron__", "__health_check__"})
 CONTROL_REQUEST_ID_PREFIXES = ("interrupt_", "interrupt-",
                                # Intermediate control requests dispatched by cron (command acks / internal fetches):
-                               # the worker never replies with frames, so registering would always fire a card at expiry
+                               # the worker never replies with frames, so registering would always fire a card at
+                               #  expiry
                                # (two live occurrences on 2026-11-11 morning: cron-command-ack-*/fetch-*
                                #   entries state=sent seq=0, channel=web escaped the __cron__ channel exemption).
                                "cron-command-ack-", "fetch-")
 
 # Delivery identity keys (mirror of the gateway message_handler._DELIVERY_IDENTITY_METADATA_KEYS;
-# unit tests assert both sides equal to prevent drift). The ledger stores only the intersection of these keys, never user content.
+# unit tests assert both sides equal to prevent drift). The ledger stores only the intersection of these keys, never
+#  user content.
 DELIVERY_IDENTITY_METADATA_KEYS = frozenset({
     "app_id",
     "chat_type",
@@ -74,7 +80,8 @@ DELIVERY_IDENTITY_METADATA_KEYS = frozenset({
 _BATCH_FRAMES = 50
 _BATCH_SECONDS = 2.0
 
-# Terminal-entry reaping: retention window after an entry goes terminal (the sweep reclaims memory and disk copies, logging for audit).
+# Terminal-entry reaping: retention window after an entry goes terminal (the sweep reclaims memory and disk copies,
+#  logging for audit).
 _REAP_SECONDS = 3600.0
 
 _PLACEHOLDER_ERROR_TEXT = "长时间未收到回复，本次处理可能已中断"
@@ -144,7 +151,8 @@ class DeliveryLedger:
         deadline: float,
         dump_ref: str = "",
     ) -> LedgerEntry | None:
-        """Register at dispatch accept (sync write). Control-plane requests are skipped (zero visible replies make a placeholder card meaningless)."""
+        """Register at dispatch accept (sync write). Control-plane requests are skipped (zero visible replies make a
+        placeholder card meaningless)."""
         from jiuwenswarm.common.schema.message import ReqMethod
 
         if getattr(request, "req_method", None) == ReqMethod.CHAT_CANCEL:
@@ -157,7 +165,8 @@ class DeliveryLedger:
             getattr(request, "req_method", None) == ReqMethod.COMMAND_GOAL
             and str(params.get("action", "get")).strip().lower() not in {"set", "resume"}
         ):
-# Page restore (attach_goal) and passive goal subscription have zero visible frames by design — the criteria align with
+# Page restore (attach_goal) and passive goal subscription have zero visible frames by design — the criteria align
+#  with
 # the worker-side _is_session_work_request (atomgit id=200347100):
 # these web-channel requests would always hit the 600s expiry with a false "process may have been interrupted"
 # card. An active goal command (set/resume) has visible replies and registers normally.
@@ -200,7 +209,8 @@ class DeliveryLedger:
         )
         prev_entry = self._entries.get(entry.request_id)
         if prev_entry is not None:
-# Same-rid re-register: take the max cursor — when process_cli cancel reuses the original rid and overwrites the entry,
+# Same-rid re-register: take the max cursor — when process_cli cancel reuses the original rid and overwrites the
+#  entry,
 # a wiped cursor would break the after=sequence replay contract (AIReview SF-4-③).
             entry.sequence = max(entry.sequence, prev_entry.sequence)
         self._entries[entry.request_id] = entry
@@ -218,9 +228,11 @@ class DeliveryLedger:
     def on_wire_delivered(
         self, *, request_id: str, payload: dict[str, Any], now: float | None = None
     ) -> None:
-        """Any delivered frame: reset the deadline (synchronous; liveness semantics in the module header); pending/pending_flush turn retracted.
+        """Any delivered frame: reset the deadline (synchronous; liveness semantics in the module header);
+        pending/pending_flush turn retracted.
 
-        sent is an absorbing terminal: a late real reply after the card was sent only updates bookkeeping, no deadline reset,
+        sent is an absorbing terminal: a late real reply after the card was sent only updates bookkeeping, no deadline
+        reset,
         no state change (mutual exclusion = no suppression; the late real reply is still delivered).
         """
         entry = self._entries.get(str(request_id or ""))
@@ -234,15 +246,22 @@ class DeliveryLedger:
             entry.dirty_at = entry.dirty_at or now
         event = wire_event(payload)
         if event is None or event not in STREAM_VISIBLE_EVENT_WHITELIST:
-            # Non-whitelisted frames are also a liveness signal (P7): long tool-only rounds with zero visible frames are
-            # healthy as long as the frame flow advances — the deadline resets on any delivered frame; the card only fires for
-            # a fully silent pipeline. Persistence stays graded/batched (this chain runs on the supervisor event-loop thread,
+            # Non-whitelisted frames are also a liveness signal (P7): long tool-only rounds with zero visible frames
+            #  are
+            # healthy as long as the frame flow advances — the deadline resets on any delivered frame; the card only
+            #  fires for
+            # a fully silent pipeline. Persistence stays graded/batched (this chain runs on the supervisor event-loop
+            #  thread,
             # per-frame fsync is forbidden).
             #
-            # Explicit trade-off (atomgit 199642764): worker keepalive frames (agent_ws_server._activity_event) also land in
-            # this branch and reset the deadline; therefore "visible silence" (no whitelisted frame for a long while) is NOT part of
-            # the card judgment — this PR alarm semantics converge to "pipeline fully silent (frame flow stopped)"; zero visible
-            # output during long tool rounds is treated as healthy. last_visible_output_ts is kept as bookkeeping for a future
+            # Explicit trade-off (atomgit 199642764): worker keepalive frames (agent_ws_server._activity_event) also
+            #  land in
+            # this branch and reset the deadline; therefore "visible silence" (no whitelisted frame for a long while)
+            #  is NOT part of
+            # the card judgment — this PR alarm semantics converge to "pipeline fully silent (frame flow stopped)";
+            #  zero visible
+            # output during long tool rounds is treated as healthy. last_visible_output_ts is kept as bookkeeping for
+            #  a future
             # standalone visible-silence watchdog.
 
             entry.deadline = now + self._idle_seconds
@@ -252,8 +271,10 @@ class DeliveryLedger:
             return
         entry.last_visible_output_ts = now
         if entry.placeholder_state in PLACEHOLDER_TERMINAL_STATES:
-            # Terminal entries (retracted/sent): late frames only update in-memory bookkeeping; deadline/cursor go through batched
-            # persistence (graded thresholds) — no per-frame fsync; that chain runs on the supervisor event-loop thread and
+            # Terminal entries (retracted/sent): late frames only update in-memory bookkeeping; deadline/cursor go
+            #  through batched
+            # persistence (graded thresholds) — no per-frame fsync; that chain runs on the supervisor event-loop
+            #  thread and
             # per-frame fsync would block IPC traffic on the same loop.
             if entry.placeholder_state == PLACEHOLDER_RETRACTED:
                 entry.deadline = now + self._idle_seconds
@@ -266,8 +287,10 @@ class DeliveryLedger:
         entry.dirty_at = entry.dirty_at or now
         if entry.placeholder_state in {PLACEHOLDER_PENDING, PLACEHOLDER_PENDING_FLUSH}:
             if event in VISIBLE_EVENT_WHITELIST:
-                # Only terminal frames (final/error/question) cancel the card backstop; chat.delta only resets the deadline —
-                # a mid-stream interruption (worker stuck, not crashed) leaves the entry pending and the card still fires at expiry,
+                # Only terminal frames (final/error/question) cancel the card backstop; chat.delta only resets the
+                #  deadline —
+                # a mid-stream interruption (worker stuck, not crashed) leaves the entry pending and the card still
+                #  fires at expiry,
                 # giving the user an error backstop.
                 entry.placeholder_state = PLACEHOLDER_RETRACTED
                 entry.terminal_at = now
@@ -280,7 +303,8 @@ class DeliveryLedger:
         if entry is None or entry.placeholder_state == state:
             return False
         if entry.placeholder_state in PLACEHOLDER_TERMINAL_STATES:
-            # Terminal absorb: terminal states cannot migrate out (prevents SENT overwriting RETRACTED under a sweep snapshot race).
+            # Terminal absorb: terminal states cannot migrate out (prevents SENT overwriting RETRACTED under a sweep
+            #  snapshot race).
             logger.info(
                 "[DeliveryLedger] transition rejected from terminal state=%s request_id=%s audit=%s",
                 entry.placeholder_state, entry.request_id, audit,
@@ -347,10 +371,12 @@ class DeliveryLedger:
         return expired
 
     def reap_terminal(self, now: float | None = None) -> int:
-        """Reap terminal entries: sent/retracted/failed older than the retention window get their memory and disk copies deleted.
+        """Reap terminal entries: sent/retracted/failed older than the retention window get their memory and disk
+        copies deleted.
 
         Terminal time comes from terminal_at (older on-disk entries fall back to registered_at); log before reaping
-        (request_id / terminal state / terminal age) to keep the audit trail in the log face. Returns the reaped count.
+        (request_id / terminal state / terminal age) to keep the audit trail in the log face. Returns the reaped
+        count.
         """
         now = time.time() if now is None else now
         reaped = 0
@@ -375,7 +401,8 @@ class DeliveryLedger:
 
     # ----------------------------------------------------------- persistence
     def load(self) -> int:
-        """Front-startup reload: read entries one by one, judged by wall clock (deadline kept as-is; the sweep judges expiry)."""
+        """Front-startup reload: read entries one by one, judged by wall clock (deadline kept as-is; the sweep judges
+        expiry)."""
         self._entries.clear()
         directory = self.directory
         if not directory.is_dir():
@@ -424,7 +451,8 @@ class DeliveryLedger:
                 pass
 
     def _flush_batched(self, entry: LedgerEntry, now: float) -> None:
-        """Batched flush for cursor / visible timestamps: 50 frames / 2s thresholds; deadline-only changes enter the window too."""
+        """Batched flush for cursor / visible timestamps: 50 frames / 2s thresholds; deadline-only changes enter the
+        window too."""
         if entry.dirty_frames == 0 and not entry.dirty_deadline:
             return
         if entry.dirty_frames >= _BATCH_FRAMES or now - (entry.dirty_at or now) >= _BATCH_SECONDS:

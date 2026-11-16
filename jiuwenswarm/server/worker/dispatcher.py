@@ -72,7 +72,8 @@ def _question_body_matches(body: Any, response_kind: Any = None) -> dict[str, An
 
 
 def _question_frame_body(wire: Any) -> dict[str, Any] | None:
-    """Top-level wire frame -> question body (same-source criteria). response_kind and the question marker pass through
+    """Top-level wire frame -> question body (same-source criteria). response_kind and the question marker pass
+    through
     the retained-frame wrapper (either the outer wire or the inner shell may carry them)."""
     if not isinstance(wire, dict):
         return None
@@ -860,10 +861,13 @@ class WorkerDispatcher:
         """Whether a pending-replay question frame is expired — judged by the control payload itself, aligned with
         the ``_question_recovery_filter`` authority (``recoverable_control``).
 
-        ``record.interactions`` is the mixed interactions dict (waiting control set + question frames); non-empty does not imply
-        an in-flight question: with other controls remaining, the old coarse heuristic misjudged a finished question as in-flight and redelivered it
+        ``record.interactions`` is the mixed interactions dict (waiting control set + question frames); non-empty does
+        not imply
+        an in-flight question: with other controls remaining, the old coarse heuristic misjudged a finished question
+        as in-flight and redelivered it
         (openjiuwen-AIReview 9722 id=200409667 — port of the 9707 authority-judgment alignment
-        fix). When authority/marker are unreachable, fall back to the old heuristic (empty-dict check) to conservatively keep the original replay behavior.
+        fix). When authority/marker are unreachable, fall back to the old heuristic (empty-dict check) to
+        conservatively keep the original replay behavior.
         """
         runtime_getter = getattr(self._runtime, "_execution_runtime", None)
         runtime = runtime_getter() if callable(runtime_getter) else self._runtime
@@ -878,7 +882,8 @@ class WorkerDispatcher:
         return resolve(session_id, control_id, execution_id) is None
 
     async def _subscribe_by_id(self, message: dict[str, Any], conn: IpcConnection, generation: int) -> None:
-        """P6 identity replay: reverse-lookup the retained frames of one request via the ledger identity key and replay them (with the wire_id ack chain).
+        """P6 identity replay: reverse-lookup the retained frames of one request via the ledger identity key and
+        replay them (with the wire_id ack chain).
 
         Lookup key = (scope[:4], request_id) (same key shape as ``WorkerEventStore._active``);
         miss -> status=miss; worker_instance mismatch (worker restart lost retained frames) ->
@@ -925,16 +930,21 @@ class WorkerDispatcher:
                     record = candidate
                     break
         if record is None:
-            # Lookup miss: record finished/pruned or key mismatch -> supervisor turns it into the placeholder-card path.
+            # Lookup miss: record finished/pruned or key mismatch -> supervisor turns it into the placeholder-card
+            #  path.
             await _reply("miss")
             return
         if message.get("worker_instance") not in {None, "", self._bridge.events.instance}:
-            # Worker restarted (retained frames lost): supervisor goes straight to the placeholder card, no full history replay.
+            # Worker restarted (retained frames lost): supervisor goes straight to the placeholder card, no full
+            #  history replay.
             await _reply("history_required", dispatch_id=record.dispatch_id)
             return
-        # Replay frames share the publication lock with live frames of the same scope (same as the _subscribe replay precedent): take the lock first, then judge
-        # the gap and snapshot, then send frame by frame — judging the gap outside the lock leaves a TOCTOU window (concurrent append evicting
-        # retained frames between the check and the snapshot would silently skip frames); the same lock guarantees a total order between replay and live frames of the same scope
+        # Replay frames share the publication lock with live frames of the same scope (same as the _subscribe replay
+        #  precedent): take the lock first, then judge
+        # the gap and snapshot, then send frame by frame — judging the gap outside the lock leaves a TOCTOU window
+        #  (concurrent append evicting
+        # retained frames between the check and the snapshot would silently skip frames); the same lock guarantees a
+        #  total order between replay and live frames of the same scope
         # in arrival order.
         async with self._bridge.publication_lock(record.scope):
             # Re-verify generation/connection before acking: on a generation change, no ack and no replay —
@@ -942,7 +952,8 @@ class WorkerDispatcher:
             if self._bridge.holder.generation != generation or self._bridge.holder.conn is None:
                 return
             if self._bridge.events.replay_gapped(record.scope, rid, after):
-                # The retained frames of this request were evicted below the cursor: replay would silently skip frames,
+                # The retained frames of this request were evicted below the cursor: replay would silently skip
+                #  frames,
                 # status=ok would mask the gap -> supervisor placeholder-card path. The watermark is judged per
                 # (scope, request_id); another request eviction must not misreport this request as gapped.
                 await _reply("history_required", dispatch_id=record.dispatch_id)
@@ -953,7 +964,8 @@ class WorkerDispatcher:
             # replay (200876804).
             frames = self._bridge.events.replay_by_request(
                 record.scope, rid, after=after, dispatch_id=record.dispatch_id)
-            # The ok-first ack is the contract locked by test_e: the supervisor consumes ok as a no-op (it only handles
+            # The ok-first ack is the contract locked by test_e: the supervisor consumes ok as a no-op (it only
+            #  handles
             # miss/history_required); the fallback for a replay interruption = supervisor sweep retry +
             # placeholder expiry, not the ok semantics (atomgit 06:53 review: the "ok booked as success" premise
             # does not hold; the ack timing keeps the original contract).
@@ -965,13 +977,16 @@ class WorkerDispatcher:
                 if isinstance(payload, dict):
                     qbody = _question_frame_body(payload)
                     if qbody is not None and self._replayed_question_expired(record, qbody):
-                        # Expired question cards are not redelivered with the replay (authority = recoverable_control judged
+                        # Expired question cards are not redelivered with the replay (authority = recoverable_control
+                        #  judged
                         # per control; leftover other control interactions no longer get misjudged as in-flight;
                         # openjiuwen-AIReview 9722 id=200409667 = port of the 9707 authority alignment,
                         # following atomgit id=200378287, 9707 id=199769142-④ / the 06:53 review).
                         continue
-                    # Inject the replayed marker on a shallow-copy isolation: never write back to the event_store retained frame
-                    # (writing in place pollutes the logged object, and later the real first delivery would be mistaken by the consumer as an already-replayed frame —
+                    # Inject the replayed marker on a shallow-copy isolation: never write back to the event_store
+                    #  retained frame
+                    # (writing in place pollutes the logged object, and later the real first delivery would be
+                    #  mistaken by the consumer as an already-replayed frame —
                     # exactly the silent-reply-swallowing failure this PR fixes; atomgit 9722 id=200375260).
                     payload = {**payload}
                     metadata = dict(payload.get("metadata") or {})
