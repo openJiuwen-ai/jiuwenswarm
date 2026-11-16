@@ -338,6 +338,21 @@ export function responseAge(minutes: number): { unit: 'minutes' | 'hours' | 'day
   return { unit: 'minutes', count: whole };
 }
 
+export const CAROUSEL_CARD_MIN_WIDTH = 230;
+export const CAROUSEL_GAP = 14;
+
+/** Whole cards that fit the carousel, so every page starts and ends on a card edge. */
+export function carouselCardsPerView(width: number): number {
+  return Math.max(1, Math.floor((width + CAROUSEL_GAP) / (CAROUSEL_CARD_MIN_WIDTH + CAROUSEL_GAP)));
+}
+
+export function carouselEdges(scrollLeft: number, clientWidth: number, scrollWidth: number): {
+  atStart: boolean;
+  atEnd: boolean;
+} {
+  return { atStart: scrollLeft <= 1, atEnd: scrollLeft + clientWidth >= scrollWidth - 1 };
+}
+
 export function activeChannelCount(member: JiuwenMateActivityMember): number {
   return member.channels.filter((item) => item.tasks > 0 || item.calls > 0).length;
 }
