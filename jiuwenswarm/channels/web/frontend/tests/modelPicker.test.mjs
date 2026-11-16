@@ -49,6 +49,7 @@ try {
     vite.ssrLoadModule('/src/features/settings/services/settingsContract.ts'),
     vite.ssrLoadModule('/src/features/designer/designerModelConfiguration.ts'),
     vite.ssrLoadModule('/src/features/designer/useDesignerModelConfiguration.ts'),
+    vite.ssrLoadModule('/src/stores/workspaceStore.ts'),
   ]);
 } finally {
   await vite.close();
@@ -85,6 +86,7 @@ const [
   { SETTINGS_CONFIG_CHANGED_EVENT },
   { modelsForSlot, resolvedGenerationModelId },
   { useDesignerGenerationStore },
+  { useWorkspaceStore },
 ] = modules;
 
 const resources = Object.fromEntries(
@@ -420,6 +422,82 @@ test('run now waits for navigation and reports a session restore failure', async
     assert.match(byId('cron-error-toast').textContent, /task was triggered.*session list/);
     assert.equal(byId('cron-success-toast'), null);
   });
+});
+
+test('scheduled tasks follow the selected work mode without mixing status counts', async (t) => {
+  const base = {
+    description: 'Task', mode: 'agent', cron_expr: '0 0 2 * * ? *', timezone: 'Asia/Shanghai',
+    targets: 'web', expired: false, project_id: 'default', wake_offset_seconds: 0,
+  };
+  t.mock.method(webClient, 'request', async (method) => {
+    if (method === 'cron.job.list') return { jobs: [
+      { ...base, id: 'work', name: 'Work task', work_mode: 'work', enabled: true },
+      { ...base, id: 'code', name: 'Code task', work_mode: 'code', enabled: false },
+      { ...base, id: 'legacy', name: 'Legacy task', enabled: true },
+    ] };
+    if (method === 'project.list') return { projects: [] };
+    if (method === 'channel.get') return { channels: [{ channel_id: 'web' }] };
+    if (method === 'channel.xiaoyi.get_conf') return { config: {} };
+    throw new Error(`Unexpected request: ${method}`);
+  });
+  const previousMode = useWorkspaceStore.getState().workMode;
+  try {
+    useWorkspaceStore.setState({ workMode: 'work' });
+    await withFixture(async ({ mount, byId }) => {
+      await mount(createElement(CronPanel, { sessionId, onCreateViaChat() {}, onSelectSession() {} }));
+      assert.match(byId('cron-jobs-table').textContent, /Work task/);
+      assert.match(byId('cron-jobs-table').textContent, /Legacy task/);
+      assert.doesNotMatch(byId('cron-jobs-table').textContent, /Code task/);
+      assert.match(byId('cron-stats-total').textContent, /2/);
+      await act(async () => useWorkspaceStore.setState({ workMode: 'code' }));
+      assert.match(byId('cron-jobs-table').textContent, /Code task/);
+      assert.doesNotMatch(byId('cron-jobs-table').textContent, /Work task|Legacy task/);
+      assert.match(byId('cron-stats-total').textContent, /1/);
+    });
+  } finally {
+    useWorkspaceStore.setState({ workMode: previousMode });
+  }
+});
+
+test('create and edit failures stay visible inside the scheduled task drawer', async (t) => {
+  const job = {
+    id: 'edit-job', name: 'Existing task', description: 'Task description', mode: 'agent',
+    cron_expr: '0 0 2 * * ? *', timezone: 'Asia/Shanghai', targets: 'web',
+    enabled: true, expired: false, project_id: 'default', work_mode: 'work', wake_offset_seconds: 0,
+  };
+  let jobs = [];
+  t.mock.method(webClient, 'request', async (method) => {
+    if (method === 'cron.job.list') return { jobs };
+    if (method === 'project.list') return { projects: [] };
+    if (method === 'channel.get') return { channels: [{ channel_id: 'web' }] };
+    if (method === 'channel.xiaoyi.get_conf') return { config: {} };
+    if (method === 'cron.job.create' || method === 'cron.job.update') throw new Error('server rejected request');
+    throw new Error(`Unexpected request: ${method}`);
+  });
+  const previousMode = useWorkspaceStore.getState().workMode;
+  try {
+    useWorkspaceStore.setState({ workMode: 'work' });
+    await withFixture(async ({ mount, click, byId }) => {
+      await mount(createElement(CronPanel, { sessionId, onCreateViaChat() {}, onSelectSession() {} }));
+      await click(byId('cron-empty-template-card'));
+      await click(byId('cron-drawer-submit-btn'));
+      assert.match(byId('cron-drawer-submit-error').textContent, /server rejected request/);
+      assert.ok(byId('cron-drawer').contains(byId('cron-drawer-submit-error')));
+      assert.equal(byId('cron-error-toast'), null);
+      await click(byId('cron-drawer-close-btn'));
+      jobs = [job];
+    });
+    await withFixture(async ({ mount, click, byId }) => {
+      await mount(createElement(CronPanel, { sessionId, onCreateViaChat() {}, onSelectSession() {} }));
+      await click(byId('cron-job-edit-btn'));
+      assert.equal(byId('cron-drawer-submit-error'), null);
+      await click(byId('cron-drawer-submit-btn'));
+      assert.match(byId('cron-drawer-submit-error').textContent, /server rejected request/);
+      assert.ok(byId('cron-drawer').contains(byId('cron-drawer-submit-error')));
+    });
+  } finally {
+    useWorkspaceStore.setState({ workMode: previousMode });
+  }
 });
 
 test('a historical chat alias still resolves to the selected model after extraction', async () => {
