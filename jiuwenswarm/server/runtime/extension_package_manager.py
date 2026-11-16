@@ -97,7 +97,9 @@ _AGENT_TEMPLATE_KIND = "agent_templates"
 _AGENT_GROUP_KIND = "agent_groups"
 _PLUGIN_PACKAGE_KIND = "plugin_packages"
 _HUB_PREVIEW_ARCHIVE_LIMIT = 8
-_EXTERNAL_HARNESS_PROVIDERS = frozenset({"claudecode", "codex", "dsh"})
+# dsh 不在允许列表中：仓内无任何 dsh 运行时实现（CLI 映射只有 claudecode/codex），
+# 列入白名单只会让校验错误信息误导用户"暂支持 dsh"（#6686）
+_EXTERNAL_HARNESS_PROVIDERS = frozenset({"claudecode", "codex"})
 _EXTERNAL_HARNESS_UNSUPPORTED_FIELDS = ("tools", "rails", "subagents")
 _FORM_HARNESS_PROVIDERS = frozenset({"claudecode", "codex"})
 _EXTERNAL_HARNESS_TAG = {"zh": "三方Harness", "en": "External Harness"}

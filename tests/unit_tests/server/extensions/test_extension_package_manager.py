@@ -1207,7 +1207,7 @@ class TestCreateInstallUninstall:
             if entry["id"] == "codex-expert"
         )["installed"] is True
 
-    @pytest.mark.parametrize("provider_name", ["", "claude-code", "deepseek-harness", "native"])
+    @pytest.mark.parametrize("provider_name", ["", "claude-code", "deepseek-harness", "native", "gemini", "dsh"])
     def test_install_external_runtime_rejects_provider_outside_allowlist(
         self, extension_workspace: Path, provider_name: str
     ) -> None:
@@ -1222,8 +1222,11 @@ class TestCreateInstallUninstall:
             },
         )
 
-        with pytest.raises(ValueError, match="provider_name.*claudecode.*codex.*dsh"):
+        with pytest.raises(ValueError, match="provider_name.*claudecode.*codex") as exc_info:
             catalog.install_agent_template({"id": "invalid-runtime"})
+        # 幽灵 provider dsh 不得再出现在白名单提示中（got 部分回显被拒值，#6686）
+        assert "claudecode, codex" in str(exc_info.value)
+        assert "one of: claudecode, codex, dsh" not in str(exc_info.value)
 
         assert catalog.read_agent_template_marketplace_entries() == []
 
@@ -1238,7 +1241,7 @@ class TestCreateInstallUninstall:
             extra_manifest={
                 "name": "unsupported-runtime",
                 "description": "External expert with unsupported native capabilities.",
-                "runtime": {"provider_name": "dsh"},
+                "runtime": {"provider_name": "codex"},
                 unsupported_field: [{"file": "unsupported.py"}],
             },
         )
