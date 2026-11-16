@@ -819,6 +819,27 @@ test('subagent roster updates keep the persisted display role', () => {
   assert.equal(replay?.payload.role, '查询汕头今日天气');
 });
 
+test('subagent history replays the saved expert name and avatar', () => {
+  const avatar = 'data:image/webp;base64,YXZhdGFy';
+  const displayNames = { zh: '调研专家', en: 'Research Expert' };
+  const replay = parseSubagentHistoryReplay({
+    role: 'assistant',
+    event_type: 'chat.subtask_update',
+    timestamp: 1787019579.059,
+    subagent_id: subagentId,
+    parent_session_id: sessionId,
+    display_name: displayNames.zh,
+    display_name_i18n: displayNames,
+    avatar,
+    status: 'idle',
+    revision: 2,
+  }, sessionId, subagentId);
+
+  assert.equal(replay?.kind, 'updated');
+  assert.deepEqual(replay?.payload.display_name_i18n, displayNames);
+  assert.equal(replay?.payload.avatar, avatar);
+});
+
 test('subagent history rejects activity whose nested parent session differs', () => {
   const replay = parseSubagentHistoryReplay({
     role: 'assistant',

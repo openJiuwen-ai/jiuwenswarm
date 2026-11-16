@@ -21,7 +21,12 @@ from openjiuwen.harness.factory import create_deep_agent
 from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.rails import SkillUseRail
 from openjiuwen.harness.rails.base import DeepAgentRail
-from openjiuwen.harness.resources import LoadRecord, aload_agent_template_package, read_agent_template_card
+from openjiuwen.harness.resources import (
+    AgentTemplateCard,
+    LoadRecord,
+    aload_agent_template_package,
+    read_agent_template_card,
+)
 from openjiuwen.harness.schema.build_context import BuildContext
 from openjiuwen.harness.schema.config import SubAgentConfig
 from openjiuwen.harness.schema.extension_spec import AgentTemplateSpec
@@ -30,6 +35,7 @@ from openjiuwen.harness.tools.subagent.task_tool import TaskTool, resolve_subage
 
 from jiuwenswarm.agents.harness.agent_observability import attach_subagent_observability
 from jiuwenswarm.agents.harness.common.prompt.priority_registry import SystemPromptPriority
+from jiuwenswarm.server.runtime.extension_package_manager import resolve_package_avatar_thumbnail
 
 from .expert_task_plan import ExpertTask, TASK_PLAN_PROVIDER
 
@@ -65,10 +71,10 @@ def general_purpose_recipe(agent: DeepAgent) -> SubAgentConfig | None:
     )
 
 
-async def _installed_template(expert_id: str) -> tuple[Path, AgentTemplateSpec]:
+async def _installed_template(expert_id: str) -> tuple[Path, AgentTemplateSpec, AgentTemplateCard]:
     from jiuwenswarm.agents.harness.team.experts import JiuwenExpertCatalog
 
-    matches = []
+    matches: list[tuple[Path, AgentTemplateCard]] = []
     for package in await JiuwenExpertCatalog().list_expert_packages():
         manifest = package.path / "manifest.json"
         try:
@@ -76,18 +82,18 @@ async def _installed_template(expert_id: str) -> tuple[Path, AgentTemplateSpec]:
         except ValueError:
             continue
         if card.name == expert_id:
-            matches.append(manifest)
+            matches.append((manifest, card))
     if not matches:
         raise ValueError(f"Expert {expert_id!r} is not installed or its manifest is unavailable")
     if len(matches) > 1:
         raise ValueError(f"Expert {expert_id!r} matches multiple installed templates")
-    manifest = matches[0]
+    manifest, card = matches[0]
     spec = await aload_agent_template_package(manifest)
     if spec.agent_card.name != expert_id:
         raise ValueError(f"Installed expert {expert_id!r} changed before dispatch")
     if spec.runtime is not None:
         raise ValueError(f"Expert {expert_id!r} requires an external runtime")
-    return manifest.parent, spec
+    return manifest.parent, spec, card
 
 
 def _copy_skill_rail(rail: SkillUseRail) -> SkillUseRail:
@@ -155,6 +161,9 @@ class _ExpertNodeTask(TaskTool):
 
     def __init__(self, tool: TaskTool, task: ExpertTask, recipe: SubAgentConfig) -> None:
         super().__init__(tool.card, tool.parent_agent, tool.language, allowed_subagent_types={_GENERAL_PURPOSE})
+        self.display_task_description = task.task
+        self.display_name_i18n: dict[str, str] | None = None
+        self.display_avatar = ""
         self._task = task
         self._recipe = recipe
         self._completion = _NodeCompletionRail(task)
@@ -164,8 +173,18 @@ class _ExpertNodeTask(TaskTool):
         self.outputs: dict[str, Any] = {}
 
     async def run(self, query: str, session: Session) -> dict[str, Any]:
-        if self._task.expert_id is not None:
-            self._template = await _installed_template(self._task.expert_id)
+        expert_id = self._task.expert_id
+        if expert_id is not None:
+            directory, spec, card = await _installed_template(expert_id)
+            self._template = (directory, spec)
+            self.display_name_i18n = {
+                "zh": card.display_label("zh") or expert_id,
+                "en": card.display_label("en") or expert_id,
+            }
+            if card.avatar:
+                self.display_avatar = await asyncio.to_thread(
+                    resolve_package_avatar_thumbnail, directory, card.avatar,
+                )
         try:
             await self.invoke({"subagent_type": _GENERAL_PURPOSE, "task_description": query}, session=session)
             return self.outputs

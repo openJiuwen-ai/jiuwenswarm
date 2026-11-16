@@ -337,15 +337,21 @@ function replaceSubagent(runtime: SubagentRuntime, incoming: Subagent, allowSame
       const hasUsefulDisplayName = current.display_name.trim() === 'general-purpose'
         && incoming.display_name.trim() !== ''
         && incoming.display_name.trim() !== 'general-purpose';
-      if (!hasUsefulDisplayName) return runtime;
+      const displayNames = current.display_name_i18n ?? incoming.display_name_i18n;
+      const avatar = current.avatar ?? incoming.avatar;
+      if (!hasUsefulDisplayName && displayNames === current.display_name_i18n && avatar === current.avatar) {
+        return runtime;
+      }
       return {
         ...runtime,
         subagentsById: {
           ...runtime.subagentsById,
           [incoming.subagent_id]: {
             ...current,
-            display_name: incoming.display_name,
-            role: incoming.role.trim() ? incoming.role : current.role,
+            display_name: hasUsefulDisplayName ? incoming.display_name : current.display_name,
+            role: hasUsefulDisplayName && incoming.role.trim() ? incoming.role : current.role,
+            ...(displayNames ? { display_name_i18n: displayNames } : {}),
+            ...(avatar ? { avatar } : {}),
           },
         },
       };
@@ -354,11 +360,15 @@ function replaceSubagent(runtime: SubagentRuntime, incoming: Subagent, allowSame
 
   // Some recovery sources only carry the status transition. Keep the canonical
   // assignment metadata when a newer sparse snapshot omits it.
+  const displayNames = incoming.display_name_i18n ?? current?.display_name_i18n;
+  const avatar = incoming.avatar ?? current?.avatar;
   const mergedIncoming = current
     ? {
       ...incoming,
       role: incoming.role.trim() ? incoming.role : current.role,
       task_description: incoming.task_description.trim() ? incoming.task_description : current.task_description,
+      ...(displayNames ? { display_name_i18n: displayNames } : {}),
+      ...(avatar ? { avatar } : {}),
     }
     : incoming;
 

@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from PIL import Image
 
 from openjiuwen.core.foundation.llm import (
     AssistantMessage,
@@ -33,9 +34,12 @@ from jiuwenswarm.agents.harness.common.rails.symphony.expert_task_plan import Ex
 from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit
 from jiuwenswarm.agents.harness.team.experts import catalog
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.session.session_history import flush_history_writes, load_history_records
+from jiuwenswarm.server.wire_truncate import split_history_record_for_stream
 
 
 _CONFIG = {"symphony": {"orchestration": {"enabled": True}}, "react": {"subagent_runtime": {"enabled": True}}}
+_RESEARCHER_NAMES = {"zh": "调研专家", "en": "Research Expert"}
 
 
 def _reply(content="", *calls):
@@ -113,10 +117,18 @@ def _install_experts(tmp_path: Path, monkeypatch) -> dict[str, Path]:
         )
         receipt = tmp_path / f"{expert}.txt"
         receipts[expert] = receipt
+        (package / "avatars").mkdir()
+        avatar = package / "avatars" / "avatar.png"
+        if expert == "researcher":
+            Image.new("RGB", (32, 32), "blue").save(avatar)
+        else:
+            avatar.write_bytes(b"corrupt image")
         (package / "manifest.json").write_text(json.dumps({
             "package_type": "agent_template", "name": expert, "description": "Test expert",
             "persona": {"dir": "persona"}, "tools": [{"file": "receipt.py", "class": "Receipt"}],
             "skills": [{"dir": f"skills/{expert}-method"}],
+            "avatar": "avatars/avatar.png",
+            **({"display_name": _RESEARCHER_NAMES} if expert == "researcher" else {}),
         }), encoding="utf-8")
         (package / "receipt.py").write_text(
             "from pathlib import Path\n"
@@ -181,21 +193,34 @@ def _tool_results(messages):
 @pytest.mark.parametrize("execute", [True, False])
 async def test_chat_returns_dag_then_delegates_native_and_inline_nodes(tmp_path, monkeypatch, execute):
     receipts = _install_experts(tmp_path, monkeypatch)
+    report_task = "Write the report." + " Cite the verified sources in the final report." * 12
+    expected_roles = {
+        "research": "researcher",
+        "organize": "organize",
+        "verify": "verify",
+        report_task: "reporter",
+        "check citations": "researcher",
+    }
     graph = _plan({
         "task-1": _node("research", "findings", expert="researcher"),
         "task-2": _node("organize", "notes"),
         "task-3": _node("verify", "verified", input_name="evidence"),
-        "task-4": _node("report", "report", expert="reporter", input_name="verified"),
+        "task-4": _node(report_task, "report", expert="reporter", input_name="verified"),
+        "task-5": _node("check citations", "citations", expert="researcher"),
     }, [
         ("task-1", "task-3", "FINDINGS", "Evidence"),
         ("task-2", "task-3", "notes", "evidence"),
+        ("task-5", "task-3", "citations", "evidence"),
         ("task-3", "task-4", "verified", "verified"),
     ])
     both_started = asyncio.Event()
     started = set()
     root_round = 0
     events = []
-    query = "Research and write the report" if execute else "Show only the assignment graph"
+    query = (
+        "Research and write the report." + " Use the supplied materials to verify the facts." * 14
+        if execute else "Show only the assignment graph"
+    )
 
     async def reply(messages, tools):
         nonlocal root_round
@@ -206,20 +231,22 @@ async def test_chat_returns_dag_then_delegates_native_and_inline_nodes(tmp_path,
             assert "You are executing a single Symphony task" in system or "你负责执行 Symphony 的一个任务节点" in system
             assignment = json.loads(user_input.split("\n\n", 1)[1])
             task = assignment["task"]
-            if task in {"research", "organize"} and not results:
+            assert assignment["user_request"] == query
+            assert assignment["role"] == expected_roles[task]
+            if task in {"research", "organize", "check citations"} and not results:
                 started.add(task)
-                if len(started) == 2:
+                if len(started) == 3:
                     both_started.set()
                 await asyncio.wait_for(both_started.wait(), timeout=5)
             if task == "verify":
-                assert assignment["inputs"] == {"evidence": ["researcher", "organized notes"]}
+                assert assignment["inputs"] == {"evidence": ["researcher", "organized notes", "researcher"]}
                 return _reply('{"outputs":{"verified":"verified facts"}}')
             if task == "organize":
                 assert assignment["role_description"] == "Role for organize"
                 return _reply("", ("submit", task_tool_module.SUBMIT_OUTPUTS_TOOL, {
                     "outputs": {"notes": "organized notes"},
                 }))
-            if task == "report":
+            if task == report_task:
                 assert assignment["inputs"] == {"verified": "verified facts"}
             assert f"Persona from {assignment['role']} template" in str(messages[0].content)
             if "method" not in results:
@@ -248,7 +275,7 @@ async def test_chat_returns_dag_then_delegates_native_and_inline_nodes(tmp_path,
                 return _reply("Plan displayed")
             research = _task_call("task-1")
             research[2]["call_goal"] = "Collect evidence"
-            return _reply("", research, _task_call("task-2"), _task_call("task-3", call_id="early"))
+            return _reply("", research, _task_call("task-2"), _task_call("task-5"), _task_call("task-3", call_id="early"))
         if root_round == 3:
             assert json.loads(results["early"])["status"] == "waiting"
             return _reply("", _task_call("task-3"), _task_call("task-1", call_id="duplicate"))
@@ -259,20 +286,48 @@ async def test_chat_returns_dag_then_delegates_native_and_inline_nodes(tmp_path,
         return _reply("Report delivered")
 
     agent = _chat_agent(tmp_path, monkeypatch, graph, reply)
-    async for event in agent.stream(_chat_input(query)):
+    chat_input = _chat_input(query)
+    async for event in agent.stream(chat_input):
         events.append(event)
     assert (events[-1].payload["output"] if "output" in events[-1].payload else events[-1].payload["content"]) == (
         "Report delivered" if execute else "Plan displayed"
     )
     if execute:
-        assert started == {"research", "organize"}
+        assert started == {"research", "organize", "check citations"}
         assert all(receipt.read_text() == "template tool ran" for receipt in receipts.values())
         subagent_events = [event for event in events if event.type == "subagent_updated"]
-        assert subagent_events
+        subagent_ids_by_task = {}
+        avatars_by_task = {}
         for event in subagent_events:
-            data = event.payload["subagent_updated"]
+            data = JiuWenSwarmDeepAdapter.parse_stream_chunk(event)
+            assert data is not None and data["event_type"] == "chat.subtask_update"
+            task = data["task_description"]
+            role = expected_roles[task]
+            assert subagent_ids_by_task.setdefault(task, data["subagent_id"]) == data["subagent_id"]
+            if role == "researcher":
+                assert data["display_name"] in _RESEARCHER_NAMES.values()
+                assert data["display_name_i18n"] == _RESEARCHER_NAMES
+                if data.get("avatar"):
+                    assert data["avatar"].startswith("data:image/webp;base64,")
+                    assert avatars_by_task.setdefault(task, data["avatar"]) == data["avatar"]
+            else:
+                assert data["display_name"] == role
+                assert data.get("display_name_i18n") == ({"zh": role, "en": role} if role == "reporter" else None)
+                assert "avatar" not in data
             assert Runner.resource_mgr.get_tool(f"expert_receipt_{data['subagent_id']}") is None
             assert Runner.resource_mgr.get_tool(f"{task_tool_module.SUBMIT_OUTPUTS_TOOL}_{data['subagent_id']}") is None
+        assert subagent_ids_by_task.keys() == expected_roles.keys()
+        assert len(set(subagent_ids_by_task.values())) == len(expected_roles)
+        assert avatars_by_task.keys() == {"research", "check citations"}
+        assert avatars_by_task["research"] == avatars_by_task["check citations"]
+        flush_history_writes()
+        for task, avatar_url in avatars_by_task.items():
+            records = load_history_records(chat_input["conversation_id"], subagent_id=subagent_ids_by_task[task])
+            terminal = next(record for record in records if record.get("turn_outcome") == "completed")
+            [replay] = split_history_record_for_stream(terminal)
+            assert replay["avatar"] == avatar_url
+            assert replay["display_name_i18n"] == _RESEARCHER_NAMES
+            assert replay["task_description"] == task
     else:
         assert not started and not any(receipt.exists() for receipt in receipts.values())
 
