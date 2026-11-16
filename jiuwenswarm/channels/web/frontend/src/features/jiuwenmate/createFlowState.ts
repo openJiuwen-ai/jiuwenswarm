@@ -91,6 +91,16 @@ export function openColleagueMessages(state: JiuwenMateState): JiuwenMateState {
   };
 }
 
+/**
+ * A deep link such as an activity trace opens the workspace once; reopening chat from the rail
+ * must start from the plain private chat instead of replaying it.
+ */
+export function clearWorkspaceIntent<T>(
+  current: { nonce: number; intent: T | null },
+): { nonce: number; intent: T | null } {
+  return current.intent === null ? current : { nonce: current.nonce + 1, intent: null };
+}
+
 export function openColleagueWorkspace(state: JiuwenMateState, colleagueId: string): JiuwenMateState {
   return { ...state, ...RESET_CREATION, view: 'colleague-workspace', selectedColleagueId: colleagueId };
 }

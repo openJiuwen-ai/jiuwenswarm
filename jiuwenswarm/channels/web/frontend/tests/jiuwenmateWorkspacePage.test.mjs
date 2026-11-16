@@ -48,7 +48,7 @@ const webResult = {
 };
 
 /** Renders the real page with a recording chat API and timers the test drives itself. */
-async function renderWorkspace({ withChannels = false, schedules = [], ...colleagueOverrides } = {}, initialWebConversations = []) {
+async function renderWorkspace({ withChannels = false, schedules = [], intent = null, channels = [], ...colleagueOverrides } = {}, initialWebConversations = []) {
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
   const previous = {
     window: globalThis.window,
@@ -67,7 +67,7 @@ async function renderWorkspace({ withChannels = false, schedules = [], ...collea
   };
   dom.window.clearInterval = (id) => ticks.delete(id);
   dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
-  const state = { webConversations: initialWebConversations, channels: [], channelCalls: [], channelFailure: false, schedules };
+  const state = { webConversations: initialWebConversations, channels, channelCalls: [], channelFailure: false, schedules };
   Object.defineProperty(dom.window.document, 'visibilityState', { configurable: true, get: () => state.hidden ? 'hidden' : 'visible' });
   const channelApi = {
     listChannels: async (agentId) => {
@@ -127,6 +127,7 @@ async function renderWorkspace({ withChannels = false, schedules = [], ...collea
     root.render(React.createElement(ColleagueWorkspacePage, {
       colleagues: [currentColleague],
       selectedColleagueId: colleague.id,
+      intent,
       chat,
       channelApi: withChannels ? channelApi : undefined,
       connectionEpoch,
@@ -463,6 +464,25 @@ test('joining a group updates an open channel directory without remounting the w
     await page.poll();
     const panel = page.container.querySelector('[data-testid="jiuwenmate-management-panel"]');
     assert.ok(panel.textContent.includes(joinedGroup.name));
+  } finally { await page.close(); }
+});
+
+test('a trace opened from the employee center shows in the management panel beside the private chat', async () => {
+  const page = await renderWorkspace({
+    withChannels: true,
+    channels: [joinedGroup],
+    intent: { recordTab: 'channels', channelId: joinedGroup.id, trace: true },
+  });
+  try {
+    const panel = page.container.querySelector('[data-testid="jiuwenmate-management-panel"]');
+    assert.ok(panel.querySelector('[data-testid="jiuwenmate-management-channel-detail"]'));
+    assert.ok(panel.querySelector('[data-testid="jiuwenmate-channel-trace-page"]'));
+    assert.equal(page.container.querySelector('[data-testid="jiuwenmate-channel-view"]'), null);
+
+    await act(async () => panel.querySelector('[data-testid="jiuwenmate-trace-back-button"]').click());
+    await page.flush();
+    assert.ok(page.container.querySelector('[data-testid="jiuwenmate-management-channel-detail"]'));
+    assert.equal(page.container.querySelector('[data-testid="jiuwenmate-channel-trace-page"]'), null);
   } finally { await page.close(); }
 });
 
