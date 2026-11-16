@@ -6570,6 +6570,10 @@
         "promptRequired": "请输入任务描述",
         "required": "请填写任务名称和描述",
         "executorRequired": "请选择执行此任务的员工",
+        "onceDateRequired": "请选择执行日期",
+        "timeRequired": "请选择执行时间",
+        "monthDayInvalid": "请输入 1 到 31 之间的每月执行日期",
+        "intervalRequired": "请输入执行间隔",
         "intervalInvalid": "间隔必须是正整数",
         "futureRequired": "单次执行时间必须晚于当前时间",
         "rangeInvalid": "生效结束时间必须晚于开始时间"

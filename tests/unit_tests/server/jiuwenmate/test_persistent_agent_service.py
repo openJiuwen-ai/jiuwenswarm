@@ -24,7 +24,6 @@ from jiuwenswarm.server.jiuwenmate.repository import PersistentAgentRepository, 
 from jiuwenswarm.server.jiuwenmate.resource_assembly import InstalledResourceCatalog
 from jiuwenswarm.server.jiuwenmate.service import (
     FORMAL_CAPACITY_MARGIN_TOKENS,
-    FORMAL_OUTPUT_RESERVE_TOKENS,
     WORKSPACE_PROMPT,
     ConfiguredModelProvider,
     PersistentAgentService,
@@ -32,6 +31,7 @@ from jiuwenswarm.server.jiuwenmate.service import (
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot, build_invocation, publish_spec
 
 from openjiuwen.core.foundation.llm import ModelClientConfig, ModelRequestConfig
+from openjiuwen.core.foundation.llm.model_clients.openai_model_client import OpenAIModelClient
 from openjiuwen.harness import persistent_agent as core
 from openjiuwen.harness.persistent_agent.execution.capacity import capacity_limits
 from openjiuwen.harness.resources.extension_loader import find_agent_template_manifest, load_agent_template_package
@@ -759,19 +759,49 @@ def test_permission_profile_is_employee_scoped_and_published_into_spec(tmp_path)
     assert second_spec.permissions["mode"] == "manual"
 
 
-def test_publication_fills_the_formal_capacity_check(tmp_path):
+def test_publication_reserves_capacity_without_limiting_model_output(tmp_path):
     service = make_service(tmp_path)
     view = service.create_colleague(NS, settings())
     spec = service.current_snapshot(NS, view.agent_id).load_spec()
     request = spec.model.model_request_config
 
     assert request.context_window == 256 * 1024
-    assert request.max_tokens == FORMAL_OUTPUT_RESERVE_TOKENS
+    assert request.max_tokens is None
     assert spec.capacity_safety_margin_tokens == FORMAL_CAPACITY_MARGIN_TOKENS
-    assert spec.model_input_limit_tokens == request.context_window - request.max_tokens - FORMAL_CAPACITY_MARGIN_TOKENS
-    limits = capacity_limits(spec)
-    assert limits is not None
-    assert limits.available_input == spec.model_input_limit_tokens
+    assert spec.model_input_limit_tokens == 252928
+
+
+@pytest.mark.parametrize(("max_tokens", "expected_limit", "input_limit"), [
+    (None, None, 1039360),
+    (0, None, 1039360),
+    (-1, None, 1039360),
+    (4096, 4096, 1043456),
+])
+def test_published_model_request_preserves_the_configured_output_limit(tmp_path, max_tokens, expected_limit, input_limit):
+    service = make_service(tmp_path, FakeModels(window=1048576, max_tokens=max_tokens))
+    view = service.create_colleague(NS, settings())
+    spec = service.current_snapshot(NS, view.agent_id).load_spec()
+    model = spec.model
+    assert model.model_request_config.max_tokens == expected_limit
+    assert spec.model_input_limit_tokens == input_limit
+    client = OpenAIModelClient(model.model_request_config, model.model_client_config)
+
+    params = client._build_request_params(
+        messages=[{"role": "user", "content": "Build an interactive game."}],
+        tools=None,
+        temperature=None,
+        top_p=None,
+        model=None,
+        stop=None,
+        max_tokens=None,
+        stream=True,
+    )
+
+    if expected_limit is None:
+        assert "max_tokens" not in params
+        assert "max_completion_tokens" not in params
+    else:
+        assert params["max_tokens"] == 4096
 
 
 def test_invocation_identifies_configured_model_without_connection_secrets(tmp_path):
@@ -870,6 +900,22 @@ def test_publication_keeps_a_configured_output_reserve(tmp_path):
     assert spec.model.model_request_config.context_window == 262144
     assert spec.model.model_request_config.max_tokens == 4096
     assert spec.model_input_limit_tokens == 262144 - 4096 - FORMAL_CAPACITY_MARGIN_TOKENS
+    assert capacity_limits(spec).available_input == spec.model_input_limit_tokens
+
+
+def test_republication_removes_an_output_limit_no_longer_set_by_the_model(tmp_path):
+    models = FakeModels(window=1048576, max_tokens=8192)
+    service = make_service(tmp_path, models)
+    view = service.create_colleague(NS, settings())
+    previous = service.current_snapshot(NS, view.agent_id)
+    models.max_tokens = None
+
+    assert service.publish(NS, view.agent_id).config_version == "v2"
+    spec = service.current_snapshot(NS, view.agent_id).load_spec()
+
+    assert spec.model.model_request_config.max_tokens is None
+    assert spec.model.model_request_config.context_window == 1048576
+    assert previous.load_spec().model.model_request_config.max_tokens == 8192
 
 
 def test_an_output_reserve_that_fills_the_window_is_refused(tmp_path):
