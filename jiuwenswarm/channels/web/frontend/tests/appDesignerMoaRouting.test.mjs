@@ -132,7 +132,7 @@ test('a failed Designer submission releases the draft for retry without changing
   };
   const send = createAppSend(state.dependencies);
   await send('create a scene');
-  assert.deepEqual(state.calls.errors, [{ content: 'designer.chat.limitVideo', variant: 'error' }]);
+  assert.deepEqual(state.calls.errors, [{ content: 'designer.chat.limitVideo', variant: 'error', wide: true }]);
   assert.equal(state.processing.isProcessing, false);
   assert.equal(state.creatingSessionRef.current, false);
   await send('retry scene');

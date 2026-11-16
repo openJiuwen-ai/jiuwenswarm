@@ -277,7 +277,7 @@ export function DesignerChatPanel() {
     // Same gate as the landing page: a round needs the chat model and both
     // generation slots, so refuse loudly instead of failing mid-run (#5266).
     if (blockedProblem) {
-      toast.open({ content: blockedProblem, variant: 'error' });
+      toast.open({ content: blockedProblem, variant: 'error', wide: true });
       return;
     }
     setSending(true);
