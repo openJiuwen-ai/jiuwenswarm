@@ -18,12 +18,14 @@ generated: true
 | [jiuwenswarm/agents/harness/common/rails](#module-1) |
 | [jiuwenswarm/agents/harness/common/tools](#module-2) |
 | [jiuwenswarm/channels/web/frontend](#module-3) |
-| [jiuwenswarm/common/e2a](#module-4) |
-| [jiuwenswarm/common/schema](#module-5) |
-| [jiuwenswarm/extensions/sdk](#module-6) |
-| [jiuwenswarm/resources/plugins/ttse](#module-7) |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-8) |
-| [未分类](#module-9) |
+| [jiuwenswarm/channels/web/frontend/src/features/settings](#module-4) |
+| [jiuwenswarm/common](#module-5) |
+| [jiuwenswarm/common/e2a](#module-6) |
+| [jiuwenswarm/common/schema](#module-7) |
+| [jiuwenswarm/extensions/sdk](#module-8) |
+| [jiuwenswarm/resources/plugins/ttse](#module-9) |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-10) |
+| [未分类](#module-11) |
 
 <a id="module-1"></a>
 
@@ -51,13 +53,29 @@ generated: true
 
 <a id="module-4"></a>
 
+## jiuwenswarm/channels/web/frontend/src/features/settings
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [S_01_affinity-settings](jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | jiuwenswarm/common, jiuwenswarm/channels/web/frontend/src/features/settings | jiuwenswarm/common/kv_cache_affinity_config.py, jiuwenswarm/common/config.py | — |
+
+<a id="module-5"></a>
+
+## jiuwenswarm/common
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [S_01_affinity-settings](jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | jiuwenswarm/common, jiuwenswarm/channels/web/frontend/src/features/settings | jiuwenswarm/common/kv_cache_affinity_config.py, jiuwenswarm/common/config.py | — |
+
+<a id="module-6"></a>
+
 ## jiuwenswarm/common/e2a
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [S_01_local-request-methods](jiuwenswarm/common/S_01_local-request-methods.md) | S | JiuwenSwarm request method ownership | mingo007 | jiuwenswarm/common/schema, jiuwenswarm/common/e2a | jiuwenswarm/common/schema/req_method.py, jiuwenswarm/common/schema/message.py, jiuwenswarm/common/schema/agent.py, jiuwenswarm/common/e2a/gateway_normalize.py, jiuwenswarm/common/e2a/agent_compat.py | — |
 
-<a id="module-5"></a>
+<a id="module-7"></a>
 
 ## jiuwenswarm/common/schema
 
@@ -65,7 +83,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [S_01_local-request-methods](jiuwenswarm/common/S_01_local-request-methods.md) | S | JiuwenSwarm request method ownership | mingo007 | jiuwenswarm/common/schema, jiuwenswarm/common/e2a | jiuwenswarm/common/schema/req_method.py, jiuwenswarm/common/schema/message.py, jiuwenswarm/common/schema/agent.py, jiuwenswarm/common/e2a/gateway_normalize.py, jiuwenswarm/common/e2a/agent_compat.py | — |
 
-<a id="module-6"></a>
+<a id="module-8"></a>
 
 ## jiuwenswarm/extensions/sdk
 
@@ -73,7 +91,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [S_03_native-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/extensions/sdk | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/extensions/sdk/plugin_runtime.py | — |
 
-<a id="module-7"></a>
+<a id="module-9"></a>
 
 ## jiuwenswarm/resources/plugins/ttse
 
@@ -81,7 +99,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [S_02_ttse-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_02_ttse-plugin-runtime.md) | S | TTSE Coding 插件运行契约 | xinyang_bali | jiuwenswarm/resources/plugins/ttse | jiuwenswarm/resources/plugins/ttse/rails/ttse_plugin_rail.py, jiuwenswarm/resources/plugins/ttse/manifest.json | — |
 
-<a id="module-8"></a>
+<a id="module-10"></a>
 
 ## jiuwenswarm/server/runtime/agent_adapter
 
@@ -91,7 +109,7 @@ generated: true
 | [S_01_tool-discovery-language](jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py | — |
 | [S_03_native-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/extensions/sdk | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/extensions/sdk/plugin_runtime.py | — |
 
-<a id="module-9"></a>
+<a id="module-11"></a>
 
 ## 未分类
 

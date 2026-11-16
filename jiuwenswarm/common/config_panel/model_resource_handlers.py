@@ -5,6 +5,8 @@ from __future__ import annotations
 from agent_gateway.common.model_selection import ModelSelection
 from jiuwenswarm.common.config import (
     delete_model_resource,
+    get_config_raw,
+    resolve_env_vars,
     upsert_model_group_resource,
     upsert_model_resource,
 )
@@ -14,6 +16,8 @@ from jiuwenswarm.common.model_errors import (
     MODEL_SELECTION_NOT_FOUND,
     ModelSelectionError,
 )
+
+from jiuwenswarm.common.kv_cache_affinity_config import get_affinity_status
 
 RESOURCE_OPERATIONS = {
     "models.get": "models.get",
@@ -82,6 +86,7 @@ async def model_resource_handler(
 
     del session_id
     try:
+        before = get_affinity_status(resolve_env_vars(get_config_raw()))
         payload = await _resource_payload(operation, params or {}, user_id=user_id)
         if operation.endswith((".upsert", ".delete")):
             if operation == "models.delete":
@@ -91,11 +96,17 @@ async def model_resource_handler(
                 changed_keys = ["models.groups"]
             else:
                 changed_keys = ["models.defaults"]
+            status = get_affinity_status(resolve_env_vars(get_config_raw()))
+            auto_disabled = before["requested_enabled"] and not status["requested_enabled"]
+            if auto_disabled:
+                changed_keys.append("kv_cache_affinity_enabled")
             applied = await _apply_models_change(
                 on_config_saved, agent_client,
                 changed_keys=changed_keys,
             )
             payload["applied_without_restart"] = applied
+            payload["kv_cache_affinity_status"] = status
+            payload["kv_cache_affinity_auto_disabled"] = auto_disabled
         await channel.send_response(ws, req_id, ok=True, payload=payload)
     except ModelSelectionError as exc:
         await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code, payload=exc.to_payload())

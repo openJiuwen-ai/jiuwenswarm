@@ -26,6 +26,8 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
     get_default_model_provider as resolve_default_model_provider,
     set_default_model_provider_in_entries,
     validate_affinity_invariant,
+    prepare_model_affinity_update,
+    set_affinity_enabled,
 )
 from jiuwenswarm.common.observability_config import migrate_legacy_observability_config
 from jiuwenswarm.common.security.base_crypto import get_crypto_provider
@@ -935,20 +937,22 @@ def update_context_engine_enabled_in_config(value: bool) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def reconcile_model_affinity(data: dict[str, Any], *, explicit_enable: bool = False) -> None:
+    """Validate a complete candidate inside the caller's config write boundary."""
+    valid, failures = validate_affinity_invariant(resolve_env_vars(deepcopy(data)))
+    if valid:
+        return
+    if explicit_enable:
+        raise ValueError("Cannot enable KV cache affinity: " + "; ".join(failures))
+    set_affinity_enabled(data, False)
+
+
 def update_kv_cache_affinity_enabled_in_config(value: bool) -> None:
-    """更新 Application 级 KVC 开关，并清理旧 ReAct 配置。"""
+    """Reject incompatible activation before writing any configuration."""
     def _mutate(data: dict[str, Any]) -> dict[str, Any]:
-        kv_config = data.get(APPLICATION_KV_CACHE_CONFIG_KEY)
-        if not isinstance(kv_config, dict):
-            kv_config = {}
-            data[APPLICATION_KV_CACHE_CONFIG_KEY] = kv_config
-        kv_config[KV_CACHE_AFFINITY_ENABLED_KEY] = value
-
-        react = data.get("react")
-        if isinstance(react, dict):
-            react.pop(APPLICATION_KV_CACHE_CONFIG_KEY, None)
+        set_affinity_enabled(data, value)
+        reconcile_model_affinity(data, explicit_enable=value)
         return data
-
     update_config(_mutate)
 
 
@@ -2019,9 +2023,11 @@ def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
             if current.get("model_id") == saved["model_id"]:
                 _protect_model_key(saved, current)
                 saved = _merge_model_update(current, saved)
+                prepare_model_affinity_update(saved, current, entry)
                 defaults[index] = saved
                 break
         else:
+            prepare_model_affinity_update(saved, {}, entry)
             defaults.append(saved)
             _remove_initial_model_placeholder(candidate, saved)
             _protect_model_key(saved, {})
@@ -2029,6 +2035,7 @@ def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
             for current in candidate["defaults"]:
                 current["is_default"] = current["model_id"] == saved["model_id"]
         _validate_model_candidate(candidate)
+        reconcile_model_affinity(data)
         return data
 
     update_config(_mutate)
@@ -2143,6 +2150,7 @@ def delete_model_resource(resource_type: str, resource_id: str, *, cron_referenc
             candidate["groups"] = next_groups
         candidate[key] = filtered
         _validate_model_candidate(candidate)
+        reconcile_model_affinity(data)
         deleted = True
         return data
 
@@ -2249,6 +2257,7 @@ def get_available_models(
 
 def update_default_models_in_config(
     models_list: list[dict[str, Any]], *, cron_references_checked: bool = False,
+    affinity_enabled: bool | None = None,
 ) -> None:
     def _mutate(data):
         models = _models_for_write(data)
@@ -2259,6 +2268,9 @@ def update_default_models_in_config(
         if "default" in models:
             del models["default"]
         _validate_model_candidate(models)
+        if affinity_enabled is not None:
+            set_affinity_enabled(data, affinity_enabled)
+        reconcile_model_affinity(data, explicit_enable=affinity_enabled is True)
         return data
     update_config(_mutate)
 

@@ -7,7 +7,7 @@ import tracemalloc
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -294,51 +294,25 @@ def test_recovery_budget_is_shared_by_concurrent_event_loops():
 
 
 @pytest.mark.asyncio
-async def test_prompt_storage_failure_still_emits_call_start_and_end(monkeypatch):
+async def test_call_markers_do_not_write_model_input(monkeypatch):
     from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
     from tests.unit_tests.agentserver.test_stream_event_rail_wire_budget import _StreamSession
 
     session = _StreamSession()
     callback = SimpleNamespace(session=session, context=None, extra={},
                                inputs=SimpleNamespace(messages=[UserMessage(content="QUESTION " * 2000)], tools=[]))
-    monkeypatch.setattr(artifacts, "put_prompt", lambda *_args: (_ for _ in ()).throw(OSError("disk full")))
+    put_prompt = Mock(side_effect=OSError("disk full"))
+    monkeypatch.setattr(artifacts, "put_prompt", put_prompt)
     rail = JiuSwarmStreamEventRail()
     await rail.before_model_call(callback)
     assert len(session.events) == 1 and session.events[0].type == "llm_call_start"
     payload = session.events[0].payload
-    assert "QUESTION" in payload["prompt"] and len(payload["prompt"]) < 4096
+    assert "prompt" not in payload
     assert "payload_refs" not in payload
     await rail._emit_llm_call_signal(callback, "llm_call_end")
     assert len(session.events) == 2 and session.events[1].type == "llm_call_end"
     assert "payload_refs" not in session.events[1].payload
-
-
-@pytest.mark.asyncio
-async def test_prompt_artifact_uses_final_model_input_instead_of_the_before_model_preview(stored, monkeypatch):
-    from openjiuwen.core.foundation.llm import SystemMessage
-    from jiuwenswarm.agents.harness.common.rails import stream_event_rail as rail_module
-    from tests.unit_tests.agentserver.test_stream_event_rail_wire_budget import _StreamSession
-
-    session = _StreamSession()
-    monkeypatch.setattr(session, "get_session_id", lambda: stored.sid)
-    monkeypatch.setattr(rail_module, "record_model_token_usage", AsyncMock())
-    rail = rail_module.JiuSwarmStreamEventRail()
-    monkeypatch.setattr(rail, "_emit_context_usage", AsyncMock())
-    callback = SimpleNamespace(session=session, context=None, extra={}, inputs=SimpleNamespace(
-        messages=[UserMessage(content="PREVIEW")], tools=[], response=None,
-    ))
-    await rail.before_model_call(callback)
-    assert "payload_refs" not in session.events[0].payload
-
-    final_messages = [SystemMessage(content="FINAL SYSTEM RULES"), UserMessage(content="FINAL QUESTION")]
-    callback.inputs.messages = final_messages
-    callback.inputs.tools = [{"name": "final_tool", "parameters": {"type": "object"}}]
-    await rail.after_model_call(callback)
-    assert [event.type for event in session.events] == ["llm_call_start", "llm_call_end"]
-    reference = session.events[1].payload["payload_refs"]["prompt"]
-    restored = json.loads(artifacts.read_artifact_chunk(stored.sid, reference["sha256"])["content"])
-    assert [message["content"] for message in restored["messages"]] == ["FINAL SYSTEM RULES", "FINAL QUESTION"]
-    assert restored["tools"] == callback.inputs.tools
+    put_prompt.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -376,7 +350,7 @@ async def test_artifact_get_uses_the_same_session_resolution_as_history(stored, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reference_phase", ["start", "end", "usage_before_end"])
-async def test_later_llm_call_does_not_inherit_the_previous_prompt_artifact(monkeypatch, reference_phase):
+async def test_llm_calls_do_not_copy_prompt_or_artifact_into_usage(monkeypatch, reference_phase):
     from tests.unit_tests.agentserver.test_deep_adapter_stream_end_final import _adapter_ready, _run_stream, _usage_chunk
 
     refs = {"prompt": {"sha256": "a" * 64, "bytes": 12, "path": "unused"}}
@@ -395,13 +369,16 @@ async def test_later_llm_call_does_not_inherit_the_previous_prompt_artifact(monk
     ])
     events = await _run_stream(_adapter_ready(monkeypatch), chunks)
     usage = [event["metadata"]["usage_metadata"] for event in events if event.get("event_type") == "chat.usage_metadata"]
-    assert len(usage) == 2 and usage[0]["payload_refs"] == refs
-    assert usage[1]["prompt"] == "SECOND" and "payload_refs" not in usage[1]
+    assert len(usage) == 2
+    assert all("prompt" not in item and "payload_refs" not in item for item in usage)
+    calls = [event for event in events if event.get("event_type") in {"chat.llm_call_start", "chat.llm_call_end"}]
+    assert sum(event["event_type"] == "chat.llm_call_start" for event in calls) == 2
+    assert all("prompt" not in item and "payload_refs" not in item for item in calls)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("usage_first", [False, True])
-async def test_usage_uses_final_end_prompt_reference_instead_of_start_preview(monkeypatch, usage_first):
+async def test_usage_is_delivered_once_after_call_end_in_either_sdk_order(monkeypatch, usage_first):
     from tests.unit_tests.agentserver.test_deep_adapter_stream_end_final import _adapter_ready, _run_stream, _usage_chunk
 
     preview = {"prompt": {"sha256": "a" * 64, "bytes": 12, "path": "preview"}}
@@ -410,8 +387,9 @@ async def test_usage_uses_final_end_prompt_reference_instead_of_start_preview(mo
     ordered = [_usage_chunk(), end] if usage_first else [end, _usage_chunk()]
     chunks = [SimpleNamespace(type="llm_call_start", payload={"prompt": "PREVIEW", "payload_refs": preview})]
     events = await _run_stream(_adapter_ready(monkeypatch), chunks + ordered)
-    usage = next(event for event in events if event.get("event_type") == "chat.usage_metadata")
-    assert usage["metadata"]["usage_metadata"]["payload_refs"] == final
+    types = [event.get("event_type") for event in events]
+    assert types.count("chat.usage_metadata") == 1
+    assert types.index("chat.llm_call_end") < types.index("chat.usage_metadata")
 
 
 @pytest.mark.asyncio

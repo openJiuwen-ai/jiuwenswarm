@@ -417,9 +417,19 @@ export function ModelDialog({
         required: true,
         placeholder: t('settingsPanel.fields.api_base.placeholder'),
         onChange: () => {
+          form.setFieldValue('kv_cache_affinity', false);
           connectionChanged.current = true;
           invalidateConnectionState();
         },
+      });
+    }
+    if (custom && values.protocol === 'openai') {
+      formItems.push({
+        name: 'kv_cache_affinity',
+        label: t('settingsPanel.models.affinityCapability'),
+        component: 'switch',
+        switchLabel: t('settingsPanel.models.affinityCapability'),
+        description: t('settingsPanel.models.affinityCapabilityDescription'),
       });
     }
     formItems.push({
@@ -451,7 +461,7 @@ export function ModelDialog({
     helpTips: t('settingsPanel.models.modelIdHint'),
     onChange: (_modelName, nextValues) => {
       invalidateConnectionState();
-      applyModelDraft(nextValues);
+      applyModelDraft({ ...nextValues, kv_cache_affinity: false });
     },
     onBlur: (_modelName, nextValues) => {
       const previous = aliasSyncedFromModelName.current;

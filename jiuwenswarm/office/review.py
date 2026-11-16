@@ -1,14 +1,16 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""The independent review of one rendered slide behind ``verify_slide_visual``.
+"""The independent review behind an app's visual check (``verify_slide_visual``, ``verify_doc_visual``).
 
-The author's reasoning does not grade its own pixels. The render and the
-measured geometry go to the reviewer in two fresh messages, the checklist (the
-``review.md`` of the app's package) and the evidence, with nothing of the
-conversation. The reviewer is the conversation's own model when it takes
-images, else the configured vision model (``models.vision``). The first line
-of its answer decides the verdict: the no-issues sentinel is ``done``,
-anything else (or a ``NOT VISIBLE`` claim) is ``needs_work``.
+The author's reasoning does not grade its own pixels. The renders go to the
+reviewer in two fresh messages, the checklist (the ``review.md`` of the app's
+package) and the evidence, with nothing of the conversation. The evidence is
+what the task pane measured on a slide, or for a document its page count and
+the author's focus area, wrapped in a tag the checklist marks as data. The
+reviewer is the conversation's own model when it takes images, else the
+configured vision model (``models.vision``). The first line of its answer
+decides the verdict: the no-issues sentinel is ``done``, anything else (or a
+``NOT VISIBLE`` claim) is ``needs_work``.
 """
 
 from __future__ import annotations
@@ -73,9 +75,9 @@ def vision_client_config() -> dict[str, Any] | None:
     return dict(block) if isinstance(block, dict) else None
 
 
-async def review_slide(checklist: str, session_model: Model | None, render: str, geometry: str,
-                       expected_changes: str | None) -> str:
-    """The review of a render and its geometry summary against ``checklist``; raises ``ReviewFailed``.
+async def review_renders(checklist: str, session_model: Model | None, renders: list[str], evidence: str,
+                         expected_changes: str | None) -> str:
+    """The review of renders (image data URLs) and the evidence read with them; raises ``ReviewFailed``.
 
     ``session_model`` is the conversation's model when it takes images; without one, ``models.vision`` reviews.
     """
@@ -93,8 +95,8 @@ async def review_slide(checklist: str, session_model: Model | None, render: str,
         system += EXPECTED_CHANGES_ADDENDUM.format(expected_changes=expected_changes.strip())
     messages = [
         {"role": "system", "content": system},
-        {"role": "user", "content": [{"type": "text", "text": geometry},
-                                     {"type": "image_url", "image_url": {"url": render}}]},
+        {"role": "user", "content": [{"type": "text", "text": evidence},
+                                     *({"type": "image_url", "image_url": {"url": render}} for render in renders)]},
     ]
     try:
         model = session_model or Model(model_client_config=ModelClientConfig(**client),
@@ -138,15 +140,22 @@ def _evidence(review: str) -> dict[str, list[str]]:
     return evidence
 
 
-def verifier_result(slide_id: str, review: str) -> str:
-    """What the author reads: the verdict and the sorted evidence, not the raw geometry."""
+def verifier_result(review: str, **target: str) -> str:
+    """What the author reads: the verdict and the sorted evidence, not the raw measurements.
+
+    ``target`` names what was reviewed (``slide_id``), as attributes of the result.
+    """
     evidence = json.dumps(_evidence(review), ensure_ascii=False, indent=2)
-    return (f'<verifier-result verdict="{_verdict(review)}" slide_id="{slide_id}">\n'
+    return (f'<verifier-result verdict="{_verdict(review)}"{_attributes(target)}>\n'
             f"<review-evidence>\n{evidence}\n</review-evidence>\n{_REPAIR_POLICY}\n</verifier-result>")
 
 
-def verifier_error(slide_id: str, reason: str) -> str:
-    return f'<verifier-result slide_id="{slide_id}">No verdict: {reason}</verifier-result>'
+def verifier_error(reason: str, **target: str) -> str:
+    return f"<verifier-result{_attributes(target)}>No verdict: {reason}</verifier-result>"
+
+
+def _attributes(target: dict[str, str]) -> str:
+    return "".join(f' {name}="{value}"' for name, value in target.items())
 
 
 def geometry_summary(geometry: dict[str, Any]) -> str:
