@@ -21,6 +21,7 @@ def note(stage: str) -> None:
 class FakeClient:
     def __init__(self) -> None:
         self.scenario = os.environ.get("EXIT_TEST_SCENARIO", "normal")
+        self.answer_done = asyncio.Event()
 
     async def start(self) -> None:
         note("start")
@@ -72,18 +73,42 @@ class FakeClient:
                 while True:
                     await asyncio.sleep(0.02)
                     yield event("chat.delta", delta="active")
-            elif self.scenario == "interaction_eof":
+            elif self.scenario in {"interaction_eof", "answer", "empty_answer"}:
                 yield event(
                     "chat.ask_user_question",
                     request_id="card",
                     source="ask_user_interrupt",
                     questions=[{"question": "Approve?", "options": ["yes", "no"]}],
                 )
-                await asyncio.Event().wait()
+                if self.scenario == "interaction_eof":
+                    await asyncio.Event().wait()
+                else:
+                    await self.answer_done.wait()
             else:
                 yield event("chat.final", content="exit fixture completed")
         finally:
             note("stream-closed")
+
+    async def stream_interaction_answer(self, answer):
+        from jiuwenswarm.runtime.events import RuntimeEvent
+
+        assert answer.channel_id == "process_cli"
+        assert answer.interaction_id == "card"
+        assert answer.source == "ask_user_interrupt"
+        note("answer")
+        yield RuntimeEvent(
+            request_id=answer.request_id, channel_id=answer.channel_id,
+            session_id=answer.session_id, payload={"event_type": "runtime.accepted"},
+        )
+        yield RuntimeEvent(
+            request_id=answer.request_id, channel_id=answer.channel_id,
+            session_id=answer.session_id,
+            payload={"event_type": "chat.final", "content": (
+                "" if self.scenario == "empty_answer" else "answered once"
+            )},
+            is_complete=True, runtime_completion="completed",
+        )
+        self.answer_done.set()
 
     async def cancel(self, request) -> None:
         assert request.channel_id == "process_cli"
