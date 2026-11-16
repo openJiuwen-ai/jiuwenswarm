@@ -32,7 +32,7 @@ from jiuwenswarm.office.client_tools import build_task_pane_tools
 from jiuwenswarm.office import review
 from jiuwenswarm.office.contract import load_contract
 from jiuwenswarm.office.review import NO_ISSUES_SENTINEL, review_checklist
-from tests.unit_tests.office.conftest import POWERPOINT_PACKAGE
+from tests.unit_tests.office.conftest import POWERPOINT_PACKAGE, WORD_PACKAGE
 
 PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg=="
 REVIEW_CHECKLIST = review_checklist(POWERPOINT_PACKAGE)
@@ -263,8 +263,9 @@ def _evidence(result: str) -> dict:
     return json.loads(result.split("<review-evidence>\n", 1)[1].split("\n</review-evidence>", 1)[0])
 
 
-def test_the_review_checklist_asks_for_the_line_the_verdict_reads() -> None:
-    assert f"respond with exactly this first line:\n{NO_ISSUES_SENTINEL}\n" in REVIEW_CHECKLIST
+@pytest.mark.parametrize("package", [POWERPOINT_PACKAGE, WORD_PACKAGE], ids=["powerpoint", "word"])
+def test_the_review_checklist_asks_for_the_line_the_verdict_reads(package) -> None:
+    assert f"respond with exactly this first line:\n{NO_ISSUES_SENTINEL}\n" in review_checklist(package)
 
 
 def test_the_review_summary_counts_what_the_task_pane_measures_and_nothing_else() -> None:
@@ -306,6 +307,35 @@ async def test_a_visual_review_pauses_once_and_shows_the_conversation_s_model_on
     assert geometry["text"].startswith("Measured geometry (from the presentation's object model): 1 bounding-box")
     assert geometry["text"] == review.geometry_summary(GEOMETRY)
     assert REVIEW_QUERY not in json.dumps(review_messages)
+
+
+@pytest.mark.parametrize(("rendered", "arguments", "sent", "evidence"), [
+    (2, {"page_hint": "the pricing table"}, 2,
+     "The document has 2 pages; the first 2 are attached.\n<focus_area>the pricing table</focus_area>"),
+    (8, {}, 6, "The document has 8 pages; the first 6 are attached.\nNo focus area was named."),
+], ids=["focus-wrapped-as-data", "first-six-pages-of-eight"])
+async def test_a_document_review_shows_the_reviewer_the_word_checklist_the_pages_and_the_focus_only(
+        conversation, attach_pane, vision, rendered, arguments, sent, evidence):
+    attach_pane("doc-a", ["verify_doc_visual"])
+    vision.reply("page 2: the second table runs past the right margin; fit it to the page width.")
+    verify = ToolCall(id="verify-1", type="function", name="verify_doc_visual", arguments=json.dumps(arguments))
+    pages = {"content": [{"type": "text", "text": f"{rendered} pages"},
+                         *({"type": "image", "data_url": RENDER} for _ in range(rendered))]}
+
+    async with conversation([[verify]], session_id="doc-a", package=WORD_PACKAGE) as pane:
+        [request] = await pane.turn(REVIEW_QUERY)
+        await pane.answer((request, pages))
+        result = pane.model.tool_results()["verify-1"]
+
+    assert result.startswith(f'<verifier-result verdict="needs_work" pages_reviewed="{sent} of {rendered}">')
+    assert _evidence(result)["hard_defects"] == [
+        "page 2: the second table runs past the right margin; fit it to the page width."]
+    system, user = vision.requests[0]["messages"]
+    assert system == {"role": "system", "content": review_checklist(WORD_PACKAGE)}
+    focus, *images = user["content"]
+    assert focus == {"type": "text", "text": evidence}
+    assert images == [{"type": "image_url", "image_url": {"url": RENDER}}] * sent
+    assert REVIEW_QUERY not in json.dumps(vision.requests[0])
 
 
 async def test_a_conversation_whose_model_cannot_see_images_has_the_vision_model_review(
