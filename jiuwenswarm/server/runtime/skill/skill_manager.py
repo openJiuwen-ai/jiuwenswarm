@@ -6105,7 +6105,10 @@ class SkillManager:
                 raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
         name = str(meta.get("name") or "").strip()
         description = str(meta.get("description") or "").strip()
-        if not name:
+        # frontmatter 缺 name 时 _parse_skill_md 会用文件名（如 "SKILL"）兜底，
+        # 导入校验须区分"显式声明"与"文件名兜底"：缺显式 name 的包按元数据
+        # 无效拒绝，与文档承诺的 SKILL_INVALID_METADATA 语义对齐（#6688）
+        if not name or not SkillManager._skill_md_declares_explicit_name(md):
             raise SkillRpcError(
                 ERROR_SKILL_INVALID_METADATA,
                 "SKILL.md YAML 须包含非空 name",
@@ -6116,6 +6119,29 @@ class SkillManager:
                 "SKILL.md YAML 须包含非空 name 与 description",
             )
         return meta
+
+    @staticmethod
+    def _skill_md_declares_explicit_name(md: Path) -> bool:
+        """判断 SKILL.md frontmatter 是否显式声明了非空 name（#6688）.
+
+        ``_parse_skill_md`` 对缺 name 的 frontmatter 会以文件名兜底，导入校验
+        需要识别这种兜底来源；无 frontmatter 或 YAML 解析失败同样视为未声明。
+        """
+        try:
+            text = _read_text_long(md)
+        except OSError:
+            return False
+        fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)", text, re.DOTALL)
+        if not fm_match:
+            return False
+        try:
+            loaded = yaml.safe_load(fm_match.group(1))
+        except Exception:
+            return False
+        if not isinstance(loaded, dict):
+            return False
+        value = loaded.get("name")
+        return isinstance(value, str) and bool(value.strip())
 
     def _install_imported_skill_dir(
         self,
