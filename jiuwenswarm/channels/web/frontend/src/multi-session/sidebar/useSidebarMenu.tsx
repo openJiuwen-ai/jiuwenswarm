@@ -333,6 +333,10 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
     archiveInFlightRef.current.add(opKey);
     try {
       await archiveSession(session.session_id);
+      // Archive stops a live turn in the backend without terminal wire frames.
+      // Settle the local turn before the Session leaves the workspace so an
+      // undo/restore cannot resurrect it as still running (GitCode #6533).
+      useChatStore.getState().settleLifecycleStoppedSession(session.session_id);
       flushSync(() => {
         removeSessionLocally(session.session_id);
         openArchiveSuccessToast(t, {
