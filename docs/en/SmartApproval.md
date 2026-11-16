@@ -47,6 +47,8 @@ When Smart Approval needs your judgment, JiuwenSwarm displays the standard Permi
 
 **Reject** and **Allow once** apply only to the current tool call. A new call with the same tool and arguments in the same session is evaluated against the current rules and shows another card if human approval is still required. **Remember permanently** and **Remember for this session** reuse allow rules within their existing scopes and cannot override an explicit `deny`.
 
+If an approved command cannot be represented by a safe reusable rule, as with some complex shell commands, the current invocation can still be allowed without remembering the permission. The approval reason explains this outcome, and future calls follow the current permission rules. Approval invalidation caused by changed arguments, scope, or effective policy still rejects execution.
+
 ### Enable it in configuration
 
 By default, the configuration file is `~/.jiuwenswarm/config/config.yaml`. If `JIUWENSWARM_CONFIG_DIR` is set, use the `config.yaml` file in that directory instead.
