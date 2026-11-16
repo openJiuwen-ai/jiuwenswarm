@@ -11,7 +11,6 @@ from types import SimpleNamespace
 
 import psutil
 import pytest
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from jiuwenswarm.server.lifecycle import Readiness

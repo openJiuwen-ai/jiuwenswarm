@@ -94,6 +94,8 @@ async def test_unobserved_exit_retries_retirement_before_replacement(monkeypatch
     try:
         await asyncio.wait_for(initial, 2)
         assert readiness.state is ReadinessState.FAILED
+        if phase == "startup":
+            assert "temporary bootstrap failure" in supervisor._fatal_reason
         assert supervisor._automatic_recovery_task is not None
         assert supervisor._retryable_failure
         assert supervisor._ipc_ready.is_set()
@@ -156,20 +158,32 @@ async def test_identity_failure_stays_nonretryable_when_startup_retirement_times
     monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", "front_loopback")
     supervisor = RuntimeSupervisor(Readiness())
+    retire_calls = []
 
     async def bring_up():
+        supervisor._worker_pid, supervisor._worker_create_time = 123, 1.0
+        supervisor._worker_instance = "retiring-worker"
         raise module.WorkerIdentityError("invalid deployment identity")
 
-    async def retire():
+    def reap(*, deadline, terminate=False):
+        retire_calls.append((supervisor.worker_pid, supervisor._worker_create_time,
+                             supervisor.worker_instance, terminate))
         raise module.WorkerExitUnconfirmed("exit still pending")
 
     monkeypatch.setattr(supervisor, "_bring_up", bring_up)
-    monkeypatch.setattr(supervisor, "_retire_unhealthy_worker", retire)
-    await asyncio.wait_for(supervisor._supervise(), 1)
-    assert supervisor._readiness.state is ReadinessState.FAILED
-    assert not supervisor._retryable_failure
-    assert supervisor._automatic_recovery_task is None
-    await supervisor.stop()
+    monkeypatch.setattr(supervisor, "_reap_validated_worker", reap)
+    try:
+        await asyncio.wait_for(supervisor._supervise(), 1)
+        assert retire_calls == [(123, 1.0, "retiring-worker", True)]
+        assert supervisor._readiness.state is ReadinessState.FAILED
+        assert not supervisor._retryable_failure
+        assert supervisor._automatic_recovery_task is None
+        assert "invalid deployment identity" in supervisor._fatal_reason
+        assert "exit still pending" in supervisor._fatal_reason
+        assert supervisor._readiness.snapshot()["failed_reason"] == supervisor._fatal_reason
+    finally:
+        supervisor._clear_attached_worker_identity()
+        await supervisor.stop()
 
 
 @pytest.mark.asyncio
