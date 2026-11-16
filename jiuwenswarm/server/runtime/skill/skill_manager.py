@@ -159,11 +159,23 @@ _DETAIL_KEY_SKILLHUB_DETAIL_FAILED = "skills.swarmskillshub.errors.detailFailed"
 _SKILLHUB_DETAIL_DESC_MAX_CHARS = 200 * 1024
 
 # ZIP 解包配额（防 zip bomb）
-_SKILL_ZIP_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+SKILL_ZIP_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 _SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
 _SKILL_ZIP_MAX_FILE_COUNT = 5000
 _SKILL_ZIP_MAX_SINGLE_FILE_BYTES = 32 * 1024 * 1024
 _SKILL_ZIP_MAX_PATH_DEPTH = 20
+
+
+def _discard_uploaded_skill_zip(src: Path) -> None:
+    """删除两阶段上传留下的临时 zip（仅限受控上传根，best-effort）."""
+    try:
+        from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
+            discard_skill_upload,
+        )
+    except ImportError:  # pragma: no cover - 防御性兜底
+        return
+    discard_skill_upload(str(src))
+
 
 # ---------------------------------------------------------------------------
 # 技能同步（Server / Client 分离部署）
@@ -5634,35 +5646,49 @@ class SkillManager:
                 f"上传文件不存在: {path_str}",
             ) from exc
 
-        if not src.is_file():
-            raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "上传内容不是文件")
-        name_lower = src.name.lower()
-        if name_lower.endswith(".skill") or name_lower.endswith(".skill.zip"):
-            raise SkillRpcError(
-                ERROR_SKILL_INVALID_PACKAGE,
-                "仅接受 .zip 文件",
-            )
-        if not name_lower.endswith(".zip"):
-            raise SkillRpcError(
-                ERROR_SKILL_INVALID_PACKAGE,
-                "仅接受 .zip 文件",
-            )
+        try:
+            if not src.is_file():
+                raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "上传内容不是文件")
+            name_lower = src.name.lower()
+            if name_lower.endswith(".skill") or name_lower.endswith(".skill.zip"):
+                raise SkillRpcError(
+                    ERROR_SKILL_INVALID_PACKAGE,
+                    "仅接受 .zip 文件",
+                )
+            if not name_lower.endswith(".zip"):
+                raise SkillRpcError(
+                    ERROR_SKILL_INVALID_PACKAGE,
+                    "仅接受 .zip 文件",
+                )
 
-        size = src.stat().st_size
-        if size > _SKILL_ZIP_MAX_UPLOAD_BYTES:
-            raise SkillRpcError(
-                ERROR_SKILL_FILE_TOO_LARGE,
-                f"上传包超过限制（{_SKILL_ZIP_MAX_UPLOAD_BYTES} 字节）",
-            )
+            size = src.stat().st_size
+            if size > SKILL_ZIP_MAX_UPLOAD_BYTES:
+                raise SkillRpcError(
+                    ERROR_SKILL_FILE_TOO_LARGE,
+                    f"上传包超过限制（{SKILL_ZIP_MAX_UPLOAD_BYTES} 字节）",
+                )
 
-        with tempfile.TemporaryDirectory(prefix="jiuwenswarm_import_upload_") as tmpdir:
-            skill_dir = self._extract_skill_package_file(src, Path(tmpdir))
-            return self._install_imported_skill_dir(
-                skill_dir,
-                force=overwrite,
-                origin="file-api:upload",
-                conflict_code=ERROR_SKILL_ALREADY_EXISTS,
-            )
+            with tempfile.TemporaryDirectory(prefix="jiuwenswarm_import_upload_") as tmpdir:
+                skill_dir = self._extract_skill_package_file(src, Path(tmpdir))
+                result = self._install_imported_skill_dir(
+                    skill_dir,
+                    force=overwrite,
+                    origin="file-api:upload",
+                    conflict_code=ERROR_SKILL_ALREADY_EXISTS,
+                )
+        except SkillRpcError as exc:
+            # 同名冲突时保留上传文件，等待前端覆盖确认后的二次导入。
+            if exc.code not in (
+                ERROR_SKILL_ALREADY_EXISTS,
+                ERROR_SKILL_IMPORT_OVERWRITE_REQUIRED,
+            ):
+                _discard_uploaded_skill_zip(src)
+            raise
+        except Exception:
+            _discard_uploaded_skill_zip(src)
+            raise
+        _discard_uploaded_skill_zip(src)
+        return result
 
     async def handle_skills_create_from_knowledge(self, params: dict) -> dict:
         """知识转 Skill：校验输入并准备隔离临时目录与 Agent follow-up.
@@ -5696,10 +5722,10 @@ class SkillManager:
             if not src.is_file():
                 raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "知识文档不是文件")
             size = src.stat().st_size
-            if size > _SKILL_ZIP_MAX_UPLOAD_BYTES:
+            if size > SKILL_ZIP_MAX_UPLOAD_BYTES:
                 raise SkillRpcError(
                     ERROR_SKILL_FILE_TOO_LARGE,
-                    f"知识文档超过限制（{_SKILL_ZIP_MAX_UPLOAD_BYTES} 字节）",
+                    f"知识文档超过限制（{SKILL_ZIP_MAX_UPLOAD_BYTES} 字节）",
                 )
             file_path = str(src)
 
