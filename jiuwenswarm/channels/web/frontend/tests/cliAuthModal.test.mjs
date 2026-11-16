@@ -250,6 +250,7 @@ test('multi-step CLI opens and waits once per step, including a reused URL', asy
     await view.refresh();
     assert.deepEqual(view.calls.waits, [['feishu', 0], ['feishu', 1]]);
     assert.equal(view.calls.opened.length, 2);
+    assert.ok(document.querySelector('[data-testid="connector-market-cli-auth-modal-step-done"]'));
     await view.settle(view.waits[1], { type: 'connected' });
     assert.deepEqual(view.calls.connected, ['latest']);
   } finally {
@@ -257,7 +258,32 @@ test('multi-step CLI opens and waits once per step, including a reused URL', asy
   }
 });
 
-test('retry starts a fresh CLI wait while manual opening remains available', async () => {
+for (const strict of [false, true]) {
+  for (const authUrl of ['https://example.com/cli-auth', 'https://example.com/refreshed-auth', null]) {
+    test(`same-step CLI responses continue waiting with URL ${authUrl} and StrictMode ${strict}`, async () => {
+      const view = await mountModal({ strict });
+      try {
+        const response = { type: 'auth_required', stepIndex: 0, authUrl };
+        // Reuse the exact response object to verify each completed wait starts a new round.
+        for (let round = 0; round < 2; round += 1) {
+          await view.settle(view.waits[round], response);
+          await view.refresh();
+          assert.equal(view.calls.waits.length, round + 2);
+          assert.deepEqual(view.calls.waits[round + 1], ['feishu', 0]);
+          assert.equal(useConnectorStore.getState().busyMap.feishu, 'connect');
+        }
+        assert.equal(view.calls.opened.length, authUrl === 'https://example.com/refreshed-auth' ? 2 : 1);
+        assert.equal(document.querySelector('[data-testid="connector-market-cli-auth-modal-step-done"]'), null);
+        await view.settle(view.waits[2], { type: 'connected' });
+        assert.deepEqual(view.calls.connected, ['latest']);
+      } finally {
+        await view.close();
+      }
+    });
+  }
+}
+
+test('retry starts a fresh CLI wait and reopens the URL while manual opening remains available', async () => {
   const view = await mountModal();
   try {
     await view.settle(view.waits[0], { type: 'auth_failed' });
@@ -265,9 +291,11 @@ test('retry starts a fresh CLI wait while manual opening remains available', asy
     assert.equal(view.calls.waits.length, 1);
     await view.click('connector-market-cli-auth-modal-retry');
     assert.equal(view.calls.waits.length, 2);
-    assert.equal(view.calls.opened.length, 1);
-    await view.click('connector-market-cli-auth-modal-open-link');
     assert.equal(view.calls.opened.length, 2);
+    await view.refresh();
+    assert.equal(view.calls.opened.length, 2);
+    await view.click('connector-market-cli-auth-modal-open-link');
+    assert.equal(view.calls.opened.length, 3);
     await view.settle(view.waits[1], { type: 'connected' });
     assert.deepEqual(view.calls.connected, ['latest']);
   } finally {
@@ -298,7 +326,7 @@ test('a rejected CLI RPC shows an error and allows an explicit retry', async () 
     assert.equal(useConnectorStore.getState().busyMap.feishu, undefined);
     await view.click('connector-market-cli-auth-modal-retry');
     assert.equal(view.calls.waits.length, 2);
-    assert.equal(view.calls.opened.length, 1);
+    assert.equal(view.calls.opened.length, 2);
     await view.settle(view.waits[1], { type: 'connected' });
     assert.deepEqual(view.calls.connected, ['initial']);
   } finally {
@@ -354,6 +382,32 @@ test('host OAuth startup failure can retry with a fresh flow', async () => {
     await view.settle(view.starts[1], { flow: 'flow-2', authUrl: 'https://example.com/host-auth', stepIndex: 0 });
     await view.settle(view.waits[0], { type: 'connected' });
     assert.deepEqual(view.calls.connected, ['initial']);
+  } finally {
+    await view.close();
+  }
+});
+
+test('host OAuth treats auth_required from wait as an error and retries a fresh flow', async () => {
+  const view = await mountModal({ strict: true, name: 'canva', initial: { hostOAuth: true, authUrl: null } });
+  try {
+    const authUrl = 'https://example.com/host-auth';
+    await view.settle(view.starts[0], { flow: 'flow-1', authUrl, stepIndex: 0 });
+    await view.settle(view.waits[0], { type: 'auth_required', authUrl, stepIndex: 0 });
+    await view.refresh();
+    assert.ok(document.querySelector('[data-testid="connector-market-cli-auth-modal-error"]'));
+    assert.equal(view.calls.starts.length, 1);
+    assert.equal(view.calls.waits.length, 1);
+    assert.equal(view.calls.opened.length, 1);
+    assert.deepEqual(view.calls.connected, []);
+
+    await view.click('connector-market-cli-auth-modal-retry');
+    assert.equal(view.calls.starts.length, 2);
+    await view.settle(view.starts[1], { flow: 'flow-2', authUrl, stepIndex: 0 });
+    assert.deepEqual(view.calls.waits, [['canva', 0], ['canva', 0]]);
+    assert.equal(view.calls.opened.length, 2);
+    await view.refresh('retried');
+    await view.settle(view.waits[1], { type: 'connected' });
+    assert.deepEqual(view.calls.connected, ['retried']);
   } finally {
     await view.close();
   }

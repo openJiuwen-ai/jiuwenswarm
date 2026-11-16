@@ -30,7 +30,7 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
   const { t } = useTranslation();
   const waitAuth = useConnectorStore((s) => s.waitAuth);
   const startOAuth = useConnectorStore((s) => s.startOAuth);
-  const [step, setStep] = useState(initial);
+  const [{ step, round }, setAuthorization] = useState({ step: initial, round: 0 });
   const [status, setStatus] = useState<'waiting' | 'error'>('waiting');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [justAdvanced, setJustAdvanced] = useState(false);
@@ -82,13 +82,13 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
         stepIndex = response.stepIndex ?? 0;
       }
 
-      const openKey = JSON.stringify([name, stepIndex, authUrl]);
+      const openKey = JSON.stringify([name, stepIndex, authUrl, retrySeq]);
       if (authUrl && !openedAuthRef.current.has(openKey)) {
         openedAuthRef.current.add(openKey);
         window.open(authUrl, '_blank', 'noopener,noreferrer');
       }
-      // Reuse the request during effect replay. An explicit retry starts a new request.
-      const key = JSON.stringify([name, stepIndex, retrySeq]);
+      // Reuse effect replays within a round. Each auth_required response starts a new wait.
+      const key = JSON.stringify([name, stepIndex, authUrl, retrySeq, round]);
       if (waitAuthRequestRef.current?.key !== key) {
         waitAuthRequestRef.current = { key, promise: waitAuth(name, stepIndex) };
       }
@@ -107,9 +107,8 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
         return;
       }
       if (!isHostOAuth && response.type === 'auth_required') {
-        // A new authorization step starts its own popup and wait request.
-        setJustAdvanced(true);
-        setStep(response);
+        setJustAdvanced((response.stepIndex ?? 0) > currentStepIndex);
+        setAuthorization((current) => ({ step: response, round: current.round + 1 }));
         return;
       }
       setStatus('error');
@@ -123,7 +122,7 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
       // Invalidate this subscription while retaining requests for effect replay.
       requestSeqRef.current += 1;
     };
-  }, [currentAuthUrl, currentStepIndex, name, retrySeq, isHostOAuth, startOAuth, waitAuth]);
+  }, [currentAuthUrl, currentStepIndex, name, retrySeq, round, isHostOAuth, startOAuth, waitAuth]);
 
   function handleManualOpen() {
     if (step.authUrl) window.open(step.authUrl, '_blank', 'noopener,noreferrer');
