@@ -75,3 +75,30 @@ async def test_uninstall_user_copy_of_builtin_named_skill_still_succeeds(
     assert result["success"] is True
     assert not (manager._skills_dir / "docx-pro").exists()
     assert (builtin_root / "docx-pro" / "SKILL.md").is_file()
+
+
+@pytest.mark.asyncio
+async def test_uninstall_with_guard_rejecting_name_keeps_structured_error(
+    manager: SkillManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """畸形 name（Windows 盘符相对名 D:foo 形态）触发 _safe_child_path ValueError
+    时按"未命中内置目录"处理，返回结构化"未找到 skill"而非异常穿透（审查 SF-1）。
+
+    Linux 上 D:foo 不越界，Windows 上 ``base / "D:foo"`` 因盘符锚定替换整个
+    路径使 relative_to 必抛——用 monkeypatch 复现该拒绝形态做跨平台契约测试。
+    """
+    from jiuwenswarm.server.runtime.skill import skill_manager as sm_mod
+
+    builtin_root = manager._skills_dir.parent / "builtin_missing"
+    _write_skill_dir(builtin_root, folder="advanced-daily-report", name="advanced-daily-report")
+
+    def raising_child_path(base, name, label):
+        raise ValueError(f"invalid {label} path: {name}")
+
+    monkeypatch.setattr(sm_mod, "_safe_child_path", raising_child_path)
+
+    result = await manager.handle_skills_uninstall({"name": "D:foo"})
+
+    assert result == {"success": False, "detail": "未找到 skill: D:foo"}
+    assert (builtin_root / "advanced-daily-report" / "SKILL.md").is_file()

@@ -5262,7 +5262,14 @@ class SkillManager:
         builtin_dir = get_builtin_skills_dir()
         if not _exists_long(builtin_dir):
             return None
-        direct_builtin = _safe_child_path(builtin_dir, name, "skill")
+        # 与 _resolve_local_skill_dir 同款兜底：畸形/越界 name（如 Windows 盘符
+        # 相对名 D:foo）会让 _safe_child_path 抛 ValueError，此处按"未命中
+        # 内置目录"处理，让调用方继续走结构化的"未找到 skill"路径，而不是
+        # 让异常穿透到 RPC 层（test_skill_manager_path_safety 锁定的契约）。
+        try:
+            direct_builtin = _safe_child_path(builtin_dir, name, "skill")
+        except ValueError:
+            return None
         if _is_dir_long(direct_builtin):
             return direct_builtin
         # 遍历 builtin 目录，通过解析 SKILL.md 查找匹配的技能
