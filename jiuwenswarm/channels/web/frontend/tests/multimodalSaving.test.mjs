@@ -28,12 +28,12 @@ await build({
 const { SettingsServicesProvider, SettingItemRenderer, multimodalToolItems, MultimodalSettingsFeedback, i18n } = await import('../node_modules/.cache/multimodal-saving.mjs');
 const tools = ['vision', 'audio', 'video', 'visual_gen', 'video_gen'];
 
-async function mount({ failRead = () => false } = {}) {
+async function mount({ failRead = () => false, models } = {}) {
   const root = createRoot(document.getElementById('root'));
   const writes = [];
   const snapshot = {
     schema_version: 1,
-    models: ['a', 'b'].map((id) => ({ model_id: id, display_name: id, capabilities: tools })),
+    models: models ?? ['a', 'b'].map((id) => ({ model_id: id, display_name: id, capabilities: tools })),
     tools: Object.fromEntries(tools.map((tool) => [tool, { model_id: 'a', enabled: true }])),
   };
   const request = async (method, params) => {
@@ -67,6 +67,35 @@ async function mount({ failRead = () => false } = {}) {
     close: async () => act(async () => root.unmount()),
   };
 }
+
+test('duplicate model labels show only display names, expose option details, and save the chosen ID', async () => {
+  const models = ['a', 'b'].map((model_id) => ({
+    model_id, display_name: 'Shared model', model_name: 'qwen3.7-max',
+    api_base: 'https://models.example.com/compatible-mode/v1', capabilities: tools,
+  }));
+  const details = models.map((model) => `qwen3.7-max\n${model.api_base}\n${model.model_id}`);
+  const ui = await mount({ models });
+  try {
+    const trigger = ui.select('vision');
+    const selectedLabel = trigger.querySelector('[data-testid="settings-select-label"]');
+    assert.equal(selectedLabel.textContent.trim(), 'Shared model');
+    assert.equal(trigger.title, 'Shared model');
+    await act(async () => trigger.click());
+    for (const [index, title] of details.entries()) {
+      const option = document.querySelector(`[role="option"][data-variant="${index}"]`);
+      assert.equal(option.textContent.trim(), 'Shared model');
+      assert.equal(option.title, title);
+    }
+    await act(async () => document.querySelector('[role="option"][data-variant="1"]').click());
+    assert.deepEqual(ui.writes.map((write) => write.params), [{ tool_id: 'vision', model_id: 'b' }]);
+    await ui.finish(0);
+    assert.equal(trigger.textContent.trim(), 'Shared model');
+    await act(async () => trigger.click());
+    assert.equal(document.querySelector('[role="option"][data-variant="1"]').getAttribute('aria-selected'), 'true');
+  } finally {
+    await ui.close();
+  }
+});
 
 test('saving locks only its own capability and queued controls recover on success or failure', async () => {
   const ui = await mount();

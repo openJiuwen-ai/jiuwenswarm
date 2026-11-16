@@ -11,8 +11,10 @@ import { applyBrowserDisplaySettings, browserDisplayRevision } from '../../deskt
 import { usePersonalContextStore } from '../../../stores/personalContextStore';
 import { parseContextCapacity } from '../modules/personalContext/capacitySetting';
 
+export type SettingsSourceOption = { value: SettingValue; label: string; title?: string };
+
 export type SettingsSourceController = {
-  optionsFor?: (key: string) => readonly { value: SettingValue; label: string }[];
+  optionsFor?: (key: string) => readonly SettingsSourceOption[];
   requiresConfiguration?: (key: string) => boolean;
   values: Readonly<Record<string, unknown>>;
   savingKeys: ReadonlySet<string>;

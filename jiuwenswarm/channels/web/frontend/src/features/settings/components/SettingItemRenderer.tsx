@@ -1,12 +1,12 @@
 import { useCallback, useContext, useEffect, useId, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, FieldError, Input, Select, Switch } from '../../../components/ui';
+import { Button, FieldError, Input, Select, Switch, type SelectOption } from '../../../components/ui';
 import { useAdaptiveTooltip } from '../../../hooks/useAdaptiveTooltip';
 import type { SettingItemDefinition } from '../registry/types';
 import { parseConfigBoolean } from '../services/settingsContract';
 import { useSettingsServices } from '../services/SettingsServicesProvider';
 import { formatSettingsSaveError, InlineSaveFeedbackContext } from '../services/settingsSaveFeedback';
-import { SettingsSourceProvider, useSettingsSource } from '../services/SettingsSourceProvider';
+import { SettingsSourceProvider, useSettingsSource, type SettingsSourceOption } from '../services/SettingsSourceProvider';
 import { useUnsavedChanges } from '../services/useUnsavedChanges';
 import { SettingRow } from './SettingRow';
 
@@ -233,14 +233,24 @@ function SimpleSettingItem({
 
   if (item.component === 'select') {
     if (item.optionsFromSource && !source.optionsFor) throw new Error(`Settings source has no options for ${item.key}`);
-    const entries = item.optionsFromSource ? source.optionsFor!(item.key)
+    const entries: readonly SettingsSourceOption[] = item.optionsFromSource ? source.optionsFor!(item.key)
       : item.options.map((option) => ({ ...option, label: t(option.labelKey) }));
     const selectedIndex = entries.findIndex((option) => Object.is(option.value, source.values[item.key]));
-    const options = entries.map((option, index) => ({ value: String(index), label: option.label }));
+    const options: SelectOption[] = entries.map((option, index) => ({
+      value: String(index),
+      title: option.title ?? option.label,
+      label: (
+        <span className="settings-select__label" data-testid="settings-select-label">
+          {option.label}
+        </span>
+      ),
+    }));
     if (item.configure) options.push({ value: 'configure', label: t('settingsPanel.models.addModel') });
     control = (
       <Select
+        className="settings-select"
         aria-label={title}
+        title={entries[selectedIndex]?.label}
         value={String(selectedIndex)}
         disabled={controlDisabled}
         options={options}
@@ -262,7 +272,11 @@ function SimpleSettingItem({
 
   return (
     <>
-      <SettingRow title={title} description={description}>
+      <SettingRow
+        title={title}
+        description={description}
+        className={item.component === 'select' ? 'setting-row--select' : undefined}
+      >
         {control}
       </SettingRow>
       {item.component === 'select' && configuring && item.configure ? (
