@@ -136,18 +136,22 @@ def get_jiuwen_sdk_media_globals(
     *,
     workspace: str | None,
     agent_name: str | None,
+    session_upload_root: Path | None = None,
 ) -> dict[str, Any]:
     """Forward Web models and bind a workspace when the host grants access."""
     video = get_enabled_multimodal_model_config(runtime_config, "video")
     audio = get_enabled_multimodal_model_config(runtime_config, "audio")
-    if not video and not audio:
+    has_web_models = bool(video or audio)
+    if not has_web_models and session_upload_root is None:
         return {}
 
     jiuwen = get_jiuwen_builtin_config(config)
     sdk_globals = _custom_sdk_config_dict(jiuwen).get("globals")
     configured_roots = sdk_globals.get("local_media_roots") if isinstance(sdk_globals, dict) else None
     globals_config: dict[str, Any] = {}
-    if workspace and not configured_roots and not os.getenv("JIUWEN_MEMORY_VIDEO_ROOTS", "").strip():
+    env_roots = os.getenv("JIUWEN_MEMORY_VIDEO_ROOTS", "").strip()
+    deployed_roots = configured_roots or env_roots
+    if workspace and has_web_models and not deployed_roots:
         try:
             root = Path(workspace).expanduser()
             if root.is_absolute():
@@ -158,6 +162,16 @@ def get_jiuwen_sdk_media_globals(
                     ]
         except (OSError, ValueError, RuntimeError):
             logger.debug("[JiuwenRailBuilder] workspace unavailable for media import")
+    if session_upload_root is not None:
+        roots = deployed_roots or globals_config.get("local_media_roots", [])
+        if isinstance(roots, str):
+            try:
+                roots = json.loads(roots)
+            except json.JSONDecodeError:
+                roots = None
+        if isinstance(roots, list):
+            binding = {"scope": _memory_scope(jiuwen, agent_name), "root": str(session_upload_root)}
+            globals_config["local_media_roots"] = roots if binding in roots else [*roots, binding]
     for prefix, model in (("video", video), ("asr", audio)):
         if not model:
             continue
