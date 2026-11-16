@@ -1434,6 +1434,12 @@ def prompt_respects_practice(
         and not re.search(r"(?i)\bwearing\b", text)
     ):
         reasons.append("missing_wardrobe_lock")
+    # With sheets attached, an outfit described in words is a second version of the
+    # wardrobe the plates already show. A stated delta ("now wearing …") is fine.
+    if plates and re.search(r"(?i)\bwearing\b(?:\s+[\w'’-]+){3,}", text) and not re.search(
+        r"(?i)\bnow wearing\b", text
+    ):
+        reasons.append("wardrobe_restated")
     # A stated speech line must reach the clip verbatim, or the shot loses its line.
     speech = str(cfg.get("speech_line") or "").strip()
     if speech and cfg.get("include_speech") is not False:
