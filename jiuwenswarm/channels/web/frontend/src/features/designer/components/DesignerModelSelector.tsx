@@ -1,5 +1,5 @@
 import { AlertTriangle, Info, Plus } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
+import { useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import ChatModelSelector from '../../../components/ChatPanel/ChatModelSelector';
 import ModelPicker, { type ModelPickerPresentation } from '../../../components/ModelPicker';
@@ -14,6 +14,11 @@ import {
   type DesignGenerationSlot,
 } from '../designerModelConfiguration';
 import { resolveDesignerDisplayedModel } from '../designerModelLabel';
+import {
+  getDesignModelGate,
+  requestDesignModelRestoreRetry,
+  subscribeDesignModelGate,
+} from '../designSessionModelRestore';
 import { useDesignerStore } from '../designerStore';
 import { useDesignerModelConfiguration } from '../useDesignerModelConfiguration';
 import DesignGenerationModelList from './DesignGenerationModelList';
@@ -55,6 +60,11 @@ export default function DesignerModelSelector({
   sessionId, disabled = false, readOnly = false,
 }: { sessionId?: string; disabled?: boolean; readOnly?: boolean }) {
   const { t } = useTranslation();
+  const sessionRestore = useSyncExternalStore(
+    subscribeDesignModelGate,
+    getDesignModelGate,
+    getDesignModelGate,
+  );
   const [tab, setTab] = useState<Tab>('chat');
   const {
     snapshot, selection, loading, failed, selectError, reload, select,
@@ -93,6 +103,37 @@ export default function DesignerModelSelector({
       ? t(`${key}.notConfigured`)
       : problemText;
   const warningActionLabel = failed ? t(`${key}.retry`) : emptySlots.length > 0 ? t(`${key}.configure`) : '';
+  const sessionRestorePending = sessionRestore?.sessionId === boundSessionId && sessionRestore.status !== 'ready';
+  if (sessionRestorePending) {
+    return (
+      <div className="designer-model-selector" data-testid="designer-model-selector" data-variant="session-restore">
+        {sessionRestore?.status === 'failed' ? (
+          <div
+            role="alert"
+            className="designer-model-selector__state"
+            data-testid="designer-model-selector-session-error"
+          >
+            <p>{t(`${key}.sessionLoadFailed`)}</p>
+            <button
+              type="button"
+              onClick={requestDesignModelRestoreRetry}
+              data-testid="designer-model-selector-session-retry"
+            >
+              {t(`${key}.retry`)}
+            </button>
+          </div>
+        ) : (
+          <span
+            role="status"
+            className="designer-model-selector__state"
+            data-testid="designer-model-selector-session-loading"
+          >
+            {t(`${key}.sessionLoading`)}
+          </span>
+        )}
+      </div>
+    );
+  }
 
   const renderMenu = (catalog: ReactNode, close: () => void) => (
     <section className="designer-model-selector__panel" data-testid="designer-model-config"

@@ -142,6 +142,8 @@
       "enable": "Enable",
       "retry": "Reload",
       "loading": "Loading model configuration…",
+      "sessionLoading": "Loading the selected model…",
+      "sessionLoadFailed": "Could not load the selected model. Please retry.",
       "notConfigured": "Generation models are not configured yet.",
       "loadFailed": "Could not load generation model configuration. Please retry."
     },

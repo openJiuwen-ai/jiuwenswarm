@@ -18,7 +18,7 @@ import { isTeamSessionLive, retainBubblesArrivedDuringHistory } from './services
  * 应用主布局，整合所有组件
  */
 
-import { useState, useCallback, useEffect, useRef, Component, ReactNode, useMemo, lazy, Suspense, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
+import { useState, useCallback, useEffect, useLayoutEffect, useRef, useSyncExternalStore, Component, ReactNode, useMemo, lazy, Suspense, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { ChatPanel } from './components/ChatPanel';
 import { usePromptSuggestionBox } from './hooks/usePromptSuggestionBox';
 import { DesktopTextEditContextMenu } from './components/DesktopTextEditContextMenu';
@@ -150,6 +150,14 @@ import {
   useTeamSelectorStore,
 } from './stores';
 import { useChatRoute } from './multi-session/routing/useChatRoute';
+import {
+  alignDesignModelGate,
+  designSessionPendingRestore,
+  getDesignModelGate,
+  publishDesignModelGate,
+  shouldHoldDesignModelDefault,
+  subscribeDesignModelGate,
+} from './features/designer/designSessionModelRestore';
 import { chatRoutePath } from './multi-session/routing/route';
 import { ConversationSidebar, type NewConversationOptions } from './multi-session/sidebar/ConversationSidebar';
 import {
@@ -631,8 +639,26 @@ function AppContent({
     tRef.current = t;
   }, [t]);
 
+  const designModelGate = useSyncExternalStore(
+    subscribeDesignModelGate,
+    getDesignModelGate,
+    getDesignModelGate,
+  );
+
+  useLayoutEffect(() => {
+    const pendingSessionId = designSessionPendingRestore(
+      route.kind,
+      route.kind === 'design-project' ? route.sessionId : null,
+      NEW_CONVERSATION_ID,
+    );
+    publishDesignModelGate(alignDesignModelGate(getDesignModelGate(), pendingSessionId));
+  }, [route]);
+
   useEffect(() => {
     if (activeNav === 'chat') {
+      // A shared model_name matches the first catalogue row. Wait for the
+      // design session's saved id before that fallback can write it.
+      if (shouldHoldDesignModelDefault(getDesignModelGate(), sessionId)) return;
       const { defaultModelName, setSelectedModelName } = useSessionStore.getState();
       const runtime = useSessionStore.getState().getRuntime(sessionId);
       const missingModelName = Boolean(defaultModelName && !runtime?.selectedModelName);
@@ -641,7 +667,7 @@ function AppContent({
         setSelectedModelName(sessionId, defaultModelName);
       }
     }
-  }, [activeNav, sessionId]);
+  }, [activeNav, designModelGate, sessionId]);
 
   useEffect(() => {
     if (!FEATURE_APP_UPDATER_UI && activeNav === 'updatepanel') {
@@ -2221,6 +2247,43 @@ function AppContent({
     sessionMetadataRequestsRef.current.set(targetSessionId, pending);
     return pending;
   }, [fetchSessionMetadata]);
+
+  useEffect(() => {
+    const pendingSessionId = designSessionPendingRestore(
+      route.kind,
+      route.kind === 'design-project' ? route.sessionId : null,
+      NEW_CONVERSATION_ID,
+    );
+    if (!pendingSessionId || !isConnected) return undefined;
+    const current = getDesignModelGate();
+    if (!current || current.sessionId !== pendingSessionId || current.status !== 'loading') return undefined;
+    const attempt = current.attempt;
+    let cancelled = false;
+    sessionIdRef.current = pendingSessionId;
+    useSessionStore.getState().ensureRuntime(pendingSessionId);
+    void loadSessionMetadata(pendingSessionId).then((session) => {
+      if (cancelled) return;
+      const latest = getDesignModelGate();
+      if (
+        !latest
+        || latest.sessionId !== pendingSessionId
+        || latest.attempt !== attempt
+        || latest.status !== 'loading'
+      ) return;
+      if (session) {
+        useSessionStore.getState().ensureRuntime(pendingSessionId);
+        restoreSessionModelSelection(pendingSessionId, session.model_selection, session.model);
+      }
+      publishDesignModelGate({
+        sessionId: pendingSessionId,
+        status: session ? 'ready' : 'failed',
+        attempt,
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [designModelGate, isConnected, loadSessionMetadata, route]);
 
   // 获取服务端配置（通过 WS 方法）
   const fetchConfig = useCallback(async () => {
