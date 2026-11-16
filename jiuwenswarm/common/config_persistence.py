@@ -21,10 +21,9 @@ from jiuwenswarm.common.multimodal_models import MultimodalError
 def atomic_write(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
-    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".pending", dir=path.parent)
-    staged = Path(name)
-    try:
-        with os.fdopen(fd, "wb") as stream:
+    with tempfile.TemporaryDirectory(prefix=f".{path.name}.", suffix=".pending", dir=path.parent) as directory:
+        staged = Path(directory) / path.name
+        with staged.open("wb") as stream:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
@@ -38,8 +37,6 @@ def atomic_write(path: Path, content: bytes) -> None:
                 os.fsync(directory_fd)
             finally:
                 os.close(directory_fd)
-    finally:
-        staged.unlink(missing_ok=True)
 
 
 def env_content(original: str, updates: dict[str, str | None]) -> str:

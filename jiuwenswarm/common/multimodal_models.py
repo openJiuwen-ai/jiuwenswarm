@@ -37,6 +37,14 @@ def _length(value: str) -> int:
     return len(value.encode("utf-16-le", errors="surrogatepass")) // 2
 
 
+def _valid_capabilities(caps: Any, purpose: Any) -> bool:
+    if not isinstance(caps, list) or not caps:
+        return False
+    if any(not isinstance(cap, str) or PURPOSES.get(cap) != purpose for cap in caps):
+        return False
+    return len(set(caps)) == len(caps)
+
+
 def validate_model(model: Any) -> dict[str, Any]:
     """Validate new edits; deliberately never used to validate migrated fields."""
     errors = []
@@ -60,9 +68,7 @@ def validate_model(model: Any) -> dict[str, Any]:
     if purpose not in ("understanding", "generation"):
         invalid("purpose")
     caps = result.get("capabilities")
-    if (not isinstance(caps, list) or not caps
-            or any(not isinstance(cap, str) or PURPOSES.get(cap) != purpose for cap in caps)
-            or len(set(caps)) != len(caps)):
+    if not _valid_capabilities(caps, purpose):
         invalid("capabilities")
     else:
         result["capabilities"] = [tool for tool in CAPABILITIES if tool in caps]
@@ -75,15 +81,21 @@ def validate_model(model: Any) -> dict[str, Any]:
         invalid("connection")
     protocol = connection.get("protocol")
     optional_credentials = purpose == "generation" and isinstance(protocol, str) and protocol.strip() == "vllm-omni"
-    for field, maximum in (("provider", 100), ("protocol", 100), ("api_base", 512), ("api_key", 2048), ("model_name", 100)):
+    for field, maximum in (
+        ("provider", 100), ("protocol", 100), ("api_base", 512), ("api_key", 2048), ("model_name", 100),
+    ):
         value = connection.get(field, "")
-        optional = optional_credentials and field in ("api_key", "model_name")
-        if not isinstance(value, str) or _length(value.strip()) > maximum or (not optional and not value.strip()):
+        if not isinstance(value, str):
             invalid(f"connection.{field}")
-        elif field == "api_base" and not re.match(r"^https?://", value.strip(), re.IGNORECASE):
+            continue
+        value = value.strip()
+        optional = optional_credentials and field in ("api_key", "model_name")
+        if _length(value) > maximum or (not optional and not value):
+            invalid(f"connection.{field}")
+        elif field == "api_base" and not re.match(r"^https?://", value, re.IGNORECASE):
             invalid("connection.api_base")
         else:
-            connection[field] = value.strip()
+            connection[field] = value
     if purpose == "understanding":
         if connection.get("protocol") != "openai":
             invalid("connection.protocol")
@@ -120,15 +132,15 @@ def validate_catalogue(state: Any) -> None:
             raise MultimodalError("MM_CONFIG_READ_FAILED")
         caps = model.get("capabilities")
         if (model["model_id"] in ids or model.get("purpose") not in ("understanding", "generation")
-                or not isinstance(caps, list) or not caps
-                or any(not isinstance(cap, str) or PURPOSES.get(cap) != model["purpose"] for cap in caps)
-                or len(set(caps)) != len(caps) or not isinstance(model.get("connection"), dict)
-                or not isinstance(model.get("display_name"), str) or not isinstance(model.get("legacy_options", {}), dict)):
+                or not _valid_capabilities(caps, model["purpose"])):
+            raise MultimodalError("MM_CONFIG_READ_FAILED")
+        if (not isinstance(model.get("connection"), dict) or not isinstance(model.get("display_name"), str)
+                or not isinstance(model.get("legacy_options", {}), dict)):
             raise MultimodalError("MM_CONFIG_READ_FAILED")
         ids.add(model["model_id"])
     for tool in CAPABILITIES:
         binding = tools[tool]
-        if not isinstance(binding, dict) or type(binding.get("enabled")) is not bool:
+        if not isinstance(binding, dict) or not isinstance(binding.get("enabled"), bool):
             raise MultimodalError("MM_CONFIG_READ_FAILED")
         model_id = binding.get("model_id")
         if model_id is not None:
@@ -158,9 +170,11 @@ def normalize_legacy_model(model: dict) -> dict:
 
 
 def _confirm(params: dict, affected: list[str]) -> None:
+    if not affected:
+        return
     confirmed = params.get("confirmed_tools", [])
-    if affected and (not isinstance(confirmed, list) or any(not isinstance(tool, str) for tool in confirmed)
-                     or sorted(confirmed) != sorted(affected)):
+    if (not isinstance(confirmed, list) or any(not isinstance(tool, str) for tool in confirmed)
+            or sorted(confirmed) != sorted(affected)):
         raise MultimodalError("MM_CONFIRM_REQUIRED", {"affected_tools": affected})
 
 
@@ -230,16 +244,24 @@ def transition(state: dict, operation: str, params: dict) -> tuple[dict, dict]:
                 raise MultimodalError("MM_CAPABILITY_MISMATCH", {"tool_id": tool, "model_id": model["model_id"]})
             binding["model_id"] = model["model_id"]
         if "enabled" in params:
-            if type(params["enabled"]) is not bool:
+            if not isinstance(params["enabled"], bool):
                 raise MultimodalError("MM_VALIDATION_FAILED")
             if params["enabled"] and binding["model_id"] is None:
                 raise MultimodalError("MM_MODEL_REQUIRED", {"tool_id": tool})
             binding["enabled"] = params["enabled"]
     elif operation != "config.apply":
         raise MultimodalError("MM_VALIDATION_FAILED")
-    result["changed_tools"] = [tool for tool in CAPABILITIES if tools[tool] != state["tools"][tool]
-                               or next((m for m in models if m["model_id"] == tools[tool]["model_id"]), None)
-                               != next((m for m in state["models"] if m["model_id"] == state["tools"][tool]["model_id"]), None)]
+    changed_tools = []
+    for tool in CAPABILITIES:
+        if tools[tool] != state["tools"][tool]:
+            changed_tools.append(tool)
+            continue
+        model_id = tools[tool]["model_id"]
+        current_model = next((model for model in models if model["model_id"] == model_id), None)
+        previous_model = next((model for model in state["models"] if model["model_id"] == model_id), None)
+        if current_model != previous_model:
+            changed_tools.append(tool)
+    result["changed_tools"] = changed_tools
     result["changed"] = candidate != state
     validate_catalogue(candidate)
     return candidate, result

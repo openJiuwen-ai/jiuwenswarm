@@ -15,7 +15,9 @@ from jiuwenswarm.common.config_persistence import commit_multimodal, publish_env
 from jiuwenswarm.common.multimodal_models import (
     CAPABILITIES, MultimodalError, normalize_legacy_model, public_snapshot, references, transition, validate_catalogue,
 )
-from jiuwenswarm.common.multimodal_projection import ALIASES, FIELDS, migrate_catalogue, model_block, project_catalogue, resolve_legacy
+from jiuwenswarm.common.multimodal_projection import (
+    ALIASES, FIELDS, migrate_catalogue, model_block, project_catalogue, resolve_legacy,
+)
 from jiuwenswarm.common.security.base_crypto import get_crypto_provider
 from jiuwenswarm.common.utils import get_config_file
 
@@ -30,7 +32,10 @@ def _credentials(value, *, encrypt: bool, secret: bool = False, environment_refe
                                  and not key.lower().endswith("_tokens"))
                 for key, item in value.items()}
     if isinstance(value, list):
-        return [_credentials(item, encrypt=encrypt, secret=secret, environment_references=environment_references) for item in value]
+        return [
+            _credentials(item, encrypt=encrypt, secret=secret, environment_references=environment_references)
+            for item in value
+        ]
     if secret and isinstance(value, str) and value:
         if environment_references and re.fullmatch(r"\$\{[A-Z_]+\}", value):
             return value
@@ -55,7 +60,8 @@ def _yaml_bytes(data: dict) -> bytes:
 class MultimodalStore:
     """Resolve catalogue paths in the active user context for each operation."""
 
-    def _load(self, path: Path, *, migrate: bool = False) -> tuple[dict, dict]:
+    @staticmethod
+    def _load(path: Path, *, migrate: bool = False) -> tuple[dict, dict]:
         try:
             raw = load_yaml_round_trip(path) or {}
             state = raw.get("multimodal")
@@ -69,7 +75,9 @@ class MultimodalStore:
                 managed_keys = {f"{tool.upper()}_{suffix}" for tool in CAPABILITIES
                                 for suffix in (*FIELDS.values(), "ENABLED", *ALIASES.get(tool, ()))}
                 managed_env = {key: value for key, value in env.items() if key in managed_keys}
-                state = migrate_catalogue(_credentials(legacy_models, encrypt=False), _credentials(managed_env, encrypt=False))
+                state = migrate_catalogue(
+                    _credentials(legacy_models, encrypt=False), _credentials(managed_env, encrypt=False),
+                )
                 # Migration preserves switches and missing values. It never runs
                 # create-model rules or new-form validation.
                 validate_catalogue(state)
@@ -87,7 +95,8 @@ class MultimodalStore:
         except Exception:
             raise MultimodalError("MM_CONFIG_READ_FAILED") from None
 
-    def _commit(self, path: Path, raw: dict, state: dict) -> dict[str, str | None]:
+    @staticmethod
+    def _commit(path: Path, raw: dict, state: dict) -> dict[str, str | None]:
         projected, updates = project_catalogue(raw, state)
         # Protect authoritative and derived credentials with the same provider.
         projected["multimodal"] = _credentials(state, encrypt=True)
@@ -130,6 +139,7 @@ class MultimodalStore:
             result["snapshot"] = public_snapshot(candidate)
             result["saved"] = True
             return result, updates
+
 
 def initialize_multimodal_models() -> None:
     """Migrate and project saved settings before Runtime consumers start."""

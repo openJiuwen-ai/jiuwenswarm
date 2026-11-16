@@ -182,8 +182,11 @@ class ConfigAdapter(GatewayAdapter):
             params = request.params or {}
             updates = params.get("config", {}) if request.req_method == ReqMethod.CONFIG_SAVE_ALL else params
             managed_suffixes = {"model", "enabled", *FIELDS.keys()}
-            affected = [tool for tool in CAPABILITIES if isinstance(updates, dict)
-                        and any(f"{tool}_{suffix}" in updates for suffix in managed_suffixes)]
+            affected = []
+            if isinstance(updates, dict):
+                for tool in CAPABILITIES:
+                    if any(f"{tool}_{suffix}" in updates for suffix in managed_suffixes):
+                        affected.append(tool)
             if affected and get_config_raw().get("multimodal") is not None:
                 error = MultimodalError("MM_LEGACY_WRITE_UNSUPPORTED", {"affected_tools": affected})
                 return AgentResponse(request_id=request.request_id, channel_id=request.channel_id, ok=False,

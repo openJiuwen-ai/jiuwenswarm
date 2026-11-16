@@ -269,12 +269,35 @@ def test_projection_preserves_ordinary_models_and_clears_old_aliases(list_models
         assert projected["models"]["image_gen"] == ordinary["image_gen"]
 
 
-@pytest.mark.parametrize("capabilities", [["vision", "video_gen"], [], ["vision", "vision"]])
+@pytest.mark.parametrize("capabilities", [
+    ["vision", "video_gen"], [], ["vision", "vision"], None, "vision", [None], [["vision"]],
+])
 def test_invalid_purpose_capabilities_rejected(capabilities):
     model = model_for(["vision"])
     model["capabilities"] = capabilities
     with pytest.raises(MultimodalError, match="MM_VALIDATION_FAILED"):
         validate_model(model)
+
+
+@pytest.mark.parametrize("enabled", [0, 1, "true", None, []])
+def test_tool_switch_requires_boolean_in_requests_and_saved_catalogues(enabled):
+    state = create(empty_state(), model_for(["vision"]))
+    with pytest.raises(MultimodalError, match="MM_VALIDATION_FAILED"):
+        transition(state, "tools.update", {"tool_id": "vision", "enabled": enabled})
+    assert state["tools"]["vision"]["enabled"] is True
+    state["tools"]["vision"]["enabled"] = enabled
+    with pytest.raises(MultimodalError, match="MM_CONFIG_READ_FAILED"):
+        validate_catalogue(state)
+
+
+@pytest.mark.parametrize("capabilities", [
+    [], ["vision", "vision"], ["video_gen"], None, "vision", [None], [["vision"]],
+])
+def test_saved_catalogue_rejects_malformed_capabilities(capabilities):
+    state = create(empty_state(), model_for(["vision"]))
+    state["models"][0]["capabilities"] = capabilities
+    with pytest.raises(MultimodalError, match="MM_CONFIG_READ_FAILED"):
+        validate_catalogue(state)
 
 
 def test_generation_optional_credentials_and_utf16_limits_match_existing_form():

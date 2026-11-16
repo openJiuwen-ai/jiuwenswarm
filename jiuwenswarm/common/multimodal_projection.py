@@ -13,7 +13,9 @@ FIELDS = {
     "context_window_tokens": "CONTEXT_WINDOW_TOKENS", "protocol": "PROTOCOL",
 }
 ALIASES = {"vision": ("BASE_URL", "MODEL"), "audio": ("BASE_URL", "TRANSCRIPTION_MODEL", "QUESTION_ANSWERING_MODEL")}
-TEMPLATE_MODEL_NAMES = {"vision": "your-vision-model-name", "audio": "your-audio-model-name", "video": "your-video-model-name"}
+TEMPLATE_MODEL_NAMES = {
+    "vision": "your-vision-model-name", "audio": "your-audio-model-name", "video": "your-video-model-name",
+}
 CLIENT_FIELDS = {"api_base", "base_url", "api_key", "model_name", "model", "client_provider", "model_provider",
                  "endpoint_profile", "context_window_tokens", "vendor_key", "plan", "protocol"}
 
@@ -57,6 +59,7 @@ def migrate_catalogue(raw: dict, env: dict) -> dict:
     """Import each old slot; merge only equal effective model configurations."""
     resolved = resolve_legacy(raw, env)
     state = {"schema_version": 1, "models": [], "tools": {}}
+    required_fields = ("api_base", "api_key", "model_name", "provider")
     for tool in CAPABILITIES:
         prefix = tool.upper()
         block = model_block(resolved, tool) if tool in UNDERSTANDING else {}
@@ -93,10 +96,10 @@ def migrate_catalogue(raw: dict, env: dict) -> dict:
         if tool not in UNDERSTANDING and context_key in env:
             legacy["generation_context_window_tokens"] = env[context_key]
         # Template defaults and explicit switches alone are not model configurations.
-        present = any(connection.get(key) for key in ("api_base", "api_key", "model_name", "provider")) or bool(overrides)
+        present = any(connection.get(key) for key in required_fields) or bool(overrides)
         explicit = env.get(f"{prefix}_ENABLED", block.get("enabled"))
         enabled = (_enabled(explicit) if explicit is not None else
-                   tool in UNDERSTANDING and all(connection.get(key) for key in ("api_base", "api_key", "model_name", "provider")))
+                   tool in UNDERSTANDING and all(connection.get(key) for key in required_fields))
         binding = {"model_id": None, "enabled": enabled}
         if present:
             imported = normalize_legacy_model({
@@ -107,11 +110,14 @@ def migrate_catalogue(raw: dict, env: dict) -> dict:
                 state["tools"][tool] = {"model_id": None, "enabled": False}
                 continue
             if explicit is None and tool in UNDERSTANDING:
-                binding["enabled"] = all(imported["connection"].get(key) for key in ("api_base", "api_key", "model_name", "provider"))
+                binding["enabled"] = all(imported["connection"].get(key) for key in required_fields)
             imported["display_name"] = str(imported["connection"].get("model_name") or tool)
-            match = next((model for model in state["models"] if model["purpose"] == PURPOSES[tool]
-                          and model["connection"] == imported["connection"]
-                          and model["legacy_options"] == imported["legacy_options"]), None)
+            match = None
+            for model in state["models"]:
+                if (model["purpose"] == PURPOSES[tool] and model["connection"] == imported["connection"]
+                        and model["legacy_options"] == imported["legacy_options"]):
+                    match = model
+                    break
             if match is None:
                 match = imported
                 state["models"].append(match)

@@ -24,6 +24,50 @@ from jiuwenswarm.server.runtime.gateway_adapter.multimodal_config_adapter import
 from tests.unit_tests.test_multimodal_models import model_for
 
 
+@pytest.mark.parametrize("existing", [False, True])
+def test_atomic_write_preserves_permissions_and_removes_staging_files(tmp_path, existing):
+    path = tmp_path / "config.yaml"
+    if existing:
+        path.write_bytes(b"old")
+        path.chmod(0o640)
+    config_persistence.atomic_write(path, b"new")
+    assert path.read_bytes() == b"new"
+    assert list(tmp_path.iterdir()) == [path]
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o777 == (0o640 if existing else 0o600)
+
+
+@pytest.mark.parametrize("failure_step", ["file_sync", "replace", "directory_sync"])
+def test_atomic_write_cleans_staging_files_after_failure(tmp_path, monkeypatch, failure_step):
+    from jiuwenswarm.common import config
+
+    if failure_step == "directory_sync" and os.name == "nt":
+        pytest.skip("Directory synchronization is only used on POSIX")
+    path = tmp_path / "config.yaml"
+    path.write_bytes(b"old")
+    original_fsync = os.fsync
+    sync_count = 0
+
+    def fail_sync(fd):
+        nonlocal sync_count
+        sync_count += 1
+        if failure_step == "file_sync" or (failure_step == "directory_sync" and sync_count == 2):
+            raise OSError("injected synchronization failure")
+        original_fsync(fd)
+
+    def fail_replace(source, target):
+        assert path.read_bytes() == b"old"
+        raise OSError("injected replacement failure")
+
+    monkeypatch.setattr(os, "fsync", fail_sync)
+    if failure_step == "replace":
+        monkeypatch.setattr(config, "_atomic_replace", fail_replace)
+    with pytest.raises(OSError, match="injected"):
+        config_persistence.atomic_write(path, b"new")
+    assert path.read_bytes() == (b"new" if failure_step == "directory_sync" else b"old")
+    assert list(tmp_path.iterdir()) == [path]
+
+
 def test_env_updates_replace_complete_multiline_bindings_and_preserve_other_values():
     original = "# unchanged\nOTHER='a\nb'\nVISION_API_KEY='old\\'key\\\\value\nsecond line'\nVISION_API_KEY=duplicate\nTAIL=keep\n"
     updated = config_persistence.env_content(original, {"VISION_API_KEY": "new\ncredential"})
