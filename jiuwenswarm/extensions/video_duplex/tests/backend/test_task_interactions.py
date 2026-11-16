@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import until
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import agent_client, until
 
 from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import LocalCheckpoint
 
@@ -571,20 +571,6 @@ def test_ambiguous_or_destructive_queue_arguments_are_rejected(args):
 
 @pytest.mark.parametrize("source", ["ask_user_interrupt", "permission_interrupt", "confirm_interrupt"])
 async def test_agent_question_is_not_a_completed_result(source):
-    class Client:
-        async def send_request_stream(self, env):
-            yield SimpleNamespace(
-                payload=dict(
-                    event_type="chat.ask_user_question",
-                    request_id="q",
-                    source=source,
-                    questions=[{"question": "预算是多少？"}],
-                )
-            )
-            yield SimpleNamespace(
-                payload=dict(event_type="chat.final", content="等待预算")
-            )
-
     progress = []
 
     async def observe(entry):
@@ -592,7 +578,11 @@ async def test_agent_question_is_not_a_completed_result(source):
 
     with pytest.raises(InteractionPending):
         await execute_core_agent(
-            Client(),
+            agent_client(frames=[
+                {"event_type": "chat.ask_user_question", "request_id": "q", "source": source,
+                 "questions": [{"question": "预算是多少？"}]},
+                {"event_type": "chat.final", "content": "等待预算"},
+            ]),
             question="trip",
             query="trip",
             visual_context="",

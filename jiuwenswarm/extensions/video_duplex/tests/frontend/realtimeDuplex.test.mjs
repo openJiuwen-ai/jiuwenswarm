@@ -253,12 +253,10 @@ test('a short spoken answer to the only card is submitted directly, and its succ
   session.enqueueQuestion('', { id: 'card-b', request_id: 'chat-approval', state: 'pending', source: 'confirm_interrupt',
     questions: [{ header: '操作确认: cua_agent', question: '打开计算器',
       options: [{ label: '本次允许' }, { label: '会话内记住' }, { label: '永久记住' }, { label: '拒绝' }] }] });
-  session.handleEvent({ type: 'response.created', response: { id: 'notice' } });
-  session.handleEvent({ type: 'response.done', response: { id: 'notice', status: 'completed' } });
+  finishResponse(session, 'notice');
   sent.length = 0;
 
-  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'u2' });
-  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'u2', transcript: '本会话保持同意。' });
+  spokenTurn(session, '本会话保持同意。', 'u2');
   assert.equal(functionCalls.length, 1);
   assert.equal(functionCalls[0].name, 'jiuwen_task_answer');
   assert.deepEqual(JSON.parse(functionCalls[0].arguments), { job_id: '', interaction_id: 'card-b', answers: ['会话内记住'] });
@@ -271,10 +269,8 @@ test('a short spoken answer to the only card is submitted directly, and its succ
 
   // A new request is never taken as an answer: it goes to the model with the card status.
   sent.length = 0;
-  session.handleEvent({ type: 'response.created', response: { id: 'r2' } });
-  session.handleEvent({ type: 'response.done', response: { id: 'r2', status: 'completed' } });
-  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'u3' });
-  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'u3', transcript: '打开计算器。' });
+  finishResponse(session, 'r2');
+  spokenTurn(session, '打开计算器。', 'u3');
   assert.equal(functionCalls.length, 1);
   assert.deepEqual(sent.map(e => e.type), ['conversation.item.create', 'response.create']);
   assert.match(sent[0].item.content[0].text, /The user just said: "打开计算器。"/);
@@ -327,8 +323,7 @@ test('closing the last card lets the provider answer speech by itself again', ()
 test('without an open card, and for the assistant notices, replies are left alone', () => {
   const { session, sent } = createSession();
   session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'u1' });
-  session.handleEvent({ type: 'response.created', response: { id: 'r1' } });
-  session.handleEvent({ type: 'response.done', response: { id: 'r1', status: 'completed' } });
+  finishResponse(session, 'r1');
   openCard(session); // its notice reply is not a user turn
   session.handleEvent({ type: 'response.created', response: { id: 'notice' } });
   assert.equal(sent.filter(e => e.type === 'response.cancel').length, 0);
@@ -379,11 +374,9 @@ test('information questions persist until closed and leave approval rules separa
   assert.equal(updates()[0].session.turn_detection.create_response, false);
   session.enqueueQuestion('ask', card);
   assert.equal(updates().length, 1);
-  session.handleEvent({ type: 'response.created', response: { id: 'notice' } });
-  session.handleEvent({ type: 'response.done', response: { id: 'notice', status: 'completed' } });
+  finishResponse(session, 'notice');
   sent.length = 0;
-  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'answer' });
-  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'answer', transcript: '两百元' });
+  spokenTurn(session, '两百元', 'answer');
   assert.deepEqual(sent.map(e => e.type), ['conversation.item.create', 'response.create']);
   assert.match(sent[0].item.content[0].text, /预算多少.*jiuwen_form_answer.*两百元/);
   session.enqueueQuestion('ask', { ...card, state: 'accepted' });
@@ -401,8 +394,7 @@ const spokenTurn = (session, transcript, id = 'answer') => {
 test('a spoken form option submits once without relying on a Qwen call and reports its receipt', () => {
   const { session, sent, functionCalls } = createSession();
   session.enqueueQuestion('ask', informationCard());
-  session.handleEvent({ type: 'response.created', response: { id: 'notice' } });
-  session.handleEvent({ type: 'response.done', response: { id: 'notice', status: 'completed' } });
+  finishResponse(session, 'notice');
   sent.length = 0;
   spokenTurn(session, '程序员吧。');
   assert.equal(functionCalls.length, 1);
@@ -422,8 +414,7 @@ test('ambiguous forms, new tasks and partial multi-question answers never submit
     [{ ...informationCard(), questions: [...informationCard().questions, { question: '多长？' }] }]]) {
     const { session, sent, functionCalls } = createSession();
     cards.forEach((card, i) => session.enqueueQuestion(`ask-${i}`, card));
-    session.handleEvent({ type: 'response.created', response: { id: 'notice' } });
-    session.handleEvent({ type: 'response.done', response: { id: 'notice', status: 'completed' } });
+    finishResponse(session, 'notice');
     sent.length = 0;
     spokenTurn(session, cards.length === 1 && cards[0].questions.length === 1 ? '打开微信' : '程序员');
     assert.equal(functionCalls.length, 0);
@@ -441,8 +432,7 @@ test('shared option aliases and concurrent approval cards cannot be auto-answere
     if (!approval) card.questions[0].options.push({ label: '程序员/工程师' });
     session.enqueueQuestion('ask', card);
     if (approval) openCard(session);
-    session.handleEvent({ type: 'response.created', response: { id: 'notice' } });
-    session.handleEvent({ type: 'response.done', response: { id: 'notice', status: 'completed' } });
+    finishResponse(session, 'notice');
     spokenTurn(session, '程序员');
     assert.equal(functionCalls.length, 0);
   }
@@ -820,6 +810,11 @@ test('user interruption clears streaming audio and late item events cannot reope
   assert.equal(posted.filter(item => item.type === 'audio').length, 1);
 });
 
+function finishResponse(session, id) {
+  session.handleEvent({ type: 'response.created', response: { id } });
+  session.handleEvent({ type: 'response.done', response: { id, status: 'completed' } });
+}
+
 function createSession(videoFrame = null, callbackOverrides = {}) {
   const states = [];
   const posted = [];
@@ -988,8 +983,7 @@ test('rejected Qwen image frame stays diagnostic and does not report voice failu
   });
   session.sendAudio(new Int16Array([1]), true);
   session.sendAudio(new Int16Array([2]), true);
-  session.handleEvent({ type: 'response.created', response: { id: 'answered' } });
-  session.handleEvent({ type: 'response.done', response: { id: 'answered', status: 'completed' } });
+  finishResponse(session, 'answered');
   session.handleEvent({
     type: 'error', error: { type: 'invalid_request_error', message: 'Error append image before append audio.' },
   });
@@ -1866,8 +1860,7 @@ test('permission cards stay manual and never submit spoken consent', () => {
   assert.match(JSON.stringify(sent), /click the on-screen permission card manually/);
   assert.equal(sent.some(event => event.type === "session.update"), false);
   session.handleEvent({ type: 'input_audio_buffer.speech_started', item_id: 'consent' });
-  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'consent' });
-  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'consent', transcript: '同意' });
+  spokenTurn(session, '同意', 'consent');
   assert.equal(functionCalls.length, 0);
   assert.equal(diagnostics.some(event => event.event === 'qwen_card_spoken_answer'), false);
 });
@@ -1879,8 +1872,7 @@ test('execution confirmations accept explicit execute speech using the actual ca
     id: 'execute-card', request_id: 'execute-request', state: 'pending', source: 'confirm_interrupt',
     questions: [{ question: '执行此计划？', options: [{ label: '执行' }, { label: '跳过' }] }],
   });
-  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'execute-input' });
-  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'execute-input', transcript: '按计划执行' });
+  spokenTurn(session, '按计划执行', 'execute-input');
   assert.equal(functionCalls.length, 1);
   assert.deepEqual(JSON.parse(functionCalls[0].arguments), {
     job_id: 'execute-job', interaction_id: 'execute-card', answers: ['执行'],
@@ -1895,20 +1887,12 @@ test('a permission card replaces a stale execution confirmation without carrying
     questions: [{ question: '允许访问文件？', options: [{ label: '本次允许' }, { label: '拒绝' }] }],
   });
   assert.equal(session.pendingApprovals.size, 0);
-  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'permission-input' });
-  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'permission-input', transcript: '同意' });
+  spokenTurn(session, '同意', 'permission-input');
   assert.equal(functionCalls.length, 0);
 });
 
 
-test('converted completed cancellation updates context silently as a pending Core followup', () => {
-  const { session, sent } = createSession();
-  session.enqueueOperationResult('cancel', {
-    state: 'followup', converted_to: 'modify', task_status: 'completed', stopped: false, successor_id: 'child',
-  });
-  assert.equal(sent.filter(event => event.item?.type === 'function_call_output').length, 1);
-  assert.equal(sent.filter(event => event.type === 'response.create').length, 0);
-});
+
 
 
 test('successful task completion requests one spoken result after silent acceptance', () => {

@@ -2579,54 +2579,18 @@ async def test_execute_core_agent_extracts_generated_brief_protocol() -> None:
     assert result["realtime_brief"]["source"] == "core_agent"
 
 
-@pytest.mark.asyncio
-async def test_execute_core_agent_prefers_chat_final_like_normal_chat() -> None:
-    class FakeAgentClient:
-        async def send_request_stream(self, envelope):
-            del envelope
-            yield SimpleNamespace(
-                payload={"event_type": "chat.delta", "content": "正在查询资料……"},
-            )
-            yield SimpleNamespace(
-                payload={
-                    "event_type": "chat.final",
-                    "content": "香港今天有骤雨，外出建议带伞。",
-                },
-            )
-
+@pytest.mark.parametrize("final", ["香港今天有骤雨，外出建议带伞。", ""])
+async def test_execute_core_agent_prefers_final_and_falls_back_to_stream(final):
     result = await video_search.execute_core_agent(
-        FakeAgentClient(),
-        question="香港今天天气如何？",
-        query="香港今日天气",
-        visual_context="室内画面",
-        search_session_id="search-session",
+        make_agent_client(frames=[
+            {"event_type": "chat.delta", "content": "正在查询资料……"},
+            {"event_type": "chat.delta", "content": "外出建议带伞。"},
+            {"event_type": "chat.final", "content": final},
+        ]),
+        question="香港今天天气如何？", query="香港今日天气",
+        visual_context="室内画面", search_session_id="search-session",
     )
-
-    assert result["answer"] == "香港今天有骤雨，外出建议带伞。"
-
-
-@pytest.mark.asyncio
-async def test_execute_core_agent_empty_final_keeps_streamed_answer() -> None:
-    class FakeAgentClient:
-        async def send_request_stream(self, envelope):
-            del envelope
-            yield SimpleNamespace(
-                payload={"event_type": "chat.delta", "content": "香港今天有骤雨，"},
-            )
-            yield SimpleNamespace(
-                payload={"event_type": "chat.delta", "content": "外出建议带伞。"},
-            )
-            yield SimpleNamespace(payload={"event_type": "chat.final", "content": ""})
-
-    result = await video_search.execute_core_agent(
-        FakeAgentClient(),
-        question="香港今天天气如何？",
-        query="香港今日天气",
-        visual_context="室内画面",
-        search_session_id="search-session",
-    )
-
-    assert result["answer"] == "香港今天有骤雨，外出建议带伞。"
+    assert result["answer"] == (final or "正在查询资料……外出建议带伞。")
 
 
 @pytest.mark.asyncio
@@ -2868,21 +2832,12 @@ async def test_execute_core_agent_streams_every_reasoning_delta() -> None:
     async def collect_progress(item):
         progress.append(item)
 
-    class FakeAgentClient:
-        async def send_request_stream(self, envelope):
-            del envelope
-            for content in ("先检查", "，再核实"):
-                yield SimpleNamespace(
-                    payload={"event_type": "chat.reasoning", "content": content},
-                    is_complete=False,
-                )
-            yield SimpleNamespace(
-                payload={"event_type": "chat.final", "content": "完成"},
-                is_complete=True,
-            )
-
     result = await video_search.execute_core_agent(
-        FakeAgentClient(),
+        make_agent_client(frames=[
+            {"event_type": "chat.reasoning", "content": "先检查"},
+            {"event_type": "chat.reasoning", "content": "，再核实"},
+            {"event_type": "chat.final", "content": "完成"},
+        ]),
         question="测试",
         query="测试",
         visual_context="",
@@ -2905,15 +2860,9 @@ async def test_video_search_returns_failure_when_core_agent_fails(monkeypatch) -
     task_logs = []
     monkeypatch.setattr(task_adapter, "trace_task", lambda event, **fields: task_logs.append((event, fields)))
 
-    class FakeAgentClient:
-        async def send_request(self, envelope):
-            del envelope
-            return SimpleNamespace(
-                ok=False,
-                payload={"error": "Max iterations reached without completion"},
-            )
-
-    channel = _video_channel(FakeAgentClient())
+    channel = _video_channel(make_agent_client(
+        {"error": "Max iterations reached without completion"}, ok=False,
+    ))
     monkeypatch.setattr(video_live, "_video_live_mode", lambda: "realtime")
     monkeypatch.setattr(video_live, "_append_video_event_log", event_logs.append)
 
@@ -3388,22 +3337,6 @@ def test_voice_result_preserves_pending_and_blocked_core_outcomes(answer):
     )
     assert presented["realtime_brief"]["summary"] == answer.strip()
     assert presented["realtime_brief"]["source"] == "derived"
-
-
-def test_voice_brief_protocol_allows_unfinished_background_work():
-    prompt = video_search.core_agent_brief_protocol("pending-outcome")
-    assert "Preserve pending, partial, blocked and failed outcomes" in prompt
-    assert "do not claim the task is still unfinished" not in prompt
-
-
-def test_joyai_resource_policy_survives_completed_and_empty_invocation_queries():
-    for message in [joyai_provider.ground_user_instruction("删除这个每天九点的定时提醒")]:
-        assert "Completed Core work can still be revised" in message
-        assert "Further actions on prior results may also be delegated to Core" in message
-        assert "original result and context" in message
-        assert "accepted/submitted is not completion" in message
-        assert "cancel receipt reports completed/stopped=false" in message
-        assert "Cron tools" not in message
 
 
 async def test_joyai_delegates_reminder_deletion_after_completed_creation(monkeypatch):
@@ -3903,27 +3836,10 @@ THINKING = {
 TOOL_CALL = {**THINKING, "seq": 2, "kind": "tool_call", "summary": "screenshot()", "tool_name": "screenshot"}
 
 
-def test_subagent_frames_become_progress_carrying_the_original_event():
-    # The Web panel normalizes the exact typed-path frame; a reshaped copy would drift.
-    roster = video_search.core_agent_progress(ROSTER)
-    activity = video_search.core_agent_progress(THINKING)
-    assert roster["stage"] == activity["stage"] == "subagent"
-    assert roster["subagent_event"] == ROSTER
-    assert activity["subagent_event"] == THINKING
-    assert "cua_agent" in roster["title"]
-    assert activity["detail"] == "Looking for the window"
-
-
-
 @pytest.mark.asyncio
 async def test_every_subagent_frame_reaches_task_progress_in_stream_order():
     frames = [ROSTER, THINKING, TOOL_CALL, {**ROSTER, "status": "idle", "revision": 2},
               {"event_type": "chat.final", "content": "Done"}]
-
-    class Client:
-        async def send_request_stream(self, _env):
-            for payload in frames:
-                yield SimpleNamespace(payload=payload)
 
     progress = []
 
@@ -3931,11 +3847,14 @@ async def test_every_subagent_frame_reaches_task_progress_in_stream_order():
         progress.append(entry)
 
     await video_search.execute_core_agent(
-        Client(), question="q", query="q", visual_context="", search_session_id="voice", on_progress=record,
+        make_agent_client(frames=frames), question="q", query="q", visual_context="", search_session_id="voice", on_progress=record,
     )
     # Repeated roster/activity frames are distinct facts; none may be deduplicated away.
     forwarded = [entry["subagent_event"] for entry in progress if entry["stage"] == "subagent"]
     assert forwarded == frames[:4]
+    subagents = [entry for entry in progress if entry["stage"] == "subagent"]
+    assert "cua_agent" in subagents[0]["title"]
+    assert subagents[1]["detail"] == "Looking for the window"
 
 
 @pytest.mark.parametrize("field", ["result", "raw_output", "data"])

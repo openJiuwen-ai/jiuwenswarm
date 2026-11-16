@@ -164,9 +164,16 @@ async def run_queue(
     return result, operate, step
 
 
-def agent_client(payload, *, ok=True):
-    """Record unary Agent requests and return the supplied protocol receipt."""
-    return SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(ok=ok, payload=payload)))
+def agent_client(payload=None, *, ok=True, frames=None):
+    """Record unary requests and replay supplied Agent stream payloads."""
+    async def stream(_request):
+        for frame in frames:
+            yield SimpleNamespace(payload=frame)
+
+    client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(ok=ok, payload=payload)))
+    if frames is not None:
+        client.send_request_stream = stream
+    return client
 
 
 

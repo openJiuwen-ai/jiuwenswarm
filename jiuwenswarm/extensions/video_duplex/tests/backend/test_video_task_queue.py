@@ -879,7 +879,7 @@ async def test_voice_reorder_with_quoted_version_pushes_queue_and_changes_execut
 
 def test_qwen_exposes_queue_manager_and_preserves_voice_approval_answers():
     names = {t["function"]["name"] for t in qwen_omni_tools(queue_manager=True)}
-    assert names == {"jiuwen_delegate", "jiuwen_queue_manage", "jiuwen_task_answer"}
+    assert names == {"jiuwen_delegate", "jiuwen_queue_manage", "jiuwen_task_answer", "jiuwen_form_answer"}
     for args in ({}, {"instruction": " "}, {"instruction": "move", "job_id": "invented"}):
         with pytest.raises(ValueError):
             parse_qwen_omni_tool_call({"name": "jiuwen_queue_manage", "call_id": "m", "arguments": args})
