@@ -105,3 +105,24 @@ code-quality-check 核对完整增量及兼容边界，无当前范围阻塞项�
 每个分支均用自己的原始 uv.lock 新建冻结环境，实际 Git 依赖 commit 逐一匹配该锁；未迁移或修改依赖文件。环境准备先遇到并行共享缓存锁超时，随后复用本机已有精确 Git 对象并顺序安装；离线尝试缺构建后端元数据，最终以原锁和 PyPI 索引完成安装。环境失败日志保留，三分支各自首次业务回归均通过。11 个相关 pytest 文件使用 macOS/Python 3.11.4，唯一跳过均为可选 webview 缺失；此前原生 Windows 结论仍仅覆盖其当时实测的依赖组合。
 
 code-quality-check 未发现当前范围阻塞项，本次迁移没有新机制或结构变化，架构升级 Not triggered，沿用已完成的生命周期审查。迁移独立只读评审为 Approve，已核对三个完整差异、原消费者、JUnit、退出码、候选及锁摘要，未另行重跑测试。结果、命令、环境和评审见 [迁移测试摘要](../../../task-artifacts/authorized-download-delivery-20261116/test-summary.json)、[质量记录](../../../task-artifacts/authorized-download-delivery-20261116/quality-review.md) 和 [迁移独立评审](../../../task-artifacts/authorized-download-delivery-20261116/independent-review.md)。测试日志、配置、密钥、运行产物以及其他未提交任务内容均不纳入提交；以代码修复、现行契约、设计与验证记录分别组织提交，向独立修复分支推送。
+
+
+## PR #10236 门禁与检视修复：2026-11-16
+
+门禁初始评论报告 CodeCheck 与 UT 失败，其他扫描、Ruff、构建和 Issue 关联通过；评论本身未绑定可验证的执行 SHA，不把报告状态扩大为后续候选状态。已读取在线 CodeCheck 明细，唯一规则为 G.CTL.03（过期判断含 4 个布尔表达式，阈值 3），改为两个等价的嵌套判断；未运行本地格式化或静态检查。
+
+检视指出 reference 登记使用原始绝对路径、校验使用 resolve 后路径，父目录别名可使历史 token 被拒绝。新增真实 token/Owner 重建用例在原候选失败，修复后通过：引用登记保存规范化路径，读取仍对未 resolve 的输入执行 no-follow/普通文件检查，继续拒绝文件本身为符号链接。独立复查进一步要求保持宿主已选定的精确交付路径；现将 asset 加入既有 owned_assets 后比较登记路径与该原路径，不等时在构建 token/push 前失败，复用 finally 撤销登记。授权消费后父目录重定向的负例先红后绿，确认没有 push/history、登记已撤销、原文件均保留。
+
+UT 在线报告唯一失败为 ASR 配置优先级用例在存在加密 Provider 时把明文测试值解密为空。以公开 Provider 注入点可在原基线和 PR 复现相同断言（1 failed/3 passed）；无 Provider 时两侧均 4 passed。仅对该优先级用例 monkeypatch getter 返回 None，并将已有导入置于模块顶部，解密正负用例仍各自验证真实调用边界，ASR 生产代码不改。修复后同一 Provider 条件下 4 passed。此证据确认用例依赖未固定的进程状态，不声称已追出 CI 当次的 Provider 注册来源。
+
+迁移前分别核对：两发布分支的缺陷 Owner 代码逐字节相同、存在相同的过期表达式及授权投递路径，因此迁移路径、授权 guard 和 CodeCheck 修复。0.2.9 还包含同一 ASR 用例及 owner 解密逻辑，迁移其测试隔离；0.2.8 均不存在，不迁该项。未新增 TTL 清理、下载时重算摘要或其他机制。
+
+| 分支 | 最终本地回归 | 范围 |
+| --- | --- | --- |
+| develop | 246 passed，1 skipped | 12 个文件，含 ASR 配置用例 |
+| 0.2.9 | 246 passed，1 skipped | 12 个文件，含 ASR 配置用例 |
+| 0.2.8 | 238 passed，1 skipped | 11 个下载相关文件 |
+
+唯一跳过为缺少可选 webview。故障定位还对照了原基线和 PR：common 目录各 1184 passed/68 skipped，全 unit 收集但只选 ASR 时各 2 passed；前缀执行两侧均在 4460 passed 后因 macOS sandbox 禁止 sysctl 中断，发生于 ASR 前，不能当作 ASR 基线同败证据。没有把这些结果宣称为 Linux 全量门禁通过。后续 CI 结果由对应新提交重新确认，未合并任何 PR。证据见 [本轮质量与范围判断](../../../task-artifacts/authorized-download-pr-feedback-20261116/quality-review.md)、[迁移必要性](../../../task-artifacts/authorized-download-pr-feedback-20261116/migration-necessity.json) 与 [本轮测试摘要](../../../task-artifacts/authorized-download-pr-feedback-20261116/followup-test-summary.json)。
+
+本轮最终独立只读复核为 **Approve**，三个候选均无未解决阻塞项；核对最终差异、逐文件摘要及 JUnit，未另行重跑测试，详见 [本轮独立复核](../../../task-artifacts/authorized-download-pr-feedback-20261116/independent-review.md)。复核后仅追加本条真实结论，代码及测试不变。

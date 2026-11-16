@@ -186,6 +186,29 @@ def test_verified_download_info_uses_sealed_asset_and_original_name(
     assert payload["name"] == "approved report.md"
 
 
+def test_reference_token_through_symlink_parent_survives_owner_reload(tmp_path: Path) -> None:
+    directory = tmp_path / "real-directory"
+    directory.mkdir()
+    alias = tmp_path / "directory-alias"
+    alias.symlink_to(directory, target_is_directory=True)
+    owner, asset = _stage_asset(alias, now=100, expires_at=0, reference_only=True)
+    manager = WebFileDownloadManager("s" * 32, asset_owner=owner)
+    token = manager.generate_verified_asset_token(asset, file_name="report.md", session_id="alias")
+
+    recovered_owner = VerifiedDownloadAssetOwner(
+        root=owner.root, now_fn=lambda: 100_000, start_sweeper=False,
+    )
+    recovered = WebFileDownloadManager("s" * 32, asset_owner=recovered_owner)
+    payload = recovered.validate_token(token, session_id="alias")
+
+    assert payload is not None
+    assert Path(payload["path"]) == directory / "approved report.md"
+    sidecar = json.loads((owner.root / f"{asset.asset_id}.json").read_text())
+    assert sidecar["sealed_path"] == payload["path"]
+    recovered_owner.prune()
+    assert recovered.validate_token(token, session_id="alias") is not None
+
+
 def test_reference_token_and_digest_restore_from_durable_history(tmp_path: Path) -> None:
     from jiuwenswarm.server.control.history_service import load_history_page
     from jiuwenswarm.server.runtime.session.session_history import (

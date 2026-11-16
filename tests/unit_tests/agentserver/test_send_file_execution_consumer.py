@@ -121,6 +121,42 @@ async def test_authorized_send_captures_delivery_time_bytes(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_authorized_send_rejects_capture_path_redirect(tmp_path: Path) -> None:
+    approved = tmp_path / "approved"
+    approved.mkdir()
+    source = approved / "report.md"
+    source.write_bytes(b"approved")
+    redirected = tmp_path / "redirected"
+    redirected.mkdir()
+    redirected_source = redirected / source.name
+    redirected_source.write_bytes(b"different target")
+    owner = VerifiedDownloadAssetOwner(root=tmp_path / "assets", start_sweeper=False)
+    publish_send_file_execution_grant(
+        create_send_file_execution_grant((source,), target_channels=("web",))
+    )
+    server, history, patches = _delivery_patches(owner)
+    stage = owner.stage
+
+    def redirect_before_capture(*args, **kwargs):
+        approved.rename(tmp_path / "original-approved")
+        approved.symlink_to(redirected, target_is_directory=True)
+        return stage(*args, **kwargs)
+
+    with patches[0], patches[1], patches[2], patch.object(
+        owner, "stage", side_effect=redirect_before_capture,
+    ):
+        result = await _toolkit(owner).send_file(source.as_posix(), target_channels=("web",))
+
+    assert "send_file_asset_path_changed" in result
+    server.send_push.assert_not_awaited()
+    history.assert_not_called()
+    assert current_send_file_execution_grant() is None
+    assert list(owner.root.iterdir()) == []
+    assert redirected_source.read_bytes() == b"different target"
+    assert (tmp_path / "original-approved" / source.name).read_bytes() == b"approved"
+
+
+@pytest.mark.asyncio
 async def test_missing_grant_fails_before_asset_capture(tmp_path: Path) -> None:
     source = tmp_path / "report.md"
     source.write_text("content", encoding="utf-8")
