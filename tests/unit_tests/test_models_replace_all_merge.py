@@ -784,3 +784,71 @@ def test_build_models_defaults_accepts_opencode_go_without_endpoint_profile(monk
     assert mcc["client_provider"] == "OpenAI"
     assert mcc["api_base"] == "https://opencode.ai/zen/go/v1"
     assert "endpoint_profile" not in mcc
+
+
+def test_web_save_rejects_opencode_go_paired_with_another_transport():
+    """The Web save path enforces the same vendor/transport rule as the TUI.
+
+    OpenCode Go is decided by ``vendor_key`` alone at runtime, so an entry that
+    names the vendor key but another ``client_provider`` would receive the
+    ``x-opencode-session`` header over a transport that never asked for it.
+    Only the TUI command checked this before; both paths now share
+    ``vendor_provider_error``.
+    """
+    import pytest
+
+    from jiuwenswarm.common.model_config_validation import (
+        ModelSelectionError,
+        raise_if_invalid,
+        validate_models_config,
+        vendor_provider_error,
+    )
+
+    valid = {
+        "defaults": [
+            {
+                "model_id": "mdl_opencode",
+                "model_client_config": {
+                    "model_name": "deepseek-v4.1-flash",
+                    "api_base": "https://opencode.ai/zen/go/v1",
+                    "api_key": "sk-test-not-a-real-key",
+                    "client_provider": "OpenAI",
+                    "vendor_key": "opencode-go",
+                    "plan": "custom_api",
+                },
+            }
+        ]
+    }
+    assert validate_models_config(valid) == []
+
+    invalid = {
+        "defaults": [
+            {
+                "model_id": "mdl_opencode",
+                "model_client_config": {
+                    "model_name": "deepseek-v4.1-flash",
+                    "api_base": "https://opencode.ai/zen/go/v1",
+                    "api_key": "sk-test-not-a-real-key",
+                    "client_provider": "Anthropic",
+                    "vendor_key": "opencode-go",
+                    "plan": "custom_api",
+                },
+            }
+        ]
+    }
+    errors = validate_models_config(invalid)
+    assert errors == [
+        "defaults[0].model_client_config: OpenCode Go models require model_provider OpenAI"
+    ]
+    with pytest.raises(ModelSelectionError):
+        raise_if_invalid(invalid)
+
+
+def test_the_transport_rule_applies_only_to_opencode_go():
+    """Other vendors keep their pairing; a blank transport is not a contradiction."""
+    from jiuwenswarm.common.model_config_validation import vendor_provider_error
+
+    assert vendor_provider_error({"vendor_key": "deepseek", "client_provider": "Anthropic"}) is None
+    assert vendor_provider_error({"vendor_key": "opencode-go", "client_provider": ""}) is None
+    assert vendor_provider_error({"vendor_key": "opencode-go", "client_provider": "openai"}) is None
+    assert vendor_provider_error(None) is None

@@ -61,9 +61,11 @@ from jiuwenswarm.common.context_window import (
     DEFAULT_CONTEXT_WINDOW_TOKENS,
     parse_positive_int,
 )
-from jiuwenswarm.common.model_config_validation import probe_model_connection
+from jiuwenswarm.common.model_config_validation import (
+    probe_model_connection,
+    vendor_provider_error,
+)
 from jiuwenswarm.common.model_error_messages import user_facing_model_error
-from jiuwenswarm.common.opencode_go import is_opencode_go_client_config
 from jiuwenswarm.common.reasoning_config import (
     effective_endpoint_profile,
     resolve_endpoint_profile_override,
@@ -86,17 +88,12 @@ class ModelOpError(Exception):
 
 
 def _vendor_provider_error(client_cfg: dict) -> str | None:
-    """OpenCode Go is an OpenAI-compatible dialect and must say so."""
-    if not is_opencode_go_client_config(
-        {"vendor_key": client_cfg.get("vendor_key", "")}
-    ):
-        return None
-    provider = normalize_provider_value(
-        resolve_env_vars(str(client_cfg.get("client_provider") or ""))
-    )
-    if provider != "OpenAI":
-        return "OpenCode Go models require model_provider OpenAI"
-    return None
+    """OpenCode Go is an OpenAI-compatible dialect and must say so.
+
+    Delegates to the shared check in ``model_config_validation`` so the TUI
+    command and the Web panel enforce the same rule from one definition.
+    """
+    return vendor_provider_error(client_cfg)
 
 
 def _resolve_agent_client(agent_client: Any) -> Any:
