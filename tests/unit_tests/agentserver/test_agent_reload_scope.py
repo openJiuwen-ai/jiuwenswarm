@@ -938,7 +938,9 @@ def _real_deep_reload_model(api_base: str, model_name: str):
     )
 
 
-async def _reload_deep_adapter_config_for_test(previous_config, deep_config_factory):
+async def _reload_deep_adapter_config_for_test(
+    previous_config, deep_config_factory, *, live_reload=None,
+):
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_module
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
         JiuWenSwarmDeepAdapter,
@@ -1019,10 +1021,30 @@ async def _reload_deep_adapter_config_for_test(previous_config, deep_config_fact
         ),
         patch.object(interface_module.JiuWenSwarmDeepAdapter, "_sync_mcp_servers_for_runtime", _async_noop),
     ):
-        await adapter.reload_agent_config(
-            {"react": {"agent_name": "main_agent"}, "browser": {"headless": True}},
-            {},
-        )
+        config = {"react": {"agent_name": "main_agent"}, "browser": {"headless": True}}
+        if live_reload is None:
+            await adapter.reload_agent_config(config, {})
+        else:
+            sid = "session-a"
+            adapter._is_session_scoped_adapter = True
+            adapter._parent_session_id = sid
+            adapter._active_request_model = previous_config.model
+            parent = JiuWenSwarmDeepAdapter()
+            parent._session_adapters[sid] = adapter
+            adapter._mark_session_active(sid)
+            try:
+                with patch.object(adapter, "_try_init_a2x_client", AsyncMock()):
+                    if live_reload == "targeted":
+                        await parent._reload_target_session_adapter(config, {}, target_session_id=sid)
+                    else:
+                        config["permissions"] = {"enabled": False}
+                        parent._mark_session_adapters_stale_for_reload(
+                            config, {"FREE_SEARCH_BING_ENABLED": "true"}
+                        )
+                        await parent._reload_session_adapter_if_stale(sid, adapter)
+            finally:
+                adapter._unmark_session_active(sid)
+
 
     adapter._instance.react_agent.register_callback.assert_awaited_once()
     return adapter, configured_fields
@@ -1227,6 +1249,30 @@ def test_deep_adapter_model_config_fingerprint_includes_legacy_react_model_field
         JiuWenSwarmDeepAdapter._models_config_fingerprint(old_config)
         != JiuWenSwarmDeepAdapter._models_config_fingerprint(new_config)
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("live_reload", ["targeted", "mixed"])
+async def test_live_reload_preserves_selected_model(live_reload):
+    from openjiuwen.harness import DeepAgentConfig
+
+    active_model = _real_deep_reload_model("https://active.example.test/v1", "GLM-5.2")
+
+    def _new_config(model, agent_card, tool_cards, rails):
+        return DeepAgentConfig(
+            model=model, card=agent_card, system_prompt="updated", tools=tool_cards, rails=rails
+        )
+
+    adapter, configured_fields = await _reload_deep_adapter_config_for_test(
+        DeepAgentConfig(model=active_model, system_prompt="previous"),
+        _new_config,
+        live_reload=live_reload,
+    )
+
+    assert configured_fields == [(None, "updated")]
+    assert adapter._instance._deep_config.model is active_model
+    assert adapter._model_client_config is active_model.model_client_config
+    assert adapter._model_request_config is active_model.model_config
 
 
 @pytest.mark.asyncio
