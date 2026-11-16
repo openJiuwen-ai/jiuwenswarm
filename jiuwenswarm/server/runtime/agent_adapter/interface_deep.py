@@ -4095,6 +4095,7 @@ class JiuWenSwarmDeepAdapter:
                     or existing._has_live_root_permission_owner(sid)  # pylint: disable=protected-access
                 )
                 if busy:
+                    effective_moa = getattr(existing, "_moa_enabled", False)
                     installed_selection = existing._collaboration_model_selection  # pylint: disable=protected-access
                     if (
                         installed_selection is None
@@ -4117,7 +4118,13 @@ class JiuWenSwarmDeepAdapter:
                         if cached is not None and cached[1] is getattr(existing, "_last_resolved_model", None):
                             installed_selection = selection
                     explicit_switch = model_selection is not None or bool(model_name)
-                    if not retain_moa_snapshot and explicit_switch and selection != installed_selection:
+                    changes_moa_runtime = effective_moa and selection != installed_selection
+                    if not effective_moa and explicit_switch and not retain_moa_snapshot:
+                        changes_moa_runtime = effective_moa_enabled(
+                            get_config(), raw_selection, mode=mode,
+                            is_cron=self._is_cron_execution_session(sid),
+                        )
+                    if not retain_moa_snapshot and explicit_switch and changes_moa_runtime:
                         logger.warning(
                             "[JiuWenSwarm] model switch rejected on busy session: session_id=%s "
                             "requested=%s model_name=%s installed=%s",
@@ -4127,10 +4134,10 @@ class JiuWenSwarmDeepAdapter:
                             installed_selection,
                         )
                         raise RuntimeError("Model selection cannot change while the session is executing")
-                    # Global settings and metadata changes never replace a running
-                    # or permission-suspended invocation's installed snapshot.
-                    effective_moa = getattr(existing, "_moa_enabled", False)
-                    selection = installed_selection
+                    # Preserve snapshots for MoA work and passive lookups.
+                    # Ordinary requests keep their request-scoped model selection.
+                    if effective_moa or not explicit_switch:
+                        selection = installed_selection
                     moa_fingerprint = getattr(existing, "_moa_fingerprint", None)
                     if effective_moa and moa_can_access is not None:
                         # Read the same-class child's installed snapshot, not global settings.
@@ -4160,6 +4167,18 @@ class JiuWenSwarmDeepAdapter:
                         )
                     else:
                         moa_snapshot = None
+                # Retained single-agent answers can echo a group without installing MoA.
+                # Keep the ordinary session's saved selection for the next turn.
+                retained_ordinary_group = (
+                    busy
+                    and retain_moa_snapshot
+                    and not effective_moa
+                    and selection is not None
+                    and selection.type == "model_group"
+                    and not is_team_mode(mode)
+                    and not self._is_cron_execution_session(sid)
+                )
+                if (not busy or not effective_moa) and not retained_ordinary_group:
                     if model_selection is not None and selection is not None:
                         from jiuwenswarm.server.runtime.session.session_metadata import update_session_model_selection
                         update_session_model_selection(sid, selection.model_dump())
