@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -59,10 +60,16 @@ def test_detect_result_carries_builtin_path_for_local_path_hit(
 def test_detect_result_builtin_path_empty_when_managed_cli_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """内置 CLI 未安装（托管文件缺失）时 builtin_path 为空串。"""
+    """内置 CLI 未安装（托管文件缺失）时 builtin_path 为空串。
+
+    PATH 探测必须打桩：cli_path 为空时 detect 回退 shutil.which 查找系统
+    PATH，装有 claude 的机器上会探测成功并破坏 missing 断言（!10307 检视）。
+    """
     monkeypatch.setattr(handlers, "external_cli_managed_cli_path", lambda _agent: "")
+    monkeypatch.setattr(shutil, "which", lambda _cmd, path=None: None)
     result = handlers.detect_external_cli_agent("claude", "")
     assert result["status"] == "missing"
+    assert result["path"] == ""
     assert result["builtin_path"] == ""
 
 

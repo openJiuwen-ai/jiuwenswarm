@@ -1481,7 +1481,16 @@ export function ExternalCliAgentsSection({
                           </span>
                         ) : undefined
                       }
-                      onChange={(next) => void validateAndCommitPath(cliAgent, next)}
+                      onChange={(next) => {
+                        // 选中内置（托管安装）路径时切回内置模式：use_builtin=true、
+                        // 清空自定义路径。托管路径由安装器管理（升级/重装会挪位置），
+                        // 固化成自定义 cli_path 与内置语义相悖（!10307 检视意见）。
+                        if (builtinPaths[cliAgent] && next === builtinPaths[cliAgent]) {
+                          void toggleAgentEnabled(cliAgent, true, true, '');
+                          return;
+                        }
+                        void validateAndCommitPath(cliAgent, next);
+                      }}
                       className="!h-9 min-w-0 max-w-[55rem] flex-1"
                       maxPanelWidth={880}
                       data-testid="settings-panel-external-cli-agent-cli-path-select"
