@@ -118,6 +118,8 @@
       "enable": "去开启",
       "retry": "重新读取",
       "loading": "正在读取模型配置…",
+      "sessionLoading": "正在读取模型选择…",
+      "sessionLoadFailed": "模型选择读取失败，请重试。",
       "notConfigured": "生成模型尚未配置",
       "loadFailed": "生成模型配置读取失败，请重试。"
     },

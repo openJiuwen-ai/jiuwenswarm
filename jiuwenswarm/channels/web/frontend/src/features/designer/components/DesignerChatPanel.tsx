@@ -1,5 +1,5 @@
 import { LoaderCircle, PanelRight, Square, X } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import SendPlaneIcon from '../../../assets/send_plane.svg?react';
 import { MessageList } from '../../../components/ChatPanel/MessageList';
@@ -12,7 +12,11 @@ import { DESIGN_GENERATION_CHANGED_EVENT } from '../useDesignerModelConfiguratio
 import { requestSettingsModule } from '../../settings/settingsNavigation';
 import { toast } from '../../../components/ui';
 import { useChatStore } from '../../../stores/chatStore';
-import { useSessionStore } from '../../../stores/sessionStore';
+import { isModelCatalogPending, useSessionStore } from '../../../stores/sessionStore';
+import {
+  getDesignModelGate,
+  subscribeDesignModelGate,
+} from '../designSessionModelRestore';
 import { buildConversationModelPayload } from '../../../multi-session/state/conversationModelSelection';
 import type { Message, UserAnswer } from '../../../types';
 import {
@@ -152,14 +156,36 @@ export function DesignerChatPanel() {
   const setChatModel = useDesignerStore((state) => state.setChatModel);
   const availableModelCount = useSessionStore((state) => state.chatAvailableModels.length);
   const selectedModelId = selectedModelSelection?.type === 'model' ? selectedModelSelection.id : undefined;
+  const designModelGate = useSyncExternalStore(
+    subscribeDesignModelGate,
+    getDesignModelGate,
+    getDesignModelGate,
+  );
   // The director chain resolves its preferred model from graph metadata,
   // and leader rounds run on the session selection: keep both in sync so a pick
   // made here takes effect on the next round instead of only relabelling the UI.
   // A shared model_name is not enough; the stable id distinguishes custom rows.
+  // Hold the write until a direct design URL has restored that id. Filling the
+  // name from the catalogue afterwards must use the same id, not the first row.
   useEffect(() => {
-    if (!sessionId || !selectedModelName) return;
-    setChatModel(selectedModelName, selectedModelId);
-  }, [selectedModelId, selectedModelName, sessionId, setChatModel]);
+    if (!sessionId) return;
+    const gate = getDesignModelGate();
+    if (gate?.sessionId === sessionId && gate.status !== 'ready') return;
+    let modelName = selectedModelName ?? '';
+    let modelId = selectedModelId;
+    if (modelId && !modelName) {
+      const store = useSessionStore.getState();
+      if (isModelCatalogPending(store.chatAvailableModels, store.availableModelGroups)) return;
+      store.setSelectedModelSelection(sessionId, { type: 'model', id: modelId });
+      const restored = store.getRuntime(sessionId);
+      modelName = restored?.selectedModelName ?? '';
+      modelId = restored?.selectedModelSelection?.type === 'model'
+        ? restored.selectedModelSelection.id
+        : modelId;
+    }
+    if (!modelName) return;
+    setChatModel(modelName, modelId);
+  }, [availableModelCount, designModelGate, selectedModelId, selectedModelName, sessionId, setChatModel]);
 
   const composerBusy = isProcessing || sending;
   const chatBusy = composerBusy || leaderRunActive;
