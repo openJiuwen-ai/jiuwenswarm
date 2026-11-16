@@ -23,7 +23,8 @@ import {
   setActivityYear,
   taskColumns,
   responseAge,
-  usageChange,
+  periodUsage,
+  weeklyUsageChange,
   yearHeatmap,
 } from '../node_modules/.cache/jiuwenmate-office/officeState.js';
 
@@ -124,14 +125,28 @@ test('summary and token formatting follow the design', () => {
   assert.equal(formatTableTokens(108000), '108.0K');
 });
 
-test('usage change compares the selected window with the previous one', () => {
+test('period usage sums the selected window', () => {
   const days = [
     { date: '2026-10-05', tasks: 1, minutes: 0, calls: 1, tokens: 100 },
     { date: '2026-10-12', tasks: 1, minutes: 0, calls: 1, tokens: 50 },
   ];
-  assert.deepEqual(usageChange(days, '7d', today), { tokens: 50, percent: -50 });
-  assert.deepEqual(usageChange(days, 'all', today), { tokens: 150, percent: null });
-  assert.equal(usageChange([], '7d', today).percent, null);
+  assert.equal(periodUsage(days, '7d', today), 50);
+  assert.equal(periodUsage(days, 'all', today), 150);
+  assert.equal(periodUsage([], '7d', today), 0);
+});
+
+test('weekly usage change compares this week so far with the whole previous calendar week', () => {
+  const monday = new Date(2026, 10, 16);
+  const days = [
+    { date: '2026-11-08', tasks: 1, minutes: 0, calls: 1, tokens: 999 },
+    { date: '2026-11-12', tasks: 1, minutes: 0, calls: 1, tokens: 120 },
+    { date: '2026-11-15', tasks: 1, minutes: 0, calls: 1, tokens: 80 },
+    { date: '2026-11-16', tasks: 1, minutes: 0, calls: 1, tokens: 150 },
+  ];
+  assert.equal(weeklyUsageChange(days, monday), -25);
+  assert.equal(weeklyUsageChange(days, new Date(2026, 10, 22)), -25);
+  assert.equal(weeklyUsageChange(days, new Date(2026, 10, 23)), -100);
+  assert.equal(weeklyUsageChange(days.slice(3), monday), null);
 });
 
 test('last response carries minutes into hours and days', () => {

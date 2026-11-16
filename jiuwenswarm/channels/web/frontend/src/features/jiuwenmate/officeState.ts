@@ -334,22 +334,21 @@ function sumTokens(days: readonly JiuwenMateActivityDay[], start: Date, end: Dat
   return days.reduce((sum, day) => (inDateRange(day.date, start, end) ? sum + day.tokens : sum), 0);
 }
 
-/** Token total for the selected window, and the change against the previous window of the same length. */
-export function usageChange(
-  days: readonly JiuwenMateActivityDay[],
-  period: JiuwenMateWorkPeriod,
-  today: Date,
-): { tokens: number; percent: number | null } {
-  if (period === 'all') {
-    return { tokens: days.reduce((sum, day) => sum + day.tokens, 0), percent: null };
-  }
-  const current = periodBounds(period, today);
-  const length = PERIOD_DAYS[period];
-  const previous = { start: addDays(current.start, -length), end: addDays(current.start, -1) };
-  const tokens = sumTokens(days, current.start, current.end);
-  const before = sumTokens(days, previous.start, previous.end);
-  if (before === 0) return { tokens, percent: null };
-  return { tokens, percent: Math.round(((tokens - before) / before) * 1000) / 10 };
+/** Token total for the selected window. */
+export function periodUsage(days: readonly JiuwenMateActivityDay[], period: JiuwenMateWorkPeriod, today: Date): number {
+  if (period === 'all') return days.reduce((sum, day) => sum + day.tokens, 0);
+  const { start, end } = periodBounds(period, today);
+  return sumTokens(days, start, end);
+}
+
+/** Change of this week's tokens (Monday through today) against the whole previous Monday–Sunday week. */
+export function weeklyUsageChange(days: readonly JiuwenMateActivityDay[], today: Date): number | null {
+  const end = parseIsoDate(toIsoDate(today));
+  const monday = addDays(end, -((end.getDay() + 6) % 7));
+  const current = sumTokens(days, monday, end);
+  const before = sumTokens(days, addDays(monday, -7), addDays(monday, -1));
+  if (before === 0) return null;
+  return Math.round(((current - before) / before) * 1000) / 10;
 }
 
 export function mergeDailyActivity(members: readonly JiuwenMateActivityMember[]): JiuwenMateDailyActivity[] {
