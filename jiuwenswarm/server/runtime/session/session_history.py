@@ -7,6 +7,7 @@ import datetime
 import hashlib
 import json
 import logging
+import math
 import os
 import queue
 import re
@@ -37,6 +38,14 @@ _JSONL_HISTORY_FILENAME = "history.jsonl"
 _LEGACY_HISTORY_ENV = "JIUWENSWARM_USE_LEGACY_HISTORY_JSON"
 _PROBE_OK_TOKENS = {"HEALTH_CHECK_OK", "HEARTBEAT_OK"}
 SESSION_REQUEST_COMPLETED_EVENT = "chat.request_completed"
+SESSION_REQUEST_TERMINAL_STATUSES = frozenset({
+    "success",
+    "error",
+    "cancelled",
+    "failed",
+    "waiting_user",
+    "unknown",
+})
 # Gateway may inline @path as <file-content>...</file-content> before chat.send.
 # History should keep the short @path form so jsonl rows stay one physical line
 # and refresh UI does not load megabytes of file body.
@@ -56,7 +65,6 @@ class HistorySnapshotChanged(RuntimeError):
     """The history file was replaced or truncated after the snapshot began."""
 
 
-<<<<<<< RELEASE
 @dataclass(frozen=True)
 class PreparedHistoryRecord:
     """A canonical record and host-only facts for its metadata update."""
@@ -74,8 +82,6 @@ class HistoryAppendOutcomeUnknown(OSError):
     """A failed write could not be rolled back to its original length."""
 
 
-||||||| BEFORE_PR_9610
-=======
 @dataclass(frozen=True, slots=True)
 class SessionCompletionBoundary:
     """Exact durable history row that closes a completed session prefix."""
@@ -197,6 +203,9 @@ def project_completed_session_prefix(
     groups: dict[str, dict[str, Any]] = {}
     for ordinal, record in enumerate(records):
         if not isinstance(record, dict):
+            continue
+        # Extension notes are transcript entries, not requests waiting to finish.
+        if record.get("transcript_only") is True:
             continue
         request_id = str(record.get("request_id") or "").strip()
         role = str(record.get("role") or "").strip().lower()
@@ -321,7 +330,6 @@ def project_completed_session_records(
     return projected
 
 
->>>>>>> DEVELOP
 def collapse_file_content_blocks(content: str) -> str:
     """Replace inlined ``<file-content>`` bodies with ``@path`` references.
 
@@ -1654,12 +1662,19 @@ def commit_history_record(
     """
     from jiuwenswarm.server.runtime.session import lifecycle as lc
 
+    # Develop exposes these shared handles; older releases keep private names.
+    write_queue = globals().get("WRITE_QUEUE")
+    if write_queue is None:
+        write_queue = _WRITE_QUEUE
+    file_lock = globals().get("FILE_LOCK")
+    if file_lock is None:
+        file_lock = _FILE_LOCK
     sid = prepared.session_id
     if prepared.metadata.get("subagent_id"):
         raise ValueError("committed appends only support main session history")
     with _QUEUE_ENQUEUE_LOCK:
-        _WRITE_QUEUE.join()
-        with _FILE_LOCK, lc.resource_lock("session", sid):
+        write_queue.join()
+        with file_lock, lc.resource_lock("session", sid):
             lc.write_guard(sid, generation=prepared.metadata.get("append_generation"))
             path = _ensure_legacy_json_bootstrap(sid) if use_legacy_history_json() else _ensure_jsonl_bootstrap(sid)
             for previous in _iter_committed_history(path):

@@ -8,12 +8,6 @@ import logging
 import math
 from typing import Any
 
-<<<<<<< RELEASE
-||||||| BEFORE_PR_9610
-from jiuwenswarm.common.mode_matrix import is_team_mode
-=======
-from agent_gateway.common.mode_matrix import is_team_mode
->>>>>>> DEVELOP
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.server.control.responses import build_error_response
 from jiuwenswarm.server.runtime.session.session_history import (
