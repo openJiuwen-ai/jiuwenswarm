@@ -5368,7 +5368,7 @@
       "saving": "保存中",
       "name": "名称",
       "type": "类型",
-      "typeStdio": "STUDIO",
+      "typeStdio": "STDIO",
       "typeHttp": "流式HTTP",
       "command": "启动命令",
       "args": "参数",
