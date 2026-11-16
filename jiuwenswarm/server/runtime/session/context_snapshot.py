@@ -340,7 +340,9 @@ async def save_context_snapshot(*, context_engine: Any, session: Any,
     )
 
     binding = bind_context_checkpoint(context_engine, session)
-    async with context_checkpoint_lock(binding), context_snapshot_lock(context):
+    from jiuwenswarm.runtime.checkpoint_budget import admit_context_checkpoint
+
+    async with admit_context_checkpoint(), context_checkpoint_lock(binding), context_snapshot_lock(context):
         covered = set(getattr(context, "history_recovery_covered", ()))
         covered.update(consumed_request_ids or ())
         context.history_recovery_covered = covered
