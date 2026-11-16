@@ -334,6 +334,10 @@ export function ToolPanel({
     () => [...applicationPlanningTasks, ...teamTasks],
     [applicationPlanningTasks, teamTasks],
   );
+  const teamCompletedTasks = useMemo(
+    () => teamTasks.filter((task) => task.status === 'completed').length,
+    [teamTasks],
+  );
   const todoCompletedTasks = planningTasks.filter((task) => task.status === 'completed').length;
   const hydratedTeamHistorySessionRef = useRef<string | null>(null);
   const loadingTeamHistorySessionRef = useRef<string | null>(null);
@@ -570,7 +574,7 @@ export function ToolPanel({
                   metricTasks={teamTasks}
                   members={teamMembers}
                   totalTasks={teamTasks.length}
-                  completedTasks={teamTasks.filter((task) => task.status === 'completed').length}
+                  completedTasks={teamCompletedTasks}
                   statusIconAtEnd
                 />
               ) : (
@@ -599,7 +603,7 @@ export function ToolPanel({
         tasks: teamPlanningTasks,
         metricTasks: teamTasks,
         totalTasks: teamTasks.length,
-        completedTasks: teamTasks.filter((task) => task.status === 'completed').length,
+        completedTasks: teamCompletedTasks,
         expanded: teamPlanningExpanded,
       }
     : {

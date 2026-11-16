@@ -44,3 +44,54 @@ test('switching context resets the value and reduced motion stops an active anim
     delete globalThis.IS_REACT_ACT_ENVIRONMENT;
   }
 });
+
+test('animation advances through intermediate values and retargets from its displayed value', async (context) => {
+  const dom = new JSDOM('<div id="root"></div>');
+  const oldWindow = globalThis.window;
+  const oldDocument = globalThis.document;
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  let now = 0;
+  context.mock.method(performance, 'now', () => now);
+  const frames = new Map();
+  let nextFrame = 0;
+  dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  dom.window.requestAnimationFrame = (callback) => { frames.set(++nextFrame, callback); return nextFrame; };
+  dom.window.cancelAnimationFrame = (id) => frames.delete(id);
+  const root = createRoot(document.getElementById('root'));
+  function Probe({ value }) { return createElement('span', null, useTweenedPercent(value)); }
+  const render = (value) => act(async () => root.render(createElement(Probe, { value })));
+  const displayed = () => Number(document.querySelector('span').textContent);
+  const advance = (time) => act(async () => {
+    now = time;
+    const callbacks = [...frames.values()];
+    frames.clear();
+    callbacks.forEach((callback) => callback(now));
+  });
+  try {
+    await render(0);
+    await render(100);
+    assert.equal(displayed(), 0);
+    await advance(250);
+    const intermediate = displayed();
+    assert.ok(intermediate > 0 && intermediate < 100);
+    await render(40);
+    assert.equal(displayed(), intermediate);
+    assert.equal(frames.size, 1);
+    await advance(500);
+    assert.ok(displayed() > 40 && displayed() < intermediate);
+    await advance(750);
+    assert.equal(displayed(), 40);
+    assert.equal(frames.size, 0);
+    await render(100);
+    assert.equal(frames.size, 1);
+  } finally {
+    await act(async () => root.unmount());
+    assert.equal(frames.size, 0);
+    dom.window.close();
+    globalThis.window = oldWindow;
+    globalThis.document = oldDocument;
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  }
+});
