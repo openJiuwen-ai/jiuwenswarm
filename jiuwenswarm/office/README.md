@@ -1,15 +1,16 @@
 # Office 后端
 
 Office 任务窗格在 AgentServer 侧的能力：工具合同、在任务窗格执行的客户端工具、人设与 skills、
-插入用的会话资产。`server/client_attachments/registry.py` 把应用编号 `office-powerpoint`
-登记为包目录 `powerpoint/`；这个目录既是合同，也是对话加载的 agent template（`manifest.json`）。
+插入用的会话资产。`server/client_attachments/registry.py` 把应用编号 `office-powerpoint`、`office-word`、
+`office-excel` 分别登记为包目录 `powerpoint/`、`word/`、`excel/`；每个目录既是合同，也是对话加载的
+agent template（`manifest.json`）。
 
 ## 目录
 
 ```text
 contract.py            读包目录的 tools.json，校验 annotations，生成 ToolCard
 client_tools.py        TaskPaneTool(ClientTool)：build_request 判断能否执行并给出下载链接，complete 处理截图；
-                       VerifySlideVisualTool：verify_slide_visual
+                       VisualReviewTool：按工具名表 _VISUAL_REVIEWS 挂审稿（verify_slide_visual、verify_doc_visual）
 review.py              视觉复核：选审稿模型、审稿调用（60s）、判定、几何摘要、返回给作者的结果
 rails.py               OfficeToolsRail：注册所在包的工具，第一次模型调用时按 supported_tools 去掉窗格跑不了的
 assets.py              publish_office_asset 与会话资产（office_assets/，经 /file-api/download 下发）
@@ -18,6 +19,7 @@ runtime.py             会话目录、资产允许目录、把图片存进会话
 powerpoint/            合同 tools.json、profile.json（任务窗格构建时读取）；agent template：
                        manifest.json、persona/（替换默认身份）、rails/（指向 OfficeToolsRail）、skills/；
                        review.md（verify_slide_visual 的审稿清单）
+word/、excel/          同上的 Word、Excel 包；word/review.md 是 verify_doc_visual 的审稿清单，excel/ 没有视觉复核
 ```
 
 `contract.py`、`TaskPaneTool`、`rails.py` 不认识 Office：任何在自己包里声明工具、由客户端执行的应用都是

@@ -6,7 +6,7 @@
 
 | 目录 | 用途 | 说明 |
 |---|---|---|
-| `tests/unit_tests/` | 单元测试 | 主力目录，约 1180 个测试文件 |
+| `tests/unit_tests/` | 单元测试 | 主力目录，约 1190 个测试文件 |
 | `tests/unit/` | 早期单元测试 | 7 个测试文件，`make test-unit` 不包含 |
 | `tests/integration/` | 集成测试 | 8 个测试文件，`make test-integration` 的筛选目录 |
 | `tests/system_tests/` | 系统测试 | 需要完整运行环境 |

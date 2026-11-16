@@ -146,49 +146,6 @@ def _multipart(
 
 
 @pytest.fixture
-def manager(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SkillManager:
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
-    state_file = skills_dir / "skills_state.json"
-    state_file.write_text(
-        json.dumps(
-            {
-                "marketplaces": [],
-                "installed_plugins": [],
-                "local_skills": [],
-                "skill_configs": {},
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager.get_agent_skills_dir",
-        lambda: skills_dir,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager.get_builtin_skills_dir",
-        lambda: tmp_path / "builtin_missing",
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager._get_agent_root_dir",
-        lambda: tmp_path,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager._get_marketplace_dir",
-        lambda: skills_dir / "_marketplace",
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager._get_state_file",
-        lambda: state_file,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skilldev.state_utils.get_state_file",
-        lambda: state_file,
-    )
-    return SkillManager()
-
-
-@pytest.fixture
 def sync_token(monkeypatch: pytest.MonkeyPatch) -> str:
     token = "unit-test-sync-token"
     monkeypatch.setenv("JIUWENSKILL_SYNC_TOKEN", token)

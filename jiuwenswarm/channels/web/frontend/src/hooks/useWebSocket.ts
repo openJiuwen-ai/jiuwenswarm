@@ -4785,7 +4785,20 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       // 归档相关事件：集中在此分发，刷新活跃工作区数据（项目/会话/置顶）；
       // 归档管理页自行订阅同名事件刷新归档列表。项目归档事件已随协议移除。
       // 事件可能早于响应到达，去抖合并后按当前状态幂等刷新。
-      webClient.on<ArchiveResourceEventPayload>('session.archived', () => {
+      webClient.on<ArchiveResourceEventPayload>('session.archived', ({ payload }) => {
+        const sessionId = typeof payload.session_id === 'string' ? payload.session_id : '';
+        if (sessionId) {
+          // Archive stops a live turn in the backend without terminal wire
+          // frames. Settle the local runtime here so an undo/restore in this
+          // tab does not resume a phantom "processing" turn (GitCode #6533).
+          useChatStore.getState().settleLifecycleStoppedSession(sessionId);
+          const sessionPatch: Partial<Session> = {
+            is_processing: false,
+            updated_at: new Date().toISOString(),
+          };
+          updateSession(sessionId, sessionPatch);
+          useWorkspaceStore.getState().patchSession(sessionId, sessionPatch);
+        }
         scheduleArchiveWorkspaceRefresh(false);
       }),
       webClient.on<ArchiveResourceEventPayload>('session.unarchived', () => {

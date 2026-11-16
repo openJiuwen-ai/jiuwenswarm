@@ -51,19 +51,26 @@ test('all finished schedule plans are expired while execution outcomes stay inta
   assert.equal(plans[0].lastStatus, 'completed', 'Display filtering must not change the recorded execution outcome');
 });
 
-test('past deadlines block resume and paused plans join the expired filter', () => {
+test('paused plans blocked by expiry appear in the expired filter', () => {
   const now = Date.parse('2026-11-12T00:00:00Z');
   const past = '2026-11-12T08:00:00+08:00';
   const future = '2026-11-13T00:00:00Z';
   const plan = { ...draft, id: 'recurring', agentId: 'a', lastStatus: 'paused', nextFireAt: future, runCount: 0 };
-  const expired = { ...plan, id: 'expired', endsAt: past, lastStatus: 'completed' };
-  const missed = { ...plan, id: 'missed', scheduleKind: 'once', nextFireAt: past };
+  const expired = { ...plan, id: 'expired', endsAt: past };
+  const missed = { ...plan, id: 'missed', scheduleKind: 'once', runAt: future, nextFireAt: past };
   const completed = { ...plan, id: 'completed', scheduleKind: 'once', nextFireAt: null, runCount: 1, lastStatus: 'completed' };
-  const scheduledOnce = { ...plan, scheduleKind: 'once' };
-
-  assert.equal(state.scheduleResumeBlocked(plan, now), false);
-  assert.equal(state.scheduleResumeBlocked(scheduledOnce, now), false);
-  for (const item of [expired, missed, completed]) assert.equal(state.scheduleResumeBlocked(item, now), true);
   const plans = [plan, expired, missed, completed];
   assert.deepEqual(state.filterSchedules(plans, '', 'a', 'expired', now).map(p => p.id), ['expired', 'missed', 'completed']);
+});
+
+test('expired plans cannot enable while future paused plans can', () => {
+  const now = Date.parse('2026-11-15T08:00:00Z');
+  const future = { ...draft, lastStatus: 'paused', nextFireAt: '2026-11-16T01:00:00Z' };
+  assert.equal(state.canEnableSchedule(future, now), true);
+  assert.equal(state.canEnableSchedule({ ...future, lastStatus: 'completed' }, now), false);
+  assert.equal(state.canEnableSchedule({ ...future, endsAt: '2026-11-14T08:00:00Z' }, now), false);
+  assert.equal(state.canEnableSchedule({ ...future, endsAt: '2026-11-15T20:00:00Z' }, now), false);
+  assert.equal(state.canEnableSchedule({ ...future, scheduleKind: 'once', runAt: '2026-11-16T01:00:00Z' }, now), true);
+  assert.equal(state.canEnableSchedule({ ...future, scheduleKind: 'once', runAt: '2026-11-14T01:00:00Z' }, now), false);
+  assert.equal(state.canEnableSchedule({ ...future, scheduleKind: 'once', runAt: '2026-11-16T01:00:00Z', nextFireAt: null }, now), false);
 });

@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { ActionMenu } from '../components/ActionMenu';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import type { JiuwenMateActivity, JiuwenMateCategory } from '../types';
-import { filterSchedules, scheduleDisplayStatus, scheduleResumeBlocked, scheduleSummary } from './state';
+import { canEnableSchedule, filterSchedules, scheduleDisplayStatus, scheduleSummary } from './state';
 import { ScheduleDialog } from './ScheduleDialog';
 import { ScheduleHistory } from './ScheduleHistory';
 import type { Schedule, ScheduleDraft, ScheduleRun } from './types';
@@ -154,7 +154,7 @@ export function ScheduleBoard({
               </tr>
             ) : visible.map((plan) => {
               const colleague = colleagueOf(plan.agentId);
-              const resumeBlocked = scheduleResumeBlocked(plan, now);
+              const resumeBlocked = !canEnableSchedule(plan, now);
               const statusLabel = scheduleDisplayStatus(plan, now);
               const nextExecution = resumeBlocked ? null : plan.nextFireAt;
               return (
@@ -199,7 +199,7 @@ export function ScheduleBoard({
                           className="jiuwenmate-link-button jiuwenmate-link-button--blue"
                           data-testid="jiuwenmate-schedule-toggle"
                           onClick={() => {
-                            if (!plan.enabled && scheduleResumeBlocked(plan, Date.now())) {
+                            if (!plan.enabled && !canEnableSchedule(plan)) {
                               setEditing(plan);
                               return;
                             }
@@ -247,6 +247,10 @@ export function ScheduleBoard({
           saving={saving}
           onClose={() => setEditing(undefined)}
           onSubmit={(agentId, draft) => (editing ? onUpdate(editing.id, draft) : onCreate(agentId, draft))}
+          onSubmitAndEnable={editing ? async (_agentId, draft) => {
+            await onUpdate(editing.id, draft);
+            await onSetEnabled(editing.id, true);
+          } : undefined}
         />
       ) : null}
     </section>
