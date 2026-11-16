@@ -41,7 +41,6 @@ from jiuwenswarm.runtime.session_provisioner import (
     SessionSwitchInput,
     SessionSwitchResult,
 )
-<<<<<<< RELEASE
 from jiuwenswarm.runtime.session import (
     RuntimeSessionCoordinator,
     RuntimeSessionState,
@@ -78,44 +77,6 @@ from jiuwenswarm.runtime.session.model import (
     TeamWaiterKind,
 )
 from jiuwenswarm.runtime.session_input import resolve_session_input_mode, validate_session_input
-||||||| BEFORE_PR_9610
-from jiuwenswarm.runtime.session import (
-    RuntimeSessionCoordinator,
-    RuntimeSessionState,
-    SessionCloseTimeoutError,
-    SessionPersistencePolicy,
-    SessionWorkKind,
-)
-from jiuwenswarm.runtime.session_delete import TeamDeleteResult
-from jiuwenswarm.runtime.session_lifecycle import (
-    RuntimeParticipantRegistry,
-    RuntimeResourceLease,
-    SessionDescriptor as LifecycleSessionDescriptor,
-    SessionExecutionEvent,
-    SessionExecutionFinishedEvent,
-    SessionInactiveEvent,
-    SessionInputIntentDisposition,
-    SessionInputIntentEvent,
-    SessionKind,
-    SessionLifecycleTarget,
-    SessionRuntimeLifecyclePort,
-)
-from jiuwenswarm.runtime.session.model import (
-    TEAM_ATTACH_ONLY_PARAM,
-    TEAM_EXECUTION_CONTEXT_METADATA_KEY,
-    ExecutionCancelCause,
-    ExecutionLifecycleContext,
-    SessionExecutionSnapshot,
-    SessionExecutionState,
-    SessionLifecycleContext,
-    TeamExecutionContext,
-    TeamExecutionDetails,
-    TeamWaiterKind,
-)
-from jiuwenswarm.runtime.session_input import resolve_session_input_mode, validate_session_input
-=======
-from jiuwenswarm.server.middleware.chat import trigger_before_chat_request
->>>>>>> DEVELOP
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
 
 if TYPE_CHECKING:
@@ -2789,20 +2750,17 @@ class AgentRuntime:
         *,
         channel_id: str,
         session_id: str,
-        reset_plan_state: bool = True,
-<<<<<<< RELEASE
         end_reason: SessionRunEndReason = SessionRunEndReason.OTHER,
-||||||| BEFORE_PR_9610
-=======
+        reset_plan_state: bool = True,
         request: AgentRequest | None = None,
->>>>>>> DEVELOP
     ) -> bool:
         """Release in-memory resources owned by one Runtime session.
 
-        Session cleanup only touches the manager that already exists from
-        ``__init__``.  Keep it available while the first ``start`` is still in
-        progress so an AgentServer disconnect never has to bypass this public
-        API or start new Runtime dependencies merely to release stale state.
+        A tenant-aware host resolves the request's manager, or visits its
+        existing managers when no request is available. A single-manager host
+        keeps using the manager supplied at construction. Cleanup remains
+        available while the first ``start`` is still in progress, without
+        starting Runtime dependencies merely to release stale state.
 
         ``reset_plan_state=False`` supports the existing transactional
         ``session.delete`` flow: Runtime work is drained first, while plan
@@ -2816,6 +2774,7 @@ class AgentRuntime:
             return await self._cleanup_session_run(
                 channel_id=channel_id, session_id=session_id,
                 reset_plan_state=reset_plan_state, reason=reason,
+                request=request,
             )
 
     async def _cleanup_session_run(
@@ -2825,6 +2784,7 @@ class AgentRuntime:
         session_id: str,
         reset_plan_state: bool,
         reason: SessionRunEndReason,
+        request: AgentRequest | None = None,
     ) -> bool:
         """Keep a resumed generation out until old-run cleanup finishes."""
         if self._closed:
@@ -2833,23 +2793,14 @@ class AgentRuntime:
             result = await self._session_coordinator.close_session(session_id)
             if result.timed_out:
                 raise SessionCloseTimeoutError(session_id, result.timed_out)
-<<<<<<< RELEASE
         await self._notify_session_run_end(session_id, reason=reason)
-        cleaned = await self._agent_manager.cleanup_session_runtime(
-            channel_id=channel_id,
-            session_id=session_id,
-        )
-||||||| BEFORE_PR_9610
-        cleaned = await self._agent_manager.cleanup_session_runtime(
-            channel_id=channel_id,
-            session_id=session_id,
-        )
-=======
-        if request is not None:
+        tenant = getattr(self, "_tenant", None)
+        if tenant is None:
+            managers = [self._agent_manager]
+        elif request is not None:
             managers = [await self.resolve_manager(request)]
         else:
-            # 无请求时扫池，避免 delete 等路径漏掉非默认租户。
-            managers = list(self._tenant.iter_managers_for_host_event()) or [
+            managers = list(tenant.iter_managers_for_host_event()) or [
                 self.agent_manager
             ]
         cleaned = False
@@ -2860,7 +2811,6 @@ class AgentRuntime:
                     session_id=session_id,
                 )
             ) or cleaned
->>>>>>> DEVELOP
         await self._forget_agent_execution_owner(
             channel_id=channel_id,
             session_id=session_id,

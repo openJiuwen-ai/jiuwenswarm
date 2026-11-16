@@ -2,27 +2,36 @@
 
 from __future__ import annotations
 
-<<<<<<< RELEASE
+import importlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
-||||||| BEFORE_PR_9610
-import json
-from pathlib import Path
-=======
-from jiuwenswarm.common.model_selection_store import (  # noqa: F401
-    get_session_model_selection,
-    set_session_model_selection,
-)
->>>>>>> DEVELOP
+from types import ModuleType
 
-<<<<<<< RELEASE
 from jiuwenswarm.common.model_errors import MODEL_GROUP_INVALID, ModelSelectionError
-from jiuwenswarm.common.model_selection import ModelSelection
-from jiuwenswarm.common.protocol_ids import is_valid_session_id
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 
+try:
+    from agent_gateway.common.model_selection import ModelSelection
+    from agent_gateway.common.protocol_ids import is_valid_session_id
+except ModuleNotFoundError as error:
+    if error.name != "agent_gateway":
+        raise
+    from jiuwenswarm.common.model_selection import ModelSelection
+    from jiuwenswarm.common.protocol_ids import is_valid_session_id
+
 SESSION_MODEL_INFO_KEY = "session_model_info"
+
+
+def _shared_model_selection_store() -> ModuleType | None:
+    """Use the common store on hosts where model persistence has moved."""
+    module_name = "jiuwenswarm.common.model_selection_store"
+    try:
+        return importlib.import_module(module_name)
+    except ModuleNotFoundError as error:
+        if error.name != module_name:
+            raise
+        return None
 
 
 def _metadata_path(session_id: str) -> Path:
@@ -37,11 +46,13 @@ def _metadata_path(session_id: str) -> Path:
 
 
 def _read_model_metadata(session_id: str) -> dict[str, object] | None:
-    path = _metadata_path(session_id)
+    shared = _shared_model_selection_store()
+    path = shared._metadata_path(session_id) if shared is not None else _metadata_path(session_id)
     if not path.is_file():
         return None
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        text = shared._read_text_ride_out_sharing(path) if shared is not None else path.read_text(encoding="utf-8")
+        raw = json.loads(text)
         if not isinstance(raw, dict):
             raise ValueError("session metadata must be an object")
         return raw
@@ -50,6 +61,9 @@ def _read_model_metadata(session_id: str) -> dict[str, object] | None:
 
 
 def get_session_model_selection(session_id: str) -> ModelSelection | None:
+    shared = _shared_model_selection_store()
+    if shared is not None:
+        return shared.get_session_model_selection(session_id)
     metadata = _read_model_metadata(session_id)
     raw = metadata.get("model_selection") if metadata is not None else None
     try:
@@ -148,44 +162,11 @@ def get_session_model_info(session_id: str) -> dict[str, object] | None:
 
 
 def set_session_model_selection(session_id: str, selection: ModelSelection) -> None:
+    shared = _shared_model_selection_store()
+    if shared is not None:
+        shared.set_session_model_selection(session_id, selection)
+        return
     from jiuwenswarm.server.runtime.session.session_metadata import update_session_model_selection
 
     _metadata_path(session_id)  # Validate before entering the shared writer.
     update_session_model_selection(session_id, selection.model_dump())
-||||||| BEFORE_PR_9610
-from jiuwenswarm.common.model_errors import MODEL_GROUP_INVALID, ModelSelectionError
-from jiuwenswarm.common.model_selection import ModelSelection
-from jiuwenswarm.common.protocol_ids import is_valid_session_id
-from jiuwenswarm.common.utils import get_agent_sessions_dir
-
-
-def _metadata_path(session_id: str) -> Path:
-    session_id = str(session_id or "").strip()
-    if not is_valid_session_id(session_id):
-        raise ValueError("invalid session_id")
-    root = get_agent_sessions_dir().resolve()
-    path = (root / session_id / "metadata.json").resolve()
-    if root not in path.parents:
-        raise ValueError("session_id escapes session root")
-    return path
-
-
-def get_session_model_selection(session_id: str) -> ModelSelection | None:
-    path = _metadata_path(session_id)
-    if not path.is_file():
-        return None
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8")).get("model_selection")
-        return ModelSelection.model_validate(raw) if isinstance(raw, dict) else None
-    except (OSError, ValueError) as exc:
-        raise ModelSelectionError(MODEL_GROUP_INVALID, "cannot read the session's model selection") from exc
-
-
-def set_session_model_selection(session_id: str, selection: ModelSelection) -> None:
-    from jiuwenswarm.server.runtime.session.session_metadata import update_session_model_selection
-
-    _metadata_path(session_id)  # Validate before entering the shared writer.
-    update_session_model_selection(session_id, selection.model_dump())
-=======
-__all__ = ["get_session_model_selection", "set_session_model_selection"]
->>>>>>> DEVELOP

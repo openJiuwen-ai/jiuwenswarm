@@ -2240,22 +2240,18 @@ class AgentWebSocketServer:
         """Build every AgentServer Runtime through one product composition root."""
         from jiuwenswarm.agents.harness.team import get_team_manager
         from jiuwenswarm.runtime.session_lifecycle import RuntimeParticipantRegistry
-<<<<<<< RELEASE
+        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_owner import (
+            get_kv_cache_application_owner,
+        )
+
+        owner = get_kv_cache_application_owner()
         from jiuwenswarm.server.runtime.session.attach_notifications import (
             ExtensionSessionAttachParticipant,
         )
         from jiuwenswarm.server.runtime.session.end_notifications import (
             ExtensionSessionEndParticipant,
         )
-||||||| BEFORE_PR_9610
-=======
-        from jiuwenswarm.runtime.team_controller import process_team_controller
->>>>>>> DEVELOP
-        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_owner import (
-            get_kv_cache_application_owner,
-        )
 
-        owner = get_kv_cache_application_owner()
         self._kv_cache_application_owner = owner
         self._session_association_participant = ExtensionSessionAttachParticipant()
         registry = RuntimeParticipantRegistry(host_run_end=(ExtensionSessionEndParticipant(
@@ -2605,16 +2601,10 @@ class AgentWebSocketServer:
             unguarded_methods = {
                 "session.list", "project.list", "project.info", "project.get_sessions",
                 "project.get_cron_sessions", "project.pinned_sessions", "chat.cancel",
-<<<<<<< RELEASE
-                "session.stop", "voice.task.checkpoint.ack",
+                "session.stop", "voice.task.checkpoint.ack", "recommendation.job",
                 # A released view only cleans up its existing association;
                 # its exact identity is checked even if the Session archived.
                 "session.detach",
-||||||| BEFORE_PR_9610
-                "session.stop", "voice.task.checkpoint.ack",
-=======
-                "session.stop", "voice.task.checkpoint.ack", "recommendation.job",
->>>>>>> DEVELOP
             }
             # 仅广场/目录只读 RPC 跳过会话存活校验（#5886）。不要复用
             # _is_stateless_method_request：其前缀含 skills.toggle / rebuild 等写操作。

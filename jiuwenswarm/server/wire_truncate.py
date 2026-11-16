@@ -26,7 +26,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from jiuwenswarm.common.mode_matrix import is_team_mode
+try:
+    from agent_gateway.common.mode_matrix import is_team_mode
+except ModuleNotFoundError as error:
+    if error.name != "agent_gateway":
+        raise
+    from jiuwenswarm.common.mode_matrix import is_team_mode
 
 # ---------------------------------------------------------------------------
 # Wire byte budgets
@@ -238,7 +243,6 @@ def _minimal_history_record_for_wire(record: dict[str, Any]) -> dict[str, Any]:
     return minimal
 
 
-<<<<<<< RELEASE
 def is_restorable_history_record(record: Any) -> bool:
     """Return whether a stored record belongs in the public main transcript."""
     if not isinstance(record, dict):
@@ -262,8 +266,6 @@ def is_restorable_history_record(record: Any) -> bool:
     return has_content if not event_type else event_type in _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES
 
 
-||||||| BEFORE_PR_9610
-=======
 def _restore_mcp_app_block(original: dict[str, Any], sanitized: dict[str, Any]) -> None:
     """Keep an MCP App tool result (``raw_output.mcp_app``) byte-for-byte.
 
@@ -279,7 +281,6 @@ def _restore_mcp_app_block(original: dict[str, Any], sanitized: dict[str, Any]) 
         sanitized_raw["mcp_app"] = block
 
 
->>>>>>> DEVELOP
 def _sanitize_history_record_for_wire(record: Any) -> dict[str, Any]:
     """Sanitize one history record, collapsing if it exceeds the per-record budget."""
     if not isinstance(record, dict):
@@ -287,6 +288,7 @@ def _sanitize_history_record_for_wire(record: Any) -> dict[str, Any]:
     sanitized = _sanitize_history_wire_value({key: value for key, value in record.items() if key != "_session_append"})
     if not isinstance(sanitized, dict):
         return {"content": str(sanitized), "truncated": True}
+    _restore_mcp_app_block(record, sanitized)
     if _json_wire_size(sanitized) <= _HISTORY_WIRE_RECORD_MAX_BYTES:
         return sanitized
     return _collapse_oversized_history_record(sanitized)

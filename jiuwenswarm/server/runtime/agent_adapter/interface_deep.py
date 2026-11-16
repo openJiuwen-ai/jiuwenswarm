@@ -464,6 +464,7 @@ from jiuwenswarm.agents.harness.common.a4p.execution_context import (
 )
 from jiuwenswarm.server.runtime.session.session_metadata import build_server_push_message
 from jiuwenswarm.server.runtime.session.session_history import append_history_record, load_history_records
+from jiuwenswarm.server.runtime.session.history_context import history_context_scope
 from jiuwenswarm.server.runtime import extension_package_manager as equipment
 
 # Goal 用户历史：忙碌插队时先挂起，等上一轮→goal 边界（或流结束）再落盘，
@@ -14087,15 +14088,6 @@ class JiuWenSwarmDeepAdapter:
             # workspace.root_path (~/.jiuwenswarm/agent/workspace).
             deep_config.cwd = task_cwd
             deep_config.project_root = task_workspace
-<<<<<<< RELEASE
-        self._seed_runtime_cwd(task_cwd, workspace=task_workspace, session_id=runtime_config.session_id)
-        if runtime_paths is not None and runtime_paths.is_projectless:
-            setattr(self._instance, "_jiuwenswarm_project_dir", task_workspace)
-||||||| BEFORE_PR_9610
-        self._seed_runtime_cwd(task_cwd, workspace=task_workspace)
-        if runtime_paths is not None and runtime_paths.is_projectless:
-            setattr(self._instance, "_jiuwenswarm_project_dir", task_workspace)
-=======
         self._seed_runtime_cwd(task_cwd, workspace=task_workspace)
         # 外部记忆 rail 的 _resolve_project 读这两个属性做 coords.project 路由:
         # - 非 projectless mode (web/ide 等): task_workspace 来自 runtime_config.workspace /
@@ -14127,7 +14119,6 @@ class JiuWenSwarmDeepAdapter:
         if react_agent is not None and hasattr(react_agent, "__dict__"):
             setattr(react_agent, "_jiuwenswarm_project_dir", project_dir_str)
             setattr(react_agent, "_jiuwenswarm_is_projectless", is_projectless)
->>>>>>> DEVELOP
         resolved_language = self._resolve_runtime_language()
         resolved_channel = (
             str(
@@ -14138,6 +14129,13 @@ class JiuWenSwarmDeepAdapter:
             or "web"
         )
         stage_timer.mark("cwd_seed")
+
+        from jiuwenswarm.server.runtime.session.history_context import capture_history_workspace
+
+        capture_history_workspace(
+            runtime_config.session_id, cwd=get_cwd(),
+            project_root=task_workspace if self._project_dir else None,
+        )
 
         self._sync_a4p_tools_for_runtime(
             get_config(),
@@ -17549,14 +17547,7 @@ class JiuWenSwarmDeepAdapter:
         """Bind trusted host identity and command execution for one request."""
         async with self._permission_request_admission(request, inputs):
             self.validate_auto_permission_workspace_request(request)
-<<<<<<< RELEASE
             from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
-            from jiuwenswarm.server.runtime.session.history_context import history_context_scope
-||||||| BEFORE_PR_9610
-            from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
-=======
-            from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
->>>>>>> DEVELOP
 
             with self._bind_permission_request_context(request), history_context_scope(
                 request.session_id or "default", request_id=request.request_id,
@@ -18268,14 +18259,7 @@ class JiuWenSwarmDeepAdapter:
         """Bind trusted host identity and command execution for one stream."""
         async with self._permission_request_admission(request, inputs):
             self.validate_auto_permission_workspace_request(request)
-<<<<<<< RELEASE
             from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
-            from jiuwenswarm.server.runtime.session.history_context import history_context_scope
-||||||| BEFORE_PR_9610
-            from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
-=======
-            from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
->>>>>>> DEVELOP
 
             with self._bind_permission_request_context(request), history_context_scope(
                 request.session_id or "default", request_id=request.request_id,
