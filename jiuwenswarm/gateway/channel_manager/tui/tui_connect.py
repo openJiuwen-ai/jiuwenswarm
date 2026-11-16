@@ -3155,14 +3155,29 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
         try:
-            if session_id:
-                params["session_id"] = session_id
-            # project_dir 默认值：TUI 前端已自动注入；仅当「未传」时从当前会话 metadata 兜底
+            # 任务源会话优先级：显式 params.session_id > 传输层 session_id（仅真实会话）。
+            # 传输层 session_id 可能是连接占位 id（连接未携带 session_id 时由
+            # _make_session_id() 铸造），占位 id 永远不会落盘；原样写成 job.session_id
+            # 会让产物投递兜底建出无 query 的空会话。
+            explicit_sid = str(params.get("session_id") or "").strip()
+            source_sid = explicit_sid
+            if not source_sid and session_id:
+                from jiuwenswarm.server.runtime.session.session_metadata import session_metadata_exists
+                if session_metadata_exists(session_id):
+                    source_sid = session_id
+                else:
+                    logger.info(
+                        "[cron.job.create] skip transport placeholder session_id=%s",
+                        session_id,
+                    )
+            if source_sid:
+                params["session_id"] = source_sid
+            # project_dir 默认值：TUI 前端已自动注入；仅当「未传」时从任务源会话 metadata 兜底
             # 注意：显式传空串 "" 等价于归默认项目，不可覆盖——用 key presence 区分
-            if "project_dir" not in params and session_id:
+            if "project_dir" not in params and source_sid:
                 try:
                     from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
-                    meta = get_session_metadata(session_id, cache_bust=True)
+                    meta = get_session_metadata(source_sid, cache_bust=True)
                     if isinstance(meta, dict):
                         pd = meta.get("project_dir")
                         if isinstance(pd, str) and pd.strip():

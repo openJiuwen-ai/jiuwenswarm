@@ -47,6 +47,7 @@ import { isPlanWireMode, resolvePlanWireMode } from '../features/planMode/wireMo
 import { normalizeTaskEvent } from '../stores/teamTaskNormalize';
 import { webClient, requestGoalAction, sendGoalStreamCommand } from '../services/webClient';
 import { createStreamDeltaBatcher } from '../services/streamDeltaBatcher';
+import { resolveCronEventSessionId } from '../services/cronEventSessionRoute';
 import {
   fetchTtsAudio,
   playAudioBase64,
@@ -2726,7 +2727,17 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
       }),
       webClient.on('chat.file', ({ payload }) => {
-        const sessionId = resolveEventSessionId(payload);
+        let sessionId = resolveEventSessionId(payload);
+        // cron 文件广播对 web 通道不带 payload.session_id（服务端按
+        // delivery_session_id 落历史，桌面端未回写时为空）。与 chat.final
+        // 一致回退到 exec_session_id / lastRunSessionId，避免整帧被丢弃。
+        if (!sessionId) {
+          sessionId = resolveCronEventSessionId(
+            payload,
+            (jobId) => useCronStore.getState().lastRunSessionId[jobId]
+          );
+          if (sessionId) ensureSessionRuntimes(sessionId);
+        }
         if (!sessionId) return;
         const files = (payload.files ?? []) as FileDownloadItem[];
         if (!files.length) return;

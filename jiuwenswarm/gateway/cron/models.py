@@ -281,6 +281,12 @@ class CronJob:
     targets: str = ""
     # SessionMap 形态（如 feishu::chat_id::bot_id::...），仅 feishu_enterprise 投递用；由 AgentServer 上下文写入。
     session_id: str | None = None
+    # 展示渠道（web/desktop/tui）的 canonical 展示会话。桌面端解析出展示会话后
+    # 经 cron.job.update 回写；这些渠道的文件投递与历史兜底一律以它为目标。
+    # 不得回落 session_id——那是创建来源/IM 投递路由字段，来源会话可能已被
+    # 用户删除，向它兜底 append 会在落盘层自动重建出只有文件卡的幽灵会话
+    # （文件投递与正文展示会话分叉缺陷）。
+    delivery_session_id: str | None = None
     created_at: float | None = None
     updated_at: float | None = None
     # 记录定时任务是在群聊("group")还是私聊("p2p")中创建的，用于推送时决定是否走 IMOutboundPipeline
@@ -328,6 +334,8 @@ class CronJob:
         }
         if self.session_id:
             d["session_id"] = self.session_id
+        if self.delivery_session_id:
+            d["delivery_session_id"] = self.delivery_session_id
         if self.chat_type:
             d["chat_type"] = self.chat_type
         if self.mode:
@@ -418,6 +426,13 @@ class CronJob:
         sid_raw = data.get("session_id", None)
         job_session_id = str(sid_raw).strip() if isinstance(sid_raw, str) and str(sid_raw).strip() else None
 
+        delivery_sid_raw = data.get("delivery_session_id", None)
+        job_delivery_session_id = (
+            str(delivery_sid_raw).strip()
+            if isinstance(delivery_sid_raw, str) and str(delivery_sid_raw).strip()
+            else None
+        )
+
         chat_type_raw = data.get("chat_type", None)
         job_chat_type = (
             str(chat_type_raw).strip()
@@ -488,6 +503,7 @@ class CronJob:
             description=description,
             targets=targets_str,
             session_id=job_session_id,
+            delivery_session_id=job_delivery_session_id,
             created_at=created_at_f,
             updated_at=updated_at_f,
             chat_type=job_chat_type,

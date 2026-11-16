@@ -4,12 +4,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.gateway.cron.models import CronRunState
+from jiuwenswarm.gateway.cron.models import CronJob, CronRunState
+from jiuwenswarm.gateway.cron.scheduler import (
+    CronSchedulerService,
+    _resolve_delivery_session_id,
+)
 
 from tests.unit_tests.gateway.test_cron_scheduler import (
     FakeMessageHandler,
@@ -120,7 +127,12 @@ class TestPushRunDeliverables:
         real_file.write_bytes(b"x")
         missing = tmp_path / "missing.jpg"
         svc, handler = _svc_with_recorder(monkeypatch)
-        job = SimpleNamespace(id="job-1", name="测试任务", session_id="desktop_1a_1")
+        job = SimpleNamespace(
+            id="job-1",
+            name="测试任务",
+            session_id="desktop_1a_source",
+            delivery_session_id="desktop_1a_display",
+        )
         state = CronRunState(
             run_id="job-1:123",
             job_id="job-1",
@@ -156,8 +168,10 @@ class TestPushRunDeliverables:
         payload = chat_file_msgs[0].payload
         # 前端 chat.file 处理第一步 resolveEventSessionId(payload) 只认
         # payload.session_id（不认 wire 顶层）——缺失即整帧被静默忽略。
-        # 这里带 job 绑定会话（= 用户发起会话），文件卡落在绑定会话聊天流里。
-        assert payload.get("session_id") == "desktop_1a_1"
+        # 展示渠道只认桌面回写的 delivery_session_id，绝不回落 job.session_id
+        # （创建来源会话可能已被删除，兜底 append 会重建出纯文件幽灵会话）。
+        assert payload.get("session_id") == "desktop_1a_display"
+        assert payload.get("session_id") != job.session_id
         assert isinstance(payload.get("cron"), dict)
         assert payload["cron"]["job_id"] == "job-1"
         assert payload["cron"]["run_id"] == "job-1:123"
@@ -305,3 +319,232 @@ class TestCollectOrdering:
         assert seen["deliver_files"], (
             "deliver_files 必须在 _persist_run 等挂起点之前回收完成（否则 push 竞态丢文件）"
         )
+
+
+# ── 展示会话路由（delivery_session_id）回归 ─────────────────────────────────
+#
+# 幽灵会话缺陷回归：文件投递历史兜底绝不允许写入"创建来源/IM 投递路由"语义的
+# job.session_id 并把已删除的会话自动重建为纯文件幽灵会话。
+# 契约：web/desktop/tui 展示渠道只认 delivery_session_id（桌面回写）；
+# 未回写时跳过历史兜底（广播照发）；IM 渠道维持 job.session_id 路由不变。
+
+
+@pytest.fixture()
+def sessions_root(tmp_path, monkeypatch):
+    """会话落盘根目录与下载令牌密钥隔离到临时目录."""
+    root = tmp_path / "sessions"
+    root.mkdir(parents=True)
+    import jiuwenswarm.server.runtime.session.session_history as sh
+    import jiuwenswarm.server.runtime.session.session_metadata as sm
+
+    monkeypatch.setattr(sh, "get_agent_sessions_dir", lambda: root)
+    monkeypatch.setattr(sm, "get_agent_sessions_dir", lambda: root)
+    monkeypatch.setenv("JIUWENSWARM_FILE_DOWNLOAD_SECRET", "test-secret")
+    return root
+
+
+class _DeliveryRecorder:
+    def __init__(self):
+        self.frames = []
+
+    async def publish_robot_messages(self, msg):
+        self.frames.append(msg)
+
+
+def _make_delivery_service():
+    """最小化构造：_push_run_deliverables 仅依赖 _now_fn/_message_handler."""
+    svc = object.__new__(CronSchedulerService)
+    svc._now_fn = time.time
+    svc._message_handler = _DeliveryRecorder()
+    return svc
+
+
+def _make_job_state(job_id, session_id, delivery_session_id, deliver_file, ts=1794480000):
+    job = CronJob(
+        id=job_id,
+        name="版本验证",
+        enabled=True,
+        cron_expr="*/1 * * * *",
+        timezone="Asia/Shanghai",
+        targets="desktop",
+        session_id=session_id,
+        delivery_session_id=delivery_session_id,
+    )
+    state = CronRunState(
+        run_id=f"{job_id}:{ts}",
+        job_id=job_id,
+        wake_at_iso="2026-11-12T09:20:00+08:00",
+        push_at_iso="2026-11-12T09:20:05+08:00",
+        status="succeeded",
+        exec_channel_id="__cron__",
+        exec_session_id="__cron___exec",
+        deliver_files=[
+            {"path": str(deliver_file), "name": deliver_file.name, "artifact_id": "art-1"}
+        ],
+    )
+    return job, state
+
+
+def _push_delivery(svc, job, state, channel_id="desktop"):
+    async def _run():
+        await svc._push_run_deliverables(
+            job=job,
+            state=state,
+            channel_id=channel_id,
+            msg_session_id=None,
+            routing_session_id=None,
+            metadata=None,
+            group_digital_avatar=False,
+            app_id=None,
+        )
+        from jiuwenswarm.server.runtime.session.session_history import flush_history_writes
+
+        flush_history_writes()
+
+    asyncio.run(_run())
+    assert svc._message_handler.frames, "应产生 chat.file 广播帧"
+    return svc._message_handler.frames[-1]
+
+
+def _session_history(sessions_root, sid):
+    p = sessions_root / sid / "history.jsonl"
+    if not p.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in p.read_text(encoding="utf-8", errors="replace").splitlines()
+        if line.strip()
+    ]
+
+
+def _list_sessions(sessions_root):
+    return sorted(p.name for p in sessions_root.iterdir() if p.is_dir())
+
+
+def test_resolve_delivery_session_id_by_channel():
+    job = CronJob(
+        id="j", name="n", enabled=True, cron_expr="*/1 * * * *",
+        timezone="Asia/Shanghai", targets="desktop",
+        session_id="sess_source", delivery_session_id="sess_display",
+    )
+    for ch in ("desktop", "web", "tui", "Desktop"):
+        assert _resolve_delivery_session_id(job, ch) == "sess_display"
+    for ch in ("feishu", "dingtalk", "whatsapp", "wecom", "wechat", "xiaoyi",
+               "feishu_enterprise:app1"):
+        assert _resolve_delivery_session_id(job, ch) == "sess_source"
+
+
+def test_no_ghost_session_created_without_delivery_session_id(sessions_root, tmp_path):
+    """展示渠道未回写 delivery_session_id：广播照发，但绝不兜底写来源会话."""
+    deliver_file = tmp_path / "report.txt"
+    deliver_file.write_text("data", encoding="utf-8")
+    svc = _make_delivery_service()
+    # 事故形态：session_id 指向已被用户删除的创建来源会话
+    job, state = _make_job_state("job-ghost", "sess_deleted_source", None, deliver_file)
+
+    frame = _push_delivery(svc, job, state)
+
+    assert frame.payload["event_type"] == "chat.file"
+    assert frame.payload["session_id"] is None
+    assert "sess_deleted_source" not in _list_sessions(sessions_root)
+    assert _list_sessions(sessions_root) == []
+
+
+def test_file_history_lands_in_delivery_session(sessions_root, tmp_path):
+    """delivery_session_id 已回写：文件历史落展示会话，来源会话不被触碰."""
+    deliver_file = tmp_path / "report.txt"
+    deliver_file.write_text("data", encoding="utf-8")
+    (sessions_root / "sess_display").mkdir()
+    svc = _make_delivery_service()
+    job, state = _make_job_state("job-ok", "sess_deleted_source", "sess_display", deliver_file)
+
+    frame = _push_delivery(svc, job, state)
+
+    assert frame.payload["session_id"] == "sess_display"
+    assert frame.payload["files"][0]["download_url"]
+    hist = _session_history(sessions_root, "sess_display")
+    assert len(hist) == 1
+    rec = hist[0]
+    assert rec["role"] == "assistant"
+    assert rec["event_type"] == "chat.file"
+    assert rec["request_id"] == f"cron-{state.run_id}"
+    assert rec["files"][0]["name"] == "report.txt"
+    assert "sess_deleted_source" not in _list_sessions(sessions_root)
+
+
+def test_repeat_delivery_no_duplicate_session(sessions_root, tmp_path):
+    """多轮投递：文件记录累加进同一展示会话，不产生任何新会话."""
+    deliver_file = tmp_path / "report.txt"
+    deliver_file.write_text("data", encoding="utf-8")
+    (sessions_root / "sess_display").mkdir()
+    svc = _make_delivery_service()
+    job, state1 = _make_job_state("job-loop", "sess_deleted_source", "sess_display", deliver_file, ts=1794480000)
+    _, state2 = _make_job_state("job-loop", "sess_deleted_source", "sess_display", deliver_file, ts=1794480300)
+
+    _push_delivery(svc, job, state1)
+    _push_delivery(svc, job, state2)
+
+    assert len(_session_history(sessions_root, "sess_display")) == 2
+    assert _list_sessions(sessions_root) == ["sess_display"]
+
+
+def test_im_channel_keeps_session_id_routing(sessions_root, tmp_path):
+    """IM 渠道行为不变：沿用 job.session_id 外部投递路由."""
+    deliver_file = tmp_path / "report.txt"
+    deliver_file.write_text("data", encoding="utf-8")
+    (sessions_root / "sess_im").mkdir()
+    svc = _make_delivery_service()
+    job, state = _make_job_state("job-im", "sess_im", None, deliver_file)
+
+    frame = _push_delivery(svc, job, state, channel_id="feishu")
+
+    assert frame.payload["session_id"] == "sess_im"
+    assert len(_session_history(sessions_root, "sess_im")) == 1
+    assert "sess_display" not in _list_sessions(sessions_root)
+
+
+def test_job_delivery_session_id_roundtrip():
+    job = CronJob(
+        id="j", name="n", enabled=True, cron_expr="*/1 * * * *",
+        timezone="Asia/Shanghai", targets="web", description="d",
+        delivery_session_id="sess_display",
+    )
+    data = job.to_dict()
+    assert data["delivery_session_id"] == "sess_display"
+    assert CronJob.from_dict(data).delivery_session_id == "sess_display"
+
+    legacy = CronJob(
+        id="j", name="n", enabled=True, cron_expr="*/1 * * * *",
+        timezone="Asia/Shanghai", targets="web", description="d",
+    )
+    legacy_data = legacy.to_dict()
+    assert "delivery_session_id" not in legacy_data
+    assert CronJob.from_dict(legacy_data).delivery_session_id is None
+
+
+def test_store_update_delivery_session_id(tmp_path):
+    """桌面端经 cron.job.update 回写展示会话（controller.update_job → store）."""
+    from jiuwenswarm.gateway.cron.store import CronJobStore
+
+    store = CronJobStore(tmp_path / "cron_jobs.json")
+
+    async def _run():
+        await store.create_job(
+            job_id="job-store",
+            name="版本验证",
+            cron_expr="*/1 * * * *",
+            timezone="Asia/Shanghai",
+            description="d",
+            targets="web",
+            session_id="sess_source",
+        )
+        created = await store.get_job("job-store")
+        assert created is not None and created.delivery_session_id is None
+        updated = await store.update_job("job-store", {"delivery_session_id": "sess_display"})
+        assert updated.delivery_session_id == "sess_display"
+        reread = await store.get_job("job-store")
+        assert reread is not None and reread.delivery_session_id == "sess_display"
+        cleared = await store.update_job("job-store", {"delivery_session_id": ""})
+        assert cleared.delivery_session_id is None
+
+    asyncio.run(_run())
