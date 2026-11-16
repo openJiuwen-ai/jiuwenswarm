@@ -15,8 +15,8 @@ import pytest
 from openjiuwen.core.events import Event
 from openjiuwen.core.extension import ActivationReport, ActivePackageRecord
 
+from e2a.agent_compat import e2a_to_agent_request
 from e2a.models import E2AEnvelope
-from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.schema.agent import AgentRef, AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions_v2.management import adapter as adapter_module
