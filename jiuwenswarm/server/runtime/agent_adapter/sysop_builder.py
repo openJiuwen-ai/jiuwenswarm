@@ -31,6 +31,7 @@ from jiuwenswarm.common.utils import (
     get_agent_root_dir,
     get_agent_workspace_dir,
     get_config_file,
+    get_user_home,
     get_user_workspace_dir,
 )
 
@@ -416,6 +417,114 @@ def _build_adx_extra_params() -> dict[str, Any]:
     return extra
 
 
+def _deduplicate_workspace_mount(mounts: list, expected: dict) -> None:
+    """Allow equivalent historical mounts while protecting platform targets."""
+    for item in list(mounts):
+        if not isinstance(item, dict) or item.get("target") != expected["target"]:
+            continue
+        normalized = dict(item)
+        if normalized.get("type") == "bind":
+            normalized.pop("type")
+        if normalized != expected:
+            raise ValueError("Managed sandbox mounts cannot replace an AgentOS workspace")
+        mounts.remove(item)
+
+
+def _build_mounted_sandbox_extra_params() -> dict[str, Any]:
+    """Map AgentOS workspaces to a mounted external tool provider."""
+    endpoint = get_sandbox_endpoint()
+    workspace = _resolve_workspace_dir()
+    if workspace is None:
+        raise ValueError("Managed sandbox requires a workspace directory")
+    setting_keys = (
+        "image", "rootfs_template", "runtime", "cpu", "cpu_limit", "memory", "mem_limit", "idle_timeout", "user",
+        "group", "network", "connection", "env", "create_timeout", "schedule_timeout", "endpoint_file",
+    )
+    extra = {key: endpoint[key] for key in setting_keys if key in endpoint}
+    mounts = []
+    for mount in endpoint.get("mounts") or []:
+        if "source" in mount and "host_path" not in mount:
+            mount = dict(mount)
+            mount["host_path"] = mount.pop("source")
+            mount["options"] = ["ro" if mount.pop("readonly", False) else "rw"]
+        mounts.append(mount)
+    default_home = str(endpoint.get("workdir") or workspace)
+    if is_agentos_runtime():
+        user_dir = os.environ.get("JIUWENSWARM_USER_DIRECTORY", "").strip()
+        if (not user_dir.startswith("/") or user_dir == "/"
+                or any(part in (".", "..") for part in user_dir.split("/"))):
+            raise ValueError("Managed sandbox requires an absolute AgentOS user directory")
+        workspace_mounts, _ = _build_agentos_workspace_mounts()
+        home = get_user_home()
+        if not home.is_absolute() or home == Path(home.anchor):
+            raise ValueError("Managed sandbox requires an absolute AgentOS home")
+        default_home = str(home)
+        agent_root = _resolve_agent_root_dir()
+        if agent_root is None or not agent_root.is_relative_to(home):
+            raise ValueError("Managed session uploads must be inside the AgentOS home")
+        sessions_root = agent_root / "sessions"
+        sessions_root.mkdir(parents=True, exist_ok=True)
+        workspace_mounts.append({
+            "source": str(Path(user_dir) / sessions_root.relative_to(home)),
+            "target": str(sessions_root), "readonly": True,
+        })
+        for mount in reversed(workspace_mounts):
+            target = mount["target"]
+            expected = {
+                "host_path": mount["source"], "target": target,
+                "options": ["ro" if mount.get("readonly") else "rw"],
+            }
+            _deduplicate_workspace_mount(mounts, expected)
+            mounts.insert(0, expected)
+        from openjiuwen.agent_teams.paths import get_agent_teams_home
+
+        home = home.resolve()
+        teams_home = get_agent_teams_home().resolve()
+        if not teams_home.is_relative_to(home) or teams_home == home:
+            raise ValueError("Managed Team workspace must be inside the AgentOS home")
+        teams_home.mkdir(parents=True, exist_ok=True)
+        expected = {
+            "host_path": str(Path(user_dir) / teams_home.relative_to(home)),
+            "target": str(teams_home), "options": ["rw"],
+        }
+        _deduplicate_workspace_mount(mounts, expected)
+        mounts.append(expected)
+    extra["mounts"] = mounts
+    extra["workdir"] = str(endpoint.get("workdir") or workspace)
+    environment = dict(extra.get("env") or {})
+    environment.setdefault("HOME", default_home)
+    extra["env"] = environment
+    _apply_tool_sandbox_env_overrides(extra)
+    # Management-plane request overrides must not exceed a retained user limit.
+    for env_key, request, limit in (
+        ("TOOL_SANDBOX_CPU", "cpu", "cpu_limit"),
+        ("TOOL_SANDBOX_MEMORY", "memory", "mem_limit"),
+    ):
+        if os.getenv(env_key, "").strip() and limit in extra:
+            value = extra[limit]
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f"sandbox.{limit} must be an integer")
+            extra[limit] = max(value, extra[request])
+    return extra
+
+
+def build_shared_sandbox_sysop_spec(team_name: str, role: str):
+    """Serialize the configured shared tool scope for Team cold recovery."""
+    from openjiuwen.harness.schema.deep_agent_spec import SysOperationSpec
+
+    del team_name, role  # Retained for callers; all roles share the parent's scope.
+    endpoint = get_sandbox_endpoint()
+    if (not get_sandbox_runtime().get("enabled")
+            or not (endpoint.get("launcher_config") or {}).get("shared_scope")):
+        return None
+    card = create_sandbox_sysop_card(endpoint["url"], endpoint["type"])
+    if card is None:
+        return None
+    card.id = "shared_tools"
+    return SysOperationSpec(id=card.id, mode=card.mode, work_config=card.work_config,
+                            gateway_config=card.gateway_config)
+
+
 _TOOL_SANDBOX_ENV_OVERRIDES = (
     ("TOOL_SANDBOX_CPU", "cpu"),
     ("TOOL_SANDBOX_MEMORY", "memory"),
@@ -656,8 +765,13 @@ def create_sandbox_sysop_card(
             install_no_host_fallback_jiuwenbox_providers()
 
 
+        launcher = get_sandbox_endpoint().get("launcher_config") or {}
+        managed_mounts = launcher.get("workspace_mounts")
         if normalized_type == "adx-environment":
             extra_params = _build_adx_extra_params()
+            if managed_mounts:
+                managed = _build_mounted_sandbox_extra_params()
+                extra_params.update(mounts=managed["mounts"], env=managed["env"])
             sysop_card = SysOperationCard(
                 mode=OperationMode.SANDBOX,
                 work_config=LocalWorkConfig(shell_allowlist=None),
@@ -709,7 +823,7 @@ def create_sandbox_sysop_card(
             template_name = str(endpoint.get("template_name") or "").strip()
             if not template_name:
                 raise ValueError("sandbox.template_name is required for jiuwenbox-conch")
-            if any(value for value in files_runtime.values()) or upload_list:
+            if any((files_runtime or {}).values()) or upload_list:
                 raise ValueError("jiuwenbox-conch supports directory mounts, not sandbox.files uploads/allow/deny")
             conch = dict(endpoint.get("conch") or {})
             mounts = []
@@ -737,10 +851,12 @@ def create_sandbox_sysop_card(
             extra_params["fallback_on_failure"] = False
             sandbox_type = "jiuwenbox"
 
+        if managed_mounts and normalized_type not in {"jiuwenbox", "jiuwenbox-conch"}:
+            extra_params.update(_build_mounted_sandbox_extra_params())
         if idle_check_interval is not None:
             extra_params["idle_check_interval"] = idle_check_interval
 
-        isolation_custom_id = _sandbox_isolation_custom_id(project_dir)
+        isolation_custom_id = (launcher.get("shared_scope") if managed_mounts else None) or _sandbox_isolation_custom_id(project_dir)
         gateway_config = SandboxGatewayConfig(
             isolation=SandboxIsolationConfig(
                 container_scope=ContainerScope.CUSTOM,

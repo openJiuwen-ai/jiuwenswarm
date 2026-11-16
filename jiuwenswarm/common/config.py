@@ -4224,8 +4224,11 @@ def get_sandbox_endpoint() -> dict[str, Any]:
         "startup_mode": _normalize_sandbox_startup_mode(sandbox.get("startup_mode")),
         "policy_file": str(sandbox.get("policy_file") or "").strip(),
     }
-    if sandbox_type == "adx-environment":
-        for key in ("image", "rootfs", "runtime", "workdir", "mounts", "cpu", "cpu_limit",
+    launcher = sandbox.get("launcher_config") or {}
+    if "launcher_config" in sandbox:
+        result["launcher_config"] = launcher
+    if sandbox_type == "adx-environment" or launcher.get("workspace_mounts"):
+        for key in ("image", "rootfs", "rootfs_template", "runtime", "workdir", "mounts", "cpu", "cpu_limit",
                     "memory", "mem_limit", "idle_timeout", "user", "group", "network", "connection",
                     "env", "create_timeout", "schedule_timeout", "endpoint_file", "restart_policy"):
             if key in sandbox:
