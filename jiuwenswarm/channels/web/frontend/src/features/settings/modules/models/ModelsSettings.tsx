@@ -110,7 +110,7 @@ export function buildModelResourcePayload(model: ModelEntry): Record<string, unk
   if (model.timeout !== undefined) client.timeout = model.timeout;
   client.vendor_key = model.vendor_key ?? null;
   client.plan = model.plan ?? null;
-  if (model.endpoint_profile) client.endpoint_profile = model.endpoint_profile;
+  client.endpoint_profile = model.endpoint_profile ?? '';
   if (model.extensions) client.extensions = model.extensions;
   const config: Record<string, unknown> = {};
   if (model.temperature !== undefined) config.temperature = model.temperature;

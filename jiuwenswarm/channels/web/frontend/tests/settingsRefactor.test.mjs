@@ -38,7 +38,7 @@ import {
 const root = new URL('../', import.meta.url);
 const source = (path) => readFileSync(new URL(path, root), 'utf8');
 
-test('model resource payload explicitly clears reasoning when returning to the provider default', () => {
+function loadBuildModelResourcePayload() {
   const page = ts.createSourceFile(
     'ModelsSettings.tsx',
     source('src/features/settings/modules/models/ModelsSettings.tsx'),
@@ -53,7 +53,11 @@ test('model resource payload explicitly clears reasoning when returning to the p
   const javascript = ts.transpileModule(declaration.getText(page).replace(/^export\s+/, ''), {
     compilerOptions: { target: ts.ScriptTarget.ES2020 },
   }).outputText;
-  const buildPayload = new Function(`${javascript}; return buildModelResourcePayload;`)();
+  return new Function(`${javascript}; return buildModelResourcePayload;`)();
+}
+
+test('model resource payload explicitly clears reasoning when returning to the provider default', () => {
+  const buildPayload = loadBuildModelResourcePayload();
   for (const level of ['on', 'off', '']) {
     const payload = buildPayload({
       model_id: 'mdl-reasoning', model_name: 'Qwen3.8-Flash', model_provider: 'OpenAI',
@@ -62,6 +66,22 @@ test('model resource payload explicitly clears reasoning when returning to the p
     assert.equal(payload.model_config_obj.reasoning_level, level);
     assert.equal('api_key' in payload.model_client_config, false);
   }
+});
+
+test('model resource payload clears each unselected preset field explicitly', () => {
+  const buildPayload = loadBuildModelResourcePayload();
+  const custom = {
+    model_id: 'mdl-custom', model_name: 'custom-model', model_provider: 'OpenAI',
+    api_base: 'https://example.test/v1', api_key: '',
+  };
+  assert.deepEqual(buildPayload(custom).model_client_config, {
+    model_name: 'custom-model', client_provider: 'OpenAI', api_base: 'https://example.test/v1',
+    vendor_key: null, plan: null, endpoint_profile: '',
+  });
+  const preset = buildPayload({ ...custom, vendor_key: 'deepseek', plan: 'custom_api' });
+  assert.equal(preset.model_client_config.vendor_key, 'deepseek');
+  assert.equal(preset.model_client_config.plan, 'custom_api');
+  assert.equal(preset.model_client_config.endpoint_profile, '');
 });
 
 function sourceFilesUnder(path) {

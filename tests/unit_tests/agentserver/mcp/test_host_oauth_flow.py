@@ -120,38 +120,16 @@ def test_canva_redirect_uri_is_pinned_to_loopback(workspace: Path):
     assert "redirect_uri=http%3A%2F%2F127.0.0.1%3A19000%2Fmcp%2Foauth%2Fcallback" in started["auth_url"]
 
 
-def test_oauth_flow_survives_manager_restart(workspace: Path):
-    calls: list[tuple[str, str, dict]] = []
-    routes = {
-        "https://mcp.canva.cn/.well-known/oauth-protected-resource": _FakeResponse(200, {
-            "authorization_servers": ["https://mcp.canva.cn"],
-        }),
-        "https://mcp.canva.cn/.well-known/oauth-authorization-server": _FakeResponse(200, {
-            "authorization_endpoint": "https://mcp.canva.cn/authorize",
-            "token_endpoint": "https://mcp.canva.cn/token",
-            "registration_endpoint": "https://mcp.canva.cn/register",
-            "response_types_supported": ["code"],
-            "token_endpoint_auth_methods_supported": ["none"],
-        }),
-        "https://mcp.canva.cn/register": _FakeResponse(201, {"client_id": "client-1"}),
-        "https://mcp.canva.cn/token": _FakeResponse(200, {
-            "access_token": "access-1",
-            "refresh_token": "refresh-1",
-        }),
-    }
-    manager = OAuthFlowManager(workspace_dir=workspace, http_client=lambda: _FakeClient(calls, routes))
-    started = manager.start("canva", "http://127.0.0.1:19000/")
-    flow_id = started["flow"]
-
-    restarted = OAuthFlowManager(workspace_dir=workspace, http_client=lambda: _FakeClient(calls, routes))
-    assert restarted.complete({
-        "flow": flow_id,
-        "state": started["auth_url"].split("state=")[1].split("&")[0],
-        "code": "code-1",
-    }) is True
-
-
-def test_oauth_flow_can_be_found_by_state_when_flow_id_missing(workspace: Path):
+@pytest.mark.parametrize(
+    "include_flow_id",
+    [
+        pytest.param(True, id="by-flow-id"),
+        pytest.param(False, id="by-state-when-flow-id-missing"),
+    ],
+)
+def test_oauth_flow_completion_survives_manager_restart_with_or_without_flow_id(
+    workspace: Path, include_flow_id: bool
+):
     calls: list[tuple[str, str, dict]] = []
     routes = {
         "https://mcp.canva.cn/.well-known/oauth-protected-resource": _FakeResponse(200, {
@@ -173,9 +151,12 @@ def test_oauth_flow_can_be_found_by_state_when_flow_id_missing(workspace: Path):
     manager = OAuthFlowManager(workspace_dir=workspace, http_client=lambda: _FakeClient(calls, routes))
     started = manager.start("canva", "http://127.0.0.1:19000/")
     state = started["auth_url"].split("state=")[1].split("&")[0]
+    payload = {"state": state, "code": "code-1"}
+    if include_flow_id:
+        payload = {"flow": started["flow"], **payload}
 
     restarted = OAuthFlowManager(workspace_dir=workspace, http_client=lambda: _FakeClient(calls, routes))
-    assert restarted.complete({"state": state, "code": "code-1"}) is True
+    assert restarted.complete(payload) is True
 
 
 def test_expired_persisted_flow_cannot_complete_by_state(workspace: Path):

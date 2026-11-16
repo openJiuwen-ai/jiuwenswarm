@@ -871,8 +871,12 @@ def test_get_team_agent_includes_runner_owned_leader() -> None:
     assert manager.get_team_agent("runner-session") is leader
 
 
+@pytest.mark.parametrize("channel_id", ["feishu", "web"])
 @pytest.mark.asyncio
-async def test_create_team_appends_session_id_to_team_name(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_team_appends_session_id_to_team_name(
+    monkeypatch: pytest.MonkeyPatch,
+    channel_id: str,
+) -> None:
     created_team_names: list[str] = []
 
     class _FakeWorkspace:
@@ -896,38 +900,7 @@ async def test_create_team_appends_session_id_to_team_name(monkeypatch: pytest.M
     )
     manager = TeamManager()
 
-    team_agent = await manager.create_team("oc_abc123", deep_agent=object(), channel_id="feishu")
-
-    assert team_agent is not None
-    assert created_team_names == ["demo_team_oc_abc123"]
-
-
-@pytest.mark.asyncio
-async def test_create_team_appends_session_id_to_web_team_name(monkeypatch: pytest.MonkeyPatch) -> None:
-    created_team_names: list[str] = []
-
-    class _FakeWorkspace:
-        root_path = None
-
-    class _Spec:
-        def __init__(self) -> None:
-            self.team_name = "demo_team"
-            self.workspace = _FakeWorkspace()
-
-        def build(self):
-            created_team_names.append(self.team_name)
-            return SimpleNamespace()
-
-    monkeypatch.setattr(TeamManager, "_load_team_spec", staticmethod(lambda _session_id: _Spec()))
-    # Provider assembly is covered by the swarm suite; stub it so this
-    # session-management test runs on the minimal fake spec.
-    monkeypatch.setattr(
-        "jiuwenswarm.agents.swarm.enrich_team_spec_for_swarm",
-        lambda spec, **kwargs: None,
-    )
-    manager = TeamManager()
-
-    team_agent = await manager.create_team("oc_abc123", deep_agent=object(), channel_id="web")
+    team_agent = await manager.create_team("oc_abc123", deep_agent=object(), channel_id=channel_id)
 
     assert team_agent is not None
     assert created_team_names == ["demo_team_oc_abc123"]

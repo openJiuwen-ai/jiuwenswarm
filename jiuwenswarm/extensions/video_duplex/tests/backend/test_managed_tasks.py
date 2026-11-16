@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import until
+
 from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import LocalCheckpoint, install_bridge
 
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
@@ -21,12 +23,6 @@ class TaskAdapter(SimpleNamespace):
     @property
     def task_execution_binding(self):
         return self._instance, self._voice_agent_task_rail
-
-
-async def until(predicate):
-    async with asyncio.timeout(3):
-        while not predicate():
-            await asyncio.sleep(0.005)
 
 
 class Executor:
@@ -1206,10 +1202,9 @@ async def test_resumed_cua_receipt_tracks_execution_missing_from_scheduler(tasks
 
 
 @pytest.mark.parametrize("native_handle", [False, True])
-async def test_settlement_timeout_does_not_claim_native_work_has_stopped(tasks, monkeypatch, native_handle):
+async def test_settlement_waits_for_native_work_to_stop(tasks, monkeypatch, native_handle):
     from jiuwenswarm.server.runtime.video_task import execution as module
 
-    monkeypatch.setattr(module, "CANCEL_SETTLEMENT_TIMEOUT", 0.02)
     service, executor = tasks
     task = submit(service, "settlement-timeout")
     await until(lambda: executor.calls)
@@ -1231,7 +1226,8 @@ async def test_settlement_timeout_does_not_claim_native_work_has_stopped(tasks, 
             if native is not None:
                 rail.managed_tasks[request.session_id].native_executions.add(native)
         assert request.request_id in module._reporting_requests
-        await until(lambda: request.request_id not in module._reporting_requests)
+        await asyncio.sleep(0.04)
+        assert request.request_id in module._reporting_requests
         assert not service.store.read(task["id"])["execution_settled"]
         assert not module.managed_request_detached(rail, request)
         if native is not None:
@@ -1239,6 +1235,8 @@ async def test_settlement_timeout_does_not_claim_native_work_has_stopped(tasks, 
             release.set()
             await native
         harness.active_round = None
+        await until(lambda: service.store.read(task["id"])["execution_settled"])
+        await until(lambda: request.request_id not in module._reporting_requests)
         assert module.managed_request_detached(rail, request)
         assert request.request_id not in module._unsettled_requests
     finally:
@@ -1260,21 +1258,216 @@ async def test_waiting_voice_cancel_does_not_create_a_followup(tasks):
     assert executor.calls == []
 
 
-async def test_failed_stop_without_settlement_becomes_unknown_and_retains_capacity(tasks, monkeypatch):
+async def test_failed_stop_waits_for_settlement_and_retains_capacity(tasks, monkeypatch):
     from jiuwenswarm.extensions.video_duplex.backend.tasks import service as module
 
-    monkeypatch.setattr(module, "CANCEL_SETTLEMENT_TIMEOUT", 0.02)
     service, executor = tasks
     service.concurrency = 1
     task = submit(service, "unconfirmed-stop")
     await until(lambda: executor.calls)
     executor.reject_stop = True
     await service.cancel("alice", "conversation", task["id"], "stop")
-    await until(lambda: service.store.read(task["id"])["status"] == "unknown")
+    await until(lambda: bool(service.store.read(task["id"])["error"]))
+    await asyncio.sleep(0.04)
+    assert service.store.read(task["id"])["status"] == "cancelling"
     current = service.store.read(task["id"])
     assert not current["execution_settled"] and not current["execution_cancelled"]
-    assert "cleanup was not confirmed" in current["error"]
+    assert "Stop acknowledgement unavailable" in current["error"]
     waiting = service.submit("alice", "another-conversation", "next", "Next independent task")
     await asyncio.sleep(0.03)
     assert service.store.read(waiting["id"])["status"] == "queued"
     assert len(executor.calls) == 1
+    executor.gates[task["id"]].set()
+    await until(lambda: service.store.read(task["id"])["status"] == "cancelled")
+
+
+
+@pytest.mark.asyncio
+async def test_recovery_dispatches_only_opened_owner_and_conversation(tasks):
+    service, executor = tasks
+    store = service.store
+    scopes = [("alice", "task-duplex:current"), ("alice", "task-duplex:other"),
+              ("bob", "task-duplex:current")]
+    queued = [service._new(owner, session, "pending", {}) for owner, session in scopes]
+    with store.transaction() as db:
+        for task in queued:
+            store.put(db, task)
+    service.snapshot(*scopes[0])
+    await until(lambda: len(executor.calls) == 1)
+    assert executor.calls[0]["id"] == queued[0]["id"]
+    executor.gates[queued[0]["id"]].set()
+    await until(lambda: not service.workers)
+    service.kick()
+    await asyncio.sleep(0)
+    assert len(executor.calls) == 1
+    assert all(store.read(task["id"])["status"] == "queued" for task in queued[1:])
+
+    # Opening another conversation activates it even after service startup.
+    service.snapshot(*scopes[1])
+    await until(lambda: len(executor.calls) == 2)
+    assert executor.calls[1]["id"] == queued[1]["id"]
+    assert store.read(queued[2]["id"])["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_recovery_does_not_probe_or_change_other_conversations(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.extensions.video_duplex.backend.tasks import service as module
+
+    monkeypatch.setattr(module, "RECONCILE_INTERVAL", 0.01)
+
+    store = TaskStore(tmp_path / "scoped-running.sqlite")
+    executor = SimpleNamespace(reconcile=AsyncMock(return_value={"status": "running"}))
+    service = TaskService(store, executor)
+    current = service._new("alice", "current", "running", {})
+    other = service._new("alice", "other", "running", {})
+    for task in (current, other):
+        task["status"] = "running"
+    with store.transaction() as db:
+        for task in (current, other):
+            store.put(db, task)
+    try:
+        service.snapshot("alice", "current")
+        await until(lambda: executor.reconcile.await_count == 1)
+        assert executor.reconcile.await_args.args[0]["id"] == current["id"]
+        assert store.read(current["id"])["status"] == "running"
+        assert store.read(other["id"])["status"] == "running"
+        service.snapshot("alice", "current")
+        await asyncio.sleep(0.04)
+        assert executor.reconcile.await_count == 1
+        service.snapshot("alice", "other")
+        await until(lambda: executor.reconcile.await_count == 2)
+        assert store.read(other["id"])["status"] == "running"
+    finally:
+        await service.close()
+
+
+async def test_scheduler_completion_waits_for_round_cleanup_before_next_task(tasks, monkeypatch):
+    """A scheduler handle can finish before the round releases the shared Agent."""
+    service, executor = tasks
+    first = submit(service, "first-round")
+    await until(lambda: executor.calls)
+    scheduler = asyncio.create_task(asyncio.sleep(0))
+    await scheduler
+    release = asyncio.Event()
+    harness = _round_harness()
+
+    async def finish_round():
+        await release.wait()
+        harness.active_round = None
+
+    round_task = asyncio.create_task(finish_round())
+    harness._interaction_round_task = round_task
+    harness.loop_controller.task_scheduler._running_tasks["round-id"] = (None, scheduler)
+    rail = SimpleNamespace(managed_tasks={})
+    adapter = TaskAdapter(_instance=harness, _voice_agent_task_rail=rail, _is_session_scoped_adapter=True)
+    request = SimpleNamespace(channel_id="video_tool", session_id=first["core_session_id"],
+                              request_id=first["request_id"])
+    install_bridge(monkeypatch, service.store, request)
+    try:
+        async with bind_task_execution(request, adapter, {}):
+            pass
+        await asyncio.sleep(0.03)
+        successor = SimpleNamespace(
+            channel_id="video_tool", session_id="shared-chat", request_id="second-round",
+            params=request.params, user_id="alice",
+        )
+        with pytest.raises(RuntimeError, match="当前会话仍有任务"):
+            async with bind_task_execution(successor, adapter, {}):
+                pytest.fail("A new task must not enter the still-owned Agent")
+        assert not service.store.read(first["id"])["execution_settled"]
+        release.set()
+        await until(lambda: service.store.read(first["id"])["execution_settled"])
+    finally:
+        release.set()
+        await round_task
+        await until(lambda: service.store.read(first["id"])["execution_settled"])
+
+
+@pytest.mark.parametrize("status", ["running", "unknown"])
+@pytest.mark.parametrize("owner", ["alice", "bob"])
+async def test_unopened_scope_reserves_resources_without_consuming_capacity(tasks, owner, status):
+    service, executor = tasks
+    service.concurrency = 1
+    foreign = service._new(owner, "unopened", "desktop in use", {"resources": ["desktop"]})
+    foreign["status"] = status
+    with service.store.transaction() as db:
+        service.store.put(db, foreign)
+    conflict = independent(service, "desktop request", resources=["desktop"])
+    unrelated = independent(service, "weather request", resources=["weather"])
+    await until(lambda: len(executor.calls) == 1)
+    assert executor.calls[0]["id"] == unrelated["id"]
+    assert service.store.read(conflict["id"])["status"] == "queued"
+    rows, _ = service.snapshot("alice", "conversation")
+    snapshot = next(t for t in rows if t["id"] == conflict["id"])
+    assert [t["id"] for t in snapshot["waiting_on"]] == ([foreign["id"]] if owner == "alice" else [])
+    assert (owner, "unopened") not in service.active_scopes
+    assert service.store.read(foreign["id"])["status"] == status
+    executor.gates[unrelated["id"]].set()
+    await until(lambda: not service.workers)
+    service.kick()
+    await asyncio.sleep(0.02)
+    assert len(executor.calls) == 1
+    # An authoritative end fact releases the resource; merely opening a scope does not.
+    service.store.update(foreign["id"], lambda t: t.update(status="completed", execution_settled=True))
+    service.kick()
+    await until(lambda: len(executor.calls) == 2)
+    assert executor.calls[1]["id"] == conflict["id"]
+
+
+@pytest.mark.parametrize("stopping", [False, True])
+async def test_lost_settlement_push_is_recovered_by_read_only_core_probe(tmp_path, monkeypatch, stopping):
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.extensions.video_duplex.backend import task_adapter
+    from jiuwenswarm.extensions.video_duplex.backend.tasks import service as module
+
+    monkeypatch.setattr(module, "RECONCILE_INTERVAL", 0.01)
+    monkeypatch.setattr(task_adapter, "task_agent_query", AsyncMock(return_value={"files": []}))
+    store = TaskStore(tmp_path / "lost-settlement.sqlite")
+    finish = asyncio.Event()
+    calls, probes, stops = [], [], []
+
+    class MissingPushExecutor(task_adapter.AgentTaskExecutor):
+        async def _run(self, task, progress, context):
+            calls.append(task["id"])
+            store.update(task["id"], lambda t: t.update(execution_bound=True))
+            if task["instruction"] == "second":
+                store.update(task["id"], lambda t: t.update(execution_settled=True))
+            elif stopping:
+                await asyncio.Event().wait()
+            return {"answer": task["instruction"]}
+
+    async def core_reply(task, *, probe):
+        if probe:
+            probes.append(task["request_id"])
+            if len(probes) == 1:
+                raise ConnectionError("Transient probe failure")
+        else:
+            stops.append(task["request_id"])
+        return SimpleNamespace(ok=True, payload={"success": True, "managed_task_settled": finish.is_set()})
+
+    executor = MissingPushExecutor(None, store, None)
+    monkeypatch.setattr(executor, "reconciliation_ready", AsyncMock(return_value=True))
+    monkeypatch.setattr(executor, "_send_cancel_request", core_reply)
+    service = TaskService(store, executor)
+    try:
+        first = submit(service, "first")
+        second = submit(service, "second")
+        await until(lambda: calls)
+        if stopping:
+            await service.cancel("alice", "conversation", first["id"], "stop")
+        await until(lambda: len(probes) >= 2)
+        assert not store.read(first["id"])["execution_settled"]
+        assert calls == [first["id"]]
+        assert store.read(second["id"])["status"] == "queued"
+        finish.set()
+        expected = "cancelled" if stopping else "completed"
+        await until(lambda: store.read(first["id"])["status"] == expected)
+        await until(lambda: store.read(second["id"])["status"] == "completed")
+        assert calls == [first["id"], second["id"]]
+        assert stops == ([first["request_id"]] if stopping else [])
+        assert store.read(first["id"])["execution_settled"]
+        if not stopping:
+            assert store.read(first["id"])["result"]["answer"] == "first"
+    finally:
+        await service.close()

@@ -241,7 +241,7 @@ datas += collect_data_files(
 datas += collect_data_files(
     "jiuwenswarm.office",
     include_py_files=True,
-    includes=["powerpoint/**/*"],
+    includes=["powerpoint/**/*", "word/**/*", "excel/**/*"],
 )
 # DesignRail 的 config.yaml + skills/ 树（SKILL.md / workflows / references / scripts）
 # 含 .mjs 脚本和 _templates/ 模板（脚本运行时读取），需额外 pattern
