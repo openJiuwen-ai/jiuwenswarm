@@ -820,14 +820,9 @@ function AppContent({
       setTeamAreaExpanded(false);
       setSingleAgentPanelExpanded(false);
       setToolPanelHidden(true);
-<<<<<<< RELEASE
     } else if (route.kind === 'system-plugin-recovery') {
       setRequestedSettingsModuleId('systemPluginRecovery');
       setActiveNav('settings');
-||||||| BEFORE_PR_9610
-=======
-      return () => { cancelled = true; };
->>>>>>> DEVELOP
     } else if (route.kind === 'chat-new') {
       if (window.location.pathname !== '/chat/new') {
         navigate({ kind: 'chat-new' }, { replace: true });

@@ -232,18 +232,12 @@ function logStreamFor(name) {
 
 function serviceCommand(name, extraArgs = []) {
   if (app.isPackaged) {
-<<<<<<< RELEASE
     const flags = {
       web: '--desktop-run-web',
       agent: '--desktop-run-agent',
       gateway: '--desktop-run-gateway',
       recovery: '--extension-recovery-sidecar',
     };
-||||||| BEFORE_PR_9610
-    const flags = { web: '--desktop-run-web', agent: '--desktop-run-agent', gateway: '--desktop-run-gateway' };
-=======
-    const flags = { web: '--desktop-run-web', agent: '--desktop-run-agent', gateway: '--desktop-run-gateway', lifecycle: '--desktop-run-worker-lifecycle' };
->>>>>>> DEVELOP
     const flag = flags[name];
     if (!flag) throw new Error(`Unknown service name: ${name}`);
     return { command: backendExecutable(), args: [flag, ...extraArgs] };
@@ -257,12 +251,7 @@ function serviceCommand(name, extraArgs = []) {
     agent: 'jiuwenswarm.server.app_agentserver',
     gateway: 'jiuwenswarm.gateway.app_gateway',
     web: 'jiuwenswarm.channels.web.app_web',
-<<<<<<< RELEASE
     recovery: 'jiuwenswarm.common.system_plugin_recovery_sidecar',
-||||||| BEFORE_PR_9610
-=======
-    lifecycle: 'jiuwenswarm.server.supervisor.shutdown',
->>>>>>> DEVELOP
   };
   const moduleName = moduleNames[name];
   if (!moduleName) throw new Error(`Unknown service name: ${name}`);
@@ -804,23 +793,13 @@ async function startBackendServices({ ports, webProcess, webReady }) {
   // consume PLAYWRIGHT_MCP_TARGET_RESOLVER through their spawn env.
   let agentProcess = null;
   let gatewayProcess = null;
-<<<<<<< RELEASE
   let recoveryProcess = null;
-||||||| BEFORE_PR_9610
-=======
-  if (shuttingDown) return;
->>>>>>> DEVELOP
   try {
     recoveryRestartSignalPath = path.join(app.getPath('userData'), 'system-plugin-recovery-restart.json');
     await fs.mkdir(path.dirname(recoveryRestartSignalPath), { recursive: true });
     await fs.unlink(recoveryRestartSignalPath).catch(() => {});
     await prepareRuntimeWorkspace();
-<<<<<<< RELEASE
     recoveryProcess = spawnService('recovery', ports);
-||||||| BEFORE_PR_9610
-=======
-    if (shuttingDown) return;
->>>>>>> DEVELOP
     agentProcess = spawnService('agent', ports);
     gatewayProcess = spawnService('gateway', ports);
 
@@ -833,21 +812,8 @@ async function startBackendServices({ ports, webProcess, webReady }) {
       webReady,
     ]);
   } catch (error) {
-<<<<<<< RELEASE
     for (const child of [webProcess, recoveryProcess, agentProcess, gatewayProcess]) {
       if (child) void terminateService(child);
-||||||| BEFORE_PR_9610
-    for (const child of [webProcess, agentProcess, gatewayProcess]) {
-      if (child) void terminateService(child);
-=======
-    // Quit owns cleanup. A cancelled preparation/readiness wait is not a startup failure.
-    if (shuttingDown) return;
-    for (const child of [webProcess, agentProcess, gatewayProcess]) {
-      if (child) {
-        void terminateService(child).catch(error =>
-          console.error('[electron] background service cleanup incomplete', error));
-      }
->>>>>>> DEVELOP
     }
     throw error;
   }
@@ -982,7 +948,6 @@ function waitForDescendantsExit(descendants, timeoutMs) {
 }
 
 async function terminateService(child) {
-<<<<<<< RELEASE
   if (!child?.pid || !serviceTreeRunning(child)) return;
   // AgentServer's Runtime Worker owns a separate POSIX session. Preserve its
   // pid before signalling the Front's group so recovery and normal shutdown
@@ -993,47 +958,14 @@ async function terminateService(child) {
     await waitForServiceTreeExit(child, SERVICE_SHUTDOWN_TIMEOUT_MS)
     && await waitForDescendantsExit(descendants, SERVICE_SHUTDOWN_TIMEOUT_MS)
   ) return;
-||||||| BEFORE_PR_9610
-  if (!child?.pid || !serviceTreeRunning(child)) return;
-  signalServiceTree(child, 'SIGTERM');
-  if (await waitForServiceTreeExit(child, SERVICE_SHUTDOWN_TIMEOUT_MS)) return;
-=======
-  if (!child?.pid) return;
-  if (!serviceTreeRunning(child)) {
-    await child.frontDetachPromise;
-    return;
-  }
-  const signaled = signalServiceTree(child, 'SIGTERM');
-  try {
-    if (!signaled) throw new Error('Failed to start service shutdown');
-    const stopped = await waitForServiceTreeExit(child, SERVICE_SHUTDOWN_TIMEOUT_MS);
-    await child.frontDetachPromise;
-    if (stopped || !serviceTreeRunning(child)) return;
-  } catch (error) {
-    console.warn('[electron] graceful Front detach incomplete', error);
-    if (!serviceTreeRunning(child)) throw error;
-  }
->>>>>>> DEVELOP
 
   console.warn(`[electron] service tree ${child.pid} did not stop after SIGTERM; forcing shutdown`);
-<<<<<<< RELEASE
   signalServiceTree(child, 'SIGKILL', descendants);
   if (
     !(await waitForServiceTreeExit(child, SERVICE_KILL_TIMEOUT_MS))
     || !(await waitForDescendantsExit(descendants, SERVICE_KILL_TIMEOUT_MS))
   ) {
     console.error(`[electron] service tree ${child.pid} is still running after SIGKILL`);
-||||||| BEFORE_PR_9610
-  signalServiceTree(child, 'SIGKILL');
-  if (!(await waitForServiceTreeExit(child, SERVICE_KILL_TIMEOUT_MS))) {
-    console.error(`[electron] service tree ${child.pid} is still running after SIGKILL`);
-=======
-  if (!signalServiceTree(child, 'SIGKILL')) throw new Error('Failed to start forced service shutdown');
-  const stopped = await waitForServiceTreeExit(child, SERVICE_KILL_TIMEOUT_MS);
-  await child.frontDetachPromise;
-  if (!stopped) {
-    throw new Error(`Service tree ${child.pid} is still running after SIGKILL`);
->>>>>>> DEVELOP
   }
 }
 
