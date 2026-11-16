@@ -158,7 +158,10 @@ export default function DesignerModelSelector({
     menuMaxHeight: 480, hideAddModel: true,
   };
   return (
-    <div className="designer-model-selector" data-testid="designer-model-selector">
+    <div
+      className={`designer-model-selector${disabled ? ' designer-edit-control' : ''}`}
+      data-testid="designer-model-selector"
+    >
       {warning && <ModelConfigurationWarning key={warning} message={warning} actionLabel={warningActionLabel}
         disabled={disabled} onAction={() => {
           if (failed) void reload();

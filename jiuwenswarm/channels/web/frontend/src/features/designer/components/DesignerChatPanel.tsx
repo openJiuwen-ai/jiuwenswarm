@@ -24,7 +24,7 @@ import {
 } from '../designerEntry';
 import { findDesignModelsProblem } from '../designModelsReadiness';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
-import { designerChatStopControl, isDesignerChatStoppable } from '../designerGraphLock';
+import { designerChatStopControl, isDesignerChatStoppable, isDesignerModelMenuLocked } from '../designerGraphLock';
 import { useDesignerRunStore } from '../designerRunStore';
 import { useDesignerStore } from '../designerStore';
 import { useDesignerUiStore } from '../designerUiStore';
@@ -135,6 +135,7 @@ export function DesignerChatPanel() {
     sessionId ? state.runtimes[sessionId]?.isProcessing ?? false : false,
   );
   const runIsRunning = useDesignerRunStore((state) => state.isRunning);
+  const runStatus = useDesignerRunStore((state) => state.run?.status ?? null);
   const runTriggerSource = useDesignerRunStore((state) => state.run?.metadata?.trigger_source ?? null);
   const leaderRunActive = runIsRunning && runTriggerSource === 'leader';
   // After chat.final, isProcessing is false while the leader-triggered canvas
@@ -157,6 +158,9 @@ export function DesignerChatPanel() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Safari can fire compositionend before the keydown that confirms a candidate.
   const composingRef = useRef(false);
+  // Same window as the clickable stop control, plus a canvas rerun that keeps
+  // its own toolbar and never swaps the chat send button.
+  const modelMenuLocked = isDesignerModelMenuLocked({ stopControl, runStatus });
   const stopRequestedRef = useRef(false);
   // The canvas owns exactly one session: read and write the model against that
   // session id. `activeSessionId` follows the app route and can point at
@@ -627,7 +631,7 @@ export function DesignerChatPanel() {
           />
           <div className="designer-chat-panel__composer-actions">
             {sessionId ? (
-              <DesignerModelSelector sessionId={sessionId} readOnly />
+              <DesignerModelSelector sessionId={sessionId} readOnly disabled={modelMenuLocked} />
             ) : null}
             <ApplicationPluginTaskInputActions
               eligible={

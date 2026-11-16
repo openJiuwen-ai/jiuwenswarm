@@ -3653,6 +3653,8 @@ textarea.designer-node-toolbar__prompt.designer-edit-control,
 .designer-node__resize.designer-edit-control *,
 .designer-media-settings.designer-edit-control,
 .designer-media-settings.designer-edit-control *,
+.designer-chat-panel__composer-actions .designer-model-selector.designer-edit-control,
+.designer-chat-panel__composer-actions .designer-model-selector.designer-edit-control *,
 .designer-node-toolbar__comfyui.designer-edit-control,
 .designer-node-toolbar__comfyui.designer-edit-control * {
   cursor: not-allowed;
