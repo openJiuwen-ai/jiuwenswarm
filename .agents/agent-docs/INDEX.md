@@ -43,17 +43,18 @@ generated: true
 | [jiuwenswarm/server/control](#module-26) |
 | [jiuwenswarm/server/ipc](#module-27) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-28) |
-| [jiuwenswarm/server/runtime/skill](#module-29) |
-| [jiuwenswarm/server/supervisor](#module-30) |
-| [jiuwenswarm/server/worker](#module-31) |
-| [scripts](#module-32) |
-| [tests](#module-33) |
-| [tests/fixtures/ttse_plugin](#module-34) |
-| [tests/unit_tests/agentserver](#module-35) |
-| [tests/unit_tests/gateway](#module-36) |
-| [tests/unit_tests/personal_context](#module-37) |
-| [tests/unit_tests/server/extensions](#module-38) |
-| [未分类](#module-39) |
+| [jiuwenswarm/server/runtime/gateway_adapter](#module-29) |
+| [jiuwenswarm/server/runtime/skill](#module-30) |
+| [jiuwenswarm/server/supervisor](#module-31) |
+| [jiuwenswarm/server/worker](#module-32) |
+| [scripts](#module-33) |
+| [tests](#module-34) |
+| [tests/fixtures/ttse_plugin](#module-35) |
+| [tests/unit_tests/agentserver](#module-36) |
+| [tests/unit_tests/gateway](#module-37) |
+| [tests/unit_tests/personal_context](#module-38) |
+| [tests/unit_tests/server/extensions](#module-39) |
+| [未分类](#module-40) |
 
 <a id="module-1"></a>
 
@@ -153,6 +154,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [F_20261027_2015_bilingual-progressive-tool-discovery](features/jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, tests/unit_tests/agentserver/test_tool_discovery_language.py | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
+| [S_01_authorized-file-download](specs/jiuwenswarm/common/S_01_authorized-file-download.md) | S | 授权文件下载规约 | nypdmax | jiuwenswarm/common, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/server/runtime/gateway_adapter | jiuwenswarm/common/verified_download_assets.py, jiuwenswarm/common/file_download_token.py, jiuwenswarm/agents/harness/common/tools/send_file_to_user.py, jiuwenswarm/server/runtime/gateway_adapter/workspace_file_adapter.py | — |
 | [S_01_tool-discovery-language](specs/jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py | — |
 
 <a id="module-12"></a>
@@ -233,6 +235,7 @@ generated: true
 | [B_20261112_1716_affinity-status-read](bugfix/jiuwenswarm/server/control/B_20261112_1716_affinity-status-read.md) | B | 控制面遗漏亲和状态导致开关与说明不一致 | MengHan18 | jiuwenswarm/server/control, jiuwenswarm/common, jiuwenswarm/channels/web/frontend/src/features/settings | jiuwenswarm/server/control/config_service.py, jiuwenswarm/common/kv_cache_affinity_config.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/useSettingsConfig.ts | 无独立 D：修复 F_20261110_2026_affinity-settings 的读入口遗漏及用户反馈的开启交互。 |
 | [B_20261112_2025_permission-profile-refresh](bugfix/jiuwenswarm/server/B_20261112_2025_permission-profile-refresh.md) | B | 刷新后智能审批档位错误回显为默认权限 | nypdmax | jiuwenswarm/common, jiuwenswarm/server/control | jiuwenswarm/common/permission_mode.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, tests/unit_tests/agentserver/test_front_permission_profile.py | 无独立 D：补齐既有 config.get/config.set 权限档位回显契约，无独立设计；审批决策与持久化格式不变。 |
 | [S_01_affinity-settings](specs/jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | jiuwenswarm/common, jiuwenswarm/channels/web/frontend/src/features/settings | jiuwenswarm/common/kv_cache_affinity_config.py, jiuwenswarm/common/config.py | — |
+| [S_01_authorized-file-download](specs/jiuwenswarm/common/S_01_authorized-file-download.md) | S | 授权文件下载规约 | nypdmax | jiuwenswarm/common, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/server/runtime/gateway_adapter | jiuwenswarm/common/verified_download_assets.py, jiuwenswarm/common/file_download_token.py, jiuwenswarm/agents/harness/common/tools/send_file_to_user.py, jiuwenswarm/server/runtime/gateway_adapter/workspace_file_adapter.py | — |
 
 <a id="module-20"></a>
 
@@ -321,13 +324,21 @@ generated: true
 
 <a id="module-29"></a>
 
+## jiuwenswarm/server/runtime/gateway_adapter
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [S_01_authorized-file-download](specs/jiuwenswarm/common/S_01_authorized-file-download.md) | S | 授权文件下载规约 | nypdmax | jiuwenswarm/common, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/server/runtime/gateway_adapter | jiuwenswarm/common/verified_download_assets.py, jiuwenswarm/common/file_download_token.py, jiuwenswarm/agents/harness/common/tools/send_file_to_user.py, jiuwenswarm/server/runtime/gateway_adapter/workspace_file_adapter.py | — |
+
+<a id="module-30"></a>
+
 ## jiuwenswarm/server/runtime/skill
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261103_0936_skill-action-param-type-validation](bugfix/jiuwenswarm/server/runtime/skill/B_20261103_0936_skill-action-param-type-validation.md) | B | 技能安装/更新/卸载入口参数类型校验缺失修复 | openjiuwen_ai | jiuwenswarm/server/runtime/skill | jiuwenswarm/server/runtime/skill/skill_manager.py, tests/unit_tests/agentserver/test_skill_manager_enterprise_state.py | 无独立 D：三个入口的参数契约（string 标识、boolean force）已由前端 webHttpClient 与 EnterpriseSkillSourcePanel 既有调用形态声明，本次为入口 类型校验层缺失的补接，无独立设计。 |
 
-<a id="module-30"></a>
+<a id="module-31"></a>
 
 ## jiuwenswarm/server/supervisor
 
@@ -336,7 +347,7 @@ generated: true
 | [B_20261107_1505_6226-forwarding-replay](bugfix/jiuwenswarm/server/supervisor/B_20261107_1505_6226-forwarding-replay.md) | B | 历史回放触发转发队列溢出及前端计时不收尾 | kdgmpw | jiuwenswarm/server/supervisor, jiuwenswarm/channels/web/frontend | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, tests/unit_tests/agentserver/test_supervisor_forwarding.py, jiuwenswarm/channels/web/frontend/tests/sessionInput.test.mjs | 无独立 D：对现有有界转发及前端终态处理的小范围修复，无独立设计。 |
 | [B_20261110_1042_issue6191-ipc-recovery](bugfix/jiuwenswarm/server/ipc/B_20261110_1042_issue6191-ipc-recovery.md) | B | IPC 突发积压与降级就绪重连导致 Runtime 失败 | 刘瑜 | jiuwenswarm/server/ipc, jiuwenswarm/server/supervisor | jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, tests/unit_tests/agentserver/test_ipc_receive_recovery.py | 无独立 D：对现有有界 IPC 和 Runtime 恢复状态机的小范围修复，无独立设计。 |
 
-<a id="module-31"></a>
+<a id="module-32"></a>
 
 ## jiuwenswarm/server/worker
 
@@ -344,7 +355,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261105_1518_worker-dispatch-slot-accounting](bugfix/jiuwenswarm/server/worker/B_20261105_1518_worker-dispatch-slot-accounting.md) | B | Worker 派发容量排除已返回的 handler | kdgmpw | jiuwenswarm/server/worker | jiuwenswarm/server/worker/event_store.py | 无独立 D：按会话中确认的最小修复方案调整 Worker 内部计数。 |
 
-<a id="module-32"></a>
+<a id="module-33"></a>
 
 ## scripts
 
@@ -353,7 +364,7 @@ generated: true
 | [F_20261111_1528_unified-observability-config](features/F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | jiuwenswarm/common, jiuwenswarm/agents/harness, jiuwenswarm/resources, deploy/yuanrong, scripts | jiuwenswarm/common/observability_config.py, jiuwenswarm/common/config.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/agents/harness/team/team_manager.py, jiuwenswarm/resources/config.yaml, deploy/yuanrong/conf/gateway-config-yuanrong.template.yaml, scripts/reset_trajectory_data.py, tests/unit_tests/common/test_observability_config.py, tests/unit_tests/agentserver/test_trajectory_runtime_wiring.py | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
 | [B_20261031_1006_ttse-runtime-fixture](bugfix/tests/unit_tests/agentserver/B_20261031_1006_ttse-runtime-fixture.md) | B | TTSE runtime UT 使用版本化夹具修复整批 setup error | xinyang_bali | tests/unit_tests/agentserver, tests/unit_tests/server/extensions, tests/fixtures/ttse_plugin, scripts | tests/unit_tests/agentserver/test_ttse_plugin_runtime.py, tests/unit_tests/server/extensions/test_ttse_plugin_package.py, tests/unit_tests/conftest.py, tests/fixtures/ttse_plugin/manifest.json, tests/fixtures/ttse_plugin/config.yaml, tests/fixtures/ttse_plugin/rails/ttse_plugin_rail.py, scripts/package_ttse_plugin.py | 无独立 D：修复用户报告的 CI 测试数据缺失，保持现有 plugin_runtime v1 与生产默认打包路径，无独立 D。 |
 
-<a id="module-33"></a>
+<a id="module-34"></a>
 
 ## tests
 
@@ -361,7 +372,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [F_20261113_1040_del-ut-slim](features/F_20261113_1040_del-ut-slim.md) | F | develop 测试库瘦身第一批：删除 agent-gateway 镜像测试层与死代码副本 | kdgmpw | tests | TESTING.md, tests/unit_tests/channels/cli/test_chat.py, tests/unit_tests/test_config.py, tests/unit_tests/runtime/test_runtime_service.py, tests/unit_tests/common/test_mcp_dynamic_token_patch.py, tests/unit_tests/gateway/test_cli_channel_handlers.py, tests/unit_tests/server/test_session_metadata.py, tests/unit_tests/agentserver/test_team_model_selection.py, tests/unit_tests/agentserver/test_skill_sync.py, tests/unit_tests/agentserver/test_runtime_worker_phase2.py, tests/unit_tests/agentserver/test_team_helpers.py, tests/system_tests/test_project_memory.py, tests/auth/（整目录删除，4 个上游镜像测试）, tests/unit_tests/agentserver/memory/（删除 4 个镜像/占位测试）, tests/unit_tests/agentserver/test_skill_manager_rebuild_followup.py（删除）, tests/unit_tests/agentserver/test_envelope_placeholder.py（删除）, tests/integration/test_acp_cli_stdio_integration.py（删除）, tests/unit_tests/gateway/ 与 tests/unit_tests/channel/ 等（删除 65 个上游逐字节镜像测试，完整清单见本特性提交 diff）, tests/unit_tests/gateway/ 与 tests/unit_tests/channel/（第二批删除 21 个镜像/分叉测试，完整清单见第二批提交 diff）, tests/unit_tests/gateway/test_cron_scheduler_web_session.py（新增：提取 cron web session 回归）, tests/unit_tests/runtime/test_cron_job_mutations.py（新增：迁入 jw cron 单模型守卫）, tests/unit_tests/resources/test_advanced_daily_report_skill.py（新增：迁入 jw 技能脚本资源守护）, tests/system_tests/proc_harness.py（新增：system_tests 进程/WS helper 共享）, tests/unit_tests/agentserver/ 等 26 个涉改测试文件（参数化合并、helper 上提，清单见第二批提交 diff）, docs/zh/HarmonyOS_Dev_Workflow_Test_Guide.md、docs/en/HarmonyOS_Dev_Workflow_Test_Guide.md（同步移除已删测试引用） | 无独立 D：基于会话内对 develop 测试库的两轮静态扫描（10 个分组深扫 + 17,316 个用例级 AST 指纹比对）与上游 agent-gateway 仓的逐字节校验，用户在会话中直接确认执行，无独立设计编号。 |
 
-<a id="module-34"></a>
+<a id="module-35"></a>
 
 ## tests/fixtures/ttse_plugin
 
@@ -369,7 +380,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1006_ttse-runtime-fixture](bugfix/tests/unit_tests/agentserver/B_20261031_1006_ttse-runtime-fixture.md) | B | TTSE runtime UT 使用版本化夹具修复整批 setup error | xinyang_bali | tests/unit_tests/agentserver, tests/unit_tests/server/extensions, tests/fixtures/ttse_plugin, scripts | tests/unit_tests/agentserver/test_ttse_plugin_runtime.py, tests/unit_tests/server/extensions/test_ttse_plugin_package.py, tests/unit_tests/conftest.py, tests/fixtures/ttse_plugin/manifest.json, tests/fixtures/ttse_plugin/config.yaml, tests/fixtures/ttse_plugin/rails/ttse_plugin_rail.py, scripts/package_ttse_plugin.py | 无独立 D：修复用户报告的 CI 测试数据缺失，保持现有 plugin_runtime v1 与生产默认打包路径，无独立 D。 |
 
-<a id="module-35"></a>
+<a id="module-36"></a>
 
 ## tests/unit_tests/agentserver
 
@@ -378,7 +389,7 @@ generated: true
 | [B_20261031_1006_ttse-runtime-fixture](bugfix/tests/unit_tests/agentserver/B_20261031_1006_ttse-runtime-fixture.md) | B | TTSE runtime UT 使用版本化夹具修复整批 setup error | xinyang_bali | tests/unit_tests/agentserver, tests/unit_tests/server/extensions, tests/fixtures/ttse_plugin, scripts | tests/unit_tests/agentserver/test_ttse_plugin_runtime.py, tests/unit_tests/server/extensions/test_ttse_plugin_package.py, tests/unit_tests/conftest.py, tests/fixtures/ttse_plugin/manifest.json, tests/fixtures/ttse_plugin/config.yaml, tests/fixtures/ttse_plugin/rails/ttse_plugin_rail.py, scripts/package_ttse_plugin.py | 无独立 D：修复用户报告的 CI 测试数据缺失，保持现有 plugin_runtime v1 与生产默认打包路径，无独立 D。 |
 | [B_20261031_1048_ttse-core-dependent-ut](bugfix/tests/unit_tests/agentserver/B_20261031_1048_ttse-core-dependent-ut.md) | B | 暂时移除依赖未合入 core 工厂能力的插件 UT | xinyang_bali | tests/unit_tests/agentserver | tests/unit_tests/agentserver/test_ttse_plugin_runtime.py | 无独立 D：用户明确要求暂时删除依赖 core 的相关 UT，不调整依赖或运行实现，无独立 D。 |
 
-<a id="module-36"></a>
+<a id="module-37"></a>
 
 ## tests/unit_tests/gateway
 
@@ -386,7 +397,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](bugfix/tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-37"></a>
+<a id="module-38"></a>
 
 ## tests/unit_tests/personal_context
 
@@ -394,7 +405,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1038_cron-migration-ut](bugfix/tests/unit_tests/B_20261031_1038_cron-migration-ut.md) | B | cron 会话迁移的实时流测试与类清点兼容修复 | kdgmpw | tests/unit_tests/gateway, tests/unit_tests/personal_context | tests/unit_tests/gateway/test_cron_live_bus.py, tests/unit_tests/personal_context/test_closed_class_inventory.py | 无独立 D：对现有测试契约和解释器兼容性的小范围修复，无独立设计。 |
 
-<a id="module-38"></a>
+<a id="module-39"></a>
 
 ## tests/unit_tests/server/extensions
 
@@ -402,7 +413,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261031_1006_ttse-runtime-fixture](bugfix/tests/unit_tests/agentserver/B_20261031_1006_ttse-runtime-fixture.md) | B | TTSE runtime UT 使用版本化夹具修复整批 setup error | xinyang_bali | tests/unit_tests/agentserver, tests/unit_tests/server/extensions, tests/fixtures/ttse_plugin, scripts | tests/unit_tests/agentserver/test_ttse_plugin_runtime.py, tests/unit_tests/server/extensions/test_ttse_plugin_package.py, tests/unit_tests/conftest.py, tests/fixtures/ttse_plugin/manifest.json, tests/fixtures/ttse_plugin/config.yaml, tests/fixtures/ttse_plugin/rails/ttse_plugin_rail.py, scripts/package_ttse_plugin.py | 无独立 D：修复用户报告的 CI 测试数据缺失，保持现有 plugin_runtime v1 与生产默认打包路径，无独立 D。 |
 
-<a id="module-39"></a>
+<a id="module-40"></a>
 
 ## 未分类
 

@@ -23,7 +23,8 @@ generated: true
 | [jiuwenswarm/extensions/sdk](#module-6) |
 | [jiuwenswarm/resources/plugins/ttse](#module-7) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-8) |
-| [未分类](#module-9) |
+| [jiuwenswarm/server/runtime/gateway_adapter](#module-9) |
+| [未分类](#module-10) |
 
 <a id="module-1"></a>
 
@@ -39,6 +40,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
+| [S_01_authorized-file-download](jiuwenswarm/common/S_01_authorized-file-download.md) | S | 授权文件下载规约 | nypdmax | jiuwenswarm/common, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/server/runtime/gateway_adapter | jiuwenswarm/common/verified_download_assets.py, jiuwenswarm/common/file_download_token.py, jiuwenswarm/agents/harness/common/tools/send_file_to_user.py, jiuwenswarm/server/runtime/gateway_adapter/workspace_file_adapter.py | — |
 | [S_01_tool-discovery-language](jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py | — |
 
 <a id="module-3"></a>
@@ -64,6 +66,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [S_01_affinity-settings](jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | jiuwenswarm/common, jiuwenswarm/channels/web/frontend/src/features/settings | jiuwenswarm/common/kv_cache_affinity_config.py, jiuwenswarm/common/config.py | — |
+| [S_01_authorized-file-download](jiuwenswarm/common/S_01_authorized-file-download.md) | S | 授权文件下载规约 | nypdmax | jiuwenswarm/common, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/server/runtime/gateway_adapter | jiuwenswarm/common/verified_download_assets.py, jiuwenswarm/common/file_download_token.py, jiuwenswarm/agents/harness/common/tools/send_file_to_user.py, jiuwenswarm/server/runtime/gateway_adapter/workspace_file_adapter.py | — |
 
 <a id="module-6"></a>
 
@@ -92,6 +95,14 @@ generated: true
 | [S_03_native-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/extensions/sdk | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/extensions/sdk/plugin_runtime.py | — |
 
 <a id="module-9"></a>
+
+## jiuwenswarm/server/runtime/gateway_adapter
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [S_01_authorized-file-download](jiuwenswarm/common/S_01_authorized-file-download.md) | S | 授权文件下载规约 | nypdmax | jiuwenswarm/common, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/server/runtime/gateway_adapter | jiuwenswarm/common/verified_download_assets.py, jiuwenswarm/common/file_download_token.py, jiuwenswarm/agents/harness/common/tools/send_file_to_user.py, jiuwenswarm/server/runtime/gateway_adapter/workspace_file_adapter.py | — |
+
+<a id="module-10"></a>
 
 ## 未分类
 
