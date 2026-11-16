@@ -6816,6 +6816,7 @@
       "minutesAgo": "{{count}} 分钟前",
       "hoursAgo": "{{count}} 小时前",
       "daysAgo": "{{count}} 天前",
+      "previous": "上一组",
       "next": "下一组",
       "workRecord": "工作记录",
       "groupChats": "群聊 {{count}}",
