@@ -7,9 +7,16 @@ await build({
   plugins: [{ name: 'install-test-api', setup(builder) {
     builder.onResolve({ filter: /services\/pluginPackagesApi$/ }, () => ({ path: 'api', namespace: 'mock' }));
     builder.onResolve({ filter: /features\/catalogCache$/ }, () => ({ path: 'cache', namespace: 'mock' }));
+    builder.onResolve({ filter: /^\.\.\/i18n$/ }, () => ({ path: 'i18n', namespace: 'mock' }));
     builder.onLoad({ filter: /.*/, namespace: 'mock' }, ({ path }) => ({ contents: path === 'api'
-      ? `export class PluginInstallPendingError extends Error {}; export const pluginPackagesApi = { install: id => globalThis.installRequests(id) };`
-      : `export const scheduleCatalogRefresh = () => {}; export const catalogScope = () => '';`, loader: 'js' }));
+      ? `export class PluginInstallPendingError extends Error {};
+        export class PluginReplacementError extends Error {};
+        export const pluginPackagesApi = {
+          install: id => globalThis.installRequests(id),
+        };`
+      : path === 'i18n'
+        ? `export default { t: key => key };`
+        : `export const scheduleCatalogRefresh = () => {}; export const catalogScope = () => '';`, loader: 'js' }));
   }}],
 });
 globalThis.window = { setTimeout: () => 1, clearTimeout: () => {} };

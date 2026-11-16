@@ -14,6 +14,7 @@ interface MyMarketCardProps {
   onUse?: () => void;
   onQuickInstall?: () => void;
   quickAction?: 'install' | 'connect';
+  actionMode?: 'auto' | 'use';
   actionDisabled?: boolean;
 }
 
@@ -29,7 +30,8 @@ export function MyMarketCard({
   onUse,
   onQuickInstall,
   quickAction = 'install',
+  actionMode = 'auto',
   actionDisabled,
 }: MyMarketCardProps) {
-  return <MarketCard title={title} tags={tags} description={description} iconUrl={iconUrl} state={state} busyKind={busyKind} canOpenDetail={canOpenDetail} onOpenDetail={onOpenDetail} onUse={onUse} onQuickAdd={() => onQuickInstall?.()} quickAction={quickAction} actionDisabled={actionDisabled} />;
+  return <MarketCard title={title} tags={tags} description={description} iconUrl={iconUrl} state={state} busyKind={busyKind} canOpenDetail={canOpenDetail} onOpenDetail={onOpenDetail} onUse={onUse} onQuickAdd={() => onQuickInstall?.()} quickAction={quickAction} actionMode={actionMode} actionDisabled={actionDisabled} />;
 }
