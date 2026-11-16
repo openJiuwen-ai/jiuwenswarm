@@ -35,7 +35,7 @@ class OpenCodeSessionRail(DeepAgentRail):
         super().__init__()
         self.session_id = session_id
         self.member_identity = member_identity
-        self._signature: tuple[int, str] | None = None
+        self._signature: tuple[int, int, str] | None = None
 
     def _scope(self) -> str:
         return f"member:{self.session_id}:{self.member_identity}"
@@ -52,7 +52,12 @@ class OpenCodeSessionRail(DeepAgentRail):
             return
 
         header_value = derive_session_id(self._scope())
-        signature = (id(llm), header_value)
+        # Identity is checked structurally as well as by object identity: a
+        # recycled CPython id could otherwise match a previous instance, and
+        # the rail would skip the reinstall it was rebuilt to perform. The
+        # config and model object ids cost nothing and make the signature
+        # survive only a genuinely unchanged pair.
+        signature = (id(llm), id(llm.model_config), header_value)
         if self._signature == signature:
             return
 
@@ -70,5 +75,5 @@ class OpenCodeSessionRail(DeepAgentRail):
             model_client_config=updated_config,
             model_config=llm.model_config,
         )
-        self._signature = (id(updated_llm), header_value)
+        self._signature = (id(updated_llm), id(updated_llm.model_config), header_value)
         agent.set_llm(updated_llm)

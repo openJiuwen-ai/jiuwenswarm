@@ -3,8 +3,13 @@
 
 The OpenCode Go vendor is identified by ``model_client_config.vendor_key``;
 it reuses the OpenAI-compatible transport, so no new ``endpoint_profile`` is
-introduced (agent-core rejects unknown profiles). All injection helpers are
-pure and never mutate the shared configuration dictionaries.
+introduced (agent-core rejects unknown profiles).
+
+Mutation contract: the ``*_into_selection`` helpers copy before writing and
+never touch the caller's objects. ``inject_session_header`` is the exception
+-- it writes into the mapping it is given, so a caller passing a dictionary
+shared with the configuration must pass a copy. Every current call site does,
+and the tests pin that the shared config is left untouched.
 """
 
 from __future__ import annotations

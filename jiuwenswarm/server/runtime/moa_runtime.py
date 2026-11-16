@@ -85,6 +85,11 @@ def resolve_moa_settings(config: dict[str, Any], selection: ModelSelection | dic
     # make the fingerprint differ between the scoped build and the unscoped
     # re-validation the adapter performs on every turn -- and every turn would
     # then tear down and rebuild the group.
+    # Deliberately unconditional, including when `scope` is None: the round
+    # trip is what gives the scoped and unscoped calls the same normalized
+    # shape to hash. Fingerprinting `resolved` directly on the unscoped path
+    # produces a different digest than the scoped build does, which is the
+    # disagreement this whole snapshot exists to prevent.
     unscoped_group = ResolvedModelGroup.model_validate(resolved.model_dump())
     if scope:
         from jiuwenswarm.common.opencode_go import inject_session_into_selection
