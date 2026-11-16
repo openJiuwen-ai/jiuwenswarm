@@ -13,7 +13,12 @@ import { resolveUserId } from '../utils/userId';
 import i18n from '../i18n';
 import { GoalRecord } from '../types/goal';
 import { createSessionEventGate } from './sessionEventGate';
+<<<<<<< RELEASE
 import { browserClientCapabilities } from '../features/webui/client/browserClient.ts';
+||||||| BEFORE_PR_9610
+=======
+import { RuntimeResume } from './runtimeResume';
+>>>>>>> DEVELOP
 
 type EventHandler = (event: WsEvent) => void;
 type TypedEventHandler<TPayload> = (event: WsEvent & { payload: TPayload }) => void;
@@ -94,6 +99,7 @@ function logDevWsTraffic(entry: DevWsLogEntry): void {
 }
 
 class WebClient {
+<<<<<<< RELEASE
   private connectionRetainers = 0;
   retainConnection(): () => void {
     this.connectionRetainers++;
@@ -119,6 +125,12 @@ class WebClient {
       }
     });
   }
+||||||| BEFORE_PR_9610
+=======
+  private readonly runtimeResume = new RuntimeResume();
+  private resumeOwner = '';
+  private connectedOnce = false;
+>>>>>>> DEVELOP
   private ws: WebSocket | null = null;
   private state: WebConnectionState = 'idle';
   private handlers = new Map<string, Set<EventHandler>>();
@@ -179,6 +191,15 @@ class WebClient {
       return this.connectPromise;
     }
 
+<<<<<<< RELEASE
+||||||| BEFORE_PR_9610
+    this.lastConnectOptions = options;
+=======
+    this.lastConnectOptions = options;
+    const owner = resolveUserId() || '';
+    if (owner !== this.resumeOwner) this.runtimeResume.clear();
+    this.resumeOwner = owner;
+>>>>>>> DEVELOP
     this.manualClose = false;
     this.updateState(this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
 
@@ -457,10 +478,15 @@ class WebClient {
       return;
     }
 
+<<<<<<< RELEASE
     if (!message.event.startsWith('connection.') && !message.event.startsWith('webui.')
       && message.event !== 'client.operation' && message.event !== 'client.declarations'
       && browserClientCapabilities.isUnavailable()) return;
 
+||||||| BEFORE_PR_9610
+=======
+    if (!this.runtimeResume.observe(message)) return;
+>>>>>>> DEVELOP
     this.resolveRuntimeAcceptedPending(message);
     this.dispatchEvent(message);
   }

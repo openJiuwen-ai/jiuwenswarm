@@ -14087,9 +14087,47 @@ class JiuWenSwarmDeepAdapter:
             # workspace.root_path (~/.jiuwenswarm/agent/workspace).
             deep_config.cwd = task_cwd
             deep_config.project_root = task_workspace
+<<<<<<< RELEASE
         self._seed_runtime_cwd(task_cwd, workspace=task_workspace, session_id=runtime_config.session_id)
         if runtime_paths is not None and runtime_paths.is_projectless:
             setattr(self._instance, "_jiuwenswarm_project_dir", task_workspace)
+||||||| BEFORE_PR_9610
+        self._seed_runtime_cwd(task_cwd, workspace=task_workspace)
+        if runtime_paths is not None and runtime_paths.is_projectless:
+            setattr(self._instance, "_jiuwenswarm_project_dir", task_workspace)
+=======
+        self._seed_runtime_cwd(task_cwd, workspace=task_workspace)
+        # 外部记忆 rail 的 _resolve_project 读这两个属性做 coords.project 路由:
+        # - 非 projectless mode (web/ide 等): task_workspace 来自 runtime_config.workspace /
+        #   project_dir / self._project_dir / 默认会话目录,is_projectless=False → rail 返回
+        #   basename 作为 project(命名空间标识,非路径)。
+        # - projectless mode (SDK 对接 jiuwen-memory): task_workspace 来自 runtime_paths,
+        #   is_projectless 由 resolve_runtime_workspace_paths / resolve_bound_runtime_workspace_paths 决定:
+        #     * 用户传 project_dir → explicit_root 非空 → is_projectless=False → rail 返回 basename
+        #     * 无 project_dir → 分配 chat-<n> 任务目录 → is_projectless=True → rail 返回 None,
+        #       让 jiuwen-memory 内核按 default 空间处理(不做 project 隔离)。
+        # 每轮 _apply_runtime_config_stages 都会刷新,跨轮切换 project 也能即时生效。
+        #
+        # 同步设到内层 ReActAgent: ProgressiveToolRail 的 before_model_call 拿到的
+        # ctx.agent 是 ReActAgent(不是外层 DeepAgent),仅设 DeepAgent 会让第二次
+        # prefetch 拿到 has_attr=False → coords 丢失。
+        project_dir_str = task_workspace
+        is_projectless = bool(
+            runtime_paths is not None
+            and getattr(runtime_paths, "is_projectless", False)
+        )
+        # 外部记忆 rail 经 getattr(ctx.agent, "_jiuwenswarm_project_dir", ...) 读
+        # 这两个属性做 coords.project 路由;真实 DeepAgent/ReActAgent 都带 __dict__,
+        # setattr 必然成功。仅当 _instance 是无法承载实例属性的桩(如纯 object())时
+        # 跳过——这类桩本就不会被 rail 读取,避免拖垮单测桩。
+        if hasattr(self._instance, "__dict__"):
+            setattr(self._instance, "_jiuwenswarm_project_dir", project_dir_str)
+            setattr(self._instance, "_jiuwenswarm_is_projectless", is_projectless)
+        react_agent = getattr(self._instance, "_react_agent", None)
+        if react_agent is not None and hasattr(react_agent, "__dict__"):
+            setattr(react_agent, "_jiuwenswarm_project_dir", project_dir_str)
+            setattr(react_agent, "_jiuwenswarm_is_projectless", is_projectless)
+>>>>>>> DEVELOP
         resolved_language = self._resolve_runtime_language()
         resolved_channel = (
             str(
@@ -17393,8 +17431,14 @@ class JiuWenSwarmDeepAdapter:
             if permission_rail is not None:
                 cleanup.callback(setattr, permission_rail, "run_permission_levels", previous_rail_levels)
                 permission_rail.run_permission_levels = tool_levels
+<<<<<<< RELEASE
             context_token = CURRENT_RUN_CONTEXT.set(context)
             cleanup.callback(_reset_context_variable, CURRENT_RUN_CONTEXT, context_token)
+||||||| BEFORE_PR_9610
+            context_token = CURRENT_RUN_CONTEXT.set(context)
+            cleanup.callback(CURRENT_RUN_CONTEXT.reset, context_token)
+=======
+>>>>>>> DEVELOP
             run_permissions_token = RUN_PERMISSIONS.set(tool_levels)
             cleanup.callback(_reset_context_variable, RUN_PERMISSIONS, run_permissions_token)
             runtime_mode = str(request_params.get("mode") or "agent").strip().lower()
@@ -17505,8 +17549,14 @@ class JiuWenSwarmDeepAdapter:
         """Bind trusted host identity and command execution for one request."""
         async with self._permission_request_admission(request, inputs):
             self.validate_auto_permission_workspace_request(request)
+<<<<<<< RELEASE
             from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
             from jiuwenswarm.server.runtime.session.history_context import history_context_scope
+||||||| BEFORE_PR_9610
+            from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
+=======
+            from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
+>>>>>>> DEVELOP
 
             with self._bind_permission_request_context(request), history_context_scope(
                 request.session_id or "default", request_id=request.request_id,
@@ -18218,8 +18268,14 @@ class JiuWenSwarmDeepAdapter:
         """Bind trusted host identity and command execution for one stream."""
         async with self._permission_request_admission(request, inputs):
             self.validate_auto_permission_workspace_request(request)
+<<<<<<< RELEASE
             from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
             from jiuwenswarm.server.runtime.session.history_context import history_context_scope
+||||||| BEFORE_PR_9610
+            from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
+=======
+            from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
+>>>>>>> DEVELOP
 
             with self._bind_permission_request_context(request), history_context_scope(
                 request.session_id or "default", request_id=request.request_id,

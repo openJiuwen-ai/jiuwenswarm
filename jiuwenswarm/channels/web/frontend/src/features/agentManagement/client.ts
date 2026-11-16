@@ -129,6 +129,7 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
     source: 'live',
     async listCatalog(options: AgentCatalogListOptions = {}) {
       try {
+<<<<<<< RELEASE
         const payload = await requestEquipmentList<RawAgentListPayload & { cache?: CatalogCacheMetadata }>(
           webRequest,
           'agent_templates.list',
@@ -139,6 +140,34 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
           },
           { preferCache: !options.query },
         );
+||||||| BEFORE_PR_9610
+        const payload = await requestEquipmentList<RawAgentListPayload & { cache?: CatalogCacheMetadata }>(
+          webRequest,
+          'agent_templates.list',
+          {
+            ...(options.filter ? { filter: options.filter } : {}),
+            ...(options.includeTeamCompatibility ? { include_team_compatibility: true } : {}),
+            ...(options.query ? { query: options.query } : {}),
+          },
+          !options.query,
+        );
+=======
+        const params = {
+          ...(options.filter ? { filter: options.filter } : {}),
+          ...(options.includeTeamCompatibility ? { include_team_compatibility: true } : {}),
+          ...(options.query ? { query: options.query } : {}),
+        };
+        const loadCatalog = () =>
+          requestEquipmentList<RawAgentListPayload & { cache?: CatalogCacheMetadata }>(
+            webRequest,
+            'agent_templates.list',
+            params,
+            !options.query,
+          );
+        const payload = isEnterprise()
+          ? await retryWhilePodStarting(loadCatalog, { onWaiting: options.onPodStarting })
+          : await loadCatalog();
+>>>>>>> DEVELOP
 
         const items = (payload.templates || []).map((item) =>
           normalizeAgentTemplateListItem(item, getAgentManagementLocale()),

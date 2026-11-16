@@ -272,6 +272,7 @@ http2_submodules = [
 ]
 
 # 部分包需要显式声明隐藏导入
+<<<<<<< RELEASE
 hiddenimports = webview_hiddenimports + http2_submodules + [
     "jiuwenswarm.channels.cli.extension",  # Shared extension command in frozen subprocesses.
     "jiuwenswarm.common.extension_cli",
@@ -279,6 +280,29 @@ hiddenimports = webview_hiddenimports + http2_submodules + [
     # and import this module, so it never appears in the entry point's import
     # graph. Keep it explicit or frozen builds fail to activate such packages.
     "jiuwenswarm.gateway.extensions_v2.webui.ops",
+||||||| BEFORE_PR_9610
+hiddenimports = webview_hiddenimports + http2_submodules + [
+=======
+lazy_runtime_submodules = []
+for lazy_package in (
+    "agent_gateway",
+    "jiuwenswarm.agents.harness.common.auto_harness",
+    "jiuwenswarm.agents.harness.common.tools",
+    "jiuwenswarm.agents.harness.common.rails",
+    "jiuwenswarm.common.auth",
+    "jiuwenswarm.agents.swarm",
+    "jiuwenswarm.server.client_attachments",
+    # An app template's rail file imports its rail (jiuwenswarm.office.rails) at load time.
+    "jiuwenswarm.office",
+):
+    lazy_runtime_submodules += collect_submodules(lazy_package)
+
+hiddenimports = lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdown"] + webview_hiddenimports + http2_submodules + [
+    "jiuwenswarm.server.jiuwenmate.agent_mail_local_provider",
+    "jiuwenswarm.server.jiuwenmate.dingtalk_cli_local_provider",
+    # Full-duplex Python sources load by path, outside the static import graph.
+    "jiuwenswarm.common.asr_client",
+>>>>>>> DEVELOP
     "matplotlib",  # 论文 reporting 阶段生成结果图
     "pandas",  # pymilvus 依赖
     # ``--doctor`` imports these targets dynamically before business imports.
@@ -309,9 +333,18 @@ hiddenimports = webview_hiddenimports + http2_submodules + [
     "dotenv",
     "webview",
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
+<<<<<<< RELEASE
     "jiuwenswarm.channels.web.desktop_app",  # 桌面入口
     "jiuwenswarm.common.system_plugin_recovery_sidecar",
 ] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + team_kv_cache_hiddenimports + dispatch_submodules
+||||||| BEFORE_PR_9610
+    "jiuwenswarm.channels.web.desktop_app",  # 桌面入口
+] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + team_kv_cache_hiddenimports + dispatch_submodules
+=======
+    "jiuwenswarm.channels.desktop.desktop_app",  # 桌面入口
+] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + cli_channel_submodules
+hiddenimports += gateway_submodules
+>>>>>>> DEVELOP
 
 # 排除不需要的模块以减小体积（pandas 为 pymilvus/openjiuwen 所需，不可排除）
 excludes = [

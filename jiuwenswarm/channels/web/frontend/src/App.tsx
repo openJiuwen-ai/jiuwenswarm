@@ -1,6 +1,11 @@
+<<<<<<< RELEASE
 import { ApplicationConversationRuntimes } from './applicationPlugins/ApplicationConversationRuntimes';
 import { gatewayFetch } from './services/gatewayFetch';
 import { browserClientCapabilities } from './features/webui/client/browserClient';
+||||||| BEFORE_PR_9610
+import { ApplicationConversationRuntimes } from './applicationPlugins/ApplicationConversationRuntimes';
+=======
+>>>>>>> DEVELOP
 import { isConversationModelGroupBlocked } from './multi-session/state/conversationModelSelection';
 import { HistoryRefreshQueue } from './features/historyRefreshQueue';
 import {
@@ -140,8 +145,13 @@ import {
   usePersonalContextStore,
 } from './stores';
 import { useChatRoute } from './multi-session/routing/useChatRoute';
+<<<<<<< RELEASE
 import { ApplicationPresentationHost } from './features/webui/presentation/ApplicationPresentationHost';
 import type { PresentationConversation } from './features/webui/presentation/protocol';
+||||||| BEFORE_PR_9610
+=======
+import { chatRoutePath } from './multi-session/routing/route';
+>>>>>>> DEVELOP
 import { ConversationSidebar, type NewConversationOptions } from './multi-session/sidebar/ConversationSidebar';
 import {
   NEW_CONVERSATION_ID,
@@ -516,9 +526,30 @@ function AppContent({
   const [diagnosisUiRequested, setDiagnosisUiRequested] = useState(false);
 
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
+<<<<<<< RELEASE
   const [webUIPage, setWebUIPage] = useState<WebUIPageTarget | null>(null);
   // peek 内点击“新建实验”时递增：跳转实验页后自动打开创建对话框；handleNavigate 统一归零防重挂载误触发
   const [rsiOpenCreateNonce, setRsiOpenCreateNonce] = useState(0);
+||||||| BEFORE_PR_9610
+  // peek 内点击“新建实验”时递增：跳转实验页后自动打开创建对话框；handleNavigate 统一归零防重挂载误触发
+  const [rsiOpenCreateNonce, setRsiOpenCreateNonce] = useState(0);
+=======
+  const [isJiuwenMate, setIsJiuwenMate] = useState(() => {
+    try {
+      return window.localStorage.getItem('jiuwenswarm:jiuwenmate-mode') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('jiuwenswarm:jiuwenmate-mode', String(isJiuwenMate));
+    } catch {
+      // Keep the mode switch usable when browser storage is unavailable.
+    }
+  }, [isJiuwenMate]);
+  const openInstalledExpertRef = useRef<(packageName: string) => void>(() => {});
+>>>>>>> DEVELOP
   const masterEnabled = usePersonalContextStore(
     (s) => s.config.collection_enabled || s.config.agent_use_enabled,
   );
@@ -789,9 +820,14 @@ function AppContent({
       setTeamAreaExpanded(false);
       setSingleAgentPanelExpanded(false);
       setToolPanelHidden(true);
+<<<<<<< RELEASE
     } else if (route.kind === 'system-plugin-recovery') {
       setRequestedSettingsModuleId('systemPluginRecovery');
       setActiveNav('settings');
+||||||| BEFORE_PR_9610
+=======
+      return () => { cancelled = true; };
+>>>>>>> DEVELOP
     } else if (route.kind === 'chat-new') {
       if (window.location.pathname !== '/chat/new') {
         navigate({ kind: 'chat-new' }, { replace: true });
@@ -1928,12 +1964,22 @@ function AppContent({
       const response = await request<Session>('session.get_metadata', {
         session_id: targetSessionId,
       });
+<<<<<<< RELEASE
       if (contextEpoch !== browserClientCapabilities.getEpoch()) return null;
       const {
         queued_session_messages: queuedMessages,
         can_continue_queued_session_messages: canContinueQueuedMessages,
         ...session
       } = response;
+||||||| BEFORE_PR_9610
+      const {
+        queued_session_messages: queuedMessages,
+        can_continue_queued_session_messages: canContinueQueuedMessages,
+        ...session
+      } = response;
+=======
+      const { queued_session_messages: queuedMessages, can_continue_queued_session_messages: canContinueQueuedMessages, ...session } = response;
+>>>>>>> DEVELOP
       if ((session as unknown as Record<string, unknown>).archived === true) {
         if (sessionIdRef.current === targetSessionId) {
           navigate({ kind: 'chat-new' }, { replace: true });
@@ -2476,6 +2522,7 @@ function AppContent({
   }, [clearProactiveToastTimer, clearRestartAutoCloseTimer, clearSaveToastTimer]);
 
   useEffect(() => {
+<<<<<<< RELEASE
     const message = proactiveNotificationMessage?.trim();
     if (!message) return;
     setProactiveToastMessage(message);
@@ -2492,20 +2539,52 @@ function AppContent({
   useEffect(() => {
     if (!isConnected) {
       configInitializationRef.current = null;
+||||||| BEFORE_PR_9610
+    const message = proactiveNotificationMessage?.trim();
+    if (!message) return;
+    setProactiveToastMessage(message);
+    setProactiveToastVisible(true);
+    clearProactiveToastTimer();
+    proactiveToastTimerRef.current = window.setTimeout(() => {
+      setProactiveToastVisible(false);
+      setProactiveNotification(null);
+      proactiveToastTimerRef.current = null;
+    }, 8000);
+  }, [clearProactiveToastTimer, proactiveNotificationMessage, setProactiveNotification]);
+
+  const configFetchedForConnectionRef = useRef(false);
+  useEffect(() => {
+    if (!isConnected) {
+      configFetchedForConnectionRef.current = false;
+=======
+    if (!isConnected || initialDataLoaded) {
+>>>>>>> DEVELOP
       return;
     }
+<<<<<<< RELEASE
     if (!clientRequestContextReady) return;
     const contextEpoch = browserClientCapabilities.getEpoch();
     const initialization = configInitializationRef.current;
     const pending = initialization?.context === clientRequestContext ? initialization.pending : fetchConfig();
     configInitializationRef.current = { context: clientRequestContext, pending };
     let cancelled = false;
+||||||| BEFORE_PR_9610
+    if (configFetchedForConnectionRef.current) return;
+    configFetchedForConnectionRef.current = true;
+=======
+>>>>>>> DEVELOP
     void (async () => {
       await pending;
       if (!cancelled && contextEpoch === browserClientCapabilities.getEpoch()) setInitialDataLoaded(true);
     })();
+<<<<<<< RELEASE
     return () => { cancelled = true; };
   }, [clientRequestContext, clientRequestContextReady, fetchConfig, isConnected]);
+||||||| BEFORE_PR_9610
+  }, [fetchConfig, isConnected]);
+=======
+  }, [fetchConfig, initialDataLoaded, isConnected]);
+>>>>>>> DEVELOP
 
   const initialProjectsLoadedRef = useRef(false);
 
@@ -2536,8 +2615,25 @@ function AppContent({
   }, [clientRequestContext, clientRequestContextReady, initialDataLoaded, isConnected, loadProjects]);
 
   useEffect(() => {
+<<<<<<< RELEASE
     setMissingSessionId(null);
     if (!isConnected || !routeSessionId || !clientRequestContextReady) return;
+||||||| BEFORE_PR_9610
+    if (!isConnected || !routeSessionId) {
+      setMissingSessionId(null);
+      return;
+    }
+=======
+    const reconnected = isConnected && prevConnectedRef.current === false;
+    prevConnectedRef.current = isConnected;
+    if (!isConnected || !routeSessionId) {
+      setMissingSessionId(null);
+      return;
+    }
+    if (reconnected) {
+      metadataDowngradeAllowedRef.current.add(routeSessionId);
+    }
+>>>>>>> DEVELOP
     void loadSessionMetadata(routeSessionId);
   }, [clientRequestContext, clientRequestContextReady, isConnected, loadSessionMetadata, routeSessionId]);
 
@@ -2604,8 +2700,16 @@ function AppContent({
 
   // 当会话 ID 变化或页面加载时，自动加载历史会话
   useEffect(() => {
+<<<<<<< RELEASE
     if (!isConnected || !clientRequestContextReady || !sessionId || sessionId === NEW_CONVERSATION_ID) return;
     const contextEpoch = browserClientCapabilities.getEpoch();
+||||||| BEFORE_PR_9610
+    if (!isConnected || !sessionId || sessionId === NEW_CONVERSATION_ID) return;
+=======
+    // The canvas restores its own director history through DesignerPage.
+    if (route.kind === 'design-project') return;
+    if (!isConnected || !sessionId || sessionId === NEW_CONVERSATION_ID) return;
+>>>>>>> DEVELOP
     const forceRefresh = forcedHistoryRefreshRef.current.delete(sessionId);
     
     if (!forceRefresh && sessionIdsCreatedInThisPageRef.current.has(sessionId)) {
@@ -2705,7 +2809,13 @@ function AppContent({
         limit: 50,
       }),
       onReady: (messages, cursorMeta) => {
+<<<<<<< RELEASE
         if (cancelled || contextEpoch !== browserClientCapabilities.getEpoch()) return;
+||||||| BEFORE_PR_9610
+=======
+        const seed = pendingCronUserSeedsRef.current.get(sessionId);
+        pendingCronUserSeedsRef.current.delete(sessionId);
+>>>>>>> DEVELOP
         historyRestoreFromPanelHintRef.current = false;
         // "目标完成"回显消息纯前端合成，从未写进后端 session 历史，history.get 拉回来的
         // messages 里不会有它——按时间戳把本地持久化的记录补回去，见
@@ -3423,9 +3533,21 @@ function AppContent({
 
   const handleSendMessage = useCallback(async (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => {
     const currentSessionId = sessionIdRef.current;
+<<<<<<< RELEASE
     if (!currentSessionId) return false;
     if (options?.queuedTaskId) {
       return sendMessage(content, currentSessionId, mediaItems, options);
+||||||| BEFORE_PR_9610
+    if (!currentSessionId) return;
+    if (options?.queuedTaskId) {
+      await sendMessage(content, currentSessionId, mediaItems, options);
+      return;
+=======
+    if (!currentSessionId) return;
+    if (options && 'queuedTaskId' in options) {
+      await sendMessage(content, currentSessionId, mediaItems, options);
+      return;
+>>>>>>> DEVELOP
     }
     const currentState = useSessionStore.getState();
     const currentRuntime = currentState.getRuntime(currentSessionId);
@@ -3478,7 +3600,16 @@ function AppContent({
             projectId: created.projectId,
             sessionId: created.sessionId,
           });
+<<<<<<< RELEASE
           return true;
+||||||| BEFORE_PR_9610
+=======
+          if (!store.expandedProjectIds[created.projectId]) {
+            store.toggleProjectExpanded(created.projectId);
+          }
+          await store.loadProjects();
+          await store.loadProjectSessions(created.projectId);
+>>>>>>> DEVELOP
         } catch (error) {
           const code = error instanceof Error ? error.message : '';
           const referenceError = code === 'image_limit'
@@ -3523,6 +3654,7 @@ function AppContent({
           pendingNewAgentGroupBinding,
         );
       }
+<<<<<<< RELEASE
       const baseWorkContext = getWorkContextForSession(NEW_CONVERSATION_ID);
       const preservedProject = newConversationProjectRef.current;
       const workContext = {
@@ -3531,6 +3663,17 @@ function AppContent({
         work_mode: baseWorkContext.work_mode,
       };
       let accepted: boolean | undefined;
+||||||| BEFORE_PR_9610
+      const baseWorkContext = getWorkContextForSession(NEW_CONVERSATION_ID);
+      const preservedProject = newConversationProjectRef.current;
+      const workContext = {
+        project_id: baseWorkContext.project_id || preservedProject?.project_id,
+        project_dir: baseWorkContext.project_dir || preservedProject?.project_dir,
+        work_mode: baseWorkContext.work_mode,
+      };
+=======
+      const workContext = getWorkContextForSession(NEW_CONVERSATION_ID);
+>>>>>>> DEVELOP
       try {
         const createParams: Record<string, unknown> = {
           create_token: generateUuidV4(),
@@ -3657,10 +3800,20 @@ function AppContent({
           queueOrAddGoalObjectiveMessage(newSid, messageContent);
           setGoalObjective(newSid, messageContent);
         } else {
+<<<<<<< RELEASE
           const sent = await sendMessage(messageContent, newSid, mediaItems);
           accepted = sent;
           if (!sent) {
             useChatStore.getState().setInputValue(newSid, messageContent);
+||||||| BEFORE_PR_9610
+          const sent = await sendMessage(messageContent, newSid, mediaItems);
+          if (!sent) {
+            useChatStore.getState().setInputValue(newSid, messageContent);
+=======
+          chatSent = await sendMessage(messageContent, newSid, mediaItems, undefined, provenance);
+          if (chatSent !== true) {
+            restoreUnsentInput(newSid, messageContent);
+>>>>>>> DEVELOP
           }
         }
         newConversationProjectRef.current = null;
@@ -3691,8 +3844,15 @@ function AppContent({
     } else {
       useChatStore.getState().setInputValue(currentSessionId, content);
     }
+<<<<<<< RELEASE
     return sent;
   }, [disposeInFlightHistoryHandles, mode, navigate, request, sendMessage, setGoalObjective, t]);
+||||||| BEFORE_PR_9610
+  }, [disposeInFlightHistoryHandles, mode, navigate, request, sendMessage, setGoalObjective, t]);
+=======
+    return sent === true ? currentSessionId : undefined;
+  }, [disposeInFlightHistoryHandles, mode, navigate, request, route.kind, sendMessage, setGoalObjective, t]);
+>>>>>>> DEVELOP
 
   const handlePersistMedia = useCallback((content: string, mediaItems: MediaItem[]) => {
     const currentSessionId = sessionIdRef.current;
@@ -4509,6 +4669,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
     };
   }, [clearChatPanelResize, showWorkspaceDivider]);
 
+<<<<<<< RELEASE
   useEffect(() => {
     if (webUIPage && webUIPage.scope !== 'application' && webUIPage.sessionId !== sessionId) {
       setWebUIPage(null);
@@ -4526,6 +4687,161 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
       </div>
     ) : null;
 
+||||||| BEFORE_PR_9610
+=======
+  const promptSuggestionSessionId = useChatStore((s) => s.activeSessionId);
+  const hasSuggestionConversation = useChatStore((s) => {
+    const runtime = s.runtimes[s.activeSessionId ?? ''];
+    return Boolean(runtime && (runtime.isLoadingHistory || runtime.historyPagerMeta
+      || runtime.messages.length || runtime.toolExecutionOrder.length));
+  });
+  const promptSuggestionBox = usePromptSuggestionBox(promptSuggestionSessionId, hasSuggestionConversation, activeNav === 'chat');
+  useEffect(() => {
+    promptSuggestionBox.setEnabled(normalizeConfigBoolean(serverConfig?.prompt_suggestion_enabled));
+  }, [promptSuggestionBox.setEnabled, serverConfig?.prompt_suggestion_enabled]);
+  const renderJiuwenMateExistingPage = (nav: JiuwenMateExistingPage) => {
+    if (nav === 'agents') {
+      return (
+        <div className="app-section min-h-0">
+          <AgentManagementPanel
+            isActive
+            onUseAgent={(packageName) => openInstalledExpertRef.current(packageName)}
+            onUsePrompt={handleUseAgentPrompt}
+            onUseAgentGroup={(groupId) => {
+              setIsJiuwenMate(false);
+              handleUseAgentGroup(groupId);
+            }}
+            onUseGroupPrompt={(groupId, prompt) => {
+              setIsJiuwenMate(false);
+              handleUseGroupPrompt(groupId, prompt);
+            }}
+            onCreateViaChat={() => {
+              setIsJiuwenMate(false);
+              requestSessionNavigation('new', {
+                initialInputValue: t('agentManagement.actions.createViaChatPrompt'),
+                initialSelectedSkills: ['agent-creator'],
+              });
+            }}
+            onCreateGroupViaChat={() => {
+              setIsJiuwenMate(false);
+              requestSessionNavigation('new', {
+                initialInputValue: t('agentManagement.group.actions.createViaChatPrompt'),
+                initialSelectedSkills: ['agent-group-creator'],
+                forceMode: 'agent',
+              });
+            }}
+            navigationRequest={agentManagementNavigationRequest}
+          />
+        </div>
+      );
+    }
+    if (nav === 'personalContext') {
+      if (!FEATURE_PERSONAL_CONTEXT_UI) return null;
+      return (
+        <div className="app-section">
+          <PersonalContextPanel isConnected={isConnected} isActive />
+        </div>
+      );
+    }
+    if (nav === 'skills') {
+      return (
+        <div className="app-section">
+          <SkillPanel
+            sessionId={sessionId}
+            isConnected={isConnected}
+            isActive
+            symphonyEnabled={normalizeConfigBoolean(serverConfig?.symphony_enabled)}
+            onSymphonyEnabledChange={saveSymphonyEnabled}
+            onNavigateToSettings={() => requestSettingsModule('agent')}
+          />
+        </div>
+      );
+    }
+    if (nav === 'connectorMarket') {
+      return (
+        <div className="app-page-body">
+          <div className="page-content">
+            <ConnectorMarketPanel
+              onCreateViaChat={() => window.dispatchEvent(new CustomEvent('jiuwen:new-conversation', {
+                detail: {
+                  skillName: 'plugin-creator',
+                  suffixText: t('connectorMarket.chatPrompts.createPlugin'),
+                  metadata: { scene: 'create_plugin' },
+                },
+              }))}
+              onUseExample={(initialInputValue, mcpName, displayName) =>
+                requestSessionNavigation('new', {
+                  initialInputValue,
+                  initialEnabledMcps: [mcpName],
+                  forceMode: 'agent',
+                  metadata: { prefer_mcp: { id: mcpName, display_name: displayName ?? mcpName } },
+                })
+              }
+              onUsePluginExample={(initialInputValue, pluginId) =>
+                requestSessionNavigation('new', { initialInputValue, initialEnabledPlugins: [pluginId], forceMode: 'agent' })
+              }
+              onUseExtension={({ kind, id }) =>
+                requestSessionNavigation(
+                  'new',
+                  kind === 'plugin'
+                    ? { initialEnabledPlugins: [id], forceMode: 'agent' }
+                    : { initialEnabledMcps: [id], forceMode: 'agent' },
+                )
+              }
+            />
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="app-section">
+        <SettingsPage
+          definition={settingsPageDefinition}
+          isConnected={isConnected}
+          connectionState={connectionState}
+          request={settingsRequest}
+          onHasChangesChange={handleSettingsHasChangesChange}
+          onDetectExternalCli={detectExternalCli}
+          onSelectExternalCliPath={selectExternalCliPath}
+          onTrackExternalCliDependencyInstalls={trackExternalCliDependencyInstalls}
+          externalCliInstallStatuses={externalCliInstallStatuses}
+          onGetExternalCliInstallStatus={getExternalCliDependencyInstallStatus}
+          onExternalCliInstallStatusChange={updateExternalCliInstallStatus}
+          externalCliPendingChoices={externalCliPendingChoices}
+          onExternalCliPendingChoicesChange={setExternalCliPendingChoices}
+          externalCliDetectResults={externalCliDetectResults}
+          onExternalCliDetectResultsChange={setExternalCliDetectResults}
+          initialModuleId={requestedSettingsModuleId ?? undefined}
+        />
+      </div>
+    );
+  };
+
+  if (isJiuwenMate) {
+    return (
+      <>
+        <JiuwenMateApp
+          onExit={() => {
+            setIsJiuwenMate(false);
+            if (route.kind === 'group-chat') navigate({ kind: 'chat-new' });
+          }}
+          groupId={route.kind === 'group-chat' ? route.groupId : undefined}
+          onSelectGroup={(groupId) => navigate(groupId ? { kind: 'group-chat', groupId } : { kind: 'chat-new' })}
+          renderExistingPage={renderJiuwenMateExistingPage}
+          useInstalledExpertRef={openInstalledExpertRef}
+          confirmDiscardSettings={() => {
+            if (!settingsHasChangesRef.current) return true;
+            if (!window.confirm(t('settingsPanel.dialog.discardConfirm'))) return false;
+            setRequestedSettingsModuleId(null);
+            return true;
+          }}
+        />
+        <LoginDialog />
+      </>
+    );
+  }
+
+>>>>>>> DEVELOP
   return (
     <WebUISlotProvider
       sessionId={sessionId && sessionId !== NEW_CONVERSATION_ID ? sessionId : null}

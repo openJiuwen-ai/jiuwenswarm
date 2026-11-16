@@ -975,7 +975,13 @@ export function AssetPublishHost() {
         if (!value) return;
         const saved = JSON.parse(value);
         if (
+<<<<<<< RELEASE
           ['skill', 'agent_template', 'agent_group', 'plugin', 'mcp', 'system_plugin'].includes(saved.reference?.kind) &&
+||||||| BEFORE_PR_9610
+          ['skill', 'agent_template', 'agent_group', 'plugin', 'mcp'].includes(saved.reference?.kind) &&
+=======
+          ['skill', 'skillpack', 'agent_template', 'agent_group', 'plugin', 'mcp'].includes(saved.reference?.kind) &&
+>>>>>>> DEVELOP
           typeof saved.reference?.local_id === 'string'
         )
           setSelection(saved);

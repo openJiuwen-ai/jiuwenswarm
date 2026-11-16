@@ -238,6 +238,7 @@ def _minimal_history_record_for_wire(record: dict[str, Any]) -> dict[str, Any]:
     return minimal
 
 
+<<<<<<< RELEASE
 def is_restorable_history_record(record: Any) -> bool:
     """Return whether a stored record belongs in the public main transcript."""
     if not isinstance(record, dict):
@@ -261,6 +262,24 @@ def is_restorable_history_record(record: Any) -> bool:
     return has_content if not event_type else event_type in _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES
 
 
+||||||| BEFORE_PR_9610
+=======
+def _restore_mcp_app_block(original: dict[str, Any], sanitized: dict[str, Any]) -> None:
+    """Keep an MCP App tool result (``raw_output.mcp_app``) byte-for-byte.
+
+    The app's ``structuredContent`` is data the app parses; depth/list/string
+    truncation would hand it values like ``"<truncated>"`` where it expects
+    numbers and crash it on history restore. The per-record size budget below
+    still applies: an oversized record collapses and drops the block entirely.
+    """
+    raw_output = original.get("raw_output")
+    block = raw_output.get("mcp_app") if isinstance(raw_output, dict) else None
+    sanitized_raw = sanitized.get("raw_output")
+    if isinstance(block, dict) and isinstance(sanitized_raw, dict):
+        sanitized_raw["mcp_app"] = block
+
+
+>>>>>>> DEVELOP
 def _sanitize_history_record_for_wire(record: Any) -> dict[str, Any]:
     """Sanitize one history record, collapsing if it exceeds the per-record budget."""
     if not isinstance(record, dict):

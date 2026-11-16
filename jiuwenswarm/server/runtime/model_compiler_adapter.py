@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from jiuwenswarm.common.model_errors import MODEL_RUNTIME_UNAVAILABLE, ModelSelectionError
+<<<<<<< RELEASE
 from jiuwenswarm.common.model_selection import ResolvedModel, ResolvedModelGroup, ResolvedSelection
 from jiuwenswarm.common.reasoning_injector import inject_reasoning_params
 
@@ -19,6 +20,10 @@ def _core_model_data(model: ResolvedModel) -> dict[str, Any]:
     data = model.model_dump()
     data["request_defaults"] = _core_request_config(model.request_defaults)
     return data
+||||||| BEFORE_PR_9610
+from jiuwenswarm.common.model_selection import ResolvedModel, ResolvedModelGroup, ResolvedSelection
+=======
+>>>>>>> DEVELOP
 
 
 def compile_model_selection(resolved: ResolvedSelection) -> Any:
