@@ -660,7 +660,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if outer_host is None:
             self._write_proxy_error(400, "invalid Host header")
             return
-        parsed = urlparse(self.api_target)
+        parsed = urlparse(target or self.api_target)
         if parsed.scheme == "https":
             ssl_ctx = None if _get_ssl_verify() else _get_insecure_ssl_context()
             conn: http.client.HTTPConnection = http.client.HTTPSConnection(
@@ -691,6 +691,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 if normalized_key in self._HOP_BY_HOP_HEADERS:
                     continue
                 if normalized_key == "host":
+                    continue
+                if login_surface and normalized_key == "x-jiuwen-web-surface":
                     continue
                 if normalized_key in self._UNTRUSTED_FORWARDED_HOST_HEADERS:
                     continue
@@ -727,6 +729,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 if key.lower() in self._HOP_BY_HOP_HEADERS:
                     continue
                 self.send_header(key, value)
+            if streaming:
+                self.close_connection = True
+                self.send_header("Connection", "close")
             self.end_headers()
             headers_sent = True
             if streaming:
