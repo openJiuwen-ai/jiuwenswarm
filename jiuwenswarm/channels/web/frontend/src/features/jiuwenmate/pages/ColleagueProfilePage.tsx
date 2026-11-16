@@ -66,7 +66,8 @@ import {
   mergeDailyActivity,
   minutesSince,
   responseAge,
-  usageChange,
+  periodUsage,
+  weeklyUsageChange,
 } from '../officeState';
 import type {
   JiuwenMateActivityHistoryItem,
@@ -1034,8 +1035,9 @@ function ProfileOverview({
   const [hoveredCellId, setHoveredCellId] = useState<string | null>(null);
   const year = today.getFullYear();
   const days = activity?.days ?? [];
-  const usage = usageChange(days, period, today);
-  const percent = usage.percent === null ? '—' : `${usage.percent}%`;
+  const tokens = periodUsage(days, period, today);
+  const change = weeklyUsageChange(days, today);
+  const percent = change === null ? '—' : `${change}%`;
   const daily = useMemo(() => mergeDailyActivity(activity ? [activity] : []), [activity]);
   const heatmap = useMemo(() => halfYearHeatmap(year, half, daily), [year, half, daily]);
   const taskKinds = tasksInHalf(activity?.kinds ?? [], year, half);
@@ -1055,7 +1057,7 @@ function ProfileOverview({
       value: (
         <>
           {percent}
-          {usage.percent !== null && usage.percent > 0 ? <ArrowUp aria-hidden className="jiuwenmate-trend-up" /> : null}
+          {change !== null && change > 0 ? <ArrowUp aria-hidden className="jiuwenmate-trend-up" /> : null}
         </>
       ),
       icon: ChartLine,
@@ -1064,7 +1066,7 @@ function ProfileOverview({
       key: 'resources',
       value: (
         <>
-          {formatSummaryTokens(usage.tokens)}
+          {formatSummaryTokens(tokens)}
           <small>tokens</small>
         </>
       ),
