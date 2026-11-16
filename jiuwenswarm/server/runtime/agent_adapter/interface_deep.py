@@ -11408,11 +11408,11 @@ class JiuWenSwarmDeepAdapter:
     def _jiuwen_memory_media_globals(self, config: dict[str, Any]) -> dict[str, Any]:
         workspace = getattr(self, "_memory_media_workspace", None)
         upload_root = getattr(self, "_memory_media_upload_root", None)
-        if (
-            (not workspace and upload_root is None)
-            or getattr(self._sys_operation_card, "mode", None) != OperationMode.LOCAL
-            or get_jiuwen_builtin_mode(config) != "sdk"
-        ):
+        if not workspace and upload_root is None:
+            return {}
+        if getattr(self._sys_operation_card, "mode", None) != OperationMode.LOCAL:
+            return {}
+        if get_jiuwen_builtin_mode(config) != "sdk":
             return {}
 
         runtime_config = self._config_base_cache or {}
