@@ -22,6 +22,8 @@ import { filterPublishedHistoryBatch } from '../../features/historyPagination';
 import { projectTimelineItems, type TimelineDisplayItem } from '../../features/chatTimeline/projectTimelineItems';
 import { VirtualTimeline, type TimelineViewportState } from './VirtualTimeline';
 import { TimelineRowStateProvider, useTimelineRowState } from './timelineRowState';
+import { EMPTY_APPLICATION_TASKS, useApplicationTaskStore } from '../../applicationPlugins/taskProgressStore';
+import { taskTimelineClock, type TaskTimelineClock } from '../../applicationPlugins/taskTimelineClock';
 import {
   buildTimelineItems,
   buildRenderItems,
@@ -286,6 +288,8 @@ function CompletedWorkChip({
   showAvatar,
   teamLayout,
   elapsedMs = 0,
+  taskClock,
+  startMs = 0,
   agentTemplateName,
   teamLeaderIdentity,
   teamGroupIdentity,
@@ -299,16 +303,22 @@ function CompletedWorkChip({
   showAvatar: boolean;
   teamLayout: boolean;
   elapsedMs?: number;
+  taskClock?: TaskTimelineClock;
+  startMs?: number;
   agentTemplateName?: string;
   teamLeaderIdentity?: TeamLeaderIdentity | null;
   teamGroupIdentity?: AgentGroupIdentity | null;
 }) {
   const { t } = useTranslation();
+  const now = useNow(Boolean(taskClock?.active));
+  const displayElapsed = taskClock?.active
+    ? Math.max(elapsedMs, now - startMs)
+    : taskClock?.endMs ? Math.max(elapsedMs, taskClock.endMs - startMs) : elapsedMs;
   // 耗时并入 turn 折叠条文案（原底部 TurnElapsed 已移除），位置唯一不再打架。
   const label =
     variant === 'turn'
-      ? elapsedMs > 0
-        ? `${t('chatUi.turnElapsed')} ${formatDurationPrecise(elapsedMs)}`
+      ? displayElapsed > 0
+        ? `${t('chatUi.turnElapsed')} ${taskClock?.active ? formatElapsedCoarse(displayElapsed) : formatDurationPrecise(displayElapsed)}`
         : t('chatUi.workCompletedFallback')
       : formatStreakSummaryLabel(t, thinkingCount, toolCount, outcomeTone);
   // 图标统一用 frame-time 时钟资源，状态色仍由 is-success/is-partial/is-error 通过 currentColor 区分。
@@ -569,6 +579,8 @@ export function ChatTimelineList({
     (s) => s.runtimes[conversationId]?.reasoningSegments ?? EMPTY_REASONING,
   );
   const isProcessing = staticTimeline ? false : storeIsProcessing;
+  const applicationTasks = useApplicationTaskStore(state =>
+    staticTimeline ? EMPTY_APPLICATION_TASKS : state.sessions[sessionId ?? conversationId ?? ''] ?? EMPTY_APPLICATION_TASKS);
   const allReasoningSegments = reasoningSegmentsProp ?? (staticTimeline ? EMPTY_REASONING : storeReasoningSegments);
   const publishedBatchSeq = staticTimeline
     ? Number.MAX_SAFE_INTEGER
@@ -621,6 +633,18 @@ export function ChatTimelineList({
   const settleNow = useNow(settlingForStreak);
   const streakNowMs = settlingForStreak ? settleNow : Date.now();
   const turnWorkMeta = useMemo(() => buildTurnWorkMeta(renderItems, isProcessing), [renderItems, isProcessing]);
+  const taskClocks = useMemo(() => {
+    const summaries = renderItems.filter(item => item.type === 'turnSummary');
+    const clocks = new Map<number, TaskTimelineClock>();
+    summaries.forEach((summary, index) => {
+      const ids = renderItems.flatMap(item => item.type === 'toolGroup' && item.turnId === summary.turnId
+        ? item.executions.map(execution => execution.toolCall.id) : []);
+      const clock = taskTimelineClock(applicationTasks, summary.startMs,
+        summaries[index + 1]?.startMs ?? Number.POSITIVE_INFINITY, ids);
+      if (clock) clocks.set(summary.turnId, clock);
+    });
+    return clocks;
+  }, [applicationTasks, renderItems]);
   const turnFoldAnchorKeys = useMemo(
     () => buildTurnFoldAnchorKeys(renderItems, turnWorkMeta),
     [renderItems, turnWorkMeta],
@@ -753,6 +777,8 @@ export function ChatTimelineList({
       expanded={Boolean(expandedTurns[turnKey])}
       onToggle={() => toggleTurn(turnKey)}
       elapsedMs={completedWorkDurationMs(meta)}
+      startMs={turnElapsedRangeMs(meta).startMs}
+      taskClock={taskClocks.get(meta.turnId)}
       showAvatar
       teamLayout={isTeamMode}
       agentTemplateName={agentTemplateNameByTurn.get(meta.turnId)}

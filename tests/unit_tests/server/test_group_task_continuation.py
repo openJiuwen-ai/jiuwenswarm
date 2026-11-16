@@ -1,6 +1,7 @@
 """Private-team background ownership, interaction, continuation and provenance."""
 
 import asyncio
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -989,7 +990,11 @@ async def test_idle_after_the_reminder_falls_back_to_the_reply_with_output_files
         outputs = tmp_path / "outputs"
         outputs.mkdir()
         gc._private_runs[key]["outputs_dir"] = str(outputs)
-        (outputs / "note.md").write_text("deliverable", encoding="utf-8")
+        output = outputs / "note.md"
+        output.write_text("deliverable", encoding="utf-8")
+        # File-system timestamps can lag the wall clock used for the run start.
+        written_at = gc._private_runs[key]["started_at"] + 1
+        os.utime(output, (written_at, written_at))
         assert (await gc.BeginTeamTask(key).invoke({"execution_id": execution_id})).success
         yield _leader("llm_output", content="Interim note.")
         yield IDLE
