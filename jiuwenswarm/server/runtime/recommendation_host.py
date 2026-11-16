@@ -262,6 +262,13 @@ class RecommendationHost:
         service = self.topic_service
         if service is None:
             return
+        from jiuwenswarm.agents.harness.common.recommendation.topic_history import (
+            clear_session_window_cache,
+        )
+
+        # The turn that just completed may belong to a session the cached window
+        # predates; the next scan must enumerate it rather than reuse that window.
+        clear_session_window_cache()
         from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
             normalize_topic_work_mode,
             scope_for_project,

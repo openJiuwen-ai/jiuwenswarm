@@ -291,6 +291,10 @@ class TopicService:
                     self._ark_config = self._config_loader()
                     self._configuration_status = background_configuration_status(self._ark_config)
                 self._accepting_work = True
+                from .topic_history import clear_session_window_cache
+
+                # Seed every scope from one fresh enumeration, not one per scope.
+                clear_session_window_cache()
                 self.schedule_seed("recommendation-enabled")
             return self.configuration_status()
 
@@ -1116,6 +1120,12 @@ class TopicService:
         answered: str,
     ) -> str:
         normalized_work_mode = normalize_topic_work_mode(work_mode)
+        # The model is the first gate: without it no pool can be written, so
+        # loading history would only delay the state the page is about to
+        # receive. Returning here keeps the usual report path, which still
+        # publishes "missing_configuration" to the page.
+        if self._ark_config is None:
+            return "missing_configuration"
         input_revision = await asyncio.to_thread(
             self._input_revision_loader, context_scope, normalized_work_mode,
         )

@@ -187,7 +187,7 @@ from jiuwenswarm.server.runtime.session.session_history import (
     project_completed_session_records,
 )
 from jiuwenswarm.server.runtime.session.session_metadata import (
-    get_all_sessions_metadata,
+    get_session_metadata,
 )
 
 SESSION_SUMMARY_CONFIG_VERSION = "topic-starter-v6-session-summary-api-v10"
@@ -271,7 +271,9 @@ _SUMMARY_BATCH_CONCURRENCY = 3
 # Only conversations completed inside this window, newest first, are summarized:
 # older ones survive through Memory, not through a session summary.
 _SUMMARY_SESSION_WINDOW_SECONDS = 90 * 24 * 60 * 60
-_SUMMARY_SESSION_LIMIT = 50
+# RID consumes at most ``_RID_SESSION_SUMMARY_LIMIT`` summaries per run, so
+# summarizing more only precomputes summaries this run cannot use.
+_SUMMARY_SESSION_LIMIT = 30
 # RID reads a bounded slice of the summaries; the short-delta sessions are always kept.
 _RID_SESSION_SUMMARY_LIMIT = 30
 _RID_FEEDBACK_MESSAGE_CHARS = 800
@@ -3993,7 +3995,11 @@ def _default_context_snapshot(
         **raw_state_receipt,
         "negative_preference_version": negative_preference_version,
     }
-    metadata, _ = get_all_sessions_metadata(limit=1_000_000, offset=0)
+    metadata = []
+    for session_id in records:
+        item = get_session_metadata(str(session_id), enable_writeback=False)
+        item.setdefault("session_id", str(session_id))
+        metadata.append(item)
     project_by_session = {
         str(item.get("session_id") or ""): (str(item.get("project_id") or "") or None)
         for item in metadata
@@ -4797,20 +4803,21 @@ class TopicPipeline:
         project_id_for_scope(context_scope)
         normalized_work_mode = normalize_topic_work_mode(work_mode)
         records = self.completed_records_loader()
-        metadata, _ = get_all_sessions_metadata(limit=1_000_000, offset=0)
-        project_by_session = {
-            str(item.get("session_id") or ""): (
-                str(item.get("project_id") or "") or None
+        # Only the loaded window can contribute; read metadata for those
+        # sessions instead of materialising every visible session.
+        metadata_by_session = {
+            str(session_id): get_session_metadata(
+                str(session_id), enable_writeback=False,
             )
-            for item in metadata
-            if str(item.get("session_id") or "")
+            for session_id in records
+        }
+        project_by_session = {
+            session_id: (str(item.get("project_id") or "") or None)
+            for session_id, item in metadata_by_session.items()
         }
         work_mode_by_session = {
-            str(item.get("session_id") or ""): normalize_topic_work_mode(
-                item.get("work_mode")
-            )
-            for item in metadata
-            if str(item.get("session_id") or "")
+            session_id: normalize_topic_work_mode(item.get("work_mode"))
+            for session_id, item in metadata_by_session.items()
         }
         revision: list[object] = []
         deprojected_project_revisions: list[str] = []
@@ -4895,15 +4902,20 @@ class TopicPipeline:
             now=now,
             records_loader=lambda: records,
         )
-        metadata, _ = await asyncio.to_thread(
-            get_all_sessions_metadata, limit=1_000_000, offset=0
-        )
-        project_by_session = {
-            str(item.get("session_id") or ""): (
-                str(item.get("project_id") or "") or None
-            )
-            for item in metadata
-        }
+        def read_project_by_session() -> dict[str, str | None]:
+            return {
+                str(session_id): (
+                    str(
+                        get_session_metadata(
+                            str(session_id), enable_writeback=False,
+                        ).get("project_id") or ""
+                    )
+                    or None
+                )
+                for session_id in records
+            }
+
+        project_by_session = await asyncio.to_thread(read_project_by_session)
         mapping = history.state_mapping_entries(inputs.state)
         scoped = [
             behavior
@@ -6032,7 +6044,16 @@ class TopicPipeline:
 
         try:
             records = await asyncio.to_thread(self.completed_records_loader)
-            metadata, _ = await asyncio.to_thread(get_all_sessions_metadata, limit=1_000_000, offset=0)
+
+            def read_metadata() -> list[dict[str, Any]]:
+                items = []
+                for session_id in records:
+                    item = get_session_metadata(str(session_id), enable_writeback=False)
+                    item.setdefault("session_id", str(session_id))
+                    items.append(item)
+                return items
+
+            metadata = await asyncio.to_thread(read_metadata)
             project_by_session = {
                 str(item.get("session_id") or ""): (str(item.get("project_id") or "") or None)
                 for item in metadata
