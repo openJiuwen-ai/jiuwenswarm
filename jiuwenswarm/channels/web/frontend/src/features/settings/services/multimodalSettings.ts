@@ -78,7 +78,7 @@ export type MultimodalSettingsState = {
   snapshot: MultimodalSnapshot | null;
   loading: boolean;
   saving: boolean;
-  error: unknown;
+  error: { source: 'read' | 'write'; cause: unknown } | null;
   lastChange: MultimodalChange | null;
   notice?: { tool: MultimodalCapability } | null;
 };
@@ -106,13 +106,15 @@ export class MultimodalSettingsStore {
   load = (force = false): Promise<void> => {
     if (this.loading && !force) return this.loading;
     const sequence = ++this.readSequence;
-    this.publish({ loading: true, error: null });
+    this.publish({ loading: true, error: force || this.state.error?.source !== 'write' ? null : this.state.error });
     this.loading = this.request<MultimodalSnapshot>('multimodal.models.list', {}, { timeoutMs: 30_000 })
       .then((snapshot) => {
         if (sequence === this.readSequence) this.publish({ snapshot });
       })
       .catch((error: unknown) => {
-        if (sequence === this.readSequence) this.publish({ error });
+        if (sequence === this.readSequence && this.state.error?.source !== 'write') {
+          this.publish({ error: { source: 'read', cause: error } });
+        }
       })
       .finally(() => {
         if (sequence === this.readSequence) {
@@ -135,8 +137,10 @@ export class MultimodalSettingsStore {
     operation: 'models.upsert' | 'models.delete' | 'tools.update' | 'config.apply',
     params: Record<string, unknown>,
   ): Promise<MultimodalChange> {
+    // Starting an already queued write must not clear a previous failure.
+    this.publish({ error: null });
     return this.saveQueue.enqueue(`multimodal.${operation}`, async () => {
-      this.publish({ saving: true, error: null, notice: null });
+      this.publish({ saving: true, notice: null });
       try {
         const result = await this.request<MultimodalChange>(`multimodal.${operation}`, {
           ...params,
@@ -147,7 +151,7 @@ export class MultimodalSettingsStore {
         this.publish({ snapshot: result.snapshot, lastChange: result, loading: false });
         return result;
       } catch (error) {
-        this.publish({ error });
+        this.publish({ error: { source: 'write', cause: error } });
         throw error;
       } finally {
         this.publish({ saving: false });

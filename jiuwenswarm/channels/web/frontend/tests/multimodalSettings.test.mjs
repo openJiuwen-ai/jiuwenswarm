@@ -76,6 +76,8 @@ test('confirmation failure preserves the actual payload and snapshot', async () 
   }, new SettingsSaveQueue());
   await store.load();
   await assert.rejects(store.write('models.delete', { model_id: 'a' }), (actual) => actual === error);
+  assert.equal(store.getSnapshot().error.source, 'write');
+  assert.equal(store.getSnapshot().error.cause, error);
   assert.deepEqual(store.getSnapshot().snapshot, snapshot());
   assert.equal(store.getSnapshot().saving, false);
 });
@@ -93,7 +95,8 @@ test('transport failure keeps the saved snapshot and clears the saving state wit
   await assert.rejects(store.write('models.upsert', { mode: 'create' }), (error) => error === failure);
   assert.deepEqual(store.getSnapshot().snapshot, snapshot());
   assert.equal(store.getSnapshot().saving, false);
-  assert.equal(store.getSnapshot().error, failure);
+  assert.equal(store.getSnapshot().error.source, 'write');
+  assert.equal(store.getSnapshot().error.cause, failure);
   assert.equal(store.getSnapshot().lastChange, null);
   assert.ok(!states.includes('saved'));
 });
@@ -136,4 +139,83 @@ test('each dynamic tool declaration has Chinese and English field titles/descrip
       }
     }
   }
+});
+
+test('automatic reload preserves a write failure until explicit retry or a new save', async () => {
+  const failure = new Error('save failed');
+  let failWrite = true;
+  const store = new MultimodalSettingsStore(async (method) => {
+    if (method.endsWith('.list')) return snapshot();
+    if (failWrite) throw failure;
+    return { saved: true, changed: true, applied_without_restart: true, snapshot: snapshot() };
+  }, new SettingsSaveQueue());
+  await assert.rejects(store.write('tools.update', { tool_id: 'vision', enabled: false }));
+  await store.load();
+  assert.equal(store.getSnapshot().error.source, 'write');
+  assert.equal(store.getSnapshot().error.cause, failure);
+  await store.load(true);
+  assert.equal(store.getSnapshot().error, null);
+  await assert.rejects(store.write('tools.update', { tool_id: 'vision', enabled: false }));
+  failWrite = false;
+  await store.write('tools.update', { tool_id: 'vision', enabled: false });
+  assert.equal(store.getSnapshot().error, null);
+});
+
+test('automatic reads cannot replace a write failure, but explicit retry can report and recover a read failure', async () => {
+  const writeFailure = new Error('save failed');
+  const readFailure = new Error('read failed');
+  let readFails = true;
+  const store = new MultimodalSettingsStore(async (method) => {
+    if (!method.endsWith('.list')) throw writeFailure;
+    if (readFails) throw readFailure;
+    return snapshot();
+  }, new SettingsSaveQueue());
+  await assert.rejects(store.write('tools.update', { tool_id: 'vision', enabled: false }));
+  await store.load();
+  assert.equal(store.getSnapshot().error.source, 'write');
+  assert.equal(store.getSnapshot().error.cause, writeFailure);
+  await store.load(true);
+  assert.equal(store.getSnapshot().error.source, 'read');
+  assert.equal(store.getSnapshot().error.cause, readFailure);
+  readFails = false;
+  await store.load();
+  assert.equal(store.getSnapshot().error, null);
+});
+
+test('a read already in flight cannot clear or replace a newer write failure', async () => {
+  for (const readFails of [false, true]) {
+    const failure = new Error('save failed');
+    let finishRead;
+    const store = new MultimodalSettingsStore(async (method) => {
+      if (!method.endsWith('.list')) throw failure;
+      return new Promise((resolve, reject) => {
+        finishRead = () => readFails ? reject(new Error('read failed')) : resolve(snapshot());
+      });
+    }, new SettingsSaveQueue());
+    const loading = store.load();
+    await assert.rejects(store.write('tools.update', { tool_id: 'vision', enabled: false }));
+    finishRead();
+    await loading;
+    assert.equal(store.getSnapshot().error.source, 'write');
+    assert.equal(store.getSnapshot().error.cause, failure);
+    assert.equal(store.getSnapshot().loading, false);
+  }
+});
+
+test('shortcut notice remains while a write waits and clears when that write starts', async () => {
+  const queue = new SettingsSaveQueue();
+  let release;
+  const blocker = queue.enqueue('other-setting', () => new Promise((resolve) => { release = resolve; }), {
+    successFeedback: false,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const store = new MultimodalSettingsStore(async () => ({
+    saved: true, changed: true, applied_without_restart: true, snapshot: snapshot(),
+  }), queue);
+  store.announceShortcutChange('vision');
+  const write = store.write('tools.update', { tool_id: 'vision', enabled: false });
+  assert.deepEqual(store.getSnapshot().notice, { tool: 'vision' });
+  release();
+  await Promise.all([blocker, write]);
+  assert.equal(store.getSnapshot().notice, null);
 });
