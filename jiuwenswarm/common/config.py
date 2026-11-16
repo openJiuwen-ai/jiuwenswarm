@@ -4239,6 +4239,12 @@ def get_sandbox_endpoint() -> dict[str, Any]:
         for key in _YUANRONG_ENDPOINT_OPTIONAL_KEYS:
             if key in sandbox:
                 result[key] = sandbox[key]
+    # Provider settings are opaque to the application configuration reader.
+    for key in ("image", "rootfs_template", "runtime", "workdir", "mounts", "cpu", "cpu_limit", "memory", "mem_limit",
+                "idle_timeout", "user", "group", "network", "connection", "env", "create_timeout",
+                "schedule_timeout", "endpoint_file", "launcher_config"):
+        if key in sandbox:
+            result[key] = sandbox[key]
     if sandbox_type == "jiuwenbox-conch":
         for key in ("template_name", "user", "group", "conch"):
             if key in sandbox:
