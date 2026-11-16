@@ -340,8 +340,10 @@ export function modelDraftToEntry(
     return applyDraftAffinity(next, draft, existing);
   }
 
-  delete next.vendor_key;
-  delete next.plan;
+  if (draft.vendor_selection === CUSTOM_VENDOR_SELECTION) {
+    delete next.vendor_key;
+    delete next.plan;
+  }
   if (!existing || connectionChanged) {
     next.model_provider = draft.protocol === 'anthropic' ? 'Anthropic' : 'OpenAI';
     delete next.endpoint_profile;
