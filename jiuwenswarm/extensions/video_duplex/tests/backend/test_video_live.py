@@ -38,9 +38,8 @@ from jiuwenswarm.extensions.video_duplex.backend import (
     video_search,
     video_voice,
 )
-
-
 from jiuwenswarm.extensions.video_duplex.backend.video_search import core_agent_progress
+
 
 @pytest.fixture(autouse=True)
 def _isolate_video_mode_environment(monkeypatch) -> None:
@@ -3649,8 +3648,6 @@ async def test_missing_task_recovery_never_discloses_or_changes_another_conversa
 
 
 def test_core_progress_preserves_native_skill_metadata():
-    from jiuwenswarm.extensions.video_duplex.backend.video_search import core_agent_progress
-
     call = {
         "event_type": "chat.tool_call",
         "tool_call": {
