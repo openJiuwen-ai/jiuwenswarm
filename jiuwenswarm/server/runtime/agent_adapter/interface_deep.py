@@ -3603,6 +3603,12 @@ class JiuWenSwarmDeepAdapter:
         # The running round can still retry or make another model call.
         # Leave the pending version unapplied until its execution settles.
         if not permission_delta and adapter._is_session_live(session_id):  # pylint: disable=protected-access
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] lazy session reload deferred while running: "
+                "session_id=%s version=%s",
+                session_id,
+                current_version,
+            )
             return
         try:
             await adapter.reload_agent_config(
@@ -4125,6 +4131,8 @@ class JiuWenSwarmDeepAdapter:
         lock = self._session_adapter_locks.setdefault(sid, asyncio.Lock())
         async with lock:
             existing = self._session_adapters.get(sid)
+            # Goal status observes the installed adapter; execution requests
+            # own cron mode reconciliation and config adoption.
             if (
                 reuse_without_reload
                 and existing is not None

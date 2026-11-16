@@ -1416,6 +1416,31 @@ async def test_goal_get_does_not_apply_pending_session_reload(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_goal_get_checks_cleanup_for_permission_isolated_session(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+
+    parent = JiuWenSwarmDeepAdapter()
+    child = JiuWenSwarmDeepAdapter()
+    child._is_session_scoped_adapter = True
+    child._parent_session_id = "session-a"
+    child._permission_state.permission_isolated = True
+    child._permission_state.permission_cleanup_complete = False
+    cleanup = AsyncMock()
+    get_goal_manager = MagicMock()
+    monkeypatch.setattr(child, "_isolate_permission_instance", cleanup)
+    monkeypatch.setattr(child, "_get_goal_manager", get_goal_manager)
+    parent._session_adapters["session-a"] = child
+
+    with pytest.raises(RuntimeError, match="permission_session_cleanup_pending"):
+        await parent.dispatch_goal_control(action="get", session_id="session-a")
+
+    cleanup.assert_awaited_once()
+    get_goal_manager.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_lazy_reload_waits_until_running_session_settles(monkeypatch):
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
         JiuWenSwarmDeepAdapter,
