@@ -133,6 +133,8 @@
       "videoMissing": "还没有视频生成模型。请在「设置 → 模型 → 多模态」中添加后再使用设计。",
       "imageOff": "图像生成已在「设置 > Agent」中关闭。",
       "imageMissing": "还没有图片生成模型。请在「设置 → 模型 → 多模态」中添加后再使用设计。",
+      "protocolUnsupported": "设计模式不支持 {{protocol}} 协议。",
+      "protocolUnsupportedEmpty": "设计模式不支持未填写协议的生成模型。",
       "lockedHint": "本次设计使用创建时选定的模型，画布上不提供切换模型。",
       "notSelected": "未选择模型",
       "openModelSettings": "去设置"

@@ -133,6 +133,8 @@
       "videoMissing": "No video generation model yet. Add one in Settings → Models → Multimodal before using Design.",
       "imageOff": "Image generation is switched off in Settings > Agent.",
       "imageMissing": "No image generation model yet. Add one in Settings → Models → Multimodal before using Design.",
+      "protocolUnsupported": "Design does not support the {{protocol}} protocol.",
+      "protocolUnsupportedEmpty": "Design does not support a generation model with no protocol.",
       "lockedHint": "This design runs on the model it was started with. Switching the model is not available on the canvas.",
       "notSelected": "No model",
       "openModelSettings": "Open Settings"

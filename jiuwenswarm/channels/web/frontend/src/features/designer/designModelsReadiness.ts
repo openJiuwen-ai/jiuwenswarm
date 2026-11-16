@@ -1,5 +1,5 @@
 // Design gate (frontend-only): a design prompt needs a chat model plus at
-// least one video model and one image model in the multimodal catalogue.
+// least one supported video model and one supported image model.
 // The agent tool switch is ignored. Called from the design-mode entry points,
 // the canvas chat send and single-node regenerate — other modes are untouched.
 
@@ -84,7 +84,7 @@ export async function findDesignRunProblem(nodes: readonly MaybeNode[], graph?: 
 
 /**
  * User-facing problems blocking a design prompt, or null when a chat model
- * and at least one video model and one image model are available.
+ * and at least one supported video model and one supported image model are available.
  * Never throws: a failed catalogue read must not block entry.
  */
 export async function findDesignModelsProblem(): Promise<string | null> {
