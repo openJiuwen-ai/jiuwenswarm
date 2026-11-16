@@ -1561,7 +1561,7 @@ test('SettingRow exposes a business-agnostic subSettings slot for dependent rows
   assert.match(uiComponents, /export \{ CollapsibleText, type CollapsibleTextProps \}/);
   assert.doesNotMatch(settingsComponents, /CollapsibleText/);
   assert.match(itemRenderer, /subSettings=\{[\s\S]*item\.subItems\.items\.map/);
-  assert.match(itemRenderer, /item\.subItems\?\.show === 'always' \|\| checked/);
+  assert.match(itemRenderer, /item\.subItems\?\.show === 'always' \|\| enabled/);
   assert.match(itemRenderer, /item\.subItems\?\.disabled === 'when-parent-unchecked'/);
   assert.match(experimentalDefinition, /show: 'always',[\s\S]*disabled: 'when-parent-unchecked'/);
   assert.doesNotMatch(browserDefinition, /component: 'switch'|key: 'enabled'|subItems:/);
