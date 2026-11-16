@@ -616,6 +616,9 @@ class AgentManager:
                     self._agent_create_params.setdefault("tui", {})[
                         cache_key
                     ] = create_params
+                # 与另两处回插（LRU 驱逐、cleanup_session_runtime）一致：
+                # 补当前时刻时间戳，缺省 0.0 会让失败实例插队到最旧。
+                self._agent_last_used[agent_id] = time.monotonic()
             raise
         else:
             logger.info(

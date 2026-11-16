@@ -470,6 +470,32 @@ async def test_tui_retirement_clears_agent_last_used_entry() -> None:
     assert id(agent) not in manager._agent_last_used
 
 
+@pytest.mark.asyncio
+async def test_tui_retirement_cleanup_failure_restores_lru_timestamp() -> None:
+    manager = AgentManager()
+    agent = _BlockingThenFailingCleanupAgent()
+    cache_key = "agent::/tmp/tui-retire-fail"
+    manager.agents["tui"] = {cache_key: agent}
+    manager._agent_create_params["tui"] = {cache_key: {"mode": "agent"}}
+    manager._agent_last_used[id(agent)] = 1.0
+
+    task = asyncio.create_task(
+        manager.cleanup_session_runtime(
+            channel_id="tui",
+            session_id="tui_retire_fail",
+        )
+    )
+    await agent.cleanup_started.wait()
+    agent.allow_cleanup.set()
+    with pytest.raises(RuntimeError, match="failed for 1 agent"):
+        await asyncio.wait_for(task, timeout=2)
+
+    # 回插须与另两处（LRU 驱逐、cleanup_session_runtime）一致地补时间戳。
+    assert manager.agents["tui"][cache_key] is agent
+    assert manager._agent_create_params["tui"][cache_key] == {"mode": "agent"}
+    assert id(agent) in manager._agent_last_used
+
+
 def _seed_session_agent(
     manager: AgentManager,
     channel_key: str,
