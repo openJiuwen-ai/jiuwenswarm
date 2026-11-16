@@ -442,16 +442,16 @@ async def test_a_visual_review_without_the_requested_slide_s_capture_fails_unrev
     assert vision.requests == []
 
 
-@pytest.mark.parametrize(("replies", "reasons"), [
+@pytest.mark.parametrize(("replies", "reasons", "timeout"), [
     # Either the review deadline or the provider's read timeout can fire first.
-    ([(200, NO_ISSUES_SENTINEL, 2.0)], ("did not answer within", "APITimeoutError: Request timed out")),
-    ([(500, "", 0.0)], ("the vision model (vision-test) failed",)),
-    ([(200, "", 0.0), (200, "  ", 0.0)], ("answered nothing 2 times",)),
+    ([(200, NO_ISSUES_SENTINEL, 2.0)], ("did not answer within", "APITimeoutError: Request timed out"), 0.5),
+    ([(500, "", 0.0)], ("the vision model (vision-test) failed",), 5.0),
+    ([(200, "", 0.0), (200, "  ", 0.0)], ("answered nothing 2 times",), 5.0),
 ], ids=["timeout", "provider-error", "empty-replies"])
 async def test_a_review_that_fails_returns_the_render_without_a_verdict(
-        conversation, attach_pane, vision, monkeypatch, replies, reasons):
+        conversation, attach_pane, vision, monkeypatch, replies, reasons, timeout):
     attach_pane("deck-a", REVIEWING)
-    monkeypatch.setattr(review, "REVIEW_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(review, "REVIEW_TIMEOUT_SECONDS", timeout)
     vision.replies = list(replies)
 
     async with conversation([[_verify()]]) as pane:
