@@ -78,7 +78,10 @@ def manager(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SkillManager:
     return SkillManager()
 
 
-def _post_upload(port: int, filename: str | None, content: bytes = b""):
+def _post_upload(
+    port: int, filename: str | None, content: bytes = b"",
+    *, endpoint: str = "/file-api/skills/upload-temp",
+):
     boundary = "----PackagedSkillUploadBoundary"
     body = (
         f"--{boundary}\r\n"
@@ -98,7 +101,7 @@ def _post_upload(port: int, filename: str | None, content: bytes = b""):
     try:
         connection.request(
             "POST",
-            "/file-api/skills/upload-temp",
+            endpoint,
             body=body,
             headers={"Content-Type": f'multipart/form-data; boundary="{boundary}"'},
         )
@@ -170,3 +173,49 @@ def test_upload_rejects_filename_paths(upload_server, filename):
     assert payload["code"] == "SKILL_UNSAFE_PATH"
     assert "path" not in payload
     assert list(upload_root.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("frontmatter", "member", "expected_code"),
+    [
+        ("name: http-demo\ndescription: >-\n  HTTP skill\n  description", None, None),
+        ("description: demo", None, "SKILL_INVALID_METADATA"),
+        ("name: 42\ndescription: demo", None, "SKILL_INVALID_METADATA"),
+        ("name: http-demo\ndescription: 42", None, "SKILL_INVALID_METADATA"),
+        ("name: http-demo\ndescription: demo", "pkg/evXool.md", "SKILL_UNSAFE_PATH"),
+        ("name: http-demo\ndescription: demo", "../escape.md", "SKILL_UNSAFE_PATH"),
+    ],
+)
+def test_http_import_validates_before_installing(
+    upload_server, manager, monkeypatch, frontmatter, member, expected_code,
+):
+    port, _ = upload_server
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.skill.skills_multipart_http.SkillManager", lambda: manager,
+    )
+    package = io.BytesIO()
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("pkg/SKILL.md", f"\n---\n{frontmatter}\n---\nBody")
+        if member is not None:
+            archive.writestr(member, "unsafe")
+    body = package.getvalue()
+    if member == "pkg/evXool.md":
+        body = body.replace(b"evXool.md", b"ev\x00ool.md")
+    before = {path.relative_to(manager.skills_dir): path.read_bytes()
+              for path in manager.skills_dir.rglob("*") if path.is_file()}
+    before_dirs = set(manager.skills_dir.rglob("*"))
+    status, payload = _post_upload(port, "skill.zip", body, endpoint="/file-api/skills/import")
+    if expected_code is None:
+        assert status == 200, payload
+        assert payload["success"] is True
+        assert payload["skill"]["name"] == "http-demo"
+        assert payload["skill"]["description"] == "HTTP skill description"
+        assert (manager.skills_dir / "http-demo" / "SKILL.md").is_file()
+        state = json.loads((manager.skills_dir / "skills_state.json").read_text(encoding="utf-8"))
+        assert any(item["name"] == "http-demo" for item in state["local_skills"])
+    else:
+        assert status == 400, payload
+        assert payload["code"] == expected_code
+        assert set(manager.skills_dir.rglob("*")) == before_dirs
+        assert {path.relative_to(manager.skills_dir): path.read_bytes()
+                for path in manager.skills_dir.rglob("*") if path.is_file()} == before
