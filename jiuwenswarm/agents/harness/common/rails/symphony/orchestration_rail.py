@@ -1420,8 +1420,8 @@ Skill IDs are sufficient evidence.
 
 Do not call `symphony_compose_graph` for single Skill use, inspection, or
 question, a simple single-Skill command, pure search, listing, comparison, or
-recommendation, or when the user merely mentions a Skill or 技能. Calling
-`skill_index` alone is also not a compose trigger.
+recommendation, or when the user merely mentions a Skill or 技能. Capability
+discovery alone does not trigger composition.
 
 When composition is required, pass only the selected exact Skill IDs as
 `candidate_skill_ids`; never pass all retrieval results. If no candidate is

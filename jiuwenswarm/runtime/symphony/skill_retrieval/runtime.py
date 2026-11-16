@@ -11,6 +11,8 @@ from uuid import uuid4
 
 from openjiuwen.symphony import SymphonyConfig, SymphonyRuntime
 
+from jiuwenswarm.runtime.symphony.capabilities import build_catalog_fingerprints
+
 
 @dataclass
 class _BuildJob:
@@ -65,6 +67,8 @@ class SkillTaxonomyRuntime:
     async def _build(self, job: _BuildJob, force: bool, previous: _BuildJob | None) -> dict[str, Any]:
         def progress(state):
             job.state = dict(state)
+            if job.state.get("status") == "success":
+                job.state["status"] = "running"
 
         try:
             if previous is not None:
@@ -75,6 +79,9 @@ class SkillTaxonomyRuntime:
                 force=force, progress=progress, disabled_capability_ids=self._disabled,
                 source_by_id=self._sources,
             )
+            if result.get("success"):
+                job.state = {**job.state, "status": "running", "stage": "capability_fingerprints"}
+                await build_catalog_fingerprints(self.config, self._model, force=force)
             job.result = result
             job.state = self._runtime.retrieval.status(
                 disabled_capability_ids=self._disabled,
@@ -133,7 +140,7 @@ class SkillTaxonomyRuntime:
                     "error": {"code": "build_id_mismatch"}}
 
         async def cancel_owner():
-            if job.state.get("stage") == "queued":
+            if job.state.get("stage") in {"queued", "capability_fingerprints"}:
                 job.task.cancel()
             else:
                 await job.runtime.retrieval.cancel_build(build_id=active_id or None)

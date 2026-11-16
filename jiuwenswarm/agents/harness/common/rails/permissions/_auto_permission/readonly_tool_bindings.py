@@ -37,7 +37,7 @@ _TIMESTAMP_FUNC = convert_timestamp_to_utc8_time._func  # pylint: disable=protec
 _ACP_DELEGATES = {name: getattr(acp, name) for name in ("read_terminal_output", "wait_for_terminal_exit")}
 _RECALL_DELEGATE = compression_recall.recall_compressed_context
 _SESSION_OBSERVATION_TOOLS = {
-    "tool_search", "skill_index", "list_skill", "get_current_goal", "recall_compressed_context",
+    "tool_search", "capability_search", "list_skill", "get_current_goal", "recall_compressed_context",
 }
 
 
@@ -188,23 +188,26 @@ def _session_observation_binding(invocation, session_id: str, agent) -> bool:
                                ("tool_search", "_render_listing", "_render_schema", "_live_records"))
             and matches_bound_method(tool._func, expected_owner=toolkit, expected_func=ToolRetrievalToolkit.tool_search)
         )
-    if name == "skill_index":
+    if name == "capability_search":
         from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import SkillRetrievalPromptRail
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import SkillRetrievalToolkit
 
+        # Host callbacks for other catalogs follow the ordinary permission route.
+        if invocation.tool_args.get("type", "skill") != "skill":
+            return False
         rail = _owned_rail(agent, SkillRetrievalPromptRail)
         if rail is None:
             return False
         wrapper = rail._source_toolkit
         if type(wrapper) is not SkillRetrievalToolkit or wrapper._session_scope != session_id:
             return False
-        toolkit = wrapper._index_toolkit
+        toolkit = wrapper.session
         if not _methods_match(
-            toolkit, DiscoverySession, ("get_tools", "skill_index", "_execute", "_continue"),
+            toolkit, DiscoverySession, ("get_tools", "capability_search", "_execute", "_continue"),
         ):
             return False
         # The verified public factory supplies the concrete SDK executor without a private-module import.
-        reference = DiscoverySession.get_tools(toolkit)[0]
+        reference, = DiscoverySession.get_tools(toolkit)
         binding = _resolve_owned_readonly_tool(
             invocation, agent, tool_type=type(reference), rail_type=SkillRetrievalPromptRail,
             invoke_func=type(reference).invoke,
@@ -217,7 +220,7 @@ def _session_observation_binding(invocation, session_id: str, agent) -> bool:
             and rail._prompt_skillfs is wrapper._environment
             and toolkit._environment is wrapper._environment and not toolkit._closed
             and matches_bound_method(
-                tool._func, expected_owner=toolkit, expected_func=DiscoverySession.skill_index,
+                tool._func, expected_owner=toolkit, expected_func=DiscoverySession.capability_search,
             )
         )
     if name == "list_skill":

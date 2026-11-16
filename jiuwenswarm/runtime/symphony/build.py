@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from openjiuwen.symphony import FINGERPRINT_ARTIFACT_FILENAME, SymphonyRuntime
+from openjiuwen.symphony import SymphonyRuntime
 from jiuwenswarm.common.symphony_config import SymphonyConfig
 from jiuwenswarm.runtime.symphony.adapter import model_from_config
 from jiuwenswarm.runtime.symphony.llm import LLMConfig, get_llm_token_usage_summary, reset_llm_token_usage
@@ -85,9 +84,6 @@ async def build_graph(config: SymphonyConfig, llm_config: LLMConfig, *, force: b
 
     def prepare_artifact(version_dir: Path):
         # Application metadata is complete before Core atomically publishes the version.
-        source = Path(config.storage.artifact_root) / "cache" / "fingerprints" / FINGERPRINT_ARTIFACT_FILENAME
-        if source.is_file():
-            shutil.copy2(source, version_dir / FINGERPRINT_ARTIFACT_FILENAME)
         (version_dir / "llm_usage.json").write_text(
             json.dumps(get_llm_token_usage_summary(), ensure_ascii=False),
             encoding="utf-8",

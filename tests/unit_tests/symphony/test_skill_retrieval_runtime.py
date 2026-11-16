@@ -62,6 +62,103 @@ async def finished(runtime):
     raise AssertionError("taxonomy task did not finish")
 
 
+@pytest.mark.asyncio
+async def test_capability_search_uses_installed_experts_and_live_mcp_permissions(tmp_path, monkeypatch):
+    from openjiuwen.agent_teams.experts import PackageLocation
+    from openjiuwen.core.foundation.tool import McpServerConfig, ToolCard, ToolExposure
+    from openjiuwen.core.runner import Runner
+    from openjiuwen.core.single_agent.ability_manager import AbilityManager
+    from openjiuwen.symphony import FingerprintArtifactStore
+
+    from jiuwenswarm.agents.harness.common.tools.tool_retrieval_toolkits import ToolRetrievalToolkit
+    from jiuwenswarm.agents.harness.team.experts import JiuwenExpertCatalog
+    from jiuwenswarm.common import config as common_config
+    from jiuwenswarm.common.mcp_package_manifest import McpPackageManifest
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.mcp import registry, state_store
+
+    config = config_for(tmp_path)
+    config["symphony"]["orchestration"] = {"enabled": False}
+    write_skill(tmp_path / "skills", "invoice")
+    expert = tmp_path / "expert"
+    expert.mkdir()
+    (expert / "manifest.json").write_text(json.dumps({
+        "package_type": "agent_template", "name": "invoice", "description": "Reconcile invoices",
+    }))
+
+    async def list_experts(self):
+        return [PackageLocation(name="invoice", path=expert, source="local")]
+
+    async def list_groups(self):
+        return []
+
+    monkeypatch.setattr(JiuwenExpertCatalog, "list_expert_packages", list_experts)
+    monkeypatch.setattr(JiuwenExpertCatalog, "list_group_packages", list_groups)
+    package = McpPackageManifest(
+        root=tmp_path, package_id="office", version="1", name="Office", description="Collaboration suite",
+        integration_type="remote-mcp", integration_file=None, credentials_type="none", credentials_file=None,
+        icon_file=None, skill_dirs=(), server_name="office", server_config=None, raw={},
+    )
+    monkeypatch.setattr(registry, "list_local_packages", lambda: [package])
+    monkeypatch.setattr(common_config, "get_config_yaml_mcp_servers", lambda: [])
+    state = {"mcp": {"office": {"state": "connected"}}}
+    monkeypatch.setattr(state_store, "read_mcp_state", lambda: state)
+    monkeypatch.setattr(state_store, "connected_mcp_skill_dirs", lambda: [])
+
+    policy = load_symphony_config(config)
+    runtime = SkillTaxonomyRuntime(config=policy)
+    runtime.start_build()
+    status = await finished(runtime)
+    assert status["status"] == "success", status
+    fingerprint_root = tmp_path / "runtime" / "cache" / "fingerprints"
+    for directory, kind in ((fingerprint_root, "skill"), (fingerprint_root / "expert", "expert"),
+                            (fingerprint_root / "connector", "connector"), (fingerprint_root / "mcp", "mcp")):
+        assert [item.capability_type for item in FingerprintArtifactStore(directory).read().fingerprints] == [kind]
+
+    manager = AbilityManager()
+    server = McpServerConfig(server_id="office-one", server_name="office", server_path="https://example.test/mcp")
+    card = ToolCard(
+        id="office-one.office.lookup", name="mcp_office_lookup", description="Lookup a customer ledger",
+        exposure=ToolExposure.DEFERRED,
+    )
+    manager.add([server, card, ToolCard(id="tool_search", name="tool_search", description="Find a deferred tool")])
+    monkeypatch.setattr(Runner.resource_mgr, "get_mcp_tool_ids", lambda server_id: [card.id] if server_id == server.server_id else [])
+
+    toolkit = SkillRetrievalToolkit(skill_directories=[str(tmp_path / "skills")], config_base=config)
+    try:
+        adapter = object.__new__(JiuWenSwarmDeepAdapter)
+        adapter._config_base_cache = config
+        adapter._instance = SimpleNamespace(ability_manager=manager)
+        adapter._skill_retrieval_tools_enabled_for_runtime = lambda *_: True
+        adapter._get_or_create_skill_retrieval_toolkit = lambda: toolkit
+        search, = adapter._create_skill_retrieval_tools()
+        assert search.card.name == "capability_search"
+        skill = await search.invoke({"query": "invoice", "type": "skill"})
+        assert skill.detailed_output["observed_skill_ids"] == ["invoice"]
+        experts = await search.invoke({"query": "invoice", "type": "expert"})
+        assert [(hit["type"], hit["id"]) for hit in experts["matches"]] == [("expert", "invoice")]
+        assert experts["matches"][0]["actions"][0]["id"] == "invoice"
+        matches = (await search.invoke({"query": "customer ledger", "type": "connector"}))["matches"]
+        assert [(hit["type"], hit["id"], hit["matched_on"]) for hit in matches] == [("connector", "office", "action")]
+        assert matches[0]["actions"][0]["id"] == card.name
+        matches = (await search.invoke({"query": "customer ledger", "type": "mcp"}))["matches"]
+        assert [hit["type"] for hit in matches] == ["mcp"]
+
+        details = ToolRetrievalToolkit(deferred_tools_provider=adapter._collect_deferred_tool_infos,
+                                       session_scope="fixture")
+        assert json.loads(await details.tool_search(operation="get_schema", tool=card.name))["name"] == card.name
+        manager.set_mcp_tool_allowlist(server, [])
+        assert (await search.invoke({"query": "customer ledger", "type": "connector"}))["matches"] == []
+        with pytest.raises(ValueError, match="not in the deferred catalogue"):
+            await details.tool_search(operation="get_schema", tool=card.name)
+        manager.set_mcp_tool_allowlist(server, None)
+        state["mcp"].clear()
+        assert (await search.invoke({"query": "customer ledger", "type": "connector"}))["matches"] == []
+    finally:
+        await toolkit.aclose()
+        await runtime.cancel()
+
+
 def test_actual_model_supplies_only_missing_context_defaults(tmp_path):
     config = config_for(tmp_path)
     config["symphony"]["retrieval"]["prompt"] = {"candidate_budget_ratio": 0.02}
@@ -70,6 +167,106 @@ def test_actual_model_supplies_only_missing_context_defaults(tmp_path):
     assert settings.prompt.candidate_budget_tokens == 80
     config["symphony"]["retrieval"]["prompt"]["context_window_tokens"] = 10000
     assert build_model_discovery_settings(config, model=Model()).prompt.candidate_budget_tokens == 200
+
+
+@pytest.mark.asyncio
+async def test_mixed_taxonomy_build_and_discovery_use_installed_manifest_paths(tmp_path, monkeypatch):
+    from openjiuwen.core.runner import Runner
+    from openjiuwen.core.single_agent.ability_manager import AbilityManager
+
+    from jiuwenswarm.common import config as common_config
+    from jiuwenswarm.runtime.symphony import service
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+
+    config = config_for(tmp_path, context=100_000)
+    config["symphony"]["retrieval"]["use_existing_index"] = True
+    skills, configured, outside = (tmp_path / name for name in ("skills", "configured-experts", "outside"))
+    write_skill(skills, "ledger")
+
+    def write_expert(root, directory, name, **fields):
+        package = root / directory
+        package.mkdir(parents=True)
+        (package / "manifest.json").write_text(json.dumps({
+            "package_type": "agent_template", "name": name, "description": "Reconcile invoices", **fields,
+        }))
+
+    write_expert(configured, "ledger-package", "ledger")
+    write_expert(configured, "invoice-package", "invoice", runtime={"provider_name": "undeclared-cli"})
+    write_expert(configured, "uninstalled", "uninstalled")
+    write_expert(configured, "duplicate-name", "shadow")
+    write_expert(outside, "shadow", "shadow")
+    write_expert(outside, "outside", "outside")
+    config["symphony"]["capability"]["sources"].append({"type": "expert", "root": str(configured)})
+    marketplace = tmp_path / "marketplace.json"
+
+    def set_installed(*names):
+        marketplace.write_text(json.dumps({"plugins": [{"id": name, "installed": True} for name in names]}))
+
+    set_installed("ledger-package", "invoice-package", "shadow", "outside")
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.experts.catalog.expert_package_roots",
+        lambda _: (marketplace, configured, outside),
+    )
+    monkeypatch.setattr(common_config, "get_config", lambda: config)
+    monkeypatch.setattr(service, "get_swarm_symphony_service", lambda: SimpleNamespace(
+        runtime=lambda: SimpleNamespace(model=None),
+    ))
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.capabilities._service_catalog", lambda: SimpleNamespace(
+        connectors={}, servers={},
+    ))
+    manager = SkillManager(workspace_dir=str(tmp_path))
+    status = await manager.handle_skills_retrieval_status({})
+    assert status["candidate_scale"] == "small" and status["build_supported"]
+    started = await manager.handle_skills_retrieval_index_build({})
+    assert started["success"] and started["background"]
+    runtime = manager._skill_taxonomy_runtime()
+    assert (await finished(runtime))["status"] == "success"
+    status = await manager.handle_skills_retrieval_status({"build_id": started["build_id"]})
+    assert status["fresh"] and status["indexed_count"] == 1
+
+    abilities = AbilityManager()
+    toolkit = SkillRetrievalToolkit(skill_directories=[skills], config_base=config, session_scope="mixed-taxonomy-test")
+    registered_id = None
+    try:
+        adapter = object.__new__(JiuWenSwarmDeepAdapter)
+        adapter._config_base_cache = config
+        adapter._instance = SimpleNamespace(ability_manager=abilities)
+        adapter._skill_retrieval_tools_enabled_for_runtime = lambda *_: True
+        adapter._get_or_create_skill_retrieval_toolkit = lambda: toolkit
+        search, = adapter._create_skill_retrieval_tools()
+        assert search.card.name == "capability_search"
+        Runner.resource_mgr.add_tool(search)
+        registered_id = search.card.id
+        assert Runner.resource_mgr.get_tool(registered_id) is search
+        root = await search.invoke({"type": "expert", "operation": "list"})
+        category, = root["categories"]
+        assert category["count"] == 2
+        queries = ["ledger", "invoice", "invoices"]
+        matched = await search.invoke({"type": "expert", "query": queries, "category": category["category"]})
+        assert {hit["id"]: hit["actions"][0]["id"] for hit in matched["matches"]} == {
+            "ledger": "ledger-package", "invoice": "invoice-package",
+        }
+        profile = toolkit.session_profile()
+        assert is_valid_skill_retrieval_session_profile(profile)
+        assert profile["pinned_index_revision"] == profile["expert_index_snapshot"]["fingerprint"]
+        restored = SkillRetrievalToolkit(skill_directories=[skills], config_base=config, frozen_profile=profile)
+        try:
+            assert (await restored.session.capability_search(type="expert", operation="list"))["categories"] == [category]
+        finally:
+            await restored.aclose()
+
+        page = await search.invoke({"type": "expert", "query": queries, "top_k": 1})
+        set_installed("ledger-package", "shadow", "outside")
+        with pytest.raises(ValueError, match="Expert catalog changed"):
+            await search.invoke({"type": "expert", "cursor": page["next_cursor"]})
+        root = await search.invoke({"type": "expert", "operation": "list"})
+        assert root["categories"][0]["count"] == 1
+    finally:
+        if registered_id is not None:
+            Runner.resource_mgr.remove_tool(registered_id)
+        await toolkit.aclose()
+        await runtime.cancel()
 
 
 def test_status_and_constructor_are_lazy_and_start_requires_host_loop(tmp_path):
@@ -187,7 +384,7 @@ async def test_global_build_excludes_session_overlay_and_session_revision_stays_
         assert toolkit.current_records()[0].source == "installed-local"
         disabled.add("session-only")
         assert set(toolkit.environment.selection_cards()) == {"alpha"}
-        result = await toolkit.skill_index(operation="search", query="Session only")
+        result = await toolkit.session.capability_search(operation="search", query="Session only")
         assert "session-only" not in str(result)
         profile = toolkit.session_profile()
         assert is_valid_skill_retrieval_session_profile(profile)
@@ -196,7 +393,7 @@ async def test_global_build_excludes_session_overlay_and_session_revision_stays_
         if new_toolkit is not None:
             await new_toolkit.aclose()
     with pytest.raises(RuntimeError, match="closed"):
-        await toolkit.skill_index(operation="list")
+        await toolkit.session.capability_search(operation="list")
     assert not model.closed and not host_model.closed
 
 
@@ -315,6 +512,7 @@ async def test_manager_build_status_and_search_use_configured_global_collection(
     ))
     status = await manager.handle_skills_retrieval_status({})
     assert status["enabled"] and status["build_supported"]
+    assert status["tool_name"] == "capability_search"
     assert status["installed_count"] == 1 and status["installed_enabled_count"] == 1
     started = await manager.handle_skills_retrieval_index_build({})
     assert started["success"] and started["background"] and started["build_id"]
@@ -394,7 +592,7 @@ async def test_adapter_disabled_tools_are_closed_and_joined_during_cleanup(tmp_p
     adapter._sync_skill_retrieval_tools_for_runtime(config)
     assert adapter._skill_retrieval_toolkit is None
     with pytest.raises(RuntimeError, match="closed"):
-        await toolkit.skill_index(operation="list")
+        await toolkit.session.capability_search(operation="list")
     await adapter.cleanup()
     assert toolkit._close_task.done()
     assert adapter._retired_skill_retrieval_toolkits == []
@@ -552,8 +750,8 @@ async def test_team_discovery_execution_and_seed_recovery_share_workspace_skills
     try:
         assert {item.worker_id for item in toolkit.current_records()} == {"installed"}
         search, = build_skill_retrieval({}, ctx)
-        assert search.card.name == "skill_index"
-        result = await search.invoke({"operation": "list"})
+        assert search.card.name == "capability_search"
+        result = await search.invoke({"type": "skill", "operation": "list"})
         assert result.detailed_output["observed_skill_ids"] == ["installed"]
         register_swarm_providers()
         spec = build_member_deep_agent_spec(config, "team", "teammate", DeepAgentSpec())
@@ -572,7 +770,7 @@ async def test_team_discovery_execution_and_seed_recovery_share_workspace_skills
             "skill_configs": {"installed": {"enabled": False}},
         }))
         assert toolkit.current_records() == ()
-        result = await search.invoke({"operation": "list"})
+        result = await search.invoke({"type": "skill", "operation": "list"})
         assert result.detailed_output["observed_skill_ids"] == []
         await execution.reload_skills()
         assert execution.get_skills_for_session() == []

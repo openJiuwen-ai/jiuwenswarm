@@ -96,7 +96,7 @@ register(['fetch_webpage', 'mcp_fetch_webpage'], {
   iconKey: 'fetch',
 });
 // 技能检索归「查看技能」动作
-register(['skill_index', 'search_skill'], {
+register(['search_skill'], {
   category: 'search',
   actionKey: 'chatUi.toolAction.skill',
   iconKey: 'skill',

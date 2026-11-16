@@ -1,4 +1,4 @@
-"""JiuwenSwarm adaptation for Symphony's DCI-compatible Skill discovery."""
+"""JiuwenSwarm adaptation for Symphony's session capability discovery."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from openjiuwen.core.foundation.tool import Tool
-from openjiuwen.symphony import SymphonyRuntime
+from openjiuwen.symphony import DiscoverySession, SymphonyRuntime
 from openjiuwen.symphony.config import RetrievalConfig
 from openjiuwen.symphony.discovery import (
     SkillFS,
@@ -24,7 +24,7 @@ from openjiuwen.symphony.discovery import (
 
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.context_window import resolve_context_window_tokens
-from jiuwenswarm.common.symphony_config import load_symphony_config
+from jiuwenswarm.common.symphony_config import configured_skill_roots, load_symphony_config
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +129,16 @@ def is_valid_skill_retrieval_session_profile(
     if _snapshot_from_profile(profile) is None:
         return False
     raw_index_snapshot = profile.get("index_snapshot")
+    expert_snapshot = profile.get("expert_index_snapshot")
+    if expert_snapshot is not None:
+        try:
+            expert = SkillIndexSnapshot.from_dict(expert_snapshot)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if not isinstance(profile.get("expert_taxonomy_root"), str):
+            return False
+        if raw_index_snapshot is not None and expert.fingerprint != profile.get("pinned_index_revision"):
+            return False
     if raw_index_snapshot is None:
         return not str(profile.get("pinned_index_revision") or "")
     try:
@@ -211,13 +221,17 @@ def build_model_discovery_settings(config_base: dict[str, Any] | None = None, *,
 
 
 def skill_retrieval_artifact_root(config_base: dict[str, Any] | None = None) -> Path:
-    return Path(load_symphony_config(_config(config_base)).storage.artifact_root) / "tree"
+    return SymphonyRuntime(None, load_symphony_config(_config(config_base))).retrieval.artifact_root
+
+
+def disabled_skills_from_directories(directories: Sequence[Path]) -> list[str]:
+    from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
+
+    return sorted({name for root in directories for name in load_execution_disabled_skills(skills_dir=root)})
 
 
 class SkillRetrievalToolkit:
-    """Share a Core DiscoverySession between the Skill tool and prompt rail."""
-
-    TOOL_NAME = "skill_index"
+    """Share one Core DiscoverySession between capability search and the Skill prompt."""
 
     def __init__(self, *, skill_directories: SkillDirectoriesProvider,
                  disabled_skills: DisabledSkillsProvider = None, source_by_name: SkillSourcesProvider = None,
@@ -232,8 +246,10 @@ class SkillRetrievalToolkit:
         self._source_by_name = source_by_name
         self._session_scope = session_scope
         self._runtime = SymphonyRuntime(model, self._config)
+        self._has_expert_sources = any(source.type == "expert" for source in self._config.capability.sources)
         self._close_task: asyncio.Task | None = None
         self._closed = False
+        self._ability_manager: Callable[[], Any] | None = None
         if frozen_profile is not None and not is_valid_skill_retrieval_session_profile(frozen_profile):
             logger.warning("Ignoring invalid persisted Skill retrieval profile")
             frozen_profile = None
@@ -249,25 +265,33 @@ class SkillRetrievalToolkit:
             session_scope=session_scope, capability_directories=skill_directories,
             visible_capability_ids=visible_skill_names, disabled_capability_ids=disabled_skills,
             source_by_id=source_by_name, config=flat_config,
+            search_catalog=self._search_catalog, expert_candidates=self._expert_candidates,
         )
         flat_snapshot = self._probe_session.environment.prompt_snapshot(refresh=False)
         baseline = restored_snapshot or flat_snapshot
         self._candidate_scale = "small" if baseline.all_candidates_included else "large"
         self._estimated_candidate_tokens = baseline.estimated_candidate_tokens
         self._candidate_budget_tokens = baseline.candidate_budget_tokens
-        consume_index = self._candidate_scale == "large" and self._index_enabled
+        consume_index = self._index_enabled and (self._candidate_scale == "large" or self._has_expert_sources)
         self._settings = configured.model_copy(update={"use_existing_index": consume_index})
         if consume_index:
-            pinned = {"pinned_index_snapshot": restored_index} if frozen_profile is not None else {}
+            pinned = {}
+            if frozen_profile is not None:
+                pinned["pinned_index_snapshot"] = restored_index
+                pinned["pinned_expert_index_snapshot"] = (
+                    frozen_profile.get("expert_index_snapshot")
+                    if frozen_profile.get("expert_taxonomy_root") == str(self._runtime.retrieval.artifact_root)
+                    else None
+                )
             self._session = self._runtime.retrieval.create_session(
                 session_scope=session_scope, capability_directories=skill_directories,
                 visible_capability_ids=visible_skill_names, disabled_capability_ids=disabled_skills,
-                source_by_id=source_by_name, config=self._settings, pin_index_revision=True, **pinned,
+                source_by_id=source_by_name, config=self._settings, pin_index_revision=True,
+                search_catalog=self._search_catalog, expert_candidates=self._expert_candidates, **pinned,
             )
         else:
             self._session = self._probe_session
         self._environment = self._session.environment
-        self._index_toolkit = self._session
         self._frozen_prompt_snapshot = restored_snapshot or self._environment.prompt_snapshot(refresh=False)
         restored_cards = frozen_profile.get("selection_cards") if frozen_profile is not None else None
         self._frozen_selection_cards = (
@@ -279,11 +303,11 @@ class SkillRetrievalToolkit:
             layout=self._environment.artifact.layout, index_state=self._frozen_prompt_snapshot.index_state,
         )
         self._auto_build_result: dict[str, Any] | None = None
-        if auto_build_index and consume_index:
+        if auto_build_index and consume_index and self._candidate_scale == "large":
             self._start_background_index_build()
 
     @property
-    def session(self):
+    def session(self) -> DiscoverySession:
         return self._session
 
     @property
@@ -332,7 +356,7 @@ class SkillRetrievalToolkit:
 
     def session_profile(self) -> dict[str, Any]:
         pinned = self._environment.pinned_index_snapshot
-        return {
+        profile = {
             "schema_version": SKILL_RETRIEVAL_SESSION_PROFILE_VERSION,
             "session_id": self._session_scope, "enabled": self._config.retrieval.enabled,
             "index_enabled": self._index_enabled, "candidate_scale": self._candidate_scale,
@@ -348,15 +372,35 @@ class SkillRetrievalToolkit:
             "prompt_snapshot": asdict(self._frozen_prompt_snapshot),
             "index_snapshot": pinned.to_dict() if pinned is not None else None,
         }
+        if self._has_expert_sources:
+            expert = self._session.pinned_expert_index_snapshot
+            profile["expert_taxonomy_root"] = str(self._runtime.retrieval.artifact_root)
+            profile["expert_index_snapshot"] = expert.to_dict() if expert is not None else None
+        return profile
 
     def current_records(self) -> tuple[SkillRecord, ...]:
         return self._session.records()
 
-    async def skill_index(self, **kwargs: Any):
-        return await self._session.skill_index(**kwargs)
+    def bind_ability_manager(self, provider: Callable[[], Any]) -> None:
+        self._ability_manager = provider
 
     def get_tools(self) -> list[Tool]:
-        return list(self._session.get_tools())
+        tool, = self._session.get_tools()
+        tool.card.description += (
+            " Expert search reads the installed catalog. Use returned expert references when spawn_expert is available."
+        )
+        return [tool]
+
+    async def _search_catalog(self, kind: str, query: str, top_k: int) -> dict[str, Any]:
+        from jiuwenswarm.runtime.symphony.capabilities import search_catalog
+
+        manager = self._ability_manager() if self._ability_manager is not None else None
+        return await search_catalog(self._config, self._environment, manager, kind, query, top_k)
+
+    async def _expert_candidates(self):
+        from jiuwenswarm.runtime.symphony.capabilities import expert_candidates
+
+        return await expert_candidates(self._config)
 
     def _start_background_index_build(self) -> None:
         from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
@@ -376,13 +420,11 @@ class SkillRetrievalToolkit:
                                            "data": {"state": "failed"}}
                 logger.warning("Unable to resolve the host model for Skill taxonomy: %s", exc)
                 return
-        from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
-
-        root = self._config.capability.require_single_source().root
+        roots = configured_skill_roots(self._config)
         runtime = SkillTaxonomyRuntime(
             config=self._config, model=model,
-            disabled_capability_ids=lambda: load_execution_disabled_skills(skills_dir=root),
-            source_by_id=lambda: skill_sources_from_directories([root]),
+            disabled_capability_ids=lambda: disabled_skills_from_directories(roots),
+            source_by_id=lambda: skill_sources_from_directories(roots),
         )
         if runtime.status().get("fresh"):
             return

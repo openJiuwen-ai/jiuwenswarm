@@ -45,6 +45,17 @@ def load_symphony_config(
     return symphony_config_from_dict(config.get("symphony", {}), context_window_tokens=context_window_tokens)
 
 
+def configured_skill_roots(config: SymphonyConfig) -> tuple[Path, ...]:
+    return tuple(dict.fromkeys(Path(source.root) for source in config.capability.sources if source.type == "skill"))
+
+
+def require_graph_skill_root(config: SymphonyConfig) -> Path:
+    roots = configured_skill_roots(config)
+    if len(roots) != 1:
+        raise ValueError("Symphony orchestration requires exactly one skill capability source")
+    return roots[0]
+
+
 def symphony_config_from_dict(
     raw: dict[str, Any] | None,
     *,

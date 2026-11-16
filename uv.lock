@@ -17,11 +17,11 @@ resolution-markers = [
 [manifest]
 overrides = [
     { name = "e2a", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=e2a&rev=defa6d8d8904eb3272a58fa0ad13f94f7adb4a51" },
-    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f5ecfd7435400fafc4e4b4d399c921a134c4358c" },
-    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f5ecfd7435400fafc4e4b4d399c921a134c4358c" },
-    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f5ecfd7435400fafc4e4b4d399c921a134c4358c" },
-    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f5ecfd7435400fafc4e4b4d399c921a134c4358c" },
-    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f5ecfd7435400fafc4e4b4d399c921a134c4358c" },
+    { name = "openjiuwen", git = "https://gitcode.com/lin-xiaoyu/agent-core.git?rev=0aa106bfc204fd3e24b5fc892c730a5f1d679187" },
+    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/lin-xiaoyu/agent-core.git?rev=0aa106bfc204fd3e24b5fc892c730a5f1d679187" },
+    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/lin-xiaoyu/agent-core.git?rev=0aa106bfc204fd3e24b5fc892c730a5f1d679187" },
+    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/lin-xiaoyu/agent-core.git?rev=0aa106bfc204fd3e24b5fc892c730a5f1d679187" },
+    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/lin-xiaoyu/agent-core.git?rev=0aa106bfc204fd3e24b5fc892c730a5f1d679187" },
 ]
 
 [[package]]
@@ -3905,7 +3905,7 @@ wheels = [
 [[package]]
 name = "openjiuwen"
 version = "0.1.20"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f5ecfd7435400fafc4e4b4d399c921a134c4358c#f5ecfd7435400fafc4e4b4d399c921a134c4358c" }
+source = { git = "https://gitcode.com/lin-xiaoyu/agent-core.git?rev=0aa106bfc204fd3e24b5fc892c730a5f1d679187#0aa106bfc204fd3e24b5fc892c730a5f1d679187" }
 dependencies = [
     { name = "agentdescent" },
     { name = "aiofiles" },
@@ -7555,12 +7555,12 @@ requires-dist = [
     { name = "mutagen", specifier = ">=1.47.0,<2" },
     { name = "mutagen", marker = "extra == 'harmony'", specifier = ">=1.47.0" },
     { name = "numpy", specifier = ">=1.24.0,<3" },
-    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f5ecfd7435400fafc4e4b4d399c921a134c4358c" },
-    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f5ecfd7435400fafc4e4b4d399c921a134c4358c" },
-    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f5ecfd7435400fafc4e4b4d399c921a134c4358c" },
-    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f5ecfd7435400fafc4e4b4d399c921a134c4358c" },
-    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f5ecfd7435400fafc4e4b4d399c921a134c4358c" },
-    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f5ecfd7435400fafc4e4b4d399c921a134c4358c" },
+    { name = "openjiuwen", git = "https://gitcode.com/lin-xiaoyu/agent-core.git?rev=0aa106bfc204fd3e24b5fc892c730a5f1d679187" },
+    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/lin-xiaoyu/agent-core.git?rev=0aa106bfc204fd3e24b5fc892c730a5f1d679187" },
+    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/lin-xiaoyu/agent-core.git?rev=0aa106bfc204fd3e24b5fc892c730a5f1d679187" },
+    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/lin-xiaoyu/agent-core.git?rev=0aa106bfc204fd3e24b5fc892c730a5f1d679187" },
+    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/lin-xiaoyu/agent-core.git?rev=0aa106bfc204fd3e24b5fc892c730a5f1d679187" },
+    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/lin-xiaoyu/agent-core.git?rev=0aa106bfc204fd3e24b5fc892c730a5f1d679187" },
     { name = "openjiuwen-computeruse", git = "https://gitcode.com/openJiuwen/computer-use.git?rev=2c8171fb6783dba589dd396263b3161186c5f3e4" },
     { name = "openjiuwen-runtime-foundation", git = "https://gitcode.com/openJiuwen/agent-runtime.git?subdirectory=foundation&branch=develop" },
     { name = "opentelemetry-api", specifier = ">=1.45.1,<2" },

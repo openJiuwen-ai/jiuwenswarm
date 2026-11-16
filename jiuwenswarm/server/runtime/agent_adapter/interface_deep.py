@@ -668,6 +668,7 @@ from jiuwenswarm.agents.harness.common.tools import (
     is_skill_retrieval_enabled,
     SymphonyToolkit,
 )
+from openjiuwen.symphony.discovery import CAPABILITY_SEARCH_TOOL_NAME
 from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
     SKILL_RETRIEVAL_SESSION_PROFILE_VERSION, skill_sources_from_directories,
 )
@@ -998,11 +999,6 @@ _ACP_BLOCKED_DEFAULT_TOOL_NAMES = frozenset(
         "edit_file",
         "bash",
         "code",
-    }
-)
-_SKILL_RETRIEVAL_TOOL_NAMES = frozenset(
-    {
-        "skill_index",
     }
 )
 _TOOL_RETRIEVAL_TOOL_NAMES = frozenset(
@@ -7641,13 +7637,16 @@ class JiuWenSwarmDeepAdapter:
                 )
 
     def _create_skill_retrieval_tools(self) -> list[Any]:
-        """Create the session-local installed-Skill reference directory tool."""
+        """Create the session's capability search tool."""
         if not self._skill_retrieval_tools_enabled_for_runtime(
             self._config_base_cache
         ):
             logger.info("[JiuWenSwarmDeepAdapter] SkillRetrievalToolkit skipped: disabled")
             return []
         skill_retrieval_toolkit = self._get_or_create_skill_retrieval_toolkit()
+        skill_retrieval_toolkit.bind_ability_manager(
+            lambda: getattr(getattr(self, "_instance", None), "ability_manager", None)
+        )
         tools = skill_retrieval_toolkit.get_tools()
         logger.info(
             "[JiuWenSwarmDeepAdapter] SkillRetrievalToolkit built: tools=%s",
@@ -7795,7 +7794,7 @@ class JiuWenSwarmDeepAdapter:
                 self._retired_skill_retrieval_toolkits = retired
             self._skill_retrieval_toolkit = None
             self._skill_retrieval_environment = None
-            self._drop_tool_names_from_runtime(_SKILL_RETRIEVAL_TOOL_NAMES)
+            self._drop_tool_names_from_runtime({CAPABILITY_SEARCH_TOOL_NAME})
 
     def _collect_deferred_tool_infos(self, cards: Any = None) -> list[ToolInfo]:
         """Project deferred tool cards into retrieval ToolInfos.
@@ -7811,12 +7810,21 @@ class JiuWenSwarmDeepAdapter:
 
         infos: list[ToolInfo] = []
         source_cards: list[Any]
+        mcp_prefixes: tuple[str, ...] = ()
+        live_mcp_ids: set[str] = set()
         instance = getattr(self, "_instance", None)
         ability_manager = getattr(instance, "ability_manager", None) if instance is not None else None
         list_abilities = getattr(ability_manager, "list", None)
         if callable(list_abilities):
             try:
-                source_cards = [c for c in (list_abilities() or []) if isinstance(c, ToolCard)]
+                abilities = list_abilities() or []
+                source_cards = [c for c in abilities if isinstance(c, ToolCard)]
+                mcp_prefixes = tuple(
+                    f"{server.server_id}.{server.server_name}." for server in abilities
+                    if isinstance(server, McpServerConfig)
+                )
+                if mcp_prefixes:
+                    live_mcp_ids = {card.id for _, card in ability_manager.registered_mcp_tool_cards()}
             except Exception:
                 source_cards = list(cards) if cards is not None else list(self._tool_cards or [])
         else:
@@ -7833,6 +7841,9 @@ class JiuWenSwarmDeepAdapter:
         for card in source_cards:
             name = str(getattr(card, "name", "") or "").strip()
             if not name or name == "tool_search":
+                continue
+            card_id = str(getattr(card, "id", "") or "")
+            if card_id.startswith(mcp_prefixes) and card_id not in live_mcp_ids:
                 continue
             if getattr(card, "exposure", None) is not ToolExposure.DEFERRED:
                 continue
@@ -7863,7 +7874,7 @@ class JiuWenSwarmDeepAdapter:
         ``progressive_tool_enabled`` arms AbilityManager's deferred assignment
         (which we keep), but also queues the bundled rail (BM25 + its own
         ``tool_search``/``tool_call`` meta tools). We swap that rail for our
-        skill_index-framework ``ToolRetrievalPromptRail``; dropping it from
+        session-scoped ``ToolRetrievalPromptRail``. Dropping it from
         ``_pending_rails`` before ``ensure_initialized`` means its ``init``
         never runs, so no meta tools are registered and no ``uninit`` cleanup
         is needed.
@@ -13431,7 +13442,7 @@ class JiuWenSwarmDeepAdapter:
                 self._skill_retrieval_tools = self._create_skill_retrieval_tools()
                 skill_retrieval_tool_names: list[str] = []
                 for tool in self._skill_retrieval_tools:
-                    # skill_index owns session-frozen scale, taxonomy revision,
+                    # Capability search owns session-frozen scale, taxonomy revision,
                     # and visibility state, so it must never share the first
                     # session's instance through the process-wide bare id.
                     self._register_agent_owned_tool(tool, self._tool_owner_id())
@@ -13496,7 +13507,7 @@ class JiuWenSwarmDeepAdapter:
                 tool_retrieval_tool_names: list[str] = []
                 for tool in self._tool_retrieval_tools:
                     # tool_search owns the session-frozen deferred inventory,
-                    # so like skill_index it must never share the first
+                    # so like capability search it must never share the first
                     # session's instance through the process-wide bare id.
                     self._register_agent_owned_tool(tool, self._tool_owner_id())
                     tool_cards.append(tool.card)
@@ -14064,7 +14075,7 @@ class JiuWenSwarmDeepAdapter:
         # assignment (whitelist-based) during _initial_configure. That same
         # flag also queued openjiuwen's bundled ProgressiveToolRail, whose
         # BM25/ToolSearchTool/tool_call stack we replace with our
-        # skill_index-framework ToolRetrievalPromptRail. Drop it from the
+        # session-scoped ToolRetrievalPromptRail. Drop it from the
         # pending queue before ensure_initialized() runs rail init, so its
         # meta tools are never registered and no cleanup is needed.
         self._drop_pending_progressive_tool_rail()

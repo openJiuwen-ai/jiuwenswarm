@@ -88,7 +88,6 @@ from jiuwenswarm.agents.swarm.config_specs import (
     build_member_deep_agent_spec,
     build_member_subagent_specs,
 )
-from agent_gateway.common.mode_matrix import NEW_TEAM_DESIGN
 from jiuwenswarm.agents.swarm.providers import (
     code_rails,
     evolution_rails,
@@ -911,11 +910,11 @@ def test_swarm_list_skill_composes_member_team_and_global_visibility(
     assert tools.visible_skill_names_for_list_skill(ctx) == {"alpha", "beta"}
 
 
-@pytest.mark.parametrize("extra_expert_source", [False, True])
+@pytest.mark.parametrize("extra_source_kind", [None, "expert", "connector"])
 def test_swarm_skill_retrieval_prompt_uses_same_live_inventory(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    extra_expert_source: bool,
+    extra_source_kind: str | None,
 ) -> None:
     """Use the member inventory when Core can start and skip unsupported configurations."""
     workspace_root = str(tmp_path / "member-workspace")
@@ -933,8 +932,8 @@ def test_swarm_skill_retrieval_prompt_uses_same_live_inventory(
     )
 
     sources = [{"type": "skill", "root": str(tmp_path / "catalog-skills")}]
-    if extra_expert_source:
-        sources.append({"type": "expert", "root": str(tmp_path / "experts")})
+    if extra_source_kind is not None:
+        sources.append({"type": extra_source_kind, "root": str(tmp_path / extra_source_kind)})
     factory = resolve_factory(get_catalog()[registry.SKILL_RETRIEVAL_PROMPT].factory_ref)
     rail = factory(
         {},
@@ -949,7 +948,7 @@ def test_swarm_skill_retrieval_prompt_uses_same_live_inventory(
         ),
     )
 
-    if extra_expert_source:
+    if extra_source_kind == "connector":
         assert rail is None
         return
 
