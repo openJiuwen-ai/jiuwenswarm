@@ -66,6 +66,54 @@ async def test_handoff_persists_tool_boundary_and_separate_expert_identities(mon
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("as_dict", [False, True])
+async def test_ask_user_boundary_persists_pending_final_text(monkeypatch, as_dict):
+    records = []
+
+    class FakeAdapter:
+        @staticmethod
+        async def process_message_stream_impl(*_args, **_kwargs):
+            events = [
+                {"event_type": "chat.delta", "content": "出卡前正文"},
+                {
+                    "event_type": "chat.ask_user_question",
+                    "request_id": "ask-1",
+                    "questions": [{"id": "q1", "question": "继续吗？"}],
+                },
+            ]
+            for payload in events:
+                yield payload if as_dict else AgentResponseChunk(
+                    request_id="req-ask-user",
+                    channel_id="desktop",
+                    payload=payload,
+                    is_complete=False,
+                )
+
+    monkeypatch.setattr(interface_module.JiuWenSwarm, "_ensure_adapter", lambda *_a, **_k: FakeAdapter())
+    monkeypatch.setattr(interface_module, "get_config", lambda: {"memory": {"mode": "disabled"}})
+    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
+    monkeypatch.setattr(interface_module, "append_history_record", lambda **record: records.append(record))
+    monkeypatch.setattr(interface_module, "_schedule_symphony_session_feedback", lambda *_args: None)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.expert.expert_service.history_expert_identity_extra",
+        lambda _session_id: {"expert_id": "", "expert_type": "agent"},
+    )
+    request = AgentRequest(
+        request_id="req-ask-user",
+        channel_id="desktop",
+        session_id="session-ask-user",
+        params={"query": "请确认", "mode": "agent"},
+        is_stream=True,
+    )
+
+    [chunk async for chunk in interface_module.JiuWenSwarm().process_message_stream(request)]
+
+    finals = [record for record in records if record.get("event_type") == "chat.final"]
+    assert [record["content"] for record in finals] == ["出卡前正文"]
+    assert finals[0]["request_id"] == "req-ask-user"
+
+
+@pytest.mark.asyncio
 async def test_process_message_stream_uses_bounded_handoff_queue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
