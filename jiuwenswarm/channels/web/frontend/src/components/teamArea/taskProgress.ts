@@ -1,16 +1,33 @@
 import type { TeamTask } from '../../stores/sessionStore';
+import type { WorkflowRun } from './workflowTypes';
+import { workflowPhaseForTask } from './workflowTypes';
 
-/**
- * Returns the board's 0-100 progress from real task counts:
- * completed / (all tasks - cancelled). Cancelled tasks ("任务失败") never
- * count toward the denominator, and the value only changes when a task's
- * status changes.
- */
+/** Completed tasks out of all displayed tasks, including unsuccessful ones. */
 export function getTaskProgressPercent(tasks: Pick<TeamTask, 'status'>[]): number {
-  const actionable = tasks.filter((task) => task.status !== 'cancelled');
-  if (actionable.length === 0) {
-    return 0;
-  }
-  const completed = actionable.filter((task) => task.status === 'completed').length;
-  return Math.round((completed / actionable.length) * 100);
+  return tasks.length ? Math.floor(tasks.filter((task) => task.status === 'completed').length * 100 / tasks.length) : 0;
+}
+
+export const getCompletedTaskPercent = getTaskProgressPercent;
+
+export function hasRunningTask(tasks: TeamTask[], runs: WorkflowRun[], sessionActive: boolean): boolean {
+  return tasks.some((task) => {
+    if (task.status !== 'in_progress') return false;
+    if (!task.workflow_run_id) return task.task_id.startsWith('application:') || sessionActive;
+    const run = runs.find((item) => item.id === task.workflow_run_id);
+    const phase = workflowPhaseForTask(task, runs)?.phase;
+    return run?.status === 'running' && phase?.status === 'running';
+  });
+}
+
+/** Run-level counters already include child phases; never sum phase counters here. */
+export function getWorkflowAgentCounts(runs: WorkflowRun[]): { ended: number; total: number } | null {
+  if (!runs.length || runs.some((run) =>
+    !Number.isInteger(run.agent_count) || !Number.isInteger(run.completed_agent_count) ||
+    run.agent_count == null || run.completed_agent_count == null ||
+    run.agent_count < 0 || run.completed_agent_count < 0 || run.completed_agent_count > run.agent_count
+  )) return null;
+  return runs.reduce((counts, run) => ({
+    total: counts.total + run.agent_count!,
+    ended: counts.ended + run.completed_agent_count!,
+  }), { total: 0, ended: 0 });
 }

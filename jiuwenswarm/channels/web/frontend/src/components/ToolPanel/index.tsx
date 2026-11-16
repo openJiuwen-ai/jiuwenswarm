@@ -179,7 +179,7 @@ export function ToolPanel({
   const [teamPlanningExpanded, setTeamPlanningExpanded] = useState(false);
   const [teamMembersExpanded, setTeamMembersExpanded] = useState(false);
   const [artifactsExpanded, setArtifactsExpanded] = useState(false);
-  const { completedTasks: teamCompletedTasks, teamTasks, totalTasks: teamTotalTasks } = useTaskPlanningMetrics();
+  const { teamTasks } = useTaskPlanningMetrics();
   const artifactsCount = useSessionArtifactsCount();
   const sessionAssetCount = useSessionAssetsStore(selectSessionAssets(activeSessionId)).length;
   const subagentCount = useSubagentStore(state => Object.keys(state.runtimes[resolvedSessionId]?.subagentsById ?? {}).length);
@@ -334,7 +334,6 @@ export function ToolPanel({
     () => [...applicationPlanningTasks, ...teamTasks],
     [applicationPlanningTasks, teamTasks],
   );
-  const applicationCompleted = applicationPlanningTasks.filter((task) => task.status === 'completed').length;
   const todoCompletedTasks = planningTasks.filter((task) => task.status === 'completed').length;
   const hydratedTeamHistorySessionRef = useRef<string | null>(null);
   const loadingTeamHistorySessionRef = useRef<string | null>(null);
@@ -568,9 +567,10 @@ export function ToolPanel({
                 <TaskPlanningPanel
                   variant="expanded"
                   tasks={teamPlanningTasks}
+                  metricTasks={teamTasks}
                   members={teamMembers}
-                  totalTasks={teamTotalTasks + applicationPlanningTasks.length}
-                  completedTasks={teamCompletedTasks + applicationCompleted}
+                  totalTasks={teamTasks.length}
+                  completedTasks={teamTasks.filter((task) => task.status === 'completed').length}
                   statusIconAtEnd
                 />
               ) : (
@@ -597,8 +597,9 @@ export function ToolPanel({
   const planningProps = isTeam
     ? {
         tasks: teamPlanningTasks,
-        totalTasks: teamTotalTasks + applicationPlanningTasks.length,
-        completedTasks: teamCompletedTasks + applicationCompleted,
+        metricTasks: teamTasks,
+        totalTasks: teamTasks.length,
+        completedTasks: teamTasks.filter((task) => task.status === 'completed').length,
         expanded: teamPlanningExpanded,
       }
     : {

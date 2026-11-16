@@ -20,7 +20,9 @@ import {
 } from './shared';
 import { CompactTaskList } from './CompactTaskList';
 import { UnassignedTeamAvatar } from './UnassignedTeamAvatar';
-import { getTaskProgressPercent } from './taskProgress';
+import { getCompletedTaskPercent, getTaskProgressPercent, getWorkflowAgentCounts, hasRunningTask } from './taskProgress';
+import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
+import { useTweenedPercent } from './useTweenedPercent';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { SwarmflowTreeView } from './SwarmflowTreeView';
 import { SwarmflowGraphView } from './SwarmflowGraphView';
@@ -33,6 +35,7 @@ import { RunGroupHeader } from './RunGroupHeader';
 type TaskPlanningPanelProps = {
   variant: 'compact' | 'expanded';
   tasks: SessionTeamTask[];
+  metricTasks?: SessionTeamTask[];
   members: TeamMember[];
   totalTasks: number;
   completedTasks: number;
@@ -62,7 +65,7 @@ type TaskPlanningPanelProps = {
 };
 
 const COLUMN_STATS: Array<{ key: TaskColumnKey | 'progress'; labelKey: string }> = [
-  { key: 'progress', labelKey: 'team.planning.metrics.progress' },
+  { key: 'progress', labelKey: 'team.planning.taskCompletion' },
   { key: 'completed', labelKey: 'team.planning.columns.completed' },
   { key: 'running', labelKey: 'team.planning.columns.running' },
   { key: 'waiting', labelKey: 'team.planning.columns.waiting' },
@@ -72,11 +75,18 @@ const COLUMN_STATS: Array<{ key: TaskColumnKey | 'progress'; labelKey: string }>
 export function ProgressBar({
   progressPercent,
   groupedTasks,
+  workflowRuns,
+  teamMetrics = false,
+  sessionActive = false,
 }: {
   progressPercent: number;
   groupedTasks: Record<TaskColumnKey, SessionTeamTask[]>;
+  workflowRuns?: WorkflowRun[];
+  teamMetrics?: boolean;
+  sessionActive?: boolean;
 }) {
   const { t } = useTranslation();
+  const displayedPercent = useTweenedPercent(progressPercent);
   return (
     <>
       <div
@@ -102,24 +112,39 @@ export function ProgressBar({
                 className="text-sm font-semibold text-text-strong"
                 data-testid="team-area-task-planning-column-count"
               >
-                {column.key === 'progress' ? `${progressPercent}%` : groupedTasks[column.key].length}
+                {column.key === 'progress' ? `${Math.round(displayedPercent)}%` : groupedTasks[column.key].length}
               </span>
             </div>
           ))}
         </div>
       </div>
+      {teamMetrics && <div className="mb-2 text-xs text-text-muted" data-testid="team-area-task-planning-metric-scope">{t('team.planning.teamMetricScope')}</div>}
+      <WorkflowAgentProgress runs={workflowRuns} />
       <div
-        className="h-1 rounded-full overflow-hidden mb-4"
+        className={`h-1 rounded-full overflow-hidden mb-4 ${hasRunningTask(groupedTasks.running, workflowRuns ?? [], sessionActive) ? 'animate-pulse motion-reduce:animate-none' : ''}`}
         style={{ backgroundColor: 'var(--color-task-progress-track)' }}
         data-testid="team-area-task-planning-progress-track"
       >
+        {/* Width is tweened in JS so the bar eases between status changes
+            instead of snapping; a CSS transition would double-animate it. */}
         <div
-          className="h-full rounded-full transition-all duration-300"
-          style={{ width: `${progressPercent}%`, backgroundColor: 'var(--color-task-progress)' }}
+          className="h-full rounded-full"
+          style={{ width: `${displayedPercent}%`, backgroundColor: 'var(--color-task-progress)' }}
           data-testid="team-area-task-planning-progress-fill"
         />
       </div>
     </>
+  );
+}
+
+function WorkflowAgentProgress({ runs }: { runs?: WorkflowRun[] }) {
+  const { t } = useTranslation();
+  if (!runs?.length) return null;
+  const counts = getWorkflowAgentCounts(runs);
+  return (
+    <div className="mb-2 text-xs text-text-muted" data-testid="team-area-workflow-agent-progress">
+      {counts ? t('team.planning.agentProgress', counts) : t('team.planning.agentProgressLoading')}
+    </div>
   );
 }
 
@@ -137,8 +162,14 @@ export function ProgressSection({
   expanded,
   emptyIllustration,
   workflowRuns,
+  metricTasks = tasks,
+  teamMetrics = false,
+  sessionActive = false,
 }: {
   tasks: SessionTeamTask[];
+  metricTasks?: SessionTeamTask[];
+  teamMetrics?: boolean;
+  sessionActive?: boolean;
   groupedTasks: Record<TaskColumnKey, SessionTeamTask[]>;
   completedTasks: number;
   totalTasks: number;
@@ -155,6 +186,10 @@ export function ProgressSection({
   const { t } = useTranslation();
   const emptyIllustrationSize = displayMode === 'count' ? 48 : 72;
   useEnsurePhaseAgents(tasks, workflowRuns);
+  // The count layout pairs its bar with raw completed/total numbers, so that
+  // bar keeps the factual ratio; hooks stay above the empty-state return.
+  const completedPercent = getCompletedTaskPercent(metricTasks);
+  const displayedCompletedPercent = useTweenedPercent(completedPercent);
 
   if (tasks.length === 0) {
     return (
@@ -177,7 +212,7 @@ export function ProgressSection({
     );
   }
 
-  const progressPercent = getTaskProgressPercent(tasks);
+  const progressPercent = getTaskProgressPercent(metricTasks);
 
   if (displayMode === 'count') {
     // 镜像 worker 的任务卡按 run 分组展示，组头用共享 RunGroupHeader；
@@ -190,6 +225,7 @@ export function ProgressSection({
           <div className="mb-4">
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-end gap-1 text-text-strong">
+                <span className="text-xs text-text-muted mr-1" data-testid="team-area-task-planning-completion-label">{t('team.planning.taskCompletion')}</span>
                 <span
                   className="text-2xl font-semibold leading-none"
                   data-testid="team-area-task-planning-completed-count"
@@ -201,14 +237,16 @@ export function ProgressSection({
                 </span>
               </div>
             </div>
+            {teamMetrics && <div className="mb-2 text-xs text-text-muted" data-testid="team-area-task-planning-metric-scope">{t('team.planning.teamMetricScope')}</div>}
+            <WorkflowAgentProgress runs={workflowRuns} />
             <div
-              className="h-1 rounded-full overflow-hidden"
+              className={`h-1 rounded-full overflow-hidden ${hasRunningTask(groupedTasks.running, workflowRuns ?? [], sessionActive) ? 'animate-pulse motion-reduce:animate-none' : ''}`}
               style={{ backgroundColor: 'var(--color-task-progress-track)' }}
               data-testid="team-area-task-planning-progress-track"
             >
               <div
                 className="h-full rounded-full"
-                style={{ width: `${progressPercent}%`, backgroundColor: 'var(--color-task-progress)' }}
+                style={{ width: `${displayedCompletedPercent}%`, backgroundColor: 'var(--color-task-progress)' }}
                 data-testid="team-area-task-planning-progress-fill"
               />
             </div>
@@ -260,7 +298,7 @@ export function ProgressSection({
 
   return (
     <div className="flex flex-col flex-1 min-h-0" data-testid="team-area-task-planning-progress-section">
-      <ProgressBar progressPercent={progressPercent} groupedTasks={groupedTasks} />
+      <ProgressBar progressPercent={progressPercent} groupedTasks={groupedTasks} workflowRuns={workflowRuns} teamMetrics={teamMetrics} sessionActive={sessionActive} />
       <div className="flex-1 overflow-y-auto" data-testid="team-area-task-planning-task-list">
         <CompactTaskList
           tasks={tasks}
@@ -342,6 +380,7 @@ export function ViewSwitcher({
 export function TaskPlanningPanel({
   variant,
   tasks,
+  metricTasks: suppliedMetricTasks,
   members,
   totalTasks,
   completedTasks,
@@ -358,9 +397,15 @@ export function TaskPlanningPanel({
   emptyIllustration,
 }: TaskPlanningPanelProps) {
   const { t } = useTranslation();
+  const metricTasks = suppliedMetricTasks ?? tasks;
+  const teamMetrics = suppliedMetricTasks !== undefined;
   const [view, setView] = useState<'board' | 'list' | 'workflow'>('list');
   const activeSessionId = useChatStore((s) => s.activeSessionId);
-  const workflowRuns = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.workflowRuns ?? []);
+  const conversationId = useOrganizationConversationKey(activeSessionId);
+  const isProcessing = useChatStore((s) => s.runtimes[conversationId]?.isProcessing ?? false);
+  const isPaused = useChatStore((s) => s.runtimes[conversationId]?.isPaused ?? false);
+  const sessionActive = isProcessing && !isPaused;
+  const workflowRuns = useSessionStore((s) => s.runtimes[conversationId]?.workflowRuns ?? []);
   const groupedTasks = useMemo(() => {
     const groups: Record<TaskColumnKey, SessionTeamTask[]> = {
       waiting: [],
@@ -369,12 +414,12 @@ export function TaskPlanningPanel({
       cancelled: [],
     };
 
-    tasks.forEach((task) => {
+    metricTasks.forEach((task) => {
       groups[getTaskColumnKey(task)].push(task);
     });
 
     return groups;
-  }, [tasks]);
+  }, [metricTasks]);
 
   // 普通任务 = 没有 run 归属的成员任务；镜像出来的 swarmflow 任务由树视图展示。
   const ordinaryTasks = useMemo(
@@ -382,7 +427,7 @@ export function TaskPlanningPanel({
     [tasks],
   );
 
-  const progressPercent = getTaskProgressPercent(tasks);
+  const progressPercent = getTaskProgressPercent(metricTasks);
 
   if (variant === 'compact') {
     const allTasks = tasks;
@@ -417,7 +462,11 @@ export function TaskPlanningPanel({
           </div>
         )}
         <ProgressSection
+          key={conversationId}
           tasks={allTasks}
+          metricTasks={metricTasks}
+          teamMetrics={teamMetrics}
+          sessionActive={sessionActive}
           groupedTasks={groupedTasks}
           completedTasks={completedTasks}
           totalTasks={totalTasks}
@@ -453,7 +502,7 @@ export function TaskPlanningPanel({
           {header}
           {workflowRuns.length > 0 && activeSessionId ? (
             <>
-              <ProgressBar progressPercent={progressPercent} groupedTasks={groupedTasks} />
+              <ProgressBar key={conversationId} progressPercent={progressPercent} groupedTasks={groupedTasks} workflowRuns={workflowRuns} teamMetrics={teamMetrics} sessionActive={sessionActive} />
               {/* 普通任务（无 workflow_run_id）照常展示在 swarmflow 树上方：
                   以前只要会话里有 run 就把普通任务整段替换掉，teammate 同时跑
                   普通任务 + swarmflow 时普通任务会凭空消失。 */}
@@ -477,7 +526,11 @@ export function TaskPlanningPanel({
             </>
           ) : (
             <ProgressSection
+              key={conversationId}
               tasks={tasks}
+              metricTasks={metricTasks}
+              teamMetrics={teamMetrics}
+              sessionActive={sessionActive}
               groupedTasks={groupedTasks}
               completedTasks={completedTasks}
               totalTasks={totalTasks}
@@ -492,7 +545,7 @@ export function TaskPlanningPanel({
       ) : view === 'workflow' ? (
         <div className="flex h-full flex-col px-6 pb-6" data-testid="team-area-task-planning-workflow-view">
           {header}
-          <ProgressBar progressPercent={progressPercent} groupedTasks={groupedTasks} />
+          <ProgressBar key={conversationId} progressPercent={progressPercent} groupedTasks={groupedTasks} workflowRuns={workflowRuns} teamMetrics={teamMetrics} sessionActive={sessionActive} />
           {workflowRuns.length > 0 && activeSessionId ? (
             <SwarmflowGraphView runs={workflowRuns} sessionId={activeSessionId} />
           ) : null}
@@ -500,7 +553,7 @@ export function TaskPlanningPanel({
       ) : (
         <div className="flex h-full flex-col px-6 pb-6">
           {header}
-          <ProgressBar progressPercent={progressPercent} groupedTasks={groupedTasks} />
+          <ProgressBar key={conversationId} progressPercent={progressPercent} groupedTasks={groupedTasks} workflowRuns={workflowRuns} teamMetrics={teamMetrics} sessionActive={sessionActive} />
 
           <div
             className="min-h-0 flex-1 overflow-auto rounded-lg bg-secondary p-6"
@@ -515,7 +568,7 @@ export function TaskPlanningPanel({
                 <BoardColumn
                   key={column.key}
                   column={column}
-                  tasks={groupedTasks[column.key]}
+                  tasks={tasks.filter((task) => getTaskColumnKey(task) === column.key)}
                   members={members}
                   hideAssignee={hideAssignee}
                   workflowRuns={workflowRuns}
