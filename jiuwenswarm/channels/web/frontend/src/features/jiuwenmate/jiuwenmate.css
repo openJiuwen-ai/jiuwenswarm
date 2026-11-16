@@ -2465,6 +2465,21 @@
   border-radius: 50%;
   color: #fff;
   background: var(--jm-dark);
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+
+.jiuwenmate-composer__toolbar .jiuwenmate-composer__send:hover:not(:disabled) {
+  color: #fff;
+  background: #404040;
+}
+
+.jiuwenmate-composer__toolbar .jiuwenmate-composer__send:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(26, 26, 26, 0.25);
+}
+
+.jiuwenmate-composer__toolbar .jiuwenmate-composer__send:active:not(:disabled) {
+  transform: scale(0.92);
 }
 
 .jiuwenmate-composer__toolbar .jiuwenmate-composer__send:disabled {
