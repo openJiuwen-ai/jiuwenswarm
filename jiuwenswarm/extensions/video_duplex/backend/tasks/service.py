@@ -615,10 +615,12 @@ class TaskService:
         try:
             await self.executor.cancel(task)
         except CancellationSettlementTimeout as exc:
+            # The lambda outlives the ``except`` suite, where ``exc`` is unbound.
+            message = str(exc)
             task = self.store.update(task["id"], lambda t: (
-                t.update(status="unknown", error=str(exc)) if t["status"] == "cancelling" else None
+                t.update(status="unknown", error=message) if t["status"] == "cancelling" else None
             ))
-            trace_task("task_cancel_worker_failed", task=task_state(task), error=str(exc))
+            trace_task("task_cancel_worker_failed", task=task_state(task), error=message)
             await self._notify(task)
             self.kick()
             return
