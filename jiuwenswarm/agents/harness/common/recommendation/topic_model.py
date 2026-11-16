@@ -441,6 +441,22 @@ def _parse_stage_json(text: str) -> Any:
                 return data
             except json.JSONDecodeError as exc:
                 last_error = exc
+    # General models occasionally quote an English title inside a Chinese JSON
+    # string without escaping it. Repair syntax only; business validators still
+    # decide whether the decoded value is usable.
+    try:
+        import json_repair
+    except ImportError:  # pragma: no cover - declared dependency, kept optional
+        json_repair = None
+    if json_repair is not None:
+        for candidate in candidates:
+            try:
+                repaired = json_repair.loads(candidate)
+            except Exception:  # noqa: BLE001 - malformed input stays malformed
+                continue
+            if isinstance(repaired, (dict, list)):
+                logger.warning("[Topic] stage JSON repaired after parse failure")
+                return repaired
     if last_error is not None:
         raise last_error
     raise json.JSONDecodeError("unparseable stage content", raw, 0)
