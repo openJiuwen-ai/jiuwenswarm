@@ -48,7 +48,7 @@ def normalize_result(result: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-_MAX_STEER_IMAGE_FILES = 16
+_MAX_STEER_IMAGE_FILES = 20
 _STEER_CONTENT_LIMIT = 32000
 
 
