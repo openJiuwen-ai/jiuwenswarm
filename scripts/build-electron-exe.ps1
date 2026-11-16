@@ -500,7 +500,7 @@ if ($DoSign) {
 #    等 node 脚本）因此不依赖用户机器的 Node.js。
 Import-Module (Join-Path $PSScriptRoot "build-runtimes.psm1") -Force
 $ElectronMinimumNodeVersion = [version]"22.12.0"
-$RuntimeSettings = Get-RuntimeBundleSettings -DefaultNodeVersion "v22.12.0"
+$RuntimeSettings = Get-RuntimeBundleSettings -DefaultNodeVersion "v22.13.0"
 $BundleNode = $RuntimeSettings.BundleNode
 $BundleUv = $RuntimeSettings.BundleUv
 $NodeVersion = $RuntimeSettings.NodeVersion
