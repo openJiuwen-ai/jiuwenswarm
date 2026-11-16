@@ -68,6 +68,12 @@ export function scheduleDisplayStatus(plan: ScheduleStatusSource): string {
   return plan.lastStatus === 'completed' ? 'expired' : plan.lastStatus;
 }
 
+export function canEnableSchedule(plan: Schedule, now = Date.now()): boolean {
+  if (plan.lastStatus === 'completed' || (plan.endsAt && Date.parse(plan.endsAt) <= now)) return false;
+  if (plan.endsAt && plan.nextFireAt && Date.parse(plan.nextFireAt) > Date.parse(plan.endsAt)) return false;
+  return plan.scheduleKind !== 'once' || Boolean(plan.nextFireAt && plan.runAt && Date.parse(plan.runAt) > now);
+}
+
 export function filterSchedules<T extends ScheduleStatusSource & { name: string; agentId: string }>(
   plans: readonly T[],
   query: string,

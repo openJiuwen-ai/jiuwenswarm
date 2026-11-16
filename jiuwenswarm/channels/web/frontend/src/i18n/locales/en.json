@@ -6063,6 +6063,7 @@
       "namePlaceholder": "For example: After-sales assistant",
       "description": "Abilities",
       "descriptionPlaceholder": "Describe what this employee is good at, what it owns and how it should work",
+      "descriptionTooLong": "The capability description must be {{limit}} characters or fewer. Shorten it before saving.",
       "role": "Work domains",
       "preview": "Card preview",
       "previewName": "New employee",
@@ -6105,7 +6106,9 @@
         "starterPrompts": "Add quick prompt"
       },
       "starterPromptsLimit": "Up to {{count}} prompts",
-      "starterPromptDuplicate": "Duplicates an earlier prompt; only one is kept when saved",
+      "starterPromptDuplicate": "Duplicates an earlier prompt; edit or remove it.",
+      "starterPromptsDuplicateTitle": "Duplicate starter prompts",
+      "starterPromptsDuplicateMessage": "Starter prompts must be unique. Edit or remove the duplicates before creating the employee.",
       "empty": {
         "skills": "No skills",
         "connectors": "No connectors",
@@ -6468,6 +6471,11 @@
       }
     },
     "schedule": {
+      "save": "Save",
+      "saveAndEnable": "Save and enable",
+      "pausedEditHint": "This task is paused. Saving keeps it paused; choose Save and enable to resume automatic execution.",
+      "actionFailed": "Scheduled task action failed",
+      "resumeExpired": "Enable (edit schedule first)",
       "add": "Add",
       "createTitle": "New scheduled task",
       "editTitle": "Edit scheduled task",
@@ -6551,6 +6559,7 @@
         "running": "Running"
       },
       "error": {
+        "enableExpired": "This task has expired. Update its schedule before enabling it.",
         "nameRequired": "Enter a task name.",
         "promptRequired": "Enter a task description.",
         "required": "Enter a name and a description",

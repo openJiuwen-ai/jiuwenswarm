@@ -60,10 +60,11 @@ function templateDetailMarkup(templateId, installedExperts = []) {
   ));
 }
 const zh = JSON.parse(readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8'));
+const en = JSON.parse(readFileSync(new URL('../src/i18n/locales/en.json', import.meta.url), 'utf8'));
 const i18n = i18next.createInstance();
 await i18n.use(initReactI18next).init({
   lng: 'zh',
-  resources: { zh: { translation: zh } },
+  resources: { zh: { translation: zh }, en: { translation: en } },
   interpolation: { escapeValue: false },
 });
 
@@ -78,6 +79,87 @@ test('curated employee details label role abilities separately from actual skill
   assert.match(skills.textContent, /暂无技能/);
   assert.doesNotMatch(skills.textContent, /支出分析|方案比较|风险说明/);
 });
+
+for (const language of ['zh', 'en']) {
+  test('duplicate starter prompts block creation with a dialog and allow correction in ' + language, async () => {
+    const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
+    const previous = {
+      window: globalThis.window,
+      document: globalThis.document,
+      actEnvironment: globalThis.IS_REACT_ACT_ENVIRONMENT,
+    };
+    globalThis.window = dom.window;
+    globalThis.document = dom.window.document;
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    await i18n.changeLanguage(language);
+    const container = dom.window.document.getElementById('root');
+    const root = createRoot(container);
+    let completed = 0;
+    let draft = {
+      name: '周报助手', description: '整理周报', category: 'custom', tags: [],
+      capabilities: { model: '', skills: [], connectors: [], plugins: [], knowledge: [], starterPrompts: ['写周报', ' 写周报 '] },
+    };
+    const render = () => root.render(React.createElement(I18nextProvider, { i18n }, React.createElement(ColleagueCreatePage, {
+      step: 'refine', source: 'custom', detailTemplateId: null, customDialogOpen: false, draft,
+      modelCatalog: { models: [], defaultModelId: '' },
+      resourceCatalog: { skills: [], connectors: [], plugins: [], knowledge: [] },
+      resourceCatalogReady: true,
+      missingTemplateCapabilities: { skills: [], connectors: [], plugins: [], knowledge: [] },
+      skillRecommendations: { status: 'ready', local: [], plaza: [], error: null },
+      onDismissSkillRecommendationError() {}, onInstallSkill: async () => 'unused', submitting: false,
+      onOpenTemplateDetail() {}, onCloseTemplateDetail() {}, onChooseTemplate() {},
+      onOpenCustom() {}, onCloseCustom() {}, onConfirmCustom() {}, onOpenPlaza() {},
+      onDraftChange(patch) { draft = { ...draft, ...patch }; render(); },
+      onCancel() {}, onComplete() { completed += 1; },
+    })));
+    try {
+      await act(async () => render());
+      const submit = () => container.querySelector('[data-testid="jiuwenmate-create-submit-button"]');
+      await act(async () => submit().click());
+      assert.equal(completed, 0, 'Invalid prompts must not reach the employee creation callback');
+      const dialog = container.querySelector('[data-testid="jiuwenmate-starter-prompts-error-dialog"]');
+      assert.ok(dialog);
+      assert.equal(dialog.getAttribute('role'), 'dialog');
+      assert.match(dialog.textContent, language === 'zh' ? /推荐短句重复/ : /Duplicate starter prompts/);
+      assert.equal(container.querySelectorAll('[data-testid="jiuwenmate-starter-prompt-input"]')[1].getAttribute('aria-invalid'), 'true');
+
+      await act(async () => container.querySelector('[data-testid="jiuwenmate-starter-prompts-error-confirm"]').click());
+      assert.equal(container.querySelector('[data-testid="jiuwenmate-starter-prompts-error-dialog"]'), null);
+      draft = { ...draft, capabilities: { ...draft.capabilities, starterPrompts: ['写周报', '写月报'] } };
+      await act(async () => render());
+      assert.equal(container.querySelector('[data-testid="jiuwenmate-starter-prompt-duplicate"]'), null);
+      await act(async () => submit().click());
+      assert.equal(completed, 1);
+
+      draft = { ...draft, capabilities: { ...draft.capabilities, starterPrompts: [] } };
+      await act(async () => render());
+      await act(async () => submit().click());
+      assert.equal(completed, 2, 'Starter prompts remain optional');
+      draft = { ...draft, description: '1'.repeat(201) };
+      await act(async () => render());
+      assert.equal(submit().disabled, true, 'Imported descriptions must also respect the 200-character limit');
+      assert.equal(container.querySelector('[data-testid="jiuwenmate-colleague-description-input"]').hasAttribute('maxlength'), false,
+        'Imported descriptions must remain editable above the save limit');
+      assert.match(container.querySelector('[data-testid="jiuwenmate-colleague-description-limit-error"]').textContent, /200/);
+      await act(async () => container.querySelector('form').dispatchEvent(
+        new dom.window.Event('submit', { bubbles: true, cancelable: true }),
+      ));
+      assert.equal(completed, 2);
+      draft = { ...draft, description: `  ${'1'.repeat(200)}  ` };
+      await act(async () => render());
+      assert.equal(container.querySelector('[data-testid="jiuwenmate-colleague-description-limit-error"]'), null);
+      await act(async () => submit().click());
+      assert.equal(completed, 3, 'Exactly 200 trimmed characters remain valid');
+    } finally {
+      await act(async () => root.unmount());
+      dom.window.close();
+      globalThis.window = previous.window;
+      globalThis.document = previous.document;
+      globalThis.IS_REACT_ACT_ENVIRONMENT = previous.actEnvironment;
+      await i18n.changeLanguage('zh');
+    }
+  });
+}
 
 test('installed expert details preserve real bundled skills', () => {
   const document = new JSDOM(templateDetailMarkup('installed:expense-review', [{

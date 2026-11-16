@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { ActionMenu } from '../components/ActionMenu';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import type { JiuwenMateActivity, JiuwenMateCategory } from '../types';
-import { filterSchedules, scheduleDisplayStatus, scheduleSummary } from './state';
+import { canEnableSchedule, filterSchedules, scheduleDisplayStatus, scheduleSummary } from './state';
 import { ScheduleDialog } from './ScheduleDialog';
 import { ScheduleHistory } from './ScheduleHistory';
 import type { Schedule, ScheduleDraft, ScheduleRun } from './types';
@@ -191,7 +191,10 @@ export function ScheduleBoard({
                   <td>{plan.runCount}</td>
                   <td>
                     <span className="jiuwenmate-schedule-board__actions">
-                      <button type="button" className="jiuwenmate-link-button jiuwenmate-link-button--blue" onClick={() => void onSetEnabled(plan.id, !plan.enabled)}>
+                      <button type="button" className="jiuwenmate-link-button jiuwenmate-link-button--blue"
+                        disabled={!plan.enabled && !canEnableSchedule(plan)}
+                        title={!plan.enabled && !canEnableSchedule(plan) ? t('jiuwenmate.schedule.error.enableExpired') : undefined}
+                        onClick={() => void onSetEnabled(plan.id, !plan.enabled)}>
                         {plan.enabled ? t('jiuwenmate.schedule.pause') : t('jiuwenmate.schedule.resume')}
                       </button>
                       <button type="button" className="jiuwenmate-link-button jiuwenmate-link-button--blue" onClick={() => setEditing(plan)}>{t('jiuwenmate.schedule.edit')}</button>
@@ -230,6 +233,10 @@ export function ScheduleBoard({
           saving={saving}
           onClose={() => setEditing(undefined)}
           onSubmit={(agentId, draft) => (editing ? onUpdate(editing.id, draft) : onCreate(agentId, draft))}
+          onSubmitAndEnable={editing ? async (_agentId, draft) => {
+            await onUpdate(editing.id, draft);
+            await onSetEnabled(editing.id, true);
+          } : undefined}
         />
       ) : null}
     </section>
