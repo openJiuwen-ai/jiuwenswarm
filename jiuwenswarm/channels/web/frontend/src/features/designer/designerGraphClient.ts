@@ -103,8 +103,11 @@ export const designerGraphClient = {
       projectId ? { project_id: projectId } : {},
     ),
 
-  save: (graph: DesignerExecutionGraph) =>
-    webRequest<{ graph: DesignerExecutionGraph }>('designer.graph.save', { graph }),
+  save: (graph: DesignerExecutionGraph, options?: { layoutOnly?: boolean }) =>
+    webRequest<{ graph: DesignerExecutionGraph }>('designer.graph.save', {
+      graph,
+      ...(options?.layoutOnly ? { layout_only: true } : {}),
+    }),
 
   patch: (graphId: string, patch: DesignerGraphPatch) =>
     webRequest<{ graph: DesignerExecutionGraph }>('designer.graph.patch', {
