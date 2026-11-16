@@ -55,6 +55,7 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("mcp.server.add", "POST", "/mcp/servers"),
     ("mcp.server.remove", "POST", "/mcp/servers/remove"),
     ("mcp.server.update", "POST", "/mcp/servers/update"),
+    ("mcp.server.rescan", "POST", "/mcp/servers/rescan"),
     ("mcp.server.list", "GET", "/mcp/servers"),
     ("mcp.server.get", "GET", "/mcp/servers/{name}"),
     ("command.sandbox", "POST", "/sessions/{session_id}/commands/sandbox"),

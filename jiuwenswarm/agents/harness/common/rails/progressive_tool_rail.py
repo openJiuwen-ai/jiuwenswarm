@@ -54,18 +54,13 @@ from jiuwenswarm.common.mcp_config import (
     get_active_office_claw_mcp_tool_ids,
     is_office_claw_tool_name_live_concurrent,
     is_request_scoped_mcp_tool_id,
+    office_claw_tool_identity_value,
     resolve_active_office_claw_tool_id,
 )
 
 
 def _office_claw_tool_env_value(tool: Any, key: str) -> str:
-    params = getattr(tool, "_params", None)
-    if not isinstance(params, dict):
-        return ""
-    env = params.get("env")
-    if not isinstance(env, dict):
-        return ""
-    return str(env.get(key) or "").strip()
+    return office_claw_tool_identity_value(tool, key)
 
 logger = logging.getLogger(__name__)
 
