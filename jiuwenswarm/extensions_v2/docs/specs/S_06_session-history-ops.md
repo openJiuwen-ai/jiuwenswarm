@@ -16,6 +16,8 @@
 
 `ops.session.append(note)` 接受新格式 `{id, message}` 或兼容旧格式 `{id, role, content}`；同一原请求必须连参数格式一起保持重试。新 message 只允许 user/assistant/system 文本消息，不能制造工具调用/结果或媒体。平台固定会话和包身份、来源和行 uuid；追加 transcript_only，不启动 Agent。旧事件字段 content/source/role/message_id 已被结构化输入替代，旧回执 message 的产品记录应改读 history_record。
 
+`transcript_only` 留档不形成等待完成的原生请求，不要求伪造 `chat.request_completed`。完成历史投影不将其计入已完成用户请求，也不得让它阻断后续真实请求的连续完成前缀；原始历史中的留档消息保留。
+
 `ops.session.messages()` 现在触发 `session.messages` 查询链，返回最近最多 4096 项、按旧到新排列的 role/text/toolUses/toolResults 数组；没有 limit/cursor 参数或 page 包装。未知历史为空数组，读取故障不冒充空数组。逐字段解释见 F_18，公共封装和拒绝协议见 [S_08](S_08_session-query-events.md)。底层产品历史分页服务仍保留，不作为新的公开 Ops。
 
 ## 2. 平台覆盖

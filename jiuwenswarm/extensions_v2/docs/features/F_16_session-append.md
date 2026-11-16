@@ -26,6 +26,8 @@
 
 `await ops.session.append(note)` 为扩展追加 transcript_only 留档消息，使用绑定会话和真实包身份，另起 session.append 事件链，返回实际提交、重复或拒绝的回执。需要读回历史时，使用 [F_18 的独立查询方法](F_18_session-messages.md)；读取不要求先执行追加。
 
+留档消息不形成原生请求的完成边界。完成历史投影跳过这类记录，不因一条没有 `chat.request_completed` 的扩展 user 留档而截断后续真实请求；真实未完成请求仍保持原有阻断规则，原始历史不改写。回归入口为 [release/develop 兼容测试](../../../../tests/unit_tests/server/test_beta3_extension_merge_compatibility.py)。
+
 | 项 | 本次实现 | 与固定 Claude 定义的关系 |
 | --- | --- | --- |
 | 事件输入 | message、door、origin、uuid | 对齐消息/进入环节/产生者/行身份的分工；不是直接复用 TypeScript 对象 |
