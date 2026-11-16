@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import Future
 from contextlib import aclosing
 from copy import deepcopy
 from dataclasses import replace
@@ -24,10 +25,19 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Tuple
 
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
-from jiuwenswarm.common.session_message import (
-    SESSION_MESSAGE_INTERNAL_KEY,
-    with_cross_session_history_metadata,
-)
+
+try:
+    from agent_gateway.common.session_message import (
+        SESSION_MESSAGE_INTERNAL_KEY,
+        with_cross_session_history_metadata,
+    )
+except ModuleNotFoundError:
+    # Keep the beta3 checkout importable before the external Gateway package is
+    # installed.  The develop-side package remains the primary implementation.
+    from jiuwenswarm.common.session_message import (
+        SESSION_MESSAGE_INTERNAL_KEY,
+        with_cross_session_history_metadata,
+    )
 
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
     SKILLS_REBUILD_SILENT,
@@ -41,10 +51,13 @@ from jiuwenswarm.agents.harness.common.memory.config import get_memory_mode, is_
 from jiuwenswarm.server.runtime.session.history_io import run_history_io as _run_history_io
 from jiuwenswarm.server.runtime.session.history_context import history_context_request, history_context_stream
 from jiuwenswarm.server.runtime.session.session_history import (
+    SESSION_REQUEST_COMPLETED_EVENT,
     append_compact_history_records,
     append_history_record,
     collapse_file_content_blocks,
+    enqueue_history_request_completion,
     resolve_final_record_timestamp,
+    wait_for_history_receipt,
 )
 from jiuwenswarm.server.runtime.agent_adapter.team_member_stream_history import (
     MEMBER_SEGMENT_BOUNDARY_EVENTS,
@@ -68,10 +81,16 @@ from jiuwenswarm.server.runtime.skill.archive_store import ARCHIVE_DIRNAME
 from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.runtime_workspace import RuntimeWorkspacePaths
-from jiuwenswarm.common.e2a.constants import (
-    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
-    E2A_INTERNAL_CANCEL_SOURCE_KEY,
-)
+try:
+    from e2a.constants import (
+        E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
+        E2A_INTERNAL_CANCEL_SOURCE_KEY,
+    )
+except ModuleNotFoundError:
+    from jiuwenswarm.common.e2a.constants import (
+        E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
+        E2A_INTERNAL_CANCEL_SOURCE_KEY,
+    )
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_EXECUTE_OPTION_VALUES,
     PLAN_REMINDER_ORIGINAL_QUERY_KEY,
@@ -88,23 +107,40 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.permission_options import
     normalize_option_value,
     resolve_permission_action,
 )
-from jiuwenswarm.common.mode_matrix import (
-    canonicalize_mode_text,
-    is_code_profile_mode,
-    is_team_mode as is_team_runtime_mode,
-    is_team_plan_mode,
-    is_web_composable_mode,
-    read_request_work_mode,
-)
+try:
+    from agent_gateway.common.mode_matrix import (
+        canonicalize_mode_text,
+        is_code_profile_mode,
+        is_team_mode as is_team_runtime_mode,
+        is_team_plan_mode,
+        is_web_composable_mode,
+        read_request_work_mode,
+    )
+except ModuleNotFoundError:
+    from jiuwenswarm.common.mode_matrix import (
+        canonicalize_mode_text,
+        is_code_profile_mode,
+        is_team_mode as is_team_runtime_mode,
+        is_team_plan_mode,
+        is_web_composable_mode,
+        read_request_work_mode,
+    )
 from jiuwenswarm.common.context_keys import (
     JIUWENSWARM_CHANNEL_CONTEXT_KEY,
     JIUWENSWARM_SKIP_A2UI_CONTEXT_KEY,
 )
-from jiuwenswarm.extensions.registry import ExtensionRegistry
+try:
+    from agent_gateway.extensions.registry import ExtensionRegistry
+except ModuleNotFoundError:
+    from jiuwenswarm.extensions.registry import ExtensionRegistry
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.chat_final import ensure_final_mode_inplace
-from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
-from jiuwenswarm.extensions.hooks_context import MemoryHookContext
+try:
+    from jiuwenswarm.common.hook_event import AgentServerHookEvents
+    from jiuwenswarm.common.hooks_context import MemoryHookContext
+except ModuleNotFoundError:
+    from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
+    from jiuwenswarm.extensions.hooks_context import MemoryHookContext
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
@@ -121,6 +157,7 @@ from jiuwenswarm.server.runtime.a2ui.integration import (
 )
 from jiuwenswarm.server.runtime.a2ui.runtime.finalizer import should_finalize_a2ui_content
 from jiuwenswarm.server.runtime import extension_package_manager as package_manager
+from jiuwenswarm.server.gateway_push.transport import WebSocketGatewayPushTransport
 from jiuwenswarm.agents.harness.common.auto_memory import (
     _execute_auto_memory_extraction,
 )
@@ -954,6 +991,87 @@ def _trigger_auto_memory_extraction(
 
 
 logger = logging.getLogger(__name__)
+
+
+def _session_message_owns_completion(request: AgentRequest) -> bool:
+    """Return whether the session-message host owns the terminal history row."""
+
+    params = request.params if isinstance(request.params, dict) else {}
+    return isinstance(params.get(SESSION_MESSAGE_INTERNAL_KEY), dict) or bool(
+        getattr(request, "trusted_session_message_route", None)
+    )
+
+
+_COMPLETION_ANNOUNCEMENTS: set[asyncio.Task[None]] = set()
+_HISTORY_RECEIPT_WAIT_SECONDS = 5.0
+
+
+async def _await_history_receipt(completion_receipt: Future[None]) -> None:
+    """Wait briefly for the terminal history row without cancelling its writer."""
+
+    try:
+        await wait_for_history_receipt(
+            completion_receipt,
+            timeout=_HISTORY_RECEIPT_WAIT_SECONDS,
+        )
+    except TimeoutError:
+        logger.warning(
+            "history completion receipt not confirmed within %.1fs",
+            _HISTORY_RECEIPT_WAIT_SECONDS,
+        )
+
+
+def _announce_durable_completion(
+    session_id: str,
+    request_id: str,
+    completion_receipt: Future[None],
+) -> None:
+    """Notify Gateway after the request-completion row reaches durable history."""
+
+    loop = asyncio.get_running_loop()
+
+    def announce() -> None:
+        task = loop.create_task(
+            WebSocketGatewayPushTransport().send_push(
+                {
+                    "channel_id": "",
+                    "session_id": session_id,
+                    "request_id": request_id,
+                    "payload": {"event_type": SESSION_REQUEST_COMPLETED_EVENT},
+                }
+            )
+        )
+        _COMPLETION_ANNOUNCEMENTS.add(task)
+        task.add_done_callback(_COMPLETION_ANNOUNCEMENTS.discard)
+
+    def on_written(receipt: Future[None]) -> None:
+        if receipt.cancelled() or receipt.exception() is not None:
+            return
+        try:
+            loop.call_soon_threadsafe(announce)
+        except RuntimeError:
+            # The event loop may already be closing during process shutdown.
+            logger.debug("completion announcement skipped during shutdown")
+
+    completion_receipt.add_done_callback(on_written)
+
+
+def _complete_history_request(
+    session_id: str,
+    request_id: str,
+    *,
+    terminal_status: str = "success",
+) -> Future[None] | None:
+    """Persist and announce the terminal boundary for a regular chat request."""
+
+    completion_receipt = enqueue_history_request_completion(
+        session_id,
+        request_id,
+        terminal_status=terminal_status,
+    )
+    if completion_receipt is not None:
+        _announce_durable_completion(session_id, request_id, completion_receipt)
+    return completion_receipt
 
 
 # SkillDev 请求方法集合（统一委托给 SkillDevService）
@@ -3223,6 +3341,20 @@ class JiuWenSwarm:
         if isinstance(request.params, dict):
             restore_chat_send_equipment_params(session_id, request.params)
         query = request.params.get("query", "")
+        feedback_scheduled = _session_message_owns_completion(request)
+        completion_receipt: Future[None] | None = None
+
+        def _schedule_feedback_once(terminal_status: str) -> None:
+            nonlocal feedback_scheduled, completion_receipt
+            if feedback_scheduled:
+                return
+            completion_receipt = _complete_history_request(
+                session_id,
+                request.request_id,
+                terminal_status=terminal_status,
+            )
+            feedback_scheduled = True
+
         # proactive_recommendation 是系统触发的推荐指令（不是用户说的话），不写 user
         # history——否则刷新页面会显示"[主动推荐指令] xxx"这种用户没说过的消息。
         if _should_record_user_history(request.params):
@@ -3248,7 +3380,11 @@ class JiuWenSwarm:
 
         try:
             inputs, memory_mode, user_turn = await self._build_inputs_async(request)
+        except asyncio.CancelledError:
+            _schedule_feedback_once("cancelled")
+            raise
         except _TeamPlanApprovalPayloadError as exc:
+            _schedule_feedback_once("error")
             return AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -3256,6 +3392,9 @@ class JiuWenSwarm:
                 payload={"error": str(exc)},
                 metadata=request.metadata,
             )
+        except Exception:
+            _schedule_feedback_once("error")
+            raise
 
         # Session-level MCP enable: reconcile to explicit mcp ∪ equipment
         # connectors before the agent runs. Always pass a list (never None):
@@ -3268,6 +3407,7 @@ class JiuWenSwarm:
                 session_id,
             )
         except (OSError, TypeError, ValueError) as exc:
+            _schedule_feedback_once("error")
             return AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -3275,6 +3415,12 @@ class JiuWenSwarm:
                 payload={"error": str(exc)},
                 metadata=request.metadata,
             )
+        except asyncio.CancelledError:
+            _schedule_feedback_once("cancelled")
+            raise
+        except Exception:
+            _schedule_feedback_once("error")
+            raise
         reconcile_kwargs: dict[str, Any] = {
             "model_name": params.get("model_name"),
             "history_before_request_id": request.request_id,
@@ -3288,11 +3434,18 @@ class JiuWenSwarm:
         moa_access = getattr(adapter, "moa_access_kwargs", None)
         if callable(moa_access):
             reconcile_kwargs.update(moa_access(request))
-        await self.reconcile_session_mcp(
-            request.session_id,
-            compute_chat_send_mcp_needed(params),
-            **reconcile_kwargs,
-        )
+        try:
+            await self.reconcile_session_mcp(
+                request.session_id,
+                compute_chat_send_mcp_needed(params),
+                **reconcile_kwargs,
+            )
+        except asyncio.CancelledError:
+            _schedule_feedback_once("cancelled")
+            raise
+        except Exception:
+            _schedule_feedback_once("error")
+            raise
 
         # cloud memory: before chat hook
         if memory_mode == "cloud":
@@ -3304,19 +3457,33 @@ class JiuWenSwarm:
                 workspace_dir=str(get_agent_home_dir()),
                 extra=request.params,
             )
-            await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.MEMORY_BEFORE_CHAT, mem_ctx)
+            try:
+                await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.MEMORY_BEFORE_CHAT, mem_ctx)
+            except asyncio.CancelledError:
+                _schedule_feedback_once("cancelled")
+                raise
+            except Exception:
+                _schedule_feedback_once("error")
+                raise
             memory_block = "\n\n".join(b for b in mem_ctx.memory_blocks if b)
             inputs["memory_block"] = memory_block
 
         async def run_agent_task():
             return await adapter.process_message_impl(request, inputs)
 
-        if schedule_session:
-            result = await self._session_manager.submit_and_wait(
-                session_id, run_agent_task
-            )
-        else:
-            result = await run_agent_task()
+        try:
+            if schedule_session:
+                result = await self._session_manager.submit_and_wait(
+                    session_id, run_agent_task
+                )
+            else:
+                result = await run_agent_task()
+        except asyncio.CancelledError:
+            _schedule_feedback_once("cancelled")
+            raise
+        except Exception:
+            _schedule_feedback_once("error")
+            raise
 
         if result.ok and result.payload.get("content"):
             content = result.payload["content"]
@@ -3383,6 +3550,9 @@ class JiuWenSwarm:
             if is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
                 _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=False)
 
+        _schedule_feedback_once("success" if result.ok else "error")
+        if completion_receipt is not None:
+            await _await_history_receipt(completion_receipt)
         return result
 
     async def deliver_session_input(
@@ -3862,10 +4032,27 @@ class JiuWenSwarm:
 
         rid = request.request_id
         cid = request.channel_id
+        feedback_scheduled = _session_message_owns_completion(request)
+        completion_receipt: Future[None] | None = None
+
+        def _schedule_feedback_once(terminal_status: str) -> None:
+            nonlocal feedback_scheduled, completion_receipt
+            if feedback_scheduled:
+                return
+            completion_receipt = _complete_history_request(
+                session_id,
+                rid,
+                terminal_status=terminal_status,
+            )
+            feedback_scheduled = True
 
         try:
             inputs, memory_mode, user_turn = await self._build_inputs_async(request)
+        except asyncio.CancelledError:
+            _schedule_feedback_once("cancelled")
+            raise
         except _TeamPlanApprovalPayloadError as exc:
+            _schedule_feedback_once("error")
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=cid,
@@ -3879,6 +4066,9 @@ class JiuWenSwarm:
                 is_complete=True,
             )
             return
+        except Exception:
+            _schedule_feedback_once("error")
+            raise
 
         # Session-level MCP enable: reconcile to explicit mcp ∪ equipment
         # connectors before the agent runs. Always pass a list (never None):
@@ -3891,6 +4081,7 @@ class JiuWenSwarm:
                 session_id,
             )
         except (OSError, TypeError, ValueError) as exc:
+            _schedule_feedback_once("error")
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=cid,
@@ -3898,6 +4089,12 @@ class JiuWenSwarm:
                 is_complete=True,
             )
             return
+        except asyncio.CancelledError:
+            _schedule_feedback_once("cancelled")
+            raise
+        except Exception:
+            _schedule_feedback_once("error")
+            raise
         reconcile_kwargs: dict[str, Any] = {
             "model_name": params.get("model_name"),
             "history_before_request_id": request.request_id,
@@ -3918,11 +4115,18 @@ class JiuWenSwarm:
                 **reconcile_kwargs,
             )
         except RuntimeError as exc:
+            _schedule_feedback_once("error")
             if not is_team_mode:
                 raise
             async for chunk in _team_preflight_failure_chunks(rid, cid, session_id, exc):
                 yield chunk
             return
+        except asyncio.CancelledError:
+            _schedule_feedback_once("cancelled")
+            raise
+        except Exception:
+            _schedule_feedback_once("error")
+            raise
         # Team 的交互回答走普通流式路径，不经过 deliver_control_input。
         # 与单 Agent 使用同一落盘格式，按原问题的 params.request_id 配对。
         await _persist_ask_user_answer_history(request, session_id, params)
@@ -3947,7 +4151,14 @@ class JiuWenSwarm:
                 workspace_dir=str(get_agent_home_dir()),
                 extra=request.params,
             )
-            await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.MEMORY_BEFORE_CHAT, mem_ctx)
+            try:
+                await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.MEMORY_BEFORE_CHAT, mem_ctx)
+            except asyncio.CancelledError:
+                _schedule_feedback_once("cancelled")
+                raise
+            except Exception:
+                _schedule_feedback_once("error")
+                raise
             memory_block = "\n\n".join(b for b in mem_ctx.memory_blocks if b)
             inputs["memory_block"] = memory_block
 
@@ -5078,9 +5289,11 @@ class JiuWenSwarm:
                             is_complete=False,
                         )
         except asyncio.CancelledError:
+            _schedule_feedback_once("cancelled")
             logger.info("[JiuWenSwarm] 流式处理被中断: request_id=%s", rid)
             raise
         except GeneratorExit:
+            _schedule_feedback_once("cancelled")
             logger.info("[JiuWenSwarm] 流式连接已关闭: request_id=%s", rid)
             raise
         finally:
@@ -5136,6 +5349,9 @@ class JiuWenSwarm:
         # (which may be full after a disconnect), but preserve the public
         # cancellation contract once all already-produced chunks are drained.
         if producer_cancellation is not None:
+            _schedule_feedback_once("cancelled")
+            if completion_receipt is not None:
+                await _await_history_receipt(completion_receipt)
             raise producer_cancellation
 
         assistant_message = final_answer_content or "".join(final_answer_chunks)
@@ -5218,6 +5434,9 @@ class JiuWenSwarm:
         if is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
             _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=True)
 
+        _schedule_feedback_once("success")
+        if completion_receipt is not None:
+            await _await_history_receipt(completion_receipt)
         yield AgentResponseChunk(
             request_id=rid,
             channel_id=cid,
