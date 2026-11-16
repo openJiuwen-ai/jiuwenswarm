@@ -320,11 +320,17 @@ class RecommendationHost:
         clear_recommendation_language_cache()
         clear_session_window_cache()
         service = self.topic_service
-        if service is not None and service.configuration_status().get("enabled"):
+        enabled = bool(
+            service is not None
+            and service.configuration_status().get("enabled")
+        )
+        if enabled:
             service.schedule_seed("recommendation-language-changed")
+        # The existing event contract carries the switch state; the frontend
+        # writes it straight into its recommendation state.
         await self.emit(
             TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
-            {"preferred_language": language},
+            {"enabled": enabled, "preferred_language": language},
         )
 
     async def session_left_project(self, project_id: str, session_id: str) -> None:

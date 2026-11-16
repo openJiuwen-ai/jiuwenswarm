@@ -155,6 +155,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_sources import (
     SearchFn,
     SourceAssessment,
     SourceClassifier,
+    corpus_version_for_language,
     default_fetch,
     load_fixed_starter_corpus,
 )
@@ -9700,7 +9701,10 @@ class TopicPipeline:
         corpus_text_by_id = {
             starter.starter_id: starter.text
             for starter in load_fixed_starter_corpus(
-                str(trigger_key["corpus_version"])
+                str(
+                    trigger_key.get("corpus_version")
+                    or corpus_version_for_language(self._language())
+                )
             )
         }
         return BackgroundGenerationResult(
