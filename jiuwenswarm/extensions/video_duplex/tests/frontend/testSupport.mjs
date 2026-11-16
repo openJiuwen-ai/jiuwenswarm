@@ -35,13 +35,22 @@ export async function loadModules(paths, { plugins = [], alias = { react: requir
 // This module is also the suite entry point; importing it never starts another runner.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   // Keep upstream tests that import prepared modules unchanged.
-  for (const name of ['joyaiPromptLifecycle', 'searchPresentation']) {
-    const directory = name === 'joyaiPromptLifecycle' ? 'joyai-prompt-lifecycle' : 'search-presentation';
-    await build({
-      entryPoints: [fileURLToPath(new URL(`VideoLivePanel/${name}.ts`, frontend))],
-      bundle: true, platform: 'node', format: 'esm',
-      outfile: fileURLToPath(new URL(`node_modules/.cache/${directory}/${name}.js`, webFrontend)),
-    });
+  for (const [directory, extension, names] of [
+    ['joyai-prompt-lifecycle', 'js', ['joyaiPromptLifecycle']],
+    ['search-presentation', 'js', ['searchPresentation']],
+    ['frame-encoding', 'mjs', ['frameEncoding']],
+    ['joyai-voice', 'js', ['joyaiVoice', 'speechGate']],
+    ['joyai-tool-context', 'js', ['joyaiToolContext']],
+    ['video-source', 'js', ['videoSource']],
+  ]) {
+    for (const name of names) {
+      await build({
+        entryPoints: [fileURLToPath(name === 'speechGate'
+          ? webSource('utils/speechDetection/speechGate.ts') : new URL(`VideoLivePanel/${name}.ts`, frontend))],
+        bundle: true, platform: 'node', format: 'esm',
+        outfile: fileURLToPath(new URL(`node_modules/.cache/${directory}/${name}.${extension}`, webFrontend)),
+      });
+    }
   }
   // Discover new tests automatically, independent of the shell's glob expansion.
   const files = readdirSync(new URL('./', import.meta.url))

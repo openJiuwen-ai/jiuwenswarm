@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { loadModules } from './testSupport.mjs';
-const { FRAME_MAX_JPEG_BYTES, FRAME_MAX_BASE64_BYTES, FrameEncoder, fitFrameSize, frameStepsFor } = await loadModules([
-  "VideoLivePanel/frameEncoding.ts",
-]);
+import {
+  FRAME_MAX_JPEG_BYTES,
+  FRAME_MAX_BASE64_BYTES,
+  FrameEncoder,
+  fitFrameSize,
+  frameStepsFor,
+} from '../../../../channels/web/frontend/node_modules/.cache/frame-encoding/frameEncoding.mjs';
 
 // Fake JPEG size: bytes per pixel shrink with quality; `density` stands in for picture detail.
 const fakeRenderer = (density, calls = []) => async (width, height, quality) => {

@@ -15,7 +15,7 @@ from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import parse_qw
 from jiuwenswarm.extensions.video_duplex.backend.task_adapter import task_identity
 from jiuwenswarm.extensions.video_duplex.backend.tasks.errors import QueueVersionConflict, TaskRevisionConflict
 from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import (
-    management_call, run_queue, tool_proposal, until,
+    run_queue, tool_proposal,
 )
 
 
@@ -51,6 +51,12 @@ def test_voice_job_has_a_total_bound_even_with_many_large_fields():
     assert result["job_id"] == "a"
     assert result["details_omitted"] is True
     assert len(json.dumps(result, ensure_ascii=False).encode("utf-8")) < 12000
+
+
+async def until(predicate):
+    async with asyncio.timeout(3):
+        while not predicate():
+            await asyncio.sleep(0.005)
 
 
 @pytest.fixture
@@ -877,6 +883,13 @@ async def test_voice_reorder_with_quoted_version_pushes_queue_and_changes_execut
     await until(lambda: q.record(desktop)["status"] == "completed")
 
 
+def management_call():
+    return parse_qwen_omni_tool_call({
+        "name": "jiuwen_queue_manage", "call_id": "manage-1",
+        "arguments": {"instruction": "先打开飞书，再打开微信"},
+    })
+
+
 def test_qwen_exposes_queue_manager_and_preserves_voice_approval_answers():
     names = {t["function"]["name"] for t in qwen_omni_tools(queue_manager=True)}
     assert names == {"jiuwen_delegate", "jiuwen_queue_manage", "jiuwen_task_answer", "jiuwen_form_answer"}
@@ -887,33 +900,48 @@ def test_qwen_exposes_queue_manager_and_preserves_voice_approval_answers():
 
 @pytest.mark.asyncio
 async def test_reorder_queries_then_executes_and_returns_real_receipts(monkeypatch):
-    arguments = {"job_id": "feishu", "action": "before", "before_job_id": "wechat"}
-    result, operate, _ = await run_queue(monkeypatch, [
-        tool_proposal("jiuwen_task_reorder", arguments), '{"response":"已将飞书排在微信前面。"}',
-    ], [{"jobs": [{"job_id": "wechat", "revision": 1}, {"job_id": "feishu", "revision": 1}]},
-        {"operation": {"state": "reordered"}}])
-    calls = operate.call_args_list
+    manager = SimpleNamespace(operate=AsyncMock(side_effect=[
+        {"jobs": [{"job_id": "wechat", "revision": 1}, {"job_id": "feishu", "revision": 1}]},
+        {"operation": {"state": "reordered"}},
+    ]))
+    step = AsyncMock(side_effect=[
+        json.dumps({"tool": {"name": "jiuwen_task_reorder", "arguments": {
+            "job_id": "feishu", "action": "before", "before_job_id": "wechat"}}}),
+        json.dumps({"response": "已将飞书排在微信前面。"}),
+    ])
+    monkeypatch.setattr(queue_manager, "request_step", step)
+    result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "先飞书再微信")
+    calls = manager.operate.call_args_list
     assert calls[0].args[2].name == "jiuwen_task_query"
     assert calls[1].args[:2] == ("alice", "voice")
-    assert calls[1].args[2].arguments == arguments
+    assert calls[1].args[2].arguments == {"job_id": "feishu", "action": "before", "before_job_id": "wechat"}
     assert result["receipts"][1]["receipt"]["operation"]["state"] == "reordered"
 
 
 @pytest.mark.asyncio
 async def test_unknown_ids_and_new_delegations_cannot_execute(monkeypatch):
-    for name, arguments in [("jiuwen_task_cancel", {"job_id": "guessed"}), ("jiuwen_delegate", {"task": "new"})]:
-        result, operate, _ = await run_queue(monkeypatch, tool_proposal(name, arguments), {"jobs": []})
+    for tool in [
+        {"name": "jiuwen_task_cancel", "arguments": {"job_id": "guessed"}},
+        {"name": "jiuwen_delegate", "arguments": {"task": "new"}},
+    ]:
+        manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": []}))
+        monkeypatch.setattr(queue_manager, "request_step", AsyncMock(return_value=json.dumps({"tool": tool})))
+        result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "取消任务")
         assert result["state"] == "incomplete"
-        assert operate.await_count == 1
+        assert manager.operate.await_count == 1
 
 
 @pytest.mark.asyncio
 async def test_joyai_manager_cannot_submit_information_answers(monkeypatch):
-    result, operate, step = await run_queue(monkeypatch, tool_proposal("jiuwen_task_answer", {
-        "job_id": "form", "interaction_id": "question", "answers": ["yes"],
-    }), {"jobs": [{"job_id": "form", "revision": 1}]}, allow_answers=False, reply_language="en")
+    manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": [{"job_id": "form", "revision": 1}]}))
+    step = AsyncMock(return_value=json.dumps({"tool": {"name": "jiuwen_task_answer", "arguments": {
+        "job_id": "form", "interaction_id": "question", "answers": ["yes"]}}}))
+    monkeypatch.setattr(queue_manager, "request_step", step)
+    result = await queue_manager.manage_queue(
+        manager, "alice", "voice", management_call(), "回答问题", allow_answers=False, reply_language="en",
+    )
     assert result["state"] == "incomplete"
-    assert operate.await_count == 1
+    assert manager.operate.await_count == 1
     context = json.loads(step.call_args.args[0][1]["content"])
     assert context["reply_language"] == "en"
     assert "jiuwen_task_answer" not in [t["function"]["name"] for t in context["allowed_tools"]]
@@ -941,7 +969,6 @@ async def test_invalid_proposal_is_corrected_without_user_error(monkeypatch, inv
     assert json.loads(step.call_args.args[0][-1]["content"])["applied"] is False
 
 
-
 @pytest.mark.asyncio
 async def test_duplicate_write_reuses_receipt_without_dispatch(monkeypatch):
     write = tool_proposal("jiuwen_task_cancel", {"job_id": "a"})
@@ -952,7 +979,6 @@ async def test_duplicate_write_reuses_receipt_without_dispatch(monkeypatch):
     assert result["receipts"][1]["receipt"] == result["receipts"][2]["receipt"]
 
 
-
 @pytest.mark.asyncio
 async def test_operational_exception_is_not_replayed_as_validation_error(monkeypatch):
     result, operate, step = await run_queue(monkeypatch, tool_proposal("jiuwen_task_cancel", {"job_id": "a"}),
@@ -961,7 +987,6 @@ async def test_operational_exception_is_not_replayed_as_validation_error(monkeyp
     assert result["error"] == "connection lost after dispatch"
     assert operate.await_count == 2
     assert step.await_count == 1
-
 
 
 @pytest.mark.asyncio
@@ -980,7 +1005,6 @@ async def test_revision_conflict_can_query_then_correct_without_replaying_old_wr
     assert operate.await_count == 4
     assert operate.await_args_list[1].args[2].arguments["revision"] == 1
     assert operate.await_args_list[3].args[2].arguments["revision"] == 2
-
 
 
 @pytest.mark.asyncio
@@ -1006,7 +1030,6 @@ async def test_gateway_duplicate_call_shares_execution(monkeypatch):
     assert mocked.await_count == 1
     assert channel.send_response.await_count == 2
     await manager.close()
-
 
 
 @pytest.mark.asyncio
@@ -1036,7 +1059,6 @@ async def test_text_manager_changes_real_queue_order(tmp_path, monkeypatch):
         await manager.close()
 
 
-
 @pytest.mark.asyncio
 async def test_pending_management_is_cancellable_and_does_not_repeat_operations(monkeypatch):
     manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": []}))
@@ -1057,7 +1079,6 @@ async def test_pending_management_is_cancellable_and_does_not_repeat_operations(
     with pytest.raises(asyncio.CancelledError):
         await pending
     assert manager.operate.await_count == 1
-
 
 
 @pytest.mark.asyncio
@@ -1083,7 +1104,6 @@ async def test_model_request_preserves_configured_network_timeout(monkeypatch):
     assert await queue_manager.request_step([]) == '{"response":"done"}'
     assert received[0].timeout == 77
     invoke.assert_awaited_once_with([])
-
 
 
 @pytest.mark.asyncio

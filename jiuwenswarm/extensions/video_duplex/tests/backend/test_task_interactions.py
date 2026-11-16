@@ -1098,14 +1098,14 @@ async def test_joyai_may_answer_approval_cards_but_not_information_forms(approva
         await manager.operate("alice", SCOPE, call, approvals_only=True)
 
 
-async def test_compact_form_answer_binds_only_unique_scoped_information_card(system):
+async def test_compact_form_answer_binds_only_unique_scoped_information_card(system, monkeypatch):
     from jiuwenswarm.extensions.video_duplex.backend.task_adapter import VideoSearchManager
 
     service, executor = system
     task = submit(service, "compact-form")
     await until(lambda: service.store.read(task["id"])["output_closed"])
     manager = object.__new__(VideoSearchManager)
-    manager._service = service
+    monkeypatch.setattr(manager, "_service", service, raising=False)
     call = parse_qwen_omni_tool_call({
         "name": "jiuwen_form_answer", "call_id": "compact-answer",
         "arguments": {"answers": ["230"]},
@@ -1120,7 +1120,7 @@ async def test_compact_form_answer_binds_only_unique_scoped_information_card(sys
     assert await manager.operate("user", "voice", call) == receipt
 
 
-async def test_compact_form_answer_refuses_ambiguous_and_permission_cards():
+async def test_compact_form_answer_refuses_ambiguous_and_permission_cards(monkeypatch):
     from contextlib import nullcontext
     from unittest.mock import AsyncMock
     from jiuwenswarm.extensions.video_duplex.backend.task_adapter import VideoSearchManager
@@ -1131,9 +1131,10 @@ async def test_compact_form_answer_refuses_ambiguous_and_permission_cards():
     rows = [task, {**task, "id": "two"}]
     answer = AsyncMock()
     manager = object.__new__(VideoSearchManager)
-    manager._service = SimpleNamespace(answer=answer, store=SimpleNamespace(
+    service = SimpleNamespace(answer=answer, store=SimpleNamespace(
         transaction=lambda: nullcontext(None), rows=lambda db, owner, scope: rows,
     ))
+    monkeypatch.setattr(manager, "_service", service, raising=False)
     call = parse_qwen_omni_tool_call({
         "name": "jiuwen_form_answer", "call_id": "answer", "arguments": {"answers": ["yes"]},
     })

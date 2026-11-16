@@ -1026,13 +1026,16 @@ class VideoSearchManager:
                 raise ValueError("JoyAI voice form answers are disabled; complete the on-screen form")
             with self.service.store.transaction() as db:
                 tasks = self.service.store.rows(db, owner, scope)
-                replay = [task for task in tasks
-                          if (task.get("interaction") or {}).get("source") == "ask_user_interrupt"
-                          and task["interaction"].get("operation_id") == call.call_id]
-                candidates = replay or [task for task in tasks
-                              if task["status"] == "waiting_user"
-                              and (task.get("interaction") or {}).get("state") == "pending"
-                              and task["interaction"].get("source") == "ask_user_interrupt"]
+                replay, pending = [], []
+                for task in tasks:
+                    interaction = task.get("interaction") or {}
+                    if interaction.get("source") != "ask_user_interrupt":
+                        continue
+                    if interaction.get("operation_id") == call.call_id:
+                        replay.append(task)
+                    if task["status"] == "waiting_user" and interaction.get("state") == "pending":
+                        pending.append(task)
+                candidates = replay or pending
             if len(candidates) != 1:
                 raise ValueError("Select exactly one pending information form before answering")
             task = candidates[0]
