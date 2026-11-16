@@ -420,12 +420,15 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
         session_id: str | None, phase: str, error: Exception,
     ) -> None:
         known = isinstance(error, (PermissionApprovalInvalidated, PermissionRememberUnavailable))
+        request_scope = "unknown"
+        if attempt.approved:
+            request_scope = "session" if attempt.session_only else "user" if attempt.remember_requested else "once"
         logger.warning(
             "[PermissionInterruptRail] permission.approval.invalidated "
             "session_id=%s tool_call_id=%s tool=%s phase=%s "
             "request_scope=%s reason_code=%s error_type=%s",
             session_id, attempt.tool_call_id, normalized_name, phase,
-            "session" if attempt.session_only else "user" if attempt.remember_requested else "once",
+            request_scope,
             str(error) if known else "unexpected_error", type(error).__name__,
             exc_info=not known,
         )

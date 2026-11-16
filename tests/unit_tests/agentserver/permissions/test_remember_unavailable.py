@@ -123,7 +123,10 @@ async def test_unavailable_remember_never_writes_a_nonempty_auto_confirm_key(sto
     ("persist", PermissionApprovalInvalidated("current_policy_denied")),
     ("persist", RuntimeError("unexpected storage failure")),
 ])
-async def test_other_approval_failures_still_reject_and_log_the_phase(storage, tmp_path, monkeypatch, caplog, phase, error):
+@pytest.mark.parametrize("permanent,scope", [(False, "session"), (True, "user")])
+async def test_other_approval_failures_still_reject_and_log_the_phase(
+    storage, tmp_path, monkeypatch, caplog, phase, error, permanent, scope,
+):
     policy, _ = storage
     rail = build(policy, tmp_path, "session-a", True)
 
@@ -133,12 +136,13 @@ async def test_other_approval_failures_still_reject_and_log_the_phase(storage, t
         return True
 
     monkeypatch.setattr(rail.base_rail, "_exact_persist_callback", persist)
-    resumed = await approve(rail, context("session-a", "unknown_lookup", {"query": "private-args"}), False)
+    resumed = await approve(rail, context("session-a", "unknown_lookup", {"query": "private-args"}), permanent)
     assert exact._EXACT_PERSIST_ATTEMPT.get() is None
     assert resumed.extra["_skip_tool"] is True
     assert "approval_invalidated" in str(resumed.extra)
     records = [record.getMessage() for record in caplog.records if "permission.approval.invalidated" in record.getMessage()]
     assert len(records) == 1 and f"phase={phase}" in records[0]
+    assert f"request_scope={scope}" in records[0]
     assert "tool_call_id=call-1" in records[0] and "session_id=session-a" in records[0]
     assert "private-args" not in records[0]
     assert not layers.user_permissions_path().exists()
@@ -160,18 +164,52 @@ def test_unvalidated_attempt_cannot_fall_back(storage, tmp_path, monkeypatch, mi
         exact._EXACT_PERSIST_ATTEMPT.reset(token)
 
 
-async def test_hosted_remember_without_card_validation_stays_rejected(storage, tmp_path, monkeypatch):
-    policy, _ = storage
+@pytest.mark.parametrize("permanent", [False, True])
+async def test_hosted_remember_without_card_validation_stays_rejected(
+    storage, tmp_path, monkeypatch, caplog, permanent,
+):
+    policy, global_path = storage
     base = build(policy, tmp_path, "session-a", True).base_rail
+    paths = [global_path, layers.user_permissions_path(), layers.session_permissions_path("session-a")]
+    before = _bytes(paths)
     monkeypatch.setattr(base, "_exact_persist_callback", Mock(side_effect=PermissionRememberUnavailable("approval_rule_unavailable")))
     monkeypatch.setattr(base._host, "permission_scene_hook", None)
-    hosted = AsyncMock(return_value=PermissionConfirmResponse(approved=True, auto_confirm=True, persist_allow=False))
+    hosted = AsyncMock(return_value=PermissionConfirmResponse(
+        approved=True, auto_confirm=True, persist_allow=permanent,
+    ))
     monkeypatch.setattr(base._host, "request_permission_confirmation", hosted)
     first = context("session-a", "bash", _compound_command(tmp_path))
     decision = await base.resolve_interrupt(first, first.inputs.tool_call, None)
     assert isinstance(decision, RejectResult) and "approval_invalidated" in str(decision.tool_result)
     hosted.assert_awaited_once()
+    assert exact._EXACT_PERSIST_ATTEMPT.get() is None
     assert first.session.get_state(INTERRUPT_AUTO_CONFIRM_KEY) in (None, {})
+    assert _bytes(paths) == before
+    records = [
+        record.getMessage() for record in caplog.records
+        if "permission.approval.invalidated" in record.getMessage()
+    ]
+    assert len(records) == 1 and "phase=persist" in records[0]
+    assert "request_scope=unknown" in records[0]
+    assert "tool_call_id=call-1" in records[0] and "session_id=session-a" in records[0]
+
+
+async def test_single_use_validation_failure_keeps_once_scope(storage, tmp_path, monkeypatch, caplog):
+    policy, _ = storage
+    rail = build(policy, tmp_path, "session-a", True)
+    persist = Mock(side_effect=PermissionApprovalInvalidated("approval_accesses_changed"))
+    monkeypatch.setattr(rail.base_rail, "_exact_persist_callback", persist)
+    resumed = await approve(
+        rail, context("session-a", "unknown_lookup", {"query": "private-args"}), False, remember=False,
+    )
+    assert resumed.extra["_skip_tool"] is True and "approval_invalidated" in str(resumed.extra)
+    records = [
+        record.getMessage() for record in caplog.records
+        if "permission.approval.invalidated" in record.getMessage()
+    ]
+    assert len(records) == 1 and "phase=validate" in records[0]
+    assert "request_scope=once" in records[0]
+    assert "private-args" not in records[0]
 
 
 def test_safe_rule_unavailability_is_distinct_and_does_not_write(storage, tmp_path):
