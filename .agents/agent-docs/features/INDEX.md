@@ -28,8 +28,9 @@ generated: true
 | [jiuwenswarm/resources](#module-11) |
 | [jiuwenswarm/resources/plugins/ttse](#module-12) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-13) |
-| [scripts](#module-14) |
-| [tests](#module-15) |
+| [jiuwenswarm/server/runtime/gateway_adapter](#module-14) |
+| [scripts](#module-15) |
+| [tests](#module-16) |
 
 <a id="module-1"></a>
 
@@ -79,6 +80,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, tests/unit_tests/agentserver/test_tool_discovery_language.py | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
+| [F_20261114_0017_authorized-original-file-download](F_20261114_0017_authorized-original-file-download.md) | F | 授权附件原文件引用与 SHA-256 留痕实施 | nypdmax | jiuwenswarm/common, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/server/runtime/gateway_adapter | jiuwenswarm/common/verified_download_assets.py, jiuwenswarm/common/file_download_token.py, jiuwenswarm/agents/harness/common/tools/send_file_to_user.py, jiuwenswarm/server/runtime/gateway_adapter/workspace_file_adapter.py | [D-20261113-1809-authorized-original-file-download](../designs/active/D-20261113-1809-authorized-original-file-download/design.md) |
 
 <a id="module-7"></a>
 
@@ -104,6 +106,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [F_20261110_2026_affinity-settings](F_20261110_2026_affinity-settings.md) | F | 实验功能算力亲和开关与自定义模型能力接入 | MengHan18 | jiuwenswarm/common, jiuwenswarm/channels/web/frontend/src/features/settings | jiuwenswarm/common/kv_cache_affinity_config.py, jiuwenswarm/common/config.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/common/config_panel/model_resource_handlers.py, jiuwenswarm/common/config_panel/models_handlers.py, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/ModelDialog.tsx, jiuwenswarm/channels/web/frontend/src/features/settings/modules/experimental/definition.ts, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/server/runtime/session/kv_cache/kv_cache_model_provider.py, jiuwenswarm/server/runtime/session/kv_cache/kv_cache_application_runtime.py | 无独立 D：外部初始方案为 docs_HM_kvc/E前端开关打开/01 和 02；全局准入和交互按用户确认的 04 小白版文档替代，无仓库内 D 标识。 |
 | [F_20261111_1528_unified-observability-config](F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | jiuwenswarm/common, jiuwenswarm/agents/harness, jiuwenswarm/resources, deploy/yuanrong, scripts | jiuwenswarm/common/observability_config.py, jiuwenswarm/common/config.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/agents/harness/team/team_manager.py, jiuwenswarm/resources/config.yaml, deploy/yuanrong/conf/gateway-config-yuanrong.template.yaml, scripts/reset_trajectory_data.py, tests/unit_tests/common/test_observability_config.py, tests/unit_tests/agentserver/test_trajectory_runtime_wiring.py | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
+| [F_20261114_0017_authorized-original-file-download](F_20261114_0017_authorized-original-file-download.md) | F | 授权附件原文件引用与 SHA-256 留痕实施 | nypdmax | jiuwenswarm/common, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/server/runtime/gateway_adapter | jiuwenswarm/common/verified_download_assets.py, jiuwenswarm/common/file_download_token.py, jiuwenswarm/agents/harness/common/tools/send_file_to_user.py, jiuwenswarm/server/runtime/gateway_adapter/workspace_file_adapter.py | [D-20261113-1809-authorized-original-file-download](../designs/active/D-20261113-1809-authorized-original-file-download/design.md) |
 
 <a id="module-10"></a>
 
@@ -141,13 +144,21 @@ generated: true
 
 <a id="module-14"></a>
 
+## jiuwenswarm/server/runtime/gateway_adapter
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [F_20261114_0017_authorized-original-file-download](F_20261114_0017_authorized-original-file-download.md) | F | 授权附件原文件引用与 SHA-256 留痕实施 | nypdmax | jiuwenswarm/common, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/server/runtime/gateway_adapter | jiuwenswarm/common/verified_download_assets.py, jiuwenswarm/common/file_download_token.py, jiuwenswarm/agents/harness/common/tools/send_file_to_user.py, jiuwenswarm/server/runtime/gateway_adapter/workspace_file_adapter.py | [D-20261113-1809-authorized-original-file-download](../designs/active/D-20261113-1809-authorized-original-file-download/design.md) |
+
+<a id="module-15"></a>
+
 ## scripts
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [F_20261111_1528_unified-observability-config](F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | jiuwenswarm/common, jiuwenswarm/agents/harness, jiuwenswarm/resources, deploy/yuanrong, scripts | jiuwenswarm/common/observability_config.py, jiuwenswarm/common/config.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/agents/harness/team/team_manager.py, jiuwenswarm/resources/config.yaml, deploy/yuanrong/conf/gateway-config-yuanrong.template.yaml, scripts/reset_trajectory_data.py, tests/unit_tests/common/test_observability_config.py, tests/unit_tests/agentserver/test_trajectory_runtime_wiring.py | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
 
-<a id="module-15"></a>
+<a id="module-16"></a>
 
 ## tests
 
