@@ -337,6 +337,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261107_1505_6226-forwarding-replay](bugfix/jiuwenswarm/server/supervisor/B_20261107_1505_6226-forwarding-replay.md) | B | 历史回放触发转发队列溢出及前端计时不收尾 | kdgmpw | jiuwenswarm/server/supervisor, jiuwenswarm/channels/web/frontend | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, tests/unit_tests/agentserver/test_supervisor_forwarding.py, jiuwenswarm/channels/web/frontend/tests/sessionInput.test.mjs | 无独立 D：对现有有界转发及前端终态处理的小范围修复，无独立设计。 |
+| [B_20261116_1726_6709-retirement-retry](bugfix/jiuwenswarm/server/supervisor/B_20261116_1726_6709-retirement-retry.md) | B | Worker 退出确认超时后恢复自动重试 | 刘瑜 | jiuwenswarm/server/supervisor | jiuwenswarm/server/supervisor/runtime_supervisor.py, tests/unit_tests/agentserver/test_worker_retirement_recovery.py, tests/unit_tests/agentserver/test_worker_shutdown_deadline.py, tests/unit_tests/agentserver/test_runtime_worker_phase2.py | 无独立 D：修复现有 Worker 退休与退避恢复之间的断链，复用已有恢复入口和身份校验，无独立设计。 |
 
 <a id="module-31"></a>
 
