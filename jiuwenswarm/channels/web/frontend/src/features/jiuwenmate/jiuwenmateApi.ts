@@ -827,6 +827,7 @@ function toActivityDay(value: unknown): JiuwenMateActivityDay | null {
     tasks: count(row.tasks),
     ...(row.finished_tasks !== undefined ? { finishedTasks: count(row.finished_tasks) } : {}),
     ...(row.failures !== undefined ? { failures: count(row.failures) } : {}),
+    ...(row.replies !== undefined ? { replies: count(row.replies) } : {}),
     minutes: count(row.minutes),
     calls: count(row.calls),
     tokens: count(row.tokens),

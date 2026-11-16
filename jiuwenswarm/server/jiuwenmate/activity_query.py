@@ -197,6 +197,7 @@ def assemble_activity(
         day_tasks: dict[str, int] = defaultdict(int)
         day_finished_tasks: dict[str, int] = defaultdict(int)
         day_failures: dict[str, int] = defaultdict(int)
+        day_replies: dict[str, int] = defaultdict(int)
         day_minutes: dict[str, int] = defaultdict(int)
         day_calls: dict[str, int] = defaultdict(int)
         day_tokens: dict[str, int] = defaultdict(int)
@@ -231,6 +232,7 @@ def assemble_activity(
                 day_finished_tasks[day] += 1
             if outcome == "completed":
                 replies += 1
+                day_replies[day] += 1
             elif outcome == "failed":
                 failures += 1
                 day_failures[day] += 1
@@ -335,6 +337,7 @@ def assemble_activity(
                 "tasks": day_tasks[day],
                 "finished_tasks": day_finished_tasks[day],
                 "failures": day_failures[day],
+                "replies": day_replies[day],
                 "minutes": day_minutes[day],
                 "calls": day_calls[day],
                 "tokens": day_tokens[day],
