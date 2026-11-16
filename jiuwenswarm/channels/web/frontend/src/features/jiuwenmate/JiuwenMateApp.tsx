@@ -17,6 +17,7 @@ import {
   finishColleagueAuthorization,
   openColleagueAuthorization,
   openColleagueCreation,
+  clearWorkspaceIntent,
   openColleagueMessages,
   openColleagueProfile,
   openColleagueWorkspace,
@@ -427,6 +428,7 @@ export function JiuwenMateApp({
 
   const handleRailViewChange = (view: JiuwenMateRailView) => {
     if (view === 'office' && groupId) onSelectGroup();
+    if (view === 'messages') setWorkspaceIntent(clearWorkspaceIntent);
     showFeature(view, view === 'office' ? openOffice : openColleagueMessages);
   };
 
