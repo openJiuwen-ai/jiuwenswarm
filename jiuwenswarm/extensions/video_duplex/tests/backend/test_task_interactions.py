@@ -1106,3 +1106,59 @@ async def test_joyai_may_answer_approval_cards_but_not_information_forms(approva
         "job_id": task["id"], "interaction_id": "question-a", "answers": ["5000"]})
     with pytest.raises(ValueError, match="JoyAI voice form answers are disabled"):
         await manager.operate("alice", SCOPE, call, approvals_only=True)
+
+
+async def test_compact_form_answer_binds_only_unique_scoped_information_card(system):
+    from jiuwenswarm.extensions.video_duplex.backend.task_adapter import VideoSearchManager
+
+    service, executor = system
+    task = submit(service, "compact-form")
+    await until(lambda: service.store.read(task["id"])["output_closed"])
+    manager = object.__new__(VideoSearchManager)
+    manager._service = service
+    call = parse_qwen_omni_tool_call({
+        "name": "jiuwen_form_answer", "call_id": "compact-answer",
+        "arguments": {"answers": ["230"]},
+    })
+    with pytest.raises(ValueError, match="pending information form"):
+        await manager.operate("other-user", "voice", call)
+    receipt = await manager.operate("user", "voice", call)
+    assert receipt["state"] == "accepted"
+    assert await manager.operate("user", "voice", call) == receipt
+    await until(lambda: service.store.read(task["id"])["status"] == "completed")
+    assert service.store.read(task["id"])["result"]["answer"] == "230"
+    assert await manager.operate("user", "voice", call) == receipt
+
+
+def test_compact_form_answer_rejects_ids_and_malformed_answers():
+    for args in [{"answers": []}, {"answers": [""]}, {"answers": [True]},
+                 {"answers": ["yes"], "token": "old"}, {"answers": ["yes"], "job_id": "other"}]:
+        with pytest.raises(ValueError):
+            parse_qwen_omni_tool_call({"name": "jiuwen_form_answer", "call_id": "invalid", "arguments": args})
+
+
+async def test_compact_form_answer_refuses_ambiguous_and_permission_cards():
+    from contextlib import nullcontext
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.extensions.video_duplex.backend.task_adapter import VideoSearchManager
+
+    task = {"id": "one", "status": "waiting_user", "interaction": {
+        "id": "question", "source": "ask_user_interrupt", "state": "pending",
+    }}
+    rows = [task, {**task, "id": "two"}]
+    answer = AsyncMock()
+    manager = object.__new__(VideoSearchManager)
+    manager._service = SimpleNamespace(answer=answer, store=SimpleNamespace(
+        transaction=lambda: nullcontext(None), rows=lambda db, owner, scope: rows,
+    ))
+    call = parse_qwen_omni_tool_call({
+        "name": "jiuwen_form_answer", "call_id": "answer", "arguments": {"answers": ["yes"]},
+    })
+    with pytest.raises(ValueError, match="pending information form"):
+        await manager.operate("user", "voice", call)
+    rows[:] = [{**task, "interaction": {**task["interaction"], "source": "permission_interrupt"}}]
+    with pytest.raises(ValueError, match="pending information form"):
+        await manager.operate("user", "voice", call)
+    with pytest.raises(ValueError, match="JoyAI voice form answers are disabled"):
+        await manager.operate("user", "voice", call, approvals_only=True)
+    answer.assert_not_awaited()

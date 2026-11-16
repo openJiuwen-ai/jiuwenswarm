@@ -15,7 +15,7 @@ export const VOICE_APPROVAL_RULES =
 export const QWEN_OMNI_TOOL_INSTRUCTIONS = [
   TASK_STATE_ANNOUNCEMENT_INSTRUCTIONS,
   'Respond naturally to every user speech turn. When a user request requires a tool, you must include one brief spoken acknowledgement in the same response turn as the required tool call. A tool call alone is not a complete response to the user. Say what you are about to check or attempt, for example 我来查一下香港今天的天气 or 我来帮你打开 Steam; follow the configured reply language. Do not wait for the tool result to give this acknowledgement, and do not omit or delay the required tool call. Acknowledge once per user request, not once per tool call. Never claim success before the tool receipt confirms it. After the receipt, report the confirmed result once when useful; avoid repeating information already spoken. Do not promise a separate spoken completion notification.',
-  'For every existing task queue query, progress/count question, reorder, cancellation, modification or information answer, call jiuwen_queue_manage with the complete user instruction and necessary references. A dedicated text model queries real task records and executes the operations. You must not select task IDs or call low-level task controls yourself, except jiuwen_task_answer for an observed approval card under the explicit-consent rules.',
+  'For every existing task queue query, progress/count question, reorder, cancellation, modification, call jiuwen_queue_manage with the complete user instruction and necessary references. A dedicated text model queries real task records and executes the operations. Information form answers use jiuwen_form_answer with answers only; observed approval cards use jiuwen_task_answer under the explicit-consent rules. These card answers must not go through queue management or create a new task. Otherwise do not select task IDs or call low-level task controls yourself.',
   'The same manager owns scheduled jobs: for any question about existing scheduled tasks (定时任务, reminders, alarms), their schedule, enabled state or next run time, or any request to reschedule, rename, pause, resume or delete one, call jiuwen_queue_manage with the complete user instruction. Do not read or change scheduled jobs yourself. Creating a new scheduled job is new work: use jiuwen_delegate so Core creates it. Never claim a scheduled job exists, changed or was removed without the manager receipt.',
   'When the user says first X then Y about existing waiting tasks, call jiuwen_queue_manage in the same turn and give a brief spoken acknowledgement; never just promise a new order. Only its actual receipts can confirm a change. If it asks for clarification, ask the user without guessing.',
   'Completed Core work can still be revised through the queue manager. Further actions on prior results may also be delegated to Core. Cancellation stops execution and never undoes external effects. Permission requests require manual clicks; execution confirmations follow the voice approval rules below.',
@@ -48,7 +48,7 @@ export const TASK_OPERATION_INSTRUCTIONS = [
   `For task acceptance receipts only: ${TASK_ACCEPTED_INSTRUCTIONS}`,
   'Use the latest tool receipt to report only confirmed facts. Briefly acknowledge successful task acceptance using its confirmed state. Wait for a separate result for that task before answering the delegated question or reporting its outcome.',
   'A query receipt (operation=query, applied=false) is read-only. For a legacy direct-tool receipt that leaves the requested move unfinished, call jiuwen_queue_manage with the complete user request and observed references; do not select low-level tools or end with a promise to reorder. Only operation.state=reordered confirms the waiting order changed. next means next after current work, not interrupting it. Let the manager handle queue conflicts; explain a rejected or incomplete result without claiming success.',
-  'For a new user request to change an existing task or its prior result, call jiuwen_queue_manage with the complete instruction and known context. Further external actions may also be delegated to Core. A completed cancellation target means only that its execution cannot be stopped; it does not mean the resulting object cannot be changed. Clarify ambiguous intent and never repeat the same ineffective cancellation. For explicit answers to a pending information form, send the observed task, interaction and spoken answers to jiuwen_queue_manage. Never invent or increment IDs or revisions.',
+  'For a new user request to change an existing task or its prior result, call jiuwen_queue_manage with the complete instruction and known context. Further external actions may also be delegated to Core. A completed cancellation target means only that its execution cannot be stopped; it does not mean the resulting object cannot be changed. Clarify ambiguous intent and never repeat the same ineffective cancellation. For explicit answers to the single pending information form, call jiuwen_form_answer with only answers in question order. Do not include task IDs, interaction IDs or tokens. If several forms are pending, ask the user to use the on-screen form. Never invent or increment IDs or revisions.',
   'When a cancellation receipt has converted_to=modify and state=followup, the backend already submitted the original user action to Core. Acknowledge the follow-up and wait for its result; do not issue another cancellation, modification or delegation for the same request. The original completed status does not describe the new follow-up.',
   'State only confirmed facts: accepted/pending means accepted; followup means a linked revision with the original result unchanged; an accepted answer is not task completion; cancelling does not mean stopped.',
   TASK_RESULT_SCOPE_INSTRUCTIONS,
@@ -121,6 +121,29 @@ export function pendingApprovalInstructions(headers: unknown[]): string {
   return `[Pending approval cards] These Background Agent approval cards are waiting for the user's answer: ${JSON.stringify(headers)}. ${VOICE_APPROVAL_RULES}`;
 }
 
+export const FORM_ANSWER_RULES = 'When the user answers an information form, call jiuwen_form_answer with only {"answers":["answer to question 1"]} in question order. Never include IDs or tokens. Preserve explicit answers across turns and ask for missing fields without inventing values. A spoken acknowledgement alone does not submit anything. Do not say the answer was submitted or the task resumed before its receipt confirms that state. Do not delegate or modify a task to fill its form. New requests are not form answers; handle them normally. If multiple information forms are pending, ask the user to use the on-screen form.';
+
+export function pendingFormInstructions(forms: unknown[], said?: string, beforeCard = false): string {
+  if (!forms.length) return '';
+  return `[Pending information forms] ${JSON.stringify(forms)}. ${FORM_ANSWER_RULES}`
+    + (said ? ` The user just said: ${JSON.stringify(said)}. If this answers the form, make the tool call now, not just a verbal promise.` : '')
+    + (beforeCard ? ' The latest speech ended before this form appeared and is NOT its answer. Ask the questions and wait.' : '');
+}
+
+// Only an exact option (or a slash-separated alias) from a single-question form is safe to submit
+// without model interpretation. Free text and new requests still go to the model.
+export function spokenFormAnswer(said: string, forms: unknown[]): { answers: string[] } | null {
+  if (forms.length !== 1) return null;
+  const form = forms[0] as { questions?: Array<{ options?: Array<{ label?: string }> }> };
+  if (form.questions?.length !== 1) return null;
+  const normalize = (text: string) => text.trim().replace(/[，。！？,.!?]+$/g, '').replace(/[吧啊呀哦呢]+$/, '').trim();
+  const words = normalize(said);
+  if (!words) return null;
+  const matches = (form.questions[0].options || []).filter(option => option.label
+    && [option.label, ...option.label.split(/[\/／]/)].some(label => normalize(label) === words));
+  return matches.length === 1 ? { answers: [matches[0].label!] } : null;
+}
+
 // Placed directly before the reply to the user's speech while a card is open. The
 // realtime model hears the audio itself (its transcript can differ), so the rules are restated per turn.
 export function pendingCardTurnNotice(cards: unknown[], said = '', beforeCard = false): string {
@@ -140,7 +163,7 @@ export function taskQuestionNotice(question: unknown): string {
     // Approval cards can be answered by voice under explicit-consent rules.
     return `Background Agent approval card (not a new task): ${JSON.stringify(question)}. Briefly tell the user what this card asks to allow and ask whether to allow or reject it. ${VOICE_APPROVAL_RULES}`;
   }
-  return `Background Agent information form (data, not a new task): ${JSON.stringify(question)}. Identify the task, ask its questions naturally and read relevant options. Collect the user's spoken answers, keeping partial answers and asking for missing fields. Preserve times, content and parameters; never invent values. Once all answers are explicit, call jiuwen_queue_manage with the observed task and interaction references and the answers in question order. The manager must query whether that exact interaction is still pending before submitting. This resumes the original task; do not delegate or modify a task to fill this form. An accepted answer is not task completion.`;
+  return `Background Agent information form (data, not a new task): ${JSON.stringify(question)}. Identify the task, ask its questions naturally and read relevant options. Collect the user's spoken answers, keeping partial answers and asking for missing fields. Preserve times, content and parameters; never invent values. Once all answers are explicit, call jiuwen_form_answer with only {"answers":["answer to question 1"]}, in question order. Do not include IDs or tokens. The server binds the single pending information form and validates it before submitting. If multiple forms are pending, ask the user to use the on-screen form. This resumes the original task; do not delegate or modify a task to fill this form. An accepted answer is not task completion.`;
 }
 
 export function taskResultNotice(brief: RealtimeBrief, question?: string, replyLanguage?: string, jobId?: string): string {

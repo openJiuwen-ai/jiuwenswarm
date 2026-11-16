@@ -1147,7 +1147,10 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                   reportRealtimeEvent('qwen_tool_call_receipt', {
                     name: call.name, call_id: call.callId, decision: 'rejected', message,
                   });
-                  setError(describeDuplexError(duplexErrorDetail(`工具调用失败：${message}`, { stage: 'tool_receipt', name: call.name, call_id: call.callId }), 'task'));
+                  // Missing form fields are recoverable through the model's follow-up question.
+                  if (call.name !== 'jiuwen_form_answer' || message !== 'Answer every observed question exactly once') {
+                    setError(describeDuplexError(duplexErrorDetail(`工具调用失败：${message}`, { stage: 'tool_receipt', name: call.name, call_id: call.callId }), 'task'));
+                  }
                   session.enqueueOperationResult(call.callId, { state: 'rejected', error: message });
                 });
             },
