@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -122,6 +123,43 @@ async def _wait_http_listen(
     )
 
 
+def _load_web_peer_fingerprints(peer_directory: Path) -> set[str]:
+    from openjiuwen_runtime.foundation.security.link_profile import (
+        LinkProfileError,
+        cert_fingerprint,
+    )
+
+    try:
+        certificates = sorted(
+            path for path in peer_directory.iterdir() if path.suffix == ".crt"
+        )
+    except OSError as exc:
+        raise LinkProfileError(
+            f"cannot read Web mTLS peer directory {peer_directory}: {exc.strerror}"
+        ) from exc
+
+    fingerprints = set()
+    for certificate in certificates:
+        try:
+            fingerprints.add(cert_fingerprint(str(certificate)))
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "[WebHTTP] skipping invalid Web mTLS peer certificate %s (%s)",
+                certificate,
+                type(exc).__name__,
+            )
+    if not fingerprints:
+        raise LinkProfileError(
+            f"no valid Web mTLS peer certificates (*.crt) in {peer_directory}"
+        )
+    logger.info(
+        "[WebHTTP] loaded %d Web mTLS peer fingerprints from %s",
+        len(fingerprints),
+        peer_directory,
+    )
+    return fingerprints
+
+
 async def start_web_http_server(
     channel: Any,
     *,
@@ -142,6 +180,45 @@ async def start_web_http_server(
         )
 
     app = create_web_http_app(channel)
+    mode = os.getenv("JIUWENSWARM_LINK_MTLS_MODE", "").strip() or "off"
+    tls_options: dict[str, Any] = {}
+    if mode != "off":
+        from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
+
+        link_mtls = LinkMTLSConfig.from_env(role="gateway")
+        if link_mtls.enforced:
+            from openjiuwen_runtime.foundation.security.link_profile import (
+                DEFAULT_IDENTITY_ROOT,
+                PEER_CERT_SCOPE,
+                LinkProfileError,
+                fingerprint,
+            )
+            from openjiuwen_runtime.foundation.security.link_stream_guard import (
+                LinkBindingMiddleware,
+            )
+
+            tls_options = link_mtls.uvicorn_ssl_kwargs()
+            profile = link_mtls.profile
+            assert profile is not None
+            web_pins = _load_web_peer_fingerprints(DEFAULT_IDENTITY_ROOT / "web-peers")
+            binding = {name.lower(): value for name, value in profile.headers().items()}
+
+            def authorize_web(request: Any) -> None:
+                peer = request.scope.get(PEER_CERT_SCOPE)
+                health = request.scope.get("path") == "/api/v1/health"
+                if health and (not peer or fingerprint(peer) not in web_pins):
+                    # Preserve the existing service-identity checks for probes.
+                    profile.authorize(request.scope, request.headers)
+                    return
+                profile.verify_peer(peer, {"web"}, expected_fingerprints=web_pins)
+                if not health:
+                    headers = {name.lower(): value for name, value in request.headers.items()}
+                    if any(headers.get(name) != value for name, value in binding.items()):
+                        raise LinkProfileError(
+                            "request binding does not match authenticated deployment"
+                        )
+
+            app.add_middleware(LinkBindingMiddleware, authorize=authorize_web)
     cfg = uvicorn.Config(
         app=app,
         host=host,
@@ -149,15 +226,21 @@ async def start_web_http_server(
         log_level="info",
         access_log=False,
         lifespan="on",
+        **tls_options,
     )
+    if tls_options:
+        # Surface TLS context and server credential errors before spawning the task.
+        cfg.load()
     server = uvicorn.Server(cfg)
     task = asyncio.create_task(server.serve(), name="gateway-web-http")
     await _wait_http_listen(host, port, task)
     logger.info(
-        "[WebHTTP] listening http://%s:%s/api/v1 "
-        "(also /file-api /share-api /api/sessions*; health=/api/v1/health)",
+        "[WebHTTP] listening %s://%s:%s/api/v1 "
+        "(also /file-api /share-api /api/sessions*; health=/api/v1/health; mTLS mode=%s)",
+        "https" if tls_options else "http",
         host,
         port,
+        mode,
     )
     return server, task
 
