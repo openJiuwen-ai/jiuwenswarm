@@ -74,7 +74,9 @@ async def _sync_conversation_context(agent, session_id, context, react):
     records = batch.records
     # Retain consumed IDs even if Core compacts its message window.
     seen = getattr(context, "duplex_history_ids", None)
-    if seen is None:
+    if not isinstance(seen, set):
+        # 与上游标守卫同源：context 上混入的陌生去重集合（如测试替身的
+        # 魔法属性、外部写入的 dict）按"未建集合"处理，从当前消息窗口重建。
         seen = {
             (getattr(message, "metadata", None) or {}).get(HISTORY_ID)
             for message in context.get_messages()
