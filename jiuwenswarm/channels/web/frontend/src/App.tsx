@@ -1198,6 +1198,10 @@ function AppContent({
     if (!masterEnabled) return [...rsiFiltered, 'personalContext'];
     return rsiFiltered;
   }, [frontendPlatform, masterEnabled, rsiFeatureEnabled]);
+  const jiuwenMateHiddenPages = useMemo<JiuwenMateExistingPage[]>(
+    () => (FEATURE_PERSONAL_CONTEXT_UI && masterEnabled ? [] : ['personalContext']),
+    [masterEnabled],
+  );
 
   useEffect(() => {
     if (isEnterprise() && (ENTERPRISE_HIDDEN_NAV_ITEMS as readonly string[]).includes(activeNav)) {
@@ -4816,6 +4820,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           groupId={route.kind === 'group-chat' ? route.groupId : undefined}
           onSelectGroup={(groupId) => navigate(groupId ? { kind: 'group-chat', groupId } : { kind: 'chat-new' })}
           renderExistingPage={renderJiuwenMateExistingPage}
+          hiddenExistingPages={jiuwenMateHiddenPages}
           useInstalledExpertRef={openInstalledExpertRef}
           confirmDiscardSettings={confirmDiscardSettings}
         />
