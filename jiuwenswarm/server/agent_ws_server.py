@@ -124,7 +124,7 @@ from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     validate_sandbox_files_runtime,
 )
 from jiuwenswarm.server.utils.utils import is_team_params
-from jiuwenswarm.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     deprecate_mode,
     is_plan_mode,
     is_single_agent_mode,

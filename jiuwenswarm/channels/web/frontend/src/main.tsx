@@ -4,15 +4,11 @@ import { A2UIProvider } from '@a2ui/react';
 import type { A2UIClientEventMessage } from '@a2ui/react';
 import { injectStyles } from '@a2ui/react/styles';
 import App from './App.tsx'
-<<<<<<< RELEASE
 import { WebUIAppRoot } from './features/webui'
-||||||| BEFORE_PR_9610
-=======
 import { isUserLoginRoute, userWebPaths } from './auth/manager/userWebPaths';
 import { UserLoginPage } from './auth/manager/UserLoginPage';
 import { EnterpriseEntry } from './EnterpriseEntry.tsx'
 import { SkillPackInstallPlanHost } from './components/SkillPanel/SkillPackInstallPlan';
->>>>>>> DEVELOP
 import { ShareImageExportRunner } from './features/shareImageExport'
 import { openSourceSettingsPageDefinition } from './features/settings/registry/openSourceDefinition'
 import type { SettingsRequest } from './features/settings/services/settingsContract'
@@ -82,26 +78,14 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         client={browserRunner}
       />
     ) : (
-<<<<<<< RELEASE
       <WebUIAppRoot>
-        <App
-          settingsPageDefinition={openSourceSettingsPageDefinition}
-          resolveSettingsRequest={resolveOpenSourceSettingsRequest}
-        />
+        <EnterpriseEntry>
+          <App
+            settingsPageDefinition={isEnterprise() ? enterpriseSettingsPageDefinition : openSourceSettingsPageDefinition}
+            resolveSettingsRequest={resolveOpenSourceSettingsRequest}
+          />
+        </EnterpriseEntry>
       </WebUIAppRoot>
-||||||| BEFORE_PR_9610
-      <App
-        settingsPageDefinition={openSourceSettingsPageDefinition}
-        resolveSettingsRequest={resolveOpenSourceSettingsRequest}
-      />
-=======
-      <EnterpriseEntry>
-        <App
-          settingsPageDefinition={isEnterprise() ? enterpriseSettingsPageDefinition : openSourceSettingsPageDefinition}
-          resolveSettingsRequest={resolveOpenSourceSettingsRequest}
-        />
-      </EnterpriseEntry>
->>>>>>> DEVELOP
     )}
   </A2UIProvider>,
 )
