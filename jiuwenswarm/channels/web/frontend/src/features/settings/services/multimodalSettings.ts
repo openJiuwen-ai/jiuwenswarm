@@ -151,7 +151,10 @@ export class MultimodalSettingsStore {
         this.publish({ snapshot: result.snapshot, lastChange: result, loading: false });
         return result;
       } catch (error) {
-        this.publish({ error: { source: 'write', cause: error } });
+        // The model editor owns validation feedback; other failures remain page-visible.
+        if (operation !== 'models.upsert' || multimodalErrorDetails(error).code !== 'MM_VALIDATION_FAILED') {
+          this.publish({ error: { source: 'write', cause: error } });
+        }
         throw error;
       } finally {
         this.publish({ saving: false });

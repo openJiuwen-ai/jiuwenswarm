@@ -468,7 +468,6 @@
       "displayName": "模型展示名称",
       "displayNamePlaceholder": "默认使用模型名称，可自行修改",
       "nameInvalid": "请输入 1–100 个字符的模型展示名称",
-      "completeFields": "请完善模型配置中的必填项。",
       "add": "添加多模态模型",
       "edit": "编辑多模态模型",
       "deleteTitle": "删除模型？",
@@ -492,7 +491,7 @@
         "video_gen": "视频生成"
       },
       "errors": {
-        "MM_VALIDATION_FAILED": "请检查模型配置，确保所有必填项符合要求。",
+        "MM_VALIDATION_FAILED": "模型配置校验失败，请检查后重试。",
         "MM_CONFIRM_REQUIRED": "模型绑定发生变化，请重新确认受影响的工具。",
         "MM_MODEL_NOT_FOUND": "该模型已不存在，请重新选择。",
         "MM_MODEL_ID_CONFLICT": "模型标识冲突，请重新打开添加弹框。",
