@@ -34,6 +34,15 @@ export async function loadModules(paths, { plugins = [], alias = { react: requir
 
 // This module is also the suite entry point; importing it never starts another runner.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  // Keep upstream tests that import prepared modules unchanged.
+  for (const name of ['joyaiPromptLifecycle', 'searchPresentation']) {
+    const directory = name === 'joyaiPromptLifecycle' ? 'joyai-prompt-lifecycle' : 'search-presentation';
+    await build({
+      entryPoints: [fileURLToPath(new URL(`VideoLivePanel/${name}.ts`, frontend))],
+      bundle: true, platform: 'node', format: 'esm',
+      outfile: fileURLToPath(new URL(`node_modules/.cache/${directory}/${name}.js`, webFrontend)),
+    });
+  }
   // Discover new tests automatically, independent of the shell's glob expansion.
   const files = readdirSync(new URL('./', import.meta.url))
     .filter(name => name.endsWith('.test.mjs')).sort()
