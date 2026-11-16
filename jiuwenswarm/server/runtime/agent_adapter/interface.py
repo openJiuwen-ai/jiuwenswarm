@@ -44,6 +44,7 @@ from e2a.constants import (
     E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
 )
+from e2a.hooks import AgentServerHookEvents, MemoryHookContext
 
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_EXECUTE_OPTION_VALUES,
@@ -91,8 +92,6 @@ from jiuwenswarm.common.context_keys import (
     JIUWENSWARM_CHANNEL_CONTEXT_KEY,
     JIUWENSWARM_SKIP_A2UI_CONTEXT_KEY,
 )
-from jiuwenswarm.common.hook_event import AgentServerHookEvents
-from jiuwenswarm.common.hooks_context import MemoryHookContext
 from jiuwenswarm.common.input_guard import InputTooLongError
 from jiuwenswarm.common.schema.agent import (
     AgentRequest,
