@@ -555,6 +555,16 @@ Gateway pin 前移后仍须重锁并重新验证普通 pip 安装。
 - 未运行全仓 UT、远端 ST、完整桌面构建或真实搜索 E2E。主工作区环境、用户服务和
   Gateway 业务代码不变；本地结果不等同于新 CI 已通过。
 
+验证期间官方 develop 前移至 `078e8f5d2`，追加合并该提交（包含双工任务更新和 STUDIO 文案修正），
+没有新增冲突。最终候选重跑同一 12 文件组合为 **407 passed、1 failed、1 skipped**；
+前一轮的群续跑用例本轮通过，唯一失败改为
+`test_slow_legacy_retirement_cannot_exceed_election_deadline` 的 `close` 精确次数断言：
+40ms 测试窗口内观测到 2 次，而非 1 次。该测试、群续跑测试和 RuntimeSupervisor
+均与官方 develop 完全一致；不将其直接归因于搜索修复，也不声称已修复计时抖动。
+单独复跑三个 Worker 文件为 **39 passed、1 skipped**，前端再次为 **69 passed**。
+两个组合运行的失败记录均保留；未修改 Worker、放宽 deadline、改变断言或新增跳过。
+最终 JUnit 位于本地 `.tmp/ut9841-final-20261116.xml` 与 `.tmp/ut9841-worker-20261116.xml`，不提交。
+
 ## 残余限制
 
 语义评估仍可能误判或不可用，不能把所有相关搜索结果变成实时证据。剩余搜索源和页面布局也可能变动。
