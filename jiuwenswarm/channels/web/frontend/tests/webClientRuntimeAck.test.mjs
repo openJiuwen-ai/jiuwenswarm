@@ -46,6 +46,7 @@ class FakeWebSocket {
 globalThis.WebSocket = FakeWebSocket;
 
 const { webClient } = await import('../node_modules/.cache/web-client-runtime-ack/webClient.mjs');
+const { useChatStore } = await import('../node_modules/.cache/web-client-runtime-ack/chatStore.mjs');
 const { attachTeamSession, resetTeamAttachments } = await import(
   '../node_modules/.cache/web-client-runtime-ack/teamAttach.mjs'
 );
@@ -380,6 +381,108 @@ test('pending reconnect recovery preserves processing and retries only the origi
     offStatus();
     offSnapshot();
     await fresh.disconnect();
+  }
+});
+
+test('busy sessions keep their original cursor after the fast retry budget and request missing history', { timeout: 5000 }, async () => {
+  const fresh = new webClient.constructor();
+  const store = useChatStore.getState();
+  const sessionId = 'recover-lost-terminal';
+  const sent = [];
+  const history = [];
+  const offHistory = fresh.on('runtime.history_required', ({ payload }) => history.push(payload.session_id));
+  const recovered = new Promise((resolve) => {
+    fresh.on('chat.processing_status', ({ payload }) => {
+      if (payload.is_processing === false && payload.session_id === sessionId) resolve(payload);
+    });
+  });
+  const originalSend = FakeWebSocket.prototype.send;
+  try {
+    store.ensureRuntime(sessionId);
+    store.setProcessing(sessionId, true);
+    await fresh.connect();
+    FakeWebSocket.instance.receive({
+      type: 'event',
+      event: 'chat.delta',
+      payload: { session_id: sessionId, runtime_event: { worker_instance: 'worker', sequence: 42 } },
+    });
+    const turnRevision = store.getRuntime(sessionId).turnRevision;
+    store.appendReasoning(sessionId, 'Last execution output');
+    const lastReasoning = store.getRuntime(sessionId).reasoningSegments.at(-1);
+    await fresh.disconnect();
+    FakeWebSocket.prototype.send = function (raw) {
+      originalSend.call(this, raw);
+      const query = JSON.parse(raw);
+      sent.push(query);
+      const runtime = sent.length <= 3
+        ? { recovery_pending: true, retry_after_ms: 1 }
+        : { is_processing: false, history_required: false };
+      queueMicrotask(() => {
+        this.receive({ type: 'res', id: query.id, ok: true, payload: { runtime } });
+        if (sent.length === 3) {
+          for (const source of ['org_background', 'proactive_recommendation']) {
+            this.receive({
+              type: 'event',
+              event: 'chat.processing_status',
+              payload: { session_id: sessionId, is_processing: true, team_id: 'team', source },
+            });
+          }
+        }
+      });
+    };
+    await fresh.connect();
+    const status = await recovered;
+    assert.equal(status.is_processing, false);
+    assert.equal(status.timestamp, lastReasoning.updatedAt);
+    assert.equal(store.getRuntime(sessionId).turnRevision, turnRevision);
+    assert.deepEqual(history, [sessionId]);
+    assert.deepEqual(sent.map(({ method, params }) => ({ method, params })), Array.from({ length: 4 }, () => ({
+      method: 'session.get_metadata',
+      params: { session_id: sessionId, runtime_resume: { worker_instance: 'worker', after: 42 } },
+    })));
+  } finally {
+    FakeWebSocket.prototype.send = originalSend;
+    offHistory();
+    await fresh.disconnect();
+    store.removeRuntime(sessionId);
+  }
+});
+
+test('an idle recovery response cannot settle a newer locally started turn', async () => {
+  const fresh = new webClient.constructor();
+  const store = useChatStore.getState();
+  const sessionId = 'recover-old-turn';
+  const statuses = [];
+  const offStatus = fresh.on('chat.processing_status', ({ payload }) => statuses.push(payload));
+  try {
+    store.ensureRuntime(sessionId);
+    const initialRevision = store.getRuntime(sessionId).turnRevision;
+    store.setProcessing(sessionId, true, { newTurn: true });
+    assert.equal(store.getRuntime(sessionId).turnRevision, initialRevision + 1);
+    await fresh.connect();
+    FakeWebSocket.instance.receive({
+      type: 'event',
+      event: 'chat.delta',
+      payload: { session_id: sessionId, runtime_event: { worker_instance: 'worker', sequence: 9 } },
+    });
+    await fresh.disconnect();
+    await fresh.connect();
+    const request = FakeWebSocket.instance.lastRequest;
+    assert.equal(request.params.runtime_resume.after, 9);
+    store.setProcessing(sessionId, true, { newTurn: true });
+    FakeWebSocket.instance.receive({
+      type: 'res',
+      id: request.id,
+      ok: true,
+      payload: { runtime: { is_processing: false } },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(statuses, []);
+    assert.equal(store.getRuntime(sessionId).foregroundIsProcessing, true);
+  } finally {
+    offStatus();
+    await fresh.disconnect();
+    store.removeRuntime(sessionId);
   }
 });
 
