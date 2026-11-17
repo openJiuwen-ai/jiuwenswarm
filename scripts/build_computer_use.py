@@ -28,7 +28,7 @@ def bundle_data(project_root: Path) -> list[tuple[str, str]]:
     if stage.exists():
         shutil.rmtree(stage)
     stage.mkdir(parents=True)
-    macos_bundle = None
+    macos_bundle: Path | None = None
     if sys.platform == "darwin":
         source = executable.parents[2]
         macos_bundle = stage / source.relative_to(root)
@@ -66,8 +66,9 @@ def macos_bundle_relative_path() -> Path:
     """Return the macOS app path relative to the SDK resource root."""
     from computer_use.paths import native_driver
 
-    executable = Path(native_driver(platform="darwin", root=Path("."))["command"])
-    return executable.parents[2]
+    root = Path(".").resolve()
+    executable = Path(native_driver(platform="darwin", root=root)["command"])
+    return executable.resolve().relative_to(root).parents[2]
 
 
 def finalize_macos_bundle(project_root: Path, collection_root: Path, app_bundle: Path) -> None:

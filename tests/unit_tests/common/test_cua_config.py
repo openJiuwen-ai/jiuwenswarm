@@ -89,6 +89,26 @@ def test_frozen_backend_uses_external_resource_layout(tmp_path, monkeypatch, sys
     assert not cua_config.is_cua_repl_available()
 
 
+@pytest.mark.parametrize("result", [None, {}, {"command": None}, AttributeError("SDK probe failed")])
+def test_frozen_macos_sdk_probe_failure_keeps_settings_available(tmp_path, monkeypatch, result):
+    monkeypatch.setattr(cua_config, "sys", SimpleNamespace(platform="darwin", frozen=True, _MEIPASS=str(tmp_path)))
+    monkeypatch.setattr(cua_config, "_is_harmony_desktop", lambda: False)
+    monkeypatch.setattr(cua_config.platform, "mac_ver", lambda: ("14.0", (), ""))
+    monkeypatch.setattr(cua_config.importlib.util, "find_spec", lambda name: object())
+
+    def native_driver(*, platform, root):
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setitem(sys.modules, "computer_use.paths", SimpleNamespace(native_driver=native_driver))
+
+    assert cua_config.cua_backend_settings() == {
+        "cua_backend_available": "false",
+        "cua_backend_unavailable_reason": "backend_missing",
+    }
+
+
 @pytest.mark.parametrize(("version", "installed", "reason", "expected"), [
     ("14.0", False, None, "backend_missing"),
     ("14.0", True, None, ""),

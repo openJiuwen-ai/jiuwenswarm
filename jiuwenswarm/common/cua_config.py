@@ -69,7 +69,7 @@ def cua_repl_unavailable_reason() -> str:
             files = ("computer-use-driver.exe", "computer-use-capture.exe", "Interop.NativeUIA.dll")
             available = all((directory / name).is_file() for name in files)
         return "" if available else "backend_missing"
-    except (ImportError, OSError, ValueError):
+    except (ImportError, OSError, ValueError, TypeError, KeyError, AttributeError):
         return "backend_missing"
 
 
