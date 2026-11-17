@@ -169,6 +169,7 @@ export interface JiuwenMateActivityDay {
   tasks: number;
   finishedTasks?: number;
   failures?: number;
+  replies?: number;
   minutes: number;
   calls: number;
   tokens: number;

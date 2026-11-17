@@ -1,6 +1,7 @@
 import { ChevronDown, Send, ShieldUser, Square } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useAdaptiveTooltip } from '../../../hooks/useAdaptiveTooltip';
 import { type JiuwenMateModelCatalog } from '../jiuwenmateApi';
 import { ColleagueModelPicker } from './ColleagueModelPicker';
 
@@ -49,6 +50,7 @@ export function ConversationComposer({
 }: ConversationComposerProps) {
   const { t } = useTranslation();
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
+  const { tooltip: sendTooltip, handlers: sendTooltipHandlers } = useAdaptiveTooltip();
   const canSend = Boolean(onSend) && !sending && value.trim().length > 0;
   return (
     <div className="jiuwenmate-composer" data-testid="jiuwenmate-conversation-composer">
@@ -133,7 +135,8 @@ export function ConversationComposer({
               type="button"
               className="jiuwenmate-composer__send jiuwenmate-composer__send--stop"
               aria-label={t('jiuwenmate.workspace.stop')}
-              title={t('jiuwenmate.workspace.stop')}
+              data-tooltip={t('jiuwenmate.workspace.stop')}
+              {...sendTooltipHandlers}
               disabled={stopping}
               onClick={onStop}
               data-testid="jiuwenmate-composer-stop"
@@ -145,6 +148,8 @@ export function ConversationComposer({
               type="button"
               className="jiuwenmate-composer__send"
               aria-label={t('jiuwenmate.workspace.send')}
+              data-tooltip={t('jiuwenmate.workspace.send')}
+              {...sendTooltipHandlers}
               disabled={!canSend}
               onClick={onSend}
               data-testid="jiuwenmate-composer-send"
@@ -152,6 +157,7 @@ export function ConversationComposer({
               <Send aria-hidden />
             </button>
           )}
+          {sendTooltip}
         </span>
       </div>
     </div>

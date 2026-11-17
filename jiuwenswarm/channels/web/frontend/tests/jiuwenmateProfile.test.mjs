@@ -2049,6 +2049,50 @@ async function mountDashboard(extra = {}) {
   };
 }
 
+test('employee cards reveal the full description only when it is clipped', async () => {
+  const fullDescription = '整理资料、撰写文档、总结讨论，并将结论整理为可跟进的行动清单。';
+  const view = await mountDashboard({
+    colleagues: [{ ...dashboardProps.colleagues[0], description: fullDescription }],
+  });
+  const previousObserver = globalThis.MutationObserver;
+  try {
+    const description = view.find('.jiuwenmate-colleague-card__description');
+    const card = description.closest('button');
+    const doc = description.ownerDocument;
+    const { MouseEvent, MutationObserver } = doc.defaultView;
+    globalThis.MutationObserver = MutationObserver;
+    let scrollHeight = 60;
+    Object.defineProperties(description, {
+      clientHeight: { value: 60 },
+      scrollHeight: { get: () => scrollHeight },
+    });
+    const tooltip = () => doc.querySelector('[role="tooltip"]');
+    const moveMouse = async (element, eventName, relatedTarget = null) => {
+      await act(async () => element.dispatchEvent(new MouseEvent(eventName, { bubbles: true, relatedTarget })));
+    };
+
+    await moveMouse(description, 'mouseover');
+    assert.equal(tooltip(), null);
+    await moveMouse(description, 'mouseout');
+
+    scrollHeight = 100;
+    await moveMouse(card, 'mouseover');
+    assert.equal(tooltip(), null);
+    await moveMouse(card, 'mouseout', description);
+    assert.equal(tooltip()?.textContent, fullDescription);
+    await moveMouse(description, 'mouseout', card);
+    assert.equal(tooltip(), null);
+
+    await act(async () => card.focus());
+    assert.equal(tooltip()?.textContent, fullDescription);
+    await act(async () => card.blur());
+    assert.equal(tooltip(), null);
+  } finally {
+    globalThis.MutationObserver = previousObserver;
+    await view.close();
+  }
+});
+
 for (const [language, message] of [
   ['zh', '请选择执行此任务的员工'],
   ['en', 'Select an AI employee to run this task.'],
@@ -2353,3 +2397,135 @@ for (const [language, expected] of [['zh', '已过期'], ['en', 'Expired']]) {
     } finally { await view.close(); await i18n.changeLanguage('zh'); }
   });
 }
+
+test('activity period dates use the schedule calendar without a clear button and no future days', async () => {
+  await i18n.changeLanguage('zh');
+  const view = await mountDashboard({ activity: { members: [] }, today: new Date(2026, 10, 16) });
+  try {
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="activity"]'));
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="period"]'));
+    assert.equal(view.find('input[type="date"]'), null);
+    const field = (testId) => view.find(`[data-testid="${testId}"] [data-testid="cron-date-picker-input"]`);
+    const end = field('jiuwenmate-office-period-end').value;
+    assert.equal(end, '2026-11-16');
+    assert.equal(field('jiuwenmate-office-period-start').value, '2026-11-10');
+    assert.equal(field('jiuwenmate-office-period-start').getAttribute('aria-label'), '开始日期');
+    assert.equal(field('jiuwenmate-office-period-end').getAttribute('aria-label'), '结束日期');
+
+    await view.click(view.find('[data-testid="jiuwenmate-office-period-start"] [data-testid="cron-date-picker"] > div'));
+    const days = [...view.container.querySelectorAll('[data-testid="cron-date-picker-day"]')];
+    assert.ok(days.length > 0);
+    assert.equal(view.container.textContent.includes('清除'), false);
+    for (const day of days) assert.equal(day.disabled, day.dataset.variant > end, day.dataset.variant);
+
+    const firstOfMonth = days[0];
+    await view.click(firstOfMonth);
+    assert.equal(field('jiuwenmate-office-period-start').value, firstOfMonth.dataset.variant);
+    assert.equal(field('jiuwenmate-office-period-end').value, end);
+  } finally { await view.close(); }
+});
+
+async function mountActivityDashboard() {
+  const [colleague] = dashboardProps.colleagues;
+  const joinedAt = (year, month, day) => new Date(year, month - 1, day, 18).toISOString();
+  const view = await mountDashboard({
+    today: new Date(2026, 10, 16),
+    colleagues: [
+      { ...colleague, joinedAt: joinedAt(2025, 12, 31) },
+      { ...colleague, id: 'agent-2', name: '小周', joinedAt: joinedAt(2026, 11, 12) },
+      { ...colleague, id: 'agent-3', name: '小陈', joinedAt: joinedAt(2026, 11, 15) },
+    ],
+    activity: {
+      generatedAt: '2026-11-16T00:00:00Z',
+      members: [{
+        agentId: colleague.id,
+        calls: 16,
+        tokens: 16000,
+        tasks: 16,
+        replies: 16,
+        failures: 0,
+        companionDays: 321,
+        lastResponseAt: null,
+        days: [
+          { date: '2025-12-31', tasks: 1, minutes: 0, calls: 1, tokens: 1000, replies: 1 },
+          { date: '2026-11-09', tasks: 9, minutes: 0, calls: 9, tokens: 9000, replies: 9 },
+          { date: '2026-11-12', tasks: 2, minutes: 0, calls: 2, tokens: 2000, replies: 2 },
+          { date: '2026-11-16', tasks: 4, minutes: 0, calls: 4, tokens: 4000, replies: 4 },
+        ],
+        kinds: [],
+        history: [],
+        hours: [],
+        channels: [],
+        groups: [],
+      }],
+    },
+  });
+  await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="activity"]'));
+  return view;
+}
+
+function leaderboardRows(view) {
+  return [...view.container.querySelectorAll('[data-testid="jiuwenmate-activity-table"] tbody tr')].map((row) =>
+    [0, 1, 3].map((column) => row.cells[column].textContent),
+  );
+}
+
+test('the employee leaderboard shows the roster and totals for the selected year', async () => {
+  const view = await mountActivityDashboard();
+  try {
+    assert.equal(leaderboardRows(view).length, 3);
+    await view.click(view.find('[data-testid="jiuwenmate-office-year-select"]'));
+    await view.click(view.find('[data-testid="jiuwenmate-menu-item"][data-variant="2025"]'));
+    assert.deepEqual(leaderboardRows(view), [['小九', '1.0K', '1']]);
+  } finally { await view.close(); }
+});
+
+test('the period leaderboard includes employees already created by its inclusive end date', async () => {
+  const view = await mountActivityDashboard();
+  try {
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="period"]'));
+    await view.click(view.find('[data-testid="jiuwenmate-office-period-end"] [data-testid="cron-date-picker"] > div'));
+    await view.click(view.find('[data-testid="cron-date-picker-day"][data-variant="2026-11-12"]'));
+    assert.deepEqual(leaderboardRows(view), [['小九', '2.0K', '2'], ['小周', '0.0K', '0']]);
+  } finally { await view.close(); }
+});
+
+test('the activity overview shows zero active days and tasks for an unused period', async () => {
+  const view = await mountActivityDashboard();
+  const metric = (key) => view.find(`[data-testid="jiuwenmate-metric-band"] [data-variant="${key}"] strong`).textContent;
+  try {
+    await view.click(view.find('[data-testid="jiuwenmate-office-year-select"]'));
+    await view.click(view.find('[data-testid="jiuwenmate-menu-item"][data-variant="2025"]'));
+    assert.deepEqual([metric('activeDays'), metric('tasks')], ['1', '1']);
+
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="period"]'));
+    await view.click(view.find('[data-testid="jiuwenmate-office-period-end"] [data-testid="cron-date-picker"] > div'));
+    await view.click(view.find('[data-testid="cron-date-picker-day"][data-variant="2026-11-11"]'));
+    assert.deepEqual([metric('members'), metric('activeDays'), metric('tasks')], ['1', '0', '0']);
+
+    await view.click(view.find('[data-testid="jiuwenmate-office-period-end"] [data-testid="cron-date-picker"] > div'));
+    await view.click(view.find('[data-testid="cron-date-picker-day"][data-variant="2026-11-12"]'));
+    assert.deepEqual([metric('members'), metric('activeDays'), metric('tasks')], ['2', '1', '2']);
+  } finally { await view.close(); }
+});
+
+test('the activity overview and leaderboard exclude employees without a known creation date', async () => {
+  const [colleague] = dashboardProps.colleagues;
+  const view = await mountDashboard({
+    today: new Date(2026, 10, 17),
+    colleagues: [
+      { ...colleague, joinedAt: new Date(2026, 10, 17, 15).toISOString() },
+      { ...colleague, id: 'agent-2', name: '小周', joinedAt: '' },
+    ],
+    activity: { members: [] },
+  });
+  try {
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="activity"]'));
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="period"]'));
+    await view.click(view.find('[data-testid="jiuwenmate-office-period-end"] [data-testid="cron-date-picker"] > div'));
+    await view.click(view.find('[data-testid="cron-date-picker-day"][data-variant="2026-11-16"]'));
+
+    assert.equal(view.find('[data-testid="jiuwenmate-metric-band"] [data-variant="members"] strong').textContent, '0');
+    assert.equal(view.find('[data-testid="jiuwenmate-activity-table"] .jiuwenmate-table__member'), null);
+  } finally { await view.close(); }
+});

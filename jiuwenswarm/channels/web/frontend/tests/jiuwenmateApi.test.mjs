@@ -665,7 +665,7 @@ test('activity payload keeps counts and drops a member without an id', () => {
         failures: 1,
         companion_days: 16,
         last_response_at: '2026-10-16T10:00:00+00:00',
-        days: [{ date: '2026-10-16', tasks: 2, minutes: 90, calls: 2, tokens: 65 }],
+        days: [{ date: '2026-10-16', tasks: 2, replies: 1, minutes: 90, calls: 2, tokens: 65 }],
         hours: [{ date: '2026-10-16', hour: 10, minutes: 0, tasks: 1, tokens: 65 }],
         channels: [{ channel: 'web', calls: 2, tokens: 65, tasks: 2, replies: 1, failures: 1 }],
         groups: [],
@@ -690,6 +690,7 @@ test('activity payload keeps counts and drops a member without an id', () => {
   assert.equal(activity.members[0].tokens, 65);
   assert.equal(activity.members[0].replies, 1);
   assert.equal(activity.members[0].failures, 1);
+  assert.deepEqual(activity.members[0].days, [{ date: '2026-10-16', tasks: 2, replies: 1, minutes: 90, calls: 2, tokens: 65 }]);
   assert.deepEqual(activity.members[0].hours, [{ date: '2026-10-16', hour: 10, minutes: 0, tasks: 1, tokens: 65 }]);
   assert.deepEqual(activity.members[0].kinds, [{ date: '2026-10-16', conversation: 1, channel: 0, schedule: 1 }]);
   assert.deepEqual(activity.members[0].history, [

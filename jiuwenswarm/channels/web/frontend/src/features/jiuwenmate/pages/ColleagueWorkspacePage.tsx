@@ -89,6 +89,7 @@ import {
   clearManagementChannel,
   createWorkspaceState,
   openChannelTrace,
+  openManagementChannelTrace,
   selectChannel,
   selectManagementChannel,
   selectRecordTab,
@@ -170,7 +171,7 @@ export interface JiuwenMateChannelApi {
 function initialState(colleague: JiuwenMateColleague, intent?: JiuwenMateWorkspaceIntent | null): JiuwenMateWorkspaceState {
   let state = createWorkspaceState(colleague.id, intent?.channelId ?? null);
   if (intent) state = selectRecordTab(state, intent.recordTab);
-  if (intent?.trace && intent.channelId) state = openChannelTrace(state);
+  if (intent?.trace && intent.channelId) state = openManagementChannelTrace(state, intent.channelId);
   if (compactWorkspace()) state = setRecordsCollapsed(state, true);
   return state;
 }
@@ -225,7 +226,7 @@ export function ColleagueWorkspacePage({
   const [state, setState] = useState(() => initialState(colleague, intent));
   const channelId = state.managementChannelId ?? state.selectedChannelId;
   const [board, setBoard] = useState(false);
-  const [rightPanel, setRightPanel] = useState<RightPanel>(null);
+  const [rightPanel, setRightPanel] = useState<RightPanel>(() => (intent?.trace && intent.channelId ? 'management' : null));
   const [recordsWidth, setRecordsWidth] = useState(368);
   const [panelWidth, setPanelWidth] = useState(400);
   const resizeDragRef = useRef<{ pointerId: number; side: 'records' | 'panel'; startX: number; startWidth: number } | null>(null);
