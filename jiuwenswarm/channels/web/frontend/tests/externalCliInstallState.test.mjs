@@ -647,7 +647,9 @@ test('the detection hint distinguishes PATH lookup from executable validation', 
   // 自动落闸只认 missing/unsupported（地址不存在/不可执行）；unavailable
   // （可执行文件在、版本命令失败）不落闸，保留手动关闭的能力。
   assert.match(section, /result\.status === 'missing' \|\| result\.status === 'unsupported'/);
-  assert.match(section, /await commit\(cliAgent, \{\s+enabled: false,\s+useBuiltin: draftValues\[useBuiltinKey\] === 'true',/);
+  // 自动落闸只依据持久化快照决策与提交，不持久化未保存的草稿路径（!10406）。
+  assert.match(section, /probedPersistedChoice/);
+  assert.match(section, /await commit\(cliAgent, \{\s+enabled: false,\s+useBuiltin: persistedValues\[useBuiltinKey\] === 'true',/);
 });
 
 test('uploaded custom agents are listed after Claude and Codex', async () => {

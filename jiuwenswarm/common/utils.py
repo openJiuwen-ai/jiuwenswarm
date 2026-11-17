@@ -33,6 +33,7 @@ import json
 import os
 import re
 import sys
+import uuid
 import datetime
 import shutil
 import socket
@@ -1160,8 +1161,19 @@ def _restore_previous_external_cli_state(config_path: Path, state: dict[str, Any
         histories = state.get("histories") or {}
         if histories:
             jiuwen_team["external_cli_path_histories"] = histories
-        with config_path.open("w", encoding="utf-8") as handle:
-            yaml_rt.dump(data, handle)
+        # 原子写回：恢复写一半崩溃会留下半截 config.yaml，启动直接失败
+        # （!10406 检视），与 config.py 的落盘出口保持同样的原子语义。
+        tmp = config_path.with_name(f"{config_path.stem}.{uuid.uuid4().hex}.yaml.tmp")
+        try:
+            with tmp.open("w", encoding="utf-8") as handle:
+                yaml_rt.dump(data, handle)
+            os.replace(tmp, config_path)
+        except BaseException:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+            raise
         logger.info("已保留覆盖前的三方 agent 配置与路径历史")
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"保留覆盖前的三方 agent 配置失败: {exc}")
