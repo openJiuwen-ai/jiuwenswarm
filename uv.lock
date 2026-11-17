@@ -2464,7 +2464,7 @@ requires-dist = [
     { name = "redis", marker = "extra == 'redis'", specifier = ">=5.0.0" },
     { name = "ruamel-yaml", specifier = ">=0.18.0" },
     { name = "ruamel-yaml", marker = "extra == 'harmony'", specifier = ">=0.18.0" },
-    { name = "security-mask", git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=foundation&rev=develop" },
+    { name = "security-mask", git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=foundation&rev=38db5a46327c11e21efc40d7f541d05ea120e08a" },
     { name = "skillnet-ai", specifier = "==0.0.16" },
     { name = "skillnet-ai", marker = "extra == 'harmony'", specifier = "==0.0.16" },
     { name = "slack-bolt", specifier = ">=1.30.0" },
@@ -5480,7 +5480,7 @@ wheels = [
 [[package]]
 name = "security-mask"
 version = "0.1.0"
-source = { git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=foundation&rev=develop#38db5a46327c11e21efc40d7f541d05ea120e08a" }
+source = { git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=foundation&rev=38db5a46327c11e21efc40d7f541d05ea120e08a#38db5a46327c11e21efc40d7f541d05ea120e08a" }
 
 [[package]]
 name = "setuptools"

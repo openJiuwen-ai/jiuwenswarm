@@ -79,7 +79,7 @@ dependencies = [
     # Keep in sync with openjiuwen (core) agent-shield pin.
     "agent-shield @ git+https://gitcode.com/openJiuwen/agent-security.git@fceecb12456291f0de9c48a39eea6c17a92e169b#subdirectory=agent_shield",
     "agent-ssas @ git+https://gitcode.com/openJiuwen/agent-security.git@develop#subdirectory=agent_ssas",
-    "security-mask @ git+https://gitcode.com/openJiuwen/agent-security.git@develop#subdirectory=foundation",
+    "security-mask @ git+https://gitcode.com/openJiuwen/agent-security.git@38db5a46327c11e21efc40d7f541d05ea120e08a#subdirectory=foundation",
 ]
 
 [project.optional-dependencies]
