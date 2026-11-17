@@ -57,6 +57,14 @@ class ToolCategory(NamedTuple):
 # the live registry are skipped at render time.
 _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
     ToolCategory(
+        path="code-analysis",
+        description="提取源码文件的类、函数、签名与文档注释大纲。",
+        tools=("code_outline",),
+        description_en=(
+            "Extract classes, functions, signatures, and docstrings from source files."
+        ),
+    ),
+    ToolCategory(
         path="coding-memory",
         description=(
             "读写项目编码记忆（coding_memory/ 下的 markdown）：跨会话沉淀"

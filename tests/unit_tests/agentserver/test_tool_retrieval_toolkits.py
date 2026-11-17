@@ -73,6 +73,7 @@ def test_static_category_table_shape() -> None:
     assert "worktree" in paths
     assert "user-todos" in paths
     by_path = {category.path: category for category in _TOOL_CATEGORIES}
+    assert "code_outline" in by_path["code-analysis"].tools
     assert "powershell" in by_path["terminal"].tools
     assert "cron_create_job" in by_path["cron"].tools
     assert "read_pdf" in by_path["documents"].tools
