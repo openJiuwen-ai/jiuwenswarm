@@ -34,7 +34,11 @@ from jiuwenswarm.agents.harness.flash.tools.flash_todo import (
     _UNIFIED_TODO_NAME,
     UnifiedTodoTool,
 )
-from jiuwenswarm.common.todo_snapshot import format_todos_for_frontend
+from jiuwenswarm.common.todo_snapshot import (
+    format_todos_for_frontend,
+    project_todo_snapshot,
+    versioned_todo_output,
+)
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.server.runtime.agent_adapter.refusal_text_scrub import (
     RefusalScrubGate,
@@ -204,6 +208,8 @@ class FlashTodoRail(DeepAgentRail):
             ),
         }
         self.engines = engines
+        # Core tools default to their existing create behavior; Flash opts in.
+        engines["create"].require_explicit_plan_action = True
         for engine in engines.values():
             bind_todo_lifecycle(engine)
         unified_tool = UnifiedTodoTool(engines, language, agent_id)
@@ -376,12 +382,17 @@ class FlashTodoRail(DeepAgentRail):
         if session is None or not self._open_todos:
             return
         open_todos = list(self._open_todos)
-        if not await self._persist_cancel_open_todos(session, open_todos):
+        result = await self._persist_cancel_open_todos(session, open_todos)
+        if result is None:
             return
         self._open_todos = []
-        rows = await self._refusal_todo_rows(session)
+        rows = await self._refusal_todo_rows(session, result)
         if rows is not None:
-            await self._write_control(session, "todo.updated", {"todos": rows})
+            payload = {"todos": rows}
+            meta = getattr(rows, "todo_meta", None)
+            if meta is not None:
+                payload["todo_meta"] = meta
+            await self._write_control(session, "todo.updated", payload)
         for todo_id, meta in open_todos:
             await self._write_control(session, "task.complete", {
                 "task_id": f"todo:{todo_id}",
@@ -391,29 +402,37 @@ class FlashTodoRail(DeepAgentRail):
                 "source": "todo",
             })
 
-    async def _persist_cancel_open_todos(self, session: Any, open_todos: list) -> bool:
+    async def _persist_cancel_open_todos(self, session: Any, open_todos: list) -> dict[str, Any] | None:
         modify = self.engines.get("modify")
         ids = [todo_id for todo_id, _ in open_todos]
         if modify is None or not ids:
             logger.warning("[FlashTodoRail] refusal cancel skipped: no modify engine")
-            return False
+            return None
         try:
             result = await modify.invoke({"action": "cancel", "ids": ids}, session=session)
         except Exception as exc:
             logger.warning("[FlashTodoRail] refusal cancel failed: %s", exc)
-            return False
+            return None
         message = str(result.get("message") or "") if isinstance(result, dict) else ""
         if not message.startswith("Successfully cancelled"):
             logger.warning("[FlashTodoRail] refusal cancel rejected: %s", message)
-            return False
-        return True
+            return None
+        return result
 
-    async def _refusal_todo_rows(self, session: Any) -> list[dict[str, Any]] | None:
-        """Snapshot after cancel. Cancelled rows stay out, matching history replay."""
-        items = await self._load_todo_items(session)
+    async def _refusal_todo_rows(self, session: Any, result: dict[str, Any]) -> list[dict[str, Any]] | None:
+        """优先使用取消回执；旧引擎沿用读取路径。"""
+        snapshot = snapshot_from_result(result)
+        # 回执内容与版本必须配对，避免混入后续提交。
+        items = snapshot.todos if snapshot is not None else await self._load_todo_items(session)
         if items is None:
             return None
-        return format_todos_for_frontend(items)
+        if not versioned_todo_output():
+            return format_todos_for_frontend(items)
+        if snapshot is None:
+            snapshot = getattr(items, "snapshot", None)
+        if snapshot is None or not snapshot.exists or not snapshot.read_authoritative:
+            return None
+        return project_todo_snapshot(snapshot)
 
     async def _load_todo_items(self, session: Any) -> list[Any] | None:
         list_engine = self.engines.get("list")
@@ -502,14 +521,7 @@ class FlashTodoRail(DeepAgentRail):
         ))
 
     def update_disabled_tools(self, disabled_tools: list[str] | set[str] | None) -> None:
-        """热更新 disabled_tools 快照（reload 时重灌，避免实例保留导致旧值）。
-
-        ``FlashTodoRail`` 实例在 reload 时保留（原位更新约定，见 adapter
-        ``_get_current_agent_rails``），而 ``DisabledToolsRail`` 会按最新
-        ``react.disabled_tools`` 重建。若不重灌本 rail 的 ``_disabled_tools``，
-        todo 从「未禁用」翻成「禁用」后，``_inject_todo_section`` 仍会注入 430，
-        导致「提示词要求调 todo、工具面却没有 todo」。
-        """
+        """刷新保留实例的禁用工具配置，供后续 reload 接线使用。"""
         self._disabled_tools = set(disabled_tools or [])
 
 
