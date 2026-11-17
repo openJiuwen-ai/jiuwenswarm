@@ -14,16 +14,19 @@
 from __future__ import annotations
 
 import argparse
-import datetime as _dt
 import re
 import sys
 from pathlib import Path
 
 import lib_frontmatter as lib
-from document_identity import GitIdentity, git_identity
 import yaml
 
-_GENERATED_AT_RE = re.compile(r"^<!-- generated-at:.*-->\s*$", re.MULTILINE)
+UNCLASSIFIED = "未分类"
+_ANCHOR_UNSAFE = re.compile(r"[^A-Za-z0-9_]+")
+
+# Generated indexes carry a fixed author so that regenerating them from another
+# Git identity does not rewrite the header; the source documents keep real authors.
+INDEX_AUTHOR = "sync_documents.py"
 
 # 索引内分组：标题 + 该组包含的 (stage, status) 过滤条件
 STAGE_GROUPS = (
@@ -34,6 +37,24 @@ STAGE_GROUPS = (
 )
 
 _COLUMNS = ("ID", "标题", "状态", "作者", "领域", "更新日期")
+
+
+def module_anchor(name: str) -> str:
+    """Derive a navigation anchor from the module name alone.
+
+    Anchors must not depend on a module's position in the sorted list: positional
+    anchors renumber every later module whenever one is added, which turns a
+    one-line index change into a merge conflict across the whole file.
+    """
+    if name == UNCLASSIFIED:
+        return "module-unclassified"
+    return "module-" + _ANCHOR_UNSAFE.sub("-", name).strip("-")
+
+
+def index_header(title: str) -> str:
+    """Render the frontmatter shared by every generated index."""
+    metadata = {"title": title, "author": INDEX_AUTHOR, "generated": True}
+    return "---\n" + yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).rstrip() + "\n---\n"
 
 
 def _cell(value) -> str:
@@ -78,10 +99,11 @@ def _module_names(rec: lib.DocRecord) -> list[str]:
         name = value.strip()
         if name and name not in names:
             names.append(name)
-    return names or ["未分类"]
+    return names or [UNCLASSIFIED]
 
 
-def build_index(records: list[lib.DocRecord], timestamp: str) -> str:
+def build_index(records: list[lib.DocRecord]) -> str:
+    """Render the design index body; output depends only on the source frontmatter."""
     valid = [r for r in records if not r.parse_error]
     skipped = [r for r in records if r.parse_error]
 
@@ -98,7 +120,6 @@ def build_index(records: list[lib.DocRecord], timestamp: str) -> str:
 
     out: list[str] = []
     out.append("<!-- 本文件由 .agents/skills/jw-design/scripts/generate_index.py 自动生成，请勿手改。重新生成：python .agents/skills/jw-design/scripts/generate_index.py -->")
-    out.append(f"<!-- generated-at: {timestamp} -->")
     out.append("")
     out.append("# 设计文档索引 (INDEX)")
     out.append("")
@@ -109,11 +130,11 @@ def build_index(records: list[lib.DocRecord], timestamp: str) -> str:
     for rec in valid:
         for name in _module_names(rec):
             modules.setdefault(name, []).append(rec)
-    names = sorted(modules, key=lambda name: (name == "未分类", name))
+    names = sorted(modules, key=lambda name: (name == UNCLASSIFIED, name))
 
     out.extend(["## 模块目录", "", "| 模块 |", "|---|"])
-    for number, name in enumerate(names, start=1):
-        out.append(f"| [{_cell(name)}](#module-{number}) |")
+    for name in names:
+        out.append(f"| [{_cell(name)}](#{module_anchor(name)}) |")
     if not names:
         out.append("| — |")
     out.append("")
@@ -121,8 +142,8 @@ def build_index(records: list[lib.DocRecord], timestamp: str) -> str:
     header = "| " + " | ".join(_COLUMNS) + " |"
     sep = "|" + "|".join(["---"] * len(_COLUMNS)) + "|"
 
-    for number, name in enumerate(names, start=1):
-        out.extend([f'<a id="module-{number}"></a>', "", f"## {_cell(name)}", ""])
+    for name in names:
+        out.extend([f'<a id="{module_anchor(name)}"></a>', "", f"## {_cell(name)}", ""])
         module_paths = {rec.rel_path for rec in modules[name]}
         for title, _stage_dir, _statuses in STAGE_GROUPS:
             rows = [rec for rec in grouped[title] if rec.rel_path in module_paths]
@@ -145,27 +166,9 @@ def build_index(records: list[lib.DocRecord], timestamp: str) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
-def index_metadata(path: Path, title: str, identity: GitIdentity) -> dict:
-    """Build a generated index header that keeps the index's original author.
-
-    An index is attributed once, to whoever first generated it. Regenerating
-    it later is a mechanical refresh, not authorship, so the existing
-    ``author`` / ``author_email`` survive and the current Git identity is used
-    only when the index is new or has no readable author yet.
-    """
-    author: object = identity.name
-    author_email: object = identity.email
-    if path.is_file():
-        existing, _, error = lib.parse_frontmatter(path.read_text(encoding="utf-8"))
-        if error is None and existing.get("author"):
-            author = existing["author"]
-            author_email = existing.get("author_email")
-    return {"title": title, "author": author, "author_email": author_email, "generated": True}
-
-
-def normalize(text: str) -> str:
-    """剔除易变的 generated-at 行，用于 --check 和重新生成时比对内容是否变化。"""
-    return _GENERATED_AT_RE.sub("", text)
+def render_design_index(records: list[lib.DocRecord]) -> str:
+    """Render the complete designs/INDEX.md including its fixed frontmatter."""
+    return f"{index_header('设计文档索引')}\n{build_index(records)}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -177,28 +180,20 @@ def main(argv: list[str] | None = None) -> int:
     try:
         root = args.root or lib.repo_root()
         records = lib.iter_docs(root, None)
-        timestamp = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8))).isoformat(timespec="minutes")
-        content = build_index(records, timestamp)
-        identity = git_identity(root.resolve())
+        content = render_design_index(records)
         index_path = root / lib.INDEX_FILE
-        metadata = index_metadata(index_path, "设计文档索引", identity)
-        header = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).rstrip()
-        content = f"---\n{header}\n---\n\n{content}"
 
         if args.check:
             if not index_path.is_file():
                 print("INDEX.md 不存在，需要生成。", file=sys.stderr)
                 return 1
             current = index_path.read_text(encoding="utf-8")
-            if normalize(current) == normalize(content):
+            if current == content:
                 print("✓ INDEX.md 已是最新。")
                 return 0
             print("✗ INDEX.md 已过期，请运行：python .agents/skills/jw-design/scripts/generate_index.py", file=sys.stderr)
             return 1
 
-        if index_path.is_file() and normalize(index_path.read_text(encoding="utf-8")) == normalize(content):
-            print("✓ INDEX.md 已是最新，未改写。")
-            return 0
         index_path.write_text(content, encoding="utf-8")
         print(f"✓ 已生成 {lib.INDEX_FILE}（{len([r for r in records if not r.parse_error])} 篇文档）。")
         return 0

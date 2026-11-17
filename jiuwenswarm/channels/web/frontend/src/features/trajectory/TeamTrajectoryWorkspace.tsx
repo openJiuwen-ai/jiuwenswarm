@@ -25,6 +25,7 @@ import {
 import {
   buildScheduledTeamLaneSections,
   groupScheduledTaskRuns,
+  noReviewMessageKey,
   scheduledMemberDisplayName,
   type ScheduledReviewerLane,
   type ScheduledReviewerTask,
@@ -367,7 +368,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
     task.rounds.length === 0
       ? (
         <span className={css.taskReviewEmpty}>
-          {t('trajectory.team.schedule.noReviews')}
+          {t(noReviewMessageKey(task.phase, task.reviewRecordCount))}
         </span>
       )
       : task.rounds.map(round => (
@@ -384,10 +385,33 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
   );
 
   const renderTaskReview = (task: ScheduledReviewerTask) => {
-    const collapsed = collapsedReviews.has(task.taskId);
     const taskPhase = task.phase === undefined
       ? null
       : t(`trajectory.team.schedule.phase.${task.phase}`);
+    if (task.runCount === 0) {
+      // Nothing to disclose: keep the task's name and status visible as a
+      // static row instead of a collapsible section with an empty body.
+      return (
+        <div
+          className={css.taskReviewSection}
+          key={`task-review:${task.taskId}`}
+          data-testid="team-trajectory-review-task-group"
+          data-variant={task.taskId}
+          data-task-index={task.taskIndex}
+        >
+          <div className={css.taskReviewStatic}>
+            <span className={css.taskReviewSpacer} aria-hidden />
+            <span className={css.taskIndex}>T{task.taskIndex}</span>
+            <strong className={css.taskName}>{task.taskId}</strong>
+            {taskPhase === null ? null : <span className={css.sectionMeta}>{taskPhase}</span>}
+            <span className={css.taskReviewEmpty}>
+              {t(noReviewMessageKey(task.phase, task.reviewRecordCount))}
+            </span>
+          </div>
+        </div>
+      );
+    }
+    const collapsed = collapsedReviews.has(task.taskId);
     return (
       <div
         className={css.taskReviewSection}
@@ -419,7 +443,11 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
           <span className={css.taskIndex}>T{task.taskIndex}</span>
           <strong className={css.taskName}>{task.taskId}</strong>
           {taskPhase === null ? null : <span className={css.sectionMeta}>{taskPhase}</span>}
-          <span className={css.taskReviewCount}>
+          <span
+            className={css.taskReviewCount}
+            data-testid="team-trajectory-review-count"
+            data-variant={task.taskId}
+          >
             {t('trajectory.team.schedule.reviewCount', { count: task.runCount })}
           </span>
         </button>
@@ -612,10 +640,6 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
           <>
             {standaloneMembers.length === 0 ? null : (
               <div className={css.laneSection} data-testid="team-trajectory-member-group">
-                <div className={css.memberSectionHeader}>
-                  <strong>{t('trajectory.team.members')}</strong>
-                  <span>{standaloneMembers.length}</span>
-                </div>
                 {ungrouped.map(renderLane)}
                 {workflowGroups.map(renderWorkflowGroup)}
               </div>

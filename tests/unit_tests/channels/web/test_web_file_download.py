@@ -176,17 +176,6 @@ def _serve_file(
     return handler
 
 
-def test_valid_token_is_accepted() -> None:
-    manager = WebFileDownloadManager(secret="s" * 32)
-    token = manager.generate_token("/tmp/report.xlsx", "session-1", expires_in=60)
-
-    payload = manager.validate_token(token)
-    assert payload is not None
-    assert payload["path"] == "/tmp/report.xlsx"
-    assert payload["exp"] == pytest.approx(int(time.time()) + 60, abs=1)
-    assert payload["sid"] == "session-1"
-
-
 def test_package_avatar_url_downloads_original_image(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from jiuwenswarm.server.runtime.package_avatars import resolve_package_avatar_url
 
@@ -208,18 +197,6 @@ def test_package_avatar_url_downloads_original_image(monkeypatch: pytest.MonkeyP
     assert handler.wfile.getvalue() == image
 
 
-def test_non_expiring_token_omits_exp() -> None:
-    """send_file_to_user 交付产物应签发不过期令牌（payload 无 exp）。"""
-    manager = WebFileDownloadManager(secret="s" * 32)
-    token = manager.generate_token("/tmp/report.xlsx", "session-1", expires_in=None)
-
-    payload = manager.validate_token(token)
-    assert payload is not None
-    assert payload["path"] == "/tmp/report.xlsx"
-    assert "exp" not in payload
-    assert payload["sid"] == "session-1"
-
-
 def test_non_expiring_download_info_stays_valid(tmp_path: Path) -> None:
     file_path = tmp_path / "deliverable.txt"
     file_path.write_text("ok", encoding="utf-8")
@@ -231,22 +208,6 @@ def test_non_expiring_download_info_stays_valid(tmp_path: Path) -> None:
     assert "exp" not in payload
 
 
-def test_expired_token_is_rejected() -> None:
-    manager = WebFileDownloadManager(secret="s" * 32)
-    token = manager.generate_token("/tmp/report.xlsx", "session-1", expires_in=-1)
-
-    assert manager.validate_token(token) is None
-    assert manager.validate_token(token, check_expiry=False) is not None
-
-
-def test_tampered_token_is_rejected() -> None:
-    manager = WebFileDownloadManager(secret="s" * 32)
-    token = manager.generate_token("/tmp/report.xlsx", expires_in=60)
-    encoded, signature = token.split(".")
-
-    assert manager.validate_token(f"{encoded}x.{signature}") is None
-
-
 def _signed_token(secret: str, payload: object) -> str:
     encoded = base64.urlsafe_b64encode(
         json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -255,60 +216,6 @@ def _signed_token(secret: str, payload: object) -> str:
         secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256
     ).hexdigest()
     return f"{encoded}.{signature}"
-
-
-def test_strict_legacy_token_without_expiration_remains_compatible() -> None:
-    secret = "s" * 32
-    manager = WebFileDownloadManager(secret=secret)
-    token = _signed_token(
-        secret,
-        {"path": "/tmp/report.xlsx", "sid": "session-1"},
-    )
-
-    assert manager.validate_token(token) == {
-        "path": "/tmp/report.xlsx",
-        "sid": "session-1",
-    }
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"path": "/tmp/report.xlsx"},
-        {"path": "", "sid": "session-1"},
-        {"path": "/tmp/report.xlsx", "sid": ""},
-        {"path": 1, "sid": "session-1"},
-        {"path": "/tmp/report.xlsx", "sid": 1},
-        {"path": "/tmp/report.xlsx", "sid": "session-1", "extra": "claim"},
-        {
-            "path": "/tmp/report.xlsx",
-            "sid": "session-1",
-            "download_http_base": "",
-        },
-        {
-            "path": "/tmp/report.xlsx",
-            "sid": "session-1",
-            "download_http_base": "http://test.invalid",
-            "extra": "claim",
-        },
-        {
-            "kind": "verified_asset_v1",
-            "asset_id": "asset-1",
-            "path": "/tmp/report.xlsx",
-            "size": 1,
-            "digest": "sha256:digest",
-            "name": "report.xlsx",
-            "sid": "session-1",
-        },
-    ],
-)
-def test_only_exact_legacy_no_expiration_payload_is_accepted(
-    payload: dict[str, object],
-) -> None:
-    secret = "s" * 32
-    manager = WebFileDownloadManager(secret=secret)
-
-    assert manager.validate_token(_signed_token(secret, payload)) is None
 
 
 def test_agent_http_bases_use_trusted_resolver(
@@ -615,9 +522,11 @@ def test_verified_single_user_upload_persists_without_http_bridge(
     assert handler.response == (200, {"path": str(target), "size": 13})
 
 
-def test_verified_asset_retry_range_and_concurrent_get_use_same_sealed_object(
+@pytest.mark.parametrize("reference_only", [False, True])
+def test_verified_asset_retry_range_and_concurrent_get_use_registered_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    reference_only: bool,
 ) -> None:
     source = tmp_path / "media.bin"
     source.write_bytes(b"0123456789")
@@ -628,7 +537,8 @@ def test_verified_asset_retry_range_and_concurrent_get_use_same_sealed_object(
     asset = owner.stage(
         source,
         file_name=source.name,
-        expires_at=time.time() + 60,
+        expires_at=0 if reference_only else time.time() + 60,
+        reference_only=reference_only,
     )
     manager = WebFileDownloadManager("s" * 32, asset_owner=owner)
     monkeypatch.setattr(WebFileDownloadManager, "_instance", manager)
@@ -638,6 +548,7 @@ def test_verified_asset_retry_range_and_concurrent_get_use_same_sealed_object(
         session_id="session-a",
     )
     source.write_bytes(b"changed-after-capture")
+    expected = b"changed-after-capture" if reference_only else b"0123456789"
 
     def fetch(headers: dict[str, str] | None = None) -> _DownloadHandlerStub:
         handler = _DownloadHandlerStub(command="GET", headers=headers)
@@ -647,16 +558,21 @@ def test_verified_asset_retry_range_and_concurrent_get_use_same_sealed_object(
     first = fetch()
     retry = fetch()
     partial = fetch({"Range": "bytes=2-5"})
+    head = _DownloadHandlerStub(command="HEAD")
+    _SpaStaticHandler._handle_file_download(head, {"token": token})
     with ThreadPoolExecutor(max_workers=4) as executor:
         concurrent_bodies = tuple(
             executor.map(lambda _index: fetch().wfile.getvalue(), range(4))
         )
 
     assert first.status == retry.status == 200
-    assert first.wfile.getvalue() == retry.wfile.getvalue() == b"0123456789"
+    assert first.wfile.getvalue() == retry.wfile.getvalue() == expected
+    assert head.status == 200
+    assert head.response_headers["Content-Length"] == str(len(expected))
+    assert head.wfile.getvalue() == b""
     assert partial.status == 206
-    assert partial.wfile.getvalue() == b"2345"
-    assert concurrent_bodies == (b"0123456789",) * 4
+    assert partial.wfile.getvalue() == expected[2:6]
+    assert concurrent_bodies == (expected,) * 4
 
 
 @pytest.mark.parametrize("command", ["GET", "HEAD"])

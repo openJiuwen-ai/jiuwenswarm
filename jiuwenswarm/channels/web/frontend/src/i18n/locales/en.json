@@ -830,11 +830,15 @@
         "maas": "Maas Pangu",
         "minimax": "MiniMax",
         "mimo": "Xiaomi MiMo",
+        "opencode-go": "OpenCode Go",
         "openrouter": "OpenRouter",
         "vllm-omni": "vLLM-Omni",
         "volcengine": "Volcengine",
         "zhipu": "Zhipu GLM",
         "unrecognized": "Unrecognized provider ({{vendor}})"
+      },
+      "apiBasePlaceholders": {
+        "opencode-go": "e.g. https://opencode.ai/zen/go/v1"
       },
       "protocols": {
         "openai": "OpenAI",
@@ -1401,7 +1405,6 @@
     },
     "team": {
       "memberLanes": "Member trajectory lanes",
-      "members": "Members",
       "workflowGroupAria": "Workflow {{name}}, {{count}} operators",
       "workflowGroupOperators": "{{count}} operators",
       "schedule": {
@@ -1421,6 +1424,7 @@
         "expandReviews": "Expand review records",
         "collapseReviews": "Collapse review records",
         "noReviews": "No reviews yet",
+        "directCompleted": "Completed directly without review",
         "reviewCount_one": "{{count}} Review",
         "reviewCount_other": "{{count}} Reviews",
         "phase": {
@@ -1874,6 +1878,14 @@
     "planning": {
       "tab": "Task Planning",
       "progressTitle": "Task Progress",
+      "taskCompletion": "Tasks completed",
+      "executionProgress": "Execution progress",
+      "estimatedProgress": "Execution progress (estimated)",
+      "agentProgress": "Loaded workflow nodes: {{ended}} / {{total}} ended",
+      "phaseAgentProgress": "Phase nodes: {{ended}} / {{total}} ended",
+      "agentProgressUnavailable": "Loaded workflow nodes: some workflow node counts are unavailable",
+      "teamMetricScope": "Task counts include team tasks and workflow phases, excluding application tasks. Progress combines ordinary tasks and workflows, using workflow node counts when available.",
+      "teamBoardMetricScope": "Progress includes team tasks and workflows only. Status counts include all board tasks, including application tasks.",
       "token": "Token",
       "taskList": "Task List",
       "taskListAria": "{{task}} task list",

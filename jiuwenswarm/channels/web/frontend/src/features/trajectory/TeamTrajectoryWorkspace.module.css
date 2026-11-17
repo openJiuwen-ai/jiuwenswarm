@@ -129,6 +129,30 @@
   outline-offset: 1px;
 }
 
+.taskReviewStatic {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  padding: 2px 4px 2px 0;
+  color: var(--dsw-alias-label-primary);
+}
+
+.taskReviewSpacer {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.taskReviewStatic .sectionMeta {
+  flex: none;
+  margin-left: 0;
+}
+
 .taskReviewToggle .taskName {
   flex: 0 1 auto;
 }
@@ -170,7 +194,6 @@
   padding-left: 0;
 }
 
-.memberSectionHeader,
 .sectionHeader,
 .roundHeader {
   display: flex;
@@ -179,14 +202,6 @@
   gap: 8px;
   color: var(--dsw-alias-label-secondary);
   font: var(--dsw-font-xxs-12);
-}
-
-.memberSectionHeader {
-  padding: 0 8px;
-}
-
-.memberSectionHeader strong {
-  color: var(--dsw-alias-label-primary);
 }
 
 .sectionHeader {

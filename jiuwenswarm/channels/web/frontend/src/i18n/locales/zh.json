@@ -830,11 +830,15 @@
         "maas": "Maas 盘古",
         "minimax": "MiniMax",
         "mimo": "小米 MiMo",
+        "opencode-go": "OpenCode Go",
         "openrouter": "OpenRouter",
         "vllm-omni": "vLLM-Omni",
         "volcengine": "火山引擎",
         "zhipu": "智谱 GLM",
         "unrecognized": "未识别提供商（{{vendor}}）"
+      },
+      "apiBasePlaceholders": {
+        "opencode-go": "例如：https://opencode.ai/zen/go/v1"
       },
       "protocols": {
         "openai": "OpenAI",
@@ -1401,7 +1405,6 @@
     },
     "team": {
       "memberLanes": "成员轨迹泳道",
-      "members": "成员",
       "workflowGroupAria": "工作流 {{name}}，{{count}} 个算子",
       "workflowGroupOperators": "{{count}} 个算子",
       "schedule": {
@@ -1421,6 +1424,7 @@
         "expandReviews": "展开评审记录",
         "collapseReviews": "收起评审记录",
         "noReviews": "暂无 Review 记录",
+        "directCompleted": "无需验收，直接完成",
         "reviewCount_one": "{{count}} 次评审",
         "reviewCount_other": "{{count}} 次评审",
         "phase": {
@@ -1874,6 +1878,14 @@
     "planning": {
       "tab": "任务",
       "progressTitle": "任务进度",
+      "taskCompletion": "任务完成",
+      "executionProgress": "执行进度",
+      "estimatedProgress": "执行进度（估算）",
+      "agentProgress": "已加载工作流的执行节点：{{ended}} / {{total}} 已结束",
+      "phaseAgentProgress": "阶段执行节点：{{ended}} / {{total}} 已结束",
+      "agentProgressUnavailable": "已加载工作流的执行节点：部分工作流节点状态不可用",
+      "teamMetricScope": "任务数包含团队任务和工作流阶段，不含应用任务；执行进度综合普通任务与工作流，工作流优先使用节点计数",
+      "teamBoardMetricScope": "执行进度仅统计团队任务和工作流；各状态数量包含看板中的全部任务（含应用任务）",
       "token": "Token",
       "taskList": "任务列表",
       "taskListAria": "{{task}} 任务列表",

@@ -289,6 +289,29 @@ def test_template_covers_every_key_a_shipped_config_carries(relative: str):
     )
 
 
+def test_the_default_model_entry_names_vendor_key(monkeypatch):
+    """``VENDOR_KEY`` reached nothing but the env fallback.
+
+    ``get_default_models`` reads ``VENDOR_KEY`` only in its env-fallback branch,
+    which an operator whose config carries ``models.defaults`` never takes; this
+    template always ships one. So the default entry itself has to name the key:
+    a fresh installation copies the template verbatim, and an existing one gains
+    it through ``migrate_config_from_template``. ``.env.template`` alone only
+    documents the variable.
+    """
+    from jiuwenswarm.common.config import resolve_env_vars
+
+    template = _load(_TEMPLATE)
+    entry = template["models"]["defaults"][0]["model_client_config"]
+    assert "vendor_key" in entry
+
+    monkeypatch.delenv("VENDOR_KEY", raising=False)
+    assert resolve_env_vars(entry["vendor_key"]) == ""
+
+    monkeypatch.setenv("VENDOR_KEY", "opencode-go")
+    assert resolve_env_vars(entry["vendor_key"]) == "opencode-go"
+
+
 def test_every_accepted_divergence_is_still_a_divergence():
     """The list may only shrink.
 

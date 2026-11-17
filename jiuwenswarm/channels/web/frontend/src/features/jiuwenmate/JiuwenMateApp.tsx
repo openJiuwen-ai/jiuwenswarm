@@ -300,9 +300,15 @@ export function JiuwenMateApp({
     void loadColleagues();
   }, [loadColleagues, modelRefreshStatus]);
 
-  // A group route always lands in the chat view, where group chats live.
+  const activatedGroupIdRef = useRef<string | undefined>(undefined);
+  // Activate chat on group entry, without stealing navigation after a background refresh.
   useEffect(() => {
-    if (!groupId || loadStatus !== 'ready') return;
+    if (!groupId) {
+      activatedGroupIdRef.current = undefined;
+      return;
+    }
+    if (loadStatus !== 'ready' || activatedGroupIdRef.current === groupId) return;
+    activatedGroupIdRef.current = groupId;
     setExistingPage(null);
     setPublicLabel(null);
     setActiveRailView('messages');
