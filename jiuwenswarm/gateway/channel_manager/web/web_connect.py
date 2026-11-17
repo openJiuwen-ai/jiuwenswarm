@@ -807,7 +807,7 @@ class WebChannel(BaseWsChannel):
     async def ensure_web_proxy_http_session(self) -> aiohttp.ClientSession:
         """HTTP-only session. Each request closes its socket.
 
-        YuanRong's frontend answers the second request on a keep-alive
+        A remote frontend answers the second request on a keep-alive
         connection with an empty 404, which shows up as a blank SPA and
         failed module loads. WebSocket stays on ``ensure_web_proxy_session``.
         """

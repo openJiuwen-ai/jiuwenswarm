@@ -8,70 +8,26 @@ from jiuwenswarm.extensions.sdk.third_agent import ThirdAgentExtension
 from jiuwenswarm.common.client.third_agent import ThirdAgent
 
 from jiuwenswarm.common.config import get_config
-from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import AgentManager
 from jiuwenswarm.extensions.agentos.agentos_router.agentos_authenticator import AgentOSAuthenticator
 from jiuwenswarm.extensions.agentos.agentos_router.config import (
-    RouterConfig,
     agentos_router_selected,
-    load_router_config,
 )
-from jiuwenswarm.extensions.agentos.agentos_router.registry_client import RegistryClient
-from jiuwenswarm.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
-from jiuwenswarm.extensions.agentos.agentos_router.ssh_relay import YuanrongSshRelay
+from jiuwenswarm.extensions.agentos.agentos_router.adx.config import (
+    AdxRouterConfig, load_router_config as load_adx_config,
+)
 from jiuwenswarm.extensions.agentos.agentos_router.third_agent import AgentOSThirdAgent
-from jiuwenswarm.extensions.yuanrong_frontend_client import (
-    YuanrongFrontendAgentClient,
-)
 
 
 class AgentOSRouter(AgentServerClientExtension, ThirdAgentExtension):
     """AgentOS southbound Router extension (AgentServerClient + ThirdAgent)."""
 
-    def __init__(self, config: RouterConfig) -> None:
+    def __init__(self, config: AdxRouterConfig) -> None:
+        from jiuwenswarm.extensions.agentos.agentos_router.adx.router_client import AdxRouterClient
         self._config = config
-        self._yuanrong_client = YuanrongFrontendAgentClient(
-            frontend_endpoint=config.frontend_endpoint,
-            function_version_urn=config.function_version_urn,
-            concurrency=config.concurrency,
-            invoke_timeout_s=config.invoke_timeout_s,
-            agent_timeout_s=config.agent_timeout_s,
-            agent_namespace=config.agent_namespace,
-            probe_settings=config.probes,
-            wait_running_timeout_s=config.probes.wait_running_timeout_seconds,
-            wait_running_interval_s=config.probes.wait_running_interval_seconds,
-        )
-        self._registry_client = RegistryClient(config.registry)
-        self._agent_manager = AgentManager(
-            creating_timeout_seconds=config.creating_timeout_seconds,
-            key_fields=config.agent_key_fields,
-        )
-        self._ssh_relay = YuanrongSshRelay(
-            config.ssh,
-            frontend_endpoint=config.frontend_endpoint,
-        )
-        self._router_client = AgentOSRouterClient(
-            self._yuanrong_client,
-            self._registry_client,
-            self._agent_manager,
-            ssh_relay=self._ssh_relay,
-            ssh_channel_endpoint=config.ssh_channel,
-            workspace_root=config.workspace_root,
-            sandbox_idle_timeout_seconds=config.sandbox_idle_timeout_seconds,
-            agent_sandbox_cpu=config.agent_sandbox_cpu,
-            agent_sandbox_memory=config.agent_sandbox_memory,
-            tool_sandbox_idle_timeout_seconds=config.tool_sandbox_idle_timeout_seconds,
-            tool_sandbox_cpu=config.tool_sandbox_cpu,
-            tool_sandbox_memory=config.tool_sandbox_memory,
-            sandbox_idle_check_interval_seconds=(
-                config.sandbox_idle_check_interval_seconds
-            ),
-            disconnect_cleanup_timeout_seconds=(
-                config.disconnect_cleanup_timeout_seconds
-            ),
-            connect_warmup_enabled=config.connect_warmup_enabled,
-            probe_settings=config.probes,
-            auth_client=AgentOSAuthenticator(config.auth_service_url, config.timeout) if config.auth_enabled else None
-        )
+        settings = config.router
+        auth_client = (AgentOSAuthenticator(settings.auth_service_url, settings.timeout)
+                       if settings.auth_enabled else None)
+        self._router_client = AdxRouterClient(config, auth_client=auth_client)
         self._third_agent = AgentOSThirdAgent(self._router_client)
         self._closed = False
 
@@ -130,7 +86,8 @@ async def register_extensions(registry):
     config = get_config()
     if not agentos_router_selected(config):
         return []
-    extension = AgentOSRouter(load_router_config(config))
+    settings = load_adx_config(config)
+    extension = AgentOSRouter(settings)
     registry.register_agent_server_client(extension)
     registry.register_third_agent(extension)
     return [extension]

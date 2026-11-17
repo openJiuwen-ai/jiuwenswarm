@@ -397,7 +397,7 @@ async def _proxied_upstream(handler, *, resolver=None, with_releaser: bool = Fal
     """Start an upstream + channel + port client; clean everything up after.
 
     *resolver* overrides the default ``http://127.0.0.1:<port>`` resolver; it
-    takes ``(user_id, agent_type, protocol, upstream_port)`` (e.g. the YuanRong
+    takes ``(user_id, agent_type, protocol, upstream_port)`` (e.g. the Environment
     tunnel form with route query). Yields :class:`_ProxyUpstream`.
     """
     runner, upstream_port = await _upstream(handler)

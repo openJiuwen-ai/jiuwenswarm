@@ -114,8 +114,8 @@ from jiuwenswarm.server.runtime.session.session_history import (
     wait_for_history_receipt,
 )
 from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
+    build_adx_sandbox_status_view,
     build_filesystem_policy,
-    build_yuanrong_sandbox_status_view,
     effective_files_from_policy,
     find_auto_managed_match,
     find_nested_files_conflict,
@@ -1725,11 +1725,11 @@ class AgentWebSocketServer:
             endpoint = get_sandbox_endpoint()
             url = endpoint.get("url") or "http://127.0.0.1:8321"
             sandbox_type = endpoint.get("type") or "jiuwenbox"
-            # yuanrong 不需要本机 jiuwenbox 进程; 仅通过 config 启用 SysOperation。
-            if str(sandbox_type).strip().lower() == "yuanrong":
+            # ADX 工具环境不需要本机 jiuwenbox 进程; 仅通过 config 启用 SysOperation。
+            if str(sandbox_type).strip().lower() == "adx-environment":
                 logger.info(
-                    "[AgentWebSocketServer] sandbox.type=yuanrong, skipping "
-                    "jiuwenbox auto-start (YuanRong uses YR_* env + yr.init)"
+                    "[AgentWebSocketServer] sandbox.type=adx-environment, skipping "
+                    "jiuwenbox auto-start (tool lifecycle is managed through ADX)"
                 )
                 return
             raw_policy = endpoint.get("policy_file") or ""
@@ -10519,8 +10519,8 @@ class AgentWebSocketServer:
         其他写动作通过 ``adapter.apply_sandbox_runtime_patch()`` 立即热更,
         不重建 agent.
 
-        当 ``sandbox.type=yuanrong`` 时仅允许 ``status`` (裸 ``/sandbox`` 查看
-        enabled/executor/mounts); 任意子指令一律拒绝。
+        当 ``sandbox.type=adx-environment`` 时仅允许 ``status`` (裸 ``/sandbox`` 查看
+        enabled/runtime/mounts); 任意子指令一律拒绝。
         """
         params = request.params or {}
         sub = str(params.get("sub", "status")).strip().lower() or "status"
@@ -10532,13 +10532,13 @@ class AgentWebSocketServer:
             _require_sandbox_supported()
             endpoint = get_sandbox_endpoint()
             sandbox_type = str(endpoint.get("type") or "").strip().lower()
-            if sandbox_type == "yuanrong":
+            if sandbox_type == "adx-environment":
                 if sub != "status":
                     raise ValueError(
-                        "sandbox.type=yuanrong: only /sandbox (view config) is "
+                        "sandbox.type=adx-environment: only /sandbox (view config) is "
                         "supported; subcommands are disabled"
                     )
-                payload = build_yuanrong_sandbox_status_view()
+                payload = build_adx_sandbox_status_view()
                 resp = AgentResponse(
                     request_id=request.request_id,
                     channel_id=request.channel_id,

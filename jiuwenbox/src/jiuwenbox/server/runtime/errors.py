@@ -26,6 +26,14 @@ class SandboxStateError(Exception):
         logger.warning("%s: %s", self.__class__.__name__, str(self))
 
 
+class SandboxCreateError(RuntimeError):
+    """Startup failure with a public message and optional internal diagnostics."""
+
+    def __init__(self, public_message: str, *, diagnostic: str | None = None) -> None:
+        super().__init__(diagnostic or public_message)
+        self.public_message = public_message
+
+
 class SandboxConflictError(Exception):
     """Raised for expected request conflicts such as duplicate sandbox IDs."""
 

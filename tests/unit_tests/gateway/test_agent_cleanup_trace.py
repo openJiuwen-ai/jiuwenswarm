@@ -22,7 +22,6 @@ from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
 )
 from jiuwenswarm.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
 from jiuwenswarm.extensions.agentos.agentos_router.stale_cleanup import cleanup_stale_sandboxes
-from jiuwenswarm.extensions.yuanrong_frontend_client import YuanrongFrontendAgentClient
 
 
 def _setup_trace(monkeypatch, request_id="r", method="chat.send", connection_id="c"):
@@ -251,7 +250,7 @@ async def test_sweep_each_instance_has_independent_result_and_preserves_processe
         user_id="u4", agent_type="jiuwenswarm", sandbox_id="live"))]))
     parent = telemetry.start_request_trace("message", "chat.send", channel="web", connection_id="c")
     with telemetry.bind_request_trace(parent):
-        assert await cleanup_stale_sandboxes(yuanrong=Frontend(), registry=Registry(), agent_manager=manager) == 4
+        assert await cleanup_stale_sandboxes(backend=Frontend(), registry=Registry(), agent_manager=manager) == 4
         assert telemetry.current_request_trace() is parent
         assert telemetry.current_cleanup_trace() is None
     spans = [span for span in exporter.get_finished_spans() if span.name == "gw.agent.sweep"]
@@ -277,7 +276,7 @@ async def test_sweep_unconfirmed_delete_is_not_success(tracing):
                                unregister_instance=AsyncMock(return_value={"deleted": True}))
     manager = SimpleNamespace(list_all_agents=AsyncMock(return_value=[]))
     frontend = SimpleNamespace(delete_sandbox=AsyncMock(return_value=None))
-    assert await cleanup_stale_sandboxes(yuanrong=frontend, registry=registry, agent_manager=manager) == 1
+    assert await cleanup_stale_sandboxes(backend=frontend, registry=registry, agent_manager=manager) == 1
     span = next(span for span in exporter.get_finished_spans() if span.name == "gw.agent.sweep")
     assert span.attributes["gateway.outcome"] == "incomplete"
     assert span.attributes["cleanup.frontend.delete.reason"] == "delete_result_unconfirmed"
@@ -333,59 +332,6 @@ def test_cleanup_observation_failure_does_not_change_work_or_leak_span(tracing, 
     assert any(span.name == "gw.agent.delete" for span in exporter.get_finished_spans())
 
 
-@pytest.fixture
-async def cleanup_setup(monkeypatch):
-    monkeypatch.setattr(telemetry, '_runtime', None)
-    monkeypatch.delenv('OTEL_ENABLED', raising=False)
-    monkeypatch.delenv('OTEL_TRACES_SAMPLER', raising=False)
-    tracing = telemetry.configure_gateway_telemetry({'telemetry': {'enabled': True, 'exporter': 'none'}})
-    exporter = InMemorySpanExporter()
-    tracing.provider.add_span_processor(SimpleSpanProcessor(exporter))
-    events = []
-    registry_response = {'status': 200, 'body': {'deleted': True}}
-    frontend = YuanrongFrontendAgentClient(frontend_endpoint='http://frontend.test', function_version_urn='fn')
-    await frontend.connect('')
-    response = {'status': 200, 'body': {'code': 200}}
-    entered, release = asyncio.Event(), asyncio.Event()
-    release.set()
-
-    def delete(instance_id, trace_id):
-        events.append(('frontend', instance_id))
-        return response['status'], json.dumps(response['body'])
-
-    monkeypatch.setattr(frontend, '_do_agent_delete', delete)
-    registry = RegistryClient(RegistryConfig(endpoint='http://registry.test'))
-
-    async def handle(request):
-        events.append(('registry', request.method))
-        assert await manager.get_agent('u1', 'jiuwenswarm') is None
-        return httpx.Response(registry_response['status'], json=registry_response['body'])
-
-    registry._http = httpx.AsyncClient(base_url='http://registry.test', transport=httpx.MockTransport(handle))
-    manager = AgentManager()
-    router = AgentOSRouterClient(frontend, registry, manager, disconnect_cleanup_timeout_seconds=0.01,
-                                 sandbox_idle_timeout_seconds=0.01)
-
-    async def creator(info):
-        info.sandbox_id = 'instance-1'
-        return info
-
-    async def seed(acquire=False):
-        return await manager.get_or_create_agent('u1', 'jiuwenswarm', creator=creator, acquire=acquire)
-
-    class Socket:
-        async def disconnect(self):
-            events.append(('ws', 'close'))
-            entered.set()
-            await release.wait()
-
-    router._ws_clients['instance-1'] = Socket()
-    yield SimpleNamespace(router=router, manager=manager, frontend=frontend, registry=registry,
-                          events=events, exporter=exporter, response=response, seed=seed,
-                          entered=entered, release=release, registry_response=registry_response)
-    release.set()
-    await router.shutdown()
-    await telemetry.shutdown_gateway_telemetry()
 
 
 def spans(setup, name):
@@ -397,211 +343,23 @@ def message_trace():
                                          trace_context={'trace_id': '11111111-1111-1111-1111-111111111111'})
 
 
-@pytest.mark.parametrize('fail', [False, True])
-async def test_explicit_delete_observes_real_leaf_results_and_preserves_order(cleanup_setup, fail):
-    s = cleanup_setup
-    await s.seed()
-    if fail:
-        s.response.update(status=500, body={'code': 500, 'message': 'failure'})
-    parent = message_trace()
-    with telemetry.bind_request_trace(parent):
-        assert await s.router.delete_agent('u1', 'jiuwenswarm') is True
-    parent.finish('success')
-    assert s.events == [('ws', 'close'), ('frontend', 'instance-1'), ('registry', 'DELETE')]
-    assert await s.manager.get_agent('u1', 'jiuwenswarm') is None
-    delete = spans(s, 'gw.agent.delete')[0]
-    assert delete.parent.span_id == parent.span.get_span_context().span_id
-    assert delete.attributes['cleanup.frontend.delete.outcome'] == ('failed' if fail else 'success')
-    assert delete.attributes['cleanup.registry.unregister.outcome'] == 'success'
-    assert delete.attributes['gateway.outcome'] == ('failed' if fail else 'success')
-    assert len(spans(s, 'gw.frontend.delete')) == len(spans(s, 'registry.unregister')) == 1
-
-
-@pytest.mark.parametrize('fail', [False, True])
-async def test_idle_checks_only_trace_actual_reclaim(cleanup_setup, monkeypatch, fail):
-    s = cleanup_setup
-    held = await s.seed(acquire=True)
-    clock = [held.last_active_at + 3601]
-    monkeypatch.setattr(agent_manager, 'time', SimpleNamespace(time=lambda: clock[0]))
-    parent = message_trace()
-    original_pop = s.manager.pop_if_idle
-
-    async def pop(*args, **kwargs):
-        runtime = await original_pop(*args, **kwargs)
-        if runtime is not None:
-            s.events.append(('manager', 'pop'))
-        return runtime
-
-    s.manager.pop_if_idle = pop
-    if fail:
-        s.response.update(status=500, body={'code': 500, 'message': 'failure'})
-    with telemetry.bind_request_trace(parent):
-        for _ in range(30):
-            assert await s.router._reap_idle_once() == 0
-        assert s.events == []
-        assert s.exporter.get_finished_spans() == ()
-        assert (await s.manager.get_agent('u1', 'jiuwenswarm')).task_count == 1
-        await s.manager.release(held.key)
-        s.router._sandbox_idle_timeout_seconds = 3600
-        for _ in range(30):
-            assert await s.router._reap_idle_once() == 0
-        assert s.events == []
-        assert s.exporter.get_finished_spans() == ()
-        clock[0] += 3601
-        assert await s.router._reap_idle_once() == 1
-        assert telemetry.current_request_trace() is parent
-    assert s.events == [('manager', 'pop'), ('ws', 'close'), ('frontend', 'instance-1'), ('registry', 'DELETE')]
-    assert await s.manager.get_agent('u1', 'jiuwenswarm') is None
-    finished = s.exporter.get_finished_spans()
-    assert len(finished) == 4
-    delete = spans(s, 'gw.agent.delete')[0]
-    assert delete.parent is None
-    assert delete.context.trace_id != parent.span.get_span_context().trace_id
-    assert delete.attributes['source'] == 'idle_reaper'
-    assert delete.attributes['gateway.outcome'] == ('failed' if fail else 'success')
-    assert delete.attributes['cleanup.result'] == ('partial' if fail else 'success')
-    for name in ('gw.agent.ws.close', 'gw.frontend.delete', 'registry.unregister'):
-        leaf = spans(s, name)
-        assert len(leaf) == 1
-        assert leaf[0].parent.span_id == delete.context.span_id
-        assert leaf[0].context.trace_id == delete.context.trace_id
-    parent.finish('success')
-
-
-async def test_delayed_cleanup_is_independent_of_finished_message(cleanup_setup):
-    s = cleanup_setup
-    await s.seed()
-    await asyncio.sleep(0.03)
-    parent = message_trace()
-    with telemetry.bind_request_trace(parent):
-        await s.router._on_channel_event(SimpleNamespace(user_id='u1', event_type='disconnected'))
-        task = s.router._pending_cleanups['u1']
-        parent.finish('success')
-        await asyncio.wait_for(task, 5)
-    delete = spans(s, 'gw.agent.delete')[0]
-    assert delete.parent is None
-    assert delete.context.trace_id != parent.span.get_span_context().trace_id
-    assert delete.attributes['source'] == 'disconnect_cleanup'
-    assert await s.manager.get_agent('u1', 'jiuwenswarm') is None
-
-
-async def test_network_failure_cleanup_is_shielded_and_stays_in_trace(cleanup_setup):
-    s = cleanup_setup
-    runtime = await s.seed()
-    s.release.clear()
-    parent = message_trace()
-    with telemetry.bind_request_trace(parent):
-        task = asyncio.create_task(s.router._cleanup_agent_on_network_failure(runtime, reason='network_error'))
-        await asyncio.wait_for(s.entered.wait(), 5)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert s.events == [('ws', 'close')]
-        s.release.set()
-        await _wait_for(lambda: spans(s, 'gw.agent.delete'))
-    parent.finish('failed')
-    delete = spans(s, 'gw.agent.delete')[0]
-    assert delete.parent.span_id == parent.span.get_span_context().span_id
-    assert delete.context.trace_id == parent.span.get_span_context().trace_id
-    assert delete.attributes['source'] == 'network_failure'
-    assert s.events == [('ws', 'close'), ('frontend', 'instance-1'), ('registry', 'DELETE')]
-    assert await s.manager.get_agent('u1', 'jiuwenswarm') is None
 
 
 
 
-async def test_registry_cas_skip_survives_none_return(cleanup_setup, monkeypatch):
-    s = cleanup_setup
-    await s.seed()
-    s.registry_response.update(status=409, body={'detail': 'mismatch'})
-
-    async def unregister_agent(agent_id, *, user_id, agent_type):
-        result = await s.registry.unregister_instance('service-1', expected_instance_id='instance-1')
-        assert result['deleted'] is False
-        return None
-
-    monkeypatch.setattr(s.registry, 'unregister_agent', unregister_agent)
-    parent = message_trace()
-    with telemetry.bind_request_trace(parent):
-        assert await s.router.delete_agent('u1', 'jiuwenswarm') is True
-    parent.finish('success')
-    delete = spans(s, 'gw.agent.delete')[0]
-    assert delete.attributes['cleanup.registry.unregister.outcome'] == 'skipped'
-    assert delete.attributes['cleanup.registry.unregister.reason'] == 'instance_id_mismatch'
-    assert delete.attributes['gateway.outcome'] != 'success'
-    assert s.events == [('ws', 'close'), ('frontend', 'instance-1'), ('registry', 'DELETE')]
-    assert await s.manager.get_agent('u1', 'jiuwenswarm') is None
-
-
-async def test_idle_success_pops_before_releasing_resources(cleanup_setup):
-    s = cleanup_setup
-    await s.seed()
-    await asyncio.sleep(0.03)
-    original = s.frontend.delete_sandbox
-
-    async def delete(instance_id):
-        assert await s.manager.get_agent('u1', 'jiuwenswarm') is None
-        await original(instance_id)
-
-    s.frontend.delete_sandbox = delete
-    assert await s.router._reap_idle_once() == 1
-    assert s.events == [('ws', 'close'), ('frontend', 'instance-1'), ('registry', 'DELETE')]
-    delete_span = spans(s, 'gw.agent.delete')[0]
-    assert delete_span.parent is None
-    assert delete_span.attributes['source'] == 'idle_reaper'
-    assert delete_span.attributes['cleanup.frontend.delete.outcome'] == 'success'
-    assert delete_span.attributes['cleanup.registry.unregister.outcome'] == 'success'
 
 
 
-@pytest.mark.parametrize('unavailable', [False, True])
-async def test_inline_failure_cleanup_stays_in_message_trace(cleanup_setup, unavailable):
-    s = cleanup_setup
-    runtime = await s.seed()
-    parent = message_trace()
-    with telemetry.bind_request_trace(parent):
-        if unavailable:
-            await s.router._cleanup_agent_on_instance_unavailable(runtime, exc=RuntimeError('unavailable'))
-        else:
-            await s.router._cleanup_agent_on_network_failure(runtime, reason='network_error')
-    parent.finish('failed')
-    delete = spans(s, 'gw.agent.delete')[0]
-    assert delete.context.trace_id == parent.span.get_span_context().trace_id
-    assert delete.parent.span_id == parent.span.get_span_context().span_id
-    assert delete.attributes['source'] == ('instance_unavailable' if unavailable else 'network_failure')
-    assert s.events == [('ws', 'close'), ('frontend', 'instance-1'), ('registry', 'DELETE')]
-    assert await s.manager.get_agent('u1', 'jiuwenswarm') is None
 
 
-@pytest.mark.parametrize('status,outcome,reason', [(200, 'success', 'accepted'), (404, 'skipped', 'not_found')])
-async def test_frontend_delete_wire_and_cleanup(monkeypatch, status, outcome, reason):
-    runtime, exporter, parent = _setup_trace(monkeypatch)
-    seen = []
-    class Response:
-        def __enter__(self): return self
-        def __exit__(self, *args): return False
-        def read(self):
-            return (b'{"code": 404, "message": "instance not found or not running"}'
-                    if status == 404 else b'{"code": 200}')
-    def urlopen(req, timeout):
-        seen.append(dict(req.header_items()))
-        response = Response()
-        response.status = status
-        return response
-    monkeypatch.setattr('urllib.request.urlopen', urlopen)
-    client = YuanrongFrontendAgentClient(frontend_endpoint='http://localhost', function_version_urn='fn')
-    await client.connect('')
-    with telemetry.bind_request_trace(parent), telemetry.bind_cleanup_trace(parent):
-        await client.delete_sandbox('i', trace_id='legacy')
-    span = next(s for s in exporter.get_finished_spans() if s.name == 'gw.frontend.delete')
-    _check_trace_headers(seen[0], span)
-    assert span.attributes['http.request.method'] == 'DELETE'
-    assert span.attributes['http.response.status_code'] == status
-    parent.finish('success')
-    root = next(s for s in exporter.get_finished_spans() if s.context.span_id == parent.span.get_span_context().span_id)
-    assert root.attributes['cleanup.frontend.delete.outcome'] == outcome
-    assert root.attributes['cleanup.frontend.delete.reason'] == reason
-    runtime.provider.shutdown()
+
+
+
+
+
+
+
+
 
 
 @pytest.mark.parametrize('status,body,outcome,reason', [
@@ -637,45 +395,8 @@ async def test_registry_delete_cas_and_cleanup(monkeypatch, status, body, outcom
     runtime.provider.shutdown()
 
 
-async def test_untraced_delete_preserves_legacy_headers(monkeypatch):
-    seen = []
-    class Response:
-        status = 200
-        def __enter__(self): return self
-        def __exit__(self, *args): return False
-        def read(self): return b'{"code": 200}'
-    def urlopen(req, timeout):
-        seen.append({k.lower(): v for k, v in req.header_items()})
-        return Response()
-    monkeypatch.setattr('urllib.request.urlopen', urlopen)
-    client = YuanrongFrontendAgentClient(frontend_endpoint='http://localhost', function_version_urn='fn')
-    await client.connect('')
-    await client.delete_sandbox('i', trace_id='legacy')
-    assert seen[0]['x-trace-id'] == 'legacy'
-    assert 'traceparent' not in seen[0]
 
 
-@pytest.mark.parametrize('kind', ['timeout', 'failed', 'cancelled'])
-async def test_frontend_delete_errors_are_reported_without_changing_exception(monkeypatch, kind):
-    runtime, exporter, parent = _setup_trace(monkeypatch)
-    async def run_thread(*args):
-        if kind == 'cancelled':
-            raise asyncio.CancelledError()
-        if kind == 'timeout':
-            raise TimeoutError('timeout')
-        raise ValueError('failed')
-    monkeypatch.setattr(asyncio, 'to_thread', run_thread)
-    client = YuanrongFrontendAgentClient(frontend_endpoint='http://localhost', function_version_urn='fn')
-    await client.connect('')
-    exception = {'cancelled': asyncio.CancelledError, 'timeout': TimeoutError, 'failed': ValueError}[kind]
-    with telemetry.bind_request_trace(parent), telemetry.bind_cleanup_trace(parent):
-        with pytest.raises(exception):
-            await client.delete_sandbox('i')
-        assert telemetry.get_cleanup_result('frontend.delete') == kind
-    span = next(s for s in exporter.get_finished_spans() if s.name == 'gw.frontend.delete')
-    assert span.attributes['gateway.outcome'] == kind
-    parent.finish('success')
-    runtime.provider.shutdown()
 
 
 @pytest.mark.parametrize('kind', ['timeout', 'failed', 'cancelled'])
@@ -696,78 +417,5 @@ async def test_registry_delete_errors_are_reported_without_changing_exception(mo
     span = next(s for s in exporter.get_finished_spans() if s.name == 'registry.unregister')
     assert span.attributes['gateway.outcome'] == kind
     await client.close()
-    parent.finish('success')
-    runtime.provider.shutdown()
-
-
-@pytest.mark.parametrize('transport', ['frontend', 'registry'])
-async def test_http_success_survives_sdk_attribute_failure(monkeypatch, transport):
-    runtime, exporter, parent = _setup_trace(monkeypatch)
-    failed_spans = []
-
-    def fail_leaf_attribute():
-        leaf = telemetry.current_request_trace()
-        assert leaf is not None and leaf is not parent
-        failed_spans.append(leaf.span)
-        def fail(*args, **kwargs):
-            raise RuntimeError('SDK setter failed')
-        monkeypatch.setattr(leaf.span, 'set_attribute', fail)
-
-    if transport == 'frontend':
-        class Response:
-            status = 200
-            def __enter__(self): return self
-            def __exit__(self, *args): return False
-            def read(self): return b'{"code": 200}'
-        def urlopen(req, timeout):
-            fail_leaf_attribute()
-            return Response()
-        monkeypatch.setattr('urllib.request.urlopen', urlopen)
-        client = YuanrongFrontendAgentClient(frontend_endpoint='http://localhost', function_version_urn='fn')
-        await client.connect('')
-        with telemetry.bind_request_trace(parent), telemetry.bind_cleanup_trace(parent):
-            assert await client.delete_sandbox('instance') is None
-            assert telemetry.get_cleanup_result('frontend.delete') == 'success'
-    else:
-        def handler(request):
-            fail_leaf_attribute()
-            assert request.url.params['instance_id'] == 'instance'
-            return httpx.Response(200, json={'service_id': 'service', 'deleted': True})
-        client = RegistryClient(RegistryConfig(endpoint='http://registry.test'))
-        client._http = httpx.AsyncClient(base_url='http://registry.test', transport=httpx.MockTransport(handler))
-        with telemetry.bind_request_trace(parent), telemetry.bind_cleanup_trace(parent):
-            result = await client.unregister_instance('service', expected_instance_id='instance')
-            assert result == {'service_id': 'service', 'deleted': True}
-            assert telemetry.get_cleanup_result('registry.unregister') == 'success'
-        await client.close()
-    assert len(failed_spans) == 1
-    assert any(span.context.span_id == failed_spans[0].get_span_context().span_id
-               for span in exporter.get_finished_spans())
-    parent.finish('success')
-    runtime.provider.shutdown()
-
-
-async def test_disabled_registry_unregister_agent_is_reported_by_router(monkeypatch):
-    from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import AgentManager
-    from jiuwenswarm.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
-
-    runtime, exporter, parent = _setup_trace(monkeypatch)
-    frontend = YuanrongFrontendAgentClient(frontend_endpoint='http://localhost', function_version_urn='fn')
-    await frontend.connect('')
-    monkeypatch.setattr(frontend, '_do_agent_delete', lambda instance_id, trace_id: (200, '{"code": 200}'))
-    registry = RegistryClient(RegistryConfig())
-    manager = AgentManager()
-    router = AgentOSRouterClient(frontend, registry, manager)
-    async def creator(info):
-        info.sandbox_id = 'instance'
-        return info
-    await manager.get_or_create_agent('user', 'jiuwenswarm', creator=creator)
-    with telemetry.bind_request_trace(parent):
-        assert await router.delete_agent('user', 'jiuwenswarm') is True
-    leaf = next(s for s in exporter.get_finished_spans() if s.name == 'gw.agent.delete')
-    assert leaf.attributes['cleanup.registry.unregister.outcome'] == 'skipped'
-    assert leaf.attributes['cleanup.registry.unregister.reason'] == 'disabled'
-    assert not any(s.name == 'registry.unregister' for s in exporter.get_finished_spans())
-    await router.shutdown()
     parent.finish('success')
     runtime.provider.shutdown()

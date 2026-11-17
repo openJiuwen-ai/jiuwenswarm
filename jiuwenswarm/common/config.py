@@ -253,12 +253,12 @@ def _read_with_retry(filepath: Path, max_attempts: int = 3) -> dict[str, Any]:
 
 def get_config():
     """读取并解析 config.yaml（锁保护 + 跨进程降级重试）。"""
+    from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
     config_base = _read_with_retry(get_config_file())
     # resolve_env_vars 和 _normalize_config 只操作内存数据，在锁外执行以缩短锁持有时间
     config_base = resolve_env_vars(config_base)
     _normalize_config(config_base)
 
-    from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
     if is_agentos_runtime():
         for section, env_key in (
             ("code_graph", "JIUWENSWARM_AGENTOS_CODE_GRAPH_CONFIG"),
@@ -266,11 +266,16 @@ def get_config():
         ):
             try:
                 defaults = json.loads(os.getenv(env_key, "{}"))
-                if isinstance(defaults, dict) and defaults:
-                    local = config_base.get(section)
-                    config_base[section] = {**defaults, **local} if isinstance(local, dict) else defaults
             except (ValueError, TypeError):
                 logger.warning("Ignoring malformed AgentOS %s deployment config", section)
+                continue
+            if isinstance(defaults, dict) and defaults:
+                local = config_base.get(section)
+                if section == "sandbox":
+                    from jiuwenswarm.common.runtime_settings import bind_runtime_sandbox
+                    config_base[section] = bind_runtime_sandbox(local, defaults)
+                else:
+                    config_base[section] = {**defaults, **local} if isinstance(local, dict) else defaults
 
     return apply_runtime_model_config(config_base)
 
@@ -584,8 +589,13 @@ def dump_yaml_round_trip(config_path: Path, data: Any) -> None:
     rt.indent(mapping=2, sequence=4, offset=2)
     rt.width = 4096
     tmp = config_path.with_name(f"{config_path.stem}.{uuid.uuid4().hex}.yaml.tmp")
+    from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
+    mode = config_path.stat().st_mode & 0o777 if is_agentos_runtime() and config_path.exists() else None
     try:
         with open(tmp, "w", encoding="utf-8") as f:
+            if mode is not None:
+                # Prepared AgentOS configuration can contain private business credentials.
+                os.fchmod(f.fileno(), mode)
             rt.dump(data, f)
         _atomic_replace(tmp, config_path)
     except BaseException:
@@ -3695,6 +3705,7 @@ def _get_agentos_model(models: dict[str, Any], name: str) -> dict[str, Any] | No
     return None
 
 
+
 def get_model_config(name: str, index: int | None = None) -> dict[str, Any] | None:
     """获取指定模型的原始配置（不解析环境变量）。
 
@@ -3936,38 +3947,13 @@ _VALID_SANDBOX_STARTUP_MODES = ("internal", "external")
 _DEFAULT_SANDBOX_STARTUP_MODE = "internal"
 _DEFAULT_SANDBOX_POLICY_FILE = "code-agent-policy.yaml"
 
-# YuanRong sandbox knobs under flat ``sandbox:`` (see get_sandbox_endpoint).
-_VALID_YUANRONG_EXECUTORS = ("default", "docker", "conch")
-_DEFAULT_YUANRONG_EXECUTOR = "docker"
-_DEFAULT_YUANRONG_URL = "http://127.0.0.1:18093"
-_YUANRONG_ENDPOINT_OPTIONAL_KEYS: tuple[str, ...] = (
-    "image",
-    "workdir",
-    "mounts",
-    "cpu",
-    "cpu_limit",
-    "memory",
-    "mem_limit",
-    "rootfs",
-    "user",
-    "group",
-)
-
 # Public re-exports for callers that need to fall back to / advertise defaults
 # (e.g. agent_ws_server 把缺省值持久化到 config.yaml, 让重启后 get_sandbox_endpoint
 # 能直接读到, 而不必每次再走一遍 fallback 逻辑)。
 DEFAULT_SANDBOX_STARTUP_MODE = _DEFAULT_SANDBOX_STARTUP_MODE
 DEFAULT_SANDBOX_POLICY_FILE = _DEFAULT_SANDBOX_POLICY_FILE
-DEFAULT_YUANRONG_SANDBOX_URL = _DEFAULT_YUANRONG_URL
-DEFAULT_YUANRONG_EXECUTOR = _DEFAULT_YUANRONG_EXECUTOR
 
 
-def _normalize_yuanrong_executor(value: Any) -> str:
-    """归一化 ``sandbox.executor``; 非法或空值回落到默认 ``docker``."""
-    text = str(value or "").strip().lower()
-    if text not in _VALID_YUANRONG_EXECUTORS:
-        return _DEFAULT_YUANRONG_EXECUTOR
-    return text
 
 
 def _normalize_sandbox_startup_mode(value: Any) -> str:
@@ -4203,18 +4189,11 @@ def update_sandbox_policy_file(value: str) -> str:
 
 def get_sandbox_endpoint() -> dict[str, Any]:
     """返回 ``sandbox.url`` / ``sandbox.type`` / ``sandbox.preserve_file_sharing_mode``
-    / ``sandbox.startup_mode`` / ``sandbox.policy_file``, 以及 yuanrong 可选 knobs。
+    / ``sandbox.startup_mode`` / ``sandbox.policy_file``。
 
     ``preserve_file_sharing_mode`` 缺省或为空时返回空串, 由调用方决定默认值
     (当前只有 ``"mount"``)。 ``startup_mode`` 未配置时回落到 ``internal``;
     ``policy_file`` 未配置时返回空串 (由调用方决定默认 policy)。
-
-    当 ``type=yuanrong`` 时额外返回:
-    - ``executor`` (缺省 ``docker``)
-    - 若 yaml 中存在: ``image`` / ``workdir`` / ``mounts`` / ``cpu`` /
-      ``cpu_limit`` / ``memory`` / ``mem_limit`` / ``rootfs`` /
-      ``user`` / ``group``
-    - ``url`` 为空时回落 ``http://127.0.0.1:18093``
 
     Raises:
         ValueError: yaml 里 ``preserve_file_sharing_mode`` 写了非法值时, 直接
@@ -4225,6 +4204,8 @@ def get_sandbox_endpoint() -> dict[str, Any]:
     sandbox = cfg.get("sandbox") or {}
     mode = _normalize_preserve_file_sharing_mode(sandbox.get("preserve_file_sharing_mode"))
     sandbox_type = str(sandbox.get("type") or "").strip()
+    if sandbox_type.lower() == "yuanrong":
+        raise ValueError("sandbox.type=yuanrong requires deployment migration to adx-environment")
     url = str(sandbox.get("url") or "").strip()
     result: dict[str, Any] = {
         "url": url,
@@ -4233,10 +4214,10 @@ def get_sandbox_endpoint() -> dict[str, Any]:
         "startup_mode": _normalize_sandbox_startup_mode(sandbox.get("startup_mode")),
         "policy_file": str(sandbox.get("policy_file") or "").strip(),
     }
-    if sandbox_type == "yuanrong":
-        result["url"] = url or _DEFAULT_YUANRONG_URL
-        result["executor"] = _normalize_yuanrong_executor(sandbox.get("executor"))
-        for key in _YUANRONG_ENDPOINT_OPTIONAL_KEYS:
+    if sandbox_type == "adx-environment":
+        for key in ("image", "rootfs_template", "runtime", "workdir", "mounts", "cpu", "cpu_limit",
+                    "memory", "mem_limit", "idle_timeout", "user", "group", "network", "connection",
+                    "env", "create_timeout", "schedule_timeout", "endpoint_file", "restart_policy"):
             if key in sandbox:
                 result[key] = sandbox[key]
     if sandbox_type == "jiuwenbox-conch":
@@ -4265,7 +4246,7 @@ def update_sandbox_endpoint(
 ) -> dict[str, Any]:
     """写入 ``sandbox.url`` / ``sandbox.type`` 以及可选的
     ``preserve_file_sharing_mode`` / ``startup_mode`` / ``policy_file``
-    / yuanrong knobs 到 config.yaml; 返回实际写入的字段集合
+    及工具资源参数到 config.yaml; 返回实际写入的字段集合
     (没有改动的字段不在返回里)。
 
     所有 ``None`` 入参表示"本次不修改该字段, 保留 config.yaml 中既有值",
@@ -4296,7 +4277,7 @@ def update_sandbox_endpoint(
 
     executor_value: str | None = None
     if executor is not None:
-        executor_value = _normalize_yuanrong_executor(executor)
+        executor_value = str(executor).strip()
 
     data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
     if "sandbox" not in data or not isinstance(data.get("sandbox"), dict):

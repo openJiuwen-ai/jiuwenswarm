@@ -1809,11 +1809,26 @@ def _build_route_config_map(bindings: list[GatewayRouteBinding]) -> dict[str, Ro
     }
 
 
+def _validate_agent_client_registration(config, extension, *, required_type=None) -> None:
+    gateway = (config or {}).get("gateway") or {}
+    selected = str((gateway.get("agent_client") or {}).get("type") or "websocket").strip().lower()
+    expected = required_type or selected
+    if expected == "websocket":
+        return
+    registered = extension.metadata.id if extension is not None else "none"
+    if selected != expected or registered != expected or extension.get_client() is None:
+        raise RuntimeError(
+            f"Configured AgentServerClient {expected!r} is not registered (selected: {selected}, "
+            f"registered: {registered}). Check gateway.agent_client.type and extension loading logs."
+        )
+
+
 async def _run(
         agent_server_url: str,
         web_host: str,
         web_port: int,
         web_path: str,
+        required_client_type: str | None = None,
 ) -> None:
     # IM 平台 (dingtalk/feishu/whatsapp/wechat/xiaoyi/telegram/discord/slack/wecom) 均为
     # 惰性 import: 仅在对应 channel enabled 分支内导入, 避免冷启动时为禁用平台
@@ -1896,9 +1911,10 @@ async def _run(
     max_retries = int(os.getenv("AGENT_CONNECT_RETRY", "20"))
     retry_interval = float(os.getenv("AGENT_CONNECT_RETRY_INTERVAL", "3"))
 
-    # 从扩展注册表获取 AgentServerClient（WebSocket 或 Yuanrong 等扩展实现）
+    # 从扩展注册表获取 AgentServerClient（WebSocket 或 AgentOS Router 等扩展实现）
     agent_server_ext = extension_registry.get_agent_server_client_extension()
     full_cfg = get_config()
+    _validate_agent_client_registration(full_cfg, agent_server_ext, required_type=required_client_type)
     configure_gateway_telemetry(
         full_cfg or {},
         user_id_formatter=lambda value: mask_sensitive(f"user_id={value}").removeprefix("user_id="),
@@ -1918,7 +1934,7 @@ async def _run(
     else:
         third_agent = get_unsupported_third_agent()
 
-    # 如果是 WebSocket 客户端，需要连接；如果是 YuanrongFrontendAgentClient，无需连接
+    # 如果是 WebSocket 客户端，需要连接；HTTP 控制客户端不需要连接
     if isinstance(client, WebSocketAgentServerClient):
         await _connect_with_retry(
             client,
@@ -1927,7 +1943,7 @@ async def _run(
             interval=retry_interval,
         )
     else:
-        # YuanrongFrontendAgentClient 是 HTTP 客户端，无需连接
+        # HTTP 控制客户端无需建立长连接
         await client.connect("")
     log_startup_stage("agent_server_connected")
 
@@ -3143,7 +3159,7 @@ async def _run(
             _set_agentos_ssh_key_issuer(None)
 
             if isinstance(ssh_conf, dict):
-                # 南向经 agent client（如 agentos_router -> yuanrong）动态解析。
+                # 南向经 agent client（如 agentos_router -> ADX）动态解析。
                 enabled, reason = _is_channel_enabled(ssh_conf, ["listen_port"])
                 full_cfg = get_config()
                 gateway_cfg = full_cfg.get("gateway") if isinstance(full_cfg, dict) else {}
@@ -3711,6 +3727,12 @@ def main() -> None:
         metavar="<path>",
         help="Load environment from .env file (processed at startup, not used here).",
     )
+    parser.add_argument(
+        "--require-adx-router",
+        # Accept previously generated service units; validation itself is generic.
+        dest="required_client_type", action="store_const", const="agentos_router",
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args()
 
     # Handle --name: check if bootstrap .env was loaded successfully
@@ -3755,6 +3777,7 @@ def main() -> None:
                 web_host=web_host,
                 web_port=web_port,
                 web_path=web_path,
+                required_client_type=args.required_client_type,
             )
         )
     finally:

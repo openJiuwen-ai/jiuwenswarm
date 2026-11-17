@@ -18,14 +18,27 @@ from collections.abc import Callable
 CLONE_NEWNS = 0x00020000
 CLONE_NEWUSER = 0x10000000
 AT_FDCWD = -100
+AT_EMPTY_PATH = 0x1000
 OPEN_TREE_CLONE = 1
 OPEN_TREE_CLOEXEC = os.O_CLOEXEC
 MOVE_MOUNT_F_EMPTY_PATH = 0x4
 SYS_OPEN_TREE = 428
 SYS_MOVE_MOUNT = 429
+SYS_MOUNT_SETATTR = 442
 MS_RDONLY = 1
 MS_REMOUNT = 32
 MS_BIND = 4096
+MS_PRIVATE = 1 << 18
+
+
+class _MountAttr(ctypes.Structure):
+    _fields_ = [
+        ("attr_set", ctypes.c_uint64),
+        ("attr_clr", ctypes.c_uint64),
+        ("propagation", ctypes.c_uint64),
+        ("userns_fd", ctypes.c_uint64),
+    ]
+
 
 _libc = ctypes.CDLL("libc.so.6", use_errno=True)
 _libc.setns.argtypes = [ctypes.c_int, ctypes.c_int]
@@ -66,6 +79,26 @@ def _open_tree(src: str) -> int:
     )
     if fd < 0:
         raise _errno(f"open_tree {src}")
+    try:
+        # open_tree clones inherit the source's shared propagation group.
+        # Nested checkout mounts would otherwise propagate back into the host
+        # (and multiply on later checkouts). Privatize the detached clone before
+        # attaching it; the host source mount must remain unchanged. Kernels
+        # without mount_setattr use the existing direct-create fallback.
+        empty = ctypes.create_string_buffer(b"")
+        attr = _MountAttr(propagation=MS_PRIVATE)
+        if _syscall_long(
+            SYS_MOUNT_SETATTR,
+            fd,
+            ctypes.addressof(empty),
+            AT_EMPTY_PATH,
+            ctypes.addressof(attr),
+            ctypes.sizeof(attr),
+        ) < 0:
+            raise _errno(f"mount_setattr private {src}")
+    except OSError:
+        os.close(fd)
+        raise
     return fd
 
 

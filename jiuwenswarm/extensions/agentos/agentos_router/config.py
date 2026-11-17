@@ -15,10 +15,10 @@ from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
 from jiuwenswarm.extensions.agentos.agentos_router.logutil import log_agentos
 from jiuwenswarm.extensions.agentos.agentos_router.registry_client import RegistryConfig
 from jiuwenswarm.extensions.agentos.agentos_router.ssh_relay import (
-    YuanrongSshSettings,
-    load_yuanrong_ssh_settings,
+    SshSettings,
+    load_ssh_settings,
 )
-from jiuwenswarm.extensions.yuanrong_frontend_client import (
+from jiuwenswarm.extensions.agentos.agentos_router.backend import (
     DEFAULT_RUNTIME_PROBE_SETTINGS,
     DEFAULT_THIRD_AGENT_PROBE_SETTINGS,
     RuntimeProbeSettings,
@@ -33,16 +33,16 @@ SANDBOX_IDLE_TIMEOUT_ENV = "SANDBOX_IDLE_TIMEOUT_SECONDS"
 BUILTIN_AGENT_CPU_ENV = "AGENTOS_BUILTIN_AGENT_CPU"
 BUILTIN_AGENT_MEMORY_ENV = "AGENTOS_BUILTIN_AGENT_MEMORY"
 # Env seeds for the Tool Sandbox. These names must match what AgentServer reads
-# when it builds the yuanrong tool sandbox (``sysop_builder._TOOL_SANDBOX_ENV_OVERRIDES``);
+# when it builds the remote tool sandbox (``sysop_builder._TOOL_SANDBOX_ENV_OVERRIDES``);
 # the same constants are re-emitted into a newly created AgentServer sandbox.
 # Tool Sandbox idle timeout is integer seconds: the tool-sandbox provider
-# (yuanrong/jiuwenbox) coerces ``extra_params["idle_timeout"]`` with ``int()``.
+# (sandbox) coerces ``extra_params["idle_timeout"]`` with ``int()``.
 TOOL_SANDBOX_IDLE_TIMEOUT_ENV = "TOOL_SANDBOX_IDLE_TIMEOUT"
 TOOL_SANDBOX_CPU_ENV = "TOOL_SANDBOX_CPU"
 TOOL_SANDBOX_MEMORY_ENV = "TOOL_SANDBOX_MEMORY"
 # Env override for gateway.agentos.disconnect_cleanup_timeout_seconds.
 DISCONNECT_CLEANUP_TIMEOUT_ENV = "DISCONNECT_CLEANUP_TIMEOUT_SECONDS"
-# Env overrides for YuanRong TCP probes / GET wait (win over yaml).
+# Env overrides for Environment TCP probes / GET wait (win over yaml).
 WAIT_RUNNING_TIMEOUT_ENV = "AGENTOS_WAIT_RUNNING_TIMEOUT_SECONDS"
 WAIT_RUNNING_INTERVAL_ENV = "AGENTOS_WAIT_RUNNING_INTERVAL_SECONDS"
 PROBE_STARTUP_INITIAL_DELAY_ENV = "AGENTOS_PROBE_STARTUP_INITIAL_DELAY_SECONDS"
@@ -65,29 +65,23 @@ class SshChannelEndpoint:
 
 @dataclass(frozen=True)
 class RouterConfig:
-    frontend_endpoint: str
-    function_version_urn: str
-    concurrency: int
-    invoke_timeout_s: float
     registry: RegistryConfig
     agent_namespace: str = "default"
-    agent_timeout_s: float = 300.0
     creating_timeout_seconds: float = 60.0
     agent_key_fields: tuple[str, ...] = DEFAULT_AGENT_KEY_FIELDS
     workspace_root: str = DEFAULT_AGENT_WORKSPACE_ROOT
-    # Idle sandbox reclamation: delete the YuanRong instance once an agent
+    # Idle sandbox reclamation: delete the Environment instance once an agent
     # has no held tasks (chat/SSH/web) for this long. <= 0 disables reclamation.
     sandbox_idle_timeout_seconds: float = 600.0
-    # Builtin jiuwenswarm agent sandbox resources, passed to the YuanRong
-    # ``/api/agent`` create call as ``runtime_spec.cpu`` / ``memory``. Only
-    # affect sandboxes created after the value changes.
+    # Builtin AgentServer resources are applied to backend create requests.
+    # Changes affect only newly created environments.
     agent_sandbox_cpu: int = 2000
     agent_sandbox_memory: int = 4096
     # Tool Sandbox settings are not consumed by Gateway. They are forwarded to
     # each newly created AgentServer instance as environment values; the
     # AgentServer/tool provider decides how to use them.
     # idle_timeout is integer seconds: the tool-sandbox provider coerces it
-    # with ``int()`` (yuanrong/jiuwenbox sandbox providers).
+    # with ``int()`` (sandbox sandbox providers).
     tool_sandbox_idle_timeout_seconds: int = 600
     tool_sandbox_cpu: int = 2000
     tool_sandbox_memory: int = 4096
@@ -103,7 +97,7 @@ class RouterConfig:
     # create + cold-start 502 retries. Failure never drops the connection.
     connect_warmup_enabled: bool = True
     probes: RuntimeProbeSettings = DEFAULT_RUNTIME_PROBE_SETTINGS
-    ssh: YuanrongSshSettings = YuanrongSshSettings()
+    ssh: SshSettings = SshSettings()
     ssh_channel: SshChannelEndpoint | None = None
     auth_service_url: str = ""
     timeout: float = 10.0
@@ -112,10 +106,7 @@ class RouterConfig:
 
 def agentos_router_selected(config: dict[str, Any]) -> bool:
     agent_client = read_mapping_path(config, "gateway", "agent_client")
-    return (
-        str(agent_client.get("type") or "websocket").strip().lower()
-        == "agentos_router"
-    )
+    return str(agent_client.get("type") or "websocket").strip().lower() == "agentos_router"
 
 
 def load_ssh_channel_endpoint(config: dict[str, Any]) -> SshChannelEndpoint | None:
@@ -375,20 +366,13 @@ def _load_probe_settings(agentos: Mapping[str, Any]) -> RuntimeProbeSettings:
     return settings
 
 
-def load_router_config(config: dict[str, Any]) -> RouterConfig:
+def load_router_config(
+    config: dict[str, Any], *,
+    tool_sandbox_defaults: Mapping[str, Any] | None = None,
+) -> RouterConfig:
     agent_client = read_mapping_path(config, "gateway", "agent_client")
     agentos = read_mapping_path(config, "gateway", "agentos")
     registry = read_mapping_path(config, "gateway", "agentos", "registry")
-
-    frontend_endpoint = str(agent_client.get("frontend_endpoint") or "").strip()
-    function_version_urn = str(
-        agent_client.get("function_version_urn") or ""
-    ).strip()
-    if not frontend_endpoint or not function_version_urn:
-        raise ValueError(
-            "gateway.agent_client.frontend_endpoint and function_version_urn "
-            "are required in agentos_router mode"
-        )
 
     auth_service_url = str(agentos.get("auth_service_url") or "").strip()
     timeout = float(agentos.get("timeout") or 10)
@@ -406,14 +390,16 @@ def load_router_config(config: dict[str, Any]) -> RouterConfig:
     # startup value and the management plane overrides it at runtime.
     agent_sandbox_cpu = _overlay_int_env(2000, BUILTIN_AGENT_CPU_ENV)
     agent_sandbox_memory = _overlay_int_env(4096, BUILTIN_AGENT_MEMORY_ENV)
-    tool_sandbox_idle_timeout_env = _read_int_env(TOOL_SANDBOX_IDLE_TIMEOUT_ENV)
-    tool_sandbox_idle_timeout_seconds = (
-        600
-        if tool_sandbox_idle_timeout_env is None
-        else tool_sandbox_idle_timeout_env
+    tool_defaults = tool_sandbox_defaults or {}
+    tool_sandbox_idle_timeout_seconds = _overlay_int_env(
+        _read_int(tool_defaults, "idle_timeout", 600), TOOL_SANDBOX_IDLE_TIMEOUT_ENV,
     )
-    tool_sandbox_cpu = _overlay_int_env(2000, TOOL_SANDBOX_CPU_ENV)
-    tool_sandbox_memory = _overlay_int_env(4096, TOOL_SANDBOX_MEMORY_ENV)
+    tool_sandbox_cpu = _overlay_int_env(
+        _read_int(tool_defaults, "cpu", 2000), TOOL_SANDBOX_CPU_ENV,
+    )
+    tool_sandbox_memory = _overlay_int_env(
+        _read_int(tool_defaults, "memory", 4096), TOOL_SANDBOX_MEMORY_ENV,
+    )
 
     disconnect_cleanup_env = _read_float_env(DISCONNECT_CLEANUP_TIMEOUT_ENV)
     disconnect_cleanup_timeout_seconds = (
@@ -423,12 +409,7 @@ def load_router_config(config: dict[str, Any]) -> RouterConfig:
     )
 
     return RouterConfig(
-        frontend_endpoint=frontend_endpoint,
-        function_version_urn=function_version_urn,
-        concurrency=int(agent_client.get("concurrency") or 1),
-        invoke_timeout_s=float(agent_client.get("invoke_timeout_s") or 60.0),
         agent_namespace=str(agent_client.get("agent_namespace") or "default").strip() or "default",
-        agent_timeout_s=float(agent_client.get("agent_timeout_s") or 300.0),
         registry=RegistryConfig(
             endpoint=str(registry.get("endpoint") or "").strip(),
             request_timeout_s=float(registry.get("request_timeout_s") or 10.0),
@@ -456,7 +437,7 @@ def load_router_config(config: dict[str, Any]) -> RouterConfig:
         disconnect_cleanup_timeout_seconds=disconnect_cleanup_timeout_seconds,
         connect_warmup_enabled=_read_bool(agentos, "connect_warmup_enabled", True),
         probes=_load_probe_settings(agentos),
-        ssh=load_yuanrong_ssh_settings(agentos.get("ssh")),
+        ssh=load_ssh_settings(agentos.get("ssh")),
         ssh_channel=load_ssh_channel_endpoint(config),
         auth_service_url=auth_service_url,
         timeout=timeout,
