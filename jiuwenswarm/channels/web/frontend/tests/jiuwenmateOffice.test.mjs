@@ -118,8 +118,7 @@ test('period heatmap keeps subminute work visible by using hourly task counts', 
 });
 
 test('summary and token formatting follow the design', () => {
-  const heatmap = yearHeatmap(2026, today, activities);
-  const summary = activitySummary(heatmap, 2, [{ tokens: 108000 }, { tokens: 112000 }, { tokens: 8000 }]);
+  const summary = activitySummary(activities, 2, [{ tokens: 108000 }, { tokens: 112000 }, { tokens: 8000 }]);
   assert.deepEqual(summary, { members: 2, activeDays: 2, tasks: 132, tokens: 220000 });
   assert.equal(formatSummaryTokens(336000), '336k');
   assert.equal(formatTableTokens(108000), '108.0K');
@@ -192,9 +191,9 @@ test('overview usage and replies follow the picked year or period instead of all
 });
 
 test('overview member count only includes colleagues who had joined by the end of the range', () => {
-  const joinedAts = [new Date(2025, 5, 1, 10).toISOString(), new Date(2026, 10, 11, 9).toISOString(), ''];
-  assert.equal(joinedColleagueCount(joinedAts, '2026-11-16'), 3);
-  assert.equal(joinedColleagueCount(joinedAts, '2025-12-31'), 2);
-  assert.equal(joinedColleagueCount(joinedAts, '2025-06-01'), 2);
-  assert.equal(joinedColleagueCount(joinedAts, '2024-12-31'), 1);
+  const joinedAts = [new Date(2025, 5, 1, 10).toISOString(), new Date(2026, 10, 11, 9).toISOString(), '', 'unknown'];
+  assert.equal(joinedColleagueCount(joinedAts, '2026-11-16'), 2);
+  assert.equal(joinedColleagueCount(joinedAts, '2025-12-31'), 1);
+  assert.equal(joinedColleagueCount(joinedAts, '2025-06-01'), 1);
+  assert.equal(joinedColleagueCount(joinedAts, '2024-12-31'), 0);
 });

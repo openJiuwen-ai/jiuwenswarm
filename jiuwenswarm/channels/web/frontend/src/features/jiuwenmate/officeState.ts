@@ -204,12 +204,14 @@ export function activityRangeBounds(state: JiuwenMateOfficeState, today: Date): 
   return { start: toIsoDate(start), end: toIsoDate(end) };
 }
 
-/** How many colleagues had joined by `end` (inclusive ISO date); an unreadable join time still counts. */
+/** Compare a known creation date with the inclusive end of the range. */
+export function colleagueJoinedBy(joinedAt: string, end: string): boolean {
+  const joined = new Date(joinedAt);
+  return Number.isFinite(joined.getTime()) && toIsoDate(joined) <= end;
+}
+
 export function joinedColleagueCount(joinedAts: readonly string[], end: string): number {
-  return joinedAts.filter((joinedAt) => {
-    const joined = new Date(joinedAt);
-    return Number.isNaN(joined.getTime()) || toIsoDate(joined) <= end;
-  }).length;
+  return joinedAts.filter((joinedAt) => colleagueJoinedBy(joinedAt, end)).length;
 }
 
 /** A member's tokens and successful replies on the days inside `start`..`end` (inclusive ISO dates). */
@@ -299,15 +301,14 @@ export function periodHeatmap(
 }
 
 export function activitySummary(
-  heatmap: JiuwenMateYearHeatmap,
+  days: readonly JiuwenMateDailyActivity[],
   memberCount: number,
   stats: readonly JiuwenMateMemberStats[],
 ): { members: number; activeDays: number; tasks: number; tokens: number } {
-  const cells = heatmap.weeks.flat().filter((cell) => cell.inRange);
   return {
     members: memberCount,
-    activeDays: cells.filter((cell) => cell.tasks > 0).length,
-    tasks: cells.reduce((sum, cell) => sum + cell.tasks, 0),
+    activeDays: days.filter((day) => day.tasks > 0).length,
+    tasks: days.reduce((sum, day) => sum + day.tasks, 0),
     tokens: stats.slice(0, memberCount).reduce((sum, item) => sum + item.tokens, 0),
   };
 }
