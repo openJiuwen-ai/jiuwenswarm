@@ -40,6 +40,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_sources import (
     FetchFn,
     corpus_version_for_language,
     I3_RETRIEVAL_PROMPT_VERSION,
+    RankedInterest,
     RankedInterest as CorpusRankedInterest,
     RETRIEVAL_CONFIG_VERSION,
     SearchFn,
