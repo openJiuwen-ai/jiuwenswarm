@@ -2116,7 +2116,6 @@
     "topicStarter": {
       "statusMissingConfiguration": "话题推荐暂不可用，请前往设置检查。",
       "recommendedForYou": "为你推荐",
-      "statusLoading": "正在加载…",
       "heading": "今天想干点什么？",
       "notInterested": "先跳过",
       "dateAndVersion": "看看这一天",
