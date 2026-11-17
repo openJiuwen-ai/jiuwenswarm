@@ -711,20 +711,14 @@ function AppContent({
   const [historyBootstrapKey, setHistoryBootstrapKey] = useState(0);
   const historyRefreshQueueRef = useRef(new HistoryRefreshQueue());
   const forcedHistoryRefreshRef = useRef(new Set<string>());
+  const recoveryHistoryRefreshRef = useRef(new Set<string>());
   const [historyRecoveryRevision, setHistoryRecoveryRevision] = useState(0);
-  // 延迟绑定到后文定义的 loadSessionMetadata，供 runtime.history_required 回查权威运行态。
-  const loadSessionMetadataRef = useRef<((id: string) => Promise<Session | null>) | null>(null);
   const sessionIdRef = useRef(sessionId);
   useEffect(() => webClient.on('runtime.history_required', (event) => {
     const targetSessionId = event.payload.session_id;
     if (typeof targetSessionId !== 'string' || !targetSessionId) return;
     historyRefreshQueueRef.current.request(targetSessionId);
     setHistoryRecoveryRevision((revision) => revision + 1);
-    // 该恢复 turn 的终态被当孤儿丢弃，本地 isProcessing 可能停在刷新前的 true
-    // （不会再有 processing_status(false) 到达），从而阻塞下方 effect 的 take()。
-    // 回查网关权威运行态，用实时 is_processing 覆盖本地状态解除阻塞；若确有新 turn
-    // 在跑则保持 busy、延后刷新，不会清掉新轮的流式缓冲。
-    void loadSessionMetadataRef.current?.(targetSessionId);
   }), []);
   const sessionRestoreQueueRef = useRef<Promise<void>>(Promise.resolve());
   const sessionMetadataRequestsRef = useRef(new Map<string, Promise<Session | null>>());
@@ -2052,11 +2046,13 @@ function AppContent({
 
   const fetchSessionMetadata = useCallback(async (targetSessionId: string): Promise<Session | null> => {
     const ownerStateRevision = organizationOwnerStateRevision(targetSessionId);
+    const snapshotTurnRevision = useChatStore.getState().getRuntime(targetSessionId)?.turnRevision ?? 0;
     const queueSnapshot = useChatStore.getState().beginQueuedSessionMessageSnapshot(targetSessionId);
     try {
-      const response = await request<Session>('session.get_metadata', {
-        session_id: targetSessionId,
-      });
+      const response = await request<Session & { runtime?: { recovery_pending?: boolean } }>(
+        'session.get_metadata',
+        { session_id: targetSessionId },
+      );
       const { queued_session_messages: queuedMessages, can_continue_queued_session_messages: canContinueQueuedMessages, ...session } = response;
       if ((session as unknown as Record<string, unknown>).archived === true) {
         if (sessionIdRef.current === targetSessionId) {
@@ -2104,16 +2100,22 @@ function AppContent({
       // 快照可能仍报告未运行。允许这种滞后快照把运行态压回空闲，会让发送按钮
       // 和任务转圈闪回空闲，所以只有断线重连后的首次快照才允许它回落，其余情况
       // 运行态的结束交给终态事件（processing_status(false) / chat.final）。
-      if (typeof session.is_processing === 'boolean') {
+      if (typeof session.is_processing === 'boolean' && response.runtime?.recovery_pending !== true) {
         const allowDowngrade = metadataDowngradeAllowedRef.current.delete(targetSessionId);
-        const locallyBusy = useChatStore.getState().getRuntime(targetSessionId)?.foregroundIsProcessing === true;
+        const runtime = useChatStore.getState().getRuntime(targetSessionId);
+        const locallyBusy = runtime?.foregroundIsProcessing === true;
+        // The cursor recovery owns settlement while it can still replay the terminal output.
+        const recoveringExecution =
+          'isRecoveringExecution' in webClient && webClient.isRecoveringExecution(targetSessionId);
+        const mayDowngrade = allowDowngrade && !recoveringExecution &&
+          (runtime?.turnRevision ?? 0) === snapshotTurnRevision;
         // A pause/cancel ack just settled this turn; a lagging worker snapshot
         // must not relight processing until a new round starts (user send or a
         // real processing_status(true) wire frame clears the marker).
         const interruptSettled = useChatStore.getState()
           .getRuntime(targetSessionId)?.interruptSettledEpoch != null;
         if (
-          (session.is_processing || allowDowngrade || !locallyBusy)
+          (session.is_processing || mayDowngrade || !locallyBusy)
           && maySnapshotRelightProcessing(session.is_processing, interruptSettled, allowDowngrade)
         ) {
           setProcessing(targetSessionId, session.is_processing);
@@ -2228,10 +2230,6 @@ function AppContent({
     sessionMetadataRequestsRef.current.set(targetSessionId, pending);
     return pending;
   }, [fetchSessionMetadata]);
-
-  useEffect(() => {
-    loadSessionMetadataRef.current = loadSessionMetadata;
-  }, [loadSessionMetadata]);
 
   useEffect(() => {
     const pendingSessionId = designSessionPendingRestore(
@@ -2713,7 +2711,9 @@ function AppContent({
   useEffect(() => {
     if (!isConnected || !sessionId) return;
     // A recovered old request must not clear a newer turn's stream buffers.
-    if (!historyRefreshQueueRef.current.take(sessionId, isProcessing || isLoadingHistory)) return;
+    const currentRuntime = useChatStore.getState().getRuntime(sessionId);
+    if (!historyRefreshQueueRef.current.take(sessionId, (currentRuntime?.isProcessing ?? false) || isLoadingHistory)) return;
+    recoveryHistoryRefreshRef.current.add(sessionId);
     disposeInFlightHistoryHandles(sessionId);
     setHistoryPagerMeta(sessionId, null);
     forcedHistoryRefreshRef.current.add(sessionId);
@@ -2777,6 +2777,7 @@ function AppContent({
     if (route.kind === 'design-project') return;
     if (!isConnected || !sessionId || sessionId === NEW_CONVERSATION_ID) return;
     const forceRefresh = forcedHistoryRefreshRef.current.delete(sessionId);
+    const recoveryRefresh = recoveryHistoryRefreshRef.current.delete(sessionId);
     
     if (!forceRefresh && sessionIdsCreatedInThisPageRef.current.has(sessionId)) {
       releasePendingSessionEvents(sessionId);
@@ -2868,9 +2869,23 @@ function AppContent({
       })();
     };
 
+    const recoveryTurnRevision = existingRuntime?.turnRevision;
+    const discardRecoveryHistory = () => {
+      if (historyRestoreHandlesRef.current.get(sessionId) !== restoreHandle) return;
+      historyRestoreHandlesRef.current.delete(sessionId);
+      historyRefreshQueueRef.current.request(sessionId);
+      setLoadingHistory(sessionId, false);
+      setHistoryRecoveryRevision((revision) => revision + 1);
+    };
+
     // 开始历史会话加载
     const restoreHandle = beginHistoryRestore({
       sessionId: sessionId,
+      shouldApply: recoveryRefresh ? () => {
+        const runtime = useChatStore.getState().getRuntime(sessionId);
+        return runtime?.turnRevision === recoveryTurnRevision && !runtime?.isProcessing;
+      } : undefined,
+      onDiscard: recoveryRefresh ? discardRecoveryHistory : undefined,
       requestNextBatch: (cursor) => request(HISTORY_GET_METHOD, {
         session_id: sessionId,
         cursor,
@@ -3093,7 +3108,7 @@ function AppContent({
         }
         setHistoryPagerMeta(sessionId, null);
         setLoadingHistory(sessionId, false);
-        if (sessionIdRef.current === sessionId) {
+        if (!recoveryRefresh && sessionIdRef.current === sessionId) {
           clearMessages(sessionId);
           addMessage(sessionId, {
             id: `history-load-failed-${Date.now()}`,
@@ -3118,6 +3133,7 @@ function AppContent({
           limit: 50,
         });
       } catch (error) {
+        if (recoveryRefresh && historyRestoreHandlesRef.current.get(sessionId) !== restoreHandle) return;
         historyRestoreFromPanelHintRef.current = false;
         restoreHandle.dispose();
         if (historyRestoreHandlesRef.current.get(sessionId) === restoreHandle) {
@@ -3127,7 +3143,7 @@ function AppContent({
         setHistoryPagerMeta(sessionId, null);
         console.error('Failed to load history:', error);
         setLoadingHistory(sessionId, false);
-        if (sessionIdRef.current === sessionId) {
+        if (!recoveryRefresh && sessionIdRef.current === sessionId) {
           clearMessages(sessionId);
           addMessage(sessionId, {
             id: `history-load-failed-${Date.now()}`,

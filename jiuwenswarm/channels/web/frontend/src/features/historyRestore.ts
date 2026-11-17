@@ -509,6 +509,9 @@ interface BeginHistoryRestoreOptions {
   subagentId?: string;
   /** Continue initial restore past batches with no restorable content. */
   requestNextBatch: (cursor: string) => Promise<unknown>;
+  /** Validate recovery against the live turn before publishing any history data. */
+  shouldApply?: () => boolean;
+  onDiscard?: () => void;
   onReady: (messages: Message[], cursor: HistoryCursorMeta) => void;
   /** 与消息同一时间线顺序，用于恢复 ToolGroupDisplay */
   onToolReplay?: (items: HistoryToolReplayItem[]) => void;
@@ -2516,6 +2519,10 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     stopListening();
 
     try {
+      if (options.shouldApply && !options.shouldApply()) {
+        options.onDiscard?.();
+        return;
+      }
       if (tokenUsageSnapshot) {
         options.onSessionTokenUsage?.(tokenUsageSnapshot);
       }
