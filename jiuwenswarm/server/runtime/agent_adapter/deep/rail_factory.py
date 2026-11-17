@@ -1,7 +1,6 @@
 """按配置或环境变量构造不依赖适配器实例的 rail 和额外工具。"""
 
 from __future__ import annotations
-import hashlib
 import importlib
 import logging
 import os
@@ -10,7 +9,6 @@ from typing import (
     Any,
     Callable,
 )
-from openjiuwen.core.foundation.tool import ToolCard
 from openjiuwen.core.sys_operation import SysOperation
 from openjiuwen.harness.rails import (
     SkillUseRail,
@@ -23,9 +21,8 @@ from jiuwenswarm.agents.harness.common.rails.concurrent_safe_rails import Concur
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.mcp_config import (
-    MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX,
     RequestScopedOfficeClawMcpTool,
-    _positive_timeout_s,
+    create_request_scoped_mcp_tool,
 )
 from jiuwenswarm.common.schema.agent import AgentRequest
 
@@ -51,6 +48,9 @@ def _stage_request_mcp_tools(
     strict: bool = False,
     yield_to_existing: bool = False,
     staged_name_resolver: Callable[[str, str, _RequestMcpToolBuffers], str] | None = None,
+    runtime_params: dict[str, str] | None = None,
+    runtime_delivery: tuple[str, str, bool] = ("", "", False),
+    catalog_host: bool = False,
 ) -> None:
     """Build request tools without publishing a partially discovered request.
 
@@ -59,10 +59,6 @@ def _stage_request_mcp_tools(
     rewrites are recorded in ``buffers.research_name_rewrites`` so deepresearch
     admission sees the staged names.
     """
-    request_scope = hashlib.sha256(
-        f"{request.session_id}:{request.request_id}".encode("utf-8")
-    ).hexdigest()[:20]
-    prefix = MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX if use_global_pool else "office-claw-request-"
     for tool_def in tool_defs:
         name = str(tool_def.get("name") or "").strip()
         if not name or name in buffers.seen_names:
@@ -82,19 +78,11 @@ def _stage_request_mcp_tools(
         if staged_name != name:
             buffers.research_name_rewrites.setdefault(server_name, {})[name] = staged_name
             buffers.seen_names.add(staged_name)
-        card = ToolCard(
-            id=f"{prefix}{request_scope}.{server_name}.{staged_name}",
-            name=staged_name,
-            description=str(tool_def.get("description") or ""),
-            input_params=tool_def.get("input_params") or {},
-        )
-        if not strict:
-            timeout = _positive_timeout_s(params.get("timeout_s"))
-            if timeout is not None:
-                card.properties["resilience"] = {"timeout_s": timeout}
-        tool = RequestScopedOfficeClawMcpTool(
-            card, params, request.request_id, server_name, use_global_pool=use_global_pool,
-            remote_tool_name=name,
+        tool = create_request_scoped_mcp_tool(
+            request.request_id, request.session_id, server_name, tool_def, params,
+            staged_name=staged_name, use_global_pool=use_global_pool, strict=strict,
+            runtime_params=runtime_params, runtime_delivery=runtime_delivery,
+            catalog_host=catalog_host,
         )
         buffers.pending_tools.append((tool, strict))
 

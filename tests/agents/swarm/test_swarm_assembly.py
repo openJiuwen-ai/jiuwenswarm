@@ -1382,6 +1382,15 @@ async def test_team_workspace_report_path_uses_flat_mount_with_team_id() -> None
     assert "Internal mount path: `.team/`" in prompt
     assert f".team/{team_id}/" not in prompt
     assert ".team/<team>/team-workspace/" not in prompt
+    assert "project_dir" in prompt
+    assert "当前项目目录，见运行时目录上下文" in prompt
+    assert "once per user-facing deliverable" in prompt
+    assert "same path used for the user-facing deliverable" in prompt
+    assert "当前项目目录：未设置" in prompt
+    assert "cwd) / task work path" in prompt
+    assert "Example absolute path to pass to `send_file_to_user`" not in prompt
+    assert "prd-review-memo.md" not in prompt
+    assert "do not also send `.team/` collaboration copies" not in prompt
 
 
 # ---------------------------------------------------------------------------

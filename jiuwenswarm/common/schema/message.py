@@ -41,6 +41,7 @@ class ReqMethod(Enum):
     MCP_SERVER_UPDATE = "mcp.server.update"
     MCP_SERVER_LIST = "mcp.server.list"
     MCP_SERVER_GET = "mcp.server.get"
+    MCP_SERVER_RESCAN = "mcp.server.rescan"
     COMMAND_MODEL = "command.model"
     COMMAND_RESUME = "command.resume"
     COMMAND_SANDBOX = "command.sandbox"

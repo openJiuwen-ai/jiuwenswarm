@@ -155,6 +155,7 @@ ROUTES: list[RouteSpec] = [
     RouteSpec("POST", "/mcp/servers", ReqMethod.MCP_SERVER_ADD.value),
     RouteSpec("POST", "/mcp/servers/remove", ReqMethod.MCP_SERVER_REMOVE.value),
     RouteSpec("POST", "/mcp/servers/update", ReqMethod.MCP_SERVER_UPDATE.value),
+    RouteSpec("POST", "/mcp/servers/rescan", ReqMethod.MCP_SERVER_RESCAN.value),
     RouteSpec("GET", "/mcp/servers", ReqMethod.MCP_SERVER_LIST.value),
     RouteSpec("GET", "/mcp/servers/{name}", ReqMethod.MCP_SERVER_GET.value),
     RouteSpec("POST", "/sessions/{session_id}/commands/sandbox", ReqMethod.COMMAND_SANDBOX.value),
