@@ -876,8 +876,11 @@ async def handle_history_get(ctx: RequestContext) -> None:
     # 归一化数字型参数
     page_idx = _coerce_int(params.get("page_idx"), 0)
     sessions_root = str(_sessions_dir_for_request(request))
-    data = get_conversation_history(
-        session_id=session_id, page_idx=page_idx, sessions_root=sessions_root,
+    data = await asyncio.to_thread(
+        get_conversation_history,
+        session_id=session_id,
+        page_idx=page_idx,
+        sessions_root=sessions_root,
     )
     if data is None:
         resp = AgentResponse(
@@ -904,8 +907,11 @@ async def handle_history_get_stream(ctx: RequestContext) -> None:
     # 归一化数字型参数
     page_idx = _coerce_int(params.get("page_idx"), 0)
     sessions_root = str(_sessions_dir_for_request(request))
-    data = get_conversation_history(
-        session_id=session_id, page_idx=page_idx, sessions_root=sessions_root,
+    data = await asyncio.to_thread(
+        get_conversation_history,
+        session_id=session_id,
+        page_idx=page_idx,
+        sessions_root=sessions_root,
     )
     if data is None:
         err_chunk = AgentResponseChunk(
