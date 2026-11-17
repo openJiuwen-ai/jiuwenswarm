@@ -2640,12 +2640,16 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
             SKILL_UPLOAD_MAX_REQUEST_BYTES,
             handle_skills_upload_temp_http,
+            skill_http_error_body,
         )
 
         length = self._parse_content_length()
         if length > SKILL_UPLOAD_MAX_REQUEST_BYTES:
             self._discard_request_body(length)
-            self._write_json(413, {"error": "upload_too_large"})
+            self._write_json(
+                413,
+                skill_http_error_body("SKILL_FILE_TOO_LARGE", "上传包超过限制"),
+            )
             return
         status, payload = handle_skills_upload_temp_http(
             content_type=self.headers.get("Content-Type", ""),
@@ -2655,9 +2659,20 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
     def _handle_skills_upload_discard(self) -> None:
         from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
+            SKILL_UPLOAD_DISCARD_MAX_REQUEST_BYTES,
             discard_skill_upload,
+            skill_http_error_body,
         )
 
+        # Reject before reading: draining a caller-controlled huge body would
+        # tie up the request thread for no benefit.
+        length = self._parse_content_length()
+        if length > SKILL_UPLOAD_DISCARD_MAX_REQUEST_BYTES:
+            self._write_json(
+                413,
+                skill_http_error_body("SKILL_FILE_TOO_LARGE", "请求体超过限制"),
+            )
+            return
         try:
             payload = json.loads(self._read_request_body().decode("utf-8") or "{}")
         except (UnicodeDecodeError, json.JSONDecodeError):

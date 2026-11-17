@@ -37,16 +37,14 @@ from jiuwenswarm.server.runtime.skill.skill_manager import (
 
 logger = logging.getLogger(__name__)
 
-#: 两阶段上传的受控临时根目录名；目录结构与历史扁平前缀均在此统一回收。
-SKILL_UPLOAD_ROOT_NAME = "jiuwenswarm_skill_upload"
-#: 历史版本直接落在临时目录根下的扁平目录前缀，仅用于兜底回收。
-SKILL_UPLOAD_LEGACY_PREFIX = "jiuwenswarm_skill_upload_"
-#: 上传包大小上限，与 SkillManager 的 zip 限制保持一致。
-SKILL_UPLOAD_MAX_BYTES = SKILL_ZIP_MAX_UPLOAD_BYTES
+#: 每次上传在系统临时目录下创建独立目录的前缀，同时作为上传件归属标识。
+SKILL_UPLOAD_PREFIX = "jiuwenswarm_skill_upload_"
 #: 请求体上限：预留 multipart 头部开销，避免合法 zip 被误拒。
-SKILL_UPLOAD_MAX_REQUEST_BYTES = SKILL_UPLOAD_MAX_BYTES + 2 * 1024 * 1024
+SKILL_UPLOAD_MAX_REQUEST_BYTES = SKILL_ZIP_MAX_UPLOAD_BYTES + 2 * 1024 * 1024
 #: 上传残留的兜底 TTL（前端 discard 未送达时回收）。
 SKILL_UPLOAD_TTL_SECONDS = 24 * 60 * 60
+#: discard 请求体上限：只承载一个路径，正常请求远小于此值。
+SKILL_UPLOAD_DISCARD_MAX_REQUEST_BYTES = 64 * 1024
 
 _SKILL_HTTP_ERROR_STATUS: dict[str, int] = {
     "SKILL_ALREADY_EXISTS": 409,
@@ -61,7 +59,7 @@ _SKILL_HTTP_ERROR_STATUS: dict[str, int] = {
     "SKILL_INVALID_METADATA": 400,
     "SKILL_RESERVED_PATH": 400,
     "SKILL_UNSAFE_PATH": 400,
-    "SKILL_FILE_TOO_LARGE": 400,
+    "SKILL_FILE_TOO_LARGE": 413,
     "SKILL_KNOWLEDGE_INPUT_CONFLICT": 400,
     "SKILL_VERSION_CONTENT_INVALID": 400,
     "SKILL_REBUILD_FAILED": 500,
@@ -109,11 +107,6 @@ def parse_multipart_form(content_type: str, body: bytes) -> dict[str, Any]:
     return fields
 
 
-def skill_upload_root() -> Path:
-    """返回受控上传根目录（不保证存在）."""
-    return Path(tempfile.gettempdir()) / SKILL_UPLOAD_ROOT_NAME
-
-
 def _resolve_existing(path: Path) -> Path | None:
     try:
         return path.resolve(strict=True)
@@ -122,61 +115,47 @@ def _resolve_existing(path: Path) -> Path | None:
 
 
 def discard_skill_upload(path_value: str) -> bool:
-    """删除受控上传根内的上传文件或专属目录（幂等）.
+    """删除某次上传的专属目录（幂等）。
 
-    仅接受以下两类路径，其余一律拒绝，避免误删用户文件：
-    - ``<root>/<file>``：dev 中间件使用的扁平布局；
-    - ``<root>/<upload-dir>/<file>``：upload-temp 创建的专属目录。
+    仅接受系统临时目录下 ``SKILL_UPLOAD_PREFIX*`` 目录内的文件；解析符号链接
+    后仍须满足该布局，其余路径一律拒绝，避免误删用户文件。
     """
     text = str(path_value or "").strip()
     if not text:
         return False
-    root = _resolve_existing(skill_upload_root())
-    if root is None:
+    tmpdir = _resolve_existing(Path(tempfile.gettempdir()))
+    if tmpdir is None:
         return False
     resolved = _resolve_existing(Path(text))
-    if resolved is None or resolved == root:
+    if resolved is None:
         return False
-    if resolved.parent == root:
-        try:
-            resolved.unlink()
-        except OSError:
-            return False
-        return True
-    if resolved.parent.parent == root and resolved.parent != root:
-        shutil.rmtree(resolved.parent, ignore_errors=True)
-        return not resolved.parent.exists()
-    return False
+    upload_dir = resolved.parent
+    if upload_dir.parent != tmpdir or not upload_dir.name.startswith(SKILL_UPLOAD_PREFIX):
+        return False
+    shutil.rmtree(upload_dir, ignore_errors=True)
+    return not upload_dir.exists()
 
 
 def cleanup_stale_skill_uploads(
     max_age_seconds: int = SKILL_UPLOAD_TTL_SECONDS,
 ) -> int:
-    """回收超过 TTL 的上传残留（新布局专属目录 + 历史扁平前缀目录）."""
-    root = skill_upload_root()
+    """回收超过 TTL 的上传专属目录（按固定前缀识别）。"""
     tmpdir = Path(tempfile.gettempdir())
-    candidates: list[Path] = []
-    if root.is_dir():
-        try:
-            candidates.extend(root.iterdir())
-        except OSError:
-            pass
     try:
-        candidates.extend(tmpdir.glob(f"{SKILL_UPLOAD_LEGACY_PREFIX}*"))
+        candidates = list(tmpdir.glob(f"{SKILL_UPLOAD_PREFIX}*"))
     except OSError:
-        pass
+        return 0
 
     removed = 0
     now = time.time()
-    visited: set[Path] = set()
     for entry in candidates:
         try:
-            if entry == root or entry in visited:
+            # 用 lstat 读取链接自身的 mtime：悬空符号链接也能按 TTL 回收。
+            if now - entry.lstat().st_mtime < max_age_seconds:
                 continue
-            visited.add(entry)
-            if now - entry.stat().st_mtime < max_age_seconds:
-                continue
-            if entry.is_dir():
+            if entry.is_symlink():
+                entry.unlink()
+            elif entry.is_dir():
                 shutil.rmtree(entry, ignore_errors=True)
             else:
                 entry.unlink()
@@ -210,9 +189,7 @@ def handle_skills_upload_temp_http(
             raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, "文件路径非法或指向保留目录")
 
         cleanup_stale_skill_uploads()
-        upload_root = skill_upload_root()
-        upload_root.mkdir(parents=True, exist_ok=True)
-        upload_dir = Path(tempfile.mkdtemp(prefix="", dir=str(upload_root)))
+        upload_dir = Path(tempfile.mkdtemp(prefix=SKILL_UPLOAD_PREFIX))
         dest = upload_dir / filename
         try:
             dest.write_bytes(bytes(file_field["content"]))
