@@ -2,7 +2,6 @@
 """Exercise document authorship, relationships and generated navigation."""
 
 import importlib
-import re
 from pathlib import Path
 from types import ModuleType
 
@@ -65,8 +64,9 @@ def test_indexes_link_features_and_bugs_to_designs(sync_module: ModuleType, tmp_
         index = tmp_path / section / "INDEX.md"
         text = index.read_text(encoding="utf-8")
         assert "../designs/proposals/D-20261026-1200-topic/design.md" in text
-        assert "src/runtime.py" in text and "runtime" in text
-        assert metadata(index)["author"] == "writer"
+        assert "src/runtime.py" not in text and "runtime" in text
+        assert metadata(index)["author"] == "sync_documents.py"
+        assert "author_email" not in metadata(index)
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*.md")}
     sync_module.synchronize(tmp_path, identity)
     after = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*.md")}
@@ -169,12 +169,13 @@ def test_module_groups_list_shared_documents_without_global_totals(sync_module: 
     text = (tmp_path / "features/INDEX.md").read_text(encoding="utf-8")
     assert "共 2 篇文档" not in text
     assert "总数" not in text
-    assert "| [gateway](#module-1) |" in text
+    assert "| [gateway](#module-gateway) |" in text
     assert "文档数" not in text
-    assert "| [runtime](#module-2) |" in text
+    assert "| [runtime](#module-runtime) |" in text
     assert text.count("[F_01_shared]") == 2
     assert text.count("[F_02_runtime]") == 1
-    assert text.count("src/shared.py") == 2
+    assert text.count("[F_01_shared]") == 2
+    assert "src/shared.py" not in text
 
 
 def test_missing_module_is_visible_in_last_group(sync_module: ModuleType, tmp_path: Path) -> None:
@@ -201,63 +202,54 @@ def test_grouping_keeps_author_and_design_links(sync_module: ModuleType, tmp_pat
     assert "> 开发前" not in design_index
     assert "全局统计" not in design_index
     assert "设计数" not in design_index
-    assert "| [runtime](#module-1) |" in design_index
+    assert "| [runtime](#module-runtime) |" in design_index
     assert "[D-20261026-1200-topic]" in design_index
 
 
-def test_regenerating_indexes_keeps_their_original_author(sync_module: ModuleType, tmp_path: Path) -> None:
-    """A later sync refreshes index content without re-attributing the index."""
-    write_doc(tmp_path, "designs/proposals/D-20261026-1200-topic/design.md", "---\nid: D-20261026-1200-topic\ntitle: Topic\nstage: proposals\nstatus: draft\nmodules: [runtime]\n---\n\n# Topic\n")
-    write_doc(tmp_path, "features/F_20261026_1200_first.md", "---\nmodules: [runtime]\ndesigns: []\ndesign_note: none\n---\n\n# First\n")
-    sync_module.synchronize(tmp_path, sync_module.GitIdentity("creator", "creator@example.invalid"))
-    indexes = [tmp_path / "INDEX.md", *(tmp_path / section / "INDEX.md" for section in ("designs", "features", "bugfix", "specs"))]
-    for index in indexes:
-        assert metadata(index)["author"] == "creator"
-
-    added = write_doc(tmp_path, "features/F_20261027_1200_second.md", "---\nauthor: null\nmodules: [other]\ndesigns: []\ndesign_note: none\n---\n\n# Second\n")
-    sync_module.synchronize(tmp_path, sync_module.GitIdentity("later", "later@example.invalid"), added)
-
-    assert metadata(added)["author"] == "later"
-    assert "F_20261027_1200_second" in (tmp_path / "features" / "INDEX.md").read_text(encoding="utf-8")
-    for index in indexes:
-        data = metadata(index)
-        assert data["author"] == "creator"
-        assert data["author_email"] == "creator@example.invalid"
-
-
-def test_index_without_author_is_attributed_to_current_identity(sync_module: ModuleType, tmp_path: Path) -> None:
-    """An index whose header has no author yet takes the current Git identity."""
-    write_doc(tmp_path, "features/INDEX.md", "---\ntitle: stale\ngenerated: true\n---\n\n# stale\n")
-    sync_module.synchronize(tmp_path, sync_module.GitIdentity("writer", "writer@example.invalid"))
-    assert metadata(tmp_path / "features" / "INDEX.md")["author"] == "writer"
-
-
-def test_unchanged_design_index_keeps_its_timestamp(sync_module: ModuleType, tmp_path: Path) -> None:
-    """A sync that changes nothing in the design index leaves the file untouched."""
-    write_doc(tmp_path, "designs/proposals/D-20261026-1200-topic/design.md", "---\nid: D-20261026-1200-topic\ntitle: Topic\nstage: proposals\nstatus: draft\nmodules: [runtime]\n---\n\n# Topic\n")
+def test_adding_a_module_only_inserts_lines(sync_module: ModuleType, tmp_path: Path) -> None:
+    """A new module must not renumber anchors or rewrite unrelated index lines."""
+    write_doc(tmp_path, "designs/proposals/D-20261026-1200-zeta/design.md", "---\nid: D-20261026-1200-zeta\nstatus: draft\nstage: proposals\nmodules: [zeta/sub]\n---\n\n# Zeta\n")
+    write_doc(tmp_path, "features/F_01_zeta.md", "---\nmodules: [zeta/sub]\ndesigns: []\ndesign_note: Existing contract\n---\n\n# Zeta\n")
+    write_doc(tmp_path, "specs/S_01_unknown.md", "# Unknown\n")
     identity = sync_module.GitIdentity("writer", "writer@example.invalid")
     sync_module.synchronize(tmp_path, identity)
-    index = tmp_path / "designs" / "INDEX.md"
-    stale = re.sub(r"generated-at: .*? -->", "generated-at: 2000-01-01T00:00+08:00 -->", index.read_text(encoding="utf-8"), count=1)
-    index.write_text(stale, encoding="utf-8")
-
+    indexes = ("INDEX.md", "designs/INDEX.md", "features/INDEX.md")
+    before = {name: (tmp_path / name).read_text(encoding="utf-8").splitlines() for name in indexes}
+    assert '<a id="module-zeta-sub"></a>' in before["features/INDEX.md"]
+    assert '<a id="module-unclassified"></a>' in before["INDEX.md"]
+    write_doc(tmp_path, "designs/proposals/D-20261026-1300-alpha/design.md", "---\nid: D-20261026-1300-alpha\nstatus: draft\nstage: proposals\nmodules: [alpha]\n---\n\n# Alpha\n")
+    write_doc(tmp_path, "features/F_02_alpha.md", "---\nmodules: [alpha]\ndesigns: []\ndesign_note: Existing contract\n---\n\n# Alpha\n")
     sync_module.synchronize(tmp_path, identity)
+    for name in indexes:
+        after = (tmp_path / name).read_text(encoding="utf-8").splitlines()
+        remaining = iter(after)
+        assert all(line in remaining for line in before[name]), name
 
-    assert index.read_text(encoding="utf-8") == stale
+
+def test_indexes_do_not_depend_on_who_regenerates_them(sync_module: ModuleType, tmp_path: Path) -> None:
+    """Regenerating under another Git identity or later time leaves indexes untouched."""
+    write_doc(tmp_path, "designs/proposals/D-20261026-1200-topic/design.md", "---\nid: D-20261026-1200-topic\nstatus: draft\nstage: proposals\nmodules: [runtime]\n---\n\n# Topic\n")
+    write_doc(tmp_path, "features/F_01_change.md", "---\nauthor: original\nmodules: [runtime]\ndesigns: []\ndesign_note: Existing contract\n---\n\n# Change\n")
+    sync_module.synchronize(tmp_path, sync_module.GitIdentity("first", "first@example.invalid"))
+    before = {path: path.read_bytes() for path in tmp_path.rglob("INDEX.md")}
+    sync_module.synchronize(tmp_path, sync_module.GitIdentity("second", "second@example.invalid"))
+    after = {path: path.read_bytes() for path in tmp_path.rglob("INDEX.md")}
+    assert before == after
+    for content in after.values():
+        text = content.decode("utf-8")
+        assert "generated-at" not in text
+        assert "example.invalid" not in text
 
 
-def test_generate_index_cli_keeps_author_and_check_stays_green(sync_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The standalone design-index generator follows the same author rule."""
-    import generate_index
-
-    write_doc(tmp_path, "designs/proposals/D-20261026-1200-topic/design.md", "---\nid: D-20261026-1200-topic\ntitle: Topic\nstage: proposals\nstatus: draft\nmodules: [runtime]\n---\n\n# Topic\n")
-    sync_module.synchronize(tmp_path, sync_module.GitIdentity("creator", "creator@example.invalid"))
-    index = tmp_path / "designs" / "INDEX.md"
-    before = index.read_text(encoding="utf-8")
-
-    monkeypatch.setattr(generate_index, "git_identity", lambda path: sync_module.GitIdentity("later", "later@example.invalid"))
-    assert generate_index.main(["--root", str(tmp_path / "designs"), "--check"]) == 0
-    assert generate_index.main(["--root", str(tmp_path / "designs")]) == 0
-
-    assert index.read_text(encoding="utf-8") == before
-    assert metadata(index)["author"] == "creator"
+def test_indexes_do_not_list_code_files(sync_module: ModuleType, tmp_path: Path) -> None:
+    """Keep rows short; code files and modules are not repeated per group."""
+    write_doc(tmp_path, "features/F_01_shared.md", "---\nmodules: [runtime, gateway]\nfiles: [src/shared.py]\ndesigns: []\ndesign_note: Existing contract\n---\n\n# Shared\n")
+    sync_module.synchronize(tmp_path, sync_module.GitIdentity("writer", "writer@example.invalid"))
+    root_text = (tmp_path / "INDEX.md").read_text(encoding="utf-8")
+    section_text = (tmp_path / "features/INDEX.md").read_text(encoding="utf-8")
+    assert "src/shared.py" not in root_text
+    assert "src/shared.py" not in section_text
+    assert root_text.count("[F_01_shared]") == 2
+    assert "| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |" in root_text
+    assert "| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |" in section_text
+    assert "runtime, gateway" not in section_text
