@@ -116,10 +116,7 @@ export function MarketplacePage({
   const busyMap = useConnectorStore((s) => s.busyMap);
   const connectorIsLoading = useConnectorStore((s) => s.isLoading);
 
-  // packages/localPackages：现在跟 MCP 侧一样由后端 filter 参数分好（builtin/local，见
-  // ConnectorMarket/index.tsx 的 load() 和 pluginPackageStore.ts 头注释），"插件广场"用
-  // packages（filter='builtin'），"我的插件"用 localPackages（filter='local'）——之前"插件广场"
-  // 传 undefined 拿混合列表、靠前端 pkg.source 二次过滤是遗留写法，2026-08-19 对齐 MCP 侧改掉。
+  // The marketplace contains builtin and Hub plugins; mine contains installed plugins.
   const packages = usePluginPackageStore((s) => s.packages);
   const localPackages = usePluginPackageStore((s) => s.localPackages);
   const [installationFilter, setInstallationFilter] = useState<InstallationFilter>('all');
@@ -230,7 +227,7 @@ export function MarketplacePage({
       const id = pendingInstallIdRef.current;
       if (!id) return;
       pendingInstallIdRef.current = null;
-      clearPluginInstallPending(id);
+      clearPluginInstallPending(id, true);
       void installPlugin(id);
     },
     () => {
@@ -346,9 +343,7 @@ export function MarketplacePage({
   const filteredPlugins = useMemo(() => {
     if (topTab === 'my' ? myKind !== 'plugin' : topTab !== 'plugin') return [];
     const q = query.trim().toLowerCase();
-    // "我的插件"vs"插件广场"现在也由后端 filter 参数分好（builtin/local，见上面 packages/
-    // localPackages 的注释），跟 filteredConnectors 同款，不用再按 pkg.source 二次过滤。分类
-    // 筛选（category）只在"广场"视角适用，"我的"没有分类 tab。
+    // The backend supplies the marketplace and installed-plugin lists.
     const base = topTab === 'my'
       ? localPackages
       : q
@@ -639,17 +634,10 @@ export function MarketplacePage({
                     iconUrl={pkg.avatar || undefined}
                     state={pluginInstallingIds[pkg.id] ? 'connecting' : pluginInstalled ? 'connected' : 'idle'}
                     busyKind="install"
+                    actionMode="use"
                     actionDisabled={!!pluginInstallingIds[pkg.id]}
                     onOpenDetail={() => onOpenPluginDetail(pkg.id)}
-                    onUse={() => pluginConnected ? onUse({ kind: 'plugin', id: pkg.runtimePackageName }) : onOpenPluginDetail(pkg.id)}
-                    // 触发条件要跟着卡片态走，不能只看 installed——"已安装但 MCP 未连接"这个
-                    // 组合下 derivePluginCardState 也会算出 'idle'（见该函数注释），"+"按钮同样
-                    // 要能点（点击后重新触发安装，对应按钮矩阵"已安装+未连接：+号"这一格）。
-                    onQuickInstall={
-                      derivePluginCardState(pluginInstalled, pluginConnected) === 'connected'
-                        ? undefined
-                        : () => installPlugin(pkg.id)
-                    }
+                    onUse={() => pluginInstalled && pluginConnected ? onUse({ kind: 'plugin', id: pkg.runtimePackageName }) : onOpenPluginDetail(pkg.id)}
                   />
                 );
               })
@@ -689,7 +677,7 @@ export function MarketplacePage({
                     canOpenDetail
                     onOpenDetail={() => onOpenPluginDetail(pkg.id)}
                     onUse={() => pluginConnected ? onUse({ kind: 'plugin', id: pkg.runtimePackageName }) : onOpenPluginDetail(pkg.id)}
-                    // 同款修正：不能只看 installed，见上面"我的插件"卡片同名 prop 的注释。
+                    // Marketplace installation can resume pending connector setup.
                     onQuickAdd={() => {
                       if (derivePluginCardState(pluginInstalled, pluginConnected) !== 'connected')
                         installPlugin(pkg.id);

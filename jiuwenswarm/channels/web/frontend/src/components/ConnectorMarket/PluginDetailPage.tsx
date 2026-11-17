@@ -89,7 +89,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
   const installFlow = usePendingConnectorFlow(
     () => {
       clearInstallPending(id, true);
-      void install(id);
+      void install(id).then(() => loadDetail(id));
     },
     () => {
       // 依赖 connector 自动连接失败/被取消：清掉 pending 名单，否则下面这个 effect 会因为
@@ -149,6 +149,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
   async function handleInstall() {
     setInstalling(true);
     await install(id);
+    await loadDetail(id);
     setInstalling(false);
   }
 
@@ -233,18 +234,18 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
                   {uninstalling ? t('connectorMarket.card.uninstalling') : t('connectorMarket.card.uninstall')}
                 </button>
               )}
-              {installed && (
+              {(fromMy || installed) && (
                 <button
                   type="button"
                   className="detail-action detail-action--use"
                   onClick={handleUse}
-                  disabled={!linked || reconnectFlow.active}
+                  disabled={!installed || !linked || reconnectFlow.active}
                   data-testid="connector-market-plugin-detail-use"
                 >
                   {t('connectorMarket.card.use')}
                 </button>
               )}
-              {!installed && (
+              {!fromMy && !installed && (
                 <button
                   type="button"
                   className="detail-action detail-action--install"
