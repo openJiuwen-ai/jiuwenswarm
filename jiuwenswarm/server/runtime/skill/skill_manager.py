@@ -313,6 +313,170 @@ def _inventory_busy_result() -> dict[str, Any]:
     }
 
 
+# skills.toggle 在工作线程里等待这把锁。连续拨开关或与安装/卸载重叠时
+# 排队完成，而不是 timeout=0 立刻失败。事件循环上的其他调用仍用 timeout=0。
+_SKILL_TOGGLE_LOCK_TIMEOUT_SECONDS = 5.0
+
+# skills.rebuild 的静默改写可能超过 Gateway 的 600 秒非流式上限。任务状态写在
+# 技能目录里，并在进程内登记正在跑的任务：SkillManager 会换实例，只放在
+# self 上的话，下一次查询会把仍在跑的重建看成已经中断。
+_REBUILD_JOB_FILENAME = "rebuild-job.json"
+_REBUILD_INTERRUPTED_DETAIL = "重建任务已中断，请重试。"
+_LIVE_REBUILD_IDS: set[str] = set()
+_REBUILD_JOBS_BY_ID: dict[str, dict[str, Any]] = {}
+_REBUILD_TASKS: dict[str, asyncio.Task[None]] = {}
+
+
+def note_rebuild_live(rebuild_id: str, live: bool) -> None:
+    if live:
+        _LIVE_REBUILD_IDS.add(rebuild_id)
+    else:
+        _LIVE_REBUILD_IDS.discard(rebuild_id)
+
+
+def rebuild_is_live(rebuild_id: str) -> bool:
+    return rebuild_id in _LIVE_REBUILD_IDS
+
+
+def remember_rebuild_task(rebuild_id: str, task: asyncio.Task[None]) -> None:
+    _REBUILD_TASKS[rebuild_id] = task
+
+
+def pop_rebuild_task(rebuild_id: str) -> None:
+    _REBUILD_TASKS.pop(rebuild_id, None)
+
+
+async def wait_rebuild_task(rebuild_id: str) -> None:
+    task = _REBUILD_TASKS.get(rebuild_id)
+    if task is not None:
+        await task
+
+
+def get_rebuild_job(rebuild_id: str) -> dict[str, Any] | None:
+    job = _REBUILD_JOBS_BY_ID.get(rebuild_id)
+    return dict(job) if isinstance(job, dict) else None
+
+
+def _rebuild_job_path(skill_dir: Path) -> Path:
+    return skill_dir / ARCHIVE_DIRNAME / _REBUILD_JOB_FILENAME
+
+
+def read_rebuild_job(skill_dir: Path) -> dict[str, Any] | None:
+    path = _rebuild_job_path(skill_dir)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def write_rebuild_job(skill_dir: Path | None, job: dict[str, Any]) -> None:
+    stored = dict(job)
+    if skill_dir is not None:
+        stored["skill_dir"] = str(skill_dir)
+    rebuild_id = str(stored.get("rebuild_id") or "")
+    if rebuild_id:
+        _REBUILD_JOBS_BY_ID[rebuild_id] = stored
+    if skill_dir is None:
+        return
+    path = _rebuild_job_path(skill_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(stored, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
+def lookup_rebuild_job(
+    rebuild_id: str,
+    skill_dir: Path | None,
+) -> dict[str, Any] | None:
+    cached = _REBUILD_JOBS_BY_ID.get(rebuild_id)
+    if isinstance(cached, dict):
+        return dict(cached)
+    if skill_dir is None:
+        return None
+    job = read_rebuild_job(skill_dir)
+    if isinstance(job, dict) and str(job.get("rebuild_id") or "") == rebuild_id:
+        _REBUILD_JOBS_BY_ID[rebuild_id] = job
+        return dict(job)
+    return None
+
+
+def reconcile_stale_rebuild(
+    job: dict[str, Any],
+    skill_dir: Path | None,
+) -> dict[str, Any]:
+    """进程里已经没有对应任务时，把磁盘上的 running 改成失败。"""
+    if job.get("status") != "running":
+        return job
+    rebuild_id = str(job.get("rebuild_id") or "")
+    if rebuild_id and rebuild_is_live(rebuild_id):
+        return job
+    failed = {
+        **job,
+        "status": "failed",
+        "success": False,
+        "code": "SKILL_REBUILD_FAILED",
+        "detail": _REBUILD_INTERRUPTED_DETAIL,
+    }
+    target = skill_dir
+    raw = str(job.get("skill_dir") or "")
+    if target is None and raw:
+        candidate = Path(raw)
+        if candidate.is_dir():
+            target = candidate
+    write_rebuild_job(target, failed)
+    return failed
+
+
+def rebuild_job_payload(job: dict[str, Any]) -> dict[str, Any]:
+    rebuild_id = str(job.get("rebuild_id") or "")
+    status = str(job.get("status") or "failed")
+    if status == "running":
+        return {
+            "success": True,
+            "status": "running",
+            "pending": True,
+            "rebuild_id": rebuild_id,
+        }
+    if status == "done":
+        return {
+            "success": True,
+            "status": "done",
+            "pending": False,
+            "rebuild_id": rebuild_id,
+            "result": {"success": True},
+        }
+    return {
+        "success": False,
+        "status": "failed",
+        "pending": False,
+        "rebuild_id": rebuild_id,
+        "code": str(job.get("code") or "SKILL_REBUILD_FAILED"),
+        "detail": str(job.get("detail") or "技能重建失败。"),
+    }
+
+
+def take_active_rebuild(skill_dir: Path, name: str) -> dict[str, Any] | None:
+    """同一技能已有活着的重建时返回原任务，避免再清一次 evolutions。"""
+    existing = read_rebuild_job(skill_dir)
+    if not isinstance(existing, dict) or existing.get("status") != "running":
+        return None
+    rebuild_id = str(existing.get("rebuild_id") or "")
+    if rebuild_id and rebuild_is_live(rebuild_id):
+        return {
+            "success": True,
+            "pending": True,
+            "status": "running",
+            "rebuild_id": rebuild_id,
+            "name": name,
+        }
+    reconcile_stale_rebuild(existing, skill_dir)
+    return None
+
+
 def _skillpack_validation_result(exc: SkillPackValidationError) -> dict[str, Any]:
     changed = exc.code == "SKILLPACK_PLAN_CHANGED"
     return {
@@ -1477,6 +1641,9 @@ class SkillManager:
         ``SKILL.md``。实现位于本类，不依赖 evolution_slash 模块。
         """
         params = params or {}
+        rebuild_id = str(params.get("rebuild_id") or "").strip()
+        if rebuild_id:
+            return await self.handle_skills_rebuild_status(params)
         if "version" not in params:
             raise ValueError("缺少参数: version（本地无版本 Skill 请显式传 null）")
         name = str(params.get("name") or "").strip()
@@ -1504,6 +1671,9 @@ class SkillManager:
         skill_dir = self._resolve_local_skill_dir(name)
         if skill_dir is None:
             raise SkillRpcError(ERROR_SKILL_NOT_FOUND, f"未找到 skill: {name}")
+        active = take_active_rebuild(skill_dir, name)
+        if active is not None:
+            return active
         self._ensure_skillpack_operation_supported(name, "skills.rebuild")
         if self._is_builtin_skill(name, self._get_installed_plugins(), skill_dir):
             raise SkillRpcError("SKILL_BUILTIN_READ_ONLY", f"内置 Skill 不可 rebuild: {name}")
@@ -1524,22 +1694,59 @@ class SkillManager:
             logger.warning("[SkillManager] skills.rebuild failed: skill=%s error=%s", name, exc)
             raise SkillRpcError("SKILL_REBUILD_FAILED", f"rebuild 失败: {exc}") from exc
 
+    async def handle_skills_rebuild_status(self, params: dict) -> dict:
+        """查询一次后台重建。任务文件还写着 running、进程里却没有任务时记为失败。"""
+        params = params or {}
+        rebuild_id = str(params.get("rebuild_id") or "").strip()
+        if not rebuild_id:
+            return {
+                "success": False,
+                "status": "failed",
+                "code": "SKILL_REBUILD_FAILED",
+                "detail": "缺少参数: rebuild_id",
+            }
+        name = str(params.get("name") or "").strip()
+        skill_dir: Path | None = None
+        if name:
+            try:
+                name = _safe_path_name(name, "skill")
+                skill_dir = self._resolve_local_skill_dir(name)
+            except (ValueError, SkillRpcError):
+                skill_dir = None
+        job = lookup_rebuild_job(rebuild_id, skill_dir)
+        if job is None:
+            return {
+                "success": False,
+                "status": "failed",
+                "code": "SKILL_REBUILD_FAILED",
+                "detail": "重建任务不存在或已过期。",
+                "rebuild_id": rebuild_id,
+            }
+        return rebuild_job_payload(reconcile_stale_rebuild(job, skill_dir))
+
     async def handle_skills_toggle(self, params: dict) -> dict:
         """切换已安装本地 skill 的 enabled 状态。
 
         支持 ``dry_run=True`` 探测：不落任何状态，仅返回该技能当前
         关联的技能包列表（parent_skillpacks）。前端在成员技能切换前
         先探测一次，以服务端实时结果决定是否弹出二次确认，避免依赖
-        页面缓存的列表数据。企业版在 workspace 锁里重载账本后再写，
-        避免并发安装被旧内存覆盖。
+        页面缓存的列表数据。调用发生在工作线程里，会短暂等待技能目录锁，
+        让连续开关和安装/卸载错开而不是立刻失败。企业版在 workspace 锁里
+        重载账本后再写，避免并发安装被旧内存覆盖。
         """
         try:
             return await asyncio.to_thread(self._toggle_skills_locked, params)
         except InventoryLockTimeout:
             return _inventory_busy_result()
 
-    @inventory_mutation
     def _toggle_skills_locked(self, params: dict) -> dict:
+        with inventory_mutex(self.skills_dir).acquire(
+            timeout=_SKILL_TOGGLE_LOCK_TIMEOUT_SECONDS,
+        ):
+            self.reload_state()
+            return self._toggle_skills_after_lock(params)
+
+    def _toggle_skills_after_lock(self, params: dict) -> dict:
         blocked = self._managed_skill_toggle_blocked(params)
         if blocked is not None:
             return blocked
@@ -4928,14 +5135,21 @@ class SkillManager:
             if raw_name
             else None
         )
-        # 预置：各版本均不可卸载。内置：仅企业版不可卸载（个人版与 develop 一致，
-        # 由下方 _uninstall_skill_body 按源码内置目录判定是否真正不可删）。
+        # 预置与内置在各版本都不可卸载。内置安装副本和源码目录一样不能删；
+        # 账本已标明 user/prebuilt 的同名技能仍按原记录卸载。
         source_type = (
             str(installation.get("source_type") or "").strip()
             if installation is not None
             else ""
         )
-        if source_type == "prebuilt" or (is_enterprise() and source_type == "builtin"):
+        if installation is not None and self._is_builtin_installation_record(installation):
+            return {
+                "success": False,
+                "error_code": "prebuilt_not_removable",
+                "error_message": "内置技能不允许删除",
+                "detail": "内置技能不允许删除",
+            }
+        if source_type == "prebuilt":
             return {
                 "success": False,
                 "error_code": "prebuilt_not_removable",
@@ -11901,9 +12115,15 @@ class SkillManager:
                 "error_code": "not_found",
                 "error_message": f"skill `{name}` is not installed",
             }
-        # 与 handle_skills_uninstall 同一分版策略，避免个人版 builtin 在此入口被误拒。
+        # 与 handle_skills_uninstall 一致：内置、预置在各版本都不可卸载。
         source_type = str(installation.get("source_type") or "").strip()
-        if source_type == "prebuilt" or (is_enterprise() and source_type == "builtin"):
+        if self._is_builtin_installation_record(installation):
+            return {
+                "success": False,
+                "error_code": "prebuilt_not_removable",
+                "error_message": "内置技能不允许删除",
+            }
+        if source_type == "prebuilt":
             return {
                 "success": False,
                 "error_code": "prebuilt_not_removable",

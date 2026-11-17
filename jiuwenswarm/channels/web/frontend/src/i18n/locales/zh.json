@@ -4139,6 +4139,7 @@
       "published": "技能 {{name}} 发布成功",
       "publishFailed": "发布失败",
       "rebuilding": "正在重建技能，请耐心等待",
+      "rebuildStillRunning": "重建仍在后台进行，请稍后在版本列表查看。",
       "rebuildCompleted": "技能重建完成",
       "rebuildFailed": "重建失败: {{detail}}"
     },
