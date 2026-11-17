@@ -163,7 +163,7 @@ class ProgressiveToolRail(DeepAgentRail):
         agent_id: str | None = None,
         agent_card_id: str | None = None,
         enable_for_models: list[str] | None = None,
-        deepresearch_context_provider: Callable[[], dict[str, str]] | None = None,
+        deepresearch_context_provider: Callable[[], dict[str, Any]] | None = None,
         active_skill_provider: Callable[[], str | None] | None = None,
         disabled_tools: list[str] | None = None,
     ) -> None:
@@ -442,6 +442,8 @@ class ProgressiveToolRail(DeepAgentRail):
                 service_id=service_id,
                 agent_id=agent_id,
                 workspace_key=workspace_key,
+                todo_tool_provider=route.get("todo_tool_provider"),
+                todo_owner_required=route.get("todo_owner_required", False),
                 output_dir=str(route.get("output_dir") or ""),
             )
             cleanup.callback(reset_deepresearch_route, route_token)
@@ -677,7 +679,7 @@ class ProgressiveToolRail(DeepAgentRail):
         if tool_name and await self._skill_gate_blocks_direct_call(ctx, tool_name):
             self._reject_tool_not_available(ctx, tool_name)
             return
-        if tool_name != "deepresearch_execute":
+        if tool_name not in {"deepresearch_execute", "deepresearch_stream"}:
             return
         manager = self._bind_deepresearch_context(tool_name)
         manager.__enter__()
@@ -694,7 +696,7 @@ class ProgressiveToolRail(DeepAgentRail):
             or getattr(tool_call, "name", "")
             or ""
         ).strip()
-        if tool_name != "deepresearch_execute":
+        if tool_name not in {"deepresearch_execute", "deepresearch_stream"}:
             return
         tool_call_id = str(getattr(tool_call, "id", "") or id(inputs))
         bindings = ctx.extra.get(_EAGER_DEEPRESEARCH_BINDINGS_KEY, {})

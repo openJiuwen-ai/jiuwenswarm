@@ -57,7 +57,7 @@ wheels = [
 [[package]]
 name = "agent-shield"
 version = "0.1.0"
-source = { git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=agent_shield&rev=develop#38db5a46327c11e21efc40d7f541d05ea120e08a" }
+source = { git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=agent_shield&rev=fceecb12456291f0de9c48a39eea6c17a92e169b#fceecb12456291f0de9c48a39eea6c17a92e169b" }
 dependencies = [
     { name = "pyyaml" },
 ]
@@ -2374,7 +2374,7 @@ requires-dist = [
     { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'test'", specifier = "==1.0.0" },
     { name = "a2ui-agent-sdk", specifier = "==0.2.1" },
     { name = "a2ui-agent-sdk", marker = "extra == 'harmony'", specifier = "==0.2.1" },
-    { name = "agent-shield", git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=agent_shield&rev=develop" },
+    { name = "agent-shield", git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=agent_shield&rev=fceecb12456291f0de9c48a39eea6c17a92e169b" },
     { name = "agent-ssas", git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=agent_ssas&rev=develop" },
     { name = "aiosqlite", specifier = ">=0.22.1" },
     { name = "aiosqlite", marker = "extra == 'harmony'", specifier = ">=0.22.1" },
@@ -2464,7 +2464,7 @@ requires-dist = [
     { name = "redis", marker = "extra == 'redis'", specifier = ">=5.0.0" },
     { name = "ruamel-yaml", specifier = ">=0.18.0" },
     { name = "ruamel-yaml", marker = "extra == 'harmony'", specifier = ">=0.18.0" },
-    { name = "security-mask", git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=foundation&rev=develop" },
+    { name = "security-mask", git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=foundation&rev=38db5a46327c11e21efc40d7f541d05ea120e08a" },
     { name = "skillnet-ai", specifier = "==0.0.16" },
     { name = "skillnet-ai", marker = "extra == 'harmony'", specifier = "==0.0.16" },
     { name = "slack-bolt", specifier = ">=1.30.0" },
@@ -3563,7 +3563,7 @@ wheels = [
 [[package]]
 name = "openjiuwen"
 version = "0.1.16"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable#f13babda6093e0973a8f92f6208ee1ddaf1b9b31" }
+source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable#c4d7ec673a0fa2557d7a07b770f71deea2d9f5d2" }
 dependencies = [
     { name = "agent-shield" },
     { name = "agentdescent" },
@@ -5480,7 +5480,7 @@ wheels = [
 [[package]]
 name = "security-mask"
 version = "0.1.0"
-source = { git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=foundation&rev=develop#38db5a46327c11e21efc40d7f541d05ea120e08a" }
+source = { git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=foundation&rev=38db5a46327c11e21efc40d7f541d05ea120e08a#38db5a46327c11e21efc40d7f541d05ea120e08a" }
 
 [[package]]
 name = "setuptools"
