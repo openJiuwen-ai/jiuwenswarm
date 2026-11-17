@@ -382,8 +382,40 @@
   outline-offset: 2px;
 }
 
-.itemToggle:hover .itemChevron {
+.itemToggle:hover .itemChevron,
+.itemChevronButton:hover .itemChevron {
   color: var(--color-text-primary);
+}
+
+.itemToggleMain {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  width: auto;
+}
+
+.itemAction {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+.itemAction .linkButton {
+  align-self: center;
+  white-space: nowrap;
+}
+
+.itemChevronButton {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
 }
 
 .itemChevron {
@@ -1008,3 +1040,140 @@
   color: var(--color-text-primary);
   font-size: 0.75rem;
 }
+.summaryScroll {
+  max-height: 65vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+  padding: 2px;
+}
+
+.summaryOverview {
+  gap: 0.5rem;
+}
+
+.summaryScroll .markdownBox {
+  font-size: 0.75rem;
+  line-height: 1.65;
+}
+
+.summaryScroll .markdownBox :where(p, li, blockquote, td, th) {
+  font-size: 0.75rem;
+  line-height: 1.65;
+}
+
+.summaryScroll .markdownBox :where(h1, h2, h3, h4, h5, h6) {
+  font-size: 0.8125rem;
+}
+
+.summaryAgentsFold {
+  margin-top: 0.75rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: 0.5rem;
+  background: var(--color-surface-card);
+}
+
+.summaryAgentsFoldHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+  padding: 0.75rem 0.875rem;
+}
+
+.summaryAgentsFoldHead::-webkit-details-marker {
+  display: none;
+}
+
+.summaryAgentsFoldHead:focus-visible {
+  outline: 2px solid var(--color-action-primary);
+  outline-offset: -2px;
+}
+
+.summaryAgentsFold[open] .summaryAgentsFoldHead .summaryAgentChevron {
+  transform: rotate(90deg);
+}
+
+.summaryAgentsFoldHead .summaryHeading {
+  margin: 0;
+}
+
+.summaryAgentsFold .summaryAgents {
+  margin-top: 0;
+  padding: 0 0.875rem 0.75rem;
+}
+
+.summaryAgents {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.summaryAgent {
+  padding: 0.75rem 0.875rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: 0.5rem;
+  background: var(--color-surface-card);
+}
+
+.summaryAgentHead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.summaryAgentHead::-webkit-details-marker {
+  display: none;
+}
+
+.summaryAgentHead:focus-visible {
+  outline: 2px solid var(--color-action-primary);
+  outline-offset: 4px;
+}
+
+.summaryAgentChevron {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+}
+
+.summaryAgent[open] .summaryAgentChevron {
+  transform: rotate(90deg);
+}
+
+.summaryAgentBody {
+  margin-top: 12px;
+}
+
+.summaryHeading {
+  margin: 0 0 10px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.summaryAgentHead .summaryHeading {
+  margin: 0;
+}
+
+.summaryAgentNumber {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: var(--color-surface-muted);
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+}
+
+.summaryMeta {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+}
+
