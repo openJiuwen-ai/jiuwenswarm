@@ -1030,6 +1030,21 @@ def _detect_cli_at(normalized_agent: str, cli_path: str, use_builtin: bool = Fal
             "message": version_error or "version command failed",
         }
 
+    identity_patterns = {
+        "claude": r"\bClaude Code\b",
+        "codex": r"\bcodex(?:-cli)?\s+\d",
+    }
+    identity_pattern = identity_patterns.get(normalized_agent)
+    if identity_pattern and not re.search(identity_pattern, version_output, re.IGNORECASE):
+        return {
+            "cli_agent": normalized_agent,
+            "status": "unavailable",
+            "path": resolved_path,
+            "version": version,
+            "reference_version": reference_version,
+            "message": f"version output does not identify the selected program as {normalized_agent}",
+        }
+
     status = "ok"
     message = ""
     version_tuple = parse_version_tuple(version)

@@ -210,7 +210,8 @@ async def test_external_cli_detect_finds_compatible_sdk_on_cold_gateway(
         lambda name: str(competing_cli) if name == cli_agent and runtime_state == "current" else None,
     )
     monkeypatch.setattr(_gw_config_set_handlers, "external_cli_reference_version", lambda _agent: "1.2.3")
-    monkeypatch.setattr(_gw_config_set_handlers, "run_external_cli_version_command", lambda *_args: ("1.2.3", ""))
+    version_output = "1.2.3 (Claude Code)" if cli_agent == "claude" else "codex-cli 1.2.3"
+    monkeypatch.setattr(_gw_config_set_handlers, "run_external_cli_version_command", lambda *_args: (version_output, ""))
     assert _gw_config_set_handlers.external_cli_managed_cli_path(cli_agent) == ""
     channel = FakeWebChannel()
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=SimpleNamespace(server_ready=True)))
