@@ -59,7 +59,7 @@ class LaunchSpec:
     """Image launch-spec from registry ``GET .../launch-spec``.
 
     Top-level response fields used for agent create:
-    ``runtime_spec`` (YuanRong RuntimeSpec) and ``env_vars``.
+    ``runtime_spec`` (Environment RuntimeSpec) and ``env_vars``.
     """
 
     framework: str
@@ -766,7 +766,7 @@ class RegistryClient:
             or info.metadata.get("framework_version")
             or "default"
         ).strip()
-        # Placement node is YuanRong node_ip, patched after running. Do not
+        # Placement node is Environment node_ip, patched after running. Do not
         # stamp Gateway heartbeat IP (RegistryConfig.node) as the sandbox site.
         node = str(
             info.metadata.get("node")
@@ -779,7 +779,7 @@ class RegistryClient:
             or sandbox_meta.get("instance_id")
             or ""
         ).strip()
-        # Placement IP is patched after YuanRong get_agent_info. The first
+        # Placement IP is patched after Environment get_agent_info. The first
         # POST leaves address empty, same as node, until that IP exists.
         address = str(
             info.metadata.get("address")

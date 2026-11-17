@@ -1,19 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Southbound SSH relay into YuanRong agent instances.
-
-Bridges a northbound ``SshRelaySession`` (accepted by the gateway
-``SshChannel`` as an interactive shell) to the YuanRong frontend SSH
-endpoint::
-
-    ssh -p 2222 'yr:instance:<instance_id>:port=2222'@<frontend-host>
-
-Client private keys are loaded from ``client_keys_dir`` (default
-``/root/.ssh``).
-
-``<instance_id>`` is the instance id returned by the YuanRong agent
-create API (``POST /api/agent``), resolved by the AgentOS Router.
-"""
+"""Shared terminal, key and stream handling for the AgentOS SSH relay."""
 
 from __future__ import annotations
 
@@ -26,12 +13,10 @@ from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.extensions.agentos.agentos_router.logutil import log_agentos
-from jiuwenswarm.extensions.yuanrong_frontend_client import bind_southbound_trace_id
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_SSH_PORT = 2222
-DEFAULT_SSH_USER_TEMPLATE = "yr:instance:{instance}:port=2222"
 DEFAULT_CLIENT_KEYS_DIR = "/root/.ssh"
 _RELAY_BUFFER_SIZE = 32768
 _USER_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -46,10 +31,6 @@ _DEFAULT_CLIENT_KEY_NAMES = (
     "id_ed448",
     "agent_key",
 )
-# create_sandbox 返回后 frontend bastion / 实例 sshd 可能尚未就绪，对端会
-# 立刻掐连接（asyncssh: "SSH connection closed"）。对齐 chat WS 冷启动重试。
-_SSH_CONNECT_READY_TIMEOUT_SECONDS = 60.0
-_SSH_CONNECT_RETRY_INTERVAL_SECONDS = 1.0
 _SSH_CONNECT_RETRYABLE_TEXT_TOKENS = (
     "ssh connection closed",
     "connection closed",
@@ -126,24 +107,20 @@ def list_client_key_paths(keys_dir: Path) -> list[str]:
 
 
 @dataclass(frozen=True)
-class YuanrongSshSettings:
-    """Southbound SSH access settings for the YuanRong frontend."""
+class SshSettings:
+    """Southbound SSH access settings for the ADX frontend."""
 
     port: int = DEFAULT_SSH_PORT
-    user_template: str = DEFAULT_SSH_USER_TEMPLATE
     connect_timeout_s: float = 30.0
     client_keys_dir: str = DEFAULT_CLIENT_KEYS_DIR
 
 
-def load_yuanrong_ssh_settings(raw: Any) -> YuanrongSshSettings:
+def load_ssh_settings(raw: Any) -> SshSettings:
     """Build settings from the ``gateway.agentos.ssh`` config block."""
     if not isinstance(raw, dict):
         raw = {}
-    return YuanrongSshSettings(
+    return SshSettings(
         port=int(raw.get("port") or DEFAULT_SSH_PORT),
-        user_template=str(
-            raw.get("user_template") or DEFAULT_SSH_USER_TEMPLATE
-        ).strip(),
         connect_timeout_s=float(raw.get("connect_timeout_s") or 30.0),
         client_keys_dir=str(
             raw.get("client_keys_dir") or DEFAULT_CLIENT_KEYS_DIR
@@ -152,21 +129,21 @@ def load_yuanrong_ssh_settings(raw: Any) -> YuanrongSshSettings:
     )
 
 
-class YuanrongSshRelay:
-    """Relay PTY/exec traffic between a northbound SSH session and YuanRong."""
+class SshRelay:
+    """Relay PTY/exec traffic between a northbound SSH session and ADX."""
 
     def __init__(
         self,
-        settings: YuanrongSshSettings,
+        settings: SshSettings,
         *,
-        frontend_endpoint: str = "",
+        endpoint: str = "",
     ) -> None:
         self._settings = settings
-        self._frontend_endpoint = (frontend_endpoint or "").strip()
+        self._endpoint = (endpoint or "").strip()
 
     @property
     def backend_host(self) -> str:
-        parsed = urllib.parse.urlparse(self._frontend_endpoint)
+        parsed = urllib.parse.urlparse(self._endpoint)
         return parsed.hostname or ""
 
     @property
@@ -177,15 +154,6 @@ class YuanrongSshRelay:
     def client_keys_dir(self) -> str:
         return self._settings.client_keys_dir
 
-    def backend_username(self, instance_id: str, *, trace_id: str = "") -> str:
-        instance = str(instance_id or "").strip()
-        if not instance:
-            raise ValueError("instance_id is required for YuanRong SSH relay")
-        username = self._settings.user_template.format(instance=instance)
-        tid = str(trace_id or "").strip()
-        if tid:
-            username = f"{username}:trace={urllib.parse.quote(tid, safe='')}"
-        return username
 
     async def run(
         self,
@@ -194,7 +162,7 @@ class YuanrongSshRelay:
         *,
         user_id: str = "",
     ) -> int:
-        """Relay *session* to the YuanRong instance; returns the exit code.
+        """Relay *session* to the ADX instance; returns the exit code.
 
         Always resolves ``session.done`` and ``session.exit_code`` so the
         northbound channel waiting in ``_wait_relay_done`` is released.
@@ -223,7 +191,7 @@ class YuanrongSshRelay:
                 session.session_id,
                 instance_id,
             )
-            self._write_client_error(session, f"yuanrong ssh relay failed: {exc}")
+            self._write_client_error(session, f"ADX ssh relay failed: {exc}")
             if isinstance(exc, SshSouthConnectError):
                 # 连接阶段失败透出给路由层分类处理（网络不可达 → 强制清理
                 # 死沙箱；密钥/认证失败 → 保留沙箱）。其余异常保持吞掉，
@@ -245,7 +213,7 @@ class YuanrongSshRelay:
         try:
             session.process.stdout.write(f"[ssh-relay] {reason}\r\n".encode())
         except Exception:  # noqa: BLE001 - client may already be gone
-            logger.debug("[YuanrongSshRelay] client write failed", exc_info=True)
+            logger.debug("[SshRelay] client write failed", exc_info=True)
 
     def _resolve_client_keys(self, user_id: str) -> list[str]:
         keys_dir = resolve_client_keys_dir(
@@ -268,101 +236,19 @@ class YuanrongSshRelay:
         """Probe southbound SSH until sshd accepts, then close the probe.
 
         Used by ``3rdagent.switch`` after create so the client does not SSH
-        before the YuanRong instance is reachable.
+        before the ADX instance is reachable.
         """
         conn = await self._connect_until_ready(instance_id, user_id=user_id)
         conn.close()
         try:
             await conn.wait_closed()
         except Exception:  # noqa: BLE001
-            logger.debug("[YuanrongSshRelay] probe close failed", exc_info=True)
+            logger.debug("[SshRelay] probe close failed", exc_info=True)
 
     async def _connect_until_ready(
-        self,
-        instance_id: str,
-        *,
-        user_id: str = "",
-        session_id: str = "",
+        self, instance_id: str, *, user_id: str = "", session_id: str = "",
     ) -> Any:
-        asyncssh = _import_asyncssh()
-
-        host = self.backend_host
-        if not host:
-            raise ValueError(
-                "yuanrong ssh host is empty "
-                "(set gateway.agent_client.frontend_endpoint with a hostname)"
-            )
-        client_keys = self._resolve_client_keys(user_id)
-        keys_dir = resolve_client_keys_dir(self._settings.client_keys_dir, user_id)
-        deadline = (
-            asyncio.get_running_loop().time() + _SSH_CONNECT_READY_TIMEOUT_SECONDS
-        )
-        attempt = 0
-        while True:
-            attempt += 1
-            trace_id = bind_southbound_trace_id()
-            username = self.backend_username(instance_id, trace_id=trace_id)
-            log_agentos(
-                logger,
-                logging.DEBUG,
-                "ssh.south.connect",
-                user_id=user_id,
-                session_id=session_id,
-                sandbox_id=instance_id,
-                instance=instance_id,
-                attempt=attempt,
-                trace_id=trace_id,
-            )
-            logger.debug(
-                "[AgentOS] ssh.south.connect keys_dir=%s keys=%s user_id=%s sandbox_id=%s trace_id=%s",
-                keys_dir,
-                len(client_keys),
-                user_id,
-                instance_id,
-                trace_id,
-            )
-            try:
-                conn = await asyncio.wait_for(
-                    asyncssh.connect(
-                        host,
-                        port=self._settings.port,
-                        username=username,
-                        client_keys=client_keys,
-                        agent_path=None,
-                        known_hosts=None,
-                    ),
-                    timeout=self._settings.connect_timeout_s,
-                )
-            except Exception as exc:
-                remaining = deadline - asyncio.get_running_loop().time()
-                if remaining <= 0 or not _is_ssh_connect_retryable(exc):
-                    raise
-                sleep_for = min(_SSH_CONNECT_RETRY_INTERVAL_SECONDS, remaining)
-                log_agentos(
-                    logger,
-                    logging.WARNING,
-                    "ssh.south.retry",
-                    user_id=user_id,
-                    session_id=session_id,
-                    sandbox_id=instance_id,
-                    instance=instance_id,
-                    attempt=attempt,
-                    error=type(exc).__name__,
-                    sleep=f"{sleep_for:.1f}s",
-                )
-                await asyncio.sleep(sleep_for)
-                continue
-            log_agentos(
-                logger,
-                logging.INFO,
-                "ssh.south.ready",
-                user_id=user_id,
-                session_id=session_id,
-                sandbox_id=instance_id,
-                instance=instance_id,
-                attempt=attempt,
-            )
-            return conn
+        raise NotImplementedError("SSH connection establishment is owned by the ADX relay")
 
     async def _relay(
         self,
@@ -388,7 +274,7 @@ class YuanrongSshRelay:
             try:
                 await conn.wait_closed()
             except Exception:  # noqa: BLE001
-                logger.debug("[YuanrongSshRelay] close failed", exc_info=True)
+                logger.debug("[SshRelay] close failed", exc_info=True)
 
     async def _relay_over_connection(self, session: Any, conn: Any) -> int:
         process = session.process
@@ -433,7 +319,7 @@ class YuanrongSshRelay:
                 exc = task.exception() if not task.cancelled() else None
                 if exc is not None:
                     logger.debug(
-                        "[YuanrongSshRelay] pump ended with error: %s",
+                        "[SshRelay] pump ended with error: %s",
                         exc,
                         exc_info=exc,
                     )
@@ -454,12 +340,12 @@ class YuanrongSshRelay:
         try:
             backend.close()
         except Exception:  # noqa: BLE001
-            logger.debug("[YuanrongSshRelay] backend.close failed", exc_info=True)
+            logger.debug("[SshRelay] backend.close failed", exc_info=True)
         try:
             await backend.wait_closed()
         except Exception:  # noqa: BLE001
             logger.debug(
-                "[YuanrongSshRelay] backend.wait_closed failed", exc_info=True
+                "[SshRelay] backend.wait_closed failed", exc_info=True
             )
 
     @staticmethod
@@ -472,7 +358,7 @@ class YuanrongSshRelay:
             process.exit(code)
         except Exception:  # noqa: BLE001 - channel may already be closed
             logger.debug(
-                "[YuanrongSshRelay] northbound process.exit failed",
+                "[SshRelay] northbound process.exit failed",
                 exc_info=True,
             )
 
@@ -491,7 +377,7 @@ class YuanrongSshRelay:
                     )
                 except Exception:  # noqa: BLE001 - exec channels have no PTY
                     logger.debug(
-                        "[YuanrongSshRelay] change_terminal_size failed",
+                        "[SshRelay] change_terminal_size failed",
                         exc_info=True,
                     )
                 continue
@@ -508,7 +394,7 @@ class YuanrongSshRelay:
                     backend.stdin.write_eof()
                 except Exception:  # noqa: BLE001 - backend may already be closed
                     logger.debug(
-                        "[YuanrongSshRelay] write_eof failed", exc_info=True
+                        "[SshRelay] write_eof failed", exc_info=True
                     )
                 break
             try:

@@ -22,7 +22,7 @@ from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.extensions.agentos.agentos_router import router_client
 from jiuwenswarm.extensions.agentos.agentos_router.registry_client import RegistryClient, RegistryConfig, RegistryValidationError
 from jiuwenswarm.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
-from jiuwenswarm.extensions.yuanrong_frontend_client import SandboxInfo, YuanrongFrontendAgentClient
+from jiuwenswarm.extensions.agentos.agentos_router.backend import SandboxInfo
 
 
 def _setup_trace(monkeypatch, request_id="r", method="chat.send", connection_id="c"):
@@ -106,7 +106,7 @@ async def test_disabled_gateway_tracing_preserves_external_context_during_ws(mon
         seen.append(context.get_value(marker))
         return socket
 
-    monkeypatch.setattr(router_client.AgentOSRouterClient, "_wait_yuanrong_running", wait_running)
+    monkeypatch.setattr(router_client.AgentOSRouterClient, "_wait_environment_running", wait_running)
     monkeypatch.setattr(router_client.AgentOSRouterClient, "_connect_ws_until_ready", connect)
     try:
         assert await client._get_ws_client(runtime) is socket
@@ -146,7 +146,7 @@ async def test_shared_trace_non_owner_ws_links_creation(monkeypatch):
         seen.append(telemetry.current_request_trace())
         return SimpleNamespace(server_ready=True)
 
-    monkeypatch.setattr(router_client.AgentOSRouterClient, "_wait_yuanrong_running", wait_running)
+    monkeypatch.setattr(router_client.AgentOSRouterClient, "_wait_environment_running", wait_running)
     monkeypatch.setattr(router_client.AgentOSRouterClient, "_connect_ws_until_ready", connect)
     try:
         with telemetry.bind_request_trace(second):
@@ -192,7 +192,7 @@ async def test_unconfirmed_ws_is_incomplete_after_successful_registration(monkey
     async def connect(self, **kwargs):
         return socket
 
-    monkeypatch.setattr(router_client.AgentOSRouterClient, "_wait_yuanrong_running", wait_running)
+    monkeypatch.setattr(router_client.AgentOSRouterClient, "_wait_environment_running", wait_running)
     monkeypatch.setattr(router_client.AgentOSRouterClient, "_connect_ws_until_ready", connect)
     try:
         assert await client._get_ws_client(SimpleNamespace(info=info)) is socket
@@ -243,7 +243,7 @@ async def test_foreign_ws_leader_cancel_does_not_cancel_preparation(monkeypatch)
         with telemetry.bind_request_trace(second):
             return await client._get_ws_client(runtime)
 
-    monkeypatch.setattr(router_client.AgentOSRouterClient, "_wait_yuanrong_running", wait_running)
+    monkeypatch.setattr(router_client.AgentOSRouterClient, "_wait_environment_running", wait_running)
     monkeypatch.setattr(router_client.AgentOSRouterClient, "_connect_ws_until_ready", connect)
     owner = asyncio.create_task(owner_call())
     client._preparation_traces = {
@@ -290,7 +290,7 @@ async def test_registry_skipped_deleted_is_incomplete(monkeypatch, skip_at):
 
     client._agent_manager = SimpleNamespace(key_fields=("user_id", "agent_type"), get_agent=get_agent)
     client._registry = SimpleNamespace(register_agent=register, update_instance=register)
-    monkeypatch.setattr(router_client.AgentOSRouterClient, "_wait_yuanrong_running", wait_running)
+    monkeypatch.setattr(router_client.AgentOSRouterClient, "_wait_environment_running", wait_running)
     try:
         await client._register_agent(info, operation)
         assert operation.outcome == "incomplete"
@@ -330,9 +330,9 @@ async def test_warmup_with_unconfirmed_ws_is_incomplete(monkeypatch):
         await telemetry.shutdown_gateway_telemetry()
 
 
-class Yuanrong:
+class Control:
     agent_namespace = 'default'
-    frontend_endpoint = 'http://127.0.0.1:8888'
+    ingress_url = 'http://127.0.0.1:8888'
 
     def __init__(self):
         self.creates = 0
@@ -426,7 +426,7 @@ async def setup_router(monkeypatch, tmp_path):
     exporter.started = started
     runtime.provider.add_span_processor(TrackingProcessor(exporter))
     (tmp_path / 'u1').mkdir()
-    yuanrong = Yuanrong()
+    yuanrong = Control()
     registry = Registry()
     entered, release = asyncio.Event(), asyncio.Event()
     release.set()
@@ -555,35 +555,6 @@ async def test_shared_create_and_cancelled_ws_waiter_keep_owners(setup_router):
         second.finish('cancelled')
 
 
-async def test_frontend_poll_headers_and_scope(monkeypatch):
-    runtime, exporter, parent = _setup_trace(monkeypatch)
-    observed = []
-    class Response:
-        status = 200
-        def __enter__(self): return self
-        def __exit__(self, *args): return False
-        def read(self):
-            return json.dumps({'code': 200, 'instance': {'status': 'starting' if len(observed) == 1 else 'running'}}).encode()
-    def urlopen(req, timeout):
-        observed.append(dict(req.header_items()))
-        return Response()
-    monkeypatch.setattr('urllib.request.urlopen', urlopen)
-    client = YuanrongFrontendAgentClient(frontend_endpoint='http://localhost', function_version_urn='fn',
-                                         wait_running_interval_s=0)
-    await client.connect('')
-    with telemetry.bind_request_trace(parent):
-        await client.wait_until_running('i', trace_id='legacy')
-        assert telemetry.current_request_trace() is parent
-    spans = exporter.get_finished_spans()
-    gets = [s for s in spans if s.name == 'gw.frontend.get']
-    wait = next(s for s in spans if s.name == 'gw.frontend.wait_running')
-    assert len(gets) == 2 and wait.attributes['poll.count'] == 2
-    for headers, span in zip(observed, gets):
-        _check_trace_headers(headers, span)
-        assert span.parent.span_id == wait.context.span_id
-    assert wait.parent.span_id == parent.span.get_span_context().span_id
-    parent.finish('success')
-    runtime.provider.shutdown()
 
 
 async def test_registry_only_preparation_calls_have_spans(monkeypatch):
@@ -644,38 +615,6 @@ async def test_ws_handshake_scope_is_not_inherited_by_receiver(monkeypatch):
 
 
 
-async def test_create_retry_and_failure_preserve_trace(monkeypatch):
-    runtime, exporter, parent = _setup_trace(monkeypatch)
-    headers = []
-    class Response:
-        status = 200
-        def __enter__(self): return self
-        def __exit__(self, *args): return False
-        def read(self): return b'{"code": 200, "instance_id": "i"}'
-    def urlopen(req, timeout):
-        headers.append(dict(req.header_items()))
-        if len(headers) == 1:
-            raise TimeoutError('timeout')
-        return Response()
-    monkeypatch.setattr('urllib.request.urlopen', urlopen)
-    client = YuanrongFrontendAgentClient(frontend_endpoint='http://localhost', function_version_urn='fn')
-    await client.connect('')
-    options = dict(namespace='n', name='name', workspace='/tmp',
-                   runtime_spec={'runtime': 'docker', 'rootfs': {'imageurl': 'image'}})
-    with telemetry.bind_request_trace(parent):
-        with pytest.raises(Exception):
-            await client.create_sandbox(**options)
-        info = await client.create_sandbox(**options)
-    assert UUID(info.metadata["trace_id"]).int == parent.span.get_span_context().trace_id
-    assert info.metadata["trace_id"] == {k.lower(): v for k, v in headers[1].items()}["x-trace-id"]
-    spans = [s for s in exporter.get_finished_spans() if s.name == 'gw.frontend.create']
-    assert len(spans) == 2
-    assert spans[0].attributes['gateway.outcome'] == 'timeout'
-    for header, span in zip(headers, spans):
-        _check_trace_headers(header, span)
-        assert span.parent.span_id == parent.span.get_span_context().span_id
-    parent.finish('success')
-    runtime.provider.shutdown()
 
 async def test_registry_timeout_and_untraced_calls(monkeypatch):
     runtime, exporter, parent = _setup_trace(monkeypatch)

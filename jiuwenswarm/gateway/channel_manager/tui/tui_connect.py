@@ -739,7 +739,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             **{k: v for k, v in params.items() if k not in ("session_id", "project_dir")},
         }
         real_client = _resolve_agent_client(agent_client)
-        # A remote non-AgentOS extension (for example YuanRong) also has an
+        # A remote non-AgentOS extension (for example a remote AgentServer) also has an
         # isolated user directory.  Only the stock local WebSocket client may
         # use the historical shared-directory fallback.
         legacy_shared_dir = is_legacy_shared_directory_client(real_client)
