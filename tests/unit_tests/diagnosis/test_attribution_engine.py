@@ -34,6 +34,8 @@ from jiuwenswarm.diagnosis.attribution_engine import (
     _flatten_span,
     _prepare_nodes,
     _render_llm_line,
+    _improvement_kwargs,
+    _prefer_design_suggestion,
     _translate_evolution_judge,
     _translate_reward_failure_causes,
 )
@@ -1097,3 +1099,22 @@ def test_production_host_runs_diagnoses_with_the_attribution_core_engine() -> No
     from jiuwenswarm.server.diagnosis.host import build_diagnosis_engine
 
     assert isinstance(build_diagnosis_engine(), AttributionCoreEngine)
+
+
+def test_game_design_text_replaces_the_attribution_draft() -> None:
+    diagnosis = SimpleNamespace(run_meta={"reward": {"artifact_improvement": "下一版开局先选守桥还是守坡。"}})
+
+    assert _prefer_design_suggestion(diagnosis, "归因草稿") == "下一版开局先选守桥还是守坡。"
+    assert _prefer_design_suggestion(SimpleNamespace(run_meta={"reward": {}}), "把清单移到文末") == "把清单移到文末"
+    assert _prefer_design_suggestion(SimpleNamespace(run_meta={}), "  ") is None
+
+
+def test_improvement_flag_matches_the_core_that_is_installed() -> None:
+    from openjiuwen.agent_evolving.attribution import run_diagnosis
+    import inspect
+
+    flag = _improvement_kwargs()
+    if "generate_improvements" in inspect.signature(run_diagnosis).parameters:
+        assert flag == {"generate_improvements": True}
+    else:
+        assert flag == {}

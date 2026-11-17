@@ -29,6 +29,7 @@ Design notes (see ``CONTEXT_09_new_attr.md``):
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import re
 import time
@@ -73,6 +74,27 @@ WorkspaceResolver = Callable[[str], str]
 ModelFactory = Callable[[Any], Any]
 
 _REWARD_CARD_ID = "attribution-reward-agent"
+
+
+def _improvement_kwargs() -> dict[str, bool]:
+    """Ask Reward for a game design suggestion when this core knows the flag.
+
+    releases/0.2.9 pins a core that does not have the parameter yet. Passing it
+    there would crash diagnosis. The agent-core PR adds the parameter.
+    """
+    if "generate_improvements" in inspect.signature(run_diagnosis).parameters:
+        return {"generate_improvements": True}
+    return {}
+
+
+def _prefer_design_suggestion(diagnosis: Any, attribution_text: str | None) -> str | None:
+    """Use the game design text when Reward wrote one; otherwise keep attribution."""
+    reward = (getattr(diagnosis, "run_meta", None) or {}).get("reward") or {}
+    design = str(reward.get("artifact_improvement") or "").strip()
+    if design:
+        return design
+    text = str(attribution_text or "").strip()
+    return text or None
 _TASK_PARSE_TIMEOUT_S = 180.0
 
 #: Core LLM status stages mapped onto the three zhou stage ids.
@@ -1024,6 +1046,7 @@ class AttributionCoreEngine:
             status_sink=context.sink,
             model_name=context.model_name,
             status_counter=context.counter,
+            **_improvement_kwargs(),
         )
         for signal in diagnosis.signals:
             queue.put_nowait(
@@ -1200,7 +1223,7 @@ class AttributionCoreEngine:
             trajectory_summary=outcome.trajectory_summary or text["trajectory_summary_no_signals"],
             reward_failure_causes=causes,
             evolution_judge=judges,
-            artifact_improvement=runtime.artifact_improvement,
+            artifact_improvement=_prefer_design_suggestion(diagnosis, runtime.artifact_improvement),
             reward=diagnosis.reward_payload,
         )
         status = "completed"
