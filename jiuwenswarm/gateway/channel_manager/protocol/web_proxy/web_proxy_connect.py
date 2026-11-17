@@ -10,7 +10,7 @@ shares that port; the query (then Cookie) selects the sandbox.
 
 The resolver returns a URL string (``http://...`` or ``ws://...``); this
 module is protocol-agnostic and contains no backend-specific
-(e.g. YuanRong) logic. Each proxied request acquires and releases the
+(e.g. ADX) logic. Each proxied request acquires and releases the
 sandbox hold. The listen port does not hold a sandbox.
 """
 
@@ -96,8 +96,8 @@ _TEST_NET_1 = str(ipaddress.ip_address(0xC0000201))
 def _append_tail(upstream_url: str, tail: str) -> str:
     """Join *tail* onto the upstream path; keep existing query as-is.
 
-    YuanRong frontend: ``/serverless/v1/http?instance=&port=&tenant_id=`` plus
-    ``api/foo`` becomes ``/serverless/v1/http/api/foo?instance=&port=&tenant_id=``.
+    The ADX Environment HTTP endpoint keeps its routing query when a browser
+    request appends a relative path.
     """
     if not tail:
         return upstream_url
@@ -393,7 +393,7 @@ async def _ensure_proxy_session(channel: Any) -> aiohttp.ClientSession:
 async def _ensure_http_proxy_session(channel: Any) -> aiohttp.ClientSession:
     """HTTP session that closes the socket after each response.
 
-    YuanRong returns an empty 404 for the second request on a keep-alive
+    An upstream proxy may return an empty 404 for the second request on a keep-alive
     connection; see ``WebChannel.ensure_web_proxy_http_session`` for the
     force_close rationale. WebSocket must keep using
     :func:`_ensure_proxy_session`.
@@ -536,7 +536,7 @@ def _forward_headers(
         if low in _HOP_BY_HOP_HEADERS:
             continue
         forwarded[key] = value
-    # YuanRong sets X-Forwarded-Proto; OpenClaw then requires a trusted
+    # The upstream proxy sets X-Forwarded-Proto; OpenClaw then requires a trusted
     # proxy plus a non-loopback client address that is not the sandbox
     # host's own IP (same-host curls use GATEWAY_HOST and get 403).
     peer = client_host.strip()
@@ -562,7 +562,7 @@ def _forward_ws_headers(
     client_host: str = "",
     user_id: str = "",
 ) -> dict[str, str]:
-    """Headers for the upstream WS handshake (YuanRong → OpenClaw)."""
+    """Headers for the upstream WS handshake (Gateway → OpenClaw)."""
     forwarded = _forward_headers(headers, client_host=client_host, user_id=user_id)
     for key in list(forwarded):
         if key.lower().startswith("sec-websocket-"):

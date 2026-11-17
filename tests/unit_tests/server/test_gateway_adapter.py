@@ -1552,3 +1552,25 @@ class TestParseIntParam:
         assert parse_int_param({"limit": "abc"}, "limit", 20, minimum=1, maximum=200) == 20
         assert parse_int_param({"limit": True}, "limit", 20, minimum=1, maximum=200) == 20
         assert parse_int_param({}, "limit", 20, minimum=1, maximum=200) == 20
+
+
+@pytest.mark.asyncio
+async def test_workspace_native_upload_preparation_keeps_path_authority(tmp_path, monkeypatch):
+    from jiuwenswarm.server.runtime.gateway_adapter import workspace_file_adapter as module
+    monkeypatch.setattr(module, 'get_user_workspace_dir', lambda: tmp_path)
+    monkeypatch.setattr(module, 'is_path_within_user_dirs', lambda path: Path(path).is_relative_to(tmp_path))
+    adapter = WorkspaceFileAdapter()
+    params = {'upload_id': 'native1', 'target_rel_path': 'agent/sessions/s/uploads/report.txt',
+              'data': '', 'prepare_only': True}
+    first = await adapter.handle(_request(ReqMethod.FILE_UPLOAD_CHUNK, params))
+    assert first.ok and Path(first.payload['path']).read_bytes() == b''
+    second = await adapter.handle(_request(ReqMethod.FILE_UPLOAD_CHUNK, params))
+    assert second.ok and second.payload['path'] != first.payload['path']
+    rejected = await adapter.handle(_request(ReqMethod.FILE_UPLOAD_CHUNK, {
+        **params, 'target_rel_path': '../escape',
+    }))
+    assert not rejected.ok
+    rejected = await adapter.handle(_request(ReqMethod.FILE_UPLOAD_CHUNK, {
+        **params, 'resolved_path': first.payload['path'],
+    }))
+    assert not rejected.ok
