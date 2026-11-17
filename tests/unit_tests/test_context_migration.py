@@ -213,6 +213,81 @@ def test_legacy_tool_pair_with_missing_request_metadata_still_closes(
     assert pages == [[call, result]]
 
 
+@pytest.mark.parametrize("suffix", [".jsonl", ".json"])
+@pytest.mark.parametrize("identity", ["call_record_id", "user_record", "completion_record_id", "both_record_ids"])
+def test_cancelled_legacy_call_uses_available_request_identity(stored, suffix, identity):
+    call = _call("legacy", "orphan")
+    completion = _completion("legacy")
+    if identity != "completion_record_id":
+        call.pop("request_id")
+    if identity in {"call_record_id", "both_record_ids"}:
+        call["id"] = "legacy:assistant"
+    if identity in {"completion_record_id", "both_record_ids"}:
+        completion.pop("request_id")
+    prefix = [user("legacy")] if identity == "user_record" else []
+    rows = prefix + [call, completion] + [user(f"next-{index}", "small") for index in range(2050)]
+    path = stored.path.with_suffix(suffix)
+    if suffix == ".json":
+        path.write_text(json.dumps(rows), encoding="utf-8")
+    else:
+        stored.write(rows)
+    original = path.read_bytes()
+
+    pages, _ = _read_pages(path, stored.sid)
+
+    assert [record for page in pages for record in page] == prefix + [call] + rows[len(prefix) + 2:]
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("case", ["other_request", "overlapping_requests", "unknown_user", "unscoped_call"])
+def test_legacy_cancellation_never_guesses_another_request(stored, case):
+    call = _call("active", "orphan")
+    call.pop("request_id")
+    if case == "other_request":
+        rows = [user("active"), call, _completion("other")]
+    elif case == "overlapping_requests":
+        rows = [user("active"), user("other"), call, _completion("active")]
+    elif case == "unknown_user":
+        anonymous_user = user("unknown")
+        anonymous_user.pop("request_id")
+        rows = [anonymous_user, user("active"), call, _completion("active")]
+    else:
+        rows = [call, _completion("active")]
+    stored.write(rows)
+    original = stored.path.read_bytes()
+
+    with pytest.raises(HistoryReplayError, match="unfinished tool group"):
+        _read_pages(stored.path, stored.sid)
+
+    assert stored.path.read_bytes() == original
+
+
+def test_legacy_request_scope_survives_a_page_boundary(stored, monkeypatch):
+    monkeypatch.setattr(migration, "_PAGE_AT_RECORDS", 2)
+    call = _call("legacy", "orphan")
+    call.pop("request_id")
+    rows = [user("legacy"), {"role": "assistant", "request_id": "legacy",
+                             "event_type": "chat.reasoning", "content": "keep reasoning"},
+            call, _completion("legacy"), user("next")]
+    stored.write(rows)
+
+    pages, _ = _read_pages(stored.path, stored.sid)
+
+    assert [record for page in pages for record in page] == rows[:3] + rows[4:]
+
+
+def test_completed_requests_do_not_make_a_later_legacy_call_ambiguous(stored):
+    call = _call("legacy", "orphan")
+    call.pop("request_id")
+    rows = [user("old"), _call("old", "done"), _result("old", "done"),
+            _completion("old", "success"), user("legacy"), call, _completion("legacy")]
+    stored.write(rows)
+
+    pages, _ = _read_pages(stored.path, stored.sid)
+
+    assert [record for page in pages for record in page] == rows[:3] + rows[4:6]
+
+
 @pytest.mark.parametrize("budget", ["bytes", "records"])
 def test_an_oversized_unclosed_group_still_fails(stored, budget):
     rows = [_call("pending", "tool")]
@@ -251,17 +326,21 @@ def test_completion_keeps_the_excluded_request_and_covered_prefix_out_of_the_pag
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", ["cancelled", "tiny_records"])
+@pytest.mark.parametrize("case, tool_group_count", [
+    ("cancelled", 60), ("cancelled", 61), ("legacy_cancelled", 61), ("tiny_records", 0),
+])
 async def test_native_migration_installs_a_complete_checkpoint_and_preserves_audit(
-    stored, monkeypatch, case
+    stored, monkeypatch, case, tool_group_count
 ):
     rows = [
         user("cancelled", "CANCELLED_INPUT"),
         _call("cancelled", "orphan"),
         _completion("cancelled"),
     ]
-    if case == "cancelled":
-        for index in range(60):
+    if case == "legacy_cancelled":
+        rows[1].pop("request_id")
+    if case != "tiny_records":
+        for index in range(tool_group_count):
             rid = f"turn-{index}"
             rows.extend(
                 [user(rid), _call(rid, rid), _result(rid, rid, "x" * (100 * 1024))]
@@ -309,9 +388,13 @@ async def test_native_migration_installs_a_complete_checkpoint_and_preserves_aud
     )
 
     messages = engine.get_context(session_id=stored.sid).get_messages()
-    if case == "cancelled":
-        assert sorted(compressed_tool_ids) == sorted(
-            f"turn-{index}" for index in range(60)
+    if case != "tiny_records":
+        retained_tool_ids = [message.tool_call_id for message in messages if isinstance(message, ToolMessage)]
+        retained_call_ids = {call.id for message in messages if isinstance(message, AssistantMessage)
+                             for call in message.tool_calls or ()}
+        assert retained_call_ids == set(retained_tool_ids)
+        assert sorted(compressed_tool_ids + retained_tool_ids) == sorted(
+            f"turn-{index}" for index in range(tool_group_count)
         )
     else:
         assert [message.content for message in messages] == ["CANCELLED_INPUT"] + [
