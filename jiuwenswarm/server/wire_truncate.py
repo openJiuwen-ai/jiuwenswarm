@@ -81,6 +81,7 @@ _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES = frozenset(
         "chat.file",
         "chat.ask_user_question",
         "chat.ask_user_answer",
+        "chat.ask_user_closed",
         "chat.error",
         "team.message",
         "context.usage",

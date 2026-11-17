@@ -1319,6 +1319,46 @@ class AgentRuntime:
             self._team_execution_controller.activate()
         return prepared
 
+    @staticmethod
+    def _ask_user_stop_timestamp(request: AgentRequest, intent: str, is_team: bool) -> float | None:
+        from e2a.constants import (
+            E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
+            E2A_INTERNAL_CANCEL_SOURCE_KEY,
+        )
+        from jiuwenswarm.enterprise.edition import is_enterprise
+
+        if request.channel_id != "web" or not is_enterprise():
+            return None
+        if intent not in {"cancel", "stop"} and not (is_team and intent == "pause"):
+            return None
+        metadata = request.metadata if isinstance(request.metadata, dict) else {}
+        if metadata.get(E2A_INTERNAL_CANCEL_SOURCE_KEY) == E2A_CANCEL_SOURCE_CLIENT_DISCONNECT:
+            return None
+        # Use the time the stop was requested so a later question stays interactive.
+        return time.time()
+
+    async def _record_ask_user_stop(
+        self, request: AgentRequest, stopped_at: float, question_ids: set[str] | None
+    ) -> None:
+        from jiuwenswarm.server.runtime.session.history_io import run_history_io
+        from jiuwenswarm.server.runtime.session.session_history import enqueue_ask_user_stop, wait_for_history_receipt
+
+        if not request.session_id:
+            return
+        try:
+            async with self._tenant.scoped_manager(request):
+                receipt = await run_history_io(
+                    enqueue_ask_user_stop,
+                    session_id=request.session_id,
+                    request_id=request.request_id,
+                    timestamp=stopped_at,
+                    question_ids=question_ids,
+                )
+                if receipt is not None:
+                    await wait_for_history_receipt(receipt)
+        except Exception:  # noqa: BLE001
+            logger.exception("[Runtime] Failed to record ask_user stop: session_id=%s", request.session_id)
+
     async def cancel_request(
         self,
         request: AgentRequest,
@@ -1347,6 +1387,8 @@ class AgentRuntime:
             else None
         )
         is_team_request = self._request_targets_team(request)
+        stopped_at = self._ask_user_stop_timestamp(request, intent, is_team_request)
+        team_stopped = False
         team_paused = False
         target_request_id = str(params.get("target_request_id") or "").strip()
         # Only the web cron path fences a specific execution. Other transports
@@ -1423,6 +1465,11 @@ class AgentRuntime:
                 producer_stopped and not result.timed_out
                 if result is not None else bool(owners)
             )
+            if stop_confirmed and stopped_at is not None and targets:
+                question_ids = set()
+                for target in targets:
+                    question_ids.update(target.waiting_control_ids)
+                await self._record_ask_user_stop(request, stopped_at, question_ids)
             return AgentResponse(
                 request_id=request.request_id, channel_id=request.channel_id, ok=True,
                 payload={
@@ -1444,7 +1491,7 @@ class AgentRuntime:
                     channel_id=request.channel_id,
                 )
             elif intent in {"cancel", "stop"}:
-                await self._team_lifecycle().stop_session(
+                team_stopped = await self._team_lifecycle().stop_session(
                     context,
                     reason=ExecutionCancelCause.USER_CANCEL.value,
                 )
@@ -1475,6 +1522,7 @@ class AgentRuntime:
         ):
             await self._clear_pending_interaction(request.session_id or "default")
         cancellation_drained = True
+        executions_cancelled = False
         # 单 Agent 的 pause 只挂起 ReAct 循环：StreamEventRail 在下一个
         # checkpoint 阻塞，resume 后同一条流继续产出。协调器取消会直接杀掉
         # producer 且不产终止帧，前端/Gateway 永远等不到 chat.processing_status。
@@ -1501,6 +1549,7 @@ class AgentRuntime:
                 excluded_execution_ids=excluded_execution_ids,
             )
             cancellation_drained = not cancellation.timed_out
+            executions_cancelled = cancellation.cancelled > 0
             if team_paused and not cancellation_drained:
                 logger.warning(
                     "[Runtime] Team pause completion skipped after cancellation timeout: session_id=%s "
@@ -1514,6 +1563,18 @@ class AgentRuntime:
                 request,
                 generation=snapshot.generation if snapshot is not None else None,
             )
+        stop_confirmed = team_stopped or team_paused or executions_cancelled or (
+            response.ok and isinstance(response.payload, dict) and response.payload.get("success") is True
+        )
+        if stopped_at is not None and cancellation_drained and stop_confirmed:
+            question_ids = None
+            if target_request_id:
+                question_ids = set()
+                executions = snapshot.executions if snapshot is not None else ()
+                for execution in executions:
+                    if target_request_id in (execution.request_id, execution.root_request_id):
+                        question_ids.update(execution.waiting_control_ids)
+            await self._record_ask_user_stop(request, stopped_at, question_ids)
         return response
 
     async def _publish_team_pause_completed(

@@ -1698,6 +1698,32 @@ def append_history_record(
         logger.warning("更新会话元数据失败: %s", exc)
 
 
+def enqueue_ask_user_stop(
+    *,
+    session_id: str,
+    request_id: str,
+    timestamp: float,
+    question_ids: set[str] | None = None,
+) -> Future[None] | None:
+    """Persist a confirmed stop boundary in the session history."""
+    if question_ids == set() or not history_exists(session_id):
+        return None
+    record = {
+        "id": f"{request_id}:ask_user_closed",
+        "role": "assistant",
+        "request_id": request_id,
+        "channel_id": "web",
+        "timestamp": timestamp,
+        "content": "",
+        "event_type": "chat.ask_user_closed",
+    }
+    if question_ids is not None:
+        record["question_request_ids"] = sorted(question_ids)
+    receipt: Future[None] = Future()
+    _enqueue_history_item(session_id, record, receipt=receipt)
+    return receipt
+
+
 def enqueue_history_request_completion(
     session_id: str,
     request_id: str,
