@@ -3310,9 +3310,10 @@
       "feishuPlaceholder": "Feishu fetch will be developed separately later",
       "localFiles": {
         "rootDirLabel": "Local folder path",
-        "rootDirPlaceholder": "D:/my-notes",
-        "rootDirHint": "Must be absolute",
-        "rootDirRequired": "Please enter the local folder path"
+        "rootDirPlaceholder": "/home/user/my-notes",
+        "rootDirHint": "Enter an absolute folder path on the machine running JiuwenSwarm.",
+        "rootDirRequired": "Please enter the local folder path",
+        "browse": "Choose a local folder"
       },
       "zhihu": {
         "columnUrlLabel": "Zhihu column URL",
