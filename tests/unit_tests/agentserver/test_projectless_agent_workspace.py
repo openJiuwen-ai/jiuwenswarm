@@ -569,6 +569,7 @@ async def test_runtime_config_uses_projectless_task_workspace(
 
     task_root = Path(runtime_rail.execution_paths["workspace"])
     assert task_root.name == "chat-1"
+    assert adapter._instance._jiuwenswarm_memory_project_dir is None
     if mode == "agent":
         assert adapter._memory_media_workspace == str(task_root)
     assert runtime_rail.execution_paths == {
@@ -602,6 +603,7 @@ async def test_runtime_config_uses_projectless_task_workspace(
     }
     assert deep_config.cwd == str(explicit_project)
     assert deep_config.project_root == str(explicit_project)
+    assert adapter._instance._jiuwenswarm_memory_project_dir == str(explicit_project)
     if mode == "agent":
         assert adapter._memory_media_workspace == str(explicit_project)
 

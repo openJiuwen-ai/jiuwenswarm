@@ -198,6 +198,39 @@ async def test_moa_notices_do_not_count_as_round_output(monkeypatch, as_dict):
     assert not any(event.get("event_type") == "chat.final" for event in events)
 
 
+async def _wait_for_moa_close_start(
+    consumer: asyncio.Task[None],
+    close_started: asyncio.Event,
+) -> None:
+    close_waiter = asyncio.create_task(close_started.wait())
+    try:
+        # Startup includes dispatch and lazy imports, not just owner cleanup.
+        done, _ = await asyncio.wait(
+            (consumer, close_waiter),
+            timeout=10,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if consumer in done:
+            await consumer
+        assert close_started.is_set(), "MoA close did not start within the startup budget"
+    finally:
+        close_waiter.cancel()
+        await asyncio.gather(close_waiter, return_exceptions=True)
+
+
+@pytest.mark.anyio
+async def test_moa_close_start_propagates_consumer_failure() -> None:
+    async def fail_before_close() -> None:
+        raise RuntimeError("consumer failed before MoA close")
+
+    consumer = asyncio.create_task(fail_before_close())
+    try:
+        with pytest.raises(RuntimeError, match="consumer failed before MoA close"):
+            await asyncio.wait_for(_wait_for_moa_close_start(consumer, asyncio.Event()), 5)
+    finally:
+        await asyncio.gather(consumer, return_exceptions=True)
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("close_early", [False, True])
 async def test_moa_output_consumer_owns_and_closes_progress(monkeypatch, close_early):
@@ -256,10 +289,12 @@ async def test_moa_output_consumer_owns_and_closes_progress(monkeypatch, close_e
 @pytest.mark.anyio
 @pytest.mark.parametrize("close_early", [False, True])
 @pytest.mark.parametrize("cancel_close", [False, True])
+@pytest.mark.parametrize("startup_delay", [0.0, 2.1], ids=["immediate", "delayed"])
 async def test_moa_close_failure_preserves_owner_cleanup(
     monkeypatch: pytest.MonkeyPatch,
     close_early: bool,
     cancel_close: bool,
+    startup_delay: float,
 ) -> None:
     from openjiuwen.harness import observability
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep
@@ -311,6 +346,7 @@ async def test_moa_close_failure_preserves_owner_cleanup(
     events = []
 
     async def consume() -> None:
+        await asyncio.sleep(startup_delay)
         stream = adapter.process_message_stream_impl(request, {"query": "hello"})
         try:
             async for chunk in stream:
@@ -323,7 +359,7 @@ async def test_moa_close_failure_preserves_owner_cleanup(
 
     consumer = asyncio.create_task(consume())
     try:
-        await asyncio.wait_for(close_started.wait(), 2)
+        await _wait_for_moa_close_start(consumer, close_started)
         if cancel_close:
             consumer.cancel("cancel during MoA close")
             with pytest.raises(asyncio.CancelledError, match="cancel during MoA close"):

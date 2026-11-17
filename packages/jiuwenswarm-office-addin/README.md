@@ -12,12 +12,10 @@ One build serves the three hosts: a page and a manifest per host
 (`src/taskpane.<host>.ts`) that gives the shared pane (`startPane`) its app
 and its tool runtime. An app is a platform (Microsoft Office; WPS to come)
 and a surface (`presentation`, `document`, `workbook`), which the attach
-sends as `host_vendor` and `kind`. Word declares no tools yet: its pane
-attaches, chats and answers questions, and its tools come with its contract.
-Excel runs its contract's tools and sends the workbook's state with each
-message (`chat.send` `client_state`).
+sends as `host_vendor` and `kind`. Word and Excel run their contract's tools
+and send the document's state with each message (`chat.send` `client_state`).
 
-## Excel code
+## Code in Word and Excel
 
 `execute_office_js` runs the model's code on the pane's main thread, inside
 `Excel.run`, where the host context lives. The first call locks the realm down
@@ -40,6 +38,33 @@ later writes wait in the write queue until it does. Formulas are screened in
 English only, so writes to `formulasLocal` are refused. The
 call is approved as a whole by the backend's rules before it runs; the pane
 cannot ask in the middle of a run.
+
+Word binds the same runner to `Word.run` and the `Word` enums. Its screen
+refuses changes to what every document on the computer shares (the templates
+with Normal.dotm, building blocks, the list gallery, the master list of
+sources), opening or creating other documents, and fields or inserted markup
+that make Word fetch from another file, program or address. The runner reads
+the Track Changes mode before and after the code and adds
+`tracked_change_warning` when the code changed it.
+
+## Word suggestion cards
+
+`propose_doc_edits` checks each edit's `old_text` against the document and
+returns at once: the edits it finds become cards under the call in the
+transcript, the others come back in `invalid_edits`. A card shows its section,
+summary, the change word by word and the alternatives to pick; the user
+applies it as an edit (Track Changes off for it), as a tracked change (on for
+it) or as a comment, skips it, or undoes it once applied (a hidden bookmark over
+the changed words is how the undo finds them; a tracked change is rejected, a
+comment deleted; words edited since, or tracked changes already decided in
+Word, are left as they are). The user's own Track Changes setting is put back
+after each.
+The cards' state is the pane's alone, kept in the document's settings
+(`jiuwenswarm.doc_edits`) by call and edit id, so a reopened pane shows them
+again from the conversation's history. The next message of the conversation
+that proposed them carries each new decision once it is sent
+(`<user_reviewed_edits>`); `withdraw_doc_edits` greys out the conversation's
+pending cards, but not one the user is applying.
 
 So far the pane chats, switches between the document's conversations, answers
 the backend's approvals and questions, shows each turn's tool calls on a
@@ -130,7 +155,7 @@ separate straight segments.
 | `presentationScenePatch` | Reads a patch (roles with their font floors, design-system tokens, exact fields) and draws it in one batch: every slide, shape, table and layout it names is checked before the first change; a failure after that says which slides landed. It tells the turn's undo what it is about to change before it changes it. A connector's route comes from its anchors (on shapes the patch adds, by name, or the slide has, by id, where the patch leaves them) or its own box, checked before the first change; an elbow without waypoints bends at right angles. |
 | `presentationAssetClient` | Fetches a published file a call inserts from its signed `/file-api/download` link and takes it only if its size and SHA-256 are the descriptor's. |
 | `slideSnapshots` | The per-turn snapshots and the undo (see above). |
-| `hostWriteQueue` | The one critical section for document writes, first come first served: tool writes, the end-of-turn hashes and undos. |
+| `hostWriteQueue` | The one critical section for document writes, first come first served: tool writes, the end-of-turn hashes and undos, the suggestion cards. It says whether a write ran just now, so Word leaves the pane's own edits out of the user's. |
 | `paneController` | The pane's state and the user's actions: opening the document's latest conversation (or a new one), sending (on the model picked under the message box, `chat.send` `model_name`), stopping, answering a question, switching and starting conversations, taking the document back from another window. It also holds the connection state (down, with the next attempt and when) and the outcome of an action the transcript has no place for, until dismissed. The shown conversation's history loads first, again on every attach (as after a reconnect); its live events wait for it. A turn that wrote closes its snapshots and offers its undo while no turn runs; after an undo the next message sent starts with a line saying which slides came back, which the transcript does not show. A `models.updated` reads the models again. |
 | `conversationModel` | A pure reducer from a conversation's events to what the pane shows: the transcript, whether the turn runs, and the question it waits on (`chat.ask_user_question` with source `permission_interrupt`, `confirm_interrupt` or `ask_user_interrupt`, answered through `chat.send` as the web chat answers it). A tool call keeps what the model said it is for (`call_goal`) and its arguments. A turn that ran a writing tool ends with an entry naming the calls its undo takes back. The same reducer replays the history. |
 | `crossDocumentMessages` | Reads the tasks this conversation sends to other documents (`session_send_message`) and the ones other documents send here (`cross_session_agent`, `session.message.updated`). |
@@ -138,13 +163,19 @@ separate straight segments.
 | `copy`, `styles.css` | Every UI text, and the design tokens (colors, spacing, radius, type) as CSS custom properties on `:root`: the web chat's light values, the pane's own dark values, and Windows high contrast (`forced-colors`). |
 | `officeTheme` | Follows the Office theme: dark on a dark Office background, light on a light one, and the system's color scheme when the host has no Office theme. |
 | `startPane`, `taskpane.<host>` | The pane in a host: document identity, the host's tool runtime, the Gateway and the pane wired together. Each entry names its app and builds its runtime; PowerPoint's also has the undo. |
-| `scriptedGateway`, `fakePowerPoint`, `fakeExcel`, `nodeSandbox` | The scripted backend the tests drive the pane through; a workbook for the Excel tests; the deck the write tests write to, which exports a slide as a real single-slide package, inserts packages keeping their shape ids, and brings in and drops masters; and the sandbox worker bundled with esbuild into a node worker thread. |
+| `scriptedGateway`, `fakePowerPoint`, `fakeExcel`, `fakeWord`, `nodeSandbox` | The scripted backend the tests drive the pane through; a workbook for the Excel tests; a document for the Word tests (ranges as spans of the body's text that move as edits land); the deck the write tests write to, which exports a slide as a real single-slide package, inserts packages keeping their shape ids, and brings in and drops masters; and the sandbox worker bundled with esbuild into a node worker thread. |
 | `sessionFacade` | `session.create` (the app's `client_app`, on the server's active model from `models.list`), `client.conversations` (the conversations of this document), `client.conversation.messages` (a conversation's history), `client.list` (the user's attached documents), `chat.send` (messages and answers), `chat.interrupt`, `media.persist`. |
 | `clientToolOutcome`, `toolResultBudget` | Pure shaping of a write's mutation record and of the result size. |
 | `excelApp`, `excelTools` | Excel's app (its answers run to 40,000 characters, as a sheet's cells need) and its tools on `Excel.run`: `get_cell_ranges` (values, formulas and notes keyed by cell, formatting by the blocks that share it, merged areas, at most `cellLimit` non-empty cells cut at a row with `nextRanges`), `get_range_as_csv`, `set_cell_range` (refuses to overwrite unless allowed, returns each formula's value), `copy_paste_range` (refuses to cut a merged area or overwrite), `execute_office_js` and `read_surface_context`. Notes need ExcelApi 1.18. |
 | `excelGuard` | What Excel refuses to write whatever the approval: the formula functions that reach outside the workbook, links to other workbooks or files, and, for code, hyperlinks, inserted workbooks and outside refreshes. |
 | `excelState` | The workbook's state each message carries: `<initial_state>` (sheets with ids and sizes, Excel tables and their columns) with a conversation's first message from this pane, `<user_changes>` (cell edits, sheets added, deleted and renamed, heard from the host's events from ExcelApi 1.14, renames from 1.17; this add-in's own edits left out), and `<user_context>` (active sheet, selected chart or ranges, names cleaned for display). Changes count as told only once `chat.send` took the message. |
-| `officeCodeRunner` | The runner of `execute_office_js` (see Excel code above), host-neutral: each host gives its `run`, enums and write screen. |
+| `officeCodeRunner` | The runner of `execute_office_js` (see Code in Word and Excel above), host-neutral: each host gives its `run`, enums and write screen. |
+| `wordApp`, `wordTools` | Word's app (its answers run to 200,000 characters, as the industry add-in allows) and its tools on `Word.run`: `read_doc_section` (by heading or paragraph range, at most 400 paragraphs a call, each with its index and markers, optionally its formatting), `search_doc_text` (each hit's paragraph index and a snippet), `edit_doc_text`, `edit_doc_list` (a new bulleted or numbered list by `startNewList`, as list style names are in Word's display language, or one item joining a list), `collapse_blank_paragraphs` (empty means only spaces and tabs, so page and line breaks stay; keeps empty paragraphs that hold a picture, shape, comment, tracked change, field or content control, list items and table cells), `verify_doc` (styles, list numbers, cells per table row), `execute_office_js`, `read_surface_context` (a note that the state was added at the turn's start), the card tools, and the capture `explain_edits`' reviewer checks claims against (final text and pending tracked changes). |
+| `wordText`, `wordPassage` | The text rules of the edit tools: quotes match either kind, a passage past Word's 255-character search limit is found by its first and last 255 characters, a text of several lines is that many whole paragraphs, and an edit replaces only the words that differ (a word-level diff), never across a field, note or picture. |
+| `wordParagraphs` | Paragraphs as the model reads them: final text after markers (`[Heading2]`, `[1.1.]`, `[tbl:1]`, `[page-break]`, `[has: …]`, `[img]`, `[field×2]`, `[fn]`, `[en]`). |
+| `wordGuard` | What Word code may not do whatever the approval (see above). |
+| `wordState` | The document's state each message carries: `<doc_state>` (the full text under 5,000 words and 30,000 characters, else a 500-character opening; the outline with list numbers and fonts, body font, `Language:` line, custom styles, pictures, Track Changes, columns on desktop, headers and footers, comment threads, content controls and tracked changes, the last three inside `<untrusted_content>`), `<user_selection>`, `<user_changes>` (paragraphs added, changed or deleted, from WordApi 1.6 paragraph events, leaving out those within a second of the pane's own writes) and `<user_reviewed_edits>`. |
+| `docEditReview`, `view/editCards` | The suggestion cards' state and actions, and their view (see Word suggestion cards above). |
 
 Approvals are the backend's: a tool call the user's permission rules ask about
 pauses on the backend before the pane is ever called, and the pane only shows
