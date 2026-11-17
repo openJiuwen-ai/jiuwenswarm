@@ -130,6 +130,24 @@ test('only successful symphony_compose_graph results receive Mermaid', () => {
   }
 });
 
+test('shows a deferred memory operation as failed when its tool event reports failure', () => {
+  const error = 'AgentMemory add failed (server unavailable).';
+  const normalized = normalizeToolResultPayload({
+    tool_result: {
+      tool_name: 'tool_call',
+      tool_call_id: 'call-1',
+      success: false,
+      status: 'error',
+      is_error: true,
+      rendered_result: JSON.stringify({ success: false, error }),
+    },
+  });
+
+  assert.equal(normalized.success, false);
+  assert.equal(normalized.pending, undefined);
+  assert.match(normalized.result, /AgentMemory add failed/);
+});
+
 test('displays rendered_result instead of the compatibility result string', () => {
   const normalized = normalizeToolResultPayload({
     tool_result: {

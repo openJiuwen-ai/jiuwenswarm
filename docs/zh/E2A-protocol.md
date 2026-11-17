@@ -437,6 +437,8 @@ Server 自己的 `TEAM_SKILLS_HUB_BASE_URL` 决定查询哪个 Hub。WebSocket �
 
 大型工具结果保留短预览，并可携带 `payload_refs`。每个引用包含 `sha256`、`bytes`、`media_type` 和宿主路径。客户端通过会话和摘要读取原文，已保存的 prompt 引用仍可通过同一接口读取。
 
+通过 `tool_call` 调度工具时，如果目标工具返回的对象明确报告失败，工具结果事件携带 `success: false`、`status: "error"` 和 `is_error: true`。即使调度成功，客户端也会将该工具调用显示为失败。
+
 `text/plain` 表示原始字符串，`application/json` 表示完整结构化值。`raw_output_truncated=true` 表示内联预览已缩减，对应的 `payload_refs` 引用用于读取完整工件。工件存储失败时，工具事件仍发送有界预览，不携带不可用的引用，并记录失败日志。已有小结果和内联历史保持原语义。
 
 使用非流式 `history.get` 请求，传入以下 `params`：
