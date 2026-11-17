@@ -215,7 +215,7 @@ async def _create_adapter_and_run_chat(config_base: dict) -> SimpleNamespace:
         patch.dict("os.environ", {"API_KEY": "system-test-key"}),
     ):
         adapter = JiuWenSwarmDeepAdapter()
-        await adapter.create_instance()
+        await adapter.create_instance(config_base=config_base)
         response = await adapter.process_message_impl(request, inputs)
 
     assert response.ok is True
