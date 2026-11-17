@@ -321,7 +321,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
                   {isDeleteMode ? t('connectorMarket.card.uninstall') : t('connectorMarket.card.unbind')}
                 </button>
               )}
-              {installed && (
+              {installed && onUse && (
                 // 2026-08-19 用户明确要求：断联态（installed && !linked）"使用"按钮要置灰不可点——
                 // 未连接时点击会静默触发一次后台连接（handleUse 里 linked===false 分支）。收敛到
                 // .detail-action--use 后禁用态样式（not-allowed + 弱化）由共享类统一处理，该类

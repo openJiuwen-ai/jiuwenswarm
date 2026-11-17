@@ -255,16 +255,12 @@ for (const fromMy of [true, false]) {
     const calls = resetState();
     await render(PluginDetailPage, { id: plugin.id, fromMy, onBack() {} }, async host => {
       const install = host.querySelector('[data-testid="connector-market-plugin-detail-install"]');
-      const use = host.querySelector('[data-testid="connector-market-plugin-detail-use"]');
+      assert.equal(host.querySelector('[data-testid="connector-market-plugin-detail-use"]'), null);
       if (fromMy) {
         assert.equal(install, null);
         assert.ok(host.querySelector('[data-testid="connector-market-plugin-detail-uninstall"]'));
-        assert.ok(use);
-        assert.equal(use.disabled, true);
-        await act(async () => use.click());
         assert.deepEqual(calls.install, []);
       } else {
-        assert.equal(use, null);
         assert.ok(install);
         await act(async () => install.click());
         assert.deepEqual(calls.install, [plugin.id]);

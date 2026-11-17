@@ -159,10 +159,7 @@ for (const pending of [false, true]) {
         assert.equal(probe.cacheCleared, true, 'real installation invalidates detail cache');
         assert.ok(host.querySelector('[data-testid="connector-market-plugin-detail"]'));
         assert.equal(host.querySelector('[data-testid="connector-market-plugin-detail-state"]'), null);
-        const use = host.querySelector('[data-testid="connector-market-plugin-detail-use"]');
-        assert.ok(use);
-        assert.equal(use.textContent, '使用');
-        assert.equal(use.disabled, false);
+        assert.equal(host.querySelector('[data-testid="connector-market-plugin-detail-use"]'), null);
         assert.equal(host.querySelector('[data-testid="connector-market-plugin-detail-install"]'), null);
         assert.equal(store.getState().detailCache[pluginId].installed, true);
         const installCalls = probe.calls.filter(([method]) => method === 'plugin_packages.install');
@@ -173,7 +170,7 @@ for (const pending of [false, true]) {
       });
       await renderDetail(true, async host => {
         assert.equal(host.querySelector('[data-testid="connector-market-plugin-detail-install"]'), null);
-        assert.equal(host.querySelector('[data-testid="connector-market-plugin-detail-use"]').disabled, false);
+        assert.equal(host.querySelector('[data-testid="connector-market-plugin-detail-use"]'), null);
       });
     } finally {
       unsubscribe();
