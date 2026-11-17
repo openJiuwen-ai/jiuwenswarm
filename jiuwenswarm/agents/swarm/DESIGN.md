@@ -186,7 +186,7 @@ _CODE_RAIL_NAMES / _CODE_SHARED_RAIL_NAMES / _CODE_TOOL_NAMES   # code 档
 _role_evolution_rails(config, role)            # leader: 进化+创建；teammate: 成员进化
 ```
 
-`build_member_capability_specs(config, mode, role) -> (rails, tools)` 按 mode 分档；`build_member_subagent_specs` 仅 code 档（explore/plan 常驻，code/browser 受 `react.subagents.<name>.enabled` 门控）；`build_member_deep_agent_spec` 把能力 spec 折叠到 base `DeepAgentSpec`。
+`build_member_capability_specs(config, mode, role) -> (rails, tools)` 按 mode 分档；`build_member_subagent_specs` 仅 code 档（explore/plan 常驻，code/browser 受 `react.subagents.<name>.enabled` 门控）；`build_member_deep_agent_spec` 把能力 spec 折叠到 base `DeepAgentSpec`，并透传 `react.context_engine_config`（由 `_team_context_engine_config` 合并产品与成员配置，保证 token 计数与压缩阈值口径一致）。
 
 ### 7.2 属性烘焙（本模块核心机制）
 

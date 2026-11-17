@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -23,8 +24,9 @@ from jiuwenswarm.server.runtime.prewarm import (
     _build_warmup_config_base,
     _cleanup_prewarm_agent,
     run_startup_warmup,
-    warmup_import_and_checkpointer,
     warmup_deep_agent_query,
+    warmup_import_and_checkpointer,
+    warmup_tiktoken_counter,
 )
 
 
@@ -181,6 +183,10 @@ class TestCleanupPrewarmAgent:
 
 
 def _patch_phase12(monkeypatch: pytest.MonkeyPatch, *, import_exc=None, cp_exc=None) -> None:
+    # tiktoken 预热会读真实配置并启动下载线程，单测里替换为 no-op。
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.prewarm.warmup_tiktoken_counter", MagicMock()
+    )
     warm_iface = AsyncMock()
     if import_exc:
         warm_iface.side_effect = import_exc
@@ -213,6 +219,74 @@ async def test_phase12_checkpointer_failure_does_not_raise(monkeypatch: pytest.M
 async def test_phase12_ok_completes(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_phase12(monkeypatch)
     await warmup_import_and_checkpointer()  # 全程不抛即通过
+
+
+# ---------------------------------------------------------------------------
+# warmup_tiktoken_counter（阶段0.5）
+# ---------------------------------------------------------------------------
+
+
+def _patch_tiktoken_switch(monkeypatch: pytest.MonkeyPatch, *, enabled: bool, root: Any) -> list[bool]:
+    import jiuwenswarm.server.runtime.prewarm as prewarm_mod
+    from openjiuwen.core.context_engine.token import tiktoken_counter
+
+    monkeypatch.setattr(
+        prewarm_mod,
+        "get_config",
+        lambda: {"react": {"context_engine_config": {"enable_tiktoken_counter": enabled}}},
+    )
+    monkeypatch.setattr(prewarm_mod, "get_root_dir", lambda: root)
+    calls: list[bool] = []
+    monkeypatch.setattr(tiktoken_counter, "start_background_warm_up", lambda: calls.append(True))
+    return calls
+
+
+def test_tiktoken_warmup_skipped_when_switch_disabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    monkeypatch.delenv("TIKTOKEN_CACHE_DIR", raising=False)
+    calls = _patch_tiktoken_switch(monkeypatch, enabled=False, root=tmp_path)
+
+    warmup_tiktoken_counter()
+
+    assert calls == []
+    assert "TIKTOKEN_CACHE_DIR" not in os.environ
+
+
+def test_tiktoken_warmup_pins_cache_dir_and_starts_warmup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    monkeypatch.delenv("TIKTOKEN_CACHE_DIR", raising=False)
+    calls = _patch_tiktoken_switch(monkeypatch, enabled=True, root=tmp_path)
+
+    warmup_tiktoken_counter()
+
+    assert calls == [True]
+    assert os.environ["TIKTOKEN_CACHE_DIR"] == str(tmp_path / "cache" / "tiktoken")
+
+
+def test_tiktoken_warmup_keeps_preset_cache_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    preset = str(tmp_path / "preset")
+    monkeypatch.setenv("TIKTOKEN_CACHE_DIR", preset)
+    calls = _patch_tiktoken_switch(monkeypatch, enabled=True, root=tmp_path)
+
+    warmup_tiktoken_counter()
+
+    assert calls == [True]
+    assert os.environ["TIKTOKEN_CACHE_DIR"] == preset
+
+
+def test_tiktoken_warmup_failure_is_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    import jiuwenswarm.server.runtime.prewarm as prewarm_mod
+
+    def _boom() -> dict[str, Any]:
+        raise RuntimeError("config boom")
+
+    monkeypatch.setattr(prewarm_mod, "get_config", _boom)
+
+    warmup_tiktoken_counter()  # 不抛即通过
 
 
 # ---------------------------------------------------------------------------

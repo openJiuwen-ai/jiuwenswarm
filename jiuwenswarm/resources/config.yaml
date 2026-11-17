@@ -776,10 +776,11 @@ react:
     enable_reload: true    # 卸载重载：开启后模型可通过 [[HANDLE:xxx]] 标记把已卸载的大消息原文拉回上下文
 
     enable_context_debug: false     # 上下文压缩 debug 模式：开启后各处理器在阈值判断、片段切分、压缩重试、 前后对比等每个阶段落盘 JSONL 记录，便于排查压缩问题。关闭时零开销。默认关闭
-    # 精确 token 计数（tiktoken BPE）：false 时用字符估算，但图片块已按像素视觉 token
-    # 计价（不会把 base64 当文本算）。true 时文本走 BPE、图片仍按像素；首次加载可能
-    # 需要下载词表（agent-core 有后台预热）。默认关闭。
-    # enable_tiktoken_counter: false
+    # 精确 token 计数（tiktoken BPE）：文本走 BPE、图片仍按像素计价；false 则用字符估算，
+    # 对中文/JSON 低估约 25%~44%，会让压缩阈值失效。
+    # 启动阶段后台预热词表（缓存落到 {root}/cache/tiktoken），避免落到首个会话；
+    # 词表不可用（离线且无缓存）时 agent-core 自动回退字符估算，不阻断会话创建。
+    enable_tiktoken_counter: true
     # debug 记录目录；留空则按环境变量 OPENJIUWEN_CONTEXT_DEBUG_DIR，
     # 再缺省落到 {workspace}/context/{session_id}_context/context_debug/
     # context_debug_dir:

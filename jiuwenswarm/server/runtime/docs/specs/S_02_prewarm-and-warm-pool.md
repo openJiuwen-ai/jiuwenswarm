@@ -153,7 +153,9 @@
   清 marker。
 - **P3 前台抢占**：`begin_foreground`（取消后台任务）→ chat 正常建 agent →
   `end_foreground` → cooldown 后恢复泵。
-- **P4 启动预热**：`warmup_import_and_checkpointer`（阶段1/2）→ 独立
+- **P4 启动预热**：`warmup_import_and_checkpointer`（阶段 0/0.5/1/2；阶段 0.5 在后台
+  线程预热 tiktoken 词表并把 `TIKTOKEN_CACHE_DIR` 钉到 `{root}/cache/tiktoken`，
+  仅在 `react.context_engine_config.enable_tiktoken_counter` 开启时生效）→ 独立
   `create_task(warmup_deep_agent_query)`（阶段3：建临时 agent → 发一条
   chat.send → cleanup）。
 - **P5 session.create 预热**：`prewarm_session_in_background` → `extract_ids` →
