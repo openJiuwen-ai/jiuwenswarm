@@ -1382,6 +1382,13 @@ async def test_team_workspace_report_path_uses_flat_mount_with_team_id() -> None
     assert "Internal mount path: `.team/`" in prompt
     assert f".team/{team_id}/" not in prompt
     assert ".team/<team>/team-workspace/" not in prompt
+    # send_file must use the on-disk absolute path, not a reconstructed team-ws path
+    assert "prefer the absolute path returned by `write_file`" in prompt
+    assert "do not also send `.team/` collaboration copies" not in prompt
+    assert (
+        r"Example absolute path to pass to `send_file_to_user`: "
+        r"C:\Users\tester\.office-claw\agent_teams\team\team-workspace\prd-review-memo.md"
+    ) not in prompt
 
 
 # ---------------------------------------------------------------------------
