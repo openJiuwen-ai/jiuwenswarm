@@ -1,16 +1,16 @@
 # JiuwenSwarm Office add-in
 
-The task pane for PowerPoint, Word and Excel: it attaches the open document
+The task pane for PowerPoint, Word, Excel and WPS Presentation: it attaches the open document
 to a JiuwenSwarm conversation and runs the conversation's tools in the
 document. Each host is a client app of the backend (`office-powerpoint`,
-`office-word`, `office-excel`, in `jiuwenswarm/office/`); the `tools.json`
+`office-word`, `office-excel`, `wps-presentation`, in `jiuwenswarm/office/`); the `tools.json`
 and `profile.json` of an app's package directory are the tool contract both
 halves read (`@office/<app>/`).
 
 One build serves the three hosts: a page and a manifest per host
 (`taskpane.<host>.html`, `manifest.<host>.xml`), each page an entry
 (`src/taskpane.<host>.ts`) that gives the shared pane (`startPane`) its app
-and its tool runtime. An app is a platform (Microsoft Office; WPS to come)
+and its tool runtime. An app is a platform (`office` or `wps`)
 and a surface (`presentation`, `document`, `workbook`), which the attach
 sends as `host_vendor` and `kind`. Word and Excel run their contract's tools
 and send the document's state with each message (`chat.send` `client_state`).
@@ -84,9 +84,33 @@ loads only in Microsoft 365 PowerPoint (Windows, Mac and the web). PowerPoint
 supported. The Word manifest requires WordApi 1.6, and the Excel one ExcelApi
 1.13. The pane declares the
 tools the running host can run: a tool's `host_requirements` in `tools.json`
-name the requirement sets it needs (`sets`, each at its version) and whether
-it needs a Worker. On PowerPoint 1.8, `presentation_apply_patch` refuses the
+name, for each platform it runs on, the requirement sets it needs (`sets`,
+each at its version) and whether it needs a Worker. On PowerPoint 1.8, `presentation_apply_patch` refuses the
 row rules, row heights and column widths of `update_table`, which need 1.9.
+
+## WPS Presentation
+
+WPS Presentation loads the add-in's shell (`public/wps/wpp/`): its ribbon
+button writes the presentation's GUID into its custom document properties and
+opens a pane of its own for that presentation (`taskpane.wps-presentation.html?doc=<GUID>`).
+A copy of a file carries the file's GUID: of the open presentations that share
+one, the first opened keeps it and the shell gives the others new ones.
+The pane runs the PowerPoint tools unchanged over `wpsPowerPointRun`, which
+gives them the part of the PowerPoint object model they use on top of WPS's
+VBA-style one: a slide's package comes from a saved copy of the deck
+(`SaveCopyAs`) and goes back with `Slides.InsertFromFile`, a picture of a slide
+from `Slide.Export`, both through files in WPS's temporary directory. WPS keeps
+the deck's own theme on every insert, so `edit_slide_master` does not run on
+WPS (its contract entry names only `office`), `import_slides` refuses
+`keep_source_formatting`, and `edit_slide_xml` refuses code that changes a
+theme, master or layout part. A slide written back through its package
+(`find_and_replace`, `edit_slide_xml` and the other slide XML tools) loses its
+links to other slides: the package holds no other slide for a link to land on,
+so the copy goes in without them. Layout ids are positions (`m<i>l<j>`), so
+they change when a design or layout is added or removed. WPS keeps its own undo:
+the pane offers no undo of a turn there and keeps no turn, though a write that
+fails part way is still put back. A dev server
+for WPS runs over HTTP: `JIUWENSWARM_PANE_HTTP=1 npm run dev`.
 
 ## Undo this turn
 

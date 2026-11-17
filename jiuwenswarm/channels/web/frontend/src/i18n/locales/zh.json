@@ -830,11 +830,15 @@
         "maas": "Maas 盘古",
         "minimax": "MiniMax",
         "mimo": "小米 MiMo",
+        "opencode-go": "OpenCode Go",
         "openrouter": "OpenRouter",
         "vllm-omni": "vLLM-Omni",
         "volcengine": "火山引擎",
         "zhipu": "智谱 GLM",
         "unrecognized": "未识别提供商（{{vendor}}）"
+      },
+      "apiBasePlaceholders": {
+        "opencode-go": "例如：https://opencode.ai/zen/go/v1"
       },
       "protocols": {
         "openai": "OpenAI",
@@ -2116,6 +2120,7 @@
     "topicStarter": {
       "statusMissingConfiguration": "话题推荐暂不可用，请前往设置检查。",
       "recommendedForYou": "为你推荐",
+      "statusLoading": "正在加载…",
       "heading": "今天想干点什么？",
       "notInterested": "先跳过",
       "dateAndVersion": "看看这一天",

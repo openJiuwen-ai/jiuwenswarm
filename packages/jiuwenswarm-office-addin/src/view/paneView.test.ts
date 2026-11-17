@@ -49,7 +49,7 @@ afterEach(() => {
 /** The pane on a controller whose state the test sets and whose actions it records. */
 function mounted(initial: Partial<PaneState> = {}) {
   let state: PaneState = {
-    attachment: ATTACHED, conversation: emptyConversation, conversations: [], documents: new Map([['s9', '市场分析.pptx']]),
+    attachment: ATTACHED, conversation: emptyConversation, conversations: [], documents: new Map([['s9', { name: '市场分析.pptx', kind: 'presentation', current: false }]]),
     loadingHistory: false, connection: { kind: 'open' }, models: [], undo: { offers: new Set() }, ...initial,
   };
   const listeners = new Set<(state: PaneState) => void>();
@@ -556,6 +556,19 @@ describe('the end of a turn', () => {
 });
 
 describe('the header', () => {
+  it('lists the open files of this kind, this one first and marked', () => {
+    const { root, button } = mounted({ documents: new Map([
+      ['s9', { name: '市场分析.pptx', kind: 'presentation', current: false }],
+      ['s8', { name: '预算.xlsx', kind: 'workbook', current: false }],
+      [S1, { name: '季度汇报.pptx', kind: 'presentation', current: true }],
+    ]) });
+    expect(root.querySelector('.files-count')?.textContent).toBe('2');
+    button('打开的演示文稿').click();
+    const items = [...root.querySelectorAll('#files-menu .menu-item')];
+    expect(items.map(item => item.querySelector('.menu-item-title')!.textContent)).toEqual(['季度汇报.pptx', '市场分析.pptx']);
+    expect(items.map(item => item.querySelector('.menu-item-meta')?.textContent)).toEqual(['本文件', undefined]);
+  });
+
   it('lists the document\'s conversations, marks the current one, and switches', () => {
     const now = Math.floor(Date.now() / 1000);
     const { root, button, controller } = mounted({ conversations: [

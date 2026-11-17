@@ -354,6 +354,12 @@ models:
         api_key: ${API_KEY}
         model_name: ${MODEL_NAME}
         client_provider: ${MODEL_PROVIDER}
+        # vendor_key：供应商方言标识，对应 .env 的 VENDOR_KEY；只有特定网关需要
+        # （例如 OpenCode Go 填 opencode-go），一般留空即"不声明"。
+        # 写在模板里而不是只写 .env.template：新装直接拷贝模板，已有配置靠
+        # migrate_config_from_template 从模板补键；而 get_default_models 只在
+        # 配置里没有 models.defaults 时才读 VENDOR_KEY 环境变量。
+        vendor_key: ${VENDOR_KEY:-}
         # endpoint_profile：仅 OpenAI 协议(client_provider=OpenAI)生效的端点方言。
         #   openai(官方/默认)、deepseek、openrouter、siliconflow、dashscope、
         #   openai_compatible(KV释放/亲和)、ollama、lmstudio、vllm、sglang。
@@ -396,6 +402,16 @@ models:
         # 未显式填写时，JiuwenSwarm 使用固定的 256K 上下文默认值。
         # 如需覆盖默认值，可在 model_config_obj 下配置 context_window。
       is_default: true
+    # OpenCode Go（可选，默认不启用）：client_provider 固定 OpenAI，
+    # vendor_key 标识供应商方言；api_base 必填且无默认地址，模型名手填。
+    # 会话头由程序按会话/成员自动派生，无需手工配置 custom_headers。
+    # - model_client_config:
+    #     api_base: https://opencode.ai/zen/go/v1
+    #     api_key: ${OPENCODE_GO_API_KEY}
+    #     model_name: <model-name>
+    #     client_provider: OpenAI
+    #     vendor_key: opencode-go
+    #   model_config_obj: {}
   # 备份模型条目，与 defaults 同构、同等可选可切换，但 is_default 恒为 false，
   # 绝不抢启动主对话默认；前端置灰只读展示。get_agentos_models 读取本字段，
   # 每条需自行填入 model_client_config.model_name 等凭证才生效。

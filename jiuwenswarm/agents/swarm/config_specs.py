@@ -215,6 +215,9 @@ _REVIEWER_TEAM_RAIL_NAMES: tuple[str, ...] = (
     registry.MODEL_ANOMALY_DETECTION,
     registry.MULTIMODAL_IMAGE,
     registry.CONTEXT_PROCESSOR,
+    # The reviewer makes model calls of its own; without this rail an OpenCode
+    # Go reviewer sends no session header while every other member sends one.
+    registry.OPENCODE_SESSION,
 )
 _REVIEWER_CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.CODE_RUNTIME_PROMPT,
@@ -227,6 +230,7 @@ _REVIEWER_CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.CONTEXT_PROCESSOR,
     registry.CODE_LSP,
     registry.CODE_AGENT_MD,
+    registry.OPENCODE_SESSION,
 )
 # The Skill rail stays so a reviewer can use installed Skills (e.g. to read a
 # PDF deliverable); installing / removing Skills is a separate rail left out.
@@ -857,6 +861,9 @@ def build_member_capability_specs(
         rails, tools = _build_team_capability_specs(
             config, mode, role, enable_permissions=enable_permissions
         )
+    # OpenCode Go models need a member-scoped session header; the rail is a
+    # no-op for every other vendor, so mounting it needs no config gate.
+    rails.append(RailSpec(type=registry.OPENCODE_SESSION))
     if availability is not None:
         rails.append(availability)
     if (config.get("experimental") or {}).get("team_organization_ui_enabled", False):

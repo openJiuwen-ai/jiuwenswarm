@@ -4,7 +4,8 @@ import contractTools from '@office/powerpoint/tools.json';
 
 import { attachDeclaration, ToolContract, type OfficeApp, type OfficeHost } from './appContract';
 import type { DocumentId } from './documentIdentity';
-import { POWERPOINT, PRESENTATION_TOOL_NAMES } from './powerPointApp';
+import { POWERPOINT, PRESENTATION_TOOL_NAMES, WPS_PRESENTATION } from './powerPointApp';
+import { WPS_HOST } from './wpsPowerPoint';
 
 /** An Office host that supports PowerPointApi up to ``maximum``. */
 function powerPoint(maximum: string, worker = true): OfficeHost {
@@ -19,7 +20,8 @@ function powerPoint(maximum: string, worker = true): OfficeHost {
 }
 
 const ALL_TOOLS: ReadonlySet<string> = new Set(PRESENTATION_TOOL_NAMES);
-const supported = (host: OfficeHost, implemented = ALL_TOOLS) => POWERPOINT.contract.supported(host, implemented);
+const supported = (host: OfficeHost, implemented = ALL_TOOLS) => POWERPOINT.contract.supported('office', host,
+  implemented);
 const checkInput = (name: string, input: unknown) => POWERPOINT.contract.checkInput(name, input);
 const DOCUMENT_ID = '3f1c2a9e-7b4d-4e8a-9c21-5d6f7a8b9c0d' as DocumentId;
 
@@ -49,15 +51,24 @@ describe('the PowerPoint contract the pane shares with the backend', () => {
   it('attaches the document under its GUID', () => {
     expect(attachDeclaration(POWERPOINT,
       { documentId: DOCUMENT_ID, displayName: 'Deck.pptx', host: powerPoint('1.4'), implemented: ALL_TOOLS })).toEqual({
-      resource: { key: DOCUMENT_ID, display_name: 'Deck.pptx', kind: 'presentation', host_vendor: 'microsoft' },
+      resource: { key: DOCUMENT_ID, display_name: 'Deck.pptx', kind: 'presentation', host_vendor: 'office' },
       capabilities: { supported_tools: ['read_presentation_context', 'list_slide_shapes', 'verify_slides'] },
     });
+  });
+
+  it('runs in WPS Presentation with the tools whose contract names WPS', () => {
+    const declared = attachDeclaration(WPS_PRESENTATION,
+      { documentId: DOCUMENT_ID, displayName: 'Deck.pptx', host: WPS_HOST, implemented: ALL_TOOLS });
+    expect(declared.resource).toEqual(
+      { key: DOCUMENT_ID, display_name: 'Deck.pptx', kind: 'presentation', host_vendor: 'wps' });
+    expect(declared.capabilities.supported_tools).toEqual(
+      contractTools.map(tool => tool.name).filter(name => name !== 'edit_slide_master'));
   });
 });
 
 describe('an app of another host', () => {
   const word = (tools: ConstructorParameters<typeof ToolContract>[0]): OfficeApp => ({
-    platform: 'microsoft', surface: 'document', host: 'Word', clientApp: 'office-word', appId: 'office_word',
+    platform: 'office', surface: 'document', host: 'Word', clientApp: 'office-word', appId: 'office_word',
     contract: new ToolContract(tools),
   });
   const host = (sets: Record<string, boolean>): OfficeHost => ({ isSetSupported: name => sets[name], worker: true });
@@ -66,16 +77,16 @@ describe('an app of another host', () => {
     expect(attachDeclaration(word([]), {
       documentId: DOCUMENT_ID, displayName: 'Plan.docx', host: host({}), implemented: ALL_TOOLS,
     })).toEqual({
-      resource: { key: DOCUMENT_ID, display_name: 'Plan.docx', kind: 'document', host_vendor: 'microsoft' },
+      resource: { key: DOCUMENT_ID, display_name: 'Plan.docx', kind: 'document', host_vendor: 'office' },
       capabilities: { supported_tools: [] },
     });
   });
 
   it('declares a tool only when the host has every requirement set it names', () => {
     const app = word([{ name: 'read_document_context', input_schema: {}, annotations: { mutating: false },
-      host_requirements: { sets: { WordApi: '1.6', WordApiDesktop: '1.1' } } }]);
+      host_requirements: { office: { sets: { WordApi: '1.6', WordApiDesktop: '1.1' } } } }]);
     const declared = (sets: Record<string, boolean>) => (
-      app.contract.supported(host(sets), new Set(['read_document_context'])));
+      app.contract.supported('office', host(sets), new Set(['read_document_context'])));
     expect(declared({ WordApi: true, WordApiDesktop: true })).toEqual(['read_document_context']);
     expect(declared({ WordApi: true, WordApiDesktop: false })).toEqual([]);
   });

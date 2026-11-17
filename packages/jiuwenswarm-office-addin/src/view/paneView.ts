@@ -36,7 +36,7 @@ export function mountPane(
   root: HTMLElement, controller: Controller, words: DocumentCopy,
   { clock = wallClock, cards }: { clock?: PaneClock; cards?: ToolCards } = {},
 ): void {
-  const header = new Header({
+  const header = new Header(words.noun, {
     switchTo: sessionId => void controller.switchTo(sessionId),
     newConversation: () => void controller.newConversation(),
     downloadTranscript: () => {
@@ -83,7 +83,7 @@ export function mountPane(
     const attached = attachment.kind === 'attached';
     header.update({
       conversations: state.conversations, shown: shownSession(attachment), enabled: attachment.kind !== 'detached',
-      canDownload: conversation.entries.length > 0,
+      canDownload: conversation.entries.length > 0, documents: state.documents,
     });
     transcript.update({
       entries: conversation.entries, documents: state.documents, openReply: conversation.openReply,

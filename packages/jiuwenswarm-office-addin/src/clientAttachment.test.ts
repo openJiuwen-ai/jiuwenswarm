@@ -126,7 +126,7 @@ describe('ClientAttachment', () => {
 
     expect(gateway.sent('client.attach')).toEqual([{
       session_id: 's1',
-      resource: { key: DOCUMENT, display_name: 'Deck.pptx', kind: 'presentation', host_vendor: 'microsoft' },
+      resource: { key: DOCUMENT, display_name: 'Deck.pptx', kind: 'presentation', host_vendor: 'office' },
       capabilities: { supported_tools: ['read_presentation_context', 'list_slide_shapes', 'verify_slides'] },
     }]);
     expect(attachment.current()).toMatchObject({ kind: 'attached', sessionId: 's1', attachmentId: 'att_1' });

@@ -59,10 +59,10 @@ dependencies = [
     # 自定义 httpx.AsyncClient 的 http_client 会被 SDK 类型校验拒绝。
     # 待模型客户端适配 httpx2 后再放开上限。
     "anthropic>=0.40.0,<1.0.0",
-    "opentelemetry-api>=1.28.0,<1.42",
-    "opentelemetry-sdk>=1.28.0,<1.42",
-    "opentelemetry-exporter-otlp-proto-grpc>=1.28.0,<1.42",
-    "opentelemetry-exporter-otlp-proto-http>=1.28.0,<1.42",
+    "opentelemetry-api>=1.28.0",
+    "opentelemetry-sdk>=1.28.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.28.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.28.0",
     "sqlite-vec==0.1.6",
     "fastapi>=0.115,<1.0",
     "uvicorn[standard]>=0.30,<1.0",

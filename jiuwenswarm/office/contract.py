@@ -3,8 +3,9 @@
 """The contract of an Office app (``powerpoint/``), shared by the backend and the task pane build.
 
 * ``tools.json``  - every tool the task pane runs: its model schema, ``annotations``
-  (which tell how the tool is offered) and ``host_requirements`` (which the
-  task pane reads to decide whether its host can run it);
+  (which tell how the tool is offered) and ``host_requirements``: by platform
+  (``office``, ``wps``), what a host of that platform must offer to run it. A
+  tool runs only on the platforms it names;
 * ``profile.json`` - the wire identity the task pane build reads.
 
 The same directory is the app template a conversation of the app loads
@@ -24,6 +25,8 @@ from openjiuwen.core.foundation.tool import ToolCard, ToolExecution, ToolExposur
 _TOOL_FIELDS = frozenset({"type", "name", "description", "input_schema", "annotations", "host_requirements"})
 _ANNOTATION_FIELDS = frozenset({"mutating", "exposure", "parallel_safe"})
 _SCHEMA_REFERENCES = frozenset({"$ref", "definitions", "$defs"})
+PLATFORMS = frozenset({"office", "wps"})
+_REQUIREMENT_FIELDS = frozenset({"sets", "worker"})
 
 
 @dataclass(frozen=True)
@@ -84,10 +87,26 @@ def _parse_tool(raw: Any) -> ContractTool:
         raise ValueError(f"tool {name} input_schema must be an object schema")
     if _has_schema_reference(schema):
         raise ValueError(f"tool {name} input_schema must be self-contained")
-    if not isinstance(raw["host_requirements"], dict):
-        raise ValueError(f"tool {name} host_requirements must be an object")
+    _check_host_requirements(name, raw["host_requirements"])
     return ContractTool(name=name, description=description, input_schema=schema,
                         annotations=ToolAnnotations.parse(name, raw["annotations"]))
+
+
+def _check_host_requirements(name: str, raw: Any) -> None:
+    if not isinstance(raw, dict) or not raw or not set(raw) <= PLATFORMS:
+        raise ValueError(f"tool {name} host_requirements must name one or more of the platforms {sorted(PLATFORMS)}")
+    for platform, needs in raw.items():
+        if not _is_platform_requirement(needs):
+            raise ValueError(f"tool {name} host_requirements.{platform} may hold only sets (name: version) and worker")
+
+
+def _is_platform_requirement(needs: Any) -> bool:
+    if not isinstance(needs, dict) or not set(needs) <= _REQUIREMENT_FIELDS:
+        return False
+    sets = needs.get("sets", {})
+    if not isinstance(needs.get("worker", False), bool) or not isinstance(sets, dict):
+        return False
+    return all(isinstance(key, str) and isinstance(value, str) for key, value in sets.items())
 
 
 def _has_schema_reference(value: Any) -> bool:

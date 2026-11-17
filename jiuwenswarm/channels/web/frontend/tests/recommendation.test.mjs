@@ -789,6 +789,67 @@ test('project new-chat requests and accepts only its selected project pool', asy
   }
 });
 
+test('project switches show loading until the current pool answers, ignoring stale replies', async () => {
+  const panel = await mountWelcome('sess-project-loading', { holdResponses: true });
+  const loading = () => document.querySelector('[data-testid="chat-panel-topic-loading"]');
+  try {
+    assert.equal(loading()?.textContent, 'Loading…');
+    await react.act(async () => liveSocket.reply(starterRequests().at(-1).id,
+      dynamicSlateResponse('sess-project-loading', 'GLOBAL')));
+    await react.act(settle);
+    assert.equal(loading(), null);
+    for (const projectId of ['project-a', 'project-b', null]) {
+      await panel.rerender({ topicStarterProjectId: projectId });
+      assert.ok(loading(), 'each scope change must show a loading hint');
+      assert.deepEqual(visibleSuggestionTitles(), [], 'previous project cards must not remain visible');
+      const request = starterRequests().at(-1);
+      if (projectId === 'project-a') {
+        await panel.rerender({ topicStarterProjectId: 'project-skipped' });
+        const current = starterRequests().at(-1);
+        await react.act(async () => liveSocket.reply(request.id,
+          dynamicSlateResponse('sess-project-loading', 'STALE', 4, projectId)));
+        await react.act(settle);
+        assert.ok(loading(), 'a stale response must not dismiss the current loading hint');
+        assert.deepEqual(visibleSuggestionTitles(), []);
+        await react.act(async () => liveSocket.reply(current.id,
+          dynamicSlateResponse('sess-project-loading', 'CURRENT', 4, 'project-skipped')));
+      } else {
+        await react.act(async () => liveSocket.reply(request.id,
+          dynamicSlateResponse('sess-project-loading', 'CURRENT', 4, projectId)));
+      }
+      await react.act(settle);
+      assert.equal(loading(), null);
+      assert.equal(visibleSuggestionTitles().length, 4);
+    }
+  } finally {
+    await panel.unmount();
+  }
+});
+
+test('an unavailable or failed pool read ends the loading hint', async () => {
+  const panel = await mountWelcome('sess-project-loading-error', { holdResponses: true });
+  const loading = () => document.querySelector('[data-testid="chat-panel-topic-loading"]');
+  try {
+    await react.act(async () => liveSocket.reply(starterRequests().at(-1).id, {
+      available: false, preparation_state: 'preparing', reason: 'v6_pool_miss',
+    }));
+    await react.act(settle);
+    assert.equal(loading(), null);
+    assert.ok(document.querySelector('[data-testid="chat-panel-recommendation-preparation-state"]'));
+    await panel.rerender({ topicStarterProjectId: 'project-error' });
+    assert.ok(loading());
+    await react.act(async () => liveSocket.onmessage({ data: JSON.stringify({
+      type: 'res', id: starterRequests().at(-1).id, ok: false,
+      error: { code: 'UNAVAILABLE', message: 'pool read failed' },
+    }) }));
+    await react.act(settle);
+    assert.equal(loading(), null);
+    assert.equal(visibleSuggestionTitles().length, 0);
+  } finally {
+    await panel.unmount();
+  }
+});
+
 test('clicking a v6 card keeps the session effective model for the normal answer', async () => {
   const sentMessages = [];
   const panel = await mountWelcome('sess-answer-model', {

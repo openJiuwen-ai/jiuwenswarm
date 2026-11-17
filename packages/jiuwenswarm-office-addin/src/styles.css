@@ -103,6 +103,12 @@ button:disabled { cursor: default; }
 .icon-button .icon { width: 18px; height: 18px; }
 .icon-button:hover:not(:disabled), .icon-button[aria-expanded="true"] { background: var(--color-hover); color: var(--color-text); }
 .icon-button:disabled { opacity: .4; }
+.files-button { position: relative; }
+.files-count {
+  position: absolute; right: 1px; bottom: 1px; min-width: 14px; padding: 0 3px; border-radius: 7px;
+  background: var(--color-hover); color: var(--color-text-secondary); font-size: 10px; line-height: 14px;
+}
+.files-count:empty { display: none; }
 
 .menu {
   position: absolute; top: calc(100% + 4px); left: var(--space-3); right: var(--space-3);
