@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+from types import SimpleNamespace
 
 from openjiuwen.agent_teams.harness.manifest import ElementKind, harness_element
 from openjiuwen.agent_teams.group_chat.tools import GroupSendMessageTool
@@ -358,11 +359,47 @@ class GroupTaskPolicyRail(DeepAgentRail):
             and not getattr(response, "tool_calls", None)
         ):
             restore_suspended_organization(ctx)
+            await self._deliver_pending_owner_answer(ctx)
+
+    async def _deliver_pending_owner_answer(self, ctx):
+        """Post an Owner's plain answer for a still-open multi-team request.
+
+        A first text reply is ordinary chat. It stays on this route only:
+        a run_team, ask_user, or group_send_message decision already made in
+        the turn is left untouched, and every other mention shape is too.
+        """
+        if getattr(self, "_organization_decision", False):
+            return
+        from jiuwenswarm.agents.swarm.group_route import candidate, ordinary_reply
+        from jiuwenswarm.agents.swarm.group_turn import TURN_KEY
+
+        turn = getattr(ctx, "extra", {}).get(TURN_KEY)
+        if turn is None or turn.route != "organization" or not turn.client_message_id:
+            return
+        if turn.member_name != self.context.member_name:
+            return
+        content = getattr(getattr(ctx, "inputs", None), "response", None)
+        content = getattr(content, "content", None)
+        if not isinstance(content, str) or not content.strip():
+            return
+        item = candidate(self.context.session_id, turn.client_message_id)
+        if item is None or item["status"] != "pending" or item["owner_member"] != self.context.member_name:
+            return
+        backend = get_team_backend(self.context)
+        if backend is None or getattr(backend, "conversation_mode", None) != "group_chat":
+            return
+        await ordinary_reply(
+            SimpleNamespace(backend=backend, context=self.context),
+            {"content": content, "organization_reply": "final_chat"},
+            turn.client_message_id,
+            GroupSendMessageTool(backend, lambda _: "").invoke,
+        )
 
     async def before_invoke(self, ctx):
         from openjiuwen.harness.prompts import PromptSection
 
         self._delegated = False
+        self._organization_decision = False
         group = read_group(self.context.session_id)
         if group is None:
             return
@@ -583,13 +620,15 @@ class GroupTaskPolicyRail(DeepAgentRail):
 
     async def after_tool_call(self, ctx):
         self._reset_group_turn(ctx)
-        if ctx.inputs.tool_name in {"run_team", "group_send_message"}:
+        if ctx.inputs.tool_name in {"run_team", "group_send_message", "ask_user"}:
             from jiuwenswarm.agents.swarm.group_turn import restore_suspended_organization
 
             result = getattr(ctx.inputs, "tool_result", None)
             success = result.get("success") if isinstance(result, dict) else getattr(result, "success", False)
             if success is True:
-                restore_suspended_organization(ctx)
+                self._organization_decision = True
+                if ctx.inputs.tool_name in {"run_team", "group_send_message"}:
+                    restore_suspended_organization(ctx)
         if ctx.inputs.tool_name == "run_team":
             output = ctx.inputs.tool_result
             if isinstance(output, ToolOutput):
