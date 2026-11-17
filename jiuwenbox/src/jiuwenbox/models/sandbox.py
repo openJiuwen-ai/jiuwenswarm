@@ -7,6 +7,7 @@ import enum
 import re
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 from pydantic import AliasChoices, BaseModel, Field, field_serializer, field_validator
 from jiuwenbox.server.runtime.errors import InvalidJobIdError, InvalidSandboxIdError
@@ -82,6 +83,15 @@ class SandboxSpec(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     sandbox_id: str | None = None
     sandbox_runtime: str | None = None
+    stdout: str = ""
+    stderr: str = ""
+
+    @field_validator("stdout", "stderr")
+    @classmethod
+    def validate_redirect_path(cls, value: str) -> str:
+        if value and (not Path(value).is_absolute() or any(c in value for c in "\r\n\x00")):
+            raise ValueError("stdout/stderr must be absolute host paths or empty")
+        return value
 
 
 class SandboxRef(BaseModel):
@@ -91,6 +101,8 @@ class SandboxRef(BaseModel):
     phase: SandboxPhase = SandboxPhase.PROVISIONING
     runtime: str = Field(default="process", validation_alias=AliasChoices("runtime", "sandbox_runtime"))
 
+    stdout: str = ""
+    stderr: str = ""
     pid: int | None = None
     created_at: datetime = Field(default_factory=datetime.now)
     started_at: datetime | None = None
@@ -150,6 +162,8 @@ class BackgroundExecResult(BaseModel):
     running: bool | None = None
     exit_code: int | None = None
     error_message: str | None = None
+    stdout_redirected: bool = False
+    stderr_redirected: bool = False
 
 
 class BackgroundJobSummary(BaseModel):
@@ -171,7 +185,7 @@ class BackgroundJobStatus(BaseModel):
     exit_code: int | None
     started_at: datetime
     finished_at: datetime | None
-    # Background jobs discard stdout/stderr; fields stay for API stability.
+    # Background output is discarded or written to host files, never captured here.
     stdout: str = ""
     stderr: str = ""
     workdir: str | None = None

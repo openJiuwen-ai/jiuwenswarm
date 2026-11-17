@@ -2373,6 +2373,11 @@ def _handle_exec_background(conn: socket.socket, header: dict[str, Any]) -> None
             raise ValueError("exec_background request missing 'command'")
         command = _stringify_command(command)
 
+        inherit_stdout = header.get("inherit_stdout", False)
+        inherit_stderr = header.get("inherit_stderr", False)
+        if not isinstance(inherit_stdout, bool) or not isinstance(inherit_stderr, bool):
+            raise ValueError("output inheritance flags must be booleans")
+
         env_override = _normalize_env(header.get("env"))
         workdir = header.get("workdir")
         if workdir is not None and not isinstance(workdir, str):
@@ -2400,12 +2405,12 @@ def _handle_exec_background(conn: socket.socket, header: dict[str, Any]) -> None
         try:
             merged_env = build_child_env(env_override)
 
-            # Background jobs discard stdout/stderr; use ``exec`` when output
-            # must be captured.
+            # Only creation-time host redirects opt into inherited descriptors.
+            # Synchronous exec still captures its own output through pipes.
             proc_kwargs: dict[str, Any] = {
                 "stdin": subprocess.PIPE if stdin_size else subprocess.DEVNULL,
-                "stdout": subprocess.DEVNULL,
-                "stderr": subprocess.DEVNULL,
+                "stdout": None if inherit_stdout else subprocess.DEVNULL,
+                "stderr": None if inherit_stderr else subprocess.DEVNULL,
                 "env": merged_env,
                 "close_fds": True,
                 "start_new_session": True,
@@ -2440,7 +2445,10 @@ def _handle_exec_background(conn: socket.socket, header: dict[str, Any]) -> None
             _commit_bg_job(job_id, job)
             reserved = False
 
-            _send_response(conn, _bg_job_response(ok=True, job_id=job_id, job=job))
+            response = _bg_job_response(ok=True, job_id=job_id, job=job)
+            response["stdout_redirected"] = inherit_stdout
+            response["stderr_redirected"] = inherit_stderr
+            _send_response(conn, response)
         finally:
             if reserved:
                 _release_bg_job_reservation(job_id)
