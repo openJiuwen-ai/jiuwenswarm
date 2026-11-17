@@ -1542,8 +1542,6 @@ def build_cold_start_cards(
             return False
         if exclude is not None and exclude(card):
             return False
-        if feedback is not None and not feedback.still_wanted(card):
-            return False
         cards.append(card)
         picked_ids.add(str(starter.starter_id))
         return True
@@ -2198,85 +2196,18 @@ def _within(events: Collection[str], evidence: Collection[str]) -> bool:
     return bool(events) and frozenset(events) <= frozenset(evidence)
 
 
-# A global dismissal written before revision 116 hides its direction for a while, then
-# lets it back reduced; the third makes it permanent (spec D10 revision 65). Indexed by
-# the strikes in force. Since then a global card's dismissal takes off only that card,
-# and pausing its interest hides the direction for seven days each time.
-DISMISSAL_HIDDEN_DAYS = (7, 30)
-DISMISSAL_REDUCED_UNTIL_DAYS = (30, 90)
-DISMISSAL_PERMANENT_STRIKES = 3
-INTEREST_PAUSE_DAYS = 7
-_DAY_SECONDS = 86_400.0
-_STATUS_ORDER = ("available", "reduced", "hidden", "permanent")
-_IN_FORCE = frozenset({"hidden", "permanent"})
-# Fields the host keeps for counting; models see a dismissal without them.
-_HOST_ONLY_DISMISSAL_FIELDS = frozenset({
-    "dismissed_at", "evidence_session_ids", "news_source_url", "news_event", "news_match",
-    "dismissal_kind", "record_id", "card_id", "exposure_id", "card_revision_id",
-})
-
-
-@dataclass(frozen=True)
-class DismissedDirection:
-    """One direction's dismissals as of the feedback's moment."""
-
-    key: tuple[str, ...]
-    unit_id: str
-    evidence: frozenset[str]
-    records: tuple[Mapping[str, Any], ...]
-    status: str
-    permanent_since: float | None
-    direction_anchor: str = ""
-    # A pause or a hidden or permanent direction holds the profile unit or conversation events its cards came from.
-    held_units: frozenset[str] = frozenset()
-    held_evidence: frozenset[str] = frozenset()
-
-    @property
-    def direction_id(self) -> str:
-        return "|".join(self.key)
-
-
-class _Standing(NamedTuple):
-    in_force: tuple[Mapping[str, Any], ...]
-    dismissed_cards: tuple[Mapping[str, Any], ...]
-    directions: dict[tuple[str, ...], DismissedDirection]
-    blocked_news_urls: frozenset[str]
-    blocked_news_events: frozenset[str]
-    as_written_units: frozenset[str]
-    as_written_events: frozenset[str]
-
-
 @dataclass(frozen=True)
 class InterestFeedback:
-    """One scope's dismissals, with the Memory evidence that places an interest in a unit.
+    """Memory evidence behind one scope's interests.
 
-    Built from one v4 state at one moment, it alone decides whether a card is
-    still wanted, which conversation interests a dismissal withholds, which
-    directions are back but reduced, and which Memory unit holds a
-    conversation's interest. Generation, the pool reader, the stock count and
-    carrying all ask it, so for one state at one moment they agree on every card.
-
-    A card's dismissal takes off that card alone, on the global page and in a
-    project. Pausing a global card's interest hides its direction and holds the
-    unit or conversation the card came from for seven days, until the user carries
-    on that conversation or completes one that lands in that unit on their own. A
-    global dismissal written before that counts against the direction, holds the
-    sources of its cards while hidden or permanent, and earlier records keep their
-    Memory unit or source conversation meaning. Strikes count from each dismissal's
-    time until the user talks about the direction in a conversation of their own,
-    opens one of its cards once it is back, or restores it. A dismissal without a
-    recorded time keeps the meaning it was written with: always in force. An undo
-    appends a withdrawal of the record it undoes, which then counts for nothing.
+    Dismissals are no longer read: the not-interested entry point was removed and
+    historical records must not suppress. Only the unit/conversation evidence map
+    remains, which card source attachment uses.
     """
 
     now: float
-    negative_preferences: tuple[Mapping[str, Any], ...] = ()
     evidence_by_unit: Mapping[str, frozenset[str]] = dataclass_field(default_factory=dict)
     sessions_by_unit: Mapping[str, frozenset[str]] = dataclass_field(default_factory=dict)
-    # Natural completions carry source events and new user witnesses with their observed times.
-    natural_conversations: tuple[tuple[float, frozenset[str], tuple[tuple[float, str], ...]], ...] = ()
-    # Opened cards carry time, units, source events and their user interest direction.
-    opened_cards: tuple[tuple[float, frozenset[str], frozenset[str], str], ...] = ()
 
     @classmethod
     def from_state(
@@ -2287,8 +2218,6 @@ class InterestFeedback:
         project_id: str | None,
         now: float,
     ) -> InterestFeedback:
-        # Dismissals are no longer read: the not-interested entry point was
-        # removed from the product, and historical records must not suppress.
         del context_scope, project_id
         return cls(
             evidence_by_unit=_memory_evidence_by_unit(state),
@@ -2306,487 +2235,25 @@ class InterestFeedback:
         project_id: str | None,
         now: float,
     ) -> InterestFeedback:
-        """Compatibility entry point; no dismissal data is read any more."""
-
         del store
         return cls.from_state(
             state, context_scope=context_scope, project_id=project_id, now=now
         )
 
-    @property
-    def version(self) -> int:
-        """Scoped preferences only append, so their count versions them."""
-
-        return len(self.negative_preferences)
-
-    def payloads(self) -> list[dict[str, Any]]:
-        """The scoped preferences as plain dicts, as state carries them."""
-
-        return [dict(preference) for preference in self.negative_preferences]
-
-    def model_payloads(self, *, dismissed_cards: bool = True) -> list[dict[str, Any]]:
-        """The dismissals in force, without the times and evidence the host counts with.
-
-        A dismissed card names only its own question; RID reads interests, so it
-        is given the direction dismissals alone.
-        """
-
-        return [
-            {key: value for key, value in preference.items() if key not in _HOST_ONLY_DISMISSAL_FIELDS}
-            for preference in (*self._standing.in_force, *(self._standing.dismissed_cards if dismissed_cards else ()))
-        ]
-
-    def direction_payloads(self) -> list[dict[str, str]]:
-        """Known user directions and their current tier, without host counting data."""
-
-        return [{"direction": item.direction_anchor, "status": item.status}
-                for item in self._standing.directions.values() if item.direction_anchor]
-
-    def as_written(self, version: int, at: float) -> InterestFeedback:
-        """The feedback in force when a pool of this negative preference version was written."""
-
-        return replace(self, negative_preferences=self.negative_preferences[:version], now=at)
-
-    def _following_unit(self, record: Mapping[str, Any]) -> str:
-        """The current unit holding more than half of the direction's conversations still in the profile."""
-
-        source_id = str(record.get("source_id") or "")
-        present = frozenset(
-            str(session) for session in record.get("evidence_session_ids") or ()
-        ) & frozenset().union(*self.sessions_by_unit.values())
-        holders = sorted(
-            (unit_id != source_id, -len(sessions & present), unit_id)
-            for unit_id, sessions in self.sessions_by_unit.items()
-            if present and 2 * len(sessions & present) > len(present)
-        )
-        if holders:
-            return holders[0][2]
-        return source_id if source_id in self.sessions_by_unit else ""
-
-    def _resumes(
-        self,
-        pause: Mapping[str, Any],
-        completed_at: float,
-        events: frozenset[str],
-        sources: tuple[tuple[float, str], ...],
-    ) -> bool:
-        """A natural conversation after the pause continues its conversation or lands in its unit."""
-
-        paused_at = float(pause["dismissed_at"])
-        if completed_at <= paused_at:
-            return False
-        sessions = frozenset(str(session) for session in pause.get("evidence_session_ids") or ())
-        if any(observed_at > paused_at for observed_at, _ in sources) and any(
-            event.split(":", 1)[0] in sessions for event in events
-        ):
-            return True
-        unit_id = self._following_unit(pause) if pause.get("source_id") else ""
-        return bool(unit_id) and _within(events, self.evidence_by_unit.get(unit_id, frozenset()))
-
-    def _direction_key(self, record: Mapping[str, Any]) -> tuple[str, ...] | None:
-        if record.get("direction_anchor"):
-            return ("direction", str(record["direction_anchor"]))
-        unit_id = self._following_unit(record)
-        if unit_id:
-            return ("unit", unit_id)
-        events = record.get("source_event_ids")
-        if events:
-            return ("events", *sorted(str(event) for event in events))
-        return None
-
-    @cached_property
-    def _standing(self) -> _Standing:
-        in_force: list[Mapping[str, Any]] = []
-        dismissed_cards: list[Mapping[str, Any]] = []
-        as_written_units: set[str] = set()
-        as_written_events: set[str] = set()
-        timeline: dict[tuple[str, ...], list[tuple[float, str, Mapping[str, Any] | None]]] = {}
-        withdrawn = frozenset(
-            str(record["withdraws"]) for record in self.negative_preferences
-            if record.get("reason") == "withdrawn" and record.get("withdraws")
-        )
-        standing = [record for record in self.negative_preferences if record.get("record_id") not in withdrawn]
-        blocked_news_urls = frozenset(
-            str(record["news_source_url"])
-            for record in standing
-            if _is_dismissal(record) and record.get("news_source_url")
-        )
-        blocked_news_events = frozenset(
-            str(record["news_event"])
-            for record in standing
-            if _is_dismissal(record) and record.get("news_event")
-        )
-        for record in standing:
-            if not _is_dismissal(record):
-                key = self._direction_key(record)
-                if key is not None and record.get("reason") == "restored":
-                    timeline.setdefault(key, []).append((float(record.get("restored_at") or 0.0), "reset", None))
-                continue
-            if record.get("dismissal_kind") == "card":
-                # The card alone, by its ID and its question; its direction and sources stay.
-                dismissed_cards.append(record)
-                continue
-            if record.get("context_scope", GLOBAL_NEW_CHAT_SCOPE) != GLOBAL_NEW_CHAT_SCOPE:
-                # A project card's dismissal, written before it named the card alone, takes off
-                # only the card it names by its question; the project's unit and interests stay.
-                dismissed_cards.append({
-                    key: record[key] for key in ("context_scope", "project_id", "reason", "aliases") if key in record
-                })
-                continue
-            if record.get("news_match") == "closest":
-                # A closest card names only the news event, not a user-interest direction.
-                continue
-            key = (
-                self._direction_key(record)
-                if record.get("context_scope") == GLOBAL_NEW_CHAT_SCOPE and "dismissed_at" in record
-                else None
-            )
-            if key is None and record.get("dismissal_kind") == "pause":
-                # No direction to pause: nothing else holds the card's interest.
-                continue
-            if key is None:
-                # A dismissal written before times were kept, or one whose direction no
-                # current unit or remaining conversation holds: it keeps
-                # only what it was written against, and counts against no direction.
-                in_force.append(record)
-                as_written_units.add(str(record.get("source_id") or ""))
-                as_written_events.update(str(event) for event in record.get("source_event_ids") or ())
-                continue
-            timeline.setdefault(key, []).append((
-                float(record["dismissed_at"]),
-                "pause" if record.get("dismissal_kind") == "pause" else "dismissal",
-                record,
-            ))
-        directions: dict[tuple[str, ...], DismissedDirection] = {}
-        for key, entries in timeline.items():
-            direction_anchor = key[1] if key[0] == "direction" else ""
-            source_records = [record for _, _, record in entries if record is not None]
-            unit_id = (self._following_unit(source_records[-1]) if direction_anchor
-                       else key[1] if key[0] == "unit" else "")
-            evidence = (self.evidence_by_unit.get(unit_id, frozenset()) if unit_id
-                        else frozenset(str(event) for record in source_records
-                                       for event in record.get("source_event_ids") or ()))
-            # The user's own conversation about the direction, after a dismissal, resets it.
-            for completed_at, events, sources in self.natural_conversations:
-                if direction_anchor:
-                    last_dismissal = max((at for at, kind, _ in entries
-                                          if kind in _WITHHOLDING and at < completed_at), default=0.0)
-                    resets = any(
-                        observed_at > last_dismissal and _matches_direction(text, direction_anchor)
-                        for observed_at, text in sources
-                    )
-                else:
-                    resets = _belongs(unit_id, evidence, frozenset(), events)
-                if resets:
-                    entries.append((completed_at, "reset", None))
-            # A pause ends when the user carries on its paused conversation, or completes one that
-            # lands in its paused unit, on their own; other pauses of the direction stay.
-            paused = [record for _, kind, record in entries if kind == "pause"]
-            for completed_at, events, sources in self.natural_conversations:
-                for record in paused:
-                    if self._resumes(record, completed_at, events, sources):
-                        entries.append((completed_at, "resumed", record))
-            for opened_at, units, events, opened_direction in self.opened_cards:
-                if direction_anchor:
-                    opened_matches = _matches_direction(
-                        opened_direction, direction_anchor
-                    )
-                else:
-                    opened_matches = _belongs(unit_id, evidence, units, events)
-                if opened_matches:
-                    entries.append((opened_at, "opened", None))
-            strikes, last, since, paused_until = 0, 0.0, None, 0.0
-            pauses: list[tuple[float, Mapping[str, Any]]] = []
-            strike_records: list[Mapping[str, Any]] = []
-            records: list[Mapping[str, Any]] = []
-            for at, kind, record in sorted(entries, key=lambda entry: (entry[0], entry[1] not in _WITHHOLDING)):
-                _condition = (
-                    kind == "reset" or (
-                        strikes
-                        and strikes < DISMISSAL_PERMANENT_STRIKES
-                        and at >= last + DISMISSAL_HIDDEN_DAYS[strikes - 1] * _DAY_SECONDS
-                    )
-                )
-                if kind == "dismissal":
-                    strikes += 1
-                    last = at
-                    records.append(record)
-                    strike_records.append(record)
-                    if strikes == DISMISSAL_PERMANENT_STRIKES:
-                        since = at
-                elif kind == "pause":
-                    # A pause counts no strike: seven days from each pause, then nothing.
-                    paused_until = at + INTEREST_PAUSE_DAYS * _DAY_SECONDS
-                    pauses.append((paused_until, record))
-                    records.append(record)
-                elif at > self.now:
-                    # What happened after this moment cannot have reset it yet.
-                    continue
-                elif kind == "resumed":
-                    pauses = [(until, held) for until, held in pauses if held is not record]
-                    paused_until = max((until for until, _ in pauses), default=0.0)
-                elif _condition:
-                    strikes, since, strike_records = 0, None, []
-            if not records:
-                continue
-            status = _dismissal_status(strikes, last, self.now)
-            # A hidden or permanent direction and a pause hold the interests their cards came
-            # from: the unit now holding a card's unit's conversations, or the conversation
-            # events of a card built from a summary.
-            held = [record for until, record in pauses if self.now < until] + (
-                strike_records if status in _IN_FORCE else []
-            )
-            if self.now < paused_until and _STATUS_ORDER.index(status) < _STATUS_ORDER.index("hidden"):
-                status = "hidden"
-            followed_units = []
-            for held_record in held:
-                if not held_record.get("source_id"):
-                    continue
-                following_unit = self._following_unit(held_record)
-                if following_unit:
-                    followed_units.append(following_unit)
-            held_units = frozenset(followed_units)
-            resumed_events = set()
-            for held_record in held:
-                if held_record.get("source_id"):
-                    continue
-                for event in held_record.get("source_event_ids") or ():
-                    resumed_events.add(str(event))
-            held_evidence = self.evidence_of(held_units) | frozenset(resumed_events)
-            directions[key] = DismissedDirection(
-                key=key,
-                unit_id=unit_id,
-                evidence=evidence,
-                records=tuple(records),
-                status=status,
-                permanent_since=since if status == "permanent" else None,
-                direction_anchor=direction_anchor,
-                held_units=held_units,
-                held_evidence=held_evidence,
-            )
-            if status in _IN_FORCE:
-                in_force.extend(
-                    {**record, "source_id": unit_id} for record in records
-                )
-        return _Standing(
-            in_force=tuple(in_force),
-            dismissed_cards=tuple(dismissed_cards),
-            directions=directions,
-            blocked_news_urls=blocked_news_urls,
-            blocked_news_events=blocked_news_events,
-            as_written_units=frozenset(as_written_units - {""}),
-            as_written_events=frozenset(as_written_events),
-        )
-
-    def _directions_with(self, statuses: Collection[str]) -> list[DismissedDirection]:
-        return [item for item in self._standing.directions.values() if item.status in statuses]
-
-    @property
-    def dismissed_units(self) -> frozenset[str]:
-        """Units whose cards no reader shows now."""
-
-        return self._standing.as_written_units | frozenset(
-            item.unit_id for item in self._directions_with(_IN_FORCE) if item.unit_id and not item.direction_anchor
-        ) | self._held_units
-
-    def _evidence_with(self, statuses: Collection[str]) -> frozenset[str]:
-        """The evidence withheld whole: a dismissal without a named direction's, and the
-        sources a pause or a hidden or permanent named direction holds."""
-
-        return frozenset().union(*(
-            (frozenset() if item.direction_anchor else item.evidence) | item.held_evidence
-            for item in self._directions_with(statuses)
-        ))
-
-    @cached_property
-    def _held_units(self) -> frozenset[str]:
-        return frozenset().union(*(item.held_units for item in self._directions_with(_IN_FORCE)))
-
-    @property
-    @property
-    def dismissed_card_titles(self) -> tuple[str, ...]:
-        """The questions of the cards dismissed and not undone, so a reworded one is not asked again."""
-
-        return tuple(str(alias) for record in self._standing.dismissed_cards for alias in record.get("aliases") or ())
-
     def evidence_of(self, unit_ids: Iterable[str]) -> frozenset[str]:
         return frozenset().union(*(self.evidence_by_unit.get(unit_id, ()) for unit_id in unit_ids))
-
-    def still_wanted(self, card: Mapping[str, Any]) -> bool:
-        """No dismissal in force matches the card as the page shows it: intent, title, prompt and units.
-
-        Generation asks the same of a candidate plan, so the list it selects is
-        the list the reader shows. A dismissed news event stays away for good.
-        """
-
-        if card_is_news(card) and self.blocks_news(str(card["evidence_bundle"].get("source_url") or "")):
-            return False
-        # A paused interest holds its unit's cards, whatever direction name they were written under.
-        if self._held_units.intersection(str(unit) for unit in card.get("source_memory_unit_ids") or ()):
-            return False
-        # A carried card is re-planned under its own card ID.
-        card_id = str(card.get("card_id") or card.get("candidate_id") or "")
-        if card_id and any(record.get("card_id") == card_id for record in self._standing.dismissed_cards):
-            return False
-        candidate = {
-            "intent": card.get("intent"),
-            "persona": card.get("title"),
-            "primary_query": card.get("prompt"),
-            "fallback_query": card.get("title"),
-            "source_memory_unit_ids": list(card.get("source_memory_unit_ids") or ()),
-        }
-        legacy = [record for record in (*self._standing.in_force, *self._standing.dismissed_cards)
-                  if not record.get("direction_anchor")]
-        survivors, _ = apply_negative_preferences([candidate], legacy)
-        if survivors:
-            directional = [{**record, "source_id": ""} for record in self._standing.in_force
-                           if record.get("direction_anchor")]
-            direction_candidate = ({"identity_anchor": card["direction"]}
-                                   if card.get("direction") else candidate)
-            survivors, _ = apply_negative_preferences([direction_candidate], directional)
-        return bool(survivors)
-
-    def blocks_news(self, source_url: str) -> bool:
-        """A news card at this source was dismissed: that event stays away for good."""
-
-        return source_url in self._standing.blocked_news_urls
-
-    def blocks_news_event(self, event: str) -> bool:
-        """A news card on this hot-list event was dismissed: no report or hot-list card of it returns."""
-
-        return event in self._standing.blocked_news_events
-
-    def withheld(self, events_by_interest: Mapping[str, Collection[str]]) -> frozenset[str]:
-        """Conversation interests made only of what the user dismissed.
-
-        A dismissal names a Memory unit (the unit's evidence) or, for a card built
-        from a conversation, that conversation's events. RID and the reader already
-        drop a unit's own cards; a card built from the summary of a conversation
-        behind it would bring the dismissed direction straight back. A conversation
-        that also moved on to other subjects keeps its summary.
-        """
-
-        dismissed = (
-            self.evidence_of(self._standing.as_written_units)
-            | self._standing.as_written_events
-            | self._evidence_with(_IN_FORCE)
-        )
-        return frozenset(
-            interest_id
-            for interest_id, events in events_by_interest.items()
-            if _within(events, dismissed)
-        )
-
-    def status_of(self, unit_ids: Collection[str], events: Collection[str], *, direction: str = "") -> str:
-        """The tier of the direction an interest or card belongs to, by its units or its conversation."""
-
-        statuses = []
-        for item in self._standing.directions.values():
-            if item.direction_anchor:
-                matched = _matches_direction(direction, item.direction_anchor)
-            else:
-                matched = _belongs(item.unit_id, item.evidence, unit_ids, events)
-            if matched:
-                statuses.append(item.status)
-        return max(statuses, key=_STATUS_ORDER.index, default="available")
-
-    def admitted(self, manifest: Mapping[str, Any], cards: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-        """The pool's cards no dismissal takes off the page.
-
-        Each must be still wanted, and on the global page none may come from a
-        conversation interest the dismissals withhold. Only the global page
-        builds cards from conversation summaries; every project card continues
-        the project's own conversations.
-        """
-
-        withheld = (
-            self.withheld(interest_evidence_ids(manifest))
-            if manifest.get("context_scope") == GLOBAL_NEW_CHAT_SCOPE
-            else frozenset()
-        )
-        return [
-            card for card in cards
-            if self.still_wanted(card) and str(card.get("interest_summary_id") or "") not in withheld
-        ]
-
-    def reduced(self, manifest: Mapping[str, Any], cards: Iterable[Mapping[str, Any]]) -> frozenset[str]:
-        """Revisions of the cards whose direction is back but reduced; the news card keeps its first place."""
-
-        if manifest.get("context_scope") != GLOBAL_NEW_CHAT_SCOPE or not self._directions_with(("reduced",)):
-            return frozenset()
-        events_by_interest = interest_evidence_ids(manifest)
-        reduced_revisions: list[str] = []
-        for card in cards:
-            if card_is_news(card):
-                continue
-            status = self.status_of(
-                frozenset(str(unit) for unit in card.get("source_memory_unit_ids") or ()),
-                events_by_interest.get(str(card.get("interest_summary_id") or ""), ()),
-                direction=str(card.get("direction") or card.get("intent") or ""),
-            )
-            if status != "reduced":
-                continue
-            reduced_revisions.append(str(card.get("card_revision_id") or ""))
-        return frozenset(reduced_revisions)
 
     def holding_units(
         self,
         events: Collection[str],
         candidates: Iterable[tuple[str, ...]],
     ) -> tuple[str, ...]:
-        """The first candidate units whose evidence holds every event of a conversation's interest.
-
-        The same relation as ``withheld``: a dismissal of these units would
-        withhold that interest, so the interest belongs to them.
-        """
-
         return next((units for units in candidates if _within(events, self.evidence_of(units))), ())
 
     def units_sharing(self, events: Collection[str]) -> frozenset[str]:
-        """Units whose evidence includes any of these events.
-
-        Looser than ``holding_units``: a latest question that a unit has begun
-        to absorb already counts as that unit's.
-        """
-
         return frozenset(
             unit_id for unit_id, evidence in self.evidence_by_unit.items() if evidence.intersection(events)
         )
-
-
-def _belongs(unit_id: str, evidence: frozenset[str], units: Collection[str], events: Collection[str]) -> bool:
-    """A card or conversation is the direction's: its unit, a conversation the unit holds, or the dismissal."""
-
-    if unit_id:
-        return unit_id in units or _within(events, evidence)
-    return bool(evidence.intersection(events))
-
-
-def _matches_direction(text: str, direction: str) -> bool:
-    survivors, _ = apply_negative_preferences(
-        [{"identity_anchor": text}], [{"direction": direction, "aliases": [], "anchors": []}],
-    )
-    return not survivors
-
-
-def _is_dismissal(record: Mapping[str, Any]) -> bool:
-    return record.get("reason", "explicit_not_interested") == "explicit_not_interested"
-
-
-# Timeline entries that withhold a direction: a strike or a pause.
-_WITHHOLDING = frozenset({"dismissal", "pause"})
-
-
-def _dismissal_status(strikes: int, last: float, now: float) -> str:
-    if not strikes:
-        return "available"
-    if strikes >= DISMISSAL_PERMANENT_STRIKES:
-        return "permanent"
-    if now < last + DISMISSAL_HIDDEN_DAYS[strikes - 1] * _DAY_SECONDS:
-        return "hidden"
-    if now < last + DISMISSAL_REDUCED_UNTIL_DAYS[strikes - 1] * _DAY_SECONDS:
-        return "reduced"
-    return "available"
 
 
 def _eligible_pool_cards(
@@ -2802,7 +2269,7 @@ def _eligible_pool_cards(
     """Keep the pool cards still worth showing: admitted by the feedback, in date, unopened."""
 
     eligible: list[dict[str, Any]] = []
-    for card in feedback.admitted(manifest, cards):
+    for card in cards:
         if card.get("context_scope") != context_scope:
             continue
         if card.get("project_id") != project_id:
@@ -2856,13 +2323,13 @@ def pool_inventory(
         serving_compatibility_key=serving_compatibility_key,
         context_scope=context_scope,
         project_id=project_id,
-        negative_preference_version=feedback.version,
+        negative_preference_version=0,
     )
     if found is None:
         return None
     manifest, cards = found
     written_at = max((float(card.get("effective_time") or 0) for card in cards), default=now)
-    written = feedback.as_written(int(manifest.get("negative_preference_version") or 0), written_at)
+    written = feedback
     eligible = _eligible_pool_cards(
         store,
         manifest,
@@ -2889,7 +2356,7 @@ def pool_inventory(
         ))
 
     return (
-        shown(written.admitted(manifest, cards), written_at, written),
+        shown(cards, written_at, written),
         shown(eligible, now, feedback),
     )
 
@@ -2919,7 +2386,7 @@ def retainable_pool(
         serving_compatibility_key=serving_compatibility_key,
         context_scope=context_scope,
         project_id=project_id,
-        negative_preference_version=feedback.version,
+        negative_preference_version=0,
     )
     if found is None:
         return RetainablePool([], {})
@@ -2957,7 +2424,7 @@ def read_terminal_pool(
         serving_compatibility_key=serving_compatibility_key,
         context_scope=context_scope,
         project_id=project_id,
-        negative_preference_version=feedback.version,
+        negative_preference_version=0,
     )
     if found is None:
         return _static_read(context_scope, project_id)
@@ -3021,7 +2488,7 @@ def read_terminal_pool(
         # Generated screens already filtered the list; cold-start keeps pool ring order.
         exposure_cards if generated_eligible else cards,
         eligible_revision_ids=exposure_revision_ids,
-        reduced_revision_ids=feedback.reduced(manifest, exposure_cards),
+        reduced_revision_ids=frozenset(),
         context_scope=context_scope,
         window_index=window_index,
         now=now,

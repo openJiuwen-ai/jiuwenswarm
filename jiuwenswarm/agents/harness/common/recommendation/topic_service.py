@@ -704,7 +704,7 @@ class TopicService:
             short_intent_version=int(
                 self._short_intent_version_loader(context_scope)
             ),
-            negative_preference_version=feedback.version,
+            negative_preference_version=0,
             component_contract_versions={
                 component_id: (
                     "topic-starter-v6-quality-decisions-v2"

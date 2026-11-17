@@ -876,7 +876,6 @@ from jiuwenswarm.agents.harness.common.recommendation import topic_starter
 from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
     TopicStarterStore,
     TopicStarterService,
-    collect_user_evidence,
     compute_interest_drift,
 )
 
@@ -1883,9 +1882,6 @@ import pytest
 from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
     TopicStarterStore,
 )
-from jiuwenswarm.agents.harness.common.recommendation.topic_prepare import (
-    TopicPrepareService,
-)
 from jiuwenswarm.agents.harness.common.recommendation.topic_search import (
     OPENJIUWEN_NATIVE_SEARCH_PROVIDER_ID,
 )
@@ -1907,11 +1903,10 @@ def test_gateway_builds_product_lane_without_free_search_engines(
     monkeypatch.delenv("FREE_SEARCH_BING_ENABLED", raising=False)
     store = TopicStarterStore(tmp_path / "recommendation.db")
 
-    prepare_service, product_service, outcome_queue = (
+    product_service, outcome_queue = (
         recommendation_host._build_topic_starter_services(store)
     )
 
-    assert isinstance(prepare_service, TopicPrepareService)
     assert isinstance(product_service, TopicService)
     assert product_service._search_provider_id == OPENJIUWEN_NATIVE_SEARCH_PROVIDER_ID
     assert outcome_queue.pending_count == 0
@@ -2055,11 +2050,10 @@ def test_gateway_builds_product_lane_when_native_search_chain_is_configured(
     monkeypatch.setenv("FREE_SEARCH_BING_ENABLED", "true")
     store = TopicStarterStore(tmp_path / "recommendation.db")
 
-    prepare_service, product_service, _outcome_queue = (
+    product_service, _outcome_queue = (
         recommendation_host._build_topic_starter_services(store)
     )
 
-    assert isinstance(prepare_service, TopicPrepareService)
     assert isinstance(product_service, TopicService)
     assert product_service._search_provider_id == OPENJIUWEN_NATIVE_SEARCH_PROVIDER_ID
 
@@ -2074,7 +2068,6 @@ def test_recommendation_host_builds_once_even_when_free_search_is_off(
     host.store = TopicStarterStore(tmp_path / "recovery.db")
     host.ensure_services()
     assert isinstance(host.topic_service, TopicService)
-    prepare = host.topic_prepare_service
     queue = host.topic_outcome_queue
     service = host.topic_service
     assert host.topic_service.on_prepared is not None
@@ -2085,7 +2078,6 @@ def test_recommendation_host_builds_once_even_when_free_search_is_off(
     monkeypatch.setenv("FREE_SEARCH_BING_ENABLED", "true")
     host.ensure_services()
     assert host.topic_service is service
-    assert host.topic_prepare_service is prepare
     assert host.topic_outcome_queue is queue
 
 
@@ -3597,7 +3589,7 @@ async def test_gateway_shutdown_skips_unavailable_product_lane_and_awaits_prepar
         async def shutdown(self) -> None:
             calls.append("prepare")
 
-    await recommendation_host._shutdown_topic_starter_services(PrepareLane(), None)
+    await recommendation_host._shutdown_topic_starter_services(PrepareLane())
 
     assert calls == ["prepare"]
 

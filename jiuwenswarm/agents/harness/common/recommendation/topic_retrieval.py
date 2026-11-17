@@ -225,23 +225,6 @@ class PassiveStarterExample:
         ):
             raise TerminalRetrievalContractError("invalid_passive_starter_example")
 
-    def to_training_example(
-        self,
-        *,
-        positive_label: bool,
-        event_time: float,
-    ) -> PATrainingExample:
-        return PATrainingExample(
-            user_state_snapshot_id=self.user_state_snapshot_id,
-            query_text_locator=None,
-            query_source_starter_id=self.starter_id,
-            domain="passive",
-            positive_label=positive_label,
-            event_time=event_time,
-            context_scope=self.context_scope,
-            source_artifact_id=self.artifact_id,
-        )
-
     @property
     def artifact_id(self) -> str:
         return f"passive-starter:{self.exposure_id}:{self.card_revision_id}"
@@ -374,23 +357,6 @@ class ActiveExpressionExample:
             _rejected4
         ):
             raise TerminalRetrievalContractError("invalid_active_expression_example")
-
-    def to_training_example(
-        self,
-        *,
-        positive_label: bool,
-        event_time: float,
-    ) -> PATrainingExample:
-        return PATrainingExample(
-            user_state_snapshot_id=self.user_state_snapshot_id,
-            query_text_locator=self.source_locator,
-            query_source_starter_id=None,
-            domain="active",
-            positive_label=positive_label,
-            event_time=event_time,
-            context_scope=self.context_scope,
-            source_artifact_id=self.artifact_id,
-        )
 
     @property
     def artifact_id(self) -> str:
