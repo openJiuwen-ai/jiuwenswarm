@@ -1,7 +1,6 @@
 ---
 title: 实施与决策 F索引
-author: xinyang_bali
-author_email: 835397263@qq.com
+author: sync_documents.py
 generated: true
 ---
 
@@ -15,215 +14,215 @@ generated: true
 
 | 模块 |
 |---|
-| [deploy/yuanrong](#module-1) |
-| [gateway/channel_manager/web](#module-2) |
-| [jiuwenswarm](#module-3) |
-| [jiuwenswarm/agents/harness](#module-4) |
-| [jiuwenswarm/agents/harness/common/rails](#module-5) |
-| [jiuwenswarm/agents/harness/common/recommendation](#module-6) |
-| [jiuwenswarm/agents/harness/common/tools](#module-7) |
-| [jiuwenswarm/agents/harness/team/rails](#module-8) |
-| [jiuwenswarm/agents/swarm](#module-9) |
-| [jiuwenswarm/channels/tui/frontend](#module-10) |
-| [jiuwenswarm/channels/web/frontend](#module-11) |
-| [jiuwenswarm/channels/web/frontend/src/features/settings](#module-12) |
-| [jiuwenswarm/common](#module-13) |
-| [jiuwenswarm/common/config_panel](#module-14) |
-| [jiuwenswarm/extensions/sdk](#module-15) |
-| [jiuwenswarm/resources](#module-16) |
-| [jiuwenswarm/resources/plugins/ttse](#module-17) |
-| [jiuwenswarm/server/control](#module-18) |
-| [jiuwenswarm/server/runtime](#module-19) |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-20) |
-| [scripts](#module-21) |
-| [tests](#module-22) |
+| [deploy/yuanrong](#module-deploy-yuanrong) |
+| [gateway/channel_manager/web](#module-gateway-channel_manager-web) |
+| [jiuwenswarm](#module-jiuwenswarm) |
+| [jiuwenswarm/agents/harness](#module-jiuwenswarm-agents-harness) |
+| [jiuwenswarm/agents/harness/common/rails](#module-jiuwenswarm-agents-harness-common-rails) |
+| [jiuwenswarm/agents/harness/common/recommendation](#module-jiuwenswarm-agents-harness-common-recommendation) |
+| [jiuwenswarm/agents/harness/common/tools](#module-jiuwenswarm-agents-harness-common-tools) |
+| [jiuwenswarm/agents/harness/team/rails](#module-jiuwenswarm-agents-harness-team-rails) |
+| [jiuwenswarm/agents/swarm](#module-jiuwenswarm-agents-swarm) |
+| [jiuwenswarm/channels/tui/frontend](#module-jiuwenswarm-channels-tui-frontend) |
+| [jiuwenswarm/channels/web/frontend](#module-jiuwenswarm-channels-web-frontend) |
+| [jiuwenswarm/channels/web/frontend/src/features/settings](#module-jiuwenswarm-channels-web-frontend-src-features-settings) |
+| [jiuwenswarm/common](#module-jiuwenswarm-common) |
+| [jiuwenswarm/common/config_panel](#module-jiuwenswarm-common-config_panel) |
+| [jiuwenswarm/extensions/sdk](#module-jiuwenswarm-extensions-sdk) |
+| [jiuwenswarm/resources](#module-jiuwenswarm-resources) |
+| [jiuwenswarm/resources/plugins/ttse](#module-jiuwenswarm-resources-plugins-ttse) |
+| [jiuwenswarm/server/control](#module-jiuwenswarm-server-control) |
+| [jiuwenswarm/server/runtime](#module-jiuwenswarm-server-runtime) |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-jiuwenswarm-server-runtime-agent_adapter) |
+| [scripts](#module-scripts) |
+| [tests](#module-tests) |
 
-<a id="module-1"></a>
+<a id="module-deploy-yuanrong"></a>
 
 ## deploy/yuanrong
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261111_1528_unified-observability-config](F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | jiuwenswarm/common, jiuwenswarm/agents/harness, jiuwenswarm/resources, deploy/yuanrong, scripts | jiuwenswarm/common/observability_config.py, jiuwenswarm/common/config.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/agents/harness/team/team_manager.py, jiuwenswarm/resources/config.yaml, deploy/yuanrong/conf/gateway-config-yuanrong.template.yaml, scripts/reset_trajectory_data.py, tests/unit_tests/common/test_observability_config.py, tests/unit_tests/agentserver/test_trajectory_runtime_wiring.py | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261111_1528_unified-observability-config](F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
 
-<a id="module-2"></a>
+<a id="module-gateway-channel_manager-web"></a>
 
 ## gateway/channel_manager/web
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261031_1139_gateway-session-e2a](F_20261031_1139_gateway-session-e2a.md) | F | Web 会话管理统一经 E2A 交由 Server 执行 | ruiqiang2 | gateway/channel_manager/web | gateway/channel_manager/web/app_web_handlers.py, tests/unit_tests/gateway/test_app_web_handlers.py | 无独立 D：用户确认的 Gateway 解耦任务 4.1，沿用 develop 个人版现有链路，无独立设计编号。 |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261031_1139_gateway-session-e2a](F_20261031_1139_gateway-session-e2a.md) | F | Web 会话管理统一经 E2A 交由 Server 执行 | ruiqiang2 | 无独立 D：用户确认的 Gateway 解耦任务 4.1，沿用 develop 个人版现有链路，无独立设计编号。 |
 
-<a id="module-3"></a>
+<a id="module-jiuwenswarm"></a>
 
 ## jiuwenswarm
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261030_2018_teammate-swarmflow-adaptation](F_20261030_2018_teammate-swarmflow-adaptation.md) | F | 集群模式teammate支持swarmflow工具（jiuwenswarm 侧适配） | @xiajing | jiuwenswarm | jiuwenswarm/agents/harness/team/handlers/workflow_state.py, jiuwenswarm/server/runtime/agent_adapter/team_helpers.py | 无独立 D：本仓侧为 teammate 接入 swarmflow 的适配与硬化，无独立设计文档。 |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261030_2018_teammate-swarmflow-adaptation](F_20261030_2018_teammate-swarmflow-adaptation.md) | F | 集群模式teammate支持swarmflow工具（jiuwenswarm 侧适配） | @xiajing | 无独立 D：本仓侧为 teammate 接入 swarmflow 的适配与硬化，无独立设计文档。 |
 
-<a id="module-4"></a>
+<a id="module-jiuwenswarm-agents-harness"></a>
 
 ## jiuwenswarm/agents/harness
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness, jiuwenswarm/extensions/sdk, jiuwenswarm/resources/plugins/ttse | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/extensions/sdk/plugin_runtime.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/resources/plugins/ttse/manifest.json, scripts/package_ttse_plugin.py | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
-| [F_20261111_1528_unified-observability-config](F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | jiuwenswarm/common, jiuwenswarm/agents/harness, jiuwenswarm/resources, deploy/yuanrong, scripts | jiuwenswarm/common/observability_config.py, jiuwenswarm/common/config.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/agents/harness/team/team_manager.py, jiuwenswarm/resources/config.yaml, deploy/yuanrong/conf/gateway-config-yuanrong.template.yaml, scripts/reset_trajectory_data.py, tests/unit_tests/common/test_observability_config.py, tests/unit_tests/agentserver/test_trajectory_runtime_wiring.py | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
+| [F_20261111_1528_unified-observability-config](F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
 
-<a id="module-5"></a>
+<a id="module-jiuwenswarm-agents-harness-common-rails"></a>
 
 ## jiuwenswarm/agents/harness/common/rails
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, tests/unit_tests/agentserver/test_tool_discovery_language.py | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
-| [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/resources, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/recommendation, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/rails, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/resources/.env.template, tests/unit_tests/agentserver/permissions/test_trusted_web_search.py, tests/unit_tests/agentserver/permissions/test_deep_required_composition.py, tests/unit_tests/agentserver/permissions/test_permission_cold_build.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, jiuwenswarm/channels/web/frontend/tests/settingsRefactor.test.mjs, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/index.html, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/main.tsx, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/vite.config.ts, tests/unit_tests/common/test_free_search_settings.py, tests/unit_tests/gateway/test_app_web_handlers.py, docs/en/Configuration.md, docs/zh/配置信息.md, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, tests/unit_tests/agentserver/test_browser_search_fallback_prompt.py, tests/unit_tests/test_release_dependencies.py, pyproject.toml, uv.lock, MANIFEST.in, Makefile | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
+| [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 
-<a id="module-6"></a>
+<a id="module-jiuwenswarm-agents-harness-common-recommendation"></a>
 
 ## jiuwenswarm/agents/harness/common/recommendation
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/resources, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/recommendation, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/rails, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/resources/.env.template, tests/unit_tests/agentserver/permissions/test_trusted_web_search.py, tests/unit_tests/agentserver/permissions/test_deep_required_composition.py, tests/unit_tests/agentserver/permissions/test_permission_cold_build.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, jiuwenswarm/channels/web/frontend/tests/settingsRefactor.test.mjs, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/index.html, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/main.tsx, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/vite.config.ts, tests/unit_tests/common/test_free_search_settings.py, tests/unit_tests/gateway/test_app_web_handlers.py, docs/en/Configuration.md, docs/zh/配置信息.md, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, tests/unit_tests/agentserver/test_browser_search_fallback_prompt.py, tests/unit_tests/test_release_dependencies.py, pyproject.toml, uv.lock, MANIFEST.in, Makefile | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 
-<a id="module-7"></a>
+<a id="module-jiuwenswarm-agents-harness-common-tools"></a>
 
 ## jiuwenswarm/agents/harness/common/tools
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, tests/unit_tests/agentserver/test_tool_discovery_language.py | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
-| [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/resources, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/recommendation, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/rails, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/resources/.env.template, tests/unit_tests/agentserver/permissions/test_trusted_web_search.py, tests/unit_tests/agentserver/permissions/test_deep_required_composition.py, tests/unit_tests/agentserver/permissions/test_permission_cold_build.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, jiuwenswarm/channels/web/frontend/tests/settingsRefactor.test.mjs, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/index.html, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/main.tsx, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/vite.config.ts, tests/unit_tests/common/test_free_search_settings.py, tests/unit_tests/gateway/test_app_web_handlers.py, docs/en/Configuration.md, docs/zh/配置信息.md, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, tests/unit_tests/agentserver/test_browser_search_fallback_prompt.py, tests/unit_tests/test_release_dependencies.py, pyproject.toml, uv.lock, MANIFEST.in, Makefile | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
+| [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 
-<a id="module-8"></a>
+<a id="module-jiuwenswarm-agents-harness-team-rails"></a>
 
 ## jiuwenswarm/agents/harness/team/rails
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | jiuwenswarm/common, jiuwenswarm/common/config_panel, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/server/runtime, jiuwenswarm/agents/swarm, jiuwenswarm/agents/harness/team/rails, jiuwenswarm/channels/web/frontend, jiuwenswarm/channels/tui/frontend | jiuwenswarm/common/opencode_go.py, jiuwenswarm/common/config.py, jiuwenswarm/common/config_panel/models_handlers.py, jiuwenswarm/common/config_panel/tui_models_handlers.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/moa_runtime.py, jiuwenswarm/agents/harness/team/rails/opencode_session_rail.py, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/agents/swarm/providers/member_rails.py, jiuwenswarm/agents/swarm/registry.py, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/ModelDialog.tsx, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelGroupAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelVendorLabels.ts, jiuwenswarm/channels/tui/frontend/src/ui/app-screen.ts, jiuwenswarm/channels/tui/frontend/src/core/commands/builtins/model.ts, jiuwenswarm/resources/.env.template, jiuwenswarm/resources/config.yaml, docs/zh/配置信息.md, docs/en/Configuration.md | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 
-<a id="module-9"></a>
+<a id="module-jiuwenswarm-agents-swarm"></a>
 
 ## jiuwenswarm/agents/swarm
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | jiuwenswarm/common, jiuwenswarm/common/config_panel, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/server/runtime, jiuwenswarm/agents/swarm, jiuwenswarm/agents/harness/team/rails, jiuwenswarm/channels/web/frontend, jiuwenswarm/channels/tui/frontend | jiuwenswarm/common/opencode_go.py, jiuwenswarm/common/config.py, jiuwenswarm/common/config_panel/models_handlers.py, jiuwenswarm/common/config_panel/tui_models_handlers.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/moa_runtime.py, jiuwenswarm/agents/harness/team/rails/opencode_session_rail.py, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/agents/swarm/providers/member_rails.py, jiuwenswarm/agents/swarm/registry.py, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/ModelDialog.tsx, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelGroupAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelVendorLabels.ts, jiuwenswarm/channels/tui/frontend/src/ui/app-screen.ts, jiuwenswarm/channels/tui/frontend/src/core/commands/builtins/model.ts, jiuwenswarm/resources/.env.template, jiuwenswarm/resources/config.yaml, docs/zh/配置信息.md, docs/en/Configuration.md | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 
-<a id="module-10"></a>
+<a id="module-jiuwenswarm-channels-tui-frontend"></a>
 
 ## jiuwenswarm/channels/tui/frontend
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | jiuwenswarm/common, jiuwenswarm/common/config_panel, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/server/runtime, jiuwenswarm/agents/swarm, jiuwenswarm/agents/harness/team/rails, jiuwenswarm/channels/web/frontend, jiuwenswarm/channels/tui/frontend | jiuwenswarm/common/opencode_go.py, jiuwenswarm/common/config.py, jiuwenswarm/common/config_panel/models_handlers.py, jiuwenswarm/common/config_panel/tui_models_handlers.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/moa_runtime.py, jiuwenswarm/agents/harness/team/rails/opencode_session_rail.py, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/agents/swarm/providers/member_rails.py, jiuwenswarm/agents/swarm/registry.py, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/ModelDialog.tsx, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelGroupAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelVendorLabels.ts, jiuwenswarm/channels/tui/frontend/src/ui/app-screen.ts, jiuwenswarm/channels/tui/frontend/src/core/commands/builtins/model.ts, jiuwenswarm/resources/.env.template, jiuwenswarm/resources/config.yaml, docs/zh/配置信息.md, docs/en/Configuration.md | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 
-<a id="module-11"></a>
+<a id="module-jiuwenswarm-channels-web-frontend"></a>
 
 ## jiuwenswarm/channels/web/frontend
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261029_1757_mcp-app-agent-stack-refresh](F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/App.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |
-| [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/resources, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/recommendation, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/rails, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/resources/.env.template, tests/unit_tests/agentserver/permissions/test_trusted_web_search.py, tests/unit_tests/agentserver/permissions/test_deep_required_composition.py, tests/unit_tests/agentserver/permissions/test_permission_cold_build.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, jiuwenswarm/channels/web/frontend/tests/settingsRefactor.test.mjs, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/index.html, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/main.tsx, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/vite.config.ts, tests/unit_tests/common/test_free_search_settings.py, tests/unit_tests/gateway/test_app_web_handlers.py, docs/en/Configuration.md, docs/zh/配置信息.md, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, tests/unit_tests/agentserver/test_browser_search_fallback_prompt.py, tests/unit_tests/test_release_dependencies.py, pyproject.toml, uv.lock, MANIFEST.in, Makefile | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
-| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | jiuwenswarm/common, jiuwenswarm/common/config_panel, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/server/runtime, jiuwenswarm/agents/swarm, jiuwenswarm/agents/harness/team/rails, jiuwenswarm/channels/web/frontend, jiuwenswarm/channels/tui/frontend | jiuwenswarm/common/opencode_go.py, jiuwenswarm/common/config.py, jiuwenswarm/common/config_panel/models_handlers.py, jiuwenswarm/common/config_panel/tui_models_handlers.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/moa_runtime.py, jiuwenswarm/agents/harness/team/rails/opencode_session_rail.py, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/agents/swarm/providers/member_rails.py, jiuwenswarm/agents/swarm/registry.py, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/ModelDialog.tsx, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelGroupAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelVendorLabels.ts, jiuwenswarm/channels/tui/frontend/src/ui/app-screen.ts, jiuwenswarm/channels/tui/frontend/src/core/commands/builtins/model.ts, jiuwenswarm/resources/.env.template, jiuwenswarm/resources/config.yaml, docs/zh/配置信息.md, docs/en/Configuration.md | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261029_1757_mcp-app-agent-stack-refresh](F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |
+| [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
+| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 
-<a id="module-12"></a>
+<a id="module-jiuwenswarm-channels-web-frontend-src-features-settings"></a>
 
 ## jiuwenswarm/channels/web/frontend/src/features/settings
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261110_2026_affinity-settings](F_20261110_2026_affinity-settings.md) | F | 实验功能算力亲和开关与自定义模型能力接入 | MengHan18 | jiuwenswarm/common, jiuwenswarm/channels/web/frontend/src/features/settings | jiuwenswarm/common/kv_cache_affinity_config.py, jiuwenswarm/common/config.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/common/config_panel/model_resource_handlers.py, jiuwenswarm/common/config_panel/models_handlers.py, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/ModelDialog.tsx, jiuwenswarm/channels/web/frontend/src/features/settings/modules/experimental/definition.ts, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/server/runtime/session/kv_cache/kv_cache_model_provider.py, jiuwenswarm/server/runtime/session/kv_cache/kv_cache_application_runtime.py | 无独立 D：外部初始方案为 docs_HM_kvc/E前端开关打开/01 和 02；全局准入和交互按用户确认的 04 小白版文档替代，无仓库内 D 标识。 |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261110_2026_affinity-settings](F_20261110_2026_affinity-settings.md) | F | 实验功能算力亲和开关与自定义模型能力接入 | MengHan18 | 无独立 D：外部初始方案为 docs_HM_kvc/E前端开关打开/01 和 02；全局准入和交互按用户确认的 04 小白版文档替代，无仓库内 D 标识。 |
 
-<a id="module-13"></a>
+<a id="module-jiuwenswarm-common"></a>
 
 ## jiuwenswarm/common
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | jiuwenswarm/common, jiuwenswarm/common/config_panel, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/server/runtime, jiuwenswarm/agents/swarm, jiuwenswarm/agents/harness/team/rails, jiuwenswarm/channels/web/frontend, jiuwenswarm/channels/tui/frontend | jiuwenswarm/common/opencode_go.py, jiuwenswarm/common/config.py, jiuwenswarm/common/config_panel/models_handlers.py, jiuwenswarm/common/config_panel/tui_models_handlers.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/moa_runtime.py, jiuwenswarm/agents/harness/team/rails/opencode_session_rail.py, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/agents/swarm/providers/member_rails.py, jiuwenswarm/agents/swarm/registry.py, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/ModelDialog.tsx, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelGroupAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelVendorLabels.ts, jiuwenswarm/channels/tui/frontend/src/ui/app-screen.ts, jiuwenswarm/channels/tui/frontend/src/core/commands/builtins/model.ts, jiuwenswarm/resources/.env.template, jiuwenswarm/resources/config.yaml, docs/zh/配置信息.md, docs/en/Configuration.md | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
-| [F_20261110_2026_affinity-settings](F_20261110_2026_affinity-settings.md) | F | 实验功能算力亲和开关与自定义模型能力接入 | MengHan18 | jiuwenswarm/common, jiuwenswarm/channels/web/frontend/src/features/settings | jiuwenswarm/common/kv_cache_affinity_config.py, jiuwenswarm/common/config.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/common/config_panel/model_resource_handlers.py, jiuwenswarm/common/config_panel/models_handlers.py, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/ModelDialog.tsx, jiuwenswarm/channels/web/frontend/src/features/settings/modules/experimental/definition.ts, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/server/runtime/session/kv_cache/kv_cache_model_provider.py, jiuwenswarm/server/runtime/session/kv_cache/kv_cache_application_runtime.py | 无独立 D：外部初始方案为 docs_HM_kvc/E前端开关打开/01 和 02；全局准入和交互按用户确认的 04 小白版文档替代，无仓库内 D 标识。 |
-| [F_20261111_1528_unified-observability-config](F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | jiuwenswarm/common, jiuwenswarm/agents/harness, jiuwenswarm/resources, deploy/yuanrong, scripts | jiuwenswarm/common/observability_config.py, jiuwenswarm/common/config.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/agents/harness/team/team_manager.py, jiuwenswarm/resources/config.yaml, deploy/yuanrong/conf/gateway-config-yuanrong.template.yaml, scripts/reset_trajectory_data.py, tests/unit_tests/common/test_observability_config.py, tests/unit_tests/agentserver/test_trajectory_runtime_wiring.py | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
+| [F_20261110_2026_affinity-settings](F_20261110_2026_affinity-settings.md) | F | 实验功能算力亲和开关与自定义模型能力接入 | MengHan18 | 无独立 D：外部初始方案为 docs_HM_kvc/E前端开关打开/01 和 02；全局准入和交互按用户确认的 04 小白版文档替代，无仓库内 D 标识。 |
+| [F_20261111_1528_unified-observability-config](F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
 
-<a id="module-14"></a>
+<a id="module-jiuwenswarm-common-config_panel"></a>
 
 ## jiuwenswarm/common/config_panel
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/resources, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/recommendation, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/rails, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/resources/.env.template, tests/unit_tests/agentserver/permissions/test_trusted_web_search.py, tests/unit_tests/agentserver/permissions/test_deep_required_composition.py, tests/unit_tests/agentserver/permissions/test_permission_cold_build.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, jiuwenswarm/channels/web/frontend/tests/settingsRefactor.test.mjs, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/index.html, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/main.tsx, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/vite.config.ts, tests/unit_tests/common/test_free_search_settings.py, tests/unit_tests/gateway/test_app_web_handlers.py, docs/en/Configuration.md, docs/zh/配置信息.md, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, tests/unit_tests/agentserver/test_browser_search_fallback_prompt.py, tests/unit_tests/test_release_dependencies.py, pyproject.toml, uv.lock, MANIFEST.in, Makefile | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
-| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | jiuwenswarm/common, jiuwenswarm/common/config_panel, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/server/runtime, jiuwenswarm/agents/swarm, jiuwenswarm/agents/harness/team/rails, jiuwenswarm/channels/web/frontend, jiuwenswarm/channels/tui/frontend | jiuwenswarm/common/opencode_go.py, jiuwenswarm/common/config.py, jiuwenswarm/common/config_panel/models_handlers.py, jiuwenswarm/common/config_panel/tui_models_handlers.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/moa_runtime.py, jiuwenswarm/agents/harness/team/rails/opencode_session_rail.py, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/agents/swarm/providers/member_rails.py, jiuwenswarm/agents/swarm/registry.py, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/ModelDialog.tsx, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelGroupAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelVendorLabels.ts, jiuwenswarm/channels/tui/frontend/src/ui/app-screen.ts, jiuwenswarm/channels/tui/frontend/src/core/commands/builtins/model.ts, jiuwenswarm/resources/.env.template, jiuwenswarm/resources/config.yaml, docs/zh/配置信息.md, docs/en/Configuration.md | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
+| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 
-<a id="module-15"></a>
+<a id="module-jiuwenswarm-extensions-sdk"></a>
 
 ## jiuwenswarm/extensions/sdk
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness, jiuwenswarm/extensions/sdk, jiuwenswarm/resources/plugins/ttse | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/extensions/sdk/plugin_runtime.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/resources/plugins/ttse/manifest.json, scripts/package_ttse_plugin.py | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 
-<a id="module-16"></a>
+<a id="module-jiuwenswarm-resources"></a>
 
 ## jiuwenswarm/resources
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/resources, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/recommendation, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/rails, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/resources/.env.template, tests/unit_tests/agentserver/permissions/test_trusted_web_search.py, tests/unit_tests/agentserver/permissions/test_deep_required_composition.py, tests/unit_tests/agentserver/permissions/test_permission_cold_build.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, jiuwenswarm/channels/web/frontend/tests/settingsRefactor.test.mjs, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/index.html, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/main.tsx, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/vite.config.ts, tests/unit_tests/common/test_free_search_settings.py, tests/unit_tests/gateway/test_app_web_handlers.py, docs/en/Configuration.md, docs/zh/配置信息.md, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, tests/unit_tests/agentserver/test_browser_search_fallback_prompt.py, tests/unit_tests/test_release_dependencies.py, pyproject.toml, uv.lock, MANIFEST.in, Makefile | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
-| [F_20261111_1528_unified-observability-config](F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | jiuwenswarm/common, jiuwenswarm/agents/harness, jiuwenswarm/resources, deploy/yuanrong, scripts | jiuwenswarm/common/observability_config.py, jiuwenswarm/common/config.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/agents/harness/team/team_manager.py, jiuwenswarm/resources/config.yaml, deploy/yuanrong/conf/gateway-config-yuanrong.template.yaml, scripts/reset_trajectory_data.py, tests/unit_tests/common/test_observability_config.py, tests/unit_tests/agentserver/test_trajectory_runtime_wiring.py | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
+| [F_20261111_1528_unified-observability-config](F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
 
-<a id="module-17"></a>
+<a id="module-jiuwenswarm-resources-plugins-ttse"></a>
 
 ## jiuwenswarm/resources/plugins/ttse
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness, jiuwenswarm/extensions/sdk, jiuwenswarm/resources/plugins/ttse | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/extensions/sdk/plugin_runtime.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/resources/plugins/ttse/manifest.json, scripts/package_ttse_plugin.py | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 
-<a id="module-18"></a>
+<a id="module-jiuwenswarm-server-control"></a>
 
 ## jiuwenswarm/server/control
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/resources, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/recommendation, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/rails, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/resources/.env.template, tests/unit_tests/agentserver/permissions/test_trusted_web_search.py, tests/unit_tests/agentserver/permissions/test_deep_required_composition.py, tests/unit_tests/agentserver/permissions/test_permission_cold_build.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, jiuwenswarm/channels/web/frontend/tests/settingsRefactor.test.mjs, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/index.html, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/main.tsx, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/vite.config.ts, tests/unit_tests/common/test_free_search_settings.py, tests/unit_tests/gateway/test_app_web_handlers.py, docs/en/Configuration.md, docs/zh/配置信息.md, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, tests/unit_tests/agentserver/test_browser_search_fallback_prompt.py, tests/unit_tests/test_release_dependencies.py, pyproject.toml, uv.lock, MANIFEST.in, Makefile | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 
-<a id="module-19"></a>
+<a id="module-jiuwenswarm-server-runtime"></a>
 
 ## jiuwenswarm/server/runtime
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | jiuwenswarm/common, jiuwenswarm/common/config_panel, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/server/runtime, jiuwenswarm/agents/swarm, jiuwenswarm/agents/harness/team/rails, jiuwenswarm/channels/web/frontend, jiuwenswarm/channels/tui/frontend | jiuwenswarm/common/opencode_go.py, jiuwenswarm/common/config.py, jiuwenswarm/common/config_panel/models_handlers.py, jiuwenswarm/common/config_panel/tui_models_handlers.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/moa_runtime.py, jiuwenswarm/agents/harness/team/rails/opencode_session_rail.py, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/agents/swarm/providers/member_rails.py, jiuwenswarm/agents/swarm/registry.py, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/ModelDialog.tsx, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelGroupAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelVendorLabels.ts, jiuwenswarm/channels/tui/frontend/src/ui/app-screen.ts, jiuwenswarm/channels/tui/frontend/src/core/commands/builtins/model.ts, jiuwenswarm/resources/.env.template, jiuwenswarm/resources/config.yaml, docs/zh/配置信息.md, docs/en/Configuration.md | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 
-<a id="module-20"></a>
+<a id="module-jiuwenswarm-server-runtime-agent_adapter"></a>
 
 ## jiuwenswarm/server/runtime/agent_adapter
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness, jiuwenswarm/extensions/sdk, jiuwenswarm/resources/plugins/ttse | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/extensions/sdk/plugin_runtime.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/resources/plugins/ttse/manifest.json, scripts/package_ttse_plugin.py | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
-| [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, tests/unit_tests/agentserver/test_tool_discovery_language.py | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
-| [F_20261029_1757_mcp-app-agent-stack-refresh](F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/App.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |
-| [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/resources, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/recommendation, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/rails, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/resources/.env.template, tests/unit_tests/agentserver/permissions/test_trusted_web_search.py, tests/unit_tests/agentserver/permissions/test_deep_required_composition.py, tests/unit_tests/agentserver/permissions/test_permission_cold_build.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, jiuwenswarm/channels/web/frontend/tests/settingsRefactor.test.mjs, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/index.html, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/main.tsx, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/vite.config.ts, tests/unit_tests/common/test_free_search_settings.py, tests/unit_tests/gateway/test_app_web_handlers.py, docs/en/Configuration.md, docs/zh/配置信息.md, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, tests/unit_tests/agentserver/test_browser_search_fallback_prompt.py, tests/unit_tests/test_release_dependencies.py, pyproject.toml, uv.lock, MANIFEST.in, Makefile | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
-| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | jiuwenswarm/common, jiuwenswarm/common/config_panel, jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/server/runtime, jiuwenswarm/agents/swarm, jiuwenswarm/agents/harness/team/rails, jiuwenswarm/channels/web/frontend, jiuwenswarm/channels/tui/frontend | jiuwenswarm/common/opencode_go.py, jiuwenswarm/common/config.py, jiuwenswarm/common/config_panel/models_handlers.py, jiuwenswarm/common/config_panel/tui_models_handlers.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/moa_runtime.py, jiuwenswarm/agents/harness/team/rails/opencode_session_rail.py, jiuwenswarm/agents/swarm/config_specs.py, jiuwenswarm/agents/swarm/providers/member_rails.py, jiuwenswarm/agents/swarm/registry.py, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/ModelDialog.tsx, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelGroupAdapters.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/models/modelVendorLabels.ts, jiuwenswarm/channels/tui/frontend/src/ui/app-screen.ts, jiuwenswarm/channels/tui/frontend/src/core/commands/builtins/model.ts, jiuwenswarm/resources/.env.template, jiuwenswarm/resources/config.yaml, docs/zh/配置信息.md, docs/en/Configuration.md | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
+| [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
+| [F_20261029_1757_mcp-app-agent-stack-refresh](F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |
+| [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
+| [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 
-<a id="module-21"></a>
+<a id="module-scripts"></a>
 
 ## scripts
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/resources, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/recommendation, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/rails, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/resources/.env.template, tests/unit_tests/agentserver/permissions/test_trusted_web_search.py, tests/unit_tests/agentserver/permissions/test_deep_required_composition.py, tests/unit_tests/agentserver/permissions/test_permission_cold_build.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, jiuwenswarm/channels/web/frontend/tests/settingsRefactor.test.mjs, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/index.html, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/main.tsx, jiuwenswarm/channels/web/frontend/tests/fixtures/free-search-settings/vite.config.ts, tests/unit_tests/common/test_free_search_settings.py, tests/unit_tests/gateway/test_app_web_handlers.py, docs/en/Configuration.md, docs/zh/配置信息.md, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, tests/unit_tests/agentserver/test_browser_search_fallback_prompt.py, tests/unit_tests/test_release_dependencies.py, pyproject.toml, uv.lock, MANIFEST.in, Makefile | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
-| [F_20261111_1528_unified-observability-config](F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | jiuwenswarm/common, jiuwenswarm/agents/harness, jiuwenswarm/resources, deploy/yuanrong, scripts | jiuwenswarm/common/observability_config.py, jiuwenswarm/common/config.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/agents/harness/team/team_manager.py, jiuwenswarm/resources/config.yaml, deploy/yuanrong/conf/gateway-config-yuanrong.template.yaml, scripts/reset_trajectory_data.py, tests/unit_tests/common/test_observability_config.py, tests/unit_tests/agentserver/test_trajectory_runtime_wiring.py | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
+| [F_20261111_1528_unified-observability-config](F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
 
-<a id="module-22"></a>
+<a id="module-tests"></a>
 
 ## tests
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261113_1040_del-ut-slim](F_20261113_1040_del-ut-slim.md) | F | develop 测试库瘦身第一批：删除 agent-gateway 镜像测试层与死代码副本 | kdgmpw | tests | TESTING.md, tests/unit_tests/channels/cli/test_chat.py, tests/unit_tests/test_config.py, tests/unit_tests/runtime/test_runtime_service.py, tests/unit_tests/common/test_mcp_dynamic_token_patch.py, tests/unit_tests/gateway/test_cli_channel_handlers.py, tests/unit_tests/server/test_session_metadata.py, tests/unit_tests/agentserver/test_team_model_selection.py, tests/unit_tests/agentserver/test_skill_sync.py, tests/unit_tests/agentserver/test_runtime_worker_phase2.py, tests/unit_tests/agentserver/test_team_helpers.py, tests/system_tests/test_project_memory.py, tests/auth/（整目录删除，4 个上游镜像测试）, tests/unit_tests/agentserver/memory/（删除 4 个镜像/占位测试）, tests/unit_tests/agentserver/test_skill_manager_rebuild_followup.py（删除）, tests/unit_tests/agentserver/test_envelope_placeholder.py（删除）, tests/integration/test_acp_cli_stdio_integration.py（删除）, tests/unit_tests/gateway/ 与 tests/unit_tests/channel/ 等（删除 65 个上游逐字节镜像测试，完整清单见本特性提交 diff）, tests/unit_tests/gateway/ 与 tests/unit_tests/channel/（第二批删除 21 个镜像/分叉测试，完整清单见第二批提交 diff）, tests/unit_tests/gateway/test_cron_scheduler_web_session.py（新增：提取 cron web session 回归）, tests/unit_tests/runtime/test_cron_job_mutations.py（新增：迁入 jw cron 单模型守卫）, tests/unit_tests/resources/test_advanced_daily_report_skill.py（新增：迁入 jw 技能脚本资源守护）, tests/system_tests/proc_harness.py（新增：system_tests 进程/WS helper 共享）, tests/unit_tests/agentserver/ 等 26 个涉改测试文件（参数化合并、helper 上提，清单见第二批提交 diff）, docs/zh/HarmonyOS_Dev_Workflow_Test_Guide.md、docs/en/HarmonyOS_Dev_Workflow_Test_Guide.md（同步移除已删测试引用） | 无独立 D：基于会话内对 develop 测试库的两轮静态扫描（10 个分组深扫 + 17,316 个用例级 AST 指纹比对）与上游 agent-gateway 仓的逐字节校验，用户在会话中直接确认执行，无独立设计编号。 |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261113_1040_del-ut-slim](F_20261113_1040_del-ut-slim.md) | F | develop 测试库瘦身第一批：删除 agent-gateway 镜像测试层与死代码副本 | kdgmpw | 无独立 D：基于会话内对 develop 测试库的两轮静态扫描（10 个分组深扫 + 17,316 个用例级 AST 指纹比对）与上游 agent-gateway 仓的逐字节校验，用户在会话中直接确认执行，无独立设计编号。 |
