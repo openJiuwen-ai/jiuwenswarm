@@ -8249,8 +8249,10 @@ class JiuWenSwarmDeepAdapter:
 
     @staticmethod
     def _plan_check_allowed_tools() -> frozenset[str] | None:
-        """②号防线 plan 态校验的设计可见集（None=全量校验）。
+        """②号防线 plan 态校验的设计可见集（None=兜底只校验 plan 状态机工具）。
 
+        None 语义（评审 CR-4，2026-11-16）：rail 侧兜底收敛到
+        _PLAN_MACHINE_TOOLS（enter/exit_plan_mode 交集），不再全量校验。
         work 装配 plan 态走 WORK_PLAN_ALLOWED_TOOLS 白名单过滤，白名单外的
         eager 成员设计性缺席，校验按白名单收敛防每轮假阳性（评审 CR-1，
         2026-11-10）。
