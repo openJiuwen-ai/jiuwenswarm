@@ -140,7 +140,7 @@ async def test_environment_create_query_delete_uses_original_spec(monkeypatch, t
     body = json.loads(creates[0].content)
     assert body['namespace'] == cfg.router.agent_namespace != cfg.tenant
     assert second.metadata['tenant_id'] == cfg.tenant
-    assert body['rootfs'] == {'type': 'image', 'imageurl': 'agent-runtime:1', 'runtime': 'runc'}
+    assert body['rootfs'] == {'type': 'image', 'imageurl': 'agent-runtime:1', 'runtime': 'supervisor'}
     assert body['process'] == {'commands': spec['cmds'], 'user': '10001:10001'}
     assert body['cpu'] == 2000 and body['memory'] == 4096
     assert body['env']['MODEL_API_BASE'] == 'http://model/v1'

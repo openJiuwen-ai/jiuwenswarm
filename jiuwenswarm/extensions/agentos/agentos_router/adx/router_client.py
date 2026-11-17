@@ -121,7 +121,9 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
         return await super()._create_agent_impl(agent_info, operation)
 
     async def _create_sandbox_for_agent(self, agent_info, *, reuse_existing, **kwargs):
-        if reuse_existing and (self._config.runtime_class == 'runsc' or self._config.restart_policy is not None):
+        builtin = agent_info.agent_type == BUILTIN_AGENT_TYPE
+        runtime_class = self._control.resolve_runtime_class(kwargs.get('runtime_spec') or {}, builtin=builtin)
+        if reuse_existing and (runtime_class == 'runsc' or self._config.restart_policy is not None):
             namespace = self._control.agent_namespace + '-'
             # Registry rows survive Gateway restart; native state remains the
             # authority. Also discover pre-generation IDs during an upgrade.
@@ -149,7 +151,7 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
             if available:
                 return await self._control._ready_sandbox_info(available[0])
         return await self._control.create_sandbox(
-            builtin=agent_info.agent_type == BUILTIN_AGENT_TYPE, **kwargs)
+            builtin=builtin, **kwargs)
 
     def set_channel_manager(self, channel_manager) -> None:
         super().set_channel_manager(channel_manager)
@@ -172,7 +174,9 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
 
     async def _run_network_failure_delete(self, runtime: AgentRuntime, *, reason: str = 'network_failure') -> None:
         """Keep ADX-owned recovery state when a business transport disconnects."""
-        if self._config.runtime_class != 'runsc' and self._config.restart_policy is None:
+        runtime_class = self._control.resolve_runtime_class(
+            runtime.info.metadata.get('runtime_spec') or {}, builtin=runtime.info.agent_type == BUILTIN_AGENT_TYPE)
+        if runtime_class != 'runsc' and self._config.restart_policy is None:
             await super()._run_network_failure_delete(runtime, reason=reason)
             return
         if not await self._agent_manager.is_current(runtime):

@@ -215,6 +215,12 @@ class AdxControlClient:
                 raise AgentNotVisibleError('ADX replacement Environment is not visible yet') from exc
             raise AdxCreateTimeout('Timed out waiting for the ADX Environment to become available') from exc
 
+    def resolve_runtime_class(self, runtime_spec: dict, *, builtin: bool) -> str:
+        """Keep deployment defaults for builtin agents and honor custom launch specs."""
+        if builtin:
+            return self.config.runtime_class
+        return runtime_spec.get('sandbox_type') or self.config.runtime_class
+
     def _creation_body(self, namespace: str, name: str, workspace: str, runtime_spec: dict,
                        env_vars: dict | None, mounts: list | None, *, builtin: bool | None = None) -> dict:
         spec = copy.deepcopy(runtime_spec)
@@ -222,6 +228,7 @@ class AdxControlClient:
         image = rootfs.get('imageurl') or rootfs.get('image_url')
         if builtin is None:
             builtin = name.endswith('+jiuwenswarm') and image == 'jiuwenswarm-agent-runtime:latest'
+        runtime_class = self.resolve_runtime_class(spec, builtin=builtin)
         if builtin:
             image = self.config.builtin_image
         body = {'namespace': namespace, 'name': name,
@@ -230,15 +237,15 @@ class AdxControlClient:
                 'mounts': [{'type': 'bind', 'host_path': workspace, 'target': self.config.workspace_target,
                             'options': ['rbind', 'rw']}]}
         if image:
-            if self.config.local_images is not None:
+            if runtime_class in ('runc', 'runsc') and self.config.local_images is not None:
                 template = self.config.local_images.get(image)
                 if not template:
                     raise ValueError(f'Image {image} has no prepared local rootfs; offline deployment must prepare it first')
-                body['rootfs'] = {'type': 'template', 'name': template, 'runtime': self.config.runtime_class}
+                body['rootfs'] = {'type': 'template', 'name': template, 'runtime': runtime_class}
             else:
-                body['rootfs'] = {'type': 'image', 'imageurl': image, 'runtime': self.config.runtime_class}
+                body['rootfs'] = {'type': 'image', 'imageurl': image, 'runtime': runtime_class}
             body['inheritEntrypoint'] = True
-        if self.config.runtime_class == 'runsc':
+        if runtime_class == 'runsc':
             timeout = self.agent_idle_timeout_seconds
             if not math.isfinite(timeout):
                 raise ValueError('Agent idle timeout must be finite')
@@ -289,7 +296,7 @@ class AdxControlClient:
         body['ports'] = sorted(set(ports))
         if builtin and self.config.builtin_launch:
             launch = self.config.builtin_launch
-            if self.config.runtime_class == 'runsc' and 'workspace_mount_options' in launch:
+            if runtime_class == 'runsc' and 'workspace_mount_options' in launch:
                 options = launch['workspace_mount_options']
                 allowed = {'rw', 'ro', 'nosuid', 'nodev', 'noexec', 'disable_file_handle_sharing'}
                 error = 'builtin workspace_mount_options must be unique writable bind options'

@@ -224,9 +224,10 @@ def test_generated_gateway_name_keeps_builtin_runsc_launch(monkeypatch):
     control = AdxControlClient(_config(monkeypatch, runtime_class='runsc',
         builtin_image='ubuntu:24.04', builtin_launch=launch))
     body = control._creation_body('test', 'gateway-new-generation', '/workspace',
-        {'rootfs': {'imageurl': 'jiuwenswarm-agent-runtime:latest'}},
+        {'sandbox_type': 'supervisor', 'rootfs': {'imageurl': 'jiuwenswarm-agent-runtime:latest'}},
         {AGENT_GENERATION_ENV: 'new-generation'}, None, builtin=True)
     assert body['rootfs']['imageurl'] == 'ubuntu:24.04'
+    assert body['rootfs']['runtime'] == 'runsc'
     assert body['process'] == launch['process']
     assert body['env']['JIUWENSWARM_ADX_API_TOKEN'] == 'platform-secret'
     assert launch['mounts'][0] in body['mounts']
@@ -449,13 +450,31 @@ def test_invalid_ingress_origins_fail_at_startup(monkeypatch, url):
 
 
 @pytest.mark.asyncio
-async def test_registry_launch_spec_is_forwarded_to_environment_without_template_registration(monkeypatch):
+@pytest.mark.parametrize('default_runtime,declared_runtime,local_template', [
+    ('supervisor', None, None),
+    ('supervisor', 'runsc', None),
+    ('supervisor', 'runsc', 'local-third'),
+    ('runsc', 'supervisor', 'local-third'),
+    ('runsc', 'conch', 'local-third'),
+])
+async def test_registry_launch_spec_selects_custom_runtime_and_rootfs(
+    monkeypatch, default_runtime, declared_runtime, local_template,
+):
     from jiuwenswarm.extensions.agentos.agentos_router.registry_client import ImageInfo
 
-    router, _clients = _router(_config(monkeypatch, builtin_image='registry.example/builtin:1'))
+    image = 'registry.example/third:2'
+    router, _clients = _router(_config(monkeypatch, runtime_class=default_runtime,
+        builtin_image='registry.example/builtin:1',
+        local_images={image: local_template} if local_template else None,
+        builtin_launch={'process': {'commands': [['/opt/python/bin/python', '-m', 'agentserver']]},
+                        'mounts': [{'type': 'bind', 'host_path': '/opt/python',
+                                    'target': '/opt/python', 'options': ['ro']}]},
+        builtin_process_from_image=True))
     spec = {'rootfs': {'imageurl': 'registry.example/third:2', 'user': '10001:10001', 'ports': ['tcp:8080']},
             'cmds': [['/app/worker', '--serve']], 'code_path': '/work', 'cpu': 500, 'memory': 1024,
             'probes': {'startup': {'tcpSocket': {'port': 8080}, 'failureThreshold': 3}}}
+    if declared_runtime:
+        spec['sandbox_type'] = declared_runtime
     router._registry.get_image_info = AsyncMock(return_value=ImageInfo(
         image_name='third', image_uri='registry.example/third:2',
         metadata={'runtime_spec': spec, 'env_vars': {'MODEL_ENDPOINT': 'http://model/v1'}}))
@@ -465,13 +484,56 @@ async def test_registry_launch_spec_is_forwarded_to_environment_without_template
         body = router.test_api.creates[0]
         assert runtime.info.sandbox_id == 'test-' + body['name']
         assert body['name'] == 'alice+third-' + runtime.info.agent_id[:12]
-        assert body['rootfs']['imageurl'] == 'registry.example/third:2'
+        selected_runtime = declared_runtime or default_runtime
+        if local_template and selected_runtime == 'runsc':
+            assert body['rootfs'] == {'type': 'template', 'name': local_template, 'runtime': selected_runtime}
+        else:
+            assert body['rootfs'] == {'type': 'image', 'imageurl': image, 'runtime': selected_runtime}
+        assert ('idleTimeoutSeconds' in body) == (selected_runtime == 'runsc')
         assert body['process'] == {'commands': spec['cmds'], 'user': '10001:10001', 'cwd': '/work'}
         assert body['cpu'] == 500 and body['memory'] == 1024
         assert body['env'] == {'MODEL_ENDPOINT': 'http://model/v1', AGENT_GENERATION_ENV: runtime.info.agent_id}
         assert body['mounts'][0]['host_path'].endswith('/alice')
+        assert len(body['mounts']) == 1
         assert body['readinessProbe']['tcpSocket']['port'] == 8080
         assert all('/api/agent/' not in request.url.path for request in router.test_api.requests)
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_supervisor_builtin_keeps_its_binding_with_custom_local_images(monkeypatch):
+    router, _ = _router(_config(monkeypatch, runtime_class='supervisor',
+        builtin_image='agentos-supervisor:v1', local_images={'dsh:1': 'local-dsh'}))
+    await router.connect('')
+    try:
+        assert (await router.send_request(_request())).ok
+        body, = router.test_api.creates
+        assert body['rootfs'] == {'type': 'image', 'imageurl': 'agentos-supervisor:v1', 'runtime': 'supervisor'}
+        assert 'idleTimeoutSeconds' not in body
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_custom_runsc_reuse_and_disconnect_follow_its_declared_runtime(monkeypatch):
+    from jiuwenswarm.extensions.agentos.agentos_router.registry_client import ImageInfo
+
+    router, _ = _router(_config(monkeypatch, runtime_class='supervisor', restart_policy=None))
+    spec = {'sandbox_type': 'runsc', 'rootfs': {'imageurl': 'dsh:1'}}
+    router._registry.get_image_info = AsyncMock(return_value=ImageInfo(
+        image_name='dsh', image_uri='dsh:1', metadata={'runtime_spec': spec}))
+    instance = 'test-alice+dsh'
+    router._registry.list_instances = AsyncMock(return_value=[InstanceRecord(
+        service_id='old-service', instance_id=instance, user='alice', framework='dsh')])
+    try:
+        router.test_api.environments[instance] = {'id': instance, 'tenant_id': 'appliance', 'status': 'running'}
+        runtime = await router._agent_manager.get_or_create_agent('alice', 'dsh', creator=router._create_agent)
+        assert runtime.info.sandbox_id == instance
+        assert not router.test_api.creates
+        await router._run_network_failure_delete(runtime, reason='connection_closed')
+        assert instance in router.test_api.environments
+        assert not any(request.method == 'DELETE' for request in router.test_api.requests)
     finally:
         await router.shutdown()
 
