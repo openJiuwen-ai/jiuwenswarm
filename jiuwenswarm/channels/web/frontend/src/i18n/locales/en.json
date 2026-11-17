@@ -2128,7 +2128,6 @@
     "topicStarter": {
       "statusMissingConfiguration": "Topic recommendations are unavailable. Check Settings.",
       "recommendedForYou": "Recommended for you",
-      "statusLoading": "Loading…",
       "heading": "What would you like to explore today?",
       "notInterested": "Skip for now",
       "dateAndVersion": "See this day",
