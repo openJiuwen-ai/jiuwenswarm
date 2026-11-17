@@ -51,6 +51,8 @@
 **N6 UnifiedTodoTool 必须是 Tool 子类**
 不能做成 LocalFunction：`invoke` 需要接收 `session` kwarg 并透传给四个引擎（todo.json 按 session 键控）；LocalFunction 没有 session 通道，会静默写错 / 读错 session 的文件。模块 docstring 登记了这条硬约束。
 
+create 的 tasks 项要求非空 content，id 可选：模型提供时保留，省略时沿用 Core 生成 ID 的兼容行为。推荐稳定 ID 的提示不应升级为拒绝旧调用的必填约束；后续增量修改仍使用实际持久化的 ID。
+
 **N7 统一名 `todo` 与 `todo_` 前缀钩子的共生约束**
 `_UNIFIED_TODO_NAME = "todo"`（不带前缀）。外层 task-loop 钩子（TaskExecutionRail 系）按 `todo_` 前缀识别 todo 调用，统一名**有意绕过**这些钩子；同时 flash 前端的 todo 刷新链路工具名常量已包含 `todo`（docstring 登记）。改动统一名或拆回四工具，必须同步核对这些前缀判定与前端常量，否则外层钩子会静默漏判 / 误判。前端 `toolProtocol.ts` 的内联协议清洗白名单列五个**历史名**（todo_create/complete/insert/remove/list）+ `todo_` 前缀兜底（review 意见：新增 `todo_*` 工具无需同步白名单）。
 
@@ -60,6 +62,8 @@
 430正文由Flash本仓中英文常量提供，运行时与离线注册表共用，明确活动计划继续/追加使用todo(action=modify)，显式替换使用plan_action=new/rebuild；不再从SDK正文做工具名或整句替换。正文迁移不撤销创建保护，也不改变取消回执和版本事件配对。
 
 拒答后的取消更新优先使用修改引擎返回的提交快照，不重新读取另一并发提交。默认 legacy 保持原字段与展示；显式 versioned 时连同该快照的 todo_meta 发送，无法确认快照时不发送无版本替代包。提交结果标记 unknown 的异常不得转换成“校验拒绝、未提交”提示。
+
+深适配器将 `todo.updated` 的 OutputSchema 转为出站事件时，保留生产方已提供的可选 todo_meta；转换器不重新读取快照或生成版本，legacy 输入不增加该字段。
 
 直接继承 `DeepAgentRail`（priority=90，替换旧的 `ConcurrentSafeTaskPlanningRail`）：**不做 TaskPlan 同步、不实现 after_task_iteration**——TaskPlan 同步与推进提醒在 flash 有意丢弃；但 **close nudge（[[S_03]] 机制）已接入**：构造 `TodoCloseGate(_UNIFIED_TODO_NAME)`（@60），before_invoke 重置 gate → before_model_call `_close_gate.arm` → after_model_call `_close_gate.attach`（文本收尾被替换为一次内部 todo 调用）→ before_tool_call 拦截 nudge 工具调用并注入消息 → after_tool_call 加载 in_progress 条目。挂载面 = init 建引擎并注册统一工具、before/after_model_call 提示注入与 nudge 装挂、before/after_tool_call nudge 拦截与加载、uninit 反注册。
 

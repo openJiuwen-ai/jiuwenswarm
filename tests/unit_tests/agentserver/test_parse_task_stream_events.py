@@ -4,6 +4,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from jiuwenswarm.common.schema.message import EventType
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
@@ -16,6 +18,20 @@ def test_event_type_accepts_task_lifecycle_values() -> None:
     assert EventType("task.start") is EventType.TASK_START
     assert EventType("task.update") is EventType.TASK_UPDATE
     assert EventType("task.complete") is EventType.TASK_COMPLETE
+
+
+@pytest.mark.parametrize("payload", [
+    {"todos": []},
+    {"todos": [], "todo_meta": {"plan_id": "P", "revision": 5}},
+    {"todos": [], "todo_meta": None},
+    "invalid",
+])
+def test_parse_stream_chunk_preserves_optional_todo_meta(payload) -> None:
+    chunk = SimpleNamespace(type="todo.updated", payload=payload)
+    expected = {"event_type": "todo.updated", "todos": []}
+    if isinstance(payload, dict) and payload.get("todo_meta") is not None:
+        expected["todo_meta"] = payload["todo_meta"]
+    assert _parse_stream_chunk(chunk) == expected
 
 
 def test_parse_stream_chunk_forwards_task_update_snapshot() -> None:

@@ -25,3 +25,11 @@ OfficeClaw 聊天正常、Todo 文件存在时，history.get 仍可能只返回�
 read_todo_snapshot 会为冷会话创建并缓存适配器，但此前读取结束没有触发既有空闲回收。连续浏览历史而不聊天时，过期适配器会继续保留。现以 try/finally 覆盖取得适配器及后续读取，复用 _evict_idle_session_adapters；不修改 TTL、批次上限或活跃/审批/子代理/会话锁保护。
 
 回归保留真实读取入口、创建缓存与回收逻辑，仅替代重量级实例初始化、后端返回和磁盘上下文恢复。十项新增用例在修改前均复现过期适配器残留；修改后历史与会话回收两文件共49项通过。覆盖正常结果、无工具、无快照、非权威快照、读取异常/取消，以及保护中的会话保留。本轮未运行实例、模型或远程CI；证据在 Checkpoint 的 tools_failure_analysis/validation_20261110/fix-implementation/review-rnd2/jiuwen-history-idle。
+
+## 2026-11-17：冷恢复模式与缓存参数对齐
+
+旧会话只有 mode=agent/flash、work_mode=work 时，历史入口误把 work 当成实现名而提前退出；即使模式可用，冷创建漏传 session_id/sub_mode 也会与聊天使用不同的缓存键。
+
+历史入口改为在请求副本上复用聊天的模式解析，保留 Flash 亲和与显式 Code 规则，并传入完整会话缓存参数。不调用聊天准备函数，因为读取历史不应改请求、同步元数据或启动任务；不改 AgentManager 缓存算法，也不把读取失败降级为宿主旧副本。
+
+测试覆盖真实旧 metadata 文件、Flash 开关/亲和、Code/Plan、未知模式，以及受控实例创建下真实管理器的“历史→聊天→历史”和 generation 推进。相关 11 个测试文件共 357 项通过；首次测试误把非 Plan 渠道当成可恢复 Plan，已修正为 Web 渠道，未放宽产品 Plan 门控。该结果为本地定向回归，不代表浏览器、Windows 或远端验收。逐项改动与原始日志见工程根 `Debug/FEATBIND-flash-todo-update/iteration-2/`。

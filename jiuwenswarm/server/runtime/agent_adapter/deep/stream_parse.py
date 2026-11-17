@@ -681,7 +681,10 @@ def _parse_stream_chunk(
 
             if chunk_type == "todo.updated":
                 todos = payload.get("todos", []) if isinstance(payload, dict) else []
-                return {"event_type": "todo.updated", "todos": todos}
+                result = {"event_type": "todo.updated", "todos": todos}
+                if isinstance(payload, dict) and payload.get("todo_meta") is not None:
+                    result["todo_meta"] = payload["todo_meta"]
+                return result
 
             if chunk_type == "task.start":
                 if isinstance(payload, dict):

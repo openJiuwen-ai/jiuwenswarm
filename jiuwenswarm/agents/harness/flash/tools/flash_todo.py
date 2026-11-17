@@ -112,7 +112,7 @@ def _unified_todo_input_params(language: str) -> dict:
             "tasks": {
                 "type": "array",
                 "minItems": 1,
-                "items": {"type": "object", "required": ["id", "content"], "properties": {
+                "items": {"type": "object", "required": ["content"], "properties": {
                     "id": {"type": "string"}, "content": {"type": "string", "minLength": 1},
                     "activeForm": {"type": "string"}, "description": {"type": "string"},
                     "selected_model_id": {"type": "string"},
