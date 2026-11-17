@@ -1456,6 +1456,8 @@ class SwarmSymphonyService:
                             "Symphony Skill install failed (%s)",
                             type(exc).__name__,
                         )
+                        if getattr(exc, "code", "") == "SKILL_ALREADY_EXISTS":
+                            return {"installed": False, "reason": "skill_already_exists"}
                         if getattr(exc, "code", "") in {
                             "SKILL_INVALID_METADATA",
                             "SKILL_INVALID_PACKAGE",

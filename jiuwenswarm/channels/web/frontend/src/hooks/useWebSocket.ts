@@ -23,6 +23,7 @@ import {
 } from '../features/sessionAssets/sessionAssets';
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { toast } from '../components/ui/Toast/toastStore';
+import { isSkillPackagePrompt } from '../components/InteractionSlot/promptRouting';
 import { useTranslation } from 'react-i18next';
 import {
   ConnectionAckPayload,
@@ -2865,6 +2866,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       // 「执行」分支会在请求发出前先乐观地关掉 Plan 开关并登记补发标记，失败时要撤回。
       let planExecuteOptimistic = false;
       let pendingAgentGroupId: string | undefined;
+      const skillPackageRequest = requestId.startsWith('symphony_experience_');
       try {
         const pendingQuestion = useChatStore.getState().getRuntime(sessionId)?.pendingQuestions[0];
         const pendingMatches = pendingQuestion?.request_id === requestId;
@@ -3060,7 +3062,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           useHarnessStore.getState().setActivateInteraction(sessionId, null);
         } else {
           // 否则发送 chat.user_answer（自进化确认）
-          await request('chat.user_answer', {
+          const receipt = await request<Record<string, unknown> | undefined>('chat.user_answer', {
             session_id: sessionId,
             ...getSessionWorkContext(sessionId),
             request_id: requestId,
@@ -3069,7 +3071,26 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             ...interruptPayload,
             ...approvalSchemaPayload,
             ...evolutionMetaPayload,
-          });
+          }, skillPackageRequest ? { awaitUserAnswerResult: true, timeoutMs: 120000 } : undefined);
+          if (isSkillPackagePrompt({ request_id: requestId, questions: [], evolutionMeta }) && (
+            receipt?.accepted === false || receipt?.resolved === false ||
+            (receipt?.installed === false && receipt?.deferred !== true)
+          )) {
+            toast.open({
+              id: `skill-package-answer-${sessionId}-${requestId}`,
+              content: t(receipt?.reason === 'skill_already_exists'
+                ? 'skillPackagePrompt.nameConflict'
+                : 'skillPackagePrompt.createFailed'),
+              variant: 'error',
+              wide: true,
+              duration: 8,
+              testId: 'interaction-slot-skill-package-error',
+            });
+            return false;
+          }
+          if (skillPackageRequest && typeof receipt?.resolved !== 'boolean') {
+            throw new Error(t('skillPackagePrompt.resultUnavailable'));
+          }
         }
         if (effectiveSource === 'ask_user_interrupt') {
           // 后端快照可能仍带着这道题，恢复执行时会重新派发；登记后不再入队。
@@ -3089,6 +3110,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const webError = error as WebError;
         if (pendingAgentGroupId) {
           clearFailedAgentGroupBinding(sessionId, pendingAgentGroupId);
+        }
+        if (skillPackageRequest) {
+          toast.open({
+            id: `skill-package-answer-${sessionId}-${requestId}`,
+            content: t('skillPackagePrompt.resultUnavailable'),
+            variant: 'error',
+            wide: true,
+            duration: 8,
+            testId: 'interaction-slot-skill-package-error',
+          });
         }
         onErrorRef.current?.(webError.message || t('network.submitAnswerFailed'));
         return false;

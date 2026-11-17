@@ -5173,7 +5173,10 @@
     "skippedSummary": "已跳过"
   },
   "skillPackagePrompt": {
-    "creating": "正在创建…"
+    "creating": "正在创建…",
+    "nameConflict": "创建失败：本地已有同名技能或技能包，原内容未覆盖。可选择“暂不创建”，或处理同名冲突后重试。",
+    "createFailed": "创建技能包失败，确认卡已保留。请稍后重试，或选择“暂不创建”。",
+    "resultUnavailable": "暂未确认技能包创建结果，确认卡已保留。请检查技能列表后重试，或选择“暂不创建”。"
   },
   "qaSummary": {
     "title": "问题澄清"
@@ -6687,6 +6690,7 @@
       "periodEnd": "结束日期",
       "periodTo": "至",
       "periodLimit": "最多支持查看 {{count}} 天数据，已自动调整开始日期",
+      "periodLimitEnd": "最多支持查看 {{count}} 天数据，已自动调整结束日期",
       "metrics": {
         "members": "员工数量",
         "activeDays": "活跃天数",
@@ -6720,9 +6724,11 @@
       "minutesAgo": "{{count}} 分钟前",
       "hoursAgo": "{{count}} 小时前",
       "daysAgo": "{{count}} 天前",
+      "previous": "上一组",
       "next": "下一组",
       "workRecord": "工作记录",
-      "groupChats": "群聊 {{count}}",
+      "groupChats": "群聊列表",
+      "groupChatsCount": "共 {{count}} 个",
       "channelColumns": {
         "group": "群聊",
         "channel": "频道",

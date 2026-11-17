@@ -131,6 +131,10 @@ class _InflightStream:
 _RECOVERY_TIMEOUT = 90.0
 
 
+class WorkerExitUnconfirmed(RuntimeError):
+    """The validated Worker may still be exiting after the observation deadline."""
+
+
 class RuntimeSupervisor:
     """Spawn, health-check, and route execution to the resident Worker.
 
@@ -615,10 +619,16 @@ class RuntimeSupervisor:
                             await conn.close()
                         await self._retire_unhealthy_worker()
                     except Exception as cleanup_error:
-                        self._fatal = True
-                        self._fatal_reason = f"attached Worker startup cleanup failed: {cleanup_error}"
-                        self._readiness.mark_failed(self._fatal_reason)
-                        self._ipc_ready.set()
+                        reason = f"attached Worker startup cleanup failed (startup error: {exc}): {cleanup_error}"
+                        if (isinstance(cleanup_error, WorkerExitUnconfirmed)
+                                and not isinstance(exc, WorkerIdentityError)):
+                            self._mark_retryable_failure(reason)
+                        else:
+                            self._fatal = True
+                            self._retryable_failure = False
+                            self._fatal_reason = reason
+                            self._readiness.mark_failed(reason)
+                            self._ipc_ready.set()
                         logger.exception("[Supervisor] attached startup cleanup failed")
                         break
                 logger.warning(
@@ -663,7 +673,7 @@ class RuntimeSupervisor:
                 if unhealthy_reason or self._ipc_mode == FRONT_LOOPBACK or exited:
                     self._record_post_ready_exit(reason)
                 if not self._fatal and self._restart_count >= self._max_restarts:
-                    self._mark_restart_exhausted(reason)
+                    self._mark_retryable_failure(reason)
                 if self._fatal:
                     self._readiness.mark_failed(self._fatal_reason or reason)
                     self._ipc_ready.set()
@@ -695,10 +705,17 @@ class RuntimeSupervisor:
                     try:
                         await self._retire_unhealthy_worker()
                     except Exception as exc:  # noqa: BLE001
-                        self._fatal = True
-                        self._fatal_reason = f"unhealthy Worker could not be retired: {exc}"
-                        self._readiness.mark_failed(self._fatal_reason)
-                        self._ipc_ready.set()
+                        reason = f"unhealthy Worker could not be retired: {exc}"
+                        if isinstance(exc, WorkerExitUnconfirmed):
+                            # Recovery rechecks the retained identity and exit
+                            # before it can elect or spawn a replacement.
+                            self._mark_retryable_failure(reason)
+                        else:
+                            self._fatal = True
+                            self._retryable_failure = False
+                            self._fatal_reason = reason
+                            self._readiness.mark_failed(reason)
+                            self._ipc_ready.set()
                         logger.exception("[Supervisor] unhealthy Worker retirement failed")
                         break
                 if self._fatal:
@@ -1505,9 +1522,9 @@ class RuntimeSupervisor:
         self._post_ready_crashes.append(now)
         if len(self._post_ready_crashes) >= _POST_READY_CRASH_LIMIT:
             self._crash_retry_at = self._post_ready_crashes[0] + _POST_READY_CRASH_WINDOW
-            self._mark_restart_exhausted(f"runtime worker repeatedly exited after readiness: {reason}")
+            self._mark_retryable_failure(f"runtime worker repeatedly exited after readiness: {reason}")
 
-    def _mark_restart_exhausted(self, reason: str) -> None:
+    def _mark_retryable_failure(self, reason: str) -> None:
         """Publish a transient failure and retry after a bounded cooldown."""
         self._retryable_failure = True
         self._fatal = True
@@ -1526,7 +1543,7 @@ class RuntimeSupervisor:
         delay = _RECOVERY_BACKOFF_INITIAL
         while not self._stopping and not self._closing:
             delay = max(delay, self._crash_retry_at - time.monotonic())
-            logger.warning("[Supervisor] restart budget exhausted; retrying in %.1fs", delay)
+            logger.warning("[Supervisor] runtime recovery pending; retrying in %.1fs", delay)
             await asyncio.sleep(delay)
             if self._stopping or self._closing or self._readiness.state is not ReadinessState.FAILED:
                 return
@@ -1552,7 +1569,7 @@ class RuntimeSupervisor:
             self._ipc_ready.set()
             return False
         if self._restart_count >= self._max_restarts:
-            self._mark_restart_exhausted(reason)
+            self._mark_retryable_failure(reason)
             return False
         self._restart_count += 1
         logger.info(
@@ -1868,7 +1885,7 @@ class RuntimeSupervisor:
                 try:
                     process.wait(timeout=max(0.0, deadline - time.monotonic()))
                 except psutil.TimeoutExpired as exit_error:
-                    raise RuntimeError(
+                    raise WorkerExitUnconfirmed(
                         "Validated Worker exit could not be observed before the shutdown deadline"
                     ) from exit_error
         except psutil.NoSuchProcess:

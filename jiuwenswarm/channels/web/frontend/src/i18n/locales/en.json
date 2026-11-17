@@ -5176,7 +5176,10 @@
     "skippedSummary": "Skipped"
   },
   "skillPackagePrompt": {
-    "creating": "Creating…"
+    "creating": "Creating…",
+    "nameConflict": "Creation failed: a local skill or skill package has the same name. Its contents were not overwritten. Choose Later, or resolve the name conflict and retry.",
+    "createFailed": "Failed to create the skill package. The confirmation remains open. Retry later or choose Later.",
+    "resultUnavailable": "The skill package creation result is not yet confirmed. The confirmation remains open. Check My Skills before retrying, or choose Later."
   },
   "qaSummary": {
     "title": "Clarifications"
@@ -6690,6 +6693,7 @@
       "periodEnd": "End date",
       "periodTo": "to",
       "periodLimit": "Up to {{count}} days can be shown; the start date was adjusted",
+      "periodLimitEnd": "Up to {{count}} days can be shown; the end date was adjusted",
       "metrics": {
         "members": "Members",
         "activeDays": "Active days",
@@ -6723,9 +6727,11 @@
       "minutesAgo": "{{count}} min ago",
       "hoursAgo": "{{count}} hr ago",
       "daysAgo": "{{count}} day ago",
+      "previous": "Previous",
       "next": "Next",
       "workRecord": "Work record",
-      "groupChats": "Group chats {{count}}",
+      "groupChats": "Group chats",
+      "groupChatsCount": "{{count}} total",
       "channelColumns": {
         "group": "Group chat",
         "channel": "Channel",

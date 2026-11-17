@@ -20,6 +20,8 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmD
 def isolated_search_env(monkeypatch):
     for provider in ("bocha", "perplexity", "serper", "jina"):
         monkeypatch.setenv(f"{provider.upper()}_API_KEY", "")
+    for flag in ("FREE_SEARCH_DDG_ENABLED", "FREE_SEARCH_BING_ENABLED"):
+        monkeypatch.setenv(flag, "false")
     monkeypatch.setattr(mcp_paid_search.card, "description", mcp_paid_search.card.description)
     monkeypatch.setattr(mcp_paid_search.card, "input_params", deepcopy(mcp_paid_search.card.input_params))
     monkeypatch.setattr(mcp_toolkits, "_SEARCH_ABILITY_MANAGERS", WeakSet())

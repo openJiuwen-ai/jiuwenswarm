@@ -8,6 +8,8 @@ await build({
   entryPoints: [
     'src/hooks/useWebSocket.ts', 'src/stores/index.ts', 'src/i18n/index.ts',
     'src/components/InteractionSlot/AuthorizationPrompt.tsx', 'src/services/webClient.ts',
+    'src/components/InteractionSlot/InteractionPrompt.tsx',
+    'src/components/ui/Toast/Toast.tsx', 'src/components/ui/Toast/toastStore.ts',
     'src/components/ChatPanel/ToolCallDisplay.tsx', 'src/components/ChatPanel/ToolGroupDisplay.tsx',
     'src/features/planMode/planModeGate.ts',
     'src/features/multiModelCollaboration/featureConfig.ts',

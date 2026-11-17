@@ -110,6 +110,12 @@ class ContextCheckpointer(Checkpointer):
         return getattr(self.delegate, name)
 
     async def _commit(self, native_session: Any, *, interrupted: bool) -> Any:
+        from jiuwenswarm.runtime.checkpoint_budget import admit_context_checkpoint
+
+        async with admit_context_checkpoint():
+            return await self._commit_admitted(native_session, interrupted=interrupted)
+
+    async def _commit_admitted(self, native_session: Any, *, interrupted: bool) -> Any:
         from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
 
         method = self.delegate.interrupt_agent_execute if interrupted else self.delegate.post_agent_execute

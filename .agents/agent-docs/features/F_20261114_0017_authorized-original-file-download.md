@@ -5,7 +5,7 @@ type: F
 author: nypdmax
 author_email: chengkunck@gmail.com
 created: 2026-11-14
-updated: 2026-11-16
+updated: 2026-11-17
 modules:
   - jiuwenswarm/common
   - jiuwenswarm/agents/harness/common/tools
@@ -137,3 +137,12 @@ develop 的冲突为三个生成索引及 ASR 用例的重复导入；0.2.9 只�
 两分支各按新目标分支原始 uv.lock 建立独立冻结环境，五个实际 Git 依赖 commit 分别匹配各自原锁，pyproject.toml / uv.lock 与目标基线一致。macOS arm64 / Python 3.11.4 下各运行 12 个相关 pytest 文件，均为 **246 passed，1 skipped，0 failed**；唯一跳过为缺少可选 webview。命令、逐文件摘要、JUnit 及环境核验见 [本轮回归摘要](../../../task-artifacts/authorized-download-rebase-20261116/test-summary.json)、[依赖核验](../../../task-artifacts/authorized-download-rebase-20261116/environment-lock-verification.json) 与 [索引条目核验](../../../task-artifacts/authorized-download-rebase-20261116/index-union-verification.json)。未重跑 Windows、浏览器/真实模型 E2E 或全量 CI；此前 Windows 证据仍限定原实测依赖组合。
 
 code-quality-check 未发现本轮范围内阻塞项。冲突解决没有引入职责、生命周期、协议或集成机制变化，架构升级 Not triggered；保留此前生命周期审查的候选范围限定。最终独立只读复核为 **Approve**，无本轮范围内阻塞项，详见 [本轮独立复核](../../../task-artifacts/authorized-download-rebase-20261116/independent-review.md)；评审未独立重跑测试，复核后仅追加此真实结论，技术文件不变。本地通过不代表新提交的远端门禁已通过。
+
+
+## 继续同步目标基线：2026-11-17
+
+上次推送后 develop 更新至 `9dd7219fcfe7`，上游将 ASR 配置用例合并到 `tests/unit_tests/common/test_common_regressions.py` 并删除旧文件，触发原 PR 的修改/删除冲突。核对两个测试函数除导入位置外 AST 等价、Provider 隔离与四项参数化断言仍在后，接受旧文件删除，保留上游合并模块原样；本轮无需再迁移旧文件的导入调整。0.2.9 当前平台文件冲突检查原已通过，按用户要求将其同步至本地最新 `ce4916ad5bfc`，自动合入无冲突。两个分支均继续保留历史、追加合入提交并普通推送。
+
+四个下载生产文件与各自上轮 PR head 逐字节一致，token 结构和原文件/不过期登记/SHA-256 契约保持。目标基线 pyproject.toml 与 uv.lock 原样保留，冻结环境五个 Git 依赖 commit 各自核对一致。两分支各完成 11 个下载测试文件及 ASR 四项用例：**246 passed，1 skipped，0 failed**；develop 使用合并模块中对应节点，0.2.9 使用原模块。唯一跳过为缺少可选 webview，环境为 macOS arm64 / Python 3.11.4；未重跑 Windows、浏览器/模型 E2E 或全量 CI。证据见 [测试迁移核对](../../../task-artifacts/authorized-download-conflicts-20261117/asr-migration-evidence.json)、[本轮测试摘要](../../../task-artifacts/authorized-download-conflicts-20261117/test-summary.json) 和 [依赖核验](../../../task-artifacts/authorized-download-conflicts-20261117/environment-lock-verification.json)。
+
+code-quality-check 未发现当前范围阻塞项；本次无职责、生命周期或协议变更，架构升级 Not triggered。最终独立只读复核为 **Approve**，无当前范围阻塞项，见 [本轮独立复核](../../../task-artifacts/authorized-download-conflicts-20261117/independent-review.md)；评审未另行重跑测试，之后仅追加此结论，技术文件不变。PR 保持未合并，新提交的远端门禁结果另行确认。

@@ -2092,3 +2092,30 @@ for (const language of ['zh', 'en']) {
     } finally { await view.close(); await i18n.changeLanguage('zh'); }
   });
 }
+
+test('activity period dates use the schedule calendar without a clear button and no future days', async () => {
+  await i18n.changeLanguage('zh');
+  const view = await mountDashboard({ activity: { members: [] }, today: new Date(2026, 10, 16) });
+  try {
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="activity"]'));
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="period"]'));
+    assert.equal(view.find('input[type="date"]'), null);
+    const field = (testId) => view.find(`[data-testid="${testId}"] [data-testid="cron-date-picker-input"]`);
+    const end = field('jiuwenmate-office-period-end').value;
+    assert.equal(end, '2026-11-16');
+    assert.equal(field('jiuwenmate-office-period-start').value, '2026-11-10');
+    assert.equal(field('jiuwenmate-office-period-start').getAttribute('aria-label'), '开始日期');
+    assert.equal(field('jiuwenmate-office-period-end').getAttribute('aria-label'), '结束日期');
+
+    await view.click(view.find('[data-testid="jiuwenmate-office-period-start"] [data-testid="cron-date-picker"] > div'));
+    const days = [...view.container.querySelectorAll('[data-testid="cron-date-picker-day"]')];
+    assert.ok(days.length > 0);
+    assert.equal(view.container.textContent.includes('清除'), false);
+    for (const day of days) assert.equal(day.disabled, day.dataset.variant > end, day.dataset.variant);
+
+    const firstOfMonth = days[0];
+    await view.click(firstOfMonth);
+    assert.equal(field('jiuwenmate-office-period-start').value, firstOfMonth.dataset.variant);
+    assert.equal(field('jiuwenmate-office-period-end').value, end);
+  } finally { await view.close(); }
+});

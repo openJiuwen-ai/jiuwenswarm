@@ -1382,7 +1382,7 @@ def parse_optional_int(value: Any) -> int | None:
 
 
 def _resolve_general_purpose_max_iterations(config: dict[str, Any] | None) -> int:
-    """Resolve the general-purpose inner cap; unconfigured inherits the former 100."""
+    """Resolve the general-purpose inner cap; unconfigured inherits the default 1000."""
     react_cfg = config if isinstance(config, dict) else {}
     subagents_cfg = react_cfg.get("subagents")
     general_cfg = (
@@ -1390,7 +1390,7 @@ def _resolve_general_purpose_max_iterations(config: dict[str, Any] | None) -> in
     )
     return parse_int(
         general_cfg.get("max_iterations") if isinstance(general_cfg, dict) else None,
-        parse_int(react_cfg.get("max_iterations"), 100),
+        parse_int(react_cfg.get("max_iterations"), 1000),
     )
 
 
@@ -5914,7 +5914,7 @@ class JiuWenSwarmDeepAdapter:
                         language=resolved_language,
                         max_iterations=parse_int(
                             research_agent_cfg.get("max_iterations"),
-                            parse_int(react_cfg.get("max_iterations"), 100),
+                            parse_int(react_cfg.get("max_iterations"), 1000),
                         ),
                     )
                 )
@@ -17485,9 +17485,9 @@ class JiuWenSwarmDeepAdapter:
             if refresh_warnings:
                 receipt = {**receipt, "refresh_warnings": refresh_warnings}
         return {
-            "accepted": True,
-            "resolved": True,
             **receipt,
+            "accepted": bool(receipt.get("installed")),
+            "resolved": bool(receipt.get("installed")),
         }
 
     async def handle_swarmflow_reply(self, request: AgentRequest) -> AgentResponse:

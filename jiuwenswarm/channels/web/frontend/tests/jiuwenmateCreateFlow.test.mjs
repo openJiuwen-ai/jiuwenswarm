@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   cancelColleagueCreation,
+  clearWorkspaceIntent,
   closeTemplateDetail,
   completeColleagueCreation,
   createColleagueId,
@@ -22,6 +23,15 @@ import {
   startColleagueRefinement,
   updateColleagueDraft,
 } from '../node_modules/.cache/jiuwenmate-create-flow/createFlowState.js';
+
+test('reopening chat from the rail drops an activity trace link instead of replaying it', () => {
+  const traced = { nonce: 3, intent: { recordTab: 'channels', channelId: 'group-1', trace: true } };
+  const reopened = clearWorkspaceIntent(traced);
+  assert.deepEqual(reopened, { nonce: 4, intent: null });
+
+  const plain = { nonce: 4, intent: null };
+  assert.equal(clearWorkspaceIntent(plain), plain);
+});
 
 const draft = {
   name: '品牌顾问',
