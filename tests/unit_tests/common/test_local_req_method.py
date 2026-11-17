@@ -126,3 +126,40 @@ def test_gateway_string_request_resolves_to_local_member():
     envelope = E2AEnvelope(request_id="gateway", channel="web", method="jiuwenmate.delivery.ack")
     request = parse_raw_message(json.dumps(envelope.to_dict()))
     assert request.req_method is ReqMethod.JIUWENMATE_DELIVERY_ACK
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["FILE_READ_UPLOAD_CHUNK", "TRAJECTORY_USAGE_GET"])
+async def test_gateway_fetch_restores_host_method_and_routing_identity(name):
+    from agent_gateway.common.protocol_methods import ReqMethod as GatewayReqMethod
+    from agent_gateway.routing.e2a_proxy import fetch_agent_unary
+
+    from jiuwenswarm.common.schema.agent import AgentResponse
+
+    local_method = ReqMethod[name]
+    gateway_method = GatewayReqMethod[name]
+    assert gateway_method is not local_method
+    requests = []
+
+    class WireClient:
+        server_ready = True
+
+        async def send_request(self, envelope):
+            assert type(envelope.method) is str
+            request = parse_raw_message(json.dumps(envelope.to_dict()))
+            requests.append(load_agent_request(dump_agent_request(request)))
+            return AgentResponse(request_id=request.request_id, channel_id=request.channel_id, ok=True, payload={})
+
+    ok, payload = await fetch_agent_unary(
+        agent_client=WireClient(), req_method=gateway_method,
+        params={"session_id": "session-a"}, session_id="session-a",
+        user_id="user-a", channel_id="web",
+        metadata={"routing": {"group_id": "group-a", "bot_id": "bot-a"}},
+    )
+    assert ok and payload == {}
+    assert len(requests) == 1
+    assert requests[0].req_method is local_method
+    assert requests[0].session_id == "session-a"
+    assert requests[0].user_id == "user-a"
+    assert requests[0].metadata["routing"]["group_id"] == "group-a"
+    assert requests[0].metadata["routing"]["bot_id"] == "bot-a"

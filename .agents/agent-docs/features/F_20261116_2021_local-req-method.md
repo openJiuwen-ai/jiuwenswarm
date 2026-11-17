@@ -12,6 +12,7 @@ files:
   - jiuwenswarm/common/schema/message.py
   - jiuwenswarm/common/schema/agent.py
   - jiuwenswarm/common/e2a/gateway_normalize.py
+  - jiuwenswarm/server/dispatch.py
   - jiuwenswarm/extensions/video_duplex/backend/task_adapter.py
   - jiuwenswarm/extensions/video_duplex/extension.py
   - tests/unit_tests/common/test_local_req_method.py
@@ -83,3 +84,73 @@ ReqMethod、旧版 fallback、未知方法终态错误、非法参数拒绝及�
 此前 661 项通过属于初版记录；本次候选重跑上述相同组合命令，结果为
 `660 passed, 1 deselected`，减少的一项是已删除的过时测试。
 正常插件注册测试在没有 schema 模块 mock 时仍通过；环境与未覆盖限制不变。
+
+## 2026-11-17 UT 门禁修复
+
+门禁报告对应提交 `3d2fd38c9ff44e9ad7ebe2ce64e090f7d281907c`，
+Linux / Python 3.11.5，生成于 2026-11-16 22:03:06，结果为
+25165 passed、2 failed、224 skipped。
+报告：[PR !10318 UT](https://openjiuwen-ci.obs.cn-north-4.myhuaweicloud.com/jiuwenswarm/ut/10318/unit_test_report.html)。
+
+两项失败均来自此前遗漏的同进程测试边界：
+
+- `test_session_upload_read.py::test_enterprise_raw_file_reuses_tenant_rpc_and_streaming`
+  将 Gateway 枚举直接装进 Host AgentRequest，Host 分派判定为不支持方法，HTTP 返回 400。
+- `test_trajectory_usage_http.py::test_http_exposes_session_scoped_request_usage`
+  将 `TrajectoryHost.call` 直接注入 Gateway HTTP 服务，未经过字符串转换，同样返回 400。
+
+修复限定在测试替身：按 `.value` 转为 Host 本地枚举，并将跨仓调用断言改为比较线协议字符串。
+保留原 HTTP、租户隔离、流式读取与用量数据断言，不放宽生产分派，不重新绑定上游枚举。
+新增两项回归用真实 `fetch_agent_unary`、JSON、Front 与 IPC 路径验证这两个方法
+转换为本地枚举，同时保留 session、user、group 和 bot 身份。
+
+本地验证：上述组合命令为 `662 passed, 1 deselected`。
+另用真实 Gateway HTTP 服务及 TrajectoryHost、注入 settings/reader 复现修复前 400、修复后 200；
+用真实 WorkspaceFileAdapter 分派复现修复前 BAD_REQUEST、修复后成功，后者仅 stub 文件 I/O、
+未经过租户包装层。两项原始完整用例仍受本地 openjiuwen 缺失限制，文件读取还依赖 Linux
+文件描述符接口；不能将局部复现视为完整 UT 已通过，需新一轮 CI 确认。
+
+## 2026-11-17 develop 冲突处理
+
+合并 develop `7cc474c95`，保留其测试文件整合与团队控制功能，不重写已有提交。
+本节续写合并后候选的实施与验证；上述 532 个成员及历史测试结果仍对应当时版本。
+
+- 将上游新增的 `TEAM_CREATE`、`TEAM_GET`、`TEAM_STOP`、`TEAM_MEMBER_JOIN`、
+  `TEAM_MEMBER_LEAVE`、`TEAM_MEMBERS_LIST`、`TEAM_QUOTA_GET` 纳入静态本地枚举，
+  当前共 539 个成员，名称和字符串值保持不变。
+- 不保留上游新增的请求枚举动态补齐函数，删除 dispatch 和相关测试中的补齐调用；
+  企业版 handler 注册仍由 `is_enterprise()` 控制，枚举存在不代表个人版开放此能力。
+- 保留上游删除旧测试文件的结果，将 trajectory HTTP 测试替身的跨仓枚举转换、
+  企业协议身份与拆分 Gateway 测试断言迁移至 `test_channel_regressions.py`、
+  `test_common_regressions.py` 和 `test_server_jiuwenmate_regressions.py`。
+- 使用上游更新后的文档索引工具重新生成索引，不手工拼接冲突内容。
+
+验证环境仍为 Windows / Python 3.14，协议及 Gateway 使用前述锁定版本源码，
+测试使用 `--noconftest -o addopts= -o log_cli=false`：
+
+| 范围 | 实际结果 | 限制 |
+| --- | --- | --- |
+| develop 枚举目录逐项比对 | 539 个成员的名称和值完全一致 | 依据锁定 E2A 目录、develop 补齐调用与团队控制清单，一次性比对 |
+| 本地枚举、normalization、方法契约、Front、视频兼容、诊断 HTTP、飞书回调 | 660 passed, 1 deselected | 转发名单测试仍因缺少 openjiuwen 排除 |
+| 团队路由固定测试 | 13 passed | 覆盖路由与本地枚举边界，不代表完整企业运行时验收 |
+| 上述三个整合模块中的迁移用例 | 采集失败 | 整合模块的顶层导入依赖缺失的 openjiuwen，需 CI 验证 |
+
+全部本地成员的 Front / IPC 往返测试自动覆盖新增的 7 个团队方法；导入不修改
+协议枚举的回归继续通过。完整 UT 门禁仍需本次合并提交触发的新一轮 CI 确认。
+
+## 2026-11-17 按要求 rebase
+
+按用户要求，将原始三个提交重放到 develop `24fdb1bf7`，不保留 merge 提交。
+上节记录保留为历史证据，其冲突处理已纳入重放后的提交：新增团队成员和企业门控、
+整合测试中的本地枚举转换及此前 UT 修复全部保留。逐文件对象比对确认，本 PR
+涉及的生产代码和测试与变基前 `7666a953f` 内容一致，文档索引保留最新上游记录。
+
+变基后在相同环境重跑上述定向组合并加入团队路由测试，结果为
+`673 passed, 1 deselected`。openjiuwen 缺失和完整门禁待 CI 的限制不变，
+不得将变基前 CI 状态视为新提交的验证结论。
+
+推送期间 develop 又前进到 `598a0ca1b`（清理已迁往 Gateway 的重复测试），
+已再次 rebase：保留上游对 `test_issue_5448_zombie_stream_terminal_frame.py`
+的删除及 `gateway_server_fakes` 导入调整，不恢复重复用例；保留仍在本仓的
+trajectory HTTP 与 A4P 测试边界修复。最终基线为 `598a0ca1b`，仍为三个
+线性提交，最终候选再次运行同一组合得到 `673 passed, 1 deselected`。
