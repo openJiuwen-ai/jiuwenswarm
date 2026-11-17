@@ -2049,6 +2049,50 @@ async function mountDashboard(extra = {}) {
   };
 }
 
+test('employee cards reveal the full description only when it is clipped', async () => {
+  const fullDescription = '整理资料、撰写文档、总结讨论，并将结论整理为可跟进的行动清单。';
+  const view = await mountDashboard({
+    colleagues: [{ ...dashboardProps.colleagues[0], description: fullDescription }],
+  });
+  const previousObserver = globalThis.MutationObserver;
+  try {
+    const description = view.find('.jiuwenmate-colleague-card__description');
+    const card = description.closest('button');
+    const doc = description.ownerDocument;
+    const { MouseEvent, MutationObserver } = doc.defaultView;
+    globalThis.MutationObserver = MutationObserver;
+    let scrollHeight = 60;
+    Object.defineProperties(description, {
+      clientHeight: { value: 60 },
+      scrollHeight: { get: () => scrollHeight },
+    });
+    const tooltip = () => doc.querySelector('[role="tooltip"]');
+    const moveMouse = async (element, eventName, relatedTarget = null) => {
+      await act(async () => element.dispatchEvent(new MouseEvent(eventName, { bubbles: true, relatedTarget })));
+    };
+
+    await moveMouse(description, 'mouseover');
+    assert.equal(tooltip(), null);
+    await moveMouse(description, 'mouseout');
+
+    scrollHeight = 100;
+    await moveMouse(card, 'mouseover');
+    assert.equal(tooltip(), null);
+    await moveMouse(card, 'mouseout', description);
+    assert.equal(tooltip()?.textContent, fullDescription);
+    await moveMouse(description, 'mouseout', card);
+    assert.equal(tooltip(), null);
+
+    await act(async () => card.focus());
+    assert.equal(tooltip()?.textContent, fullDescription);
+    await act(async () => card.blur());
+    assert.equal(tooltip(), null);
+  } finally {
+    globalThis.MutationObserver = previousObserver;
+    await view.close();
+  }
+});
+
 for (const [language, message] of [
   ['zh', '请选择执行此任务的员工'],
   ['en', 'Select an AI employee to run this task.'],
