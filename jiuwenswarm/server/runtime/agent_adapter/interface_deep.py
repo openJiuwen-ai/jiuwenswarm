@@ -1422,6 +1422,9 @@ class JiuWenSwarmDeepAdapter:
         self._model_identity_owners: dict[str, dict[str, str]] = {}
         self._model_entry_by_ref: dict[str, dict[str, Any]] = {}
         self._applied_model_refs: set[str] = set()
+        # Per-session window override snapshots (no sticky selected/catalog).
+        # See deep/context_window.py and server docs/specs/S_06_*.
+        self._context_window_override_snapshots: dict[str, dict[str, Any]] = {}
         # Optional lite/pro mapping from models.defaults[].tier for task_tool.
         self._tier_model_cache: dict[str, Model] = {}
         # Cache system prompt to avoid re-building on every btw/recap call.
@@ -5696,6 +5699,73 @@ class JiuWenSwarmDeepAdapter:
             recover_kv,
         )
 
+
+    def _catalog_context_window_tokens_for_request(
+        self, request: AgentRequest
+    ) -> int | None:
+        """Read sibling ``context_window_tokens`` via request identity (not Model ``is``)."""
+        from jiuwenswarm.server.runtime.agent_adapter.deep.context_window import (
+            resolve_catalog_window_tokens,
+        )
+
+        params = request.params if isinstance(getattr(request, "params", None), dict) else {}
+        return resolve_catalog_window_tokens(
+            params=params,
+            entry_by_ref=self._model_entry_by_ref,
+            identity_to_keys=self._model_identity_to_keys,
+            normalize_ref=normalize_model_identity_reference,
+        )
+
+    def _apply_request_context_window(
+        self,
+        request: AgentRequest,
+        session_id: str | None,
+        *,
+        model_name: str = "",
+    ) -> None:
+        """Compose effective window and write this session's compression denominator.
+
+        Deep main chat only. Call after model apply and pending reload, before invoke.
+        Catalog max is resolved from request identity (model_ref / model_name), not
+        Model object identity, so reload order need not change for this feature.
+        """
+        from jiuwenswarm.server.runtime.agent_adapter.deep.context_window import (
+            run_request_context_window_apply,
+        )
+
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+        params = request.params if isinstance(getattr(request, "params", None), dict) else {}
+        catalog_max = self._catalog_context_window_tokens_for_request(request)
+
+        react_agent = None
+        if self._instance is not None:
+            react_agent = getattr(self._instance, "react_agent", None) or getattr(
+                self._instance, "_react_agent", None
+            )
+        context_engine = getattr(react_agent, "context_engine", None) if react_agent else None
+        context = None
+        if context_engine is not None:
+            try:
+                context = context_engine.get_context(session_id=sid)
+            except Exception:
+                logger.debug(
+                    "[ModelWindow] get_context failed session=%s", sid, exc_info=True
+                )
+                context = None
+
+        log_model = str(model_name or params.get("model_name") or "").strip()
+        run_request_context_window_apply(
+            session_id=sid,
+            params=params,
+            catalog_max=catalog_max,
+            context=context,
+            context_engine=context_engine,
+            snapshots=self._context_window_override_snapshots,
+            model_name=log_model,
+            log=logger,
+        )
 
     def _apply_model_to_react_agent(self, model: Model) -> None:
         """将指定模型应用到 react_agent 实例（替换 _llm 和 _config 字段）。
@@ -16319,6 +16389,14 @@ class JiuWenSwarmDeepAdapter:
             resolved_model = self._resolve_model_for_request(request)
             self._apply_model_to_react_agent(resolved_model)
             await self._maybe_apply_pending_reload()
+            self._apply_request_context_window(
+                request,
+                session_id,
+                model_name=str(
+                    getattr(getattr(resolved_model, "model_config", None), "model_name", "")
+                    or ""
+                ),
+            )
             self._update_permission_rail(self._config_base_cache)
             request_env_tokens = self._bind_request_env_overlay()
             self._mark_session_active(session_id)
@@ -17555,6 +17633,9 @@ class JiuWenSwarmDeepAdapter:
             model_name = str(
                 getattr(resolved_model.model_config, "model_name", "") or ""
             ).strip()
+            self._apply_request_context_window(
+                request, session_id, model_name=model_name
+            )
             model_refs = [
                 ref
                 for ref, keys in self._model_identity_to_keys.items()

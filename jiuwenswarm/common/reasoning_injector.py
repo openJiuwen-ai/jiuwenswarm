@@ -46,6 +46,24 @@ def _runtime_config_copy(model_config_dict: dict[str, Any]) -> dict[str, Any]:
     return runtime_model_config
 
 
+def _has_explicit_thinking_fields(model_config: dict[str, Any]) -> bool:
+    """True when catalog already carries vendor thinking fields to passthrough.
+
+    OfficeAce / gear sync writes ``extra_body.thinking`` and/or
+    ``reasoning_effort`` directly. Those must not be rewritten by the legacy
+    ``reasoning_level`` injector.
+    """
+    if model_config.get("reasoning_effort") is not None:
+        return True
+    extra_body = model_config.get("extra_body")
+    if not isinstance(extra_body, dict):
+        return False
+    for key in ("thinking", "enable_thinking", "reasoning_effort"):
+        if key in extra_body and extra_body[key] is not None:
+            return True
+    return False
+
+
 def inject_deepseek_official_payload(
     model_config_obj: dict[str, Any],
     mapped_level: ReasoningEffort,
@@ -82,8 +100,12 @@ def inject_reasoning_params(
     model_config_obj: Any,
 ) -> dict[str, Any]:
     model_config_dict = _model_config_to_dict(model_config_obj)
-    level = normalize_reasoning_level(model_config_dict.get("reasoning_level"))
     runtime_model_config = _runtime_config_copy(model_config_dict)
+    # Explicit vendor fields win: strip reasoning_level only, do not rewrite.
+    if _has_explicit_thinking_fields(model_config_dict):
+        return runtime_model_config
+
+    level = normalize_reasoning_level(model_config_dict.get("reasoning_level"))
     if level is None:
         return runtime_model_config
 

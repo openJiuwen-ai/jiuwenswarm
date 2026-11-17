@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_03 / schema-data-models |
 | 关联模块 | jiuwenswarm/common/schema/（7 文件） |
-| 最近一次修订日期 | 2026-10-13 |
-| 关联 feature | 暂无 |
+| 最近一次修订日期 | 2026-11-17 |
+| 关联 feature | 窗口选用字段见 server `F_03_context-window-effective-denominator`；思考透传见 [[F_02_thinking-passthrough-no-rewrite]] |
 
 ## 范围 / 边界
 
@@ -43,7 +43,10 @@ swarmflow_reply 的参数契约。模型之间的协议转换（E2A ↔ AgentReq
   `ask_user_response_schema()` 单点生成。
 - **N8 ChatSendParams 契约**：`content` 是主字段，`query` **DEPRECATED**（读兼容、写禁
   新增）；`skills` / `mode` / `team` / `attachments` / `answers`（plan 审批）/ `evolution`
-  / `auto_harness` 等为可选槽位。TypedDict 是纯契约，无运行时校验——校验在消费方。
+  / `auto_harness` 等为可选槽位；可选正 int
+  `selected_context_window_tokens` 为 OfficeAce 卡片窗口选用（仅请求级压缩分母，禁止写入
+  `model_config_obj`；生效语义见 server `S_06_context-window-effective-denominator` 与
+  [[S_10]] N9）。TypedDict 是纯契约，无运行时校验——校验在消费方。
 - **N9 HookEventBase 自动前缀**：`__init_subclass__` 自动给事件名加 scope 前缀，对齐
   openjiuwen 0.1.9+ EventBase；下游 `GatewayHookEvents` / `AgentServerHookEvents` 定义在
   `extensions/hook_event.py`（不在本包）。
@@ -84,9 +87,12 @@ swarmflow_reply 的参数契约。模型之间的协议转换（E2A ↔ AgentReq
 - 改 ask_user 契约 → `tests/unit_tests/common/test_ask_user_response.py` + 前端卡片
   schema 同步（`ask_user_response_schema` 是对前端的契约）。
 - 弃用字段 → 保留读取兼容一个版本周期，标注 DEPRECATED 注释，勿物理删除。
+- 增删 `ChatSendParams` 窗口/模型相关可选槽 → 同步本规约 N8；窗口生效写入不在本包，回链
+  server `S_06` / [[S_10]] N9。
 
 ## 与其它 spec 的关系
 
 - [[S_02]]：E2A 信封与 AgentRequest 的转换边界。
 - [[S_08]]：Mode 的组合解析与 canonical 化（mode_matrix / work_mode）。
 - [[S_13]]：`Message.metadata` 内 routing / ext 子键的落点约定。
+- [[S_10]] N9：窗口字段禁止进 `model_config_obj`；server `S_06`：窗口生效分母。
