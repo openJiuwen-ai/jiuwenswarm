@@ -1094,6 +1094,62 @@ def cleanup_stale_openjiuwen_descs() -> None:
                 ) from exc
 
 
+def _read_previous_external_cli_state(config_path: Path) -> Optional[dict[str, Any]]:
+    """读取将被模板覆盖的 config.yaml 里用户的三方 agent 配置。
+
+    返回 external_cli_agents 列表与路径历史；不存在或为空时返回 None。
+    任何解析失败都按"无可保留"处理，不阻塞 init。
+    """
+    if not config_path.exists():
+        return None
+    try:
+        import yaml
+
+        with config_path.open("r", encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+        team = ((data.get("modes") or {}).get("team") or {}).get("jiuwen_team") or {}
+        agents = team.get("external_cli_agents")
+        histories = team.get("external_cli_path_histories")
+        if not isinstance(agents, list) or not agents:
+            return None
+        return {
+            "agents": agents,
+            "histories": histories if isinstance(histories, dict) else {},
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"读取覆盖前的三方 agent 配置失败，跳过保留: {exc}")
+        return None
+
+
+def _restore_previous_external_cli_state(config_path: Path, state: dict[str, Any]) -> None:
+    """把覆盖前的三方 agent 配置写回新 config.yaml（ruamel round-trip 保格式）。
+
+    直接对被覆盖的目标文件做节点级更新——不能用全局 CONFIG_YAML_PATH 的更新
+    函数：prepare_workspace 可能带着与默认数据目录不同的 workspace_dir 被调用。
+    旧配置在保存时已通过校验，这里按原样回写；任一失败仅记录告警并保留模板
+    默认值，不阻塞 init。
+    """
+    try:
+        from ruamel.yaml import YAML
+
+        yaml_rt = YAML()
+        yaml_rt.preserve_quotes = True
+        with config_path.open("r", encoding="utf-8") as handle:
+            data = yaml_rt.load(handle) or {}
+        modes = data.setdefault("modes", {})
+        team = modes.setdefault("team", {})
+        jiuwen_team = team.setdefault("jiuwen_team", {})
+        jiuwen_team["external_cli_agents"] = state["agents"]
+        histories = state.get("histories") or {}
+        if histories:
+            jiuwen_team["external_cli_path_histories"] = histories
+        with config_path.open("w", encoding="utf-8") as handle:
+            yaml_rt.dump(data, handle)
+        logger.info("已保留覆盖前的三方 agent 配置与路径历史")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"保留覆盖前的三方 agent 配置失败: {exc}")
+
+
 def prepare_workspace(
     overwrite: bool = True,
     preferred_language: Optional[str] = None,
@@ -1126,6 +1182,11 @@ def prepare_workspace(
 
     config_initialized = overwrite or not config_yaml_dest.exists()
     if config_initialized:
+        # init/重新部署用模板覆盖 config.yaml 时，保留用户已启用的三方 agent
+        # 配置与路径历史：托管安装的 CLI 运行时（runtime/external-cli/...）
+        # 并不随 init 删除，配置若一并清空，已安装的 agent 会在 UI 上回到
+        # "已关闭"，与磁盘上仍然存在的安装状态不一致。
+        preserved_external_cli = _read_previous_external_cli_state(config_yaml_dest)
         with TrackCopyDiff(
             dest=config_yaml_dest,
             is_file=True,
@@ -1133,6 +1194,8 @@ def prepare_workspace(
             overwrite=overwrite,
         ):
             shutil.copy2(config_yaml_src, config_yaml_dest)
+        if preserved_external_cli is not None:
+            _restore_previous_external_cli_state(config_yaml_dest, preserved_external_cli)
 
     resolved_lang = _resolve_preferred_language(config_yaml_dest, preferred_language)
 
