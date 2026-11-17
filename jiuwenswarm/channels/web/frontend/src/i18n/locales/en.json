@@ -1332,7 +1332,8 @@
       "trajectory": "Trajectory"
     },
     "team": {
-      "memberLanes": "Member trajectory lanes",      "workflowGroupAria": "Workflow {{name}}, {{count}} operators",
+      "memberLanes": "Member trajectory lanes",
+      "workflowGroupAria": "Workflow {{name}}, {{count}} operators",
       "workflowGroupOperators": "{{count}} operators",
       "schedule": {
         "title": "Dispatch control",
