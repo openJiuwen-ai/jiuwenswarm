@@ -291,6 +291,8 @@ function detectFailureMessage(
 
 type ExternalCliAgentsSectionProps = {
   draftValues: Record<string, string>;
+  /** 持久化配置的快照：自动落闸只依据持久化状态决策，不持久化未保存的草稿路径 */
+  persistedValues: Record<string, string>;
   /** Uploaded custom agents, rendered after Claude and Codex. */
   customAgents?: ExternalCliCustomAgent[];
   /** Installs an uploaded provider wheel and optional CLI executable. */
@@ -327,6 +329,7 @@ type ExternalCliAgentsSectionProps = {
 
 export function ExternalCliAgentsSection({
   draftValues,
+  persistedValues,
   customAgents = [],
   onUploadCustomAgent,
   onRemoveCustomAgent,
@@ -553,21 +556,26 @@ export function ExternalCliAgentsSection({
         return;
       }
       // 检测确认当前配置的可执行文件不存在（missing）或路径不可执行
-      // （unsupported），而 agent 还处于启用态：自动把开关落掉并持久化，让
-      // 状态行"未安装"与开关一致（未安装 → 禁用，重新启用需先安装或修正
-      // 路径）。仅手动检测触发——自动探测不得静默改写配置；unavailable
-      // （可执行文件在、版本命令失败）不落闸，保留手动关闭的能力。
+      // （unsupported），而持久化配置里 agent 还处于启用态：自动把开关落掉
+      // 并持久化，让状态行"未安装"与开关一致（未安装 → 禁用，重新启用需先
+      // 安装或修正路径）。仅手动检测触发——自动探测不得静默改写配置；
+      // unavailable（可执行文件在、版本命令失败）不落闸，保留手动关闭的
+      // 能力。且仅当探测的就是持久化路径时才落闸：探测未保存的草稿路径
+      // 失败不代表现有配置失效，不能把草稿路径静默持久化（!10406 检视）。
       const enabledKey = externalCliKey(cliAgent, 'enabled');
       const useBuiltinKey = externalCliKey(cliAgent, 'use_builtin');
       const cliPathKey = externalCliKey(cliAgent, 'cli_path');
       const confirmedMissing =
         !!result && (result.status === 'missing' || result.status === 'unsupported');
-      if (confirmedMissing && draftValues[enabledKey] === 'true') {
+      const probedPersistedChoice =
+        (cliPath || '').trim() === (persistedValues[cliPathKey] ?? '').trim()
+        && persistedValues[enabledKey] === 'true';
+      if (confirmedMissing && probedPersistedChoice) {
         try {
           await commit(cliAgent, {
             enabled: false,
-            useBuiltin: draftValues[useBuiltinKey] === 'true',
-            cliPath: draftValues[cliPathKey] ?? '',
+            useBuiltin: persistedValues[useBuiltinKey] === 'true',
+            cliPath: persistedValues[cliPathKey] ?? '',
           });
           showHint(t('config.externalCli.savedHint'));
         } catch (error) {
@@ -575,7 +583,7 @@ export function ExternalCliAgentsSection({
         }
       }
     },
-    [commit, detect, draftValues, setAgentError, showHint, t],
+    [commit, detect, draftValues, persistedValues, setAgentError, showHint, t],
   );
 
   const clearDetectResult = useCallback(
