@@ -1297,7 +1297,8 @@
       "trajectory": "轨迹"
     },
     "team": {
-      "memberLanes": "成员轨迹泳道",      "workflowGroupAria": "工作流 {{name}}，{{count}} 个算子",
+      "memberLanes": "成员轨迹泳道",
+      "workflowGroupAria": "工作流 {{name}}，{{count}} 个算子",
       "workflowGroupOperators": "{{count}} 个算子",
       "schedule": {
         "title": "调度控制",
