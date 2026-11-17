@@ -545,16 +545,12 @@
       "hideValue": "Hide value"
     },
     "general": {
-<<<<<<< RELEASE
       "display": "Display",
-||||||| BEFORE_PR_9610
-=======
       "topicModelTitle": "Configure topic recommendation model",
       "topicModelDisconnected": "Disconnected. Reconnect and try again.",
       "topicModelSave": "Save and enable",
       "topicModelProtocol": "Topic recommendations require an OpenAI-compatible model.",
       "topicModelDelete": "Delete the topic recommendation model configuration and turn off topic recommendations.",
->>>>>>> DEVELOP
       "preferences": "Interface and connection",
       "language": "Language",
       "languageDescription": "Set the display language for the application interface.",
@@ -5426,7 +5422,6 @@
     "reject": "Reject",
     "approve": "Authorize",
     "waiting": "Processing..."
-<<<<<<< RELEASE
   },
   "webuiFileImport": {
     "uploading": "Uploading {{percent}}%",
@@ -5492,8 +5487,6 @@
       "unavailable": "File preview is unavailable for this session",
       "error": "Unable to read this file. Select it again to retry."
     }
-||||||| BEFORE_PR_9610
-=======
   },
   "mcpApp": {
     "loading": "Loading app…",
@@ -6478,6 +6471,5 @@
       "blocked": "Waiting",
       "stopped": "Stopped"
     }
->>>>>>> DEVELOP
   }
 }

@@ -4,27 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-<<<<<<< RELEASE
     "test:application-presentation": "esbuild tests/fixtures/applicationPresentation.ts --bundle --packages=external --platform=node --format=esm --define:import.meta.env={} --outfile=node_modules/.cache/application-presentation/protocol.mjs && node --test tests/applicationPresentation.test.mjs tests/presentationTransitions.test.mjs",
-||||||| BEFORE_PR_9610
-=======
-    "test:editable-combobox": "esbuild src/components/SessionSidebar/EditableCombobox.tsx --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/editable-combobox/EditableCombobox.mjs && node --test tests/editableCombobox.test.mjs",
-    "test:ttse-work-mode": "node scripts/test-ttse-work-mode.mjs",
-    "test:plugin-replacement": "node --test tests/pluginReplacement.test.mjs",
-    "test:designer-entry": "node --test tests/designerEntry.test.mjs tests/appDesignerMoaRouting.test.mjs",
-    "test:skill-marketplace": "esbuild src/components/SkillPanel/MarketplaceView.tsx src/components/SkillPanel/skillPanelUtils.ts --bundle --splitting --packages=external --platform=node --format=esm --jsx=automatic --out-extension:.js=.mjs --outdir=node_modules/.cache/skill-marketplace --loader:.svg=dataurl --loader:.png=dataurl --loader:.css=empty --define:import.meta.env={} && node --test tests/skillMarketplace.test.mjs",
-    "test:skillpack-install": "esbuild src/components/SkillPanel/skillPackInstall.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/skillpack-install/skillPackInstall.mjs && node --test tests/skillPackInstall.test.mjs",
->>>>>>> DEVELOP
     "test:update-panel": "esbuild src/components/UpdatePanel/index.tsx --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/update-panel/index.mjs && node --test tests/updatePanel.test.mjs",
-<<<<<<< RELEASE
     "test:panel-pages": "node scripts/build-panel-pages.mjs && node --test tests/panelPagesReact.test.mjs",
     "test:webui-client": "esbuild tests/fixtures/webuiClient.ts --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/webui-client/client.mjs --define:import.meta.env={} && node --test tests/webuiClient.test.mjs",
     "test:app-request-context": "node --test tests/appRequestContext.test.mjs",
-||||||| BEFORE_PR_9610
-=======
-    "test:model-refresh": "esbuild src/features/settings/modules/models/useModelRefreshStatus.ts --bundle --packages=external --platform=node --format=esm --outdir=node_modules/.cache/model-refresh && node --test tests/modelRefreshStatus.test.mjs tests/modelRefreshUi.test.mjs",
-    "test:group-chat": "esbuild src/features/groupChat/state.ts src/multi-session/routing/route.ts --bundle --platform=node --format=esm --outdir=node_modules/.cache/group-chat --define:import.meta.env={} && node --test tests/groupChat.test.mjs",
->>>>>>> DEVELOP
     "test:desktop-file-drop": "esbuild src/features/workspace/localFilePicker.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/desktop-file-drop/localFilePicker.mjs && node --test tests/desktopFileDrop.test.mjs",
     "test:asset-name-search": "esbuild src/features/assetNameSearch.ts --bundle --platform=node --format=esm --outdir=node_modules/.cache/asset-name-search && node --test tests/assetNameSearch.test.mjs",
     "test:moa-settings": "npm run test:multi-model-collaboration-settings",
@@ -35,7 +19,6 @@
     "test:organization-leader-identity": "node --test tests/organizationLeaderIdentity.test.mjs",
     "test:browser-agent-activity": "esbuild src/features/browserAgentActivity.ts src/stores/sessionStore.ts src/stores/subagentStore.ts --bundle --splitting --packages=external --platform=node --format=esm --outdir=node_modules/.cache/browser-agent-activity --define:import.meta.env={} && node --test tests/browserAgentActivity.test.mjs",
     "test:browser-display": "esbuild tests/fixtures/browserDisplayExports.ts --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/browser-display/exports.mjs --loader:.css=empty --loader:.svg=dataurl --loader:.png=dataurl --define:import.meta.env={} && node --test tests/browserDisplay.test.mjs",
-<<<<<<< RELEASE
     "test:webui-contracts": "esbuild tests/fixtures/webuiContracts.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/webui-contracts/contracts.mjs && node --test tests/webuiContracts.test.mjs",
     "test:webui-components": "node scripts/build-webui-components.mjs && node --test tests/webuiComponents.test.mjs tests/webuiComponentsReact.test.mjs",
     "test:plugin-settings": "node scripts/build-webui-components.mjs && node --test tests/pluginSettings.test.mjs",
@@ -45,10 +28,6 @@
     "test:webui-events": "esbuild tests/fixtures/webuiEvents.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/webui-events/events.mjs && node --test tests/webuiEvents.test.mjs",
     "test:webui-transport": "esbuild src/features/webui/transport/index.ts --bundle --splitting --packages=external --platform=node --format=esm --outbase=src/features/webui --outdir=node_modules/.cache/webui-transport && node --test tests/webuiTransport.test.mjs",
     "test:webui-renderer": "esbuild src/features/webui/renderer/index.ts src/features/webui/react/WebUIHost.tsx src/features/webui/react/WebUIProvider.tsx src/features/webui/react/WebUIInstanceView.tsx src/features/webui/react/WebUIInstanceErrorBoundary.tsx src/features/webui/assembly/index.ts src/features/webui/contracts/index.ts src/features/webui/protocol/index.ts src/features/webui/runtime/index.ts src/features/webui/transport/index.ts src/features/webui/testing/demoCatalog.ts src/features/webui/testing/fixtures.ts --bundle --splitting --packages=external --platform=node --format=esm --outbase=src/features/webui --outdir=node_modules/.cache/webui-renderer --define:import.meta.env={} --loader:.css=empty --loader:.svg=dataurl && node --test tests/webuiRenderer.test.mjs",
-||||||| BEFORE_PR_9610
-=======
-    "test:browser-reopen": "esbuild tests/fixtures/browserReopenExports.ts --bundle --packages=external --platform=node --format=esm --jsx=automatic --loader:.css=empty --outfile=node_modules/.cache/browser-reopen/exports.mjs --define:import.meta.env={} && node --test tests/browserReopen.test.mjs",
->>>>>>> DEVELOP
     "test:generation-models": "esbuild src/features/settings/modules/agent/generationModels.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/generation-models/generationModels.mjs && node --test tests/generationModels.test.mjs",
     "test:generation-model-dialog": "node --test tests/generationModelDialog.test.mjs",
     "test:a4p-authorization": "node --test tests/a4pAuthorization.test.mjs",

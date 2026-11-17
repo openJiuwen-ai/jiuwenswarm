@@ -1,4 +1,6 @@
 import { gatewayFetch } from '../../services/gatewayFetch';
+import { isEnterprise } from '../../edition';
+import { fileDownloadHead, prepareFileDownload } from '../../services/fileDownload';
 import { GatewayImage, GatewayVideo, needsGatewayResource, downloadGatewayResource } from '../../features/webui/client/GatewayResources';
 /**
  * MessageItem 组件
@@ -1148,20 +1150,24 @@ function FileDownloadList({
     let cancelled = false;
     files.forEach((file, index) => {
       if (!file.download_url) return;
-<<<<<<< RELEASE
-      gatewayFetch(file.download_url, { method: 'HEAD' })
-||||||| BEFORE_PR_9610
-      fetch(file.download_url, { method: 'HEAD' })
-=======
-      fileDownloadHead(file.download_url)
->>>>>>> DEVELOP
+      const gatewayResource = needsGatewayResource(file.download_url);
+      const enterpriseDownload = !gatewayResource && isEnterprise();
+      const head = gatewayResource
+        ? gatewayFetch(file.download_url, { method: 'HEAD' })
+        : fileDownloadHead(file.download_url);
+      head
         .then((res) => {
-          if (!cancelled && !res.ok) {
-            setExpiredSet((prev) => new Set(prev).add(index));
+          if (!cancelled) {
+            setExpiredSet((prev) => {
+              const next = new Set(prev);
+              if (res.ok && enterpriseDownload) next.delete(index);
+              else if (!res.ok && (!enterpriseDownload || [403, 404, 410].includes(res.status))) next.add(index);
+              return next;
+            });
           }
         })
         .catch(() => {
-          if (!cancelled) {
+          if (!cancelled && !enterpriseDownload) {
             setExpiredSet((prev) => new Set(prev).add(index));
           }
         });
@@ -1183,19 +1189,15 @@ function FileDownloadList({
 
   const handleDownload = async (file: FileDownloadItem, index: number) => {
     if (expiredSet.has(index) || !file.download_url) return;
-<<<<<<< RELEASE
     if (needsGatewayResource(file.download_url)) {
       try { await downloadGatewayResource(file.download_url, file.name || 'download'); }
       catch { window.alert(t('artifacts.downloadFailed', { name: file.name })); }
       return;
     }
-||||||| BEFORE_PR_9610
-=======
     if (isEnterprise() && !(await prepareFileDownload(file.download_url))) {
       window.alert(t('artifacts.downloadFailed', { name: file.name }));
       return;
     }
->>>>>>> DEVELOP
 
     const pywebviewApi = (window as Window & { pywebview?: { api?: { download_file?: (url: string, filename: string) => DesktopSaveApiResult } } }).pywebview?.api;
     if (pywebviewApi?.download_file) {
