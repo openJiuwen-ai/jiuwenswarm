@@ -1,5 +1,14 @@
 # Native plugin runtime
 
+## Plugin Marketplace and My Plugins
+
+Plugin Marketplace provides installation actions. My Extensions → Plugins lists only installed plugins and offers Use
+on each card. If an installed plugin's MCP dependencies are not ready, open its details to connect them. Details opened
+from My Extensions do not offer Install. Local creation drafts and incomplete installations are excluded from My Plugins;
+their files remain available for further development or another installation attempt.
+
+## Runtime declaration
+
 Ordinary zero-argument Rails retain their existing loading path. Plugins needing host services declare metadata.plugin_runtime with contract_version=1, profiles=["code"] and/or ["work"], role_scope="main", requires, capabilities and optional direct_tools.
 
 Available services are main_model (model/name pair), trajectory (shared processor with a per-mount lease), agent_data_workspace (absolute data-root Path) and embedding_factory (provider construction). Call runtime.require(name); undeclared or unavailable services fail explicitly. New plugins using these services need only a ZIP, not another host manager. New fundamental services still require host support.

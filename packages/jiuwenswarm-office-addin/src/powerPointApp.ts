@@ -1,17 +1,24 @@
-/** PowerPoint: its identity, and the contract of the ``office-powerpoint`` app's package directory. */
+/**
+ * PowerPoint and WPS Presentation: their identities, and the contract of the package directory both apps
+ * (``office-powerpoint``, ``wps-presentation``) load.
+ */
 import contractProfile from '@office/powerpoint/profile.json';
 import contractTools from '@office/powerpoint/tools.json';
 
 import { ToolContract, type OfficeApp } from './appContract';
 
 export const POWERPOINT: OfficeApp = {
-  platform: 'microsoft',
+  platform: 'office',
   surface: 'presentation',
   host: 'PowerPoint',
   clientApp: 'office-powerpoint',
   appId: contractProfile.app_id,
   contract: new ToolContract(contractTools),
   flatResults: new Set(['read_presentation_context', 'verify_slide_visual']),
+};
+
+export const WPS_PRESENTATION: OfficeApp = {
+  ...POWERPOINT, platform: 'wps', host: 'WPS Presentation', clientApp: 'wps-presentation',
 };
 
 export const PRESENTATION_TOOL_NAMES = [

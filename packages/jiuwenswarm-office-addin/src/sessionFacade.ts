@@ -14,6 +14,15 @@ export function imageDataUrl({ mimeType, base64Data }: OutgoingImageAttachment):
   return `data:${mimeType};base64,${base64Data}`;
 }
 
+/** A document the user has open with its task pane attached. */
+export interface OpenDocument {
+  name: string;
+  /** What it is, as the attach's ``resource.kind`` gives it: ``presentation``, ``document``, ``workbook``. */
+  kind: string;
+  /** The document of the conversation that asked. */
+  current: boolean;
+}
+
 export interface ResourceConversation {
   sessionId: SessionId;
   title: string;
@@ -108,12 +117,13 @@ export class SessionFacade {
   }
 
   /** The user's attached documents (``client.list``), by the conversation each is attached to. */
-  async openDocuments(sessionId: SessionId): Promise<Map<string, string>> {
+  async openDocuments(sessionId: SessionId): Promise<Map<string, OpenDocument>> {
     const response = await this.gateway.request('client.list', { session_id: sessionId });
     const attachments = Array.isArray(response.attachments) ? response.attachments.filter(isRecord) : [];
     return new Map(attachments.flatMap(item => (
       typeof item.session_id === 'string' && typeof item.display_name === 'string'
-        ? [[item.session_id, item.display_name] as const] : [])));
+        ? [[item.session_id, { name: item.display_name, kind: typeof item.kind === 'string' ? item.kind : '',
+          current: item.is_current === true }] as const] : [])));
   }
 
   /** Answer the question a paused turn asks (``chat.ask_user_question``); the turn goes on. */

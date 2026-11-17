@@ -18,6 +18,14 @@ const IMAGE_TYPES: Readonly<Record<string, string>> = {
 const MAX_IMAGE_MB = 10;
 /** ``media.persist`` keeps the first eight images of a message. */
 const MAX_IMAGES = 8;
+/** A read the host never ends is given up after this long, so the image stops holding the message. */
+const READ_TIMEOUT_MS = 10_000;
+
+/** An image in the box: shown from the moment it is added, sendable once read. */
+interface BoxImage {
+  filename: string;
+  read?: OutgoingImageAttachment;
+}
 
 /**
  * The message box: Enter sends, Shift+Enter breaks the line. Send and Stop
@@ -54,9 +62,7 @@ export class Composer {
   private state = { enabled: false, running: false };
   /** The box had the focus when it was disabled, as when a question came; it gets it back when enabled. */
   private refocus = false;
-  private images: readonly OutgoingImageAttachment[] = [];
-  /** Images still being read; the message waits for them. */
-  private reading = 0;
+  private images: readonly BoxImage[] = [];
   /** Why the last images added were not all taken. */
   private refusal = '';
 
@@ -159,23 +165,32 @@ export class Composer {
       const mimeType = imageType(file);
       if (!mimeType) refusals.push(copy.imageType(file.name));
       else if (file.size > MAX_IMAGE_MB * 1024 * 1024) refusals.push(copy.imageSize(file.name, MAX_IMAGE_MB));
-      else if (this.images.length + this.reading + taken.length >= MAX_IMAGES) {
+      else if (this.images.length + taken.length >= MAX_IMAGES) {
         refusals.push(copy.imageCount(MAX_IMAGES));
         break;
       } else taken.push({ file, mimeType });
     }
     this.refusal = refusals.join('；');
-    this.reading += taken.length;
-    this.paint();
-    const read = await Promise.allSettled(taken.map(({ file, mimeType }) => readImage(file, mimeType)));
-    this.reading -= taken.length;
-    this.images = [...this.images, ...read.flatMap(result => (result.status === 'fulfilled' ? [result.value] : []))];
-    const unread = taken.filter((_, index) => read[index].status === 'rejected');
-    if (unread.length) this.refusal = [...refusals, ...unread.map(({ file }) => copy.imageRead(file.name))].join('；');
+    const added: BoxImage[] = taken.map(({ file }) => ({ filename: file.name || 'image' }));
+    this.images = [...this.images, ...added];
+    this.paintImages();
+    const unread = new Set<BoxImage>();
+    await Promise.all(added.map(async (image, index) => {
+      try {
+        image.read = await readImage(taken[index].file, taken[index].mimeType);
+      } catch {
+        unread.add(image);
+      }
+      this.paintImages();
+    }));
+    // An image removed meanwhile is not reported.
+    const failed = added.filter(image => unread.has(image) && this.images.includes(image));
+    this.images = this.images.filter(image => !unread.has(image));
+    if (failed.length) this.refusal = [...refusals, ...failed.map(image => copy.imageRead(image.filename))].join('；');
     this.paintImages();
   }
 
-  private removeImage(image: OutgoingImageAttachment): void {
+  private removeImage(image: BoxImage): void {
     this.images = this.images.filter(item => item !== image);
     this.refusal = '';
     this.paintImages();
@@ -184,8 +199,10 @@ export class Composer {
 
   private paintImages(): void {
     this.thumbnails.hidden = !this.images.length;
-    this.thumbnails.replaceChildren(...this.images.map(image => h('li', { class: 'composer-image' },
-      h('img', { src: imageDataUrl(image), alt: image.filename }),
+    this.thumbnails.replaceChildren(...this.images.map(image => h('li', {
+      class: image.read ? 'composer-image' : 'composer-image is-reading', title: image.filename,
+    },
+      image.read ? h('img', { src: imageDataUrl(image.read), alt: image.filename }) : icon('spinner'),
       h('button', {
         type: 'button', class: 'icon-button', 'aria-label': copy.removeImage(image.filename),
         title: copy.removeImage(image.filename), onclick: () => this.removeImage(image),
@@ -204,7 +221,7 @@ export class Composer {
 
   private sendable(): boolean {
     const { enabled, running } = this.state;
-    return enabled && this.hasMessage() && !this.reading && !(running && this.images.length);
+    return enabled && this.hasMessage() && this.images.every(image => image.read) && !(running && this.images.length);
   }
 
   private paint(): void {
@@ -230,13 +247,14 @@ export class Composer {
     if (!this.sendable()) return;
     const text = this.input.value;
     const { images } = this;
+    const read = images.flatMap(image => (image.read ? [image.read] : []));
     this.input.value = '';
     this.images = [];
     this.refusal = '';
     this.fit();
     this.paintImages();
     // A message that did not go out comes back to the box.
-    if (await this.actions.send(text, images)) return;
+    if (await this.actions.send(text, read)) return;
     if (!this.input.value) {
       this.input.value = text;
       this.fit();
@@ -265,11 +283,19 @@ function clipboardFiles(data: DataTransfer): File[] {
 function readImage(file: File, mimeType: string): Promise<OutgoingImageAttachment> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
+    const timer = setTimeout(() => {
+      reader.abort();
+      reject(new Error(`reading ${file.name} took over ${READ_TIMEOUT_MS} ms`));
+    }, READ_TIMEOUT_MS);
     reader.onload = () => {
+      clearTimeout(timer);
       const url = String(reader.result);
       resolve({ filename: file.name || 'image', mimeType, base64Data: url.slice(url.indexOf(',') + 1) });
     };
-    reader.onerror = () => reject(reader.error);
+    reader.onerror = () => {
+      clearTimeout(timer);
+      reject(reader.error);
+    };
     reader.readAsDataURL(file);
   });
 }

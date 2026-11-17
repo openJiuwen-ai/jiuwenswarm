@@ -233,18 +233,18 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
                   {uninstalling ? t('connectorMarket.card.uninstalling') : t('connectorMarket.card.uninstall')}
                 </button>
               )}
-              {installed && (
+              {(fromMy || installed) && (
                 <button
                   type="button"
                   className="detail-action detail-action--use"
                   onClick={handleUse}
-                  disabled={!linked || reconnectFlow.active}
+                  disabled={!installed || !linked || reconnectFlow.active}
                   data-testid="connector-market-plugin-detail-use"
                 >
                   {t('connectorMarket.card.use')}
                 </button>
               )}
-              {!installed && (
+              {!fromMy && !installed && (
                 <button
                   type="button"
                   className="detail-action detail-action--install"

@@ -639,17 +639,10 @@ export function MarketplacePage({
                     iconUrl={pkg.avatar || undefined}
                     state={pluginInstallingIds[pkg.id] ? 'connecting' : pluginInstalled ? 'connected' : 'idle'}
                     busyKind="install"
+                    actionMode="use"
                     actionDisabled={!!pluginInstallingIds[pkg.id]}
                     onOpenDetail={() => onOpenPluginDetail(pkg.id)}
-                    onUse={() => pluginConnected ? onUse({ kind: 'plugin', id: pkg.runtimePackageName }) : onOpenPluginDetail(pkg.id)}
-                    // 触发条件要跟着卡片态走，不能只看 installed——"已安装但 MCP 未连接"这个
-                    // 组合下 derivePluginCardState 也会算出 'idle'（见该函数注释），"+"按钮同样
-                    // 要能点（点击后重新触发安装，对应按钮矩阵"已安装+未连接：+号"这一格）。
-                    onQuickInstall={
-                      derivePluginCardState(pluginInstalled, pluginConnected) === 'connected'
-                        ? undefined
-                        : () => installPlugin(pkg.id)
-                    }
+                    onUse={() => pluginInstalled && pluginConnected ? onUse({ kind: 'plugin', id: pkg.runtimePackageName }) : onOpenPluginDetail(pkg.id)}
                   />
                 );
               })
@@ -689,7 +682,7 @@ export function MarketplacePage({
                     canOpenDetail
                     onOpenDetail={() => onOpenPluginDetail(pkg.id)}
                     onUse={() => pluginConnected ? onUse({ kind: 'plugin', id: pkg.runtimePackageName }) : onOpenPluginDetail(pkg.id)}
-                    // 同款修正：不能只看 installed，见上面"我的插件"卡片同名 prop 的注释。
+                    // Marketplace installation can resume pending connector setup.
                     onQuickAdd={() => {
                       if (derivePluginCardState(pluginInstalled, pluginConnected) !== 'connected')
                         installPlugin(pkg.id);

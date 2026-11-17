@@ -689,11 +689,16 @@ export function copyImage(sourceBase64: string, targetBase64: string, shapeId: s
 /** Parts code may not add or change: macros, ActiveX controls and embedded objects. */
 const ACTIVE_CONTENT = /^ppt\/(?:vbaproject|activex\/|macrosheets\/|embeddings\/)/i;
 
+/** The theme, master and layout parts of a slide's package. */
+const DESIGN_PART = /^ppt\/(?:theme|slideMasters|slideLayouts)\//;
+
 /**
  * Whether a package code edited (``after``) may replace the slide exported as ``before``: it still holds that one
- * slide, adds or changes no active content, and links no new file outside the deck other than by a hyperlink.
+ * slide, adds or changes no active content, and links no new file outside the deck other than by a hyperlink. With
+ * ``insertTakesDeckDesign``, the host gives a slide it inserts the deck's own theme, master and layouts (WPS), so the
+ * code may not change those parts either: the change would be lost.
  */
-export function checkEdit(before: string, after: string): void {
+export function checkEdit(before: string, after: string, insertTakesDeckDesign = false): void {
   const [exported, edited] = [loadPackage(before), loadPackage(after)];
   if (slidePart(edited) !== slidePart(exported)) {
     throw new PackageRefused(`The code left ${slidePart(edited)} as the slide; edit ${slidePart(exported)} in place`);
@@ -703,6 +708,12 @@ export function checkEdit(before: string, after: string): void {
   const active = Object.keys(edited).find(path => ACTIVE_CONTENT.test(path) && !same(exported[path], edited[path]));
   if (active) {
     throw new PackageRefused(`The code added or changed ${active}: macros, controls and objects stay as they are`);
+  }
+  const design = insertTakesDeckDesign && [...new Set([...Object.keys(exported), ...Object.keys(edited)])]
+    .find(path => DESIGN_PART.test(path) && !same(exported[path], edited[path]));
+  if (design) {
+    throw new PackageRefused(`The code changed ${design}: this presentation app gives the edited slide the deck's `
+      + 'own theme, master and layouts, so that change would be lost. Change only the slide\'s own parts');
   }
   const links = (parts: Parts) => new Set(Object.keys(parts).filter(path => path.endsWith('.rels'))
     .flatMap(path => elements(parseXml(parts, path), PR, 'Relationship')

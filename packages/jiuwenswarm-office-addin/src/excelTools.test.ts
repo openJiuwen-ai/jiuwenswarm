@@ -14,7 +14,8 @@ const NOTES = { isSetSupported: (name: string, version: string) => name === 'Exc
 
 /** Calls ``toolName`` on ``book`` as the backend would, and reads the answer the model gets. */
 async function call(book: FakeWorkbook, toolName: string, input: JsonObject): Promise<JsonObject> {
-  const runtime = excelRuntime({ run: book.run, host: NOTES, enums: {}, surface: async () => '' });
+  const runtime = excelRuntime({ run: book.run, host: NOTES, enums: {}, surface: async () => '',
+    writes: new HostWriteQueue() });
   const result: ClientToolResult = await new ClientToolDispatcher(EXCEL, runtime, new HostWriteQueue())
     .execute({ requestId: 'call_1', interruptId: 'int_1', toolName, input, downloads: {} });
   const [first] = result.content;

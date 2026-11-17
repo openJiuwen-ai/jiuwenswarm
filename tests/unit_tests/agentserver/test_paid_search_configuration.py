@@ -199,16 +199,23 @@ async def test_mcp_no_keys_does_not_dispatch(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("register_unrelated_tool", [False, True])
+@pytest.mark.parametrize("free_search_enabled", [False, True])
 async def test_existing_mcp_agent_refreshes_model_tools_on_enable_change_and_disable(
-    monkeypatch,
-    register_unrelated_tool,
-):
+    monkeypatch: pytest.MonkeyPatch,
+    free_search_enabled: bool,
+    register_unrelated_tool: bool,
+) -> None:
     from openjiuwen.core.single_agent.ability_manager import AbilityManager
 
+    monkeypatch.setenv("FREE_SEARCH_DDG_ENABLED", str(free_search_enabled).lower())
     manager = AbilityManager()
     mcp_toolkits.track_mcp_search_tools(manager)
     resource_add = MagicMock()
-    monkeypatch.setattr(mcp_toolkits.Runner.resource_mgr, "add_tool", resource_add)
+    monkeypatch.setattr(
+        mcp_toolkits,
+        "Runner",
+        SimpleNamespace(resource_mgr=SimpleNamespace(add_tool=resource_add)),
+    )
     if register_unrelated_tool:
         list_tool_info = manager.list_tool_info
 
@@ -237,6 +244,8 @@ async def test_existing_mcp_agent_refreshes_model_tools_on_enable_change_and_dis
         call(mcp_paid_search, skip_if_exists=True),
         call(mcp_paid_search, skip_if_exists=True),
     ]
+    assert (manager.get("mcp_free_search") is not None) == free_search_enabled
+    assert any(item.name == "mcp_free_search" for item in await manager.list_tool_info()) == free_search_enabled
 
 
 @pytest.mark.asyncio

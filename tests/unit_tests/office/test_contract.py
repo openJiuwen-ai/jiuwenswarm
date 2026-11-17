@@ -12,7 +12,7 @@ from openjiuwen.core.foundation.tool import ToolExecution, ToolExposure
 
 from jiuwenswarm.office.contract import ToolAnnotations, load_contract
 from jiuwenswarm.server.client_attachments import load_client_capabilities, registry
-from tests.unit_tests.agentserver.client_attachments_support import CLIENT_APP, answer, request
+from tests.unit_tests.agentserver.client_attachments_support import CLIENT_APP, answer, created_for, request
 from tests.unit_tests.office.conftest import POWERPOINT_PACKAGE
 
 # What JiuwenSwarm ships, read before the ``isolated`` fixture replaces it.
@@ -23,11 +23,13 @@ WORD_TOOLS = {"read_doc_section", "search_doc_text", "edit_doc_text", "edit_doc_
               "execute_office_js", "read_surface_context"}
 EXCEL_TOOLS = {"get_cell_ranges", "get_range_as_csv", "set_cell_range", "copy_paste_range", "execute_office_js",
                "read_surface_context"}
+PRESENTATION = ({"app_id": "office_powerpoint", "domain": "presentation", "contract_version": 1}, 18,
+                {"read_presentation_context", "list_slide_shapes", "read_slide_image", "read_slide_text",
+                 "edit_slide_text", "find_and_replace"})
 # Each app: its profile, how many tools its contract has, and the ones offered directly.
 APPS = {
-    CLIENT_APP: ({"app_id": "office_powerpoint", "domain": "presentation", "contract_version": 1}, 18,
-                 {"read_presentation_context", "list_slide_shapes", "read_slide_image", "read_slide_text",
-                  "edit_slide_text", "find_and_replace"}),
+    CLIENT_APP: PRESENTATION,
+    "wps-presentation": PRESENTATION,
     "office-word": ({"app_id": "office_word", "domain": "document", "contract_version": 1}, 12, WORD_TOOLS),
     "office-excel": ({"app_id": "office_excel", "domain": "workbook", "contract_version": 1}, 6, EXCEL_TOOLS),
 }
@@ -73,8 +75,25 @@ def test_each_contract_tool_is_a_client_tool_offered_as_its_annotations_say(app_
         assert card.input_params == tool.input_schema
     # Each agent registers its own cards: registering one rewrites its id.
     assert tools[0].card() is not tools[0].card()
-    # The registry offers attach exactly these tools.
-    assert registry.client_apps()[app_id].tool_names == {tool.name for tool in tools}
+    # The registry offers attach exactly the tools that run on the app's platform.
+    platform = app_id.split("-")[0]
+    raw = json.loads((PACKAGES[app_id] / "tools.json").read_text("utf-8"))
+    assert registry.client_apps()[app_id].tool_names == {tool["name"] for tool in raw
+                                                         if platform in tool["host_requirements"]}
+
+
+def test_wps_presentation_runs_the_powerpoint_package_less_what_wps_cannot_do() -> None:
+    wps, powerpoint = registry.client_apps()["wps-presentation"], registry.client_apps()[CLIENT_APP]
+    assert wps.package_dir == powerpoint.package_dir
+    assert powerpoint.tool_names - wps.tool_names == {"edit_slide_master"}
+
+
+def test_host_requirements_that_name_no_platform_are_refused(tmp_path) -> None:
+    tools = json.loads((PACKAGES[CLIENT_APP] / "tools.json").read_text("utf-8"))
+    tools[0]["host_requirements"] = {"sets": {"PowerPointApi": "1.4"}}
+    (tmp_path / "tools.json").write_text(json.dumps(tools), "utf-8")
+    with pytest.raises(ValueError, match="platforms"):
+        load_contract(tmp_path)
 
 
 @pytest.fixture
@@ -90,8 +109,13 @@ def test_a_task_pane_attaches_its_conversation_and_keeps_what_its_powerpoint_run
     assert load_client_capabilities("session-1") == SUPPORTED
 
 
-@pytest.mark.parametrize("unknown", ["delegate_slides", "render_slide"])
-def test_an_attach_declaring_tools_outside_the_contract_is_refused(shipped, unknown) -> None:
+@pytest.mark.parametrize(("client_app", "unknown"), [
+    (CLIENT_APP, "delegate_slides"), (CLIENT_APP, "render_slide"),
+    # In the contract, but not a tool that runs on WPS.
+    ("wps-presentation", "edit_slide_master"),
+])
+def test_an_attach_declaring_tools_outside_the_contract_is_refused(shipped, client_app, unknown) -> None:
+    created_for("session-1", client_app)
     refused = answer(request(capabilities={"supported_tools": ["read_presentation_context", unknown]}))
 
     assert refused["ok"] is False and refused["payload"]["code"] == "INVALID_ARGUMENT"

@@ -104,9 +104,9 @@ WORKSPACE_PROMPT = (
 
 # Feishu IM accepts uploaded files up to 30 MB, so no shared file may exceed it.
 SHARE_FILE_MAX_BYTES = 30_000_000
-# Formal execution refuses a Spec that omits the capacity check. A model entry's
-# own positive context window and output limit are kept; otherwise the host uses
-# the fixed 256K window and reserves 8192 tokens for output plus a 1024 margin.
+# Keep capacity accounting separate from the provider's output limit. When no
+# output limit is configured, reserve 8192 tokens locally without sending that
+# reserve as max_tokens; the provider keeps its default, as in personal mode.
 FORMAL_OUTPUT_RESERVE_TOKENS = 8192
 FORMAL_CAPACITY_MARGIN_TOKENS = 1024
 
@@ -198,19 +198,20 @@ def _positive_token_count(value: Any) -> int | None:
 
 
 def formal_model_capacity(model: TeamModelConfig) -> tuple[TeamModelConfig, int, int]:
-    """Fill the four values formal execution requires, keeping a configured output limit.
+    """Resolve capacity accounting without imposing an unconfigured output limit.
 
     Returns the model, the input limit, and the safety margin. The input limit is the
     context window minus the output reserve and the margin.
     """
     request = model.model_request_config or ModelRequestConfig()
     window = _positive_token_count(request.context_window) or DEFAULT_CONTEXT_WINDOW_TOKENS
-    reserve = _positive_token_count(request.max_tokens)
+    output_limit = _positive_token_count(request.max_tokens)
+    reserve = output_limit
     if reserve is None:
         reserve = min(FORMAL_OUTPUT_RESERVE_TOKENS, window - FORMAL_CAPACITY_MARGIN_TOKENS - 1)
     if reserve is None or reserve <= 0 or reserve + FORMAL_CAPACITY_MARGIN_TOKENS >= window:
         raise PersistentAgentError("model capacity leaves no room for input", code="INVALID_CONFIG")
-    request = request.model_copy(update={"context_window": window, "max_tokens": reserve})
+    request = request.model_copy(update={"context_window": window, "max_tokens": output_limit})
     return (
         model.model_copy(update={"model_request_config": request}),
         window - reserve - FORMAL_CAPACITY_MARGIN_TOKENS,

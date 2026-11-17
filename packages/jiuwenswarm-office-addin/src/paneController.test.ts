@@ -98,7 +98,7 @@ describe('opening the pane', () => {
     expect(gateway.sent('session.create')).toEqual([]);
     expect(controller.state().conversations.map(item => item.sessionId)).toEqual(['s1', 's0']);
     expect(transcript(controller)).toEqual([{ kind: 'user', text: '改标题' }, { kind: 'assistant', text: '好了。' }]);
-    expect(controller.state().documents.get('s9')).toBe('市场分析.pptx');
+    expect(controller.state().documents.get('s9')?.name).toBe('市场分析.pptx');
   });
 
   it('starts a conversation on the server\'s active model when the document has none', async () => {
@@ -422,6 +422,32 @@ describe('the document\'s conversations', () => {
     expect(gateway.sent('client.attach').map(params => params.session_id)).toEqual(['s1', 's2']);
     expect(controller.state().conversations.map(item => item.sessionId)).toEqual(['s2']);
     expect(transcript(controller)).toEqual([]);
+  });
+
+  it('stays in a conversation nobody has written in yet, however fast new conversation is clicked', async () => {
+    gateway.answer('session.create', { session_id: 's2' });
+    const controller = pane();
+    await controller.open();
+    await settle();
+    gateway.answer('client.conversation.messages', () => new Promise<JsonObject>(() => undefined));
+    await Promise.all([controller.newConversation(), controller.newConversation()]);
+    await controller.newConversation();
+    await settle();
+
+    expect(gateway.sent('session.create')).toHaveLength(1);
+    expect(gateway.sent('client.attach').map(params => params.session_id)).toEqual(['s1', 's2']);
+  });
+
+  it('starts a new conversation from one whose history could not be read', async () => {
+    gateway.answer('client.conversation.messages', new GatewayRequestError('down', 'UNAVAILABLE'));
+    gateway.answer('session.create', { session_id: 's2' });
+    const controller = pane();
+    await controller.open();
+    await settle();
+    await controller.newConversation();
+    await settle();
+
+    expect(gateway.sent('client.attach').map(params => params.session_id)).toEqual(['s1', 's2']);
   });
 });
 
