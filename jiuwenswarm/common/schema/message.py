@@ -198,6 +198,32 @@ _ensure_protocol_member(EventType, "CLIENT_ATTACHMENTS_CHANGED", "client.attachm
 _ensure_req_method("VOICE_SESSION_RECEIPTS", "voice.session.receipts")
 _ensure_req_method("VOICE_TASK_PENDING_INTERRUPT", "voice.task.pending_interrupt")
 
+_TEAM_CONTROL_REQ_METHODS = (
+    ("TEAM_CREATE", "team.create"),
+    ("TEAM_GET", "team.get"),
+    ("TEAM_STOP", "team.stop"),
+    ("TEAM_MEMBER_JOIN", "team.member.join"),
+    ("TEAM_MEMBER_LEAVE", "team.member.leave"),
+    ("TEAM_MEMBERS_LIST", "team.members.list"),
+    ("TEAM_QUOTA_GET", "team.quota.get"),
+)
+
+
+def ensure_team_control_req_methods() -> None:
+    """Register enterprise team-control methods missing from the pinned protocol."""
+    for name, value in _TEAM_CONTROL_REQ_METHODS:
+        _ensure_req_method(name, value)
+
+
+def _install_team_control_req_methods() -> None:
+    from jiuwenswarm.enterprise.edition import is_enterprise
+
+    if is_enterprise():
+        ensure_team_control_req_methods()
+
+
+_install_team_control_req_methods()
+
 __all__ = [
     "PROMPT_SUGGESTION_READY_EVENT",
     "SESSION_REQUEST_COMPLETED_EVENT",

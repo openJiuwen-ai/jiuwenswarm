@@ -70,6 +70,8 @@ def _isolate_user_workspace(tmp_path_factory):
         )
         mp.setattr(_utils, "_workspace_base_dir", data)
         mp.setattr(_utils, "_initialized", False)
+        for name in ("_config_dir", "_workspace_dir", "_root_dir"):
+            mp.setattr(_utils, name, None)
         mp.setenv("JIUWENSWARM_CONFIG_DIR", str(config_dir))
         # A Gateway operation can resolve either package's cached config path.
         for name in ("agent_gateway.common.config", "jiuwenswarm.common.config"):

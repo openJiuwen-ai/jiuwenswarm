@@ -36,7 +36,7 @@ import {
   isPreviewableMention,
   mentionOptions,
 } from '../designerMentions';
-import DesignerModelBadge from './DesignerModelBadge';
+import DesignerModelSelector from './DesignerModelSelector';
 import {
   DESIGNER_REF_LIMITS,
   designerReferenceKindFromMime,
@@ -622,8 +622,7 @@ export function DesignerChatPanel() {
           />
           <div className="designer-chat-panel__composer-actions">
             {sessionId ? (
-              /* No model switch on the canvas: show the model Design runs on (#5266). */
-              <DesignerModelBadge sessionId={sessionId} />
+              <DesignerModelSelector sessionId={sessionId} readOnly />
             ) : null}
             <ApplicationPluginTaskInputActions
               eligible={

@@ -8,7 +8,8 @@ import {
 import { ApplicationConversationRuntimes } from './applicationPlugins/ApplicationConversationRuntimes';
 import { AssetPublishHost } from './components/AssetPublishDrawer';
 import { PluginReplacementDialog } from './components/ConnectorMarket/PluginReplacementDialog';
-import { isEnterprise, ENTERPRISE_HIDDEN_NAV_ITEMS } from './edition';
+import { isEnterprise, ENTERPRISE_HIDDEN_NAV_ITEMS, PERSONAL_HIDDEN_NAV_ITEMS } from './edition';
+import { isTeamSessionLive, retainBubblesArrivedDuringHistory } from './services/sessionLive';
 // Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 /**
@@ -27,6 +28,7 @@ import { reenterJiuwenMate } from './features/jiuwenmate/publicNav';
 import type { JiuwenMateExistingPage } from './features/jiuwenmate/types';
 import { SkillPanel } from './components/SkillPanel';
 import { AgentManagementPanel } from './components/AgentManagementPanel';
+import { TeamPanel } from './components/TeamPanel';
 import { RsiPage } from './features/rsi/RsiPage';
 import { RsiRailPeek } from './features/rsi/components/RsiRailPeek';
 import { useRsiStore } from './features/rsi/rsiStore';
@@ -59,6 +61,7 @@ import {
   SETTINGS_MODULE_NAVIGATION_EVENT,
   requestSettingsModule,
   type SettingsModuleTarget,
+  type SettingsNavigationTarget,
 } from './features/settings/settingsNavigation';
 import { ConnectorMarketPanel } from './components/ConnectorMarket';
 import { LoginDialog } from './components/LoginDialog';
@@ -144,6 +147,7 @@ import {
   useCronStore,
   useSubagentStore,
   usePersonalContextStore,
+  useTeamSelectorStore,
 } from './stores';
 import { useChatRoute } from './multi-session/routing/useChatRoute';
 import { chatRoutePath } from './multi-session/routing/route';
@@ -153,6 +157,7 @@ import {
   createConversationTitle,
   isConversationMissing,
   registerCreatedConversation,
+  forgetCreatedConversation,
   resolveNewConversationEntrySettings,
   resetNewConversationRuntime,
 } from './multi-session/state/newConversationLifecycle';
@@ -592,7 +597,7 @@ function AppContent({
     useState<Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>>({});
   const [hasVisitedSkills, setHasVisitedSkills] = useState(false);
   const [hasVisitedPersonalContext, setHasVisitedPersonalContext] = useState(false);
-  const [requestedSettingsModuleId, setRequestedSettingsModuleId] = useState<SettingsModuleTarget | null>(null);
+  const [requestedSettingsNavigation, setRequestedSettingsNavigation] = useState<SettingsNavigationTarget | null>(null);
   const {
     isMobile,
     isToolPanelAutoHideViewport,
@@ -668,8 +673,8 @@ function AppContent({
   useEffect(() => {
     if (isJiuwenMate) return;
     const handler = (event: Event) => {
-      const moduleId = (event as CustomEvent<SettingsModuleTarget>).detail;
-      setRequestedSettingsModuleId(moduleId);
+      const target = (event as CustomEvent<SettingsModuleTarget | SettingsNavigationTarget>).detail;
+      setRequestedSettingsNavigation(typeof target === 'string' ? { moduleId: target } : target);
       setActiveNav('settings');
     };
     window.addEventListener(SETTINGS_MODULE_NAVIGATION_EVENT, handler);
@@ -1185,7 +1190,7 @@ function AppContent({
   const hiddenNavItems = useMemo<MainNavKey[]>(() => {
     const base: MainNavKey[] = [
       ...getHiddenNavItemsForPlatform(frontendPlatform),
-      ...(isEnterprise() ? ENTERPRISE_HIDDEN_NAV_ITEMS : []),
+      ...(isEnterprise() ? ENTERPRISE_HIDDEN_NAV_ITEMS : PERSONAL_HIDDEN_NAV_ITEMS),
     ];
     const rsiFiltered: MainNavKey[] = rsiFeatureEnabled
       ? base
@@ -1200,7 +1205,8 @@ function AppContent({
   }, [frontendPlatform, masterEnabled, rsiFeatureEnabled]);
 
   useEffect(() => {
-    if (isEnterprise() && (ENTERPRISE_HIDDEN_NAV_ITEMS as readonly string[]).includes(activeNav)) {
+    const hidden = isEnterprise() ? ENTERPRISE_HIDDEN_NAV_ITEMS : PERSONAL_HIDDEN_NAV_ITEMS;
+    if ((hidden as readonly string[]).includes(activeNav)) {
       setActiveNav('chat');
     }
   }, [activeNav]);
@@ -2392,6 +2398,7 @@ function AppContent({
       cli_agent: ExternalCliAgentKind;
       status: "ok" | "warning" | "missing" | "unsupported" | "unavailable";
       path?: string;
+      builtin_path?: string;
       version?: string;
       reference_version?: string;
       message?: string;
@@ -2600,15 +2607,22 @@ function AppContent({
     };
   }, [clearRestartAutoCloseTimer, clearSaveToastTimer]);
 
+  const fetchConfigRef = useRef(fetchConfig);
+  fetchConfigRef.current = fetchConfig;
+
   useEffect(() => {
-    if (!isConnected || initialDataLoaded) {
+    if (!isConnected) {
       return;
     }
+    let cancelled = false;
     void (async () => {
-      await fetchConfig();
-      setInitialDataLoaded(true);
+      await fetchConfigRef.current();
+      if (!cancelled) setInitialDataLoaded(true);
     })();
-  }, [fetchConfig, initialDataLoaded, isConnected]);
+    return () => {
+      cancelled = true;
+    };
+  }, [isConnected]);
 
   const initialProjectsLoadedRef = useRef(false);
 
@@ -2826,6 +2840,12 @@ function AppContent({
     };
 
     // 开始历史会话加载
+    const idsAtHistoryStart = isEnterprise()
+      ? new Set(
+          (useChatStore.getState().getRuntime(sessionId)?.messages ?? []).map((message) => message.id),
+        )
+      : null;
+
     const restoreHandle = beginHistoryRestore({
       sessionId: sessionId,
       requestNextBatch: (cursor) => request(HISTORY_GET_METHOD, {
@@ -2842,15 +2862,21 @@ function AppContent({
         // hooks/useWebSocket.ts 的 applyIncomingGoal/mergePersistedGoalCompletionMessages。
         // 同时给命中"曾经设置过目标"的 user 消息回填 isGoalObjectiveMessage 徽章标记，
         // 见 stampGoalObjectiveMessages。
+        const restored = stampGoalObjectiveMessages(
+          sessionId,
+          mergePersistedGoalCompletionMessages(
+            sessionId,
+            mergeCronRunUserSeed(messages, sessionId, seed).map((message) => ({ ...message, historyBatchSeq: 1 })),
+          ),
+        );
         replaceHistoryMessages(
           sessionId,
-          stampGoalObjectiveMessages(
-            sessionId,
-            mergePersistedGoalCompletionMessages(
-              sessionId,
-              mergeCronRunUserSeed(messages, sessionId, seed).map((message) => ({ ...message, historyBatchSeq: 1 })),
-            ),
-          )
+          retainBubblesArrivedDuringHistory(
+            restored,
+            idsAtHistoryStart,
+            useChatStore.getState().getRuntime(sessionId)?.messages ?? [],
+            isTeamSessionLive(sessionId),
+          ),
         );
         setHistoryPagerMeta(sessionId, {
           nextCursor: cursorMeta.nextCursor,
@@ -2879,9 +2905,17 @@ function AppContent({
       onEmpty: (cursorMeta) => {
         const seed = pendingCronUserSeedsRef.current.get(sessionId);
         pendingCronUserSeedsRef.current.delete(sessionId);
-        replaceHistoryMessages(sessionId, mergePersistedGoalCompletionMessages(
-          sessionId, mergeCronRunUserSeed([], sessionId, seed),
-        ));
+        replaceHistoryMessages(
+          sessionId,
+          retainBubblesArrivedDuringHistory(
+            mergePersistedGoalCompletionMessages(
+              sessionId, mergeCronRunUserSeed([], sessionId, seed),
+            ),
+            idsAtHistoryStart,
+            useChatStore.getState().getRuntime(sessionId)?.messages ?? [],
+            isTeamSessionLive(sessionId),
+          ),
+        );
         setHistoryPagerMeta(sessionId, {
           nextCursor: cursorMeta.nextCursor,
           hasMore: cursorMeta.hasMore,
@@ -3906,7 +3940,7 @@ function AppContent({
 
   /**
    * 删除目标：active 时除了清目标，还要顺带结束当前会话输出——复用停止按钮同一套中断调用
-   * （team 走 pause、其余走 cancel）。先清目标再补发中断，避免目标还没清掉那个空档被
+   * （个人版团队走 pause，企业版团队和其余模式走 cancel）。先清目标再补发中断，避免目标还没清掉那个空档被
    * "ACTIVE 目标保持交互打开"的后端逻辑又续上一轮。非 active 状态下只清目标，不打断当前
    * 会话（如果还有一轮在自然跑完，让它继续）。
    */
@@ -3915,7 +3949,7 @@ function AppContent({
       const isGoalActive = useGoalStore.getState().runtimes[sessionId]?.goal?.status === 'active';
       void clearGoal(sessionId);
       if (!isGoalActive) return;
-      if (mode === 'team') {
+      if (mode === 'team' && !isEnterprise()) {
         void pause(sessionId);
       } else {
         void cancel(sessionId);
@@ -4294,6 +4328,27 @@ function AppContent({
     ],
   );
 
+  const handleTeamSessionsDeleted = useCallback(async (sessionIds: string[]) => {
+    const deleted = new Set(sessionIds.filter(Boolean));
+    for (const id of deleted) {
+      forgetCreatedConversation(id);
+      useSessionStore.getState().removeSession(id);
+      useSessionStore.getState().removeRuntime(id);
+      useTeamSelectorStore.getState().removeRuntime(id);
+      useChatStore.getState().removeRuntime(id);
+      useSubagentStore.getState().removeRuntime(id);
+      useTodoStore.getState().removeRuntime(id);
+      useHarnessStore.getState().removeRuntime(id);
+      useGoalStore.getState().removeRuntime(id);
+      usePlanStore.getState().removeRuntime(id);
+    }
+    useWorkspaceStore.getState().removeSessions([...deleted]);
+    if (routeSessionId && deleted.has(routeSessionId)) {
+      setMissingSessionId(routeSessionId);
+    }
+    await useWorkspaceStore.getState().refreshWorkspaceAndCron();
+  }, [routeSessionId]);
+
   const handleNavigate = useCallback(
     (nav: MainNavKey, peekTarget: SecondarySidebar | null = null): boolean => {
       if (nav !== 'settings' && !confirmLeaveSettings()) {
@@ -4303,7 +4358,7 @@ function AppContent({
       else closeSidebarPeek();
       // 创建对话框信号一次性消费：归零避免携带旧 nonce 重进实验页时误开对话框
       setRsiOpenCreateNonce(0);
-      if (nav !== 'settings') setRequestedSettingsModuleId(null);
+      if (nav !== 'settings') setRequestedSettingsNavigation(null);
       setActiveNav(nav);
       if (nav === 'chat') {
         if (route.kind === 'group-chat') navigate({ kind: 'chat-new' });
@@ -4314,7 +4369,7 @@ function AppContent({
         }
       }
       if (modelSetupGuideStep === 1 && nav === 'settings') {
-        setRequestedSettingsModuleId('models');
+        setRequestedSettingsNavigation({ moduleId: 'models' });
         setModelSetupGuideStep(2);
       }
       if (nav === 'agents') setHasVisitedAgents(true);
@@ -4336,7 +4391,7 @@ function AppContent({
       modelSetupGuideStep,
       setSingleAgentPanelExpanded,
       setHasVisitedPersonalContext,
-      setRequestedSettingsModuleId,
+      setRequestedSettingsNavigation,
       setTeamAreaExpanded,
       setToolPanelHidden,
     ],
@@ -4687,7 +4742,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
   useEffect(() => {
     promptSuggestionBox.setEnabled(normalizeConfigBoolean(serverConfig?.prompt_suggestion_enabled));
   }, [promptSuggestionBox.setEnabled, serverConfig?.prompt_suggestion_enabled]);
-  const renderJiuwenMateExistingPage = (nav: JiuwenMateExistingPage, initialSettingsModuleId?: SettingsModuleTarget) => {
+  const renderJiuwenMateExistingPage = (nav: JiuwenMateExistingPage, settingsNavigation?: SettingsNavigationTarget) => {
     if (nav === 'agents') {
       return (
         <div className="app-section min-h-0">
@@ -4799,7 +4854,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           onExternalCliPendingChoicesChange={setExternalCliPendingChoices}
           externalCliDetectResults={externalCliDetectResults}
           onExternalCliDetectResultsChange={setExternalCliDetectResults}
-          initialModuleId={initialSettingsModuleId}
+          initialModuleId={settingsNavigation?.moduleId}
+          navigationTarget={settingsNavigation}
         />
       </div>
     );
@@ -5160,12 +5216,18 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
             />
           </div>
         )}
+        {isEnterprise() && activeNav === 'teams' && (
+          <div className="app-section min-h-0">
+            <TeamPanel onSessionsDeleted={handleTeamSessionsDeleted} />
+          </div>
+        )}
         {activeNav === 'sessions' && (
           <div className="app-section">
             <SessionsPanel
                 currentSessionId={sessionId}
                 isConnected={isConnected}
                 isProcessing={isProcessing}
+                mode={mode}
                 onRestoreSession={handleRestoreSession}
             />
           </div>
@@ -5221,7 +5283,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               onExternalCliPendingChoicesChange={setExternalCliPendingChoices}
               externalCliDetectResults={externalCliDetectResults}
               onExternalCliDetectResultsChange={setExternalCliDetectResults}
-              initialModuleId={requestedSettingsModuleId ?? undefined}
+              initialModuleId={requestedSettingsNavigation?.moduleId}
+              navigationTarget={requestedSettingsNavigation ?? undefined}
               sidebar={{
                 isActive: activeNav === 'settings',
                 collapsed: isSettingsNarrowViewport,

@@ -131,6 +131,14 @@ async def _start_worker_runtime(
     if runtime is None:
         raise RuntimeError("Runtime construction did not publish its cleanup owner")
     runtime_bootstrap.bind_runtime_signals(server, signals)
+    # Prewarm exec: credential references once per process BEFORE the server
+    # accepts traffic: fill the in-memory store so the first get_config() of
+    # the running service already finds resolved values instead of a miss
+    # (empty api_key). to_thread keeps the subprocess waits off the loop.
+    from jiuwenswarm.common.config import get_config_raw
+    from jiuwenswarm.common.credentials import prewarm_from_config
+
+    await asyncio.to_thread(prewarm_from_config, get_config_raw())
     await server.start(bind_transport=False)
     measurements.stage("runtime_started")
     telemetry.install_runtime_observability(server)

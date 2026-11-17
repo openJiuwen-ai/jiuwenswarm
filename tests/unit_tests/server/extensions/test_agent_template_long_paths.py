@@ -38,7 +38,7 @@ def deep_expert(extension_workspace, monkeypatch):
 
 
 @pytest.mark.parametrize("provider", [None, "claudecode"])
-def test_create_update_and_delete_expert_with_long_paths(deep_expert, provider):
+def test_create_update_and_delete_expert_with_long_paths(deep_expert, path_limits, provider):
     params, package, relative = deep_expert
     if provider:
         params["runtime"] = {"provider_name": provider, "config": {}}
@@ -64,7 +64,7 @@ def test_create_update_and_delete_expert_with_long_paths(deep_expert, provider):
 
 
 @pytest.mark.parametrize("operation", ["create", "update"])
-def test_expert_partial_copy_failure_cleans_temporary_skills(deep_expert, monkeypatch, operation):
+def test_expert_partial_copy_failure_cleans_temporary_skills(deep_expert, monkeypatch, path_limits, operation):
     params, package, relative = deep_expert
     if operation == "update":
         catalog.create_agent_template(params)
@@ -88,7 +88,7 @@ def test_expert_partial_copy_failure_cleans_temporary_skills(deep_expert, monkey
         assert not (package / "skills/new-skill").exists()
 
 
-def test_expert_manifest_write_failure_removes_new_package(deep_expert, monkeypatch):
+def test_expert_manifest_write_failure_removes_new_package(deep_expert, monkeypatch, path_limits):
     params, package, _ = deep_expert
 
     def fail_write(*args):
@@ -100,8 +100,12 @@ def test_expert_manifest_write_failure_removes_new_package(deep_expert, monkeypa
     assert not package.exists()
 
 
-@pytest.fixture
-def legacy_windows_paths(monkeypatch):
+@pytest.fixture(params=["native", "legacy-windows"])
+def path_limits(request, monkeypatch):
+    """Run each test with native paths and, on Windows, legacy 248-char limits."""
+    if request.param == "native":
+        yield
+        return
     if sys.platform != "win32":
         pytest.skip("Requires native Windows filesystem APIs")
 
@@ -129,23 +133,12 @@ def legacy_windows_paths(monkeypatch):
     monkeypatch.setattr(shutil, "rmtree", guarded(shutil.rmtree))
     for name in ("mkdir", "read_text", "write_text", "rename", "exists", "is_dir", "is_file", "iterdir"):
         monkeypatch.setattr(Path, name, guarded(getattr(Path, name)))
-
-
-@pytest.mark.parametrize("operation", ["round-trip", "create", "update", "write"])
-def test_windows_expert_operations_with_legacy_path_limits(
-    deep_expert, monkeypatch, legacy_windows_paths, operation,
-):
-    if operation == "round-trip":
-        test_create_update_and_delete_expert_with_long_paths(deep_expert, "claudecode")
-    elif operation == "write":
-        test_expert_manifest_write_failure_removes_new_package(deep_expert, monkeypatch)
-    else:
-        test_expert_partial_copy_failure_cleans_temporary_skills(deep_expert, monkeypatch, operation)
+    yield
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider", [None, "claudecode"])
-async def test_created_long_path_expert_is_visible_and_can_join_group(deep_expert, provider):
+async def test_created_long_path_expert_is_visible_and_can_join_group(deep_expert, path_limits, provider):
     params, package, relative = deep_expert
     if provider:
         params["runtime"] = {"provider_name": provider, "config": {}}
@@ -179,13 +172,8 @@ async def test_created_long_path_expert_is_visible_and_can_join_group(deep_exper
 
 
 @pytest.mark.asyncio
-async def test_windows_created_expert_remains_visible(deep_expert, legacy_windows_paths):
-    await test_created_long_path_expert_is_visible_and_can_join_group(deep_expert, "claudecode")
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("source", ["built_in", "resources"])
-async def test_long_path_package_sources_preserve_conflict_checks(deep_expert, monkeypatch, source):
+async def test_long_path_package_sources_preserve_conflict_checks(deep_expert, monkeypatch, path_limits, source):
     params, package, _ = deep_expert
     catalog.create_agent_template(params)
     if source == "built_in":
@@ -211,7 +199,7 @@ async def test_long_path_package_sources_preserve_conflict_checks(deep_expert, m
         assert params["id"] in [card["id"] for card in cards]
 
 
-def test_package_enumeration_accepts_long_roots(tmp_path, monkeypatch):
+def test_package_enumeration_accepts_long_roots(tmp_path, monkeypatch, path_limits):
     root = tmp_path / ("deep-root-" * 10) / ("deep-root-" * 10) / ("deep-root-" * 10)
     package = Path(extended_path(root / "expert"))
     package.mkdir(parents=True)
@@ -222,13 +210,3 @@ def test_package_enumeration_accepts_long_roots(tmp_path, monkeypatch):
     assert [entry.name for entry in catalog._iter_resource_package_dirs("agent_templates")] == ["expert"]
 
 
-def test_windows_package_enumeration_accepts_long_roots(tmp_path, monkeypatch, legacy_windows_paths):
-    test_package_enumeration_accepts_long_roots(tmp_path, monkeypatch)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("source", ["built_in", "resources"])
-async def test_windows_long_package_sources_preserve_conflicts(
-    deep_expert, monkeypatch, legacy_windows_paths, source,
-):
-    await test_long_path_package_sources_preserve_conflict_checks(deep_expert, monkeypatch, source)

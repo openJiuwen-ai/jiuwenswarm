@@ -26,6 +26,8 @@ export interface OfficeApp {
   contract: ToolContract;
   /** The tools whose answers carry their fields at the top level, as the backend reads them. */
   flatResults?: ReadonlySet<string>;
+  /** The most characters of one tool answer, when not ``MAX_TOOL_RESULT_CHARS``. */
+  resultChars?: number;
 }
 
 /** A node of an ``input_schema``: the part of JSON Schema the contract's tools use. */

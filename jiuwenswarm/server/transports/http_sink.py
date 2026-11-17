@@ -9,10 +9,15 @@ import json
 from typing import Any
 
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+from jiuwenswarm.enterprise.edition import is_enterprise
 
 _PLAN_MODE_EXITED = "plan.mode_exited"
 # 客户端断开后没人再取帧。队列有上限，满了就等，避免一轮长聊天把内存堆满。
 _SSE_FRAME_QUEUE_LIMIT = 32
+# 短于网关对 Agent HTTP 流的 600 秒读超时。只在企业版 SSE 上发送。
+_SSE_KEEPALIVE_INTERVAL_SECONDS = 10.0
+_SSE_KEEPALIVE_COMMENT = ": keepalive\n\n"
+_SSE_KEEPALIVE_STOP_TIMEOUT_SECONDS = 1.0
 
 
 def response_to_dict(response: AgentResponse) -> dict[str, Any]:
@@ -57,7 +62,7 @@ def _annotate_model_error(payload: dict[str, Any], session_id: str | None) -> No
 
 
 class _QuietKeepalive:
-    """HTTP 没有长连接空闲块。这些方法留着，是为了流式处理函数能照常调用。"""
+    """个人版 HTTP 不发空闲注释。这些方法留着，是为了流式处理函数能照常调用。"""
 
     @staticmethod
     def start() -> None:
@@ -74,6 +79,61 @@ class _QuietKeepalive:
     @staticmethod
     async def stop() -> None:
         return None
+
+
+class _EnterpriseSseKeepalive(_QuietKeepalive):
+    """企业版队长流在 idle 后仍开着。空闲时写 SSE 注释，避免网关读超时。"""
+
+    def __init__(self, sink: "SSESink") -> None:
+        self._sink = sink
+        self._stop = asyncio.Event()
+        self._activity = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+
+    def start(self) -> None:
+        if self._task is not None:
+            return
+        self._task = asyncio.create_task(self._run(), name="sse-keepalive")
+
+    def notify_activity(self, *, terminal: bool = False) -> None:
+        self._activity.set()
+        if terminal:
+            self._stop.set()
+
+    def signal_stop(self) -> None:
+        self._stop.set()
+        self._activity.set()
+
+    async def stop(self) -> None:
+        self.signal_stop()
+        task = self._task
+        self._task = None
+        if task is None:
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=_SSE_KEEPALIVE_STOP_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                return
+
+    async def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._activity.wait(),
+                    timeout=_SSE_KEEPALIVE_INTERVAL_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                if self._stop.is_set():
+                    return
+                self._sink.offer_keepalive()
+                continue
+            self._activity.clear()
+            if self._stop.is_set():
+                return
 
 
 class UnaryHTTPSink:
@@ -114,9 +174,19 @@ class SSESink:
             await self.close()
         return True
 
-    @staticmethod
-    def open_stream_keepalive(request: Any) -> _QuietKeepalive:
-        return _QuietKeepalive()
+    def open_stream_keepalive(self, request: Any) -> _QuietKeepalive:
+        if not is_enterprise():
+            return _QuietKeepalive()
+        return _EnterpriseSseKeepalive(self)
+
+    def offer_keepalive(self) -> None:
+        """队列满时丢掉这一拍，不挡住正在写入的真实 chunk。"""
+        if self._closed:
+            return
+        try:
+            self._queue.put_nowait(_SSE_KEEPALIVE_COMMENT)
+        except asyncio.QueueFull:
+            return
 
     async def frames(self):
         while True:
