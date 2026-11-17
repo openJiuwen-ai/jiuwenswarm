@@ -197,9 +197,10 @@ async def start_web_http_server(
                 LinkBindingMiddleware,
             )
 
-            tls_options = link_mtls.uvicorn_ssl_kwargs()
             profile = link_mtls.profile
-            assert profile is not None
+            if profile is None:
+                raise LinkProfileError("enforce requires a pinned deployment profile")
+            tls_options = link_mtls.uvicorn_ssl_kwargs()
             web_pins = _load_web_peer_fingerprints(DEFAULT_IDENTITY_ROOT / "web-peers")
             binding = {name.lower(): value for name, value in profile.headers().items()}
 
