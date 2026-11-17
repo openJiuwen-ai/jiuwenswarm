@@ -23,6 +23,7 @@ def _make_adapter(*, session_scoped: bool, selected=None):
     a = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
     a._is_session_scoped_adapter = session_scoped
     a._session_selected_mcp = selected if selected is not None else set()
+    a._instance_overrides = {}
     return a
 
 
@@ -84,3 +85,13 @@ def test_session_child_multiple_selections() -> None:
     roots = adapter._skill_scan_dirs()
     assert len(roots) == 3  # agent skills dir + feishu + ctrip
     assert "/ws/mcp/skills/dingtalk" not in roots
+
+
+def test_a_conversation_that_leaves_out_the_skill_library_scans_only_its_selected_mcp_dirs() -> None:
+    """An Office task pane's conversation sees its template's skills, bound later, and no workspace library."""
+    from jiuwenswarm.server.client_attachments.registry import Capability
+
+    adapter = _make_adapter(session_scoped=True, selected={"feishu"})
+    adapter._instance_overrides = {"left_out_capabilities": frozenset({Capability.SKILL_LIBRARY})}
+    adapter._skill_manager = _skill_mgr_mock([{"name": "feishu", "dir": "/ws/mcp/skills/feishu"}])
+    assert adapter._skill_scan_dirs() == ["/ws/mcp/skills/feishu"]
