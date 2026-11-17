@@ -2,8 +2,12 @@
 
 Office 任务窗格在 AgentServer 侧的能力：工具合同、在任务窗格执行的客户端工具、人设与 skills、
 插入用的会话资产。`server/client_attachments/registry.py` 把应用编号 `office-powerpoint`、`office-word`、
-`office-excel` 分别登记为包目录 `powerpoint/`、`word/`、`excel/`；每个目录既是合同，也是对话加载的
-agent template（`manifest.json`）。
+`office-excel` 分别登记为包目录 `powerpoint/`、`word/`、`excel/`，`wps-presentation`（WPS 演示）也登记为
+`powerpoint/`；每个目录既是合同，也是对话加载的 agent template（`manifest.json`）。
+
+每个工具的 `host_requirements` 按平台（`office`、`wps`）写宿主要具备什么（`sets`：Office.js 需求集合；
+`worker`：要 Worker）。工具只在写了的平台上运行：登记表给每个应用一个平台，attach 拒绝声明本平台
+没有的工具；窗格只声明本平台写了、条件满足、自己实现了的工具。只有 WPS 能做的工具以后只写 `wps`。
 
 ## 目录
 
