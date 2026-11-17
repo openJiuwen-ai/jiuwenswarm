@@ -58,3 +58,9 @@ resident Worker 的 IPC 暂时断开时，Front 保留已提交流式请求的�
 90 秒仅限制传输恢复，不限制正常执行时长。原 Worker 已退出、被替换或被判不健康，重试额度耗尽，原 dispatch 不再保留，未投递输出已超过有界回放窗口，或服务停止时，原等待请求仍明确失败；不把缺失输出当成成功。普通非流式 RPC 保留原有投递确认和失败语义，`front_loopback` 仍按其 Worker 生命周期处理断连。
 
 IPC 发送和关闭同时失败时，Front 仍保留原恢复等待；恢复订阅失败后退役该连接，再续接所有保留的请求。服务停止时，即使 IPC 关闭抛错，等待者和后台任务也会清理。
+
+## Worker 输出日志
+
+resident 与 `front_loopback` 均沿用原始输出路由：stdout 继承启动进程的输出，stderr 直接追加写入 `worker-logs/runtime-worker-*.stderr.log`。Supervisor 启动日志和运行诊断提供 stderr 文件路径，异常退出的堆栈保留在该文件中。
+
+Supervisor 不再逐行读取并重标 Worker 输出，也不创建独立的 stdout 日志文件。stderr 可以包含正常 INFO 日志，不能据此判定 Worker 发生错误；排障时结合文件中的原始日志级别、异常堆栈与进程退出码。
