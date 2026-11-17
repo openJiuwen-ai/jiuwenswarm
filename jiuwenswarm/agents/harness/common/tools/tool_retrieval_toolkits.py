@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Static in-code tool category catalogue for progressive ``tool_search``.
 
 The deferred-tool directory is a flat category table frozen into this
@@ -66,6 +68,15 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
         description_en=(
             "Read, write and edit project coding memory: persistent facts, "
             "decisions and lessons across sessions."
+        ),
+    ),
+    ToolCategory(
+        path="file-diff",
+        description="对比两个工作区文件或两段文本的差异，输出带行号和统计的统一补丁。",
+        tools=("diff_files",),
+        description_en=(
+            "Compare two workspace files or text blocks and output a numbered "
+            "unified diff with change statistics."
         ),
     ),
     ToolCategory(

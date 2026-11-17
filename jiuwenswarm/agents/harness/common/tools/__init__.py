@@ -3,6 +3,7 @@
 from importlib import import_module
 
 _EXPORTS = {
+    "diff_files": (".diff_tools", "diff_files"),
     "set_global_memory_manager": (".memory_tools", "set_global_memory_manager"),
     "init_memory_manager_async": (".memory_tools", "init_memory_manager_async"),
     "get_decorated_tools": (".memory_tools", "get_decorated_tools"),

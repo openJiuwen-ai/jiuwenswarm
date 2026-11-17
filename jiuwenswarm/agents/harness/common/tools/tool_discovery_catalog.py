@@ -28,6 +28,10 @@ def _entry(display_en: str, aliases_zh: str) -> ToolDiscoveryMetadata:
 # The registered card remains authoritative for invocation instructions and
 # schema. These summaries and aliases are only a multilingual search projection.
 BUILTIN_TOOL_DISCOVERY: dict[str, ToolDiscoveryMetadata] = {
+    "diff_files": _entry(
+        "Compute unified diff with line numbers between two files or text blocks.",
+        "文件对比 文本对比 差异比较 代码差异 diff 补丁",
+    ),
     "coding_memory_edit": _entry("Edit an exact passage in project coding memory.", "编辑 修改 编码记忆 项目记忆"),
     "coding_memory_read": _entry("Read persistent project coding memory.", "读取 查看 编码记忆 项目记忆"),
     "coding_memory_write": _entry("Write facts, decisions, and lessons to project coding memory.", "写入 记录 编码记忆 项目记忆"),

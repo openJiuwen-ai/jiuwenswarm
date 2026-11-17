@@ -325,6 +325,15 @@ def test_read_pdf_is_a_static_read_path_tool() -> None:
     assert info.facts_source == "host_static"
 
 
+def test_diff_files_is_a_static_read_path_tool() -> None:
+    info = classify_tool("diff_files")
+
+    assert info.category == "path"
+    assert info.operation_family == "workspace_read"
+    assert info.static_side_effects == frozenset()
+    assert info.facts_source == "host_static"
+
+
 def test_host_todo_tools_have_static_authority() -> None:
     assert classify_tool("todo_get").operation_family == "task_state"
 
