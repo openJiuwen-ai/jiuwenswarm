@@ -28,9 +28,8 @@ generated: true
 | [jiuwenswarm/server/control](#module-11) |
 | [jiuwenswarm/server/runtime](#module-12) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-13) |
-| [jiuwenswarm/server/runtime/gateway_adapter](#module-14) |
-| [scripts](#module-15) |
-| [未分类](#module-16) |
+| [scripts](#module-14) |
+| [未分类](#module-15) |
 
 <a id="module-1"></a>
 
@@ -63,7 +62,6 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [S_01_authorized-file-download](jiuwenswarm/common/S_01_authorized-file-download.md) | S | 授权文件下载规约 | nypdmax | jiuwenswarm/common, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/server/runtime/gateway_adapter | jiuwenswarm/common/verified_download_assets.py, jiuwenswarm/common/file_download_token.py, jiuwenswarm/agents/harness/common/tools/send_file_to_user.py, jiuwenswarm/server/runtime/gateway_adapter/workspace_file_adapter.py | — |
 | [S_01_tool-discovery-language](jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py | — |
 | [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/agents/harness/common/recommendation, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/prompt/browser_task_prompt.py, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, setup.py, pyproject.toml, uv.lock, MANIFEST.in | — |
 
@@ -92,7 +90,6 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [S_01_affinity-settings](jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | jiuwenswarm/common, jiuwenswarm/channels/web/frontend/src/features/settings | jiuwenswarm/common/kv_cache_affinity_config.py, jiuwenswarm/common/config.py | — |
-| [S_01_authorized-file-download](jiuwenswarm/common/S_01_authorized-file-download.md) | S | 授权文件下载规约 | nypdmax | jiuwenswarm/common, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/server/runtime/gateway_adapter | jiuwenswarm/common/verified_download_assets.py, jiuwenswarm/common/file_download_token.py, jiuwenswarm/agents/harness/common/tools/send_file_to_user.py, jiuwenswarm/server/runtime/gateway_adapter/workspace_file_adapter.py | — |
 
 <a id="module-8"></a>
 
@@ -147,21 +144,13 @@ generated: true
 
 <a id="module-14"></a>
 
-## jiuwenswarm/server/runtime/gateway_adapter
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [S_01_authorized-file-download](jiuwenswarm/common/S_01_authorized-file-download.md) | S | 授权文件下载规约 | nypdmax | jiuwenswarm/common, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/server/runtime/gateway_adapter | jiuwenswarm/common/verified_download_assets.py, jiuwenswarm/common/file_download_token.py, jiuwenswarm/agents/harness/common/tools/send_file_to_user.py, jiuwenswarm/server/runtime/gateway_adapter/workspace_file_adapter.py | — |
-
-<a id="module-15"></a>
-
 ## scripts
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/agents/harness/common/recommendation, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/prompt/browser_task_prompt.py, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, setup.py, pyproject.toml, uv.lock, MANIFEST.in | — |
 
-<a id="module-16"></a>
+<a id="module-15"></a>
 
 ## 未分类
 
