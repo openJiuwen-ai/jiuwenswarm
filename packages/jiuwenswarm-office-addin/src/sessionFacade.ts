@@ -9,6 +9,11 @@ export interface OutgoingImageAttachment {
   base64Data: string;
 }
 
+/** The image as a ``data:`` URL, to show it in the pane. */
+export function imageDataUrl({ mimeType, base64Data }: OutgoingImageAttachment): string {
+  return `data:${mimeType};base64,${base64Data}`;
+}
+
 export interface ResourceConversation {
   sessionId: SessionId;
   title: string;
@@ -112,7 +117,7 @@ export class SessionFacade {
 
   /** A message, on ``modelName`` when given (``chat.send`` ``model_name``, as the web chat's model picker sends it). */
   async sendText(
-    sessionId: SessionId, content: string, images: OutgoingImageAttachment[] = [], modelName?: string,
+    sessionId: SessionId, content: string, images: readonly OutgoingImageAttachment[] = [], modelName?: string,
   ): Promise<void> {
     const mediaItems = images.length ? await this.persistImages(sessionId, images) : undefined;
     const uploadedImages = mediaItems?.map(({ filename, path, mime_type, size_bytes }) => (
@@ -150,7 +155,7 @@ export class SessionFacade {
    * the multimodal rail) and ``files.uploaded_images`` (for the user turn).
    */
   private async persistImages(
-    sessionId: SessionId, images: OutgoingImageAttachment[],
+    sessionId: SessionId, images: readonly OutgoingImageAttachment[],
   ): Promise<PersistedImageAttachment[]> {
     const response = await this.gateway.request(
       'media.persist',
