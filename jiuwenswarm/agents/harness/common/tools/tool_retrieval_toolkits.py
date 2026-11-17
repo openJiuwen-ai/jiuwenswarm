@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Static in-code tool category catalogue for progressive ``tool_search``.
 
 The deferred-tool directory is a flat category table frozen into this
@@ -70,9 +72,12 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
     ),
     ToolCategory(
         path="documents",
-        description="读取 PDF 文档的文本内容，支持按页与分块读取。",
-        tools=("read_pdf",),
-        description_en="Read PDF text by page or in chunks.",
+        description="读取 PDF、Word (docx) 及表格 (xlsx/csv) 办公文档的内容，支持结构化提取与分页。",
+        tools=("read_pdf", "read_docx", "read_spreadsheet"),
+        description_en=(
+            "Read PDF, Word (.docx), and spreadsheet (.xlsx/.csv) office documents "
+            "with structured extraction and pagination."
+        ),
     ),
     ToolCategory(
         path="external-agents",

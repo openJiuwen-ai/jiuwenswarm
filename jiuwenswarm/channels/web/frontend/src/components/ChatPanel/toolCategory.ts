@@ -1,3 +1,5 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 import {
   getSymphonyCommandLabel,
   isSymphonyCommandTool,
@@ -46,7 +48,17 @@ function register(names: string[], definition: ToolDisplayDefinition): void {
 // 设计稿 18 种状态之外的动作不注册专属图标，由 getToolIconKey 兜底为扳手。
 // -----------------------------------------------------------------------------
 // 文件类：读取 / 写入 / 编辑
-register(['read_file', 'read_text_file', 'read_pdf', 'read_memory', 'memory_get', 'coding_memory_read', 'read_memory_file'], {
+register([
+  'read_file',
+  'read_text_file',
+  'read_pdf',
+  'read_docx',
+  'read_spreadsheet',
+  'read_memory',
+  'memory_get',
+  'coding_memory_read',
+  'read_memory_file',
+], {
   category: 'file',
   actionKey: 'chatUi.toolAction.read',
   iconKey: 'read',

@@ -13,6 +13,8 @@ _EXPORTS = {
     "read_memory": (".memory_tools", "read_memory"),
     "set_group_chat_mode": (".memory_tools", "set_group_chat_mode"),
     "is_group_chat_mode": (".memory_tools", "is_group_chat_mode"),
+    "read_docx": (".docx_tools", "read_docx"),
+    "read_spreadsheet": (".spreadsheet_tools", "read_spreadsheet"),
     "SendFileToolkit": (".send_file_to_user", "SendFileToolkit"),
     "SkillToolkit": (".skill_toolkits", "SkillToolkit"),
     "build_model_discovery_settings": (".skill_retrieval_toolkits", "build_model_discovery_settings"),

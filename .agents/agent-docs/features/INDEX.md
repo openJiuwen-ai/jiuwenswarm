@@ -36,6 +36,7 @@ generated: true
 | [jiuwenswarm/server/runtime/agent_adapter](#module-jiuwenswarm-server-runtime-agent_adapter) |
 | [scripts](#module-scripts) |
 | [tests](#module-tests) |
+| [tests/unit_tests/agents](#module-tests-unit_tests-agents) |
 
 <a id="module-deploy-yuanrong"></a>
 
@@ -95,6 +96,7 @@ generated: true
 |---|---|---|---|---|
 | [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
 | [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
+| [F_20261116_0500_office-document-reader-tools](F_20261116_0500_office-document-reader-tools.md) | F | 补齐结构化办公文档只读工具 (read_docx 与 read_spreadsheet) | zhuxiangju | 无独立 D：补齐办公文档 Word 与 Excel/CSV 结构化只读能力的工程落地。 |
 
 <a id="module-jiuwenswarm-agents-harness-team-rails"></a>
 
@@ -226,3 +228,11 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [F_20261113_1040_del-ut-slim](F_20261113_1040_del-ut-slim.md) | F | develop 测试库瘦身第一批：删除 agent-gateway 镜像测试层与死代码副本 | kdgmpw | 无独立 D：基于会话内对 develop 测试库的两轮静态扫描（10 个分组深扫 + 17,316 个用例级 AST 指纹比对）与上游 agent-gateway 仓的逐字节校验，用户在会话中直接确认执行，无独立设计编号。 |
+
+<a id="module-tests-unit_tests-agents"></a>
+
+## tests/unit_tests/agents
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261116_0500_office-document-reader-tools](F_20261116_0500_office-document-reader-tools.md) | F | 补齐结构化办公文档只读工具 (read_docx 与 read_spreadsheet) | zhuxiangju | 无独立 D：补齐办公文档 Word 与 Excel/CSV 结构化只读能力的工程落地。 |
