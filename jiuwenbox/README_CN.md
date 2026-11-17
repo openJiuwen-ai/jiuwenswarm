@@ -204,11 +204,35 @@ curl -H "Authorization: Bearer $JIUWENBOX_API_TOKEN" http://127.0.0.1:8321/healt
 | `jiuwenbox-server --api-token` | 启动参数，优先级高于 env |
 | `jiuwenbox --api-token` | CLI 参数，优先级高于 env |
 
+### Supervisor 常驻进程输出重定向
+
+创建沙箱时，在 `POST /api/v1/sandboxes` 请求顶层指定宿主日志文件：
+
+```json
+{
+  "stdout": "/var/log/jiuwenbox/agent.out",
+  "stderr": "/var/log/jiuwenbox/agent.err"
+}
+```
+
+两字段默认空字符串，查询结果也返回相同的配置。
+
+路径由可信部署管理员配置，是宿主路径。管理服务在进入命名空间、降权之前
+打开文件，无需给沙箱增加日志目录挂载或文件系统权限。父目录须已存在且服务
+可访问；文件追加写入，新文件权限 `0600`，不修改已有权限；拒绝最终路径的
+符号链接、FIFO 和其它非普通文件。此类创建不使用已固定 stdio 的预热槽。
+
+后台常驻进程继承已配置的输出流，未配置的后台流仍丢弃；同步 `exec` 继续
+返回捕获的输出。后台状态的 `stdout/stderr` 仍为空，原始内容从宿主文件读取。
+启动诊断只读取本次追加的数据，旧 ready 标记不会影响就绪检查。创建请求结束
+后父进程关闭自己的描述符，后台进程继续写入。Jiuwenbox 不负责轮转这些文件，
+应在进程终止后配置保留和回收。本功能适用于 Supervisor，Conch 不支持此接线。
+
 ### 持久化审计日志（`--save-logs DIR`）
 
 **默认情况下 jiuwenbox 不会写任何日志文件**：审计事件只在 Python 标
-准 logger 的 `DEBUG` 级别出现，沙箱 daemon 与后台 exec 的 stdout/stderr
-直接送到 `/dev/null`，`/api/v1/sandboxes/{id}/logs` 返回空字符串。这样
+准 logger 的 `DEBUG` 级别出现，沙箱 daemon 的启动诊断保留在匿名临时文件，后台 exec 的 stdout/stderr
+默认送到 `/dev/null`，`/api/v1/sandboxes/{id}/logs` 返回空字符串。这样
 保证一台新装的机器不会在 `$HOME` 下悄悄留下任何文件，也不会因为长期
 运行的服务把磁盘写满。
 

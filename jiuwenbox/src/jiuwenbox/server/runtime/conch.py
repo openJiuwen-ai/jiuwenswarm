@@ -455,7 +455,11 @@ class ConchRuntime(RuntimeAdapter):
         sandbox_id: str,
         policy_path: Path,
         env: dict[str, str] | None = None,
+        stdout: str = "",
+        stderr: str = "",
     ) -> int | None:
+        if stdout or stderr:
+            raise ValueError("Conch does not support host stdout/stderr redirects")
         async with self._lock:
             existing = self._sandboxes.get(sandbox_id)
             if existing is not None:

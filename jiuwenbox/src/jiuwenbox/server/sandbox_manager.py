@@ -616,6 +616,8 @@ class SandboxManager:
                 )
                 self.policy_engine.validate_policy(policy)
                 if runtime_name == RUNTIME_CONCH:
+                    if spec.stdout or spec.stderr:
+                        raise PolicyValidationError("Conch does not support host stdout/stderr redirects")
                     self.policy_engine.validate_conch_policy(policy)
                 # Create sandbox ref
                 ref = SandboxRef(
@@ -623,6 +625,8 @@ class SandboxManager:
                     phase=SandboxPhase.PROVISIONING,
                     runtime=runtime_name,
                     env=dict(spec.env),
+                    stdout=spec.stdout,
+                    stderr=spec.stderr,
                 )
                 self._sandboxes[sandbox_id] = ref
                 self._policies[sandbox_id] = policy
@@ -656,6 +660,8 @@ class SandboxManager:
                     sandbox_id=sandbox_id,
                     policy_path=policy_path,
                     env=ref.env,
+                    stdout=ref.stdout,
+                    stderr=ref.stderr,
                 )
             with perf_trace.span("api.finalize", sandbox_id):
                 ip_address = await self._resolve_sandbox_ip_address(
@@ -739,6 +745,8 @@ class SandboxManager:
                 sandbox_id=sandbox_id,
                 policy_path=policy_path,
                 env=ref.env,
+                stdout=ref.stdout,
+                stderr=ref.stderr,
             )
             ip_address = await self._resolve_sandbox_ip_address(
                 sandbox_id, runtime=runtime,
