@@ -792,6 +792,57 @@ export function normalizeMasterEdit(base64: string, marker: string): string {
   return savePackage(parts);
 }
 
+/** The URI of the picture extension that names a picture's SVG beside its raster image. */
+const SVG_EXTENSION = '{96DAC541-7B7A-43D3-8B79-37D633B846F1}';
+const SVG_NAMESPACE = 'http://schemas.microsoft.com/office/drawing/2016/SVG/main';
+
+/** ``svg`` drawn in ``color``: its own fills give way to one fill on the whole icon. */
+export function recolorSvg(svg: string, color: string): string {
+  return svg.replace(/\sfill="(?!none")[^"]*"/g, '').replace(/<svg\b/, `<svg fill="${color}"`);
+}
+
+export interface IconPlacement { x: number; y: number; size: number; alt: string }
+
+/**
+ * insert_icon: ``svg`` as a picture on the slide, the way PowerPoint stores an inserted icon: the picture shows the
+ * SVG, and ``png`` stands in for it where SVG cannot be drawn.
+ */
+export function insertIcon(base64: string, svg: string, png: Uint8Array, place: IconPlacement): PackageEdit {
+  const parts = loadPackage(base64);
+  const path = slidePart(parts);
+  const slide = parseXml(parts, path);
+  const rels = relationships(parts, path);
+  let serial = 1;
+  while (parts[`ppt/media/icon${serial}.svg`] || parts[`ppt/media/icon${serial}.png`]) serial += 1;
+  const media = (extension: string, bytes: Uint8Array) => {
+    parts[`ppt/media/icon${serial}.${extension}`] = bytes;
+    return addRelationship(rels, `${R}/image`, `../media/icon${serial}.${extension}`);
+  };
+  const [raster, vector] = [media('png', png), media('svg', strToU8(svg))];
+  const types = parseXml(parts, '[Content_Types].xml');
+  const declared = new Set(elements(types, CT, 'Default').map(item => item.getAttribute('Extension')?.toLowerCase()));
+  for (const extension of ['png', 'svg'].filter(item => !declared.has(item))) {
+    const entry = types.createElementNS(CT, 'Default');
+    entry.setAttribute('Extension', extension);
+    entry.setAttribute('ContentType', MEDIA_TYPES[extension]);
+    types.documentElement!.appendChild(entry);
+  }
+  const id = nextShapeId(slide);
+  const [x, y, size] = [place.x, place.y, place.size].map(points => Math.round(points * EMU_PER_POINT));
+  const alt = place.alt.replace(/[&<>"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[char]!);
+  appendShapes(slide, [`<p:pic><p:nvPicPr><p:cNvPr id="${id}" name="Icon ${id}" descr="${alt}"/><p:cNvPicPr>`
+    + '<a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr>'
+    + `<p:blipFill><a:blip r:embed="${raster}"><a:extLst><a:ext uri="${SVG_EXTENSION}">`
+    + `<asvg:svgBlip xmlns:asvg="${SVG_NAMESPACE}" r:embed="${vector}"/></a:ext></a:extLst></a:blip>`
+    + '<a:stretch><a:fillRect/></a:stretch></p:blipFill>'
+    + `<p:spPr><a:xfrm><a:off x="${x}" y="${y}"/><a:ext cx="${size}" cy="${size}"/></a:xfrm>`
+    + '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>']);
+  parts[path] = strToU8(serialize(slide));
+  parts[relationshipsPart(path)] = strToU8(serialize(rels));
+  parts['[Content_Types].xml'] = strToU8(serialize(types));
+  return { base64: savePackage(parts), changed: true, result: { shape_id: String(id) } };
+}
+
 /** The ids of the slide's own shapes, as PowerPoint lists them: not those inside a group. */
 export function slideShapeIds(base64: string): string[] {
   const parts = loadPackage(base64);

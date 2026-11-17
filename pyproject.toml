@@ -219,6 +219,8 @@ jiuwenswarm = [
     "office/word/**/*",
     "office/excel/*",
     "office/excel/**/*",
+    # The icon set search_icons and insert_icon read (fluent-24.json.gz, aliases.json, LICENSE)
+    "office/fluent_icons/*",
 ]
 jiuwenbox = [
     "configs/**/*",

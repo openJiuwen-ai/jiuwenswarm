@@ -1472,15 +1472,6 @@ class AgentRuntime:
                 and isinstance(response.payload, dict)
                 and response.payload.get("success") is True
             )
-        if (
-            response.ok
-            and intent in {"cancel", "supplement"}
-            and not (
-                isinstance(response.payload, dict)
-                and response.payload.get("success") is False
-            )
-        ):
-            await self._clear_pending_interaction(request.session_id or "default")
         cancellation_drained = True
         # 单 Agent 的 pause 只挂起 ReAct 循环：StreamEventRail 在下一个
         # checkpoint 阻塞，resume 后同一条流继续产出。协调器取消会直接杀掉
@@ -1516,6 +1507,16 @@ class AgentRuntime:
                     snapshot.generation if snapshot is not None else None,
                     cancellation.timed_out,
                 )
+        # Clear once the executions stop, since a cancelled answer restores its questions as it unwinds.
+        if (
+            response.ok
+            and intent in {"cancel", "supplement"}
+            and not (
+                isinstance(response.payload, dict)
+                and response.payload.get("success") is False
+            )
+        ):
+            await self._clear_pending_interaction(request.session_id or "default")
         if team_paused and cancellation_drained:
             await self._publish_team_pause_completed(
                 request,

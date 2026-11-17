@@ -31,6 +31,7 @@ export const PRESENTATION_TOOL_NAMES = [
   'duplicate_slide',
   'import_slides',
   'copy_image_between_slides',
+  'insert_icon',
   'edit_slide_master',
   'read_slide_text',
   'read_slide_image',

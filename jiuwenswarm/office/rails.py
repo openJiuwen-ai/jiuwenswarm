@@ -29,6 +29,7 @@ from openjiuwen.harness.rails._multimodal import should_enable_read_image_multim
 from jiuwenswarm.office.assets import OfficeAssetStore, PublishOfficeAssetTool
 from jiuwenswarm.office.client_tools import build_task_pane_tools
 from jiuwenswarm.office.documents import ListOpenDocumentsTool
+from jiuwenswarm.office.icons import SearchIconsTool
 from jiuwenswarm.office.runtime import session_id_of
 
 
@@ -36,9 +37,11 @@ class OfficeToolsRail(AgentRail):
     """Add the app's tools; keep registered only the task pane tools the document's host can run.
 
     The tools are the contract tools of the app's package, which the task pane
-    runs, ``publish_office_asset`` and ``list_open_documents``. At the first
-    model call after a task pane attached, the rail takes off the agent the task
-    pane tools the pane does not support (``client.attach`` saved them), so
+    runs, ``publish_office_asset``, ``list_open_documents`` and, beside
+    ``insert_icon``, ``search_icons``. At the first model call after a task
+    pane attached, the rail takes off the agent the task pane tools the pane
+    does not support (``client.attach`` saved them; ``search_icons`` goes with
+    ``insert_icon``), so
     neither the tools of a call nor ``tool_search`` and its catalog offer a tool
     the pane cannot run. That stays for the agent's life: a conversation runs
     in one host. It runs before the progressive tool rail (90), which reads the
@@ -64,7 +67,8 @@ class OfficeToolsRail(AgentRail):
         client_tools = build_task_pane_tools(self._package_dir, partial(_session_model, agent),
                                              partial(_native_image_model, agent), store)
         self._client_tools = client_tools
-        self._tools = [*client_tools, PublishOfficeAssetTool(store), ListOpenDocumentsTool()]
+        icons = [SearchIconsTool()] if any(tool.card.name == "insert_icon" for tool in client_tools) else []
+        self._tools = [*client_tools, PublishOfficeAssetTool(store), ListOpenDocumentsTool(), *icons]
         for tool in self._tools:
             agent.ability_manager.add_ability(tool.card, tool)
 
@@ -91,6 +95,8 @@ class OfficeToolsRail(AgentRail):
             return
         self._settled = True
         hidden = {tool.card.name for tool in self._client_tools} - supported
+        if "insert_icon" in hidden:
+            hidden.add("search_icons")
         # Only the agent's list changes: the tools stay in the resource manager, which runs them.
         ctx.agent.ability_manager.remove(sorted(hidden))
         # This call's tools were taken from the agent's list before the change.
