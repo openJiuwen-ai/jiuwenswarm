@@ -882,7 +882,8 @@ def check_todo_initialization(
     if file_exists:
         session_dir.mkdir(parents=True, exist_ok=True)
     path = session_dir / "metadata.json"
-    with _FILE_LOCK, portalocker.Lock(str(path) + ".lock", timeout=30):
+    # 同会话文件锁已协调线程和进程；不能持全局锁等待某个会话的磁盘锁。
+    with portalocker.Lock(str(path) + ".lock", timeout=30):
         metadata = (json.loads(path.read_text(encoding="utf-8")) if path.exists()
                     else {"session_id": session_id})
         if not isinstance(metadata, dict):

@@ -1972,7 +1972,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             try:
                 items = await todo_tool.load_todos(session_id)
                 loaded = getattr(items, "snapshot", None)
-                if loaded is not None and not loaded.exists:
+                if loaded is not None and (
+                    not loaded.exists or not getattr(loaded, "read_authoritative", True)
+                ):
                     return
                 snapshot = loaded.document() if loaded is not None else None
                 todos_data = items

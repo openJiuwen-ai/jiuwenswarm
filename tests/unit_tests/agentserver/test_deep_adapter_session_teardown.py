@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -362,6 +364,91 @@ async def test_idle_eviction_keeps_queued_reconnect_adapter() -> None:
         "sess_idle_reconnect": replacement
     }
     assert getattr(parent, "_session_adapter_locks")["sess_idle_reconnect"] is lock
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", [
+    "ok", "no_tool", "missing", "untrusted", "error", "cancelled",
+    "active", "approval", "subagent", "locked",
+])
+async def test_history_reads_evict_expired_adapters_and_keep_protected_sessions(monkeypatch, outcome):
+    from openjiuwen.harness.tools.todo_store import TodoSnapshot
+
+    parent = _make_adapter(
+        _is_session_scoped_adapter=False,
+        _session_adapters={}, _session_adapter_locks={}, _session_adapter_last_used={},
+        _session_adapter_versions={}, _session_adapter_reload_failures={},
+        _session_instance_config={}, _session_instance_mode="agent", _session_instance_sub_mode=None,
+        _config_base_cache=None, SESSION_ADAPTER_IDLE_TTL_SEC=1.0,
+        SESSION_ADAPTER_EVICT_BATCH_SIZE=8,
+    )
+    children = {}
+
+    def create_child(sid, **_kwargs):
+        child = _IdleChildAdapter()
+        child.create_instance = AsyncMock()
+        child.start_interaction = AsyncMock()
+
+        async def read_todos(_sid):
+            snapshot = TodoSnapshot([], sid, 1)
+            if sid == "history_b":
+                if outcome == "error":
+                    raise OSError("read failed")
+                if outcome == "cancelled":
+                    raise asyncio.CancelledError()
+                if outcome == "missing":
+                    snapshot = None
+                elif outcome == "untrusted":
+                    snapshot.read_authoritative = False
+            return SimpleNamespace(snapshot=snapshot)
+
+        tool = SimpleNamespace(read_todos=read_todos)
+        child.get_todo_modify_tool = lambda _sid: None if sid == "history_b" and outcome == "no_tool" else tool
+        children[sid] = child
+        return child
+
+    parent._new_session_scoped_adapter = create_child
+    parent._reload_session_adapter_if_stale = AsyncMock()
+    parent._remove_runtime_state_file = Mock()
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.session_ops_service.warmup_session_context", AsyncMock(),
+    )
+    await parent.read_todo_snapshot("history_a")
+    protected = outcome in {"active", "approval", "subagent", "locked"}
+    held_lock = None
+    if protected:
+        await parent.read_todo_snapshot("history_protected")
+        parent._session_adapter_last_used["history_protected"] = 0.0
+        if outcome == "active":
+            children["history_protected"].is_session_active = lambda _sid: True
+        elif outcome == "approval":
+            parent._sessions_awaiting_tool_permission.add("history_protected")
+        elif outcome == "subagent":
+            monkeypatch.setattr(
+                "jiuwenswarm.server.runtime.agent_adapter.interface_deep._session_has_live_subagent_runtime",
+                lambda _adapter, sid: sid == "history_protected",
+            )
+        else:
+            held_lock = parent._session_adapter_locks["history_protected"]
+            await held_lock.acquire()
+    parent._session_adapter_last_used["history_a"] = 0.0
+    try:
+        if outcome in {"error", "cancelled"}:
+            with pytest.raises(OSError if outcome == "error" else asyncio.CancelledError):
+                await parent.read_todo_snapshot("history_b")
+        else:
+            result = await parent.read_todo_snapshot("history_b")
+            assert (result is None) == (outcome in {"no_tool", "missing", "untrusted"})
+        assert children["history_a"].cleaned is True
+        assert "history_a" not in parent._session_adapters
+        assert "history_a" not in parent._session_adapter_locks
+        assert "history_b" in parent._session_adapters
+        if protected:
+            assert children["history_protected"].cleaned is False
+            assert "history_protected" in parent._session_adapters
+    finally:
+        if held_lock is not None:
+            held_lock.release()
 
 
 @pytest.mark.asyncio
