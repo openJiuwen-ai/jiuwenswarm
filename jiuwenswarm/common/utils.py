@@ -1148,12 +1148,29 @@ def _restore_previous_external_cli_state(config_path: Path, state: dict[str, Any
 
     直接对被覆盖的目标文件做节点级更新——不能用全局 CONFIG_YAML_PATH 的更新
     函数：prepare_workspace 可能带着与默认数据目录不同的 workspace_dir 被调用。
-    旧配置在保存时已通过校验，这里按原样回写；任一失败仅记录告警并保留模板
+    条目按当前允许清单过滤：旧配置里已不被支持的 agent 若原样回写，会在后续
+    配置归一化时抛 ValueError 导致保存失败。任一失败仅记录告警并保留模板
     默认值，不阻塞 init。
     """
     try:
         from ruamel.yaml import YAML
+        from jiuwenswarm.common.config import _allowed_external_cli_agents
 
+        allowed = set(_allowed_external_cli_agents())
+
+        def _allowed_entry(item: Any) -> bool:
+            if isinstance(item, dict):
+                name = str(item.get("cli_agent") or "").strip()
+            elif isinstance(item, str):
+                name = item.strip()
+            else:
+                return False
+            return bool(name) and name in allowed
+
+        agents = [item for item in state["agents"] if _allowed_entry(item)]
+        if not agents:
+            logger.info("覆盖前没有仍受支持的三方 agent 配置可保留")
+            return
         yaml_rt = YAML()
         yaml_rt.preserve_quotes = True
         with config_path.open("r", encoding="utf-8") as handle:
@@ -1161,7 +1178,7 @@ def _restore_previous_external_cli_state(config_path: Path, state: dict[str, Any
         modes = data.setdefault("modes", {})
         team = modes.setdefault("team", {})
         jiuwen_team = team.setdefault("jiuwen_team", {})
-        jiuwen_team["external_cli_agents"] = state["agents"]
+        jiuwen_team["external_cli_agents"] = agents
         histories = state.get("histories") or {}
         if histories:
             jiuwen_team["external_cli_path_histories"] = histories
@@ -1179,13 +1196,16 @@ def external_cli_state_sidecar_path() -> Path:
     保留；旁路文件落在用户级应用数据目录，重装不会清除，init 时用于恢复
     三方 agent 的启用配置。
     """
-    display_name = "WorkSwarm"
+    try:
+        from jiuwenswarm.common._build_config import DISPLAY_NAME
+    except Exception:  # noqa: BLE001
+        DISPLAY_NAME = "WorkSwarm"
     if os.name == "nt":
         local_app_data = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
-        return local_app_data / display_name / "external_cli_state.json"
+        return local_app_data / DISPLAY_NAME / "external_cli_state.json"
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / display_name / "external_cli_state.json"
-    return Path.home() / ".config" / display_name / "external_cli_state.json"
+        return Path.home() / "Library" / "Application Support" / DISPLAY_NAME / "external_cli_state.json"
+    return Path.home() / ".config" / DISPLAY_NAME / "external_cli_state.json"
 
 
 def refresh_external_cli_state_sidecar(config_path: Path) -> None:
@@ -1260,7 +1280,13 @@ def prepare_workspace(
         # 配置与路径历史：托管安装的 CLI 运行时（runtime/external-cli/...）
         # 并不随 init 删除，配置若一并清空，已安装的 agent 会在 UI 上回到
         # "已关闭"，与磁盘上仍然存在的安装状态不一致。
-        preserved_external_cli = _read_previous_external_cli_state(config_yaml_dest)
+        # 旧 config 存在但没有任何启用中的 agent（用户主动全部禁用过）时，
+        # 空列表就是用户的真实意图，不能落到旁路恢复把禁用状态又翻回来；
+        # 只有旧 config 不存在（数据目录被整体删除）才从旁路兜底恢复。
+        config_existed = config_yaml_dest.exists()
+        preserved_external_cli = (
+            _read_previous_external_cli_state(config_yaml_dest) if config_existed else None
+        )
         with TrackCopyDiff(
             dest=config_yaml_dest,
             is_file=True,
@@ -1270,7 +1296,7 @@ def prepare_workspace(
             shutil.copy2(config_yaml_src, config_yaml_dest)
         if preserved_external_cli is not None:
             _restore_previous_external_cli_state(config_yaml_dest, preserved_external_cli)
-        else:
+        elif not config_existed:
             # 数据目录被整体删除（重装/重置）的场景：旧 config 已不存在，无从
             # 保留；从数据目录之外的状态旁路恢复三方 agent 的启用配置。
             sidecar_state = _read_external_cli_state_sidecar()
