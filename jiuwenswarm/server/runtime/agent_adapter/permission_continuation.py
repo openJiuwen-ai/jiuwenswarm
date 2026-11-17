@@ -497,17 +497,28 @@ def unanswered_permission_batch(instance: Any, target_sid: str, loop_session_id:
     return message
 
 
+def _calls_without_index(calls: Any) -> list[Any]:
+    """Comparison copies of *calls* with ``ToolCall.index`` cleared.
+
+    A restored context deserialized from the snapshot carries no ``index`` on
+    its calls while Core's interrupted batch records 0/1, so an exact object
+    comparison rejects the same batch. Every other field and the order stay
+    significant; the original calls are left untouched.
+    """
+    return [
+        call.model_copy(update={"index": None}) if hasattr(call, "model_copy") else call
+        for call in (calls or ())
+    ]
+
+
 async def discard_restored_permission_batch(
     instance: Any, target_sid: str, loop_session_id: str | None,
 ) -> bool:
     """Balance a cold, unanswered batch before the Host admits a fresh user turn.
 
-    The caller owns the session lock and has excluded live work. Only Core's
-    exact batch identifies what paused; the restored window merely approximates
-    it: it may keep the batch verbatim, omit calls paused before their tool
-    event, or already hold a result for one of them. Settling by call id keeps
-    every one of those shapes from blocking a fresh user turn. This never
-    restores an approval or guesses a completed tool result.
+    The caller owns the session lock and has excluded live work. History omits
+    calls paused before their tool event; only Core's exact batch can fill that
+    gap. This never restores an approval or guesses a completed tool result.
     """
     message = unanswered_permission_batch(instance, target_sid, loop_session_id)
     if message is None:
@@ -520,57 +531,31 @@ async def discard_restored_permission_batch(
     state = session.get_state(INTERRUPTION_KEY)
     old_context = copy.deepcopy(context.save_state())
     old_session_context = copy.deepcopy(session.get_state("context"))
-    calls = list(message.tool_calls)
-    ids = [call.id for call in calls]
-    names = {call.id: call.name for call in calls}
-    client_tool_ids = {call.tool_call_id for call in _paused_client_tool_calls(state)}
+    ids = {call.id for call in message.tool_calls}
     messages = list(context.get_messages() or [])
-    results = {str(getattr(item, "tool_call_id", "") or "") for item in messages}
-    call_ids = {
-        str(getattr(call, "id", "") or "")
-        for item in messages
-        for call in (getattr(item, "tool_calls", None) or [])
-    }
-    # Only a context without any trace of the batch needs the message itself.
-    appended_batch = not set(ids) & call_ids
+    if any(getattr(item, "tool_call_id", None) in ids for item in messages):
+        raise RootPermissionQueueError("permission_continuation_context_mismatch")
+    existing = []
+    for item in messages:
+        calls = getattr(item, "tool_calls", None) or []
+        if any(getattr(call, "id", None) in ids for call in calls):
+            existing.append(item)
+    if existing and (
+        len(existing) != 1
+        or _calls_without_index(existing[0].tool_calls) != _calls_without_index(message.tool_calls)
+    ):
+        raise RootPermissionQueueError("permission_continuation_context_mismatch")
     try:
-        added = 0
-        if appended_batch:
+        if not existing:
             await context.add_messages(copy.deepcopy(message))
-            call_ids.update(ids)
-        for tool_call_id in ids:
-            # A call whose result already exists is settled; a call the
-            # context never kept cannot be balanced without an orphan result.
-            if tool_call_id in results or tool_call_id not in call_ids:
-                continue
-            await context.add_messages(
-                _superseded_message(tool_call_id, names[tool_call_id], client_tool_ids)
-            )
-            added += 1
-        session.update_state({INTERRUPTION_KEY: None})
-        await engine.save_contexts(session)
+        if not await discard_pending_permission_interrupt_for_target(instance, target_sid, loop_session_id):
+            raise RootPermissionQueueError("permission_continuation_discard_failed")
     except BaseException:
         context.load_state({context.context_id(): old_context})
         # Session updates merge dictionaries and treat nested None as deletion.
         session.update_state({"context": None})
         session.update_state({INTERRUPTION_KEY: state, "context": old_session_context})
         raise
-    already_resolved = len(set(ids) & results)
-    if already_resolved or not appended_batch:
-        # The rebuilt context disagreed with Core's batch; keep the shape in the
-        # log so a future report of this path is diagnosable.
-        logger.warning(
-            "[PermissionContinuation] settled restored permission batch with a diverged "
-            "context session=%s calls=%d appended_batch=%s already_resolved=%d balanced=%d "
-            "context_calls=%d",
-            target_sid, len(ids), appended_batch, already_resolved, added,
-            len(set(ids) & call_ids),
-        )
-    else:
-        logger.info(
-            "[PermissionContinuation] settled restored permission batch session=%s calls=%d",
-            target_sid, len(ids),
-        )
     return True
 
 

@@ -404,7 +404,7 @@ def assert_settled(child, request, ids):
 async def test_trimmed_restored_batch_still_settles_on_fresh_input(
     hosts, sqlite_checkpoint, monkeypatch, mode, count, wrapper_goal,
 ):
-    """The paused call is absent from the rebuilt context; it is re-added once."""
+    """The paused call is absent from the restored window; it is re-added once."""
     old = await hosts("old", "cold-trimmed", mode=mode)
     await _interrupt(old, monkeypatch, mode=mode, kind="permission", count=count)
     if wrapper_goal:
@@ -437,72 +437,55 @@ async def test_trimmed_restored_batch_still_settles_on_fresh_input(
     h.script.responses = [AssistantMessage(content="FRESH-COLD-COMPLETED")]
     result = await _request(h, query=request.params["query"])
     assert result.ok and "FRESH-COLD-COMPLETED" in repr(result.payload)
+    assert h.executions == [], "the superseded tool must never execute"
     await sqlite_checkpoint()
     assert await _recovered_ids(h) == set()
 
 
+def restored_batch_message(context, ids):
+    """The restored assistant message that carries Core's batch."""
+    for message in context.get_messages():
+        calls = getattr(message, "tool_calls", None) or []
+        if any(getattr(call, "id", None) in ids for call in calls):
+            return message
+    raise AssertionError("the restored window lost Core's batch")
+
+
+async def prewarmed(h, monkeypatch):
+    """Restore the window and keep the adapter, as a page-status prewarm does."""
+    parent = parent_for(h, monkeypatch)
+    request = fresh(h)
+    assert await parent._get_or_create_session_adapter(request.session_id) is h.adapter
+    context = h.adapter._instance.react_agent.context_engine.get_context(session_id=request.session_id)
+    return parent, request, context
+
+
 @pytest.mark.parametrize("mode", ["manual", "auto"])
 @pytest.mark.parametrize("count", [1, 2])
-async def test_restored_result_for_a_pending_call_still_settles(
+async def test_restored_batch_settles_when_only_index_differs(
     hosts, sqlite_checkpoint, monkeypatch, mode, count,
 ):
-    """A restored window may already hold a result for a paused call.
+    """Core records ToolCall.index 0/1 while the restored window keeps None.
 
-    The batch is still wholly unanswered for Core, so the call keeps its real
-    result, is not cancelled twice, and the rest of the batch is settled.
+    That representation difference alone must not reject Core's own batch.
     """
-    old = await hosts("old", "cold-restored-result", mode=mode)
+    old = await hosts("old", "cold-index", mode=mode)
     await _interrupt(old, monkeypatch, mode=mode, kind="permission", count=count)
     calls = pending_calls(old)
     ids = {call["id"] for call in calls}
     await stopped_checkpoint(old, sqlite_checkpoint)
 
-    h = await hosts("new", "cold-restored-result", mode=mode)
-    parent = parent_for(h, monkeypatch)
-    request = fresh(h)
-    assert await parent._get_or_create_session_adapter(request.session_id) is h.adapter
-    context = h.adapter._instance.react_agent.context_engine.get_context(session_id=request.session_id)
-    await context.add_messages(ToolMessage(tool_call_id=calls[0]["id"], content="deleted"))
-
-    child = await parent._get_or_create_session_adapter(
-        request.session_id, execution_request=request, host_external_input=True,
-    )
-    assert child is h.adapter
-    messages, present = assert_settled(child, request, ids)
-    assert present == ids
-    kept = [message for message in messages if getattr(message, "tool_call_id", None) == calls[0]["id"]]
-    assert len(kept) == 1 and kept[0].content == "deleted"
-    h.script.responses = [AssistantMessage(content="FRESH-COLD-COMPLETED")]
-    result = await _request(h, query=request.params["query"])
-    assert result.ok and "FRESH-COLD-COMPLETED" in repr(result.payload)
-    await sqlite_checkpoint()
-    assert await _recovered_ids(h) == set()
-
-
-@pytest.mark.parametrize("mode", ["manual", "auto"])
-@pytest.mark.parametrize("count", [1, 2])
-async def test_prewarmed_batch_drift_still_settles(
-    hosts, sqlite_checkpoint, monkeypatch, mode, count,
-):
-    """A second, drifted copy of the batch must not double-balance or block."""
-    from openjiuwen.core.foundation.llm import ToolCall
-
-    old = await hosts("old", "cold-drift", mode=mode)
-    await _interrupt(old, monkeypatch, mode=mode, kind="permission", count=count)
-    calls = pending_calls(old)
-    ids = {call["id"] for call in calls}
-    await stopped_checkpoint(old, sqlite_checkpoint)
-
-    h = await hosts("new", "cold-drift", mode=mode)
-    parent = parent_for(h, monkeypatch)
-    request = fresh(h)
-    assert await parent._get_or_create_session_adapter(request.session_id) is h.adapter
-    context = h.adapter._instance.react_agent.context_engine.get_context(session_id=request.session_id)
-    await context.add_messages(AssistantMessage(content="", tool_calls=[
-        ToolCall(id=call["id"], type="function", name=call["name"],
-                 arguments=json.dumps({"display_only": "drifted"}))
-        for call in calls
-    ]))
+    h = await hosts("new", "cold-index", mode=mode)
+    parent, request, _context = await prewarmed(h, monkeypatch)
+    instance = h.adapter._instance
+    state = instance.loop_session.get_state(INTERRUPTION_KEY)
+    for position, entry in enumerate(state.interrupted_tools.values()):
+        entry.tool_call = entry.tool_call.model_copy(update={"index": position})
+    state.ai_message.tool_calls = [
+        call.model_copy(update={"index": position})
+        for position, call in enumerate(state.ai_message.tool_calls)
+    ]
+    instance.loop_session.update_state({INTERRUPTION_KEY: state})
 
     child = await parent._get_or_create_session_adapter(
         request.session_id, execution_request=request, host_external_input=True,
@@ -513,5 +496,47 @@ async def test_prewarmed_batch_drift_still_settles(
     h.script.responses = [AssistantMessage(content="FRESH-COLD-COMPLETED")]
     result = await _request(h, query=request.params["query"])
     assert result.ok and "FRESH-COLD-COMPLETED" in repr(result.payload)
+    assert h.executions == [], "the superseded tool must never execute"
     await sqlite_checkpoint()
     assert await _recovered_ids(h) == set()
+
+
+@pytest.mark.parametrize("shape", ["result_present", "duplicate_batch", "arguments_drift", "order_swap"])
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+@pytest.mark.parametrize("count", [1, 2])
+async def test_restored_batch_rejects_a_context_it_cannot_trust(
+    hosts, sqlite_checkpoint, monkeypatch, mode, count, shape,
+):
+    """A context that disagrees beyond ``index`` stays fail-closed."""
+    if shape == "order_swap" and count < 2:
+        pytest.skip("reordering needs a two-call batch")
+    old = await hosts("old", "cold-reject", mode=mode)
+    await _interrupt(old, monkeypatch, mode=mode, kind="permission", count=count)
+    calls = pending_calls(old)
+    ids = {call["id"] for call in calls}
+    await stopped_checkpoint(old, sqlite_checkpoint)
+
+    h = await hosts("new", "cold-reject", mode=mode)
+    parent, request, context = await prewarmed(h, monkeypatch)
+    instance = h.adapter._instance
+    if shape == "result_present":
+        await context.add_messages(ToolMessage(tool_call_id=calls[0]["id"], content="deleted"))
+    else:
+        message = restored_batch_message(context, ids)
+        if shape == "duplicate_batch":
+            await context.add_messages(deepcopy(message))
+        elif shape == "arguments_drift":
+            message.tool_calls = [
+                call.model_copy(update={"arguments": '{"value":"foreign"}'})
+                for call in message.tool_calls
+            ]
+        else:
+            message.tool_calls = list(reversed(message.tool_calls))
+
+    with pytest.raises(continuation.RootPermissionQueueError, match="permission_continuation_context_mismatch"):
+        await parent._get_or_create_session_adapter(
+            request.session_id, execution_request=request, host_external_input=True,
+        )
+    state = instance.loop_session.get_state(INTERRUPTION_KEY)
+    assert getattr(state, "interrupted_tools", None), "a rejected batch must stay pending"
+    assert h.executions == [], "the superseded tool must never execute"
