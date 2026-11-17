@@ -70,6 +70,12 @@ Swarm forwards each enabled, complete model configuration under any permission p
 
 ## 2. Built-in Memory vs. JiuwenMemory
 
+When Swarm starts with the JiuwenMemory provider selected, it leaves `MEMORY.md` unseeded. The first long-term memory write in a session without a project uses the `default` project. With local Markdown storage, it creates `memory/default/MEMORY.md` under the configured Markdown root.
+
+When switching to the SDK with a Swarm-managed Markdown root, Swarm archives a leftover root `MEMORY.md` that matches a built-in template before starting the SDK. Edited files stay in place.
+
+For a selected project, Swarm derives its memory coordinate from the directory name and a hash of the normalized absolute path. Local long-term memory uses `memory/<directory-name>-<path-hash>/MEMORY.md`. Omit the memory tool's `project` argument to use the current session's coordinate. Existing memory stored under a bare directory name remains accessible by explicitly selecting that legacy coordinate.
+
 JiuwenSwarm defaults to **built-in memory** (`memory.engine: builtin`), based on local Markdown files; switching to JiuwenMemory uses remote structured backends. The key difference is not "tool names" but **how memory is triggered**:
 
 - **Built-in memory**: No auto-trigger. The Agent must **actively call** `memory_*` tools (`memory_search` / `write_memory`, etc.) to read or write memory — nothing happens if it doesn't call them.
