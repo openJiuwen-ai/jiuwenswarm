@@ -12,6 +12,7 @@ type TooltipState = {
   text: string;
   buttonRect: { left: number; right: number; top: number; bottom: number };
   placement: TooltipPlacement;
+  fallbackTop?: number;
 };
 
 type TooltipHandlers = {
@@ -25,8 +26,7 @@ interface UseAdaptiveTooltipOptions {
   offsetX?: number;
   /** 垂直偏移（px），正值为向下，默认 0 */
   offsetY?: number;
-  /** 水平对齐：默认 'center'（居中于触发元素），'left'（tooltip 左缘对齐锚点左缘），'right'（tooltip 右缘对齐锚点右缘）。
-   *  仅 'center' 时 offsetX 生效；left/right 忽略 offsetX，仍受视口边界约束。 */
+  /** 水平对齐：'center'（默认）、'left' 或 'right'，对齐后应用 offsetX 并受视口边界约束。 */
   align?: TooltipAlign;
   placement?: TooltipPlacement;
   /** 最大宽度（px），不传时用 .adaptive-tooltip 的默认 320px */
@@ -40,6 +40,8 @@ interface UseAdaptiveTooltipOptions {
    *  典型场景：hover 子元素（被截断的标题 span）时，tooltip 相对于稳定行容器定位。
    *  data-tooltip 文本仍然从事件触发元素读取。 */
   anchorRef?: RefObject<HTMLElement | null>;
+  /** 下方空间不足时，浮层从此元素的上边缘向上展开。默认使用锚点。 */
+  topFallbackAnchorRef?: RefObject<HTMLElement | null>;
   /** portal 挂载容器，默认 document.body。触发元素位于 top layer 弹窗（showModal 打开的 <dialog>）内时
    *  必须传该 dialog 元素：普通 DOM 无论 z-index 多高都会被 top layer 整体盖住。 */
   containerRef?: RefObject<HTMLElement | null>;
@@ -50,7 +52,7 @@ interface UseAdaptiveTooltipOptions {
  * 右侧空间不足时提示右缘对齐按钮右缘，左侧空间不足时左缘对齐按钮左缘，
  * 仍放不下时收进视口内（VIEWPORT_MARGIN 兜底）。
  *
- * offsetX: 相对触发元素宽度的百分比偏移（负值向左），0 = 居中，-50 = 左移半个触发元素宽度。
+ * offsetX: 相对锚点宽度的百分比偏移（负值向右），0 = 不偏移。
  * placement: 'top' 显示在触发元素上方，'bottom'（默认）显示在下方，'right' 显示在右侧。
  *
  * 自动隐藏时机：hover/focus 离开、点击任意位置、焦点移到其他元素、
@@ -74,6 +76,7 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
   const placement = options?.placement ?? 'bottom';
   const maxWidth = options?.maxWidth;
   const anchorRef = options?.anchorRef;
+  const topFallbackAnchorRef = options?.topFallbackAnchorRef;
   const containerRef = options?.containerRef;
   const interactive = options?.interactive ?? false;
   const [state, setState] = useState<TooltipState | null>(null);
@@ -119,9 +122,10 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
         text,
         buttonRect: { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom },
         placement,
+        fallbackTop: topFallbackAnchorRef?.current?.getBoundingClientRect().top,
       });
     },
-    [placement, anchorRef, hide, cancelHide],
+    [placement, anchorRef, topFallbackAnchorRef, hide, cancelHide],
   );
 
   useLayoutEffect(() => {
@@ -158,10 +162,11 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
       finalTop = topPos >= minTop ? topPos : (spaceBelow >= height ? bottom + TOOLTIP_GAP : topPos);
     } else {
       const bottomPos = bottom + TOOLTIP_GAP;
-      const spaceAbove = top - TOOLTIP_GAP - minTop;
-      finalTop = bottomPos + height <= viewportHeight ? bottomPos : (spaceAbove >= height ? top - TOOLTIP_GAP - height : bottomPos);
+      const topPos = (state.fallbackTop ?? top) - TOOLTIP_GAP - height;
+      finalTop = bottomPos + height <= viewportHeight || topPos < minTop ? bottomPos : topPos;
     }
 
+    const shift = (buttonWidth * offsetPct) / 100;
     let finalLeft: number;
     if (state.placement === 'right') {
       const rightPos = right + TOOLTIP_GAP;
@@ -170,11 +175,10 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
         ? rightPos
         : Math.max(minLeft, Math.min(leftPos, maxLeft));
     } else if (align === 'left') {
-      finalLeft = Math.max(minLeft, Math.min(left, maxLeft));
+      finalLeft = left - shift;
     } else if (align === 'right') {
-      finalLeft = Math.max(minLeft, Math.min(right - width, maxLeft));
+      finalLeft = right - width - shift;
     } else {
-      const shift = (buttonWidth * offsetPct) / 100;
       const centered = left + buttonWidth / 2 - width / 2 - shift;
       if (centered < minLeft) {
         finalLeft = Math.max(minLeft, Math.min(left - shift, maxLeft));

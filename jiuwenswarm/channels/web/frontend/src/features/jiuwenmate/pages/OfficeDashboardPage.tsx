@@ -34,6 +34,7 @@ import {
   carouselCardsPerView,
   carouselEdges,
   CAROUSEL_GAP,
+  colleagueJoinedBy,
   createOfficeState,
   formatMonthDay,
   formatSummaryTokens,
@@ -228,13 +229,14 @@ function memberCard(
   t: (key: string) => string,
   colleague: JiuwenMateColleague,
   handlers: OfficeDashboardHandlers,
-  options: { selected?: boolean; onSelect?: () => void } = {},
+  options: { selected?: boolean; onSelect?: () => void; revealClippedDescription?: boolean } = {},
 ) {
   return (
     <ColleagueCard
       colleague={colleague}
       selected={options.selected}
       onSelect={options.onSelect}
+      revealClippedDescription={options.revealClippedDescription}
       badge={memberBadge(t, colleague)}
       menu={memberMenu(t, colleague, handlers)}
       actions={[
@@ -257,7 +259,7 @@ function MembersTab({ colleagues, handlers }: { colleagues: readonly JiuwenMateC
       </button>
       {colleagues.map((colleague) => (
         <div key={colleague.id} className="jiuwenmate-office__member">
-          {memberCard(t, colleague, handlers)}
+          {memberCard(t, colleague, handlers, { revealClippedDescription: true })}
         </div>
       ))}
     </div>
@@ -363,7 +365,7 @@ function ActivityAllTab({
     member ? memberRangeTotals(member.days, range.start, range.end) : { tokens: 0, replies: 0 };
   const summary = {
     ...activitySummary(
-      heatmap,
+      daily.filter((day) => day.date >= range.start && day.date <= range.end),
       colleagues.length,
       members.map((member) => {
         const inRange = totals(member);
@@ -374,6 +376,7 @@ function ActivityAllTab({
   };
   const keyword = query.trim();
   const ranked = colleagues
+    .filter((colleague) => colleagueJoinedBy(colleague.joinedAt, range.end))
     .map((colleague) => {
       const member = members.find((item) => item.agentId === colleague.id);
       const inRange = totals(member);
