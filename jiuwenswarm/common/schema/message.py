@@ -153,6 +153,9 @@ _ensure_req_method("WORKSPACE_TREE", "workspace.tree")
 _ensure_req_method("WORKSPACE_PREVIEW", "workspace.preview")
 _ensure_req_method("WORKSPACE_USAGE", "workspace.usage")
 _ensure_req_method("WORKSPACE_ENTRIES_DELETE", "workspace.entries.delete")
+# skills.rebuild 的静默改写没有稳定上限。状态查询走独立方法，避免继续占着
+# 600 秒的非流式请求。协议包尚未发布该成员时在这里补齐。
+_ensure_req_method("SKILLS_REBUILD_STATUS", "skills.rebuild_status")
 _ensure_req_method("SKILLS_SOURCE_PROVIDERS", "skills.source.providers")
 _ensure_req_method("SKILLS_SOURCE_SEARCH", "skills.source.search")
 _ensure_req_method("SKILLS_SOURCE_INSTALL", "skills.source.install")
