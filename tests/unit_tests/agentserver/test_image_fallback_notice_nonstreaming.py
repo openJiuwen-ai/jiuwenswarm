@@ -151,6 +151,11 @@ def quiet_runtime(monkeypatch):
     monkeypatch.setattr(f"{module}.setup_permission_context", lambda request: None)
     monkeypatch.setattr(f"{module}.cleanup_permission_context", lambda token: None)
     monkeypatch.setattr(
+        "jiuwenswarm.extensions.video_duplex.backend.conversation_context."
+        "sync_conversation_context",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
         "jiuwenswarm.agents.harness.agent_observability.sync_agent_observability",
         lambda *args, **kwargs: None,
     )
