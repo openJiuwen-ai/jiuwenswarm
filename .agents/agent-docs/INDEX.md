@@ -57,6 +57,7 @@ generated: true
 | [scripts](#module-scripts) |
 | [tests](#module-tests) |
 | [tests/fixtures/ttse_plugin](#module-tests-fixtures-ttse_plugin) |
+| [tests/unit_tests/agents](#module-tests-unit_tests-agents) |
 | [tests/unit_tests/agentserver](#module-tests-unit_tests-agentserver) |
 | [tests/unit_tests/gateway](#module-tests-unit_tests-gateway) |
 | [tests/unit_tests/personal_context](#module-tests-unit_tests-personal_context) |
@@ -191,6 +192,7 @@ generated: true
 |---|---|---|---|---|
 | [F_20261027_2015_bilingual-progressive-tool-discovery](features/jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
 | [F_20261103_1124_sdk-web-retrieval](features/F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
+| [F_20261116_2135_web-article-tool](features/F_20261116_2135_web-article-tool.md) | F | 补齐智能网页长文提取与降噪工具 (read_web_article) | zhuxiangju | 无独立 D：接入内部安全守卫与 trafilatura 的智能长文提取落地。 |
 | [S_01_tool-discovery-language](specs/jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | — |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
@@ -477,6 +479,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261031_1006_ttse-runtime-fixture](bugfix/tests/unit_tests/agentserver/B_20261031_1006_ttse-runtime-fixture.md) | B | TTSE runtime UT 使用版本化夹具修复整批 setup error | xinyang_bali | 无独立 D：修复用户报告的 CI 测试数据缺失，保持现有 plugin_runtime v1 与生产默认打包路径，无独立 D。 |
+
+<a id="module-tests-unit_tests-agents"></a>
+
+## tests/unit_tests/agents
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261116_2135_web-article-tool](features/F_20261116_2135_web-article-tool.md) | F | 补齐智能网页长文提取与降噪工具 (read_web_article) | zhuxiangju | 无独立 D：接入内部安全守卫与 trafilatura 的智能长文提取落地。 |
 
 <a id="module-tests-unit_tests-agentserver"></a>
 
