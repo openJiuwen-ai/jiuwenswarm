@@ -91,6 +91,11 @@ workspace/agent/memory/*.db-wal
 
 jiuwenswarm/workspace/.whatsapp-auth/
 jiuwenswarm/resources/agent/workspace/*
+# Ship the builtin catalog while keeping runtime workspace data ignored.
+!jiuwenswarm/resources/agent/workspace/skills/
+jiuwenswarm/resources/agent/workspace/skills/*
+!jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/
+!jiuwenswarm/resources/agent/workspace/skills/_proprietary_skills.json
 # Ship the in-repo designer AgentGroup (design team leader/worker templates).
 !jiuwenswarm/resources/agent/workspace/plugins/
 !jiuwenswarm/resources/agent/workspace/plugins/agent_groups/

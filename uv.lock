@@ -82,7 +82,7 @@ wheels = [
 [[package]]
 name = "agent-gateway"
 version = "0.0.1"
-source = { git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=703da5cec987acaaab3557e90007965ca2644c96#703da5cec987acaaab3557e90007965ca2644c96" }
+source = { git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=d68e80bf7abc5a6f28e7178ae79c2ea644308259#d68e80bf7abc5a6f28e7178ae79c2ea644308259" }
 dependencies = [
     { name = "aiohttp" },
     { name = "aiosqlite" },
@@ -7196,7 +7196,7 @@ wheels = [
 
 [[package]]
 name = "workswarm"
-version = "0.2.8"
+version = "0.2.9b5"
 source = { editable = "." }
 dependencies = [
     { name = "a2ui-agent-sdk" },
@@ -7404,7 +7404,7 @@ requires-dist = [
     { name = "a2ui-agent-sdk", specifier = "==0.2.1" },
     { name = "a2ui-agent-sdk", marker = "extra == 'harmony'", specifier = "==0.2.1" },
     { name = "a4p", specifier = "==0.1.0" },
-    { name = "agent-gateway", git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=703da5cec987acaaab3557e90007965ca2644c96" },
+    { name = "agent-gateway", git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=d68e80bf7abc5a6f28e7178ae79c2ea644308259" },
     { name = "aiosqlite", specifier = ">=0.22.1,<0.23" },
     { name = "aiosqlite", marker = "extra == 'harmony'", specifier = ">=0.22.1" },
     { name = "anthropic", specifier = ">=0.40.0,<1.0.0" },
@@ -7576,7 +7576,7 @@ test = [
 
 [[package]]
 name = "workswarm-tui"
-version = "0.2.8"
+version = "0.2.9b5"
 source = { directory = "packages/jiuwenswarm-tui" }
 
 [[package]]

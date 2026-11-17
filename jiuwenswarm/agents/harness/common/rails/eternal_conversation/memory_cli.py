@@ -19,6 +19,9 @@ VENDORED_SKILL = (
     / "agent"
     / "workspace"
     / "skills"
+    / "workswarm-builtin"
+    / "references"
+    / "capabilities"
     / "dynamic-memory-cli"
 )
 

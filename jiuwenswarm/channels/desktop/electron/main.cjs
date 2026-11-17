@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, net, session, shell, Tray, WebContentsView } = require('electron');
+const { app, BaseWindow, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, net, session, shell, Tray, WebContentsView } = require('electron');
 const { spawn, execFile } = require('node:child_process');
 const { randomBytes, randomUUID } = require('node:crypto');
 const { inspect } = require('node:util');
@@ -17,6 +17,8 @@ const { SHARED_BROWSER_PARTITION, panelIdentity, hasLiveLease, evictionCandidate
 const { createBrowserDownloadService } = require('./browser_downloads.cjs');
 const { createDownloadBubbleController } = require('./browser_download_bubble.cjs');
 const { createShutdownReceipt, completeShutdownReceipt, recordShutdownOutcome } = require('./update_shutdown.cjs');
+const { createAppMarketWindows } = require('./app_market_windows.cjs');
+const appMarketWindows = createAppMarketWindows(BaseWindow, WebContentsView, () => mainWindow, resolveIconPath, () => app.getAppMetrics(), () => app.getLocale());
 let macUpdateInProgress = false;
 let updateShutdownReceipt = null;
 
@@ -99,7 +101,7 @@ async function findAvailablePorts(scanRange = 10) {
 let hasCdp = false;
 
 function mainLogPath() {
-  return path.join(app.getPath('home'), '.jiuwenswarm', 'logs', 'electron-main.log');
+  return path.join(userWorkspaceDir(), 'logs', 'electron-main.log');
 }
 
 function installMainConsoleTee() {
@@ -212,7 +214,7 @@ const logStreams = new Map();
 function logStreamFor(name) {
   if (!app.isPackaged) return 'inherit';
   if (logStreams.has(name)) return logStreams.get(name);
-  const logDir = path.join(app.getPath('home'), '.jiuwenswarm', 'logs');
+  const logDir = path.join(userWorkspaceDir(), 'logs');
   const logFile = path.join(logDir, `electron-${name}.log`);
   let fd;
   try {
@@ -510,11 +512,12 @@ const GATEWAY_LOCK_FILENAME = '.gateway.lock';
 const GATEWAY_PREFLIGHT_WAIT_MS = 15_000;
 
 function userWorkspaceDir() {
-  return path.join(app.getPath('home'), '.jiuwenswarm');
+  const home = process.env.JIUWENSWARM_HOME || app.getPath('home');
+  return process.env.JIUWENSWARM_DATA_DIR || path.join(home, '.jiuwenswarm');
 }
 
 function desktopWindowPreferencesPath() {
-  const workspaceDir = process.env.JIUWENSWARM_DATA_DIR || userWorkspaceDir();
+  const workspaceDir = userWorkspaceDir();
   return path.join(workspaceDir, 'config', DESKTOP_WINDOW_PREFERENCES_FILENAME);
 }
 
@@ -2542,6 +2545,11 @@ async function fetchImplicitAuthorizeUrl(docPage, successOrigin) {
 }
 
 function registerIpcHandlers() {
+  registerHandler('desktop:open-market-app', appMarketWindows.open);
+  registerHandler('desktop:close-market-app', appMarketWindows.close);
+  registerHandler('desktop:set-market-app-viewport', appMarketWindows.setViewport);
+  registerHandler('desktop:reload-market-app', appMarketWindows.reload);
+  registerHandler('desktop:market-app-resources', appMarketWindows.getResources);
   ipcMain.on('desktop:is-frontend-only', event => {
     if (mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents) {
       event.returnValue = isFrontendOnly;

@@ -621,7 +621,9 @@ if ($FrontendOnly) {
     Write-Host "`n[4/6] Reusing existing PyInstaller backend: $BackendDist" -ForegroundColor Yellow
 } else {
     Write-Host "`n[4/6] Running PyInstaller (backend)..." -ForegroundColor Yellow
-    uv run pyinstaller scripts\jiuwenswarm.spec --noconfirm
+    # Use an extended local path when collecting deeply nested runtime data.
+    $CollectDir = "\\?\$ProjectRoot\dist"
+    uv run pyinstaller scripts\jiuwenswarm.spec --noconfirm --distpath $CollectDir
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     if (-not (Test-Path (Join-Path $BackendDist $BuildExecutableNameWindows))) {
         throw "PyInstaller output not found: $BackendDist\$BuildExecutableNameWindows"
@@ -764,6 +766,8 @@ Copy-Item -Path (Join-Path $DesktopDir "main.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "update_shutdown.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "cdp_port.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_panels.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "app_market_windows.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "app_market_resources.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_downloads.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_download_bubble.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "share_image_export.cjs") -Destination $AppDir -Force
@@ -943,12 +947,28 @@ if (-not $Iscc) {
         throw "ISCC.exe was not found after installing Inno Setup 7. Install Inno Setup 7 and rerun the build."
     }
 }
+# The Office schema tree is the deepest payload path. Compress it before the
+# Inno Setup 6 MAX_PATH gate so the gate validates the payload that will
+# actually be packed, not the seed layout.
+$PayloadRoot = (Get-InnoSetupSourceRoot -ProjectRoot $ProjectRoot -SourceDir "$BuildDisplayName-Electron").TrimEnd('\')
+$OfficeSchemas = Join-Path $PayloadRoot 'resources\backend\_internal\jiuwenswarm\resources\agent\workspace\skills\workswarm-builtin\references\capabilities\ppt-creation\scripts\opc\schemas'
+if (Test-Path -LiteralPath $OfficeSchemas -PathType Container) {
+    $OfficeSchemas = (Resolve-Path -LiteralPath $OfficeSchemas).ProviderPath
+    $PayloadPrefix = (Resolve-Path -LiteralPath $PayloadRoot).ProviderPath.TrimEnd('\') + '\'
+    if (-not $OfficeSchemas.StartsWith($PayloadPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Office schemas are outside the Electron payload: $OfficeSchemas"
+    }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [IO.Compression.ZipFile]::CreateFromDirectory($OfficeSchemas, "$OfficeSchemas.zip")
+    Remove-Item -LiteralPath $OfficeSchemas -Recurse -Force
+}
 if (-not (Test-InnoSetup7OrNewer -IsccPath $Iscc)) {
     # Inno Setup 6 fails late ("The system cannot find the path specified")
     # whenever a payload path exceeds MAX_PATH. The assembled app is final here,
-    # so validate it before compression and fail fast with an actionable message.
-    # This gate stays after the -SkipInstaller return above: directory-only
-    # builds must not resolve a compiler or care about payload path length.
+    # so validate it before invoking the compiler and fail fast with an
+    # actionable message. This gate stays after the -SkipInstaller return above:
+    # directory-only builds must not resolve a compiler or care about payload
+    # path length.
     $PayloadRoot = Get-InnoSetupSourceRoot -ProjectRoot $ProjectRoot -SourceDir "$BuildDisplayName-Electron"
     $MaxPathViolation = Find-MaxPathViolation -SourceRoot $PayloadRoot
     if ($null -ne $MaxPathViolation) {
@@ -982,7 +1002,11 @@ if (Test-Path -LiteralPath $InstallerPath) {
     Remove-Item -LiteralPath $InstallerPath -Force
 }
 
+$LongestPayloadPath = Get-ChildItem -LiteralPath $PayloadRoot -File -Recurse |
+    ForEach-Object { $_.FullName.Length - $PayloadRoot.Length - 1 } |
+    Measure-Object -Maximum
 $IsccArguments = @(
+    "/DMaxPayloadRelativePath=$($LongestPayloadPath.Maximum)",
     "/DMyAppName=$BuildDisplayName",
     "/DMyAppExeName=$ShellExeName",
     "/DMyAppVersion=$BuildVersion",
@@ -998,9 +1022,30 @@ if ($DoSign) {
         " /tr $TimestampUrl /td SHA256 /v " + '$f'
     $IsccArguments += "/Scertumsha256=$InnoSignCommand"
 }
-$IsccArguments += "$ProjectRoot\scripts\installer-electron.iss"
-& $Iscc @IsccArguments
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$InnoRoot = $ProjectRoot
+$InnoDrive = $null
+if (($PayloadRoot.Length + 1 + $LongestPayloadPath.Maximum) -gt 249) {
+    $UsedDrives = [System.IO.DriveInfo]::GetDrives().Name
+    $DriveName = 90..68 | ForEach-Object { "$([char]$_):\" } |
+        Where-Object { $_ -notin $UsedDrives } | Select-Object -First 1
+    if (-not $DriveName) {
+        throw 'Inno Setup needs a shorter checkout path or a free drive letter.'
+    }
+    $InnoDrive = $DriveName.TrimEnd('\')
+    & subst.exe $InnoDrive $ProjectRoot
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not map a short Inno Setup path for $ProjectRoot."
+    }
+    $InnoRoot = $DriveName
+}
+try {
+    $IsccArguments += Join-Path $InnoRoot 'scripts\installer-electron.iss'
+    & $Iscc @IsccArguments
+    $InnoExitCode = $LASTEXITCODE
+} finally {
+    if ($InnoDrive) { & subst.exe $InnoDrive /D }
+}
+if ($InnoExitCode -ne 0) { exit $InnoExitCode }
 
 if (-not (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) {
     throw "Inno Setup completed without creating the expected installer: $InstallerPath"

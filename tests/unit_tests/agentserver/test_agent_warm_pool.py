@@ -109,6 +109,12 @@ async def test_persist_session_is_create_identity_but_not_warm_key() -> None:
         await manager.claim_prewarmed_session(**params, persist_session=False)
     assert warm_pool.claim_calls == 1
 
+    role_params = {**params, "create_token": "role-token", "execution_profile": "app_role",
+                   "role_instructions": "fisherman"}
+    await manager.claim_prewarmed_session(**role_params)
+    with pytest.raises(ValueError, match="different session parameters"):
+        await manager.claim_prewarmed_session(**{**role_params, "role_instructions": "researcher"})
+
 
 @pytest.fixture
 def isolated_pool(monkeypatch, tmp_path: Path):
