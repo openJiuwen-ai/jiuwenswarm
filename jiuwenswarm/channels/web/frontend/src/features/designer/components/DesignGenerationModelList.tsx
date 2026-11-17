@@ -96,7 +96,9 @@ export default function DesignGenerationModelList({
                 </span>
                 <span
                   className="chat-mode-select__label"
-                  data-tooltip={unsupported ? undefined : (model?.api_base.trim() || undefined)}
+                  data-tooltip={
+                    unsupported || !model ? undefined : [model.provider, protocol, model.model_name].join(' · ')
+                  }
                   {...(!unsupported ? handlers : {})}
                   data-testid={selected ? `${testIdPrefix}-name` : undefined}
                 >

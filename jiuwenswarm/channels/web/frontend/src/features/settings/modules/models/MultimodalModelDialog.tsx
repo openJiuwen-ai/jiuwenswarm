@@ -7,7 +7,7 @@ import { SettingsConfirmDialog } from '../../components';
 import { useMultimodalSettings } from '../../services/useMultimodalSettings';
 import {
   capabilitiesFor, MULTIMODAL_CAPABILITIES, multimodalErrorDetails, multimodalPurpose,
-  type MultimodalCapability, type MultimodalConnection, type MultimodalModel, type MultimodalPurpose,
+  type MultimodalCapability, type MultimodalChange, type MultimodalConnection, type MultimodalModel, type MultimodalPurpose,
 } from '../../services/multimodalSettings';
 import { GenerationModelConfigDialog } from '../agent/GenerationModelConfigDialog';
 import { MediaModelConfigDialog } from '../agent/MediaModelConfigDialog';
@@ -16,7 +16,11 @@ import { multimodalErrorMessage, MultimodalReferenceMessage } from './Multimodal
 import { syncDisplayNameWithModelName } from './modelAdapters';
 
 type Metadata = { display_name: string; purpose: MultimodalPurpose; capabilities: MultimodalCapability[] };
-type Confirmation = { tools: MultimodalCapability[]; resolve: (confirmed: boolean) => void };
+type Confirmation = {
+  tools: MultimodalCapability[];
+  activationTools: MultimodalCapability[];
+  resolve: (enabled: boolean | null) => void;
+};
 
 export function MultimodalModelDialog({
   model, defaultCapability, onClose,
@@ -91,6 +95,24 @@ export function MultimodalModelDialog({
       placeholder: t('settingsPanel.multimodal.displayNamePlaceholder'),
     },
   ];
+  async function saveWithConfirmation(params: Record<string, unknown>): Promise<MultimodalChange> {
+    try {
+      return await store.write('models.upsert', params);
+    } catch (error) {
+      const details = multimodalErrorDetails(error);
+      const tools = details.affected_tools ?? [];
+      const activationTools = details.activation_tools ?? [];
+      if (details.code !== 'MM_CONFIRM_REQUIRED' || (!tools.length && !activationTools.length)) {
+        throw new Error(multimodalErrorMessage(error, t));
+      }
+      const enabled = await new Promise<boolean | null>((resolve) => setConfirmation({ tools, activationTools, resolve }));
+      setConfirmation(null);
+      if (enabled === null) throw new ModelConfigSaveCancelled();
+      return saveWithConfirmation({
+        ...params, confirmed_tools: tools, tool_activation: { tools: activationTools, enabled },
+      });
+    }
+  }
   const save = async (updates: Record<string, string>) => {
     const metadata = form.getValues();
     const prefix = values.purpose === 'understanding' ? 'vision' : slot;
@@ -103,26 +125,10 @@ export function MultimodalModelDialog({
         context_window_tokens: Number(read('context_window_tokens')),
       } : {}),
     };
-    const params = { mode: model ? 'update' : 'create', model: {
+    const params: Record<string, unknown> = { mode: model ? 'update' : 'create', model: {
       model_id: modelId, ...metadata, display_name: metadata.display_name.trim(), connection: nextConnection,
     } };
-    let result;
-    try {
-      result = await store.write('models.upsert', params);
-    } catch (error) {
-      const details = multimodalErrorDetails(error);
-      if (details.code !== 'MM_CONFIRM_REQUIRED' || !details.affected_tools) {
-        throw new Error(multimodalErrorMessage(error, t));
-      }
-      const confirmed = await new Promise<boolean>((resolve) => setConfirmation({ tools: details.affected_tools!, resolve }));
-      setConfirmation(null);
-      if (!confirmed) throw new ModelConfigSaveCancelled();
-      try {
-        result = await store.write('models.upsert', { ...params, confirmed_tools: details.affected_tools });
-      } catch (error) {
-        throw new Error(multimodalErrorMessage(error, t));
-      }
-    }
+    const result = await saveWithConfirmation(params);
     if (defaultCapability && !metadata.capabilities.includes(defaultCapability)) store.announceShortcutChange(defaultCapability);
     return result;
   };
@@ -154,6 +160,7 @@ export function MultimodalModelDialog({
       </div>
     ),
   };
+  const confirmsActivation = Boolean(confirmation?.activationTools.length);
   return (
     <>
       {values.purpose === 'understanding' ? (
@@ -166,10 +173,37 @@ export function MultimodalModelDialog({
           titleKey={model ? 'settingsPanel.multimodal.edit' : 'settingsPanel.multimodal.add'} extension={extension}
           save={save} onClose={onClose} />
       )}
-      <SettingsConfirmDialog open={confirmation !== null} title={t('settingsPanel.multimodal.changeTitle')}
-        message={<MultimodalReferenceMessage tools={confirmation?.tools ?? []} operation="edit" />}
-        confirmLabel={t('settingsPanel.multimodal.confirmChanges')}
-        onConfirm={() => confirmation?.resolve(true)} onCancel={() => confirmation?.resolve(false)} />
+      <SettingsConfirmDialog
+        open={confirmation !== null}
+        title={t(confirmsActivation ? 'settingsPanel.multimodal.enableTitle' : 'settingsPanel.multimodal.changeTitle')}
+        message={
+          <>
+            {confirmation && confirmsActivation ? (
+              <div data-testid="settings-multimodal-activation-message">
+                <p data-testid="settings-multimodal-activation-tools">
+                  {t('settingsPanel.multimodal.enableTools', {
+                    tools: confirmation.activationTools.map((tool) => t(`settingsPanel.multimodal.tools.${tool}`))
+                      .join(t('settingsPanel.multimodal.separator')),
+                    model: values.display_name.trim(),
+                  })}
+                </p>
+                <p data-testid="settings-multimodal-activation-rule">{t('settingsPanel.multimodal.keepDisabledRule')}</p>
+              </div>
+            ) : null}
+            {confirmation?.tools.length ? (
+              <MultimodalReferenceMessage
+                tools={confirmation.tools}
+                operation="edit"
+              />
+            ) : null}
+          </>
+        }
+        confirmLabel={t(confirmsActivation ? 'settingsPanel.multimodal.enableAndUse' : 'settingsPanel.multimodal.confirmChanges')}
+        cancelLabel={confirmsActivation ? t('settingsPanel.multimodal.keepDisabled') : undefined}
+        onConfirm={() => confirmation?.resolve(true)}
+        onCancel={() => confirmation?.resolve(confirmsActivation ? false : null)}
+        onDismiss={() => confirmation?.resolve(null)}
+      />
     </>
   );
 }

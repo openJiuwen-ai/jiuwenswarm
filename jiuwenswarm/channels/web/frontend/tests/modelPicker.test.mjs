@@ -1803,7 +1803,7 @@ test('unsupported generation protocols stay listed and are not a choice', async 
     assert.equal(allowedOption.getAttribute('title'), null);
     assert.equal(blockedOption.getAttribute('title'), null);
     await hover(allowedOption.querySelector('.chat-mode-select__label'));
-    assert.equal(document.querySelector('[role="tooltip"]').textContent, allowed.api_base);
+    assert.equal(document.querySelector('[role="tooltip"]').textContent, 'DashScope · dashscope · wan');
     assert.equal(
       blockedOption.parentElement.getAttribute('data-tooltip'),
       'Design does not support the openai protocol.',

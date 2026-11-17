@@ -46,6 +46,7 @@ export type MultimodalFieldError = { field: string; key: string; args?: Record<s
 export type MultimodalErrorDetails = {
   code?: string;
   affected_tools?: MultimodalCapability[];
+  activation_tools?: MultimodalCapability[];
   field_errors?: MultimodalFieldError[];
 };
 export function multimodalErrorDetails(error: unknown): MultimodalErrorDetails {
