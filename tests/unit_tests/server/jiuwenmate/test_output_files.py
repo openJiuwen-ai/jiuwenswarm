@@ -319,7 +319,10 @@ async def test_paused_hands_off_files_and_feishu_claims_the_shared_workspace_out
     jobs = host.repository.claim_pending_result_deliveries(NS, now=NOW)
     assert len(jobs) == 2
     notices = [job for job in jobs if "file" not in job]
-    assert len(notices) == 1 and "暂停" in notices[0]["text"]
+    assert len(notices) == 1
+    assert notices[0]["text"].splitlines() == [
+        "原因：执行额度不足或预算检查未通过。", f"请求编号：{state.record.request_id}",
+    ]
     jobs = [job for job in jobs if "file" in job]
     assert len(jobs) == 1
     file = jobs[0]["file"]

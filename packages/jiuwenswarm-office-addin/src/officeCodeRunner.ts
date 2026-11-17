@@ -13,7 +13,7 @@
  */
 import 'ses';
 
-import type { ClientToolError, ClientToolResponse } from './clientToolDispatcher';
+import { type ClientToolError, type ClientToolResponse, png } from './clientToolDispatcher';
 
 /** The most a ``context.sync()`` may take, as the industry runner allows, and the most a whole call may take. */
 export const SYNC_MS = 30_000;
@@ -38,6 +38,8 @@ export interface CodeHost {
   enums: Record<string, Readonly<Record<string, string>>>;
   /** Why a write is refused, or undefined to let it through. */
   screen(write: HostWrite): string | undefined;
+  /** Hears each write let through, with the host object it changes, just before the code queues it. */
+  writing?(target: object): void;
 }
 
 /**
@@ -46,12 +48,12 @@ export interface CodeHost {
  */
 const WRITE_METHODS = new Set(['delete', 'clear', 'clearAll', 'deleteAll', 'deleteRows', 'deleteColumns',
   'removeDuplicates', 'replaceAll', 'moveTo', 'cut', 'clearOrResetContents', 'clearFilters', 'ungroup', 'unmerge',
-  'split', 'convertToText', 'breakAllLinks', 'breakLinks', 'removePageBreaks', 'autoFill', 'flashFill',
-  'selectItems']);
-const WRITE_PREFIXES = ['add', 'apply', 'attach', 'auto', 'break', 'change', 'clear', 'convert', 'copy', 'cut',
-  'delete', 'detach', 'distribute', 'duplicate', 'freeze', 'hide', 'import', 'increment', 'indent', 'insert',
-  'merge', 'move', 'outdent', 'protect', 'refresh', 'remove', 'replace', 'request', 'resize', 'reset', 'save',
-  'scale', 'set', 'show', 'sort', 'split', 'group', 'unfreeze', 'unprotect', 'update'];
+  'split', 'convertToText', 'breakAllLinks', 'breakLinks', 'removePageBreaks', 'autoFill', 'flashFill', 'accept',
+  'acceptAll', 'reject', 'rejectAll', 'reply', 'selectItems', 'startNewList']);
+const WRITE_PREFIXES = ['add', 'apply', 'attach', 'auto', 'break', 'change', 'clear', 'convert', 'copy', 'create',
+  'cut', 'delete', 'detach', 'distribute', 'duplicate', 'freeze', 'hide', 'import', 'increment', 'indent', 'insert',
+  'merge', 'move', 'open', 'outdent', 'protect', 'refresh', 'remove', 'replace', 'request', 'resize', 'reset',
+  'save', 'scale', 'set', 'show', 'sort', 'split', 'group', 'unfreeze', 'unprotect', 'update'];
 /** Names that would reach Office.js internals (``_``), a class or a prototype rather than the document. */
 const HIDDEN = /^_|^(?:constructor|prototype|__proto__)$/;
 const NETWORK = ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource'];
@@ -239,7 +241,8 @@ export async function runOfficeCode(host: CodeHost, code: string): Promise<Clien
       }, CALL_MS);
     })]);
     return {
-      ok: true, ...(result === undefined ? {} : { result }), ...(run.image ? { imageBase64: run.image } : {}),
+      ok: true, ...(result === undefined ? {} : { result }),
+      ...(run.image ? { images: [png(run.image)] } : {}),
       mutationEvidence: { outcome: !run.wrote ? 'not_applied' : run.syncFailed ? 'partial' : 'applied',
         native_mutation_started: run.wrote },
     };
@@ -347,7 +350,7 @@ class Membrane {
       },
       set: (_shell, name, value) => {
         const key = reveal(name);
-        this.write({ path, name: key, values: [value] });
+        this.write(target, { path, name: key, values: [value] });
         return Reflect.set(target, key, this.unwrap(value));
       },
       has: (_shell, name) => typeof name === 'string' && !HIDDEN.test(name) && Reflect.has(target, name),
@@ -374,7 +377,7 @@ class Membrane {
       throw this.run.refuse('Code cannot listen to document events; read the state it needs instead.');
     }
     if (WRITE_METHODS.has(name) || WRITE_PREFIXES.some(prefix => name.startsWith(prefix))) {
-      this.write({ path, name, values: args });
+      this.write(target, { path, name, values: args });
     }
     const result = Reflect.apply(method, target, args.map(arg => this.unwrap(arg)));
     const step = [...path, name];
@@ -383,9 +386,10 @@ class Membrane {
       : this.wrap(result, step);
   }
 
-  private write(write: HostWrite): void {
+  private write(target: object, write: HostWrite): void {
     const reason = this.host.screen({ ...write, values: write.values.map(value => this.data(value)) });
     if (reason) throw this.run.refuse(reason);
+    this.host.writing?.(target);
     this.run.queued += 1;
   }
 
@@ -409,6 +413,12 @@ class Membrane {
       clearTimeout(timer);
     }
   }
+}
+
+/** The enums of a host's namespace (``Excel``, ``Word``), without its classes and functions. */
+export function hostEnums(namespace: object): Record<string, Readonly<Record<string, string>>> {
+  return Object.fromEntries(Object.entries(namespace).filter(([, value]) => value && typeof value === 'object'
+    && Object.values(value).every(item => typeof item === 'string')));
 }
 
 function isPageObject(value: object): boolean {

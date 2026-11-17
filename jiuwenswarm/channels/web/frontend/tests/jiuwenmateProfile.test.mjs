@@ -52,6 +52,64 @@ const feishuConnection = { channel: 'feishu', connectionKey: 'cli-app', agentId:
 
 const noop = () => undefined;
 
+test('settings navigation preserves module and tab targets and honors the discard guard', async (t) => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
+  const { window: previousWindow, document: previousDocument, IS_REACT_ACT_ENVIRONMENT: previousAct } = globalThis;
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  t.mock.method(webClient, 'request', async (method) => {
+    if (method === 'group.list') return { groups: [], total: 0 };
+    if (method === 'jiuwenmate.colleague.list') return { colleagues: [] };
+    return {};
+  });
+  const root = createRoot(document.getElementById('root'));
+  let renderedPage;
+  let allowDiscard = false;
+  const confirmDiscardSettings = t.mock.fn(() => allowDiscard);
+  const navigate = async (detail) => {
+    await act(async () => window.dispatchEvent(new dom.window.CustomEvent('jiuwen:settings-module', { detail })));
+  };
+  const clickRail = async (label) => {
+    const button = document.querySelector(`[data-testid="jiuwenmate-rail-existing-item"][data-variant="${label}"]`);
+    assert.ok(button);
+    await act(async () => button.click());
+  };
+  try {
+    await act(async () => root.render(React.createElement(JiuwenMateApp, {
+      onExit: noop,
+      confirmDiscardSettings,
+      renderExistingPage: (nav, target) => {
+        renderedPage = { nav, target };
+        return null;
+      },
+    })));
+    await navigate('agent');
+    assert.deepEqual(renderedPage, { nav: 'settings', target: { moduleId: 'agent' } });
+    const multimodalTarget = { moduleId: 'models', tabId: 'multimodal' };
+    await navigate(multimodalTarget);
+    assert.deepEqual(renderedPage, { nav: 'settings', target: multimodalTarget });
+    assert.equal(confirmDiscardSettings.mock.callCount(), 0);
+
+    await clickRail('jiuwenmate.nav.skills');
+    assert.equal(confirmDiscardSettings.mock.callCount(), 1);
+    assert.deepEqual(renderedPage, { nav: 'settings', target: multimodalTarget });
+    allowDiscard = true;
+    await clickRail('jiuwenmate.nav.skills');
+    assert.equal(confirmDiscardSettings.mock.callCount(), 2);
+    assert.deepEqual(renderedPage, { nav: 'skills', target: undefined });
+    await clickRail('jiuwenmate.nav.settings');
+    assert.deepEqual(renderedPage, { nav: 'settings', target: undefined });
+  } finally {
+    await act(async () => root.unmount());
+    dom.window.close();
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    globalThis.IS_REACT_ACT_ENVIRONMENT = previousAct;
+  }
+});
+
 for (const { language, expectedMessage, rejects } of [
   { language: 'zh', expectedMessage: '解除连接成功' },
   { language: 'en', expectedMessage: 'Disconnected' },
@@ -2074,6 +2132,108 @@ async function changeScheduleField(view, selector, value) {
 }
 
 for (const language of ['zh', 'en']) {
+  const cases = [
+    { mode: 'once', field: 'onceDate', empty: '', corrected: '2030-02-01',
+      zh: '请选择执行日期', en: 'Select an execution date.' },
+    { mode: 'once', field: 'time', empty: '', corrected: '10:00', date: '2030-02-01',
+      zh: '请选择执行时间', en: 'Select an execution time.' },
+    { mode: 'period', field: 'time', empty: '', corrected: '10:00',
+      zh: '请选择执行时间', en: 'Select an execution time.' },
+    { mode: 'period', field: 'monthDay', empty: '', corrected: '15', monthly: true,
+      zh: '请输入 1 到 31 之间的每月执行日期', en: 'Enter a day of the month between 1 and 31.' },
+    { mode: 'interval', field: 'interval', empty: '', corrected: '2',
+      zh: '请输入执行间隔', en: 'Enter an execution interval.' },
+    { mode: 'interval', field: 'interval', empty: '0', corrected: '2',
+      zh: '间隔必须是正整数', en: 'The interval must be a positive integer' },
+    { mode: 'once', field: 'onceDate', empty: '2020-01-01', corrected: '2030-02-01',
+      zh: '单次执行时间必须晚于当前时间', en: 'A one-time run must be in the future' },
+  ];
+  for (const scenario of cases) {
+    test(`schedule plan validation highlights ${scenario.mode} ${scenario.field} ${scenario.empty || 'empty'} in ${language}`, async () => {
+      await i18n.changeLanguage(language);
+      const created = [];
+      const view = await mountDashboard({ onCreateSchedule: (...args) => { created.push(args); } });
+      try {
+        await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+        await view.click(view.find('.jiuwenmate-schedule-board .jiuwenmate-dark-button'));
+        await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-executor"]', 'agent-1');
+        await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-name"]', 'Reminder');
+        await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-prompt"]', 'Take a break');
+        const mode = [...view.container.querySelectorAll('[role="tab"]')]
+          .find((item) => item.textContent === i18n.t(`jiuwenmate.schedule.mode.${scenario.mode}`));
+        await view.click(mode);
+        const selector = `[aria-label="${i18n.t(`jiuwenmate.schedule.${scenario.field}`)}"]`;
+        if (scenario.monthly) {
+          await changeScheduleField(view, `[aria-label="${i18n.t('jiuwenmate.schedule.frequency')}"]`, 'monthly');
+        }
+        if (scenario.date) {
+          await changeScheduleField(view, `[aria-label="${i18n.t('jiuwenmate.schedule.onceDate')}"]`, scenario.date);
+        }
+        await changeScheduleField(view, selector, scenario.empty);
+        const field = view.find(selector);
+        assert.equal(field.getAttribute('aria-invalid'), null);
+        await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+        assert.deepEqual(created, [], 'Missing or invalid schedule fields must not submit');
+        assert.equal(field.getAttribute('aria-invalid'), 'true');
+        assert.equal(field.ownerDocument.activeElement, field);
+        const error = field.ownerDocument.getElementById(field.getAttribute('aria-describedby'));
+        assert.ok(error, 'The invalid control must link to its visible field error');
+        assert.equal(error.getAttribute('role'), 'alert');
+        assert.equal(error.textContent, scenario[language]);
+        await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-name"]', 'Updated reminder');
+        assert.equal(field.getAttribute('aria-invalid'), 'true', 'Unrelated edits must not dismiss the error');
+        await changeScheduleField(view, selector, scenario.corrected);
+        assert.equal(field.getAttribute('aria-invalid'), null);
+        assert.equal(field.getAttribute('aria-describedby'), null);
+        assert.equal(view.find('[data-testid="jiuwenmate-schedule-dialog"] [role="alert"]'), null);
+        await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+        assert.equal(created.length, 1);
+      } finally { await view.close(); await i18n.changeLanguage('zh'); }
+    });
+  }
+}
+
+for (const language of ['zh', 'en']) {
+  test(`schedule plan validation also guards paused edits and clears inactive mode errors in ${language}`, async () => {
+    await i18n.changeLanguage(language);
+    const updated = [];
+    const enabled = [];
+    const view = await mountDashboard({
+      schedules: [{ ...dashboardPlan, enabled: false, scheduleKind: 'once', runAt: '2030-02-01T01:00:00Z' }],
+      onUpdateSchedule: (...args) => { updated.push(args); },
+      onSetScheduleEnabled: (...args) => { enabled.push(args); },
+    });
+    try {
+      await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+      const row = view.find('[data-testid="jiuwenmate-schedule-board-row"]');
+      await view.click([...row.querySelectorAll('button')].find(item => item.textContent === i18n.t('jiuwenmate.schedule.edit')));
+      const dateSelector = `[aria-label="${i18n.t('jiuwenmate.schedule.onceDate')}"]`;
+      const timeSelector = `[aria-label="${i18n.t('jiuwenmate.schedule.time')}"]`;
+      await changeScheduleField(view, dateSelector, '');
+      await changeScheduleField(view, timeSelector, '');
+      await view.click(view.find('[data-testid="jiuwenmate-schedule-save-enable"]'));
+      assert.equal(view.find(dateSelector).getAttribute('aria-invalid'), 'true');
+      assert.equal(view.find(dateSelector).ownerDocument.activeElement, view.find(dateSelector));
+      await changeScheduleField(view, dateSelector, '2030-02-01');
+      assert.equal(view.find(dateSelector).getAttribute('aria-invalid'), null);
+      assert.equal(view.find(timeSelector).getAttribute('aria-invalid'), 'true');
+      await view.click(view.find('[data-testid="jiuwenmate-schedule-save-enable"]'));
+      assert.equal(view.find(timeSelector).ownerDocument.activeElement, view.find(timeSelector));
+      assert.deepEqual(updated, []);
+      assert.deepEqual(enabled, []);
+      await view.click([...view.container.querySelectorAll('[role="tab"]')]
+        .find(item => item.textContent === i18n.t('jiuwenmate.schedule.mode.period')));
+      assert.equal(view.find('[data-testid="jiuwenmate-schedule-dialog"] [role="alert"]'), null);
+      await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+      assert.equal(updated.length, 1);
+      assert.equal(updated[0][0], dashboardPlan.id);
+      assert.equal(updated[0][1].scheduleKind, 'cron');
+      assert.equal(updated[0][1].startsAt, null);
+      assert.equal(updated[0][1].endsAt, null);
+      assert.deepEqual(enabled, []);
+    } finally { await view.close(); await i18n.changeLanguage('zh'); }
+  });
+
   test(`schedule required fields highlight and independently clear on correction in ${language}`, async () => {
     await i18n.changeLanguage(language);
     const created = [];

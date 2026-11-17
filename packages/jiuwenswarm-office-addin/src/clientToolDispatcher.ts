@@ -1,5 +1,7 @@
 import type { OfficeApp, Surface } from './appContract';
-import type { ClientToolExecutor, ClientToolRequest, ClientToolResult, ContentBlock } from './clientAttachment';
+import type {
+  ClientToolExecutor, ClientToolRequest, ClientToolResult, ContentBlock, ToolImage,
+} from './clientAttachment';
 import { withMutationRecord } from './clientToolOutcome';
 import { isRecord, type JsonObject } from './gatewayClient';
 import type { HostWriteQueue } from './hostWriteQueue';
@@ -27,8 +29,13 @@ export interface ClientToolRuntime<Name extends string = string> {
     toolName: Name;
     input: JsonObject;
     downloads: Readonly<Record<string, string>>;
+    /** The conversation that made the call. */
+    sessionId?: string;
   }): Promise<ClientToolResponse>;
 }
+
+/** A PNG a tool returns. */
+export const png = (data: string): ToolImage => ({ media_type: 'image/png', data });
 
 /** One runtime of several, each running the tools it declares. */
 export function joinRuntimes(...runtimes: ClientToolRuntime[]): ClientToolRuntime {
@@ -85,7 +92,8 @@ export class ClientToolDispatcher implements ClientToolExecutor {
       hostStarted = true;
       try {
         return await this.runtime.execute(
-          { callId: request.requestId, toolName, input: request.input, downloads: request.downloads });
+          { callId: request.requestId, toolName, input: request.input, downloads: request.downloads,
+            sessionId: request.sessionId });
       } catch (error) {
         return { ok: false, error: {
           code: 'CLIENT_TOOL_EXECUTION_FAILED', message: error instanceof Error ? error.message : String(error),
@@ -154,8 +162,8 @@ function toolResult(
       ...(response.result === undefined ? {} : { result: response.result }), ...mutation };
   }
   const content: ContentBlock[] = [{ type: 'text', text: fitToolResultJson(value, limit) }];
-  if (response.ok && response.imageBase64) {
-    content.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: response.imageBase64 } });
+  for (const image of response.ok ? response.images ?? [] : []) {
+    content.push({ type: 'image', source: { type: 'base64', ...image } });
   }
   return {
     status: response.ok ? 'completed' : FAILURE_STATUS.get(response.error.code) ?? 'error',
@@ -250,8 +258,8 @@ export type ClientToolResponse = ResponseRecords & (
     ok: true;
     result?: unknown;
     successFields?: Record<string, unknown>;
-    /** A PNG the tool produced (a slide render), returned as an image block. */
-    imageBase64?: string;
+    /** Images the tool produced (a slide render, a document's pages), each returned as an image block. */
+    images?: ToolImage[];
   }
   | { ok: false; error: ClientToolError }
 );

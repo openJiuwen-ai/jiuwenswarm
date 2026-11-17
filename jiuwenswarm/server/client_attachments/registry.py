@@ -34,11 +34,14 @@ class Capability(StrEnum):
     FILE_DELIVERY = "file_delivery"
     # ResponsePromptRail: the prompt sections on the message envelope, on final replies and file delivery, and A2UI.
     MESSAGE_RULES = "message_rules"
+    # The workspace's skill library; the app's own skills come with its template.
+    SKILL_LIBRARY = "skill_library"
 
 
-# An Office task pane's conversation: the document is the deliverable, the task pane renders no A2UI and the
-# persona sets the message rules.
-_TASK_PANE_LEAVES_OUT = frozenset({Capability.SUBAGENTS, Capability.FILE_DELIVERY, Capability.MESSAGE_RULES})
+# An Office task pane's conversation: the document is the deliverable, the task pane renders no A2UI, the
+# persona sets the message rules and the template brings the skills (a library skill would build files instead).
+_TASK_PANE_LEAVES_OUT = frozenset({
+    Capability.SUBAGENTS, Capability.FILE_DELIVERY, Capability.MESSAGE_RULES, Capability.SKILL_LIBRARY})
 
 # client_app: the app's package directory, ``<package>/<relative dir>`` inside an installed Python package so it
 # resolves the same from source and from a frozen bundle, and the capabilities its conversations leave out.

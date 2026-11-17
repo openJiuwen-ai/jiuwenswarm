@@ -66,6 +66,10 @@ export class TaskPaneController {
   private undoNote: string | undefined;
   /** An undo is under way; a second click waits for none. */
   private undoing = false;
+  /** A conversation nobody has written in: created by this pane, or its history read back with no messages. */
+  private unwritten: SessionId | undefined;
+  /** A new conversation being created; a click meanwhile waits for it instead of creating another. */
+  private creating: Promise<void> | undefined;
   private readonly listeners = new Set<(state: PaneState) => void>();
 
   constructor(private readonly options: {
@@ -106,8 +110,14 @@ export class TaskPaneController {
     await this.options.attachment.start(latest);
   }
 
-  /** A new conversation of this document; the one it leaves stays in the list. */
+  /** A new conversation of this document; the one it leaves stays in the list. One nobody has written in is kept. */
   async newConversation(): Promise<void> {
+    if (this.shown && this.shown === this.unwritten) return;
+    this.creating ??= this.createConversation().finally(() => { this.creating = undefined; });
+    await this.creating;
+  }
+
+  private async createConversation(): Promise<void> {
     const { sessions, attachment } = this.options;
     let fresh: SessionId;
     try {
@@ -116,6 +126,7 @@ export class TaskPaneController {
       this.update({ alert: { tone: 'error', text: copy.newConversationFailed(reasonOf(error)) } });
       return;
     }
+    this.unwritten = fresh;
     await attachment.attach(fresh);
   }
 
@@ -167,6 +178,7 @@ export class TaskPaneController {
         await this.options.sessions.sendText(sessionId, message, images, this.value.model);
       }
       if (this.undoNote === note) this.undoNote = undefined;
+      if (this.unwritten === sessionId) this.unwritten = undefined;
       return true;
     } catch (error) {
       if (sessionId !== this.shown) return false;
@@ -268,7 +280,9 @@ export class TaskPaneController {
     const load = this.loads;
     let conversation: Conversation;
     try {
-      conversation = replayHistory(await this.options.sessions.history(sessionId));
+      const messages = await this.options.sessions.history(sessionId);
+      conversation = replayHistory(messages);
+      if (!messages.length && load === this.loads) this.unwritten = sessionId;
     } catch (error) {
       conversation = emptyConversation;
       if (load === this.loads) this.update({ alert: { tone: 'error', text: copy.historyFailed(reasonOf(error)) } });

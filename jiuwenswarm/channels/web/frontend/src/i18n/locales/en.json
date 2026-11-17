@@ -97,6 +97,7 @@
     "work": "Tasks",
     "agent": "Experts",
     "design": "Design",
+    "teams": "Teams",
     "experiments": "RSI",
     "sessions": "Sessions",
     "cron": "Scheduled Tasks",
@@ -123,6 +124,25 @@
     "noSettings": "This plugin does not provide a settings page."
   },
   "designer": {
+    "modelConfiguration": {
+      "title": "Model configuration",
+      "help": "Choose a chat model and view the generation models available to tasks.",
+      "bindingHint": "Uses the model bound in Settings → Agent → Tools. View only; change it there.",
+      "bindingModel": "Currently bound model",
+      "chat": "Chat",
+      "video_gen": "Video generation",
+      "visual_gen": "Image generation",
+      "missing": "Not configured",
+      "incomplete": "Missing required fields",
+      "disabled": "Not enabled",
+      "problem": "{{name}}: {{status}}",
+      "separator": "; ",
+      "configure": "Configure",
+      "enable": "Enable",
+      "retry": "Reload",
+      "loading": "Loading model configuration…",
+      "loadFailed": "Could not load generation model configuration. Please retry."
+    },
     "loading": "Loading design workflow…",
     "emptyTitle": "No design workflow yet",
     "emptyDescription": "Describe a project to create a dedicated Design workspace and workflow.",
@@ -468,6 +488,57 @@
     "qwenOnly": "Only Qwen full-duplex is currently supported. Configure Qwen Omni Realtime in Settings."
   },
   "settingsPanel": {
+    "multimodal": {
+      "tab": "Multimodal models",
+      "tabHelp": "Manage models for image, audio and video understanding, and image and video generation. Adjust tool switches and model bindings in Settings → Agent → Tools.",
+      "purpose": "Model purpose",
+      "capabilities": "Model capabilities",
+      "understanding": "Multimodal understanding",
+      "generation": "Multimodal generation",
+      "selectCapabilities": "Select model capabilities",
+      "capabilityHint": "Select only capabilities that this model supports.",
+      "displayName": "Model display name",
+      "displayNamePlaceholder": "Defaults to the model name; you can change it",
+      "nameInvalid": "Enter a model display name between 1 and 100 characters",
+      "completeFields": "Complete the required model configuration fields.",
+      "add": "Add multimodal model",
+      "edit": "Edit multimodal model",
+      "deleteTitle": "Delete model?",
+      "changeTitle": "Change model capabilities?",
+      "confirmDelete": "Delete",
+      "confirmChanges": "Confirm changes",
+      "deleteReferences": "This model is used by: {{tools}}.",
+      "editReferences": "This change affects the model selections for: {{tools}}.",
+      "replacementRule": "After confirmation, affected tools will switch to another matching model and keep their current on/off state. Tools without a matching model will be turned off and their model configuration cleared.",
+      "deleteUnbound": "This model will be removed from the multimodal model list.",
+      "applyFailed": "Saved, but could not be applied. Please retry.",
+      "shortcutChanged": "Model added. It does not include {{tool}}, so this tool’s settings are unchanged.",
+      "separator": ", ",
+      "empty": "No multimodal models configured",
+      "emptyDescription": "Add a model and select its capabilities. Matching tools without a selected model will be enabled automatically.",
+      "tools": {
+        "vision": "Image processing",
+        "audio": "Audio processing",
+        "video": "Video understanding",
+        "visual_gen": "Image generation",
+        "video_gen": "Video generation"
+      },
+      "errors": {
+        "MM_VALIDATION_FAILED": "Check the model configuration and complete all required fields.",
+        "MM_CONFIRM_REQUIRED": "Model references have changed. Confirm the affected tools again.",
+        "MM_MODEL_NOT_FOUND": "This model no longer exists. Select another model.",
+        "MM_MODEL_ID_CONFLICT": "The model ID is already in use. Reopen the add dialog.",
+        "MM_CAPABILITY_MISMATCH": "The selected model does not support this tool. Select another model.",
+        "MM_MODEL_REQUIRED": "Add a model with the required capability first.",
+        "MM_STORAGE_FAILED": "Could not save the configuration. Please retry.",
+        "MM_RECOVERY_REQUIRED": "The configuration transaction could not be recovered. Check the configuration files before retrying.",
+        "MM_CONFIG_READ_FAILED": "Could not read the model configuration. Check the files and credentials.",
+        "MM_UNSUPPORTED_SCHEMA": "This configuration version is unsupported. Update the components.",
+        "MM_LEGACY_WRITE_UNSUPPORTED": "Use Multimodal models to change this configuration.",
+        "METHOD_NOT_FOUND": "Component versions do not match. Update Gateway, the protocol package, and AgentServer.",
+        "unknown": "The operation failed. Please retry."
+      }
+    },
     "affinity": {
       "noSupportingModel": "No configured model supports affinity. Configure one in Models first."
     },
@@ -945,6 +1016,38 @@
       "requiredFields": "Fields marked * are required. Complete them to save. Saved API keys do not need to be entered again."
     },
     "fields": {
+      "vision_enabled": {
+        "title": "Image processing",
+        "description": "Use the selected model for this media type. Turning this off retains the model selection."
+      },
+      "audio_enabled": {
+        "title": "Audio processing",
+        "description": "Use the selected model for this media type. Turning this off retains the model selection."
+      },
+      "video_enabled": {
+        "title": "Video understanding",
+        "description": "Use the selected model for this media type. Turning this off retains the model selection."
+      },
+      "vision_model_id": {
+        "title": "Selected model",
+        "description": "Select a multimodal model with this capability"
+      },
+      "audio_model_id": {
+        "title": "Selected model",
+        "description": "Select a multimodal model with this capability"
+      },
+      "video_model_id": {
+        "title": "Selected model",
+        "description": "Select a multimodal model with this capability"
+      },
+      "visual_gen_model_id": {
+        "title": "Selected model",
+        "description": "Select a multimodal model with this capability"
+      },
+      "video_gen_model_id": {
+        "title": "Selected model",
+        "description": "Select a multimodal model with this capability"
+      },
       "preferred_language": {
         "title": "Language",
         "description": "Set the display language for the application interface."
@@ -1579,8 +1682,47 @@
       "showTasks": "Show tasks"
     }
   },
+  "teams": {
+    "title": "Team Management",
+    "subtitle": "View existing teams, or stop and delete them",
+    "teamList": "Existing teams",
+    "count": "{{count}} team(s)",
+    "quota": "{{used}} used / {{limit}} limit (default {{default}})",
+    "orgQuota": "Org {{used}} used / {{limit}} limit",
+    "quotaUnavailable": "Quota status unavailable",
+    "createUserFull": "Create failed. A user can have at most {{limit}} teams",
+    "createOrgFull": "Create failed. An organization can have at most {{limit}} teams",
+    "sessionCount": "{{count}} session(s)",
+    "listLabel": "Session for this team: {{title}}",
+    "untitledSession": "Untitled session",
+    "createdAt": "Created {{time}}",
+    "createdAtWithId": "Created {{time}} · …{{suffix}}",
+    "sessionSuffix": "…{{suffix}}",
+    "empty": "No teams",
+    "deleteTeam": "Delete team",
+    "deleting": "Deleting...",
+    "deleteConfirm": "Delete team {{team}}?\nThis will delete the team runtime, linked sessions, and directory.",
+    "stopTeam": "Stop",
+    "stopping": "Stopping...",
+    "humanMembers": "{{count}} human member(s)",
+    "status": {
+      "creating": "Creating",
+      "running": "Running",
+      "paused": "Paused",
+      "stopping": "Stopping",
+      "stopped": "Stopped",
+      "deleted": "Deleted"
+    },
+    "errors": {
+      "loadTeams": "Failed to load teams",
+      "deleteTeam": "Failed to delete team: {{team}}",
+      "stopTeam": "Failed to stop team"
+    }
+  },
   "team": {
     "members": "Team Members",
+    "quotaUsage": "Teams {{used}}/{{limit}}",
+    "orgQuotaUsage": "Org {{used}}/{{limit}}",
     "membersTab": "Team",
     "statusTab": "Status",
     "filesTab": "Files",
@@ -6573,6 +6715,10 @@
         "promptRequired": "Enter a task description.",
         "required": "Enter a name and a description",
         "executorRequired": "Select an AI employee to run this task.",
+        "onceDateRequired": "Select an execution date.",
+        "timeRequired": "Select an execution time.",
+        "monthDayInvalid": "Enter a day of the month between 1 and 31.",
+        "intervalRequired": "Enter an execution interval.",
         "intervalInvalid": "The interval must be a positive integer",
         "futureRequired": "A one-time run must be in the future",
         "rangeInvalid": "The effective end must be after the start"

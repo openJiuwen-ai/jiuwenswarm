@@ -1093,7 +1093,16 @@ class TrajectoryStore:
             connection.rollback()
             raise
         if removed > 0:
-            connection.execute("PRAGMA incremental_vacuum").fetchall()
+            # SQLite 3.53 reclaims one freelist page per call. Repeat until the
+            # freelist is empty so the file shrinks, as a single omitted-N call did.
+            while True:
+                pending = int(connection.execute("PRAGMA freelist_count").fetchone()[0] or 0)
+                if pending <= 0:
+                    break
+                connection.execute("PRAGMA incremental_vacuum").fetchall()
+                remaining = int(connection.execute("PRAGMA freelist_count").fetchone()[0] or 0)
+                if remaining >= pending:
+                    break
         return removed
 
     def _retire_expired_pages(self, connection: sqlite3.Connection, cutoff: int) -> int:

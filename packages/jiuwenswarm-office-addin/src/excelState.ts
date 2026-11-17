@@ -2,24 +2,27 @@
  * The workbook's state as the model reads it, in the industry add-in's blocks: ``<user_context>`` (the active sheet,
  * the selected ranges or chart) each turn; ``<initial_state>`` (each sheet's id and size, its Excel tables and their
  * columns) with a conversation's first message from this pane; and ``<user_changes>``, what the user changed in the
- * workbook since the last message, from the host's change events. ``read_surface_context`` gives the
- * ``<user_context>`` block alone.
+ * workbook since the last message, from the host's change events less what the pane's own writes left.
+ * ``read_surface_context`` gives the ``<user_context>`` block alone.
  */
 import type { OfficeHost } from './appContract';
-import { cellsOf } from './excelAddress';
+import { cellName, cellsOf, parseBlock } from './excelAddress';
 import type { ExcelRun } from './excelTools';
+import { type HostWriteQueue, type Look, type Looks, UserChanges } from './hostWriteQueue';
 import type { ClientState } from './sessionFacade';
 import { quoted } from './stateText';
 
-/** Changes the next message lists at most, the latest first kept, and how much of a value each shows. */
-const MAX_CHANGES = 100;
+/** How much of a changed value a change shows. */
 const MAX_VALUE_CHARS = 200;
 /** How long a sheet or chart name may run in ``<user_context>``, and a selected range. */
 const MAX_NAME_CHARS = 60;
 const MAX_RANGE_CHARS = 200;
-/** Change events say whether this add-in made the change from ExcelApi 1.14; without that, none are listed. */
-const CHANGES_SET = ['ExcelApi', '1.14'] as const;
+const CHANGES_SET = ['ExcelApi', '1.9'] as const;
 const RENAMES_SET = ['ExcelApi', '1.17'] as const;
+/** A worksheet's size, which bounds a whole column or row a change event names. */
+const SHEET = { rows: 1_048_576, columns: 16_384 };
+/** Cells from one corner to another, as against a whole column or row. */
+const BOUNDED = /^\$?[A-Z]+\$?\d+(?::\$?[A-Z]+\$?\d+)?$/i;
 
 /** What the user changed: a cell edit, or a sheet added, deleted or renamed. */
 interface Change {
@@ -52,60 +55,137 @@ function shown(value: unknown): string {
   return typeof value === 'string' ? quoted(value, MAX_VALUE_CHARS) : String(value);
 }
 
-/** The ``<user_changes>`` block of ``changes``; empty when there are none. */
-function changesBlock(changes: Change[], omitted: number): string {
-  if (!changes.length) return '';
-  const lines = changes.map(({ type, sheetName, address, before, after }) => [
+/** A change as ``<user_changes>`` lists it. */
+function changeLine({ type, sheetName, address, before, after }: Change): string {
+  return [
     `[${type}]`, `sheetName:${shown(sheetName)}`, ...(address ? [`range:${cellsOf(address)}`] : []),
     ...(before !== undefined || after !== undefined ? [`${shown(before)}→${shown(after)}`] : []),
-  ].join(' '));
-  if (omitted) lines.push(`[${omitted} older change${omitted === 1 ? ' is' : 's are'} not listed.]`);
-  return `<user_changes>\n${lines.join('\n')}\n</user_changes>`;
+  ].join(' ');
+}
+
+/** The sheet and the cells of an address as Excel gives it, as ``'Q1 data'!A1:B2``. */
+function sheetAndCells(address: string): { sheetName: string; cells: string } {
+  const bang = address.lastIndexOf('!');
+  const sheet = address.slice(0, bang).trim();
+  return { sheetName: /^'.*'$/.test(sheet) ? sheet.slice(1, -1).replace(/''/g, "'") : sheet,
+    cells: address.slice(bang + 1).trim() };
+}
+
+/** A cell's place in the ledger of the pane's writes: the sheet's id and the cell, as ``{id}!B2``. */
+function cellPlace(sheetId: string, row: number, column: number): string {
+  return `${sheetId}!${cellName(row, column)}`;
+}
+
+/** A cell as the ledger compares it: its formula, else its value; null when it is empty. */
+function cellLook(formula: unknown): Look {
+  return formula === '' || formula === null || formula === undefined ? null : String(formula);
 }
 
 export class ExcelState {
-  private changes: Change[] = [];
-  private omitted = 0;
+  private readonly changes = new UserChanges<Change>(changeLine);
   /** Sheet names by id, for change events, which name the sheet by id. */
   private readonly names = new Map<string, string>();
   /** Conversations whose messages from this pane already carried ``<initial_state>``. */
   private readonly introduced = new Set<string>();
 
   constructor(private readonly run: ExcelRun, private readonly office: Pick<Office.Context, 'contentLanguage'
-    | 'displayLanguage'>) {}
+    | 'displayLanguage'>, private readonly writes: HostWriteQueue) {}
 
-  /** Listens to the user's changes for as long as the pane runs, on ``context``, a context of its own. */
+  /**
+   * Listens to the user's changes for as long as the pane runs, on ``context``, a context of its own. A change at a
+   * cell or sheet that still shows what the pane's last write left there is taken as that write's.
+   */
   async watch(context: Excel.RequestContext, host: OfficeHost): Promise<void> {
     if (!host.isSetSupported(...CHANGES_SET)) return;
+    this.writes.observe(touched => this.looks(touched));
     const sheets = context.workbook.worksheets;
     sheets.load('items/id,items/name');
     await context.sync();
     sheets.items.forEach(sheet => this.names.set(sheet.id, sheet.name));
     const nameOf = (id: string) => this.names.get(id) ?? id;
+    const written = (sheetId: string, name: Look) => this.writes.leftAt(sheetId) === name;
     sheets.onChanged.add(async event => {
-      if (event.triggerSource === 'ThisLocalAddin') return;
-      this.record({ type: 'CellChanged', sheetName: nameOf(event.worksheetId), address: event.address,
+      // Excel tags its add-in's writes where it can. Only the tag tells a column the pane deleted, which also moves
+      // cells whose content stays as it was, from the user's.
+      if (event.triggerSource === 'ThisLocalAddin' || await this.cellsWritten(context, event)) return;
+      this.changes.add({ type: 'CellChanged', sheetName: nameOf(event.worksheetId), address: event.address,
         before: event.details?.valueBefore, after: event.details?.valueAfter });
     });
     sheets.onAdded.add(async event => {
+      await this.writes.idle();
       const sheet = context.workbook.worksheets.getItem(event.worksheetId);
       sheet.load('name');
       await context.sync();
       this.names.set(event.worksheetId, sheet.name);
-      this.record({ type: 'SheetAdded', sheetName: sheet.name });
+      if (!written(event.worksheetId, sheet.name)) this.changes.add({ type: 'SheetAdded', sheetName: sheet.name });
     });
     sheets.onDeleted.add(async event => {
-      this.record({ type: 'SheetDeleted', sheetName: nameOf(event.worksheetId) });
+      await this.writes.idle();
+      if (!written(event.worksheetId, null)) {
+        this.changes.add({ type: 'SheetDeleted', sheetName: nameOf(event.worksheetId) });
+      }
       this.names.delete(event.worksheetId);
     });
     if (host.isSetSupported(...RENAMES_SET)) {
       sheets.onNameChanged.add(async event => {
+        await this.writes.idle();
         this.names.set(event.worksheetId, event.nameAfter);
-        this.record({ type: 'SheetRenamed', sheetName: event.nameAfter, before: event.nameBefore,
+        if (written(event.worksheetId, event.nameAfter)) return;
+        this.changes.add({ type: 'SheetRenamed', sheetName: event.nameAfter, before: event.nameBefore,
           after: event.nameAfter });
       });
     }
     await context.sync();
+  }
+
+  /** Whether every cell of a change still shows what the pane's last write left there. */
+  private async cellsWritten(context: Excel.RequestContext, event: Excel.WorksheetChangedEventArgs): Promise<boolean> {
+    await this.writes.idle();
+    const address = cellsOf(event.address);
+    const block = parseBlock(address, SHEET);
+    if (!block) return false;
+    const places: string[] = [];
+    // Stops at the first cell no write of the pane changed, before a whole column is read.
+    for (let row = block.top; row <= block.bottom; row += 1) {
+      for (let column = block.left; column <= block.right; column += 1) {
+        const place = cellPlace(event.worksheetId, row, column);
+        if (this.writes.leftAt(place) === undefined) return false;
+        places.push(place);
+      }
+    }
+    const range = context.workbook.worksheets.getItem(event.worksheetId).getRange(address);
+    range.load('formulas');
+    await context.sync();
+    return range.formulas.flat().every((formula, index) => this.writes.leftAt(places[index]) === cellLook(formula));
+  }
+
+  /**
+   * Each sheet's name by its id, and the formula or value of each cell in ``touched`` (addresses as Excel gives
+   * them) by its place: of a whole column or row, the part in use.
+   */
+  private looks(touched: readonly string[]): Promise<Looks> {
+    return this.run(async context => {
+      const sheets = context.workbook.worksheets;
+      sheets.load('items/id,items/name');
+      await context.sync();
+      const ranges = touched.flatMap(selectedRanges).flatMap(address => {
+        const { sheetName, cells } = sheetAndCells(address);
+        const sheet = sheets.items.find(item => item.name === sheetName);
+        if (!sheet) return [];
+        const range = BOUNDED.test(cells) ? sheet.getRange(cells)
+          : sheet.getRange(cells).getUsedRangeOrNullObject(true);
+        range.load('rowIndex,columnIndex,formulas');
+        return [{ id: sheet.id, range }];
+      });
+      // Ranges too large to read back leave their cells out of the ledger; the sheets still count.
+      const read = await context.sync().then(() => ranges, () => []);
+      const looks: Looks = new Map(sheets.items.map(sheet => [sheet.id, sheet.name]));
+      for (const { id, range } of read.filter(({ range }) => !range.isNullObject)) {
+        range.formulas.forEach((row, r) => row.forEach((formula, c) => looks.set(
+          cellPlace(id, range.rowIndex + r + 1, range.columnIndex + c + 1), cellLook(formula))));
+      }
+      return looks;
+    });
   }
 
   /**
@@ -114,16 +194,14 @@ export class ExcelState {
    * cell is being edited) still lets the message go, saying so.
    */
   async forMessage(sessionId: string): Promise<ClientState> {
-    const changes = [...this.changes];
-    const { omitted } = this;
+    const changes = this.changes.block();
     try {
       const now = await this.current();
       const introduce = !this.introduced.has(sessionId);
-      const first = introduce ? await this.initialState() : changesBlock(changes, omitted);
+      const first = introduce ? await this.initialState() : changes.text;
       return { text: [first, now].filter(Boolean).join('\n'), sent: () => {
         if (introduce) this.introduced.add(sessionId);
-        this.changes = this.changes.filter(change => !changes.includes(change));
-        this.omitted = Math.max(0, this.omitted - omitted);
+        changes.sent();
       } };
     } catch (error) {
       return { text: `<user_context>\nThe workbook could not be read when this message was sent (${
@@ -155,14 +233,6 @@ export class ExcelState {
       }
       return `<user_context>\n${lines.join('\n')}\n</user_context>`;
     });
-  }
-
-  private record(change: Change): void {
-    this.changes.push(change);
-    if (this.changes.length > MAX_CHANGES) {
-      this.changes.shift();
-      this.omitted += 1;
-    }
   }
 
   private initialState(): Promise<string> {
