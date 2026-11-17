@@ -145,6 +145,7 @@ HANDLERS: dict[ReqMethod, HandlerSpec] = {
     ReqMethod.MCP_SERVER_UPDATE: HandlerSpec(fn=mcp_servers_handlers.handle_mcp_server_update),
     ReqMethod.MCP_SERVER_LIST: HandlerSpec(fn=mcp_servers_handlers.handle_mcp_server_list),
     ReqMethod.MCP_SERVER_GET: HandlerSpec(fn=mcp_servers_handlers.handle_mcp_server_get),
+    ReqMethod.MCP_SERVER_RESCAN: HandlerSpec(fn=mcp_servers_handlers.handle_mcp_server_rescan),
     ReqMethod.COMMAND_SANDBOX: HandlerSpec(fn=sandbox_handlers.handle_command_sandbox),
     ReqMethod.COMMAND_RESUME: HandlerSpec(fn=commands_handlers.handle_command_resume),
     ReqMethod.COMMAND_SESSION: HandlerSpec(fn=commands_handlers.handle_command_session),

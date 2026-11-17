@@ -12,6 +12,7 @@ import asyncio
 import copy
 import hashlib
 import importlib
+import inspect
 import json
 import logging
 import operator
@@ -126,6 +127,7 @@ from openjiuwen.harness.schema.interaction import (
     SendInputRequest,
 )
 from openjiuwen.harness.schema.task import TodoStatus
+from openjiuwen.harness.tools.todo_store import TodoSnapshot
 from openjiuwen.harness.workspace.workspace import Workspace, WorkspaceNode
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
@@ -213,8 +215,8 @@ from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import (
     _push_skill_sleep_published,
     _push_skill_sleep_suggest,
     _push_team_skill_evolve_resolution_status,
-    _record_goal_completed_history_if_needed,
     _record_goal_set_history_if_needed,
+    _schedule_goal_completed_history_if_needed,
     _reset_deepresearch_route_context,
     _reset_runtime_cron_context,
     _resolve_enable_task_loop,
@@ -777,6 +779,7 @@ from jiuwenswarm.common.config import (
 from jiuwenswarm.common.mcp_config import (
     CONNECTOR_DISCOVERY_FAILED,
     CONNECTOR_NO_TOOLS,
+    CONNECTOR_RUNTIME_PARAMS_INVALID,
     MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX,
     OfficeClawMcpRegistration,
     RequestScopedOfficeClawMcpTool,
@@ -808,9 +811,17 @@ from jiuwenswarm.common.mcp_config import (
 from jiuwenswarm.common.mcp_server_registry import (
     DisabledMcpServerError,
     McpRegistryChatError,
+    McpServerDeclaration,
     UnknownMcpServerError,
+    deepresearch_connect_params,
+    extract_mcp_runtime_params,
     extract_mcp_server_list,
+    extract_mcp_tool_scope,
     get_mcp_server_registry,
+    is_office_claw_entry_name,
+    resolve_runtime_params,
+    retire_request_owned_mcp_workers,
+    runtime_delivery,
 )
 from jiuwenswarm.server.runtime.agent_adapter.deepagent_task_plan_binding_patch import (
     apply_deepagent_task_plan_binding_patch,
@@ -1013,6 +1024,7 @@ class JiuWenSwarmDeepAdapter:
     _is_subagent_enabled = staticmethod(_is_subagent_enabled)
     _build_mcp_server_config = staticmethod(_build_mcp_server_config)
     _extract_enabled_mcp_server_entries = staticmethod(_extract_enabled_mcp_server_entries)
+    _deepresearch_requires_todo_owner: ClassVar[bool] = False
     # 只有实际 Flash Adapter 延迟图片 SDK 初始化，其他 Adapter 在构造时完成。
     _defer_image_sdk_imports: ClassVar[bool] = False
     SESSION_ADAPTER_IDLE_TTL_SEC = _session_adapter_idle_ttl_default()
@@ -3461,6 +3473,100 @@ class JiuWenSwarmDeepAdapter:
         env = params.get("env") if isinstance(params.get("env"), dict) else {}
         return str(env.get("OFFICE_CLAW_INVOCATION_ID") or "").strip()
 
+    async def _append_registry_mcp_server_tools(
+        self,
+        request: AgentRequest,
+        server_names: list[str],
+        buffers: _RequestMcpToolBuffers,
+    ) -> str:
+        """Stage registered servers from the tool cache; returns the bound invocation id."""
+        registry = get_mcp_server_registry()
+        runtime_params = extract_mcp_runtime_params(request.params)
+        tool_scope = extract_mcp_tool_scope(request.params)
+        snapshots = await registry.snapshot_for_chat(server_names)
+        declaration_reader = getattr(registry, "chat_declarations", None)
+        declarations = declaration_reader(server_names) if callable(declaration_reader) else {}
+        policy_reader = getattr(registry, "get_server", None)
+        invocation_id = ""
+        # office-claw 条目先占名：之后的连接器重名时让位，不反过来挤掉系统工具。
+        for name, tool_defs, params in sorted(
+            snapshots, key=lambda item: not is_office_claw_entry_name(item[0]),
+        ):
+            declaration = declarations.get(name) or McpServerDeclaration()
+            # 连接器目录按连接器 ID 查询，注册名是 <userId>:<connectorId>。
+            catalog_name = name if declaration.system else name.rsplit(":", 1)[-1]
+            values, skip_reason, dropped = resolve_runtime_params(
+                declaration, runtime_params.get(name),
+            )
+            if dropped:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] undeclared MCP runtime params dropped: "
+                    "request_id=%s server=%s count=%s names=%s",
+                    request.request_id, name, len(dropped), dropped[:16],
+                )
+            if skip_reason:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] registered MCP server skipped this request: "
+                    "request_id=%s server=%s reason=%s", request.request_id, name, skip_reason,
+                )
+                buffers.unavailable_connectors[catalog_name] = CONNECTOR_RUNTIME_PARAMS_INVALID
+                continue
+            scope = tool_scope.get(name)
+            if scope is not None:
+                tool_defs = [t for t in tool_defs if str(t.get("name") or "").strip() in scope]
+                if not tool_defs:
+                    buffers.unavailable_connectors[catalog_name] = CONNECTOR_NO_TOOLS
+            strict = is_office_claw_entry_name(name)
+            if strict:
+                conflict = self._strict_mcp_entry_conflict(tool_defs, buffers)
+                if conflict is not None:
+                    logger.error(
+                        "[JiuWenSwarmDeepAdapter] system MCP entry dropped on tool name conflict: "
+                        "request_id=%s server=%s tool=%s", request.request_id, name, conflict,
+                    )
+                    continue
+            _stage_request_mcp_tools(
+                request, name, tool_defs, params, buffers, use_global_pool=True, strict=strict,
+                staged_name_resolver=self._resolve_shadow_safe_tool_name,
+                runtime_params=values, catalog_host=declaration.system,
+                runtime_delivery=runtime_delivery(
+                    declaration, values, f"{request.session_id}:{request.request_id}",
+                ),
+            )
+            if declaration.system and not invocation_id:
+                invocation_id = values.get("OFFICE_CLAW_INVOCATION_ID", "")
+            if not tool_defs:
+                continue
+            try:
+                policy = await policy_reader(name) if callable(policy_reader) else None
+            except Exception:
+                policy = None
+            if policy and policy.get("enabled"):
+                from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import (
+                    project_search_server,
+                )
+                # 委托经本轮装载的工具对象调用，判定时把随请求下发的请求头一并计入。
+                research_server = project_search_server(
+                    name, policy["config"], deepresearch_connect_params(params, declaration, values),
+                )
+                if research_server:
+                    buffers.research_servers.append(research_server)
+                    rewrites = buffers.research_name_rewrites.get(name) or {}
+                    buffers.research_tool_names[name] = (
+                        self._staged_research_tool_names(tool_defs, rewrites)
+                    )
+        return invocation_id
+
+    def _strict_mcp_entry_conflict(
+        self, tool_defs: list[dict[str, Any]], buffers: _RequestMcpToolBuffers,
+    ) -> str | None:
+        """严格装载的条目不改名、不逐个跳过：有一个工具名不可用就整组不装。"""
+        names = [str(tool.get("name") or "").strip() for tool in tool_defs]
+        for name in names:
+            unusable = not name or names.count(name) > 1
+            if unusable or name in buffers.seen_names or self._is_builtin_shadowed_tool_name(name):
+                return name
+        return None
 
     async def _append_request_mcp_server_tools(
         self,
@@ -3654,28 +3760,9 @@ class JiuWenSwarmDeepAdapter:
                     skip_office_claw=office_claw_config is not None,
                 )
             if server_names:
-                snapshots = await get_mcp_server_registry().snapshot_for_chat(server_names)
-                for name, tool_defs, params in snapshots:
-                    _stage_request_mcp_tools(
-                        request, name, tool_defs, params, buffers, use_global_pool=True,
-                        staged_name_resolver=self._resolve_shadow_safe_tool_name,
-                    )
-                    reader = getattr(get_mcp_server_registry(), "get_server", None)
-                    try:
-                        policy = await reader(name) if callable(reader) else None
-                    except Exception:
-                        policy = None
-                    if policy and policy.get("enabled") and tool_defs:
-                        from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import (
-                            project_search_server,
-                        )
-                        research_server = project_search_server(name, policy["config"], params)
-                        if research_server:
-                            buffers.research_servers.append(research_server)
-                            rewrites = buffers.research_name_rewrites.get(name) or {}
-                            buffers.research_tool_names[name] = (
-                                self._staged_research_tool_names(tool_defs, rewrites)
-                            )
+                invocation_id = await self._append_registry_mcp_server_tools(
+                    request, server_names, buffers,
+                )
             # Preserve source priority: registry -> leftovers -> office-claw when
             # a registry list is present; otherwise office-claw -> connectors.
             if office_claw_config is not None and not server_names:
@@ -3688,9 +3775,11 @@ class JiuWenSwarmDeepAdapter:
                     skip_office_claw=office_claw_config is not None,
                 )
             if office_claw_config is not None and server_names:
-                invocation_id = await self._append_identity_pinned_office_claw_tools(
+                legacy_invocation_id = await self._append_identity_pinned_office_claw_tools(
                     request, office_claw_config, buffers, yield_to_existing=True,
                 )
+                # 注册面的系统条目已绑定调用身份时，旧字段的同名工具让位，身份也以注册面为准。
+                invocation_id = invocation_id or legacy_invocation_id
 
             if buffers.unavailable_connectors:
                 logger.warning(
@@ -3698,7 +3787,7 @@ class JiuWenSwarmDeepAdapter:
                     "request_id=%s connectors=%s", request.request_id, buffers.unavailable_connectors,
                 )
                 for tool, _strict in buffers.pending_tools:
-                    if tool.server_name == "office-claw":
+                    if tool.server_name == "office-claw" or tool.catalog_host:
                         tool.set_unavailable_connectors(buffers.unavailable_connectors)
 
             if not replace_request_scoped_mcp_registration(generation, generation):
@@ -3975,6 +4064,19 @@ class JiuWenSwarmDeepAdapter:
                 self._active_office_claw_mcp.request_id,
             )
         revoke_live_office_claw_allowlist(registration.tool_ids)
+        # connection_scope: request 的连接归本请求独占，请求结束（含取消、报错、审批中断）即关。
+        # 放在上面的状态清理之后：这里可能挂起，清理被取消时不能把活动注册留在半清状态。
+        try:
+            await retire_request_owned_mcp_workers(
+                registration.tool_instances, request_id=registration.request_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] request-owned MCP connection close failed: "
+                "request_id=%s error=%s",
+                registration.request_id,
+                exc,
+            )
         # 销毁本请求池化的长生命周期 stdio session（如 chrome-devtools-mcp 浏览器进程），
         # 以免其活过 chat.send。best-effort，不阻塞清理。
         try:
@@ -8183,7 +8285,7 @@ class JiuWenSwarmDeepAdapter:
                     )
         return context
 
-    def _get_deepresearch_tool_context(self) -> dict[str, str]:
+    def _get_deepresearch_tool_context(self) -> dict[str, Any]:
         """Return the adapter-owned route that survives runner task boundaries.
 
         Prefers the per-session-adapter ``_current_request_route`` snapshot
@@ -8206,6 +8308,8 @@ class JiuWenSwarmDeepAdapter:
                 "service_id": scope.service_id,
                 "agent_id": scope.agent_id,
                 "workspace_key": scope.workspace_key,
+                "todo_tool_provider": lambda: self._get_todo_modify_tool(scope.session_id),
+                "todo_owner_required": self._deepresearch_requires_todo_owner,
                 "output_dir": self._deepresearch_artifact_output_dir(
                     route.get("output_dir")
                 ),
@@ -8221,6 +8325,8 @@ class JiuWenSwarmDeepAdapter:
             "service_id": scope.service_id,
             "agent_id": scope.agent_id,
             "workspace_key": scope.workspace_key,
+            "todo_tool_provider": lambda: self._get_todo_modify_tool(scope.session_id),
+            "todo_owner_required": self._deepresearch_requires_todo_owner,
             "output_dir": self._deepresearch_artifact_output_dir(
                 metadata.get("project_dir")
             ),
@@ -10366,6 +10472,8 @@ class JiuWenSwarmDeepAdapter:
                 service_id=scope.service_id,
                 agent_id=scope.agent_id,
                 workspace_key=scope.workspace_key,
+                todo_tool_provider=lambda: self._get_todo_modify_tool(scope.session_id),
+                todo_owner_required=self._deepresearch_requires_todo_owner,
                 output_dir=self._deepresearch_artifact_output_dir(
                     normalized_metadata.get("project_dir")
                 ),
@@ -14822,6 +14930,41 @@ class JiuWenSwarmDeepAdapter:
             action="set", objective=objective, session_id=session_id
         )
 
+    async def read_todo_snapshot(
+        self, session_id: str, *, request: AgentRequest | None = None,
+    ) -> tuple[TodoSnapshot, str | None] | None:
+        """返回所属后端快照和同会话代际标记，不以宿主同名文件替代。"""
+        from jiuwenswarm.common.utils import is_valid_session_id
+
+        if not is_valid_session_id(session_id):
+            return None
+        try:
+            adapter = await self._get_or_create_session_adapter(session_id, request=request)
+            tool = adapter.get_todo_modify_tool(session_id)
+            if tool is None:
+                return None
+            instance = getattr(adapter, "_instance", None)
+            session = getattr(instance, "_interaction_session", None)
+            generation_token = None
+            if session is not None:
+                try:
+                    generation_token = get_todo_generation_token(session)
+                except Exception:
+                    logger.debug("[history.get] Todo generation unavailable: session_id=%s", session_id, exc_info=True)
+            items = await tool.read_todos(session_id)
+            snapshot = getattr(items, "snapshot", None)
+            if snapshot is None or not snapshot.exists:
+                return None
+            if not snapshot.read_authoritative or snapshot.read_only_backend:
+                return None
+            return snapshot, generation_token
+        finally:
+            await self._evict_idle_session_adapters()
+
+    def get_todo_modify_tool(self, session_id: str) -> TodoModifyTool | None:
+        """取得所属会话的 Todo 引擎，保留各模式的选择逻辑。"""
+        return self._get_todo_modify_tool(session_id)
+
     def _get_todo_modify_tool(self, session_id: str) -> TodoModifyTool | None:
         """Return a session-scoped TodoModifyTool, or None if DeepAgent unavailable.
 
@@ -16778,7 +16921,9 @@ class JiuWenSwarmDeepAdapter:
                     self._runtime_prompt_rail.set_model_name(self._resolve_model_name())
                     self._runtime_prompt_rail.set_mode(mode)
                     self._runtime_prompt_rail.set_session_id(session_id)
-                self._write_runtime_state(
+                # Offload git/subprocess + file write like the configure path so
+                # streaming turns do not stall the Worker event loop (/health).
+                self._schedule_runtime_state_write(
                     mode=mode,
                     language=resolved_language,
                     channel=resolved_channel,
@@ -17173,7 +17318,7 @@ class JiuWenSwarmDeepAdapter:
             # without touching the pure payload parser.
             if event_type == GOAL_UPDATED_EVENT_TYPE:
                 goal_obj = payload.get("goal")
-                _record_goal_completed_history_if_needed(
+                _schedule_goal_completed_history_if_needed(
                     session_id=session_id,
                     channel_id=cid,
                     channel_metadata=request.metadata if isinstance(request.metadata, dict) else None,
@@ -19337,6 +19482,8 @@ class JiuWenSwarmDeepAdapter:
         )
 
         messages = self._get_recent_messages(session_id, window=RECENT_MESSAGE_WINDOW)
+        if inspect.isawaitable(messages):
+            messages = await messages
         if not messages:
             return {"status": "no_turn"}
 
@@ -19350,7 +19497,38 @@ class JiuWenSwarmDeepAdapter:
 
         return {"status": "ok", "summary": summary_text.strip()}
 
-    def _get_recent_messages(self, session_id: str, window: int = 30) -> list[Any]:
+    @staticmethod
+    def _filter_recapworthy_history_records(records: list[Any]) -> list[Any]:
+        """Filter disk history records into recap/btw-worthy messages."""
+        from types import SimpleNamespace
+
+        if not records:
+            return []
+
+        # 只保留 user 消息和 assistant 的最终回复 / compact summary
+        recapworthy = []
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            role = rec.get("role")
+            content = rec.get("content")
+            if not isinstance(content, str) or not content.strip():
+                continue
+
+            if role == "user":
+                recapworthy.append(SimpleNamespace(role="user", content=content))
+            elif role == "assistant":
+                # Goal-completed cards are UI-only history facts; never feed them
+                # back into model recap context.
+                if rec.get("is_goal_completed_message"):
+                    continue
+                event_type = rec.get("event_type")
+                # 只包含 assistant 的最终回复和 compact summary
+                if event_type in ("chat.final", "context.compact_summary") or not event_type:
+                    recapworthy.append(SimpleNamespace(role="assistant", content=content))
+        return recapworthy
+
+    async def _get_recent_messages(self, session_id: str, window: int = 30) -> list[Any]:
         """从当前 agent 对话上下文中提取最近N条消息。
 
         查找顺序：
@@ -19358,7 +19536,7 @@ class JiuWenSwarmDeepAdapter:
         2. 父 adapter 查找 session-scoped child adapter 的 context_engine
            （解决 /btw 等侧查询在 parent adapter 上执行时，会话上下文在 child adapter
            中而 parent 的 context_engine 未加载该 session 的问题）
-        3. 回退到从磁盘读取兼容格式的 history 文件
+        3. 回退到从磁盘读取兼容格式的 history 文件（``asyncio.to_thread``）
         """
         # --- 快速路径：当前 adapter 的 context_engine 已加载 ---
         if self._instance is not None and self._instance.react_agent is not None:
@@ -19402,13 +19580,11 @@ class JiuWenSwarmDeepAdapter:
                                 exc,
                             )
 
-        # --- 回退路径：从磁盘读取兼容格式 history ---
+        # --- 回退路径：从磁盘读取兼容格式 history（off event loop）---
         # 典型场景：/resume 之后，context_engine 还未加载新 session 的上下文，
         # 但磁盘上已有该 session 的历史消息。
         try:
-            from types import SimpleNamespace
-
-            records = load_history_records(session_id)
+            records = await asyncio.to_thread(load_history_records, session_id)
             if not records:
                 logger.debug(
                     "[JiuWenSwarmDeepAdapter] _get_recent_messages: no history records on disk for session %s",
@@ -19416,29 +19592,7 @@ class JiuWenSwarmDeepAdapter:
                 )
                 return []
 
-            # 过滤出适合 recap 的消息记录
-            # 只保留 user 消息和 assistant 的最终回复 / compact summary
-            recapworthy = []
-            for rec in records:
-                if not isinstance(rec, dict):
-                    continue
-                role = rec.get("role")
-                content = rec.get("content")
-                if not isinstance(content, str) or not content.strip():
-                    continue
-
-                if role == "user":
-                    recapworthy.append(SimpleNamespace(role="user", content=content))
-                elif role == "assistant":
-                    # Goal-completed cards are UI-only history facts; never feed them
-                    # back into model recap context.
-                    if rec.get("is_goal_completed_message"):
-                        continue
-                    event_type = rec.get("event_type")
-                    # 只包含 assistant 的最终回复和 compact summary
-                    if event_type in ("chat.final", "context.compact_summary") or not event_type:
-                        recapworthy.append(SimpleNamespace(role="assistant", content=content))
-
+            recapworthy = self._filter_recapworthy_history_records(records)
             if not recapworthy:
                 logger.debug(
                     "[JiuWenSwarmDeepAdapter] _get_recent_messages: no recap-worthy records on disk for session %s",
@@ -19651,6 +19805,8 @@ class JiuWenSwarmDeepAdapter:
 
         # 2) 获取最近对话消息（保持原始格式，不做 str() 转换）
         messages = self._get_recent_messages(session_id, window=RECENT_MESSAGE_WINDOW)
+        if inspect.isawaitable(messages):
+            messages = await messages
         if not messages and not system_prompt:
             return {"status": "no_context"}
 

@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_03 / runtime-agent-management |
 | 关联模块 | jiuwenswarm/server/runtime/{agent_manager.py, tenant_agent_pool.py, agent_warm_pool.py, agent_adapter/, a2ui/, debug_trace/, session/, skill/, workspace/, agent_config_service.py, prewarm.py, proactive_adapter.py, team_binding_store.py, team_entity_store.py, team_snapshot_refresh.py} |
-| 最近一次修订日期 | 2026-10-30 |
+| 最近一次修订日期 | 2026-11-12 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -199,7 +199,11 @@ UsageReconciler:    start_usage_reconciler()（启动周期回收）
 
 ### Todo 增量提交边界
 
-暂停、恢复和既有清单修改复用 SDK 同对象事务，在最新清单上应用原业务意图，不能整表覆盖并发提交。旧工作保留捕获的 plan_id，冲突不能换绑新计划。历史恢复读取同一权威文件：默认legacy保持原字段、generation/串行展示；成功读取合法空表时发送空数组。显式versioned发送匹配的todo_meta与合法空表。读取失败不发送清空事件。不改变请求取消、HITL状态机或沙箱隔离策略。
+DeepResearch 的宿主上下文在直接、定时及延迟工具调用中传递内部 `todo_owner_required`：Flash 为 True，普通/Code 为 False，独立于取得工具是否成功。启动与回写规则见 agents/harness 的 S_06；不增加线上请求字段。
+
+暂停、恢复和既有清单修改复用 SDK 同对象事务，在最新清单上应用原业务意图，不能整表覆盖并发提交。Flash 中断取消复用已装配的 Todo 修改引擎及其会话检查。旧工作保留捕获的 plan_id，冲突不能换绑新计划。历史恢复读取同一权威文件：默认legacy保持原字段、generation/串行展示；成功读取合法空表时发送空数组。显式versioned发送匹配的todo_meta与合法空表。读取失败不发送清空事件。不改变请求取消、HITL状态机或沙箱隔离策略。
+
+历史 Todo 读取取得会话适配器后，成功、提前返回、异常及取消均在 finally 调用既有空闲回收入口。回收沿用 TTL、批次上限、活跃会话、审批、子代理和会话锁保护，不在每次读取后强制销毁当前会话。
 
 `session.create`确认新Flash会话后，在现有元数据登记内部`todo_initialized`标记。SDK调用宿主
 `snapshot_guard`：缺失文件先检查初始化依据，首次可能提交前登记已使用；有效

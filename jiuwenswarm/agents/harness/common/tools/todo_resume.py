@@ -40,13 +40,13 @@ _RESUME_QUERY_PATTERNS = (
 TODO_CREATE_BLOCKED_CN = (
     "Error: 当前会话已有未完成任务（pending/in_progress）。"
     "请先 todo_list，再用 todo_modify 续跑；勿 todo_create 覆盖。"
-    "仅当用户明确要求重来/重规划时，todo_create（ plan_action=rebuild）。"
+    "仅当用户明确要求重来/重规划时，重新调用 todo_create。"
 )
 
 TODO_CREATE_BLOCKED_EN = (
     "Error: This session has unfinished tasks (pending/in_progress). "
     "Call todo_list first, then todo_modify to resume; do not todo_create over them. "
-    "Call todo_create (plan_action=rebuild) only when the user explicitly asks to replan or restart planning."
+    "Call todo_create again only when the user explicitly asks to replan or restart planning."
 )
 
 TODO_CREATE_READ_FAILED_CN = (

@@ -8,7 +8,7 @@
 | 编号 / slug | S_01 / todo-storage-and-toolchain |
 | 关联模块（jiuwenswarm 仓） | `jiuwenswarm/agents/harness/common/tools/todo_resume.py`、`todo_compat.py`、`todo_toolkits.py`；装配点 `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py`（`install_todo_modify_compat_patch` 模块级调用） |
 | 关联模块（agent-core 仓，跨仓契约） | `openjiuwen/harness/tools/todo.py`（主链四工具）、`openjiuwen/harness/schema/task.py`（`TodoItem` / `TodoStatus`）、`openjiuwen/harness/workspace/workspace.py`（workspace 布局中的 `todo` 目录） |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-11-10 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -41,11 +41,11 @@
 
 - **N1（持久化路径唯一）**：主链 todo 数据只落 `{workspace}/todo/{session_id}/todo.json` 一处。工具内部拼接为 `workspace 参数 / {session_id} / todo.json`，装配层传入的 workspace 即 workspace 布局中的 `todo` 目录（`openjiuwen/harness/workspace/workspace.py` 定义）。上下文重注入读取同一拼接（`openjiuwen/core/context_engine/processor/forked/compressor/reinjection/builders.py` 的 `build_todo_reinjected_content`）。
 - **N2（状态枚举固定）**：主链 `TodoStatus` 恰为 4 个值：`pending` / `in_progress` / `completed` / `cancelled`。`TodoToolkit` 变体用独立枚举 `waiting` / `running` / `completed` / `cancelled`（且 `running` 从未被写入——变体没有"开始执行"动作），两套枚举、两种存储互不混用。
-- **N3（单 in_progress）**：`todo_modify` 的 `update` / `append` / `insert_after` / `insert_before` 落盘前必须通过 `_validate_single_in_progress`：当前代可见条目中 `in_progress` 至多 1 个。统计口径 = 代际过滤后（无 token 时全表），跨代残留的 in_progress 不占当前代名额。`todo_create` 不做此校验——首任务自动置 `in_progress` 是唯一合法入口。
+- **N3（单进行项与格式迁移）**：旧数组读取可按 generation 过滤；版本化计划和所有即将发布的候选，全计划至多一个 in_progress。事务在 CAS 发布前执行 validate_published_todos；旧格式不能先写出不一致新快照。冲突返回 182503，details.reason=migration_conflict，原文件不变；不自动完成、取消或丢弃旧代条目。
 - **N4（同 invoke 至多一次 todo_create）**：`TodoCreateTool._created_in_invoke` 集合 guard，第二次 `todo_create` 直接拒绝（`TOOL_TODOS_VALIDATION_INVALID`）。guard 由 agent-core `TaskPlanningRail.before_invoke` 调 `reset_invoke_marker` 重置（见 [[S_02]]）。违反后果：整表覆盖改写全部任务 id，task.run 段与前端任务列表失配乱序。
 - **N5（代际 token 单向流）**：agent-core 侧对 token 只做三件事——读（`_session_generation_token`）、打标（create/update/append/insert 写入条目）、过滤（list 视图）——**从不 bump**。bump 唯一入口是 `todo_resume.bump_todo_generation_token`（uuid4 → `session.update_state`），生产者是 agent_adapter 的 prepare hook（fresh 非续跑轮才 bump；resume 轮保持原 token，见 `openjiuwen/harness/tools/todo.py` 模块头跨仓契约注释）。
 - **N6（fail-open）**：无 `get_state` 的 session、state 里无 token、token 非字符串、条目未打标——四种情况全部放行不过滤。任何代际过滤代码不得把"缺信息"当"旧代"处理。
-- **N7（锁）**：主链 per-session `asyncio.Lock`（`TodoLockManager`，全局锁只保护锁字典创建）；`load_todos` / `save_todos` 全程持锁；四工具必须共享同一 lock_manager 实例（`create_todos_tool` 工厂保证）。变体 `TodoToolkit` 用 per-session `threading.Lock`（同步 I/O）。
+- **N7（完整事务与条件发布）**：todo_store.transact 按实际 fs 后端与规范路径确定同对象锁，覆盖完整读改写；不同工具实例仍协调，不同对象不共用长持业务锁。文件端比较 exists/hash 并 atomic_replace；冲突最多三次，重算意图且不换绑 plan；结果未知不重放。TodoLockManager 保留兼容接口，不替代事务。
 - **N8（reminder 不可被无关轮删除）**：`meta_data.persistent = true` 的条目（用户口述待办），仅当本轮 query 有删除意图**且**点名该条（id 或 content ≥4 字符的子串命中）或明确全清时才允许删除/取消；无删除意图的轮次一律保留。判定函数 `_keep_persistent_reminder`。
 - **N9（触碰即归当前代）**：`update` / `append` / `insert_*` 写入的条目在 token 非空时重打当前 token（"复活/改写的条目对当前轮可见"）；`update` 把条目置为 `in_progress` 时同步摘除 persistent 标记（reminder 进入执行地图）。
 - **N10（I/O 走 SysOperation）**：`load_todos` / `save_todos` 一律经 `SysOperation.fs()` 的 `read_file` / `write_file`（沙箱模式下文件落在沙箱内），不做本地 `os.path` 存在性预检查。变体 `TodoToolkit` 是例外（裸 `open`，仅非沙箱场景）。
@@ -74,7 +74,13 @@
 | `insert_after` | `todo_data: {target_id, items}` | 目标状态须 `in_progress` / `pending` |
 | `insert_before` | `todo_data: {target_id, items}` | 目标状态须 `pending` |
 
-错误码全集：`TOOL_TODOS_INVOKE_FAILED`（session 缺失 / get 未找到 / 内层异常统一包装）、`TOOL_TODOS_VALIDATION_INVALID`（参数形态 / 重复 id / 二次 create / 多 in_progress）、`TOOL_TODOS_LOAD_FAILED`、`TOOL_TODOS_SAVE_FAILED`、`TOOL_STREAM_NOT_SUPPORTED`。
+错误码沿用 TOOL_TODOS_VALIDATION_INVALID（参数/状态）、TOOL_TODOS_LOAD_FAILED、TOOL_TODOS_SAVE_FAILED、TOOL_TODOS_INVOKE_FAILED 与 TOOL_STREAM_NOT_SUPPORTED。已有 BaseError 原样透传，不重复包装 182504；details 补充字段/条目或迁移原因。Core update 的部分成功与 Compatible 的整批拒绝分别保留；纯输入形状先校验，计划及状态冲突在事务中判断。
+
+发布请求发出后无法确认结果时，模型可见错误文本必须说明文件可能已修改，应先读取当前 Todo 再判断，不可盲目重放。沿用原错误码和取消控制流；内部 commit_state=unknown、applied_count=None 不进入工具结果 JSON。已确认冲突继续按 N7 有界重算，不与未知结果混淆。
+
+创建策略按原设计归宿主：普通 Core/Code 保留 require_explicit_plan_action=False，Flash 显式开启活动计划保护；同 invoke 创建限制不变，明确 new/rebuild 不归零 revision、不绕过已登记文件丢失保护。
+
+未挂生命周期 guard 的旧后端可读取内容，但不能降级写入。read_only_backend/read_authoritative 标记只读来源；读取错误、元信息非法或文件丢失不冒充空表，不触发任务清空。
 
 ### jiuwenswarm 兼容层（`todo_compat.py`）
 
@@ -127,7 +133,7 @@
 | `selected_model_id` | Optional[str] | 执行该任务的模型 |
 | `generation_token` | Optional[str] | 代际标记（N5/N9） |
 
-`todo.json` = `TodoItem.to_dict()` 的 JSON 数组（`ensure_ascii=False, indent=2`）。旧文件缺字段时 `from_dict` 逐项兜底，不要求迁移。
+`todo.json` 新格式为 `{plan_id, revision, todos}`；旧数组可读，只读不改文件，实际修改在同一条件提交中迁移。未修改条目及扩展字段保留。工具仍返回原 message/tasks/todo 字典；TodoResult 的来源格式、read_authoritative、结果/条目计数和提交状态仅为内部属性，不进入模型 JSON 或默认 legacy wire。
 
 session state 三键：`todo_generation_token`（常量定义在 agent-core `tools/todo.py`，jiuwenswarm 侧 import 共享——跨仓改键名两边同时改）、`todo_turn_user_query`、`jiuwenclaw_todo_resume_snapshot_pending`。
 

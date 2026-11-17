@@ -922,6 +922,8 @@ def _build_team_capability_specs(
         )
 
     rails_specs.extend(_role_evolution_rails(config, role))
+    # Progressive filter last: before_model_call reads the full registered set.
+    rails_specs.append(RailSpec(type=registry.TEAM_PROGRESSIVE_TOOL))
 
     tool_specs: list[BuiltinToolSpec] = [
         BuiltinToolSpec(type=name, params=_tool_params(name, config))
@@ -1002,6 +1004,8 @@ def _build_code_capability_specs(
         for name in _CODE_SHARED_RAIL_NAMES
     )
     rails_specs.extend(_role_evolution_rails(config, role))
+    # Same progressive rail as chat team; code extras stay deferred unless eager.
+    rails_specs.append(RailSpec(type=registry.TEAM_PROGRESSIVE_TOOL))
 
     tool_specs: list[BuiltinToolSpec] = [
         BuiltinToolSpec(type=name, params=_tool_params(name, config))

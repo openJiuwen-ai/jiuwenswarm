@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_08 / adapter-assembly-and-config |
 | 关联模块 | interface_deep.py / interface_code.py / interface_flash.py |
-| 最近一次修订日期 | 2026-11-09 |
-| 关联 feature | 暂无 |
+| 最近一次修订日期 | 2026-11-14 |
+| 关联 feature | [[F_01]] |
 
 ## 范围 / 边界
 
@@ -34,15 +34,18 @@
 | **interface_deep** | `_build_progressive_tool_rail(config)` → `build_progressive_tool_rail_from_config`（`deep/progressive_tools.py`） | `_build_disabled_tools_rail(config)`（`deep/adapter_statics.py`） | 主产品路径；热重载重建 rail |
 | **interface_code** | 同族构建；仅 normal / plan 模式构建，`_CODE_EAGER_TOOLS` 固定追加（`lsp`、`coding_memory_*`、`switch_mode`、`enter_plan_mode`、`exit_plan_mode`），不受 `eager_tools` 配置裁剪 | 同族 | `test_code_adapter_progressive_tools.py` |
 | **interface_flash** | override `_build_progressive_tool_rail`：合并 flash eager 整表；`_progressive_tool_rail` 在 `_FLASH_RAIL_KEEP` | `_disabled_tools_rail` 由 `_PROFILE_PROTECTED_RAILS` 强制保护、不在 `_FLASH_RAIL_KEEP` | `tool_lazy_load` 深合并对 list 为**替换** |
-| **team** | 消费 deep/code 链或 team helper | 继承父 agent disabled 语义（adapter 注释：parent + inherited 双保险） | 改 team 时查 interface team_helpers |
+| **team 宿主** | 仍走 deep `_build_progressive_tool_rail`，只裁宿主工具表 | 继承父 agent disabled 语义 | 六名成员请求不经宿主 rail |
+| **team 成员** | `swarm.team_progressive_tool`（`providers/team_progressive.py`）由 `config_specs` 挂到 chat / code.team / team.plan | `swarm.disabled_tools` | **不读** yaml `eager_tools`；角色常驻名单为代码常量；`code.team` / `team.plan` 额外常驻 `switch_mode` / `enter_plan_mode` / `exit_plan_mode`（防 `invoke_tool` 绕过 CodeConfirm / plan 守卫） |
 
 ## 不变量
 
-- **N1（单一构建函数）**：progressive 参数（agent_id、agent_card_id、enable_for_models、disabled_tools、OfficeClaw kwarg）在 `build_progressive_tool_rail_from_config`（`agent_adapter/deep/progressive_tools.py`）集中注入——勿在第二处重复解析 config。
+- **N1（单 agent 构建集中）**：宿主 / 单 agent progressive 参数（agent_id、agent_card_id、enable_for_models、disabled_tools）在 `build_progressive_tool_rail_from_config`（`agent_adapter/deep/progressive_tools.py`）集中注入——勿在 adapter 第二处重复解析 yaml `eager_tools`。
+- **N1b（团队成员独立构建）**：团队成员 progressive **不得**复用 yaml `react.tool_lazy_load.eager_tools`（缺 `send_message` / 任务板）。角色名单在 `team_progressive.py` 常量；仅复用 `enabled` / `enable_for_models` / TTSE / general-purpose 门控与 `_ttse_consult_should_be_eager`。
 - **N2（热重载重建式）**：progressive / disabled 均**重建**——旧 rail 进 `rails_to_unregister`，其 `uninit()` 回滚（disabled 重新注册 `_removed_cards`）；新 rail `init()` 按新名单重新挂载。adapter 不调用 `DisabledToolsRail.update_config`。
 - **N3（flash eager 替换语义）**：flash 配置对 `eager_tools` 是**整表替换**而非 append——产品 intentional；改 flash 默认须跑 flash 相关测试。
 - **N4（AGENT_RELOAD_CONFIG）**：ops 热重载路径须同时刷新 progressive + disabled（`test_progressive_rail_reload.py`）。
 - **N5（日志契约）**：构建 progressive 时 log agent_id / enable_for_models / disabled_tools（字段名稳定，便于排障）。
+- **N6（成员 meta-tool 会话隔离）**：成员 `agent_card_id` 必须为 `{member_card}_s_{session}`；空 id 会在 `init` 退回共享 `AgentCard.id`，并发成员串 pin。
 
 ## 执行路径
 
@@ -64,6 +67,16 @@ AGENT_RELOAD_CONFIG / sync config
   → 同步 progressive eager / office_claw bindings 与 DisabledToolsRail 新名单
 ```
 
+### P3：Team 成员装配
+
+```
+build_member_capability_specs（team | code.team | team.plan）
+  → RailSpec(swarm.team_progressive_tool)
+  → team_progressive._build_team_progressive_tool_rail(SwarmBuildContext)
+  → ProgressiveToolRail(eager=角色常量 ± ttse_consult ± task_tool,
+                        agent_card_id=成员会话键)
+```
+
 ## 测试地图（swarm）
 
 | 文件 | 覆盖 |
@@ -78,6 +91,7 @@ AGENT_RELOAD_CONFIG / sync config
 | `test_progressive_recall_tool_visibility.py` | schema-pinned（recall_compressed_context）可见性与排除 |
 | `rails/test_progressive_tool_inherit_flag.py` | inherit_to_subagents |
 | `test_disabled_tools_rail.py` | DisabledToolsRail |
+| `tests/unit_tests/agents/swarm/test_team_progressive.py` | 团队角色名单 / 成员 card id / MCP 钉选 |
 
 ## 修改检查单
 

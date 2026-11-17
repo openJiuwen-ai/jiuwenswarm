@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_06 / mcp-registration-boundary |
 | 关联模块 | jiuwenswarm/common/mcp_* + agent-core mcp_rail + mcp_toolkits（邻接） |
-| 最近一次修订日期 | 2026-11-09 |
-| 关联 feature | 暂无 |
+| 最近一次修订日期 | 2026-11-13 |
+| 关联 feature | [[F_01]] |
 
 ## 范围 / 边界
 
@@ -31,6 +31,7 @@
 | DeepAgent `cfg.mcps` → `_register_pending_mcps` | agent-core DeepAgent + swarm adapter | 装配时挂接；属 **注册 plumbing** |
 | **McpRail**（priority 95） | openjiuwen/harness/rails/mcp_rail.py | 只暴露 MCP **resource** 的 list/read 工具，**不是** server 生命周期 |
 | OfficeClaw 请求域 allowlist | common/mcp_config + [[S_04]] progressive | 请求 scoped tool id 绑定与 live 检查 |
+| Team 成员请求域 MCP 钉选 | `RequestScopedMcpToolsRail` → 成员 `ProgressiveToolRail.set_office_claw_active_tool_ids` | 宿主 `_sync_office_claw_allowlist_to_progressive_rail` **只写宿主 rail**；成员必须自钉。id-only 重绑**不** `invalidate_deferred_tool_cache`（保 TOOL_NAVIGATION / prefix cache） |
 | OfficeClaw 请求域 MCP schema 发现缓存 | `common/mcp_config.py`（bundle 指纹作 key）+ progressive 的 stale ability 清理 | 请求级 schema 发现结果按 bundle 指纹缓存与失效；细节引用 common `S_09` |
 | **mcp_toolkits.py** | agents/harness/common/tools/ |  concrete 工具聚合；**非** tool-mgmt 管辖 |
 
