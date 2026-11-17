@@ -22,7 +22,7 @@ dependencies = [
     "loguru>=0.7.3,<0.8",
     "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@2f4bedb9c5d85ab70d7c79d36183e6a98799e94e",
     "openjiuwen-computeruse @ git+https://gitcode.com/openJiuwen/computer-use.git@2c8171fb6783dba589dd396263b3161186c5f3e4",
-    "JiuwenMemory>=0.2.0",
+    "JiuwenMemory>=0.2.1",
     # openjiuwen's FS read-write lock acquires and releases on different tasks;
     # filelock>=4.0.2 binds async locks to their acquiring task, stranding them.
     "filelock>=3.25.0,<4",
