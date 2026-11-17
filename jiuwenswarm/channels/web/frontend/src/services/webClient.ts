@@ -28,6 +28,7 @@ interface PendingRequest {
   reject: (reason?: unknown) => void;
   timeoutId: number | undefined;
   awaitRuntimeAccepted: boolean;
+  awaitUserAnswerResult: boolean;
 }
 
 const MAX_RECONNECT_ATTEMPTS = 5;
@@ -327,6 +328,7 @@ class WebClient {
         reject,
         timeoutId,
         awaitRuntimeAccepted: options.awaitRuntimeAccepted === true,
+        awaitUserAnswerResult: method === 'chat.user_answer' && options.awaitUserAnswerResult === true,
       };
       this.pending.set(id, pending);
 
@@ -609,6 +611,10 @@ class WebClient {
       return;
     }
     if (message.ok && pending.awaitRuntimeAccepted) {
+      return;
+    }
+    if (message.ok && pending.awaitUserAnswerResult &&
+      typeof this.normalizePayload(message.payload).resolved !== 'boolean') {
       return;
     }
     window.clearTimeout(pending.timeoutId);
