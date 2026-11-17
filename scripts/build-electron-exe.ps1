@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # JiuwenSwarm Electron 打包脚本 (Windows)
 # 用法:
 #   正式版:  .\scripts\build-electron-exe.ps1
@@ -629,6 +630,7 @@ Copy-Item -Path (Join-Path $DesktopDir "share_image_export.cjs") -Destination $A
 Copy-Item -Path (Join-Path $DesktopDir "display_media_picker.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "preload.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "application_presentation.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "application_presentation_children.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "application_transition.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "presentation_preload.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "target_mcp_wrapper.cjs") -Destination $AppDir -Force
@@ -738,6 +740,7 @@ $RequiredFiles = @(
     (Join-Path $AppDir "display_media_picker.cjs"),
     (Join-Path $AppDir "preload.cjs"),
     (Join-Path $AppDir "application_presentation.cjs"),
+    (Join-Path $AppDir "application_presentation_children.cjs"),
     (Join-Path $AppDir "application_transition.cjs"),
     (Join-Path $AppDir "presentation_preload.cjs"),
     (Join-Path $AppDir "dist\index.html"),
