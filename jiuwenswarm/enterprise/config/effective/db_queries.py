@@ -82,6 +82,23 @@ async def list_records(
     return await _db_reader.list_records(table, query=filters, order_by=order_by)
 
 
+async def fetch_a2ui_config(
+    agent_template_id: str,
+) -> dict[str, Any] | None:
+    """按 ``agent_template_id`` 读取 a2ui_config 一行。"""
+    tid = str(agent_template_id or "").strip()
+    if not tid:
+        return None
+    rows = await list_records(
+        "a2ui_config",
+        filters={"agent_template_id": tid},
+    )
+    if not rows:
+        return None
+    row = rows[0]
+    return dict(row) if isinstance(row, dict) else None
+
+
 async def fetch_advanced_config(
     agent_template_id: str,
 ) -> dict[str, Any] | None:
@@ -100,6 +117,7 @@ async def fetch_advanced_config(
 
 
 __all__ = (
+    "fetch_a2ui_config",
     "fetch_advanced_config",
     "fetch_template_by_slot",
     "fetch_templates_by_slot",
