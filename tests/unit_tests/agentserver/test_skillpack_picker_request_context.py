@@ -71,6 +71,7 @@ async def test_host_explicit_pack_skips_recommendation_but_keeps_live_guards(mon
     await rail.before_tool_call(root)
     assert root.inputs.tool_result is None
     snapshot["inventory_revision"] = "changed-after-user-selection"
+    snapshot["skills"][0]["validation_revision"] = "changed-pack-after-user-selection"
     changed = _tool_ctx(outer, "skill_tool", {"skill_name": PACK})
     await rail.before_tool_call(changed)
     assert changed.inputs.tool_result["reason"] == "skillpack_state_changed"

@@ -38,6 +38,7 @@ from tests.unit_tests.agentserver.test_symphony_orchestration_needs_input import
 def _pack(name: str = "weekly-release-pack") -> dict[str, Any]:
     return {
         "id": name, "skill_type": "skillpack", "enabled": True,
+        "validation_revision": f"{name}-revision-1",
         "members": ["release-note", "risk-check"], "blocked_members": [],
         "routing": {key: f"{key}: release note and risk report" for key in ROUTING_SECTIONS},
     }
@@ -678,6 +679,7 @@ async def test_direct_state_survives_permission_pause_without_reauthorizing_acti
     await rail.before_invoke(resumed)
     assert rail._outer_states[id(resumed)] is state
     snapshot["inventory_revision"] = "new"
+    snapshot["skills"][0]["validation_revision"] = "changed-pack"
     call = _tool_ctx(resumed, "skill_tool", {"skill_name": "weekly-release-pack"})
     await rail.before_tool_call(call)
     assert call.inputs.tool_result["reason"] == "skillpack_state_changed"
@@ -883,7 +885,10 @@ async def test_parallel_guard_does_not_resume_after_another_call_blocks(first_fa
             await first_release.wait()
             if first_failure == "snapshot_error":
                 raise TimeoutError("inventory unavailable")
-            return {**snapshot, "inventory_revision": "changed"}
+            changed = copy.deepcopy(snapshot)
+            changed["inventory_revision"] = "changed"
+            changed["skills"][0]["validation_revision"] = "changed-pack"
+            return changed
         return copy.deepcopy(snapshot)
 
     router.snapshot = controlled_snapshot
@@ -1108,6 +1113,7 @@ async def test_real_agent_inventory_failure_finishes_without_another_model_call(
     async def skill(**kwargs):
         executed.append(kwargs["skill_name"])
         snapshot["inventory_revision"] = "changed-after-root"
+        snapshot["skills"][0]["validation_revision"] = "changed-pack-after-root"
         return {"success": True, "content": "root instructions"}
 
     client = _ScriptedClient([
