@@ -82,7 +82,7 @@ wheels = [
 [[package]]
 name = "agent-gateway"
 version = "0.0.1"
-source = { git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=1119ea00f7d5829370f6c0d38f6f24a012f46be7#1119ea00f7d5829370f6c0d38f6f24a012f46be7" }
+source = { git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=4d82b28972b131599e97c0691e490819fd25a9b4#4d82b28972b131599e97c0691e490819fd25a9b4" }
 dependencies = [
     { name = "aiohttp" },
     { name = "aiosqlite" },
@@ -2605,7 +2605,7 @@ wheels = [
 
 [[package]]
 name = "jiuwenmemory"
-version = "0.2.0"
+version = "0.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
@@ -2614,9 +2614,9 @@ dependencies = [
     { name = "openai" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f3/22/a53ee11a7d314df9d69f3a858c10d1e4d41f44244d939b71776cdefdb3e0/jiuwenmemory-0.2.0.tar.gz", hash = "sha256:02aaf0dbe9caa568798adb9db476a7acdc3f580e4f2a10323d95d56bb0efaf94", size = 679405, upload-time = "2026-09-21T08:51:22.881Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/65/f3/95971b6fcba13bf7cd7455b824dbf282db73c89168c47a148b961d1667c6/jiuwenmemory-0.2.1.tar.gz", hash = "sha256:fe102bf95b91ebe186e7972fd150295b72f50f717825e7f23b6544c207d32f96", size = 1149650, upload-time = "2026-11-13T09:55:51.256Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f9/9e/975798a8b54a768e11cdee742e7cb2ca6bb61905f88000240870111195b4/jiuwenmemory-0.2.0-py3-none-any.whl", hash = "sha256:2161549a3be99bf6b715314ebf25b7ed0caa454f0f20dc797d8a9ea182d9c1e5", size = 914175, upload-time = "2026-09-21T08:51:20.933Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/62/3547b3c06b4cb12f057d9d63074beed768cde0f6eeeedcbc82d76b404921/jiuwenmemory-0.2.1-py3-none-any.whl", hash = "sha256:ef322189002a6e5107dd5200ce95af29448ac22d0686b53a6f5d9747afcb2fb0", size = 1466823, upload-time = "2026-11-13T09:55:48.735Z" },
 ]
 
 [[package]]
@@ -3947,7 +3947,7 @@ zmq = [
 [[package]]
 name = "openjiuwen-computeruse"
 version = "0.0.1"
-source = { git = "https://gitcode.com/openJiuwen/computer-use.git?rev=refs%2Fmerge-requests%2F32%2Fhead#fcd294b92c70d88eec40a382bfb108296526bac6" }
+source = { git = "https://gitcode.com/openJiuwen/computer-use.git?rev=55d7c3a39986873704b720345d1a225ce8c8815f#55d7c3a39986873704b720345d1a225ce8c8815f" }
 dependencies = [
     { name = "pillow" },
     { name = "regex" },
@@ -7404,7 +7404,7 @@ requires-dist = [
     { name = "a2ui-agent-sdk", specifier = "==0.2.1" },
     { name = "a2ui-agent-sdk", marker = "extra == 'harmony'", specifier = "==0.2.1" },
     { name = "a4p", specifier = "==0.1.0" },
-    { name = "agent-gateway", git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=1119ea00f7d5829370f6c0d38f6f24a012f46be7" },
+    { name = "agent-gateway", git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=4d82b28972b131599e97c0691e490819fd25a9b4" },
     { name = "aiosqlite", specifier = ">=0.22.1,<0.23" },
     { name = "aiosqlite", marker = "extra == 'harmony'", specifier = ">=0.22.1" },
     { name = "anthropic", specifier = ">=0.40.0,<1.0.0" },
@@ -7440,7 +7440,7 @@ requires-dist = [
     { name = "httpx", extras = ["http2", "socks"], specifier = ">=0.27,<1.0" },
     { name = "httpx", extras = ["socks"], marker = "extra == 'harmony'", specifier = ">=0.27" },
     { name = "imageio-ffmpeg", specifier = ">=0.5.1,<1" },
-    { name = "jiuwenmemory", specifier = ">=0.2.0" },
+    { name = "jiuwenmemory", specifier = ">=0.2.1" },
     { name = "json-repair", specifier = ">=0.30.0,<0.60" },
     { name = "json-repair", marker = "extra == 'harmony'", specifier = ">=0.30.0" },
     { name = "jsonschema", specifier = ">=4.20,<5" },
@@ -7462,7 +7462,7 @@ requires-dist = [
     { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'" },
     { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'" },
     { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'" },
-    { name = "openjiuwen-computeruse", git = "https://gitcode.com/openJiuwen/computer-use.git?rev=refs%2Fmerge-requests%2F32%2Fhead" },
+    { name = "openjiuwen-computeruse", git = "https://gitcode.com/openJiuwen/computer-use.git?rev=55d7c3a39986873704b720345d1a225ce8c8815f" },
     { name = "openjiuwen-protocol", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=267c077fa832b25f7f64a913461c2124353bc911" },
     { name = "openjiuwen-runtime-foundation", git = "https://gitcode.com/openJiuwen/agent-runtime.git?subdirectory=foundation&branch=develop" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<1.42" },

@@ -5,8 +5,9 @@ host through **window screenshots** and operates native application windows with
 mouse and keyboard input**: Notepad, Office, IDEs, chat clients, system dialogs, settings
 panels, and so on.
 
-JiuwenSwarm exposes the Computer Use SDK through `cua_repl`. On Linux, it can also mount
-agent-core's single-step desktop tools.
+The implementation lives in agent-core (`openjiuwen.harness.subagents.cua_agent` and
+`openjiuwen.harness.tools.cua`); this page covers enabling, using, and troubleshooting it
+in JiuwenSwarm. Actual behavior depends on the installed JiuwenSwarm and agent-core versions.
 
 > **Important:** input is real. While it runs, it moves your mouse and types into whatever
 > window has keyboard focus. Do not use the machine during a task, or enable
@@ -27,12 +28,13 @@ the main agent runs the web part with `browser_agent` first, then the desktop pa
 
 ## 2. Prerequisites
 
-- **Windows and macOS** mount only `cua_repl` and require an available Computer Use backend.
-  macOS requires version 14 or later.
+- **OS**: Windows, or Linux on X11 (`DISPLAY` pointing at an X11 server).
+  **macOS and Wayland are not supported.**
 - **Interactive desktop session**: a real display/desktop session is required; headless
   services, locked screens, or plain SSH sessions will not work.
-- **Linux single-step tools** require an X11 `DISPLAY` and the optional `cua` dependencies.
-  Install the extra in the environment where JiuwenSwarm runs.
+- **The `cua` extra (not installed by default)**: the desktop packages (`pyautogui`,
+  `psutil`, plus `pygetwindow` on Windows and `python-xlib` on Linux) ship as an optional
+  extra. Install it into the environment JiuwenSwarm runs in:
 
   ```bash
   pip install "workswarm[cua]"
@@ -40,9 +42,8 @@ the main agent runs the web part with `browser_agent` first, then the desktop pa
   uv sync --extra cua
   ```
 
-  In a repo checkout, keep passing `--extra cua` to retain those dependencies.
-  Linux uses `cua_repl` when its SDK backend is available. Linux PyInstaller builds
-  can mount the single-step tools when their dependencies are present.
+  In a repo checkout, a plain `uv sync` removes these packages again; keep passing
+  `--extra cua`. Do not install it on macOS: there is no macOS backend.
 
 - **A vision-capable (multimodal) model**: perception is screenshots only; a text-only
   model cannot complete desktop tasks. At startup JiuwenSwarm sends each model in
@@ -62,8 +63,8 @@ The persisted `react.subagents.cua_agent.enabled` defaults to `null`, following 
 release default (currently off). Only changing the switch saves `true` or `false`;
 reading settings and upgrading preserve `null` and any explicit user preference.
 
-To enable it directly, edit `~/.jiuwenswarm/config/config.yaml`. The template lives at
-`jiuwenswarm/resources/config.yaml`.
+Install the `cua` extra first (see section 2); enabling `cua_agent` without it fails on
+the first desktop task. Then edit `~/.jiuwenswarm/config/config.yaml` (template: `jiuwenswarm/resources/config.yaml`):
 
 ```yaml
 react:
@@ -106,12 +107,12 @@ enabled, the main agent:
 
 ### 4.2 How it works
 
-With the single-step tools, the subagent finds the target with `list_windows` / `list_apps`, calls `get_window_state`
+The subagent finds the target with `list_windows` / `list_apps`, calls `get_window_state`
 to bring that window to the front and capture it, then clicks, types, or scrolls at pixel
 coordinates read off the screenshot. After each input it captures again to verify the
 effect, and it only reports completion when the result is visible on screen.
 
-Default single-step tools on Linux
+Tools available by default:
 
 | Category | Tools |
 |---|---|
@@ -142,8 +143,8 @@ Environment variable:
 
 - Do not use the mouse or keyboard during a run; your input and the subagent's interfere.
   Enable `pause_on_user_input` if you need to share the machine.
-- **Linux single-step tools** honor pyautogui's fail-safe. Moving the mouse to a screen
-  corner aborts the next pyautogui action.
+- **Emergency stop**: fling the mouse into any screen corner. This trips pyautogui's
+  fail-safe and aborts the subagent's next action.
 - Close or minimize unrelated windows that show sensitive information; screenshots are sent
   to the model.
 - The subagent can start local programs with `launch_app` and type into any focused window
@@ -159,7 +160,8 @@ Environment variable:
 |---|---|---|
 | Main agent never calls `cua_agent`, or says it is unavailable | Not enabled | Set `react.subagents.cua_agent.enabled: true` and restart |
 | Main agent says the desktop agent is unavailable because the model cannot read images | The current model rejected the startup image test, so `cua_agent` was not mounted | Switch to a model that supports image input, or set `supports_vision: true` on its entry if the test was wrong |
-| `No module named 'pyautogui'` / `cua desktop preflight failed` on Linux | `cua` extra not installed, or removed by a plain `uv sync` | `pip install "workswarm[cua]"`, or `uv sync --extra cua` in a repo checkout, then restart |
+| `No module named 'pyautogui'` / `cua desktop preflight failed` | `cua` extra not installed, or removed by a plain `uv sync` | `pip install "workswarm[cua]"`, or `uv sync --extra cua` in a repo checkout, then restart |
+| `no backend for platform 'darwin'` | Running on macOS | macOS is not supported |
 | `DISPLAY is not set` | No X11 display on Linux, or Wayland session | Run in an X11 desktop session with `DISPLAY` set |
 | Window reported as minimized | Target window is minimized (position near -32000) | The subagent calls `bring_to_front` first; if it still fails, restore the window manually and retry |
 | `could not bring window ... to the foreground` | OS refused the focus change (fullscreen app, system prompt) | Close the blocking fullscreen app or prompt and retry |

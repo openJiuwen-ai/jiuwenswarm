@@ -149,6 +149,8 @@ export interface Message {
   renderKey?: string;
   /** 仅用于大历史渐进发布；实时消息没有该标记。 */
   historyBatchSeq?: number;
+  /** Unanswered history echo; a matching live prompt takes precedence. */
+  unansweredQuestion?: { requestId: string; source?: string };
   /** Fork 后从直接父会话继承的历史消息；用于定位分支开始边界。 */
   forkedFromSessionId?: string;
   audioBase64?: string;

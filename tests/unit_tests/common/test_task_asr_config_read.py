@@ -2,6 +2,7 @@
 
 import pytest
 
+from jiuwenswarm.common.security import base_crypto
 from jiuwenswarm.server.control import config_service
 
 
@@ -10,8 +11,6 @@ from jiuwenswarm.server.control import config_service
     {'asr_api_base': '', 'asr_api_key': '', 'asr_model': ''},
 ])
 def test_asr_saved_config_overrides_stale_process_environment(monkeypatch, tmp_path, saved):
-    from jiuwenswarm.common.security import base_crypto
-
     monkeypatch.setattr(base_crypto, "get_crypto_provider", lambda: None)
     path = tmp_path / '.env'
     env_keys = {'asr_api_base': 'ASR_API_BASE', 'asr_api_key': 'ASR_API_KEY', 'asr_model': 'ASR_MODEL_NAME'}
@@ -26,8 +25,6 @@ def test_asr_saved_config_overrides_stale_process_environment(monkeypatch, tmp_p
 
 @pytest.mark.parametrize("fails", [False, True])
 def test_asr_key_is_decrypted_at_config_owner(monkeypatch, tmp_path, fails):
-    from jiuwenswarm.common.security import base_crypto
-
     class OwnerCrypto:
         def decrypt(self, value):
             assert value == "owner-ciphertext"

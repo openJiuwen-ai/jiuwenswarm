@@ -42,8 +42,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_VERIFIED_ASSET_TTL_SECONDS = 600
-
 
 def looks_like_skill_package(path: str | Path) -> bool:
     """轻量判断交付文件是否为 Skill 包（不解压全量内容）.
@@ -573,15 +571,17 @@ class SendFileToolkit:
             if envelope.require_execution_authorization and not is_enterprise():
                 if envelope.asset_owner is None:
                     raise RuntimeError("send_file_asset_owner_missing")
-                expires_at = float(int(time.time()) + _VERIFIED_ASSET_TTL_SECONDS)
                 for file_path in valid_files:
                     asset = await asyncio.to_thread(
                         envelope.asset_owner.stage,
                         Path(file_path),
                         file_name=Path(file_path).name,
-                        expires_at=expires_at,
+                        expires_at=0.0,
+                        reference_only=True,
                     )
                     owned_assets.append(asset)
+                    if asset.sealed_path != Path(file_path):
+                        raise ValueError("send_file_asset_path_changed")
                     assets_by_path[_normalize_sent_file_path(file_path)] = asset
             files_payload = await asyncio.to_thread(
                 self._build_files_payload, envelope,
@@ -596,7 +596,7 @@ class SendFileToolkit:
 
             # The Runtime push is the externally visible commit point. Entering
             # it makes delivery uncertain on exceptions, so staged assets must
-            # remain valid until TTL instead of being revoked prematurely.
+            # retain their registrations instead of being revoked prematurely.
             exposure_started = True
             if not await send_runtime_push(msg):
                 exposure_started = False
@@ -610,7 +610,7 @@ class SendFileToolkit:
                     except Exception:
                         logger.exception(
                             "[SendFileToolkit] asset commit failed; "
-                            "staged TTL ownership retained asset_id=%s",
+                            "staged registration retained asset_id=%s",
                             asset.asset_id,
                         )
             _mark_files_sent(envelope.session_id, valid_files)

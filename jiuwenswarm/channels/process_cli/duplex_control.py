@@ -399,6 +399,16 @@ class DuplexController:
         if self._input_task is not None:
             self._input_task.cancel()
             await asyncio.gather(self._input_task, return_exceptions=True)
+        if self._request is not None:
+            # Answers can hold the Host approval mutex while waiting for an
+            # output owner. Release them before public cancellation needs that
+            # mutex, keeping the root reader available to drain cancellation.
+            answers = [task for operation_id, task in self._streams.items()
+                       if operation_id != self._request.request_id]
+            for task in answers:
+                task.cancel()
+            # Keep these tasks for close_streams to report any close failure.
+            await asyncio.gather(*answers, return_exceptions=True)
 
     async def close_streams(self) -> None:
         self._stopping_streams = True

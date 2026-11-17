@@ -53,7 +53,13 @@ def _prepare(monkeypatch: pytest.MonkeyPatch) -> MultimodalStore:
 
 
 def _create(store: MultimodalStore, model: dict) -> dict:
-    store.mutate("models.upsert", {"mode": "create", "model": model})
+    tools = store.read()["tools"]
+    activation_tools = [tool for tool in model["capabilities"] if not tools[tool]["enabled"]]
+    store.mutate("models.upsert", {
+        "mode": "create",
+        "model": model,
+        "tool_activation": {"tools": activation_tools, "enabled": True},
+    })
     return model
 
 

@@ -473,6 +473,97 @@ test('an immediate server validation response also appears only in the dialog fo
   assertServerValidation('generation');
 });
 
+function activationError(activationTools, affectedTools = []) {
+  return Object.assign(new Error('confirmation required'), {
+    payload: { code: 'MM_CONFIRM_REQUIRED', affected_tools: affectedTools, activation_tools: activationTools },
+  });
+}
+
+function confirmationButton(key) {
+  const button = [...document.querySelectorAll('dialog[open] .settings-confirm-dialog__footer button')]
+    .find((node) => node.textContent === i18n.t(key));
+  assert.ok(button, `Missing confirmation button ${key}`);
+  return button;
+}
+
+for (const purpose of ['understanding', 'generation']) {
+  for (const language of ['zh', 'en']) {
+    for (const enabled of [false, true]) {
+      test(`${purpose} ${language} confirms all disabled tools together with enabled=${enabled}`, async (t) => {
+        const tools = purpose === 'understanding' ? ['vision', 'audio'] : ['visual_gen', 'video_gen'];
+        const state = await mountDialog(t, purpose, language, {
+          error: (attempt) => attempt === 1 ? activationError(tools) : null,
+        });
+        for (const tool of tools) await selectCapability(tool);
+        await act(async () => saveButton(purpose).click());
+        assert.equal(state.writes.length, 1);
+        assert.equal(state.writes[0].tool_activation, undefined);
+        assert.equal(state.closed(), 0);
+        assert.equal(saveButton(purpose).disabled, true);
+        assert.equal(document.querySelectorAll('dialog[open] .settings-confirm-dialog').length, 1);
+        assert.equal(document.querySelectorAll('.settings-confirm-dialog input[type="checkbox"]').length, 0);
+        const message = get('settings-multimodal-activation-tools').textContent;
+        for (const tool of tools) assert.ok(message.includes(i18n.t(`settingsPanel.multimodal.tools.${tool}`)));
+        assert.ok(message.includes('Test model'));
+        await act(async () => confirmationButton(
+          `settingsPanel.multimodal.${enabled ? 'enableAndUse' : 'keepDisabled'}`,
+        ).click());
+        assert.equal(state.writes.length, 2);
+        assert.deepEqual(state.writes[1].tool_activation, { tools, enabled });
+        assert.equal(state.closed(), 1);
+        assert.equal(document.querySelector('[role="alert"]'), null);
+      });
+    }
+  }
+
+  test(`${purpose} closing the activation dialog cancels saving and retains the draft`, async (t) => {
+    const tool = purpose === 'understanding' ? 'vision' : 'visual_gen';
+    const state = await mountDialog(t, purpose, 'zh', { error: activationError([tool]) });
+    await selectCapability(tool);
+    await act(async () => saveButton(purpose).click());
+    await act(async () => document.querySelector('dialog[open] .settings-confirm-dialog__close').click());
+    assert.equal(state.writes.length, 1);
+    assert.equal(state.closed(), 0);
+    assert.equal(saveButton(purpose).disabled, false);
+    assert.equal(fieldNode('display_name').querySelector('input').value, 'Test model');
+    assert.equal(document.querySelector('[role="alert"]'), null);
+  });
+}
+
+test('changed activation targets require a new user choice instead of replaying the old choice', async (t) => {
+  const state = await mountDialog(t, 'understanding', 'zh', {
+    error: (attempt) => attempt < 3 ? activationError(attempt === 1 ? ['vision', 'audio'] : ['audio']) : null,
+  });
+  await selectCapability('vision');
+  await selectCapability('audio');
+  await act(async () => saveButton('understanding').click());
+  await act(async () => confirmationButton('settingsPanel.multimodal.enableAndUse').click());
+  assert.equal(state.writes.length, 2);
+  assert.equal(state.closed(), 0);
+  assert.ok(!get('settings-multimodal-activation-tools').textContent.includes(i18n.t('settingsPanel.multimodal.tools.vision')));
+  await act(async () => confirmationButton('settingsPanel.multimodal.keepDisabled').click());
+  assert.equal(state.writes.length, 3);
+  assert.deepEqual(state.writes[1].tool_activation, { tools: ['vision', 'audio'], enabled: true });
+  assert.deepEqual(state.writes[2].tool_activation, { tools: ['audio'], enabled: false });
+  assert.equal(state.closed(), 1);
+});
+
+test('one dialog explains both removed references and new disabled capabilities', async (t) => {
+  const state = await mountDialog(t, 'generation', 'en', {
+    error: (attempt) => attempt === 1 ? activationError(['visual_gen', 'video_gen'], ['vision']) : null,
+  });
+  await selectCapability('visual_gen');
+  await selectCapability('video_gen');
+  await act(async () => saveButton('generation').click());
+  assert.ok(get('settings-multimodal-reference-tools').textContent.includes(i18n.t('settingsPanel.multimodal.tools.vision')));
+  assert.ok(get('settings-multimodal-activation-tools').textContent.includes(i18n.t('settingsPanel.multimodal.tools.video_gen')));
+  assert.equal(document.querySelectorAll('dialog[open] .settings-confirm-dialog').length, 1);
+  await act(async () => confirmationButton('settingsPanel.multimodal.keepDisabled').click());
+  assert.deepEqual(state.writes[1].confirmed_tools, ['vision']);
+  assert.deepEqual(state.writes[1].tool_activation, { tools: ['visual_gen', 'video_gen'], enabled: false });
+  assert.equal(state.closed(), 1);
+});
+
 for (const operation of ['models.upsert', 'tools.update', 'models.delete', 'config.apply']) {
   test(`${operation} keeps server validation owned by its actual caller`, async () => {
     const error = validationError('connection.api_key');
