@@ -575,13 +575,31 @@ class RsiReportService:
             state = _read_provider_snapshot(adapter, "read_state", task_id)
             report = _read_provider_snapshot(adapter, "read_report", task_id)
             if report is not None or state is not None:
-                return provider_report_to_web(report, state)
+                projected = provider_report_to_web(report, state)
+                if projected["metrics"]["pruned_count"] is None:
+                    tree = _read_provider_snapshot(adapter, "get_tree", task_id)
+                    return provider_report_to_web(report, state, tree=tree)
+                return projected
             # CREATED tasks legitimately have no Provider report yet.
-        progress = self.projector.derive_progress(task_id)
+        # The in-memory projector is disposable. Restore durable tree.json
+        # before progress/tree reads so metrics survive a restart.
+        # Do not invent a root here: metric-only tasks still have unknown
+        # pruned_count until real tree nodes exist.
+        self.projector.load_from_disk(task_id)
+        if _is_completed_program_artifact(task):
+            self.projector.reconcile_program_threshold_stops(task_id)
+        try:
+            progress = self.projector.derive_progress(task_id)
+        except RsiTaskNotFound:
+            progress = {"iteration": 0, "baseline": None}
         usage = self.usage_recorder.usage_summary(task_id)
         best_artifact = self.artifact_service.best_artifact(task_id)
         config = task.config or {}
         results = config.get("results") or {}
+        try:
+            tree = self.projector.derive_tree(task_id)
+        except RsiTaskNotFound:
+            tree = None
         return {
             "status": task.status,
             "best_score": results.get("best_score"),
@@ -589,7 +607,10 @@ class RsiReportService:
             "metrics": {
                 "eval_passed": 0,
                 "eval_total": 0,
-                "pruned_count": 0,
+                "pruned_count": sum(
+                    node.get("type") == "PRUNED"
+                    for node in tree.get("nodes", [])
+                ) if tree is not None else None,
                 "iterations": progress.get("iteration") or 0,
             },
             "usage": usage,

@@ -24,6 +24,8 @@ block_cipher = None
 
 SPEC_DIR = os.path.abspath(globals().get("SPECPATH", os.getcwd()))
 project_root = os.path.abspath(os.path.join(SPEC_DIR, os.pardir))
+release_dependencies = runpy.run_path(os.path.join(project_root, "scripts", "release_dependencies.py"))
+release_dependencies["validate_release_dependencies"](Path(project_root))
 build_config_module = runpy.run_path(os.path.join(project_root, "scripts", "build_config.py"))
 build_config = build_config_module["load_build_config"](Path(project_root))
 computer_use_build = runpy.run_path(os.path.join(project_root, "scripts", "build_computer_use.py"))

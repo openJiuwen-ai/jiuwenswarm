@@ -52,12 +52,12 @@ await build({
             ? `import { createElement } from 'react';
                export const settingsActionIcons = { edit: () => createElement('svg'), delete: () => createElement('svg') };
                export const settingsNavigationIcons = { browser: () => null, experimental: () => null };
-               export const settingsEmptyBoxIllustration = 'empty.svg';
-               export const settingsCustomModelIcon = () => null;`
+               export const settingsCustomModelIcon = () => null;
+               export const settingsEmptyBoxIllustration = 'empty.svg';`
           : path.endsWith('assets/providers')
             ? `export const getModelLogoUrl = ({ vendor_key }) => 'provider-' + vendor_key + '.svg';
-               export const getProviderLogoUrl = () => undefined;
-               export const getVendorLogoUrl = () => undefined;`
+               export const getProviderLogoUrl = provider => 'provider-' + provider + '.svg';
+               export const getVendorLogoUrl = vendor => 'vendor-' + vendor + '.svg';`
           : path === './ExperimentalSettings'
             ? ['A2UISetting', 'ExternalCliCustomAgentsItem', 'RSISetting', 'TaskAsrSetting', 'TaskFullDuplexSetting', 'TrajectoryDiagnosisSetting', 'TrajectoryUiSetting']
               .map(name => `export const ${name} = () => null;`).join('\n')

@@ -41,11 +41,13 @@ from openjiuwen.rsi.harness_rsi.auto_harness.schema import load_auto_harness_con
 
 from jiuwenswarm.common.auth.model_catalog import is_login_model
 from jiuwenswarm.common.config import (
+    _duplicate_api_key_matches,
     get_available_models,
     get_config,
     get_config_raw,
     get_default_models,
     get_model_names,
+    raw_api_keys_by_model_id,
     resolve_env_vars,
     update_auto_recap_enabled_in_config,
     update_config,
@@ -919,6 +921,23 @@ async def config_validate_model_handler(
 
     api_base = str(params.get("api_base") or "").strip()
     api_key = str(params.get("api_key") or "").strip()
+    # An exec: reference echoed from the stored entry resolves before probing:
+    # the raw reference is not a usable key, so
+    # probing it would always 401 while runtime chat works. probe=True
+    # bypasses the failed backoff (explicit user retry intent); a failed
+    # resolve degrades to "" and the probe reports an auth error, matching
+    # what runtime chat would do with the same broken reference.
+    # to_thread: the resolve may run a subprocess for up to 30s — that must
+    # never sit on the event loop with every WebSocket connection waiting.
+    from jiuwenswarm.common.credentials.resolver import is_reference as _is_ref
+    from jiuwenswarm.common.credentials.resolver import resolve_credential_ref as _resolve_ref
+
+    original_api_key = api_key
+    if _is_ref(api_key):
+        api_key = await asyncio.to_thread(
+            _resolve_ref, api_key,
+            field_path="models.*.model_client_config.api_key", probe=True,
+        )
     model = str(params.get("model") or "").strip()
     model_provider = normalize_provider_value(str(params.get("model_provider") or ""))
     verify_ssl: bool | None = None
@@ -935,11 +954,21 @@ async def config_validate_model_handler(
     )
 
     if not all([api_base, api_key, model, model_provider]):
+        # A reference that resolved to empty is a *broken reference*, not a
+        # missing field — say so, or the user thinks their api_key vanished.
+        if _is_ref(original_api_key) and not api_key:
+            error = (
+                f"the exec: reference in api_key failed to resolve "
+                f"(command: {original_api_key[len('exec:'):].strip() or '<empty>'}); "
+                f"check the secret-manager command"
+            )
+        else:
+            error = "api_base, api_key, model, and model_provider are required"
         await channel.send_response(
             ws,
             req_id,
             ok=False,
-            error="api_base, api_key, model, and model_provider are required",
+            error=error,
             code="BAD_REQUEST",
         )
         return
@@ -1030,6 +1059,9 @@ async def models_list_handler(
         # 放到线程池里跑：免费模型目录缓存过期、或凭据要续期时会同步请求 APIG，
         # 在事件循环上跑会卡住同一个Gateway上的所有连接
         models = await asyncio.to_thread(get_available_models, config)
+        # 回显 api_key：raw map 仅收 exec: 引用条目（引用原文），其余形态
+        # 回落解析链路值——与现状显示一致。
+        raw_keys = await asyncio.to_thread(raw_api_keys_by_model_id)
         result = []
         for entry in models:
             if not isinstance(entry, dict):
@@ -1040,8 +1072,14 @@ async def models_list_handler(
             result_entry = {
                 "model_name": model_name,
                 "api_base": mcc.get("api_base", ""),
-                # 登录模型的api_key不下发
-                "api_key": "" if is_login_model(entry) else mcc.get("api_key", ""),
+                # 登录模型的api_key不下发；exec: 引用条目回显 raw 原文
+                # （get_config() 已把引用替换为解析后明文），其余形态回落
+                # 解析值（与现状一致）。
+                "api_key": (
+                    ""
+                    if is_login_model(entry)
+                    else raw_keys.get(str(entry.get("model_id") or ""), mcc.get("api_key", ""))
+                ),
                 "model_provider": mcc.get("client_provider", ""),
                 "temperature": mco.get("temperature"),
                 "reasoning_level": "off" if mco.get("reasoning_level") is False else mco.get("reasoning_level", ""),
@@ -1244,14 +1282,23 @@ async def command_model_handler(
                     models["defaults"] = _raw_defs
                     models.pop("default", None)
                 _effective_api_base = resolve_env_vars(str(client_cfg.get("api_base", "")))
-                _effective_api_key = resolve_env_vars(str(client_cfg.get("api_key", "")))
+                # Duplicate detection compares the *effective* credential:
+                # ${VAR} expanded (so ${API_KEY} and its value are one key),
+                # ciphertext by decrypted plaintext, exec: references by
+                # declaration string (a reference never equals a plaintext
+                # key). An empty effective key cannot discriminate — those
+                # entries dedup by model_name + api_base alone.
                 for _e in _raw_defs:
                     if not isinstance(_e, dict):
                         continue
                     _emn = resolve_env_vars(str((_e.get("model_client_config") or {}).get("model_name", "")))
                     _eab = resolve_env_vars(str((_e.get("model_client_config") or {}).get("api_base", "")))
-                    _eak = resolve_env_vars(str((_e.get("model_client_config") or {}).get("api_key", "")))
-                    if _emn == effective_name and _eab == _effective_api_base and _eak == _effective_api_key:
+                    if _emn != effective_name or _eab != _effective_api_base:
+                        continue
+                    _key_match = _duplicate_api_key_matches(
+                        _e.get("model_client_config") or {}, client_cfg,
+                    )
+                    if _key_match is None or _key_match:
                         raise ModelOpError(
                             f"Model '{effective_name}' with the same api_base and api_key already exists"
                         )
@@ -1296,11 +1343,38 @@ async def command_model_handler(
         except Exception as e:
             await channel.send_response(ws, req_id, ok=False, error=str(e))
             return
+        # Save track: resolve just-written exec: references before the config
+        # reload below reads them, so the forwarded snapshot carries real
+        # values instead of store misses (empty strings). Off the event loop;
+        # probe semantics: run now, bypass failure backoff. Covers api_key and
+        # custom_headers values — the registry routes both. A failed resolve
+        # keeps the saved entry but is surfaced in the response payload.
+        _exec_resolve_error = ""
+        _refs = [(str(client_cfg.get("api_key", "")), "models.*.model_client_config.api_key")]
+        _refs.extend(
+            (str(_v), "models.*.model_client_config.custom_headers.*")
+            for _v in (client_cfg.get("custom_headers") or {}).values()
+        )
+        for _ref, _fp in _refs:
+            if not _ref.startswith("exec:"):
+                continue
+            from jiuwenswarm.common.credentials.resolver import resolve_credential_ref_now as _resolve_now
+
+            _ok, _ = await asyncio.to_thread(_resolve_now, _ref, field_path=_fp)
+            if not _ok:
+                _exec_resolve_error = (
+                    "model saved, but resolving its exec: reference failed; "
+                    "model calls will use an empty key until it succeeds"
+                )
         _config_payload = get_config()
         await _reload_model_config_background(_config_payload, "model.add")
         await channel.send_response(
             ws, req_id, ok=True,
-            payload={"type": "model_added", "name": target},
+            payload={
+                "type": "model_added",
+                "name": target,
+                **({"exec_resolve_error": _exec_resolve_error} if _exec_resolve_error else {}),
+            },
         )
         return
 
@@ -1420,6 +1494,15 @@ async def command_model_handler(
                 _update_result["updated_name"] = resolve_env_vars(str(_upd_mcc.get("model_name", "")))
                 _cur_mcc = (_raw_defs[0].get("model_client_config") or {}) if _raw_defs else {}
                 _update_result["current_name"] = resolve_env_vars(str(_cur_mcc.get("model_name", "")))
+                # The save track needs the persisted api_key and custom_headers;
+                # capture them here while the lock is already held (same rule as
+                # the display fields above) instead of re-locking after the commit.
+                _update_result["persisted_api_key"] = str(_upd_mcc.get("api_key") or "")
+                _persisted_headers = _upd_mcc.get("custom_headers")
+                if isinstance(_persisted_headers, dict):
+                    _update_result["persisted_custom_headers"] = {
+                        str(_k): str(_v) for _k, _v in _persisted_headers.items()
+                    }
                 return data
             update_config(_update_mutate)
         except ModelOpError as _op_err:
@@ -1428,6 +1511,32 @@ async def command_model_handler(
         except Exception as e:
             await channel.send_response(ws, req_id, ok=False, error=str(e))
             return
+        # Save track: resolve just-written exec: references before the config
+        # reload below reads them (same rationale as model.add above). The key
+        # and headers were captured inside the write transaction
+        # (persisted_api_key / persisted_custom_headers), so no second lock
+        # acquisition happens here — update_config already committed, and the
+        # response must not fail after a successful write. A failed resolve
+        # keeps the saved entry and is surfaced in the response payload.
+        _exec_resolve_error = ""
+        _upd_refs = [
+            (str(_update_result.get("persisted_api_key") or ""), "models.*.model_client_config.api_key"),
+        ]
+        _upd_refs.extend(
+            (str(_v), "models.*.model_client_config.custom_headers.*")
+            for _v in (_update_result.get("persisted_custom_headers") or {}).values()
+        )
+        for _ref, _fp in _upd_refs:
+            if not _ref.startswith("exec:"):
+                continue
+            from jiuwenswarm.common.credentials.resolver import resolve_credential_ref_now as _resolve_now
+
+            _ok, _ = await asyncio.to_thread(_resolve_now, _ref, field_path=_fp)
+            if not _ok:
+                _exec_resolve_error = (
+                    "model updated, but resolving its exec: reference failed; "
+                    "model calls will use an empty key until it succeeds"
+                )
         _updated_name = _update_result.get("updated_name", "")
         _current_name = _update_result.get("current_name", "")
         _config_payload = get_config()
@@ -1437,6 +1546,7 @@ async def command_model_handler(
             "name": _updated_name,
             "index": _idx,
             "current": _current_name,
+            **({"exec_resolve_error": _exec_resolve_error} if _exec_resolve_error else {}),
         })
         return
 

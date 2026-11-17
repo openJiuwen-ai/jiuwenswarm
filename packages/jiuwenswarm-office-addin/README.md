@@ -12,9 +12,34 @@ One build serves the three hosts: a page and a manifest per host
 (`src/taskpane.<host>.ts`) that gives the shared pane (`startPane`) its app
 and its tool runtime. An app is a platform (Microsoft Office; WPS to come)
 and a surface (`presentation`, `document`, `workbook`), which the attach
-sends as `host_vendor` and `kind`. Word and Excel declare no tools yet: their
-panes attach, chat and answer questions, and their tools come with their
-contracts.
+sends as `host_vendor` and `kind`. Word declares no tools yet: its pane
+attaches, chats and answers questions, and its tools come with its contract.
+Excel runs its contract's tools and sends the workbook's state with each
+message (`chat.send` `client_state`).
+
+## Excel code
+
+`execute_office_js` runs the model's code on the pane's main thread, inside
+`Excel.run`, where the host context lives. The first call locks the realm down
+(SES `lockdown`, with unsafe error, console and locale taming and severe
+override taming, so the pane's own code keeps working); the code runs in a
+`Compartment` whose globals are the `Excel` enums and `attachImage` (one PNG
+per call), and it reaches the workbook only through `context`, behind a proxy.
+The proxy hides Office.js internals, classes and prototypes, refuses event
+handlers, and screens every write before it is queued: formulas that reach the
+network, a program or another workbook, links out of the workbook, and
+refreshes from outside it are refused (`ToolExecutionBlocked`), even when the
+code catches the refusal; `fetch`, `XMLHttpRequest`, `WebSocket` and
+`EventSource` are refused too. Code that returns with writes still queued
+fails, and those writes do not land. Writes whose `context.sync()` failed
+count as partly applied, even when the code caught the error, and a sync the
+code did not await is waited for before the answer. A `context.sync()` past 30 s or a call
+past 90 s is answered at once as uncertain: main-thread code cannot be
+stopped, so it may still finish, and the answer says to read back first;
+later writes wait in the write queue until it does. Formulas are screened in
+English only, so writes to `formulasLocal` are refused. The
+call is approved as a whole by the backend's rules before it runs; the pane
+cannot ask in the middle of a run.
 
 So far the pane chats, switches between the document's conversations, answers
 the backend's approvals and questions, shows each turn's tool calls on a
@@ -113,9 +138,13 @@ separate straight segments.
 | `copy`, `styles.css` | Every UI text, and the design tokens (colors, spacing, radius, type) as CSS custom properties on `:root`: the web chat's light values, the pane's own dark values, and Windows high contrast (`forced-colors`). |
 | `officeTheme` | Follows the Office theme: dark on a dark Office background, light on a light one, and the system's color scheme when the host has no Office theme. |
 | `startPane`, `taskpane.<host>` | The pane in a host: document identity, the host's tool runtime, the Gateway and the pane wired together. Each entry names its app and builds its runtime; PowerPoint's also has the undo. |
-| `scriptedGateway`, `fakePowerPoint`, `nodeSandbox` | The scripted backend the tests drive the pane through; the deck the write tests write to, which exports a slide as a real single-slide package, inserts packages keeping their shape ids, and brings in and drops masters; and the sandbox worker bundled with esbuild into a node worker thread. |
+| `scriptedGateway`, `fakePowerPoint`, `fakeExcel`, `nodeSandbox` | The scripted backend the tests drive the pane through; a workbook for the Excel tests; the deck the write tests write to, which exports a slide as a real single-slide package, inserts packages keeping their shape ids, and brings in and drops masters; and the sandbox worker bundled with esbuild into a node worker thread. |
 | `sessionFacade` | `session.create` (the app's `client_app`, on the server's active model from `models.list`), `client.conversations` (the conversations of this document), `client.conversation.messages` (a conversation's history), `client.list` (the user's attached documents), `chat.send` (messages and answers), `chat.interrupt`, `media.persist`. |
 | `clientToolOutcome`, `toolResultBudget` | Pure shaping of a write's mutation record and of the result size. |
+| `excelApp`, `excelTools` | Excel's app (its answers run to 40,000 characters, as a sheet's cells need) and its tools on `Excel.run`: `get_cell_ranges` (values, formulas and notes keyed by cell, formatting by the blocks that share it, merged areas, at most `cellLimit` non-empty cells cut at a row with `nextRanges`), `get_range_as_csv`, `set_cell_range` (refuses to overwrite unless allowed, returns each formula's value), `copy_paste_range` (refuses to cut a merged area or overwrite), `execute_office_js` and `read_surface_context`. Notes need ExcelApi 1.18. |
+| `excelGuard` | What Excel refuses to write whatever the approval: the formula functions that reach outside the workbook, links to other workbooks or files, and, for code, hyperlinks, inserted workbooks and outside refreshes. |
+| `excelState` | The workbook's state each message carries: `<initial_state>` (sheets with ids and sizes, Excel tables and their columns) with a conversation's first message from this pane, `<user_changes>` (cell edits, sheets added, deleted and renamed, heard from the host's events from ExcelApi 1.14, renames from 1.17; this add-in's own edits left out), and `<user_context>` (active sheet, selected chart or ranges, names cleaned for display). Changes count as told only once `chat.send` took the message. |
+| `officeCodeRunner` | The runner of `execute_office_js` (see Excel code above), host-neutral: each host gives its `run`, enums and write screen. |
 
 Approvals are the backend's: a tool call the user's permission rules ask about
 pauses on the backend before the pane is ever called, and the pane only shows

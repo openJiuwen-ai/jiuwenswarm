@@ -19,6 +19,10 @@ from jiuwenswarm.server.ipc.loopback import FrontLoopbackListener
 
 logger = logging.getLogger(__name__)
 
+# Per-pod IPC path. Enterprise home is a shared NFS volume, so a socket there
+# is reused by the next Pod and the hello handshake never completes.
+_ENTERPRISE_SOCKET_DIR = Path("/tmp/jiuwenswarm")
+
 
 def _runtime_instance_token() -> str:
     """Pod/process discriminator for IPC endpoints on a shared workspace volume.
@@ -54,14 +58,14 @@ def default_socket_path() -> str:
     override = os.environ.get("JIUWENSWARM_RUNTIME_SOCKET", "").strip()
     if override:
         return override
-    from jiuwenswarm.common.utils import get_user_workspace_dir
+    from jiuwenswarm.common.utils import get_infra_data_dir
     from jiuwenswarm.server.supervisor.identity import deployment_scope
 
     suffix = "pipe" if os.name == "nt" else "sock"
     scope = deployment_scope()[:16]
     instance = _runtime_instance_token()
     sock_name = f"runtime-{scope}-{instance}.{suffix}" if instance else f"runtime-{scope}.{suffix}"
-    path = get_user_workspace_dir() / "run" / sock_name
+    path = get_infra_data_dir() / "run" / sock_name
     if os.name != "nt" and len(os.fsencode(path)) >= 100:
         import tempfile
 
