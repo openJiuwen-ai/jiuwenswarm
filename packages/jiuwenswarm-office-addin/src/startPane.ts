@@ -5,7 +5,7 @@ import { attachDeclaration, type OfficeApp, type OfficeHost } from './appContrac
 import { ClientAttachment } from './clientAttachment';
 import { ClientToolDispatcher, type ClientToolRuntime } from './clientToolDispatcher';
 import { documentCopy } from './copy';
-import { documentDisplayName, documentId } from './documentIdentity';
+import { documentDisplayName, documentId, type DocumentId } from './documentIdentity';
 import { GatewayClient } from './gatewayClient';
 import { HostWriteQueue } from './hostWriteQueue';
 import { followOfficeTheme } from './officeTheme';
@@ -40,35 +40,47 @@ export function startPane(app: OfficeApp, tools: (context: HostContext) => HostT
   Office.onReady(async () => {
     const office = Office.context;
     followOfficeTheme(office);
-    const words = documentCopy[app.surface];
     const id = await documentId(office.document.settings);
-    const displayName = (): Promise<string> => documentDisplayName(office.document, id, words.noun);
+    const displayName = (): Promise<string> => documentDisplayName(office.document, id, documentCopy[app.surface].noun);
     const host: OfficeHost = {
       isSetSupported: (name, version) => office.requirements.isSetSupported(name, version),
       worker: typeof Worker === 'function',
     };
     const writes = new HostWriteQueue();
-    const { runtime, snapshots, clientState, cards } = tools({ office, host, writes, displayName });
-    const gateway = new GatewayClient(app.appId);
-    const sessions = new SessionFacade(gateway, app.clientApp, clientState);
-    const attachment = new ClientAttachment({
-      gateway,
-      executor: new ClientToolDispatcher(app, runtime, writes),
-      declaration: async () => attachDeclaration(app, {
-        documentId: id, displayName: await displayName(), host, implemented: runtime.tools,
-      }),
-      createSession: async () => sessions.create(await sessions.defaultModel()),
-    });
-    const controller = new TaskPaneController(
-      { attachment, sessions, documentId: id, connection: gateway, contract: app.contract, snapshots });
-    mountPane(document.getElementById('app')!, controller, words, { cards });
     // The shared runtime keeps the pane's script running while the pane is closed: a question opens it.
     // A host without the shared runtime has no Office.addin and shows the question when the user opens the pane.
-    let prompt = controller.state().conversation.prompt;
-    controller.subscribe(({ conversation }) => {
-      if (conversation.prompt && conversation.prompt !== prompt) void Office.addin?.showAsTaskpane().catch(() => undefined);
-      prompt = conversation.prompt;
-    });
-    await controller.open();
+    await openPane(app, { documentId: id, displayName, host, writes, ...tools({ office, host, writes, displayName }),
+      showPane: () => void Office.addin?.showAsTaskpane().catch(() => undefined) });
   });
+}
+
+/** The pane of a document in a host that is ready, whichever platform the host is of. */
+export async function openPane(app: OfficeApp, { documentId: id, displayName, host, writes, runtime, snapshots,
+  clientState, cards, showPane }: HostTools & {
+  documentId: DocumentId;
+  displayName: () => Promise<string>;
+  host: OfficeHost;
+  writes: HostWriteQueue;
+  /** Brings the pane up: a question waits for the user. */
+  showPane: () => void;
+}): Promise<void> {
+  const gateway = new GatewayClient(app.appId);
+  const sessions = new SessionFacade(gateway, app.clientApp, clientState);
+  const attachment = new ClientAttachment({
+    gateway,
+    executor: new ClientToolDispatcher(app, runtime, writes),
+    declaration: async () => attachDeclaration(app, {
+      documentId: id, displayName: await displayName(), host, implemented: runtime.tools,
+    }),
+    createSession: async () => sessions.create(await sessions.defaultModel()),
+  });
+  const controller = new TaskPaneController(
+    { attachment, sessions, documentId: id, connection: gateway, contract: app.contract, snapshots });
+  mountPane(document.getElementById('app')!, controller, documentCopy[app.surface], { cards });
+  let prompt = controller.state().conversation.prompt;
+  controller.subscribe(({ conversation }) => {
+    if (conversation.prompt && conversation.prompt !== prompt) showPane();
+    prompt = conversation.prompt;
+  });
+  await controller.open();
 }

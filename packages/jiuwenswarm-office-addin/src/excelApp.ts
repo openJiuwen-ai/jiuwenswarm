@@ -5,7 +5,7 @@ import contractTools from '@office/excel/tools.json';
 import { ToolContract, type OfficeApp } from './appContract';
 
 export const EXCEL: OfficeApp = {
-  platform: 'microsoft',
+  platform: 'office',
   surface: 'workbook',
   host: 'Excel',
   clientApp: 'office-excel',

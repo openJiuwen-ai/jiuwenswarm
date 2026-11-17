@@ -57,6 +57,9 @@ export const copy = {
   continueHere: '在这里继续',
   failed: (noun: string, reason: string) => `无法连接${noun}：${reason}`,
   retry: '重试',
+  paneFailed: (reason: string) => `WorkSwarm 无法在这份演示文稿中打开：${reason}`,
+  presentationClosed: '这个窗格的演示文稿已经关闭。',
+  presentationShared: '有两份打开的演示文稿带有同一个标识（一份是另一份的副本）。关闭其中一份后点“重试”。',
 
   placeholder: '需要我帮你做些什么？',
   placeholderRunning: '补充要求，会加入当前任务',

@@ -5,7 +5,7 @@ import contractTools from '@office/word/tools.json';
 import { ToolContract, type OfficeApp } from './appContract';
 
 export const WORD: OfficeApp = {
-  platform: 'microsoft',
+  platform: 'office',
   surface: 'document',
   host: 'Word',
   clientApp: 'office-word',
