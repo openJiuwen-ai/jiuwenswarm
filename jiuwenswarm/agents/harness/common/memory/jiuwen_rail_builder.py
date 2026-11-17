@@ -55,10 +55,12 @@ import os
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Optional
+from uuid import uuid4
 
 from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
     get_enabled_multimodal_model_config,
 )
+from jiuwenswarm.common.coding_memory_paths import resolve_coding_memory_project_name
 
 from .config import _load_config, get_embed_config
 
@@ -67,6 +69,11 @@ logger = logging.getLogger(__name__)
 _DEFAULT_BASE_URL = "http://127.0.0.1:8137"
 _DEFAULT_USER = "__default__"
 _DEFAULT_SCOPE = "__default__"
+_DEFAULT_PROJECT = "default"
+_DOCUMENT_TOOLS = {"agent_memory_read_md_file", "agent_memory_edit_md_file"}
+_PROJECT_TOOLS = _DOCUMENT_TOOLS | {
+    "agent_memory_search", "agent_memory_conclude", "agent_memory_video_submit",
+}
 
 
 def get_builtin_memory_provider(config: Optional[Dict[str, Any]] = None) -> str:
@@ -265,6 +272,46 @@ def _build_security_provider(org: str, user: str) -> Any:
     return lambda: context
 
 
+def _archive_stock_memory_template(markdown_root: str) -> None:
+    """Retire only an unchanged bootstrap template before starting the SDK watcher."""
+    from openjiuwen.harness.workspace.workspace import Workspace
+
+    from jiuwenswarm.common.utils import _find_package_root, get_agent_workspace_dir, get_user_workspace_dir
+
+    try:
+        root = Path(markdown_root).expanduser().resolve()
+        swarm_roots = {
+            get_agent_workspace_dir().resolve(),
+            (get_user_workspace_dir() / "agent" / "workspace").resolve(),
+        }
+        target = root / "memory" / "MEMORY.md"
+        if root not in swarm_roots or not target.is_file() or target.resolve() != target:
+            return
+
+        templates = set()
+        package_root = _find_package_root()
+        if package_root is not None:
+            for language in ("ZH", "EN"):
+                template = package_root / "resources/agent/workspace/memory" / f"MEMORY_{language}.md"
+                if template.is_file():
+                    templates.add(template.read_text(encoding="utf-8").strip())
+        for language in ("cn", "en"):
+            for node in Workspace.get_default_directory(language):
+                if node["name"] == "memory":
+                    templates.update(
+                        child["default_content"].strip()
+                        for child in node["children"]
+                        if child["name"] == "MEMORY.md" and child.get("default_content")
+                    )
+        with target.open(encoding="utf-8") as memory_file:
+            limit = max(map(len, templates), default=0) + 8
+            content = memory_file.read(limit + 1)
+        if len(content) <= limit and content.strip() in templates:
+            target.rename(target.with_name(f".MEMORY.md.bootstrap-{uuid4().hex}.bak"))
+    except (OSError, UnicodeError):
+        logger.warning("[JiuwenRailBuilder] could not archive the stock memory template", exc_info=True)
+
+
 def build_jiuwen_memory_rail(
     config: Optional[Dict[str, Any]] = None,
     agent_name: Optional[str] = None,
@@ -294,6 +341,55 @@ def build_jiuwen_memory_rail(
         logger.warning("[JiuwenRailBuilder] AgentMemoryMemoryProvider import failed: %s", exc)
         return None
 
+    class SwarmJiuwenMemoryRail(JiuwenMemoryRail):
+        """Route turn callbacks and tool defaults using the bound project path."""
+
+        @staticmethod
+        def _resolve_project_from_agent(agent: Any) -> str | None:
+            project_dir = getattr(agent, "_jiuwenswarm_memory_project_dir", None)
+            if isinstance(project_dir, str) and project_dir.strip():
+                return resolve_coding_memory_project_name(project_dir)
+            return None
+
+        def _resolve_project(self, ctx: Any) -> str | None:
+            return self._resolve_project_from_agent(getattr(ctx, "agent", None))
+
+    markdown_root = None
+
+    class SwarmMemoryProvider(AgentMemoryMemoryProvider):
+        """Apply Swarm's default project across the JiuwenMemory provider API."""
+
+        async def initialize(self, **kwargs: Any) -> None:
+            if markdown_root:
+                _archive_stock_memory_template(markdown_root)
+            await super().initialize(**kwargs)
+
+        def get_tool_schemas(self) -> list[dict[str, Any]]:
+            schemas = deepcopy(super().get_tool_schemas())
+            for schema in schemas:
+                project = schema.get("parameters", {}).get("properties", {}).get("project")
+                if schema.get("name") in _PROJECT_TOOLS and isinstance(project, dict):
+                    project["description"] = (
+                        "Omit to use the current Swarm project (or default when no project is selected). "
+                        "Only specify a project coordinate to target a different stored memory group."
+                    )
+            return schemas
+
+        async def prefetch(self, query: str, **kwargs: Any) -> str:
+            kwargs["project"] = kwargs.get("project") or _DEFAULT_PROJECT
+            return await super().prefetch(query, **kwargs)
+
+        async def sync_turn(self, user_msg: str, assistant_msg: str, **kwargs: Any) -> dict | None:
+            kwargs["project"] = kwargs.get("project") or _DEFAULT_PROJECT
+            return await super().sync_turn(user_msg, assistant_msg, **kwargs)
+
+        async def handle_tool_call(self, tool_name: str, args: dict) -> str:
+            project = args.get("project")
+            legacy_document = tool_name in _DOCUMENT_TOOLS and project == ""
+            if tool_name in _PROJECT_TOOLS and not project and not legacy_document:
+                args = {**args, "project": _DEFAULT_PROJECT}
+            return await super().handle_tool_call(tool_name, args)
+
     j = get_jiuwen_builtin_config(config)
     mode = get_jiuwen_builtin_mode(config)
     scope = _memory_scope(j, agent_name)
@@ -314,9 +410,14 @@ def build_jiuwen_memory_rail(
             inline = deepcopy(_custom_sdk_config_dict(j))
             if inline:
                 _inject_sdk_creds_and_root(inline, config)
+            markdown = inline.get("markdown_store")
+            store = markdown.get("default") if isinstance(markdown, dict) else None
+            params = store.get("params") if isinstance(store, dict) else None
+            if isinstance(params, dict) and params.get("root"):
+                markdown_root = str(params["root"])
             if sdk_media_globals:
                 inline.setdefault("globals", {}).update(deepcopy(sdk_media_globals))
-            provider = AgentMemoryMemoryProvider(
+            provider = SwarmMemoryProvider(
                 config_dict=inline or None,
                 user_id=user_id,
                 agent_id=agent_id,
@@ -329,7 +430,7 @@ def build_jiuwen_memory_rail(
             if not base_url:
                 base_url = _DEFAULT_BASE_URL
             api_key = str(j.get("api_key") or os.environ.get("JIUWEN_MEMORY_API_KEY", "") or "")
-            provider = AgentMemoryMemoryProvider(
+            provider = SwarmMemoryProvider(
                 base_url=base_url,
                 api_key=api_key,
                 user_id=user_id,
@@ -343,7 +444,7 @@ def build_jiuwen_memory_rail(
                 "[JiuwenRailBuilder] AgentMemory provider unavailable (no base_url)"
             )
             return None
-        rail = JiuwenMemoryRail(
+        rail = SwarmJiuwenMemoryRail(
             provider,
             user_id=user_id,
             scope_id=scope_id,

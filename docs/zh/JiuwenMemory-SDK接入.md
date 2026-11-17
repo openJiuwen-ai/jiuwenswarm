@@ -70,6 +70,12 @@ Swarm 在各权限档位下独立透传每组已启用且完整的模型。若�
 
 ## 2. 内置记忆与 JiuwenMemory 的区别
 
+Swarm 使用 JiuwenMemory 接入模式启动时不会预置 `MEMORY.md`。未选择项目的会话使用 `default` 作为记忆项目。使用本地 Markdown 存储时，第一次写入长期记忆会在配置的 Markdown 根目录下创建 `memory/default/MEMORY.md`。
+
+切换到 SDK 模式时，如果使用 Swarm 管理的 Markdown 根目录，Swarm 会在启动 SDK 前归档仍与内置模板一致的根级 `MEMORY.md`。已编辑的文件保留在原处。
+
+选中项目时，Swarm 用目录名和规范化绝对路径的哈希生成记忆项目坐标。本地长期记忆使用 `memory/<目录名>-<路径哈希>/MEMORY.md`。调用记忆工具时省略 `project` 参数即可使用当前会话的坐标。以前按目录名存放的记忆仍可通过显式指定旧坐标访问。
+
 JiuwenSwarm 默认用**内置记忆**（`memory.engine: builtin`），基于本地 Markdown 文件；切到 JiuwenMemory 则是远程结构化后端。两者最本质的差别不在"工具名"，而在**记忆如何被触发**：
 
 - **内置记忆**：没有自动触发机制。Agent 需要在对话中**主动调用** `memory_*` 工具（`memory_search` / `write_memory` 等）来检索或写入记忆，不调用就不会发生记忆行为。

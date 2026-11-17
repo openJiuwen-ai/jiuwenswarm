@@ -74,6 +74,21 @@ def _identity(stat: os.stat_result) -> tuple[int, int, int, int, int]:
     return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
 
+def _open_file_matches(opened: os.stat_result, named: os.stat_result) -> bool:
+    """Whether an open handle still names the same durable file bytes.
+
+    Compare only device, inode and size. On Windows, ``os.fstat`` and
+    ``Path.stat`` disagree on ``st_ctime_ns`` for the same path, so a full
+    identity equality falsely reports HISTORY_RESTORE_CHANGED on every read.
+    """
+
+    return (
+        opened.st_dev == named.st_dev
+        and opened.st_ino == named.st_ino
+        and opened.st_size == named.st_size
+    )
+
+
 def _is_voice(record: dict[str, Any]) -> bool:
     return record.get("channel_id") == "video_duplex"
 
@@ -302,7 +317,12 @@ def _read_prefix(
                 keep(record, len(raw), offset)
                 if _is_voice(record):
                     voice_end = source.tell()
-        if _identity(os.fstat(source.fileno())) != identity or _identity(path.stat()) != identity:
+        named = path.stat()
+        opened = os.fstat(source.fileno())
+        # Named-path identity catches append/rewrite/touch during the read.
+        # Open-handle matching is intentionally weaker than full identity:
+        # Windows fstat/path.stat ctime diverge for an unchanged file.
+        if _identity(named) != identity or not _open_file_matches(opened, named):
             raise HistoryReplayError("History changed during restore", code="HISTORY_RESTORE_CHANGED")
     if voice_end is not None and path.suffix.lower() == ".jsonl":
         _remember(path, _HistoryHead(identity, voice_end))

@@ -48,7 +48,7 @@ function validateItem(module: SettingsModuleDefinition, sectionId: string, item:
     throw new Error(`Component ${item.component} is not compatible with ${source} setting ${item.key}`);
   }
   if (item.component === 'select') {
-    if (item.options.length === 0) throw new Error(`Select item ${module.id}/${sectionId}/${item.id} has no options`);
+    if (item.options.length === 0 && !item.optionsFromSource) throw new Error(`Select item ${module.id}/${sectionId}/${item.id} has no options`);
     const values = item.options.map((option) => `${typeof option.value}:${String(option.value)}`);
     assertUnique(`option in select item ${module.id}/${sectionId}/${item.id}`, values);
     for (const option of item.options) {

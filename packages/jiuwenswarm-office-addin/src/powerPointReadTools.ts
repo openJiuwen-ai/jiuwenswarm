@@ -1,5 +1,5 @@
 import type { OfficeHost } from './appContract';
-import type { ClientToolResponse, ClientToolRuntime, HostTimings } from './clientToolDispatcher';
+import { type ClientToolResponse, type ClientToolRuntime, type HostTimings, png } from './clientToolDispatcher';
 import type { JsonObject } from './gatewayClient';
 import type { PresentationToolName } from './powerPointApp';
 import { themeOf } from './presentationPackage';
@@ -160,7 +160,7 @@ export function powerPointReadRuntime({ run, host, documentName, languages }: {
     async read_slide_image(call) {
       const slideId = slideIdArgument(call.input);
       const { position, image } = await renderOne(call, slideId, renderSize(call.input));
-      return { ok: true, result: { slide_id: slideId, position }, imageBase64: image };
+      return { ok: true, result: { slide_id: slideId, position }, images: [png(image)] };
     },
 
     async verify_slides(call) {
@@ -193,7 +193,7 @@ export function powerPointReadRuntime({ run, host, documentName, languages }: {
       }
       const [{ slide, size }, { image }] = await Promise.all([
         measureOne(call, slideId), renderOne(call, slideId, { width: DEFAULT_RENDER_WIDTH })]);
-      return { ok: true, imageBase64: image, result: { slide_id: slideId, geometry: {
+      return { ok: true, images: [png(image)], result: { slide_id: slideId, geometry: {
         width: size.width, height: size.height,
         shapes: slide.shapes.map(shape => shapeEntry(slide.id, shape)), ...findings(slide.shapes, size),
       } } };

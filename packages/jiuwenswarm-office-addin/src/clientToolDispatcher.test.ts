@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ClientToolRequest, ClientToolResult } from './clientAttachment';
-import { CALL_DEADLINE_MS, ClientToolDispatcher, type ClientToolResponse, type ClientToolRuntime, type ToolTelemetry } from './clientToolDispatcher';
+import { CALL_DEADLINE_MS, ClientToolDispatcher, type ClientToolResponse, type ClientToolRuntime, type ToolTelemetry, png } from './clientToolDispatcher';
 import { HostWriteQueue } from './hostWriteQueue';
 import { POWERPOINT, PRESENTATION_TOOL_NAMES } from './powerPointApp';
 
@@ -46,7 +46,7 @@ describe('ClientToolDispatcher', () => {
   });
 
   it('returns a slide render as an image block after the text', async () => {
-    execute.mockResolvedValue({ ok: true, result: { slide_index: 0 }, imageBase64: 'iVBORw0KGgo=' });
+    execute.mockResolvedValue({ ok: true, result: { slide_index: 0 }, images: [png('iVBORw0KGgo=')] });
     const result = await dispatcher.execute(request('read_slide_image'));
     expect(result.content[1]).toEqual(
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } });

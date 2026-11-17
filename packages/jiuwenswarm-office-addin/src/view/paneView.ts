@@ -7,6 +7,7 @@ import { Composer, type Waiting } from './composer';
 import { saveFile } from './download';
 import { h } from './dom';
 import { Header } from './header';
+import type { ToolCards } from './editCards';
 import { approvalSheet, questionCard, type Interaction } from './interaction';
 import { Transcript } from './transcript';
 import { Tray, trayItems, type TrayItem } from './tray';
@@ -27,11 +28,13 @@ const wallClock: PaneClock = { now: () => Date.now(), every: (ms, tick) => void 
 
 /**
  * Render the pane into ``root`` and keep it in step with the controller, in
- * ``words`` that name the host's document. The clock moves the running steps'
- * seconds and the reconnect countdown on once a second.
+ * ``words`` that name the host's document, with the host's ``cards`` under its
+ * calls. The clock moves the running steps' seconds and the reconnect
+ * countdown on once a second.
  */
 export function mountPane(
-  root: HTMLElement, controller: Controller, words: DocumentCopy, clock: PaneClock = wallClock,
+  root: HTMLElement, controller: Controller, words: DocumentCopy,
+  { clock = wallClock, cards }: { clock?: PaneClock; cards?: ToolCards } = {},
 ): void {
   const header = new Header({
     switchTo: sessionId => void controller.switchTo(sessionId),
@@ -44,12 +47,13 @@ export function mountPane(
     },
   });
   const composer = new Composer(words.noun, {
-    send: text => controller.send(text), stop: () => void controller.stop(), chooseModel: model => controller.chooseModel(model),
+    send: (text, images) => controller.send(text, images), stop: () => void controller.stop(),
+    chooseModel: model => controller.chooseModel(model),
   });
   const transcript = new Transcript(words, text => composer.fill(text), {
     undo: (...choice) => void controller.undo(...choice),
     cancelUndo: () => controller.cancelUndo(),
-  });
+  }, cards);
   const tray = new Tray();
   const interactionSlot = h('div', { class: 'interaction-slot' });
   // Not the transcript: a streamed reply would be read out again on every delta.
@@ -112,6 +116,7 @@ export function mountPane(
   };
   render(controller.state());
   controller.subscribe(render);
+  cards?.subscribe(() => render(controller.state()));
   clock.every(1000, () => {
     const now = clock.now();
     transcript.tick(now);
