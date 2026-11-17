@@ -1153,7 +1153,6 @@ def _restore_previous_external_cli_state(config_path: Path, state: dict[str, Any
     默认值，不阻塞 init。
     """
     try:
-        from ruamel.yaml import YAML
         from jiuwenswarm.common.config import _allowed_external_cli_agents
 
         allowed = set(_allowed_external_cli_agents())
@@ -1214,18 +1213,16 @@ def external_cli_state_sidecar_path(workspace_dir: Path) -> Path:
     多工作区/多实例（JIUWENSWARM_DATA_DIR），旁路不能互相串台。
     """
     try:
-        from jiuwenswarm.common._build_config import DISPLAY_NAME
+        from jiuwenswarm.common._build_config import DISPLAY_NAME as display_name
     except Exception:  # noqa: BLE001
-        DISPLAY_NAME = "WorkSwarm"
-    if workspace_dir is None:
-        workspace_dir = get_user_workspace_dir()
+        display_name = "WorkSwarm"
     identity = hashlib.sha1(str(Path(workspace_dir).resolve()).encode("utf-8")).hexdigest()[:10]
     if os.name == "nt":
         local_app_data = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
-        return local_app_data / DISPLAY_NAME / f"external_cli_state-{identity}.json"
+        return local_app_data / display_name / f"external_cli_state-{identity}.json"
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / DISPLAY_NAME / f"external_cli_state-{identity}.json"
-    return Path.home() / ".config" / DISPLAY_NAME / f"external_cli_state-{identity}.json"
+        return Path.home() / "Library" / "Application Support" / display_name / f"external_cli_state-{identity}.json"
+    return Path.home() / ".config" / display_name / f"external_cli_state-{identity}.json"
 
 
 def refresh_external_cli_state_sidecar(config_path: Path, workspace_dir: Path) -> None:
