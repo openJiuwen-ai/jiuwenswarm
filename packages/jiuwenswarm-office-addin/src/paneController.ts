@@ -15,7 +15,9 @@ import { copy, reasonOf } from './copy';
 import type { DocumentId } from './documentIdentity';
 import type { ConnectionState, GatewayClient, GatewayEvent } from './gatewayClient';
 import type { ToolContract } from './appContract';
-import type { ResourceConversation, SessionFacade } from './sessionFacade';
+import {
+  imageDataUrl, type OutgoingImageAttachment, type ResourceConversation, type SessionFacade,
+} from './sessionFacade';
 import type { SlideSnapshots } from './slideSnapshots';
 
 /** The turns the transcript offers to undo, by their ``changes`` entry. */
@@ -139,18 +141,21 @@ export class TaskPaneController {
   }
 
   /**
-   * Send a message; while the turn runs, it stops the turn and the next one takes it as a supplement. After an
+   * Send a message and its images; while the turn runs, it stops the turn and the next one takes the text as a
+   * supplement. A supplement carries no images, so a message with images is refused until the turn ends. After an
    * undo the message starts with a line saying so, as the agent's slide ids went stale.
    */
-  async send(text: string): Promise<boolean> {
+  async send(text: string, images: readonly OutgoingImageAttachment[] = []): Promise<boolean> {
     const content = text.trim();
     const { attachment } = this.value;
-    if (!content || attachment.kind !== 'attached' || this.value.conversation.prompt) return false;
-    const { sessionId } = attachment;
     const running = this.value.conversation.turn === 'running';
+    if ((!content && !images.length) || (running && images.length) || attachment.kind !== 'attached'
+        || this.value.conversation.prompt) return false;
+    const { sessionId } = attachment;
     const note = this.undoNote;
     const message = note ? `${note}\n${content}` : content;
-    const sent = addUserMessage(running ? this.value.conversation : startTurn(this.value.conversation), content);
+    const sent = addUserMessage(running ? this.value.conversation : startTurn(this.value.conversation), content,
+      images.map(image => ({ filename: image.filename, src: imageDataUrl(image) })));
     const messageId = sent.entries[sent.entries.length - 1].id;
     this.update({ conversation: sent, alert: undefined });
     try {
@@ -159,7 +164,7 @@ export class TaskPaneController {
         // The next turn starts over from the message; a write the stopped turn still had queued would surprise it.
         this.options.attachment.cancelToolCalls();
       } else {
-        await this.options.sessions.sendText(sessionId, message, [], this.value.model);
+        await this.options.sessions.sendText(sessionId, message, images, this.value.model);
       }
       if (this.undoNote === note) this.undoNote = undefined;
       return true;

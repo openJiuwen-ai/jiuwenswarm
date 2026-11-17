@@ -52,7 +52,7 @@ from jiuwenswarm.common.observability_config import (
     observability_export_settings,
     resolve_observability_section,
 )
-from jiuwenswarm.common.utils import get_user_workspace_dir
+from jiuwenswarm.common.utils import get_domain_data_dir
 from jiuwenswarm.observability.config import load_trajectory_store_settings
 from jiuwenswarm.observability.runtime import (
     shutdown_trajectory_runtime,
@@ -189,7 +189,7 @@ def _sync_agent_observability_locked(*, force: bool) -> None:
         return
 
     try:
-        traces_dir = str(cfg.get("traces_dir") or get_user_workspace_dir() / ".trace")
+        traces_dir = str(cfg.get("traces_dir") or get_domain_data_dir() / ".trace")
         obs_cfg = build_observability_config(
             cfg,
             service_name="jiuwenswarm",

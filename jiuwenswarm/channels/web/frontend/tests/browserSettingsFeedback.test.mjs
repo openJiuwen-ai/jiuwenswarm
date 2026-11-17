@@ -48,6 +48,10 @@ await build({
       builder.onLoad({ filter: /.*/, namespace: 'test-icons' }, () => ({
         contents: 'export const settingsNavigationIcons = { browser: () => null, experimental: () => null }; export const settingsActionIcons = {}; export const settingsCustomModelIcon = () => null;', loader: 'js',
       }));
+      builder.onResolve({ filter: /assets\/providers$/ }, () => ({ path: 'providers', namespace: 'test-providers' }));
+      builder.onLoad({ filter: /.*/, namespace: 'test-providers' }, () => ({
+        contents: 'export const getModelLogoUrl = () => "provider.svg"; export const getProviderLogoUrl = () => "provider.svg"; export const getVendorLogoUrl = () => "vendor.svg";', loader: 'js',
+      }));
     },
   }],
 });

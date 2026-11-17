@@ -12,8 +12,11 @@ import {
 } from './crossDocumentMessages';
 import { isRecord, type GatewayEvent, type JsonObject } from './gatewayClient';
 
+/** An image the user sent; a replayed message names its images only. */
+export interface MessageImage { filename: string; src?: string }
+
 export type Entry =
-  | { kind: 'user'; id: string; text: string }
+  | { kind: 'user'; id: string; text: string; images?: readonly MessageImage[] }
   | { kind: 'assistant'; id: string; text: string }
   | {
     kind: 'tool'; id: string; name: string; status: 'running' | 'done' | 'failed';
@@ -92,9 +95,12 @@ function has(conversation: Conversation, id: string): boolean {
   return conversation.entries.some(entry => entry.id === id);
 }
 
-export function addUserMessage(conversation: Conversation, text: string): Conversation {
+export function addUserMessage(
+  conversation: Conversation, text: string, images: readonly MessageImage[] = [],
+): Conversation {
   // A new message ends the reply it follows; the web chat drops a pending question on a new query too.
-  return add({ ...conversation, openReply: undefined, prompt: undefined }, { kind: 'user', text });
+  return add({ ...conversation, openReply: undefined, prompt: undefined },
+    { kind: 'user', text, ...(images.length ? { images } : {}) });
 }
 
 /** The conversation without one entry, as a message that did not go out. */
@@ -158,6 +164,10 @@ export function applyEvent(
       return payload.intent === 'cancel' && payload.success !== false ? endTurn(conversation, contract) : conversation;
     case 'chat.error':
       return endTurn(addNotice(conversation, 'error', copy.turnError(errorText(payload))), contract);
+    // The model takes no images: the backend says whether a vision tool reads them instead.
+    case 'chat.notice':
+      return payload.notice_type === 'image_tool_fallback' && typeof payload.content === 'string' && payload.content
+        ? addNotice(conversation, 'info', payload.content) : conversation;
     default:
       return applyTranscriptEvent(conversation, event, payload);
   }
@@ -347,12 +357,22 @@ export function replayHistory(messages: readonly JsonObject[]): Conversation {
 function replayedUserMessage(conversation: Conversation, message: JsonObject): Conversation {
   const text = typeof message.content === 'string' ? message.content : '';
   const incoming = incomingMessage(message);
-  if (!incoming) return add(conversation, { kind: 'user', text });
+  if (!incoming) {
+    const images = historyImages(message);
+    return add(conversation, { kind: 'user', text, ...(images.length ? { images } : {}) });
+  }
   if (has(conversation, incomingId(incoming.messageId))) return conversation;
   return add(conversation, {
     kind: 'incoming', id: incomingId(incoming.messageId), sourceTitle: incoming.sourceTitle,
     text: incoming.text || text, status: 'succeeded',
   });
+}
+
+/** The images a user message carried, as the history keeps them (``files.uploaded_images.items``). */
+function historyImages(message: JsonObject): MessageImage[] {
+  const uploaded = isRecord(message.files) ? message.files.uploaded_images : undefined;
+  return list(isRecord(uploaded) ? uploaded.items : undefined).flatMap(item => (
+    isRecord(item) && typeof item.filename === 'string' ? [{ filename: item.filename }] : []));
 }
 
 /** The note a replayed question or its answer shows, or undefined. */
