@@ -111,7 +111,7 @@ class MarketService:
         """启动应用实例。
 
         流程：分配端口 → 创建实例 → 启动脚本 → 等待 running → 保存记录。
-        启动超时 30 秒，超时后进入清理。
+        默认启动超时 30 秒，超时后进入清理。
         """
         instance = None
         manifest = None
@@ -141,12 +141,12 @@ class MarketService:
                     manifest.permissions.append("ai")
             self._storage.save_manifest(app_id, manifest)
             self._skill_adapter.upgrade_static_scripts(manifest)
-            port = self._port_manager.allocate(app_id, manifest.default_port)
+            instance_id = str(uuid.uuid4())
+            port = self._port_manager.allocate(instance_id, manifest.default_port)
             if port == 0:
                 self._logger.error("端口分配失败: %s", app_id)
                 return None
 
-            instance_id = str(uuid.uuid4())
             status_token = uuid.uuid4().hex
             now = datetime.now().isoformat()
 
@@ -211,39 +211,49 @@ class MarketService:
             self._status_manager.update_state(instance_id, "starting")
             self._storage.save_instance(instance)
 
-            # 等待 running 状态（超时 30 秒）
-            running = await self._wait_for_running(instance, manifest, timeout=30)
-
+            running = await self._wait_for_running(instance, manifest, timeout=manifest.startup_timeout_seconds)
             if running:
                 instance.state = "running"
                 self._status_manager.update_state(instance_id, "running")
-                self._logger.info(
-                    "应用已启动: %s instance=%s port=%d", app_id, instance_id, port
-                )
-            else:
-                # 启动失败，清理资源
-                await self._cleanup_instance(instance, manifest)
-                instance.state = "stopped" if not instance.pid or not self._supervisor.is_alive(instance.pid) else "stopping"
-                instance.detail = "启动超时或状态未确认"
-                self._status_manager.update_state(
-                    instance_id, instance.state, instance.detail
-                )
-                self._logger.warning(
-                    "应用启动失败: %s instance=%s", app_id, instance_id
-                )
+                self._logger.info("应用已启动: %s instance=%s port=%d", app_id, instance_id, port)
+                self._storage.save_instance(instance)
+                return instance
 
-            self._storage.save_instance(instance)
-            return instance
-
+        except asyncio.CancelledError:
+            if instance is not None:
+                await self._finish_failed_start(instance, manifest, "应用启动已取消")
+            raise
         except Exception as e:
             self._logger.error("启动应用失败: %s", e)
             if instance is not None:
-                await self._cleanup_instance(instance, manifest)
-                instance.state = "stopped" if not instance.pid or not self._supervisor.is_alive(instance.pid) else "stopping"
-                instance.detail = str(e)
-                self._status_manager.update_state(instance.instance_id, instance.state, instance.detail)
-                self._storage.save_instance(instance)
+                await self._finish_failed_start(instance, manifest, str(e))
             return None
+
+        await self._finish_failed_start(instance, manifest, "启动超时或状态未确认")
+        self._logger.warning("应用启动失败: %s instance=%s", app_id, instance_id)
+        return instance
+
+    async def _finish_failed_start(
+        self, instance: AppInstance, manifest: AppManifest | None, detail: str
+    ) -> None:
+        async def cleanup() -> None:
+            stopped = await self._cleanup_instance(instance, manifest)
+            instance.state = "stopped" if stopped else "stopping"
+            instance.detail = detail
+            self._status_manager.update_state(instance.instance_id, instance.state, detail)
+            self._storage.save_instance(instance)
+
+        task = asyncio.create_task(cleanup())
+        cancelled = False
+        # Keep the start lock until cleanup finishes, including repeated cancellation.
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+        task.result()
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def _wait_for_running(
         self, instance: AppInstance, manifest: AppManifest, timeout: float = 30
@@ -297,6 +307,8 @@ class MarketService:
             if not instance:
                 self._logger.error("实例不存在: %s", instance_id)
                 return False
+            if instance.state == "stopped":
+                return True
 
             manifest = self._storage.load_manifest(instance.app_id)
 
@@ -331,7 +343,7 @@ class MarketService:
                     return False
 
             # 释放端口
-            self._port_manager.release(instance.port)
+            self._port_manager.release(instance.port, instance.instance_id)
 
             instance.sessions = []
             # 更新状态为 stopped
@@ -377,7 +389,7 @@ class MarketService:
 
     async def _cleanup_instance(
         self, instance: AppInstance, manifest: AppManifest | None
-    ) -> None:
+    ) -> bool:
         """清理失败的实例资源"""
         try:
             if instance.pid:
@@ -394,10 +406,12 @@ class MarketService:
                     timeout=5,
                 )
                 if not stopped:
-                    return
-            self._port_manager.release(instance.port)
+                    return False
+            self._port_manager.release(instance.port, instance.instance_id)
+            return True
         except Exception as e:
             self._logger.error("清理实例资源失败: %s", e)
+            return False
 
     def _stop_script(self, manifest: AppManifest) -> str | None:
         pk = platform_key()

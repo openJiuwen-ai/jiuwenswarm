@@ -2,7 +2,7 @@
 import asyncio
 
 import pytest
-from openjiuwen_protocol.message import ReqMethod
+from jiuwenswarm.common.schema.message import ReqMethod
 
 from jiuwenswarm.extensions.app_market.editor_sessions import AppEditorSessions, EditorSessionError
 from jiuwenswarm.extensions.app_market.manager import AppMarketManager

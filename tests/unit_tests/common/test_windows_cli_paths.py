@@ -192,10 +192,11 @@ $script:registry | Add-Member ScriptMethod Dispose { }
     script = tmp_path / "preserve.ps1"
     script.write_text(text, encoding="utf-8")
     data = tmp_path / "user data 测试"
-    report = tmp_path / "report.json"
     path_result = tmp_path / "user-path.txt"
 
-    def run(app, *, mode="Preserve", original_path="%USERPROFILE%\\tools;;C:\\existing;C:\\existing", data_dir=None):
+    def run(app, *, mode="Preserve", original_path="%USERPROFILE%\\tools;;C:\\existing;C:\\existing",
+            data_dir=None, report_name="report.json"):
+        report = tmp_path / report_name
         env = os.environ.copy()
         env.pop("PSModulePath", None)
         env["JIUWENSWARM_DATA_DIR"] = str(data_dir or data)
@@ -571,16 +572,48 @@ def test_initialize_prioritizes_global_commands_over_prior_layout_and_retries(tm
     # Exercise the real layout transition: Initialize only discovers the new
     # source, while user PATH still includes an older source's working prefix.
     source.rename(app / "removed-old-runtime")
-    _prefix(app, "resources/backend/runtime/node-runtime")
+    installed = _prefix(app, "resources/backend/runtime/node-runtime")
     result, report, root, _ = preservation_runner(app, mode="Initialize", original_path=original_path)
     assert result.returncode == 0, report.read_text(encoding="utf-8")
     user_path = path_result.read_text(encoding="utf-8")
     entries = user_path.split(";")
     assert entries.index(str(root / "global")) < entries.index(str(old))
     assert entries.index("before") < entries.index("after")
+    preserved, report, _, _ = preservation_runner(app, original_path=user_path)
+    assert preserved.returncode == 0, report.read_text(encoding="utf-8")
+    old_bundle = Path(json.loads(report.read_text(encoding="utf-8"))["mappings"][0]["backup"])
+    (root / "global" / "user-installed.cmd").write_text("user command")
+    (installed / "new-bundle.cmd").write_text("replacement installer content")
     again, report, _, _ = preservation_runner(app, mode="Initialize", original_path=user_path)
     assert again.returncode == 0, report.read_text(encoding="utf-8")
-    assert path_result.read_text(encoding="utf-8") == user_path
+    updated = json.loads(report.read_text(encoding="utf-8"))
+    target = Path(updated["mappings"][0]["target"])
+    assert (target / "new-bundle.cmd").read_text() == "replacement installer content"
+    assert not (old_bundle / "new-bundle.cmd").exists()
+    assert (root / "global" / "user-installed.cmd").read_text() == "user command"
+    assert updated["timings"]["inventory_ms"] > 0
+    assert str(target) in path_result.read_text(encoding="utf-8").split(";")
+
+
+def test_initialize_succeeds_if_optional_timing_file_cannot_be_written(tmp_path, preservation_runner):
+    app = tmp_path / "app"
+    _prefix(app)
+    preserved, previous_report, _, _ = preservation_runner(app, report_name="workswarm-cli-Preserve.log")
+    assert preserved.returncode == 0
+    previous_timing = previous_report.with_suffix(".log.timing")
+    recorded = previous_timing.read_text(encoding="utf-8")
+    # A directory at the sidecar path makes WriteAllLines fail.
+    blocked_timing = tmp_path / "workswarm-cli-Initialize.log.timing"
+    blocked_timing.mkdir()
+    result, report, root, _ = preservation_runner(
+        app, mode="Initialize", report_name="workswarm-cli-Initialize.log",
+    )
+    assert result.returncode == 0, report.read_text(encoding="utf-8")
+    assert json.loads(report.read_text(encoding="utf-8"))["success"]
+    assert (root / "global" / "node.exe").is_file()
+    assert "Could not save optional CLI timings" in result.stdout
+    assert not blocked_timing.is_file()
+    assert previous_timing.read_text(encoding="utf-8") == recorded
 
 
 def test_backup_inside_installation_is_rejected(tmp_path, preservation_runner):
@@ -742,6 +775,7 @@ def test_inno_compiles_preservation_hooks(tmp_path, monkeypatch, name):
     scripts.mkdir(parents=True)
     for filename in (name, "windows-cli-preservation.iss", "preserve-windows-cli.ps1"):
         shutil.copyfile(ROOT / "scripts" / filename, scripts / filename)
+    shutil.copytree(ROOT / "scripts" / "license", scripts / "license")
     icon = project / "jiuwenswarm/channels/web/frontend/public/logo.ico"
     icon.parent.mkdir(parents=True)
     shutil.copyfile(ROOT / "jiuwenswarm/channels/web/frontend/public/logo.ico", icon)
@@ -749,8 +783,18 @@ def test_inno_compiles_preservation_hooks(tmp_path, monkeypatch, name):
         payload = project / "dist" / dist
         payload.mkdir(parents=True)
         (payload / "fixture.txt").write_text("compile-only fixture; never installed")
+    command = [str(compiler), "/Qp", f"/O{tmp_path / 'compiled'}", "/DBuildDisplayName=WorkSwarm",
+        "/DBuildVersion=0.0.0", "/DBuildExecutableNameWindows=workswarm.exe",
+        "/DBuildDistDirName=workswarm", "/DBuildSetupBaseName=issue5338-test"]
+    if name == "installer-electron.iss":
+        missing = subprocess.run(
+            [*command, str(scripts / name)], cwd=scripts, capture_output=True, text=True, errors="replace", timeout=60,
+        )
+        assert missing.returncode != 0
+        assert "MaxPayloadRelativePath is required" in missing.stdout + missing.stderr
+        command.append(f"/DMaxPayloadRelativePath={len('fixture.txt')}")
     result = subprocess.run(
-        [str(compiler), "/Qp", f"/O{tmp_path / 'compiled'}", "/DBuildDisplayName=WorkSwarm", "/DBuildVersion=0.0.0", "/DBuildExecutableNameWindows=workswarm.exe", "/DBuildDistDirName=workswarm", "/DBuildSetupBaseName=issue5338-test", str(scripts / name)],
+        [*command, str(scripts / name)],
         cwd=scripts, capture_output=True, text=True, errors="replace", timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr

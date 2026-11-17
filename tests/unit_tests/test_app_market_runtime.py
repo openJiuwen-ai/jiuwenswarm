@@ -109,6 +109,14 @@ def test_legacy_static_scripts_are_upgraded_without_overwriting_custom_scripts(t
         start_script={pk: f"scripts/start.{suffix}"})
     adapter.upgrade_static_scripts(manifest)
     assert "WORKSWARM_STATIC_SERVER" in path.read_text()
+    if pk == "windows":
+        updated = path.read_text(encoding="utf-8")
+        assert "[System.Diagnostics.Process]::Start($info)" in updated
+        assert "$server.WaitForExit()" in updated
+        assert "exit $server.ExitCode" in updated
+        path.write_text(adapter._previous_windows_static_start(), encoding="utf-8-sig")
+        adapter.upgrade_static_scripts(manifest)
+        assert path.read_text(encoding="utf-8-sig") == updated
     path.write_text("custom-server")
     adapter.upgrade_static_scripts(manifest)
     assert path.read_text() == "custom-server"
@@ -120,7 +128,14 @@ def test_unconfirmed_readiness_is_failure_and_releases_resources(tmp_path, monke
         page.write_text("<html>hello</html>")
         manager = AppMarketManager(str(tmp_path / "market"))
         app = await manager.publish_app(str(page), "session")
-        async def unconfirmed(*args, **kwargs):
+        manifest_path = tmp_path / "market" / "apps" / app["app_id"] / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["startup_timeout_seconds"] = 300
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        assert manager.list_apps()["apps"][0]["startup_timeout_seconds"] == 300
+
+        async def unconfirmed(instance, manifest, timeout):
+            assert timeout == 300
             return False
         monkeypatch.setattr(manager._service, "_wait_for_running", unconfirmed)
         assert await manager.start_app(app["app_id"]) is None
@@ -129,6 +144,60 @@ def test_unconfirmed_readiness_is_failure_and_releases_resources(tmp_path, monke
         assert not manager._service._supervisor.is_alive(instance.pid)
         assert not manager._service._port_manager.is_allocated(instance.port)
         assert manager.start_error(app["app_id"])
+    asyncio.run(scenario())
+
+
+def test_cancelled_start_cleans_up_before_retry_even_when_cancelled_again(tmp_path, monkeypatch):
+    async def scenario():
+        page = tmp_path / "app.html"
+        page.write_text("<html>hello</html>", encoding="utf-8")
+        manager = AppMarketManager(str(tmp_path / "market"))
+        app_id = (await manager.publish_app(str(page), "session"))["app_id"]
+        service = manager._service
+        waiting, cleaning, resume = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        wait_for_running = service._wait_for_running
+        cleanup_instance = service._cleanup_instance
+
+        async def never_ready(instance, manifest, timeout):
+            waiting.set()
+            await asyncio.Future()
+
+        async def pause_cleanup(instance, manifest):
+            cleaning.set()
+            await resume.wait()
+            return await cleanup_instance(instance, manifest)
+
+        monkeypatch.setattr(service, "_wait_for_running", never_ready)
+        monkeypatch.setattr(service, "_cleanup_instance", pause_cleanup)
+        start = asyncio.create_task(manager.start_app(app_id, owner_id="user"))
+        await asyncio.wait_for(waiting.wait(), 5)
+        previous = service.list_instances()[0]
+        assert service._supervisor.is_alive(previous.pid)
+        assert await wait_for_running(previous, service.get_app(app_id), timeout=5)
+        start.cancel()
+        await asyncio.wait_for(cleaning.wait(), 5)
+        start.cancel()
+        retry = asyncio.create_task(manager.start_app(app_id, owner_id="user"))
+        await asyncio.sleep(0)
+        assert not retry.done()
+        assert len(service.list_instances()) == 1
+        monkeypatch.setattr(service, "_wait_for_running", wait_for_running)
+        resume.set()
+        with pytest.raises(asyncio.CancelledError):
+            await start
+        assert service.get_instance(previous.instance_id).state == "stopped"
+        assert not service._supervisor.is_alive(previous.pid)
+        replacement = await asyncio.wait_for(retry, 10)
+        assert replacement and replacement["port"] == previous.port
+        assert await manager.stop_app(previous.instance_id, owner_id="user")
+        assert service.get_instance(replacement["instance_id"]).state == "running"
+        assert service._port_manager.is_allocated(previous.port)
+        # A cleanup already in flight can still reach release after the retry.
+        service._port_manager.release(previous.port, previous.instance_id)
+        assert service._port_manager.is_allocated(previous.port)
+        assert await manager.stop_app(replacement["instance_id"], owner_id="user")
+        assert not service._port_manager.is_allocated(previous.port)
+
     asyncio.run(scenario())
 
 

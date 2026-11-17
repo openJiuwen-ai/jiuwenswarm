@@ -5,11 +5,11 @@ import { webRequest } from '../../services/webClient';
 import type { AppMarketPreview } from '../../stores/sessionStore';
 import { Button } from '../ui/Button/Button';
 import { toast } from '../ui/Toast/toastStore';
-import { openAppMarketView, type InstanceInfo } from './appMarketViews';
+import { appMarketStartTimeoutMs, openAppMarketView, type InstanceInfo } from './appMarketViews';
 import { AppMarketResources } from './AppMarketResources';
 import './AppMarketPanel.css';
 
-type EditorApp = { app_id: string; name: string; editor_session_id: string };
+type EditorApp = { app_id: string; name: string; editor_session_id: string; startup_timeout_seconds?: number };
 
 export function AppMarketEditorAction({ sessionId, onOpen }: {
   sessionId: string;
@@ -39,7 +39,9 @@ export function AppMarketEditorAction({ sessionId, onOpen }: {
       void (async () => {
         const { instances } = await webRequest<{ instances: InstanceInfo[] }>('app_market.instances');
         let instance = instances.find(item => item.app_id === app.app_id && item.state === 'running');
-        if (!instance) instance = await webRequest<InstanceInfo>('app_market.start', { app_id: app.app_id }, { timeoutMs: 120_000 });
+        if (!instance) instance = await webRequest<InstanceInfo>('app_market.start', { app_id: app.app_id }, {
+          timeoutMs: appMarketStartTimeoutMs(app.startup_timeout_seconds),
+        });
         if (!active.current) return;
         if (instance.state !== 'running' || !await openAppMarketView(instance, app.name, true)) throw new Error('Preview unavailable');
         if (active.current) onOpen({ appId: app.app_id, name: app.name, instanceId: instance.instance_id });

@@ -12,6 +12,7 @@ $ErrorActionPreference = 'Stop'
 $env:PSModulePath=Join-Path $PSHOME 'Modules'
 $utf8 = New-Object Text.UTF8Encoding($false)
 $safeRoot=$false
+$timings=[ordered]@{inventory_ms=0.0; copy_ms=0.0; verification_ms=0.0}
 
 function Full-Path([string]$Path) {
     [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Path)).TrimEnd('\')
@@ -63,11 +64,17 @@ function Bytes-Hash([byte[]]$Value) {
     finally { $sha.Dispose() }
 }
 function Text-Hash([string]$Value) { Bytes-Hash ($utf8.GetBytes($Value)) }
-function Inventory([string]$Root) {
+function Inventory([string]$Root, [switch]$Verify) {
+    $timer=[Diagnostics.Stopwatch]::StartNew()
+    try {
     $rows=@(foreach ($file in @(Tree-Files $Root | Sort-Object FullName)) {
         [pscustomobject]@{path=$file.FullName.Substring($Root.Length+1); length=$file.Length; sha256=(File-Hash $file.FullName)}
     })
     ConvertTo-Json -InputObject $rows -Depth 4 -Compress
+    } finally {
+        $phase=if ($Verify) { 'verification_ms' } else { 'inventory_ms' }
+        $timings[$phase]+=$timer.Elapsed.TotalMilliseconds
+    }
 }
 function Write-Json([string]$Path, $Value) {
     [IO.File]::WriteAllText((Long-Path $Path),(ConvertTo-Json -InputObject $Value -Depth 8),$utf8)
@@ -99,12 +106,18 @@ function Preserve-UpgradeConfig() {
     else { [IO.File]::Move((Long-Path $stage),(Long-Path $pending)) }
 }
 function Copy-Tree([string]$Source, [string]$Target) {
+    $timer=[Diagnostics.Stopwatch]::StartNew()
+    try { Copy-TreeEntries $Source $Target }
+    finally { $timings.copy_ms+=$timer.Elapsed.TotalMilliseconds }
+}
+
+function Copy-TreeEntries([string]$Source, [string]$Target) {
     [IO.Directory]::CreateDirectory((Long-Path $Target)) | Out-Null
     foreach ($entry in [IO.Directory]::GetFileSystemEntries((Long-Path $Source))) {
         $attributes=[IO.File]::GetAttributes($entry)
         if ($attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Linked content requires manual preservation: $entry" }
         $destination=Join-Path $Target ([IO.Path]::GetFileName($entry))
-        if ($attributes -band [IO.FileAttributes]::Directory) { Copy-Tree (Normal-Path $entry) $destination }
+        if ($attributes -band [IO.FileAttributes]::Directory) { Copy-TreeEntries (Normal-Path $entry) $destination }
         else { [IO.File]::Copy($entry,(Long-Path $destination),$false) }
     }
 }
@@ -160,13 +173,13 @@ function Preserve-Prefix([string]$Source, [string]$RuntimeName = '') {
     })
     if (Test-Path -LiteralPath $target) {
         $manifest=Get-Content -LiteralPath (Join-Path $target 'manifest.json') -Raw | ConvertFrom-Json
-        if ($manifest.source -ne $Source -or $manifest.digest -ne $digest -or (Inventory $prefix) -ne $before) { throw "Existing preservation is incomplete or changed: $target" }
+        if ($manifest.source -ne $Source -or $manifest.digest -ne $digest -or (Inventory $prefix -Verify) -ne $before) { throw "Existing preservation is incomplete or changed: $target" }
     } else {
         $stage=Join-Path $store ('.pending-'+[guid]::NewGuid().ToString('N'))
         $copy=Join-Path $stage 'prefix'
         # Pending/failed copies are intentionally retained for diagnosis/recovery.
         Copy-Tree $Source $copy
-        if ((Inventory $copy) -ne $before -or (Inventory $Source) -ne $before) { throw "Source changed or preservation verification failed: $Source" }
+        if ((Inventory $copy -Verify) -ne $before -or (Inventory $Source -Verify) -ne $before) { throw "Source changed or preservation verification failed: $Source" }
         Assert-PrefixIdle $Source
         $manifest=[ordered]@{schema=1; source=$Source; target=$active; backup=$prefix; digest=$digest; files=($before | ConvertFrom-Json); created_utc=[DateTime]::UtcNow.ToString('o')}
         Write-Json (Join-Path $stage 'manifest.json') $manifest
@@ -186,7 +199,7 @@ function Preserve-Prefix([string]$Source, [string]$RuntimeName = '') {
                 [IO.Directory]::GetFileSystemEntries((Long-Path $active)).Count -eq 0) {
                 $stage=Join-Path $activeDirectory ('.migration-'+[guid]::NewGuid().ToString('N'))
                 Copy-Tree $prefix $stage
-                if ((Inventory $stage) -ne $before) { throw "SDK working copy verification failed: $Source" }
+                if ((Inventory $stage -Verify) -ne $before) { throw "SDK working copy verification failed: $Source" }
                 if ([IO.Directory]::Exists((Long-Path $active))) { [IO.Directory]::Delete((Long-Path $active),$false) }
                 [IO.Directory]::Move((Long-Path $stage),(Long-Path $active))
             }
@@ -203,7 +216,7 @@ function Preserve-Prefix([string]$Source, [string]$RuntimeName = '') {
         [IO.Directory]::CreateDirectory((Long-Path $installed)) | Out-Null
         $stage=Join-Path $installed ('.pending-'+[guid]::NewGuid().ToString('N'))
         Copy-Tree $prefix (Join-Path $stage 'prefix')
-        if ((Inventory (Join-Path $stage 'prefix')) -ne $before) { throw "Working copy verification failed: $Source" }
+        if ((Inventory (Join-Path $stage 'prefix') -Verify) -ne $before) { throw "Working copy verification failed: $Source" }
         Write-Json (Join-Path $stage 'origin.json') @{source=$Source; initial_digest=$digest}
         [IO.Directory]::Move((Long-Path $stage),(Long-Path $activeDirectory))
     }
@@ -318,11 +331,12 @@ try {
             exit 0
         }
         $mappings=@()
+        $sdkMappings=@()
+        $globalPrefix=Join-Path $npmRoot 'global'
         foreach ($relative in @('runtime\node-runtime','resources\backend\runtime\node-runtime')) {
             $mapping=Preserve-Prefix (Join-Path $InstallDir $relative)
             if ($mapping) { $mappings += $mapping }
         }
-        $sdkMappings=@()
         foreach ($relative in @('runtime\external-cli','resources\backend\runtime\external-cli')) {
             $sdkSource=Join-Path $InstallDir $relative
             try { $sdkAttributes=[IO.File]::GetAttributes((Long-Path $sdkSource)) }
@@ -352,14 +366,13 @@ try {
         }
         $paths=@()
         if ($Mode -eq 'Initialize') {
-            $globalPrefix=Join-Path $npmRoot 'global'
             Check-Parents $globalPrefix
             if (-not (Test-Path -LiteralPath $globalPrefix)) {
                 $nodeSource=@($mappings | Where-Object { Test-Path -LiteralPath (Join-Path $_.target 'node.exe') -PathType Leaf } | Select-Object -Last 1)
                 if ($nodeSource.Count) {
                     $stage=Join-Path $npmRoot ('.global-pending-'+[guid]::NewGuid().ToString('N'))
                     Copy-Tree $nodeSource[0].backup $stage
-                    if ((Inventory $stage) -ne (Inventory $nodeSource[0].backup)) { throw 'Managed npm prefix verification failed.' }
+                    if ((Text-Hash (Inventory $stage -Verify)) -ne $nodeSource[0].digest) { throw 'Managed npm prefix verification failed.' }
                     Write-Json (Join-Path $stage '.workswarm-prefix.json') @{schema=1; source=$nodeSource[0].source; node_sha256=(File-Hash (Join-Path $stage 'node.exe'))}
                     [IO.Directory]::Move((Long-Path $stage),(Long-Path $globalPrefix))
                 }
@@ -397,12 +410,19 @@ try {
         # copies finish so a late install cannot be erased by the next cleanup.
         foreach ($mapping in @($mappings)+@($sdkMappings)) {
             Check-Parents $mapping.source
-            if ((Text-Hash (Inventory $mapping.source)) -ne $mapping.digest) { throw "Source changed before cleanup: $($mapping.source)" }
+            if ((Text-Hash (Inventory $mapping.source -Verify)) -ne $mapping.digest) { throw "Source changed before cleanup: $($mapping.source)" }
             Assert-PrefixIdle $mapping.source
         }
         if ($sdkMappings.Count) { Assert-PrefixIdle $InstallDir -ExecutableOnly }
         Add-UserPaths $mappings $paths
-        Write-Json $ReportPath @{success=$true; mode=$Mode; mappings=$mappings; sdk_mappings=$sdkMappings; npm_root=$npmRoot}
+        Write-Json $ReportPath @{success=$true; mode=$Mode; mappings=$mappings; sdk_mappings=$sdkMappings; npm_root=$npmRoot; timings=$timings}
+        try {
+            [IO.File]::WriteAllLines("$ReportPath.timing", [string[]]@(
+                foreach ($phase in $timings.Keys) { "$phase=$([Math]::Round($timings[$phase], 1))" }
+            ), $utf8)
+        } catch {
+            Write-Warning "Could not save optional CLI timings: $($_.Exception.Message)"
+        }
     } finally { $lock.Dispose() }
 } catch {
     $message=$_.Exception.Message+"`r`n"+$_.ScriptStackTrace

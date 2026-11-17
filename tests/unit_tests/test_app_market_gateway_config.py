@@ -20,6 +20,29 @@ class GatewayConfigTest(unittest.TestCase):
     def test_binding_preserves_explicit_gateway_address(self):
         self._check_binding({"GATEWAY_HOST": "localhost", "GATEWAY_PORT": "29001"}, "localhost", 29001)
 
+    def test_registered_market_list_uses_web_channel_identity(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        methods = {}
+        channel = SimpleNamespace(
+            config=SimpleNamespace(host="127.0.0.1", port=29000),
+            register_method=methods.__setitem__,
+            send_response=AsyncMock(),
+        )
+        connection = SimpleNamespace(_web_connection_user_id="market-user")
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "jiuwenswarm.extensions.app_market.extension._DATA_DIR", Path(directory)
+        ):
+            plugin = AppMarketPlugin()
+            plugin.bind_web_channel(channel, ApplicationPluginServices(agent_client=object()))
+            with patch.object(plugin._manager, "list_apps", return_value={"apps": []}) as list_apps:
+                asyncio.run(methods["app_market.list"](connection, "list-request", {}, None))
+                list_apps.assert_called_once_with("market-user")
+            channel.send_response.assert_awaited_once_with(
+                connection, "list-request", ok=True, payload={"apps": []},
+            )
+
     def _check_binding(self, gateway_env, host, port):
         channel = SimpleNamespace(
             config=SimpleNamespace(host="127.0.0.2", port=29000),

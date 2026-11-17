@@ -17,14 +17,20 @@ function PreserveWindowsCli(const InstallDirectory, Mode: String): Boolean;
 var
   ScriptPath: String;
   ReportPath: String;
+  TimingPath: String;
+  ReadTiming: Boolean;
   ResultCode: Integer;
+  TimingLines: TArrayOfString;
+  I: Integer;
 begin
   Result := False;
   ResultCode := -1;
   ScriptPath := ExpandConstant('{tmp}\preserve-windows-cli.ps1');
   if not FileExists(ScriptPath) then
     ExtractTemporaryFile('preserve-windows-cli.ps1');
-  ReportPath := ExpandConstant('{tmp}\workswarm-cli-preservation.log');
+  ReportPath := ExpandConstant('{tmp}\workswarm-cli-') + Mode + '.log';
+  TimingPath := ReportPath + '.timing';
+  ReadTiming := not FileExists(TimingPath) or DeleteFile(TimingPath);
   if Mode = 'Initialize' then
     ShowWindowsCliStatus('Initializing CLI tools. First-time setup may take a few minutes...');
   Log('[CLI] Begin ' + Mode);
@@ -36,6 +42,10 @@ begin
     Result := ResultCode = 0;
   Log('[CLI] End ' + Mode + '; success=' + IntToStr(Ord(Result)) +
     '; result code=' + IntToStr(ResultCode));
+  if Result and ReadTiming then
+    if LoadStringsFromFile(TimingPath, TimingLines) then
+      for I := 0 to GetArrayLength(TimingLines) - 1 do
+        Log('[CLI] ' + Mode + ' ' + TimingLines[I]);
   if not Result then
     if Mode = 'Preserve' then
       MsgBox('External CLI preservation failed. Installation will stop before cleanup.' +

@@ -7,7 +7,7 @@ import { PageCard } from '../ui/PageCard/PageCard';
 import { Button } from '../ui/Button/Button';
 import { AppMarketBrowserPane } from './AppMarketBrowserPane';
 import {
-  closeAppMarketView, hasAppMarketView, readAppMarketInstances, openAppMarketView, watchAppMarketInstances,
+  appMarketStartTimeoutMs, closeAppMarketView, hasAppMarketView, readAppMarketInstances, openAppMarketView, watchAppMarketInstances,
   type InstanceInfo,
 } from './appMarketViews';
 import { webAppViews } from './webAppViews';
@@ -24,6 +24,7 @@ interface AppInfo {
   icon_url?: string;
   entry_path?: string;
   source_session?: string;
+  startup_timeout_seconds?: number;
 }
 
 export interface AppMarketEditTarget {
@@ -225,7 +226,7 @@ export function AppMarketPanel({ onEdit }: { onEdit?: AppMarketEditHandler } = {
       const instance = await webRequest<InstanceInfo>(
         'app_market.start',
         { app_id: app.app_id },
-        { timeoutMs: 120000 },
+        { timeoutMs: appMarketStartTimeoutMs(app.startup_timeout_seconds) },
       );
       if (instance.state !== 'running') throw new Error(instance.detail || t('appMarket.startFailed'));
       instanceRevision.current += 1;

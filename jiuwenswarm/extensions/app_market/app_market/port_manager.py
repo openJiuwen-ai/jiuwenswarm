@@ -13,32 +13,32 @@ class PortManager:
     def __init__(self, start_port: int = 8080, end_port: int = 9099):
         self._start_port = start_port
         self._end_port = end_port
-        self._allocated: dict[int, str] = {}  # {port: app_id}
+        self._allocated: dict[int, str] = {}  # {port: instance_id}
         self._lock = threading.Lock()
 
-    def allocate(self, app_id: str, default_port: int = 0) -> int:
-        """为应用分配端口，优先使用 default_port（如果可用）"""
+    def allocate(self, instance_id: str, default_port: int = 0) -> int:
+        """为实例分配端口，优先使用 default_port（如果可用）"""
         with self._lock:
             # 优先尝试 default_port
             if default_port > 0 and default_port not in self._allocated and self.is_available(default_port):
-                self._allocated[default_port] = app_id
-                logger.info("为应用 %s 分配默认端口 %d", app_id, default_port)
+                self._allocated[default_port] = instance_id
+                logger.info("为实例 %s 分配默认端口 %d", instance_id, default_port)
                 return default_port
 
             # 在范围内查找可用端口
             for port in range(self._start_port, self._end_port + 1):
                 if port not in self._allocated and self.is_available(port):
-                    self._allocated[port] = app_id
-                    logger.info("为应用 %s 分配端口 %d", app_id, port)
+                    self._allocated[port] = instance_id
+                    logger.info("为实例 %s 分配端口 %d", instance_id, port)
                     return port
 
-            logger.error("没有可用端口可分配给应用 %s", app_id)
+            logger.error("没有可用端口可分配给实例 %s", instance_id)
             return 0
 
-    def release(self, port: int) -> None:
-        """释放已分配的端口"""
+    def release(self, port: int, instance_id: str) -> None:
+        """只释放属于该实例的端口"""
         with self._lock:
-            if port in self._allocated:
+            if self._allocated.get(port) == instance_id:
                 del self._allocated[port]
                 logger.info("释放端口 %d", port)
 
