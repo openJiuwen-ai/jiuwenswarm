@@ -34,6 +34,7 @@ import {
   carouselCardsPerView,
   carouselEdges,
   CAROUSEL_GAP,
+  colleagueJoinedBy,
   createOfficeState,
   formatMonthDay,
   formatSummaryTokens,
@@ -364,7 +365,7 @@ function ActivityAllTab({
     member ? memberRangeTotals(member.days, range.start, range.end) : { tokens: 0, replies: 0 };
   const summary = {
     ...activitySummary(
-      heatmap,
+      daily.filter((day) => day.date >= range.start && day.date <= range.end),
       colleagues.length,
       members.map((member) => {
         const inRange = totals(member);
@@ -375,6 +376,7 @@ function ActivityAllTab({
   };
   const keyword = query.trim();
   const ranked = colleagues
+    .filter((colleague) => colleagueJoinedBy(colleague.joinedAt, range.end))
     .map((colleague) => {
       const member = members.find((item) => item.agentId === colleague.id);
       const inRange = totals(member);

@@ -2424,3 +2424,108 @@ test('activity period dates use the schedule calendar without a clear button and
     assert.equal(field('jiuwenmate-office-period-end').value, end);
   } finally { await view.close(); }
 });
+
+async function mountActivityDashboard() {
+  const [colleague] = dashboardProps.colleagues;
+  const joinedAt = (year, month, day) => new Date(year, month - 1, day, 18).toISOString();
+  const view = await mountDashboard({
+    today: new Date(2026, 10, 16),
+    colleagues: [
+      { ...colleague, joinedAt: joinedAt(2025, 12, 31) },
+      { ...colleague, id: 'agent-2', name: '小周', joinedAt: joinedAt(2026, 11, 12) },
+      { ...colleague, id: 'agent-3', name: '小陈', joinedAt: joinedAt(2026, 11, 15) },
+    ],
+    activity: {
+      generatedAt: '2026-11-16T00:00:00Z',
+      members: [{
+        agentId: colleague.id,
+        calls: 16,
+        tokens: 16000,
+        tasks: 16,
+        replies: 16,
+        failures: 0,
+        companionDays: 321,
+        lastResponseAt: null,
+        days: [
+          { date: '2025-12-31', tasks: 1, minutes: 0, calls: 1, tokens: 1000, replies: 1 },
+          { date: '2026-11-09', tasks: 9, minutes: 0, calls: 9, tokens: 9000, replies: 9 },
+          { date: '2026-11-12', tasks: 2, minutes: 0, calls: 2, tokens: 2000, replies: 2 },
+          { date: '2026-11-16', tasks: 4, minutes: 0, calls: 4, tokens: 4000, replies: 4 },
+        ],
+        kinds: [],
+        history: [],
+        hours: [],
+        channels: [],
+        groups: [],
+      }],
+    },
+  });
+  await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="activity"]'));
+  return view;
+}
+
+function leaderboardRows(view) {
+  return [...view.container.querySelectorAll('[data-testid="jiuwenmate-activity-table"] tbody tr')].map((row) =>
+    [0, 1, 3].map((column) => row.cells[column].textContent),
+  );
+}
+
+test('the employee leaderboard shows the roster and totals for the selected year', async () => {
+  const view = await mountActivityDashboard();
+  try {
+    assert.equal(leaderboardRows(view).length, 3);
+    await view.click(view.find('[data-testid="jiuwenmate-office-year-select"]'));
+    await view.click(view.find('[data-testid="jiuwenmate-menu-item"][data-variant="2025"]'));
+    assert.deepEqual(leaderboardRows(view), [['小九', '1.0K', '1']]);
+  } finally { await view.close(); }
+});
+
+test('the period leaderboard includes employees already created by its inclusive end date', async () => {
+  const view = await mountActivityDashboard();
+  try {
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="period"]'));
+    await view.click(view.find('[data-testid="jiuwenmate-office-period-end"] [data-testid="cron-date-picker"] > div'));
+    await view.click(view.find('[data-testid="cron-date-picker-day"][data-variant="2026-11-12"]'));
+    assert.deepEqual(leaderboardRows(view), [['小九', '2.0K', '2'], ['小周', '0.0K', '0']]);
+  } finally { await view.close(); }
+});
+
+test('the activity overview shows zero active days and tasks for an unused period', async () => {
+  const view = await mountActivityDashboard();
+  const metric = (key) => view.find(`[data-testid="jiuwenmate-metric-band"] [data-variant="${key}"] strong`).textContent;
+  try {
+    await view.click(view.find('[data-testid="jiuwenmate-office-year-select"]'));
+    await view.click(view.find('[data-testid="jiuwenmate-menu-item"][data-variant="2025"]'));
+    assert.deepEqual([metric('activeDays'), metric('tasks')], ['1', '1']);
+
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="period"]'));
+    await view.click(view.find('[data-testid="jiuwenmate-office-period-end"] [data-testid="cron-date-picker"] > div'));
+    await view.click(view.find('[data-testid="cron-date-picker-day"][data-variant="2026-11-11"]'));
+    assert.deepEqual([metric('members'), metric('activeDays'), metric('tasks')], ['1', '0', '0']);
+
+    await view.click(view.find('[data-testid="jiuwenmate-office-period-end"] [data-testid="cron-date-picker"] > div'));
+    await view.click(view.find('[data-testid="cron-date-picker-day"][data-variant="2026-11-12"]'));
+    assert.deepEqual([metric('members'), metric('activeDays'), metric('tasks')], ['2', '1', '2']);
+  } finally { await view.close(); }
+});
+
+test('the activity overview and leaderboard exclude employees without a known creation date', async () => {
+  const [colleague] = dashboardProps.colleagues;
+  const view = await mountDashboard({
+    today: new Date(2026, 10, 17),
+    colleagues: [
+      { ...colleague, joinedAt: new Date(2026, 10, 17, 15).toISOString() },
+      { ...colleague, id: 'agent-2', name: '小周', joinedAt: '' },
+    ],
+    activity: { members: [] },
+  });
+  try {
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="activity"]'));
+    await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="period"]'));
+    await view.click(view.find('[data-testid="jiuwenmate-office-period-end"] [data-testid="cron-date-picker"] > div'));
+    await view.click(view.find('[data-testid="cron-date-picker-day"][data-variant="2026-11-16"]'));
+
+    assert.equal(view.find('[data-testid="jiuwenmate-metric-band"] [data-variant="members"] strong').textContent, '0');
+    assert.equal(view.find('[data-testid="jiuwenmate-activity-table"] .jiuwenmate-table__member'), null);
+  } finally { await view.close(); }
+});
