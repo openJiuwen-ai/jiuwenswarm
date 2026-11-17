@@ -359,33 +359,55 @@ def _capture_logs(caplog):
 
 
 @pytest.mark.asyncio
-async def test_worker_process_persists_stdout_and_stderr(tmp_path, monkeypatch):
-    """Capture both Worker output streams in the private worker log directory."""
+@pytest.mark.parametrize("transport", ["resident", "front_loopback"])
+@pytest.mark.parametrize("exit_code", [0, 1])
+async def test_worker_process_inherits_stdout_and_persists_stderr(
+    tmp_path, monkeypatch, capfd, caplog, transport, exit_code,
+):
+    """Keep the pre-diagnostics output routing without relabeling INFO records."""
+    script = (
+        "import logging, sys\n"
+        "sys.stdin.buffer.read()\n"
+        "logging.basicConfig(level=logging.INFO)\n"
+        "print('stdout diagnostic', flush=True)\n"
+        "logging.getLogger('common').info('Registered parser TxtMdParser for .markdown')\n"
+    )
+    if exit_code:
+        script += "raise RuntimeError('worker stderr regression probe')\n"
     monkeypatch.setattr(
         process_module,
         "build_worker_command",
-        lambda *args, **kwargs: [
-            sys.executable,
-            "-c",
-            (
-                "import sys; "
-                "print('stdout diagnostic', flush=True); "
-                "print('stderr diagnostic', file=sys.stderr, flush=True)"
-            ),
-        ],
+        lambda *args, **kwargs: [sys.executable, "-c", script],
+    )
+    listener = (
+        process_module.FrontLoopbackListener()
+        if transport == "front_loopback" else None
     )
     process = process_module.WorkerProcess(
         str(tmp_path / "worker.pipe"),
         host="127.0.0.1",
         port=18092,
+        ipc_listener=listener,
     )
-
-    await process.spawn()
-    assert await process.wait(timeout=5) == 0
-
-    assert process.stdout_path.parent == process.stderr_path.parent
-    assert process.stdout_path.read_text(encoding="utf-8") == "stdout diagnostic\n"
-    assert process.stderr_path.read_text(encoding="utf-8") == "stderr diagnostic\n"
+    try:
+        await process.spawn()
+        assert await process.wait(timeout=5) == exit_code
+        captured = capfd.readouterr()
+        assert "stdout diagnostic" in captured.out
+        stderr = process.stderr_path.read_text(encoding="utf-8")
+        assert "INFO:common:Registered parser TxtMdParser for .markdown" in stderr
+        if exit_code:
+            assert "Traceback (most recent call last):" in stderr
+            assert "RuntimeError: worker stderr regression probe" in stderr
+        assert not list(process.stderr_path.parent.glob("*.stdout.log"))
+        assert not any(
+            record.getMessage().startswith(("[Worker stdout pid=", "[Worker stderr pid="))
+            for record in caplog.records
+        )
+    finally:
+        await process.stop()
+        if listener is not None:
+            await listener.close()
 
 
 @asynccontextmanager
@@ -1155,13 +1177,7 @@ async def test_real_abnormal_exit_keeps_exception_traceback(
         assert "Traceback" in stderr and "WorkerForceExit" in stderr
         assert "injected diagnostic exit" in stderr
         assert "fatal exit" in stderr
-        if supervisor._ipc_mode == supervisor_module.FRONT_LOOPBACK:
-            async with asyncio.timeout(15):
-                while (
-                    f"[Worker stderr pid={pid}]" not in caplog.text
-                    or "injected diagnostic exit" not in caplog.text
-                ):
-                    await asyncio.sleep(0.05)
+        assert f"[Worker stderr pid={pid}]" not in caplog.text
         (tmp_path / "acceptance.json").write_text(
             json.dumps(
                 {

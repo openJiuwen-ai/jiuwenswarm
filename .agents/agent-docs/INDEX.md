@@ -385,6 +385,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [B_20261107_1505_6226-forwarding-replay](bugfix/jiuwenswarm/server/supervisor/B_20261107_1505_6226-forwarding-replay.md) | B | 历史回放触发转发队列溢出及前端计时不收尾 | kdgmpw | jiuwenswarm/server/supervisor, jiuwenswarm/channels/web/frontend | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, tests/unit_tests/agentserver/test_supervisor_forwarding.py, jiuwenswarm/channels/web/frontend/tests/sessionInput.test.mjs | 无独立 D：对现有有界转发及前端终态处理的小范围修复，无独立设计。 |
 | [B_20261110_1042_issue6191-ipc-recovery](bugfix/jiuwenswarm/server/ipc/B_20261110_1042_issue6191-ipc-recovery.md) | B | IPC 突发积压与降级就绪重连导致 Runtime 失败 | 刘瑜 | jiuwenswarm/server/ipc, jiuwenswarm/server/supervisor | jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, tests/unit_tests/agentserver/test_ipc_receive_recovery.py | 无独立 D：对现有有界 IPC 和 Runtime 恢复状态机的小范围修复，无独立设计。 |
+| [B_20261117_1108_worker-output-routing-restore](bugfix/jiuwenswarm/server/supervisor/B_20261117_1108_worker-output-routing-restore.md) | B | Issue 6596 恢复 Worker 原始输出路由 | 刘瑜 | jiuwenswarm/server/supervisor | jiuwenswarm/server/supervisor/worker_process.py, tests/unit_tests/agentserver/test_ipc_backpressure.py, docs/zh/runtime-worker-lifecycle.md, docs/en/runtime-worker-lifecycle.md | 无独立 D：用户明确要求还原日志采集改动之前的逻辑，属于既有 Worker 输出行为的定向恢复。 |
 
 <a id="module-35"></a>
 
