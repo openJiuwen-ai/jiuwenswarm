@@ -133,6 +133,23 @@ def _task_text_field(name: str, value: str | None) -> dict[str, Any]:
     return field
 
 
+def _member_wire_dict(member: Any) -> dict[str, Any]:
+    """Wire shape for team members; ``displayName`` mirrors ``name`` (M1 contract)."""
+    display = getattr(member, "display_name", None) or getattr(member, "member_name", "") or ""
+    display_s = str(display).strip()
+    return {
+        "member_id": getattr(member, "member_name", "") or "",
+        "name": display_s,
+        "displayName": display_s,
+        "status": getattr(member, "status", None),
+        "execution_status": getattr(member, "execution_status", None),
+        # MemberMode: build_mode/plan_mode（控制是否需要 leader 审批）
+        "mode": getattr(member, "mode", None),
+        # role 字段：区分人类/AI（human_agent/teammate/leader）
+        "role": getattr(member, "role", None),
+    }
+
+
 class TeamMonitorHandler(BaseMonitorHandler):
     """Team Monitor 处理器.
 
@@ -168,17 +185,26 @@ class TeamMonitorHandler(BaseMonitorHandler):
 
     async def _handle_member_spawned(self, base: dict[str, Any], event: MonitorEvent) -> dict[str, Any]:
         base["member_id"] = event.member_name
-        # 获取成员 role：human_agent → mode="human"，其他保留原 mode
+        # 获取成员 role / displayName：human_agent → mode="human"，其他保留原 mode
         try:
             member_info = await self._monitor.get_member(event.member_name or "")
             if member_info is not None:
                 base["mode"] = "human" if member_info.role == "human_agent" else member_info.role
+                display = str(
+                    getattr(member_info, "display_name", None) or event.member_name or ""
+                ).strip()
+                if display:
+                    base["name"] = display
+                    base["displayName"] = display
         except Exception as e:
             logger.warning(
                 "[TeamMonitorHandler] 获取成员 role 失败: member=%s, error=%s",
                 event.member_name,
                 e,
             )
+        if "displayName" not in base and event.member_name:
+            base.setdefault("name", event.member_name)
+            base["displayName"] = base.get("name") or event.member_name
         return base
 
     @staticmethod
@@ -416,19 +442,7 @@ class TeamMonitorHandler(BaseMonitorHandler):
                 members = [m for m in members if m.member_name != leader_name]
             tasks = await self._monitor.get_tasks() or []
             return {
-                "members": [
-                    {
-                        "member_id": m.member_name,
-                        "name": m.display_name,
-                        "status": m.status,
-                        "execution_status": m.execution_status,
-                        # MemberMode: build_mode/plan_mode（控制是否需要 leader 审批）
-                        "mode": m.mode,
-                        # role 字段：区分人类/AI（human_agent/teammate/leader）
-                        "role": m.role,
-                    }
-                    for m in members
-                ],
+                "members": [_member_wire_dict(m) for m in members],
                 "tasks": [
                     {
                         "task_id": t.task_id,
@@ -468,17 +482,7 @@ class TeamMonitorHandler(BaseMonitorHandler):
             leader_name = team_info.leader_member_name if team_info else None
             if leader_name:
                 members = [m for m in members if m.member_name != leader_name]
-            return [
-                {
-                    "member_id": m.member_name,
-                    "name": m.display_name,
-                    "status": m.status,
-                    "execution_status": m.execution_status,
-                    "mode": m.mode,
-                    "role": m.role,
-                }
-                for m in members
-            ]
+            return [_member_wire_dict(m) for m in members]
         except Exception as e:
             logger.warning(
                 "[TeamMonitorHandler] get_member_list failed: session_id=%s, error=%s",
@@ -530,17 +534,7 @@ class TeamMonitorHandler(BaseMonitorHandler):
             await db.initialize()
             members = await db.member.get_team_members(team_name, status=None)
 
-            return [
-                {
-                    "member_id": m.member_name,
-                    "name": m.display_name,
-                    "status": m.status,
-                    "execution_status": m.execution_status,
-                    "mode": m.mode,
-                    "role": m.role,
-                }
-                for m in members or []
-            ]
+            return [_member_wire_dict(m) for m in members or []]
         except Exception as e:
             logger.warning(
                 "[TeamMonitorHandler] get_member_list_from_db failed: "
@@ -607,17 +601,7 @@ class TeamMonitorHandler(BaseMonitorHandler):
             tasks = await db.task.get_team_tasks(tname) or []
 
             return {
-                "members": [
-                    {
-                        "member_id": m.member_name,
-                        "name": m.display_name,
-                        "status": m.status,
-                        "execution_status": m.execution_status,
-                        "mode": m.mode,
-                        "role": m.role,
-                    }
-                    for m in members
-                ],
+                "members": [_member_wire_dict(m) for m in members],
                 "tasks": [
                     {
                         "task_id": t.task_id,

@@ -85,7 +85,11 @@ class ModelHttpHookContext:
       ``enable_thinking``、``reasoning_effort`` 扩展写了也丢弃）；
     - 未写的口袋保持原样。
 
-    ``api_base`` / ``model_name`` 只读，供扩展自行判断要不要填。
+    ``api_base`` / ``model_name`` / ``purpose`` 只读：``purpose`` 是宿主在触发前
+    归一化好的本次调用用途（积分对账口径），值域 ``chat`` / ``compaction`` /
+    ``summary`` / ``recap`` / ``rewrite`` / ``deepresearch_rewrite`` / ``subagent`` /
+    ``team_leader`` / ``team_member`` / ``skill_turbo`` / ``symphony`` / ``repair``，
+    供扩展自行判断要不要填。
     """
 
     api_base: str = ""
@@ -94,6 +98,15 @@ class ModelHttpHookContext:
     headers: dict[str, str] = field(default_factory=dict)
     # 扩展可写：并进请求正文 extra_body
     extra_body: dict[str, Any] = field(default_factory=dict)
+    # 本次模型调用的用途（积分对账口径）：chat / compaction / summary / recap /
+    # rewrite / deepresearch_rewrite / subagent / team_leader / team_member /
+    # skill_turbo / symphony / repair。只读，由宿主在触发前归一化填入。
+    # 追加在末尾，保持既有位置参数构造兼容。
+    purpose: str = "chat"
+    # (session_id, request_id) supplied by a caller that requires request attribution.
+    # Scoped extensions opt in through a separate pocket so legacy values cannot leak.
+    request_scope: tuple[str, str] | None = None
+    scoped_headers: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

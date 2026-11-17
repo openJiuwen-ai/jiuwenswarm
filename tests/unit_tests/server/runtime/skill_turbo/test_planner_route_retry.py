@@ -20,7 +20,7 @@ def _client_with_outputs(outputs: list[list[str]]) -> tuple[MagicMock, list[dict
     """构建按调用次序返回 outputs 的 fake model client，并记录每次收到的 messages。"""
     calls: list[dict] = []
 
-    async def stream(messages):
+    async def stream(messages, **_kwargs):
         idx = len(calls)
         calls.append(messages)
         for piece in outputs[min(idx, len(outputs) - 1)]:
@@ -97,7 +97,7 @@ class TestMatchSkillRouteRetry:
         """首次流调用抛异常（如网络抖动），重试成功 → 路由成功。"""
         calls: list[dict] = []
 
-        async def flaky_stream(messages):
+        async def flaky_stream(messages, **_kwargs):
             calls.append(messages)
             if len(calls) == 1:
                 raise ConnectionError("network blip")

@@ -271,6 +271,9 @@ async def _history_page_from_pg(
         }
         for m in ordered[start:start + _HISTORY_PG_PAGE_SIZE]
     ]
+    from jiuwenswarm.gateway.channel_manager.web.sensitive_mask import mask_history_records
+
+    page_messages = mask_history_records(page_messages)
     return {
         "session_id": sid,
         "messages": page_messages,
@@ -308,6 +311,7 @@ _OPENAPI_TAGS = [
     {"name": "config", "description": "RPC config.get（企业只读）"},
     {"name": "models", "description": "RPC models.list（企业聊天下拉只读）"},
     {"name": "locale", "description": "RPC locale.get_conf / set_conf"},
+    {"name": "sensitive-mask", "description": "RPC sensitive_mask.get_conf / set_conf"},
     {"name": "cron", "description": "RPC cron.job.*（企业 CronPanel）"},
     {"name": "permissions", "description": "RPC permissions.*（浏览器设置；非 Claw Manager）"},
     {"name": "skills", "description": "RPC skills.*（个人目录 + 企业租户）"},

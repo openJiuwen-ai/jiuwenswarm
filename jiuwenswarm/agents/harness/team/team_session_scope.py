@@ -17,6 +17,7 @@ class TeamBootstrapParams:
     channel_id: str | None = None
     request_metadata: dict[str, Any] | None = None
     sessions_root: str | Path | None = None
+    agent_workspace: str | Path | None = None
 
 
 @dataclass(frozen=True)

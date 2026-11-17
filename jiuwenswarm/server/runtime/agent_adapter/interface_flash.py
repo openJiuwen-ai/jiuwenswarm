@@ -200,6 +200,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
 
     # Keep image SDK initialization out of Flash's first model call path.
     _defer_image_sdk_imports = True
+    _deepresearch_requires_todo_owner = True
 
     # ── flash 行为定义（类常量，仿 CodeAdapter._FIXED_RAIL_NAMES） ─────────
     # react/evolution 覆盖：深合并进 config_base 的 react 段。这些是 flash
@@ -267,6 +268,11 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         
          # deepresearch_execute 依赖此 rail 绑定执行上下文并桥接原生 HITL。
         "_deepresearch_execution_rail",
+        # T1 出口归一（priority=82）：flash 是 relay-claw 默认聊天路径，
+        # 不挂载会让工具结果的结构化成败标记在该路径完全失效（CR-2 实跑确认）。
+        # 归一在 artifact rail(85)/TaskExecution(85) 之后、stream_event(80) 之前，
+        # 与 deep 主链顺序一致；skill_turbo 防重占位经 __ 前缀键跳过。
+        "_tool_result_normalize_rail",
         
         # 普通工具导出也需触发产物扩展（水印等），独立于 todo / TaskPlan。
         "_flash_artifact_post_process_rail",
@@ -456,28 +462,23 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         """Use the Flash profile's merged cron card for lifecycle checks."""
         return frozenset({"cron_flash"})
 
-    def _build_permission_rail_for_agent(self, config=None, llm=None, model_name=None):
-        from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
-            PermissionRailBuildOptions,
-            build_permission_rail,
-        )
+    @staticmethod
+    def _permission_rail_factory():
+        """Same build path as Deep; only the rail class differs (projection)."""
         from jiuwenswarm.agents.harness.flash.permissions.flash_permission_rail import (
             FlashPermissionRail,
         )
 
-        rail = build_permission_rail(
-            config=config or {},
-            options=PermissionRailBuildOptions(
-                llm=llm if llm is not None else self._model,
-                model_name=model_name,
-                permission_config=self._agent_permissions_body,
-                resolve_workspace_dir=self._permission_workspace_dir,
-                persist_target_agent_id_provider=self._permissions_persist_target,
-                rail_factory=FlashPermissionRail.create,
-            ),
+        return FlashPermissionRail.create
+
+    def _build_permission_rail_for_agent(self, config=None, llm=None, model_name=None):
+        rail = super()._build_permission_rail_for_agent(
+            config=config, llm=llm, model_name=model_name
         )
         if rail is None and self._resolve_permission_config_for_agent().get("enabled", False):
-            raise RuntimeError("Flash permission rail could not be built while permissions are enabled")
+            raise RuntimeError(
+                "Flash permission rail could not be built while permissions are enabled"
+            )
         return rail
 
     def _update_permission_rail(self, config_base, *, session_id=None):
@@ -799,7 +800,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         eager_tools = list(configured) if isinstance(configured, list) else list(
             _DEFAULT_PROGRESSIVE_EAGER_TOOLS
         )
-        replaced_tool_names = {"web_search", "fetch_webpage"} | set(
+        replaced_tool_names = {"web_search", "fetch_webpage", "web_image_search"} | set(
             _CRON_TOOL_NAMES
         )
         retained_tools = []
@@ -1215,6 +1216,12 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             logger.warning("[JiuwenSwarmFlashAdapter] FlashTodoRail create failed: %s", exc)
             todo_rail = None
         return todo_rail
+
+    def _get_todo_modify_tool(self, session_id: str):
+        """Reuse the Flash engine, including its session lifecycle guard."""
+        if self._instance is None or not isinstance(self._task_planning_rail, FlashTodoRail):
+            return None
+        return self._task_planning_rail.engines.get("modify")
 
     def _build_memory_rail(self, mode: str) -> FlashMemoryRail | None:
         """flash 用统一 memory rail 替换 MemoryRail（memory 5→1，mode 分发）.

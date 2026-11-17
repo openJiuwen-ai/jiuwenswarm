@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -44,6 +45,7 @@ logger = logging.getLogger(__name__)
 _CONFIG_MODULE_DIR = Path(__file__).parent
 CONFIG_YAML_PATH = get_config_file()
 SWARMFLOW_ENABLED_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_swarmflow")
+SWARMFLOW_BUDGET_CONFIG_PATH = ("modes", "team", "jiuwen_team", "swarmflow_budget")
 DEFAULT_SWARMFLOW_ENABLED = False
 # Check if user workspace exists and use it if configured via env
 _user_config = os.getenv("JIUWENSWARM_CONFIG_DIR")
@@ -78,7 +80,7 @@ def get_merged_config_dict() -> dict[str, Any]:
 
     [PERF] 实测双 YAML 重读+合并 ~150ms,且经 RuntimePromptRail 的
     模型名兜底路径被**每次模型调用**触发(每次聊天多付 ~150ms)。按
-    (路径, mtime_ns) 缓存合并结果:文件未变直接复用;配置写入方走
+    (路径, mtime_ns, size) 缓存合并结果:文件未变直接复用;配置写入方走
     invalidate_merged_config_cache() 主动失效(写文件本身也会变 mtime,
     双保险)。注意:调用方不应修改返回的 dict(共享缓存对象)。
     """
@@ -86,12 +88,7 @@ def get_merged_config_dict() -> dict[str, Any]:
     tpl_path = resolve_shipped_template_config_path()
     usr_path = _current_config_yaml_path()
     try:
-        key = (
-            str(tpl_path),
-            tpl_path.stat().st_mtime_ns if tpl_path.exists() else None,
-            str(usr_path),
-            usr_path.stat().st_mtime_ns if usr_path.exists() else None,
-        )
+        key = (str(tpl_path), _merged_part_stamp(tpl_path), str(usr_path), _merged_part_stamp(usr_path))
     except OSError:
         key = None
     if key is not None and key == _MERGED_CONFIG_CACHE_KEY and _MERGED_CONFIG_CACHE is not None:
@@ -103,6 +100,16 @@ def get_merged_config_dict() -> dict[str, Any]:
         _MERGED_CONFIG_CACHE_KEY = key
         _MERGED_CONFIG_CACHE = merged
     return merged
+
+
+def _merged_part_stamp(path: Path) -> tuple[int, int] | None:
+    # 与 YAML 解析缓存同口径 (mtime_ns, size)；文件不存在返回 None（缺失也可缓存，
+    # load_yaml_dict 此时得 {}），其余 stat 失败抛 OSError，由调用方放弃缓存。
+    try:
+        stat_result = path.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    return stat_result.st_mtime_ns, stat_result.st_size
 
 
 def resolve_env_vars(value: Any) -> Any:
@@ -444,7 +451,9 @@ def clear_config_cache(
         ]
         for key in keys_to_remove:
             _resolved_config_by_ns.pop(key, None)
-        invalidate_merged_config_cache()
+        # 合并配置只取决于两份 YAML（按路径 + mtime 校验），与 ns 的环境变量无关；
+        # 这里不再连带清掉它，否则每次 tip 写入（如每个会话 create_instance 加载 .env）
+        # 都要重新解析双 YAML。全量清理分支仍会清掉。
         if sid == "default" and aid == "default":
             _resolved_config_by_ns.pop(None, None)
             unbound_overlay_keys = [
@@ -628,12 +637,153 @@ def _get_ttse_config(config: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def get_ttse_enabled(config: dict[str, Any] | None) -> bool:
-    """Return whether TTSE (FACT/TIP) rail should be mounted.
+    """Return whether the single-agent TTSE (FACT/TIP) rail should be mounted.
 
     Opt-in: missing / unset ``enabled`` is False (shipped template and docs 2.7).
     Reads ``react.ttse.enabled`` first, then top-level ``ttse.enabled``.
+    Expert-team mounting uses :func:`get_team_ttse_enabled` instead.
     """
     return coerce_config_bool(_get_ttse_config(config).get("enabled"), False)
+
+
+def get_team_ttse_enabled(config: dict[str, Any] | None) -> bool:
+    """Return whether expert-team TTSE rails should be mounted.
+
+    Independent of :func:`get_ttse_enabled`. Missing ``react.ttse.team_enabled``
+    is False, including when the single-agent switch is on.
+    """
+    return coerce_config_bool(_get_ttse_config(config).get("team_enabled"), False)
+
+
+def shared_ttse_bank_path(workspace: Path | str) -> Path:
+    """One FACT/TIP bank for single-agent and expert-team on the same service.
+
+    Standard layout is ``<service_*>/agent_*/agent/jiuwenclaw_workspace``.
+    The bank is then ``<service_*>/.ttse/bank.json``, so every agent under that
+    service reads and writes the same file. Leader experience is a category in
+    that bank, not a second directory. Any other workspace keeps
+    ``<workspace>/.ttse/bank.json``.
+    """
+    ws = Path(workspace)
+    agent_dir = ws.parent
+    service = agent_dir.parent.parent
+    if agent_dir.name == "agent" and service.name.startswith("service_"):
+        return service / ".ttse" / "bank.json"
+    return ws / ".ttse" / "bank.json"
+
+
+_TTSE_BANK_SIDECARS = (
+    "chroma",
+    "bm25",
+    "dream",
+    "by_cat",
+    "CATALOG.md",
+    "index.json",
+    "dream-state.json",
+)
+
+
+def resolve_shared_ttse_bank(workspace: Path | str) -> Path:
+    """Bank path to open, moving a legacy workspace bank once.
+
+    The service layout reads ``<service_*>/.ttse/bank.json``. Older single-agent
+    runs wrote ``<workspace>/.ttse/bank.json``. When the new file is absent and
+    the old file exists, move the bank and its index siblings. A new file that
+    already exists is left in place. If the move fails, keep reading the old file.
+    """
+    new_bank = shared_ttse_bank_path(workspace)
+    old_bank = Path(workspace) / ".ttse" / "bank.json"
+    if os.path.normcase(str(new_bank)) == os.path.normcase(str(old_bank)):
+        return new_bank
+    if new_bank.is_file() or not old_bank.is_file():
+        return new_bank
+    try:
+        new_bank.parent.mkdir(parents=True, exist_ok=True)
+        _move_ttse_file(old_bank, new_bank)
+        for name in _TTSE_BANK_SIDECARS:
+            source = old_bank.parent / name
+            target = new_bank.parent / name
+            if source.exists() and not target.exists():
+                shutil.move(str(source), str(target))
+    except OSError as exc:
+        if new_bank.is_file():
+            return new_bank
+        logger.warning(
+            "[ttse] bank migration failed, still reading %s: %s",
+            old_bank,
+            exc,
+        )
+        return old_bank
+    logger.info("[ttse] migrated bank %s -> %s", old_bank, new_bank)
+    return new_bank
+
+
+def _move_ttse_file(source: Path, target: Path) -> None:
+    """Move ``source`` onto ``target`` without replacing an existing file."""
+    try:
+        os.link(source, target)
+    except FileExistsError:
+        return
+    except OSError:
+        if target.exists():
+            return
+        shutil.move(str(source), str(target))
+        return
+    try:
+        source.unlink()
+    except OSError as exc:
+        logger.warning("[ttse] bank copied to %s but old file remains: %s", target, exc)
+
+
+def _runtime_limit_int(name: str, raw: Any) -> int:
+    """Parse one nesting limit. Bool and float are refused, not coerced."""
+    if isinstance(raw, bool):
+        raise ValueError(f"react.subagent_runtime.{name} must be an integer")
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str) and _signed_digits(raw.strip()):
+        return int(raw.strip())
+    raise ValueError(f"react.subagent_runtime.{name} must be an integer")
+
+
+def _signed_digits(text: str) -> bool:
+    digits = text[1:] if text.startswith("-") else text
+    return bool(digits) and digits.isdigit()
+
+
+def subagent_runtime_limits(config: dict[str, Any] | None = None) -> dict[str, int]:
+    """Read nesting limits from ``react.subagent_runtime``.
+
+    Missing keys use the product defaults: depth 2, 20 running, 20 alive.
+    Depth, running, and alive must be integers >= 1, and alive must be
+    at least the running cap. Bool and non-integral numbers are refused.
+    """
+    cfg = config if config is not None else get_config()
+    react = cfg.get("react") if isinstance(cfg, dict) else None
+    runtime_cfg = react.get("subagent_runtime") if isinstance(react, dict) else None
+    runtime_cfg = runtime_cfg if isinstance(runtime_cfg, dict) else {}
+
+    def _read(name: str, default: int) -> int:
+        return _runtime_limit_int(name, runtime_cfg.get(name, default))
+
+    depth = _read("max_spawn_depth", 2)
+    concurrent = _read("max_concurrent_running", 20)
+    alive = _read("max_subagents", 20)
+    if depth < 1:
+        raise ValueError("react.subagent_runtime.max_spawn_depth must be >= 1")
+    if concurrent < 1 or alive < 1:
+        raise ValueError(
+            "react.subagent_runtime.max_concurrent_running and max_subagents must be >= 1"
+        )
+    if alive < concurrent:
+        raise ValueError(
+            "react.subagent_runtime.max_subagents must be >= max_concurrent_running"
+        )
+    return {
+        "max_spawn_depth": depth,
+        "max_concurrent_running": concurrent,
+        "max_subagents": alive,
+    }
 
 
 def is_subagent_runtime_enabled(config: dict[str, Any] | None = None) -> bool:
@@ -1193,6 +1343,63 @@ def _persist_permissions(mutate_fn) -> dict[str, Any]:
     return persist_permissions_mutate(mutate_fn, persist_scope="base")
 
 
+def get_file_soft_delete_settings(
+    config: dict[str, Any] | None,
+    workspace_dir: str | None = None,
+) -> tuple[bool, str]:
+    """返回 Windows 软删除是否开启，以及归档目录。
+
+    只有布尔 ``True`` 才开启。缺省和非布尔值都保持关闭。
+    ``archive_dir`` 为空时落到 ``<workspace>/.trash``。关闭时归档路径为空。
+    """
+    if not isinstance(config, dict):
+        return False, ""
+    permissions = config.get("permissions")
+    if not isinstance(permissions, dict):
+        return False, ""
+    section = permissions.get("soft_delete")
+    if section is None:
+        return False, ""
+    if not isinstance(section, dict):
+        logger.warning("Invalid permissions.soft_delete=%r; leaving soft-delete off", section)
+        return False, ""
+    enabled = section.get("enabled", False)
+    if not isinstance(enabled, bool):
+        logger.warning(
+            "Invalid permissions.soft_delete.enabled=%r; leaving soft-delete off",
+            enabled,
+        )
+        return False, ""
+    if not enabled:
+        return False, ""
+
+    archive = section.get("archive_dir", "")
+    if archive is None:
+        archive = ""
+    if not isinstance(archive, str):
+        logger.warning(
+            "Invalid permissions.soft_delete.archive_dir=%r; leaving soft-delete off",
+            archive,
+        )
+        return False, ""
+    archive = archive.strip()
+    if archive:
+        return True, os.path.abspath(os.path.expandvars(os.path.expanduser(archive)))
+
+    workspace = (workspace_dir or "").strip()
+    if not workspace:
+        react = config.get("react")
+        if isinstance(react, dict):
+            raw_workspace = react.get("workspace_dir")
+            if isinstance(raw_workspace, str):
+                workspace = raw_workspace.strip()
+    if not workspace:
+        from jiuwenswarm.common.utils import get_agent_workspace_dir
+
+        workspace = str(get_agent_workspace_dir())
+    return True, os.path.abspath(os.path.join(workspace, ".trash"))
+
+
 def get_permissions_file_guard_workspace_rw_enabled() -> bool:
     """读取 ``permissions.file_guard.workspace.rw_enabled``（缺省为 True）。"""
     fg = _effective_permissions().get("file_guard")
@@ -1305,6 +1512,19 @@ def update_setup_guide_enabled_in_config(value: bool) -> None:
             section = {}
             data["setup_guide"] = section
         section["enabled"] = value
+        return data
+
+    update_config(mutator)
+
+
+def update_rsi_enabled_in_config(value: bool) -> None:
+    """原子更新 rsi.enabled（RSI 优化平台开关）。"""
+    def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        section = data.get("rsi")
+        if not isinstance(section, dict):
+            section = {}
+            data["rsi"] = section
+        section["enabled"] = bool(value)
         return data
 
     update_config(mutator)
@@ -2391,6 +2611,41 @@ def update_swarmflow_enabled_in_config(enabled: bool) -> None:
     dump_yaml_round_trip(_current_config_yaml_path(), data)
 
 
+def update_swarmflow_budget_in_config(budget: str) -> None:
+    """Update ``modes.team.jiuwen_team.swarmflow_budget`` in config.yaml.
+
+    Pass an empty string or ``"none"`` to remove the budget ceiling.
+    """
+    config_path = _current_config_yaml_path()
+    clear_budget = not budget or budget.strip().lower() in ("none", "null")
+    if clear_budget:
+        data = load_yaml_round_trip(config_path)
+        current = data
+        for segment in SWARMFLOW_BUDGET_CONFIG_PATH[:-1]:
+            if segment not in current or not isinstance(current, dict):
+                return
+            current = current[segment]
+        if isinstance(current, dict):
+            current.pop(SWARMFLOW_BUDGET_CONFIG_PATH[-1], None)
+            dump_yaml_round_trip(config_path, data)
+        return
+
+    try:
+        value = int(budget)
+    except (ValueError, TypeError):
+        raise ValueError(f"swarmflow_budget must be a positive integer, got {budget!r}") from None
+    if value <= 0:
+        raise ValueError(f"swarmflow_budget must be a positive integer, got {value}")
+    data = load_yaml_round_trip(config_path)
+    current = data
+    path_so_far: list[str] = []
+    for segment in SWARMFLOW_BUDGET_CONFIG_PATH[:-1]:
+        path_so_far.append(segment)
+        current = _ensure_config_object(current, segment, ".".join(path_so_far))
+    current[SWARMFLOW_BUDGET_CONFIG_PATH[-1]] = value
+    dump_yaml_round_trip(config_path, data)
+
+
 def get_mcp_servers() -> list[dict[str, Any]]:
     """读取 config.yaml 中的 mcp.servers（原始结构，不解析环境变量）。"""
     data = get_config_raw()
@@ -2725,7 +2980,27 @@ def migrate_config_from_template(
     return False
 
 
-def _prune_override_keys(template: dict[str, Any], override: dict[str, Any], depth: int = 0) -> dict[str, Any]:
+# permissions 段可由 agent_shield / E2E fixture 注入、且不在包内模板中的键。
+# 启动 cleanup_override_against_template 不得把它们当「废弃字段」剪掉，
+# 否则 shell_allowlist: null/[] 丢失后会回落到 default-30，host_guard 也会被摘掉。
+_PERMISSIONS_OVERRIDE_KEEP_KEYS = frozenset(
+    {
+        "shell_allowlist",
+        "host_guard",
+        "package_builtin_rules",
+        "agents",
+        "approval_overrides",
+    }
+)
+
+
+def _prune_override_keys(
+    template: dict[str, Any],
+    override: dict[str, Any],
+    depth: int = 0,
+    *,
+    parent_key: str = "",
+) -> dict[str, Any]:
     """递归清理 override 中模板不存在的字段（Remove 规则）。
 
     与 _deep_merge 的 Remove 规则一致，但只做清理不合并模板值。
@@ -2735,14 +3010,18 @@ def _prune_override_keys(template: dict[str, Any], override: dict[str, Any], dep
     result: dict[str, Any] = {}
     for key, over_val in override.items():
         if key not in template:
-            # 模板没有此字段 → 丢弃
+            if parent_key == "permissions" and key in _PERMISSIONS_OVERRIDE_KEEP_KEYS:
+                result[key] = over_val
+            # 模板没有此字段 → 丢弃（permissions 扩展键除外）
             continue
         tmpl_val = template[key]
         if isinstance(tmpl_val, dict) and isinstance(over_val, dict):
             if not tmpl_val:
                 result[key] = over_val
             else:
-                result[key] = _prune_override_keys(tmpl_val, over_val, depth + 1)
+                result[key] = _prune_override_keys(
+                    tmpl_val, over_val, depth + 1, parent_key=key
+                )
         else:
             result[key] = over_val
     return result
@@ -3173,21 +3452,37 @@ def _looks_like_bare_filename(value: str) -> bool:
     return "/" not in value and "\\" not in value and not Path(value).is_absolute()
 
 
-def _jiuwenbox_configs_dir() -> Path | None:
-    """探测仓库或安装位置上的 ``jiuwenbox/configs/`` 目录。
+def _configs_dir_with_policy(candidate: Path) -> Path | None:
+    """目录里至少有一份 policy yaml 才算可用。"""
+    if candidate.is_dir() and any(candidate.glob("*.yaml")):
+        return candidate
+    return None
 
-    优先在仓库目录树里寻找 (开发场景, ``jiuwenbox/src/jiuwenbox/configs``);
-    失败再尝试已 ``pip install`` 的 jiuwenbox 包内 ``configs/``。
+
+def _frozen_jiuwenbox_configs_dir() -> Path | None:
+    """冻包里的 policy 模板。
+
+    ``collect_all`` 把 yaml 放到 ``_MEIPASS/jiuwenbox/configs``。box-server
+    启动时会把这个目录改名为 ``jiuwenbox_legacy_overlay``，避免磁盘包盖住 PYZ。
     """
-    here = Path(__file__).resolve()
+    if not getattr(sys, "frozen", False):
+        return None
+    meipass = getattr(sys, "_MEIPASS", None)
+    if not meipass:
+        return None
+    root = Path(meipass)
+    for candidate in (
+        root / "jiuwenbox" / "configs",
+        root / "jiuwenbox_legacy_overlay" / "configs",
+    ):
+        found = _configs_dir_with_policy(candidate)
+        if found is not None:
+            return found
+    return None
 
-    for ancestor in here.parents[1:7]:
-        for candidate in (
-            ancestor / "jiuwenbox" / "src" / "jiuwenbox" / "configs",
-            ancestor / "jiuwenbox" / "configs",
-        ):
-            if candidate.is_dir():
-                return candidate
+
+def _installed_jiuwenbox_configs_dir() -> Path | None:
+    """已安装 jiuwenbox 自带的 ``configs/``（git 依赖或 wheel）。"""
     try:
         import jiuwenbox  # type: ignore[import-not-found]
     except ImportError:
@@ -3196,18 +3491,42 @@ def _jiuwenbox_configs_dir() -> Path | None:
         pkg_dir = Path(jiuwenbox.__file__).resolve().parent
     except Exception:  # noqa: BLE001
         return None
-    # wheel 安装版: policy 模板随包打入 ``<site-packages>/jiuwenbox/configs/``。
-    direct = pkg_dir / "configs"
-    if direct.is_dir():
-        return direct
-
+    found = _configs_dir_with_policy(pkg_dir / "configs")
+    if found is not None:
+        return found
     for steps_up in (2, 3):
         candidate = pkg_dir
         for _ in range(steps_up):
             candidate = candidate.parent
-        candidate = candidate / "configs"
-        if candidate.is_dir():
-            return candidate
+        found = _configs_dir_with_policy(candidate / "configs")
+        if found is not None:
+            return found
+    return None
+
+
+def _jiuwenbox_configs_dir() -> Path | None:
+    """探测 ``jiuwenbox/configs/`` 目录。
+
+    裸文件名（例如 ``windows-policy.yaml``）从这里拼接。
+    顺序：冻包数据目录、已安装的 jiuwenbox 包、本仓库里残留的 ``jiuwenbox/``。
+    """
+    frozen = _frozen_jiuwenbox_configs_dir()
+    if frozen is not None:
+        return frozen
+
+    installed = _installed_jiuwenbox_configs_dir()
+    if installed is not None:
+        return installed
+
+    here = Path(__file__).resolve()
+    for ancestor in here.parents[1:7]:
+        for candidate in (
+            ancestor / "jiuwenbox" / "src" / "jiuwenbox" / "configs",
+            ancestor / "jiuwenbox" / "configs",
+        ):
+            found = _configs_dir_with_policy(candidate)
+            if found is not None:
+                return found
     return None
 
 

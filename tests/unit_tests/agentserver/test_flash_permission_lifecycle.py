@@ -159,21 +159,21 @@ def test_disabled_to_enabled_creates_flash_rail(permission_adapter):
     adapter._permission_rail = None
     skill_rail = adapter._build_skill_authorization_rail()
     adapter._skill_authorization_rail = skill_rail
-    assert skill_rail._engine is None
+    assert getattr(skill_rail, "_engine", None) is None
     adapter._update_permission_rail({}, session_id="a")
     assert isinstance(adapter._permission_rail, FlashPermissionRail)
     assert adapter._skill_authorization_rail is skill_rail
-    assert skill_rail._engine is adapter._permission_rail._engine
+    assert skill_rail._permission_key == adapter._permission_rail.permission_key
 
 
 @pytest.mark.parametrize("reload", [False, True])
 def test_enabled_permission_build_failure_stops_flash(
     permission_adapter, monkeypatch, reload
 ):
-    from jiuwenswarm.agents.harness.common.rails.interrupt import interrupt_helpers
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 
     adapter, _ = permission_adapter({"write_file": "deny"})
-    monkeypatch.setattr(interrupt_helpers, "build_permission_rail", lambda **_: None)
+    monkeypatch.setattr(interface_deep, "build_permission_rail", lambda **_: None)
     adapter._permission_rail = None
     with pytest.raises(RuntimeError, match="Flash permission rail"):
         if reload:
@@ -185,13 +185,11 @@ def test_enabled_permission_build_failure_stops_flash(
 
 
 @pytest.mark.asyncio
-async def test_permission_refresh_failure_never_calls_backend(permission_adapter):
+async def test_missing_published_key_never_calls_backend(permission_adapter):
+    from agent_shield.tool_permission import get_permission_manager
+
     _, rail = permission_adapter({"web_flash": "allow", "web_search": "allow"})
-
-    def fail():
-        raise RuntimeError("fixture storage unavailable")
-
-    rail._host.get_permissions_snapshot = fail
+    get_permission_manager().remove_config(rail.permission_key)
     ctx = tool_context("web_flash", {"search": {"query": "fixture"}})
     await rail.before_tool_call(ctx)
     assert ctx.extra.get("_skip_tool")
@@ -467,6 +465,8 @@ async def test_concurrent_workspaces_deny_foreign_target_and_keep_next_turn(
         )[1]
         for root in roots
     ]
+    for rail, root in zip(rails, roots):
+        rail.set_workspace_root(root)
     a, b = [root / "result.txt" for root in roots]
     writes_a, writes_b = [], []
     ca = tool_context("write_file", {"file_path": str(a)}, session_id="a", call_id="a")
@@ -479,8 +479,8 @@ async def test_concurrent_workspaces_deny_foreign_target_and_keep_next_turn(
             ma.execute(ctxa, ca.inputs.tool_call, ca.session),
             mb.execute(ctxb, cb.inputs.tool_call, cb.session),
         )
-        assert str(a) in str(results[0]) and str(b) not in str(results[0])
-        assert str(b) in str(results[1]) and str(a) not in str(results[1])
+        assert str(a) in str(results[0][0][0]) and str(b) not in str(results[0][0][0])
+        assert str(b) in str(results[1][0][0]) and str(a) not in str(results[1][0][0])
         forged = ca.inputs.tool_call.model_copy(update={"id": "b-forged"})
         denied = await mb.execute(ctxb, forged, cb.session)
         assert "PERMISSION_DENIED" in str(denied)

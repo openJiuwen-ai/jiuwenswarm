@@ -5,7 +5,6 @@ import hashlib
 import json
 import logging
 import re
-from pathlib import Path
 from typing import Any
 from openjiuwen.core.foundation.llm import (
     ModelRequestConfig,
@@ -20,6 +19,7 @@ from openjiuwen.harness import (
 from jiuwenswarm.agents.harness.common.rails import MultimodalImageRail
 from jiuwenswarm.common.model_config_validation import is_placeholder_api_base
 from jiuwenswarm.common.local_env_config import read_env
+from jiuwenswarm.common.stream_timeout_defaults import apply_stream_timeout_defaults
 from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
     apply_audio_model_config_from_yaml,
     apply_image_gen_model_config_from_yaml,
@@ -312,8 +312,7 @@ def _system_prompt_reload_fingerprint(deep_cfg: Any | None) -> str | None:
 # 对所有模型条目生效（relay 下发、自定义网关、环境变量回退），条目显式配置的值优先；
 # config.yaml 模板里的 180 与此保持一致。relay 下发的条目不带该字段，不补默认值会落回
 # SDK 的 60s。部分模型（如 glm-5.3）的 tool 参数不增量下发，生成长参数时静默超过 60s，
-# 这种超时重试也过不去。
-_DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS = 180.0
+# 这种超时重试也过不去。团队 / 路由装配共用 common.stream_timeout_defaults。
 
 
 def _build_model_from_entry(mcc: dict, mco: dict, modalities: Any = None) -> Model:
@@ -355,7 +354,7 @@ def _build_model_from_entry(mcc: dict, mco: dict, modalities: Any = None) -> Mod
     mcc_fields = {k: v for k, v in mcc.items() if k != "model_name"}
     if not mcc_fields.get("client_provider"):
         mcc_fields["client_provider"] = "OpenAI"
-    mcc_fields.setdefault("stream_idle_timeout", _DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS)
+    mcc_fields = apply_stream_timeout_defaults(mcc_fields)
     # 真实鉴权在 tip ``default_headers`` 里同步过来
     # (Authorization: Basic ...). api_key is only the placeholder
     # ``huawei-maas-session``. Merge into custom_headers; llm_sse_patch keeps

@@ -38,6 +38,14 @@ from jiuwenswarm.agents.harness.common.tools.tools_search_tool import (
 _MISSING = object()
 
 
+def _assert_tool_not_available_result(result: object) -> None:
+    """skip 拒绝结果已统一为 schema dict：display 保留原文本前缀。"""
+    assert isinstance(result, dict)
+    assert result["success"] is False
+    assert result["error_code"] == "tool_not_available"
+    assert result["display"].startswith("[TOOL_NOT_AVAILABLE]")
+
+
 def _card(name: str, required_skill: object = _MISSING) -> ToolCard:
     properties = {}
     if required_skill is not _MISSING:
@@ -359,6 +367,95 @@ async def test_other_skill_and_disabled_override_keep_gated_tool_hidden() -> Non
 
 
 @pytest.mark.asyncio
+async def test_inactive_skill_search_returns_skill_reload_guidance() -> None:
+    """tools_search 无匹配且命中门控卡片时返回 skill_tool 重载指引。
+
+    回归续跑降级缺口：skill 未激活（会话中断重置/闲置过期）时
+    deferred 搜索缓存被过滤，tools_search 只返回裸「未找到」，
+    模型缺乏重载指引而降级到非技能路径。修复后反查全量注册表
+    命中 required_skill 卡片，返回与 invoke_tool 门控拒绝分支一致
+    的重载口径。
+    """
+    cards = [deepresearch_execute.card, _card("ordinary_deferred")]
+    agent = _agent(cards)
+    rail = ProgressiveToolRail(
+        eager_tools=["read_file"],
+        active_skill_provider=lambda: None,
+    )
+    rail.init(agent)
+    ctx = _model_ctx(agent, cards)
+    await rail.before_model_call(ctx)
+
+    result = await rail._search_tools(
+        None,
+        ToolsSearchInput(tool_name="deepresearch_execute"),
+    )
+
+    assert result["success"] is False
+    assert result["matches"] == []
+    message = str(result["message"])
+    assert 'skill_name="deepresearch"' in message
+    assert "不要据此降级" in message
+
+
+@pytest.mark.asyncio
+async def test_active_skill_search_reports_direct_visibility_without_reload() -> None:
+    """技能激活态下 tools_search 命中门控工具不再误报「技能未激活」。
+
+    回归检视意见：declared 卡片被 _deferred_tools 无条件排除，激活态下
+    deferred 搜索同样 0 命中；修复前反查全量注册表命中 required_skill 后
+    无条件返回 skill_tool 重载指引，诱导模型对已激活技能重复重载。修复后
+    先比对当前激活技能：已激活提示直接调用，未激活才给重载指引。
+    """
+    cards = [deepresearch_execute.card, _card("ordinary_deferred")]
+    agent = _agent(cards)
+    rail = ProgressiveToolRail(
+        eager_tools=["read_file"],
+        active_skill_provider=lambda: "deepresearch",
+    )
+    rail.init(agent)
+    ctx = _model_ctx(agent, cards)
+    await rail.before_model_call(ctx)
+
+    result = await rail._search_tools(
+        None,
+        ToolsSearchInput(tool_name="deepresearch_execute"),
+    )
+
+    assert result["success"] is False
+    assert result["matches"] == []
+    message = str(result["message"])
+    assert "已随技能 'deepresearch' 激活并直接可见" in message
+    assert "直接调用" in message
+    assert "skill_tool" not in message
+
+
+@pytest.mark.asyncio
+async def test_ordinary_missing_tool_search_keeps_generic_message() -> None:
+    """非门控工具的无匹配保持通用文案，不误报技能重载指引。"""
+    ordinary = _card("ordinary_deferred")
+    agent = _agent([ordinary])
+    rail = ProgressiveToolRail(
+        eager_tools=["read_file"],
+        active_skill_provider=lambda: None,
+    )
+    rail.init(agent)
+    ctx = _model_ctx(agent, [ordinary])
+    await rail.before_model_call(ctx)
+
+    result = await rail._search_tools(
+        None,
+        ToolsSearchInput(tool_name="missing_ordinary"),
+    )
+
+    assert result["success"] is False
+    assert result["matches"] == []
+    message = str(result["message"])
+    assert "skill_tool" not in message
+    assert "未找到" in message
+
+
+@pytest.mark.asyncio
 async def test_required_skill_card_in_place_update_invalidates_deferred_cache() -> None:
     active_skill = {"name": "research-skill"}
     original = _card("mutable_tool")
@@ -444,7 +541,7 @@ async def test_replayed_direct_call_is_skipped_before_tool_implementation(
     )[0]
 
     native_execute.assert_not_awaited()
-    assert str(result).startswith("[TOOL_NOT_AVAILABLE]")
+    _assert_tool_not_available_result(result)
     assert tool_message.content.startswith("[TOOL_NOT_AVAILABLE]")
 
 
@@ -464,7 +561,7 @@ async def test_registered_card_list_failure_does_not_bypass_direct_gate() -> Non
     await rail.before_tool_call(ctx)
 
     assert ctx.extra["_skip_tool"] is True
-    assert str(ctx.inputs.tool_result).startswith("[TOOL_NOT_AVAILABLE]")
+    _assert_tool_not_available_result(ctx.inputs.tool_result)
 
 
 @pytest.mark.asyncio
@@ -483,7 +580,7 @@ async def test_registered_card_lookup_failure_fails_closed() -> None:
     await rail.before_tool_call(ctx)
 
     assert ctx.extra["_skip_tool"] is True
-    assert str(ctx.inputs.tool_result).startswith("[TOOL_NOT_AVAILABLE]")
+    _assert_tool_not_available_result(ctx.inputs.tool_result)
 
 
 @pytest.mark.asyncio
@@ -503,7 +600,7 @@ async def test_removed_registered_gated_tool_is_rejected_on_replay() -> None:
     await rail.before_tool_call(ctx)
 
     assert ctx.extra["_skip_tool"] is True
-    assert str(ctx.inputs.tool_result).startswith("[TOOL_NOT_AVAILABLE]")
+    _assert_tool_not_available_result(ctx.inputs.tool_result)
 
 
 @pytest.mark.asyncio

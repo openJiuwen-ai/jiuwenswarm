@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_02 / skill-routing-and-registration |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（environment.py、planner.py、skill_meta.py、turbo_package_loader.py、tools_loader.py、skill_turbo_tools.py） |
-| 最近一次修订日期 | 2026-10-31 |
+| 最近一次修订日期 | 2026-11-03 |
 | 关联 feature | F_03_multi-deliverable-todo-guide.md；F_05_enable-turbo-switch.md |
 
 ## 范围 / 边界
@@ -53,7 +53,7 @@
 10. **技能清单绝不闪断**：外部源扫描失败时沿用 `_last_good_entries`（进程级）最近一次成功清单；清单缓存 TTL 60s（`_ENTRIES_CACHE_TTL_SECONDS`，key = 根目录集合 frozenset）。清单为空时指南整段不注入（`remove_section`），禁止注入"暂无可用技能"式空引导。
 11. **query 契约**：`skill_acceleration_exec` 的 query 是对**单个任务**的忠实总结——严格基于用户原话与对话上下文，仅做凝练与指代消解，不得扩写脑补（如擅自罗列章节大纲）；多任务必须逐个串行调用，严禁并行。
 12. **workspace_base 显式性**：`inputs["workspace_base"]` 仅当 `request_metadata["output_dir"]` 非空时设置；**禁止任何 agent workspace 兜底**（产物路径跑偏的直接来源）。
-13. **工具执行按全局 tool_id 现取 + 请求级路由**：`environment.get_tool_function` 从 `Runner.resource_mgr` 现取实例（全局 tool_id 后注册覆盖前者）；携带 session 路由的工具（send_file_to_user）执行期必须从请求级 ContextVar 解析，**禁止依赖实例字段**。因此 `load_send_file_tools` 每请求单独刷新（先 remove 旧 tool_id 再 add）。
+13. **工具执行按全局 tool_id 现取 + 请求级路由**：`environment.get_tool_function` 从 `Runner.resource_mgr` 现取实例（全局 tool_id 后注册覆盖前者）；携带 session 路由的工具（send_file_to_user）执行期必须从请求级 ContextVar 解析，**禁止依赖实例字段**。因此 `load_send_file_tools` 每请求单独刷新（弹出让位本环境绑定；对全局注册表的 remove 仅限环境自注册旧实例，**严禁移除继承的父实例**，[[B_07]]）。
 14. **mtime 计算失败 = 禁用缓存**：`_compute_skill_codes_mtime` 失败返回 0.0，缓存 key 不匹配 → 每次强制重扫。
 15. **enable_for_models 与 vendor_map 互不影响**：前者是 DeepAgent 层 ProgressiveToolRail 的工具懒加载白名单，后者是 thinking 注入的模型白名单（见"接口契约"末节）；新模型接入必须**同时核对两处**。
 16. **PlanGenerationError 是无 raise 点的已导出符号**：定义于 planner.py 并经 `__init__.py` re-export，但当前代码无任何抛出点（plan 失败统一返回 None 走降级）。设计不得假设其被抛出，捕获它属于死代码。
@@ -243,7 +243,7 @@ SkillTurboPromptRail 每次 `before_model_call` 调 `refresh_skill_acceleration_
 | filesystem | `_load_oj_filesystem` | `sys_operation` 非 None（ReadFile/WriteFile/EditFile/ListDir/Glob/Grep） |
 | bash | `_load_oj_bash` | `sys_operation` 非 None（BashTool） |
 
-`load_send_file_tools`：前提 `request_id and session_id`；**正典装载条件是 `config.channels[channel].send_file_allowed` 能力位**（新增 channel 一律配置该开关）。代码现状另有 `channel == "officeclaw"` 历史兼容旁路（tools_loader.py，待删除的历史遗留，勿写成正典契约、勿在新 channel 上依赖）；**每请求 remove + add**。
+`load_send_file_tools`：前提 `request_id and session_id`；**正典装载条件是 `config.channels[channel].send_file_allowed` 能力位**（新增 channel 一律配置该开关）。代码现状另有 `channel == "officeclaw"` 历史兼容旁路（tools_loader.py，待删除的历史遗留，勿写成正典契约、勿在新 channel 上依赖）；**每请求刷新：弹出让位本环境绑定 + add 环境自有实例；remove 仅限自注册旧实例，严禁移除继承的父实例（[[B_07]]）**。
 
 ### P9 resume 旁路
 
@@ -287,7 +287,7 @@ HITL resume 不走 planner：直接使用持久化的 `resume_ctx["plan_code"]`�
 - **改 skill_root 解析** → 必查 `resolve_agent_registered_skill_dirs` 三级顺序与请求级绑定时序（绑定晚于解析则首目录取错）。
 - **改扫描缓存结构** → 必保 mtime 快照失效语义 + 缓存命中路径仍执行 `ensure_turbo_package` 幂等重注册，二者缺一即"已缓存但 import 失败"。
 - **改 plan_code 形态** → 必同步 [[S_03]] validator 前缀白名单与 `_safe_import`（双重强制），以及 `ensure_packages_for_plan_code` 的 import 正则（[[S_05]]）。
-- **改 send_file 装载** → 必保每请求 remove + add 与请求级 ContextVar 路由；引入任何依赖实例字段的工具前先评估并发覆盖面。
+- **改 send_file 装载** → 必保每请求刷新语义（remove 仅限环境自注册旧实例、严禁移除继承父实例，[[B_07]]）与请求级 ContextVar 路由；引入任何依赖实例字段的工具前先评估并发覆盖面。
 - **改 query 契约 / 工具描述文案** → 必保 `_render_tool_description` 与指南清单同一次扫描产出（不变量 9）；单任务串行约束在描述与 docstring 双处声明。
 - **改指南规则文案** → 中英双语两分支同步改（`_build_skill_turbo_guide_text` cn/en）；成功段"先单独调 `todo_modify`"与 `_PPT_DELIVERY_SUMMARY_*_HINT`、todo_close_nudge 的措辞契约不得破坏（回归测试：`test_task_execution_todo_close_nudge.py::test_skill_turbo_success_hint_closes_todo_before_summary` + `test_skill_prompt_multi_deliverable_todo.py`）。
 - **改 enable_turbo 开关语义** → 必查单一跳过点（`discover_external_turbo_skills`）不分离——在 environment / skill_turbo_tools 侧另设过滤会造成注册池与描述清单漂移；同步不变量 18 与边界 case 17-19。

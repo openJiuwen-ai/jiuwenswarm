@@ -248,7 +248,7 @@ The frontend shows the following options under **Self-Evolution Configuration**:
 
 ## TTSE Configuration
 
-TTSE (`react.ttse.enabled`) is independent of Skills-body evolution and is **on by default**. Agent mode mounts TTSERail, runs background FACT/TIP induction, and puts `ttse_consult` in the first-turn schema. Set `enabled: false` to turn it off.
+TTSE is independent of Skills-body evolution and has two switches. Single-agent TTSE (`react.ttse.enabled`) is **on by default**: agent mode mounts TTSERail, runs background FACT/TIP induction, and puts `ttse_consult` in the first-turn schema. Expert-team TTSE (`react.ttse.team_enabled`) is independent of `enabled` and **off by default**; set it to `true` to mount `TEAM_TTSE` on the leader and `MEMBER_TTSE` on members. Set `enabled: false` to turn off single-agent TTSE only.
 
 > 📖 For details, see [TTSE Dual-Track Self-Evolution](TTSE.md).
 

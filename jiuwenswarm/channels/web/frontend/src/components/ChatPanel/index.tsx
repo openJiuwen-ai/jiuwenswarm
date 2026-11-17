@@ -121,6 +121,8 @@ interface ChatPanelProps {
   onClearGoal?: (sessionId: string) => void;
   /** 目标 active 但当前无处理中任务时，消息入队后主动排空一次，见 InputArea.tsx 对应调用点 */
   onDrainTaskQueueIfIdle?: (sessionId: string) => void;
+  /** 专家团绑定前确保真实 session 已创建（欢迎页 new → session.create） */
+  ensureSessionForExpertTeam?: () => Promise<string>;
 }
 
 function SuggestionCard({ text, onClick }: { text: string; onClick: () => void }) {
@@ -690,6 +692,7 @@ export function ChatPanel({
   onResumeGoal,
   onClearGoal,
   onDrainTaskQueueIfIdle,
+  ensureSessionForExpertTeam,
 }: ChatPanelProps) {
   const { t } = useTranslation();
   const workspaceQuotaEnabled = useWorkspaceQuotaEnabled();
@@ -1296,6 +1299,7 @@ export function ChatPanel({
                   onSavePermission={onSavePermission}
                   onSetGoal={onSetGoal}
                   onClearGoal={onClearGoal}
+                  ensureSessionForExpertTeam={ensureSessionForExpertTeam}
                 />
               </div>
               <div className="chat-suggestions">
@@ -1339,6 +1343,7 @@ export function ChatPanel({
             onSetGoal={onSetGoal}
             onClearGoal={onClearGoal}
             onDrainTaskQueueIfIdle={onDrainTaskQueueIfIdle}
+            ensureSessionForExpertTeam={ensureSessionForExpertTeam}
           />
         </div>
       )}

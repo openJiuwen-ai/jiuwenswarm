@@ -118,7 +118,11 @@ def test_factory_ref_resolves_for_every_descriptor() -> None:
             {"tool_names": ["switch_mode"]},
             {"tool_names": 123},
         ),
-        (registry.MEMBER_SKILL_TOOLKIT, {"skills": ["alpha"]}, {"skills": 7}),
+        (
+            registry.MEMBER_SKILL_TOOLKIT,
+            {"global_skills_dir": "/tmp/skills"},
+            {"global_skills_dir": 7},
+        ),
         (registry.EXPLORE_AGENT, {"max_iterations": 20}, {"max_iterations": "many"}),
         (
             registry.PERMISSION_INTERRUPT,
@@ -201,7 +205,7 @@ def test_attribute_fields_are_params_env_fields_are_context() -> None:
         registry.TEAM_SKILL_EVOLUTION: {
             "evolution_model_config": "params",
             "review_trigger": "params",
-            "team_skills_dir": "context",
+            "global_skills_dir": "context",
         },
         registry.TEAM_SKILL_CREATE: {"skill_create": "params"},
     }
@@ -213,6 +217,7 @@ def test_attribute_fields_are_params_env_fields_are_context() -> None:
 
 def test_config_specs_bakes_attribute_params() -> None:
     """config_specs projects config-derived attributes into spec ``params``."""
+    from openjiuwen.agent_teams.rails.elements import TEAM_SKILL_USE
     from openjiuwen.harness.rails import SkillUseRail
 
     from jiuwenswarm.agents.swarm.config_specs import build_member_capability_specs
@@ -231,8 +236,10 @@ def test_config_specs_bakes_attribute_params() -> None:
     rails, _ = build_member_capability_specs(config, "code.team", "leader", enable_permissions=True)
     by_type = {spec.type: spec.params for spec in rails}
 
+    # Code SkillUse is folded onto core.team.skill_use (shared visibility track).
+    assert registry.CODE_SKILL_USE not in by_type
     assert (
-        by_type[registry.CODE_SKILL_USE]["skill_mode"]
+        by_type[TEAM_SKILL_USE]["skill_mode"]
         == SkillUseRail.SKILL_MODE_AUTO_LIST
     )
     assert registry.PERMISSION_INTERRUPT not in by_type

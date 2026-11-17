@@ -202,6 +202,138 @@ def test_merge_keeps_caller_values_and_empty_pockets() -> None:
     assert "extra_body" not in kwargs
 
 
+# ── purpose（积分对账口径）归一化 ───────────────────────────────────────
+
+
+def test_resolve_purpose_uses_explicit_request_purpose() -> None:
+    for value in (
+        "compaction",
+        "summary",
+        "recap",
+        "rewrite",
+        "deepresearch_rewrite",
+        "skill_turbo",
+        "symphony",
+        "repair",
+    ):
+        assert patch_mod._resolve_model_http_purpose(  # pylint: disable=protected-access
+            {"request_purpose": value}
+        ) == value
+
+
+def test_resolve_purpose_ignores_unknown_value_and_defaults_to_chat() -> None:
+    # 未透传时普通主对话
+    assert patch_mod._resolve_model_http_purpose({}) == "chat"  # pylint: disable=protected-access
+    # 未知值不得穿透给扩展，统一回退 chat
+    assert (  # pylint: disable=protected-access
+        patch_mod._resolve_model_http_purpose({"request_purpose": "bogus"}) == "chat"
+    )
+
+
+def test_resolve_purpose_detects_subagent_subject(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subject_mod = pytest.importorskip("openjiuwen.harness.execution_subject")
+    monkeypatch.setattr(
+        subject_mod,
+        "current_execution_subject",
+        lambda: SimpleNamespace(kind="subagent"),
+    )
+    assert patch_mod._resolve_model_http_purpose({}) == "subagent"  # pylint: disable=protected-access
+    # 显式透传值优先于子代理主体的推导
+    assert (  # pylint: disable=protected-access
+        patch_mod._resolve_model_http_purpose({"request_purpose": "recap"}) == "recap"
+    )
+
+
+def test_resolve_purpose_detects_team_subjects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subject_mod = pytest.importorskip("openjiuwen.harness.execution_subject")
+    monkeypatch.setattr(
+        subject_mod,
+        "current_execution_subject",
+        lambda: SimpleNamespace(kind="team_leader"),
+    )
+    assert (  # pylint: disable=protected-access
+        patch_mod._resolve_model_http_purpose({}) == "team_leader"
+    )
+    monkeypatch.setattr(
+        subject_mod,
+        "current_execution_subject",
+        lambda: SimpleNamespace(kind="team_member"),
+    )
+    assert (  # pylint: disable=protected-access
+        patch_mod._resolve_model_http_purpose({}) == "team_member"
+    )
+
+
+def test_resolve_purpose_main_agent_subject_defaults_to_chat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subject_mod = pytest.importorskip("openjiuwen.harness.execution_subject")
+    monkeypatch.setattr(
+        subject_mod,
+        "current_execution_subject",
+        lambda: SimpleNamespace(kind="main_agent"),
+    )
+    assert patch_mod._resolve_model_http_purpose({}) == "chat"  # pylint: disable=protected-access
+
+
+def test_invoke_wrapper_exposes_purpose_via_context(
+    monkeypatch: pytest.MonkeyPatch, fresh_patch_state: None
+) -> None:
+    async def _fake_orig_invoke(self: Any, *args: Any, **kwargs: Any):
+        return "ok"
+
+    monkeypatch.setattr(oai_mod.OpenAIModelClient, "invoke", _fake_orig_invoke)
+    patch_mod.apply_before_model_http_hook_patch()
+    calls = _install_fake_trigger(monkeypatch)
+
+    asyncio.run(
+        oai_mod.OpenAIModelClient.invoke(
+            _fake_client(), messages="hi", request_purpose="recap"
+        )
+    )
+    assert calls[0]["event"] == "agent_server:before_model_http"
+    assert calls[0]["context"].purpose == "recap"
+
+
+def test_invoke_wrapper_defaults_purpose_to_chat(
+    monkeypatch: pytest.MonkeyPatch, fresh_patch_state: None
+) -> None:
+    async def _fake_orig_invoke(self: Any, *args: Any, **kwargs: Any):
+        return "ok"
+
+    monkeypatch.setattr(oai_mod.OpenAIModelClient, "invoke", _fake_orig_invoke)
+    patch_mod.apply_before_model_http_hook_patch()
+    calls = _install_fake_trigger(monkeypatch)
+
+    asyncio.run(oai_mod.OpenAIModelClient.invoke(_fake_client(), messages="hi"))
+    assert calls[0]["context"].purpose == "chat"
+
+
+def test_stream_wrapper_exposes_purpose_via_context(
+    monkeypatch: pytest.MonkeyPatch, fresh_patch_state: None
+) -> None:
+    async def _fake_orig_stream(self: Any, *args: Any, **kwargs: Any):
+        yield 1
+
+    monkeypatch.setattr(oai_mod.OpenAIModelClient, "stream", _fake_orig_stream)
+    patch_mod.apply_before_model_http_hook_patch()
+    calls = _install_fake_trigger(monkeypatch)
+
+    async def _collect() -> None:
+        agen = oai_mod.OpenAIModelClient.stream(
+            _fake_client(), messages="hi", request_purpose="recap"
+        )
+        async for _chunk in agen:
+            pass
+
+    asyncio.run(_collect())
+    assert calls[0]["context"].purpose == "recap"
+
+
 # ── 安装幂等 ─────────────────────────────────────────────────────────
 
 
@@ -280,7 +412,7 @@ def test_stream_wrapper_triggers_and_passes_chunks(
     monkeypatch.setattr(oai_mod.OpenAIModelClient, "stream", _fake_orig_stream)
     patch_mod.apply_before_model_http_hook_patch()
 
-    _install_fake_trigger(
+    calls = _install_fake_trigger(
         monkeypatch,
         filler=lambda ctx: ctx.headers.update({"x-client": "miniprogram"}),
     )
@@ -293,6 +425,8 @@ def test_stream_wrapper_triggers_and_passes_chunks(
 
     assert chunks == [1, 2, 3]
     assert recorded[0]["custom_headers"] == {"x-client": "miniprogram"}
+    # stream 包装同样填充 purpose（默认 chat）
+    assert calls[0]["context"].purpose == "chat"
 
 
 def test_generate_image_wrapper_triggers_and_merges(
@@ -310,7 +444,7 @@ def test_generate_image_wrapper_triggers_and_merges(
     )
     patch_mod.apply_before_model_http_hook_patch()
 
-    _install_fake_trigger(
+    calls = _install_fake_trigger(
         monkeypatch,
         filler=lambda ctx: ctx.headers.update(
             {"x-client": "miniprogram|vivo|trial"}
@@ -323,6 +457,8 @@ def test_generate_image_wrapper_triggers_and_merges(
 
     assert result == "image-ok"
     assert recorded[0]["custom_headers"] == {"x-client": "miniprogram|vivo|trial"}
+    # generate_image 包装同样填充 purpose（默认 chat；图像语义值见 F_02 已知遗留）
+    assert calls[0]["context"].purpose == "chat"
 
 
 def test_anthropic_client_is_covered(

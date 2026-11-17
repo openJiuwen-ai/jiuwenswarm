@@ -583,7 +583,15 @@ def _rewrite_chart_placeholders(
     chart_index = {str(item["chart_id"]).strip(): item for item in chart_messages}
 
     def _replace(match: re.Match[str]) -> str:
-        chart_id = _validate_bundle_id(match.group(1), "chart placeholder")
+        # 修复1：占位符 ID 由宽松正则（[^)]+）捕获，可能含中文、斜杠、
+        # 空格等非法字符；不再对它施加 SAFE_BUNDLE_ID_RE 严格校验抛错，
+        # 否则报告文本里一个非法占位符就会让整条报告写入链失败。
+        # chart_ids 内的 ID 均已在 _validate_resources 过严格校验，非法
+        # 占位符 ID 必不在 chart_ids 中，原样保留不会漏替换任何合法图表
+        # （与 _rewrite_inference_links 的容错模式同构）。
+        chart_id = str(match.group(1)).strip()
+        if not chart_id or not SAFE_BUNDLE_ID_RE.fullmatch(chart_id):
+            return match.group(0)
         if chart_id not in chart_ids:
             return match.group(0)
         chart_info = chart_index[chart_id]

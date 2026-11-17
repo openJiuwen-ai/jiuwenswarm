@@ -1,10 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Apply jiuwenswarm shell safety rules to openjiuwen BashTool / PowerShellTool.
+"""Apply the TUI spawn budget to openjiuwen BashTool / PowerShellTool.
 
-The agent's primary shell tool is ``bash`` (openjiuwen ``BashTool``), not
-``mcp_exec_command``.  Safety checks in ``command_tools`` only affect the latter
-unless we hook the harness tools here.
+Permission adjudication (host guard, command allowlist, file guard, ...) lives
+in ``PermissionInterruptRail`` → ``PermissionManager.check_permission``. This
+hook only keeps the JiuwenSwarm-specific TUI spawn rate limit.
 """
 
 from __future__ import annotations
@@ -21,17 +21,9 @@ def _pre_execute_shell_command(command: str) -> str | None:
     )
 
     from jiuwenswarm.agents.harness.common.tools.command_tools import (
-        _check_command_safety,
-        _check_worktree_path_safety,
         _enforce_tui_spawn_budget,
     )
 
-    blocked = _check_command_safety(command)
-    if blocked:
-        return f"[ERROR]: command rejected for safety ({blocked})."
-    worktree_block = _check_worktree_path_safety(command)
-    if worktree_block:
-        return f"[ERROR]: {worktree_block}"
     spawn_block = _enforce_tui_spawn_budget(command, resolve_shell_session_id() or "")
     if spawn_block:
         return f"[ERROR]: {spawn_block}"

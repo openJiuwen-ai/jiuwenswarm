@@ -1370,6 +1370,7 @@ async def test_fire_and_forget_cancel_publishes_interrupt_result() -> None:
         agent_notify="fire_and_forget",
     )
 
+    await asyncio.gather(*list(handler._fire_and_forget_tasks))
     out = await handler.consume_robot_messages(timeout=0)
     assert out is not None
     assert out.payload == {
@@ -1378,8 +1379,102 @@ async def test_fire_and_forget_cancel_publishes_interrupt_result() -> None:
         "success": True,
         "message": "任务已取消",
     }
-    await asyncio.sleep(0)
     assert len(_FakeAgentClient.sent_requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_fire_and_forget_cancel_drops_stream_after_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HTTP SSE must stay up until the interrupt response returns."""
+    handler = _TestMessageHandler.create()
+    interrupt_started = asyncio.Event()
+    release_interrupt = asyncio.Event()
+    stream_cancelled_at_interrupt: list[bool] = []
+
+    async def _park() -> None:
+        await asyncio.Event().wait()
+
+    stream_task = asyncio.create_task(_park())
+    handler._stream_tasks["req-old"] = stream_task
+    handler._stream_sessions["req-old"] = "sess-1"
+
+    async def blocked_send(env: object) -> SimpleNamespace:
+        stream_cancelled_at_interrupt.append(stream_task.cancelled())
+        _FakeAgentClient.sent_requests.append(env)
+        interrupt_started.set()
+        await release_interrupt.wait()
+        return SimpleNamespace(
+            request_id="interrupt-1",
+            channel_id="feishu_enterprise",
+            ok=True,
+            payload={"event_type": "chat.interrupt_result", "success": True},
+            metadata=None,
+        )
+
+    monkeypatch.setattr(_FakeAgentClient, "send_request", staticmethod(blocked_send))
+    try:
+        await handler.cancel_agent_work_for_session(
+            _control_message(),
+            "sess-1",
+            agent_notify="fire_and_forget",
+        )
+        await interrupt_started.wait()
+        assert stream_cancelled_at_interrupt == [False]
+        assert stream_task.cancelled() is False
+        assert "req-old" in handler._stream_tasks
+        assert await handler.consume_robot_messages(timeout=0) is None
+
+        release_interrupt.set()
+        await asyncio.gather(*list(handler._fire_and_forget_tasks))
+        assert stream_task.cancelled() is True
+        assert "req-old" not in handler._stream_tasks
+        out = await handler.consume_robot_messages(timeout=0)
+        assert out is not None
+        assert out.payload["event_type"] == "chat.interrupt_result"
+        assert out.payload["success"] is True
+    finally:
+        if not stream_task.done():
+            stream_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stream_task
+
+
+@pytest.mark.asyncio
+async def test_fire_and_forget_cancel_drops_stream_when_interrupt_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler = _TestMessageHandler.create()
+
+    async def _park() -> None:
+        await asyncio.Event().wait()
+
+    stream_task = asyncio.create_task(_park())
+    handler._stream_tasks["req-old"] = stream_task
+    handler._stream_sessions["req-old"] = "sess-1"
+
+    async def failing_send(env: object) -> SimpleNamespace:
+        _FakeAgentClient.sent_requests.append(env)
+        raise RuntimeError("agent unreachable")
+
+    monkeypatch.setattr(_FakeAgentClient, "send_request", staticmethod(failing_send))
+    try:
+        await handler.cancel_agent_work_for_session(
+            _control_message(),
+            "sess-1",
+            agent_notify="fire_and_forget",
+        )
+        await asyncio.gather(*list(handler._fire_and_forget_tasks))
+        assert stream_task.cancelled() is True
+        assert "req-old" not in handler._stream_tasks
+        out = await handler.consume_robot_messages(timeout=0)
+        assert out is not None
+        assert out.payload["success"] is True
+    finally:
+        if not stream_task.done():
+            stream_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stream_task
 
 
 @pytest.mark.asyncio
@@ -1407,24 +1502,26 @@ async def test_fire_and_forget_cancel_forwards_cancelled_tools() -> None:
             "sess-1",
             agent_notify="fire_and_forget",
         )
+        await asyncio.gather(*list(handler._fire_and_forget_tasks))
 
+        tool_out = await handler.consume_robot_messages(timeout=0)
         interrupt_out = await handler.consume_robot_messages(timeout=0)
-        assert interrupt_out is not None
-        assert interrupt_out.payload["event_type"] == "chat.interrupt_result"
-
-        # Wait for fire-and-forget task to publish tool_result
-        tool_out = None
-        deadline = asyncio.get_running_loop().time() + 2.0
-        while asyncio.get_running_loop().time() < deadline:
-            tool_out = await handler.consume_robot_messages(timeout=0.05)
-            if tool_out is not None:
-                break
-            await asyncio.sleep(0.01)
-
         assert tool_out is not None
         assert tool_out.event_type.value == "chat.tool_result"
-        assert tool_out.payload["tool_result"]["tool_call_id"] == "call_spin"
-        assert "[Interrupted]" in tool_out.payload["tool_result"]["result"]
+        cancelled_result = tool_out.payload["tool_result"]
+        assert cancelled_result["tool_call_id"] == "call_spin"
+        assert "[Interrupted]" in cancelled_result["result"]
+        # P0 协议兼容：wire status 仍是 error，新字段表达取消语义
+        assert cancelled_result["status"] == "error"
+        assert cancelled_result["success"] is False
+        assert cancelled_result["error_code"] == "tool_cancelled"
+        assert cancelled_result["error_message"] == cancelled_result["result"]
+        assert cancelled_result["display"] == cancelled_result["result"]
+        assert cancelled_result["cancelled"] is True
+        assert cancelled_result["cancel_reason"] == "user_cancelled"
+        assert interrupt_out is not None
+        assert interrupt_out.payload["event_type"] == "chat.interrupt_result"
+        assert interrupt_out.payload["success"] is True
     finally:
         _FakeAgentClient.response_payload = old_payload
 

@@ -21,6 +21,14 @@ import logging
 import logging.handlers
 import os
 import sys
+import time
+
+# --- 启动计时锚点（[startup] 分段日志用）---
+# exec→首条应用日志之间存在无输出的"静默窗口"（Python 导入级联 + 模块级副作用），
+# 客户环境该窗口可达分钟级且无法归因。锚点之前（解释器启动 + 控制台脚本 +
+# 本文件 stdlib 导入，亚秒级）由 start.sh echo 时间戳夹逼；之后由 [startup] 分段
+# 日志切分。锚点须早于首个 jiuwenswarm 重导入（dotenv_early/common.utils）。
+_STARTUP_T0 = time.perf_counter()
 
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
 from jiuwenswarm.dotenv_early import parse_dotenv_early, load_dotenv_runtime
@@ -38,10 +46,59 @@ from jiuwenswarm.common.utils import (
     migrate_legacy_user_config_if_needed,
 )
 from jiuwenswarm.edition import is_enterprise
+from jiuwenswarm.common.version import __version__
 
+_t_first_log = time.perf_counter()
+logger.info(
+    "[startup] AgentServer begin: version=%s python=%s edition=%s pid=%d prelude_ms=%.0f",
+    __version__,
+    sys.version.split()[0],
+    "enterprise" if is_enterprise() else "community",
+    os.getpid(),
+    (time.perf_counter() - _STARTUP_T0) * 1000.0,
+)
+# 进程首条日志会在 logger.info 内部惰性支付日志管道的导入税（logging 记录工厂
+# 惰性导入 openjiuwen span_context 链 + IdentityFieldFilter 内联导入
+# extensions identity 链，均发生在调用线程上）。该税落在 prelude_ms（调用前
+# 求值）与首个 import 分段（调用返回后才起表）之间，不显式计价的话分段加总
+# 对不上窗口墙钟，故单独计一行。第二条日志起管道已缓存，本行自身 ~0ms。
+logger.info(
+    "[startup] first-log pipeline cost_ms=%.0f",
+    (time.perf_counter() - _t_first_log) * 1000.0,
+)
+
+
+def _log_import_elapsed(label: str, t0: float) -> None:
+    """[startup] 分段日志：静默窗口内一次重导入的耗时（毫秒，单调钟）。"""
+    logger.info(
+        "[startup] import %s elapsed_ms=%.0f",
+        label,
+        (time.perf_counter() - t0) * 1000.0,
+    )
+
+
+def _log_step_elapsed(label: str, t0: float) -> None:
+    """[startup] 分段日志：静默窗口内一个非导入步骤的耗时（毫秒，单调钟）。"""
+    logger.info(
+        "[startup] step %s elapsed_ms=%.0f",
+        label,
+        (time.perf_counter() - t0) * 1000.0,
+    )
+
+
+def _startup_total_ms() -> float:
+    """自 _STARTUP_T0 锚点以来的进程启动总耗时（毫秒，单调钟）。"""
+    return (time.perf_counter() - _STARTUP_T0) * 1000.0
+
+
+# 首条日志与首个 import 分段之间仍有一段无输出的初始化步骤（配置迁移、工作区
+# 守卫、日志装配等），逐步计时补齐，使分段加总与窗口墙钟对得上。
+_t_step = time.perf_counter()
 migrate_legacy_user_config_if_needed()
+_log_step_elapsed("migrate_legacy_user_config", _t_step)
 
 # Ensure workspace initialized
+_t_step = time.perf_counter()
 _workspace_dir = get_user_workspace_dir()
 _config_file = _workspace_dir / "config" / "config.yaml"
 _new_workspace = _workspace_dir / "agent" / "jiuwenclaw_workspace"
@@ -53,16 +110,27 @@ else:
     # 配置由部署侧/init 写入 PVC，运行时经 Gateway reload_config 热更新，不在此 merge。
     if not is_enterprise():
         update_config()
+_log_step_elapsed("workspace_guard", _t_step)
 
 # Pin openjiuwen log dir before any openjiuwen-heavy imports
+_t_import = time.perf_counter()
 from jiuwenswarm.common.openjiuwen_logging import bootstrap_openjiuwen_logging
+_log_import_elapsed("common.openjiuwen_logging", _t_import)
 
+_t_step = time.perf_counter()
 _loaded_logging_yaml = bootstrap_openjiuwen_logging()
+_log_step_elapsed("bootstrap_openjiuwen_logging", _t_step)
 
 # --- Now safe to import remaining jiuwenswarm modules ---
+_t_import = time.perf_counter()
 from jiuwenswarm.common.debug_dump import install_async_dump_handler, install_fault_log
-from jiuwenswarm.infrastructure.config import Settings
+_log_import_elapsed("common.debug_dump", _t_import)
 
+_t_import = time.perf_counter()
+from jiuwenswarm.infrastructure.config import Settings
+_log_import_elapsed("infrastructure.config", _t_import)
+
+_t_step = time.perf_counter()
 if not _loaded_logging_yaml:
     _logs_root = get_logs_dir()
     _file_logging_enabled = Settings().log_to_file_enabled
@@ -99,7 +167,14 @@ if not _loaded_logging_yaml:
 
     class _PermissionEngineFilter(logging.Filter):
         def filter(self, record: logging.LogRecord) -> bool:
-            return "[PermissionEngine]" in record.getMessage()
+            if record.name.startswith("agent_shield"):
+                return True
+            msg = record.getMessage()
+            return (
+                "[PermissionEngine]" in msg
+                or "permission.engine." in msg
+                or "permission.manager." in msg
+            )
 
     _perm_filter = _PermissionEngineFilter()
     _common_fh = None
@@ -130,16 +205,38 @@ if not _loaded_logging_yaml:
         _perm_ns_logger.addHandler(_perm_sh)
     _perm_ns_logger.propagate = False
 
+    # W1a: agent_shield 引擎/管理器日志写入 permissions.log
+    _shield_logger = logging.getLogger("agent_shield.tool_permission")
+    _shield_logger.setLevel(logging.INFO)
+    if not _shield_logger.handlers:
+        if _perm_fh is not None:
+            _shield_logger.addHandler(_perm_fh)
+        _shield_logger.addHandler(_perm_sh)
+    _shield_logger.propagate = False
+_log_step_elapsed("permissions_log_handlers", _t_step)
+
 # Load env from user workspace config/.env
+_t_step = time.perf_counter()
 load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
+_log_step_elapsed("load_dotenv_runtime", _t_step)
+
+_t_import = time.perf_counter()
 from jiuwenswarm.common.local_env_config import ingest_bare_business_into_tip
+_log_import_elapsed("common.local_env_config", _t_import)
 
+_t_step = time.perf_counter()
 ingest_bare_business_into_tip()
-reset_free_search_runtime_flags()
+_log_step_elapsed("ingest_bare_business_into_tip", _t_step)
 
+_t_step = time.perf_counter()
+reset_free_search_runtime_flags()
+_log_step_elapsed("reset_free_search_runtime_flags", _t_step)
+
+_t_import = time.perf_counter()
 from jiuwenswarm.agents.harness.common.tools.bash_tool_safety import (
     install_shell_tool_safety_hooks,
 )
+_log_import_elapsed("agents.harness.bash_tool_safety", _t_import)
 
 install_shell_tool_safety_hooks()
 
@@ -149,6 +246,7 @@ install_shell_tool_safety_hooks()
 #      公共事件点，积分对账头等扩展字段经此注入）生产链路硬依赖，无条件应用；
 #   2) 仅对 SSE-only 网关有意义：非流式 invoke()（subagent / 心跳等）把
 #      text/event-stream 文本组装成 ChatCompletion——按渠道门控，见下方函数。
+_t_import = time.perf_counter()
 from jiuwenswarm.llm_sse_patch import (
     apply_before_model_http_hook_patch,
     apply_glm_tool_xml_sanitize_patch,
@@ -157,6 +255,7 @@ from jiuwenswarm.llm_sse_patch import (
     apply_openai_response_assembly_patch,
     remove_openai_response_assembly_patch,
 )
+_log_import_elapsed("llm_sse_patch", _t_import)
 
 apply_openai_auth_header_patch()
 apply_glm_tool_xml_sanitize_patch()
@@ -242,9 +341,10 @@ apply_task_tool_debug_patch()
 # Ensure every harness-created subagent receives the SDK observability rail.
 # Loading this module earlier changes startup ordering, so keep it deferred
 # until the compatibility patches above are installed.
-importlib.import_module(
-    "openjiuwen.harness.observability"
-).install_subagent_observability_hook()
+_t_import = time.perf_counter()
+_observability = importlib.import_module("openjiuwen.harness.observability")
+_log_import_elapsed("openjiuwen.harness.observability", _t_import)
+_observability.install_subagent_observability_hook()
 
 # Subagent thinking control (task_tool optional ``thinking`` param).
 # Requires openjiuwen core with llm_call_kwargs + thinking_hook; otherwise no-op.
@@ -292,7 +392,9 @@ atexit.register(_atexit_log_exit_reason)
 
 
 async def _run(host: str, port: int) -> None:
+    _t_import = time.perf_counter()
     from jiuwenswarm.telemetry.runtime import ProcessTelemetryLifecycle
+    _log_import_elapsed("jiuwenswarm.telemetry.runtime", _t_import)
 
     telemetry_lifecycle = ProcessTelemetryLifecycle(
         logger=logger,
@@ -311,8 +413,12 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
 
     load_extra_model_clients()
 
+    _t_import = time.perf_counter()
     from openjiuwen.core.runner import Runner
+    _log_import_elapsed("openjiuwen.core.runner", _t_import)
+    _t_import = time.perf_counter()
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    _log_import_elapsed("jiuwenswarm.server.agent_ws_server", _t_import)
     from jiuwenswarm.agents.harness.team.remote_member_bootstrap import run_teammate_bootstrap_daemon
     from jiuwenswarm.extensions.manager import ExtensionManager
     from jiuwenswarm.extensions.registry import ExtensionRegistry
@@ -508,18 +614,23 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
         raise RuntimeError("AgentServer enforce requires a working HTTPS listener")
 
     if link_mtls.enforced:
-        logger.info("[AgentServer] ready: https://%s:%s/api/v1; plaintext WS disabled",
-                    host, http_server.port)
+        logger.info("[AgentServer] ready: https://%s:%s/api/v1; plaintext WS disabled  "
+                    "[startup] startup_total_ms=%.0f",
+                    host, http_server.port, _startup_total_ms())
     elif http_server is not None:
         logger.info(
-            "[AgentServer] ready: ws://%s:%s + http://%s:%s/api/v1  Ctrl+C to stop",
+            "[AgentServer] ready: ws://%s:%s + http://%s:%s/api/v1  Ctrl+C to stop  "
+            "[startup] startup_total_ms=%.0f",
             host,
             port,
             host,
             http_server.port,
+            _startup_total_ms(),
         )
     else:
-        logger.info("[AgentServer] ready: ws://%s:%s  Ctrl+C to stop", host, port)
+        logger.info("[AgentServer] ready: ws://%s:%s  Ctrl+C to stop  "
+                    "[startup] startup_total_ms=%.0f",
+                    host, port, _startup_total_ms())
 
     stop_event = asyncio.Event()
     teammate_bootstrap_task: asyncio.Task | None = None

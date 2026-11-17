@@ -503,6 +503,10 @@ def build_share_snapshot(
                 title = raw_title.strip()
         if not title:
             title = _resolve_session_title(Path(session_id), history_raw)
+        from jiuwenswarm.gateway.channel_manager.web.sensitive_mask import (
+            mask_history_records,
+        )
+
         snapshot = {
             "session_id": session_id,
             "metadata": {
@@ -510,7 +514,7 @@ def build_share_snapshot(
                 "exported_at": exported_at,
                 "filename": filename,
             },
-            "records": history_raw,
+            "records": mask_history_records(history_raw),
         }
         return snapshot, filename
 
@@ -550,6 +554,10 @@ def build_share_snapshot(
         raise ValueError("invalid_history_shape")
 
     history = [item for item in history_raw if isinstance(item, dict)]
+    from jiuwenswarm.gateway.channel_manager.web.sensitive_mask import (
+        mask_history_records,
+    )
+
     snapshot = {
         "session_id": session_id,
         "metadata": {
@@ -557,6 +565,6 @@ def build_share_snapshot(
             "exported_at": exported_at,
             "filename": filename,
         },
-        "records": history_raw,
+        "records": mask_history_records(history),
     }
     return snapshot, filename

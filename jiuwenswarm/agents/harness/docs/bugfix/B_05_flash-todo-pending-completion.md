@@ -9,8 +9,7 @@
 | 修复日期 | 2026-11-06 |
 | 关联模块 | `flash/tools/flash_todo.py`、`flash/rails/flash_todo_rail.py` |
 | 关联 spec | [S_03](../specs/S_03_todo-close-flow-control.md)、[S_05](../specs/S_05_profile-todo-variants.md) |
-| 源码基线 | 官方 `releases/stable/v0.2.6` `8bbbcbfe1`，分支 `fix/flash-todo-premature-finish-v0.2.6` |
-| 源修复 | `dev-stable` 修复提交 `e4fb6fb23`；回迁保留同一故障归档编号 |
+| 源码基线 | 官方 `dev-stable` `be550b2fba`，修复分支 `fix/flash-todo-premature-finish` |
 
 ## 现象与原因
 
@@ -29,7 +28,7 @@ Windows 1.6.0 现场创建 15 页 PPT 空壳后结束。模型以顶层 id/statu
 
 ## 验证与限制
 
-Python 3.13.15、WSL/Linux；从 Git 临时导出发布分支 `uv.lock` 锁定的官方 Core `dev-stable-ee` `8215f2c296`，配合回迁源码运行。Flash 工具面、Todo 集成、收尾、文本流控、拒答、普通收尾及权限投影/生命周期组合共 **173 通过**，不依赖相邻未合入 Core 源码。源 dev 修复在 `6db33ad057` 的 173 项结果另行保留，两组不相加。
+Python 3.13.15、WSL/Linux；从 Git 临时导出 `uv.lock` 锁定的官方 Core `6db33ad057`，配合新分支源码运行。Flash 工具面、Todo 集成、收尾、文本流控、拒答、普通收尾及权限投影/生命周期组合共 **173 通过**，不依赖相邻未合入 Core 源码。
 
 用例包括错误参数不调用引擎、状态冲突不写文件、合法批量切换、pending-only 一次续接、预算耗尽说明、成功完成后不附加说明、旧任务/提醒排除以及中断和取消退出。
 

@@ -30,6 +30,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
+from openjiuwen.core.common.exception.errors import BaseError
 from openjiuwen.core.foundation.tool import tool
 from openjiuwen.core.sys_operation.cwd import get_cwd
 
@@ -65,9 +66,11 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch.tls import (
     normalize_child_tls_config,
 )
 from jiuwenswarm.agents.harness.common.tools.deepresearch.todo_progress import (
+    close_research_todo_scope,
     deepresearch_todo_path,
     persist_deepresearch_task_update,
     capture_deepresearch_todo_target,
+    research_todo_scope,
 )
 from jiuwenswarm.agents.harness.common.tools.deepresearch.usage import (
     normalize_workflow_llm_token_usage,
@@ -88,6 +91,7 @@ from jiuwenswarm.common.utils import (
     get_shared_agent_skills_dirs,
     parse_shared_skills_dirs_raw,
 )
+from jiuwenswarm.llm_sse_patch import apply_model_http_hook
 from jiuwenswarm.perf.context import DeepResearchReportType
 from jiuwenswarm.server.gateway_push import WebSocketGatewayPushTransport
 from jiuwenswarm.server.runtime.runtime_scope import RuntimeScopeKey
@@ -237,6 +241,37 @@ _deepresearch_route_ctx: contextvars.ContextVar[dict[str, object] | None] = (
 _deepresearch_router_state_ctx: contextvars.ContextVar[object | None] = (
     contextvars.ContextVar("jiuwenswarm_deepresearch_router_state", default=None)
 )
+# Main Agent owns the outer plan; internal stages must not replace its todos.
+_deepresearch_main_agent_plan_ctx: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "jiuwenswarm_deepresearch_main_agent_plan", default=False
+)
+_deepresearch_process_scope_ctx: contextvars.ContextVar[tuple[str, str] | None] = contextvars.ContextVar(
+    "deepresearch_process_scope", default=None,
+)
+
+
+def _scope_main_agent_process(payload: dict[str, Any]) -> dict[str, Any]:
+    """Route skill process nodes beneath their captured owner, without creating todos."""
+    scope = _deepresearch_process_scope_ctx.get()
+    if scope is None or payload.get("event_type") not in {"task.start", "task.complete", "chat.reasoning"}:
+        return payload
+    owner, workflow = scope
+    node = str(payload.get("stream_source_id") or payload.get("task_id") or "").strip()
+    if not node:
+        return payload
+    scoped = dict(payload)
+    scoped.update(
+        task_id=owner,
+        stream_source_id=f"deepresearch:{workflow}:{node}",
+        skill_call_id=workflow,
+        skill_node_id=node,
+        source_chunk_type="process",
+    )
+    title = str(payload.get("task_content") or "").strip()
+    if title:
+        scoped["task_content"] = title.split(" - ", 1)[0]
+    return scoped
+
 # 停止续跑(resume node='stopped')的前端进度起始阶段提示:认领侧
 # (execution.py)按被停止节点推导后经本上下文传入 _consume_stream,
 # 避免进度列表错误回退到第一步(详见 stream_router.stage_for_resume_node)。
@@ -335,6 +370,8 @@ def push_deepresearch_route(
     agent_id: str = "default",
     workspace_key: str = "default",
     output_dir: str = "",
+    todo_tool_provider: Callable[[], Any] | None = None,
+    todo_owner_required: bool = False,
 ) -> contextvars.Token:
     """Bind request routing and its trusted DeepResearch artifact root."""
     return _deepresearch_route_ctx.set(
@@ -346,6 +383,8 @@ def push_deepresearch_route(
             "agent_id": (agent_id or "default").strip() or "default",
             "workspace_key": (workspace_key or "default").strip() or "default",
             "output_dir": str(output_dir or "").strip(),
+            "todo_tool_provider": todo_tool_provider,
+            "todo_owner_required": todo_owner_required,
         }
     )
 
@@ -364,6 +403,50 @@ def _get_route() -> dict[str, object]:
         "service_id": route.get("service_id", "default") or "default",
         "agent_id": route.get("agent_id", "default") or "default",
     }
+
+
+def _todo_workspace_key(route: dict[str, object]) -> str:
+    context = _deepresearch_route_ctx.get() or {}
+    return str(route.get("workspace_key") or context.get("workspace_key") or "default")
+
+
+def _research_todo_path(route: dict[str, object], todo_tool=None) -> Path:
+    """Resolve the Todo path from its owning tool when available."""
+    session_id = str(route.get("session_id") or "")
+    if todo_tool is None:
+        from openjiuwen.harness.tools.todo_store import bound_todo_tool
+
+        provider = (_deepresearch_route_ctx.get() or {}).get("todo_tool_provider")
+        if callable(provider):
+            todo_tool = provider()
+        else:
+            bound_tool, bound_session = bound_todo_tool()
+            if bound_session == session_id:
+                todo_tool = bound_tool
+    return deepresearch_todo_path(
+        session_id=session_id, workspace_key=_todo_workspace_key(route), tool=todo_tool,
+    )
+
+
+async def _capture_todo_target(todo_path: Path, session_id: str, *, todo_tool=None):
+    """宿主 provider 优先，不能由同名 session 的旧 worker 绑定覆盖。"""
+    if todo_tool is None:
+        provider = (_deepresearch_route_ctx.get() or {}).get("todo_tool_provider")
+        if callable(provider):
+            todo_tool = provider()
+            if todo_tool is None:
+                return None
+    if todo_tool is None:
+        return await capture_deepresearch_todo_target(todo_path, session_id=session_id)
+    return await capture_deepresearch_todo_target(todo_path, tool=todo_tool, session_id=session_id)
+
+
+async def _try_capture_todo_target(todo_path: Path, session_id: str):
+    try:
+        return await _capture_todo_target(todo_path, session_id)
+    except (BaseError, OSError, ValueError, RuntimeError, TypeError) as exc:
+        logger.warning("[deepresearch_stream] Todo owner unavailable type=%s", type(exc).__name__)
+        return None
 
 
 def _route_scope() -> RuntimeScopeKey:
@@ -862,20 +945,33 @@ def _encode_deepresearch_config(
         "tls": tls,
     }
     frame = json.dumps(
-        payload,
-        ensure_ascii=False,
-        separators=(",", ":"),
+        payload, ensure_ascii=False, separators=(",", ":"),
     ).encode("utf-8") + b"\n"
-    if len(frame) > DEEPRESEARCH_CONFIG_MAX_BYTES:
-        raise ValueError("DeepResearch config frame exceeds 64 KiB")
-    if request_query is not None:
+    error = None
+    frame_limit = DEEPRESEARCH_CONFIG_MAX_BYTES
+    if len(frame) > frame_limit:
+        error = "DeepResearch config frame exceeds 64 KiB"
+    elif request_query is not None:
         if not isinstance(request_query, str) or not request_query.strip():
             raise ValueError("DeepResearch request query must be nonempty text")
         payload["request_query"] = request_query
         frame = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
-        if len(frame) > DEEPRESEARCH_QUERY_FRAME_MAX_BYTES:
-            raise ValueError("DeepResearch query frame exceeds 1 MiB")
-    return frame
+        frame_limit = DEEPRESEARCH_QUERY_FRAME_MAX_BYTES
+        if len(frame) > frame_limit:
+            error = "DeepResearch query frame exceeds 1 MiB"
+    if error is None:
+        return frame
+    if "LLM_CUSTOM_HEADERS" in config:
+        required_config = dict(config)
+        required_config.pop("LLM_CUSTOM_HEADERS")
+        fallback_frame = _encode_deepresearch_config(required_config, request_query=request_query)
+        logger.warning(
+            "[deepresearch_stream] 配置帧超限，已省略可选 LLM_CUSTOM_HEADERS "
+            "reason=%s size_bytes=%d limit_bytes=%d",
+            error, len(frame), frame_limit,
+        )
+        return fallback_frame
+    raise ValueError(error)
 
 
 def _config_secret_values(config: dict[str, str]) -> tuple[str, ...]:
@@ -2858,6 +2954,7 @@ async def _call_deepresearch_stream_impl(
         "(no feedback needed); completed stages are not re-executed."
     ),
 )
+@research_todo_scope
 async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
     action: str,
     query: str = "",
@@ -3043,6 +3140,19 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
             service_id=str(route.get("service_id") or "default"),
             agent_id=str(route.get("agent_id") or "default"),
         )
+        # Snapshot extension-generated headers for this child invocation only.
+        # SDK consumption is independent of the host-to-runner transport.
+        model_http_attrs: dict[str, Any] = {}
+        await apply_model_http_hook(
+            api_base=config.get("LLM_BASE_URL", ""),
+            model_name=config.get("LLM_MODEL_NAME", ""),
+            kwargs=model_http_attrs,
+            request_scope=(str(route.get("session_id") or ""), str(route.get("request_id") or "")),
+        )
+        if model_http_attrs.get("custom_headers"):
+            config["LLM_CUSTOM_HEADERS"] = json.dumps(
+                model_http_attrs["custom_headers"], ensure_ascii=False,
+            )
         if report_type is not None:
             config["REPORT_TYPE"] = report_type
         if (
@@ -3119,26 +3229,44 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
             action, "search_config_missing", search_error, query, file_name,
         )
 
-    # Flash must bind its Todo owner before starting the research process.
-    # The same target also survives the cancellation/completion delivery path.
+    # Capture the existing Todo owner before starting the research process.
+    # Flash must have a valid target; other modes keep research available if
+    # the persistence target cannot be established.
     from openjiuwen.harness.tools.todo_store import bound_todo_tool
 
-    bound_tool, _ = bound_todo_tool()
+    bound_tool, bound_session = bound_todo_tool()
     todo_context = None
-    if getattr(bound_tool, "snapshot_guard", None) is not None:
+    provider = (_deepresearch_route_ctx.get() or {}).get("todo_tool_provider")
+    todo_required = (_deepresearch_route_ctx.get() or {}).get("todo_owner_required", False)
+    if bound_tool is not None or callable(provider) or todo_required:
+        selected_tool = None
         try:
-            todo_path = deepresearch_todo_path(
-                session_id=str(route.get("session_id") or ""),
-                workspace_key=str(route.get("workspace_key") or "default"),
-            )
-            todo_target = await capture_deepresearch_todo_target(todo_path)
-            if todo_target is None:
-                raise ValueError("Flash Todo owner is unavailable")
-            todo_context = (todo_path, todo_target)
-        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            if callable(provider):
+                selected_tool = provider()
+            else:
+                selected_tool = bound_tool
+                todo_required = todo_required or getattr(selected_tool, "snapshot_guard", None) is not None
+                if bound_session != str(route.get("session_id") or "") and route.get("session_id"):
+                    if todo_required:
+                        raise ValueError("Flash Todo binding does not match the request session")
+                    selected_tool = None
+            todo_required = todo_required or getattr(selected_tool, "snapshot_guard", None) is not None
+            if selected_tool is not None:
+                todo_path = _research_todo_path(route, selected_tool)
+                todo_target = await _capture_todo_target(
+                    todo_path, str(route.get("session_id") or ""), todo_tool=selected_tool,
+                )
+                if todo_target is None and todo_required:
+                    raise ValueError("Flash Todo owner is unavailable")
+                todo_context = (todo_path, todo_target)
+            else:
+                raise ValueError("Todo owner is unavailable")
+        except (BaseError, OSError, ValueError, RuntimeError, TypeError) as exc:
             logger.warning("[deepresearch_stream] Todo owner unavailable type=%s", type(exc).__name__)
-            return json.dumps({"status": "error", "error_code": "stream_failed",
-                               "error": f"DeepResearch stream failed: {type(exc).__name__}"}, ensure_ascii=False)
+            if todo_required:
+                return json.dumps({"status": "error", "error_code": "stream_failed",
+                                   "error": f"DeepResearch stream failed: {type(exc).__name__}"}, ensure_ascii=False)
+            todo_context = (None, None)
 
     try:
         progress_artifact = _create_progress_artifact()
@@ -3227,6 +3355,7 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
                 _deepresearch_stage_hint_ctx.reset(stage_hint_token)
     except asyncio.CancelledError:
         # 用户停止:先优雅停止(发帧→等落盘→超时兜底),保留 checkpoint
+        close_research_todo_scope()
         # 供 resume --node stopped 恢复,不回退到并行调研阶段重跑。
         captured: dict[str, Any] = {}
         cleanup = asyncio.create_task(
@@ -3429,6 +3558,21 @@ def _locate_salvage_report(conversation_id: str) -> dict[str, Any] | None:
     }
 
 
+async def _publish_report_files(
+    payload: dict[str, Any], send: Callable[[dict[str, Any]], Awaitable[bool]]
+) -> bool:
+    """Main Agent owns delivery; standalone keeps the existing push contract."""
+    if _deepresearch_main_agent_plan_ctx.get():
+        return bool(payload.get("files"))
+    return await send(payload)
+
+
+def _report_completion_fields(files: list[dict[str, Any]]) -> dict[str, Any]:
+    if _deepresearch_main_agent_plan_ctx.get():
+        return {"report_prepared": True, "report_delivered": False, "report_files": files}
+    return {"report_delivered": True}
+
+
 async def _deliver_salvaged_report(
     *,
     route: dict[str, object],
@@ -3490,7 +3634,7 @@ async def _deliver_salvaged_report(
     )
     if bundle:
         file_payload["metadata"] = {"artifactBundle": bundle}
-    if not await send(file_payload):
+    if not await _publish_report_files(file_payload, send):
         return None
     logger.warning(
         "[deepresearch_stream] salvaged report from raw_report.md "
@@ -3501,7 +3645,7 @@ async def _deliver_salvaged_report(
     outcome: dict[str, Any] = {
         "status": "completed",
         "conversation_id": conversation_id,
-        "report_delivered": True,
+        **_report_completion_fields(files),
         "salvaged_report": True,
     }
     if html_style_status in {"applied", "fallback"}:
@@ -3559,17 +3703,17 @@ async def _deliver_race_completed_report(
     else:
         todo_path: Path | None = None
         try:
-            todo_path = deepresearch_todo_path(
-                session_id=str(route["session_id"]),
-                workspace_key=str(route.get("workspace_key") or "default"),
-            )
+            todo_path = _research_todo_path(route)
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.warning(
                 "[deepresearch_stream] resolve todo path failed type=%s",
                 type(exc).__name__,
             )
 
-        todo_target = await capture_deepresearch_todo_target(todo_path) if todo_path is not None else None
+        todo_target = (
+            await _try_capture_todo_target(todo_path, str(route["session_id"]))
+            if todo_path is not None else None
+        )
 
     if todo_path is not None and todo_target is None:
         logger.warning("[deepresearch_stream] skip Todo persistence: no bound Todo owner")
@@ -3581,6 +3725,9 @@ async def _deliver_race_completed_report(
             return False
         if not isinstance(safe_payload, dict):
             return False
+        if _deepresearch_main_agent_plan_ctx.get() and safe_payload.get("event_type") == "task.update":
+            return True
+        safe_payload = _scope_main_agent_process(safe_payload)
         if todo_target is not None and safe_payload.get("event_type") == "task.update":
             try:
                 await persist_deepresearch_task_update(safe_payload, todo_path=todo_path, target=todo_target)
@@ -3621,9 +3768,9 @@ async def _deliver_race_completed_report(
     html_style_reason_code = None
     try:
         if response_content_type == "text/html":
-            artifacts = {
-                "html": await _write_report_html(response_content, file_name)
-            }
+            artifacts = await _write_native_html_artifacts(
+                final_result, file_name, resolved_cid
+            )
         else:
             artifact_result = await _write_report_artifacts_stream(
                 final_result,
@@ -3683,17 +3830,17 @@ async def _deliver_race_completed_report(
             file_metadata["htmlStyleReasonCode"] = html_style_reason_code
     if file_metadata:
         file_payload["metadata"] = file_metadata
-    if not await send(file_payload):
+    if not await _publish_report_files(file_payload, send):
         return None
     logger.warning(
-        "[deepresearch_stream] race-completed report delivered "
+        "[deepresearch_stream] race-completed report prepared "
         "conversation_id=%s",
         resolved_cid,
     )
     outcome: dict[str, Any] = {
         "status": "completed",
         "conversation_id": resolved_cid,
-        "report_delivered": True,
+        **_report_completion_fields(files),
         "race_completed": True,
     }
     if html_style_status in {"applied", "fallback"}:
@@ -3819,17 +3966,17 @@ async def _consume_stream(
         todo_path: Path | None = None
         if route.get("session_id"):
             try:
-                todo_path = deepresearch_todo_path(
-                    session_id=str(route["session_id"]),
-                    workspace_key=str(route.get("workspace_key") or "default"),
-                )
+                todo_path = _research_todo_path(route)
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 logger.warning(
                     "[deepresearch_stream] resolve todo path failed type=%s",
                     type(exc).__name__,
                 )
 
-        todo_target = await capture_deepresearch_todo_target(todo_path) if todo_path is not None else None
+        todo_target = (
+            await _try_capture_todo_target(todo_path, str(route.get("session_id") or ""))
+            if todo_path is not None else None
+        )
 
     if todo_path is not None and todo_target is None:
         logger.warning("[deepresearch_stream] skip Todo persistence: no bound Todo owner")
@@ -3838,6 +3985,9 @@ async def _consume_stream(
         safe_payload = _redact_json_value(payload, secrets)
         if not isinstance(safe_payload, dict):
             raise _StreamProtocolInvalid("Gateway payload is not an object")
+        if _deepresearch_main_agent_plan_ctx.get() and safe_payload.get("event_type") == "task.update":
+            return True
+        safe_payload = _scope_main_agent_process(safe_payload)
         if todo_target is not None and safe_payload.get("event_type") == "task.update":
             try:
                 await persist_deepresearch_task_update(
@@ -4148,11 +4298,15 @@ async def _consume_stream(
             html_style_reason_code = None
             try:
                 if response_content_type == "text/html":
-                    primary_path = await _await_with_periodic_progress(
-                        _write_report_html(response_content, file_name),
+                    artifacts = await _await_with_periodic_progress(
+                        _write_native_html_artifacts(
+                            final_result,
+                            file_name,
+                            str(chunk.get("conversation_id") or outcome_cid),
+                        ),
                         send_processing_progress,
                     )
-                    artifacts = {"html": primary_path}
+                    primary_path = artifacts["html"]
                 else:
                     artifact_result = await _await_with_periodic_progress(
                         _write_report_artifacts_stream(
@@ -4223,7 +4377,7 @@ async def _consume_stream(
                 file_metadata["htmlStyleReasonCode"] = html_style_reason_code
             if file_metadata:
                 file_payload["metadata"] = file_metadata
-            if not await send(file_payload):
+            if not await _publish_report_files(file_payload, send):
                 return attach_terminal_timing({
                     "status": "error",
                     "conversation_id": chunk.get("conversation_id", outcome_cid),
@@ -4237,7 +4391,7 @@ async def _consume_stream(
             completed_outcome: dict[str, Any] = {
                 "status": "completed",
                 "conversation_id": chunk.get("conversation_id", outcome_cid),
-                "report_delivered": True,
+                **_report_completion_fields(files),
             }
             # brief→professional 升级：完成即登记来源记录（metadata 缺失/无效
             # 同样登记为不可用并覆盖旧记录——升级不会读到上一份 brief 的缓存
@@ -4261,7 +4415,7 @@ async def _consume_stream(
                 )
                 if brief_upgrade_available:
                     completed_outcome["brief_upgrade_available"] = True
-                if brief_report_id:
+                if brief_report_id and not _deepresearch_main_agent_plan_ctx.get():
                     completed_outcome["brief_report"] = {
                         "v": 1,
                         "report_id": brief_report_id,
@@ -4347,7 +4501,7 @@ async def _consume_stream(
             if titles:
                 state.section_titles.update(titles)
                 state.authoritative_section_indices.update(titles)
-        for payload in route_chunk(chunk, state):
+        for payload in route_chunk(chunk, state, nested_process=_deepresearch_process_scope_ctx.get() is not None):
             await send(payload)
         # 只跟踪专业版大纲流（brief 走 brief_outline，无大纲卡与「报告概览」）。
         if chunk.get("agent") == "outline":
@@ -4360,6 +4514,36 @@ async def _consume_stream(
                 state.section_titles.update(titles)
                 state.authoritative_section_indices.update(titles)
     return outcome
+
+
+async def _write_native_html_artifacts(
+    final_result: dict[str, Any], file_name: str, conversation_id: str
+) -> dict[str, str]:
+    """保留 SDK 原生 HTML，并为主 Agent 保存可供后续加工的 Markdown。"""
+    artifacts = {
+        "html": await _write_report_html(final_result["response_content"], file_name)
+    }
+    markdown = final_result.get("response_markdown")
+    if (
+        _deepresearch_main_agent_plan_ctx.get()
+        and isinstance(markdown, str)
+        and markdown.strip()
+    ):
+        markdown_result = {
+            **final_result,
+            "response_content": markdown,
+            "response_content_type": "text/markdown",
+        }
+        try:
+            artifacts["md"] = await asyncio.to_thread(
+                _write_report_markdown, markdown_result, file_name, conversation_id
+            )
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.warning(
+                "[deepresearch_stream] Markdown 副产物写入失败，保留原生 HTML type=%s",
+                type(exc).__name__,
+            )
+    return artifacts
 
 
 async def _write_report_html(response_content: str, file_name: str) -> str:

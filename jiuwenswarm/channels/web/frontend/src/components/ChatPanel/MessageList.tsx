@@ -542,8 +542,8 @@ export function ChatTimelineList({
                 outcomeTone={meta.outcomeTone}
                 expanded={turnOpen}
                 onToggle={() => toggleTurn(item.turnId)}
-                // 折叠条就是该轮视觉顶部：头像必须挂在这里，不能跟 meta/内容区抢来抢去。
-                showAvatar
+                // 头像只挂在本轮还没被前面的气泡占掉的那一处。思考被排到回答后面时，不再另画一颗。
+                showAvatar={item.showAvatar}
                 teamLayout={isTeamMode}
               />
             );

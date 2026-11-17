@@ -2348,3 +2348,55 @@ def test_display_contract_strips_reasoning_from_structured_process_content(conte
     assert not any(f['event_type'] == 'chat.reasoning' and f.get('source_chunk_type') != 'process' for f in frames)
     if 'content' in content:
         assert '公开资料' in ''.join(f['content'] for f in _process_frames(frames))
+
+
+@pytest.mark.parametrize("agent,node", [("brief_outline", "dr_outline"), ("brief_info_collector", "dr_brief_info_collector"), ("brief_sub_reporter", "dr_brief_sub_reporter")])
+def test_nested_process_nodes_emit_real_start_and_done_boundaries(agent, node):
+    state = RouterState()
+    first = route_chunk({"agent": agent, "event": "start", "content": "progress"}, state, nested_process=True)
+    last = route_chunk({"agent": agent, "event": "done", "content": ""}, state, nested_process=True)
+    start = [f for f in first if f["event_type"] == "task.start" and f.get("stream_source_id") == node]
+    done = [f for f in last if f["event_type"] == "task.complete" and f.get("stream_source_id") == node]
+    assert len(start) == len(done) == 1
+    repeated = route_chunk({"agent": agent, "event": "done", "content": ""}, state, nested_process=True)
+    assert not any(f["event_type"] == "task.complete" and f.get("stream_source_id") == node for f in repeated)
+
+
+@pytest.mark.parametrize("agent", ["brief_sub_reporter", "sub_reporter"])
+@pytest.mark.parametrize("title", [None, "市场分析"])
+def test_chapter_node_title_describes_writing_only_when_real_title_is_missing(agent, title):
+    state = RouterState()
+    chunk = {"agent": agent, "section_idx": "1", "section_total": 2, "content": ""}
+    if title is not None:
+        chunk["section_title"] = title
+    frames = route_chunk({**chunk, "event": "start"}, state, nested_process=True)
+    frames += route_chunk({**chunk, "event": "done"}, state, nested_process=True)
+    chapter_frames = [f for f in frames if f.get("stream_source_id") == "deepresearch_section_1"]
+    assert chapter_frames
+    assert all(f["task_content"] == (title or "撰写第 1 章") for f in chapter_frames)
+    assert all(f["task_index"] == 1 for f in chapter_frames)
+
+
+def test_parallel_brief_chapters_do_not_share_completion_state():
+    state = RouterState()
+    first = route_chunk({"agent": "brief_sub_reporter", "section_idx": "1", "section_total": 2,
+                         "section_title": "市场", "event": "start", "content": ""}, state, nested_process=True)
+    second = route_chunk({"agent": "brief_sub_reporter", "section_idx": "2", "section_total": 2,
+                          "section_title": "产品", "event": "start", "content": ""}, state, nested_process=True)
+    done = route_chunk({"agent": "brief_sub_reporter", "section_idx": "1", "section_total": 2,
+                        "event": "done", "content": ""}, state, nested_process=True)
+    started = [f for f in first + second if f["event_type"] == "task.start"]
+    assert [f["stream_source_id"] for f in started] == ["deepresearch_section_1", "deepresearch_section_2"]
+    assert [f["task_content"] for f in started] == ["市场", "产品"]
+    assert [f["stream_source_id"] for f in done if f["event_type"] == "task.complete"] == ["deepresearch_section_1"]
+
+
+def test_brief_writing_handoff_closes_only_started_collection_without_done():
+    state = RouterState()
+    route_chunk({"agent": "brief_info_collector", "event": "summary_response", "content": "search progress"}, state, nested_process=True)
+    frames = route_chunk({"agent": "brief_sub_reporter", "event": "start", "section_idx": "1", "section_total": 1, "content": ""}, state, nested_process=True)
+    done = [f["stream_source_id"] for f in frames if f["event_type"] == "task.complete"]
+    assert done == ["dr_brief_info_collector"]
+    assert state.active_nodes["brief_info_collector"]["done"] is True
+    repeated = route_chunk({"agent": "brief_sub_reporter", "event": "message", "section_idx": "1", "content": ""}, state, nested_process=True)
+    assert not any(f["event_type"] == "task.complete" for f in repeated)

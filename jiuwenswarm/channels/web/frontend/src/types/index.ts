@@ -24,6 +24,7 @@ export interface Session {
   is_custom_title?: boolean;
   title_source?: 'auto' | 'user';
   model?: string;
+  rsi_harness_installation_id?: string;
   mode: AgentMode;
   status: SessionStatus;
   message_count: number;
@@ -67,6 +68,8 @@ export interface ModelEntry {
    * 新增条目不带此字段。
    */
   origin_index?: number;
+  /** RSI 模型目录中的免费模型标识；仅用于前端展示分组。 */
+  is_free?: boolean;
 }
 
 export interface OffloadFileListResponse {

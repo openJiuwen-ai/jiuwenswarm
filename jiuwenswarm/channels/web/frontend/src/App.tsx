@@ -1,3 +1,7 @@
+import { RsiSessionHarnessPicker } from './features/rsi/components/RsiSessionHarnessPicker';
+import { RsiRailPeek } from './features/rsi/components/RsiRailPeek';
+import { useRsiStore } from './features/rsi/rsiStore';
+import { useMediaQuery, useSecondarySidebarPeek, useSecondarySidebarPreference } from './hooks/useSecondarySidebar';
 /**
  * App 主组件
  *
@@ -131,6 +135,12 @@ import {
   setDiagnosisEnabled,
   useDiagnosisEnabled,
 } from './features/trajectory/featureConfig';
+import { RsiPage } from './features/rsi/RsiPage';
+import {
+  normalizeRSIEnabled,
+  setRSIFeatureEnabled,
+  useRSIFeatureEnabled,
+} from './features/rsi/featureConfig';
 import { useWorkspaceQuotaEnabled } from './features/workspace/useWorkspaceQuotaEnabled';
 import './App.css';
 
@@ -362,6 +372,18 @@ async function saveShareImage(dataUrl: string, filename: string): Promise<boolea
 const HISTORY_PRELOAD_MAX_WAIT_MS = 1500;
 
 function AppContent() {
+  const rsiEnabled = useRSIFeatureEnabled();
+  const [rsiRailCollapsedByUser, setRsiRailCollapsed] = useSecondarySidebarPreference();
+  const rsiNarrow = useMediaQuery('(max-width: 1250px)');
+  const rsiRailCollapsed = rsiRailCollapsedByUser || rsiNarrow;
+  const rsiListKnownEmpty = useRsiStore((state) => state.listLoadedOnce && state.list.length === 0);
+  const [rsiOpenCreateNonce, setRsiOpenCreateNonce] = useState(0);
+  const { target: sidebarPeek, open: openSidebarPeek, hover: hoverSidebarPeek,
+    close: closeSidebarPeek, surfaceProps: peekSurfaceProps } = useSecondarySidebarPeek();
+  const canPeekExperiments = rsiEnabled && rsiRailCollapsed && !rsiListKnownEmpty;
+  useEffect(() => {
+    if (!canPeekExperiments) closeSidebarPeek();
+  }, [canPeekExperiments, closeSidebarPeek]);
   const { t, i18n } = useTranslation();
   const { route, navigate } = useChatRoute();
   const routeKey = route.kind === 'chat-session'
@@ -399,6 +421,7 @@ function AppContent() {
   const [serverConfig, setServerConfig] = useState<Record<string, unknown> | null>(null);
   const trajectoryUiEnabled = useTrajectoryUiEnabled();
   const diagnosisEnabled = useDiagnosisEnabled();
+  const rsiFeatureEnabled = useRSIFeatureEnabled();
   const workspaceQuotaEnabled = useWorkspaceQuotaEnabled();
   const [configError, setConfigError] = useState<string | null>(null);
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
@@ -420,6 +443,7 @@ function AppContent() {
   const [hasVisitedPersonalContext, setHasVisitedPersonalContext] = useState(activeNav === 'personalContext');
   // 诊断面板保活：切走再切回不丢流式输出（卸载会销毁流式状态并断 SSE）
   const [hasVisitedDiagnosis, setHasVisitedDiagnosis] = useState(activeNav === 'diagnosis');
+  // RSI 实验页左栏（实验管理栏）收起态；DST 无 dev 侧二级侧栏体系，用本地状态承载。
   const [sidebarMorePanelOpen, setSidebarMorePanelOpen] = useState(false);
   const [modelSetupGuideStep, setModelSetupGuideStep] = useState<ModelSetupGuideStep | null>(null);
   const [modelSetupGuideManual, setModelSetupGuideManual] = useState(false);
@@ -481,6 +505,13 @@ function AppContent() {
       setActiveNav('chat');
     }
   }, [activeNav, diagnosisEnabled]);
+
+  // RSI 开关关闭后残留的 sessionStorage 导航态不应继续渲染实验页。
+  useEffect(() => {
+    if (!rsiFeatureEnabled && activeNav === 'experiments') {
+      setActiveNav('chat');
+    }
+  }, [activeNav, rsiFeatureEnabled]);
 
   // 配额特性关闭时隐藏工作空间；申请页仅企业版 + 配额开，残留会话态回退对话页。
   useEffect(() => {
@@ -625,6 +656,7 @@ function AppContent() {
   const { setCurrentSession, setAvailableModels, setMode, setTeamLeaderMemberIds } = useSessionStore();
   const sessions = useSessionStore((s) => s.sessions);
   const currentSession = useSessionStore((s) => s.currentSession);
+  const [rsiHarnessDrafts, setRsiHarnessDrafts] = useState<Record<string, string>>({});
   const routeSessionId = route.kind === 'chat-session' ? route.sessionId : null;
   const projects = useWorkspaceStore((s) => s.projects);
   const sessionTitle = useMemo(() => {
@@ -1131,6 +1163,7 @@ function AppContent() {
     try {
       const config = await request<Record<string, unknown>>('config.get');
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
+      setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
       setTrajectoryUiEnabled(normalizeTrajectoryUiEnabled(config.trajectory_ui_enabled));
       setDiagnosisEnabled(normalizeDiagnosisEnabled(config.diagnosis_enabled));
       setServerConfig(config);
@@ -1160,6 +1193,19 @@ function AppContent() {
       console.warn('Failed to fetch models list:', error);
     }
   }, [enterpriseMode, request, t, setAvailableModels]);
+
+  useEffect(() => {
+    let active = true;
+    if (!isConnected) { setRSIFeatureEnabled(false); return; }
+    void webRequest<{ enabled: boolean }>('rsi.capabilities').then((result) => {
+      if (active) setRSIFeatureEnabled(result.enabled === true);
+    }).catch(() => { if (active) setRSIFeatureEnabled(false); });
+    return () => { active = false; };
+  }, [isConnected]);
+
+  useEffect(() => {
+    if (!rsiEnabled && activeNav === 'experiments') setActiveNav('chat');
+  }, [rsiEnabled, activeNav]);
 
   useEffect(() => {
     if (!FEATURE_APP_UPDATER_UI || !isConnected || startupUpdateCheckRef.current) {
@@ -2034,6 +2080,112 @@ function AppContent() {
     enterNewConversation(targetMode);
   }, [enterNewConversation, setMode]);
 
+  /**
+   * 专家团绑定前：保证有真实 session（欢迎页 ``new`` 会先 session.create），
+   * 再交给 ``team.binding.create`` + ``team.session.bind``。
+   */
+  const ensureSessionForExpertTeam = useCallback(async (): Promise<string> => {
+    const currentSessionId = sessionIdRef.current;
+    if (currentSessionId && currentSessionId !== NEW_CONVERSATION_ID) {
+      setMode(currentSessionId, 'team');
+      return currentSessionId;
+    }
+
+    if (creatingSessionRef.current) {
+      throw new Error(t('multiSession.errors.create'));
+    }
+    creatingSessionRef.current = true;
+    setMode(NEW_CONVERSATION_ID, 'team');
+    const newRuntime = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID);
+    const runtimeSettings = {
+      mode: 'team' as AgentMode,
+      selectedModelName: useSessionStore.getState().getEffectiveModelName(NEW_CONVERSATION_ID),
+      projectDir: newRuntime?.projectDirectory ?? null,
+    };
+    const baseWorkContext = getWorkContextForSession(NEW_CONVERSATION_ID);
+    const preservedProject = newConversationProjectRef.current;
+    const workContext = {
+      project_id: baseWorkContext.project_id || preservedProject?.project_id,
+      project_dir: baseWorkContext.project_dir || preservedProject?.project_dir,
+      work_mode: useWorkspaceStore.getState().workMode,
+    };
+    // 标题必须先空着：首条用户消息才会按内容自动命名（前后端都认 empty title）。
+    // 写死「专家团」/「未命名对话」都会挡住自动改名。
+    try {
+      const createParams: Record<string, unknown> = {
+        create_token: generateUuidV4(),
+        mode: 'team',
+        is_swarm: true,
+        title: '',
+        work_mode: workContext.work_mode,
+      };
+      const previousSession = newConversationPreviousSessionRef.current;
+      if (previousSession) {
+        createParams.previous_session_id = previousSession.sessionId;
+        createParams.previous_mode = previousSession.mode;
+      }
+      if (runtimeSettings.selectedModelName) {
+        createParams.model_name = runtimeSettings.selectedModelName;
+      }
+      if (workContext.project_id) {
+        createParams.project_id = workContext.project_id;
+      }
+      if (workContext.project_dir) {
+        createParams.project_dir = workContext.project_dir;
+      }
+      const created = await createConversationSession(request, createParams);
+      const newSid = created.session_id;
+      const createdSession = registerCreatedConversation(
+        created.session_id,
+        runtimeSettings,
+        Date.now(),
+        '',
+        {
+          project_id: created.project_id || workContext.project_id,
+          project_dir: created.project_dir || workContext.project_dir,
+          work_mode: created.work_mode || workContext.work_mode,
+        },
+      );
+      const pendingSkills = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID)?.selectedSkills ?? [];
+      pendingSkills.forEach((skill) => useSessionStore.getState().addSelectedSkill(newSid, skill));
+      useSessionStore.getState().clearSelectedSkills(NEW_CONVERSATION_ID);
+      if (usePlanStore.getState().isActive(NEW_CONVERSATION_ID)) {
+        usePlanStore.getState().setActive(newSid, true, {
+          explicitEntry: usePlanStore
+            .getState()
+            .hasPendingExplicitEntry(NEW_CONVERSATION_ID),
+        });
+      }
+      usePlanStore.getState().removeRuntime(NEW_CONVERSATION_ID);
+      pendingNewConversationRef.current = false;
+      useSessionStore.getState().removeRuntime(NEW_CONVERSATION_ID);
+      useWorkspaceStore.getState().upsertSession(createdSession, { isNew: true });
+      sessionIdsCreatedInThisPageRef.current.add(newSid);
+      useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
+      // 只建会话、尚未发消息，不要留在 processing
+      useChatStore.getState().setProcessing(newSid, false);
+      sessionIdRef.current = newSid;
+      setSessionId(newSid);
+      useChatStore.getState().setActiveSessionId(newSid);
+      navigate({ kind: 'chat-session', sessionId: newSid }, { replace: true });
+      newConversationProjectRef.current = null;
+      newConversationPreviousSessionRef.current = null;
+      return newSid;
+    } catch (error) {
+      console.error('Failed to create conversation for expert team bind:', error);
+      const quotaHit = isWorkspaceQuotaError(error);
+      setCreateErrorNotice(quotaHit
+        ? {
+          title: t('multiSession.errors.quotaExceededTitle'),
+          message: t('multiSession.errors.quotaExceeded'),
+        }
+        : { title: t('multiSession.errors.create') });
+      throw error instanceof Error ? error : new Error(t('multiSession.errors.create'));
+    } finally {
+      creatingSessionRef.current = false;
+    }
+  }, [navigate, request, setMode, t]);
+
   const handleSendMessage = useCallback(async (content: string, mediaItems?: MediaItem[]) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId) return;
@@ -2128,7 +2280,11 @@ function AppContent() {
           });
           setGoalObjective(newSid, content);
         } else {
-          const sent = await sendMessage(content, newSid, mediaItems);
+          const harnessId = rsiEnabled ? rsiHarnessDrafts[currentSessionId] : undefined;
+          const sent = await sendMessage(content, newSid, mediaItems, harnessId);
+          if (sent && harnessId !== undefined) {
+            setRsiHarnessDrafts(({ [currentSessionId]: _draft, ...rest }) => ({ ...rest, [newSid]: harnessId }));
+          }
           if (!sent) {
             useChatStore.getState().setInputValue(newSid, content);
           }
@@ -2153,7 +2309,9 @@ function AppContent() {
       return;
     }
     disposeInFlightHistoryHandles(currentSessionId);
-    const sent = await sendMessage(content, currentSessionId, mediaItems);
+    const sent = await sendMessage(
+      content, currentSessionId, mediaItems, rsiEnabled ? rsiHarnessDrafts[currentSessionId] : undefined,
+    );
     if (sent) {
       const sessionState = useSessionStore.getState();
       const session =
@@ -2164,7 +2322,7 @@ function AppContent() {
     } else {
       useChatStore.getState().setInputValue(currentSessionId, content);
     }
-  }, [disposeInFlightHistoryHandles, mode, navigate, request, sendMessage, setGoalObjective, t]);
+  }, [disposeInFlightHistoryHandles, mode, navigate, request, rsiEnabled, rsiHarnessDrafts, sendMessage, setGoalObjective, t]);
 
   const handlePersistMedia = useCallback((content: string, mediaItems: MediaItem[]) => {
     const currentSessionId = sessionIdRef.current;
@@ -2665,9 +2823,11 @@ function AppContent() {
   }, [deleteTarget, enterNewConversation, request, t]);
 
   const handleNavigate = useCallback((nav: MainNavKey) => {
-    if (enterpriseBlockedNav.has(nav)) return;
-    if (nav === 'agents' && !workspaceQuotaEnabled) return;
-    if (nav === 'approvals' && (!enterpriseMode || !workspaceQuotaEnabled)) return;
+    if (enterpriseBlockedNav.has(nav)) return false;
+    if (nav === 'agents' && !workspaceQuotaEnabled) return false;
+    if (nav === 'approvals' && (!enterpriseMode || !workspaceQuotaEnabled)) return false;
+    closeSidebarPeek();
+    setRsiOpenCreateNonce(0);
     setActiveNav(nav);
     if (modelSetupGuideStep === 1 && nav === 'configpanel') {
       setModelSetupGuideStep(2);
@@ -2676,7 +2836,8 @@ function AppContent() {
     if (nav === 'channels') setHasVisitedChannels(true);
     if (nav === 'personalContext') setHasVisitedPersonalContext(true);
     if (nav === 'diagnosis') setHasVisitedDiagnosis(true);
-  }, [enterpriseBlockedNav, enterpriseMode, modelSetupGuideStep, workspaceQuotaEnabled]);
+    return true;
+  }, [closeSidebarPeek, enterpriseBlockedNav, enterpriseMode, modelSetupGuideStep, workspaceQuotaEnabled]);
 
   const skipModelSetupGuide = useCallback(() => {
     setModelSetupGuideStep(null);
@@ -2804,7 +2965,12 @@ function AppContent() {
       {/* Navigation Sidebar */}
       <SessionSidebar
         activeNav={activeNav}
-        onNavigate={handleNavigate}
+        onNavigate={(nav) => {
+          if (handleNavigate(nav) && nav === 'experiments' && canPeekExperiments) {
+            openSidebarPeek('experiments');
+          }
+        }}
+        onExperimentHover={(hovering) => hoverSidebarPeek(hovering && canPeekExperiments ? 'experiments' : null)}
         appVersion={typeof serverConfig?.app_version === 'string' ? serverConfig.app_version : ''}
         isConnected={isConnected}
         onNewSession={handleNewSession}
@@ -2814,13 +2980,15 @@ function AppContent() {
           const base: MainNavKey[] = enterpriseMode
             ? ['sessions', 'history', ...ENTERPRISE_HIDDEN_NAV_ITEMS]
             : ['sessions', 'history', 'approvals'];
+          if (!rsiEnabled) base.push('experiments');
           const withDiagnosis = diagnosisEnabled ? base : [...base, 'diagnosis' as MainNavKey];
+          const withRsi = rsiFeatureEnabled ? withDiagnosis : [...withDiagnosis, 'experiments' as MainNavKey];
           if (workspaceQuotaEnabled) {
-            return withDiagnosis;
+            return withRsi;
           }
           return enterpriseMode
-            ? [...withDiagnosis, 'agents', 'approvals']
-            : [...withDiagnosis, 'agents'];
+            ? [...withRsi, 'agents', 'approvals']
+            : [...withRsi, 'agents'];
         })()}
         onMorePanelOpenChange={setSidebarMorePanelOpen}
       />
@@ -2836,6 +3004,19 @@ function AppContent() {
 
       {/* Main Content */}
       <main className={`content ${activeNav === 'chat' ? 'content--chat' : ''} ${activeNav === 'a2aingress' ? 'content--a2a' : ''} ${effectiveTeamAreaExpanded ? 'content--team-expanded' : ''}`}>
+        {canPeekExperiments && sidebarPeek === 'experiments' && (
+          <div className="rsi-rail-peek-host" {...peekSurfaceProps}>
+            <RsiRailPeek
+              onOpenExperiments={() => handleNavigate('experiments')}
+              onCreate={() => {
+                if (handleNavigate('experiments')) setRsiOpenCreateNonce(1);
+              }}
+              onPin={rsiNarrow ? undefined : () => {
+                if (handleNavigate('experiments')) setRsiRailCollapsed(false);
+              }}
+            />
+          </div>
+        )}
         {configError && (
           <div className="card mb-4">
             <div className="text-sm text-text-muted">
@@ -2877,7 +3058,16 @@ function AppContent() {
                 >
                   <SingleAgentSurface
                     activeView={chatSurfaceView}
-                    chat={<ChatPanel
+                    chat={<>
+                      {rsiEnabled && mode === 'agent' && (
+                        <RsiSessionHarnessPicker
+                          value={rsiHarnessDrafts[sessionId] ??
+                            (currentSession?.session_id === sessionId ? currentSession.rsi_harness_installation_id : undefined) ?? ''}
+                          disabled={isProcessing || isPaused}
+                          onChange={(value) => setRsiHarnessDrafts((drafts) => ({ ...drafts, [sessionId]: value }))}
+                        />
+                      )}
+                      <ChatPanel
                       onSendMessage={handleSendMessage}
                       onPersistMedia={handlePersistMedia}
                       onPersistDocuments={handlePersistDocuments}
@@ -2908,7 +3098,9 @@ function AppContent() {
                       onResumeGoal={resumeGoal}
                       onClearGoal={handleClearGoal}
                       onDrainTaskQueueIfIdle={drainTaskQueueIfIdle}
-                    />}
+                      ensureSessionForExpertTeam={ensureSessionForExpertTeam}
+                    />
+                    </>}
                     chatLabel={t('nav.chat')}
                     mode={mode}
                     onViewChange={selectChatSurfaceView}
@@ -2994,6 +3186,18 @@ function AppContent() {
                 typeof serverConfig?.gateway_web_session_storage === 'string' &&
                 serverConfig.gateway_web_session_storage.trim().toLowerCase() === 'remote'
               }
+            />
+          </div>
+        )}
+        {rsiEnabled && activeNav === 'experiments' && (
+          <div className="app-section">
+            <RsiPage
+              collapsed={rsiRailCollapsed}
+              onCollapse={() => {
+                closeSidebarPeek();
+                setRsiRailCollapsed(true);
+              }}
+              openCreateNonce={rsiOpenCreateNonce}
             />
           </div>
         )}

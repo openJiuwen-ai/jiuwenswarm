@@ -33,6 +33,14 @@ class SkillTurbo:
         """返回 executor 的节点产物 holder，供外部构建产物摘要。"""
         return self._executor.node_artifacts
 
+    def release_registered_tools(self) -> None:
+        """回收环境注册进进程级 resource_mgr 的工具实例（issue #5908）。
+
+        供调用方在 invocation 的 finally 中调用，防止每次调用（含 HITL
+        resume）泄漏一个 uuid id 的 send_file_to_user 实例。
+        """
+        self._env.release_registered_tools()
+
     def _sync_skill_name_to_inputs(self, inputs: dict[str, Any]) -> None:
         """[TEMP-EXTERNAL-SKILL] 把 planner 同步后的 env.skill_name 写入 inputs。"""
         skill_name = self._env.skill_name

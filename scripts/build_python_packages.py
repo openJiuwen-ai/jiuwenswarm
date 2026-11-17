@@ -13,7 +13,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SIDECAR_ROOT = ROOT / "packages" / "jiuwenswarm-tui"
 SIDE_CAR_DIST = SIDECAR_ROOT / "dist"
-JIUWENBOX_ROOT = ROOT / "jiuwenbox"
+# 运行时依赖是 pyproject 里的 git 包。这里只在显式打 jiuwenbox wheel 时
+# 使用本机源码树：同级 agent-security 优先，否则用本仓库残留的 jiuwenbox/。
+_EXTERNAL_JIUWENBOX = ROOT.parent / "agent-security" / "jiuwenbox"
+JIUWENBOX_ROOT = (
+    _EXTERNAL_JIUWENBOX
+    if (_EXTERNAL_JIUWENBOX / "pyproject.toml").is_file()
+    else ROOT / "jiuwenbox"
+)
 JIUWENBOX_DIST = JIUWENBOX_ROOT / "dist"
 TUI_ROOT = ROOT / "jiuwenswarm" / "channels" / "tui" / "frontend"
 
@@ -28,7 +35,11 @@ TUI_TARGETS = {
 
 
 def run(cmd: list[str], cwd: Path, env: dict[str, str] | None = None) -> None:
-    logging.info(f"[build] ({cwd.relative_to(ROOT) if cwd != ROOT else '.'}) {' '.join(cmd)}")
+    try:
+        shown = "." if cwd == ROOT else cwd.relative_to(ROOT)
+    except ValueError:
+        shown = cwd
+    logging.info(f"[build] ({shown}) {' '.join(cmd)}")
     subprocess.run(cmd, cwd=cwd, check=True, env=env)
 
 

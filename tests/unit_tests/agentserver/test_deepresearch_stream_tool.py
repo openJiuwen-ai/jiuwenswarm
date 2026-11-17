@@ -14,6 +14,7 @@ import sys
 import warnings
 import zipfile
 from contextlib import ExitStack, asynccontextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -191,6 +192,87 @@ def _stream_patches(proc: _Proc, *, route: dict[str, str] | None = None):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("via_binding", [True, False])
+async def test_flash_research_uses_the_bound_todo_workspace(tmp_path, monkeypatch, via_binding):
+    from openjiuwen.core.single_agent.rail.base import ToolCallInputs
+    from openjiuwen.core.sys_operation import LocalWorkConfig, OperationMode
+    from openjiuwen.core.sys_operation.local._rw_lock_manager import (
+        ReadWriteLockManager,
+    )
+    from openjiuwen.core.sys_operation.local.fs_operation import FsOperation
+    from openjiuwen.harness.tools.todo import TodoModifyTool
+
+    from jiuwenswarm.agents.harness.common.rails.progressive_tool_rail import (
+        ProgressiveToolRail,
+    )
+
+    await ReadWriteLockManager.stop()
+    monkeypatch.setattr(ReadWriteLockManager, "_lock_dir", tmp_path / "locks")
+    workspace = tmp_path / "agent_office" / "todo"
+    todo_path = workspace / "flash-todo" / "todo.json"
+    todo_path.parent.mkdir(parents=True)
+    todo_path.write_text(json.dumps({"plan_id": "P", "revision": 1, "todos": []}))
+    fs = FsOperation("fs", OperationMode.LOCAL, "test", LocalWorkConfig())
+    tool = TodoModifyTool(SimpleNamespace(fs=lambda: fs), str(workspace))
+    tool.snapshot_guard = AsyncMock()
+    proc = _Proc([])
+    consume = AsyncMock(return_value={"status": "interrupted"})
+    route = {
+        "request_id": "r", "channel_id": "officeclaw", "session_id": "flash-todo",
+        "agent_id": "office", "service_id": "default", "workspace_key": "default",
+        "todo_tool_provider": lambda: tool,
+    }
+    rail = ProgressiveToolRail(deepresearch_context_provider=lambda: route)
+    monkeypatch.setattr(rail, "_skill_gate_blocks_direct_call", AsyncMock(return_value=False))
+    call = SimpleNamespace(id="research-call", name="deepresearch_stream", arguments={"query": "q"})
+    ctx = SimpleNamespace(inputs=ToolCallInputs(tool_call=call, tool_name=call.name, tool_args=call.arguments), extra={})
+    real_get_route = dt._get_route
+    try:
+        with ExitStack() as stack:
+            for item in _stream_patches(proc, route=route):
+                stack.enter_context(item)
+            stack.enter_context(patch.object(dt, "_get_route", side_effect=real_get_route))
+            stack.enter_context(patch(
+                "jiuwenswarm.common.local_env_config.build_effective_env_overlay", return_value={},
+            ))
+            stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
+                                      return_value=(tool, "flash-todo") if via_binding else (None, None)))
+            stack.enter_context(patch(
+                "jiuwenswarm.agents.harness.common.tools.deepresearch.todo_progress.get_tenant_agent_workspace_dir",
+                return_value=tmp_path / "agent_default",
+            ))
+            stack.enter_context(patch.object(dt, "_consume_stream", consume))
+            await rail.before_tool_call(ctx)
+            try:
+                result = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
+            finally:
+                await rail.after_tool_call(ctx)
+        assert result["status"] == "interrupted"
+        actual_path, target = consume.await_args.kwargs["todo_context"]
+        assert actual_path == todo_path
+        assert target.plan_id == "P"
+    finally:
+        await ReadWriteLockManager.stop()
+
+
+@pytest.mark.asyncio
+async def test_flash_research_without_request_session_fails_before_spawn():
+    proc = _Proc([])
+    spawn = AsyncMock(return_value=proc)
+    tool = SimpleNamespace(snapshot_guard=object(), get_file_path=lambda sid: f"/todo/{sid}/todo.json")
+    with ExitStack() as stack:
+        for item in _stream_patches(proc, route={"session_id": ""}):
+            stack.enter_context(item)
+        stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
+                                  return_value=(tool, "flash-todo")))
+        stack.enter_context(patch("asyncio.create_subprocess_exec", spawn))
+        result = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
+    assert result["status"] == "error"
+    assert result["error"] == "DeepResearch stream failed: ValueError"
+    spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_flash_todo_capture_finishes_before_research_process_starts():
     proc = _Proc([])
     entered, release = asyncio.Event(), asyncio.Event()
@@ -198,7 +280,8 @@ async def test_flash_todo_capture_finishes_before_research_process_starts():
     target = object()
     route = {"session_id": "flash-todo", "workspace_key": "default"}
 
-    async def capture(_path):
+    async def capture(_path, **kwargs):
+        assert kwargs["session_id"] == "flash-todo"
         entered.set()
         await release.wait()
         return target
@@ -208,7 +291,9 @@ async def test_flash_todo_capture_finishes_before_research_process_starts():
         for item in _stream_patches(proc, route=route):
             stack.enter_context(item)
         stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
-                                  return_value=(SimpleNamespace(snapshot_guard=object()), "flash-todo")))
+                                  return_value=(SimpleNamespace(snapshot_guard=object(),
+                                                                get_file_path=lambda sid: f"/todo/{sid}/todo.json"),
+                                                "flash-todo")))
         stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target", capture))
         stack.enter_context(patch.object(dt, "_consume_stream", consume))
         stack.enter_context(patch("asyncio.create_subprocess_exec", spawn))
@@ -236,7 +321,9 @@ async def test_flash_resume_keeps_captured_todo_owner_and_revised_outline(tmp_pa
         for item in _stream_patches(proc, route=route):
             stack.enter_context(item)
         stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
-                                  return_value=(SimpleNamespace(snapshot_guard=object()), "flash-todo")))
+                                  return_value=(SimpleNamespace(snapshot_guard=object(),
+                                                                get_file_path=lambda sid: f"/todo/{sid}/todo.json"),
+                                                "flash-todo")))
         stack.enter_context(patch.object(dt, "deepresearch_todo_path", return_value=tmp_path / "todo.json"))
         stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target", AsyncMock(return_value=target)))
         stack.enter_context(patch.object(dt, "_resolve_outline_interaction_feedback", return_value=feedback))
@@ -257,13 +344,77 @@ async def test_flash_todo_capture_failure_does_not_start_research():
         for item in _stream_patches(proc, route={"session_id": "flash-todo"}):
             stack.enter_context(item)
         stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
-                                  return_value=(SimpleNamespace(snapshot_guard=object()), "flash-todo")))
+                                  return_value=(SimpleNamespace(snapshot_guard=object(),
+                                                                get_file_path=lambda sid: f"/todo/{sid}/todo.json"),
+                                                "flash-todo")))
         stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target",
                                         AsyncMock(side_effect=ValueError("missing Todo"))))
         stack.enter_context(patch("asyncio.create_subprocess_exec", spawn))
         result = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
     assert result["status"] == "error" and result["error_code"] == "stream_failed"
     spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("required", [False, True])
+@pytest.mark.parametrize("provider_raises", [False, True])
+@pytest.mark.parametrize("stale_binding", [False, True])
+async def test_missing_provider_obeys_the_current_host_todo_policy(required, provider_raises, stale_binding):
+    proc = _Proc([])
+    spawn = AsyncMock(return_value=proc)
+    consume = AsyncMock(return_value={"status": "interrupted"})
+    provider = Mock(side_effect=RuntimeError("owner unavailable")) if provider_raises else Mock(return_value=None)
+    stale_tool = SimpleNamespace(snapshot_guard=object()) if stale_binding else None
+    token = dt._deepresearch_route_ctx.set({
+        "todo_tool_provider": provider, "todo_owner_required": required,
+    })
+    try:
+        with ExitStack() as stack:
+            for item in _stream_patches(proc, route={"session_id": "current"}):
+                stack.enter_context(item)
+            stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
+                                      return_value=(stale_tool, "old")))
+            stack.enter_context(patch.object(dt, "_consume_stream", consume))
+            stack.enter_context(patch("asyncio.create_subprocess_exec", spawn))
+            result = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
+        if required:
+            assert result["status"] == "error" and result["error_code"] == "stream_failed"
+            spawn.assert_not_awaited()
+            consume.assert_not_awaited()
+        else:
+            assert result["status"] == "interrupted"
+            assert consume.await_args.kwargs["todo_context"] == (None, None)
+            spawn.assert_awaited_once()
+    finally:
+        dt._deepresearch_route_ctx.reset(token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("framework_error", [False, True])
+async def test_ordinary_todo_capture_failure_does_not_block_research(framework_error):
+    from openjiuwen.core.common.exception.codes import StatusCode
+    from openjiuwen.core.common.exception.errors import build_error
+
+    proc, spawn = _Proc([]), AsyncMock()
+    spawn.return_value = proc
+    consume = AsyncMock(return_value={"status": "interrupted"})
+    error = (build_error(StatusCode.TOOL_TODOS_LOAD_FAILED, reason="unsupported backend")
+             if framework_error else RuntimeError("unsupported backend"))
+    with ExitStack() as stack:
+        for item in _stream_patches(proc, route={"session_id": "ordinary"}):
+            stack.enter_context(item)
+        stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
+                                  return_value=(SimpleNamespace(snapshot_guard=None,
+                                                                get_file_path=lambda sid: f"/todo/{sid}/todo.json"),
+                                                "ordinary")))
+        stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target",
+                                         AsyncMock(side_effect=error)))
+        stack.enter_context(patch.object(dt, "_consume_stream", consume))
+        stack.enter_context(patch("asyncio.create_subprocess_exec", spawn))
+        result = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
+    assert result["status"] == "interrupted"
+    assert consume.await_args.kwargs["todo_context"] == (None, None)
+    spawn.assert_awaited_once()
 
 
 def test_config_frame_accepts_exact_limit_and_rejects_one_byte_over():
@@ -470,6 +621,204 @@ async def test_stream_sends_explicit_report_type_in_config_frame_only(report_typ
     frame = json.loads(bytes(proc.stdin.data))
     assert frame["config"]["REPORT_TYPE"] == report_type
     assert "REPORT_TYPE" not in spawn.await_args.kwargs["env"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["start", "resume"])
+async def test_stream_forwards_model_http_headers_in_config_frame_only(action, monkeypatch):
+    """Collect this round's extension headers before either child launch path."""
+    expected = {
+        "x-officeace-client": "miniprogram|vivo|trial",
+        "x-officeace-message-meta": "research|session-A|request-A|question",
+        "x-span-id": "extension-span",
+    }
+    calls = []
+
+    async def trigger(event, context):
+        calls.append((event, context.api_base, context.model_name, context.request_scope))
+        context.scoped_headers.update(expected)
+        context.scoped_headers.update({"Authorization": "forbidden", "x-bad": "a\r\nb"})
+        context.extra_body["unrelated"] = "not-forwarded"
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.registry.ExtensionRegistry.trigger_if_initialized", trigger,
+    )
+    proc = _Proc([json.dumps({"__deepsearch_status__": "interrupted",
+                             "agent": "feedback_handler", "conversation_id": "C1"})])
+    patches = _stream_patches(proc, route={"session_id": "session-A", "request_id": "request-A",
+                                          "channel_id": "officeclaw"})
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        await dt.deepresearch_stream._func(
+            action=action, query="q", conversation_id="C1", node="stopped",
+        )
+        spawn = patches[5].new
+
+    frame = json.loads(proc.stdin.data)
+    assert json.loads(frame["config"]["LLM_CUSTOM_HEADERS"]) == expected
+    assert calls == [("agent_server:before_model_http", "https://llm.invalid/v1", "model",
+                      ("session-A", "request-A"))]
+    assert frame["version"] == 1
+    assert "extra_body" not in frame["config"]
+    assert "LLM_CUSTOM_HEADERS" not in spawn.await_args.kwargs["env"]
+    assert all(value not in str(spawn.await_args.args) for value in expected.values())
+
+
+@pytest.mark.parametrize("with_query", [False, True])
+def test_optional_headers_do_not_overflow_stdin_frame(with_query, caplog):
+    query = None
+    config = _valid_config()
+    if with_query:
+        query = "q" * (dt.DEEPRESEARCH_QUERY_FRAME_MAX_BYTES - 1000)
+    else:
+        config["FILLER"] = "q" * (dt.DEEPRESEARCH_CONFIG_MAX_BYTES - 1000)
+    baseline = dt._encode_deepresearch_config(config, request_query=query)
+    header_value = "private-attribution-marker" * 100
+    config["LLM_CUSTOM_HEADERS"] = json.dumps({"x-officeace-message-meta": header_value})
+    oversized_payload = json.loads(baseline)
+    oversized_payload["config"] = config
+    oversized_frame = json.dumps(oversized_payload, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
+    assert dt._encode_deepresearch_config(config, request_query=query) == baseline
+    limit = dt.DEEPRESEARCH_QUERY_FRAME_MAX_BYTES if with_query else dt.DEEPRESEARCH_CONFIG_MAX_BYTES
+    assert ("query frame" if with_query else "config frame") in caplog.text
+    assert f"size_bytes={len(oversized_frame)} limit_bytes={limit}" in caplog.text
+    assert header_value not in caplog.text
+
+
+def test_unrecoverable_frame_overflow_does_not_log_header_fallback(caplog):
+    config = _valid_config(
+        FILLER="q" * dt.DEEPRESEARCH_CONFIG_MAX_BYTES,
+        LLM_CUSTOM_HEADERS='{"x-officeace-client":"pc"}',
+    )
+    with pytest.raises(ValueError, match="config frame exceeds"):
+        dt._encode_deepresearch_config(config)
+    assert "LLM_CUSTOM_HEADERS" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_scoped_research_drops_legacy_unbound_hook_output(monkeypatch):
+    async def trigger(event, context):
+        context.headers["x-officeace-message-meta"] = "chat|other|old|unbound"
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.registry.ExtensionRegistry.trigger_if_initialized", trigger,
+    )
+    proc = _Proc()
+    with ExitStack() as stack:
+        for item in _stream_patches(proc, route={"session_id": "session-A", "request_id": "request-A",
+                                                  "channel_id": "officeclaw"}):
+            stack.enter_context(item)
+        await dt.deepresearch_stream._func(action="start", query="q")
+    assert "LLM_CUSTOM_HEADERS" not in json.loads(proc.stdin.data)["config"]
+
+
+def test_model_http_header_config_is_redacted_from_child_errors():
+    raw = '{"x-private-tag":"sensitive-attribution"}'
+    config = _valid_config(LLM_CUSTOM_HEADERS=raw)
+    secrets = dt._config_secret_values(config)
+    assert dt._redact_known_secrets(f"child error: {raw}", secrets) == "child error: [REDACTED]"
+
+
+def test_model_http_public_labels_do_not_redact_report_text():
+    config = _valid_config(LLM_CUSTOM_HEADERS='{"x-officeace-client":"pc"}')
+    secrets = dt._config_secret_values(config)
+    assert dt._redact_known_secrets("pc and rpc usage", secrets) == "pc and rpc usage"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["uninitialized", "empty", "error"])
+async def test_stream_without_model_http_headers_keeps_legacy_frame(mode, monkeypatch):
+    async def trigger(event, context):
+        if mode == "error":
+            context.scoped_headers["x-partial"] = "discard-on-failure"
+            raise RuntimeError("extension failed")
+        return mode != "uninitialized"
+
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.registry.ExtensionRegistry.trigger_if_initialized", trigger,
+    )
+    proc = _Proc([json.dumps({"__deepsearch_status__": "error",
+                             "error_code": "workflow_error", "error": "done"})])
+    with ExitStack() as stack:
+        for item in _stream_patches(proc):
+            stack.enter_context(item)
+        await dt.deepresearch_stream._func(action="start", query="q")
+    assert json.loads(proc.stdin.data)["config"] == _valid_config()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_streams_keep_model_http_headers_request_scoped(monkeypatch):
+    current_headers = ContextVar("test_model_http_headers")
+
+    async def trigger(event, context):
+        await asyncio.sleep(0)
+        context.scoped_headers.update(current_headers.get())
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.registry.ExtensionRegistry.trigger_if_initialized", trigger,
+    )
+    processes = [_Proc(), _Proc()]
+    patches = _stream_patches(processes[0])
+
+    async def run(request_id):
+        token = current_headers.set({"x-officeace-message-meta": request_id})
+        try:
+            await dt.deepresearch_stream._func(action="start", query=request_id)
+        finally:
+            current_headers.reset(token)
+
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        stack.enter_context(patch.object(dt, "_build_deepresearch_request_config",
+                                        side_effect=lambda **kwargs: _valid_config()))
+        stack.enter_context(patch("asyncio.create_subprocess_exec",
+                                  new=AsyncMock(side_effect=processes)))
+        await asyncio.gather(run("request-A"), run("request-B"))
+
+    headers = [json.loads(json.loads(proc.stdin.data)["config"]["LLM_CUSTOM_HEADERS"])
+               for proc in processes]
+    assert headers == [{"x-officeace-message-meta": "request-A"},
+                       {"x-officeace-message-meta": "request-B"}]
+
+
+@pytest.mark.asyncio
+async def test_real_child_receives_model_http_headers_from_stdin(tmp_path, monkeypatch):
+    expected = {"x-officeace-client": "miniprogram",
+                "x-officeace-message-meta": "research|session-A|request-A|question"}
+
+    async def trigger(event, context):
+        context.scoped_headers.update(expected)
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.registry.ExtensionRegistry.trigger_if_initialized", trigger,
+    )
+    captured = tmp_path / "received-config.json"
+    real_spawn = asyncio.create_subprocess_exec
+    child_script = (
+        "import json, pathlib, sys; "
+        "frame = json.loads(sys.stdin.buffer.readline()); "
+        "pathlib.Path(sys.argv[1]).write_text(json.dumps(frame), encoding='utf-8'); "
+        "print(json.dumps({'__deepsearch_status__': 'error', "
+        "'error_code': 'workflow_error', 'error': 'transport test complete'}), flush=True)"
+    )
+
+    async def spawn_child(*args, **kwargs):
+        return await real_spawn(sys.executable, "-c", child_script, str(captured), **kwargs)
+
+    with ExitStack() as stack:
+        for item in _stream_patches(_Proc()):
+            stack.enter_context(item)
+        stack.enter_context(patch("asyncio.create_subprocess_exec", new=spawn_child))
+        await dt.deepresearch_stream._func(action="start", query="q")
+
+    frame = json.loads(captured.read_text(encoding="utf-8"))
+    assert json.loads(frame["config"]["LLM_CUSTOM_HEADERS"]) == expected
 
 
 @pytest.mark.asyncio
@@ -1969,7 +2318,8 @@ def _race_route() -> dict[str, str]:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("delivery", ["stream", "stop_race"])
-async def test_unbound_todo_logs_skip_without_blocking_report(tmp_path, delivery):
+@pytest.mark.parametrize("capture_failure", [False, True])
+async def test_unbound_todo_logs_skip_without_blocking_report(tmp_path, delivery, capture_failure):
     frame = {
         "__deepsearch_status__": "completed", "conversation_id": "C1",
         "final_result": {
@@ -1990,6 +2340,9 @@ async def test_unbound_todo_logs_skip_without_blocking_report(tmp_path, delivery
         for item in _stream_patches(proc, route=_race_route()):
             stack.enter_context(item)
         stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool", return_value=(None, None)))
+        if capture_failure:
+            stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target",
+                                             AsyncMock(side_effect=RuntimeError("unsupported backend"))))
         stack.enter_context(patch.object(dt, "deepresearch_todo_path", return_value=path))
         stack.enter_context(patch.object(dt, "persist_deepresearch_task_update", persist))
         stack.enter_context(patch.object(dt, "WebSocketGatewayPushTransport", return_value=push))
@@ -7024,3 +7377,252 @@ async def test_native_mcp_is_transmitted_only_in_stdin_and_context_is_reset(foll
     assert dt._mcp_servers_ctx.get() is None
     assert dt._deepresearch_upgrade_snapshot_ctx.get() is None
     assert dt._deepresearch_brief_refresh_query_ctx.get() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content_type,extension", [("text/markdown", "md"), ("text/html", "html")])
+async def test_main_agent_plan_keeps_progress_without_overwriting_todos(tmp_path: Path, content_type: str, extension: str):
+    proc = _Proc(
+        [
+            json.dumps({"__deepsearch_status__": "started", "conversation_id": "C1"}),
+            json.dumps({"agent": "outline", "content": "# 1. Scope"}),
+            json.dumps(
+                {
+                    "agent": "sub_reporter",
+                    "section_idx": "1",
+                    "section_total": 1,
+                    "event": "summary_response",
+                    "content": "SUCCESS",
+                }
+            ),
+            json.dumps(
+                {
+                    "__deepsearch_status__": "completed",
+                    "conversation_id": "C1",
+                    "final_result": {
+                        "response_content": "final",
+                        "response_content_type": content_type,
+                        "response_markdown": "# SDK report\n\nMarkdown body.",
+                    },
+                }
+            ),
+        ]
+    )
+    route = {
+        "request_id": "R",
+        "channel_id": "CH",
+        "session_id": "S",
+        "service_id": "default",
+        "agent_id": "default",
+    }
+    push = AsyncMock()
+    persist = Mock(return_value=True)
+    patches = _stream_patches(proc, route=route)
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        stack.enter_context(patch.object(dt, "WebSocketGatewayPushTransport", return_value=push))
+        stack.enter_context(patch.object(dt, "deepresearch_todo_path", return_value=tmp_path / "todo.json"))
+        stack.enter_context(patch.object(dt, "persist_deepresearch_task_update", persist))
+        stack.enter_context(
+            patch.object(
+                dt,
+                "_write_report_artifacts_stream",
+                new=AsyncMock(return_value={"md": str(tmp_path / "r.md")}),
+            )
+        )
+        stack.enter_context(patch.object(dt, "_write_report_html", new=AsyncMock(return_value=str(tmp_path / "r.html"))))
+        stack.enter_context(patch.object(dt, "_get_effective_request_output_dir", return_value=tmp_path))
+        scope_token = dt._deepresearch_process_scope_ctx.set(("todo:research", "call-1"))
+        token = dt._deepresearch_main_agent_plan_ctx.set(True)
+        try:
+            outcome = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
+        finally:
+            dt._deepresearch_main_agent_plan_ctx.reset(token)
+            dt._deepresearch_process_scope_ctx.reset(scope_token)
+    assert outcome["status"] == "completed"
+    payloads = [call.args[0]["payload"] for call in push.send_push.await_args_list]
+    assert not any(item.get("event_type") == "task.update" for item in payloads)
+    assert any(item.get("event_type") == "task.start" for item in payloads)
+    assert any(item.get("event_type") == "task.complete" for item in payloads)
+    process = [item for item in payloads if item.get("event_type") in {"task.start", "task.complete", "chat.reasoning"}]
+    assert process
+    assert all(item["task_id"] == "todo:research" for item in process)
+    assert all(item["stream_source_id"].startswith("deepresearch:call-1:") for item in process)
+    assert not any(item.get("event_type") == "chat.file" for item in payloads)
+    primary, *companions = outcome["report_files"]
+    assert primary == {"path": str(tmp_path / f"r.{extension}"), "name": f"r.{extension}", "mime_type": content_type}
+    if content_type == "text/html":
+        companion, = companions
+        assert companion["mime_type"] == "text/markdown"
+        assert Path(companion["path"]).read_text(encoding="utf-8").strip() == "# SDK report\n\nMarkdown body."
+    else:
+        assert companions == []
+    assert outcome["report_prepared"] is True
+    assert outcome["report_delivered"] is False
+    persist.assert_not_called()
+
+
+@pytest.mark.parametrize("node", ["dr_outline", "deepresearch_section_1", "deepresearch_final_report"])
+def test_main_agent_process_frames_share_explicit_owner_and_lifecycle_identity(node):
+    token = dt._deepresearch_process_scope_ctx.set(("todo:research", "workflow-1"))
+    try:
+        frames = []
+        for event in ("task.start", "chat.reasoning", "task.complete"):
+            payload = {"event_type": event, "task_id": "deepresearch_stage_3",
+                       "stream_source_id": node, "task_content": "检索资料 - 检索并评估全报告证据"}
+            original = dict(payload)
+            scoped = dt._scope_main_agent_process(payload)
+            assert payload == original
+            assert scoped["task_id"] == "todo:research"
+            assert scoped["skill_call_id"] == "workflow-1"
+            assert scoped["skill_node_id"] == node
+            assert scoped["source_chunk_type"] == "process"
+            assert scoped["task_content"] == "检索资料"
+            frames.append(scoped)
+        assert len({item["stream_source_id"] for item in frames}) == 1
+        assert dt._scope_main_agent_process({"event_type": "chat.file", "files": []}) == {"event_type": "chat.file", "files": []}
+    finally:
+        dt._deepresearch_process_scope_ctx.reset(token)
+    assert dt._scope_main_agent_process(original) == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["salvage", "race"])
+async def test_main_agent_recovery_prepares_files_without_frontend_delivery(path, tmp_path):
+    send = AsyncMock(return_value=True)
+    push = AsyncMock()
+    token = dt._deepresearch_main_agent_plan_ctx.set(True)
+    try:
+        with patch.object(dt, "_get_effective_request_output_dir", return_value=tmp_path), \
+             patch.object(dt, "WebSocketGatewayPushTransport", return_value=push), \
+             patch.object(dt, "_locate_salvage_report", return_value={"response_content": "body", "citation_artifacts": {}}), \
+             patch.object(dt, "_write_report_artifacts_stream", new=AsyncMock(return_value=({"md": "/out/report.md"}, None, None, None))), \
+             patch.object(dt, "_write_report_html", new=AsyncMock(return_value="/out/report.html")):
+            if path == "salvage":
+                outcome = await dt._deliver_salvaged_report(route=_race_route(), conversation_id="C1", file_name="report", send=send, reason="test")
+            else:
+                outcome = await dt._deliver_race_completed_report(
+                    chunk={"__deepsearch_status__": "completed", "conversation_id": "C1", "final_result": {"response_content": "<html>report</html>", "response_content_type": "text/html", "response_markdown": "# SDK report"}},
+                    route=_race_route(), conversation_id="C1", file_name="report", secrets=())
+    finally:
+        dt._deepresearch_main_agent_plan_ctx.reset(token)
+    assert outcome["report_prepared"] is True
+    assert outcome["report_delivered"] is False
+    files = outcome["report_files"]
+    assert [file["mime_type"] for file in files] == (
+        ["text/html", "text/markdown"] if path == "race" else ["text/markdown"]
+    )
+    if path == "race":
+        assert Path(files[1]["path"]).read_text(encoding="utf-8").strip() == "# SDK report"
+    assert not any(c.args[0].get("event_type") == "chat.file" for c in send.await_args_list)
+    assert not any(c.args[0]["payload"].get("event_type") == "chat.file" for c in push.send_push.await_args_list)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["stream", "race"])
+async def test_main_agent_keeps_native_html_when_companion_write_fails(path, tmp_path, caplog):
+    route = _race_route()
+    native_html = "<!doctype html><html><body>Brief</body></html>"
+    final_result = {
+        "response_content": native_html,
+        "response_content_type": "text/html",
+        "response_markdown": "# SDK report",
+    }
+    private_detail = "private-companion-write-detail"
+    push = AsyncMock()
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(dt, "WebSocketGatewayPushTransport", return_value=push))
+        stack.enter_context(patch.object(dt, "_get_effective_request_output_dir", return_value=tmp_path))
+        write_markdown = stack.enter_context(
+            patch.object(dt, "_write_report_markdown", side_effect=PermissionError(private_detail))
+        )
+        token = dt._deepresearch_main_agent_plan_ctx.set(True)
+        stack.callback(dt._deepresearch_main_agent_plan_ctx.reset, token)
+        if path == "stream":
+            proc = _Proc(_completed_stream_lines(final_result))
+            for item in _stream_patches(proc, route=route):
+                stack.enter_context(item)
+            outcome = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
+        else:
+            outcome = await dt._deliver_race_completed_report(
+                chunk={"__deepsearch_status__": "completed", "conversation_id": "C1", "final_result": final_result},
+                route=route, conversation_id="C1", file_name="report", secrets=(),
+            )
+
+    write_markdown.assert_called_once()
+    assert outcome["status"] == "completed"
+    assert outcome["report_prepared"] is True
+    assert outcome["report_delivered"] is False
+    html_file, = outcome["report_files"]
+    assert html_file["mime_type"] == "text/html"
+    assert Path(html_file["path"]).read_text(encoding="utf-8") == native_html
+    assert not any(c.args[0]["payload"].get("event_type") == "chat.file" for c in push.send_push.await_args_list)
+    assert "PermissionError" in caplog.text
+    assert private_detail not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["primary_write", "cancelled"])
+async def test_native_html_artifacts_propagate_primary_failures_and_cancellation(failure, tmp_path):
+    final_result = {"response_content": "<html>Brief</html>", "response_markdown": "# Brief"}
+    error = OSError if failure == "primary_write" else asyncio.CancelledError
+    write_html = AsyncMock(side_effect=error) if failure == "primary_write" else AsyncMock(
+        return_value=str(tmp_path / "r.html")
+    )
+    token = dt._deepresearch_main_agent_plan_ctx.set(True)
+    try:
+        with patch.object(dt, "_write_report_html", write_html), \
+             patch.object(dt, "_write_report_markdown", side_effect=asyncio.CancelledError) as write_markdown:
+            with pytest.raises(error):
+                await dt._write_native_html_artifacts(final_result, "report", "C1")
+            assert write_markdown.call_count == (0 if failure == "primary_write" else 1)
+    finally:
+        dt._deepresearch_main_agent_plan_ctx.reset(token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("main_agent,send_ok", [(True, False), (False, False), (False, True)])
+async def test_report_file_delivery_ownership(main_agent, send_ok):
+    payload = {"event_type": "chat.file", "files": [{"path": "/out/report.html"}]}
+    send = AsyncMock(return_value=send_ok)
+    token = dt._deepresearch_main_agent_plan_ctx.set(main_agent)
+    try:
+        result = await dt._publish_report_files(payload, send)
+    finally:
+        dt._deepresearch_main_agent_plan_ctx.reset(token)
+    assert result is (main_agent or send_ok)
+    if main_agent:
+        send.assert_not_awaited()
+    else:
+        send.assert_awaited_once_with(payload)
+
+
+@pytest.mark.asyncio
+async def test_main_agent_brief_caches_source_without_claiming_frontend_delivery(tmp_path):
+    route = _brief_upgrade_route()
+    proc = _Proc(_completed_stream_lines({
+        "response_content": "# Brief", "metadata": _brief_upgrade_metadata(),
+    }))
+    push = AsyncMock()
+    token = dt._deepresearch_main_agent_plan_ctx.set(True)
+    try:
+        with ExitStack() as stack:
+            for item in _stream_patches(proc, route=route):
+                stack.enter_context(item)
+            stack.enter_context(patch.object(dt, "WebSocketGatewayPushTransport", return_value=push))
+            stack.enter_context(patch.object(dt, "_write_report_artifacts_stream", new=AsyncMock(
+                return_value={"md": str(tmp_path / "r.md")},
+            )))
+            outcome = json.loads(await dt.deepresearch_stream._func(
+                action="start", query="研究新能源汽车", report_type="brief",
+            ))
+        assert outcome["report_prepared"] is True
+        assert outcome["report_delivered"] is False
+        assert "brief_report" not in outcome
+        assert outcome["brief_upgrade_available"] is True
+        assert dt._get_brief_upgrade_record(route)["report_path"] == str(tmp_path / "r.md")
+        assert not any(c.args[0]["payload"].get("event_type") == "chat.file" for c in push.send_push.await_args_list)
+    finally:
+        dt._deepresearch_main_agent_plan_ctx.reset(token)
+        dt._BRIEF_UPGRADE_RECORDS.pop(dt._outline_cache_key(route), None)

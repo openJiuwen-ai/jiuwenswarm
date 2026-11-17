@@ -88,6 +88,58 @@ def test_apply_inject_patch_filters_tools_kwarg(
     assert [tool_card_name(t) for t in calls["tools"]] == ["bash"]
 
 
+def test_fork_filter_register_retries_after_sdk_appears(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import builtins
+    import sys
+    import types
+
+    import openjiuwen.harness.factory as factory
+    from jiuwenswarm.agents.harness.common.tools.subagent_executor import (
+        excluded_spawn_tools as mod,
+    )
+
+    module_name = "openjiuwen.harness.subagent_runtime.fork_build"
+    saved = sys.modules.pop(module_name, None)
+    monkeypatch.setattr(mod, "_FILTER_REGISTERED", False)
+
+    def _inject(*_args: Any, **_kwargs: Any) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(factory, "_inject_general_purpose_subagent", _inject)
+    real_import = builtins.__import__
+
+    def _block(name, globals=None, locals=None, fromlist=(), level=0):
+        if str(name).endswith("fork_build"):
+            raise ImportError("missing")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _block)
+    try:
+        assert mod.apply_inject_general_purpose_excluded_tools_patch() is True
+        assert mod._FILTER_REGISTERED is False
+    finally:
+        monkeypatch.undo()
+        if saved is not None:
+            sys.modules[module_name] = saved
+
+    calls: list[Any] = []
+    fake = types.ModuleType(module_name)
+
+    def _register(fn: Any) -> None:
+        calls.append(fn)
+
+    fake.register_inherited_tool_filter = _register
+    monkeypatch.setattr(mod, "_FILTER_REGISTERED", False)
+    monkeypatch.setattr(factory, "_inject_general_purpose_subagent", _inject)
+    monkeypatch.setitem(sys.modules, module_name, fake)
+    assert mod.apply_inject_general_purpose_excluded_tools_patch() is True
+    assert calls == [mod.filter_excluded_spawn_tools]
+    assert mod.apply_inject_general_purpose_excluded_tools_patch() is True
+    assert len(calls) == 1
+
+
 @pytest.mark.asyncio
 async def test_subagent_permission_rail_rejects_excluded_spawn_tool() -> None:
     """Execution-time deep defense: EXCLUDED_TOOLS_SPAWN always rejected."""
@@ -113,3 +165,33 @@ async def test_subagent_permission_rail_rejects_excluded_spawn_tool() -> None:
 
     rail._skip_tool.assert_called_once()
     assert "_interrupt_decision" in ctx.extra
+
+
+def test_fork_filter_register_error_still_patches_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    import types
+
+    import openjiuwen.harness.factory as factory
+    from jiuwenswarm.agents.harness.common.tools.subagent_executor import (
+        excluded_spawn_tools as mod,
+    )
+
+    module_name = "openjiuwen.harness.subagent_runtime.fork_build"
+    fake = types.ModuleType(module_name)
+
+    def _boom(_fn: Any) -> None:
+        raise RuntimeError("register failed")
+
+    fake.register_inherited_tool_filter = _boom
+    monkeypatch.setitem(sys.modules, module_name, fake)
+    monkeypatch.setattr(mod, "_FILTER_REGISTERED", False)
+
+    def _inject(*_args: Any, **_kwargs: Any) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(factory, "_inject_general_purpose_subagent", _inject)
+    assert mod.apply_inject_general_purpose_excluded_tools_patch() is True
+    assert getattr(factory, "_inject_general_purpose_subagent") is not _inject
+    assert mod._FILTER_REGISTERED is False

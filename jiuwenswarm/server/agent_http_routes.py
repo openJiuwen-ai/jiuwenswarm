@@ -127,6 +127,21 @@ ROUTES: list[RouteSpec] = [
     RouteSpec("POST", "/chat/{session_id}/actions/steer", ReqMethod.CHAT_STEER.value),
     RouteSpec("POST", "/chat/{session_id}/actions/steer/status", ReqMethod.CHAT_STEER_STATUS.value),
     RouteSpec("POST", "/chat/{session_id}/actions/answer", ReqMethod.CHAT_ANSWER.value),
+    RouteSpec(
+        "POST",
+        "/sessions/{session_id}/swarmflow/actions/pause",
+        ReqMethod.SWARMFLOW_PAUSE.value,
+    ),
+    RouteSpec(
+        "POST",
+        "/sessions/{session_id}/swarmflow/actions/resume",
+        ReqMethod.SWARMFLOW_RESUME.value,
+    ),
+    RouteSpec(
+        "POST",
+        "/sessions/{session_id}/swarmflow/actions/stop",
+        ReqMethod.SWARMFLOW_STOP.value,
+    ),
     # --- 命令 ---
     RouteSpec("POST", "/sessions/{session_id}/commands", ReqMethod.COMMAND_SESSION.value),
     RouteSpec("POST", "/sessions/{session_id}/commands/compact", ReqMethod.COMMAND_COMPACT.value),
@@ -140,6 +155,7 @@ ROUTES: list[RouteSpec] = [
     RouteSpec("POST", "/mcp/servers", ReqMethod.MCP_SERVER_ADD.value),
     RouteSpec("POST", "/mcp/servers/remove", ReqMethod.MCP_SERVER_REMOVE.value),
     RouteSpec("POST", "/mcp/servers/update", ReqMethod.MCP_SERVER_UPDATE.value),
+    RouteSpec("POST", "/mcp/servers/rescan", ReqMethod.MCP_SERVER_RESCAN.value),
     RouteSpec("GET", "/mcp/servers", ReqMethod.MCP_SERVER_LIST.value),
     RouteSpec("GET", "/mcp/servers/{name}", ReqMethod.MCP_SERVER_GET.value),
     RouteSpec("POST", "/sessions/{session_id}/commands/sandbox", ReqMethod.COMMAND_SANDBOX.value),
@@ -176,6 +192,12 @@ ROUTES: list[RouteSpec] = [
         "POST",
         "/teams/{team_name}/sessions/{session_id}/bind",
         ReqMethod.TEAM_SESSION_BIND.value,
+    ),
+    # Dissolve is session-scoped (unbind / clear generated team without path team_name).
+    RouteSpec(
+        "POST",
+        "/sessions/{session_id}/team/runtime/dissolve",
+        ReqMethod.TEAM_RUNTIME_DISSOLVE.value,
     ),
     # 这三个都是**按会话**查询（handler 读 params.session_id），因此挂在会话下。
     RouteSpec("GET", "/sessions/{session_id}/team/snapshot", ReqMethod.TEAM_SNAPSHOT.value),

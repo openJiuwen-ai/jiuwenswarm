@@ -199,6 +199,7 @@ async def test_deferred_deepresearch_rebinds_trusted_adapter_context():
         agent_id=agent_id,
     )
     target = AsyncMock()
+    todo_tool = object()
 
     async def _invoke(_arguments, **_kwargs):
         assert get_task_env_overlay() == {
@@ -212,6 +213,9 @@ async def test_deferred_deepresearch_rebinds_trusted_adapter_context():
             "agent_id": agent_id,
         }
         assert dt._get_effective_request_output_dir() == Path(output_dir).resolve()
+        assert dt._todo_workspace_key(dt._get_route()) == "tenant-workspace"
+        assert dt._deepresearch_route_ctx.get()["todo_tool_provider"]() is todo_tool
+        assert dt._deepresearch_route_ctx.get()["todo_owner_required"] is True
         return "ok"
 
     target.invoke.side_effect = _invoke
@@ -224,6 +228,9 @@ async def test_deferred_deepresearch_rebinds_trusted_adapter_context():
             "session_id": "session",
             "service_id": service_id,
             "agent_id": agent_id,
+            "workspace_key": "tenant-workspace",
+            "todo_tool_provider": lambda: todo_tool,
+            "todo_owner_required": True,
             "output_dir": output_dir,
         },
     )
@@ -256,7 +263,8 @@ async def test_deferred_deepresearch_rebinds_trusted_adapter_context():
 
 
 @pytest.mark.asyncio
-async def test_skill_activated_deepresearch_entry_rebinds_trusted_adapter_context():
+@pytest.mark.parametrize("tool_name", ["deepresearch_execute", "deepresearch_stream"])
+async def test_skill_activated_deepresearch_entry_rebinds_trusted_adapter_context(tool_name):
     service_id = "progressive-eager-service"
     agent_id = "office"
     shared_root = "/trusted/office-claw-skills"
@@ -265,9 +273,8 @@ async def test_skill_activated_deepresearch_entry_rebinds_trusted_adapter_contex
         service_id=service_id,
         agent_id=agent_id,
     )
-    agent = SimpleNamespace(
-        ability_manager=SimpleNamespace(list=lambda: [de.deepresearch_execute.card]),
-    )
+    tool = dt.deepresearch_stream if tool_name == "deepresearch_stream" else de.deepresearch_execute
+    agent = SimpleNamespace(ability_manager=SimpleNamespace(list=lambda: [tool.card]))
     rail = ProgressiveToolRail(
         eager_tools=["tools_search", "invoke_tool"],
         active_skill_provider=lambda: "deepresearch",
@@ -281,13 +288,13 @@ async def test_skill_activated_deepresearch_entry_rebinds_trusted_adapter_contex
         },
     )
     tool_call = SimpleNamespace(
-        id="call-1", name="deepresearch_execute", arguments={"query": "q"}
+        id="call-1", name=tool_name, arguments={"query": "q"}
     )
     ctx = SimpleNamespace(
         agent=agent,
         inputs=ToolCallInputs(
             tool_call=tool_call,
-            tool_name="deepresearch_execute",
+            tool_name=tool_name,
             tool_args=tool_call.arguments,
         ),
         extra={},
@@ -300,11 +307,41 @@ async def test_skill_activated_deepresearch_entry_rebinds_trusted_adapter_contex
         }
         assert dt._get_route()["service_id"] == service_id
         assert dt._get_route()["agent_id"] == agent_id
+        assert dt._get_route()["session_id"] == "session"
+        assert dt._get_route()["request_id"] == "request"
         await rail.after_tool_call(ctx)
         assert get_task_env_overlay() is None
         assert dt._get_route()["service_id"] == "default"
     finally:
         clear_agent_env_ns(service_id, agent_id)
+
+
+@pytest.mark.asyncio
+async def test_direct_stream_contexts_do_not_leak_between_sessions():
+    both_bound = asyncio.Event()
+    count = 0
+
+    async def observe(session_id):
+        nonlocal count
+        rail = ProgressiveToolRail(deepresearch_context_provider=lambda: {
+            "session_id": session_id, "request_id": session_id, "channel_id": "officeclaw",
+        })
+        rail._skill_gate_blocks_direct_call = AsyncMock(return_value=False)
+        call = SimpleNamespace(id=session_id, name="deepresearch_stream", arguments={})
+        ctx = SimpleNamespace(inputs=ToolCallInputs(tool_call=call, tool_name=call.name, tool_args={}), extra={})
+        await rail.before_tool_call(ctx)
+        try:
+            count += 1
+            if count == 2:
+                both_bound.set()
+            await both_bound.wait()
+            return dt._get_route()["session_id"]
+        finally:
+            await rail.after_tool_call(ctx)
+
+    with patch("jiuwenswarm.common.local_env_config.build_effective_env_overlay", return_value={}):
+        assert await asyncio.gather(observe("session-a"), observe("session-b")) == ["session-a", "session-b"]
+    assert dt._get_route()["session_id"] == ""
 
 
 def test_unregistered_deepresearch_prefix_does_not_receive_tenant_context():
@@ -433,15 +470,25 @@ async def test_deferred_tool_lookup_keeps_default_timeout_boundary():
         "tool_name": "missing_deferred",
     }
 
-@pytest.mark.parametrize('permission,allowed', [(None, False), ('ask', False), ('deny', False), ('allow', True)])
-def test_material_paths_require_explicit_read_permission(permission, allowed):
-    from openjiuwen.harness.security.models import PermissionLevel
+@pytest.mark.asyncio
+@pytest.mark.parametrize('permission,allowed', [('ask', False), ('deny', False), ('allow', True)])
+async def test_material_paths_require_explicit_read_permission(permission, allowed):
+    from uuid import uuid4
+    from agent_shield.tool_permission import get_permission_manager
+    key = f"test:material:{uuid4()}"
+    manager = get_permission_manager()
+    manager.update_config(
+        {'enabled': True, 'tools': {'read_file': permission}}, key,
+    )
     adapter = SimpleNamespace(_current_request_route={'materials_context': {
         'files': [{'path': '/uploaded/a.txt', 'name': 'a.txt'}], 'scope': 's', 'original_query': '参考附件'}},
         _resolve_permission_config_for_agent=Mock(return_value={'enabled': True}),
-        _permission_rail=SimpleNamespace(_engine=SimpleNamespace(check_tool_permission_directly=Mock(
-            return_value=(PermissionLevel(permission) if permission else None, None)))))
-    context = interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
+        _permission_rail=SimpleNamespace(permission_key=key),
+    )
+    try:
+        context = await interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
+    finally:
+        manager.remove_config(key)
     assert context['files'][0]['read_allowed'] is allowed
     assert 'read_allowed' not in adapter._current_request_route['materials_context']['files'][0]
 
@@ -464,7 +511,7 @@ async def test_disabled_permissions_prepare_current_request_material(tmp_path):
         _permission_rail=None,
         _resolve_permission_config_for_agent=resolve_config,
     )
-    context = interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
+    context = await interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
     reference = await prepare_materials(context, 'e7c43dd6-2d6e-4093-8c97-4d894fd0fef1')
     payload = json.loads(Path(reference['path']).read_text())
     assert payload['materials'][0]['content'] == attachment.read_text()
@@ -473,26 +520,42 @@ async def test_disabled_permissions_prepare_current_request_material(tmp_path):
     assert 'read_allowed' not in adapter._current_request_route['materials_context']['files'][0]
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize('config', [
     {'enabled': True}, {}, {'enabled': None}, {'enabled': 'false'}, {'enabled': 0}, None, [],
 ])
-def test_missing_material_permission_engine_stays_closed(config):
+async def test_missing_material_permission_engine_stays_closed(config):
     adapter = SimpleNamespace(
         _current_request_route={'materials_context': {'files': [{'path': '/uploaded/a.txt'}]}},
         _permission_rail=None,
         _resolve_permission_config_for_agent=Mock(return_value=config),
     )
-    context = interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
+    context = await interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
     assert context['files'][0]['read_allowed'] is False
 
 
-def test_material_permission_config_failure_stays_closed():
-    check = Mock(return_value=('allow', None))
+@pytest.mark.asyncio
+async def test_material_permission_config_failure_stays_closed(monkeypatch):
+    """配置解析失败必须短路 fail-closed：即使 Manager 会放行也不得查询。"""
+    from uuid import uuid4
+
+    from agent_shield.tool_permission import get_permission_manager
+
+    key = f"test:material:{uuid4()}"
+    manager = get_permission_manager()
+    manager.update_config({"enabled": True, "tools": {"read_file": "allow"}}, key)
+
+    async def _must_not_consult(*args, **kwargs):
+        raise AssertionError("config failure must short-circuit before the manager")
+
+    monkeypatch.setattr(manager, "check_permission", _must_not_consult)
     adapter = SimpleNamespace(
         _current_request_route={'materials_context': {'files': [{'path': '/uploaded/a.txt'}]}},
-        _permission_rail=SimpleNamespace(_engine=SimpleNamespace(check_tool_permission_directly=check)),
+        _permission_rail=SimpleNamespace(permission_key=key),
         _resolve_permission_config_for_agent=Mock(side_effect=RuntimeError('configuration unavailable')),
     )
-    context = interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
-    assert context['files'][0]['read_allowed'] is False
-    check.assert_not_called()
+    try:
+        context = await interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
+        assert context['files'][0]['read_allowed'] is False
+    finally:
+        manager.remove_config(key)

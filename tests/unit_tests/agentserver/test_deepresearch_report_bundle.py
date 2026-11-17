@@ -295,19 +295,44 @@ def test_build_report_bundle_cleans_only_owned_resources_after_publication_failu
     assert not (chart_dir / "second.png").exists()
 
 
-def test_build_report_bundle_cleans_owned_resources_after_rewrite_failure(tmp_path):
+def test_build_report_bundle_cleans_owned_resources_after_rewrite_failure(
+    tmp_path, monkeypatch
+):
     report_base = tmp_path / "report-v1"
 
-    with pytest.raises(ValueError):
+    def fail_rewrite(*args, **kwargs):
+        raise ValueError("injected chart rewrite failure")
+
+    monkeypatch.setattr(bundle_module, "_rewrite_chart_placeholders", fail_rewrite)
+    with pytest.raises(ValueError, match="injected chart rewrite failure"):
         build_report_bundle(
             _payload(
-                response_content="(#insertChart:../escape)",
+                response_content="(#insertChart:chart-a)",
                 chart_messages=[_chart("chart-a")],
             ),
             report_base,
         )
 
     assert not (tmp_path / "report-v1_charts").exists()
+
+
+@pytest.mark.parametrize("placeholder_id", ["../escape", "图表一", "chart a"])
+def test_build_report_bundle_keeps_invalid_chart_placeholder_as_is(
+    tmp_path, placeholder_id
+):
+    bundle = build_report_bundle(
+        _payload(
+            response_content=(
+                f"(#insertChart:{placeholder_id})\n(#insertChart:chart-a)"
+            ),
+            chart_messages=[_chart("chart-a")],
+        ),
+        tmp_path / "report-v1",
+    )
+
+    assert f"(#insertChart:{placeholder_id})" in bundle.markdown_text
+    assert "![Chart chart-a](report-v1_charts/chart-a.png)" in bundle.markdown_text
+    assert (tmp_path / "report-v1_charts" / "chart-a.png").exists()
 
 
 @pytest.mark.skipif(

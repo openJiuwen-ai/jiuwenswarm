@@ -137,6 +137,9 @@ _SUBAGENT_PERMISSION_APPROVAL_TIMEOUT = 120.0
 # ACP keeps native session/request_permission JSON-RPC — do not hijack it.
 _HOSTED_PERMISSION_CHANNELS = frozenset({"web", "officeclaw", "tui"})
 
+# web / tui 直接展示后端 options；其余 hosted 通道使用自定义权限卡按钮文案。
+_CUSTOM_OPTION_HINT_CHANNELS = _HOSTED_PERMISSION_CHANNELS - {"web", "tui"}
+
 _HOSTED_ALLOW_ONCE_LABELS = frozenset({
     "本次允许",
     "允许",
@@ -558,6 +561,10 @@ class PermissionRailBuildOptions:
     resolve_workspace_dir: Any | None = None
     persist_target_agent_id_provider: Any | None = None
     rail_factory: Callable[..., Any] | None = None
+    # Identity dims for resolve_permission_key (enterprise triad; personal unused).
+    group_id: str | None = None
+    bot_id: str | None = None
+    user_id: str | None = None
 
 
 def build_permission_rail(
@@ -566,12 +573,16 @@ def build_permission_rail(
 ) -> Any | None:
     """Build openjiuwen PermissionInterruptRail for tool permission checks.
 
+    Single factory for Deep/Code/Flash adapters and Team swarm members.
+    Returns ``None`` when permissions are disabled, or when construction fails
+    (warning + None — same fail-open assembly as pre-security-migration).
+
     Args:
         config: Agent config dict containing permissions section
         options: Optional LLM / permission-body / workspace persist inputs.
 
     Returns:
-        PermissionInterruptRail instance or None if disabled
+        PermissionInterruptRail instance, or None if disabled / create failed.
     """
     opts = options or PermissionRailBuildOptions()
     llm = opts.llm
@@ -655,26 +666,57 @@ def build_permission_rail(
         tool_names, llm is not None, model_name,
     )
     try:
+        # Filled after the rail is constructed so persist (1B) can call update_config.
+        rail_box: dict[str, Any] = {}
+
         def _persist_allow_rule(permissions: dict[str, Any]) -> bool:
-            """Persist merged `permissions` config back to config.yaml.
+            """Persist merged `permissions` then refresh the rail (1B).
 
             openjiuwen PermissionInterruptRail calls this when user selects "always allow".
 
             Mutate only approval_overrides / file_guard / external_directory on the
             persist target body (yaml ``agents[id]`` when hit, else global). Do not
             replace the entire on-disk section — that would recreate deleted tools
-            or drop the ``agents`` table.
+            or drop the ``agents`` table.  On success call ``rail.update_config``.
             """
             try:
                 from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
-                    persist_permissions_mutate,
+                    persist_permissions_mutate, get_permissions_session_id,
+                    setup_permissions_agent_base, reset_permissions_agent_base,
                 )
+
+                rail = rail_box.get("rail")
+                if rail is None:
+                    logger.warning("[InterruptHelpers] persist failed: permission rail missing")
+                    return False
+                sid = get_permissions_session_id() if is_enterprise() else None
+                if is_enterprise() and not sid:
+                    logger.warning(
+                        "[InterruptHelpers] persist failed: missing session key=%s session=%s",
+                        rail.permission_key, sid,
+                    )
+                    return False
+
+                tools_delta = {}
+                base = None
+                if is_enterprise():
+                    from agent_shield.tool_permission import get_permission_manager
+
+                    # This is a configuration write, not a tool decision. Bind
+                    # this owner's baseline; supervisor tasks may lack agent-base context.
+                    base = copy.deepcopy(dict(get_permission_manager().get_config(rail.permission_key)))
+                    before = merge_session_permissions_overlay(base, session_id=sid)
+                    before_tools = before.get("tools") or {}
+                    tools_delta = {name: value for name, value in (permissions.get("tools") or {}).items()
+                                   if before_tools.get(name) != value}
 
                 persist_target = None
                 if callable(persist_target_agent_id_provider):
                     persist_target = persist_target_agent_id_provider()
 
                 def mutate(perms: dict[str, Any]) -> None:
+                    if tools_delta:
+                        perms.setdefault("tools", {}).update(copy.deepcopy(tools_delta))
                     overrides_new = permissions.get("approval_overrides")
                     if overrides_new is not None:
                         perms["approval_overrides"] = copy.deepcopy(overrides_new)
@@ -685,12 +727,26 @@ def build_permission_rail(
                     if ext_dir_new is not None:
                         perms["external_directory"] = copy.deepcopy(ext_dir_new)
 
-                persist_permissions_mutate(
-                    mutate,
-                    persist_scope="session" if is_enterprise() else "base",
-                    persist_target_agent_id=persist_target,
-                    source="persist_allow_rule",
-                )
+                if is_enterprise():
+                    token = setup_permissions_agent_base(base)
+                    try:
+                        effective = persist_permissions_mutate(
+                            mutate, session_id=sid, persist_scope="session", source="persist_allow_rule",
+                        )
+                    finally:
+                        reset_permissions_agent_base(token)
+                    # 会话级记住只留内存 overlay，不再 publish / 热更 Manager。
+                    _ = effective
+                else:
+                    persist_permissions_mutate(
+                        mutate, persist_scope="base", persist_target_agent_id=persist_target,
+                        source="persist_allow_rule",
+                    )
+                    from jiuwenswarm.agents.harness.common.rails.permissions.permission_runtime import (
+                        update_permission_config,
+                    )
+
+                    update_permission_config(rail, permissions)
                 return True
             except Exception as exc:
                 logger.warning("[InterruptHelpers] persist_allow_rule failed: %s", exc)
@@ -870,6 +926,8 @@ def build_permission_rail(
                     inp.tool_args,
                     channel_id=str(getattr(perm_ctx, "channel_id", "") or ""),
                     session_id=None,
+                    permission_key=inp.permission_key,
+                    owner_scopes=permission_rail.projection_config_for(inp.ctx).get("owner_scopes", {}),
                 )
                 if level == "allow":
                     return ("approve",)
@@ -880,7 +938,8 @@ def build_permission_rail(
             if not principal_user_id or not channel_id:
                 return None
 
-            perm_cfg = get_effective_permissions_config()
+            # owner_scopes 是发布时保留的路由元数据；SDK 判定只收 key。
+            perm_cfg = permission_rail.projection_config_for(inp.ctx)
             owner_scopes = perm_cfg.get("owner_scopes") if isinstance(perm_cfg, dict) else None
             if not isinstance(owner_scopes, dict) or not owner_scopes:
                 return None
@@ -892,21 +951,26 @@ def build_permission_rail(
             if owner_level is None:
                 return None
             if owner_level == "allow":
-                # 有 ACTIVE Skill overlay 时强制走 engine，避免 owner allow 绕过 overlay 收紧。
-                if _has_active_skill_overlay(
-                    inp.ctx, getattr(permission_rail, "_skill_scope_resolver", None),
-                ):
-                    return None
-                return ("approve",)
+                # owner allow 不能绕过 NetGuard 或其他组件的 DENY。
+                return None
             return ("reject", f"[PERMISSION_DENIED] 该工具未被授权 (owner_scopes: {owner_level})")
 
         def _get_permissions_snapshot():
+            if is_enterprise():
+                from agent_shield.tool_permission import get_permission_manager
+                from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import get_permissions_session_id
+
+                rail = rail_box.get("rail")
+                if rail is None:
+                    raise RuntimeError("Permission persistence owner is unavailable")
+                base = dict(get_permission_manager().get_config(rail.permission_key))
+                return merge_session_permissions_overlay(base, session_id=get_permissions_session_id())
             # 企业版 Agent 模板 rail：工具校验跑在 DeepAgent supervisor Task
             # （start_interaction 时 create_task），不会继承请求 Task 上的
             # PERMISSIONS_AGENT_BASE；若这里再走 get_effective_permissions_config()
             # 会回落 yaml（常为 enabled:false）并覆盖模板配置。
-            # 返回 None → 使用 _static_config（请求开头 _update_permission_rail
-            # 与 persist 的 update_config 会刷新它）。
+            # 返回 None → rail 保持已发布的 _static_config（请求开头
+            # _update_permission_rail 与 persist 的 update_config 会刷新它）。
             if config_source == "agent_template":
                 return None
             return get_effective_permissions_config()
@@ -956,6 +1020,15 @@ def build_permission_rail(
                 exc_info=True,
             )
 
+        from jiuwenswarm.agents.harness.common.rails.permissions.permission_key import (
+            resolve_permission_key,
+        )
+
+        permission_key = resolve_permission_key(
+            group_id=opts.group_id,
+            bot_id=opts.bot_id,
+            user_id=opts.user_id,
+        )
         rail_factory = opts.rail_factory or rail_cls
         permission_rail = rail_factory(
             config=permission_config,
@@ -963,10 +1036,14 @@ def build_permission_rail(
             llm=llm,
             model_name=model_name,
             host=host,
+            permission_key=permission_key,
         )
+        rail_box["rail"] = permission_rail
         logger.info(
-            "[InterruptHelpers] PermissionInterruptRail created successfully with tool_names=%s",
-            tool_names
+            "[InterruptHelpers] PermissionInterruptRail created successfully "
+            "with tool_names=%s key=%s",
+            tool_names,
+            permission_key,
         )
     except Exception as exc:
         logger.warning("[InterruptHelpers] PermissionInterruptRail create failed: %s", exc)
@@ -1374,6 +1451,11 @@ _PERMANENT_REMEMBER_HINT_RE = re.compile(
     r"[；;]?\s*选择「永久记住」[^。\n]*[。.]?",
 )
 
+_UNIFIED_OPTION_HINT = (
+    "\n\n> 选择「本次允许」仅放行本次调用；"
+    "选择「关闭安全审计」将关闭安全审计，后续工具调用不再询问。"
+)
+
 
 def _default_interrupt_options() -> list[dict[str, str]]:
     """权限审批默认选项。
@@ -1404,6 +1486,15 @@ def _is_permanent_remember_option(option: dict[str, Any]) -> bool:
 def _strip_permanent_remember_hint(message: str) -> str:
     cleaned = _PERMANENT_REMEMBER_HINT_RE.sub("", message or "")
     return cleaned.strip()
+
+
+def _rewrite_option_label_hint(message: str) -> str:
+    """把上游选项提示统一改写为前端实际按钮文案。"""
+    return re.sub(
+        r"\n\n>\s*选择「[^」]+」[^\n]*",
+        _UNIFIED_OPTION_HINT,
+        message or "",
+    )
 
 
 def _plan_approval_interrupt_options(
@@ -1518,8 +1609,15 @@ def extract_question_from_interaction(payload: Any) -> dict | None:
         question = message
         if source == "permission_interrupt":
             question = apply_permission_intent(question, tool_name, tool_args)
-        if is_enterprise() and source == "permission_interrupt":
-            question = _strip_permanent_remember_hint(question)
+            from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
+                TOOL_PERMISSION_CHANNEL_ID,
+            )
+
+            channel = (TOOL_PERMISSION_CHANNEL_ID.get() or "").strip().lower()
+            if channel in _CUSTOM_OPTION_HINT_CHANNELS:
+                question = _rewrite_option_label_hint(question)
+            elif is_enterprise():
+                question = _strip_permanent_remember_hint(question)
 
     return {
         "question": question,

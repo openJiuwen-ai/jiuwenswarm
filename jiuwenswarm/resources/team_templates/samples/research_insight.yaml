@@ -1,0 +1,45 @@
+# Sample expert-team template for local jiuwen experience / QA.
+# Loaded via resources/team_templates/samples/ (not config.yaml).
+# Disable with JIUWENSWARM_TEAM_SAMPLES=0.
+# Historically verified: create-then-bind yields research-lead / analyst / writer.
+template_id: sample_research_insight
+display_name: 研究洞察（样例）
+team_name: sample_research_insight
+lifecycle: persistent
+sample: true
+expose_in_catalog: true
+teammate_mode: build_mode
+# Lock the expert roster: Leader keeps analyst/writer only (no spawn_*).
+team_mode: predefined
+spawn_mode: inprocess
+enable_swarmflow: false
+max_debate_rounds: 3
+enable_permissions: false
+
+leader:
+  member_name: research-lead
+  display_name: 研究负责人
+  persona: "擅长拆解调研问题、分配分析与撰稿，并对结论做交叉核验。"
+
+agents:
+  leader: $agent_leader
+  teammate: $agent_teammate
+
+predefined_members:
+  - member_name: analyst
+    display_name: 分析师
+    role_type: teammate
+    persona: "负责收集事实与数据，输出可引用的要点与不确定性说明。"
+  - member_name: writer
+    display_name: 撰稿
+    role_type: teammate
+    persona: "把分析结果整理成结构清晰、面向读者的简报。"
+
+workspace:
+  enabled: true
+
+transport:
+  type: inprocess
+
+storage:
+  type: sqlite

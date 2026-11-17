@@ -174,14 +174,28 @@ def resolve_dissolve_keep_members(
                 snapshot = copy.deepcopy(entity.template_snapshot)
 
         if snapshot is not None:
-            snapshot = reconcile_session_team_snapshot(
-                session_id=session_id,
-                team_name=team_name,
-                template_id=template_id,
-                frozen_snapshot=snapshot,
-                config_base=config_base,
-                sessions_root=sessions_root,
-            )
+            skip_reconcile = False
+            try:
+                from jiuwenswarm.server.runtime.swarm_skill_session import (
+                    should_skip_live_template_reconcile,
+                )
+            except ImportError:
+                should_skip_live_template_reconcile = None  # type: ignore[assignment]
+            if callable(should_skip_live_template_reconcile):
+                skip_reconcile = bool(should_skip_live_template_reconcile(metadata))
+
+            if skip_reconcile:
+                # Keep frozen open-library snapshot for session-generated teams.
+                pass
+            else:
+                snapshot = reconcile_session_team_snapshot(
+                    session_id=session_id,
+                    team_name=team_name,
+                    template_id=template_id,
+                    frozen_snapshot=snapshot,
+                    config_base=config_base,
+                    sessions_root=sessions_root,
+                )
         else:
             # No frozen copy anywhere: take the live template directly.
             if not isinstance(config_base, dict):

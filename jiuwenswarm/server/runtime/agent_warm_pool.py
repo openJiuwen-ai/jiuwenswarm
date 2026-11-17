@@ -565,6 +565,7 @@ class AgentWarmPool:
                         mode=key.agent_mode,
                         project_dir=key.project_dir or None,
                         sub_mode=key.agent_sub_mode,
+                        session_id=session_id,
                     )
                     if agent is None:
                         raise RuntimeError("agent creation returned None")
@@ -754,7 +755,19 @@ class AgentWarmPool:
         finally:
             if pinned:
                 self._manager.unpin_agent(agent)
-            self.clear_marker(session_id)
+            try:
+                await self._manager.cleanup_session_runtime(
+                    channel_id=channel_id, session_id=session_id
+                )
+            except Exception:
+                logger.warning(
+                    "Warm pool session cleanup failed: channel_id=%s session_id=%s",
+                    channel_id,
+                    session_id,
+                    exc_info=True,
+                )
+            finally:
+                self.clear_marker(session_id)
 
     async def _dispose_slot(self, slot: WarmSlot) -> None:
         await self._dispose_runtime(

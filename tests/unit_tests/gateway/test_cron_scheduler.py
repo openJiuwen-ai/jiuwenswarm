@@ -335,6 +335,10 @@ class TestCronLastSessionId:
         await svc.run_tasks[run_id]
 
         assert agent.released_sessions == ["cron_agentserver_allocated"]
+        cleanup = [env for env in agent.unary_requests if env.request_id == "cron-cleanup-cron_agentserver_allocated"]
+        assert len(cleanup) == 1
+        assert cleanup[0].channel_context["_jiuwenswarm_cancel_source"] == "cron_complete"
+        assert cleanup[0].session_id == "cron_agentserver_allocated"
 
     @pytest.mark.asyncio
     async def test_finished_run_keeps_slot_when_followup_is_inflight(self, tmp_path):
@@ -949,6 +953,58 @@ class TestReloadGhostTaskCleanup:
         assert len(push_update_events_after) == 0
 
 
+class TestReloadManualRunEvents:
+    """reload() must not drop the one-shot events of a pending run_now run (#5586)."""
+
+    @pytest.mark.asyncio
+    async def test_reload_keeps_pending_manual_run_events(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store)
+        svc = _make_scheduler(store)
+        await svc.reload()
+
+        info = await svc.trigger_run_now_info(job.id)
+        run_id = info["run_id"]
+        assert svc.runs[run_id].manual_trigger is True
+
+        # A concurrent store write (e.g. create/update) reloads the queue.
+        await svc.reload()
+
+        kinds = sorted(ev.kind for _, _, ev in svc.events if ev.run_id == run_id)
+        assert kinds == ["push", "wake"]
+
+    @pytest.mark.asyncio
+    async def test_reload_drops_manual_run_events_after_completion(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store)
+        svc = _make_scheduler(store)
+        await svc.reload()
+
+        info = await svc.trigger_run_now_info(job.id)
+        run_id = info["run_id"]
+        svc.runs[run_id].status = "succeeded"
+
+        await svc.reload()
+
+        assert [ev for _, _, ev in svc.events if ev.run_id == run_id] == []
+
+    @pytest.mark.asyncio
+    async def test_reload_drops_manual_run_events_when_job_removed(self, tmp_path):
+        store_file = tmp_path / "cron_jobs.json"
+        store = CronJobStore(path=store_file)
+        job = await _create_one_job(store)
+        svc = _make_scheduler(store)
+        await svc.reload()
+
+        info = await svc.trigger_run_now_info(job.id)
+        run_id = info["run_id"]
+        store_file.unlink()
+
+        await svc.reload()
+
+        assert [ev for _, _, ev in svc.events if ev.run_id == run_id] == []
+
+
 # ── Ghost task CancelledError: no push_update scheduling ──────────────────────────
 
 
@@ -1213,7 +1269,7 @@ class TestTeamModeWake:
         await task
 
         assert len(agent.stream_requests) == 1
-        assert len(agent.unary_requests) == 0
+        assert agent.unary_requests == []
         env = agent.stream_requests[0]
         assert env.is_stream is True
         assert env.channel == "tui"
@@ -1240,7 +1296,7 @@ class TestTeamModeWake:
         assert task is not None
         await task
 
-        assert len(agent.unary_requests) == 1
+        assert len(agent.unary_requests) == 2
         assert len(agent.stream_requests) == 1
         create_env = agent.unary_requests[0]
         env = agent.stream_requests[0]

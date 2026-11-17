@@ -150,7 +150,7 @@ server/
 │   ├── steering.py                   # CHAT_STEER / CHAT_STEER_STATUS：中途引导
 │   ├── team.py                       # TEAM_* 全域：templates / bindings / session_bind / snapshot / mq_publish / members / tasks_dependencies
 │   ├── commands.py                   # COMMAND_*：workflows / compact / recap / diff / context / status / model / ...
-│   ├── mcp.py / mcp_servers.py       # MCP：command.mcp + mcp_server.add/remove/update/list/get
+│   ├── mcp.py / mcp_servers.py       # MCP：command.mcp + mcp_server.add/remove/update/list/get/rescan
 │   ├── extensions.py                 # EXTENSIONS / HOOKS / HARNESS_PACKAGES
 │   ├── permissions.py                # permissions.* 动态注册（get_permissions_config_req_methods）
 │   ├── schedule.py                   # schedule.* / issue.* 共用 handle_schedule_request，按 action 分派

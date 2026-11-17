@@ -244,6 +244,15 @@ def requests_request(method: str, url: str, **kwargs: Any) -> requests.Response:
     method_up = method.upper()
     kwargs = prepare_requests_kwargs(url, kwargs)
     kwargs.setdefault("verify", _requests_verify())
+    from openjiuwen.core.common.security.outbound import outbound_permission_key
+
+    if outbound_permission_key() is not None:
+        from openjiuwen.core.common.security.outbound_http import requests_request as guarded_request
+
+        # 兼容旧网页工具默认 verify=False；受保护传输始终验证 TLS，保留自定义 CA 路径。
+        if kwargs.get("verify") is False:
+            kwargs["verify"] = True
+        return guarded_request(method_up, url, proxy_resolver=resolve_requests_proxies, **kwargs)
     session = _get_session()
     try:
         return session.request(method_up, url, **kwargs)

@@ -301,6 +301,10 @@ def test_build_member_rails_wires_trajectory_span_processor_to_evolution_rails(
             )
 
     monkeypatch.delenv("EVOLUTION_REVIEW_TRIGGER", raising=False)
+    # Pin the passive trigger so a developer/CI dotenv cannot flip the
+    # expected default (team members run signal scans, not review follow-ups).
+    monkeypatch.setenv("EVOLUTION_SIGNAL_TRIGGER", "true")
+    monkeypatch.delenv("EVOLUTION_AUTO_SCAN", raising=False)
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.team.team_runtime_inheritance.get_trajectory_span_processor",
         lambda: processor,

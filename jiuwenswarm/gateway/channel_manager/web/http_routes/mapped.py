@@ -212,6 +212,18 @@ _LOCALE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     ),
 )
 
+_SENSITIVE_MASK_ROUTES: tuple[WebHttpMappedRoute, ...] = (
+    WebHttpMappedRoute(
+        "GET", "/sensitive-mask", "sensitive_mask.get_conf",
+        "sensitive-mask", "读网页回答脱敏开关和正则列表",
+    ),
+    WebHttpMappedRoute(
+        "PUT", "/sensitive-mask", "sensitive_mask.set_conf",
+        "sensitive-mask", "写网页回答脱敏开关和正则列表",
+        accept_body=True,
+    ),
+)
+
 _CRON_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     WebHttpMappedRoute(
         "GET", "/cron/jobs", "cron.job.list",
@@ -339,6 +351,7 @@ SETTINGS_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     *_A2A_OUTBOUND_ROUTES,
     *_MODELS_ROUTES,
     *_LOCALE_ROUTES,
+    *_SENSITIVE_MASK_ROUTES,
     *_CRON_ROUTES,
     *_IM_HOSTING_ROUTES,
 )

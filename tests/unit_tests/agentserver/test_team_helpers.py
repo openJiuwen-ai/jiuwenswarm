@@ -67,6 +67,15 @@ class _InactiveTeamRuntimeManagerMixin:
         self._workflow_completed: dict[str, bool] = {}
         self._round_complete_emitted: dict[str, bool] = {}
 
+    def get_background_task_controller(self, session_id: str):
+        # Real TeamManager owns the per-session controller; the helpers reach it
+        # through get_team_manager(), so a patched manager must serve one too.
+        from openjiuwen.agent_teams.runtime.background_task_controller import BackgroundTaskController
+
+        return self.__dict__.setdefault("_test_controllers", {}).setdefault(
+            session_id, BackgroundTaskController()
+        )
+
     @staticmethod
     def owns_stream_task(session_id: str, task: asyncio.Task | None) -> bool:
         return True
@@ -423,6 +432,15 @@ def _write_team_skill(tmp_path, name: str, *, records: list[dict] | None = None)
         encoding="utf-8",
     )
     return str(skills_dir)
+
+
+def _patch_team_skills_dir(monkeypatch, skills_dir: str) -> None:
+    """Point team slash/evolution lookups at a fixture library (not the process primary dir)."""
+    monkeypatch.setattr(
+        team_helpers,
+        "_team_spec_skills_dir",
+        lambda _team_spec: skills_dir,
+    )
 
 
 def _write_regular_skill(tmp_path, name: str, *, records: list[dict] | None = None) -> str:
@@ -1529,11 +1547,12 @@ async def test_handle_team_slash_command_allows_evolve_rollback(monkeypatch, tmp
 
 @pytest.mark.anyio
 async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch, tmp_path):
-    _write_team_skill(
+    skills_dir = _write_team_skill(
         tmp_path,
         "demo-skill",
         records=[_evolution_record("First summary line")],
     )
+    _patch_team_skills_dir(monkeypatch, skills_dir)
     captured_spec: list[object] = []
     captured_context: list[dict] = []
 
@@ -1593,7 +1612,8 @@ async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch,
 
 @pytest.mark.anyio
 async def test_process_team_message_stream_handles_evolve_rebuild(monkeypatch, tmp_path):
-    _write_team_skill(tmp_path, "demo-skill")
+    skills_dir = _write_team_skill(tmp_path, "demo-skill")
+    _patch_team_skills_dir(monkeypatch, skills_dir)
     rebuild_calls: list[dict] = []
 
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
@@ -1921,7 +1941,6 @@ async def test_process_team_message_stream_restarts_round_after_shutdown_race(mo
 
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         interact_calls: list[tuple[str, str]] = []
-        skills_ready_calls: list[tuple[str, str]] = []
         stream_active = True
 
         @classmethod
@@ -1941,10 +1960,6 @@ async def test_process_team_message_stream_restarts_round_after_shutdown_race(mo
                 "deliver_to_leader_failed:[123023] deepagent runtime error, "
                 "reason: NativeHarness already stopped.",
             )
-
-        @classmethod
-        def ensure_team_shared_skills_ready_for_session(cls, session_id: str, team_spec: object):
-            cls.skills_ready_calls.append((session_id, team_spec.team_name))
 
         @staticmethod
         async def prepare_runtime_activation(session_id: str, team_name: str):
@@ -2012,9 +2027,6 @@ async def test_process_team_message_stream_restarts_round_after_shutdown_race(mo
 
     assert _FakeManager.interact_calls == [
         ("sess-team-followup-stopped", "查询杭州天气"),
-    ]
-    assert _FakeManager.skills_ready_calls == [
-        ("sess-team-followup-stopped", "unit-team"),
     ]
     assert captured["prepared"] == ("sess-team-followup-stopped", "unit-team")
     assert captured["registered"] == "sess-team-followup-stopped"
@@ -2281,10 +2293,6 @@ async def test_process_team_message_stream_resumes_active_session_without_stream
             return True, None
 
         @staticmethod
-        def ensure_team_shared_skills_ready_for_session(*_args, **_kwargs):
-            pytest.fail("active team sessions should not be treated as first requests")
-
-        @staticmethod
         async def prepare_runtime_activation(*_args, **_kwargs):
             pytest.fail("active team sessions should not be recreated")
 
@@ -2346,10 +2354,6 @@ async def test_process_team_message_stream_routes_evolution_interrupt_to_active_
             return SimpleNamespace(team_name="unit-team", enable_swarmflow=False)
 
         @staticmethod
-        def ensure_team_shared_skills_ready_for_session(session_id: str, spec: Any):
-            pytest.fail("active evolution interrupt resume should not prepare shared skills")
-
-        @staticmethod
         async def prepare_runtime_activation(session_id: str, team_name: str):
             pytest.fail("active evolution interrupt resume should not recreate runtime")
 
@@ -2401,8 +2405,6 @@ async def test_process_team_message_stream_resumes_structured_team_plan_confirm_
         {"approved": True, "auto_confirm": False, "feedback": ""},
     )
 
-    captured: dict[str, Any] = {}
-
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         runtime_ready = False
         interact_calls: list[tuple[str, Any]] = []
@@ -2443,10 +2445,6 @@ async def test_process_team_message_stream_resumes_structured_team_plan_confirm_
             return True, None
 
         @staticmethod
-        def ensure_team_shared_skills_ready_for_session(session_id: str, spec: Any):
-            captured["skills_ready"] = (session_id, spec.team_name)
-
-        @staticmethod
         async def prepare_runtime_activation(session_id: str, team_name: str):
             raise AssertionError("prepare_runtime_activation should not run for resumed approval")
 
@@ -2485,7 +2483,6 @@ async def test_process_team_message_stream_resumes_structured_team_plan_confirm_
     assert _FakeManager.interact_calls == [
         ("sess-team-plan-resume", approval_input),
     ]
-    assert "skills_ready" not in captured
     assert chunks[-1].is_complete is True
 
 
@@ -2521,10 +2518,6 @@ async def test_process_team_message_stream_rejects_orphaned_interactive_input(mo
         @staticmethod
         async def get_swarm_enriched_team_spec(**_kwargs):
             pytest.fail("orphaned interactive inputs should not recreate team runtime")
-
-        @staticmethod
-        def ensure_team_shared_skills_ready_for_session(*_args, **_kwargs):
-            pytest.fail("orphaned interactive inputs should not activate team runtime")
 
         @staticmethod
         async def prepare_runtime_activation(*_args, **_kwargs):
@@ -2663,10 +2656,6 @@ async def test_process_team_message_stream_treats_plain_query_as_first_request_a
             return SimpleNamespace(team_name="unit-team", enable_swarmflow=False)
 
         @staticmethod
-        def ensure_team_shared_skills_ready_for_session(session_id: str, spec: Any):
-            captured["skills_ready"] = (session_id, spec.team_name)
-
-        @staticmethod
         async def prepare_runtime_activation(session_id: str, team_name: str):
             captured["prepared"] = (session_id, team_name)
 
@@ -2715,7 +2704,6 @@ async def test_process_team_message_stream_treats_plain_query_as_first_request_a
     assert captured["prepared"] == ("sess-team-new-round", "unit-team")
     assert captured["registered"] == "sess-team-new-round"
     assert captured["consumed"] == ("sess-team-new-round", "你好", 1)
-    assert captured["skills_ready"] == ("sess-team-new-round", "unit-team")
     assert chunks[-1].is_complete is True
 
 
@@ -2787,7 +2775,8 @@ async def test_process_team_message_stream_converts_a2ui_followup_event(monkeypa
 async def test_process_team_message_stream_defers_first_evolve_until_team_runtime_exists(monkeypatch, tmp_path):
     captured_queries: list[str] = []
     user_intent = "没有特殊要求时格式尽量简洁，如果使用颜色也需要保持美观"
-    _write_team_skill(tmp_path, "xlsx")
+    skills_dir = _write_team_skill(tmp_path, "xlsx")
+    _patch_team_skills_dir(monkeypatch, skills_dir)
 
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @classmethod
@@ -2800,10 +2789,6 @@ async def test_process_team_message_stream_defers_first_evolve_until_team_runtim
                 team_name="unit-team",
                 workspace=SimpleNamespace(root_path=str(tmp_path / "team-workspace")),
             )
-
-        @staticmethod
-        def ensure_team_shared_skills_ready_for_session(session_id: str, team_spec: object) -> None:
-            return None
 
         @staticmethod
         async def prepare_runtime_activation(session_id: str, team_name: str) -> None:
@@ -2858,6 +2843,8 @@ async def test_process_team_message_stream_defers_first_evolve_until_team_runtim
 async def test_process_team_message_stream_syncs_team_skills_before_evolve_slash(monkeypatch, tmp_path):
     captured_queries: list[str] = []
     user_intent = "没有特殊要求时格式尽量简洁，如果使用颜色也需要保持美观"
+    skills_dir = _write_team_skill(tmp_path, "xlsx")
+    _patch_team_skills_dir(monkeypatch, skills_dir)
 
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
@@ -2870,10 +2857,6 @@ async def test_process_team_message_stream_syncs_team_skills_before_evolve_slash
                 team_name="unit-team",
                 workspace=SimpleNamespace(root_path=str(tmp_path / "team-workspace")),
             )
-
-        @staticmethod
-        def ensure_team_shared_skills_ready_for_session(session_id: str, team_spec: object) -> None:
-            _write_team_skill(tmp_path, "xlsx")
 
         @staticmethod
         async def prepare_runtime_activation(session_id: str, team_name: str) -> None:
@@ -2927,7 +2910,8 @@ async def test_process_team_message_stream_syncs_team_skills_before_evolve_slash
 @pytest.mark.anyio
 async def test_process_team_message_stream_runs_evolve_followup_without_rail(monkeypatch, tmp_path):
     captured_queries: list[str] = []
-    _write_team_skill(tmp_path, "demo-skill")
+    skills_dir = _write_team_skill(tmp_path, "demo-skill")
+    _patch_team_skills_dir(monkeypatch, skills_dir)
 
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
@@ -2940,10 +2924,6 @@ async def test_process_team_message_stream_runs_evolve_followup_without_rail(mon
                 team_name="unit-team",
                 workspace=SimpleNamespace(root_path=str(tmp_path / "team-workspace")),
             )
-
-        @staticmethod
-        def ensure_team_shared_skills_ready_for_session(session_id: str, team_spec: object) -> None:
-            return None
 
         @staticmethod
         async def prepare_runtime_activation(session_id: str, team_name: str) -> None:
@@ -2994,7 +2974,8 @@ async def test_process_team_message_stream_runs_evolve_followup_without_rail(mon
 
 @pytest.mark.anyio
 async def test_process_team_message_stream_does_not_emit_evolution_status_for_no_evolve_records(monkeypatch, tmp_path):
-    _write_team_skill(tmp_path, "demo-skill")
+    skills_dir = _write_team_skill(tmp_path, "demo-skill")
+    _patch_team_skills_dir(monkeypatch, skills_dir)
 
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
@@ -3007,10 +2988,6 @@ async def test_process_team_message_stream_does_not_emit_evolution_status_for_no
                 team_name="unit-team",
                 workspace=SimpleNamespace(root_path=str(tmp_path / "team-workspace")),
             )
-
-        @staticmethod
-        def ensure_team_shared_skills_ready_for_session(session_id: str, team_spec: object) -> None:
-            return None
 
         @staticmethod
         async def prepare_runtime_activation(session_id: str, team_name: str) -> None:
@@ -4585,6 +4562,22 @@ async def test_ensure_monitor_handlers_skips_workflow_handler_when_swarmflow_dis
     assert registered_wf_handlers.get(session_id) is None
 
 
+class _FakeWorkflowConsumeHandler:
+    """Minimal WorkflowMonitorHandler stand-in with session-scoped dedup tables."""
+
+    is_running = True
+
+    def __init__(self, *events: dict[str, object]) -> None:
+        self._events = list(events)
+        self.seen_phase: dict[str, str] = {}
+        self.seen_agent: dict[str, str] = {}
+        self.spawned_members: set[str] = set()
+
+    async def events(self):
+        for event in self._events:
+            yield event
+
+
 @pytest.mark.anyio
 async def test_consume_workflow_events_broadcasts_raw_for_tui(monkeypatch):
     """On the TUI channel _consume_workflow_events broadcasts workflow.updated as-is."""
@@ -4595,15 +4588,9 @@ async def test_consume_workflow_events_broadcasts_raw_for_tui(monkeypatch):
         "workflow": {"name": "test-flow", "status": "running"},
     }
 
-    class _FakeWorkflowHandler:
-        is_running = True
-
-        async def events(self):
-            yield event
-
     monkeypatch.setattr(team_helpers, "_broadcast_event", lambda *args: broadcasted.append(args[2]))
 
-    handler = _FakeWorkflowHandler()
+    handler = _FakeWorkflowConsumeHandler(event)
     await _TeamHelpersTestApi.consume_workflow_events(
         "tui", "sess-wf-consume", handler,
     )
@@ -4635,15 +4622,9 @@ async def test_consume_workflow_events_converts_to_team_events_for_web(monkeypat
         },
     }
 
-    class _FakeWorkflowHandler:
-        is_running = True
-
-        async def events(self):
-            yield event
-
     monkeypatch.setattr(team_helpers, "_broadcast_event", lambda *args: broadcasted.append(args[2]))
 
-    handler = _FakeWorkflowHandler()
+    handler = _FakeWorkflowConsumeHandler(event)
     await _TeamHelpersTestApi.consume_workflow_events(
         "web", "sess-wf-web", handler,
     )
@@ -4654,6 +4635,45 @@ async def test_consume_workflow_events_converts_to_team_events_for_web(monkeypat
     types = [e["event"]["type"] for e in broadcasted]
     assert "team.task.claimed" in types
     assert "team.member.spawned" in types
+
+
+@pytest.mark.anyio
+async def test_consume_workflow_events_dedup_survives_consumer_restart(monkeypatch):
+    """Handler-scoped seen_* must suppress replay after the consume loop remounts."""
+    broadcasted: list[dict[str, object]] = []
+    event = {
+        "event_type": "workflow.updated",
+        "session_id": "sess-wf-dedup",
+        "workflow": {
+            "id": "run-dedup",
+            "name": "test-flow",
+            "status": "running",
+            "phases": [
+                {
+                    "id": "planning-1",
+                    "name": "planning",
+                    "status": "running",
+                    "agents": [
+                        {"id": "researcher-1", "name": "researcher", "status": "running"}
+                    ],
+                }
+            ],
+        },
+    }
+
+    monkeypatch.setattr(team_helpers, "_broadcast_event", lambda *args: broadcasted.append(args[2]))
+    monkeypatch.setattr(team_helpers, "_persist_team_history_event", lambda *args: None)
+
+    handler = _FakeWorkflowConsumeHandler(event)
+    await _TeamHelpersTestApi.consume_workflow_events("web", "sess-wf-dedup", handler)
+    first_count = len(broadcasted)
+    assert first_count > 0
+    assert handler.seen_phase.get("run-dedup:planning-1") == "running"
+    assert "run-dedup:researcher-1" in handler.spawned_members
+
+    # Simulate pause/wake: same handler tables, new consume loop, replayed delta.
+    await _TeamHelpersTestApi.consume_workflow_events("web", "sess-wf-dedup", handler)
+    assert len(broadcasted) == first_count
 
 
 @pytest.mark.anyio

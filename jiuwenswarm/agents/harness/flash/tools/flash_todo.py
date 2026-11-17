@@ -111,7 +111,12 @@ def _unified_todo_input_params(language: str) -> dict:
             "plan_action": {"type": "string", "enum": ["new", "rebuild"]},
             "tasks": {
                 "type": "array",
-                "items": {"type": "object"},
+                "minItems": 1,
+                "items": {"type": "object", "required": ["id", "content"], "properties": {
+                    "id": {"type": "string"}, "content": {"type": "string", "minLength": 1},
+                    "activeForm": {"type": "string"}, "description": {"type": "string"},
+                    "selected_model_id": {"type": "string"},
+                }},
                 "description": d(
                     "create 必填：任务数组 [{id, content, activeForm, description, "
                     "selected_model_id?}]；活动计划默认不覆盖",
@@ -156,7 +161,8 @@ def _unified_todo_input_params(language: str) -> dict:
             },
             "ids": {
                 "type": "array",
-                "items": {"type": "string"},
+                "minItems": 1,
+                "items": {"type": "string", "minLength": 1},
                 "description": d(
                     "modify_action=delete/cancel 时：任务 ID 列表",
                     "for modify_action=delete/cancel: list of task ids",
@@ -164,6 +170,17 @@ def _unified_todo_input_params(language: str) -> dict:
             },
             "todo_data": {
                 "type": "object",
+                "properties": {
+                    "target_id": {"type": "string", "minLength": 1},
+                    "items": {"type": "array", "minItems": 1, "items": {
+                        "type": "object", "required": ["id", "content", "status"],
+                        "properties": {"id": {"type": "string"}, "content": {"type": "string"},
+                                       "status": {"type": "string"}, "activeForm": {"type": "string"},
+                                       "description": {"type": "string"},
+                                       "selected_model_id": {"type": "string"}},
+                    }},
+                },
+                "required": ["target_id", "items"],
                 "description": d(
                     "modify_action=insert_before/insert_after 时：{target_id, items: [...]}",
                     "for modify_action=insert_before/insert_after: {target_id, items: [...]}",
@@ -182,6 +199,8 @@ class UnifiedTodoTool(Tool):
     is called by ability_manager directly with session threaded through.
     """
 
+    _log_execution_status = True
+
     def __init__(self, engines: dict, language: str, agent_id=None):
         card = ToolCard(
             id=f"UnifiedTodoTool_{agent_id}" if agent_id else "UnifiedTodoTool",
@@ -195,7 +214,9 @@ class UnifiedTodoTool(Tool):
     async def invoke(self, inputs, **kwargs):
         # 参数错误用结构化 ToolOutput 返回（与 FlashMemoryTool 同风格），
         # 不 raise——交给模型读到错误后自行纠正参数。
-        data = dict(inputs or {})
+        if not isinstance(inputs, dict):
+            return ToolOutput(success=False, error="todo inputs must be a JSON object")
+        data = dict(inputs)
         action = str(data.get("action") or "").strip().lower()
 
         if action == "create":
@@ -240,6 +261,8 @@ class UnifiedTodoTool(Tool):
             try:
                 return await self._engines["modify"].invoke(inner, **kwargs)
             except BaseError as exc:
+                if getattr(exc, "tool_commit_state", None) == "unknown":
+                    raise
                 if "More than one task is marked as 'in_progress'" not in str(exc):
                     raise
                 hint = ""

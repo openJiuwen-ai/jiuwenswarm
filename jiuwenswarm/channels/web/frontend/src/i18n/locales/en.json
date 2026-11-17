@@ -1,5 +1,6 @@
 {
   "common": {
+    "expandAndPin": "Expand and pin",
     "confirm": "Confirm",
     "cancel": "Cancel",
     "close": "Close",
@@ -25,7 +26,8 @@
       "jumpTo": "Go to",
       "go": "Go"
     },
-    "all": "All"
+    "all": "All",
+    "retry": "Retry"
   },
   "approvals": {
     "myTitle": "My requests",
@@ -114,7 +116,8 @@
     "a2aIngress": "A2A Control Center",
     "personalContext": "Personal\nContext",
     "approvals": "Requests",
-    "diagnosis": "Diagnose"
+    "diagnosis": "Diagnose",
+    "experiments": "RSI"
   },
   "digitalAvatar": {
     "title": "Digital Avatar",
@@ -452,6 +455,7 @@
     "modeAutoHarnessDesc": "Automatically analyze and optimize target repository",
     "recording": "Recording... (release to send)",
     "waitingTasks": "Waiting tasks",
+    "messageQueue": "Message Queue",
     "waitingTasksCount": "Waiting tasks ({{count}})",
     "removeTask": "Remove task",
     "addImage": "Add image",
@@ -484,8 +488,10 @@
     "modeSwitchTitle": "Switch Mode",
     "modeSwitchConfirm": "Current session has history messages. Switching mode will create a new session. Continue?",
     "skills": "Skills",
+    "swarmSkills": "Team skills",
     "skillsToggle": "View installed skills",
     "noInstalledSkills": "No installed skills",
+    "noInstalledSwarmSkills": "No installed team skills",
     "skillsSearchPlaceholder": "Search skill name or description",
     "skillsManage": "Skill Management",
     "skillsAdd": "Add to composer",
@@ -497,6 +503,26 @@
     "contextCompressionCompleted": "Completed context compression {{count}} time(s) this turn",
     "historyLoading": "Loading conversation history…",
     "historyLoadMore": "Load more history",
+    "teamSession": {
+      "label": "Expert team",
+      "boundHint": "Bound; switch expert teams from the plus menu.",
+      "pickHint": "Pick an expert team from the plus menu.",
+      "emptyCatalog": "No expert teams yet. Sync/summon in OfficeAce first.",
+      "pickPlaceholder": "Select expert team…",
+      "switchPlaceholder": "Switch expert team…",
+      "current": "current",
+      "loading": "Loading…",
+      "swarmForbidden": "This session already has a bound team, so team skills are blocked; switch teams here, or open a new session for a team skill.",
+      "swarmMultiple": "At most one team skill per message."
+    },
+    "skillsToggleTeamBound": "View installed skills",
+    "skillsToggleTeamUnbound": "View skills and team playbooks",
+    "noInstalledSkillsTeamBound": "No installed ordinary skills",
+    "skillGroupOrdinary": "Ordinary skills",
+    "skillGroupSwarm": "Team skills (playbooks)",
+    "swarmSkillBadge": "Team skill",
+    "swarmSkillStartCollab": "Start collaboration with a team skill",
+    "swarmSkillStartCollabHint": "Without an expert team, use a collaboration playbook to assemble for this session. This is not summoning an expert team.",
     "config": {
       "mode": {
         "cluster": "Cluster",
@@ -783,7 +809,13 @@
     "saved": "Configuration saved and applied.",
     "disconnected": "Gateway is disconnected, so the A2A service cannot be read or changed.",
     "saveBeforeLifecycleAction": "Configuration has unsaved changes. Save or cancel them before enabling, disabling, or restarting the service.",
-    "states": { "disabled": "Disabled", "starting": "Starting", "running": "Running", "stopping": "Stopping", "error": "Error" },
+    "states": {
+      "disabled": "Disabled",
+      "starting": "Starting",
+      "running": "Running",
+      "stopping": "Stopping",
+      "error": "Error"
+    },
     "status": {
       "title": "Service status",
       "configRevision": "Configuration revision: {{revision}}",
@@ -855,7 +887,12 @@
         "syncWait": "Sync wait timeout (seconds)",
         "replaceCredential": "Replace credential (leave blank to keep)"
       },
-      "availability": { "available": "Available", "unreachable": "Unreachable", "incompatible": "Incompatible", "review_required": "Review required" },
+      "availability": {
+        "available": "Available",
+        "unreachable": "Unreachable",
+        "incompatible": "Incompatible",
+        "review_required": "Review required"
+      },
       "register": "Register",
       "registering": "Registering...",
       "registered": "The third-party Agent is registered and can now participate in outbound calls when enabled and available.",
@@ -882,7 +919,11 @@
       }
     },
     "history": {
-      "tabs": { "ariaLabel": "A2A request history direction", "ingress": "Ingress", "outbound": "Outbound" },
+      "tabs": {
+        "ariaLabel": "A2A request history direction",
+        "ingress": "Ingress",
+        "outbound": "Outbound"
+      },
       "copy": "Click to copy",
       "copied": "Copied",
       "copyFailed": "Copy failed. Select the text and copy it manually.",
@@ -897,7 +938,10 @@
         "description": "Shows the latest 200 A2A outbound dispatches without request or response bodies.",
         "empty": "No outbound history",
         "emptyDescription": "Dispatch statuses will appear after requests are sent to third-party Agents.",
-        "modes": { "sync": "Sync", "async": "Async" },
+        "modes": {
+          "sync": "Sync",
+          "async": "Async"
+        },
         "statuses": {
           "created": "Created",
           "submitting": "Submitting",
@@ -915,8 +959,15 @@
         }
       },
       "processing": "Processing",
-      "statuses": { "processing": "Processing", "completed": "Completed", "failed": "Failed", "canceled": "Canceled" },
-      "operations": { "message": "Message" },
+      "statuses": {
+        "processing": "Processing",
+        "completed": "Completed",
+        "failed": "Failed",
+        "canceled": "Canceled"
+      },
+      "operations": {
+        "message": "Message"
+      },
       "columns": {
         "status": "Status",
         "operation": "Request type",
@@ -1454,6 +1505,19 @@
       "memberNameFormatInvalid": "Member name must start with a lowercase letter, followed by lowercase letters, digits, or hyphens",
       "referencedByTeams": "Referenced by {{count}} Team(s)"
     },
+    "sensitiveMask": {
+      "title": "Web answer masking",
+      "hint": "When off, text is shown as-is. When on, a match keeps its first 3 and last 4 characters, with four stars in the middle, and at least 4 characters stay hidden. This only changes what the web page shows.",
+      "enabled": "Enable masking",
+      "name": "Name",
+      "pattern": "Regex",
+      "add": "Add rule",
+      "remove": "Remove",
+      "save": "Save",
+      "saved": "Saved",
+      "loadFailed": "Failed to load masking settings",
+      "saveFailed": "Failed to save masking settings"
+    },
     "groups": {
       "modelDefault": { "label": "Default Model (Main Chat)", "hint": "Primary chat model service and auth" },
       "modelVideo": { "label": "Video Model", "hint": "Video understanding/generation model (optional)" },
@@ -1469,9 +1533,11 @@
       "contextEngine": { "label": "Context Compression", "hint": "Enable or disable dialogue context compression" },
       "kvCacheAffinity": { "label": "Compute Affinity", "hint": "Control Ascend KV Cache affinity" },
       "permissions": { "label": "Tool Safety Guardrail", "hint": "Enable or disable permission checks for tool calls" },
+      "sandbox": { "label": "Sandbox", "hint": "Run commands inside the sandbox when enabled. Off by default." },
       "a2ui": { "label": "A2UI", "hint": "Enable or disable generated UI rendering and A2UI runtime prompts." },
       "trajectoryUi": { "label": "Trajectory UI", "hint": "Show the chat/trajectory switch in single-agent and team modes and enable trajectory observation." },
       "diagnosis": { "label": "Trajectory Diagnosis", "hint": "When enabled, auto-analyze session issues in \"Diagnose\". Online mode requires Trajectory UI enabled; offline mode only needs uploaded/imported logs." },
+      "rsi": { "label": "Enable RSI", "hint": "Show the RSI entry in the sidebar to create and view RSI tasks for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry." },
       "swarmflow": { "label": "SwarmFlow", "hint": "Enable or disable the SwarmFlow process view and monitoring in Team mode." },
       "symphony": { "label": "Skill Symphony", "hint": "Control Skill Symphony" },
       "skillRetrieval": { "label": "Skill Symphony", "hint": "Control Skill Symphony" },
@@ -1576,7 +1642,11 @@
     "enable": "Enable",
     "disable": "Disable",
     "loading": "Loading scheduled tasks...",
-    "empty": "No scheduled tasks",
+    "empty": {
+      "createButton": "Create scheduled task",
+      "templateSectionTitle": "Templates",
+      "templateMore": "More"
+    },
     "deleteConfirm": "Are you sure you want to delete this task?",
     "autoManaged": "Auto-managed",
     "autoManagedHint": "This task is auto-created/deleted by the proactive recommendation toggle (Settings → Proactive Recommendation). Only the cron expression and timezone can be edited here; other fields (name/status/description/offset/channel) are read-only. To remove it, turn off the toggle in Settings.",
@@ -1625,16 +1695,12 @@
       "noProject": "-",
       "runNow": "Run now",
       "stop": "Stop",
+      "start": "Start",
       "edit": "Edit",
       "more": "More",
       "history": "Run history",
       "triggeredSessions": "Run history",
       "noTriggeredSessions": "No trigger records"
-    },
-    "empty": {
-      "createButton": "Create scheduled task",
-      "templateSectionTitle": "Templates",
-      "templateMore": "More"
     },
     "history": {
       "comingSoon": "Coming soon"
@@ -2848,6 +2914,9 @@
       "sendFileDesc": "Send files to user"
     }
   },
+  "security": {
+    "contentRetracted": "Content retracted for security reasons"
+  },
   "codeMode": {
     "work": "Work",
     "code": "Code",
@@ -2919,9 +2988,17 @@
       "cancel": "Cancel",
       "confirm": "Confirm"
     },
-    "runtime": { "processing": "Processing" },
-    "deleteDialog": { "title": "Delete", "description": "Delete “<name>{{title}}</name>”? This action cannot be undone." },
-    "notFound": { "title": "Conversation not found or deleted", "newConversation": "New conversation" },
+    "runtime": {
+      "processing": "Processing"
+    },
+    "deleteDialog": {
+      "title": "Delete",
+      "description": "Delete “<name>{{title}}</name>”? This action cannot be undone."
+    },
+    "notFound": {
+      "title": "Conversation not found or deleted",
+      "newConversation": "New conversation"
+    },
     "errors": {
       "delete": "Failed to delete conversation",
       "create": "Failed to create conversation",
@@ -3133,15 +3210,15 @@
       "autoCollectLabel": "Auto fetch",
       "autoCollectHint": "Fetch automatically at the chosen frequency",
       "timeRangeLabel": "Time Range",
-    "timeRangeWeek": "Last Week",
-    "timeRangeMonth": "Last Month",
-    "timeRangeQuarter": "Last Quarter",
-    "timeRangeCustom": "Custom",
-    "dateRangeTitle": "Select Date Range",
-    "dateRangePlaceholder": "Select a date range",
-    "dateRangeRequired": "Select a custom date range",
-    "addUrl": "+ Add",
-    "frequencyLabel": "Auto fetch frequency",
+      "timeRangeWeek": "Last Week",
+      "timeRangeMonth": "Last Month",
+      "timeRangeQuarter": "Last Quarter",
+      "timeRangeCustom": "Custom",
+      "dateRangeTitle": "Select Date Range",
+      "dateRangePlaceholder": "Select a date range",
+      "dateRangeRequired": "Select a custom date range",
+      "addUrl": "+ Add",
+      "frequencyLabel": "Auto fetch frequency",
       "frequencyHour": "Every {{n}} hour(s)",
       "frequencyDay": "Every {{n}} day(s)",
       "frequencyEvery": "Every",
@@ -3152,7 +3229,7 @@
       "advancedConfig": "Advanced Settings",
       "maxItemsRangeError": "Max items must be 1-10000, or empty for default",
       "previousStep": "Previous",
-    "submit": "Add",
+      "submit": "Add",
       "save": "Save",
       "notConfigured": "Personal context is not configured. Enable it in Settings first.",
       "providerUnauthorized": "Not authorized. Authorize it in Settings first.",
@@ -3480,10 +3557,21 @@
       "expired": "Expired"
     },
     "schedule": {
-      "tab": { "interval": "Interval", "cron": "Cron expression", "once": "Once" },
-      "interval": { "label": "Every", "unit": "minutes, return to this session" },
-      "cron": { "hint": "Standard 5-field format: minute hour day month weekday (e.g. 0 9 * * 1-5 = weekdays at 9am)" },
-      "once": { "hint": "Pick a date and time; the job fires once at that moment and is then marked completed" },
+      "tab": {
+        "interval": "Interval",
+        "cron": "Cron expression",
+        "once": "Once"
+      },
+      "interval": {
+        "label": "Every",
+        "unit": "minutes, return to this session"
+      },
+      "cron": {
+        "hint": "Standard 5-field format: minute hour day month weekday (e.g. 0 9 * * 1-5 = weekdays at 9am)"
+      },
+      "once": {
+        "hint": "Pick a date and time; the job fires once at that moment and is then marked completed"
+      },
       "summary": {
         "interval": "Return to this session every {{minutes}} min",
         "cron": "{{expr}} ({{timezone}}), return to this session",
@@ -3515,8 +3603,15 @@
       "titleEdit": "Edit heartbeat job",
       "back": "Back"
     },
-    "concurrencyPolicy": { "skip": "Skip", "queue": "Queue", "replace": "Replace" },
-    "sessionDeletedPolicy": { "disable": "Disable job", "completed": "Mark completed" },
+    "concurrencyPolicy": {
+      "skip": "Skip",
+      "queue": "Queue",
+      "replace": "Replace"
+    },
+    "sessionDeletedPolicy": {
+      "disable": "Disable job",
+      "completed": "Mark completed"
+    },
     "panel": {
       "title": "Heartbeat Jobs",
       "loading": "Loading…",
@@ -3573,5 +3668,286 @@
       "skipped": "Last run skipped",
       "cancelled": "Last run cancelled"
     }
+  },
+  "rsi": {
+    "sessionHarness": {
+      "label": "Session Harness",
+      "default": "Use default Harness",
+      "unavailable": "Selected version unavailable"
+    },
+    "title": "RSI",
+    "createExperiment": "Create RSI Task",
+    "empty": {
+      "title": "No RSI tasks",
+      "hint": "Create RSI tasks for Harness, paper, and program optimization"
+    },
+    "intro": {
+      "title": "RSI · Recursive Self-Improvement",
+      "lead": "Make AI stronger with use—from simply working to working better",
+      "stepsTitle": "How it works",
+      "step1Title": "Step 1: Create an RSI task",
+      "step1Body": "Choose Harness Optimization or Artifact Optimization (paper or program), fill in the required parameters, and click Create to start automatic optimization.",
+      "step2Title": "Step 2: Visualize the optimization",
+      "step2Body": "Track training progress and score curves in real time. Explore the RSI tree search and let the process iterate automatically without manual intervention.",
+      "step3Title": "Step 3: Get the best result",
+      "step3Body": "Review the best score, improvement, and evaluation pass count. Install the plugin or download the artifact for immediate use.",
+      "featuresTitle": "Capabilities",
+      "feature1Title": "Harness optimization—upgrade AI's working gear",
+      "feature1Body": "AI capability = model + harness. The model thinks; the harness executes. RSI rehearses real tasks repeatedly, identifies weaknesses, generates plans, validates and scores each one, and tunes tools, rails, and skills into better gear.",
+      "feature2Title": "Artifact optimization—polish the deliverable",
+      "feature2Body": "Give your paper or program to AI for repeated polishing. It generates optimization candidates, validates and scores every version, keeps the best one, and iterates until the highest-quality deliverable is ready."
+    },
+    "list": {
+      "title": "RSI Tasks",
+      "loading": "Loading…",
+      "retry": "Retry",
+      "error": "Failed to load RSI tasks"
+    },
+    "createDialog": {
+      "title": "Create RSI Task",
+      "nameLabel": "Task name",
+      "namePlaceholder": "Enter task name",
+      "typeLabel": "Task type",
+      "typeHarness": "Harness Optimization",
+      "typeArtifact": "Artifact Optimization",
+      "artifactSubtypeLabel": "Artifact subtype",
+      "artifactTypeLabel": "Artifact type",
+      "subtypePaper": "Paper",
+      "subtypeProgram": "Program",
+      "optimizerModelLabel": "Optimizer model",
+      "evaluationMethodLabel": "Evaluation method",
+      "evaluationMethodAgent": "Agent evaluation",
+      "evaluationMethodScript": "Script evaluation",
+      "evaluationMethodComingSoon": "Coming soon",
+      "testerModelLabel": "Tester model",
+      "datasetLabel": "Evaluation dataset file",
+      "datasetPlaceholder": "Select a local evaluation dataset JSON file",
+      "datasetTip": "Select one evaluation JSON file; the top level is a cases array. Each case contains case_id and input, with optional assets and reference.",
+      "datasetFieldTipTitle": "Dataset field format",
+      "browse": "Browse",
+      "maxIterationsLabel": "Max iterations",
+      "searchWidthLabel": "Max search width",
+      "optimizationInstructionLabel": "Optimization instruction (optional; one of instruction/paper required)",
+      "optimizationInstructionPlaceholder": "Upload at least one of instruction or artifact",
+      "paperLabel": "Paper folder (optional; one of instruction/paper required)",
+      "paperPlaceholder": "Select a paper folder",
+      "paperPickerTitle": "Select paper folder",
+      "paperInfoBar": "Paper optimization produces a LaTeX folder and attempts to generate a PDF. Make sure MiKTeX or TeX Live is installed and latexmk or pdflatex is available; otherwise, PDF generation may fail.",
+      "webProxyLabel": "Literature proxy (optional)",
+      "webProxyPlaceholder": "For example: http://127.0.0.1:7890",
+      "webProxyTip": "An HTTP/HTTPS proxy is recommended to improve literature webpage and full-text download success.",
+      "webProxyConfigured": "Configured",
+      "webProxyNotConfigured": "Not configured (proxy recommended)",
+      "programLabel": "Program Path",
+      "programPlaceholder": "Select a program folder",
+      "validate": "Validate",
+      "validating": "Validating…",
+      "valid": "Validated, {{count}} samples",
+      "invalid": "Validation failed",
+      "sampleUnknown": "Validated",
+      "modelPlaceholder": "Select model",
+      "freeModels": "Free models",
+      "customModels": "Custom models",
+      "submit": "Create",
+      "cancel": "Cancel",
+      "infoBar": "Please pre-install and invoke the evolve-design skill, create artifact optimization dependencies, and fill in the program path.",
+      "validation": {
+        "nameRequired": "Please enter task name",
+        "datasetRequired": "Please select dataset file",
+        "optimizerRequired": "Please select optimizer model",
+        "testerRequired": "Please select tester model",
+        "paperOrInstruction": "Upload at least one of instruction or paper",
+        "programRequired": "Please select program file"
+      }
+    },
+    "configDialog": {
+      "title": "Configuration",
+      "readonly": "Read-only"
+    },
+    "artifact": {
+      "noHarnessSnapshot": "No Harness package has been generated for this node yet",
+      "empty": "No artifact files",
+      "loadFailed": "Failed to load artifacts",
+      "selectFile": "Select a file",
+      "copied": "Copied",
+      "copyFailed": "Copy failed",
+      "latexPreview": "Preview",
+      "latexSource": "Source"
+    },
+    "detail": {
+      "optimizationResult": "Optimization result",
+      "bestArtifact": "Current best artifact",
+      "viewPaper": "View paper",
+      "prunedReason": "Pruned reason",
+      "skippedReason": "Skip reason",
+      "viewDetail": "View details",
+      "viewArtifact": "View artifact",
+      "baselineScore": "Baseline score",
+      "usage": "Usage (tokens)",
+      "iterations": "iterations",
+      "evalCount": "Eval count",
+      "pruned": "Pruned",
+      "harnessProcess": "Harness Optimization Process",
+      "paperProcess": "Paper Optimization Process",
+      "programProcess": "Program Optimization Process",
+      "runningStage": "Running",
+      "currentBest": "Current best version",
+      "nodeHint": "Nodes show each candidate, stage, and evaluation result; select one for details",
+      "harnessNodeHint": "Each node is a Harness combination; select one to inspect changes and evaluation",
+      "paperNodeHint": "Each node is a paper version; select one to inspect changes and rejection reasons",
+      "programNodeHint": "Parallel candidates appear as they finish. Search stops when a candidate reaches the target; evaluations already in progress may finish later.",
+      "estimatedCost": "Estimated cost: ¥ {{cost}}",
+      "selectedNode": "Selected",
+      "inherit": "inherits",
+      "othersInherit": "others inherited",
+      "legendBestPath": "Current best",
+      "legendEvaluated": "Not adopted",
+      "legendPending": "In progress",
+      "legendFailed": "Failed",
+      "legendPruned": "Pruned",
+      "statusCreated": "Created",
+      "statusQueued": "Queued",
+      "statusRunning": "Optimizing",
+      "statusCompleted": "Completed",
+      "statusFailed": "Task failed",
+      "statusPaused": "Paused",
+      "statusTerminated": "Terminated",
+      "actionConfig": "Configuration",
+      "actionDelete": "Delete",
+      "actionPause": "Pause task",
+      "actionStop": "Stop task",
+      "actionUnknownError": "Unknown error",
+      "actionFailed": "Action failed: {{message}}",
+      "actionInstallSuccess": "{{taskName}} - {{snapshotName}} installed successfully!",
+      "actionClose": "Close",
+      "actionResume": "Resume task",
+      "actionStart": "Start training",
+      "actionInstall": "Install plugin",
+      "actionDownload": "Download",
+      "actionTerminate": "Terminate",
+      "actionCancel": "Cancel",
+      "actionConfirm": "Confirm",
+      "tagType": "Type",
+      "tagStatus": "Status",
+      "tagMaxIterations": "Max iterations",
+      "tagMaxSearchWidth": "Max search width",
+      "tagCreatedAt": "Created",
+      "expandView": "Expand",
+      "locate": "Locate",
+      "evaluating": "Evaluating",
+      "candidate": "Candidate ",
+      "progress": "Progress",
+      "bestArtifactPrefix": "Best artifact",
+      "changeSummary": "Changes in this version",
+      "evaluationResult": "Evaluation result",
+      "score": "Score",
+      "parentScore": "Parent",
+      "scoreDelta": "Delta",
+      "failureReason": "Failure reason",
+      "rejectionReason": "Why it was not adopted",
+      "inheritFrom": "Inherited from",
+      "baselineDescription": "This is the starting version for the optimization.",
+      "noChangeSummary": "Inherited from the parent; no structured change summary is available.",
+      "nodeArtifact": "Node artifact",
+      "processing": "Processing…",
+      "technicalInfo": "Technical details",
+      "nodeId": "Node ID",
+      "nodeType": "Lifecycle",
+      "close": "Close",
+      "deleteTitle": "Delete RSI task",
+      "deleteBody": "RSI task data cannot be restored after deletion. Delete this task?",
+      "pauseTitle": "Pause RSI task",
+      "pauseBody": "The current optimization will stop. Pause this RSI task?",
+      "stopTitle": "Stop RSI task",
+      "stopBody": "Stopping will terminate the current optimization task. Stop this RSI task?",
+      "queuedTitle": "This RSI task is queued",
+      "queuedHint": "1 more task is optimizing. Please wait."
+    },
+    "stage": {
+      "caseRunning": "Evaluating case {{index}}/{{total}}",
+      "casePassed": "Case {{index}}/{{total}} passed",
+      "caseFailed": "Case {{index}}/{{total}} failed",
+      "caseError": "Case {{index}}/{{total}} execution error",
+      "caseSkipped": "Case {{index}}/{{total}} skipped",
+      "analysisRunning": "Analyzing failed cases",
+      "analysisDone": "Failure analysis completed",
+      "analysisError": "Failure analysis failed",
+      "candidateRunning": "Generating candidate {{index}}/{{total}}",
+      "candidateDone": "Candidate {{index}}/{{total}} generated",
+      "candidateError": "Candidate {{index}}/{{total}} generation failed",
+      "scoreSuffix": " · {{score}}"
+    }
+    },
+  "swarmflow": {
+    "statusPlanned": "Planned",
+    "statusPending": "Pending",
+    "statusRunning": "Running",
+    "statusPaused": "Paused",
+    "statusCompleted": "Completed",
+    "statusFailed": "Failed",
+    "statusStopped": "Stopped",
+    "statusWaitingForHuman": "Waiting for input",
+    "subWorkflow": "Sub-workflow",
+    "clickToReply": "Click to reply",
+    "waitingForHuman": "Waiting for {{count}}",
+    "noWorkflow": "No workflow",
+    "layoutIndented": "Indented Tree",
+    "layoutOrgChart": "Org Chart",
+    "layoutGraph": "Flow Graph",
+    "pauseResumeHint": "Pause / Resume",
+    "stopHint": "Stop",
+    "controlAlreadyCompleted": "Workflow already completed",
+    "controlAlreadyStopped": "Workflow already stopped",
+    "controlAlreadyFailed": "Workflow already failed",
+    "controlAlreadyPaused": "Workflow already paused",
+    "controlUnavailable": "Workflow is running; control unavailable",
+    "controlNotFound": "Workflow run not found",
+    "controlTimeout": "Workflow control timed out; please retry",
+    "controlsDisabledHint": "The team is paused. Send a message to wake it up, then resume or stop the workflow here.",
+    "sessionBudget": "Session budget (team-wide, never resets)",
+    "runBudget": "Run budget (META.workflow_token_limit)",
+    "sessionBudgetShort": "Session",
+    "runBudgetShort": "Run",
+    "budgetUnlimited": "unbounded",
+    "budgetExhaustedSession": "Session budget exhausted",
+    "budgetExhaustedWorkflow": "Run budget exhausted",
+    "toggleLabel": "SwarmFlow",
+    "tagHint": "SwarmFlow is active for this session",
+    "closeTag": "Close SwarmFlow",
+    "closeTagDisabled": "Cannot close while processing",
+    "configTitle": "SwarmFlow Configuration",
+    "configReadonlyHint": "Session is active, config is read-only",
+    "budgetPanelTitle": "SwarmFlow Budget",
+    "budgetPanelHint": "Set the Token limit for this session.",
+    "budgetPlaceholder": "Enter number",
+    "budgetActualHint": "Configured limit: {{count}} tokens",
+    "workflowList": "Workflow List",
+    "verifyReviewing": "Reviewing…",
+    "verifyReviewingShort": "Reviewing",
+    "verifyPass": "✓ Pass",
+    "expertIdentity": "Expert: {{name}} ({{template}})",
+    "turnDetailHint": "Click to view this turn's input / output",
+    "verifyFail": "✗ Fail",
+    "verifyUndecided": "? Undecided",
+    "verifyThreshold": "Threshold {{count}}",
+    "verifyUndecidedHint": "Some reviewer(s) did not vote (undecided); retry recommended",
+    "verifyVotesMissing": "{{count}} vote(s) missing · retry recommended",
+    "verifyVoteUndecided": "? No vote",
+    "verifyScore": "{{score}} pts",
+    "verifyRound": "Round {{count}} · {{verdict}}",
+    "verifyGroupTitle": "verify · {{label}}",
+    "verifyReviewersPending": "{{names}} reviewing…",
+    "sectionCallRecords": "Activity",
+    "sectionToolCalls": "Tool calls",
+    "sectionInput": "Input",
+    "sectionOutput": "Output",
+    "sectionHumanPrompt": "Human question",
+    "sectionHumanReply": "Human reply",
+    "sectionError": "Error",
+    "charUnit": "chars",
+    "clickToViewDetail": "Click to view details",
+    "runIdTooltip": "Run ID: {{id}}",
+    "forkFromSession": "Forked from {{name}}",
+    "forkChildSession": "Forked child session"
   }
 }

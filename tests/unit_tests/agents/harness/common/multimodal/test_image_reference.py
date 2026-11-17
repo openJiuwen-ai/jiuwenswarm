@@ -7,9 +7,13 @@ from __future__ import annotations
 import pytest
 
 from jiuwenswarm.agents.harness.common.multimodal.image_reference import (
+    augment_message_with_reference_lines,
     build_image_reference_line,
     extract_multimodal_image_files,
+    normalize_image_mention_text,
+    normalized_text_mentions_image,
     parse_image_references,
+    text_mentions_image,
 )
 
 
@@ -135,3 +139,146 @@ def test_dedup_and_invalid_filtered() -> None:
     ]
     result = extract_multimodal_image_files({"files": files})
     assert [r["path"] for r in result] == ["/tmp/a.png"]
+
+
+# ---------------------------------------------------------------------------
+# leader 分发兜底：消息里只提文件名 / 路径时补引用行
+# ---------------------------------------------------------------------------
+
+_MANIFEST = [
+    {
+        "type": "image",
+        "path": "/tmp/2.jpg",
+        "filename": "2.jpg",
+        "mime_type": "image/jpeg",
+        "size_bytes": 111,
+    },
+    {
+        "type": "image",
+        "path": "/tmp/3.jpg",
+        "filename": "3.jpg",
+        "mime_type": "image/jpeg",
+        "size_bytes": 222,
+    },
+]
+
+
+def test_augment_by_filename_appends_reference_line() -> None:
+    text = "请识别 3.jpg 并给出描述。"
+
+    updated = augment_message_with_reference_lines(text, _MANIFEST)
+
+    assert updated.startswith(text)
+    assert "[image #1] path=/tmp/3.jpg filename=3.jpg mime=image/jpeg size=222" in updated
+    assert "2.jpg" not in updated.split("\n")[-1]
+
+
+def test_augment_by_path_appends_reference_line() -> None:
+    text = "图片在 /tmp/2.jpg"
+
+    updated = augment_message_with_reference_lines(text, _MANIFEST)
+
+    assert "[image #1] path=/tmp/2.jpg filename=2.jpg mime=image/jpeg size=111" in updated
+
+
+def test_augment_skips_images_not_mentioned() -> None:
+    text = "请识别第二张图片"  # 没有文件名 / 路径，无从判断是哪张
+
+    assert augment_message_with_reference_lines(text, _MANIFEST) == text
+
+
+def test_augment_is_idempotent_for_existing_reference_line() -> None:
+    text = (
+        "任务：\n"
+        "[image #2] path=/tmp/3.jpg filename=3.jpg mime=image/jpeg size=222"
+    )
+
+    assert augment_message_with_reference_lines(text, _MANIFEST) == text
+
+
+def test_augment_uses_next_index_and_respects_cap() -> None:
+    text = "看 [image #7] path=/other.png filename=other.png mime=image/png，识别 2.jpg 与 3.jpg"
+
+    updated = augment_message_with_reference_lines(text, _MANIFEST, max_images=1)
+
+    assert "[image #8] path=/tmp/2.jpg" in updated
+    assert "/tmp/3.jpg" not in updated
+
+
+def test_augment_without_manifest_is_noop() -> None:
+    text = "识别 3.jpg"
+    assert augment_message_with_reference_lines(text, None) == text
+    assert augment_message_with_reference_lines(text, []) == text
+
+
+# ---------------------------------------------------------------------------
+# 提及判定（CR-9634-2）：边界对齐 + 分隔符 / 大小写归一
+# ---------------------------------------------------------------------------
+
+
+def test_text_mentions_image_requires_token_boundaries() -> None:
+    """命中必须整名对齐：``1.png`` 不命中 ``11.png`` / ``data.png``。"""
+
+    image = _image("/tmp/1.png", filename="1.png")
+
+    assert text_mentions_image(image, "请识别 1.png 并描述") is True
+    assert text_mentions_image(image, "请识别3.png") is False
+    assert text_mentions_image(image, "见 C:/uploads/11.png") is False
+    assert text_mentions_image(image, "见 data.png") is False
+
+
+def test_text_mentions_image_matches_chinese_adjacent_filename() -> None:
+    """中文紧贴文件名仍是合法提及（边界按 ASCII 文件名类字符判定）。"""
+
+    image = _image("/tmp/3.jpg", filename="3.jpg")
+
+    assert text_mentions_image(image, "请识别3.jpg") is True
+
+
+def test_text_mentions_image_normalizes_separator_and_case() -> None:
+    """路径比较前统一分隔符并忽略大小写；filename 按 basename 形态比较。"""
+
+    image = _image("C:/uploads/3.jpg", filename="C:\\uploads\\3.jpg")
+
+    assert text_mentions_image(image, "图片在 C:\\Uploads\\3.JPG") is True
+    assert text_mentions_image(image, "图片在 c:/uploads/3.jpg") is True
+    assert text_mentions_image(image, "图片在 C:/uploads/13.jpg") is False
+
+
+def test_augment_ignores_substring_filename_mention() -> None:
+    """leader 兜底同样不得把 11.png / data.png 当成 1.png（裸子串过宽）。"""
+
+    manifest = [{"type": "image", "path": "/tmp/1.png", "filename": "1.png", "mime_type": "image/png"}]
+
+    assert augment_message_with_reference_lines("识别 11.png", manifest) == "识别 11.png"
+    assert augment_message_with_reference_lines("识别 data.png", manifest) == "识别 data.png"
+
+
+def test_normalized_text_mentions_image_reuses_one_normalized_text() -> None:
+    """已归一入口：调用方归一一次即可对多张图复用（批量场景不重复 lower 同一段文本）。"""
+
+    normalized = normalize_image_mention_text("请识别 C:\\Uploads\\1.PNG")
+    first = _image("/tmp/1.png", filename="1.png")
+    second = _image("/tmp/11.png", filename="11.png")
+
+    assert normalized_text_mentions_image(first, normalized) is True
+    assert normalized_text_mentions_image(second, normalized) is False
+
+
+def test_augment_matches_windows_separator_path_mention() -> None:
+    """正文用 Windows 反斜杠形态写路径时也能补引用行（文件名不同名时靠路径归一）。"""
+
+    manifest = [
+        {
+            "type": "image",
+            "path": "C:/uploads/3.jpg",
+            "filename": "截图 3.jpg",
+            "mime_type": "image/jpeg",
+            "size_bytes": 222,
+        }
+    ]
+
+    updated = augment_message_with_reference_lines("请识别 C:\\uploads\\3.jpg", manifest)
+
+    assert "[image #1] path=C:/uploads/3.jpg" in updated
+

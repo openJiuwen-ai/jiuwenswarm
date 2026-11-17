@@ -256,7 +256,8 @@ async def test_handle_command_compact_returns_custom_instructions(server, fake_w
 
     mock_agent = MockAgent()
 
-    async def mock_get_agent(channel_id, mode, project_dir=None, sub_mode=None):
+    async def mock_get_agent(channel_id, mode, project_dir=None, sub_mode=None, session_id=None):
+        assert session_id == "default"
         return mock_agent
 
     async def mock_send_push(msg):
@@ -321,7 +322,8 @@ async def test_handle_command_compact_pushes_current_compression_state_event(ser
 
     pushed = []
 
-    async def mock_get_agent(channel_id, mode, project_dir=None, sub_mode=None):
+    async def mock_get_agent(channel_id, mode, project_dir=None, sub_mode=None, session_id=None):
+        assert session_id == "session-1"
         return MockAgent()
 
     async def mock_send_push(msg):

@@ -1,5 +1,6 @@
 {
   "common": {
+    "expandAndPin": "展开并固定",
     "confirm": "确认",
     "cancel": "取消",
     "close": "关闭",
@@ -25,7 +26,8 @@
       "jumpTo": "跳至",
       "go": "确定"
     },
-    "all": "全部"
+    "all": "全部",
+    "retry": "重试"
   },
   "approvals": {
     "myTitle": "我的申请",
@@ -114,7 +116,8 @@
     "a2aIngress": "A2A 调度中心",
     "personalContext": "个人\n上下文",
     "approvals": "申请",
-    "diagnosis": "一键定位"
+    "diagnosis": "一键定位",
+    "experiments": "RSI"
   },
   "digitalAvatar": {
     "title": "数字分身",
@@ -485,8 +488,10 @@
     "modeSwitchTitle": "切换模式",
     "modeSwitchConfirm": "当前会话有历史消息，切换模式将新建会话。是否继续？",
     "skills": "技能",
+    "swarmSkills": "团队技能",
     "skillsToggle": "查看已安装技能",
     "noInstalledSkills": "暂无已安装技能",
+    "noInstalledSwarmSkills": "暂无已安装团队技能",
     "skillsSearchPlaceholder": "搜索技能名称或描述",
     "skillsManage": "技能管理",
     "skillsAdd": "添加到输入栏",
@@ -498,6 +503,26 @@
     "contextCompressionCompleted": "本轮完成上下文压缩 {{count}} 次",
     "historyLoading": "历史数据加载中…",
     "historyLoadMore": "加载更多历史消息",
+    "teamSession": {
+      "label": "专家团",
+      "boundHint": "已绑定；可在加号菜单切换其他专家团。",
+      "pickHint": "在加号菜单选择专家团。",
+      "emptyCatalog": "暂无专家团，请先在 OfficeAce 同步/召唤。",
+      "pickPlaceholder": "选择专家团…",
+      "switchPlaceholder": "切换专家团…",
+      "current": "当前",
+      "loading": "加载中…",
+      "swarmForbidden": "当前会话已绑定团队，不能再选团队技能；可切换其他专家团，或新开会话使用团队技能。",
+      "swarmMultiple": "每条消息最多选择一个团队技能。"
+    },
+    "skillsToggleTeamBound": "查看已安装技能",
+    "skillsToggleTeamUnbound": "查看技能与团队协作剧本",
+    "noInstalledSkillsTeamBound": "暂无已安装普通技能",
+    "skillGroupOrdinary": "普通技能",
+    "skillGroupSwarm": "团队技能（协作剧本）",
+    "swarmSkillBadge": "团队技能",
+    "swarmSkillStartCollab": "用团队技能开始协作",
+    "swarmSkillStartCollabHint": "未选择专家团时，用协作剧本在本场组人办事。这不是召唤一个专家团。",
     "config": {
       "mode": {
         "cluster": "集群模式",
@@ -765,7 +790,12 @@
     "title": "A2A 调度中心",
     "subtitle": "管理 JiuwenSwarm 对外提供的 A2A 服务。",
     "enterpriseSubtitle": "查看管理员分配的 A2A Agent，并管理个人启用状态和处理历史。",
-    "tabs": { "ariaLabel": "A2A 调度中心页面", "config": "入站配置", "outbound": "出站配置", "history": "处理历史" },
+    "tabs": {
+      "ariaLabel": "A2A 调度中心页面",
+      "config": "入站配置",
+      "outbound": "出站配置",
+      "history": "处理历史"
+    },
     "enable": "启用服务",
     "enabling": "启用中...",
     "disable": "停用服务",
@@ -779,7 +809,13 @@
     "saved": "配置已保存并应用。",
     "disconnected": "当前未连接到 Gateway，无法读取或修改 A2A 服务。",
     "saveBeforeLifecycleAction": "配置有未保存的修改，请先保存或取消，再启用、停用或重启服务。",
-    "states": { "disabled": "已关闭", "starting": "启动中", "running": "运行中", "stopping": "停止中", "error": "异常" },
+    "states": {
+      "disabled": "已关闭",
+      "starting": "启动中",
+      "running": "运行中",
+      "stopping": "停止中",
+      "error": "异常"
+    },
     "status": {
       "title": "服务状态",
       "configRevision": "配置版本：{{revision}}",
@@ -787,7 +823,10 @@
       "effectiveCardUrl": "实际 Agent Card 地址",
       "notListening": "当前未监听"
     },
-    "config": { "title": "入站服务配置", "description": "保存后立即应用，正在运行的服务将重启；取消可放弃本次修改。" },
+    "config": {
+      "title": "入站服务配置",
+      "description": "保存后立即应用，正在运行的服务将重启；取消可放弃本次修改。"
+    },
     "outbound": {
       "credentialHelp": {
         "method": "Agent Card 声明的认证方式：{{method}}。",
@@ -848,7 +887,12 @@
         "syncWait": "同步等待超时（秒）",
         "replaceCredential": "替换凭据（留空则不修改）"
       },
-      "availability": { "available": "可用", "unreachable": "不可达", "incompatible": "不兼容", "review_required": "待确认" },
+      "availability": {
+        "available": "可用",
+        "unreachable": "不可达",
+        "incompatible": "不兼容",
+        "review_required": "待确认"
+      },
       "register": "注册",
       "registering": "注册中...",
       "registered": "第三方 Agent 已注册，现在可按启用和可用状态参与出站调用。",
@@ -869,10 +913,17 @@
       "confirm": "确认并应用",
       "reject": "拒绝变化",
       "deleteConfirm": "确定删除该注册项吗？已有派发历史会保留，但新调用将立即被拒绝。",
-      "errors": { "invalidResponse": "A2A 出站管理服务返回了无效数据。", "invalidSettings": "请填写有效的显示名称和大于 0 的超时时间。" }
+      "errors": {
+        "invalidResponse": "A2A 出站管理服务返回了无效数据。",
+        "invalidSettings": "请填写有效的显示名称和大于 0 的超时时间。"
+      }
     },
     "history": {
-      "tabs": { "ariaLabel": "A2A 请求处理历史类型", "ingress": "入站请求", "outbound": "出站请求" },
+      "tabs": {
+        "ariaLabel": "A2A 请求处理历史类型",
+        "ingress": "入站请求",
+        "outbound": "出站请求"
+      },
       "copy": "点击复制",
       "copied": "已复制",
       "copyFailed": "复制失败，请选中文本后手动复制。",
@@ -887,7 +938,10 @@
         "description": "显示最近 200 条 A2A 出站派发记录，不展示请求正文或响应正文。",
         "empty": "暂无出站处理记录",
         "emptyDescription": "向第三方 Agent 派发请求后，处理状态会显示在这里。",
-        "modes": { "sync": "同步", "async": "异步" },
+        "modes": {
+          "sync": "同步",
+          "async": "异步"
+        },
         "statuses": {
           "created": "已创建",
           "submitting": "提交中",
@@ -905,8 +959,15 @@
         }
       },
       "processing": "处理中",
-      "statuses": { "processing": "处理中", "completed": "已完成", "failed": "失败", "canceled": "已取消" },
-      "operations": { "message": "消息处理" },
+      "statuses": {
+        "processing": "处理中",
+        "completed": "已完成",
+        "failed": "失败",
+        "canceled": "已取消"
+      },
+      "operations": {
+        "message": "消息处理"
+      },
       "columns": {
         "status": "状态",
         "operation": "请求类型",
@@ -996,7 +1057,8 @@
     "status": {
       "label": "状态",
       "enabled": "已启用",
-      "disabled": "已禁用"
+      "disabled": "已禁用",
+      "expired": "已过期"
     },
     "skillnet": {
       "usageNoticeTitle": "提示",
@@ -1443,6 +1505,19 @@
       "memberNameFormatInvalid": "成员名称必须以小写字母开头，后跟小写字母、数字或连字符",
       "referencedByTeams": "被 {{count}} 个 Team 引用"
     },
+    "sensitiveMask": {
+      "title": "网页回答脱敏",
+      "hint": "关闭时原文直出。打开后，命中片段留前 3 后 4 个字符，中间换成四个星号，至少藏住 4 个字符。只影响网页展示，不改历史文件。",
+      "enabled": "启用脱敏",
+      "name": "名称",
+      "pattern": "正则",
+      "add": "添加规则",
+      "remove": "删除",
+      "save": "保存",
+      "saved": "已保存",
+      "loadFailed": "读取脱敏配置失败",
+      "saveFailed": "保存脱敏配置失败"
+    },
     "groups": {
       "modelDefault": { "label": "默认模型（主对话）", "hint": "主对话模型服务与鉴权参数" },
       "modelVideo": { "label": "视频模型", "hint": "视频理解（可选）" },
@@ -1458,9 +1533,11 @@
       "contextEngine": { "label": "上下文压缩", "hint": "控制对话上下文是否启用压缩" },
       "kvCacheAffinity": { "label": "算力亲和", "hint": "控制 Ascend KV Cache 亲和能力" },
       "permissions": { "label": "工具安全护栏", "hint": "控制工具调用时的权限检查" },
+      "sandbox": { "label": "沙箱", "hint": "打开后命令在沙箱里执行，默认关闭" },
       "a2ui": { "label": "A2UI", "hint": "开启或关闭生成式界面渲染与 A2UI 运行时提示词" },
       "trajectoryUi": { "label": "轨迹界面", "hint": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路" },
       "diagnosis": { "label": "轨迹诊断", "hint": "开启后可在「一键定位」对会话进行自动问题分析；在线诊断依赖轨迹界面已开启，离线模式仅需上传/导入日志" },
+      "rsi": { "label": "启用 RSI", "hint": "显示侧边栏「RSI」入口，可创建并查看 Harness 优化和产物优化（论文、程序）的 RSI 任务；关闭后隐藏该入口。" },
       "swarmflow": { "label": "SwarmFlow", "hint": "控制 Team 模式是否启用 SwarmFlow 流程视图与监控" },
       "symphony": { "label": "技能交响乐", "hint": "控制技能交响乐" },
       "skillRetrieval": { "label": "技能交响乐", "hint": "控制技能交响乐" },
@@ -1562,7 +1639,11 @@
     "enable": "启动",
     "disable": "停用",
     "loading": "正在加载任务列表...",
-    "empty": "暂无定时任务",
+    "empty": {
+      "createButton": "创建定时任务",
+      "templateSectionTitle": "任务模板",
+      "templateMore": "更多"
+    },
     "deleteConfirm": "确定要删除这个任务吗？",
     "autoManaged": "自动维护",
     "autoManagedHint": "此任务由主动推荐开关自动创建/删除；开关在设置→主动推荐。仅 Cron 表达式与时区可在此面板编辑，其余字段（名称/状态/描述/偏移/频道）不可改；删除请到设置关闭开关。",
@@ -1617,11 +1698,6 @@
       "history": "运行历史",
       "triggeredSessions": "执行记录",
       "noTriggeredSessions": "暂无触发记录"
-    },
-    "empty": {
-      "createButton": "创建定时任务",
-      "templateSectionTitle": "任务模板",
-      "templateMore": "更多"
     },
     "history": {
       "comingSoon": "该功能即将上线"
@@ -2909,9 +2985,17 @@
       "cancel": "取消",
       "confirm": "确定"
     },
-    "runtime": { "processing": "处理中" },
-    "deleteDialog": { "title": "删除", "description": "确定删除“<name>{{title}}</name>”吗？此操作不可撤销。" },
-    "notFound": { "title": "对话不存在或已删除", "newConversation": "新建对话" },
+    "runtime": {
+      "processing": "处理中"
+    },
+    "deleteDialog": {
+      "title": "删除",
+      "description": "确定删除“<name>{{title}}</name>”吗？此操作不可撤销。"
+    },
+    "notFound": {
+      "title": "对话不存在或已删除",
+      "newConversation": "新建对话"
+    },
     "errors": {
       "delete": "删除对话失败",
       "create": "创建对话失败",
@@ -3123,15 +3207,15 @@
       "autoCollectLabel": "自动采集",
       "autoCollectHint": "开启后按频率自动采集",
       "timeRangeLabel": "采集时间",
-    "timeRangeWeek": "最近一周",
-    "timeRangeMonth": "最近一个月",
-    "timeRangeQuarter": "最近三个月",
-    "timeRangeCustom": "自定义",
-    "dateRangeTitle": "选择日期范围",
-    "dateRangePlaceholder": "请选择日期范围",
-    "dateRangeRequired": "请选择自定义时间范围",
-    "addUrl": "+ 添加",
-    "frequencyLabel": "自动采集频率",
+      "timeRangeWeek": "最近一周",
+      "timeRangeMonth": "最近一个月",
+      "timeRangeQuarter": "最近三个月",
+      "timeRangeCustom": "自定义",
+      "dateRangeTitle": "选择日期范围",
+      "dateRangePlaceholder": "请选择日期范围",
+      "dateRangeRequired": "请选择自定义时间范围",
+      "addUrl": "+ 添加",
+      "frequencyLabel": "自动采集频率",
       "frequencyHour": "每 {{n}} 小时",
       "frequencyDay": "每 {{n}} 天",
       "frequencyEvery": "每",
@@ -3142,7 +3226,7 @@
       "advancedConfig": "高级配置",
       "maxItemsRangeError": "单次采集条数须在 1~10000 之间，或留空使用默认",
       "previousStep": "上一步",
-    "submit": "添加",
+      "submit": "添加",
       "save": "保存",
       "notConfigured": "尚未配置个人上下文，请先在设置页开启",
       "providerUnauthorized": "未授权，请先去设置页授权",
@@ -3152,7 +3236,8 @@
       "localFiles": {
         "rootDirLabel": "本地文件夹路径",
         "rootDirPlaceholder": "D:/my-notes",
-        "rootDirHint": "须为绝对路径"
+        "rootDirHint": "须为绝对路径",
+        "rootDirRequired": "请输入本地文件夹路径"
       },
       "zhihu": {
         "columnUrlLabel": "知乎专栏地址",
@@ -3469,10 +3554,21 @@
       "expired": "已过期"
     },
     "schedule": {
-      "tab": { "interval": "按间隔", "cron": "Cron 表达式", "once": "单次" },
-      "interval": { "label": "每隔", "unit": "分钟回到当前会话" },
-      "cron": { "hint": "标准 5 段格式：分 时 日 月 周（例：0 9 * * 1-5 表示工作日早上 9 点）" },
-      "once": { "hint": "选择具体日期和时间，到点后回到当前会话触发一次，之后自动标记为已完成" },
+      "tab": {
+        "interval": "按间隔",
+        "cron": "Cron 表达式",
+        "once": "单次"
+      },
+      "interval": {
+        "label": "每隔",
+        "unit": "分钟回到当前会话"
+      },
+      "cron": {
+        "hint": "标准 5 段格式：分 时 日 月 周（例：0 9 * * 1-5 表示工作日早上 9 点）"
+      },
+      "once": {
+        "hint": "选择具体日期和时间，到点后回到当前会话触发一次，之后自动标记为已完成"
+      },
       "summary": {
         "interval": "每 {{minutes}} 分钟回到当前会话",
         "cron": "{{expr}}（{{timezone}}）回到当前会话",
@@ -3504,8 +3600,15 @@
       "titleEdit": "编辑心跳任务",
       "back": "返回"
     },
-    "concurrencyPolicy": { "skip": "跳过（skip）", "queue": "排队（queue）", "replace": "替换（replace）" },
-    "sessionDeletedPolicy": { "disable": "停用任务", "completed": "标记为已完成" },
+    "concurrencyPolicy": {
+      "skip": "跳过（skip）",
+      "queue": "排队（queue）",
+      "replace": "替换（replace）"
+    },
+    "sessionDeletedPolicy": {
+      "disable": "停用任务",
+      "completed": "标记为已完成"
+    },
     "panel": {
       "title": "心跳任务",
       "loading": "加载中…",
@@ -3562,5 +3665,286 @@
       "skipped": "上次运行已跳过",
       "cancelled": "上次运行已取消"
     }
+  },
+  "rsi": {
+    "sessionHarness": {
+      "label": "会话 Harness",
+      "default": "跟随默认 Harness",
+      "unavailable": "所选版本不可用"
+    },
+    "title": "RSI",
+    "createExperiment": "创建 RSI 任务",
+    "empty": {
+      "title": "暂无 RSI 任务",
+      "hint": "支持创建 Harness 优化、论文优化和程序优化的 RSI 任务"
+    },
+    "intro": {
+      "title": "RSI·递归自我改进",
+      "lead": "让AI越用越强—从「会干活」到「越干越好」",
+      "stepsTitle": "操作步骤",
+      "step1Title": "第一步：创建 RSI 任务",
+      "step1Body": "选择优化场景：Harness 优化 / 产物优化（论文、程序），填写必要参数，点击「创建」，开始自动优化。",
+      "step2Title": "第二步：可视化优化过程",
+      "step2Body": "实时可视训练进度条和得分曲线。 RSI 树搜索可视化，理解自动探索过程。全程自动迭代，无需人工干预。",
+      "step3Title": "第三步：获得最优结果",
+      "step3Body": "支持查看最优分数、提升幅度及评测通过数等参数。点击「安装插件」或「下载产物」可直接使用。",
+      "featuresTitle": "功能特点",
+      "feature1Title": "Harness 优化 —— 优化「AI 的工作装备」",
+      "feature1Body": "AI 的实力 = 模型 + Harness——模型负责想、Harness 负责干。RSI 拿真实任务反复演练：摸清短板、生成方案、逐一验证打分，对工具（tool）、护栏（rail）、技能（skill）逐项调优，沉淀出更好的装备。",
+      "feature2Title": "产物优化 —— 打磨「交付的成果」",
+      "feature2Body": "把你的成品（论文 / 程序）交给 AI 反复打磨：生成多个优化候选，逐版检验评分，保留最好的一版继续迭代，直到产出最满意的那一版再交付给你。经过多轮打磨自动完成，质量稳步上升"
+    },
+    "list": {
+      "title": "RSI 任务",
+      "loading": "加载中…",
+      "retry": "重试",
+      "error": "加载 RSI 任务列表失败"
+    },
+    "createDialog": {
+      "title": "创建 RSI 任务",
+      "nameLabel": "任务名称",
+      "namePlaceholder": "请输入任务名称",
+      "typeLabel": "任务类型",
+      "typeHarness": "Harness 优化",
+      "typeArtifact": "产物优化",
+      "artifactSubtypeLabel": "产物子类型",
+      "artifactTypeLabel": "产物类型",
+      "subtypePaper": "论文",
+      "subtypeProgram": "程序",
+      "optimizerModelLabel": "优化模型",
+      "evaluationMethodLabel": "评测方法",
+      "evaluationMethodAgent": "Agent评测",
+      "evaluationMethodScript": "脚本评测",
+      "evaluationMethodComingSoon": "待开放",
+      "testerModelLabel": "测试模型",
+      "datasetLabel": "评测集文件",
+      "datasetPlaceholder": "请选择本地评测集 JSON 文件",
+      "datasetTip": "请选择单个评测 JSON 文件；顶层为 cases 数组，每题包含 case_id、input，可选 assets 与 reference",
+      "datasetFieldTipTitle": "评测集字段格式",
+      "browse": "浏览",
+      "maxIterationsLabel": "最大迭代轮次",
+      "searchWidthLabel": "最大搜索宽度",
+      "optimizationInstructionLabel": "优化指令（可选，优化指令和论文必须上传一个）",
+      "optimizationInstructionPlaceholder": "优化指令与产物至少上传一个",
+      "paperLabel": "论文文件夹（可选，优化指令和论文必须上传一个）",
+      "paperPlaceholder": "选择论文文件夹路径",
+      "paperPickerTitle": "选择论文文件夹",
+      "paperInfoBar": "论文优化将以 LaTeX 文件夹作为产物，并尝试生成 PDF。请确保运行环境已安装 MiKTeX 或 TeX Live，且 latexmk 或 pdflatex 可用，否则 PDF 可能无法生成。",
+      "webProxyLabel": "文献检索代理（可选）",
+      "webProxyPlaceholder": "例如：http://127.0.0.1:7890",
+      "webProxyTip": "建议配置 HTTP/HTTPS 代理，以提高文献网页和全文下载的成功率。",
+      "webProxyConfigured": "已配置",
+      "webProxyNotConfigured": "未配置（建议配置代理）",
+      "programLabel": "程序路径",
+      "programPlaceholder": "选择程序文件夹路径",
+      "validate": "校验",
+      "validating": "校验中…",
+      "valid": "校验通过，共 {{count}} 条样本",
+      "invalid": "校验未通过",
+      "sampleUnknown": "校验通过",
+      "modelPlaceholder": "选择模型",
+      "freeModels": "免费模型",
+      "customModels": "自定义模型",
+      "submit": "创建",
+      "cancel": "取消",
+      "infoBar": "请预先安装、调用evolve-design技能，创建产物优化的依赖项，填写程序路径",
+      "validation": {
+        "nameRequired": "请输入任务名称",
+        "datasetRequired": "请选择数据集文件",
+        "optimizerRequired": "请选择优化模型",
+        "testerRequired": "请选择测试模型",
+        "paperOrInstruction": "优化指令和论文至少上传一个",
+        "programRequired": "请选择程序文件"
+      }
+    },
+    "configDialog": {
+      "title": "配置信息",
+      "readonly": "只读"
+    },
+    "artifact": {
+      "empty": "暂无产物文件",
+      "noHarnessSnapshot": "该节点尚未生成 Harness 包",
+      "loadFailed": "产物加载失败",
+      "selectFile": "请选择文件",
+      "copied": "已复制",
+      "copyFailed": "复制失败",
+      "latexPreview": "预览",
+      "latexSource": "源码"
+    },
+    "detail": {
+      "optimizationResult": "优化结果",
+      "bestArtifact": "当前最优产物",
+      "viewPaper": "查看论文",
+      "prunedReason": "剪枝原因",
+      "skippedReason": "跳过原因",
+      "viewDetail": "查看详情",
+      "viewArtifact": "查看产物",
+      "baselineScore": "基线分数",
+      "usage": "用量（token）",
+      "iterations": "迭代轮次",
+      "evalCount": "组合评测",
+      "pruned": "剪枝",
+      "harnessProcess": "Harness 优化过程",
+      "paperProcess": "论文优化过程",
+      "programProcess": "程序优化过程",
+      "runningStage": "运行中",
+      "currentBest": "当前最优版本",
+      "nodeHint": "节点展示每轮候选、阶段和评测结果；点击节点查看完整信息",
+      "harnessNodeHint": "节点代表一套 Harness 组合；点击节点查看本轮改动和评测结果",
+      "paperNodeHint": "节点代表一个论文版本；点击节点查看改动、阶段和未采用原因",
+      "programNodeHint": "并行候选按完成顺序出现；候选达标后停止搜索，已在评测的候选可能稍后完成",
+      "estimatedCost": "实际估算成本：{{cost}} 元",
+      "selectedNode": "当前选中",
+      "inherit": "继承",
+      "othersInherit": "其余继承",
+      "legendBestPath": "当前最优",
+      "legendEvaluated": "未采用",
+      "legendPending": "进行中",
+      "legendFailed": "失败",
+      "legendPruned": "已剪枝",
+      "statusCreated": "已创建",
+      "statusQueued": "排队中",
+      "statusRunning": "优化中",
+      "statusCompleted": "已完成",
+      "statusFailed": "任务失败",
+      "statusPaused": "已暂停",
+      "statusTerminated": "已终止",
+      "actionConfig": "配置信息",
+      "actionDelete": "删除",
+      "actionPause": "暂停任务",
+      "actionStop": "停止任务",
+      "actionUnknownError": "未知错误",
+      "actionFailed": "操作失败：{{message}}",
+      "actionInstallSuccess": "{{taskName}} - {{snapshotName}} 安装成功！",
+      "actionClose": "关闭",
+      "actionResume": "继续任务",
+      "actionStart": "开始训练",
+      "actionInstall": "安装插件",
+      "actionDownload": "下载",
+      "actionTerminate": "终止",
+      "actionCancel": "取消",
+      "actionConfirm": "确定",
+      "tagType": "类型",
+      "tagStatus": "状态",
+      "tagMaxIterations": "最大迭代轮次",
+      "tagMaxSearchWidth": "最大搜索宽度",
+      "tagCreatedAt": "创建时间",
+      "expandView": "放大查看",
+      "locate": "定位",
+      "evaluating": "正在评测",
+      "candidate": "候选",
+      "progress": "进度",
+      "bestArtifactPrefix": "最优产物",
+      "changeSummary": "本次改动",
+      "evaluationResult": "评测结果",
+      "score": "得分",
+      "parentScore": "父节点",
+      "scoreDelta": "差值",
+      "failureReason": "失败原因",
+      "rejectionReason": "未采用原因",
+      "inheritFrom": "继承自",
+      "baselineDescription": "这是本次优化的起始版本。",
+      "noChangeSummary": "沿用父版本，暂无结构化改动摘要。",
+      "nodeArtifact": "节点产物",
+      "processing": "处理中…",
+      "technicalInfo": "技术信息",
+      "nodeId": "节点 ID",
+      "nodeType": "生命周期",
+      "close": "关闭",
+      "deleteTitle": "删除 RSI 任务",
+      "deleteBody": "删除后 RSI 任务数据不可恢复，确定删除该任务吗？",
+      "pauseTitle": "暂停 RSI 任务",
+      "pauseBody": "暂停后将停止当前优化进程，确定暂停该 RSI 任务吗？",
+      "stopTitle": "停止 RSI 任务",
+      "stopBody": "停止后将终止当前优化任务，确定停止该 RSI 任务吗？",
+      "queuedTitle": "当前 RSI 任务正在排队",
+      "queuedHint": "下面还有 1 个任务正在优化中，请耐心等待"
+    },
+    "stage": {
+      "caseRunning": "评测用例 {{index}}/{{total}} 评测中",
+      "casePassed": "评测用例 {{index}}/{{total}} 通过",
+      "caseFailed": "评测用例 {{index}}/{{total}} 未通过",
+      "caseError": "评测用例 {{index}}/{{total}} 执行异常",
+      "caseSkipped": "评测用例 {{index}}/{{total}} 已跳过",
+      "analysisRunning": "正在分析失败用例",
+      "analysisDone": "失败用例分析完成",
+      "analysisError": "失败用例分析异常",
+      "candidateRunning": "正在生成候选 {{index}}/{{total}}",
+      "candidateDone": "候选 {{index}}/{{total}} 生成完成",
+      "candidateError": "候选 {{index}}/{{total}} 生成失败",
+      "scoreSuffix": " · 得分 {{score}}"
+    }
+  },
+  "swarmflow": {
+    "statusPlanned": "已规划",
+    "statusPending": "等待中",
+    "statusRunning": "运行中",
+    "statusPaused": "已暂停",
+    "statusCompleted": "已完成",
+    "statusFailed": "失败",
+    "statusStopped": "已停止",
+    "statusWaitingForHuman": "等待人工输入",
+    "subWorkflow": "子工作流",
+    "clickToReply": "点击回复",
+    "waitingForHuman": "等待回复 {{count}}",
+    "noWorkflow": "暂无工作流",
+    "layoutIndented": "缩进树",
+    "layoutOrgChart": "架构图",
+    "layoutGraph": "流程图",
+    "pauseResumeHint": "暂停/恢复",
+    "stopHint": "停止",
+    "controlAlreadyCompleted": "工作流已完成",
+    "controlAlreadyStopped": "工作流已停止",
+    "controlAlreadyFailed": "工作流已失败",
+    "controlAlreadyPaused": "工作流已暂停",
+    "controlUnavailable": "工作流正在运行，控制暂不可用",
+    "controlNotFound": "未找到工作流运行",
+    "controlTimeout": "工作流控制超时，请重试",
+    "controlsDisabledHint": "团队已暂停，发送一条消息唤醒团队后即可恢复或停止工作流",
+    "sessionBudget": "会话预算（团队共享，不随运行重置）",
+    "runBudget": "本次运行预算（META.workflow_token_limit）",
+    "sessionBudgetShort": "会话累计",
+    "runBudgetShort": "本次运行",
+    "budgetUnlimited": "无限制",
+    "budgetExhaustedSession": "会话预算耗尽",
+    "budgetExhaustedWorkflow": "运行预算耗尽",
+    "toggleLabel": "动态工作流",
+    "tagHint": "本次会话已启用动态工作流",
+    "closeTag": "关闭动态工作流",
+    "closeTagDisabled": "会话进行中，无法关闭",
+    "configTitle": "动态工作流配置",
+    "configReadonlyHint": "会话已开启，配置不可修改",
+    "budgetPanelTitle": "SwarmFlow 预算",
+    "budgetPanelHint": "设置本次会话的 Token 上限。",
+    "budgetPlaceholder": "输入数字",
+    "budgetActualHint": "本次配置上限：{{count}} tokens",
+    "workflowList": "工作流列表",
+    "verifyReviewing": "评审中…",
+    "verifyReviewingShort": "评审中",
+    "verifyPass": "✓ 通过",
+    "expertIdentity": "专家：{{name}}（{{template}}）",
+    "turnDetailHint": "点击查看该轮输入 / 输出",
+    "verifyFail": "✗ 不通过",
+    "verifyUndecided": "? 未裁决",
+    "verifyThreshold": "阈值 {{count}}",
+    "verifyUndecidedHint": "有 reviewer 未投票（undecided），建议重试",
+    "verifyVotesMissing": "{{count}} 票缺失 · 建议重试",
+    "verifyVoteUndecided": "? 未投",
+    "verifyScore": "{{score}} 分",
+    "verifyRound": "第{{count}}轮 · {{verdict}}",
+    "verifyGroupTitle": "verify 组 · {{label}}",
+    "verifyReviewersPending": "{{names}} 评审中…",
+    "sectionCallRecords": "活动",
+    "sectionToolCalls": "工具调用",
+    "sectionInput": "输入",
+    "sectionOutput": "输出",
+    "sectionHumanPrompt": "人工提问",
+    "sectionHumanReply": "人工回复",
+    "sectionError": "错误",
+    "charUnit": "字符",
+    "clickToViewDetail": "点击查看详情",
+    "runIdTooltip": "运行 ID：{{id}}",
+    "forkFromSession": "分叉自 {{name}}",
+    "forkChildSession": "子会话分叉"
   }
 }

@@ -239,12 +239,19 @@ class AgentTool(Tool):
         )
 
         # 构建 create_kwargs（对齐 DeepAgent.create_subagent 的字段映射）
+        subagent_rails = None
+        if spec.rails is not None:
+            subagent_rails = []
+            for rail in spec.rails:
+                fork_for_agent = getattr(rail, "fork_for_agent", None)
+                subagent_rails.append(fork_for_agent() if callable(fork_for_agent) else rail)
         create_kwargs = {
             "model": spec.model or parent_config.model,
             "card": spec.agent_card,
             "system_prompt": spec.system_prompt,
             "tools": parent_tool_cards,
             "mcps": spec.mcps,
+            "rails": subagent_rails,
             "enable_task_loop": spec.enable_task_loop,
             "max_iterations": spec.max_iterations if spec.max_iterations is not None else parent_config.max_iterations,
             "workspace": workspace,

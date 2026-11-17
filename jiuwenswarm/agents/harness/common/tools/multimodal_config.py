@@ -217,9 +217,9 @@ def _api_key_is_env_bound(raw_api_key: Any) -> bool:
 
 def _raw_model_api_key(model_type: str) -> Any:
     """Read unresolved api_key from raw config.yaml snapshot."""
-    from jiuwenswarm.common.config import get_config_raw
+    from jiuwenswarm.common.config import get_merged_config_dict
 
-    return _get_model_config(get_config_raw(), model_type).get("api_key")
+    return _get_model_config(get_merged_config_dict(), model_type).get("api_key")
 
 
 def _allow_embed_main_api_fallback(

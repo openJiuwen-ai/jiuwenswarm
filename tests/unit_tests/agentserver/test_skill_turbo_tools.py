@@ -1506,3 +1506,109 @@ async def test_skip_mode_abort_keeps_leak_for_resume(
     assert task_slot_guard.peek_leaked_task_slot("sess-leak") == frozenset(
         {"task_deadbeef"}
     )
+
+
+def _raise_on_run_stream(exc: BaseException):
+    async def _stream(*_args, **_kwargs):
+        if False:
+            yield None
+        raise exc
+
+    inst = MagicMock()
+    inst.artifact_holder = {}
+    inst.resume_stream = MagicMock(side_effect=_empty_stream)
+    inst.run_stream = MagicMock(side_effect=_stream)
+    return inst
+
+
+# ── release_registered_tools finally 接线（issue #5908）──────────────────
+# 三条退出路径（正常完成 / 异常 / AbortError）都必须各回收一次环境自注册
+# 的 send_file 实例；漏接 = 每次 invocation（含 HITL resume）泄漏一个 uuid 实例。
+
+
+async def _invoke_fresh_path(adapter, turbo_session, turbo):
+    """fresh 路径最小 patch 集下调用 skill_turbo.invoke，返回结果。"""
+    with (
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_skill_turbo_adapter",
+            return_value=adapter,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_task_id",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_skill_turbo_resume_answers",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_request_metadata",
+            return_value={},
+        ),
+        patch(
+            "jiuwenswarm.agents.harness.common.tools.subagent_executor.get_subagent_parent_session",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.agents.harness.common.tools.subagent_executor.context_vars.get_effective_request_workspace_dir",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.agent.SkillTurbo",
+            return_value=turbo,
+        ),
+        patch(
+            "openjiuwen.core.session.agent.create_agent_session",
+            side_effect=_isolated_session_side_effect(turbo_session),
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.set_skill_turbo_id",
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.load_resume_ctx",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        return await skill_turbo.invoke({"query": _QUERY})
+
+
+@pytest.mark.asyncio
+async def test_release_registered_tools_called_on_normal_completion(
+    _skill_turbo_runtime,
+) -> None:
+    """正常完成：finally 必须回收环境自注册实例。"""
+    adapter, turbo_session = _skill_turbo_runtime
+    turbo = _fake_turbo()
+
+    result = await _invoke_fresh_path(adapter, turbo_session, turbo)
+
+    assert result.get("success") is True
+    turbo.release_registered_tools.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_release_registered_tools_called_on_generic_exception(
+    _skill_turbo_runtime,
+) -> None:
+    """执行异常（被包装为失败结果）：finally 必须回收环境自注册实例。"""
+    adapter, turbo_session = _skill_turbo_runtime
+    turbo = _raise_on_run_stream(RuntimeError("boom"))
+
+    result = await _invoke_fresh_path(adapter, turbo_session, turbo)
+
+    assert result.get("success") is False
+    turbo.release_registered_tools.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_release_registered_tools_called_on_abort_without_tic(
+    _skill_turbo_runtime,
+) -> None:
+    """AbortError 无 TIC cause（HITL 异常族路径）：finally 必须回收环境自注册实例。"""
+    adapter, turbo_session = _skill_turbo_runtime
+    turbo = _raise_on_run_stream(AbortError("interrupted"))
+
+    result = await _invoke_fresh_path(adapter, turbo_session, turbo)
+
+    assert result.get("success") is False
+    turbo.release_registered_tools.assert_called_once()

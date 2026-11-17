@@ -1,7 +1,6 @@
 """按配置或环境变量构造不依赖适配器实例的 rail 和额外工具。"""
 
 from __future__ import annotations
-import hashlib
 import importlib
 import logging
 import os
@@ -10,7 +9,6 @@ from typing import (
     Any,
     Callable,
 )
-from openjiuwen.core.foundation.tool import ToolCard
 from openjiuwen.core.sys_operation import SysOperation
 from openjiuwen.harness.rails import (
     SkillUseRail,
@@ -23,9 +21,8 @@ from jiuwenswarm.agents.harness.common.rails.concurrent_safe_rails import Concur
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.mcp_config import (
-    MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX,
     RequestScopedOfficeClawMcpTool,
-    _positive_timeout_s,
+    create_request_scoped_mcp_tool,
 )
 from jiuwenswarm.common.schema.agent import AgentRequest
 
@@ -50,12 +47,18 @@ def _stage_request_mcp_tools(
     use_global_pool: bool = False,
     strict: bool = False,
     yield_to_existing: bool = False,
+    staged_name_resolver: Callable[[str, str, _RequestMcpToolBuffers], str] | None = None,
+    runtime_params: dict[str, str] | None = None,
+    runtime_delivery: tuple[str, str, bool] = ("", "", False),
+    catalog_host: bool = False,
 ) -> None:
-    """Build request tools without publishing a partially discovered request."""
-    request_scope = hashlib.sha256(
-        f"{request.session_id}:{request.request_id}".encode("utf-8")
-    ).hexdigest()[:20]
-    prefix = MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX if use_global_pool else "office-claw-request-"
+    """Build request tools without publishing a partially discovered request.
+
+    ``staged_name_resolver`` (adapter-provided, keeps this module instance-free)
+    may rename a connector tool whose short name is shadowed by a built-in;
+    rewrites are recorded in ``buffers.research_name_rewrites`` so deepresearch
+    admission sees the staged names.
+    """
     for tool_def in tool_defs:
         name = str(tool_def.get("name") or "").strip()
         if not name or name in buffers.seen_names:
@@ -67,18 +70,19 @@ def _stage_request_mcp_tools(
             )
             continue
         buffers.seen_names.add(name)
-        card = ToolCard(
-            id=f"{prefix}{request_scope}.{server_name}.{name}",
-            name=name,
-            description=str(tool_def.get("description") or ""),
-            input_params=tool_def.get("input_params") or {},
+        staged_name = (
+            name
+            if strict or staged_name_resolver is None
+            else staged_name_resolver(server_name, name, buffers)
         )
-        if not strict:
-            timeout = _positive_timeout_s(params.get("timeout_s"))
-            if timeout is not None:
-                card.properties["resilience"] = {"timeout_s": timeout}
-        tool = RequestScopedOfficeClawMcpTool(
-            card, params, request.request_id, server_name, use_global_pool=use_global_pool,
+        if staged_name != name:
+            buffers.research_name_rewrites.setdefault(server_name, {})[name] = staged_name
+            buffers.seen_names.add(staged_name)
+        tool = create_request_scoped_mcp_tool(
+            request.request_id, request.session_id, server_name, tool_def, params,
+            staged_name=staged_name, use_global_pool=use_global_pool, strict=strict,
+            runtime_params=runtime_params, runtime_delivery=runtime_delivery,
+            catalog_host=catalog_host,
         )
         buffers.pending_tools.append((tool, strict))
 
@@ -86,17 +90,9 @@ def _stage_request_mcp_tools(
 def _office_claw_thread_id_from_tools(
     tools: list[RequestScopedOfficeClawMcpTool],
 ) -> str:
-    for tool in tools:
-        params = getattr(tool, "_params", None)
-        if not isinstance(params, dict):
-            continue
-        env = params.get("env")
-        if not isinstance(env, dict):
-            continue
-        thread_id = str(env.get("OFFICE_CLAW_THREAD_ID") or "").strip()
-        if thread_id:
-            return thread_id
-    return ""
+    from jiuwenswarm.common.mcp_config import office_claw_thread_id_from_tools
+
+    return office_claw_thread_id_from_tools(tools)
 
 
 def _is_sandbox_bound_rail(rail: Any) -> bool:
@@ -395,7 +391,11 @@ def _suspend_subagent_permission_rails(subagent: Any) -> Callable[[], None]:
 
         def _restore() -> None:
             try:
-                rail.update_config(saved_config)
+                from jiuwenswarm.agents.harness.common.rails.permissions.permission_runtime import (
+                    update_permission_config,
+                )
+
+                update_permission_config(rail, saved_config)
             except Exception:
                 logger.warning(
                     "[spawn_fallback] failed to restore permission rail config",
@@ -426,6 +426,7 @@ def _suspend_subagent_permission_rails(subagent: Any) -> Callable[[], None]:
             "PermissionInterruptRail",
             "SkillAuthorizationPermissionRail",
             "SkillTurboPermissionRail",
+            "FlashPermissionRail",
         ):
             continue
         try:
@@ -437,7 +438,11 @@ def _suspend_subagent_permission_rails(subagent: Any) -> Callable[[], None]:
                 host.get_permissions_snapshot if host is not None else None
             )
 
-            rail.update_config(suspended_config)
+            from jiuwenswarm.agents.harness.common.rails.permissions.permission_runtime import (
+                update_permission_config,
+            )
+
+            update_permission_config(rail, suspended_config)
             if host is not None:
                 host.get_permissions_snapshot = _make_disabled_snapshot(suspended_config)
             restore_steps.append(_make_restore(rail, saved_config, host, saved_snapshot))

@@ -1,6 +1,7 @@
 """Regressions for the native MCP integration's independent code review."""
 import inspect
 import json
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -35,20 +36,34 @@ async def test_stopped_resume_only_restores_original_mcp_sources(originally_auth
     assert stream.await_args.kwargs.get("_mcp_servers") == ([SERVER] if originally_authorized else None)
 
 
+@contextmanager
 def adapter_for(policy=None, disabled=(), *, registry=False):
+    from agent_shield.tool_permission import get_permission_manager
+
     tool = SimpleNamespace(server_name='search', card=SimpleNamespace(name='search', description='Search',
                                                                      input_params={'type': 'object'}),
                            invoke=AsyncMock(return_value={'result': '{}'}))
     registration = SimpleNamespace(request_id='req', session_id='session', tool_instances=(tool,), tool_ids=('search-tool',))
-    return SimpleNamespace(
+    resolved = policy or {'enabled': False}
+    manager = get_permission_manager()
+    # mcp_search checks the process Manager under the personal ``default`` key.
+    previous = dict(manager.get_config("default"))
+    manager.update_config(resolved, "default")
+    adapter = SimpleNamespace(
         _deepresearch_mcp_snapshot=(registration, [SERVER], frozenset({'search'}) if registry else frozenset()),
         _active_office_claw_mcp=registration,
         _current_request_route={'request_id': 'req', 'session_id': 'session'},
-        _resolve_permission_config_for_agent=lambda **kw: policy or {'enabled': False},
-        _permission_rail=SimpleNamespace(_engine=SimpleNamespace(
-            check_tool_permission_directly=lambda *args: ('allow', None))),
+        _resolve_permission_config_for_agent=lambda **kw: resolved,
+        _permission_rail=None,
         _disabled_tools_rail=SimpleNamespace(_disabled_tools=set(disabled)),
+        permission_key_dims=lambda: {
+            "group_id": None, "bot_id": None, "user_id": None,
+        },
     )
+    try:
+        yield adapter
+    finally:
+        manager.update_config(previous, "default")
 
 
 async def read(adapter):
@@ -69,7 +84,8 @@ async def test_registry_revocation_and_source_changes_are_rechecked(monkeypatch,
         side_effect=DisabledMcpServerError('search') if change == 'disabled' else
         UnknownMcpServerError('search') if change == 'deleted' else None))
     monkeypatch.setattr(adapter_module, 'get_mcp_server_registry', lambda: registry)
-    assert await read(adapter_for(registry=True)) == []
+    with adapter_for(registry=True) as adapter:
+        assert await read(adapter) == []
 
 
 
@@ -80,7 +96,8 @@ async def test_registry_credential_rotation_uses_current_parameters(monkeypatch)
     registry = SimpleNamespace(snapshot_for_deepresearch=AsyncMock(
         return_value=({}, [{'name': 'search'}], params)))
     monkeypatch.setattr(adapter_module, 'get_mcp_server_registry', lambda: registry)
-    assert await read(adapter_for(registry=True)) == [{**SERVER, 'headers': {'Authorization': 'rotated'}}]
+    with adapter_for(registry=True) as adapter:
+        assert await read(adapter) == [{**SERVER, 'headers': {'Authorization': 'rotated'}}]
 
 
 
@@ -91,11 +108,12 @@ async def test_registry_credential_rotation_uses_current_parameters(monkeypatch)
 ])
 async def test_direct_sdk_cannot_receive_connections_with_per_tool_restrictions(policy, disabled):
     # SDK gets the private endpoint's frozen list, never the remote tools/list.
-    grants = await read(adapter_for(policy, disabled))
-    assert len(grants) == 1
-    assert set(grants[0].tools) == {'search'}
-    with pytest.raises(PermissionError):
-        await grants[0].call('new_ungranted_tool', {})
+    with adapter_for(policy, disabled) as adapter:
+        grants = await read(adapter)
+        assert len(grants) == 1
+        assert set(grants[0].tools) == {'search'}
+        with pytest.raises(PermissionError):
+            await grants[0].call('new_ungranted_tool', {})
 
 
 
@@ -131,12 +149,15 @@ async def test_sdk_window_rechecks_authorization_after_material_preparation():
 
 @pytest.mark.asyncio
 async def test_gateway_uses_latest_permission_without_mutating_host_engine():
+    from agent_shield.tool_permission import get_permission_manager
+
     policy = {'enabled': True, 'tools': {'search': 'allow'}, 'file_guard': {'enabled': False}}
-    adapter = adapter_for(policy)
-    grants = await read(adapter)
-    assert len(grants) == 1
-    policy['tools']['search'] = 'deny'
-    assert not await grants[0].allowed('search', {})
+    with adapter_for(policy) as adapter:
+        grants = await read(adapter)
+        assert len(grants) == 1
+        policy['tools']['search'] = 'deny'
+        get_permission_manager().update_config(policy, "default")
+        assert not await grants[0].allowed('search', {})
 
 
 @pytest.mark.asyncio
@@ -145,7 +166,8 @@ async def test_owner_scope_cannot_be_bypassed_by_gateway():
     policy = {'enabled': False, 'owner_scopes': {'web': {'owner': {'tools': {'search': 'deny'}}}}}
     token = TOOL_PERMISSION_CONTEXT.set(PermissionContext(channel_id='web', principal_user_id='owner'))
     try:
-        assert await read(adapter_for(policy)) == []
+        with adapter_for(policy) as adapter:
+            assert await read(adapter) == []
     finally:
         TOOL_PERMISSION_CONTEXT.reset(token)
 

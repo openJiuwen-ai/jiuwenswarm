@@ -231,8 +231,8 @@ class TestFlashSection:
         section = builder.sections[-1]
         assert section.name == SectionName.TASK_TOOL
         content = section.content["cn"]
-        # flash 段标志：按上下文压力判断 + 无条件并行 + 单干快路径 carve-out
-        assert "按上下文压力判断" in content
+        # flash 段标志：按上下文压力自主判断 + 无条件并行 + 单干快路径 carve-out
+        assert "按上下文压力自主判断" in content
         assert "在同一条消息中一次性发出全部 task_tool 调用" in content
         assert "直接执行更快" in content
         # 不携带 stock 段的强制委派条款（强模型拖慢源）

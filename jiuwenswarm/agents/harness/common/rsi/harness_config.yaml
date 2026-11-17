@@ -1,0 +1,6 @@
+schema_version: expert_harness.v1
+id: rsi-native-agent-baseline
+name: Native Agent Baseline
+description: >-
+  No-capability baseline package. The host DeepAgent keeps its native tools,
+  rails, and prompt while RSI optimizes only newly materialized capabilities.

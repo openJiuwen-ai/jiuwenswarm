@@ -228,33 +228,18 @@ def _collect_disabled_skills_from_state(skill_dirs: list[str]) -> set[str]:
 
 
 def _list_skill_dirs_for_context(ctx: SwarmBuildContext) -> list[str]:
-    workspace = getattr(ctx, "workspace", None)
-    skill_dirs: list[str] = []
-    if workspace is not None:
-        get_node_path = getattr(workspace, "get_node_path", None)
-        if callable(get_node_path):
-            skills_base = get_node_path("skills")
-            if skills_base:
-                skill_dirs.append(str(skills_base))
+    """Return Skill library roots used by team/agent listings (DeepAdapter-aligned)."""
+    from jiuwenswarm.common.utils import resolve_team_skill_library_dirs
 
-        list_team_links = getattr(workspace, "list_team_links", None)
-        if callable(list_team_links):
-            for _team_id, target_path in list_team_links():
-                skill_dirs.append(str(Path(target_path) / "skills"))
-
-    team_skills_dir = getattr(ctx, "team_skills_dir", None)
-    if team_skills_dir:
-        skill_dirs.append(str(team_skills_dir))
-    return list(dict.fromkeys(skill_dirs))
+    return [str(path) for path in resolve_team_skill_library_dirs()]
 
 
 def visible_skill_names_for_list_skill(ctx: SwarmBuildContext) -> set[str]:
     """Return the skill names that the matching SkillUseRail would expose."""
     if ctx.mode in _CODE_MODES:
-        from jiuwenswarm.common.utils import get_agent_skills_dir
         from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
 
-        skill_dirs = [str(Path(ctx.global_skills_dir) if ctx.global_skills_dir else get_agent_skills_dir())]
+        skill_dirs = _list_skill_dirs_for_context(ctx)
         return _scan_skill_names_from_dirs(skill_dirs, set(load_execution_disabled_skills()))
 
     skill_dirs = _list_skill_dirs_for_context(ctx)

@@ -1063,7 +1063,7 @@ class TestHandleCommandBtw:
 
         mock_agent = MockAgent()
 
-        async def mock_get_agent(channel_id, mode, project_dir=None, sub_mode=None):
+        async def mock_get_agent(channel_id, mode, project_dir=None, sub_mode=None, session_id=None):
             return mock_agent
 
         monkeypatch.setattr(
@@ -1095,7 +1095,7 @@ class TestHandleCommandBtw:
     async def test_agent_not_found_returns_error(self, server, fake_ws, monkeypatch):
         """When agent_manager returns None, handler should return ok=False."""
 
-        async def mock_get_agent_none(channel_id, mode, project_dir=None, sub_mode=None):
+        async def mock_get_agent_none(channel_id, mode, project_dir=None, sub_mode=None, session_id=None):
             return None
 
         monkeypatch.setattr(
@@ -1125,7 +1125,7 @@ class TestHandleCommandBtw:
             async def generate_btw_answer(self, session_id, question):
                 raise RuntimeError("model unavailable")
 
-        async def mock_get_agent(channel_id, mode, project_dir=None, sub_mode=None):
+        async def mock_get_agent(channel_id, mode, project_dir=None, sub_mode=None, session_id=None):
             return CrashingAgent()
 
         monkeypatch.setattr(
@@ -1158,7 +1158,7 @@ class TestHandleCommandBtw:
             async def generate_btw_answer(self, session_id, question):
                 return {"status": "ok", "answer": "ok"}
 
-        async def mock_get_agent(channel_id, mode, project_dir=None, sub_mode=None):
+        async def mock_get_agent(channel_id, mode, project_dir=None, sub_mode=None, session_id=None):
             captured_mode["mode"] = mode
             captured_mode["sub_mode"] = sub_mode
             return MockAgent()
@@ -1189,7 +1189,7 @@ class TestHandleCommandBtw:
             async def generate_btw_answer(self, session_id, question):
                 return {"status": "no_context"}
 
-        async def mock_get_agent(channel_id, mode, project_dir=None, sub_mode=None):
+        async def mock_get_agent(channel_id, mode, project_dir=None, sub_mode=None, session_id=None):
             return MockAgent()
 
         monkeypatch.setattr(
@@ -1227,7 +1227,7 @@ class TestHandleCommandBtw:
                 captured_session_id["sid"] = session_id
                 return {"status": "ok", "answer": "ok"}
 
-        async def mock_get_agent(channel_id, mode, project_dir=None, sub_mode=None):
+        async def mock_get_agent(channel_id, mode, project_dir=None, sub_mode=None, session_id=None):
             return MockAgent()
 
         monkeypatch.setattr(

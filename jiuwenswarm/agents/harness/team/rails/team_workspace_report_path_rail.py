@@ -43,21 +43,36 @@ class TeamWorkspaceReportPathRail(DeepAgentRail):
             return
 
         mount = ".team/"
-        sample = str(Path(self._root_dir) / "prd-review-memo.md")
+        # Dual-root: collaboration is team-ws / `.team/`; user open/preview is session
+        # `project_dir` (当前项目目录 in RuntimePromptRail). Do not invent delivery paths
+        # under team-ws; one send per deliverable; report the same project-dir path.
         content = (
             "# Team Workspace Artifact Paths\n\n"
-            f"- Team workspace absolute root: `{self._root_dir}`\n"
-            f"- Internal mount path: `{mount}`\n"
-            "- Use the internal mount path only for tool read/write operations.\n"
-            "- For every final deliverable file, call `send_file_to_user` with its real absolute filesystem path "
-            "before marking the task complete or sending the completion message.\n"
-            "- A file name or path in `send_message`, the final response, or a task-completion summary does not "
-            "deliver the file and must not replace `send_file_to_user`.\n"
-            "- After `send_file_to_user` succeeds, report the real absolute filesystem path under the team "
-            "workspace absolute root, not the `.team/...` mount path.\n"
-            "- The mount is already the shared workspace root; do not add a team id or `team-workspace` "
-            "segment after `.team/`.\n"
-            f"- Example absolute path to pass to `send_file_to_user`: `{sample}`\n"
+            "- Session project directory (`project_dir` / 当前项目目录，见运行时目录上下文): "
+            "user-facing open/preview root for deliverables.\n"
+            f"- Team collaboration root (`.team/` mount target when linked): `{self._root_dir}`\n"
+            f"- Internal mount path: `{mount}` - use only for teammate read/write collaboration.\n"
+            "- Collaboration drafts may use `.team/...`.\n"
+            "- User-facing final deliverables must exist under the session project directory "
+            "(write there directly, or copy once into it before delivery). "
+            "Do not invent an absolute path under the team collaboration root for user delivery.\n"
+            "- If the runtime directory context shows the session project directory as unset "
+            "(当前项目目录：未设置) or that section is missing, use the current working directory "
+            "(cwd) / task work path from that context as the user-facing delivery root instead; "
+            "still do not invent a path under the team collaboration root.\n"
+            "- Call `send_file_to_user` once per user-facing deliverable with the real absolute "
+            "path of the file on disk (prefer the path returned by `write_file`, the generator, "
+            "or realpath). That path must be under the session project directory when set, "
+            "otherwise under the cwd / task work path above. "
+            "Do not send the same deliverable twice under different aliases "
+            "(e.g. both a `.team/...` path and a team-workspace absolute path).\n"
+            "- A file name or path in `send_message`, the final response, or a task-completion "
+            "summary does not deliver the file and must not replace `send_file_to_user`.\n"
+            "- Report to teammates the real absolute path under the session project directory "
+            "(same path used for the user-facing deliverable); do not rewrite it under the "
+            "collaboration root or as a bare `.team/...` string.\n"
+            "- The mount is already the shared workspace root; do not add a team id or "
+            "`team-workspace` segment after `.team/`.\n"
         )
         self.system_prompt_builder.add_section(
             PromptSection(

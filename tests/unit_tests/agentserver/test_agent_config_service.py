@@ -19,6 +19,7 @@ from jiuwenswarm.server.runtime.agent_config_service import (
 )
 from jiuwenswarm.common.config import (
     remove_subagent_from_config,
+    update_swarmflow_budget_in_config,
     update_swarmflow_enabled_in_config,
     upsert_subagent_in_config,
 )
@@ -472,6 +473,29 @@ modes:
 
         data = yaml.safe_load(config_file.read_text(encoding="utf-8"))
         assert data["modes"]["team"]["jiuwen_team"]["enable_swarmflow"] is True
+
+    @staticmethod
+    def test_updates_swarmflow_budget(tmp_config):
+        update_swarmflow_budget_in_config("500000")
+
+        data = yaml.safe_load(tmp_config.read_text(encoding="utf-8"))
+        assert data["modes"]["team"]["jiuwen_team"]["swarmflow_budget"] == 500000
+        assert "swarmflow_budget" not in data["modes"]["team"]["secondary_team"]
+
+    @staticmethod
+    def test_clears_swarmflow_budget_with_none(tmp_config):
+        update_swarmflow_budget_in_config("500000")
+        update_swarmflow_budget_in_config("none")
+
+        data = yaml.safe_load(tmp_config.read_text(encoding="utf-8"))
+        assert "swarmflow_budget" not in data["modes"]["team"]["jiuwen_team"]
+
+    @staticmethod
+    def test_rejects_non_positive_swarmflow_budget(tmp_config):
+        with pytest.raises(ValueError, match="positive integer"):
+            update_swarmflow_budget_in_config("0")
+        with pytest.raises(ValueError, match="positive integer"):
+            update_swarmflow_budget_in_config("abc")
 
 
 class TestAgentLLMGeneration:

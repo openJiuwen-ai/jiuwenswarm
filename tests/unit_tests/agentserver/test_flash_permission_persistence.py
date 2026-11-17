@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Permanent approval must survive a new rail and session without widening scope."""
+"""Flash/OfficeAce does not persist allow-always; approvals stay session-scoped."""
 
-from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -70,9 +69,9 @@ def action_context(action, **options):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("channel", ["native", "hosted"])
-async def test_permanent_action_approval_survives_reload(policy_store, action, channel):
+async def test_allow_always_does_not_write_policy(policy_store, action, channel):
     rail = policy_store.build()
-    original = policy_store.load()
+    original = policy_store.path.read_bytes()
     ctx = action_context(action)
     payload = {"approved": True, "auto_confirm": True, "persist_allow": True}
     if channel == "hosted":
@@ -88,33 +87,11 @@ async def test_permanent_action_approval_survives_reload(policy_store, action, c
         )
         decision = await rail.resolve_interrupt(ctx, ctx.inputs.tool_call, payload)
     assert isinstance(decision, ApproveResult)
-    expected = deepcopy(original)
-    expected["tools"][f"cron_flash.{action}"] = "allow"
-    assert policy_store.load() == expected
-    assert yaml.safe_load(policy_store.path.read_text())["name"] == "fixture-agent"
-
-    reopened = policy_store.build()
-    next_ctx = action_context(action, session_id="new-session", call_id="next-call")
-    assert isinstance(
-        await reopened.resolve_interrupt(next_ctx, next_ctx.inputs.tool_call, None),
-        ApproveResult,
-    )
-    for other in ACTION_ARGS.keys() - {action}:
-        other_ctx = action_context(other, session_id="new-session", call_id=other)
-        assert isinstance(
-            await reopened.resolve_interrupt(
-                other_ctx, other_ctx.inputs.tool_call, None
-            ),
-            InterruptResult,
-        )
-
-    # Removing the saved rule takes effect on the next call of the same rail.
-    policy_store.path.write_text(yaml.safe_dump({"permissions": original}))
-    revoked = action_context(action, session_id="new-session", call_id="revoked")
-    assert isinstance(
-        await reopened.resolve_interrupt(revoked, revoked.inputs.tool_call, None),
-        InterruptResult,
-    )
+    assert policy_store.path.read_bytes() == original
+    assert policy_store.load()["tools"] == {
+        "cron_flash": "allow",
+        "write_file": "deny",
+    }
 
 
 @pytest.mark.asyncio
@@ -148,10 +125,9 @@ async def test_nonpermanent_or_rejected_approval_does_not_write(
 
 
 @pytest.mark.asyncio
-async def test_failed_action_persistence_keeps_policy_unchanged(policy_store, action):
+async def test_persist_hook_not_called_for_allow_always(policy_store, action):
     rail = policy_store.build()
-    original = policy_store.load()
-    persist = Mock(return_value=False)
+    persist = Mock(return_value=True)
     rail._host.persist_allow_rule = persist
     ctx = action_context(action)
     assert isinstance(
@@ -163,22 +139,12 @@ async def test_failed_action_persistence_keeps_policy_unchanged(policy_store, ac
         {"approved": True, "auto_confirm": True, "persist_allow": True},
     )
     assert isinstance(decision, ApproveResult)
-    persist.assert_called_once()
-    assert persist.call_args.args[0]["tools"][f"cron_flash.{action}"] == "allow"
-    assert rail._engine.config == original
-    assert policy_store.load() == original
-    fresh = action_context(action, session_id="new-session")
-    assert isinstance(
-        await policy_store.build().resolve_interrupt(
-            fresh, fresh.inputs.tool_call, None
-        ),
-        InterruptResult,
-    )
+    persist.assert_not_called()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("denied_tool", ["cron_flash", "cron_flash.run"])
-async def test_permanent_approval_cannot_replace_a_revoked_rule(
+async def test_revoked_rule_still_blocks_after_approval_attempt(
     policy_store, denied_tool
 ):
     rail = policy_store.build()
@@ -189,6 +155,7 @@ async def test_permanent_approval_cannot_replace_a_revoked_rule(
     current = policy_store.load()
     current["tools"][denied_tool] = "deny"
     policy_store.path.write_text(yaml.safe_dump({"permissions": current}))
+    rail.update_config(current)
     decision = await rail.resolve_interrupt(
         ctx,
         ctx.inputs.tool_call,
@@ -213,4 +180,3 @@ async def test_disabled_permission_does_not_request_or_persist_approval(policy_s
     )
     confirm.assert_not_awaited()
     persist.assert_not_called()
-    assert policy_store.load() == config

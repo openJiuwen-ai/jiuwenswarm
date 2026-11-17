@@ -356,6 +356,7 @@ async def test_first_and_continuation_select_configured_adapter(
         assert JiuWenSwarm._adapter_mode_for_request(request) == expected_adapter_mode
         manager.get_agent.assert_awaited_with(
             channel_id="web", mode=expected_manager_mode, project_dir=None, sub_mode=None,
+            session_id=request.session_id,
         )
         assert sync_metadata.call_args.args[2] == expected_canonical_mode
         metadata["mode"] = expected_canonical_mode
@@ -402,6 +403,7 @@ async def test_existing_office_session_keeps_flash_affinity_after_switch_off(
     assert request.resolved_adapter_mode == "flash"
     manager.get_agent.assert_awaited_with(
         channel_id="web", mode="flash", project_dir=None, sub_mode=None,
+        session_id=session_id,
     )
     persisted = session_metadata.get_session_metadata(
         session_id,
@@ -515,6 +517,7 @@ async def test_session_create_prewarm_uses_flash_factory_and_business_mode():
         project_dir=None,
         sub_mode=None,
         request=request,
+        session_id="flash-prewarm-session",
     )
     agent.prepare_session.assert_awaited_once_with(
         session_id="flash-prewarm-session",

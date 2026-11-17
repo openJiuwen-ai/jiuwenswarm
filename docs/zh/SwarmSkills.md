@@ -902,6 +902,21 @@ A: 默认地址为 `https://swarmskills.openjiuwen.com`，可通过环境变量 
 
 ---
 
-*文档版本：v2.0*
+## 6. M2 运行时要点（路 1）
+
+| 项 | 现状 |
+|----|------|
+| 共享库 | Hub / 本地安装与团队 pin 对齐 `primary_team_skill_library_dir()`；bootstrap 调用 `configure_global_skills_dir` 钉死扫描根（**复用路径，非 Hub 大改**） |
+| 同轨 | Leader / Teammate 均挂 `core.team.skill_use`（`TeamSkillUseRail`），折叠掉遗留 `SkillUseRail` |
+| 可见性 | 已含 `skills-visibility.json`；**空 allow = 全库可见**。无团 Swarm：`chat.send` → session_generated 建班并清空 `agents.*.skills`，**跳过** live 模板 reconcile，避免白名单写回 |
+| soft-link | 主路径已切到全局库 + visibility；`MemberSkillToolkit` / `team-workspace/skills` 软链挂载不再作为运行时技能源 |
+| Swarm 开班 | **无** `entry=dynamic_*`；选团只认 `team_name`；有团禁 Swarm、放行普通 Skill |
+| 解绑后再选 Swarm | 若本场已无技 auto-bind / 已绑团，须先 `dissolve` 取消团队后再选团队技能 |
+
+路 2（精细授权 / Hub 产品化）未做。
+
+---
+
+*文档版本：v2.2*
 *适用对象：jiuwenSwarm 用户、技能开发者*
-*最后更新：2026-07-13*
+*最后更新：2026-11-02*

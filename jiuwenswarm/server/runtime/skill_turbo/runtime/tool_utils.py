@@ -17,7 +17,24 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from jiuwenswarm.agents.harness.common.tool_result_schema import (
+    boolish_false as _boolish_false,
+)
+from jiuwenswarm.agents.harness.common.tool_result_schema import (
+    boolish_true as _boolish_true,
+)
+from jiuwenswarm.agents.harness.common.tool_result_schema import (
+    error_text_from_payload as _dict_error_text,
+)
+from jiuwenswarm.agents.harness.common.tool_result_schema import (
+    has_failure_signal as _dict_has_failure_signal,
+)
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError, PlanNode
+
+# 结构化失败信号 / 错误文本提取的唯一实现委托给
+# ``agents.harness.common.tool_result_schema``（与出口归一 rail、circuit_breaker
+# 消费端同源）。server -> agents import 方向与 tools_loader 既有实践一致；
+# 判定语义含非空 error 键（与 circuit_breaker 对齐），历史镜像副本已删除。
 
 logger = logging.getLogger(__name__)
 
@@ -202,25 +219,55 @@ def get_tool_data(result: Any) -> dict[str, Any]:
     return _extract_data(result) or {}
 
 
+def _boolish_success(value: Any) -> bool | None:
+    """把 success 值归一为 bool | None（兼容 "false"/"0"/"no" 等字符串形态）。
+
+    与熔断器/归一的 boolish 语义一致（CR-4）：字符串 "false" 不能被
+    ``bool("false")`` 判成真。
+    """
+    if isinstance(value, bool):
+        return value
+    if _boolish_false(value):
+        return False
+    if _boolish_true(value):
+        return True
+    return None
+
+
 def get_tool_success(result: Any) -> bool:
     """从 call_tool 返回值中提取 success 状态。
 
     兼容 ToolOutput 对象（有 .success 属性）和纯 dict（有 success 键）。
+    dict 显式 success=True 但同时携带结构化失败信号（ok=False /
+    status=error / is_error 等）时按失败处理——失败信号优先于说谎的
+    success 标记。
     """
     if result is None:
         return False
     if hasattr(result, "success"):
+        if result.success is True and isinstance(getattr(result, "data", None), dict):
+            if _dict_has_failure_signal(result.data):
+                return False
         return bool(result.success)
     data = _extract_data(result)
     if data is not None:
-        return bool(data.get("success", False))
+        if "success" in data:
+            if _dict_has_failure_signal(data):
+                return False
+            boolish = _boolish_success(data.get("success"))
+            if boolish is not None:
+                return boolish
+            return bool(data.get("success"))
+        return False
     return False
 
 
 def get_tool_error(result: Any) -> str:
     """从 call_tool 返回值中提取 error 信息。
 
-    兼容 ToolOutput 对象（有 .error 属性）和纯 dict（有 error 键）。
+    兼容 ToolOutput 对象（有 .error 属性）和纯 dict。dict 侧在 error
+    之外兜底 error_summary / error_msg / errMessage，并在载荷携带
+    结构化失败信号时回退 message / content（见 ``_dict_error_text``）。
     """
     if result is None:
         return ""
@@ -228,7 +275,7 @@ def get_tool_error(result: Any) -> str:
         return str(result.error or "")
     data = _extract_data(result)
     if data is not None:
-        return str(data.get("error", ""))
+        return _dict_error_text(data)
     return ""
 
 
@@ -330,15 +377,22 @@ def is_transient_tool_error(error: str) -> bool:
 
 
 def _is_explicit_failure(result: Any) -> bool:
-    """判断 call_tool 返回值是否显式失败（``success is False``）。
+    """判断 call_tool 返回值是否显式失败。
 
-    兼容 ToolOutput 对象（.success 属性）与 dict（success 键）。
+    兼容 ToolOutput 对象（.success 属性）与 dict（success 键）；dict 显式
+    success=True 但携带结构化失败信号时同样视为失败（信号优先）。
     """
     if hasattr(result, "success"):
+        if result.success is not False:
+            data = getattr(result, "data", None)
+            if isinstance(data, dict) and _dict_has_failure_signal(data):
+                return True
         return result.success is False
     data = _extract_data(result)
     if isinstance(data, dict):
-        return data.get("success", True) is False
+        if _dict_has_failure_signal(data):
+            return True
+        return _boolish_false(data.get("success", True))
     return False
 
 
@@ -559,13 +613,14 @@ def parse_bash_payload(text: str) -> BashResult:
     exit_code = int(payload.get("exit_code", 0) or 0)
     stdout = str(payload.get("stdout") or payload.get("content") or "")
     stderr = str(payload.get("stderr") or "")
-    success = payload.get("success")
-    error = str(payload.get("error") or "")
+    success = _boolish_success(payload.get("success"))
+    structured_failure = _dict_has_failure_signal(payload)
+    error = _dict_error_text(payload)
     exit_code = _coerce_exit_code(
         exit_code,
         stdout=stdout,
         stderr=stderr,
-        success=success if isinstance(success, bool) else None,
+        success=False if structured_failure else success,
         error=error,
     )
     return BashResult(exit_code=exit_code, stdout=stdout, stderr=stderr, raw=text)
@@ -592,7 +647,7 @@ def _extract_bash_result(raw: Any) -> BashResult | None:
     elif isinstance(raw, dict):
         if "data" in raw and isinstance(raw["data"], dict):
             data = raw["data"]
-            success = raw.get("success")
+            success = _boolish_success(raw.get("success"))
         elif "result" in raw:
             inner = raw["result"]
             if hasattr(inner, "data") and isinstance(inner.data, dict):
@@ -601,7 +656,7 @@ def _extract_bash_result(raw: Any) -> BashResult | None:
                     success = inner.success
             elif isinstance(inner, dict) and "data" in inner and isinstance(inner["data"], dict):
                 data = inner["data"]
-                success = inner.get("success")
+                success = _boolish_success(inner.get("success"))
 
     if data is None:
         return None
@@ -615,12 +670,24 @@ def _extract_bash_result(raw: Any) -> BashResult | None:
             stdout = value
             break
     stderr = str(data.get("stderr") or "")
-    success = data.get("success")
-    if not isinstance(success, bool) and hasattr(raw, "success"):
+    data_success = _boolish_success(data.get("success"))
+    if data_success is not None:
+        # data 内显式 success 优先；纯 dict 的顶层 success 不得被无 success 的
+        # data 覆盖为 None，否则会漏掉 {"success": false, "data": {...}} 的失败。
+        success = data_success
+    elif success is None and hasattr(raw, "success"):
         # 直接属性访问；skill_code 侧禁止 getattr（builtin AST 校验）
         raw_success = raw.success
         success = raw_success if isinstance(raw_success, bool) else None
-    error = str(data.get("error") or "")
+    raw_failure = isinstance(raw, dict) and _dict_has_failure_signal(raw)
+    if _dict_has_failure_signal(data) or raw_failure:
+        # success 键之外的结构化失败信号（ok=False / status=error 等）
+        # 优先于缺失或说谎的 success 标记
+        success = False
+    error = _dict_error_text(data)
+    if not error and isinstance(raw, dict):
+        # 纯 dict 的顶层 error 与 data.success 一样属于失败详情，不能只读 data
+        error = _dict_error_text(raw)
     if not error and hasattr(raw, "error"):
         raw_error = raw.error
         if isinstance(raw_error, str):
@@ -629,7 +696,7 @@ def _extract_bash_result(raw: Any) -> BashResult | None:
         exit_code,
         stdout=stdout,
         stderr=stderr,
-        success=success if isinstance(success, bool) else None,
+        success=success,
         error=error,
     )
     return BashResult(exit_code=exit_code, stdout=stdout, stderr=stderr, raw=str(raw))

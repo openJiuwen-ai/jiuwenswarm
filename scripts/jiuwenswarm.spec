@@ -293,9 +293,77 @@ datas += _rust_datas
 hiddenimports += _rust_hidden
 _bundled_binaries = _bundled_binaries + _rust_binaries
 
+# jiuwenbox 的平台适配器写在 registry._RUNTIME_IMPORTS 的字符串里，
+# Windows 启动时才 importlib.import_module("jiuwenbox.server.runtime.windows.runtime")。
+# 静态分析跟不到这个包，冻结后会 ModuleNotFoundError。collect_all 同时带上
+# configs/*.yaml；下面再点名 Windows 运行时，避免 collect 时 Linux 模块导入失败把它们漏掉。
+_jiuwenbox_datas, _jiuwenbox_binaries, _jiuwenbox_hidden = collect_all("jiuwenbox")
+
+
+def _reloc_jiuwenbox_softdelete_dll(entries):
+    """软删除 DLL 不能留在 _internal/jiuwenbox/ 下。
+
+    冻结进程启动时会把该目录改名为 jiuwenbox_legacy_overlay。
+    DLL 若先按 jiuwenbox/native 被 LoadLibrary，改名后子进程
+    （例如 powershell）仍按旧路径加载，系统就会弹「找不到 dll」。
+    win_softdelete.dll_path 在冻结包里优先找 jiuwenbox_native/native。
+    """
+    relocated = []
+    for src, dest in entries:
+        if os.path.basename(src).lower() == "jiuwen_softdelete.dll":
+            relocated.append((src, "jiuwenbox_native/native"))
+        else:
+            relocated.append((src, dest))
+    return relocated
+
+
+_jiuwenbox_datas = _reloc_jiuwenbox_softdelete_dll(_jiuwenbox_datas)
+_jiuwenbox_binaries = _reloc_jiuwenbox_softdelete_dll(_jiuwenbox_binaries)
+datas += _jiuwenbox_datas
+hiddenimports += _jiuwenbox_hidden
+_bundled_binaries = _bundled_binaries + _jiuwenbox_binaries
+
+# agent_shield 的权限子模块在运行时按工具类型导入。静态分析跟不到函数内
+# import，冻结后会 ModuleNotFoundError。collect_all 把检测与权限包一并打进 exe。
+_shield_datas, _shield_binaries, _shield_hidden = collect_all("agent_shield")
+datas += _shield_datas
+hiddenimports += _shield_hidden
+_bundled_binaries = _bundled_binaries + _shield_binaries
+
+# agent_ssas 由运行时按模块名加载，入口静态分析跟不到。
+_ssas_datas, _ssas_binaries, _ssas_hidden = collect_all("agent_ssas")
+datas += _ssas_datas
+hiddenimports += _ssas_hidden
+_bundled_binaries = _bundled_binaries + _ssas_binaries
+hiddenimports += [
+    "jiuwenbox.server.runtime.windows",
+    "jiuwenbox.server.runtime.windows.runtime",
+    "jiuwenbox.supervisor.win_acl",
+    "jiuwenbox.supervisor.win_constants",
+    "jiuwenbox.supervisor.win_exec",
+    "jiuwenbox.supervisor.win_job",
+    "jiuwenbox.supervisor.win_proxy",
+    "jiuwenbox.supervisor.win_setup",
+    "jiuwenbox.supervisor.win_wfp",
+]
+
+# 本地 editable 的 openjiuwen 用 setuptools finder，modulegraph 不会顺着
+# .pth 找到 agent-core_stable。把包的真实父目录放进 pathex，沙箱权限模块
+# （openjiuwen.harness.security）才会打进 exe。
+def _package_sys_path(package_name):
+    module = __import__(package_name)
+    package_dir = os.path.dirname(os.path.abspath(module.__file__))
+    return os.path.dirname(package_dir)
+
+_local_package_paths = []
+for _package_name in ("openjiuwen", "jiuwenbox", "agent_shield", "agent_ssas"):
+    _package_path = _package_sys_path(_package_name)
+    if _package_path not in _local_package_paths:
+        _local_package_paths.append(_package_path)
+
 a = Analysis(
     [entry_script],
-    pathex=[project_root, symphony_root],
+    pathex=_local_package_paths + [project_root, symphony_root],
     binaries=_bundled_binaries,
     datas=datas,
     hiddenimports=hiddenimports,

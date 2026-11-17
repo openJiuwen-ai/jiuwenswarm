@@ -221,17 +221,18 @@ Prompting is similar to normal chat, but for smoother runs:
 
 ### 2.4 Team Skills
 
-In Agent Team mode you can still use and develop **Skills**. Each agent can configure and use skills; the team can also share skill resources.
+In Agent Team mode you can still use and develop **Skills**. There is **one physical shared library** on disk; Leader / Teammate both scan it via the same `TeamSkillUseRail`. Member workspaces no longer keep soft-linked skill copies.
 
 **Team Skills concepts:**
 
-- **Personal skills** — configured and used by each agent, stored under `workspaces/<agent_name>_workspace/skills/`  
-- **Team-shared skills** — team-level skills under `team-workspace/skills/`, available to all members  
+- **Physical shared library** — Hub / local Skill and Swarm Skill installs land under `primary_team_skill_library_dir()` (pinned by bootstrap via `configure_global_skills_dir`); every member reads that same root  
+- **Member visibility** — each member workspace root has `skills-visibility.json`; **empty allow = full library**. Do not treat `agents.*.skills` or directory soft-links as the allow-list  
+- **No dual-source soft-links** — legacy `MemberSkillToolkit` / `team-workspace/skills` mount views are off the main path; do not assume a per-member `skills/` tree  
 
 **How skills help the team:**
 
 1. **Stronger expertise** — skills extend what each agent can do in its domain  
-2. **Shared tooling** — one shared skill set avoids duplicate setup  
+2. **Shared tooling** — one physical library avoids duplicate installs and dual lists  
 3. **Higher efficiency** — skills help agents finish assigned work faster  
 
 > For detailed usage and development of Team Skills, see the [SwarmSkills guide](SwarmSkills.md).
@@ -403,8 +404,8 @@ Agent Team provides a shared workspace where members collaborate on the same int
 
 Agent Team storage has two layers: **team shared workspace** and **per-member workspaces**.
 
-- **Team shared workspace (`team-workspace`)** — shared by all members; holds team artifacts and shared skills. Each Agent Team session gets its own folder containing `team-workspace`.  
-- **Per-member workspaces (`workspaces`)** — private space per agent for config, memory, skills, and todos.  
+- **Team shared workspace (`team-workspace`)** — shared by all members; holds team artifacts. Each Agent Team session gets its own folder containing `team-workspace`.  
+- **Per-member workspaces (`workspaces`)** — private space per agent for config, memory, visibility, and todos. Skill packages live in the platform global library, not as per-member copies.  
 
 Full path layout:
 
@@ -412,20 +413,21 @@ Full path layout:
 .agent_teams/                          ← Agent Team root
 └── <team_name>/                       ← one folder per team
     ├── team-workspace/                ← shared by all members
-    │   ├── artifacts/                 ← team outputs
-    │   │   ├── code/                  ← code artifacts
-    │   │   ├── docs/                  ← document artifacts
-    │   │   └── reports/               ← report artifacts
-    │   └── skills/                    ← team-shared skills
+    │   └── artifacts/                 ← team outputs
+    │       ├── code/                  ← code artifacts
+    │       ├── docs/                  ← document artifacts
+    │       └── reports/               ← report artifacts
     └── workspaces/                    ← per-member workspaces
         └── <agent_name>_workspace/    ← each agent’s private space
             ├── AGENT.md               ← agent configuration
             ├── memory/                ← personal long-term memory (general scenario)
             ├── coding_memory/         ← personal coding memory (coding scenario)
-            ├── skills/                ← skill library
+            ├── skills-visibility.json ← member skill visibility (empty allow = full library)
             ├── todo/                  ← todos
             └── ...                    ← other agent-specific files
 ```
+
+> Skill packages live under `primary_team_skill_library_dir()` (same root as Hub installs), not in the tree above.
 
 **Collaboration mechanisms:**
 

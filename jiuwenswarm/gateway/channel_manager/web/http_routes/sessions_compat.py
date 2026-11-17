@@ -90,6 +90,14 @@ def register_sessions_compat_routes(app: FastAPI) -> None:
         )
         if detail is None:
             return JSONResponse({"error": "not_found"}, status_code=404)
+        from jiuwenswarm.gateway.channel_manager.web.sensitive_mask import (
+            mask_history_records,
+        )
+
+        if isinstance(detail, dict):
+            messages = detail.get("messages")
+            if isinstance(messages, list):
+                detail = {**detail, "messages": mask_history_records(messages)}
         return JSONResponse(detail)
 
     logger.info(

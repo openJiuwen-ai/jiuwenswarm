@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_01 / agent-instance-lifecycle |
 | 关联模块 | `jiuwenswarm/server/runtime/agent_manager.py`、`tenant_agent_pool.py`、`tenant_catalog_registry.py`、`session_owner_routing.py`、`runtime_scope.py`、`tenant_context.py` |
-| 最近一次修订日期 | 2026-10-21 |
+| 最近一次修订日期 | 2026-11-09 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -38,12 +38,14 @@ JiuWenSwarm 门面实例的缓存 / 借用 / 退休 / 重建**。即：
 
 ## 不变量
 
-- **N1 缓存键唯一公式**：AgentManager 的 cache_key 恒为
-  `f"{mode}:{sub_mode}:{project_dir}"`，其中 `project_dir` 经
+- **N1 缓存键公式**：AgentManager 的基础 cache_key 为
+  `f"{mode}:{sub_mode}:{project_dir}"`。无项目目录的 Agent/Code 请求若有
+  `session_id`，追加 `:session:{session_id}`，使各会话的 adapter、rail 与提示词
+  builder 不共享；会话清理后退休其专属实例。`project_dir` 经
   `os.path.normcase(os.path.abspath(os.path.expanduser(...)))` 归一（agent_manager.py
-  `_normalize_project_dir` / `_make_agent_cache_key`）。改公式必须同步
-  `get_agent` / `get_agent_nowait` / `_create_agent` 三处与 warm pool 的
-  `WarmKey` 语义。
+  `_normalize_project_dir` / `_make_agent_cache_key`）。普通项目请求仍复用基础键；
+  `get_agent_nowait` 的宽泛查找不能替代按 session owner 查找。改公式须核对
+  `get_agent` / `_create_agent` / 清理链与 warm pool 的 `WarmKey` 语义。
 - **N2 plan 子模式并轨**：`collapse_plan_sub_mode` 把 `agent.plan → ""`、
   `code.plan → "normal"`（`_PLAN_SUB_MODE_ALIASES`，仅此两键）。plan 是会话运行期
   状态（`DeepAgentState.plan_mode`）而非装配形态——用户开关 Plan 必须命中同一
@@ -94,7 +96,7 @@ JiuWenSwarm 门面实例的缓存 / 借用 / 退休 / 重建**。即：
 | `TenantAgentPool.get_instance()` | 进程单例；`peek_instance()` 不触发构造 |
 | `TenantAgentPool.process_message[_stream](request)` | 顶层入口：officeclaw guard → 跨租户 HITL 找回 → `extract_ids` → `_ensure_agent_manager` → 委托 AgentManager |
 | `TenantAgentPool.sync_agents_configs(params)` | `_sync_lock` 串行；返回 per-agent 结果列表 |
-| `AgentManager.get_agent(channel_id, mode, project_dir, sub_mode, request)` | 自动创建 + 双检锁（`_get_agent_create_lock`，WeakValueDictionary） |
+| `AgentManager.get_agent(channel_id, mode, project_dir, sub_mode, request, session_id)` | 自动创建 + 双检锁；无项目 Agent/Code 以 session 隔离实例 |
 | `AgentManager.get_agent_nowait(...)` | 同步、不创建；无参时按 `mode=="agent"` 优先回退任意实例 |
 | `AgentManager.find_agent_for_interrupt_resume_nowait(session_id)` | N4 排序选优 |
 | `AgentManager.recreate_agent(channel_id, immediate=True)` | 备份 create_params → cleanup → 立即按原参数重建（`/sandbox` 等换 SysOperationCard 场景） |
