@@ -391,6 +391,9 @@ async def test_worker_process_inherits_stdout_and_persists_stderr(
     )
     try:
         await process.spawn()
+        if listener is not None:
+            payload = listener.launch_payload()
+            assert payload["transport"] == "front_loopback" and payload["port"] > 0
         assert await process.wait(timeout=5) == exit_code
         captured = capfd.readouterr()
         assert "stdout diagnostic" in captured.out

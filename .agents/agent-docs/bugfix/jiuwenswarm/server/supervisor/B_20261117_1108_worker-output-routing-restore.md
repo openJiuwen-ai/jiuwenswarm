@@ -43,3 +43,11 @@ Issue #6596 的启动截图出现外层 `ERROR [Worker stderr ...]` 包裹内层
 初轮补充回归的本地失败来自测试覆盖 `PYTHONPATH` 后子进程缺少协议依赖，以及独立环境重复路径使父子依赖指纹不同。使用锁定依赖的独立环境并去重测试启动器路径后，上述组合回归通过；未修改产品的身份校验逻辑。Windows 日志句柄由仓库外测试启动器关闭，未改动通用测试基础设施。
 
 详细日志、JUnit、类全文比较和子进程对照保存在任务证据目录 `artifacts/issue6596-restore-20261117/`，不提交运行产物。安装包验证使用内置 stub Runtime，没有执行完整模型业务；未执行 slow 用例、Linux/macOS 或鸿蒙真机验收。候选代码、锁定依赖或启动模式改变时，需重新验证受影响范围。
+
+## 2026-11-17 UT 同步
+
+用户提供的 CI 附件来自 develop 的 !10352，唯一失败为 `test_exec_secret_resolve.py` 中凭据 Header 保存测试缺少 crypto 依赖隔离。当前 0.2.9 PR 及核对时的上游 `40ddcab2fef3b5fb59d7d520cd0ea0adcdc5d292` 均没有该文件和对应 exec 凭据特性，因此不迁入 develop 的新特性用例。
+
+与 develop 同步加强已有输出回归：在 `spawn()` 后检查 loopback 启动参数及有效端口，明确两种传输模式的覆盖。配置并发写、运行模型配置、会话加密及非 slow IPC 输出补充回归为 43 passed、2 skipped、18 deselected。证据为原任务目录中的 `029-ut-fix.*`，以及 `artifacts/issue6596-ut-fix-20261117/worker-rollback-preserved.json`。
+
+本轮没有修改产品源码；`WorkerProcess` 类仍与 !9883 父提交逐字一致。同步本 PR 的测试和记录，不把 develop 附件的全量 CI 结果作为 0.2.9 的 CI 结论。
