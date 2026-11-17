@@ -6,7 +6,7 @@ generated: true
 ---
 
 <!-- 本文件由 .agents/skills/jw-design/scripts/generate_index.py 自动生成，请勿手改。重新生成：python .agents/skills/jw-design/scripts/generate_index.py -->
-<!-- generated-at: 2026-11-16T12:12+08:00 -->
+<!-- generated-at: 2026-11-17T10:31+08:00 -->
 
 # 设计文档索引 (INDEX)
 
@@ -68,7 +68,7 @@ generated: true
 
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
-| [D-20261113-1809-authorized-original-file-download](active/D-20261113-1809-authorized-original-file-download/design.md) | 授权附件改为原文件、不过期令牌与 SHA-256 留痕 | in-development | nypdmax | security | 2026-11-16 |
+| [D-20261113-1809-authorized-original-file-download](active/D-20261113-1809-authorized-original-file-download/design.md) | 授权附件改为原文件、不过期令牌与 SHA-256 留痕 | in-development | nypdmax | security | 2026-11-17 |
 
 <a id="module-5"></a>
 
@@ -88,7 +88,7 @@ generated: true
 
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
-| [D-20261113-1809-authorized-original-file-download](active/D-20261113-1809-authorized-original-file-download/design.md) | 授权附件改为原文件、不过期令牌与 SHA-256 留痕 | in-development | nypdmax | security | 2026-11-16 |
+| [D-20261113-1809-authorized-original-file-download](active/D-20261113-1809-authorized-original-file-download/design.md) | 授权附件改为原文件、不过期令牌与 SHA-256 留痕 | in-development | nypdmax | security | 2026-11-17 |
 
 <a id="module-7"></a>
 
@@ -118,4 +118,4 @@ generated: true
 
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
-| [D-20261113-1809-authorized-original-file-download](active/D-20261113-1809-authorized-original-file-download/design.md) | 授权附件改为原文件、不过期令牌与 SHA-256 留痕 | in-development | nypdmax | security | 2026-11-16 |
+| [D-20261113-1809-authorized-original-file-download](active/D-20261113-1809-authorized-original-file-download/design.md) | 授权附件改为原文件、不过期令牌与 SHA-256 留痕 | in-development | nypdmax | security | 2026-11-17 |
