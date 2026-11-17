@@ -429,6 +429,21 @@ def test_desktop_routing_rules_injected_only_when_cua_agent_is_mounted():
     assert "桌面能力路由规则" in build_cua_task_prompt("cn")
 
 
+@pytest.mark.parametrize(("language", "fidelity_rule", "unspecified_rule"), [
+    ("cn", "忠实传达用户的指令", "未指定的参数保持未指定"),
+    ("en", "faithfully relay the user's instructions", "Leave unspecified parameters unspecified"),
+])
+def test_parent_task_prompt_preserves_user_intent(mocker, language, fidelity_rule, unspecified_rule):
+    rail = BrowserTaskPromptRail()
+    rail.system_prompt_builder = mocker.Mock(language=language)
+
+    rail._inject_task_tool_section(_rail_agent("cua_agent"))
+
+    section = rail.system_prompt_builder.add_section.call_args.args[0]
+    assert fidelity_rule in section.content[language]
+    assert unspecified_rule in section.content[language]
+
+
 def test_no_routing_rules_without_browser_or_cua():
     rail = BrowserTaskPromptRail()
 
