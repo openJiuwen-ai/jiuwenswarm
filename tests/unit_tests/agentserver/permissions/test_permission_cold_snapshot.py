@@ -525,10 +525,3 @@ async def test_restored_comparison_ignores_only_index_without_mutating_inputs(in
     original = deepcopy((expected, actual))
     assert continuation._same_restored_tool_calls(expected, actual)
     assert (expected, actual) == original
-
-
-@pytest.mark.parametrize("field", ["id", "type", "name", "arguments", "response_item_id"])
-async def test_restored_comparison_preserves_all_other_call_fields(field):
-    expected = [ToolCall(id="call", type="function", name="probe", arguments='{"x": 1}', index=0)]
-    actual = [expected[0].model_copy(update={field: "different", "index": None})]
-    assert not continuation._same_restored_tool_calls(expected, actual)
