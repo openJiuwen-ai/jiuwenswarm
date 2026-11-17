@@ -203,6 +203,8 @@ async def test_after_model_call_persists_cumulative_usage_without_duplicate_cont
         "input_calls": 1,
         "output_calls": 1,
         "calls_total": 1,
+        "priced_calls": 0,
+        "total_cost": None,
     }
     from jiuwenswarm.agents.harness.common.rails.session_token_usage_rail import SessionTokenUsageRail
 
