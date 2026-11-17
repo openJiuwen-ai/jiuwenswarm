@@ -400,15 +400,13 @@
   gap: 8px;
 }
 
-.workflowGroupSelected {
-  height: 100%;
-  min-height: 0;
-  flex: 0 0 100%;
-}
-
-.workflowGroupSelected .workflowGroupLanes {
-  min-height: 0;
-  flex: 1 1 0;
+/* An expanded lane inside a workflow group takes the scheduled rounds' clamped
+ * height so the group sizes to its content: a group pinned to the lanes area's
+ * full height clips nothing, letting the sibling operator lane spill out of the
+ * group box onto the next workflow group's header. */
+.workflowGroupSelected .laneRowExpanded {
+  height: clamp(360px, 52vh, 420px);
+  flex: 0 0 clamp(360px, 52vh, 420px);
 }
 
 .workflowGroupHeader {
