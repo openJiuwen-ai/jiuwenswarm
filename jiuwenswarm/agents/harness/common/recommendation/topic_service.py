@@ -1343,8 +1343,8 @@ class TopicService:
             return results[0]
         return self._track(asyncio.create_task(prepare_history()))
 
+    @staticmethod
     def _candidate_input_changed(
-        self,
         context_scope: str,
         slot: _ScopeRun,
         *,

@@ -41,6 +41,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
     TopicStarterStore,
 )
 
+
 def _corpus_version() -> str:
     """The prepare lane follows the same UI-language corpus as the product lane."""
 

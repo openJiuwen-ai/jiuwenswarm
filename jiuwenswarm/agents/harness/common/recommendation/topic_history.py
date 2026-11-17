@@ -527,13 +527,12 @@ def _newest_session_ids(cap: int) -> tuple[str, ...]:
             return cached[1]
     epoch = _session_cache_epoch()
     sessions, _ = get_all_sessions_metadata(limit=cap, offset=0)
-    ids = tuple(
-        session_id
-        for session_id in (
-            str(item.get("session_id") or "").strip() for item in sessions
-        )
-        if session_id
-    )
+    ids = []
+    for item in sessions:
+        session_id = str(item.get("session_id") or "").strip()
+        if session_id:
+            ids.append(session_id)
+    ids = tuple(ids)
     with _SESSION_WINDOW_LOCK:
         cached = _SESSION_WINDOW_CACHE.get(key)
         if cached is not None and now - cached[0] < _SESSION_WINDOW_TTL_SECONDS:

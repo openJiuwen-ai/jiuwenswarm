@@ -1515,13 +1515,10 @@ def build_cold_start_cards(
             for index, ch in enumerate(str(trigger_key.get("local_date") or ""))
         )
     )
-    live = [
-        starter
-        for starter in load_fixed_starter_corpus(
-            str(trigger_key.get("corpus_version") or CORPUS_VERSION)
-        )
-        if _corpus_starter_is_live(starter, now)
-    ]
+    corpus = load_fixed_starter_corpus(
+        str(trigger_key.get("corpus_version") or CORPUS_VERSION)
+    )
+    live = [starter for starter in corpus if _corpus_starter_is_live(starter, now)]
     by_topic: dict[str, list[Any]] = {}
     for starter in live:
         by_topic.setdefault(starter.topic, []).append(starter)

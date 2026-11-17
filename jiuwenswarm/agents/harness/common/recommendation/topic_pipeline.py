@@ -4964,6 +4964,7 @@ class TopicPipeline:
             now=now,
             records_loader=lambda: records,
         )
+
         def read_project_by_session() -> dict[str, str | None]:
             return {
                 str(session_id): (
@@ -9596,14 +9597,14 @@ class TopicPipeline:
                 else {}
             ),
         }
-        corpus_text_by_id = {
-            starter.starter_id: starter.text
-            for starter in load_fixed_starter_corpus(
-                str(
-                    trigger_key.get("corpus_version")
-                    or corpus_version_for_language(self._language())
-                )
+        corpus = load_fixed_starter_corpus(
+            str(
+                trigger_key.get("corpus_version")
+                or corpus_version_for_language(self._language())
             )
+        )
+        corpus_text_by_id = {
+            starter.starter_id: starter.text for starter in corpus
         }
         return BackgroundGenerationResult(
             cards=cards,

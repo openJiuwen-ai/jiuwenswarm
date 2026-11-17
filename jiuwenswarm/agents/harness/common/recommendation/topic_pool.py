@@ -13,9 +13,6 @@ from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, NamedTuple
-from .topic_primitives import plain_int as _plain_int
-
-logger = logging.getLogger(__name__)
 
 from jiuwenswarm.agents.harness.common.recommendation.topic_history import (
     apply_negative_preferences,
@@ -27,6 +24,10 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
 from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
     TopicStarterStore,
 )
+
+from .topic_primitives import plain_int as _plain_int
+
+logger = logging.getLogger(__name__)
 
 POLICY_ID = "topic-starter-mvp-v5"
 PAYLOAD_VERSION = "topic-starter-pool-v1"

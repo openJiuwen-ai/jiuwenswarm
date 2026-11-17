@@ -1272,11 +1272,11 @@ def _load_history_records_with_retry(
 
 def read_team_history_records(session_id: str) -> list[dict[str, Any]]:
     """读取指定会话的历史记录，仅返回 team 模式相关的记录。"""
+    records = _load_history_records_with_retry(
+        session_id, label="read_team_history_records"
+    )
     return [
-        item
-        for item in _load_history_records_with_retry(
-            session_id, label="read_team_history_records"
-        )
+        item for item in records
         if isinstance(item, dict) and _is_team_relevant(item)
     ]
 
@@ -1352,13 +1352,10 @@ def read_session_history_records(session_id: str) -> list[dict[str, Any]]:
 
     用于 auto memory 功能提取对话消息。
     """
-    return [
-        item
-        for item in _load_history_records_with_retry(
-            session_id, label="read_session_history_records"
-        )
-        if isinstance(item, dict)
-    ]
+    records = _load_history_records_with_retry(
+        session_id, label="read_session_history_records"
+    )
+    return [item for item in records if isinstance(item, dict)]
 
 
 def _write_item(
