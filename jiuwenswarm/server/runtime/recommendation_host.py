@@ -41,10 +41,9 @@ def deactivate_recommendation_host(host: "RecommendationHost") -> None:
 def _build_topic_starter_services(
     topic_starter_store: Any,
     *,
-    prepare_service: Any = None,
     outcome_queue: Any = None,
-) -> tuple[Any, Any | None, Any]:
-    """Always build the prepare lane; leave a misconfigured product lane disabled."""
+) -> tuple[Any | None, Any]:
+    """Build the product lane; leave it disabled when its configuration is missing."""
 
     from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
         load_recommendation_controls,
@@ -54,18 +53,14 @@ def _build_topic_starter_services(
     )
     from jiuwenswarm.agents.harness.common.recommendation.topic_history import (
         load_all_session_records,
+        scrub_legacy_negative_preferences,
     )
     from jiuwenswarm.agents.harness.common.recommendation.topic_outcomes import (
         NewPageOutcomeQueue,
         TopicStarterStoreOutcomeSink,
-        migrate_dismissal_records,
-    )
+        )
     from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
         TopicPipeline,
-    )
-    from jiuwenswarm.agents.harness.common.recommendation.topic_prepare import (
-        TopicPreparePipeline,
-        TopicPrepareService,
     )
     from jiuwenswarm.agents.harness.common.recommendation.topic_search import (
         OpenJiuwenNativeSearchContractError,
@@ -80,14 +75,11 @@ def _build_topic_starter_services(
         return {sid: permitted_recommendation_history(rows, control)
                 for sid, rows in load_all_session_records().items()}
 
-    topic_prepare_service = prepare_service
-    if topic_prepare_service is None:
-        topic_prepare = TopicPreparePipeline(topic_starter_store, records_loader=permitted_records)
-        topic_prepare_service = TopicPrepareService(
-            topic_starter_store,
-            generate=topic_prepare.generate_prepared,
-            prepare_state=topic_prepare.refresh_state,
-        )
+    try:
+        scrub_legacy_negative_preferences(topic_starter_store, now=time.time())
+    except Exception:  # noqa: BLE001 - a corrupt legacy row must not block startup
+        logger.warning("[Topic] legacy dismissal scrub failed", exc_info=True)
+
     topic_outcome_queue = outcome_queue
     if topic_outcome_queue is None:
         topic_outcome_queue = NewPageOutcomeQueue()
@@ -131,8 +123,6 @@ def _build_topic_starter_services(
                 project_ids.add(str(project_id))
         return sorted(project_ids)
 
-    # Dismissals written before strikes were counted take their time from the ledger, once.
-    migrate_dismissal_records(topic_starter_store, now=time.time())
     topic_service = TopicService(
         topic_starter_store,
         generate=topic_pipeline.generate,
@@ -144,25 +134,18 @@ def _build_topic_starter_services(
         prepare_short_intent=topic_pipeline.refresh_short_intent,
         # Training / outcome labels are not required for live pools; keep them
         # out of recommendation.db and investigate generation via process logs.
-        prepare_outcomes=None,
         input_revision_loader=topic_pipeline.scope_input_revision,
         config_loader=recommendation_model_config,
         enabled=bool(load_recommendation_controls()["enabled"]),
         language_loader=recommendation_language,
     )
     topic_pipeline.on_candidates_ready = topic_service.candidate_generation_ready
-    return (
-        topic_prepare_service,
-        topic_service,
-        topic_outcome_queue,
-    )
+    return (topic_service, topic_outcome_queue)
 
 
 async def _shutdown_topic_starter_services(
-    topic_prepare_service: Any,
     topic_service: Any | None,
 ) -> None:
-    await topic_prepare_service.shutdown()
     if topic_service is not None:
         await topic_service.shutdown()
 
@@ -173,7 +156,6 @@ class RecommendationHost:
     def __init__(self) -> None:
         self.store: Any = None
         self.prompt_store: Any = None
-        self.topic_prepare_service: Any = None
         self.topic_service: Any = None
         self.topic_outcome_queue: Any = None
         self.legacy_topic_service: Any = None
@@ -210,12 +192,10 @@ class RecommendationHost:
 
         if self.store is None:
             self.store = TopicStarterStore(get_agent_workspace_dir() / "recommendation.db")
-        prepare, service, queue = _build_topic_starter_services(
+        service, queue = _build_topic_starter_services(
             self.store,
-            prepare_service=self.topic_prepare_service if self._services_built else None,
             outcome_queue=self.topic_outcome_queue if self._services_built else None,
         )
-        self.topic_prepare_service = prepare
         self.topic_service = service
         self.topic_outcome_queue = queue
         if service is not None:
@@ -254,11 +234,8 @@ class RecommendationHost:
             item.cancel()
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
-        if self.topic_prepare_service is not None:
-            await _shutdown_topic_starter_services(
-                self.topic_prepare_service,
-                self.topic_service,
-            )
+        if self.topic_service is not None:
+            await _shutdown_topic_starter_services(self.topic_service)
         self._services_built = False
 
     def on_chat_completed(self, session_id: str, request_id: str) -> None:

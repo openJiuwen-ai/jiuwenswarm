@@ -17,6 +17,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
 from jiuwenswarm.agents.harness.common.recommendation.topic_terminal import (
     LearnedComponentReceipt,
 )
+from .topic_primitives import nonempty as _nonempty, plain_int as _plain_int
 
 UTILITY_COMPONENT_ID = "interaction_utility_scorer"
 # Where a fixed condition on a card comes from, as the utility scorer lists it.
@@ -49,15 +50,6 @@ _PROJECT_QUOTAS = {
 }
 
 
-def _plain_int(value: Any) -> bool:
-    # bool is an int subclass; a JSON boolean is never a version or a count.
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _nonempty(value: Any) -> bool:
-    return isinstance(value, str) and bool(value.strip())
-
-
 def _nullable_score(value: Any, *, field_name: str) -> float | None:
     if value is None:
         return None
@@ -79,7 +71,6 @@ class SelectionCandidate:
     stable_rank: int
     evidence_eligible: bool
     freshness_eligible: bool
-    negative_preference_hit: bool
     interest_summary_id: str | None
     identity_anchor: str | None
     source_memory_unit_ids: tuple[str, ...]
@@ -96,7 +87,6 @@ class SelectionCandidate:
         _value_items = (
             self.evidence_eligible,
             self.freshness_eligible,
-            self.negative_preference_hit,
         )
         if any(
             not isinstance(value, bool)
@@ -772,8 +762,6 @@ def _candidate_hard_reasons(
         reasons.append("evidence_ineligible")
     if not candidate.freshness_eligible:
         reasons.append("freshness_ineligible")
-    if candidate.negative_preference_hit:
-        reasons.append("negative_preference")
     if constraints.context_scope == _GLOBAL_SCOPE:
         if not _nonempty(candidate.interest_summary_id):
             reasons.append("missing_personalized_interest")
