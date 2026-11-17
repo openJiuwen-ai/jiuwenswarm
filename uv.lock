@@ -3947,7 +3947,7 @@ zmq = [
 [[package]]
 name = "openjiuwen-computeruse"
 version = "0.0.1"
-source = { git = "https://gitcode.com/openJiuwen/computer-use.git?rev=refs%2Fmerge-requests%2F32%2Fhead#2d5f0ebe282ee982d61f2aa47ebd7f5c1ab80de0" }
+source = { git = "https://gitcode.com/openJiuwen/computer-use.git?rev=refs%2Fmerge-requests%2F32%2Fhead#fcd294b92c70d88eec40a382bfb108296526bac6" }
 dependencies = [
     { name = "pillow" },
     { name = "regex" },
