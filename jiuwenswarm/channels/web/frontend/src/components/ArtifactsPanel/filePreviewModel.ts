@@ -15,6 +15,15 @@ type TextKind = 'markdown' | 'text' | 'code' | 'json' | 'jsonl';
 export type PreviewKind = TextKind | 'html' | 'image' | 'video' | 'pdf' | 'docx' | 'spreadsheet' | 'presentation' | 'unsupported';
 
 const TEXT_EXTENSIONS = new Set(['conf', 'csv', 'ini', 'log', 'text', 'txt']);
+
+/** Plain-text previews stay on the main thread, so stop once this many bytes are buffered. */
+export const MAX_TEXT_PREVIEW_BYTES = 1024 * 1024;
+
+export type LimitedTextPreview = {
+  text: string;
+  truncated: boolean;
+};
+
 const IMAGE_MIME_TYPES = new Set([
   'image/apng',
   'image/avif',
@@ -217,4 +226,104 @@ export function getArtifactCopyText(kind: PreviewKind, content: string, fallback
   }
   if (kind === 'markdown' || kind === 'text' || kind === 'code') return content;
   return fallbackPath;
+}
+
+function utf8PrefixEnd(bytes: Uint8Array): number {
+  const length = bytes.length;
+  if (length === 0) return 0;
+  let index = length - 1;
+  let continuationCount = 0;
+  while (index >= 0 && continuationCount < 3 && (bytes[index] & 0xc0) === 0x80) {
+    index -= 1;
+    continuationCount += 1;
+  }
+  if (index < 0) return length;
+  const lead = bytes[index];
+  let expected = 1;
+  if (lead <= 0x7f) expected = 1;
+  else if ((lead & 0xe0) === 0xc0) expected = 2;
+  else if ((lead & 0xf0) === 0xe0) expected = 3;
+  else if ((lead & 0xf8) === 0xf0) expected = 4;
+  else return length;
+  return length - index < expected ? index : length;
+}
+
+function boundedPreviewBytes(bytes: Uint8Array): Uint8Array {
+  if (bytes.length >= 2) {
+    const utf16 = (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff);
+    if (utf16) return bytes.subarray(0, bytes.length - (bytes.length % 2));
+  }
+  const utf8End = utf8PrefixEnd(bytes);
+  const strictUtf8 = createTextDecoder('utf-8', { fatal: true });
+  if (strictUtf8) {
+    try {
+      strictUtf8.decode(bytes.subarray(0, utf8End));
+      return bytes.subarray(0, utf8End);
+    } catch {
+      // Not UTF-8. Keep a complete GBK pair when the cap splits a double-byte character.
+    }
+  }
+  const last = bytes[bytes.length - 1];
+  if (last >= 0x81 && last <= 0xfe) return bytes.subarray(0, bytes.length - 1);
+  return bytes;
+}
+
+function previewTextFromBytes(bytes: Uint8Array, truncated: boolean): LimitedTextPreview {
+  const slice = truncated ? boundedPreviewBytes(bytes) : bytes;
+  return { text: decodeTextBytes(slice), truncated };
+}
+
+function clipTextBytes(bytes: Uint8Array, maxBytes: number): LimitedTextPreview {
+  const truncated = bytes.byteLength > maxBytes;
+  const slice = truncated ? bytes.subarray(0, maxBytes) : bytes;
+  return previewTextFromBytes(slice, truncated);
+}
+
+export async function readLimitedTextPreview(
+  response: Response,
+  maxBytes: number = MAX_TEXT_PREVIEW_BYTES,
+): Promise<LimitedTextPreview> {
+  if (!Number.isInteger(maxBytes) || maxBytes < 1) throw new Error('invalid_text_preview_limit');
+  const body = response.body;
+  if (!body) return clipTextBytes(new Uint8Array(await response.arrayBuffer()), maxBytes);
+
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  let truncated = false;
+  try {
+    while (size < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const room = maxBytes - size;
+      if (value.byteLength > room) {
+        if (room > 0) chunks.push(value.subarray(0, room));
+        size = maxBytes;
+        truncated = true;
+        await reader.cancel();
+        break;
+      }
+      chunks.push(value);
+      size += value.byteLength;
+      if (size === maxBytes) {
+        const next = await reader.read();
+        if (!next.done) {
+          truncated = true;
+          await reader.cancel();
+        }
+        break;
+      }
+    }
+  } catch (error) {
+    if (size === 0) throw error;
+    truncated = true;
+  }
+
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  chunks.forEach(chunk => {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  });
+  return previewTextFromBytes(bytes, truncated);
 }
