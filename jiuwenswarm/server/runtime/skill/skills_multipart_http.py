@@ -43,8 +43,6 @@ SKILL_UPLOAD_PREFIX = "jiuwenswarm_skill_upload_"
 SKILL_UPLOAD_MAX_REQUEST_BYTES = SKILL_ZIP_MAX_UPLOAD_BYTES + 2 * 1024 * 1024
 #: 上传残留的兜底 TTL（前端 discard 未送达时回收）。
 SKILL_UPLOAD_TTL_SECONDS = 24 * 60 * 60
-#: discard 请求体上限：只承载一个路径，正常请求远小于此值。
-SKILL_UPLOAD_DISCARD_MAX_REQUEST_BYTES = 64 * 1024
 
 _SKILL_HTTP_ERROR_STATUS: dict[str, int] = {
     "SKILL_ALREADY_EXISTS": 409,
