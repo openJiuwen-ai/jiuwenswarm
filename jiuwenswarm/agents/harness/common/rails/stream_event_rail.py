@@ -1504,6 +1504,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 tool_result_payload["success"] = True
             else:
                 error_state = _infer_tool_result_error(raw_output if raw_output is not None else result)
+                if tool_name == "tool_call" and error_state is not True:
+                    # The wrapper's verdict describes dispatch. The target can still report a failure.
+                    wrapper_data = getattr(result, "data", None)
+                    target_result = wrapper_data.get("result") if isinstance(wrapper_data, dict) else None
+                    if isinstance(target_result, dict) and _infer_tool_result_error(target_result) is True:
+                        error_state = True
                 if error_state is not None:
                     tool_result_payload["success"] = not error_state
                     if error_state:
