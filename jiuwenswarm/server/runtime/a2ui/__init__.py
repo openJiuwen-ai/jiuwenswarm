@@ -7,10 +7,20 @@ depend on the public helpers exposed here instead of reaching into protocol
 or renderer details.
 """
 
-from jiuwenswarm.server.runtime.a2ui.config import A2UIConfig, get_a2ui_config, is_a2ui_enabled
+from jiuwenswarm.server.runtime.a2ui.config import (
+    A2UIConfig,
+    a2ui_config_source,
+    get_a2ui_config,
+    get_current_a2ui_config,
+    is_a2ui_enabled,
+    refresh_a2ui_config_source,
+)
 
 __all__ = [
     "A2UIConfig",
+    "a2ui_config_source",
     "get_a2ui_config",
+    "get_current_a2ui_config",
     "is_a2ui_enabled",
+    "refresh_a2ui_config_source",
 ]

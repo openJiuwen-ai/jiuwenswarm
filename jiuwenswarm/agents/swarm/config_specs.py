@@ -1096,6 +1096,9 @@ def build_member_deep_agent_spec(
         "tools": merged_tools,
         "mcps": merged_mcps,
         "kv_cache_affinity_config": _kv_cache_affinity_config(config),
+        # a2ui 不挂 DeepAgentSpec：Leader/Teammate 共用同一份已 resolve 的
+        # config（含 enterprise apply 后的 config.a2ui），运行时由
+        # get_current_a2ui_config → A2UI 请求级读源，与 kv_cache 写进 spec 不同。
     }
     if get_progressive_tool_enabled(config):
         # Same top-level ``progressive_tool_enabled`` switch the single-agent

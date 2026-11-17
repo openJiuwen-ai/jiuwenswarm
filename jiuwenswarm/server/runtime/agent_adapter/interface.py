@@ -1798,6 +1798,18 @@ class JiuWenSwarm:
             logger.info("[JiuWenSwarm] Initialized adapter: sdk=%s, mode=%s", self._sdk_name, mode)
         return self._adapter
 
+    @staticmethod
+    def _publish_runtime_a2ui_config(adapter: Any) -> None:
+        """把当前 adapter 已 resolve 的 config 挂到 A2UI 请求级读源.
+
+        rail / finalizer / client_event 经 ``get_current_a2ui_config`` 优先读其中
+        的 a2ui（与企业 ``resolve_agent_config`` 一致）；无读源时回退进程 yaml。
+        """
+        from jiuwenswarm.server.runtime.a2ui.config import refresh_a2ui_config_source
+
+        cache = getattr(adapter, "_config_base_cache", None)
+        refresh_a2ui_config_source(cache if isinstance(cache, dict) else None)
+
     def set_personal_context_runtime_enabled(self, enabled: bool) -> None:
         """Store and forward the PersonalContext Host runtime switch."""
 
@@ -3730,6 +3742,7 @@ class JiuWenSwarm:
             request.request_id, request.channel_id, session_id, self._sdk_name,
         )
 
+        self._publish_runtime_a2ui_config(adapter)
         try:
             inputs, memory_mode, user_turn = self._build_inputs(request)
         except asyncio.CancelledError:
@@ -3792,6 +3805,8 @@ class JiuWenSwarm:
         except Exception:
             _schedule_feedback_once("error")
             raise
+        # reconcile 可能刷新企业快照；再发一次供 rail/finalizer 使用。
+        self._publish_runtime_a2ui_config(adapter)
 
         # cloud memory: before chat hook
         if memory_mode == "cloud":
@@ -3999,6 +4014,7 @@ class JiuWenSwarm:
         session_id = self._session_manager.get_session_id(request.session_id)
         params = request.params if isinstance(request.params, dict) else {}
         restore_chat_send_equipment_params(session_id, params)
+        self._publish_runtime_a2ui_config(adapter)
         inputs, _memory_mode, _user_turn = self._build_inputs(request)
         await self.reconcile_session_mcp(
             request.session_id,
@@ -4011,6 +4027,7 @@ class JiuWenSwarm:
             **({"moa_enabled": params["moa_enabled"]} if "moa_enabled" in params else {}),
             **(adapter.moa_access_kwargs(request) if callable(getattr(adapter, "moa_access_kwargs", None)) else {}),
         )
+        self._publish_runtime_a2ui_config(adapter)
         # 问题澄清答案 resume 走的是 control-input 路径（Runtime.session_work_kind 判定
         # 为 CONTROL_INPUT → _deliver_control → 本方法），**不经过** process_message_stream，
         # 所以 ask_user_answer 的落盘必须放在这里。否则刷新后 chat.ask_user_question 找不到
@@ -4497,6 +4514,7 @@ class JiuWenSwarm:
             request.request_id, request.channel_id, session_id, self._sdk_name,
         )
 
+        self._publish_runtime_a2ui_config(adapter)
         try:
             inputs, memory_mode, user_turn = self._build_inputs(request)
         except asyncio.CancelledError:
@@ -4575,6 +4593,7 @@ class JiuWenSwarm:
         except Exception:
             _schedule_feedback_once("error")
             raise
+        self._publish_runtime_a2ui_config(adapter)
 
         # Team 模式：把整个 turn 交给 team_helpers。它先用 turn.text（用户原
         # 文）解析 /debug、$member 与 slash，再用同一个 render() 投递，因此
