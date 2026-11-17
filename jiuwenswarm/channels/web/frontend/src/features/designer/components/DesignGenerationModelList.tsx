@@ -84,7 +84,7 @@ export default function DesignGenerationModelList({
               aria-checked={selected}
               aria-disabled={unsupported || disabled || undefined}
               disabled={disabled && !unsupported}
-              title={unsupported ? reason : (model ? [model.provider, model.model_name].filter(Boolean).join(' · ') : option.label)}
+              title={unsupported ? reason : (model?.api_base.trim() || undefined)}
               onClick={() => { if (!unsupported && !disabled) onSelect(option.value); }}
               data-testid={`${testIdPrefix}-option`}
               data-variant={option.value}
