@@ -2105,7 +2105,9 @@ function AppContent({
         const runtime = useChatStore.getState().getRuntime(targetSessionId);
         const locallyBusy = runtime?.foregroundIsProcessing === true;
         // The cursor recovery owns settlement while it can still replay the terminal output.
-        const mayDowngrade = allowDowngrade && !webClient.isRecoveringExecution(targetSessionId) &&
+        const recoveringExecution =
+          'isRecoveringExecution' in webClient && webClient.isRecoveringExecution(targetSessionId);
+        const mayDowngrade = allowDowngrade && !recoveringExecution &&
           (runtime?.turnRevision ?? 0) === snapshotTurnRevision;
         // A pause/cancel ack just settled this turn; a lagging worker snapshot
         // must not relight processing until a new round starts (user send or a
