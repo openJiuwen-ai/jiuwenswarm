@@ -205,20 +205,22 @@ class WebFileDownloadManager:
             payload = json.loads(payload_json)
             if not isinstance(payload, dict):
                 return None
+            token_kind = payload.get("kind")
+            exp = payload.get("exp")
+            if token_kind == _VERIFIED_ASSET_TOKEN_KIND and type(exp) not in (int, float):
+                return None
+            reference_only = token_kind == _VERIFIED_ASSET_TOKEN_KIND and exp == 0
             if check_expiry:
                 # 兼容无 exp 字段的交付令牌：不强制过期；有 exp 则严格校验。
-                exp = payload.get("exp")
                 if exp is None and not _is_legacy_no_expiration_payload(payload):
                     return None
-                if exp is not None and (
-                    not isinstance(exp, (int, float)) or int(exp) < int(time.time())
-                ):
-                    logger.warning("[WebFileDownload] 令牌已过期")
-                    return None
+                if exp is not None and not reference_only:
+                    if not isinstance(exp, (int, float)) or int(exp) < int(time.time()):
+                        logger.warning("[WebFileDownload] 令牌已过期")
+                        return None
             if session_id is not None and str(session_id).strip():
                 if str(payload.get("sid") or "").strip() != str(session_id).strip():
                     return None
-            token_kind = payload.get("kind")
             if token_kind not in (None, _VERIFIED_ASSET_TOKEN_KIND):
                 return None
             if token_kind == _VERIFIED_ASSET_TOKEN_KIND:
