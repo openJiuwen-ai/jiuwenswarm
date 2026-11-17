@@ -2954,6 +2954,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/file-api/assets/upload-temp":
             self._handle_assets_upload_temp()
             return
+        if parsed.path == "/file-api/skills/upload-discard":
+            self._handle_skills_upload_discard()
+            return
         if parsed.path == "/file-api/external-cli/custom-agents":
             self._handle_custom_agent_upload()
             return
@@ -3105,6 +3108,38 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             body=self._read_request_body(),
         )
         self._write_json(status, payload)
+
+    def _handle_skills_upload_discard(self) -> None:
+        from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
+            SKILL_UPLOAD_DISCARD_MAX_REQUEST_BYTES,
+            discard_skill_upload,
+            skill_http_error_body,
+        )
+
+        length = self._parse_content_length()
+        if length > SKILL_UPLOAD_DISCARD_MAX_REQUEST_BYTES:
+            # 只含一个路径，超限请求不再读取，避免被超大 Content-Length 拖住。
+            self._write_json(
+                413,
+                skill_http_error_body("SKILL_FILE_TOO_LARGE", "请求体超过限制"),
+            )
+            return
+        try:
+            payload = json.loads(self._read_request_body().decode("utf-8") or "{}")
+        except (UnicodeDecodeError, ValueError):
+            self._write_json(
+                400,
+                skill_http_error_body("SKILL_INVALID_PACKAGE", "请求体不是合法 JSON"),
+            )
+            return
+        path_value = payload.get("path") if isinstance(payload, dict) else None
+        if not isinstance(path_value, str):
+            self._write_json(
+                400,
+                skill_http_error_body("SKILL_UNSAFE_PATH", "缺少 path 字段"),
+            )
+            return
+        self._write_json(200, {"ok": True, "discarded": discard_skill_upload(path_value)})
 
     def _handle_custom_agent_upload(self) -> None:
         from jiuwenswarm.channels.web.custom_agent_upload_http import (

@@ -807,15 +807,32 @@ export function SkillPanel({
     [createUploadError],
   );
 
+  /** 释放两阶段上传的临时文件；失败由服务端 TTL 兜底，不打断用户流程 */
+  const discardTempFile = useCallback(async (path: string) => {
+    try {
+      const response = await gatewayFetch('/file-api/skills/upload-discard', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path }),
+      });
+      if (!response.ok) {
+        console.warn(`discard skill upload failed: HTTP ${response.status}`);
+      }
+    } catch (error) {
+      console.warn('discard skill upload failed', error);
+    }
+  }, []);
+
   /** 上传技能 .zip 包：先上传到临时目录，再通过 WebSocket 调用 skills.import_upload */
   const handleSkillUpload = useCallback(
     async (file: File) => {
       setActionTarget('import_local');
       setMessage(null);
       setMessageType(null);
+      let tempPath: string | undefined;
       try {
         // Step 1: 上传文件到服务端临时目录
-        const tempPath = await uploadTempFile(file);
+        tempPath = await uploadTempFile(file);
 
         // Step 2: 通过 WebSocket 调用 skills.import_upload
         const doImport = async (overwrite: boolean) => {
@@ -866,10 +883,22 @@ export function SkillPanel({
         console.error(error);
         showErrorToast(error, 'skills.errors.importFailedHint');
       } finally {
+        // 不等待释放请求，避免网络异常时把上传按钮的 loading 态拖住
+        if (tempPath) void discardTempFile(tempPath);
         setActionTarget(null);
       }
     },
-    [uploadTempFile, fetchSkills, fetchSkillDetail, t, withSession, showMessage, setMessage, setMessageType],
+    [
+      uploadTempFile,
+      discardTempFile,
+      fetchSkills,
+      fetchSkillDetail,
+      t,
+      withSession,
+      showMessage,
+      setMessage,
+      setMessageType,
+    ],
   );
 
   /** 知识转技能：先上传文件到临时目录（如有），再通过 WebSocket 调用 skills.create_from_knowledge */
