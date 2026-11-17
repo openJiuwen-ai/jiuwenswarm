@@ -34,7 +34,7 @@ def test_opentelemetry_dependencies_exclude_protobuf4_only_proto_versions():
 
 
 def test_core_pin_matches_pip_uv_and_lockfile():
-    """All installation paths must select the same immutable adapted Core."""
+    """All installation paths must select the same official Core commit."""
     import re
 
     project = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text())
@@ -44,6 +44,7 @@ def test_core_pin_matches_pip_uv_and_lockfile():
     harmony = next(Requirement(raw) for raw in project["project"]["optional-dependencies"]["harmony"]
                    if Requirement(raw).name == "openjiuwen")
     source = project["tool"]["uv"]["sources"]["openjiuwen"]
+    assert source["git"] == "https://gitcode.com/openJiuwen/agent-core.git"
     revision = source["rev"]
     assert re.fullmatch(r"[0-9a-f]{40}", revision)
     assert regular.url == harmony.url == f"git+{source['git']}@{revision}"
