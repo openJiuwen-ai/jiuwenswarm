@@ -17,6 +17,10 @@ from e2a.constants import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.server.context import RequestContext
+from jiuwenswarm.server.interrupt_intent import (
+    normalize_interrupt_intent,
+    unknown_interrupt_intent_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +59,36 @@ async def handle_chat_cancel(ctx: RequestContext) -> None:
     """停掉当前这一轮。对方断开时，停完再清掉这条连接占着的运行状态。"""
     request = ctx.request
     services = ctx.services
+    # 契约校验前置：归一化 intent（缺省/null/空串→cancel、大小写/空白对齐
+    # runtime、stop→cancel 别名）并回写 ctx.request，保证入口判定与下游
+    # （cancel_chat_request / 定向 expert / organization）读到的 intent 一致；
+    # 未知 intent 直接回错误应答、不做任何会话/任务操作（早退分支也覆盖）。
+    intent = normalize_interrupt_intent(request.params)
+    intent_error = unknown_interrupt_intent_error(intent)
+    if intent_error:
+        logger.error(
+            "[handlers.chat] cancel: 拒绝未知 intent（未做任何会话操作）: session_id=%s intent=%s",
+            request.session_id or "default",
+            intent,
+        )
+        await ctx.sink.send_response(
+            AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={
+                    "event_type": "chat.interrupt_result",
+                    "success": False,
+                    "error": intent_error,
+                },
+            )
+        )
+        return
+    if isinstance(request.params, dict) and request.params.get("intent") != intent:
+        from dataclasses import replace
+
+        ctx.request = replace(request, params={**request.params, "intent": intent})
+        request = ctx.request
     if isinstance(request.params, dict) and (
         request.params.get("target_team_id") or request.params.get("target_request_id")
     ):
@@ -86,7 +120,6 @@ async def handle_chat_cancel(ctx: RequestContext) -> None:
         return
     # 中断请求：根据 intent 决定是否取消流式任务
     sid = request.session_id or "default"
-    intent = request.params.get("intent", "cancel") if isinstance(request.params, dict) else "cancel"
     cleanup_after_cancel = _is_client_disconnect_cancel_request(request)
 
     # 只有 cancel/supplement 才取消流式任务
