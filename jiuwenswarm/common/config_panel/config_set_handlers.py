@@ -1375,6 +1375,11 @@ def encrypt_config_params(params: dict[str, Any]) -> dict[str, Any]:
             # one corrupts it irreversibly; store verbatim.
             if is_reference(str(val or "")):
                 continue
+            # An empty value means "clear the stored credential" (e.g. the Jev
+            # delete flow). Encrypting it would persist a non-empty ciphertext,
+            # so the credential would keep looking configured and never clear.
+            if val is None or str(val).strip() == "":
+                continue
             encrypted[key] = crypto.encrypt(val)
     return encrypted
 
