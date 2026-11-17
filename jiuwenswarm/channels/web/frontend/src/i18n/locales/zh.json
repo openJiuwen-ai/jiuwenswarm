@@ -5305,6 +5305,10 @@
       "mcp": "搜索连接器",
       "my": "搜索我的扩展"
     },
+    "sources": {
+      "tabsLabel": "连接器目录来源",
+      "noSources": "暂无可用连接器源"
+    },
     "statusFilter": {
       "all": "全部",
       "pending": "待安装/连接",
@@ -5359,6 +5363,8 @@
       "use": "使用",
       "useNotWired": "该功能尚未接入，请在会话输入框的\"+\"面板里选用",
       "install": "安装",
+      "update": "更新",
+      "updateNotSupportedYet": "连接器升级功能尚未接入，暂不可用",
       "installing": "安装中",
       "connecting": "连接中",
       "disconnecting": "解绑中",

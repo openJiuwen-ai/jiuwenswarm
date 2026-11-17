@@ -63,6 +63,25 @@ def test_default_transport_uses_configured_swarmskills_service(
     transport = HttpHubTransport()
 
     assert transport.base_url == "https://swarmskills.openjiuwen.com"
+    assert transport.verify is True
+
+
+def test_transport_and_client_accept_explicit_verify_flag() -> None:
+    transport = HttpHubTransport(
+        base_url="https://hub.example.test",
+        verify=False,
+    )
+    assert transport.verify is False
+
+    client = HubClient(base_url="https://hub.example.test", verify=False)
+    assert isinstance(client.transport, HttpHubTransport)
+    assert client.transport.verify is False
+
+
+def test_hub_client_default_verify_leaves_other_callers_unchanged() -> None:
+    client = HubClient(base_url="https://hub.example.test")
+    assert isinstance(client.transport, HttpHubTransport)
+    assert client.transport.verify is True
 
 
 @pytest.mark.parametrize(

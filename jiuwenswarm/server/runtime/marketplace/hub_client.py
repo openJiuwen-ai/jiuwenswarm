@@ -82,6 +82,7 @@ class HttpHubTransport:
         timeout: float | None = None,
         token: str | None = None,
         system_token: str | None = None,
+        verify: bool = True,
     ) -> None:
         configured = (
             base_url or os.getenv("TEAM_SKILLS_HUB_BASE_URL") or DEFAULT_HUB_BASE_URL
@@ -102,6 +103,9 @@ class HttpHubTransport:
         )
         self.token = (token or "").strip()
         self.system_token = (system_token or "").strip()
+        # Default True keeps existing callers (Skill plaza / MCP / publish) unchanged.
+        # Connector SPI may pass SourceConfig.verify_ssl explicitly.
+        self.verify = bool(verify)
 
     def _headers(self) -> dict[str, str] | None:
         if self.system_token:
@@ -111,7 +115,7 @@ class HttpHubTransport:
         return None
 
     async def aclose(self) -> None:
-        key = (self.base_url, self.timeout, asyncio.get_running_loop())
+        key = (self.base_url, self.timeout, self.verify, asyncio.get_running_loop())
         client = _SHARED_HTTP_CLIENTS.pop(key, None)
         if client is not None and not client.is_closed:
             await client.aclose()
@@ -124,11 +128,15 @@ class HttpHubTransport:
         recycled ``id()`` can never hit a client bound to a closed loop.
         """
         loop = asyncio.get_running_loop()
-        key = (self.base_url, self.timeout, loop)
+        key = (self.base_url, self.timeout, self.verify, loop)
         client = _SHARED_HTTP_CLIENTS.get(key)
         if client is not None and not client.is_closed and not loop.is_closed():
             return client
-        client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=False)
+        client = httpx.AsyncClient(
+            timeout=self.timeout,
+            follow_redirects=False,
+            verify=self.verify,
+        )
         _SHARED_HTTP_CLIENTS[key] = client
         while len(_SHARED_HTTP_CLIENTS) > _MAX_SHARED_CLIENTS:
             old_key = next(iter(_SHARED_HTTP_CLIENTS))
@@ -185,6 +193,7 @@ class HubClient(HubAssetPort):
         timeout: float | None = None,
         token: str | None = None,
         system_token: str | None = None,
+        verify: bool = True,
         publisher: HubPublishPort | None = None,
     ) -> None:
         self._publisher = publisher
@@ -193,6 +202,7 @@ class HubClient(HubAssetPort):
             timeout=timeout,
             token=token,
             system_token=system_token,
+            verify=verify,
         )
         configured_base_url = (
             base_url

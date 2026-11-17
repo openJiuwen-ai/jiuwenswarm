@@ -17,7 +17,7 @@ interface MarketCardProps {
   canOpenDetail: boolean;
   onOpenDetail: () => void;
   onQuickAdd: () => void;
-  quickAction?: 'install' | 'connect';
+  quickAction?: 'install' | 'connect' | 'update';
   actionMode?: 'auto' | 'use';
   actionDisabled?: boolean;
   onUse?: () => void;
@@ -65,6 +65,23 @@ export function MarketCard({
         <Loader2 size={13} className="animate-spin" />
         {t(busyLabelKey(busyKind))}
       </span>
+    );
+  } else if (quickAction === 'update' && (state === 'idle' || state === 'error' || state === 'connected')) {
+    // Enterprise catalogue: installed but remote version differs — show Update
+    // (mcp.update not wired yet; parent supplies a no-op / toast handler).
+    actionSlot = (
+      <button
+        type="button"
+        className="connector-market-card-install"
+        disabled={actionDisabled}
+        data-testid="connector-market-card-update"
+        onClick={(event) => {
+          event.stopPropagation();
+          onQuickAdd();
+        }}
+      >
+        {t('connectorMarket.card.update')}
+      </button>
     );
   } else if (state === 'connected' || actionMode === 'use') {
     actionSlot = <button type="button" className="connector-market-card-install" data-testid="connector-market-card-use" disabled={actionDisabled || !onUse} onClick={event => { event.stopPropagation(); onUse?.(); }}>{t('connectorMarket.card.use')}</button>;

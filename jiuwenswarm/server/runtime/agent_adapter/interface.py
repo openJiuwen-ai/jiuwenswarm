@@ -2654,6 +2654,10 @@ class JiuWenSwarm:
         handler = getattr(self._skill_manager, handler_name)
         try:
             params = dict(request.params) if isinstance(request.params, dict) else {}
+            # Identity lives on request.metadata (not business params). Source
+            # SPI builders read it via params["_request_metadata"].
+            if isinstance(request.metadata, dict):
+                params["_request_metadata"] = dict(request.metadata)
             if handler_name in _SKILL_SYNC_HANDLERS:
                 # 长生命周期实例先重载磁盘 state（外部流程可能已写
                 # local_skills / skill_configs），同步结果才与磁盘一致

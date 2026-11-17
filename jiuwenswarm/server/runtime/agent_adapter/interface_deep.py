@@ -6836,8 +6836,9 @@ class JiuWenSwarmDeepAdapter:
         first session-child creation point, it also forwards the current
         request's disk-history boundary into context warmup.
 
-        In enterprise mode, the routed Agent's enabled MCP templates replace
-        the per-message selection when an execution request is available.
+        In enterprise mode, enabled MCP names from the routed Agent policy are
+        unioned with ``needed`` (marketplace / extension-panel selection), not
+        used as a replacement.
         """
         if (
             runtime_binding is not None
@@ -6862,16 +6863,24 @@ class JiuWenSwarmDeepAdapter:
             **({"moa_can_access": moa_can_access} if moa_can_access is not None else {}),
             **({"retain_moa_snapshot": True} if retain_moa_snapshot else {}),
         )
-        # Enterprise Web has no per-message MCP picker. Resolve the current
-        # routed Agent's enabled templates before name lookup/registration.
-        # Never write these entries into the shared YAML or marketplace state.
+        # Enterprise: refresh the routed Agent policy cache, then union template
+        # MCPs with the per-message / marketplace selection (chat.send ``mcp`` /
+        # session equipment). Do not replace the picker set — connector market
+        # and the session extension panel must still mount. Never write these
+        # template entries into shared YAML or marketplace state.
         from jiuwenswarm.enterprise.config.config_provider import (
             ConfigSource, resolve_config_source,
         )
         if execution_request is not None and resolve_config_source() == ConfigSource.ENTERPRISE:
             enterprise_names = await child.load_enterprise_mcp_names(execution_request)
             if enterprise_names is not None:
-                needed_set = enterprise_names
+                needed_set = needed_set | enterprise_names
+                logger.info(
+                    "[EnterpriseMCPReconcile] session=%s template=%s total=%s",
+                    session_id,
+                    len(enterprise_names),
+                    len(needed_set),
+                )
         if child._instance is None:
             pending_holder = getattr(
                 child,
@@ -13632,6 +13641,18 @@ class JiuWenSwarmDeepAdapter:
             except Exception as exc:  # noqa: BLE001
                 logger.error(
                     "[JiuWenSwarmDeepAdapter] skill source config rejected: %s",
+                    exc,
+                )
+        if loaded is not None:
+            try:
+                from jiuwenswarm.server.runtime.connector import get_source_runtime
+
+                await get_source_runtime().apply_connector_source_configs(
+                    getattr(loaded, "extension_config", None)
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "[JiuWenSwarmDeepAdapter] connector source config rejected: %s",
                     exc,
                 )
         if loaded is None and request is not None and is_enterprise():

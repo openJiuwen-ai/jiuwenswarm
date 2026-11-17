@@ -1,5 +1,11 @@
 import { scheduleCatalogRefresh, catalogScope } from '../features/catalogCache';
+import {
+  equipmentListFilter,
+  isMcpCatalogFilter,
+  type McpListFilter,
+} from '../features/equipmentMarketplace';
 import { create } from 'zustand';
+import { isEnterprise } from '../edition';
 import i18n from '../i18n';
 import { connectorApi } from '../services/connectorApi';
 import type {
@@ -80,10 +86,23 @@ interface ConnectorState {
   // "解绑"（disconnect 也置 busy）时同样显示"连接中"会误导用户，见 mcpState.ts busyLabelKey。
   // 2026-08-17：'delete' 取值随 deleteConnector action 一并删除，不再有"删除中"这个分支。
   busyMap: Record<string, McpBusyKind | undefined>;
+  /** Last catalogue source_id used for filter=hub/builtin (enterprise multi-source). */
+  catalogSourceId: string | null;
 
-  loadList: (filter: 'builtin' | 'local', options?: { silent?: boolean }) => Promise<void>;
-  loadDetail: (name: string, options?: { refresh?: boolean }) => Promise<void>;
-  installPackage: (assetId: string) => Promise<ConnectorInstallResponse | null>;
+  loadList: (
+    filter: McpListFilter,
+    options?: { silent?: boolean; sourceId?: string },
+  ) => Promise<void>;
+  loadDetail: (
+    name: string,
+    options?: { refresh?: boolean; sourceId?: string; id?: string },
+  ) => Promise<void>;
+  /** Merge catalogue/search hits into the lookup view used by detail pages. */
+  rememberConnectors: (items: ConnectorSummary[]) => void;
+  installPackage: (
+    assetId: string,
+    options?: { sourceId?: string; versionId?: string; packageName?: string },
+  ) => Promise<ConnectorInstallResponse | null>;
   uninstallPackage: (identifier: string) => Promise<boolean>;
   connect: (name: string) => Promise<ConnectorConnectResponse | null>;
   disconnect: (name: string) => Promise<void>;
@@ -227,11 +246,15 @@ function friendlyCliError(error: unknown): string {
 let quickRefreshTimer: number | null = null;
 const QUICK_REFRESH_DELAY_MS = 1500;
 
+function catalogListFilter(): 'builtin' | 'hub' {
+  return equipmentListFilter('mcp', 'catalog');
+}
+
 function scheduleQuickRefresh(get: () => ConnectorState): void {
   if (quickRefreshTimer !== null) window.clearTimeout(quickRefreshTimer);
   quickRefreshTimer = window.setTimeout(() => {
     quickRefreshTimer = null;
-    void get().loadList('builtin', { silent: true });
+    void get().loadList(catalogListFilter(), { silent: true });
     void get().loadList('local', { silent: true });
   }, QUICK_REFRESH_DELAY_MS);
 }
@@ -244,7 +267,7 @@ function scheduleQuickRefresh(get: () => ConnectorState): void {
 // 用一个按 filter 自增的序号给每次调用打标记，只有当前仍是"这个 filter 最后一次发起的调用"，
 // 它的结果（无论成功失败）才允许写入 state；比它更晚发起的调用已经存在，说明这次结果已经过时，
 // 直接丢弃、不覆盖任何东西——不管这次结果本身是好是坏。
-const listRequestSeq: Record<'builtin' | 'local', number> = { builtin: 0, local: 0 };
+const listRequestSeq: Record<McpListFilter, number> = { builtin: 0, hub: 0, local: 0 };
 
 export const useConnectorStore = create<ConnectorState>((set, get) => ({
   builtinConnectors: [],
@@ -256,21 +279,33 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
   successMessage: null,
   noticeMessage: null,
   busyMap: {},
+  catalogSourceId: null,
 
   // silent=true 仅用于安装/连接后的快速校准，不改变页面的加载状态。
   loadList: async (filter, options) => {
     const silent = options?.silent ?? false;
+    const explicitSourceId =
+      typeof options?.sourceId === 'string' ? options.sourceId.trim() : '';
+    const catalog = isMcpCatalogFilter(filter);
+    const sourceId = catalog
+      ? explicitSourceId || get().catalogSourceId || undefined
+      : undefined;
+    // Enterprise catalogue (hub) must send source_id; skip until a source is chosen.
+    if (catalog && isEnterprise() && !sourceId) {
+      if (!silent) set({ isLoading: false });
+      return;
+    }
     const mySeq = ++listRequestSeq[filter];
     const requestScope = catalogScope();
     if (!silent) set({ isLoading: true, error: null });
     try {
-      const response = await connectorApi.list(filter);
+      const response = await connectorApi.list(filter, '', { sourceId });
       if (requestScope !== catalogScope()) return;
       scheduleCatalogRefresh(
         'connectorStore.ts:' + filter,
         response.cache,
         () => {
-          void get().loadList(filter, { silent: true });
+          void get().loadList(filter, { silent: true, sourceId });
         },
         () => listRequestSeq[filter] === mySeq,
       );
@@ -278,7 +313,8 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
       const fresh = response;
       set((state) => ({
         connectors: mergeByName(state.connectors, fresh),
-        ...(filter === 'builtin' ? { builtinConnectors: fresh } : { myConnectors: fresh }),
+        ...(catalog ? { builtinConnectors: fresh } : { myConnectors: fresh }),
+        ...(catalog && explicitSourceId ? { catalogSourceId: explicitSourceId } : {}),
         isLoading: false,
       }));
     } catch (error) {
@@ -293,8 +329,14 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
 
   loadDetail: async (name: string, options) => {
     if (!options?.refresh && get().detailCache[name]) return;
+    const sourceId =
+      (typeof options?.sourceId === 'string' && options.sourceId.trim()) ||
+      get().catalogSourceId ||
+      undefined;
+    const showId =
+      (typeof options?.id === 'string' && options.id.trim()) || name;
     try {
-      const detail = await connectorApi.show(name);
+      const detail = await connectorApi.show(showId, { sourceId });
       set((state) => ({
         detailCache: { ...state.detailCache, [name]: detail },
       }));
@@ -303,14 +345,47 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
     }
   },
 
-  installPackage: async (assetId: string) => {
+  rememberConnectors: (items) => {
+    if (!items.length) return;
+    set((state) => ({
+      connectors: mergeByName(state.connectors, items),
+    }));
+  },
+
+  installPackage: async (assetId: string, options) => {
     if (get().busyMap[assetId]) return null;
     set((state) => ({
       busyMap: { ...state.busyMap, [assetId]: 'install' },
       error: null,
     }));
     try {
-      const response = await connectorApi.install(assetId);
+      const sourceId =
+        (typeof options?.sourceId === 'string' && options.sourceId.trim()) ||
+        get().catalogSourceId ||
+        undefined;
+      const versionId =
+        typeof options?.versionId === 'string' ? options.versionId.trim() : '';
+      const packageName =
+        typeof options?.packageName === 'string' ? options.packageName.trim() : '';
+      // Enterprise may still resolve version/package from the in-memory catalogue
+      // card when the caller only passed assetId (quick actions / pending flow).
+      const catalogHint =
+        !versionId || !packageName
+          ? [...get().connectors, ...get().builtinConnectors, ...get().myConnectors].find(
+              (item) => item.id === assetId || item.hubAssetId === assetId,
+            )
+          : undefined;
+      const resolvedVersionId = versionId || catalogHint?.version?.trim() || undefined;
+      const resolvedPackageName =
+        packageName ||
+        catalogHint?.runtimePackageName?.trim() ||
+        catalogHint?.name?.trim() ||
+        undefined;
+      const response = await connectorApi.install(assetId, {
+        sourceId,
+        versionId: resolvedVersionId,
+        packageName: resolvedPackageName,
+      });
       const runtimeName = response.item.name;
       const connectResult = response.connect;
       // mcp.install 下载成功后内联 connect；connect_failed 需转成可见错误态，
@@ -358,7 +433,7 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
       // 连接失败时保持 error 态（按钮「重试」）直到用户再次操作：立刻回拉 list 会拿到
       // 后端的 disconnected 快照，把刚写下的失败态覆盖掉，失败反馈就消失了。
       if (!connectFailed) {
-        void get().loadList('builtin', { silent: true });
+        void get().loadList(catalogListFilter(), { silent: true });
         void get().loadList('local', { silent: true });
       }
       return response;
@@ -406,7 +481,7 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
             : response.error || i18n.t('connectorMarket.toast.mcpUninstallPendingReload'),
         };
       });
-      void get().loadList('builtin', { silent: true });
+      void get().loadList(catalogListFilter(), { silent: true });
       void get().loadList('local', { silent: true });
       return true;
     } catch (error) {

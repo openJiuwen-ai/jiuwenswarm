@@ -144,6 +144,7 @@ _ensure_req_method("TRAJECTORY_RAW_GET", "trajectory.raw.get")
 _ensure_req_method("TRAJECTORY_ARCHIVE_OPEN", "trajectory.archive.open")
 _ensure_req_method("TRAJECTORY_BLOB_READ", "trajectory.blob.read")
 _ensure_req_method("TRAJECTORY_BLOB_CLOSE", "trajectory.blob.close")
+_ensure_req_method("MCP_SOURCES_PROVIDERS", "mcp.sources.providers")
 # Enterprise verify still registers these wire methods in HANDLERS / adapters,
 # but the pinned openjiuwen-protocol revision does not ship them yet. Without
 # ensure, importing dispatch crashes the runtime worker and HTTP :8766 never

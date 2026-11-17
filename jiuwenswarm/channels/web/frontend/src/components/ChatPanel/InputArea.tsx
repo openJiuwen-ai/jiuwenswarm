@@ -4922,11 +4922,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                           ) : null}
                           {agentTooltipNode}
                         </div>
-                        {/* 插件/MCP 装备目前后端在集群模式下不生效（JiuWenSwarmDeepAdapter
-                    ._ensure_chat_extensions 对 team 模式直接短路，见
-                    interface_deep.py），继续展示这个入口只会让用户以为选了插件/MCP 会生效，
-                    实际发出去也是白发。集群模式下直接不渲染这个入口，跟旁边 SkillSelector
-                    （!isTeamMode 判断）保持同样的处理方式。 */}
+                        {/* 插件/MCP 装备：team 模式下后端 _ensure_chat_extensions 直接短路，
+                    展示入口会误导用户；agent 模式（含企业版）正常展示。 */}
                         <div className="chat-attach-menu-item-anchor">
                           <button
                             type="button"
@@ -4967,7 +4964,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             />
                           )}
                         </div>
-                        {!enterprise && !isTeamMode && (
+                        {!isTeamMode && (
                           <div className="chat-attach-menu-item-anchor">
                             <button
                               type="button"

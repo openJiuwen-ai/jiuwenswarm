@@ -9,11 +9,18 @@ import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from jiuwenswarm.extensions.swarm_connector_hub.constants import OPENJIUWEN_HUB_SOURCE_ID
 from jiuwenswarm.server.runtime.marketplace.hub_asset_port import HubAssetKind
 from jiuwenswarm.server.runtime.marketplace.hub_asset_type_adapter import (
     HubAssetTypeConflictError,
     resolve_hub_asset_kind,
 )
+
+
+def normalize_install_source_id(source_id: str | None) -> str:
+    """Default Hub install provenance when ledger / callers omit ``source_id``."""
+    value = str(source_id or "").strip()
+    return value or OPENJIUWEN_HUB_SOURCE_ID
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +31,7 @@ class HubInstallRecord:
     checksum_sha256: str
     installed_at: str
     package_id: str = ""
+    source_id: str = OPENJIUWEN_HUB_SOURCE_ID
 
     @classmethod
     def from_dict(cls, value: dict) -> "HubInstallRecord | None":
@@ -48,7 +56,14 @@ class HubInstallRecord:
         package_id = value.get("package_id")
         if not isinstance(package_id, str) or not package_id.strip():
             package_id = fields["asset_id"]
-        return cls(kind=raw_kind, package_id=package_id.strip(), **fields)
+        # CMS-V-05 / I-05: old ledgers without source_id backfill to default Hub.
+        source_id = normalize_install_source_id(value.get("source_id"))
+        return cls(
+            kind=raw_kind,
+            package_id=package_id.strip(),
+            source_id=source_id,
+            **fields,
+        )
 
 
 class HubInstallStateStore:
@@ -113,6 +128,30 @@ class HubInstallStateStore:
             (record for record in self._read().values() if record.package_id == wanted),
             None,
         )
+
+    def assert_package_id_available(
+        self,
+        package_id: str,
+        *,
+        asset_id: str,
+        source_id: str | None,
+        kind: str = "asset",
+    ) -> None:
+        """Reject cross-source or cross-asset ownership of the same package id (D-09 #6)."""
+        owner = self.get_by_package_id(package_id)
+        if owner is None:
+            return
+        wanted_source = normalize_install_source_id(source_id)
+        owner_source = normalize_install_source_id(owner.source_id)
+        if owner_source != wanted_source:
+            raise ValueError(
+                f"Hub {kind} package id {package_id!r} is already installed "
+                f"from source {owner_source}"
+            )
+        if owner.asset_id != str(asset_id or "").strip():
+            raise ValueError(
+                f"Hub {kind} package id {package_id!r} is owned by another Hub asset"
+            )
 
     def upsert(self, record: HubInstallRecord) -> None:
         records = self._read()
