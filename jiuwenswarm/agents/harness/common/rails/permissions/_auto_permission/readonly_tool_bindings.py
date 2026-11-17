@@ -28,12 +28,14 @@ from jiuwenswarm.agents.harness.common.tools import acp_output_tools as acp
 from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import _CronToolsCronBackend, _RestrictedCronBackend
 from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronTools
 from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools.timestamp_tool import convert_timestamp_to_utc8_time
+from jiuwenswarm.agents.harness.common.tools.test_failure_tools import parse_test_failure
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_binding import matches_bound_method, resolve_tool_binding
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_decision import tool_search_args_valid
 from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.models import ToolInvocation
 
 # LocalFunction exposes no public callable-identity API; pin the executable, not its name.
 _TIMESTAMP_FUNC = convert_timestamp_to_utc8_time._func  # pylint: disable=protected-access
+_PARSE_TEST_FAILURE_FUNC = parse_test_failure._func  # pylint: disable=protected-access
 _ACP_DELEGATES = {name: getattr(acp, name) for name in ("read_terminal_output", "wait_for_terminal_exit")}
 _RECALL_DELEGATE = compression_recall.recall_compressed_context
 _SESSION_OBSERVATION_TOOLS = {
@@ -279,6 +281,8 @@ def trusted_readonly_binding(invocation, session_id: str, *, owner_agent=None) -
         name, func = invocation.tool_name, resource._func  # pylint: disable=protected-access
         if name == "convert_timestamp_to_utc8_time":
             return resource is convert_timestamp_to_utc8_time and func is _TIMESTAMP_FUNC
+        if name == "parse_test_failure":
+            return resource is parse_test_failure and func is _PARSE_TEST_FAILURE_FUNC
         if not session_id:
             return False
         if name.startswith("cron_"):

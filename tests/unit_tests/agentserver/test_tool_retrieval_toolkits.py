@@ -76,6 +76,7 @@ def test_static_category_table_shape() -> None:
     assert "powershell" in by_path["terminal"].tools
     assert "cron_create_job" in by_path["cron"].tools
     assert "read_pdf" in by_path["documents"].tools
+    assert "parse_test_failure" in by_path["testing"].tools
     assert "video_understanding" in by_path["video-understanding"].tools
     assert "audio_metadata" in by_path["audio-processing"].tools
     assert "generate_visual" in by_path["image-generation"].tools

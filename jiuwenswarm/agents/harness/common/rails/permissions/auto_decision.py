@@ -460,6 +460,23 @@ def session_observation_args_valid(name: str, args: Mapping[str, Any]) -> bool |
     return None
 
 
+def _parse_test_failure_args_valid(args: Mapping[str, Any]) -> bool:
+    if not args.keys() <= {"raw_output", "framework", "max_failures", "max_chars"}:
+        return False
+    if not _bounded_text(args.get("raw_output"), 2_000_000, empty=True):
+        return False
+    framework = args.get("framework")
+    if framework is not None and not _bounded_text(framework, 32, empty=True):
+        return False
+    for key in ("max_failures", "max_chars"):
+        value = args.get(key)
+        # bool is an int subclass; reject booleans as integer bounds.
+        # pylint: disable=huawei-unidiomatic-typecheck
+        if key in args and type(value) is not int:
+            return False
+    return True
+
+
 def _closed_internal_args_valid(facts: ToolDecisionFacts, network: Any) -> bool:
     family = facts.capability.operation_family
     args = facts.untrusted_args
@@ -475,6 +492,8 @@ def _closed_internal_args_valid(facts: ToolDecisionFacts, network: Any) -> bool:
             integer = type(value) is int  # pylint: disable=huawei-unidiomatic-typecheck
             floating = type(value) is float  # pylint: disable=huawei-unidiomatic-typecheck
             return args.keys() == {"timestamp"} and (integer or (floating and math.isfinite(value)))
+        if name == "parse_test_failure":
+            return _parse_test_failure_args_valid(args)
         field = "job_id" if name.startswith(("cron_", "heartbeat_")) else "terminal_id"
         preview = name.endswith("preview_job")
         # bool is an int subclass but is not a valid preview count.
@@ -537,6 +556,7 @@ def _internal_network_scope(facts: ToolDecisionFacts) -> Any:
             "skill_index": {"query"},
             "list_skill": {"query"},
             "recall_compressed_context": {"query"},
+            "parse_test_failure": {"raw_output"},
         }.get(facts.tool_name, set())
     elif facts.capability.operation_family == "subagent_runtime_control":
         opaque_field = {

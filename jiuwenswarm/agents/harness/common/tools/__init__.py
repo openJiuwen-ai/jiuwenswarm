@@ -21,6 +21,7 @@ _EXPORTS = {
     "skill_sources_from_manager": (".skill_retrieval_toolkits", "skill_sources_from_manager"),
     "SkillRetrievalToolkit": (".skill_retrieval_toolkits", "SkillRetrievalToolkit"),
     "SymphonyToolkit": (".symphony_toolkits", "SymphonyToolkit"),
+    "parse_test_failure": (".test_failure_tools", "parse_test_failure"),
     "tool": ("openjiuwen.core.foundation.tool.tool", "tool"),
     "ce_config": ("openjiuwen.extensions.context_evolver.core", "config"),
     "JSONFileConnector": (
