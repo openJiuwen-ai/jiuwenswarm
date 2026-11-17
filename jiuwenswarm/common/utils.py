@@ -1119,7 +1119,8 @@ def cleanup_stale_openjiuwen_descs() -> None:
 def _read_previous_external_cli_state(config_path: Path) -> Optional[dict[str, Any]]:
     """读取将被模板覆盖的 config.yaml 里用户的三方 agent 配置。
 
-    返回 external_cli_agents 列表与路径历史；不存在或为空时返回 None。
+    返回 external_cli_agents 列表、路径历史与 external_transport 节点
+    （跨进程 transport 不变式随 agents 一起恢复）；不存在或为空时返回 None。
     任何解析失败都按"无可保留"处理，不阻塞 init。
     """
     if not config_path.exists():
@@ -1137,6 +1138,7 @@ def _read_previous_external_cli_state(config_path: Path) -> Optional[dict[str, A
         return {
             "agents": agents,
             "histories": histories if isinstance(histories, dict) else {},
+            "transport": team.get("external_transport"),
         }
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"读取覆盖前的三方 agent 配置失败，跳过保留: {exc}")
@@ -1182,6 +1184,11 @@ def _restore_previous_external_cli_state(config_path: Path, state: dict[str, Any
         histories = state.get("histories") or {}
         if histories:
             jiuwen_team["external_cli_path_histories"] = histories
+        # 跨进程 transport 不变式随 agents 一起恢复：agents 需要跨进程而
+        # transport 节点缺失时，后续配置归一化会直接抛错（!10411 检视）。
+        transport = state.get("transport")
+        if transport is not None:
+            jiuwen_team["external_transport"] = transport
         with config_path.open("w", encoding="utf-8") as handle:
             yaml_rt.dump(data, handle)
         logger.info("已保留覆盖前的三方 agent 配置与路径历史")
@@ -1242,6 +1249,7 @@ def _read_external_cli_state_sidecar(workspace_dir: Path) -> Optional[dict[str, 
         return {
             "agents": agents,
             "histories": histories if isinstance(histories, dict) else {},
+            "transport": payload.get("transport"),
         }
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"读取三方 agent 状态旁路文件失败: {exc}")
