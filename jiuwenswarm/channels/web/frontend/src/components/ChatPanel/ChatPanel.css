@@ -4619,6 +4619,15 @@
   margin-bottom: 0;
 }
 
+/* Scope changes clear the slate before its replacement arrives. Keep room for
+   the heading (26px), four single-line cards (32px each), and four gaps (10px)
+   so the vertically centered heading and composer do not jump during the read.
+   Longer cards can still grow naturally instead of being clipped. */
+.chat-welcome:not(.chat-welcome--group-create) > .chat-suggestions {
+  min-height: 194px;
+  flex-shrink: 0;
+}
+
 .chat-suggestions__title {
   margin: 0 0 0.25rem 0.875rem;
   color: var(--color-text-secondary);

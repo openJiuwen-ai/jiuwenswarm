@@ -1,6 +1,7 @@
 import type { Entry } from '../conversationModel';
 import { copy, type DocumentCopy } from '../copy';
 import type { UndoState } from '../paneController';
+import type { OpenDocument } from '../sessionFacade';
 import { activityGroup, running, StepClock, tickSeconds, type Step } from './activity';
 import { h, syncChildren } from './dom';
 import type { ToolCards } from './editCards';
@@ -75,7 +76,7 @@ function unseen(last: Entry | undefined, openReply: string | undefined): boolean
 
 export interface TranscriptState {
   entries: readonly Entry[];
-  documents: ReadonlyMap<string, string>;
+  documents: ReadonlyMap<string, OpenDocument>;
   /** The reply that streams now. */
   openReply?: string;
   /** The agent works on a turn and waits for no answer. */

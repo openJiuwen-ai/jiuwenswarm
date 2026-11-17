@@ -62,7 +62,7 @@ def attach_pane():
     def attach_pane(session_id: str, supported_tools: list[str], *, owner: str = "user-1",
                     name: str = "Deck.pptx", live: bool = True, client_app: str = CLIENT_APP) -> None:
         resource = {"key": f"deck-{session_id}", "display_name": name, "kind": "presentation",
-                    "host_vendor": "microsoft"}
+                    "host_vendor": "office"}
         attachment = get_attachment_directory().attach(
             channel_id="web", ws_id=f"pane-{session_id}", owner_id=owner, client_app=client_app,
             resource=resource, session_id=session_id)

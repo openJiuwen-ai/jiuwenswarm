@@ -98,7 +98,7 @@ describe('opening the pane', () => {
     expect(gateway.sent('session.create')).toEqual([]);
     expect(controller.state().conversations.map(item => item.sessionId)).toEqual(['s1', 's0']);
     expect(transcript(controller)).toEqual([{ kind: 'user', text: '改标题' }, { kind: 'assistant', text: '好了。' }]);
-    expect(controller.state().documents.get('s9')).toBe('市场分析.pptx');
+    expect(controller.state().documents.get('s9')?.name).toBe('市场分析.pptx');
   });
 
   it('starts a conversation on the server\'s active model when the document has none', async () => {

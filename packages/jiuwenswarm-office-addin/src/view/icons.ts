@@ -1,5 +1,7 @@
 /** The pane's line icons, drawn for it on a 24 px grid; they take the text color. */
 const ICONS = {
+  files: '<path d="M8.5 7.5V5.5a1.5 1.5 0 0 1 1.5-1.5h5l4 4v8.5a1.5 1.5 0 0 1-1.5 1.5h-2"/>'
+    + '<path d="M5 9.5A1.5 1.5 0 0 1 6.5 8h5l4 4v6.5a1.5 1.5 0 0 1-1.5 1.5H6.5A1.5 1.5 0 0 1 5 18.5z"/>',
   history: '<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 4.5v4h4"/><path d="M12 7.5V12l3 2"/>',
   compose: '<path d="M11 4.5H6.5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V13"/>'
     + '<path d="M17.3 3.7a1.9 1.9 0 0 1 2.7 2.7L12.5 14l-3.5 1 1-3.5z"/>',

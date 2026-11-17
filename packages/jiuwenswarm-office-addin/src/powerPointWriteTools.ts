@@ -137,16 +137,22 @@ export async function exportSlides(batch: Batch, timings: HostTimings, ids: stri
   return { order, exports: ids.map(id => results.get(id)!.value) };
 }
 
-/** Inserts a package and tells the journal of each slide it made; ``count`` is how many it should make. */
+/**
+ * Inserts a package and tells the journal of each slide it made, also when the insert failed part way (WPS inserts
+ * one run of slides at a time), so a rollback takes them out; ``count`` is how many it should make.
+ */
 export async function insertPackage(
   write: SlideWrite, batch: Batch, base64: string, options: PowerPoint.InsertSlideOptions, count: number,
 ): Promise<string[]> {
   const before = await deckOrder(batch);
   const started = Date.now();
   batch.presentation.insertSlidesFromBase64(base64, options);
-  const made = (await deckOrder(batch)).filter(id => !before.includes(id));
+  const after: { order: string[]; error?: unknown } = await deckOrder(batch).then(order => ({ order }),
+    async (error: unknown) => ({ order: await deckOrder(batch), error }));
+  const made = after.order.filter(id => !before.includes(id));
   write.timings.insert_ms = (write.timings.insert_ms ?? 0) + Date.now() - started;
   made.forEach(id => write.journal.created(id));
+  if ('error' in after) throw after.error;
   if (made.length !== count) throw new Error(`PowerPoint inserted ${made.length} slides for ${count}`);
   return made;
 }
