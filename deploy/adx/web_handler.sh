@@ -12,7 +12,7 @@ set -euo >/dev/null 2>&1
 #
 # 命名说明:
 #   app_web.py 内部读 FRONTEND_HOST/FRONTEND_PORT 作为 --host/--port 默认值,
-#   但 deploy 仓的 FRONTEND_PORT 已被 yuanrong frontend (8888) 占用。
+#   但 deploy 仓的 FRONTEND_PORT 已被 远端沙箱控制端口 占用。
 #   故此处用独立变量 WEB_STATIC_HOST / WEB_STATIC_PORT, 并通过 --host/--port
 #   显式传给 jiuwenswarm-web, 不依赖 app_web.py 的默认值读取, 避免撞车。
 # ============================================================
@@ -54,7 +54,7 @@ web_start_systemd() {
     local web_host="${DEPLOY_VARS["WEB_STATIC_HOST"]:-0.0.0.0}"
     local web_port="${DEPLOY_VARS["WEB_STATIC_PORT"]:-5173}"
     local web_port_target="${DEPLOY_VARS["WEB_PORT"]:-19000}"
-    local python_version="${DEPLOY_VARS["YR_PYTHON_VERSION"]}"
+    local python_version="${DEPLOY_VARS["PYTHON_VERSION"]}"
     local instance_name="${DEPLOY_VARS["JIUWENSWARM_INSTANCE_NAME"]:-}"
 
     local svc_name
@@ -104,7 +104,7 @@ Environment=PATH=${py_bindir}:${remote_path}
 Environment=LD_LIBRARY_PATH=${py_libdir}:${remote_ld_lib}"
     if [ -n "${instance_name}" ]; then
         dropin_content="${dropin_content}
-Environment=JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name}"
+Environment=JIUWENSWARM_DATA_DIR=$(gateway_data_directory)"
     fi
 
     info "Creating systemd unit ${svc_name} on ${master_host}..."
@@ -169,7 +169,7 @@ web_start_nohup() {
     local instance_env=""
     local pidfile="/tmp/jiuwenswarm-web.pid"
     if [ -n "${instance_name}" ]; then
-        instance_env="JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name} "
+        instance_env="JIUWENSWARM_DATA_DIR=$(gateway_data_directory) "
         pidfile="/tmp/jiuwenswarm-web-${instance_name}.pid"
     fi
 
