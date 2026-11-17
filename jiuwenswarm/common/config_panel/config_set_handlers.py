@@ -142,6 +142,7 @@ class ConfigPanelInternalError(RuntimeError):
 WEB_CONFIG_RELOAD_CHANNEL_ID = "web"
 SEARCH_RELOAD_ENV_KEYS = {
     "BOCHA_API_KEY", "PERPLEXITY_API_KEY", "SERPER_API_KEY", "JINA_API_KEY",
+    "FREE_SEARCH_DDG_ENABLED", "FREE_SEARCH_BING_ENABLED",
 }
 MODEL_RELOAD_ENV_KEYS = {
     "MODEL_PROVIDER",
@@ -941,10 +942,14 @@ def detect_external_cli_agent(
     cli_agent: str, cli_path: str = "", use_builtin: bool = False
 ) -> dict[str, Any]:
     normalized_agent = cli_agent.strip().lower()
+    # 每次探测都携带内置（托管安装）CLI 路径：配置本地可执行文件后探测结果与
+    # PATH 扫描都不再指向内置路径，前端路径下拉框需要它作为常驻选项，
+    # 否则内置路径会从下拉框消失且会被历史清理剪掉（#6647）。
+    builtin_path = external_cli_managed_cli_path(normalized_agent)
     if normalized_agent not in EXTERNAL_CLI_AGENT_KINDS and normalized_agent in external_cli_agent_kinds():
-        return _detect_custom_agent_cli(normalized_agent, cli_path)
-    if normalized_agent not in EXTERNAL_CLI_AGENT_KINDS:
-        return {
+        result = _detect_custom_agent_cli(normalized_agent, cli_path)
+    elif normalized_agent not in EXTERNAL_CLI_AGENT_KINDS:
+        result = {
             "cli_agent": normalized_agent,
             "status": "unavailable",
             "path": "",
@@ -952,8 +957,10 @@ def detect_external_cli_agent(
             "reference_version": "",
             "message": f"unsupported cli_agent: {cli_agent}",
         }
-
-    return _detect_cli_at(normalized_agent, cli_path, use_builtin)
+    else:
+        result = _detect_cli_at(normalized_agent, cli_path, use_builtin)
+    result["builtin_path"] = builtin_path
+    return result
 
 
 def _detect_custom_agent_cli(cli_agent: str, cli_path: str) -> dict[str, Any]:
@@ -1343,10 +1350,16 @@ def encrypt_config_params(params: dict[str, Any]) -> dict[str, Any]:
     if crypto is None:
         return dict(params)
     encrypted = dict(params)
+    from jiuwenswarm.common.credentials.resolver import is_reference
+
     for key, val in list(encrypted.items()):
         if key.endswith("_context_window_tokens"):
             continue
         if "api_key" in key.lower() or "token" in key.lower():
+            # exec: references are config declarations, not secrets — encrypting
+            # one corrupts it irreversibly; store verbatim.
+            if is_reference(str(val or "")):
+                continue
             encrypted[key] = crypto.encrypt(val)
     return encrypted
 

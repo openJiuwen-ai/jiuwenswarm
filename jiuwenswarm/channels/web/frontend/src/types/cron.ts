@@ -35,6 +35,7 @@ export interface CronJobDTO {
   delete_after_run?: boolean;
   timeout_seconds?: number;
   project_id: string;
+  work_mode?: 'work' | 'code';
   last_session_id?: string;
   /** 正在执行的会话（企业版 list 挂载，供前端订 live） */
   active_session_id?: string;
@@ -49,6 +50,7 @@ export interface CronTaskUI {
   id: string;
   name: string;
   projectId: string;
+  workMode?: 'work' | 'code';
   projectName: string | null;
   description: string;
   modelName: string | null;

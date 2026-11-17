@@ -30,8 +30,8 @@ from jiuwenswarm.server.handlers.bootstrap import (
 from jiuwenswarm.server.handlers.hub_catalog import handle_hub_equipment_catalog
 from jiuwenswarm.server.handlers.chat import handle_chat_cancel
 from jiuwenswarm.server.handlers.cron_gateway import handle_cron_gateway_callback
+from jiuwenswarm.server.handlers.a4p import handle_a4p_request
 from jiuwenswarm.server.handlers.organization import (
-    handle_a4p_request,
     handle_org_snapshot,
     handle_team_list,
 )
@@ -253,6 +253,12 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.ORG_SNAPSHOT: handle_org_snapshot,
     ReqMethod.A4P_CONFIG_GET: handle_a4p_request,
     ReqMethod.A4P_CONFIG_UPDATE: handle_a4p_request,
+    # 企业版 Gateway→Pod HTTP：授权 complete/reject 等必须进 HANDLERS，
+    # 否则 pod_rest_map 有路由也会被判成 HTTP_METHOD_NOT_HANDLED。
+    ReqMethod.A4P_AUTHORIZATION_COMPLETE: handle_a4p_request,
+    ReqMethod.A4P_AUTHORIZATION_REJECT: handle_a4p_request,
+    ReqMethod.A4P_AUTHORIZATION_REPREPARE: handle_a4p_request,
+    ReqMethod.A4P_AUTHORIZATION_PENDING: handle_a4p_request,
     ReqMethod.TEAM_MQ_PUBLISH: handle_team_mq_publish,
     ReqMethod.TEAM_HISTORY_GET: handle_team_history_get,
     ReqMethod.TEAM_MEMBERS_GET: handle_team_members_get,
