@@ -455,6 +455,8 @@ async function mountCliSection(draftValues, onDetect, sectionProps = {}) {
   const commits = [];
   const props = {
     draftValues,
+    // 自动落闸依据持久化快照决策；未显式传入时与草稿一致，保持既有用例行为
+    persistedValues: sectionProps.persistedValues ?? draftValues,
     onDetect,
     onChange: () => {},
     onCommitAgent: async (agent, choice) => { commits.push([agent, choice]); },
@@ -650,6 +652,35 @@ test('the detection hint distinguishes PATH lookup from executable validation', 
   // 自动落闸只依据持久化快照决策与提交，不持久化未保存的草稿路径（!10406）。
   assert.match(section, /probedPersistedChoice/);
   assert.match(section, /await commit\(cliAgent, \{\s+enabled: false,\s+useBuiltin: persistedValues\[useBuiltinKey\] === 'true',/);
+});
+
+test('a confirmed miss on the persisted path auto-disables the agent', async () => {
+  // 手动检测确认持久化路径缺失 → 自动落闸：提交 enabled=false 且保留
+  // 持久化的模式/路径，未安装徽标与开关状态保持一致（!10406 检视）。
+  // 检测按钮仅在 installed && enabled 的路径行上渲染，桩需先返回可用
+  // 状态让按钮挂载，点击时再返回缺失。
+  const initial = {
+    external_cli_agent_codex_enabled: 'true',
+    external_cli_agent_codex_use_builtin: 'false',
+    external_cli_agent_codex_cli_path: '/local/codex',
+  };
+  let available = true;
+  const env = await mountCliSection(initial, async (agent, cliPath) => ({
+    cli_agent: agent,
+    status: available ? 'warning' : 'missing',
+    path: available ? (cliPath || '/local/codex') : '',
+    version: available ? '0.163.0' : '',
+  }), { persistedValues: initial });
+  try {
+    await env.click('[data-testid="settings-panel-external-cli-agent-detect-btn"][data-variant="codex"]');
+    available = false;
+    await env.click('[data-testid="settings-panel-external-cli-agent-detect-btn"][data-variant="codex"]');
+    assert.deepEqual(env.commits.at(-1), ['codex', {
+      enabled: false, useBuiltin: false, cliPath: '/local/codex',
+    }]);
+  } finally {
+    env.cleanup();
+  }
 });
 
 test('uploaded custom agents are listed after Claude and Codex', async () => {
