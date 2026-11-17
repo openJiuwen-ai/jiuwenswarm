@@ -20,6 +20,10 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmD
 def isolated_search_env(monkeypatch):
     for provider in ("bocha", "perplexity", "serper", "jina"):
         monkeypatch.setenv(f"{provider.upper()}_API_KEY", "")
+    # Free-search flags are ambient in CI; leaving them set would register an
+    # extra tool and make refresh call counts order-dependent.
+    for flag in ("FREE_SEARCH_DDG_ENABLED", "FREE_SEARCH_BING_ENABLED"):
+        monkeypatch.delenv(flag, raising=False)
     monkeypatch.setattr(mcp_paid_search.card, "description", mcp_paid_search.card.description)
     monkeypatch.setattr(mcp_paid_search.card, "input_params", deepcopy(mcp_paid_search.card.input_params))
     monkeypatch.setattr(mcp_toolkits, "_SEARCH_ABILITY_MANAGERS", WeakSet())
@@ -223,6 +227,7 @@ async def test_existing_mcp_agent_refreshes_model_tools_on_enable_change_and_dis
     mcp_toolkits.refresh_mcp_paid_search_tools()
     assert manager.get("mcp_paid_search") is None
     assert not any(item.name == "mcp_paid_search" for item in await manager.list_tool_info())
+    # Other tools may register through the shared Runner during this test.
     paid_search_registrations = [
         registration
         for registration in resource_add.call_args_list

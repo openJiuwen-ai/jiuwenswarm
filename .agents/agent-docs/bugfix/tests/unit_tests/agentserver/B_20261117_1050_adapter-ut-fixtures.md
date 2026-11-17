@@ -77,6 +77,19 @@ tests/unit_tests/test_context_snapshots.py
 失败项随运行变化。上述两个文件及其生产实现均为原候选内容，本轮未修改。
 因此 113 项通过仅归属于上面六个已完成回归的文件，完整 Linux CI 尚待重跑。
 
+## 2026-11-17 合并 develop 冲突修订
+
+将 upstream/develop `2cce9d32f8847139dc2aac86c77ccc2cf8ec3ef7` 合并到修复分支。
+该版本已包含相同 UT 故障的独立修复，付费搜索注册断言出现文本冲突。
+
+合并时保留 upstream 清理免费搜索环境开关的 fixture，并保留本分支的
+`mcp_paid_search` 精确调用参数校验和额外工具注册参数场景。
+图片提示用例保留 upstream 对上下文同步的 mock，以及运行时替身显式声明 `react_agent=None`。
+
+合并候选执行 `uv sync --frozen`，随后重跑上述六个 Python 文件，结果为 113 passed。
+CLI 授权、host OAuth、扩展依赖连接、卸载守卫及装备广场五组前端回归共 33 项通过。
+本轮验证覆盖冲突处的测试行为和本分支的授权生命周期修复。
+
 ## 防错模式与资料同步
 
 运行时替身显式声明可选子系统是否存在，避免 `MagicMock` 自动属性被当作真实生命周期状态。

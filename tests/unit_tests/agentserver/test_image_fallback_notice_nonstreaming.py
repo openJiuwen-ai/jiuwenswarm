@@ -162,6 +162,13 @@ def quiet_runtime(monkeypatch):
         "openjiuwen.harness.observability.close_agent_run_span",
         lambda *args, **kwargs: None,
     )
+    # Conversation-context sync reads the real session history through the
+    # agent instance. These tests exercise the notice, not history replay, and
+    # their mock instance would otherwise trip the replay cursor check.
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.video_duplex.backend.conversation_context.sync_conversation_context",
+        AsyncMock(),
+    )
 
 
 @pytest.mark.parametrize(

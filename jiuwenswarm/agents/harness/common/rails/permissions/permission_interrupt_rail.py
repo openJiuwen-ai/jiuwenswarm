@@ -17,8 +17,15 @@ from typing import Any
 from openjiuwen.core.runner.callback import AbortError
 from openjiuwen.core.single_agent.interrupt.state import INTERRUPT_AUTO_CONFIRM_KEY
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
+from openjiuwen.harness.rails.interrupt.interrupt_base import ApproveResult
 from openjiuwen.harness.rails.security.tool_security_rail import PermissionInterruptRail
 
+from jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist import (
+    PermissionApprovalInvalidated, PermissionRememberUnavailable,
+)
+from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_stream_metadata import (
+    record_reviewer_tool_result_metadata,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
     mark_permission_interrupt_request,
     root_nonpermission_resume_from_context,
@@ -47,10 +54,14 @@ def plan_hard_rejected(ctx: Any) -> bool:
 class _ExactPersistAttempt:
     attempted: bool = False
     approved: bool = False
+    validation_succeeded: bool = False
+    remember_requested: bool = False
+    remember_unavailable: bool = False
     session_only: bool = False
     persisted: bool = False
     invalidated: bool = False
     accesses: tuple[tuple[str, str], ...] = ()
+    tool_call_id: str = ""
 
 
 _EXACT_PERSIST_ATTEMPT: ContextVar[_ExactPersistAttempt | None] = ContextVar(
@@ -307,7 +318,7 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
         ):
             return self.reject(tool_result="[PERMISSION_DENIED] native_path_snapshot_unavailable")
         payload = self.parse_confirm_payload(user_input)
-        attempt = _ExactPersistAttempt()
+        attempt = _ExactPersistAttempt(tool_call_id=self._resolve_tool_call_id(tool_call))
         token = _EXACT_PERSIST_ATTEMPT.set(attempt)
         try:
             if payload is not None and payload.approved:
@@ -327,13 +338,21 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
                 attempt.accesses = tuple(tuple(item) for item in metadata.get("permission_ask_accesses", ()))
                 attempt.approved = True
                 attempt.session_only = payload.wants_session_persist()
+                attempt.remember_requested = (
+                    attempt.session_only or payload.wants_permanent_persist()
+                )
                 try:
                     if not self._exact_persist_callback(
                         self._normalize_tool_name(tool_call.name), args, attempt.accesses,
                         attempt.session_only, True,
                     ):
-                        raise ValueError("approval_validation_failed")
-                except Exception:
+                        raise PermissionApprovalInvalidated("approval_validation_failed")
+                    attempt.validation_succeeded = True
+                except Exception as exc:
+                    self._log_exact_persist_failure(
+                        normalized_name=self._normalize_tool_name(tool_call.name), attempt=attempt,
+                        session_id=self._resolve_session_id(ctx), phase="validate", error=exc,
+                    )
                     self._remove_exact_auto_confirm(ctx, tool_call)
                     return self.reject(tool_result="[PERMISSION_DENIED] approval_invalidated")
             decision = await super().resolve_interrupt(
@@ -342,6 +361,12 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
             if attempt.invalidated:
                 self._remove_exact_auto_confirm(ctx, tool_call)
                 return self.reject(tool_result="[PERMISSION_DENIED] approval_invalidated")
+            if attempt.remember_unavailable and isinstance(decision, ApproveResult):
+                self._remove_exact_auto_confirm(ctx, tool_call)
+                record_reviewer_tool_result_metadata(
+                    ctx.extra, tool_call_id=attempt.tool_call_id,
+                    metadata={"reviewer_reason_code": "manual_allow_once_remember_unavailable"},
+                )
             if payload is not None and payload.wants_permanent_persist() and attempt.persisted:
                 self._remove_exact_auto_confirm(ctx, tool_call)
             return decision
@@ -370,9 +395,55 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
                 normalized_name, dict(tool_args), attempt.accesses, attempt.session_only,
             ))
             return attempt.persisted
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, PermissionRememberUnavailable):
+                if attempt.approved and attempt.remember_requested and attempt.validation_succeeded:
+                    attempt.remember_unavailable = True
+                    logger.info(
+                        "[PermissionInterruptRail] permission.remember.unavailable "
+                        "session_id=%s tool_call_id=%s tool=%s phase=persist "
+                        "request_scope=%s actual_scope=once persisted=false reason_code=%s",
+                        session_id, attempt.tool_call_id, normalized_name,
+                        "session" if attempt.session_only else "user", str(exc),
+                    )
+                    return False
             attempt.invalidated = True
+            self._log_exact_persist_failure(
+                normalized_name=normalized_name, attempt=attempt,
+                session_id=session_id, phase="persist", error=exc,
+            )
             return False
+
+    @staticmethod
+    def _log_exact_persist_failure(
+        *, normalized_name: str, attempt: _ExactPersistAttempt,
+        session_id: str | None, phase: str, error: Exception,
+    ) -> None:
+        known = isinstance(error, (PermissionApprovalInvalidated, PermissionRememberUnavailable))
+        request_scope = "unknown"
+        if attempt.approved:
+            request_scope = "session" if attempt.session_only else "user" if attempt.remember_requested else "once"
+        logger.warning(
+            "[PermissionInterruptRail] permission.approval.invalidated "
+            "session_id=%s tool_call_id=%s tool=%s phase=%s "
+            "request_scope=%s reason_code=%s error_type=%s",
+            session_id, attempt.tool_call_id, normalized_name, phase,
+            request_scope,
+            str(error) if known else "unexpected_error", type(error).__name__,
+            exc_info=not known,
+        )
+
+    def _should_store_auto_confirm(
+        self, *, approved: bool, auto_confirm: bool, session: Any,
+        auto_confirm_key: str, persisted: bool, permanent: bool = False,
+    ) -> bool:
+        attempt = _EXACT_PERSIST_ATTEMPT.get()
+        if self._exact_persist_callback is not None and attempt is not None and attempt.remember_unavailable:
+            return False
+        return super()._should_store_auto_confirm(
+            approved=approved, auto_confirm=auto_confirm, session=session,
+            auto_confirm_key=auto_confirm_key, persisted=persisted, permanent=permanent,
+        )
 
     def _persist_session_allow(
         self, normalized_name: str, tool_args: dict, *, session_id: str | None = None,
