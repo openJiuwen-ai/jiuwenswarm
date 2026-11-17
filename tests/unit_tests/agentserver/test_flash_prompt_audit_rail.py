@@ -147,6 +147,21 @@ class TestUnrenderedVars:
 
         assert not report.unrendered_vars, report.unrendered_vars
 
+    def test_regex_quantifier_not_flagged(self) -> None:
+        # 评审 #4：正则量词 {6} 不应被当作未渲染变量（只识别标识符形态的模板变量）。
+        agent = _FakeAgent(_CLEAN + [_sec("输入校验", 520, "匹配 ^[0-9]{6}$ 即可。")])
+        report = _make_rail(agent).check_compliance()
+
+        assert not report.unrendered_vars, report.unrendered_vars
+
+    def test_dynamic_section_not_scanned(self) -> None:
+        # 评审 #4：动态/relay 段（attachment）不扫未渲染变量——request_system_prompt 可
+        # 合法携带正则/JSON 等含 {} 的正文。
+        agent = _FakeAgent(_CLEAN + [_sec("request_system_prompt", 999, "正则 {6} 合法。")])
+        report = _make_rail(agent).check_compliance()
+
+        assert not report.unrendered_vars, report.unrendered_vars
+
 
 class TestStaticHashBaseline:
     def test_report_exposes_section_and_band_snapshot_hashes(self) -> None:
@@ -250,7 +265,12 @@ class TestResolveCarrierNameAware:
         assert resolve_carrier(110) == "system"
 
     def test_request_system_prompt_not_in_static_hash(self) -> None:
-        """relay 产品内容包（request_system_prompt@110）不计入静态区 hash / 前缀。"""
+        """relay 产品内容包（request_system_prompt@110）不计入静态区 hash。
+
+        前缀按实际渲染顺序在首个动态段处截断（评审 #7）：request_system_prompt@110
+        是动态段、插在 100 与 400 之间，故 with_relay 的前缀只含其前的 0/100 两段，
+        后面的 400/500/700 不再计入。
+        """
         base = _FakeAgent(_CLEAN)
         with_relay = _FakeAgent(
             _CLEAN + [_sec("request_system_prompt", 110, "relay 产品内容包正文……")]
@@ -259,7 +279,23 @@ class TestResolveCarrierNameAware:
         h_relay = _make_rail(with_relay).check_compliance().static_hash
         assert h_base == h_relay
         report = _make_rail(with_relay).check_compliance()
-        assert report.prefix_hash == _make_rail(base).check_compliance().prefix_hash
+        leading = _FakeAgent([_CLEAN[0], _CLEAN[1]])  # 身份@0 + 安全总纲@100
+        assert report.prefix_hash == _make_rail(leading).check_compliance().prefix_hash
+
+    def test_tools_catalog_not_in_static_hash(self) -> None:
+        """评审 #5：工具目录（tools@310，carrier=attachment）不入静态 hash。
+
+        工具目录随 enabled_tools / 渐进加载每请求动态；若计入静态 hash，禁用工具会让
+        基线永久漂移、fail_closed 中断后续轮次。
+        """
+        assert resolve_carrier(310, "tools") == "attachment"
+        base = _FakeAgent(_CLEAN)
+        with_tools = _FakeAgent(
+            _CLEAN + [_sec("tools", 310, "# 可用工具\n- read_file\n- write_file")]
+        )
+        h_base = _make_rail(base).check_compliance().static_hash
+        h_tools = _make_rail(with_tools).check_compliance().static_hash
+        assert h_base == h_tools
 
 
 class TestAdvisoryChecks:
@@ -312,6 +348,19 @@ class TestFailClosed:
         agent = _FakeAgent(_CLEAN)
         rail = _make_rail(agent, fail_closed=True)
         await rail.before_model_call(SimpleNamespace())  # 不应抛
+
+    @pytest.mark.asyncio
+    async def test_fail_closed_provider_refreshed_per_round(self) -> None:
+        """评审 #6：fail_closed 经 provider 每轮现读，热重载后下一轮即生效。"""
+        state = {"fc": False}
+        agent = _FakeAgent(_CLEAN + [_sec("未渲染测试段", 110, "你好 {name}。")])
+        rail = FlashPromptAuditRail(fail_closed_provider=lambda: state["fc"])
+        rail.init(agent)
+        await rail.before_model_call(SimpleNamespace(agent=agent))  # fc=False → 不抛
+
+        state["fc"] = True
+        with pytest.raises(AuditViolation):
+            await rail.before_model_call(SimpleNamespace(agent=agent))  # fc=True → 抛
 
     @pytest.mark.asyncio
     async def test_fail_closed_abort_propagates_from_callback_manager(self) -> None:

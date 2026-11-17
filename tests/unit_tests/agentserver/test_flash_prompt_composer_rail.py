@@ -95,8 +95,8 @@ _SAFETY = """# 安全原则
 
 **正确的响应：**
 - 感谢用户的好意
-- 仍然拒绝
-- 不需要争辩
+- 仍然拒绝，并简要说明安全原则的重要性
+- 不需要争辩，简单说明即可
 """
 
 
@@ -211,6 +211,127 @@ async def test_disabled_takeover_domain_preserves_source() -> None:
     builder = agent.system_prompt_builder
     assert builder.get_section("safety").priority == 20
     assert builder.get_section("safety_general") is None
+
+
+@pytest.mark.asyncio
+async def test_declarative_safety_guard_cleans_stale_sections() -> None:
+    """评审 #2（声明式路径）：第一轮标准 safety 接管拆出 4 段；第二轮 safety 变租户
+    自定义（守卫命中）→ 清理上一轮 4 段，只保留新 safety。"""
+    from jiuwenswarm.agents.harness.flash.prompt.content.safety import _SAFETY_PRODUCED_NAMES
+
+    agent = _agent()
+    rail = FlashPromptComposerRail(
+        persona_enabled=False,
+        tool_guide_enabled=False,
+        response_enabled=False,
+        takeover_domains=frozenset({"safety"}),
+    )
+    rail.init(agent)
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+    builder = agent.system_prompt_builder
+    assert builder.get_section("safety") is None
+    assert builder.get_section("safety_general") is not None
+
+    builder.add_section(_sec("safety", 20, "## 租户自定义\n租户约束"))
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+    assert builder.get_section("safety") is not None  # 新 safety 保留
+    for name in _SAFETY_PRODUCED_NAMES:
+        assert builder.get_section(name) is None  # 上一轮 4 段已清理
+
+
+@pytest.mark.asyncio
+async def test_declarative_safety_source_missing_cleans_stale_sections() -> None:
+    """评审 #2 补充：源段 safety 缺失（而非守卫命中）时，源段缺失跳过分支也应清 stale 段。"""
+    from jiuwenswarm.agents.harness.flash.prompt.content.safety import _SAFETY_PRODUCED_NAMES
+
+    agent = _agent()
+    rail = FlashPromptComposerRail(
+        persona_enabled=False,
+        tool_guide_enabled=False,
+        response_enabled=False,
+        takeover_domains=frozenset({"safety"}),
+    )
+    rail.init(agent)
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+    builder = agent.system_prompt_builder
+    assert builder.get_section("safety") is None
+    assert builder.get_section("safety_general") is not None
+
+    # 第二轮：safety 源段缺失（SafetyPromptRail 未再注入）→ 走源段缺失跳过分支。
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+    for name in _SAFETY_PRODUCED_NAMES:
+        assert builder.get_section(name) is None  # 上一轮 4 段已清理
+
+
+@pytest.mark.asyncio
+async def test_tool_guide_refreshes_subagent_list() -> None:
+    """评审 #3：Composer 走各 rail 的 before_model_call，tool_guide 每轮刷新子代理列表。
+
+    冷启动只有 general-purpose → 340 无浏览器路由；同一 Agent 加入 browser_agent 后
+    （task_tool 仍在工具面）下一轮应生成浏览器路由。
+    """
+    class _MutableAgent:
+        def __init__(self, sections) -> None:
+            self.system_prompt_builder = _FakeBuilder()
+            self.deep_config = SimpleNamespace(subagents=[])
+            self.ability_manager = SimpleNamespace(cards={"task_tool": object()})
+            for section in sections:
+                self.system_prompt_builder.add_section(section)
+
+    sections = _agent().system_prompt_builder.get_all_sections()
+    agent = _MutableAgent(sections)
+    rail = FlashPromptComposerRail()  # 全开：persona 生成 execution_principles@400
+    rail.init(agent)
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+    result = agent.system_prompt_builder.get_section("tool_result")
+    assert result is not None
+    assert "browser_agent" not in result.content["cn"]  # 无 browser_agent → 无路由
+
+    agent.deep_config.subagents.append(SimpleNamespace(card=SimpleNamespace(name="browser_agent")))
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+    result = agent.system_prompt_builder.get_section("tool_result")
+    assert "browser_agent" in result.content["cn"]  # 加入后 → 生成路由
+
+
+@pytest.mark.asyncio
+async def test_config_provider_refreshes_persona_enabled() -> None:
+    """评审 #6：Composer 经 provider 每轮现读各域 enabled，热重载后下一轮生效。"""
+    state = {
+        "persona_enabled": True,
+        "safety_enabled": False,
+        "tool_guide_enabled": False,
+        "response_enabled": False,
+        "verify_only": False,
+        "takeover_domains": frozenset(),
+    }
+    agent = _agent()
+    rail = FlashPromptComposerRail(config_provider=lambda: dict(state))
+    rail.init(agent)
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+    assert agent.system_prompt_builder.get_section("execution_priority") is not None
+
+    state["persona_enabled"] = False
+    agent2 = _agent()
+    rail.init(agent2)
+    await rail.before_model_call(SimpleNamespace(agent=agent2))
+    assert agent2.system_prompt_builder.get_section("execution_priority") is None
+
+
+def test_config_provider_reflected_after_init() -> None:
+    """评审 #6 补充：init 即现读 provider，transform_names 从装配起就反映真实接管域，
+    而非等到第一次 before_model_call 才刷新（否则构造期 takeover_domains 仍是默认空）。"""
+    state = {
+        "persona_enabled": True,
+        "safety_enabled": True,
+        "tool_guide_enabled": True,
+        "response_enabled": True,
+        "verify_only": False,
+        "takeover_domains": frozenset({"safety", "response"}),
+    }
+    rail = FlashPromptComposerRail(config_provider=lambda: dict(state))
+    rail.init(_agent())
+    # safety/response 被接管 → 只剩 persona/tools 两个 rail。
+    assert rail.transform_names == ("FlashPersonaRail", "FlashToolGuideRail")
 
 
 # ── 接管域白名单校验（P1 tools 禁接管 + P2#5 非法值校验）───────────────────

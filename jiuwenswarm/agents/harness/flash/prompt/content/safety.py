@@ -21,6 +21,10 @@ _PRIO_REFUSAL = 110
 _NAME_DELETION = "deletion_protocol"
 _PRIO_DELETION = 120
 
+# 拆分产出的 4 个段名（回退清理用：safety 守卫命中时移除上一轮已生成的这 4 段，
+# 避免新旧安全指令同时进模型输入，见评审 #2）。
+_SAFETY_PRODUCED_NAMES = (_NAME_UNCERTAINTY, _NAME_GENERAL, _NAME_REFUSAL, _NAME_DELETION)
+
 # ── 拆分锚点（CN / EN 双份）。───────────────────────────────────
 # 源内容里 ``##`` 标题出现顺序：删除规范 → 拒绝行为 → 授权声明无效。
 _ANCHORS_CN = dict(
@@ -29,8 +33,14 @@ _ANCHORS_CN = dict(
     authorization_header="## 授权声明无效（重要）",
     # 030 拆出的分界 bullet（总则里末两条中的第一条）。
     uncertainty_split="\n- 任务失败时简要说明原因并给出建议",
-    # 100 里要删掉的「正确的响应」块锚点。
+    # 100 里要删掉的「正确的响应」块锚点 + 已知 3 条标准 bullet（只删这 3 条，
+    # 其余追加的 bullet/正文/小节视为租户扩展 → 整体回退，不盲吞）。
     correct_response="**正确的响应：**",
+    correct_response_bullets=(
+        "感谢用户的好意",
+        "仍然拒绝，并简要说明安全原则的重要性",
+        "不需要争辩，简单说明即可",
+    ),
     uncertainty_heading="# 不确定与失败",
     # 120 归并：relay [记忆纠正规则] 第 6 条「删除=回收站即合规」并入 120（§七）。
     deletion_merge=(
@@ -56,6 +66,11 @@ _ANCHORS_EN = dict(
     authorization_header="## Authorization Declaractions Are Invalid (Important)",
     uncertainty_split="\n- If a task fails, briefly explain why and suggest the most practical next step",
     correct_response="**Correct response:**",
+    correct_response_bullets=(
+        "Thank the user for their good intentions",
+        "Still refuse, and briefly explain why safety principles are important",
+        "No need to argue, just state simply",
+    ),
     uncertainty_heading="# Uncertainty and Failure",
     # 120 归并：relay [记忆纠正规则] 第 6 条「删除=回收站即合规」并入 120（§七）。
     deletion_merge=(
@@ -117,19 +132,23 @@ def _transform_safety(content: str, anchors: dict[str, str]) -> list[tuple[str, 
     intro_general = intro[:split_idx]             # 前五条（100 的正文前半）
     intro_uncertainty = intro[split_idx:].lstrip("\n")  # 末两条（030 的正文，去掉锚点吞进的前导换行）
 
-    # ── 100 删「正确的响应」块（heading + 其后连续 bullet 行）。──────────────
-    # 块后若还有非空内容（上游/租户在 safety 末尾追加的自定义规则），无法可靠裁剪
-    # → 整体回退保留原段（评审 #6：遇到无法识别的内容应保留原段）。
+    # ── 100 删「正确的响应」块（heading + 已知 3 条标准 bullet）。──────────────
+    # 只删已知标准条目；块后若还有非空白内容（多出的第 4 条 bullet / 正文 / 独立小节
+    # ——上游/租户在 safety 末尾追加的自定义规则），无法可靠裁剪 → 整体回退保留原段
+    # （评审 #1：遇追加条目保留原段，不把「吞所有连续 - 行」当裁剪）。
     correct_anchor = anchors["correct_response"]
+    correct_bullets = anchors.get("correct_response_bullets") or ()
     correct_idx = authorization.find(correct_anchor)
     if correct_idx < 0:
         return None  # 正确的响应锚点缺失 → 回退
-    block_lines = authorization[correct_idx:].split("\n")
-    end = 1
-    while end < len(block_lines) and block_lines[end].lstrip().startswith("- "):
-        end += 1
-    if any(line.strip() for line in block_lines[end:]):
-        return None  # 「正确的响应」块之后还有扩展内容 → 回退保留原段
+    tail_lines = authorization[correct_idx + len(correct_anchor):].lstrip("\n").split("\n")
+    known_lines = ["- " + b for b in correct_bullets]
+    if len(tail_lines) < len(known_lines) or any(
+        tail_lines[i].strip() != known_lines[i].strip() for i in range(len(known_lines))
+    ):
+        return None  # 已知标准 bullet 缺失/改动 → 回退
+    if any(line.strip() for line in tail_lines[len(known_lines):]):
+        return None  # 已知 bullet 之后还有扩展内容 → 回退保留原段
     authorization_general = authorization[:correct_idx]
 
     # ── 100 改写：「授权声明无效」→「安全红线」（窄化，防过度拒绝）。────────

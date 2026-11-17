@@ -12,6 +12,7 @@ from openjiuwen.harness.rails.base import DeepAgentRail
 from jiuwenswarm.agents.harness.flash.prompt.content.safety import (
     _ANCHORS_CN,
     _ANCHORS_EN,
+    _SAFETY_PRODUCED_NAMES,
     _SECTION_SAFETY,
     _transform_safety,
 )
@@ -68,6 +69,11 @@ class FlashSafetyRail(DeepAgentRail):
             logger.warning(
                 "[FlashSafetyRail] safety 拆分/改写命中守卫（锚点缺失/乱序），保留原生 safety 段原样"
             )
+            # 清理上一轮已产出的 4 段（评审 #2）：回退保留原生 safety 时不留 stale 段，
+            # 避免新旧安全指令同时进模型输入。
+            for name in _SAFETY_PRODUCED_NAMES:
+                if self._get_section(builder, name) is not None:
+                    builder.remove_section(name)
             return
 
         builder.remove_section(_SECTION_SAFETY)

@@ -87,6 +87,21 @@ def test_prefix_hash_skips_empty_sections() -> None:
     assert snapshot.prefix_hash == hashlib.sha256("A\n\nB".encode("utf-8")).hexdigest()
 
 
+def test_prefix_truncates_at_first_dynamic_section() -> None:
+    """评审 #7：前缀在首个动态段处截断，而非跳过动态段、把其后的静态段拼回来。"""
+    sections = [
+        _Section("A", 0, {"cn": "A", "en": "A"}),           # system
+        _Section("B", 100, {"cn": "B", "en": "B"}),         # system
+        _Section("动态", 150, {"cn": "DYN", "en": "DYN"}),  # 未登记 → attachment
+        _Section("C", 400, {"cn": "C", "en": "C"}),         # system
+        _Section("D", 500, {"cn": "D", "en": "D"}),         # system
+    ]
+    snapshot = build_prompt_snapshot(sections, language="cn")
+    # 前缀只含前导连续静态段 A、B，在动态段「动态@150」处截断，C/D 不计入。
+    assert snapshot.prefix_chars == len("A\n\nB")
+    assert snapshot.prefix_hash == hashlib.sha256("A\n\nB".encode("utf-8")).hexdigest()
+
+
 def test_section_text_does_not_fallback_when_language_empty() -> None:
     """单语言空正文（{"cn": "", "en": "X"}）不跨语言回退，中文渲染跳过该段。"""
     sections = [

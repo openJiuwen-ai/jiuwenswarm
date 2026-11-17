@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.base import DeepAgentRail
@@ -89,36 +89,65 @@ class FlashPromptComposerRail(DeepAgentRail):
         response_enabled: bool = True,
         verify_only: bool = False,
         takeover_domains: frozenset[str] = frozenset(),
+        config_provider: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         super().__init__()
         self._system_prompt_builder: Any = None
         self._domain_rails = (
-            ("persona", persona_enabled, FlashPersonaRail()),
-            ("safety", safety_enabled, FlashSafetyRail()),
-            ("tools", tool_guide_enabled, FlashToolGuideRail()),
-            ("response", response_enabled, FlashResponseRail()),
+            ("persona", FlashPersonaRail()),
+            ("safety", FlashSafetyRail()),
+            ("tools", FlashToolGuideRail()),
+            ("response", FlashResponseRail()),
         )
+        self._enabled = {
+            "persona": persona_enabled,
+            "safety": safety_enabled,
+            "tools": tool_guide_enabled,
+            "response": response_enabled,
+        }
         self._verify_only = verify_only
         self._takeover_domains = coerce_takeover_domains(takeover_domains)
+        # 每轮从 provider 现读配置（热重载后下一轮即生效，评审 #6）；无 provider 则用
+        # 构造期值（离线/单测路径）。
+        self._config_provider = config_provider
 
     @property
     def transform_names(self) -> tuple[str, ...]:
         """Return rails that will actually run (enabled and not declaratively taken over)."""
         return tuple(
             rail.__class__.__name__
-            for key, enabled, rail in self._domain_rails
-            if enabled and key not in self._takeover_domains
+            for key, rail in self._domain_rails
+            if self._enabled.get(key, True) and key not in self._takeover_domains
         )
 
     def init(self, agent: Any) -> None:
+        # init 时也现读一次配置（评审 #6）：让 transform_names 等诊断值从装配起就对，
+        # 而非等到第一次 before_model_call 才刷新（否则构造期 takeover_domains 仍是默认空）。
+        self._refresh_config()
         self._system_prompt_builder = getattr(agent, "system_prompt_builder", None)
-        for _key, _enabled, rail in self._domain_rails:
+        for _key, rail in self._domain_rails:
             rail.init(agent)
 
     def uninit(self, agent: Any) -> None:
-        for _key, _enabled, rail in self._domain_rails:
+        for _key, rail in self._domain_rails:
             rail.uninit(agent)
         self._system_prompt_builder = None
+
+    def _refresh_config(self) -> None:
+        """从 provider 现读各域 enabled / verify_only / takeover_domains（热重载同步）。"""
+        if self._config_provider is None:
+            return
+        cfg = self._config_provider() or {}
+        self._enabled = {
+            "persona": bool(cfg.get("persona_enabled", True)),
+            "safety": bool(cfg.get("safety_enabled", True)),
+            "tools": bool(cfg.get("tool_guide_enabled", True)),
+            "response": bool(cfg.get("response_enabled", True)),
+        }
+        self._verify_only = bool(cfg.get("verify_only", False))
+        self._takeover_domains = coerce_takeover_domains(
+            cfg.get("takeover_domains", frozenset())
+        )
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
         builder = (
@@ -128,11 +157,15 @@ class FlashPromptComposerRail(DeepAgentRail):
         if builder is None:
             return
         self._system_prompt_builder = builder
+        self._refresh_config()
 
-        for key, enabled, rail in self._domain_rails:
-            if not enabled or key in self._takeover_domains:
+        for key, rail in self._domain_rails:
+            if not self._enabled.get(key, True) or key in self._takeover_domains:
                 continue
-            rail.apply(builder)
+            # 走各 rail 自己的 before_model_call（而非 apply），让 tool_guide 的
+            # 子代理/工具面逐轮刷新也生效（评审 #3）；persona/safety/response 的
+            # before_model_call 只是取 builder + apply，行为等价。
+            await rail.before_model_call(ctx)
 
         self._apply_declarative(builder)
 
@@ -158,6 +191,16 @@ class FlashPromptComposerRail(DeepAgentRail):
             safety_content=safety_content,
         )
 
+    def _cleanup_produced(self, builder: Any, block: Any) -> None:
+        """清理该 block 上一轮已产出的 stale 段（评审 #2）。
+
+        guard 命中（源漂移）或源段缺失（supersedes 全缺）都会「不接管、保留源段」，
+        此时上一轮成功生成的 produces 段若不清，会和新旧安全指令同时进模型输入。
+        """
+        for name in block.produces:
+            if self._get_section(builder, name) is not None:
+                builder.remove_section(name)
+
     def _apply_declarative(self, builder: Any) -> None:
         """Step 4 接管：按声明式注册表 replace 被接管域的 Deep 旧段为 Flash 新段。
 
@@ -168,8 +211,8 @@ class FlashPromptComposerRail(DeepAgentRail):
         """
         enabled_takeover = {
             key
-            for key, enabled, _rail in self._domain_rails
-            if enabled and key in self._takeover_domains
+            for key, _rail in self._domain_rails
+            if self._enabled.get(key, True) and key in self._takeover_domains
         }
         if not enabled_takeover:
             return
@@ -185,12 +228,14 @@ class FlashPromptComposerRail(DeepAgentRail):
             try:
                 sections = block.render(ctx)
             except AssertionError as exc:
-                # 上游 Deep 源漂移触发 guard（与 rail 路径同构）：保留源段原样。
+                # 上游 Deep 源漂移触发 guard（与 rail 路径同构）：保留源段原样，并清理
+                # 上一轮已产出的 stale 段（评审 #2）——否则回退后新旧安全指令同时进模型。
                 logger.warning(
                     "[FlashPromptComposerRail] declarative render guard hit for %s: %s",
                     block.key,
                     exc,
                 )
+                self._cleanup_produced(builder, block)
                 continue
             # 与 rail 路径对齐：源段（supersedes）全部缺失时整域跳过，不凭空新增段。
             # rail 路径以「builder 上是否存在源段」为准（response/safety 源段缺失即跳过），
@@ -205,6 +250,7 @@ class FlashPromptComposerRail(DeepAgentRail):
                     block.key,
                     list(block.supersedes),
                 )
+                self._cleanup_produced(builder, block)
                 continue
             for name in block.supersedes:
                 builder.remove_section(name)

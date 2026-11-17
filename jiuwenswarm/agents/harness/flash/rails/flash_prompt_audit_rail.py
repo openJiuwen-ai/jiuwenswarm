@@ -6,7 +6,7 @@ import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from openjiuwen.core.runner.callback.errors import AbortError
 from openjiuwen.harness.rails.base import DeepAgentRail
@@ -45,9 +45,10 @@ _KNOWN_SAFE_PLACEHOLDERS = frozenset({
     "target_channels",
 })
 
-# 未渲染变量：``{...}`` 且花括号内不含已知安全的占位符名，也排除 JSON 对象字面量
-# （含 ``:`` 或嵌套 ``{`` 的形如 ``{"channel": ...}``）。
-_UNRENDERED_VAR_RE = re.compile(r"\{([^{}:]+)\}")
+# 未渲染变量：``{...}`` 且花括号内是「标识符形态」的模板变量。收紧为标识符语法
+# （首字符字母/下划线）而非任意非 ``{}:`` 字符——否则 ``^[0-9]{6}$`` 这类正则量词
+# 会被误判为未渲染变量（评审 #4）。JSON 对象字面量（含 ``:`` 或嵌套 ``{``）本就不命中。
+_UNRENDERED_VAR_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 def _is_static_section(section: Any) -> bool:
@@ -130,12 +131,19 @@ class FlashPromptAuditRail(DeepAgentRail):
     priority = 0
     inherit_to_subagents = False
 
-    def __init__(self, fail_closed: bool = False) -> None:
+    def __init__(
+        self,
+        fail_closed: bool = False,
+        fail_closed_provider: Callable[[], bool] | None = None,
+    ) -> None:
         super().__init__()
         self.system_prompt_builder = None
         self._agent: Any = None
         self._ability_manager: Any = None
         self.fail_closed = fail_closed
+        # 每轮从 provider 现读 fail_closed（热重载后下一轮即生效，评审 #6）；无 provider
+        # 则用构造期值（离线/单测路径）。
+        self._fail_closed_provider = fail_closed_provider
         # 会话内静态区 hash 基线：首次 before_model_call 记为 seed，后续比对。
         self._static_hash_seed: str | None = None
 
@@ -151,6 +159,9 @@ class FlashPromptAuditRail(DeepAgentRail):
         self._ability_manager = None
 
     async def before_model_call(self, ctx) -> None:
+        # 热重载后每轮从 provider 现读 fail_closed（评审 #6），再取活 builder 审计。
+        if self._fail_closed_provider is not None:
+            self.fail_closed = self._fail_closed_provider()
         # 与其他 flash rail 口径一致：每轮从 ctx 取活 builder（热重载会重建
         # system_prompt_builder），而不是只用 init 时抓到的旧实例——否则审计对象
         # 停留在旧 builder，新 prompt 从未被审计、旧 builder 变化时 static_hash_drift
@@ -259,7 +270,12 @@ class FlashPromptAuditRail(DeepAgentRail):
 
     @staticmethod
     def _check_unrendered_vars(sections: list[Any], report: AuditReport) -> None:
+        # 只扫静态区（carrier=system）：未渲染变量是 flash 静态模板渲染的产物；
+        # 动态/relay 段（request_system_prompt 等 attachment）可能合法携带正则/JSON
+        # 等含 ``{}`` 的正文，不该扫（评审 #4）。
         for s in sections:
+            if not _is_static_section(s):
+                continue
             name = str(s.name)
             content = getattr(s, "content", None)
             if not isinstance(content, dict):

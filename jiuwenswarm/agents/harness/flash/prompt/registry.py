@@ -62,6 +62,7 @@ from jiuwenswarm.agents.harness.flash.prompt.content.response import (
 from jiuwenswarm.agents.harness.flash.prompt.content.safety import (
     _ANCHORS_CN,
     _ANCHORS_EN,
+    _SAFETY_PRODUCED_NAMES,
     _transform_safety,
 )
 from jiuwenswarm.agents.harness.flash.prompt.content.subagent import FLASH_TASK_SECTION
@@ -131,6 +132,9 @@ class FlashPromptBlock:
     owner: Literal["deep", "flash"] = "flash"
     carrier: Literal["system", "durable", "attachment"] = "system"
     supersedes: tuple[str, ...] = ()
+    # 该 block 正常会产出的段名；render 守卫命中（回退保留源段）时按此清理上一轮
+    # 已生成、但本轮不再产出的 stale 段，避免新旧指令同时进模型输入（评审 #2）。
+    produces: tuple[str, ...] = ()
     enabled_when: Callable[[PromptRenderContext], bool] | None = None
     render: Callable[[PromptRenderContext], tuple[PromptSection, ...]] | None = None
 
@@ -256,6 +260,7 @@ FLASH_PROMPT_REGISTRY: tuple[FlashPromptBlock, ...] = (
     FlashPromptBlock(
         key="safety",
         supersedes=("safety",),
+        produces=_SAFETY_PRODUCED_NAMES,
         render=_render_safety,
     ),
     FlashPromptBlock(

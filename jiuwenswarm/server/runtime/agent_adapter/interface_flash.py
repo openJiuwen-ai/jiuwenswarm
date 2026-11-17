@@ -948,18 +948,24 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         return bool(config.get("enabled", True))
 
     def _build_flash_prompt_audit_rail(self) -> Any | None:
-        """最后审计器：运行期只告警，fail_closed 由 flash.audit.fail_closed 控制（默认关）。"""
+        """最后审计器：运行期只告警，fail_closed 由 flash.audit.fail_closed 控制（默认关）。
+
+        fail_closed 经 provider 每轮现读，热重载后下一轮即生效（评审 #6）。
+        """
         try:
-            audit_config = self._flash_config("audit", {})
-            fail_closed = bool(audit_config.get("fail_closed", False)) if isinstance(audit_config, dict) else False
             from jiuwenswarm.agents.harness.flash.rails.flash_prompt_audit_rail import (
                 FlashPromptAuditRail,
             )
 
-            return FlashPromptAuditRail(fail_closed=fail_closed)
+            return FlashPromptAuditRail(fail_closed_provider=self._read_audit_fail_closed)
         except Exception as exc:
             logger.warning("[FlashAdapter] FlashPromptAuditRail create failed: %s", exc, exc_info=True)
             return None
+
+    def _read_audit_fail_closed(self) -> bool:
+        """每轮现读 fail_closed（热重载同步，评审 #6）。"""
+        audit_config = self._flash_config("audit", {})
+        return bool(audit_config.get("fail_closed", False)) if isinstance(audit_config, dict) else False
 
     def _build_flash_prompt_composer_rail(self) -> Any | None:
         """Build the single static text-composition entry for Flash.
@@ -968,37 +974,16 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         缺省接管 safety/response（已证明与 rail 路径字节等价），显式空列表可全部关闭。
         ``flash.composer.verify_only`` 开启漂移校验（仅告警不裁决）。
         双读：``flash.composer.*`` 优先，``react.composer.*`` 兜底（见 ``_flash_config``）。
+
+        各域 enabled / takeover_domains / verify_only 经 provider 每轮现读，热重载后
+        下一轮即生效（评审 #6）。
         """
         try:
-            persona_config = self._flash_config("persona", {})
-            safety_config = self._flash_config("safety", {})
-            tool_guide_config = self._flash_config("tool_guide", {})
-            response_config = self._flash_config("response", {})
-            composer_config = self._flash_config("composer", {})
-            composer_config = composer_config if isinstance(composer_config, dict) else {}
             from jiuwenswarm.agents.harness.flash.prompt.composer import (
                 FlashPromptComposerRail,
-                TAKEOVERABLE_DOMAINS,
-                coerce_takeover_domains,
             )
 
-            raw_takeover = composer_config.get("takeover_domains")
-            if raw_takeover is None:
-                takeover_domains = frozenset(TAKEOVERABLE_DOMAINS)
-            else:
-                takeover_domains = coerce_takeover_domains(
-                    frozenset(resolve_string_or_list_config(raw_takeover))
-                )
-            verify_only = bool(composer_config.get("verify_only", False))
-
-            return FlashPromptComposerRail(
-                persona_enabled=self._rail_enabled(persona_config),
-                safety_enabled=self._rail_enabled(safety_config),
-                tool_guide_enabled=self._rail_enabled(tool_guide_config),
-                response_enabled=self._rail_enabled(response_config),
-                verify_only=verify_only,
-                takeover_domains=takeover_domains,
-            )
+            return FlashPromptComposerRail(config_provider=self._read_composer_config)
         except Exception as exc:
             # Composer 是 Flash 静态提示词的唯一入口：构建失败会让 persona/safety/
             # tools/response 四域重组整段静默丢失，影响面远大于单个瞬态 rail，故提级 error。
@@ -1008,6 +993,35 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                 exc_info=True,
             )
             return None
+
+    def _read_composer_config(self) -> dict[str, Any]:
+        """每轮现读 composer 各域配置（热重载同步，评审 #6）。"""
+        persona = self._flash_config("persona", {})
+        safety = self._flash_config("safety", {})
+        tool_guide = self._flash_config("tool_guide", {})
+        response = self._flash_config("response", {})
+        composer_config = self._flash_config("composer", {})
+        composer_config = composer_config if isinstance(composer_config, dict) else {}
+        from jiuwenswarm.agents.harness.flash.prompt.composer import (
+            TAKEOVERABLE_DOMAINS,
+            coerce_takeover_domains,
+        )
+
+        raw_takeover = composer_config.get("takeover_domains")
+        if raw_takeover is None:
+            takeover_domains = frozenset(TAKEOVERABLE_DOMAINS)
+        else:
+            takeover_domains = coerce_takeover_domains(
+                frozenset(resolve_string_or_list_config(raw_takeover))
+            )
+        return {
+            "persona_enabled": self._rail_enabled(persona),
+            "safety_enabled": self._rail_enabled(safety),
+            "tool_guide_enabled": self._rail_enabled(tool_guide),
+            "response_enabled": self._rail_enabled(response),
+            "verify_only": bool(composer_config.get("verify_only", False)),
+            "takeover_domains": takeover_domains,
+        }
 
     def _build_flash_section_order_rail(self) -> Any | None:
         """段序收口：旧段迁号/剥除 + 动态段 1000 带（配置 flash.section_order，默认开）。"""

@@ -148,10 +148,12 @@ FLASH_SECTION_REGISTRY: dict[int, SectionSpec] = {
     300: SectionSpec("工具选择总则", "system", "merged",
                      current=[("bash使用原则段", 0, "ContextAssembleRail（可用工具/去重）")],
                      plan="FlashToolGuideRail 拆出；删「一个问题只用一个工具」绝对禁"),
-    310: SectionSpec("可用工具", "system", "active",
+    310: SectionSpec("可用工具", "attachment", "active",
                      current=[("tools", 30, "ContextAssembleRail build_tools_section")],
                      plan=("SDK tools 段（# 可用工具 目录 + ## task_tool 使用原则）迁号 310；"
-                           "300/330 已拆出，工具发现规则（tools_search/invoke_tool）归 350 渐进式工具导航")),
+                           "300/330 已拆出，工具发现规则（tools_search/invoke_tool）归 350 渐进式工具导航；"
+                           "carrier=attachment：工具目录随 enabled_tools/渐进加载每请求动态，"
+                           "不入静态 hash（评审 #5）")),
     320: SectionSpec("call_goal 约定", "system", "adjudicate",
                      source="stream_event_rail.py:1195",
                      current=[("tool_call_goal", 40, "StreamEventRail")],
