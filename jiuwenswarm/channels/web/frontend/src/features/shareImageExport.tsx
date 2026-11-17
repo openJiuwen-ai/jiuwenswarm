@@ -1,9 +1,5 @@
-<<<<<<< RELEASE
 import { gatewayFetch } from '../services/gatewayFetch';
-||||||| BEFORE_PR_9610
-=======
 import logoUrl from '/logo.svg';
->>>>>>> DEVELOP
 import { forwardRef, useEffect, useMemo, useRef, useState } from 'react';
 import { applyStyle } from 'html-to-image/es/apply-style';
 import { cloneNode as cloneHtmlNode } from 'html-to-image/es/clone-node';
@@ -846,7 +842,7 @@ export const ShareImageDocument = forwardRef<HTMLDivElement, ShareImageDocumentP
       <header className="share-image-header">
         <div className="share-image-masthead">
           <div className="share-image-brand">
-            <img src="/logo.svg" alt="" className="share-image-brand__logo" />
+            <img src={logoUrl} alt="" className="share-image-brand__logo" />
             <div className="share-image-brand__name">WorkSwarm</div>
           </div>
         </div>

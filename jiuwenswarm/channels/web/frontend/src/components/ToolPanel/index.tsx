@@ -561,19 +561,8 @@ export function ToolPanel({
     const testId = isTeam ? 'tool-panel-expanded-team' : 'tool-panel-expanded-single-agent';
 
     return (
-<<<<<<< RELEASE
-      <div data-testid={testId} className="tool-panel-expanded h-full overflow-hidden flex-1 flex flex-col min-w-[512px]">
+      <div data-testid={testId} className="tool-panel-expanded h-full overflow-hidden flex-1 flex flex-col min-w-[320px]">
         <div className="tool-panel-expanded-content h-full flex flex-col overflow-hidden">
-||||||| BEFORE_PR_9610
-      <div data-testid={testId} className="bg-panel h-full overflow-hidden flex-1 flex flex-col min-w-[512px]">
-        <div className="h-full bg-panel flex flex-col overflow-hidden">
-=======
-      <div
-        data-testid={testId}
-        className="bg-panel h-full overflow-hidden flex flex-1 flex-col min-w-[320px]"
-      >
-        <div className="h-full bg-panel flex flex-col overflow-hidden">
->>>>>>> DEVELOP
           <ExpandedPanel
             activeTab={selectedPluginPanel?.key ?? nativePanelTab}
             onTabChange={handlePanelTabChange}
@@ -776,18 +765,12 @@ export function ToolPanel({
                 const remaining = teamMembersExpanded ? 0 : group.items.length - visible.length;
                 return (
                   <div key={group.runId} className="border-b border-border last:border-b-0">
-<<<<<<< RELEASE
                     <RunGroupHeader
                       name={group.name}
                       shortId={group.shortId}
                       status={group.status}
                       runId={group.runId}
                     />
-||||||| BEFORE_PR_9610
-                    <RunGroupHeader name={group.name} shortId={group.shortId} status={group.status} runId={group.runId} />
-=======
-                    <RunGroupHeader name={group.name} shortId={group.shortId} status={group.status} runId={group.runId} executor={group.executor} />
->>>>>>> DEVELOP
                     <CompactTaskList
                       tasks={visible}
                       members={teamMembers}

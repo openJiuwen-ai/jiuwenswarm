@@ -113,16 +113,12 @@ export interface Message {
   timestamp: string;
   /** True until the server confirms this optimistic input's timestamp. */
   isTimestampPending?: boolean;
-<<<<<<< RELEASE
   /** Local input request identity; null while preparing, absent on restored history. */
   inputRequestId?: string | null;
   /** Terminal input outcome retained after transient request notices disappear. */
   inputOutcome?: 'failed' | 'stopped';
-||||||| BEFORE_PR_9610
-=======
   /** True until runtime.accepted confirms the server received this optimistic input. */
   isAcceptedPending?: boolean;
->>>>>>> DEVELOP
   /** A displayed supplement belongs to the existing execution, not a new user turn. */
   supplementalInput?: {
     executionId: string;

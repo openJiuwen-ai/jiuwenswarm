@@ -629,16 +629,12 @@
       "hideValue": "隐藏明文"
     },
     "general": {
-<<<<<<< RELEASE
       "display": "显示设置",
-||||||| BEFORE_PR_9610
-=======
       "topicModelTitle": "配置话题推荐模型",
       "topicModelDisconnected": "连接已断开，请恢复连接后重试。",
       "topicModelSave": "保存并启用",
       "topicModelProtocol": "话题推荐仅支持 OpenAI 兼容协议的模型。",
       "topicModelDelete": "将删除话题推荐模型配置并关闭话题推荐。",
->>>>>>> DEVELOP
       "preferences": "界面与连接",
       "language": "Language",
       "languageDescription": "设置应用程序界面的界面显示语言。",
@@ -5489,7 +5485,6 @@
     "reject": "拒绝",
     "approve": "授权",
     "waiting": "处理中..."
-<<<<<<< RELEASE
   },
   "webuiFileImport": {
     "uploading": "正在上传 {{percent}}%",
@@ -5555,8 +5550,6 @@
       "unavailable": "当前会话的文件预览暂不可用",
       "error": "文件读取失败，请重新选择文件"
     }
-||||||| BEFORE_PR_9610
-=======
   },
   "mcpApp": {
     "loading": "正在加载应用…",
@@ -6541,6 +6534,5 @@
       "blocked": "等待中",
       "stopped": "已停止"
     }
->>>>>>> DEVELOP
   }
 }

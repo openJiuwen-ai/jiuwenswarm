@@ -208,22 +208,10 @@ export function SessionSidebar({
         styles={pluginNavigationStyles}
       />
       <div className="icon-rail-spacer" />
-<<<<<<< RELEASE
       <WebUIHost slotId="application.sidebar.footer" sessionId=""
         mountOptions={footerMountOptions}
         className="w-full shrink-0 items-center pb-3" instanceClassName="flex justify-center"
       />
-||||||| BEFORE_PR_9610
-=======
-      {onToggleJiuwenMate ? (
-        <JiuwenMateModeSwitch
-          active={false}
-          label={t('jiuwenmate.mode.enter')}
-          onToggle={onToggleJiuwenMate}
-        />
-      ) : null}
-      <EnterpriseContextSwitcher />
->>>>>>> DEVELOP
     </aside>
   );
 }
