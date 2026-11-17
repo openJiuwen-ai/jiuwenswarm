@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -1115,6 +1116,29 @@ async def test_real_abnormal_exit_keeps_exception_traceback(
 
 
 @pytest.mark.asyncio
+async def test_worker_exit_reports_only_the_persisted_stderr_path(tmp_path, caplog):
+    supervisor = RuntimeSupervisor(Readiness(), forwarder=EventForwarder())
+    supervisor._generation = 1
+    supervisor._owns_process = True
+    stderr_path = tmp_path / "worker.stderr.log"
+    supervisor._process = SimpleNamespace(
+        wait=AsyncMock(return_value=7), stderr_path=stderr_path,
+    )
+    connection = SimpleNamespace(close=AsyncMock())
+    supervisor._conn = connection
+
+    await supervisor._watch_process(1)
+
+    message = next(
+        record.getMessage() for record in caplog.records
+        if record.getMessage().startswith("[Supervisor] runtime worker exited:")
+    )
+    assert "code=7" in message and f"stderr={stderr_path}" in message
+    assert "stdout=" not in message
+    connection.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_event_loop_lag_dump_is_bounded_and_omits_queue_payload(
     tmp_path, monkeypatch
 ):
@@ -1135,6 +1159,9 @@ async def test_event_loop_lag_dump_is_bounded_and_omits_queue_payload(
     text = supervisor._last_dump_path.read_text(encoding="utf-8")
     snapshot = json.loads(text.splitlines()[0])
     assert snapshot["event_loop_lag_seconds"] >= 0.08
+    assert snapshot["worker_stderr"] == str(supervisor._process.stderr_path)
+    assert "worker_stdout" not in snapshot
+    assert supervisor._last_dump_path.parent == supervisor._process.stderr_path.parent
     assert "ASYNCIO TASKS" in text and "THREAD STACKS" in text
     assert (
         text.index("THREAD STACKS")
