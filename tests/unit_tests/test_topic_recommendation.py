@@ -415,6 +415,65 @@ async def test_reload_config_swaps_model_without_reseeding(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_missing_model_reports_missing_configuration_without_reading_history(tmp_path):
+    """Without a model no pool can be written; history must not be read to learn that."""
+
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        GLOBAL_NEW_CHAT_SCOPE,
+    )
+
+    reads: list[tuple[str, str]] = []
+    prepared: list[tuple[tuple, dict]] = []
+
+    def input_revision(scope, mode):
+        reads.append((scope, mode))
+        raise AssertionError("history must not be read without a model")
+
+    async def prepare_state(_config):
+        raise AssertionError("preparation must not run without a model")
+
+    async def prepare_short_intent(_scope):
+        raise AssertionError("short intent must not run without a model")
+
+    async def generate(*_args, **_kwargs):
+        raise AssertionError("generation must not run without a model")
+
+    service = TopicService(
+        TopicStarterStore(tmp_path / "recommendation-missing-model.db"),
+        generate=generate,
+        search_provider_id="test",
+        prepare_state=prepare_state,
+        prepare_short_intent=prepare_short_intent,
+        input_revision_loader=input_revision,
+        config_loader=lambda: None,
+        enabled=True,
+        now=lambda: 2.0,
+    )
+
+    def capture(*args, **kwargs):
+        prepared.append((args, kwargs))
+
+    service.on_prepared = capture
+    try:
+        outcome = await service.schedule_successor(
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+            visit_id="visit-missing-model",
+        )
+        await asyncio.sleep(0)
+        assert outcome == "missing_configuration"
+        assert reads == []
+        assert prepared == [
+            (
+                (GLOBAL_NEW_CHAT_SCOPE, "missing_configuration", False),
+                {"work_mode": "work"},
+            ),
+        ]
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_deleting_the_data_writes_no_configuration(user_config, tmp_path):
     """The switch is the entry point's job; delete only records the epoch and wipes the data."""
     service = _topic_service(tmp_path)
@@ -2691,12 +2750,212 @@ def test_corpus_avoids_anecdote_hunting_starters():
         assert "哪一次迷路" not in starter.text
 
 
+def test_card_copy_allows_abbreviation_periods_in_a_question():
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        card_copy_rejection_reason,
+    )
+
+    assert card_copy_rejection_reason(
+        "What voting rights do Washington D.C. residents have?"
+    ) is None
+    assert card_copy_rejection_reason(
+        "How does U.S. federalism work?"
+    ) is None
+    assert card_copy_rejection_reason(
+        "First sentence. Second question?"
+    ) == "multiple_sentences"
+
+
+def test_corpus_versions_select_language_files():
+    from collections import Counter
+
+    from jiuwenswarm.agents.harness.common.recommendation.topic_sources import (
+        CORPUS_VERSION_EN,
+        CORPUS_VERSION_ZH,
+        load_fixed_starter_corpus,
+    )
+
+    zh = load_fixed_starter_corpus(CORPUS_VERSION_ZH)
+    en = load_fixed_starter_corpus(CORPUS_VERSION_EN)
+
+    assert len(zh) == len(en) == 100
+    for rows in (zh, en):
+        counts = Counter(starter.topic for starter in rows)
+        assert set(counts) == {"生活", "科学", "文化", "实用", "好奇"}
+        assert all(count == 20 for count in counts.values())
+    assert all(
+        not any("一" <= ch <= "鿿" for ch in starter.text) for starter in en
+    )
+    assert any("一" <= ch <= "鿿" for ch in zh[0].text)
+
+    removed = {
+        "culture-022", "practical-021", "curiosity-021",
+        "life-016", "life-020", "science-006", "science-015",
+        "culture-014", "practical-014", "curiosity-007",
+    }
+    assert not removed & {starter.starter_id for starter in zh}
+
+
+def test_cold_start_cards_follow_language():
+    from datetime import datetime, timezone
+
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        GLOBAL_NEW_CHAT_SCOPE,
+        build_cold_start_cards,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_sources import (
+        CORPUS_VERSION_EN,
+        CORPUS_VERSION_ZH,
+    )
+
+    now = datetime(2026, 11, 16, tzinfo=timezone.utc).timestamp()
+
+    def trigger(version):
+        return {
+            "local_date": "2026-11-16",
+            "context_scope": GLOBAL_NEW_CHAT_SCOPE,
+            "project_id": None,
+            "profile_semantic_version": 0,
+            "short_intent_version": 0,
+            "search_provider_id": "test",
+            "generation_config_version": "test",
+            "corpus_version": version,
+            "document_snapshot_version": "documents:2026-11-16:v2",
+            "retrieval_config_version": "test",
+            "evidence_extractor_version": "test",
+            "input_revision_receipt": {"receipt_id": "r1"},
+        }
+
+    def has_cjk(text):
+        return any("一" <= ch <= "鿿" for ch in text)
+
+    en_cards = build_cold_start_cards(
+        trigger_key=trigger(CORPUS_VERSION_EN), now=now, target_count=4,
+    )
+    zh_cards = build_cold_start_cards(
+        trigger_key=trigger(CORPUS_VERSION_ZH), now=now, target_count=4,
+    )
+
+    assert len(en_cards) == 4
+    assert all(not has_cjk(card["title"] + card["prompt"]) for card in en_cards)
+    assert len(zh_cards) == 4
+    assert any(has_cjk(card["title"]) for card in zh_cards)
+
+
+def test_generated_stage_prompts_carry_output_language():
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
+        _v6_system_prompt,
+    )
+
+    english = _v6_system_prompt("v6_global_interest_generator", "base", "en")
+    chinese = _v6_system_prompt("v6_global_interest_generator", "base", "zh")
+    scorer = _v6_system_prompt("v6_utility_scorer", "base", "en")
+
+    assert "OUTPUT LANGUAGE" in english and "English" in english
+    assert "OUTPUT LANGUAGE" in chinese and "Chinese" in chinese
+    assert "OUTPUT LANGUAGE" not in scorer
+
+
+def test_candidates_envelope_accepts_a_bare_array():
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
+        _candidates_envelope,
+    )
+
+    items = [{"slot_id": "s1"}]
+
+    assert _candidates_envelope(items) == {"candidates": items}
+    assert _candidates_envelope({"candidates": items}) == {"candidates": items}
+    assert _candidates_envelope("not-json-shape") == "not-json-shape"
+
+
+def test_language_change_invalidates_pool_identity():
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        build_serving_compatibility_key,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_sources import (
+        CORPUS_VERSION_EN,
+        CORPUS_VERSION_ZH,
+        corpus_version_for_language,
+    )
+
+    assert corpus_version_for_language("en") == CORPUS_VERSION_EN
+    assert corpus_version_for_language("EN") == CORPUS_VERSION_EN
+    assert corpus_version_for_language("zh") == CORPUS_VERSION_ZH
+    assert corpus_version_for_language("fr") == CORPUS_VERSION_ZH
+    assert build_serving_compatibility_key(
+        {"corpus_version": CORPUS_VERSION_EN}
+    ) != build_serving_compatibility_key({"corpus_version": CORPUS_VERSION_ZH})
+
+
+def test_recommendation_language_normalizes_preferred_language(monkeypatch):
+    from jiuwenswarm.agents.harness.common.recommendation import topic_controls
+
+    for raw, expected in (
+        ("en", "en"), ("EN", "en"), ("zh", "zh"), ("fr", "zh"), (None, "zh"),
+    ):
+        monkeypatch.setattr(
+            topic_controls, "get_config", lambda _raw=raw: {"preferred_language": _raw},
+        )
+        topic_controls.clear_recommendation_language_cache()
+        assert topic_controls.recommendation_language() == expected
+
+
+def test_deprojected_profile_uses_english_taxonomy():
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
+        _deprojected_long_profile,
+    )
+
+    state = {
+        "memory": {
+            "units": [
+                {
+                    "core": {"behavior_pattern": "tech-ai-ml"},
+                    "companion": {"unit_id": "unit-1"},
+                }
+            ]
+        }
+    }
+
+    english = _deprojected_long_profile(
+        state,
+        profile_semantic_version=1,
+        project_by_session={},
+        project_identifiers_by_session={},
+        language="en",
+    )
+    chinese = _deprojected_long_profile(
+        state,
+        profile_semantic_version=1,
+        project_by_session={},
+        project_identifiers_by_session={},
+        language="zh",
+    )
+
+    assert english[0].summary_text == "AI and machine learning"
+    assert chinese[0].summary_text == "人工智能与机器学习"
+
+
+def test_hot_list_templates_follow_language():
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
+        _has_cjk,
+        _hot_list_title,
+    )
+
+    assert _hot_list_title("topic", "en").startswith("What is")
+    assert "热搜" in _hot_list_title("话题", "zh")
+    assert _has_cjk("话题") is True
+    assert _has_cjk("topic") is False
+
+
 def test_cold_start_prefers_live_timely_corpus_cards():
     from datetime import datetime, timezone
 
     from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
         GLOBAL_NEW_CHAT_SCOPE,
         build_cold_start_cards,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_sources import (
+        CORPUS_VERSION,
     )
 
     now = datetime(2026, 10, 21, tzinfo=timezone.utc).timestamp()
@@ -2709,7 +2968,7 @@ def test_cold_start_prefers_live_timely_corpus_cards():
             "short_intent_version": 0,
             "search_provider_id": "test",
             "generation_config_version": "test",
-            "corpus_version": "topic-starter-corpus-v1",
+            "corpus_version": CORPUS_VERSION,
             "document_snapshot_version": "documents:2026-10-21:v2",
             "retrieval_config_version": "test",
             "evidence_extractor_version": "test",
@@ -3601,6 +3860,423 @@ def test_clamp_topic_max_tokens_respects_context_window() -> None:
     ) == _v6_max_tokens("v6_session_summarizer")
 
 
+def test_load_all_session_records_caps_to_newest_fifty(monkeypatch) -> None:
+    from jiuwenswarm.agents.harness.common.recommendation import topic_history as history
+
+    history.clear_session_window_cache()
+    requested: dict[str, int] = {}
+    metadata = [
+        {"session_id": f"s-{index}"}
+        for index in range(history._ALL_SESSIONS_LIMIT + 12)
+    ]
+
+    def fake_metadata(*, limit: int, offset: int):
+        requested["limit"] = limit
+        requested["offset"] = offset
+        return metadata[offset: offset + limit], len(metadata)
+
+    def fake_load(session_id: str):
+        return [{"id": session_id}]
+
+    monkeypatch.setattr(history, "get_all_sessions_metadata", fake_metadata)
+    monkeypatch.setattr(history, "load_session_records", fake_load)
+
+    loaded = history.load_all_session_records()
+    assert requested == {"limit": history._ALL_SESSIONS_LIMIT, "offset": 0}
+    assert history._ALL_SESSIONS_LIMIT == 50
+    assert list(loaded) == [f"s-{index}" for index in range(50)]
+    assert history.load_all_session_records(limit=5) == {
+        f"s-{index}": [{"id": f"s-{index}"}] for index in range(5)
+    }
+
+
+def test_recommendation_history_projection_keeps_ordinals_and_boundaries(
+    monkeypatch, tmp_path,
+) -> None:
+    """The scan drops transcript-only payloads without shifting physical ordinals."""
+
+    from jiuwenswarm.agents.harness.common.recommendation import topic_history as history
+
+    rows = [
+        {
+            "id": "r1:user",
+            "role": "user",
+            "request_id": "r1",
+            "timestamp": 1.0,
+            "content": "u" * 40_000,
+            "input_origin": "manual_free_text",
+            "assistance_origin": "none",
+            "metadata": {"automation": {"kind": "heartbeat"}},
+            "prompt_suggestion": {"id": "p1"},
+        },
+        {
+            "id": "r1:llm",
+            "role": "assistant",
+            "request_id": "r1",
+            "timestamp": 1.1,
+            "event_type": "chat.llm_call_start",
+            "content": "",
+            "prompt": "x" * 1_000,
+            "metadata": {"usage": "y" * 1_000},
+        },
+        {
+            "id": "r1:activity",
+            "role": "assistant",
+            "request_id": "r1",
+            "timestamp": 1.15,
+            "event_type": "chat.subagent_activity",
+            "content": "progress noise",
+        },
+        {
+            "id": "r1:final",
+            "role": "assistant",
+            "request_id": "r1",
+            "timestamp": 1.18,
+            "event_type": "chat.final",
+            "content": "x" * 40_000,
+        },
+        {
+            "id": "r1:done",
+            "role": "assistant",
+            "request_id": "r1",
+            "timestamp": 1.2,
+            "event_type": "chat.request_completed",
+            "status": "success",
+            "feedback_only": True,
+        },
+    ]
+    path = tmp_path / "history.jsonl"
+    path.write_text(
+        "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(history, "get_read_history_path", lambda _sid: path)
+
+    projected = history.load_session_records("s-1")
+
+    assert len(projected) == len(rows)
+    assert len(projected[0]["content"]) == history._MAX_RETAINED_CONTENT_CHARS
+    assert projected[0]["metadata"] == {"automation": {"kind": "heartbeat"}}
+    assert "prompt" not in projected[1]
+    assert "metadata" not in projected[1]
+    assert "content" not in projected[2]
+    assert len(projected[3]["content"]) == history._MAX_RETAINED_CONTENT_CHARS
+    assert projected[4]["feedback_only"] is True
+    assert projected[4]["status"] == "success"
+
+
+def test_recommendation_history_stream_keeps_unicode_separators(
+    monkeypatch, tmp_path,
+) -> None:
+    """A U+2028 inside a record is content, not a line break."""
+
+    from jiuwenswarm.agents.harness.common.recommendation import topic_history as history
+
+    path = tmp_path / "history.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "id": "u:0",
+                "role": "user",
+                "request_id": "u",
+                "timestamp": 1.0,
+                "content": "before after",
+                "input_origin": "manual_free_text",
+                "assistance_origin": "none",
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(history, "get_read_history_path", lambda _sid: path)
+
+    records = history.load_session_records("s-unicode")
+
+    assert len(records) == 1
+    assert records[0]["content"] == "before after"
+
+
+def test_rescan_accepts_a_clipped_witness_for_a_long_user_turn() -> None:
+    """Old ledgers store the full text; clipping both sides avoids a false rewrite."""
+
+    from jiuwenswarm.agents.harness.common.recommendation import topic_history as history
+
+    full = "u" * 40_000
+    record = {
+        "id": "u:0",
+        "role": "user",
+        "request_id": "u",
+        "timestamp": 1.0,
+        "content": history.witness_content(full),
+        "input_origin": "manual_free_text",
+        "assistance_origin": "none",
+    }
+    ledger = {
+        "history_revision": 1,
+        "next_behavior_index": 2,
+        "sessions": {
+            "s": {
+                "entries": [{
+                    "ordinal": 0,
+                    "behavior_index": 1,
+                    "retracted": False,
+                    "witness": {
+                        "role": "user",
+                        "timestamp_or_0": 1.0,
+                        "content": full,
+                        "supported": True,
+                    },
+                }],
+                "registered_upto": [],
+            },
+        },
+    }
+
+    rescan = history.rescan_history(ledger, {"s": [record]}, {})
+
+    assert rescan.rewrite_detected is False
+    assert rescan.retracted_indices == []
+    persisted = rescan.ledger["sessions"]["s"]["entries"][0]["witness"]["content"]
+    assert persisted.startswith("witness-sha256:v1:")
+    assert full not in persisted
+
+
+def test_record_witness_stores_a_digest_not_the_text() -> None:
+    from jiuwenswarm.agents.harness.common.recommendation import topic_history as history
+
+    full = "secret user text " * 100
+    witness = history.record_witness(
+        {"role": "user", "content": full, "timestamp": 1.0}, True,
+    )
+
+    assert full not in witness["content"]
+    assert witness["content"].startswith("witness-sha256:v1:")
+
+    legacy = {
+        "role": "user", "timestamp_or_0": 1.0, "content": full, "supported": True,
+    }
+    assert history.normalize_witness(legacy)["content"] == witness["content"]
+    assert history.normalize_witness(witness) == witness
+
+
+def test_history_scan_budget_keeps_newest_sessions(monkeypatch, tmp_path) -> None:
+    """Newest-first: the first session is read, later ones stop at the budget."""
+
+    from jiuwenswarm.agents.harness.common.recommendation import topic_history as history
+
+    history.clear_session_window_cache()
+    sizes = {"newest": 60, "middle": 60, "oldest": 60}
+    monkeypatch.setattr(
+        history,
+        "get_all_sessions_metadata",
+        lambda **_kwargs: (
+            [{"session_id": sid} for sid in sizes],
+            len(sizes),
+        ),
+    )
+    monkeypatch.setattr(history, "_MAX_SCAN_BYTES", 100)
+
+    def fake_path(session_id):
+        path = tmp_path / f"{session_id}.jsonl"
+        path.write_text("x" * sizes[session_id], encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(history, "get_read_history_path", fake_path)
+    read: list[str] = []
+
+    def fake_load(session_id):
+        read.append(session_id)
+        return []
+
+    monkeypatch.setattr(history, "load_session_records", fake_load)
+
+    result = history.load_all_session_records()
+
+    assert read == ["newest"]
+    assert result == {"newest": []}
+
+
+def test_run_snapshot_serves_one_history_across_the_run(monkeypatch) -> None:
+    from jiuwenswarm.agents.harness.common.recommendation import topic_history as history
+
+    reads: list[str] = []
+    monkeypatch.setattr(
+        history, "load_session_records", lambda sid: reads.append(sid) or [],
+    )
+    token = history.set_run_records_snapshot({"s1": [{"id": "s1"}]})
+    try:
+        first = history.load_all_session_records()
+        second = history.load_all_session_records()
+        first["s1"].append({"id": "mutated"})
+        third = history.load_all_session_records()
+
+        assert reads == []
+        assert second == {"s1": [{"id": "s1"}]}
+        assert third == {"s1": [{"id": "s1"}]}
+    finally:
+        history.reset_run_records_snapshot(token)
+
+
+def test_session_records_are_read_once_per_burst(monkeypatch, tmp_path) -> None:
+    """Revision, summaries and short intent in one run share one history read."""
+
+    from jiuwenswarm.agents.harness.common.recommendation import topic_history as history
+
+    reads: list[str] = []
+    path = tmp_path / "s1.jsonl"
+    path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        history, "get_all_sessions_metadata",
+        lambda **_kwargs: ([{"session_id": "s1"}], 1),
+    )
+    monkeypatch.setattr(history, "get_read_history_path", lambda _sid: path)
+
+    def fake_load(session_id):
+        reads.append(session_id)
+        return [{"id": session_id}]
+
+    monkeypatch.setattr(history, "load_session_records", fake_load)
+    history.clear_session_window_cache()
+    try:
+        first = history.load_all_session_records()
+        second = history.load_all_session_records()
+        first["s1"].append({"id": "mutated"})
+        third = history.load_all_session_records()
+
+        assert reads == ["s1"]
+        assert [row["id"] for row in second["s1"]] == ["s1"]
+        assert [row["id"] for row in third["s1"]] == ["s1"]
+    finally:
+        history.clear_session_window_cache()
+
+
+def test_newest_session_window_is_shared_within_ttl(monkeypatch, tmp_path) -> None:
+    """One burst of scans (enable seed, concurrent scopes) enumerates once."""
+
+    from jiuwenswarm.agents.harness.common.recommendation import topic_history as history
+
+    calls: list[dict] = []
+
+    def fake_metadata(**kwargs):
+        calls.append(kwargs)
+        return [{"session_id": "s1"}], 1
+
+    monkeypatch.setattr(history, "get_all_sessions_metadata", fake_metadata)
+    monkeypatch.setattr(history, "load_session_records", lambda _sid: [])
+    monkeypatch.setattr(history, "get_read_history_path", lambda _sid: tmp_path / "none.jsonl")
+    history.clear_session_window_cache()
+    try:
+        history.load_all_session_records()
+        history.load_all_session_records()
+        assert len(calls) == 1
+
+        history.clear_session_window_cache()
+        history.load_all_session_records()
+        assert len(calls) == 2
+    finally:
+        history.clear_session_window_cache()
+
+
+def test_scope_input_revision_reads_metadata_for_loaded_sessions_only(
+    monkeypatch, tmp_path,
+) -> None:
+    from jiuwenswarm.agents.harness.common.recommendation import topic_pipeline as pipeline_module
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import TopicPipeline
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        GLOBAL_NEW_CHAT_SCOPE,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
+        TopicStarterStore,
+    )
+
+    pipeline = TopicPipeline(TopicStarterStore(tmp_path / "revision-metadata.db"))
+    records = {
+        "s-alpha": [{
+            "id": "s-alpha:0",
+            "role": "user",
+            "request_id": "r-alpha",
+            "timestamp": 10.0,
+            "content": "alpha thought",
+            "input_origin": "manual_free_text",
+            "assistance_origin": "none",
+        }],
+        "s-beta": [{
+            "id": "s-beta:0",
+            "role": "user",
+            "request_id": "r-beta",
+            "timestamp": 11.0,
+            "content": "beta thought",
+            "input_origin": "manual_free_text",
+            "assistance_origin": "none",
+        }],
+    }
+    pipeline.completed_records_loader = lambda: records
+    requested: list[str] = []
+
+    def fake_metadata(session_id, **_kwargs):
+        requested.append(session_id)
+        return {"project_id": "", "work_mode": "work"}
+
+    monkeypatch.setattr(pipeline_module, "get_session_metadata", fake_metadata)
+
+    pipeline.scope_input_revision(GLOBAL_NEW_CHAT_SCOPE, "work")
+
+    assert sorted(requested) == ["s-alpha", "s-beta"]
+
+
+@pytest.mark.asyncio
+async def test_refresh_short_intent_reads_metadata_for_loaded_sessions_only(
+    monkeypatch, tmp_path,
+) -> None:
+    from jiuwenswarm.agents.harness.common.recommendation import topic_pipeline as pipeline_module
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import TopicPipeline
+    from jiuwenswarm.agents.harness.common.recommendation.topic_prepare import (
+        V5GenerationInputs,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        GLOBAL_NEW_CHAT_SCOPE,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
+        TopicStarterStore,
+    )
+
+    pipeline = TopicPipeline(
+        TopicStarterStore(tmp_path / "short-intent-metadata.db"),
+        now=lambda: 100.0,
+    )
+    records = {
+        "s-alpha": [{
+            "id": "s-alpha:0",
+            "role": "user",
+            "request_id": "r-alpha",
+            "timestamp": 10.0,
+            "content": "alpha thought",
+            "input_origin": "manual_free_text",
+            "assistance_origin": "none",
+        }],
+    }
+    pipeline.completed_records_loader = lambda: records
+    inputs = V5GenerationInputs(
+        state={},
+        active_behaviors=(),
+        delta_behaviors=(),
+        generation_input_snapshot={},
+    )
+    requested: list[str] = []
+
+    def fake_metadata(session_id, **_kwargs):
+        requested.append(session_id)
+        return {"project_id": ""}
+
+    monkeypatch.setattr(pipeline_module, "load_generation_inputs", lambda *_a, **_k: inputs)
+    monkeypatch.setattr(pipeline_module, "get_session_metadata", fake_metadata)
+
+    assert await pipeline.refresh_short_intent(GLOBAL_NEW_CHAT_SCOPE) == ""
+
+    assert requested == ["s-alpha"]
+
+
 def test_drop_expired_pool_cards_renumbers_live_ranks() -> None:
     from jiuwenswarm.agents.harness.common.recommendation.topic_pool import (
         drop_expired_pool_cards,
@@ -4175,3 +4851,111 @@ def test_topic_service_has_no_pending_hold_or_manual_retry() -> None:
     assert not hasattr(ts.TopicService, "_held_for_chat")
     assert not hasattr(ts.TopicService, "_keep_for_chat")
     assert not hasattr(ts.TopicService, "scope_has_pending_request")
+
+
+def test_dedicated_topic_model_uses_endpoint_mandated_sampling(settings) -> None:
+    """Kimi endpoints accept one temperature; the 0.0 background default must not be sent."""
+
+    settings["recommendation"] = {"model_config": {
+        "provider": "OpenAI", "model": "kimi-k3.1-pro",
+        "api_base": "https://api.moonshot.cn/v1", "api_key": "test-key",
+        "context_window_tokens": 262144,
+    }}
+    config = controls.recommendation_model_config(environ={})
+    assert config is not None
+    assert (config.effective_temperature, config.effective_top_p) == (1.0, 0.95)
+
+
+def test_environ_topic_model_uses_endpoint_mandated_sampling() -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
+        ArkBackgroundConfig,
+    )
+
+    config = ArkBackgroundConfig.from_environ({
+        "ARK_API_KEY": "test-key", "ARK_MODEL": "kimi-k3.1-pro",
+        "ARK_BASE_URL": "https://api.moonshot.cn/v1",
+        "ARK_CONTEXT_WINDOW_TOKENS": "262144",
+    })
+    assert config is not None
+    assert (config.effective_temperature, config.effective_top_p) == (1.0, 0.95)
+
+
+def test_history_model_copy_uses_endpoint_mandated_sampling() -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_history import (
+        _effective_model_config_obj,
+    )
+
+    kimi = _effective_model_config_obj({
+        "model_client_config": {
+            "api_base": "https://api.moonshot.cn/v1", "model_name": "kimi-k3.1-pro",
+        },
+        "model_config_obj": {"context_window": 262144},
+    })
+    assert (kimi["temperature"], kimi["top_p"]) == (1.0, 0.95)
+    assert kimi["context_window"] == 262144
+
+    pinned = _effective_model_config_obj({
+        "model_client_config": {
+            "api_base": "https://api.deepseek.com", "model_name": "deepseek-chat",
+        },
+        "model_config_obj": {},
+    })
+    assert pinned["temperature"] == 0.0
+    assert "top_p" not in pinned
+
+
+@pytest.mark.asyncio
+async def test_stage_invoker_repairs_provider_required_temperature() -> None:
+    """A 400 naming the only allowed temperature is retried once with that value."""
+
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
+        ArkBackgroundConfig,
+        build_ark_stage_invoker,
+    )
+
+    class _BadRequestError(Exception):
+        status_code = 400
+
+    class _Message:
+        content = "{}"
+        refusal = None
+
+    class _Choice:
+        message = _Message()
+        finish_reason = "stop"
+
+    class _Response:
+        id = "provider-response"
+        object = "chat.completion"
+        model = "kimi-k3.1-pro"
+        usage = None
+        choices = [_Choice()]
+
+    captured: list[dict] = []
+
+    class _Completions:
+        async def create(self, **kwargs):
+            captured.append(kwargs)
+            if len(captured) == 1:
+                raise _BadRequestError(
+                    "Error code: 400 - {'error': {'message': "
+                    "'invalid temperature: only 0.6 is allowed for this model'}}"
+                )
+            return _Response()
+
+    class _Client:
+        class chat:  # noqa: N801 - mimics the OpenAI client shape
+            completions = _Completions()
+
+        async def close(self) -> None:
+            return None
+
+    invoke = build_ark_stage_invoker(
+        ArkBackgroundConfig(
+            api_key="test", model="kimi-k3.1-pro", expected_model="kimi-k3.1-pro",
+        ),
+        client_factory=lambda **_kwargs: _Client(),
+    )
+
+    assert await invoke("v6_utility_scorer", "system", "{}") == {}
+    assert [call["temperature"] for call in captured] == [0.0, 0.6]

@@ -140,6 +140,31 @@ class RecommendationConsentStore:
         return {"history_after": history_after, "deleted_at": deleted_at}
 
 
+# ``get_config`` re-reads and parses config.yaml; the stage invoker asks for the
+# language on every model call. Cache it briefly and clear it on a locale save.
+_LANGUAGE_CACHE: tuple[float, str] | None = None
+_LANGUAGE_CACHE_TTL_SECONDS = 2.0
+
+
+def clear_recommendation_language_cache() -> None:
+    global _LANGUAGE_CACHE
+    _LANGUAGE_CACHE = None
+
+
+def recommendation_language() -> str:
+    """The language user-visible recommendation copy must use."""
+
+    global _LANGUAGE_CACHE
+    now = time.monotonic()
+    cached = _LANGUAGE_CACHE
+    if cached is not None and now - cached[0] < _LANGUAGE_CACHE_TTL_SECONDS:
+        return cached[1]
+    raw = str(get_config().get("preferred_language") or "zh").strip().lower()
+    language = "en" if raw == "en" else "zh"
+    _LANGUAGE_CACHE = (now, language)
+    return language
+
+
 def load_recommendation_controls(store: Any = None) -> dict[str, Any]:
     """The switches as resolved, plus the recorded consent boundary and deletion epoch."""
 
@@ -441,6 +466,8 @@ def recommendation_model_config(environ: Any = None) -> ArkBackgroundConfig | No
     Name, endpoint, key and window come from the explicit entry. None when
     that model cannot be called this way.
     """
+    from jiuwenswarm.common.reasoning_config import resolve_sampling_override
+
     override = ArkBackgroundConfig.from_environ(environ)
     if override is not None:
         return override
@@ -450,10 +477,15 @@ def recommendation_model_config(environ: Any = None) -> ArkBackgroundConfig | No
     if isinstance(dedicated, dict):
         if not all(dedicated.get(key) for key in ("api_key", "api_base", "model")):
             return None
+        # Endpoints with mandated sampling (Kimi) reject the deterministic 0.0
+        # default; their required values win over the background defaults.
+        sampling = resolve_sampling_override(dedicated["api_base"], dedicated["model"]) or {}
         return ArkBackgroundConfig(
             api_key=dedicated["api_key"],
             model=dedicated["model"],
             base_url=dedicated["api_base"],
+            temperature=float(sampling.get("temperature", 0.0)),
+            top_p=float(sampling.get("top_p", 1.0)),
             context_window_tokens=(
                 parse_positive_int(dedicated.get("context_window_tokens"))
                 or RECOMMENDATION_CONTEXT_WINDOW_TOKENS
@@ -470,10 +502,14 @@ def recommendation_model_config(environ: Any = None) -> ArkBackgroundConfig | No
     base_url = str(client.get("api_base") or "").strip()
     if not api_key or not base_url:
         return None
+    model_name = _model_name(entry)
+    sampling = resolve_sampling_override(base_url, model_name) or {}
     return ArkBackgroundConfig(
         api_key=api_key,
-        model=_model_name(entry),
+        model=model_name,
         base_url=base_url,
+        temperature=float(sampling.get("temperature", 0.0)),
+        top_p=float(sampling.get("top_p", 1.0)),
         context_window_tokens=parse_positive_int((entry.get("model_config_obj") or {}).get("context_window"))
         or RECOMMENDATION_CONTEXT_WINDOW_TOKENS,
         client_provider=str(client.get("client_provider") or "OpenAI"),
@@ -549,7 +585,9 @@ def recommendation_sources(store: Any, locators: list[Any]) -> list[dict[str, An
             return []
         if rows[ordinal].get("role") not in {"user", "human"}:
             return []
-        if witnesses.get((sid, ordinal)) != history.record_witness(rows[ordinal], True):
+        if history.normalize_witness(
+            witnesses.get((sid, ordinal))
+        ) != history.record_witness(rows[ordinal], True):
             return []
         sources.append({"session_id": sid, "ordinal": ordinal,
                         "event_id": rows[ordinal].get("id"), "content": rows[ordinal].get("content", "")})
