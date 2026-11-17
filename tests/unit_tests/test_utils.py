@@ -582,6 +582,46 @@ def test_prepare_workspace_restores_external_cli_agents_from_sidecar(tmp_path, m
     assert team["external_cli_path_histories"]["claude"] == ["D:/tools/claude-old.exe"]
 
 
+def test_prepare_workspace_keeps_deliberately_empty_external_cli(tmp_path, monkeypatch):
+    """旧 config 存在但用户已全部禁用（空列表）时，不得从旁路把禁用状态翻回启用。"""
+    import json as json_lib
+    import yaml
+
+    sidecar = tmp_path / "outside" / "external_cli_state.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(
+        json_lib.dumps({
+            "agents": [{"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}],
+            "histories": {},
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(utils, "external_cli_state_sidecar_path", lambda: sidecar)
+
+    workspace_dir = tmp_path / ".jiuwenswarm"
+    config_dir = workspace_dir / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.yaml").write_text(
+        "\n".join([
+            "modes:",
+            "  team:",
+            "    jiuwen_team:",
+            "      external_cli_agents: []",
+        ]),
+        encoding="utf-8",
+    )
+
+    utils.prepare_workspace(
+        overwrite=True,
+        preferred_language="en",
+        workspace_dir=workspace_dir,
+    )
+
+    restored = yaml.safe_load((config_dir / "config.yaml").read_text(encoding="utf-8"))
+    team = restored["modes"]["team"]["jiuwen_team"]
+    assert not team.get("external_cli_agents")
+
+
 def test_refresh_external_cli_state_sidecar_mirrors_config(tmp_path, monkeypatch):
     """旁路文件镜像 config.yaml 里的三方 agent 配置与路径历史。"""
     import yaml
