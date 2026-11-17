@@ -135,6 +135,8 @@ Different modes are an important runtime policy layer in Harness. `AgentMode` cu
 | File-write restrictions | `write_file` / `edit_file` can only write the plan file in `plan` mode |
 | Sub-agent collaboration | After entering `plan` mode, `task_tool` can be registered dynamically to support planning-time sub-agent exploration |
 
+JiuwenSwarm supports plan approval for both single agents and teams in the Work and Code profiles. Finishing plan generation preserves the pending approval. Execute leaves plan mode and starts implementation; Skip ends only the current turn and keeps plan mode active; revision feedback continues planning. Background queries, such as asset lists and authorization status, neither switch plan mode nor emit plan-exit notifications.
+
 ### 3.5 Context & Memory: Context Engineering and Memory System
 
 Context & Memory ensures the model sees the right information at the right time. Harness uses an extended `SystemPromptBuilder` to manage static prompt sections, such as `identity`, `safety`, `skills`, `tools`, `todo`, `task_tool`, `memory`, `workspace`, `context`, `completion_signal`, and `verification_contract`.

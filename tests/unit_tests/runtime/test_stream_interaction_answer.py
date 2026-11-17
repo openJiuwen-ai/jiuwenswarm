@@ -21,10 +21,7 @@ from jiuwenswarm.channels.process_cli.client import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.runtime.agent_definition import (
-    RuntimeAgentDefinition,
-    RuntimeAgentExecution,
-)
+from jiuwenswarm.runtime.agent_definition import RuntimeAgentDefinition
 from jiuwenswarm.runtime.context import (
     get_current_runtime,
     reset_runtime_context,
@@ -760,48 +757,88 @@ async def test_ordinary_typed_answer_preserves_compatibility_api(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["agent.work.plan", "agent.code.plan"])
+@pytest.mark.parametrize("waiting", [True, False], ids=["live-approval", "checkpoint-recovery"])
 async def test_plan_answer_keeps_custom_owner_and_stream_options(
-    harness, monkeypatch
+    harness, monkeypatch, mode: str, waiting: bool
 ) -> None:
-    owner = RuntimeAgentExecution(
-        definition=RuntimeAgentDefinition(name="custom_agent", instructions="Test."),
-        mode="agent.code.plan",
+    request = _request()
+    work_mode = "code" if mode == "agent.code.plan" else "work"
+    request.params.update(mode=mode, work_mode=work_mode)
+
+    async def original(request):
+        if waiting:
+            yield _chunk(
+                request, "chat.ask_user_question",
+                request_id="question_1", source="confirm_interrupt",
+            )
+        else:
+            yield _chunk(request, "chat.final", content="Ready")
+
+    harness.agent.process_message_stream = original
+    initial = await _collect(
+        harness.runtime.stream_agent(
+            request,
+            RuntimeAgentDefinition(name="custom_agent", instructions="Test."),
+            trigger_hook=False,
+        )
     )
-    monkeypatch.setattr(
-        harness.runtime, "_agent_execution_owner", Mock(return_value=owner)
+    assert [event.event_type for event in initial] == [
+        "chat.ask_user_question" if waiting else "chat.final"
+    ]
+    owner = harness.runtime._agent_execution_owner(request)
+    assert owner is not None
+    assert owner.definition.name == "custom_agent"
+    harness.runtime._prepare_chat_turn.reset_mock()
+    harness.runtime._plan_controller.ensure_state.reset_mock()
+    harness.runtime._plan_controller.ensure_state.return_value = SimpleNamespace(
+        events=[{"event_type": "plan.mode_entered"}]
     )
-    calls = []
+    borrowed = Mock(side_effect=lambda candidate: candidate)
+    monkeypatch.setattr(harness.manager, "borrow_agent_nowait", borrowed)
+    delivered = []
     closed = []
 
-    async def stream(request, **kwargs):
-        calls.append((request, kwargs))
+    async def resumed(request):
+        delivered.append(request)
         try:
-            yield RuntimeEvent.control(
-                request_id=request.request_id,
-                channel_id="process_cli",
-                session_id=SESSION_ID,
-                payload={"event_type": "chat.delta", "content": "resuming"},
-            )
+            yield _chunk(request, "chat.delta", content="resuming")
+            yield _chunk(request, "chat.final", content="Done")
         finally:
             closed.append(get_current_runtime())
 
-    monkeypatch.setattr(harness.runtime, "stream", stream)
+    if waiting:
+        harness.agent.deliver_control_input = resumed
+    else:
+        harness.agent.process_message_stream = resumed
     callback = AsyncMock()
+    answer = replace(
+        _answer(source="confirm_interrupt" if waiting else "ask_user_interrupt", mode=mode),
+        work_mode=work_mode,
+    )
     events = await _collect(
         harness.runtime.stream_interaction_answer(
-            _answer(source="confirm_interrupt", mode="agent.code.plan"),
+            answer,
             trigger_hook=False,
             on_control_event=callback,
         )
     )
-    assert [event.event_type for event in events] == ["chat.delta"]
-    request, kwargs = calls[0]
-    assert request.params["mode"] == "agent.code.plan"
-    assert kwargs == {
-        "trigger_hook": False,
-        "on_control_event": callback,
-        "_agent_execution": owner,
-    }
+    assert [event.event_type for event in events] == ["chat.delta", "chat.final"]
+    assert len(delivered) == 1
+    assert delivered[0].params["mode"] == mode
+    assert harness.runtime._agent_execution_owner(delivered[0]) is owner
+    if waiting:
+        borrowed.assert_called_once_with(harness.agent)
+        harness.runtime._prepare_chat_turn.assert_not_awaited()
+        harness.runtime._plan_controller.ensure_state.assert_not_awaited()
+        callback.assert_not_awaited()
+    else:
+        borrowed.assert_not_called()
+        harness.runtime._prepare_chat_turn.assert_awaited_once()
+        assert harness.runtime._prepare_chat_turn.await_args.kwargs["agent_execution"] is owner
+        callback.assert_awaited_once()
+        assert callback.await_args.args[0].event_type == "plan.mode_entered"
+    harness.runtime._trigger_before_chat_request_hook.assert_not_awaited()
     assert closed == [harness.runtime]
     assert get_current_runtime() is None
 
