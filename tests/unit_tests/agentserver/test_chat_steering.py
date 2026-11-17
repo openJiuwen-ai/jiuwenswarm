@@ -1047,7 +1047,7 @@ async def test_steer_files_retry_after_failure_delivers_and_materializes():
         [{"nope": 1}],
         [{"type": "image", "path": ""}],
         [{"type": "image", "path": "x" * 513}],
-        [{"type": "image", "path": f"/tmp/{i}.png"} for i in range(17)],
+        [{"type": "image", "path": f"/tmp/{i}.png"} for i in range(21)],
     ],
 )
 def test_steer_validate_rejects_malformed_files(files):
@@ -1064,6 +1064,17 @@ def test_steer_validate_allows_files_with_valid_shape():
     params = dict(control_request().params)
     params["files"] = _steer_files()
     assert _validate(params, query=False) is None
+
+
+def test_steer_validate_allows_files_up_to_product_attachment_limit():
+    """文件数上限 20:20 张放行,21 张拒绝。"""
+    from jiuwenswarm.server.handlers.steering import _validate
+
+    params = dict(control_request().params)
+    params["files"] = [{"type": "image", "path": f"/tmp/{i}.png"} for i in range(20)]
+    assert _validate(params, query=False) is None
+    params["files"] = [{"type": "image", "path": f"/tmp/{i}.png"} for i in range(21)]
+    assert _validate(params, query=False) == "CONTENT_UNSUPPORTED"
 
 
 def test_steer_validate_rejects_files_on_status_query():

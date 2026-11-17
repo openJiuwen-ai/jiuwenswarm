@@ -11,11 +11,14 @@ from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.handlers._shared import _uses_tenant_pool
-from jiuwenswarm.server.runtime.agent_adapter.steering import rejected
+# _MAX_STEER_IMAGE_FILES 单处定义在 agent_adapter(提取层也用它做截断),
+# 校验层导入同一常量,避免两处独立维护漂移(漏改一处时多出的张数会在
+# 提取层被静默截断、零报错)。
+from jiuwenswarm.server.runtime.agent_adapter.steering import (
+    _MAX_STEER_IMAGE_FILES,
+    rejected,
+)
 from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
-
-
-_MAX_STEER_IMAGE_FILES = 16
 
 
 def _validate(params: dict[str, Any], *, query: bool) -> str | None:
