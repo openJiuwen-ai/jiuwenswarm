@@ -176,6 +176,8 @@ export interface DiagnosisRecord extends DiagnosisSummary {
   evolution_judge: EvolutionJudge[];
   /** Experimental artifact-fix text (whole markdown block, A/B path). */
   artifact_improvement?: string | null;
+  /** How the next version of a game plays; written by Reward for game tasks only. */
+  design_suggestion?: string | null;
   ttse_trigger: Record<string, TtseTriggerResult>;
   error?: { code: string; message: string };
   /** Full Reward evaluation payload (``attribution.reward.v1``); absent in rule mode. */
