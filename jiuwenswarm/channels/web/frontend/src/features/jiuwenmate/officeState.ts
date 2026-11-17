@@ -118,7 +118,10 @@ export function exceedsActivityPeriod(periodStart: string, periodEnd: string): b
 export function setActivityPeriod(state: JiuwenMateOfficeState, periodStart: string, periodEnd: string): JiuwenMateOfficeState {
   const start = parseIsoDate(periodStart);
   const end = parseIsoDate(periodEnd);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return state;
+  // A cleared date is a real state: keep it so the input stays empty instead of snapping back.
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return { ...state, periodStart, periodEnd, hoveredCellId: null };
+  }
   const [from, to] = start > end ? [end, start] : [start, end];
   const clampedFrom = daysBetween(from, to) >= MAX_PERIOD_DAYS ? addDays(to, -(MAX_PERIOD_DAYS - 1)) : from;
   return { ...state, periodStart: toIsoDate(clampedFrom), periodEnd: toIsoDate(to), hoveredCellId: null };
