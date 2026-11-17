@@ -13,6 +13,7 @@ from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import (
     _extract_legacy_params,
 )
 from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronToolRoute, CronTools
+from jiuwenswarm.server.gateway_push import PUSH_TARGET_GATEWAY, PUSH_TARGET_KEY
 from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService
 from jiuwenswarm.gateway.cron.store import CronJob, CronJobStore
 from jiuwenswarm.common.invocation_context.billing_trace import (
@@ -1447,6 +1448,40 @@ def test_run_now_pushes_real_route_from_context() -> None:
     assert pushed.channel_id == "web"
     assert pushed.session_id == "sess-route-check"
     assert pushed.request_id == "req-route-check"
+
+
+def test_run_now_forward_targets_gateway_connection(tmp_path, monkeypatch) -> None:
+    """run_now 转发帧必须携带 gateway 定向键。
+
+    desktop 会话的转发帧 channel_id=desktop，常规 channel-map 路由会落到
+    PC 前端 stdio 连接并被静默丢弃（2026-11-14「立即执行」断链根因）。
+    """
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+
+    asyncio.run(tools.run_now("job-1"))
+
+    assert len(push.payloads) == 1
+    assert push.payloads[0].get(PUSH_TARGET_KEY) == PUSH_TARGET_GATEWAY
+
+
+def test_create_forward_keeps_legacy_routing(tmp_path, monkeypatch) -> None:
+    """create 同步帧不定向网关：任务由 agent 直接写共享 store，
+    gateway 经 mtime 轮询感知，行为与存量一致。"""
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+
+    asyncio.run(
+        tools.create_job(
+            {
+                "name": "t",
+                "cron_expr": "*/5 * * * *",
+                "description": "d",
+                "targets": "web",
+            }
+        )
+    )
+
+    assert push.payloads, "create 同步帧仍需转发（best-effort）"
+    assert all(PUSH_TARGET_KEY not in p for p in push.payloads)
 
 
 def test_cron_run_action_forwards_context_to_backend() -> None:

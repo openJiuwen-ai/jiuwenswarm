@@ -33,7 +33,13 @@ from jiuwenswarm.server.ws_send import send_wire_payload
 from jiuwenswarm.server.e2a_transports import (
     TRANSPORT_CLOSED_ERRORS,
     TRANSPORT_PROTOCOL_ERRORS,
+    PipeMessageTransport,
     WsMessageTransport,
+)
+from jiuwenswarm.server.gateway_push.transport import (
+    GATEWAY_CONN_NAME,
+    PUSH_TARGET_GATEWAY,
+    PUSH_TARGET_KEY,
 )
 from jiuwenswarm.common.e2a.wire_trace import trace_inbound
 from jiuwenswarm.server.gui_rpc import get_gui_rpc_client
@@ -1382,8 +1388,20 @@ class AgentWebSocketServer:
         )
         get_device_command_manager().set_send_push_callback(self.send_push)
         get_gui_rpc_client().set_send_push_callback(self.send_push)
+
+        def _send_push_to_gateway(msg: dict[str, Any]) -> Any:
+            """Reverse RPC 请求恒定向 gateway 连接（本类注释既定语义）。
+
+            V1 注释写的是「sole active Gateway connection」，但直接传
+            self.send_push 会走 channel-map——desktop 会话发起的调用会落到
+            PC 前端 stdio 被静默丢弃。这里显式注入定向键。
+            """
+            payload = dict(msg)
+            payload[PUSH_TARGET_KEY] = PUSH_TARGET_GATEWAY
+            return self.send_push(payload)
+
         configure_reverse_rpc_transport(
-            SingleGatewayReverseRpcTransport(self.send_push)
+            SingleGatewayReverseRpcTransport(_send_push_to_gateway)
         )
 
     def set_proactive_engine(self, engine: Any) -> None:
@@ -1970,6 +1988,12 @@ class AgentWebSocketServer:
         send_lock = asyncio.Lock()
         self._current_ws = transport
         self._current_send_lock = send_lock
+
+        # gateway 兄弟进程的管道连接：额外登记专用绑定名，供 cron 转发、
+        # reverse RPC 等需要定向网关的推送使用（业务渠道绑定仍按请求登记，
+        # 二者互不覆盖；断连随 _unbind_channel_conns 一并清理）。
+        if isinstance(transport, PipeMessageTransport):
+            self._bind_channel_conn(GATEWAY_CONN_NAME, transport, send_lock)
 
         # 发送 connection.ack 事件，通知对端服务端已就绪
         try:
@@ -9488,6 +9512,11 @@ class AgentWebSocketServer:
         否则 channel_id=desktop 的产物帧会被投给 gateway 并按「未找到 Channel」
         丢弃，PC 前端直播期拿不到产物卡片）；该渠道没有登记连接时，回退到
         原来的 _current_ws 行为，保持与单连接部署一致。
+
+        定向网关：``msg[PUSH_TARGET_KEY] = PUSH_TARGET_GATEWAY`` 时优先投递
+        ``GATEWAY_CONN_NAME`` 绑定（gateway 管道连接）——cron 转发等帧的
+        channel_id 是发起会话的业务渠道（如 desktop），常规路由会落到 PC
+        前端 stdio 连接被静默丢弃；绑定缺失时回退常规路由并告警。
         """
         response_kind = str(msg.get("response_kind") or "").strip()
         gui_rpc_id = ""
@@ -9496,10 +9525,26 @@ class AgentWebSocketServer:
             if isinstance(body, dict):
                 gui_rpc_id = str(body.get("rpc_id") or "")
         channel_id = str(msg.get("channel_id") or "").strip()
-        bound = self._channel_conns.get(channel_id) if channel_id else None
+        push_target = str(msg.get(PUSH_TARGET_KEY) or "").strip()
+        bound = None
+        target_via = "current-ws"
+        if push_target == PUSH_TARGET_GATEWAY:
+            bound = self._channel_conns.get(GATEWAY_CONN_NAME)
+            if bound is not None:
+                target_via = "gateway-conn"
+            else:
+                logger.warning(
+                    "[AgentWebSocketServer] send_push gateway 定向无绑定"
+                    "（%s 未登记），回退常规路由: channel_id=%s",
+                    GATEWAY_CONN_NAME,
+                    channel_id,
+                )
+        if bound is None and channel_id:
+            bound = self._channel_conns.get(channel_id)
+            if bound is not None:
+                target_via = "channel-map"
         if bound is not None:
             target_ws, target_send_lock = bound
-            target_via = "channel-map"
         else:
             target_ws, target_send_lock = self._current_ws, self._current_send_lock
             target_via = "current-ws"

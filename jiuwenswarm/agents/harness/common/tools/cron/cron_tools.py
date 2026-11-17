@@ -22,6 +22,8 @@ from jiuwenswarm.gateway.cron.models import (
     normalize_required_device_intents,
 )
 from jiuwenswarm.server.gateway_push import (
+    PUSH_TARGET_GATEWAY,
+    PUSH_TARGET_KEY,
     GatewayPushTransport,
     WebSocketGatewayPushTransport,
 )
@@ -155,7 +157,13 @@ class CronTools:
         r = _cron_route_ctx.get()
         return r if r is not None else CronToolRoute()
 
-    async def _send_split(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+    async def _send_split(
+        self,
+        action: str,
+        params: dict[str, Any],
+        *,
+        target_gateway: bool = False,
+    ) -> dict[str, Any]:
         from jiuwenswarm.common.e2a.constants import (
             E2A_RESPONSE_KIND_CRON,
             E2A_RESPONSE_STATUS_IN_PROGRESS,
@@ -178,11 +186,23 @@ class CronTools:
                 "message": "",
             },
         }
+        if target_gateway:
+            # 帧必须到 gateway（唯一持有调度器/控制器的进程）。转发帧的
+            # channel_id 是发起会话的业务渠道（desktop 会话=desktop），
+            # 常规 channel-map 路由会把帧投给 PC 前端 stdio 连接并被
+            # 静默丢弃（2026-11-14「立即执行」断链根因），故显式定向。
+            payload[PUSH_TARGET_KEY] = PUSH_TARGET_GATEWAY
         await self._gateway_push.send_push(payload)
         return {"action": action, "status": "forwarded", "data": None, "message": "cron request forwarded to gateway"}
 
-    async def _send(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
-        return await self._send_split(action, params)
+    async def _send(
+        self,
+        action: str,
+        params: dict[str, Any],
+        *,
+        target_gateway: bool = False,
+    ) -> dict[str, Any]:
+        return await self._send_split(action, params, target_gateway=target_gateway)
 
     @staticmethod
     def _is_valid_target(value: str) -> bool:
@@ -529,4 +549,4 @@ class CronTools:
         return out
 
     async def run_now(self, job_id: str) -> Any:
-        return await self._send("run_now", {"job_id": job_id})
+        return await self._send("run_now", {"job_id": job_id}, target_gateway=True)
