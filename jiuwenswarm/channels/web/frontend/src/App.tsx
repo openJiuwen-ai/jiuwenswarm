@@ -2089,7 +2089,9 @@ function AppContent({
         );
         const allowDowngrade = metadataDowngradeAllowedRef.current.delete(targetSessionId);
         // The cursor recovery owns settlement while it can still replay the terminal output.
-        const mayDowngrade = allowDowngrade && !webClient.isRecoveringExecution(targetSessionId) &&
+        const recoveringExecution =
+          'isRecoveringExecution' in webClient && webClient.isRecoveringExecution(targetSessionId);
+        const mayDowngrade = allowDowngrade && !recoveringExecution &&
           (runtime?.turnRevision ?? 0) === snapshotTurnRevision;
         if (
           (session.is_processing || mayDowngrade || !locallyBusy)
