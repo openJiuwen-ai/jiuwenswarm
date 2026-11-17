@@ -59,6 +59,7 @@ import {
   partitionAgentsByVerifyGroups,
   compactTokenLabel,
   sessionMembersAcrossPhases,
+  workflowAgentFullName,
 } from './workflowTypes';
 import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
@@ -677,13 +678,20 @@ function AgentNode({
             >
               fork{agent.parent_session_id ? `(${forkParentDisplay(agent.parent_session_id)})` : ''}
             </span>
-            <TeamMemberAvatar
-              member={avatarName ?? workflowAgentAvatarName(agent)}
-              identity={workflowAgentIdentity(agent)}
-              className="w-5 h-5 shrink-0 rounded-full"
-              imageClassName="rounded-full"
-              alt={avatarName ?? workflowAgentAvatarName(agent)}
-            />
+            <span
+              className="shrink-0"
+              title={workflowAgentFullName(agent, runId)}
+              data-testid="team-area-swarmflow-agent-avatar"
+              data-variant={agent.id}
+            >
+              <TeamMemberAvatar
+                member={avatarName ?? workflowAgentAvatarName(agent)}
+                identity={workflowAgentIdentity(agent)}
+                className="w-5 h-5 shrink-0 rounded-full"
+                imageClassName="rounded-full"
+                alt={avatarName ?? workflowAgentAvatarName(agent)}
+              />
+            </span>
           </>
         ) : (
           <>
@@ -698,13 +706,20 @@ function AgentNode({
                 {roleTag}
               </span>
             )}
-            <TeamMemberAvatar
-              member={avatarName ?? workflowAgentAvatarName(agent)}
-              identity={workflowAgentIdentity(agent)}
-              className="w-5 h-5 shrink-0 rounded-full"
-              imageClassName="rounded-full"
-              alt={avatarName ?? workflowAgentAvatarName(agent)}
-            />
+            <span
+              className="shrink-0"
+              title={workflowAgentFullName(agent, runId)}
+              data-testid="team-area-swarmflow-agent-avatar"
+              data-variant={agent.id}
+            >
+              <TeamMemberAvatar
+                member={avatarName ?? workflowAgentAvatarName(agent)}
+                identity={workflowAgentIdentity(agent)}
+                className="w-5 h-5 shrink-0 rounded-full"
+                imageClassName="rounded-full"
+                alt={avatarName ?? workflowAgentAvatarName(agent)}
+              />
+            </span>
           </>
         )}
         {/* 主文字永远是脚本给节点的 label（同一专家被多次调用时唯一可区分）；
