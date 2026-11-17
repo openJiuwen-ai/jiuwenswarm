@@ -11,11 +11,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from http.cookiejar import Cookie, CookieJar, DefaultCookiePolicy
-from urllib.parse import quote, unquote, urlsplit
+from string import punctuation
+from urllib.parse import quote, quote_from_bytes, unquote, urlsplit
 from urllib.request import Request as CookieRequest
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from sqlalchemy import URL, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -94,11 +95,15 @@ def _headers(headers: httpx.Headers | Headers, exclude: set[str]) -> list[tuple[
     ]
 
 
-def _target(origin: str, path: str, query: str) -> httpx.URL:
+def _target(origin: str, path: str, query: bytes) -> httpx.URL:
     if any(part in {".", ".."} for part in path.split("/")) or "\\" in path:
         raise HTTPException(400, "invalid upstream path")
     url = httpx.URL(origin.rstrip("/") + "/" + quote(path.lstrip("/"), safe="/"))
-    return url.copy_with(query=query.encode("ascii")) if query else url
+    if not query:
+        return url
+    # Preserve query delimiters and existing percent escapes while encoding raw bytes.
+    encoded_query = quote_from_bytes(query, safe=punctuation)
+    return url.copy_with(query=encoded_query.encode("ascii"))
 
 
 def _scope(request: Request | WebSocket, name: str, body: dict | None = None) -> str:
@@ -119,11 +124,11 @@ def _gateway_origin(raw: str) -> str:
     if origin and "://" not in origin:
         origin = "http://" + origin
     parts = urlsplit(origin)
-    if (
-        parts.scheme not in {"http", "https"} or not parts.hostname
-        or parts.username is not None or parts.password is not None
-        or parts.query or parts.fragment or parts.path not in {"", "/"}
-    ):
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        raise HTTPException(502, "gateway address unavailable")
+    if parts.username is not None or parts.password is not None:
+        raise HTTPException(502, "gateway address unavailable")
+    if parts.query or parts.fragment or parts.path not in {"", "/"}:
         raise HTTPException(502, "gateway address unavailable")
     return origin.rstrip("/")
 
@@ -221,7 +226,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(403, "Agent or instance not admitted")
         return row
 
-    @app.get(_CONTEXT + "/agent-contexts")
+    console = APIRouter(prefix=_CONTEXT)
+
+    @console.get("/agent-contexts")
     async def contexts(request: Request):
         user = await current_user(request)
         try:
@@ -231,7 +238,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(503, "user access data unavailable") from None
         return {"code": 200, "message": "success", "data": {"contexts": result}}
 
-    @app.post(_CONTEXT + "/active-cluster")
+    @console.post("/active-cluster")
     async def active_cluster(body: ActiveCluster, request: Request, response: Response):
         user = await current_user(request)
         jid = body.jiuwenclaw_id.strip()
@@ -242,7 +249,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             max_age=30 * 24 * 60 * 60)
         return {"code": 200, "message": "success", "data": {"jiuwenclaw_id": jid}}
 
-    @app.delete(_CONTEXT + "/active-cluster")
+    @console.delete("/active-cluster")
     async def clear_cluster(response: Response):
         response.delete_cookie(_CLUSTER_COOKIE, httponly=True, samesite="lax")
         return {"code": 200, "message": "success", "data": {"cleared": True}}
@@ -261,7 +268,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ):
             content = request.stream()
         message = app.state.upstream.build_request(
-            request.method, _target(origin, path, request.url.query),
+            request.method, _target(origin, path, request.scope.get("query_string", b"")),
             headers=headers, content=content,
         )
         try:
@@ -270,6 +277,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(504, "upstream timed out") from None
         except httpx.RequestError:
             raise HTTPException(502, "upstream unavailable") from None
+
         async def stream() -> AsyncIterator[bytes]:
             try:
                 async for chunk in response.aiter_raw():
@@ -291,7 +299,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404)
         return await proxy(request, cfg.identity, path, surface=True)
 
-    @app.api_route(_CONTEXT + "/{path:path}", methods=_METHODS)
+    @console.api_route("/{path:path}", methods=_METHODS)
     async def manager_workflow(request: Request, path: str):
         if (
             path.startswith(("approvals/", "skills/upload-requests/"))
@@ -300,6 +308,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # Manager keeps the existing approval APIs and authenticates them as before.
             return await proxy(request, cfg.manager, _CONTEXT + "/" + path)
         raise HTTPException(404)
+
+    app.include_router(console)
 
     @app.api_route("/{path:path}", methods=_METHODS)
     async def gateway_proxy(request: Request, path: str):
@@ -347,13 +357,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(403, "Agent scope required")
             row = await resolve(websocket, user, bot, group)
             origin = _gateway_origin(row.gateway_ws or cfg.default_ws)
-            url = _target(origin, "ws/" + path if path else "ws", websocket.url.query)
+            query = websocket.scope.get("query_string", b"")
+            url = _target(origin, "ws/" + path if path else "ws", query)
             url = url.copy_with(scheme="wss" if url.scheme == "https" else "ws")
-            headers = [
-                (name, value) for name, value in _headers(
-                    websocket.headers, {"host", "x-user-id"},
-                ) if not name.startswith("sec-websocket-")
-            ]
+            headers = []
+            for name, value in _headers(websocket.headers, {"host", "x-user-id"}):
+                if not name.startswith("sec-websocket-"):
+                    headers.append((name, value))
             headers.append(("x-user-id", user.user_id))
             async with connect_ws(str(url), extra_headers=headers, max_size=None) as upstream:
                 await websocket.accept()

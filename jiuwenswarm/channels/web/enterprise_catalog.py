@@ -25,13 +25,6 @@ def _active(row: Any) -> bool:
 
 
 def _matches_agent_rule(rule: Any, user_id: str, group_id: str) -> bool:
-    # Preserve the Manager's legacy unconditional string and empty rule contract.
-    if isinstance(rule, str):
-        cleaned = rule.strip()
-        if not cleaned.startswith("[") and not any(
-            marker in cleaned for marker in ("==", "!=", " in ")
-        ):
-            return True
     try:
         return matches(rule, {"user_id": user_id, "group_id": group_id, "bot_id": ""})
     except ValueError:

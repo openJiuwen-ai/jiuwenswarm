@@ -1082,10 +1082,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 else:
                     self.send_error(400, "expected websocket upgrade")
                 return True
-            if (
-                path.startswith(("/idp/", "/gateway-api/")) or path == "/gateway-api"
-                or self._is_api_route() or self._is_file_api_route() or self._is_share_api_route()
-            ):
+            backend_api = path.startswith(("/idp/", "/gateway-api/")) or path == "/gateway-api"
+            resource_api = self._is_file_api_route() or self._is_share_api_route()
+            if backend_api or self._is_api_route() or resource_api:
                 self._proxy_http(target=backend, stream_sse=True)
                 return True
         if path.startswith("/idp/"):

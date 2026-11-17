@@ -8,8 +8,8 @@ from sqlalchemy import URL, insert, update
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from jiuwenswarm.channels.web.app_web import create_enterprise_app
-from jiuwenswarm.channels.web.enterprise_backend import Settings, create_app
-from jiuwenswarm.channels.web.enterprise_catalog import Catalog, User
+from jiuwenswarm.channels.web.enterprise_backend import Settings, _target, create_app
+from jiuwenswarm.channels.web.enterprise_catalog import Catalog, User, _matches_agent_rule
 
 
 def test_app_web_exports_enterprise_backend(monkeypatch):
@@ -77,7 +77,7 @@ async def test_identity_proxy_keeps_browser_binding_cookies_separate(monkeypatch
 async def test_agent_catalog_checks_live_admission_and_resource_scope():
     engine = create_async_engine("sqlite+aiosqlite://")
     catalog = Catalog(None)
-    user = User("Alice", {"A": "Organization A"})
+    user = User("Alice", {"A": "Organization A", "B": "Organization B"})
     try:
         async with engine.begin() as db:
             await db.run_sync(catalog.instances.metadata.create_all)
@@ -97,7 +97,7 @@ async def test_agent_catalog_checks_live_admission_and_resource_scope():
             }])
             await db.execute(insert(catalog.agents), [{
                 "jiuwenclaw_id": "X", "resource_id": "1",
-                "match_expr": "group_id == 'A'", "enabled": True,
+                "match_expr": "group_id in('A',)", "enabled": True,
             }, {
                 "jiuwenclaw_id": "Y", "resource_id": "1",
                 "match_expr": "group_id == 'B'", "enabled": True,
@@ -121,6 +121,25 @@ async def test_agent_catalog_checks_live_admission_and_resource_scope():
             assert await catalog.resolve(db, user, "X", "1", "A") is None
     finally:
         await engine.dispose()
+
+
+@pytest.mark.parametrize("rule", [None, "", [], "[]"])
+def test_agent_rule_preserves_unrestricted_values(rule):
+    assert _matches_agent_rule(rule, "Alice", "A")
+
+
+@pytest.mark.parametrize("rule", ["False", "group_id = 'A'", {"group_id": "A"}])
+def test_agent_rule_rejects_invalid_or_nonmatching_values(rule):
+    assert not _matches_agent_rule(rule, "Alice", "A")
+
+
+@pytest.mark.parametrize("path", ["api/v1/search", "ws"])
+def test_proxy_preserves_query_parameters_and_escapes_raw_utf8(path):
+    parameters = b"&blank=&multiple=a+b&multiple=%2F&array[]=1"
+    encoded = b"q=%e4%b8%ad" + parameters
+    raw = "q=中".encode("utf-8") + parameters
+    assert _target("https://gateway.example", path, encoded).query == encoded
+    assert _target("https://gateway.example", path, raw).query == b"q=%E4%B8%AD" + parameters
 
 
 @pytest.mark.parametrize("username", ["root", "postgres", ""])
