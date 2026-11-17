@@ -2815,6 +2815,7 @@ def prune_external_cli_path_histories_in_config(cli_agent: str, remove_paths: li
     if not histories:
         current.pop(key, None)
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    refresh_external_cli_state_sidecar(CONFIG_YAML_PATH)
     return surviving
 
 
@@ -3034,6 +3035,8 @@ def update_external_cli_agents_in_config(agents: list[str | dict[str, Any]], pub
         current.pop(EXTERNAL_TRANSPORT_CONFIG_PATH[-1], None)
 
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    # 镜像到数据目录之外的状态旁路：数据目录被整体删除（重装）后仍可恢复启用态
+    refresh_external_cli_state_sidecar(CONFIG_YAML_PATH)
 
 
 def update_external_cli_path_histories_in_config(histories: dict[str, list[str]]) -> None:
@@ -3070,6 +3073,7 @@ def update_external_cli_path_histories_in_config(histories: dict[str, list[str]]
     else:
         current.pop(EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[-1], None)
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    refresh_external_cli_state_sidecar(CONFIG_YAML_PATH)
 
 
 def update_external_cli_builtin_models_in_config(catalogs: dict[str, list[dict[str, Any]]]) -> None:
