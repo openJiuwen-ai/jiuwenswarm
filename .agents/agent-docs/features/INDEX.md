@@ -95,6 +95,7 @@ generated: true
 |---|---|---|---|---|
 | [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
 | [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
+| [F_20261116_2215_grep-code-tool](F_20261116_2215_grep-code-tool.md) | feature | grep_code Cross-Platform Code Search and Pattern Matching Tool | zxj0302 | 无独立 D：Cross-platform regex/literal code search tool for agent codebase navigation |
 
 <a id="module-jiuwenswarm-agents-harness-team-rails"></a>
 

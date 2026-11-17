@@ -29,6 +29,7 @@ _EXPORTS = {
     ),
     "TaskMemoryService": ("openjiuwen.extensions.context_evolver.service.task_memory_service", "TaskMemoryService"),
     "AddMemoryRequest": ("openjiuwen.extensions.context_evolver.service.task_memory_service", "AddMemoryRequest"),
+    "grep_code": (".grep_tools", "grep_code"),
 }
 __all__ = list(_EXPORTS)
 

@@ -133,6 +133,10 @@ BUILTIN_TOOL_DISCOVERY: dict[str, ToolDiscoveryMetadata] = {
     "delete_collection": _entry("Delete items from the user's saved knowledge collections.", "删除 收藏 知识"),
     "add_collection": _entry("Save public knowledge to the user's personal collection.", "添加 保存 收藏 知识"),
     "xiaoyi_gui_agent": _entry("Operate phone apps through screen interaction.", "操作 手机应用 点击 屏幕 GUI"),
+    "grep_code": _entry(
+        "Search codebase and text files with regex, context lines, and file filters.",
+        "代码搜索 代码检索 正则匹配 查找代码 文件过滤 ripgrep grep",
+    ),
 }
 
 

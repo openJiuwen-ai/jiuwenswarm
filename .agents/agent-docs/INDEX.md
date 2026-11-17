@@ -193,6 +193,7 @@ generated: true
 | [F_20261103_1124_sdk-web-retrieval](features/F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 | [S_01_tool-discovery-language](specs/jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | — |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
+| [F_20261116_2215_grep-code-tool](features/F_20261116_2215_grep-code-tool.md) | feature | grep_code Cross-Platform Code Search and Pattern Matching Tool | zxj0302 | 无独立 D：Cross-platform regex/literal code search tool for agent codebase navigation |
 
 <a id="module-jiuwenswarm-agents-harness-common-tools-cron"></a>
 

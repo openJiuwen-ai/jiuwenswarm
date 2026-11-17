@@ -74,7 +74,7 @@ register(['send_file_to_user'], {
 });
 
 // 搜索类：搜索内容（grep/记忆检索）
-register(['grep', 'memory_search'], {
+register(['grep', 'grep_code', 'memory_search'], {
   category: 'search',
   actionKey: 'chatUi.toolAction.search',
   iconKey: 'search',
