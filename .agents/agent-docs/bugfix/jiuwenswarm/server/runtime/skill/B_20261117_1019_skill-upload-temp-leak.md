@@ -40,14 +40,13 @@ design_note: 两阶段上传缺少文件生命周期归属，属实现缺陷的�
 
 - 每次上传用 `tempfile.mkdtemp(prefix="jiuwenswarm_skill_upload_")` 建立独立目录，
   目录前缀同时作为归属标识；消费端、discard 与 TTL 清理都只认这个布局。
-- `discard_skill_upload`：解析符号链接后要求父目录就是系统临时目录且目录名带固定前缀，
-  删除整目录，幂等；其余路径一律拒绝。
+- `discard_skill_upload`：内部函数，解析符号链接后要求父目录就是系统临时目录且目录名带固定前缀，
+  删除整目录，幂等；其余路径一律拒绝。当前仅由导入终态清理调用。
 - `handle_skills_import_upload`：导入成功或终态失败后删除源 zip；同名冲突
   （`SKILL_ALREADY_EXISTS` / `SKILL_IMPORT_OVERWRITE_REQUIRED`）保留文件以支持覆盖确认后的二次导入。
 - `cleanup_stale_skill_uploads`：启动后台线程与每次上传前各执行一次，按 24h TTL 回收；
   用 `lstat` 读 mtime，悬空符号链接同样能按 TTL 回收。
-- 请求体大小早检：upload-temp 在读取 body 前校验 Content-Length，超限直接 413；
-  discard 增加 64KB 上限，超限不读 body 直接拒绝。
+- 请求体大小早检：upload-temp 在读取 body 前校验 Content-Length，超限直接 413。
 - 保持既有本地服务安全边界：默认绑定 `FRONTEND_HOST`（缺省 localhost），
   `/file-api` POST 统一拒绝 `Sec-Fetch-Site: cross-site`。
 
@@ -57,24 +56,19 @@ design_note: 两阶段上传缺少文件生命周期归属，属实现缺陷的�
 
 - 请求：`multipart/form-data`，字段 `file`（zip，≤50MB；请求体上限 52MB）。
 - 响应：`200 {"path": "<绝对路径>"}`；`413 {"code": "SKILL_FILE_TOO_LARGE", "message", "error"}`。
-- 生命周期：文件保留到 `skills.import_upload` 终态、前端 discard 或 24h TTL 到期。
-
-`POST /file-api/skills/upload-discard`
-
-- 请求：`{"path": "<upload-temp 返回的路径>"}`，请求体上限 64KB。
-- 响应：`200 {"ok": true, "discarded": true|false}`，幂等；非受管路径返回 `discarded: false`；
-  超限 `413 {"code": "SKILL_FILE_TOO_LARGE", ...}`；非法 JSON / 非法 path 返回 400。
-- 调用方：前端技能导入流程的 `finally` 回收（批次 2）。
+- 生命周期：文件保留到 `skills.import_upload` 终态或 24h TTL 到期；同名冲突待覆盖确认期间保留。
 
 ## 验证
 
 - `tests/unit_tests/test_app_web_skill_upload.py`：上传后可导入并回收、同名冲突保留与覆盖回收、
-  discard 幂等、越界路径拒绝、discard 超限 413 且不删除、TTL 回收、悬空符号链接回收。
+  越界路径拒绝、TTL 回收、悬空符号链接回收。
 - 本地 default 实例冒烟：upload-temp 返回 `<tmp>/jiuwenswarm_skill_upload_<rand>/smoke.zip`，
-  discard 返回 `discarded: true`，文件与专属目录均被删除。
+  导入终态后文件与专属目录均被删除。
 
 ## 遗留
 
-- 前端 `SkillPanel` 的 finally discard 与 `vite.config.ts` 开发中间件改造尚未落地；
-  在该批次完成前，`npm run dev` 的上传仍写入旧扁平布局，不会被 discard 与前缀 TTL 命中。
+- 前端 `SkillPanel` 的 finally 回收、`POST /file-api/skills/upload-discard` 接口及其 64KB
+  请求体上限、`vite.config.ts` 开发中间件改造一并推迟到批次 2；在该批次完成前，
+  用户取消覆盖或关闭页面后的残留只能等待 TTL，`npm run dev` 的上传仍写入旧扁平布局，
+  不会被前缀 TTL 命中。
 - 部署侧若把 `FRONTEND_HOST` 改为非 localhost 地址，需要自行在入口增加鉴权。

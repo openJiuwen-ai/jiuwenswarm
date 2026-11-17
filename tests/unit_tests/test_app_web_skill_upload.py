@@ -25,7 +25,6 @@ from jiuwenswarm.server.runtime.skill.skill_manager import (
     SkillRpcError,
 )
 from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
-    SKILL_UPLOAD_DISCARD_MAX_REQUEST_BYTES,
     SKILL_UPLOAD_PREFIX,
     cleanup_stale_skill_uploads,
     discard_skill_upload,
@@ -124,22 +123,6 @@ def _post_upload(
         connection.close()
 
 
-def _post_discard(port: int, path_value: str):
-    connection = HTTPConnection("127.0.0.1", port, timeout=10)
-    try:
-        connection.request(
-            "POST",
-            "/file-api/skills/upload-discard",
-            body=json.dumps({"path": path_value}),
-            headers={"Content-Type": "application/json"},
-        )
-        response = connection.getresponse()
-        assert response.headers["Content-Type"].startswith("application/json")
-        return response.status, json.loads(response.read())
-    finally:
-        connection.close()
-
-
 def _skill_zip(asset: bytes) -> bytes:
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as package:
@@ -217,65 +200,11 @@ async def test_conflict_keeps_upload_until_overwrite(upload_server, manager):
     assert not second.parent.exists()
 
 
-def test_upload_discard_removes_uploaded_path(upload_server):
-    port, _ = upload_server
-    status, payload = _post_upload(port, "temp.zip", b"zip-content")
-    assert status == 200, payload
-    uploaded = Path(payload["path"])
-    assert uploaded.is_file()
-
-    status, result = _post_discard(port, str(uploaded))
-    assert status == 200
-    assert result["discarded"] is True
-    assert not uploaded.exists()
-    assert not uploaded.parent.exists()
-
-    # 幂等：重复释放仍返回成功
-    status, result = _post_discard(port, str(uploaded))
-    assert status == 200
-    assert result["discarded"] is False
-
-
-def test_upload_discard_rejects_path_outside_root(upload_server, tmp_path):
-    port, _ = upload_server
+def test_discard_rejects_path_outside_upload_root(upload_server, tmp_path):
     outside = tmp_path / "outside.zip"
     outside.write_bytes(b"keep")
-    status, result = _post_discard(port, str(outside))
-    assert status == 200
-    assert result["discarded"] is False
+    assert discard_skill_upload(str(outside)) is False
     assert outside.is_file()
-
-
-def test_upload_discard_rejects_oversized_body(upload_server):
-    port, _ = upload_server
-    status, payload = _post_upload(port, "temp.zip", b"zip-content")
-    assert status == 200, payload
-    uploaded = Path(payload["path"])
-    assert uploaded.is_file()
-
-    body = json.dumps(
-        {
-            "path": str(uploaded),
-            "pad": "x" * (SKILL_UPLOAD_DISCARD_MAX_REQUEST_BYTES + 1),
-        }
-    )
-    connection = HTTPConnection("127.0.0.1", port, timeout=10)
-    try:
-        connection.request(
-            "POST",
-            "/file-api/skills/upload-discard",
-            body=body,
-            headers={"Content-Type": "application/json"},
-        )
-        response = connection.getresponse()
-        status = response.status
-        result = json.loads(response.read())
-    finally:
-        connection.close()
-    assert status == 413
-    assert result["code"] == "SKILL_FILE_TOO_LARGE"
-    # 超限请求不读 body，也不得删除已上传的文件
-    assert uploaded.is_file()
 
 
 def test_stale_dangling_symlink_upload_dirs_are_cleaned(upload_server):
