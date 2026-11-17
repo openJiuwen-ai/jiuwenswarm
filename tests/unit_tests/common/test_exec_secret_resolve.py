@@ -739,7 +739,9 @@ class TestSaveTrackHeaders:
 
         monkeypatch.setattr(m, "CONFIG_YAML_PATH", config_file)
         monkeypatch.setattr(m, "get_config_file", lambda: config_file)
-        # Header resolution must not depend on Gateway crypto initialization.
+        # Header resolution only. A leftover ExtensionRegistry crypto bridge
+        # from another test on this worker calls get_instance() and raises
+        # when the registry has already been cleared.
         monkeypatch.setattr(m, "get_crypto_provider", lambda: None)
         _register(monkeypatch, pattern="models.*.model_client_config.custom_headers.*")
 

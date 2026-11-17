@@ -56,3 +56,5 @@ Issue #6596 的启动截图出现外层 `ERROR [Worker stderr ...]` 包裹内层
 补充回归覆盖完整 `test_exec_secret_resolve.py`、配置并发写、运行模型配置、会话加密及非 slow IPC 输出测试：96 passed、2 skipped、18 deselected。企业模型模板测试所需 foundation 使用附件 CI 的 `d4a8761c8a561b1ee1b8a4333def0077b308e709`；补齐该依赖后组合回归通过。证据位于 `artifacts/issue6596-ut-fix-20261117/` 及原证据目录的 `develop-ut-fix-final.*`。
 
 本轮没有修改产品源码；`WorkerProcess` 类仍与 !9920 父提交逐字一致。新提交的远端全量 CI 待流水线重新执行，不把本地定向通过视作全量 CI 通过。
+
+推送期间，develop 合入 `4771ebb77e88c2a8082595d6bd061eb56e24938a`，其中已包含同等的 crypto 依赖隔离。合并最新 develop 时保留上游测试注释与实现，消除该文件的重复差异；保留上游 IPC 基础设施目录等变化，`WorkerProcess` 类仍与历史版本一致。合并后重新执行上述组合并加入 socket 路径测试：96 passed、7 skipped、18 deselected，证据为 `develop-ut-fix-merged-final.*`。

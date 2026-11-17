@@ -132,6 +132,13 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("team.members.get", "GET", "/sessions/{session_id}/team/members"),
     ("team.history.get", "GET", "/sessions/{session_id}/team/history"),
     ("team.mq.publish", "POST", "/teams/mq/publish"),
+    ("team.create", "POST", "/teams"),
+    ("team.get", "GET", "/teams/current"),
+    ("team.stop", "POST", "/teams/actions/stop"),
+    ("team.member.join", "POST", "/teams/members/join"),
+    ("team.member.leave", "POST", "/teams/members/leave"),
+    ("team.members.list", "GET", "/teams/members"),
+    ("team.quota.get", "GET", "/teams/quota"),
     ("team.delete", "DELETE", "/teams/{team_name}"),
     ("skills.list", "GET", "/skills"),
     ("skills.installed", "GET", "/skills/installed"),
@@ -319,6 +326,7 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
 )
 
 REST_ROUTES: dict[str, tuple[str, str]] = {method: (verb, path) for method, verb, path in _ROUTE_ROWS}
+REST_ROUTES["video.conversation.append"] = ("POST", "/sessions/{session_id}/video/conversation/events")
 
 
 class RestAssemblyError(ValueError):
