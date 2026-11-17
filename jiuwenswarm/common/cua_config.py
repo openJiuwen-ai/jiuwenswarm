@@ -58,12 +58,14 @@ def cua_repl_unavailable_reason() -> str:
             return "unsupported_platform"
         if not bundle:
             return "backend_missing"
-        root = Path(bundle) / "computer_use/_resources/os_adapter"
+        root = Path(bundle) / "computer_use/_resources"
         if sys.platform == "darwin":
-            driver = root / "macos/.build/ComputerUseDriver.app/Contents/MacOS/computer-use-driver"
+            from computer_use.paths import native_driver
+
+            driver = Path(native_driver(platform="darwin", root=root)["command"])
             available = driver.is_file() and os.access(driver, os.X_OK)
         else:
-            directory = root / "windows/.build"
+            directory = root / "os_adapter/windows/.build"
             files = ("computer-use-driver.exe", "computer-use-capture.exe", "Interop.NativeUIA.dll")
             available = all((directory / name).is_file() for name in files)
         return "" if available else "backend_missing"

@@ -72,7 +72,7 @@ def test_frozen_backend_uses_external_resource_layout(tmp_path, monkeypatch, sys
     monkeypatch.setattr(cua_config.importlib.util, "find_spec", lambda name: object())
     assert not cua_config.is_cua_repl_available()
     root = tmp_path / "computer_use/_resources/os_adapter"
-    files = (["macos/.build/ComputerUseDriver.app/Contents/MacOS/computer-use-driver"] if system == "darwin"
+    files = (["macos/.build/Jiuwen CUA.app/Contents/MacOS/computer-use-driver"] if system == "darwin"
              else ["windows/.build/" + name for name in (
                  "computer-use-driver.exe", "computer-use-capture.exe", "Interop.NativeUIA.dll",
              )])
