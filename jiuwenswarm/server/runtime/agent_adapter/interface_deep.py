@@ -10957,6 +10957,10 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         # "entering runner streaming" line so the pre-dispatch work is visible.
         stream_impl_started_at = time.monotonic()
         if not self._is_session_scoped_adapter:
+            # 硬预算刻意为之：会话准备挂死曾以"完成帧假成功"或无限等待收场
+            # （1112 问题 2/问题 8 同族——无终态家族）。超过预算按可重试的
+            # 初始化失败处理（AgentRuntimeNotReadyError）；内层 wait_for 的
+            # 超时逃逸到此处也归入该类——语义仍成立（准备确实没完成）。
             try:
                 async with asyncio.timeout(_SESSION_PREPARE_TIMEOUT_SECONDS):
                     session_adapter = await self._get_or_create_session_adapter(

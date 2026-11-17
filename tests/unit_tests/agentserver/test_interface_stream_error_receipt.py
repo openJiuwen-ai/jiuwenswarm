@@ -24,10 +24,9 @@ def _make_request(rid: str = "req-term") -> AgentRequest:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("as_dict", [False, True])
-async def test_empty_stream_fails_with_error_terminal(monkeypatch, as_dict):
+async def test_empty_stream_fails_with_error_terminal(monkeypatch):
     """producer 零事件：空流必须以携带 AGENT_STREAM_EMPTY 的 chat.error 终帧收尾，
-    不得再以裸 {"is_complete": True} 假成功。"""
+    不得再以裸 {"is_complete": True} 假成功。（空流无事件，dict/chunk 形态无差别）"""
 
     class FakeAdapter:
         @staticmethod
@@ -183,6 +182,97 @@ async def test_execution_error_synthesizes_error_terminal(monkeypatch):
     assert isinstance(payload, dict)
     assert payload.get("event_type") == "chat.error"
     assert payload.get("error") == "本轮执行失败"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("as_dict", [False, True])
+async def test_retry_notice_does_not_poison_terminal(monkeypatch, as_dict):
+    """AI 检视 P1 回归：rail 透明重试通知（retry_notice=True）是过程不是结果——
+    重试成功并恢复产出后，终帧必须回归成功回执，不得把成功的一轮判为失败。"""
+
+    def _events():
+        yield {"event_type": "chat.delta", "content": "开始回答"}
+        yield {"event_type": "chat.error", "error": "模型调用异常，正在第 1 次重试", "retry_notice": True}
+        yield {"event_type": "chat.delta", "content": "重试后的完整回答"}
+        yield {"event_type": "chat.final", "content": "重试后的完整回答"}
+
+    class FakeAdapter:
+        @staticmethod
+        async def process_message_stream_impl(*_args, **_kwargs):
+            for payload in _events():
+                if as_dict:
+                    yield payload
+                else:
+                    yield AgentResponseChunk(
+                        request_id="req-retry", channel_id="desktop",
+                        payload=payload, is_complete=False,
+                    )
+
+    monkeypatch.setattr(interface_module.JiuWenSwarm, "_ensure_adapter", lambda *_a, **_k: FakeAdapter())
+    monkeypatch.setattr(interface_module, "get_config", lambda: {"memory": {"mode": "disabled"}})
+    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
+    monkeypatch.setattr(interface_module, "append_history_record", lambda **record: None)
+    monkeypatch.setattr(interface_module, "_schedule_symphony_session_feedback", lambda *_args: None)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.expert.expert_service.history_expert_identity_extra",
+        lambda _session_id: {},
+    )
+
+    chunks = [chunk async for chunk in interface_module.JiuWenSwarm().process_message_stream(_make_request("req-retry"))]
+
+    terminals = [chunk for chunk in chunks if chunk.is_complete]
+    assert len(terminals) == 1
+    assert terminals[-1].payload == {"is_complete": True}
+    # 重试通知帧本身仍原样透传（客户端琥珀横幅依赖它），但不进终态回执
+    assert any(
+        isinstance(chunk.payload, dict) and chunk.payload.get("retry_notice") is True
+        for chunk in chunks if not chunk.is_complete
+    )
+    assert all(
+        not (isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "chat.error")
+        for chunk in chunks if chunk.is_complete
+    )
+
+
+@pytest.mark.asyncio
+async def test_recovery_resets_error_receipt(monkeypatch):
+    """AI 检视 P1 回归（恢复清除语义）：终态性错误收集后若仍有恢复产出
+    （chat.delta/chat.final），错误收执被覆盖，终帧回归成功。"""
+
+    class FakeAdapter:
+        @staticmethod
+        async def process_message_stream_impl(*_args, **_kwargs):
+            yield AgentResponseChunk(
+                request_id="req-reset", channel_id="desktop",
+                payload={"event_type": "chat.error", "error": "瞬时错误"},
+                is_complete=False,
+            )
+            yield AgentResponseChunk(
+                request_id="req-reset", channel_id="desktop",
+                payload={"event_type": "chat.delta", "content": "恢复后的产出"},
+                is_complete=False,
+            )
+            yield AgentResponseChunk(
+                request_id="req-reset", channel_id="desktop",
+                payload={"event_type": "chat.final", "content": "恢复后的产出"},
+                is_complete=False,
+            )
+
+    monkeypatch.setattr(interface_module.JiuWenSwarm, "_ensure_adapter", lambda *_a, **_k: FakeAdapter())
+    monkeypatch.setattr(interface_module, "get_config", lambda: {"memory": {"mode": "disabled"}})
+    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
+    monkeypatch.setattr(interface_module, "append_history_record", lambda **record: None)
+    monkeypatch.setattr(interface_module, "_schedule_symphony_session_feedback", lambda *_args: None)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.expert.expert_service.history_expert_identity_extra",
+        lambda _session_id: {},
+    )
+
+    chunks = [chunk async for chunk in interface_module.JiuWenSwarm().process_message_stream(_make_request("req-reset"))]
+
+    terminals = [chunk for chunk in chunks if chunk.is_complete]
+    assert len(terminals) == 1
+    assert terminals[-1].payload == {"is_complete": True}
 
 
 @pytest.mark.asyncio
