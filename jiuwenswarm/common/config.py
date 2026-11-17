@@ -33,7 +33,6 @@ from jiuwenswarm.common.runtime_model_config import apply_runtime_model_config
 from jiuwenswarm.common.utils import (
     get_config_dir,
     get_config_file,
-    get_user_workspace_dir,
     refresh_external_cli_state_sidecar,
 )
 
