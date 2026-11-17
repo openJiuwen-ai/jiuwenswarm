@@ -113,14 +113,22 @@ def test_source_macos_reports_driver_availability_without_building(monkeypatch, 
     assert cua_config.is_cua_backend_available() is (not expected)
 
 
-def test_existing_backend_keeps_the_setting_available_when_the_repl_build_failed(monkeypatch):
+@pytest.mark.parametrize(("system", "legacy_available"), [
+    ("darwin", False), ("win32", False), ("linux", True),
+])
+def test_legacy_fallback_after_repl_build_failure_is_linux_only(monkeypatch, system, legacy_available):
+    monkeypatch.setattr(cua_config, "sys", SimpleNamespace(platform=system))
+    monkeypatch.setattr(cua_config, "_is_harmony_desktop", lambda: False)
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(cua_config.importlib.util, "find_spec", lambda name: object())
     monkeypatch.setattr(cua_config, "cua_repl_unavailable_reason", lambda: "native_build_failed")
-    monkeypatch.setattr(cua_config, "is_legacy_cua_available", lambda: True)
+
     assert not cua_config.is_cua_repl_available()
-    assert cua_config.is_cua_backend_available()
+    assert cua_config.is_legacy_cua_available() is legacy_available
+    assert cua_config.is_cua_backend_available() is legacy_available
     assert cua_config.cua_backend_settings() == {
-        "cua_backend_available": "true",
-        "cua_backend_unavailable_reason": "",
+        "cua_backend_available": "true" if legacy_available else "false",
+        "cua_backend_unavailable_reason": "" if legacy_available else "native_build_failed",
     }
 
 

@@ -79,18 +79,11 @@ def is_cua_repl_available() -> bool:
 
 
 def is_legacy_cua_available() -> bool:
-    """Check the prerequisites of agent-core's single-step desktop tools."""
+    """Check whether Linux can use agent-core's single-step desktop tools."""
     try:
-        if _is_harmony_desktop():
+        if not sys.platform.startswith("linux") or _is_harmony_desktop() or not os.getenv("DISPLAY"):
             return False
-        modules = ("pyautogui", "PIL")
-        if sys.platform.startswith("linux"):
-            if not os.getenv("DISPLAY"):
-                return False
-            modules += ("Xlib",)
-        elif sys.platform != "win32":
-            return False
-        return all(importlib.util.find_spec(name) is not None for name in modules)
+        return all(importlib.util.find_spec(name) is not None for name in ("pyautogui", "PIL", "Xlib"))
     except (ImportError, OSError, ValueError):
         return False
 
