@@ -30,7 +30,7 @@ import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
 import CancelledIcon from '../../assets/work-mode/已取消.svg?react';
 import { UnassignedTeamAvatar } from './UnassignedTeamAvatar';
 import { getBoardTaskTitle, getMemberDisplayName, getTaskColumnKey, isKnownTaskAssignee, type TeamMember } from './shared';
-import { workflowAgentAvatarName, workflowAgentDisplayName, workflowAgentIdentity, workflowPhaseWorkers, type WorkflowAgent, type WorkflowRun } from './workflowTypes';
+import { workflowAgentAvatarName, workflowAgentDisplayName, workflowAgentIdentity, workflowPhaseForTask, workflowPhaseWorkers, type WorkflowAgent, type WorkflowRun } from './workflowTypes';
 import { useEnsurePhaseAgents } from './useEnsurePhaseAgents';
 
 export interface CompactTaskListProps {
@@ -90,6 +90,7 @@ export function CompactTaskList({
         const columnKey = getTaskColumnKey(task);
         // 镜像的 workflow phase 任务无 assignee：按 run 的 phase agents 渲染色块头像栈。
         const workers = task.workflow_run_id ? workflowPhaseWorkers(task, workflowRuns ?? []) : [];
+        const phase = workflowPhaseForTask(task, workflowRuns ?? [])?.phase;
         const statusIcon = renderStatusIcon ? (
           renderStatusIcon(task)
         ) : columnKey === 'running' ? (
@@ -161,6 +162,16 @@ export function CompactTaskList({
                 {title}
               </span>
             </ApplicationTaskControls>
+            {phase && typeof phase.agent_count === 'number' && typeof phase.completed_agent_count === 'number' && (
+              <span
+                className="shrink-0 text-xs text-text-muted"
+                data-testid="team-area-task-agent-progress"
+                title={t('team.planning.phaseAgentProgress', { ended: phase.completed_agent_count, total: phase.agent_count })}
+                aria-label={t('team.planning.phaseAgentProgress', { ended: phase.completed_agent_count, total: phase.agent_count })}
+              >
+                {phase.completed_agent_count}/{phase.agent_count}
+              </span>
+            )}
             {statusIconAtEnd && statusIcon}
           </div>
         );
