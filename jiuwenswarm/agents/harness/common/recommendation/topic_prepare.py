@@ -4,8 +4,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -16,9 +14,6 @@ from typing import Any
 from jiuwenswarm.agents.harness.common.recommendation import (
     topic_history as history,
 )
-from jiuwenswarm.agents.harness.common.recommendation.topic_history import (
-    load_latest_history_state,
-)
 from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
     ArkBackgroundConfig,
     build_ark_stage_invoker,
@@ -26,32 +21,21 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
     provider_invocation_context,
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_pool import (
-    BackgroundGenerationCoordinator,
     BackgroundGenerationResult,
-    PAYLOAD_VERSION,
     POLICY_ID,
-    build_generation_trigger_key,
-    build_serving_compatibility_key,
     find_exact_pool_card,
-    read_starter_pool,
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_sources import (
-    ArkFixedStarterRankingAdapter,
     FetchFn,
     corpus_version_for_language,
-    I3_RETRIEVAL_PROMPT_VERSION,
     RankedInterest,
     RankedInterest as CorpusRankedInterest,
-    RETRIEVAL_CONFIG_VERSION,
     SearchFn,
     SourceClassifier,
     StarterHit,
     default_fetch,
     default_search,
     default_source_classifier,
-    ground_candidates,
-    load_fixed_starter_corpus,
-    retrieve_fixed_starters,
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
     TopicStarterStore,

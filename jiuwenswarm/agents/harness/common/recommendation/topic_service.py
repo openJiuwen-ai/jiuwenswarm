@@ -49,7 +49,6 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
     GLOBAL_POOL_TARGET_SIZE,
     HOT_LIST_SOURCE_KIND,
     INPUT_REVISION_RECEIPT_VERSION,
-    NEWS_ONLY_SUCCESSOR,
     POLICY_ID,
     TERMINAL_COMPONENT_IDS,
     InterestFeedback,

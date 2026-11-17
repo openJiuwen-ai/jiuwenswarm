@@ -27,9 +27,6 @@ from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
     get_deepagent_user_md_path,
 )
-from jiuwenswarm.server.runtime.session.session_metadata import (
-    get_all_sessions_metadata,
-)
 
 _DRIFT_WEIGHTS = (0.4, 0.3, 0.3)
 _DRIFT_THRESHOLD = 0.8

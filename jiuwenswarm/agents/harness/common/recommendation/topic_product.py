@@ -5,17 +5,15 @@
 from __future__ import annotations
 
 import json
-import math
 import random
 import re
 import time
 import uuid
 from collections import Counter
 from collections.abc import Collection, Iterable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import datetime, timezone
-from functools import cached_property
 from typing import Any, Callable, NamedTuple
 from urllib.parse import urlparse
 
@@ -23,10 +21,6 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_contracts import (
     cold_start_pool_ok,
     personalized_pool_rejection_reason,
     pool_is_readable,
-)
-from jiuwenswarm.agents.harness.common.recommendation.topic_history import (
-    apply_negative_preferences,
-    load_latest_history_state,
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_news import (
     NEWS_FEED_ENGINE,
@@ -62,7 +56,6 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
     TopicStarterStore,
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_terminal import (
-    RID_RESULT_SCHEMA_VERSION,
     SessionSummaryArtifact,
 )
 from .topic_primitives import (

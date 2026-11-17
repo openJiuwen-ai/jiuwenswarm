@@ -42,7 +42,6 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_news import (
     HotListEntry,
     HotListFeed,
     HotListPull,
-    hot_event_key,
     hot_list_open_url,
     normalize_news_query,
 )
@@ -77,7 +76,6 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
     SESSION_SUMMARY_COVERAGE_EVENT_TYPE,
     SESSION_SUMMARY_COVERAGE_RECEIPT_VERSION,
     SESSION_SUMMARY_MATERIALIZATION_RECEIPT_VERSION,
-    TERMINAL_COMPONENT_IDS,
     InterestFeedback,
     RetainablePool,
     build_serving_compatibility_key,

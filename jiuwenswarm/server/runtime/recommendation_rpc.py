@@ -254,7 +254,6 @@ async def _get(host: Any, params: dict[str, Any], session_id: str) -> Recommenda
     if not requested_session_id:
         return _fail("session_id is required", "BAD_REQUEST")
     from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
-        GLOBAL_NEW_CHAT_SCOPE,
         normalize_topic_work_mode,
         project_id_for_scope,
     )
