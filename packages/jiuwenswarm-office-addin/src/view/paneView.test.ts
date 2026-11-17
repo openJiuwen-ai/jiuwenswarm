@@ -73,7 +73,7 @@ function mounted(initial: Partial<PaneState> = {}) {
   const root = document.createElement('div');
   document.body.replaceChildren(root);
   mountPane(root, controller, documentCopy.presentation,
-    { now: () => clockNow, every: (_ms, tick) => ticks.push(tick) });
+    { clock: { now: () => clockNow, every: (_ms, tick) => ticks.push(tick) } });
   const set = (change: Partial<PaneState>): void => {
     state = { ...state, ...change };
     listeners.forEach(listener => listener(state));

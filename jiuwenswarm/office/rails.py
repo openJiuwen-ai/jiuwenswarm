@@ -61,7 +61,8 @@ class OfficeToolsRail(AgentRail):
 
     def init(self, agent: Any) -> None:
         store = OfficeAssetStore()
-        client_tools = build_task_pane_tools(self._package_dir, partial(_native_image_model, agent), store)
+        client_tools = build_task_pane_tools(self._package_dir, partial(_session_model, agent),
+                                             partial(_native_image_model, agent), store)
         self._client_tools = client_tools
         self._tools = [*client_tools, PublishOfficeAssetTool(store), ListOpenDocumentsTool()]
         for tool in self._tools:
@@ -116,9 +117,14 @@ async def _show_client_state(ctx: AgentCallbackContext) -> None:
     mark_client_state_shown(session_id, sequence)
 
 
+def _session_model(agent: Any) -> Model:
+    """The conversation's current model; a model switch replaces it."""
+    return agent.deep_config.model
+
+
 def _native_image_model(agent: Any) -> Model | None:
     """The conversation's current model when it takes images, else ``None``; a model switch replaces it."""
-    return agent.deep_config.model if should_enable_read_image_multimodal(agent) else None
+    return _session_model(agent) if should_enable_read_image_multimodal(agent) else None
 
 
 def _supported_tools(session_id: str) -> frozenset[str] | None:
