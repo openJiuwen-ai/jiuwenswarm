@@ -101,7 +101,7 @@ async def _migrate_history_context(*, context_engine: Any, session: Any, process
         if not path.exists():
             return False
         stat = path.stat()
-        identity = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        identity = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
         generation = int(lc.state("session", session_id).get("generation", 0))
     previous_context = context_engine.get_context(session_id=session_id)
     previous_state = previous_context.save_state() if previous_context is not None else None

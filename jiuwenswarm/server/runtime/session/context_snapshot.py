@@ -80,9 +80,12 @@ def invalidate_snapshot_hint(session_id: str) -> None:
     (snapshot_directory(session_id) / "checkpoint-hint.json").unlink(missing_ok=True)
 
 
-def _identity(path: Path) -> tuple[int, int, int, int, int]:
+def _identity(path: Path) -> tuple[int, int, int, int]:
     stat = path.stat()
-    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+    # st_ctime_ns is excluded: on Windows, os.stat and os.fstat report different
+    # values for the creation-time field, which breaks the cross-source
+    # comparison (same root cause as history_replay._identity, JW-41).
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
 
 
 def _anchor(path: Path, offset: int) -> str:
@@ -121,10 +124,14 @@ def _read_cursor(session_id: str, value: dict[str, Any]) -> HistoryReplayCursor 
 
     path = get_read_history_path(session_id)
     generation = int(lc.state("session", session_id).get("generation", 0))
-    identity = _identity(path) if path.exists() else (0, 0, 0, 0, 0)
+    identity = _identity(path) if path.exists() else (0, 0, 0, 0)
     old_identity = value.get("identity")
     offset = value.get("offset")
-    if not isinstance(old_identity, list) or len(old_identity) != 5:
+    # Accept both identity formats: legacy snapshots persist a 5-element
+    # identity (with st_ctime_ns), new ones persist 4 elements (see _identity).
+    # The ctime slot never participates in the checks below (only [:2] and
+    # [2]=size are read), so legacy snapshots need no migration.
+    if not isinstance(old_identity, list) or len(old_identity) not in (4, 5):
         raise HistoryReplayError("Invalid context snapshot boundary")
     if any(type(item) is not int for item in old_identity):
         raise HistoryReplayError("Invalid context snapshot boundary")
@@ -283,7 +290,7 @@ def _advance_boundary(session_id: str, cursor: HistoryReplayCursor | None,
         lc.write_guard(session_id)
         path = get_read_history_path(session_id)
         generation = int(lc.state("session", session_id).get("generation", 0))
-        identity = _identity(path) if path.exists() else (0, 0, 0, 0, 0)
+        identity = _identity(path) if path.exists() else (0, 0, 0, 0)
         start = cursor.offset if cursor is not None else 0
         if cursor is not None:
             if cursor.path != path or cursor.generation != generation:
