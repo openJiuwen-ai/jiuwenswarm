@@ -229,13 +229,14 @@ function memberCard(
   t: (key: string) => string,
   colleague: JiuwenMateColleague,
   handlers: OfficeDashboardHandlers,
-  options: { selected?: boolean; onSelect?: () => void } = {},
+  options: { selected?: boolean; onSelect?: () => void; revealClippedDescription?: boolean } = {},
 ) {
   return (
     <ColleagueCard
       colleague={colleague}
       selected={options.selected}
       onSelect={options.onSelect}
+      revealClippedDescription={options.revealClippedDescription}
       badge={memberBadge(t, colleague)}
       menu={memberMenu(t, colleague, handlers)}
       actions={[
@@ -258,7 +259,7 @@ function MembersTab({ colleagues, handlers }: { colleagues: readonly JiuwenMateC
       </button>
       {colleagues.map((colleague) => (
         <div key={colleague.id} className="jiuwenmate-office__member">
-          {memberCard(t, colleague, handlers)}
+          {memberCard(t, colleague, handlers, { revealClippedDescription: true })}
         </div>
       ))}
     </div>
