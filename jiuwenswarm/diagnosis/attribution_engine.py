@@ -87,14 +87,12 @@ def _improvement_kwargs() -> dict[str, bool]:
     return {}
 
 
-def _prefer_design_suggestion(diagnosis: Any, attribution_text: str | None) -> str | None:
-    """Use the game design text when Reward wrote one; otherwise keep attribution."""
+def _design_suggestion(diagnosis: Any) -> str | None:
+    """The game design text Reward wrote, or None for other tasks."""
     reward = (getattr(diagnosis, "run_meta", None) or {}).get("reward") or {}
-    design = str(reward.get("artifact_improvement") or "").strip()
-    if design:
-        return design
-    text = str(attribution_text or "").strip()
-    return text or None
+    return str(reward.get("artifact_improvement") or "").strip() or None
+
+
 _TASK_PARSE_TIMEOUT_S = 180.0
 
 #: Core LLM status stages mapped onto the three zhou stage ids.
@@ -903,6 +901,7 @@ class AttributionCoreEngine:
         else:
             # Nothing to attribute is a normal outcome, not a failure.
             result = await self._result_without_signals(context, task_parse, diagnosis)
+        result.design_suggestion = _design_suggestion(diagnosis)
         if context.summary_tree is not None:
             result.summary_tree = context.summary_tree.to_dict()
             result.trajectory_summary = (
@@ -1223,7 +1222,7 @@ class AttributionCoreEngine:
             trajectory_summary=outcome.trajectory_summary or text["trajectory_summary_no_signals"],
             reward_failure_causes=causes,
             evolution_judge=judges,
-            artifact_improvement=_prefer_design_suggestion(diagnosis, runtime.artifact_improvement),
+            artifact_improvement=runtime.artifact_improvement,
             reward=diagnosis.reward_payload,
         )
         status = "completed"

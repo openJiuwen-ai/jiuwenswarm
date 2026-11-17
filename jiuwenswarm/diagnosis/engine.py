@@ -116,6 +116,7 @@ class EngineResult:
     reward_failure_causes: list[RewardFailureCause] = field(default_factory=list)
     evolution_judge: list[EvolutionJudge] = field(default_factory=list)
     artifact_improvement: str | None = None
+    design_suggestion: str | None = None
     error: DiagnosisError | None = None
     reward: dict[str, Any] | None = None
     summary_tree: dict[str, Any] | None = None
