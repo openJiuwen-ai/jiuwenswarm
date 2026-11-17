@@ -3503,15 +3503,9 @@ class SkillManager:
                             "detail_key": "skills.clawhub.errors.skillMdNotFound",
                         }
 
-                    # 解析元数据
+                    # 安装前校验原始元数据，不使用展示兜底。
                     md = self._try_find_skill_file(skill_dir)
-                    meta = self._parse_skill_md(md) if md else None
-                    if meta is None:
-                        return {
-                            "success": False,
-                            "detail": "无法解析下载的技能文件",
-                            "detail_key": "skills.clawhub.errors.parseSkillFailed",
-                        }
+                    meta = self._assert_skill_package_safe(skill_dir)
 
                     # 删除已存在的
                     if dest.exists():
@@ -3583,6 +3577,8 @@ class SkillManager:
                         },
                     }
 
+        except SkillRpcError as exc:
+            return {"success": False, "detail": str(exc), "code": exc.code}
         except httpx.HTTPStatusError as exc:
             logger.error("ClawHub 下载 HTTP 错误: %s", exc)
             detail = f"HTTP {exc.response.status_code}: {exc.response.text[:200]}"
@@ -4241,11 +4237,7 @@ class SkillManager:
                 # 触发类型识别（与导入路径一致）
                 detect_skill_type(skill_dir)
 
-                raw_skill_name = str(meta.get("name") or "").strip() or asset_id
-                try:
-                    skill_name = _safe_path_name(raw_skill_name, "skill")
-                except ValueError as exc:
-                    raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
+                skill_name = meta["name"]
 
                 product_version = (
                     str(artifact_data.get("version") or "").strip()
@@ -4826,24 +4818,13 @@ class SkillManager:
                         "detail_key": "skills.skillNet.errors.skillMdNotFound",
                     }
 
-                md = self._try_find_skill_file(skill_dir)
-                meta = self._parse_skill_md(md) if md else None
-                if meta is None:
-                    return {
-                        "ok": False,
-                        "detail": "无法解析下载的技能文件",
-                        "detail_key": "skills.skillNet.errors.parseSkillFailed",
-                    }
-
-                raw_skill_name = meta.get("name", skill_dir.name)
-                try:
-                    skill_name = _safe_path_name(raw_skill_name, "skill")
-                except ValueError as exc:
-                    _log_rejected_name("skills.skillnet.install", "skill", raw_skill_name, exc)
-                    return {"ok": False, "detail": str(exc)}
+                meta = self._assert_skill_package_safe(skill_dir)
+                skill_name = meta["name"]
                 return self._commit_skillnet_install(skill_dir, skill_name, meta, skill_url, force=force)
         except InventoryLockTimeout:
             return {**_inventory_busy_result(), "ok": False}
+        except SkillRpcError as exc:
+            return {"ok": False, "detail": str(exc), "code": exc.code}
         except SkillNetEmptyDownloadError as exc:
             logger.error("SkillNet 下载失败: %s", exc)
             out: dict[str, Any] = {
@@ -5815,18 +5796,53 @@ class SkillManager:
         if work_dir.is_dir():
             shutil.rmtree(work_dir, ignore_errors=True)
 
+    @staticmethod
+    def _parse_skill_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+        """解析原始 frontmatter，不填充展示默认值。"""
+        match = _SKILL_FRONTMATTER_RE.match(text)
+        if not match:
+            raise ValueError("SKILL.md 开头必须是 --- frontmatter（仅允许前置空行）")
+        try:
+            metadata = yaml.safe_load(match.group(1))
+        except (yaml.YAMLError, RecursionError) as exc:
+            raise ValueError("SKILL.md frontmatter YAML 无效") from exc
+        if not isinstance(metadata, dict):
+            raise ValueError("SKILL.md frontmatter 必须是 YAML 对象")
+        return metadata, match.group(2).strip()
+
+    @staticmethod
+    def _validate_skill_metadata(path: Path) -> dict[str, Any]:
+        """在展示兜底前校验所有导入来源的元数据。"""
+        try:
+            metadata, _ = SkillManager._parse_skill_frontmatter(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
+        name = metadata.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise SkillRpcError(
+                ERROR_SKILL_INVALID_METADATA,
+                "SKILL.md YAML 须明确包含非空字符串 name",
+            )
+        description = metadata.get("description")
+        if not isinstance(description, str) or not description.strip():
+            raise SkillRpcError(
+                ERROR_SKILL_INVALID_METADATA,
+                "SKILL.md YAML 须明确包含非空字符串 description",
+            )
+        try:
+            metadata["name"] = _validate_skill_name(name.strip())
+        except ValueError as exc:
+            raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
+        metadata["description"] = description.strip()
+        return metadata
+
     def _assert_skill_package_safe(
         self,
         skill_dir: Path,
         *,
-        source_trusted: bool = False,
         allow_skillpack: bool = False,
     ) -> dict[str, Any]:
-        """校验包结构：拒根级 .archive，要求有效 name；本地导入还要求 description.
-
-        ``source_trusted=True`` 用于远端归档等已过 host/解压校验的来源：
-        与主仓 develop 一致，仅要求非空 name，允许缺 description。
-        """
+        """校验包结构和元数据：拒根级 .archive，要求有效 name 与 description。"""
         if (skill_dir / ARCHIVE_DIRNAME).exists():
             raise SkillRpcError(
                 ERROR_SKILL_RESERVED_PATH,
@@ -5839,6 +5855,7 @@ class SkillManager:
             if found is None:
                 raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "缺少 SKILL.md")
             md = found
+        declared = self._validate_skill_metadata(md)
         meta = self._parse_skill_md(md)
         if meta is None:
             raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, "无法解析 SKILL.md")
@@ -5852,18 +5869,8 @@ class SkillManager:
                 load_skillpack(skill_dir)
             except SkillPackValidationError as exc:
                 raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
-        name = str(meta.get("name") or "").strip()
-        description = str(meta.get("description") or "").strip()
-        if not name:
-            raise SkillRpcError(
-                ERROR_SKILL_INVALID_METADATA,
-                "SKILL.md YAML 须包含非空 name",
-            )
-        if not source_trusted and not description:
-            raise SkillRpcError(
-                ERROR_SKILL_INVALID_METADATA,
-                "SKILL.md YAML 须包含非空 name 与 description",
-            )
+        meta["name"] = declared["name"]
+        meta["description"] = declared["description"]
         return meta
 
     def _install_imported_skill_dir(
@@ -5872,7 +5879,6 @@ class SkillManager:
         *,
         force: bool,
         origin: str,
-        source_trusted: bool = False,
         conflict_code: str = ERROR_SKILL_IMPORT_OVERWRITE_REQUIRED,
         allow_skillpack: bool = False,
     ) -> dict[str, Any]:
@@ -5880,7 +5886,7 @@ class SkillManager:
         with inventory_mutex(self._skills_dir):
             self.reload_state()
             return self._install_imported_skill_dir_locked(
-                src, force=force, origin=origin, source_trusted=source_trusted,
+                src, force=force, origin=origin,
                 conflict_code=conflict_code, allow_skillpack=allow_skillpack,
             )
 
@@ -5890,21 +5896,14 @@ class SkillManager:
         *,
         force: bool,
         origin: str,
-        source_trusted: bool,
         conflict_code: str,
         allow_skillpack: bool,
     ) -> dict[str, Any]:
         meta = self._assert_skill_package_safe(
             src,
-            source_trusted=source_trusted,
             allow_skillpack=allow_skillpack,
         )
-        raw_skill_name = str(meta.get("name") or "").strip()
-        try:
-            skill_name = _safe_path_name(raw_skill_name, "skill")
-        except ValueError as exc:
-            _log_rejected_name("skills.import_local", "skill", raw_skill_name, exc)
-            return {"success": False, "detail": str(exc)}
+        skill_name = meta["name"]
 
         dest = _safe_child_path(self._skills_dir, skill_name, "skill")
         existing = dest.exists()
@@ -6098,7 +6097,6 @@ class SkillManager:
             source,
             force=False,
             origin=f"symphony:{package_id}",
-            source_trusted=False,
             conflict_code=ERROR_SKILL_ALREADY_EXISTS,
             allow_skillpack=True,
         )
@@ -6118,7 +6116,6 @@ class SkillManager:
         try:
             meta = self._assert_skill_package_safe(
                 source,
-                source_trusted=False,
                 allow_skillpack=True,
             )
             definition = load_skillpack(source)
@@ -6276,21 +6273,16 @@ class SkillManager:
                     skill_dir, force=force, origin=origin
                 )
 
-        if source_trusted:
-            # 远端归档导入：源已过 host 白名单 + 防 slip 解压（含拒符号链接），
-            # 直接复用本流程，name 沿用下方原宽松解析。
-            skill_name = None
-        else:
-            try:
-                skill_name = self._validate_local_skill_source(src)
-            except ValueError as exc:
-                logger.warning(
-                    "[SkillManager] import_local_from_path rejected skill: src=%s origin=%s error=%s",
-                    src,
-                    origin,
-                    exc,
-                )
-                return {"success": False, "detail": str(exc)}
+        try:
+            skill_name = self._validate_local_skill_source(src)
+        except ValueError as exc:
+            logger.warning(
+                "[SkillManager] import_local_from_path rejected skill: src=%s origin=%s error=%s",
+                src,
+                origin,
+                exc,
+            )
+            return {"success": False, "detail": str(exc), "code": ERROR_SKILL_INVALID_METADATA}
 
         if src.is_file():
             meta = self._parse_skill_md(src)
@@ -6301,19 +6293,7 @@ class SkillManager:
                     ERROR_SKILL_OPERATION_UNSUPPORTED,
                     "暂不支持导入 SkillPack",
                 )
-            raw_skill_name = meta.get("name", src.stem)
-            description = str(meta.get("description") or "").strip()
-            if source_trusted:
-                try:
-                    skill_name = _safe_path_name(raw_skill_name, "skill")
-                except ValueError as exc:
-                    _log_rejected_name("skills.import_local", "skill", raw_skill_name, exc)
-                    return {"success": False, "detail": str(exc)}
-            elif not str(raw_skill_name or "").strip() or not description:
-                raise SkillRpcError(
-                    ERROR_SKILL_INVALID_METADATA,
-                    "SKILL.md YAML 须包含非空 name 与 description",
-                )
+            description = meta["description"].strip()
             dest = _safe_child_path(self._skills_dir, skill_name, "skill")
             if dest.exists():
                 if self._is_builtin_skill(skill_name, self._get_installed_plugins(), dest):
@@ -6387,14 +6367,12 @@ class SkillManager:
             md = self._try_find_skill_file(src)
             if md is None:
                 return {"success": False, "detail": f"目录中未找到 SKILL.md: {origin}"}
-            # 统一走安装路径（保留 .archive / skill_type 等）；
-            # source_trusted 时放宽 description，兼容远端归档。
+            # 统一走安装路径（保留 .archive / skill_type 等）。
             try:
                 return self._install_imported_skill_dir(
                     src,
                     force=force,
                     origin=origin,
-                    source_trusted=source_trusted,
                 )
             except SkillRpcError as exc:
                 # 兼容旧调用方：部分路径场景仍返回 success=false
@@ -6677,18 +6655,15 @@ class SkillManager:
         body = text
 
         # 尝试解析 frontmatter
-        fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)", text, re.DOTALL)
+        fm_match = _SKILL_FRONTMATTER_RE.match(text)
         if fm_match:
             fm_text = fm_match.group(1)
             body = fm_match.group(2).strip()
             # 优先完整 YAML（支持 description: >- 多行、嵌套等），与 Team Skills Hub register_skill 一致
             try:
-                loaded = yaml.safe_load(fm_text)
-                if isinstance(loaded, dict):
-                    loaded = SkillManager._convert_yaml_date(loaded)
-                    meta = {str(k): v for k, v in loaded.items()}
-                else:
-                    meta = {}
+                loaded, body = SkillManager._parse_skill_frontmatter(text)
+                loaded = SkillManager._convert_yaml_date(loaded)
+                meta = {str(k): v for k, v in loaded.items()}
             except Exception:
                 meta = {}
             if not meta:
@@ -8561,29 +8536,10 @@ class SkillManager:
         else:
             raise ValueError(f"不支持的路径类型: {src}")
         try:
-            text = skill_file.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise ValueError(f"无法读取 SKILL.md: {skill_file}") from exc
-        match = _SKILL_FRONTMATTER_RE.match(text)
-        if not match:
-            raise ValueError(f"SKILL.md 开头必须是 --- frontmatter（仅允许前置空行）: {skill_file}")
-        try:
-            loaded = yaml.safe_load(match.group(1))
-        except (yaml.YAMLError, RecursionError) as exc:
-            raise ValueError(f"SKILL.md frontmatter YAML 无效: {skill_file}") from exc
-        if not isinstance(loaded, dict):
-            raise ValueError(f"SKILL.md frontmatter 必须是 YAML 对象: {skill_file}")
-        raw_name = loaded.get("name")
-        if not raw_name:
-            raise ValueError(f"SKILL.md frontmatter 缺少 name: {skill_file}")
-        description = loaded.get("description")
-        if not description or not str(description).strip():
-            raise ValueError(f"SKILL.md frontmatter 缺少 description: {skill_file}")
-        try:
-            skill_name = _validate_skill_name(str(raw_name))
-        except ValueError as exc:
-            raise ValueError(f"invalid skill name: {exc}") from exc
-        return skill_name
+            metadata = SkillManager._validate_skill_metadata(skill_file)
+        except SkillRpcError as exc:
+            raise ValueError(str(exc)) from exc
+        return metadata["name"]
 
     @staticmethod
     def _team_skills_hub_host_matches_rule(host: str, rule: str) -> bool:
@@ -8753,14 +8709,19 @@ class SkillManager:
 
         同时限制解包总大小、文件数量、单文件大小和目录深度。
         """
+        # zipfile 会在 NUL 处截断文件名，须在写入任何成员前检查原始名称和路径。
+        for info in zf.infolist():
+            if "\0" in info.orig_filename:
+                raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, "ZIP 包含非法文件名")
+            raw = info.orig_filename.replace("\\", "/")
+            if raw.startswith("/") or re.match(r"^[A-Za-z]:", raw) or ".." in PurePosixPath(raw).parts:
+                raise RuntimeError("ZIP 包含非法路径")
         file_count = 0
         total_uncompressed = 0
         for info in zf.infolist():
             raw = (info.filename or "").replace("\\", "/")
             if not raw or raw.startswith("/"):
                 continue
-            if "\0" in raw:
-                raise RuntimeError("ZIP 包含非法文件名")
             is_dir = raw.endswith("/") or info.is_dir()
             rel_str = raw.rstrip("/")
             if not rel_str:

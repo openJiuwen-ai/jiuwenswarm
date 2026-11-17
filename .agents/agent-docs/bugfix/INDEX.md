@@ -219,6 +219,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261103_0936_skill-action-param-type-validation](jiuwenswarm/server/runtime/skill/B_20261103_0936_skill-action-param-type-validation.md) | B | 技能安装/更新/卸载入口参数类型校验缺失修复 | openjiuwen_ai | jiuwenswarm/server/runtime/skill | jiuwenswarm/server/runtime/skill/skill_manager.py, tests/unit_tests/agentserver/test_skill_manager_enterprise_state.py | 无独立 D：三个入口的参数契约（string 标识、boolean force）已由前端 webHttpClient 与 EnterpriseSkillSourcePanel 既有调用形态声明，本次为入口 类型校验层缺失的补接，无独立设计。 |
+| [B_20261116_1412_skill-import-validation-and-list](jiuwenswarm/server/runtime/skill/B_20261116_1412_skill-import-validation-and-list.md) | B | 技能导入元数据与 ZIP 路径安全校验修复 | zhangzhongteng | jiuwenswarm/server/runtime/skill | jiuwenswarm/server/runtime/skill/skill_manager.py, tests/unit_tests/agentserver/test_skills_import_upload_and_knowledge.py, tests/unit_tests/agentserver/test_skill_manager_path_safety.py, tests/unit_tests/agentserver/test_skill_manager_clawhub_owner_handle.py, tests/unit_tests/test_app_web_skill_upload.py, docs/zh/技能.md, docs/en/Skills.md | 无独立 D：用户确认统一个人版技能导入和市场安装的元数据校验，并修复 ZIP 原始文件名及路径检查；无独立设计。 |
 
 <a id="module-21"></a>
 

@@ -139,6 +139,10 @@ ClawHub URL: https://clawhub.ai/skills
 
 #### Import local skills
 
+When importing a skill or installing one from a skill marketplace, fill in both `name` and `description` in the YAML frontmatter at the start of `SKILL.md`. Both must be non-empty strings. Leading blank lines are allowed; whitespace-only values, numbers, and lists are not accepted, and a missing name is not inferred from the filename. The same requirements apply to individual files, directories, ZIP files, and remote archives. Add a description to older remote packages that lack one before installing them.
+
+A ZIP containing member names with NUL characters, absolute paths, or `..` path traversal is rejected as a whole; correct the filenames and repackage it before retrying.
+
 Best for:
 - self-developed skills under debugging
 - skill bundles shared by others
@@ -161,7 +165,7 @@ Best for:
 
    Left sidebar → **Skills** → **Import local skill** in the top-right, enter the server-side local skill path (a `SKILL.md` file or a skill directory) in the dialog, then confirm.
 
-   > **Requirements**: the source must be an **absolute path** or a `~/...` path; `~` is expanded against the JiuwenClaw service process user's home directory on the server, not the browser user's local machine. Other relative paths are rejected. The resolved source must not be under a system/sensitive directory (e.g. `/etc`, `~/.ssh`, `C:\Windows`) or contain symbolic links. Operators may tighten the built-in blacklist via the `IMPORT_LOCAL_FORBIDDEN_DIRS` env var (comma-separated absolute paths). The `SKILL.md` must start with a `---` YAML frontmatter block containing both `name` and `description` — bare `.md` files or directories without a valid `SKILL.md` frontmatter are not importable.
+   > **Requirements**: the source must be an **absolute path** or a `~/...` path; `~` is expanded against the JiuwenClaw service process user's home directory on the server, not the browser user's local machine. Other relative paths are rejected. The resolved source must not be under a system/sensitive directory (e.g. `/etc`, `~/.ssh`, `C:\Windows`) or contain symbolic links. Operators may tighten the built-in blacklist via the `IMPORT_LOCAL_FORBIDDEN_DIRS` env var (comma-separated absolute paths). The `SKILL.md` must start with a `---` YAML frontmatter block (leading blank lines are allowed), with `name` and `description` filled in as described above — bare `.md` files or directories without a valid `SKILL.md` frontmatter are not importable.
    ![Local skill import](../assets/images/current-ui-en/12-Skills-My-Skills.png)
 
 3. **Manual copy (optional)**
@@ -603,8 +607,8 @@ When this skill is selected, follow the instructions below.
 
 | Field | Required? | Description |
 |-------|-------------|-------------|
-| `name` | Strongly recommended | Unique skill id; prefer `kebab-case`; if omitted, some setups infer from folder name |
-| `description` | Strongly recommended | One-line purpose; pipeline validation usually requires it; avoid `<` and `>` |
+| `name` | Required | Non-empty string; prefer `kebab-case`, such as `my-custom-skill`; path separators and other invalid filename characters are not allowed |
+| `description` | Required | Non-empty string describing the skill purpose; multiline text is supported |
 | `version` / `author` | Optional | Version and author |
 | `tags` | Optional | YAML list or comma-separated string |
 | `allowed_tools` | Optional | Related tool names (comma-separated string also allowed); **actual invocation depends on agent tool config and permissions** |
