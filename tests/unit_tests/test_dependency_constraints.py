@@ -33,9 +33,10 @@ def test_opentelemetry_dependencies_exclude_protobuf4_only_proto_versions():
         )
 
 
-def test_core_pin_matches_pip_uv_and_lockfile():
-    """All installation paths must select the same official Core commit."""
+def test_core_branch_matches_pip_uv_and_lockfile():
+    """Installation paths use the official merged branch and a locked commit."""
     import re
+    from urllib.parse import parse_qs
 
     project = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text())
     lock = tomllib.loads((PROJECT_ROOT / "uv.lock").read_text())
@@ -45,11 +46,15 @@ def test_core_pin_matches_pip_uv_and_lockfile():
                    if Requirement(raw).name == "openjiuwen")
     source = project["tool"]["uv"]["sources"]["openjiuwen"]
     assert source["git"] == "https://gitcode.com/openJiuwen/agent-core.git"
-    revision = source["rev"]
-    assert re.fullmatch(r"[0-9a-f]{40}", revision)
-    assert regular.url == harmony.url == f"git+{source['git']}@{revision}"
+    branch = source["branch"]
+    assert branch == "release/v0.1.20.agent_os"
+    assert regular.url == harmony.url == f"git+{source['git']}@{branch}"
     core = next(package for package in lock["package"] if package["name"] == "openjiuwen")
-    assert core["source"]["git"] == f"{source['git']}?rev={revision}#{revision}"
+    repository, _, revision = core["source"]["git"].partition("#")
+    url, _, query = repository.partition("?")
+    assert url == source["git"]
+    assert parse_qs(query) == {"branch": [branch]}
+    assert re.fullmatch(r"[0-9a-f]{40}", revision)
     assert core["version"] == "0.1.20"
     assert "adx" not in project["project"]["optional-dependencies"]
     assert all(Requirement(raw).name != "adx-environment"
