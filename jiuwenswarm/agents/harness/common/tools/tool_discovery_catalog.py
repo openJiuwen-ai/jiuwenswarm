@@ -133,6 +133,10 @@ BUILTIN_TOOL_DISCOVERY: dict[str, ToolDiscoveryMetadata] = {
     "delete_collection": _entry("Delete items from the user's saved knowledge collections.", "删除 收藏 知识"),
     "add_collection": _entry("Save public knowledge to the user's personal collection.", "添加 保存 收藏 知识"),
     "xiaoyi_gui_agent": _entry("Operate phone apps through screen interaction.", "操作 手机应用 点击 屏幕 GUI"),
+    "generate_chart": _entry(
+        "Generate vector SVG charts (bar, line, pie, donut, metric card) from data.",
+        "生成图表 数据可视化 柱状图 折线图 饼图 环形图 指标看板 svg",
+    ),
 }
 
 

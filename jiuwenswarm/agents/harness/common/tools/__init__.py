@@ -29,6 +29,7 @@ _EXPORTS = {
     ),
     "TaskMemoryService": ("openjiuwen.extensions.context_evolver.service.task_memory_service", "TaskMemoryService"),
     "AddMemoryRequest": ("openjiuwen.extensions.context_evolver.service.task_memory_service", "AddMemoryRequest"),
+    "generate_chart": (".chart_tools", "generate_chart"),
 }
 __all__ = list(_EXPORTS)
 

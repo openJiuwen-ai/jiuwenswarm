@@ -51,7 +51,14 @@ register(['read_file', 'read_text_file', 'read_pdf', 'read_memory', 'memory_get'
   actionKey: 'chatUi.toolAction.read',
   iconKey: 'read',
 });
-register(['write_file', 'write_text_file', 'write_memory', 'coding_memory_write', 'write_memory_file'], {
+register([
+  'write_file',
+  'write_text_file',
+  'write_memory',
+  'coding_memory_write',
+  'write_memory_file',
+  'generate_chart',
+], {
   category: 'file',
   actionKey: 'chatUi.toolAction.write',
   iconKey: 'write',

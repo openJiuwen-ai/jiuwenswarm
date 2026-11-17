@@ -75,6 +75,15 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
         description_en="Read PDF text by page or in chunks.",
     ),
     ToolCategory(
+        path="visualization",
+        description="生成矢量 SVG 格式的数据可视化图表（柱状图、折线图、饼图、指标卡等）。",
+        tools=("generate_chart",),
+        description_en=(
+            "Generate vector SVG data visualization charts (bar, line, pie, "
+            "donut, metric cards)."
+        ),
+    ),
+    ToolCategory(
         path="external-agents",
         description=(
             "与外部 ACP 兼容智能体子进程（Codex CLI、Gemini CLI 等）建立会话并收发消息。"

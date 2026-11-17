@@ -95,6 +95,7 @@ generated: true
 |---|---|---|---|---|
 | [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
 | [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
+| [F_20261116_2220_chart-tool](F_20261116_2220_chart-tool.md) | feature | generate_chart Zero-Dependency Vector SVG Visualization Tool | zxj0302 | 无独立 D：Lightweight zero-dependency vector SVG chart generator for data visualization |
 
 <a id="module-jiuwenswarm-agents-harness-team-rails"></a>
 
