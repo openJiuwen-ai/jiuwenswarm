@@ -95,6 +95,7 @@ generated: true
 |---|---|---|---|---|
 | [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
 | [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
+| [F_20261117_1720_fetch-docs-tool](F_20261117_1720_fetch-docs-tool.md) | F | 新增技术文档抓取与本地缓存工具 (fetch_docs) | zhuxiangju | 无独立 D：新增 fetch_docs 工具实现技术文档抓取、提纯与缓存，无独立前置设计文档。 |
 
 <a id="module-jiuwenswarm-agents-harness-team-rails"></a>
 

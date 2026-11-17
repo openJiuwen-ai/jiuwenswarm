@@ -336,3 +336,15 @@ def test_legacy_todo_names_remain_non_authoritative(tool_name: str) -> None:
     assert info.operation_family == "task_state"
     assert info.facts_source == "name_classification_hint"
     assert info.high_flex is True
+
+
+def test_fetch_docs_is_a_static_public_web_read_tool() -> None:
+    info = classify_tool("fetch_docs")
+
+    assert info.category == "network"
+    assert info.operation_family == "public_web_read"
+    assert info.resource_class == "public_web"
+    assert info.static_side_effects == frozenset({"network_read"})
+    assert info.risk_tier == "medium"
+    assert info.high_flex is False
+    assert info.facts_source == "host_static"

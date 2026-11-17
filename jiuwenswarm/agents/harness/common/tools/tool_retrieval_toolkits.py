@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Static in-code tool category catalogue for progressive ``tool_search``.
 
 The deferred-tool directory is a flat category table frozen into this
@@ -245,6 +247,18 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
         description_en=(
             "Create or resume an isolated Git worktree, switch to it and "
             "restore the previous directory on exit."
+        ),
+    ),
+    ToolCategory(
+        path="web-docs",
+        description=(
+            "抓取并提纯技术文档站点（HTML/Markdown）为本地缓存与 Markdown 正文，"
+            "支持层级遍历与本地关键词检索。"
+        ),
+        tools=("fetch_docs",),
+        description_en=(
+            "Crawl and cache technical documentation sites as clean Markdown, "
+            "with bounded depth and local keyword filtering."
         ),
     ),
 )

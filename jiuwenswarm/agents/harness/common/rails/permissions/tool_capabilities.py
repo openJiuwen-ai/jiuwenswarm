@@ -80,7 +80,7 @@ _PATH_TOOLS = {
     "search_replace",
 }
 _PUBLIC_SEARCH_TOOLS = {"mcp_free_search", "mcp_paid_search"}
-_PUBLIC_WEB_READ_TOOLS = {"mcp_fetch_webpage"}
+_PUBLIC_WEB_READ_TOOLS = {"mcp_fetch_webpage", "fetch_docs"}
 _SUBAGENT_TOOLS = {"task_tool", "spawn_sub_agent", "session_new"}
 _SUBAGENT_RUNTIME_CONTROL_TOOLS = {
     "subagent_close",

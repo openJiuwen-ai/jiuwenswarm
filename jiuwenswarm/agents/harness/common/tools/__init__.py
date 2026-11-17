@@ -11,6 +11,7 @@ _EXPORTS = {
     "write_memory": (".memory_tools", "write_memory"),
     "edit_memory": (".memory_tools", "edit_memory"),
     "read_memory": (".memory_tools", "read_memory"),
+    "fetch_docs": (".fetch_docs_tools", "fetch_docs"),
     "set_group_chat_mode": (".memory_tools", "set_group_chat_mode"),
     "is_group_chat_mode": (".memory_tools", "is_group_chat_mode"),
     "SendFileToolkit": (".send_file_to_user", "SendFileToolkit"),

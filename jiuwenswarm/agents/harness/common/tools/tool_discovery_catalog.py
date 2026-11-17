@@ -32,6 +32,10 @@ BUILTIN_TOOL_DISCOVERY: dict[str, ToolDiscoveryMetadata] = {
     "coding_memory_read": _entry("Read persistent project coding memory.", "读取 查看 编码记忆 项目记忆"),
     "coding_memory_write": _entry("Write facts, decisions, and lessons to project coding memory.", "写入 记录 编码记忆 项目记忆"),
     "read_pdf": _entry("Read PDF text by page or in chunks.", "读取 查看 PDF 文档 分页"),
+    "fetch_docs": _entry(
+        "Crawl and cache technical documentation pages as Markdown with optional local query.",
+        "抓取 文档 技术文档 文档站 缓存 Markdown API 参考",
+    ),
     "acp_chat": _entry("Exchange messages with an external ACP-compatible coding agent.", "外部智能体 ACP 对话 Codex Gemini"),
     "list_files": _entry("List files and directories in a local path.", "列出 查看 文件 目录 文件夹"),
     "get_current_goal": _entry("Inspect the current persistent goal and its status.", "查看 查询 当前目标 持续目标 状态"),
