@@ -221,31 +221,50 @@ _OVERVIEW_CN = """# 技能总则
 - 发现路径：任务匹配清单中某个技能的描述时加载它；清单外但有明确技能意图时，先用 search_skill 查。
 - 触发语义：仅在任务确实匹配技能描述时加载；不相关的任务不加载技能，直接用基础工具完成。"""
 
-_OVERVIEW_EN = """# Skill Overview
-A skill is a reusable procedure package (SKILL.md + resources) for a specific domain task.
-- Existence: the catalog below lists currently enabled skills; skills not listed are not resident — use search_skill when you need one.
-- Discovery: load a skill when the task matches its description; for clear skill intent not in the catalog, search with search_skill first.
-- Triggering: load a skill only when the task genuinely matches its description; otherwise complete the task with base tools."""
+_OVERVIEW_EN = (
+    "# Skill Overview\n"
+    "A skill is a reusable procedure package (SKILL.md + resources) for a "
+    "specific domain task.\n"
+    "- Existence: the catalog below lists currently enabled skills; skills not "
+    "listed are not resident — use search_skill when you need one.\n"
+    "- Discovery: load a skill when the task matches its description; for clear "
+    "skill intent not in the catalog, search with search_skill first.\n"
+    "- Triggering: load a skill only when the task genuinely matches its "
+    "description; otherwise complete the task with base tools."
+)
 
 _LOADING_CN = """# 技能加载
 - 加载入口统一为 skill_tool（skill_name + SKILL.md 路径）。禁止用 read_file 直接读 SKILL.md 来加载技能——那会绕过授权、凭证注入与防过期治理链。
 - 部分技能有强约束前置条件（例如 xlsx-craft 要求任何 Excel 任务第一步必须先加载）。命中这类技能时，严格按 SKILL.md 里的前置条件执行，不得跳过。
 - 加载成功后按 SKILL.md 流程执行；加载失败或返回「不支持」时，改用基础工具或其它技能，不要原样重试。"""
 
-_LOADING_EN = """# Skill Loading
-- Load through skill_tool (skill_name + SKILL.md path). Do not load a skill by reading SKILL.md directly with read_file — that bypasses authorization, credential injection and expiry governance.
-- Some skills carry mandatory preconditions (e.g. xlsx-craft requires loading first for any Excel task). Follow the SKILL.md preconditions exactly.
-- After a successful load, follow the SKILL.md workflow; on failure or "unsupported", switch to base tools or another skill — do not retry unchanged."""
+_LOADING_EN = (
+    "# Skill Loading\n"
+    "- Load through skill_tool (skill_name + SKILL.md path). Do not load a skill "
+    "by reading SKILL.md directly with read_file — that bypasses authorization, "
+    "credential injection and expiry governance.\n"
+    "- Some skills carry mandatory preconditions (e.g. xlsx-craft requires loading "
+    "first for any Excel task). Follow the SKILL.md preconditions exactly.\n"
+    "- After a successful load, follow the SKILL.md workflow; on failure or "
+    "\"unsupported\", switch to base tools or another skill — do not retry "
+    "unchanged."
+)
 
 _CHOICE_CN = """# 技能选择
 - 一个任务只选一个最匹配的技能；存在互斥技能组（多个技能都声称处理同一文件类型）时，只加载其中一个。
 - 不要仅因两个技能处理同一文件类型就互相替换；用户明确指定的技能优先，且指定技能必须与任务范围匹配。
 - 选择依据 = 用户原始请求 + 历史上下文；不要擅自把「编辑」改写成「新建」或把「新建」改写成「编辑」。"""
 
-_CHOICE_EN = """# Skill Selection
-- Choose exactly one best-matching skill per task; when a mutually exclusive group exists (multiple skills claiming the same file type), load only one.
-- Do not substitute one skill for another merely because they handle the same file type; the user's explicit choice takes priority and must match the task scope.
-- Decide from the user's original request plus history; never rewrite an "edit" as a "new" task or vice versa."""
+_CHOICE_EN = (
+    "# Skill Selection\n"
+    "- Choose exactly one best-matching skill per task; when a mutually exclusive "
+    "group exists (multiple skills claiming the same file type), load only one.\n"
+    "- Do not substitute one skill for another merely because they handle the same "
+    "file type; the user's explicit choice takes priority and must match the task "
+    "scope.\n"
+    "- Decide from the user's original request plus history; never rewrite an "
+    "\"edit\" as a \"new\" task or vice versa."
+)
 
 
 class FlashSkillRail(DeepAgentRail):

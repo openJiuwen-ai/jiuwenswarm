@@ -90,10 +90,9 @@ def _gentle_reminder(language: str) -> str:
             "结果：如果任务尚未完成，尝试换一种方法或换一套参数，而不是原样重试。"
         )
     return (
-        "You are repeating the exact same tool call with identical arguments. "
-        "Carefully analyze the previous result before calling again: if the task "
-        "is not complete, try a different approach or different arguments instead "
-        "of repeating the call."
+        "This tool has just been invoked again with an unchanged argument set. "
+        "Read the newest output before deciding the next step: unfinished work "
+        "calls for a revised plan or revised arguments, not a verbatim resend."
     )
 
 
@@ -108,14 +107,13 @@ def _detailed_reminder(language: str, tool_name: str, count: int, canonical: str
             "换一种操作、换一套参数，或证据已足够时直接收尾。"
         )
     return (
-        "Repeated tool call detected:\n"
-        f"- tool: {tool_name}\n"
-        f"- consecutive_calls: {count}\n"
-        f"- arguments: {canonical}\n"
-        "The repeated calls are not making progress. Do not call this tool with "
-        "these exact arguments again. Inspect the latest result and choose a "
-        "different action, different arguments, or finish the task if enough "
-        "evidence has been gathered."
+        "A duplicate invocation loop has been observed.\n"
+        f"- tool name: {tool_name}\n"
+        f"- occurrences in the current streak: {count}\n"
+        f"- argument set: {canonical}\n"
+        "These repeats yield nothing new. Examine the newest output, then revise "
+        "the argument set, choose another operation, or wrap up if the evidence "
+        "already gathered is sufficient."
     )
 
 

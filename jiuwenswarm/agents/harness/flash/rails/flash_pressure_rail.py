@@ -109,10 +109,10 @@ class FlashPressureRail(DeepAgentRail):
 
     def _resolve_pressure_text(self, ctx: AgentCallbackContext) -> str | None:
         """纯函数：按上一轮真实 usage / 真实模型窗口算出应注入的提醒正文；无则 None。"""
-        limit = ContextOverflowRecoveryRail._resolve_model_context_limit(ctx)
+        limit = ContextOverflowRecoveryRail.resolve_model_context_limit(ctx)
         if limit <= 0:
             return None
-        used = ContextOverflowRecoveryRail._last_prompt_tokens(ctx)
+        used = ContextOverflowRecoveryRail.last_prompt_tokens(ctx)
         if used <= 0:
             return None  # turn 1：无上一轮真实 usage
         rate = used / limit

@@ -360,6 +360,20 @@ class ContextOverflowRecoveryRail(DeepAgentRail):
             return 0
 
     # ------------------------------------------------------------------
+    # 对外水位口径：flash 水位提醒复用同一把尺子，避免各写一份解析
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def resolve_model_context_limit(cls, ctx: AgentCallbackContext) -> int:
+        """公开口径：真实模型上下文窗口；解析不到返回 0。"""
+        return cls._resolve_model_context_limit(ctx)
+
+    @staticmethod
+    def last_prompt_tokens(ctx: AgentCallbackContext) -> int:
+        """公开口径：最近一次真实 prompt token 数；无 usage 时返回 0。"""
+        return ContextOverflowRecoveryRail._last_prompt_tokens(ctx)
+
+    # ------------------------------------------------------------------
     # on_model_exception: core recovery logic
     # ------------------------------------------------------------------
 

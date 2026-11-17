@@ -43,7 +43,11 @@ class FlashMemoryRail(MemoryRail):
     # 与工具名替换同序执行（先 5→1 再内容），命中守卫两套一起判。
     _MEMORY_CONTENT_REPLACEMENTS = (
         ("是每轮回答前的固定第一步，没有任何例外", "在任务开始时做一次，之后仅在需要新的用户上下文时再做"),
-        ("is the mandatory first step before every answer, with no exceptions", "should be done once at task start, then only when new user context is needed"),
+        (
+            "is the mandatory first step before every answer, with no exceptions",
+            "should be done once at task start, then only when new user context "
+            "is needed",
+        ),
     )
 
     def __init__(
