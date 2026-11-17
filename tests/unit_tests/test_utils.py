@@ -494,6 +494,47 @@ def test_prepare_workspace_copies_rsi_program_dataset_creator(
     ).is_file()
 
 
+def test_prepare_workspace_overwrite_preserves_external_cli_agents(tmp_path):
+    """init 覆盖 config.yaml 时保留用户已启用的三方 agent 配置与路径历史。
+
+    托管安装的 CLI 运行时（runtime/external-cli/...）并不随 init 删除，
+    覆盖后的配置必须与之保持一致，否则已安装的 agent 会回到"已关闭"。
+    """
+    import yaml
+
+    workspace_dir = tmp_path / ".jiuwenswarm"
+    config_dir = workspace_dir / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.yaml").write_text(
+        "\n".join([
+            "modes:",
+            "  team:",
+            "    jiuwen_team:",
+            "      external_cli_agents:",
+            "        - cli_agent: claude",
+            "          cli_path: D:/tools/claude.exe",
+            "      external_cli_path_histories:",
+            "        claude:",
+            "          - D:/tools/claude-old.exe",
+        ]),
+        encoding="utf-8",
+    )
+
+    utils.prepare_workspace(
+        overwrite=True,
+        preferred_language="en",
+        workspace_dir=workspace_dir,
+    )
+
+    restored = yaml.safe_load((config_dir / "config.yaml").read_text(encoding="utf-8"))
+    team = restored["modes"]["team"]["jiuwen_team"]
+    assert team["external_cli_agents"] == [
+        {"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}
+    ]
+    assert team["external_cli_path_histories"]["claude"] == ["D:/tools/claude-old.exe"]
+
+
+
 @pytest.mark.parametrize("skill_name", ["rsi-program-dataset-creator", "agent-group-creator"])
 def test_ensure_default_builtin_skills_installs_program_evolution_design(
     tmp_path: Path,
