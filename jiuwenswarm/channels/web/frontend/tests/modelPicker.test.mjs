@@ -52,6 +52,8 @@ try {
     vite.ssrLoadModule('/src/stores/workspaceStore.ts'),
     vite.ssrLoadModule('/src/components/ui/Toast/Toast.tsx'),
     vite.ssrLoadModule('/src/components/ui/Toast/toastStore.ts'),
+    vite.ssrLoadModule('/src/features/designer/designerStore.ts'),
+    vite.ssrLoadModule('/src/assets/providers/index.ts'),
   ]);
 } finally {
   await vite.close();
@@ -91,6 +93,8 @@ const [
   { useWorkspaceStore },
   { ToastStack },
   { toast, toastStore, TOAST_EXIT_ANIMATION_MS },
+  { useDesignerStore },
+  { getModelLogoUrl },
 ] = modules;
 
 const resources = Object.fromEntries(
@@ -1468,7 +1472,7 @@ function generationSnapshot(models = [], overrides = {}) {
 }
 function generationModel(id, slot, extra = {}) {
   return { model_id: id, display_name: id, purpose: 'generation', capabilities: [slot], references: [slot],
-    provider: 'OpenAI', protocol: 'openai', api_base: 'https://example.invalid', model_name: id,
+    provider: 'DashScope', protocol: 'dashscope', api_base: 'https://example.invalid', model_name: id,
     api_key_configured: true, ...extra };
 }
 
@@ -1701,6 +1705,51 @@ test('canvas model configuration keeps chat locked and still changes generation 
   }, 'zh');
 });
 
+test('canvas label follows the selected model id when names collide', async (t) => {
+  t.mock.method(webClient, 'request', async () => generationSnapshot());
+  const sharedName = 'deepseek-chat';
+  const official = {
+    model_id: 'official-ds', model_name: sharedName, alias: 'Official DeepSeek',
+    vendor_key: 'deepseek', model_provider: 'DeepSeek',
+  };
+  const customOpenAI = {
+    model_id: 'custom-oai', model_name: sharedName, alias: 'Custom OpenAI DeepSeek',
+    model_provider: 'OpenAI',
+  };
+  const customAnthropic = {
+    model_id: 'custom-ant', model_name: sharedName, alias: 'Custom Anthropic DeepSeek',
+    model_provider: 'Anthropic',
+  };
+  await withFixture(async ({ mount, click, byId }) => {
+    resetGenerationStore();
+    useDesignerStore.setState({ domainGraph: null });
+    useSessionStore.getState().setAvailableModels([official, customOpenAI, customAnthropic], sharedName);
+    useSessionStore.getState().setSelectedModelSelection(sessionId, { type: 'model', id: customAnthropic.model_id });
+    await mount(createElement(DesignerModelSelector, { sessionId, readOnly: true }));
+    const trigger = byId('designer-model-selector-trigger');
+    const label = byId('designer-model-selector-label');
+    assert.equal(label.textContent, customAnthropic.alias);
+    assert.equal(trigger.querySelector('[data-testid="model-provider-icon"]').getAttribute('src'),
+      getModelLogoUrl(customAnthropic));
+    assert.notEqual(getModelLogoUrl(customAnthropic), getModelLogoUrl(official));
+    await click(trigger);
+    assert.match(byId('designer-model-config-locked-chat').textContent, new RegExp(customAnthropic.alias));
+    assert.equal(byId('designer-model-config-locked-chat').textContent.includes(official.alias), false);
+
+    await act(async () => {
+      useDesignerStore.setState({
+        domainGraph: { metadata: { model_id: official.model_id } },
+      });
+      useSessionStore.getState().setSelectedModelSelection(sessionId, null);
+    });
+    await mount(createElement(DesignerModelSelector, { sessionId, readOnly: true }));
+    assert.equal(byId('designer-model-selector-label').textContent, official.alias);
+    assert.equal(byId('designer-model-selector-trigger').querySelector('[data-testid="model-provider-icon"]').getAttribute('src'),
+      getModelLogoUrl(official));
+  });
+  useDesignerStore.setState({ domainGraph: null });
+});
+
 test('settings tab navigation applies fresh requests while allowing subsequent manual tab selection', async () => {
   await withFixture(async ({ mount, click, byId }) => {
     const tabs = [{ id: 'models', labelKey: 'settingsPanel.models.modelsTab' }, { id: 'multimodal', labelKey: 'settingsPanel.multimodal.tab' }];
@@ -1726,6 +1775,63 @@ test('design selection keeps a saved model and otherwise uses the first of that 
   assert.equal(resolvedGenerationModelId(models, 'video_gen', null), first.model_id);
   assert.equal(resolvedGenerationModelId([], 'visual_gen', image.model_id), null);
   assert.equal(resolvedGenerationModelId(models, 'visual_gen', ''), image.model_id);
+  const blocked = generationModel('seedream', 'video_gen', { protocol: 'openai' });
+  assert.equal(resolvedGenerationModelId([blocked, first], 'video_gen', blocked.model_id), first.model_id);
+  assert.equal(resolvedGenerationModelId([blocked], 'video_gen', blocked.model_id), null);
+});
+
+test('unsupported generation protocols stay listed and are not a choice', async (t) => {
+  const blocked = generationModel('seedream', 'video_gen', { protocol: 'openai', display_name: 'Seedream' });
+  const allowed = generationModel('wan', 'video_gen', { protocol: 'dashscope', display_name: 'Wan' });
+  const image = generationModel('qwen', 'visual_gen', { protocol: 'ModelArk' });
+  const { requests, saved } = installGenerationApi(t, [blocked, allowed, image], {
+    video_gen: blocked.model_id,
+    visual_gen: null,
+  });
+  await withFixture(async ({ mount, click }) => {
+    resetGenerationStore();
+    await mount(createElement(DesignerModelSelector));
+    await click(document.querySelector('[data-testid="designer-model-selector-trigger"]'));
+    await click(document.querySelector('[data-testid="designer-model-config-tab"][data-variant="video_gen"]'));
+    const options = [...document.querySelectorAll('[data-testid="designer-generation-model-option"]')];
+    assert.deepEqual(options.map((node) => node.getAttribute('data-variant')), [blocked.model_id, allowed.model_id]);
+    const blockedOption = options[0];
+    const allowedOption = options[1];
+    assert.equal(blockedOption.getAttribute('aria-disabled'), 'true');
+    assert.equal(blockedOption.getAttribute('aria-checked'), 'false');
+    assert.equal(allowedOption.getAttribute('aria-checked'), 'true');
+    assert.equal(allowedOption.getAttribute('title'), allowed.api_base);
+    assert.equal(
+      blockedOption.parentElement.getAttribute('data-tooltip'),
+      'Design does not support the openai protocol.',
+    );
+    assert.equal(
+      document.querySelector(`[data-testid="designer-generation-model-protocol-warning"][data-variant="${blocked.model_id}"]`)?.getAttribute('data-variant'),
+      blocked.model_id,
+    );
+    await click(blockedOption);
+    assert.equal(requests.includes('config.set'), false);
+    assert.equal(saved.video_gen, blocked.model_id);
+  });
+});
+
+test('a modality with only unsupported protocols warns like a missing model', async (t) => {
+  installGenerationApi(t, [
+    generationModel('seedream', 'visual_gen', { protocol: 'openai' }),
+    generationModel('seedance', 'video_gen', { protocol: 'bytedance' }),
+  ]);
+  const copy = generationCopy('en');
+  await withFixture(async ({ mount, click, byId }) => {
+    resetGenerationStore();
+    await mount(createElement(DesignerModelSelector));
+    assert.equal(byId('designer-model-config-trigger-warning').getAttribute('aria-label'), copy.designer.modelConfiguration.notConfigured);
+    await click(byId('designer-model-selector-trigger'));
+    await click(document.querySelector('[data-testid="designer-model-config-tab"][data-variant="video_gen"]'));
+    const option = document.querySelector('[data-testid="designer-generation-model-option"]');
+    assert.equal(option.getAttribute('aria-disabled'), 'true');
+    assert.equal(option.getAttribute('aria-checked'), 'false');
+    assert.ok(document.querySelector('[data-testid="designer-generation-model-protocol-warning"]'));
+  });
 });
 
 for (const language of ['zh', 'en']) {

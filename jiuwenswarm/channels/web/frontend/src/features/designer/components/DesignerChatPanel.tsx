@@ -1,5 +1,5 @@
 import { LoaderCircle, PanelRight, Square, X } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import SendPlaneIcon from '../../../assets/send_plane.svg?react';
 import { MessageList } from '../../../components/ChatPanel/MessageList';
@@ -12,7 +12,11 @@ import { DESIGN_GENERATION_CHANGED_EVENT } from '../useDesignerModelConfiguratio
 import { requestSettingsModule } from '../../settings/settingsNavigation';
 import { toast } from '../../../components/ui';
 import { useChatStore } from '../../../stores/chatStore';
-import { useSessionStore } from '../../../stores/sessionStore';
+import { isModelCatalogPending, useSessionStore } from '../../../stores/sessionStore';
+import {
+  getDesignModelGate,
+  subscribeDesignModelGate,
+} from '../designSessionModelRestore';
 import { buildConversationModelPayload } from '../../../multi-session/state/conversationModelSelection';
 import type { Message, UserAnswer } from '../../../types';
 import {
@@ -23,7 +27,7 @@ import {
 } from '../designerEntry';
 import { findDesignModelsProblem } from '../designModelsReadiness';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
-import { designerChatStopControl, isDesignerChatStoppable } from '../designerGraphLock';
+import { designerChatStopControl, isDesignerChatStoppable, isDesignerModelMenuLocked } from '../designerGraphLock';
 import { useDesignerRunStore } from '../designerRunStore';
 import { useDesignerStore } from '../designerStore';
 import { useDesignerUiStore } from '../designerUiStore';
@@ -117,6 +121,7 @@ export function DesignerChatPanel() {
     sessionId ? state.runtimes[sessionId]?.isProcessing ?? false : false,
   );
   const runIsRunning = useDesignerRunStore((state) => state.isRunning);
+  const runStatus = useDesignerRunStore((state) => state.run?.status ?? null);
   const runTriggerSource = useDesignerRunStore((state) => state.run?.metadata?.trigger_source ?? null);
   const leaderRunActive = runIsRunning && runTriggerSource === 'leader';
   // After chat.final, isProcessing is false while the leader-triggered canvas
@@ -135,6 +140,9 @@ export function DesignerChatPanel() {
   const [sending, setSending] = useState(false);
   const [stopPending, setStopPending] = useState(false);
   const stopControl = designerChatStopControl({ canStop, stopPending });
+  // Same window as the clickable stop control, plus a canvas rerun that keeps
+  // its own toolbar and never swaps the chat send button.
+  const modelMenuLocked = isDesignerModelMenuLocked({ stopControl, runStatus });
   const stopRequestedRef = useRef(false);
   // The canvas owns exactly one session: read and write the model against that
   // session id. `activeSessionId` follows the app route and can point at
@@ -148,14 +156,36 @@ export function DesignerChatPanel() {
   const setChatModel = useDesignerStore((state) => state.setChatModel);
   const availableModelCount = useSessionStore((state) => state.chatAvailableModels.length);
   const selectedModelId = selectedModelSelection?.type === 'model' ? selectedModelSelection.id : undefined;
+  const designModelGate = useSyncExternalStore(
+    subscribeDesignModelGate,
+    getDesignModelGate,
+    getDesignModelGate,
+  );
   // The director chain resolves its preferred model from graph metadata,
   // and leader rounds run on the session selection: keep both in sync so a pick
   // made here takes effect on the next round instead of only relabelling the UI.
   // A shared model_name is not enough; the stable id distinguishes custom rows.
+  // Hold the write until a direct design URL has restored that id. Filling the
+  // name from the catalogue afterwards must use the same id, not the first row.
   useEffect(() => {
-    if (!sessionId || !selectedModelName) return;
-    setChatModel(selectedModelName, selectedModelId);
-  }, [selectedModelId, selectedModelName, sessionId, setChatModel]);
+    if (!sessionId) return;
+    const gate = getDesignModelGate();
+    if (gate?.sessionId === sessionId && gate.status !== 'ready') return;
+    let modelName = selectedModelName ?? '';
+    let modelId = selectedModelId;
+    if (modelId && !modelName) {
+      const store = useSessionStore.getState();
+      if (isModelCatalogPending(store.chatAvailableModels, store.availableModelGroups)) return;
+      store.setSelectedModelSelection(sessionId, { type: 'model', id: modelId });
+      const restored = store.getRuntime(sessionId);
+      modelName = restored?.selectedModelName ?? '';
+      modelId = restored?.selectedModelSelection?.type === 'model'
+        ? restored.selectedModelSelection.id
+        : modelId;
+    }
+    if (!modelName) return;
+    setChatModel(modelName, modelId);
+  }, [availableModelCount, designModelGate, selectedModelId, selectedModelName, sessionId, setChatModel]);
 
   const composerBusy = isProcessing || sending;
   const chatBusy = composerBusy || leaderRunActive;
@@ -478,7 +508,7 @@ export function DesignerChatPanel() {
             <button
               type="button"
               className="designer-chat-panel__model-warning-action"
-              onClick={() => requestSettingsModule('models')}
+              onClick={() => requestSettingsModule('models', 'multimodal')}
               data-testid="designer-chat-model-warning-action"
             >
               {t('designer.models.openModelSettings')}
@@ -498,7 +528,7 @@ export function DesignerChatPanel() {
           />
           <div className="designer-chat-panel__composer-actions">
             {sessionId ? (
-              <DesignerModelSelector sessionId={sessionId} readOnly />
+              <DesignerModelSelector sessionId={sessionId} readOnly disabled={modelMenuLocked} />
             ) : null}
             <ApplicationPluginTaskInputActions
               eligible={

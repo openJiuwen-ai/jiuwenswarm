@@ -1,7 +1,9 @@
+import { AlertTriangle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { ModelProviderIcon } from '../../../components/ModelProviderIcon';
+import { useAdaptiveTooltip } from '../../../hooks/useAdaptiveTooltip';
 import { multimodalModelOptions, type PublicMultimodalModel } from '../../settings/services/multimodalSettings';
-import type { DesignGenerationSlot } from '../designerModelConfiguration';
+import { designGenerationProtocolSupported, type DesignGenerationSlot } from '../designerModelConfiguration';
 
 type DesignGenerationModelListProps = {
   slot: DesignGenerationSlot;
@@ -29,6 +31,7 @@ export default function DesignGenerationModelList({
   testIdPrefix,
 }: DesignGenerationModelListProps) {
   const { t } = useTranslation();
+  const { tooltip, handlers } = useAdaptiveTooltip({ placement: 'top', maxWidth: 320 });
   const key = 'designer.modelConfiguration';
   const options = multimodalModelOptions([...models], slot);
   if (failed) {
@@ -59,44 +62,67 @@ export default function DesignGenerationModelList({
     <div role="group" aria-label={t(`${key}.${slot}`)} className="designer-generation-model-list" data-testid={testIdPrefix}>
       {options.map((option) => {
         const model = models.find((item) => item.model_id === option.value);
-        const selected = option.value === selectedId;
+        const protocol = String(model?.protocol ?? '').trim();
+        const unsupported = !designGenerationProtocolSupported(protocol);
+        const selected = !unsupported && option.value === selectedId;
+        const reason = unsupported
+          ? (protocol
+            ? t('designer.models.protocolUnsupported', { protocol })
+            : t('designer.models.protocolUnsupportedEmpty'))
+          : '';
         return (
-          <button
+          <span
             key={option.value}
-            type="button"
-            className={`chat-mode-select__option${selected ? ' chat-mode-select__option--active' : ''}`}
-            role="menuitemradio"
-            aria-checked={selected}
-            disabled={disabled}
-            title={model ? [model.provider, model.model_name].filter(Boolean).join(' · ') : option.label}
-            onClick={() => onSelect(option.value)}
-            data-testid={`${testIdPrefix}-option`}
-            data-variant={option.value}
+            className="designer-generation-model-list__row"
+            data-tooltip={reason || undefined}
+            {...(unsupported ? handlers : {})}
           >
-            <span className="chat-mode-select__option-main">
-              <span className="chat-mode-select__icon" aria-hidden="true">
-                {model ? (
-                  <ModelProviderIcon model={{ model_name: model.model_name, model_provider: model.provider }} />
-                ) : null}
+            <button
+              type="button"
+              className={`chat-mode-select__option${selected ? ' chat-mode-select__option--active' : ''}${unsupported ? ' chat-mode-select__option--disabled' : ''}`}
+              role="menuitemradio"
+              aria-checked={selected}
+              aria-disabled={unsupported || disabled || undefined}
+              disabled={disabled && !unsupported}
+              title={unsupported ? reason : (model?.api_base.trim() || undefined)}
+              onClick={() => { if (!unsupported && !disabled) onSelect(option.value); }}
+              data-testid={`${testIdPrefix}-option`}
+              data-variant={option.value}
+            >
+              <span className="chat-mode-select__option-main">
+                <span className="chat-mode-select__icon" aria-hidden="true">
+                  {model ? (
+                    <ModelProviderIcon model={{ model_name: model.model_name, model_provider: model.provider }} />
+                  ) : null}
+                </span>
+                <span
+                  className="chat-mode-select__label"
+                  data-testid={selected ? `${testIdPrefix}-name` : undefined}
+                >
+                  {option.label}
+                </span>
               </span>
-              <span
-                className="chat-mode-select__label"
-                data-testid={selected ? `${testIdPrefix}-name` : undefined}
-              >
-                {option.label}
-              </span>
-            </span>
-            {selected ? (
-              <svg className="chat-mode-select__check" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
-              </svg>
-            ) : null}
-          </button>
+              {unsupported ? (
+                <AlertTriangle
+                  size={14}
+                  aria-hidden
+                  className="designer-generation-model-list__warning"
+                  data-testid={`${testIdPrefix}-protocol-warning`}
+                  data-variant={option.value}
+                />
+              ) : selected ? (
+                <svg className="chat-mode-select__check" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
+                </svg>
+              ) : null}
+            </button>
+          </span>
         );
       })}
       {selectError ? (
         <p role="alert" className="designer-model-selector__state" data-testid={`${testIdPrefix}-select-error`}>{selectError}</p>
       ) : null}
+      {tooltip}
     </div>
   );
 }

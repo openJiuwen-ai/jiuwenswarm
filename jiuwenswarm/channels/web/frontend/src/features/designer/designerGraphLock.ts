@@ -49,6 +49,19 @@ export function designerChatStopControl(params: {
 }
 
 /**
+ * The canvas model menu stays closed while the chat dock is offering stop
+ * (leader turn, or the in-flight stop click) and while a run is still active.
+ * A single-node rerun is a canvas run: it does not turn the chat send button
+ * into stop, but it is still `running` or `paused`, so the run status covers it.
+ */
+export function isDesignerModelMenuLocked(params: {
+  stopControl: 'stopping' | 'stop' | 'send';
+  runStatus?: string | null;
+}): boolean {
+  return params.stopControl !== 'send' || isActiveDesignerRun(params.runStatus || undefined);
+}
+
+/**
  * The workflow stays read-only from the moment a prompt is sent until its
  * first run finishes. While the design leader's round is open
  * (`isDesignerLeaderBusy`), the graph it is about to fill may be empty or only
