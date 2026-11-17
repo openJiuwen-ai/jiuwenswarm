@@ -169,6 +169,10 @@ from jiuwenswarm.runtime.session_provisioner import (
     SessionSwitchInput,
 )
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+from jiuwenswarm.server.heartbeat_push import (
+    merge_heartbeat_push_metadata,
+    should_skip_heartbeat_push,
+)
 from jiuwenswarm.server.middleware.chat import (
     should_trigger_before_chat_request,
     trigger_before_chat_request,
@@ -4777,6 +4781,7 @@ class AgentWebSocketServer:
         channel_id = request.channel_id or "web"
         params = request.params if isinstance(request.params, dict) else {}
         prompt = str(params.get("content") or params.get("query") or "")
+        route_metadata = dict(request.metadata or {})
         await self.send_push(
             {
                 "request_id": request.request_id,
@@ -4834,6 +4839,18 @@ class AgentWebSocketServer:
                         or payload.get("message")
                         or "Runtime execution failed"
                     )
+                pushed_event_type = (
+                    str(payload.get("event_type") or "")
+                    if isinstance(payload, dict)
+                    else ""
+                )
+                # IM channels do not render runtime telemetry; forwarding it
+                # duplicates the answer that chat.final already delivered.
+                if should_skip_heartbeat_push(
+                    pushed_event_type,
+                    event.channel_id or channel_id,
+                ):
+                    continue
                 is_processing_start = (
                     isinstance(payload, dict)
                     and payload.get("event_type") == "chat.processing_status"
@@ -4854,10 +4871,8 @@ class AgentWebSocketServer:
                         "payload": payload,
                         "agent_ref": event.agent_ref,
                         "is_complete": event.is_complete,
-                        "metadata": (
-                            event.metadata
-                            if event.metadata is not None
-                            else request.metadata
+                        "metadata": merge_heartbeat_push_metadata(
+                            route_metadata, event.metadata
                         ),
                     }
                 )
