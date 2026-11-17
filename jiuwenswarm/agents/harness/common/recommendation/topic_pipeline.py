@@ -7033,7 +7033,9 @@ class TopicPipeline:
             offered_titles, offered_questions,
         )
         restated: list[dict[str, Any]] = []
-        for plan, record in _restating_plans(generated, offered):
+        # Recent-progress plans restate an offered question just as interest plans
+        # do; both lanes must pass the same title gate.
+        for plan, record in _restating_plans([*recent, *generated], offered):
             if plan in wanted:
                 wanted.remove(plan)
                 restated.append(record)
