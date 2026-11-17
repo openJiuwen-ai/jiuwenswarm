@@ -32,6 +32,7 @@ from jiuwenswarm.office.assets import OfficeAssetStore, referenced_handles
 from jiuwenswarm.office.contract import load_contract
 from jiuwenswarm.office.review import (
     ReviewFailed,
+    check_claims,
     geometry_summary,
     review_checklist,
     review_renders,
@@ -116,7 +117,7 @@ class TaskPaneTool(ClientTool):
 
 @dataclass(frozen=True)
 class Capture:
-    """What the task pane captured for a visual review: the renders, the evidence read with them, what they show."""
+    """What the task pane captured for a review: renders, the evidence read with them, what they show."""
 
     renders: list[str]
     evidence: str
@@ -124,27 +125,52 @@ class Capture:
     target: dict[str, str]
 
 
-class VisualReviewTool(TaskPaneTool):
-    """A visual check: the task pane captures renders, a model that saw nothing else reviews them.
+@dataclass(frozen=True)
+class ReviewRequest:
+    """One review: the checklist, the reviewer, the capture and the author's call."""
 
-    One pause: the task pane answers with the capture, which the tool's entry
-    in ``_VISUAL_REVIEWS`` reads, and ``complete`` runs the review against the
-    checklist of the app's package (``review.md``), by this conversation's
-    model when it takes images, else by ``models.vision``. The author gets the
-    verdict with the same renders, which reach it as any other contract tool's
-    images do.
+    checklist: str
+    model: Model | None
+    capture: Capture
+    arguments: dict[str, Any]
+    package_dir: Path
+
+
+@dataclass(frozen=True)
+class Review:
+    """How a contract tool's result is judged by a reviewer that saw nothing of the conversation.
+
+    ``capture`` reads the task pane's result, ``judge`` turns it into what the
+    author reads, against the ``checklist`` file of the app's package. A review
+    of ``images`` needs a model that takes them: the conversation's own when it
+    does, else ``models.vision``; any other is made by the conversation's model.
     """
 
-    def __init__(self, card: ToolCard, *, checklist: str,
-                 capture: Callable[[dict[str, Any], ClientToolResult], Capture],
+    capture: Callable[[dict[str, Any], ClientToolResult], Capture]
+    judge: Callable[[ReviewRequest], Awaitable[str]]
+    checklist: str = "review.md"
+    images: bool = True
+
+
+class ReviewTool(TaskPaneTool):
+    """A check whose result an independent reviewer judges.
+
+    One pause: the task pane answers with the capture, which the tool's entry
+    in ``_REVIEWS`` reads, and ``complete`` has the reviewer judge it. The
+    author gets the judgment with the capture's renders, which reach it as any
+    other contract tool's images do.
+    """
+
+    def __init__(self, card: ToolCard, *, review: Review, package_dir: Path, session_model: Callable[[], Model],
                  native_image_model: Callable[[], Model | None], store: OfficeAssetStore) -> None:
         super().__init__(card, native_image_model=native_image_model, store=store)
-        self._checklist = checklist
-        self._capture = capture
+        self._review = review
+        self._package_dir = package_dir
+        self._session_model = session_model
 
     def build_request(self, arguments: dict[str, Any], context: ClientToolContext) -> dict[str, Any]:
         request = super().build_request(arguments, context)
-        if self._native_image_model() is None and vision_client_config() is None:
+        if self._review.images and self._native_image_model() is None and vision_client_config() is None:
             raise ClientToolUnavailable(
                 f"{self.card.name} needs a model that can see images: this conversation's model cannot, "
                 "and the vision model (models.vision) is not configured and enabled")
@@ -159,19 +185,26 @@ class VisualReviewTool(TaskPaneTool):
     async def _reviewed(self, arguments: dict[str, Any], result: ClientToolResult,
                         context: ClientToolContext) -> ToolOutput:
         try:
-            capture = self._capture(arguments, result)
+            capture = self._review.capture(arguments, result)
         except ValueError as exc:
             return ToolOutput(success=False, error=f"{self.card.name}: {exc}")
-        try:
-            review = await review_renders(self._checklist, self._native_image_model(), capture.renders,
-                                          capture.evidence, arguments.get("expected_changes"))
-        except ReviewFailed as exc:
-            text = verifier_error(str(exc), **capture.target)
-        else:
-            text = verifier_result(review, **capture.target)
+        model = self._native_image_model() if self._review.images else self._session_model()
+        text = await self._review.judge(ReviewRequest(review_checklist(self._package_dir, self._review.checklist),
+                                                      model, capture, arguments, self._package_dir))
         images = ({"type": "image", "data_url": render} for render in capture.renders)
         reviewed = ClientToolResult(content=[{"type": "text", "text": text}, *images])
         return super().complete(arguments, reviewed, context)
+
+
+async def _visual_verdict(request: ReviewRequest) -> str:
+    """The verdict on renders, sorted into what to repair and what not; or why there is none."""
+    capture = request.capture
+    try:
+        review = await review_renders(request.checklist, request.model, capture.renders, capture.evidence,
+                                      request.arguments.get("expected_changes"))
+    except ReviewFailed as exc:
+        return verifier_error(str(exc), **capture.target)
+    return verifier_result(review, **capture.target)
 
 
 def _slide_capture(arguments: dict[str, Any], result: ClientToolResult) -> Capture:
@@ -197,38 +230,73 @@ def _slide_capture(arguments: dict[str, Any], result: ClientToolResult) -> Captu
 def _page_capture(arguments: dict[str, Any], result: ClientToolResult) -> Capture:
     """The document's first rendered pages, at most ``_REVIEW_PAGE_LIMIT``, for ``verify_doc_visual``.
 
-    The reviewer reads with them how many pages the document has and the author's focus area, wrapped as data.
+    The task pane renders no more than that, and says how many pages the document has. The reviewer reads that count
+    and the author's focus area, wrapped as data, with the pages.
     """
-    images = default_client_output(result).data.get("multimodal") or []
+    output = default_client_output(result)
+    images = output.data.get("multimodal") or []
     if not images:
         raise ValueError("the task pane returned no rendered page")
+    try:
+        page_count = json.loads(output.data["content"])["result"]["page_count"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise ValueError("the task pane did not say how many pages the document has") from exc
     sent = images[:_REVIEW_PAGE_LIMIT]
     page_hint = arguments.get("page_hint")
     focus = f"<focus_area>{page_hint}</focus_area>" if page_hint else "No focus area was named."
-    evidence = f"The document has {len(images)} pages; the first {len(sent)} are attached.\n{focus}"
+    evidence = f"The document has {page_count} pages; the first {len(sent)} are attached.\n{focus}"
     return Capture([image["data_url"] for image in sent], evidence,
-                   {"pages_reviewed": f"{len(sent)} of {len(images)}"})
+                   {"pages_reviewed": f"{len(sent)} of {page_count}"})
 
 
-# The contract tools whose result an independent reviewer judges, by name: how each reads the task pane's capture.
-_VISUAL_REVIEWS: dict[str, Callable[[dict[str, Any], ClientToolResult], Capture]] = {
-    "verify_slide_visual": _slide_capture,
-    "verify_doc_visual": _page_capture,
+def _document_capture(arguments: dict[str, Any], result: ClientToolResult) -> Capture:
+    """The document's final text and pending tracked changes, for ``explain_edits``, as the reviewer reads them."""
+    try:
+        captured = json.loads(default_client_output(result).data["content"])["result"]
+        paragraphs, changes = captured["paragraphs"], captured["tracked_changes"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise ValueError("the task pane did not send the document's text") from exc
+    # The document's own text cannot close a block: each "<" in it is written "&lt;".
+    evidence = "<document_text>\n" + "\n".join(paragraphs).replace("<", "&lt;") + "\n</document_text>"
+    if changes:
+        revisions = "\n".join(f"[revision {index}] {change['author']!r} {change['type']}: {change['text'][:200]!r}"
+                               .replace("<", "&lt;") for index, change in enumerate(changes))
+        evidence += f"\n\n<tracked_changes_at_turn_start>\n{revisions}\n</tracked_changes_at_turn_start>"
+    return Capture([], evidence, {})
+
+
+async def _claim_verdicts(request: ReviewRequest) -> str:
+    """Each planned edit with a verdict per claim; a claim on a skill reads that skill of the app's package."""
+    edits = request.arguments["edits"]
+    claims = [claim for edit in edits for claim in edit["grounding"]]
+    named = {claim.get("skill_name") for claim in claims if claim["basis"] == "skill_instruction"}
+    # Only a skill the package lists is read: a name is the model's, and could be a path out of the package.
+    listed = {path.parent.name: path for path in (request.package_dir / "skills").glob("*/SKILL.md")}
+    skills = {name: listed[name].read_text("utf-8") for name in sorted(named & listed.keys())}
+    return await check_claims(request.checklist, request.model, request.capture.evidence, edits, skills)
+
+
+# The contract tools whose result an independent reviewer judges, by name.
+_REVIEWS: dict[str, Review] = {
+    "verify_slide_visual": Review(_slide_capture, _visual_verdict),
+    "verify_doc_visual": Review(_page_capture, _visual_verdict),
+    "explain_edits": Review(_document_capture, _claim_verdicts, checklist="claim_check.md", images=False),
 }
 
 
 def build_task_pane_tools(
-    package_dir: Path, native_image_model: Callable[[], Model | None], store: OfficeAssetStore,
+    package_dir: Path, session_model: Callable[[], Model], native_image_model: Callable[[], Model | None],
+    store: OfficeAssetStore,
 ) -> list[TaskPaneTool]:
     """One tool per contract tool of the app's package, for one agent."""
     tools: list[TaskPaneTool] = []
     for tool in load_contract(package_dir):
-        capture = _VISUAL_REVIEWS.get(tool.name)
-        if capture is None:
+        review = _REVIEWS.get(tool.name)
+        if review is None:
             tools.append(TaskPaneTool(tool.card(), native_image_model=native_image_model, store=store))
         else:
-            tools.append(VisualReviewTool(tool.card(), checklist=review_checklist(package_dir), capture=capture,
-                                          native_image_model=native_image_model, store=store))
+            tools.append(ReviewTool(tool.card(), review=review, package_dir=package_dir, session_model=session_model,
+                                    native_image_model=native_image_model, store=store))
     return tools
 
 

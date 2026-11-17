@@ -51,7 +51,7 @@ def test_input_change_on_blur_clamps_to_min_max_range() -> None:
             "--packages=external",
             "--platform=node",
             "--format=esm",
-            f"--outfile={_CACHE_DIR / 'Input.js'}",
+            f"--outfile={_CACHE_DIR / 'Input.mjs'}",
             "--loader:.css=empty",
         ],
         cwd=_FRONTEND_ROOT,

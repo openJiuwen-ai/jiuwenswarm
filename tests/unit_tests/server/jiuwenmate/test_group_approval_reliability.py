@@ -179,7 +179,7 @@ async def test_real_authorization_changes_still_refuse_the_read(records, changed
 
 def test_permission_termination_notice_is_specific_and_does_not_disclose_details():
     text = failure_notice_text("req-1", reason="group_access_lost", detail="private path and credentials")
-    assert "群访问权限" in text and "终止" in text and "req-1" in text
+    assert text.splitlines() == ["原因：等待或恢复期间，员工的群访问权限已失效。", "请求编号：req-1"]
     assert "内部异常" not in text and "private" not in text
 
 
@@ -496,7 +496,9 @@ async def test_access_lost_during_approval_resume_has_a_durable_notice_even_when
     await settle(lambda: not host.manager.scheduler.running)
     assert not resumed
     view = await host.manager.request_view("local", approval.request_id)
-    assert len(view.replies) == 1 and "终止" in view.replies[0]
+    assert len(view.replies) == 1
+    assert view.replies[0].splitlines()[-1] == f"请求编号：{approval.request_id}"
+    assert len(view.replies[0].splitlines()) == 2
     assert "内部异常" not in view.replies[0]
     assert ("群访问权限" if change == "left" else "历史范围") in view.replies[0]
     assert PermissionApprovalRepository(host.db).get(approval.approval_id).status == "consumed"

@@ -9,6 +9,7 @@ const _boot = new JSDOM('<!doctype html><html><body></body></html>', { url: 'htt
 for (const [k, v] of Object.entries({
   window: _boot.window,
   document: _boot.window.document,
+  navigator: _boot.window.navigator,
   Node: _boot.window.Node,
   HTMLElement: _boot.window.HTMLElement,
   Event: _boot.window.Event,
@@ -21,7 +22,7 @@ for (const [k, v] of Object.entries({
 
 const { act, createElement, useState } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { Input } = await import('../node_modules/.cache/input-change-on-blur/Input.js');
+const { Input } = await import('../node_modules/.cache/input-change-on-blur/Input.mjs');
 
 function installGlobals(dom) {
   const values = {

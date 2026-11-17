@@ -21,6 +21,7 @@
   "dependencies": {
     "@xmldom/xmldom": "0.9.12",
     "fflate": "0.8.3",
+    "pdfjs-dist": "6.4.299",
     "ses": "2.3.0"
   }
 }

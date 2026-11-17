@@ -11,6 +11,7 @@ import {
 } from './excelAddress';
 import { firstThreat, screenExcelWrite } from './excelGuard';
 import type { JsonObject } from './gatewayClient';
+import type { HostWriteQueue } from './hostWriteQueue';
 import { type CodeHost, runOfficeCode } from './officeCodeRunner';
 
 /** ``Excel.run``, injected so tests can drive a fake workbook. */
@@ -41,17 +42,17 @@ interface Options {
   enums: Record<string, Readonly<Record<string, string>>>;
   /** The current sheet, selection and chart, as ``read_surface_context`` returns them. */
   surface: () => Promise<string>;
+  /** The queue the writes run in, told where each wrote. */
+  writes: HostWriteQueue;
 }
 
 export function excelRuntime(options: Options): ClientToolRuntime<ExcelToolName> {
   const tools: Record<ExcelToolName, (input: JsonObject) => Promise<ClientToolResponse>> = {
     get_cell_ranges: input => options.run(context => readCells(context, input, options.host)),
     get_range_as_csv: input => options.run(context => readCsv(context, input)),
-    set_cell_range: input => options.run(context => writeCells(context, input, options.host)),
-    copy_paste_range: input => options.run(context => copyRange(context, input)),
-    execute_office_js: input => runOfficeCode({
-      name: 'Excel', run: options.run as CodeHost['run'], enums: options.enums, screen: screenExcelWrite,
-    }, String(input.code)),
+    set_cell_range: input => options.run(context => writeCells(context, input, options.host, options.writes)),
+    copy_paste_range: input => options.run(context => copyRange(context, input, options.writes)),
+    execute_office_js: input => runCode(String(input.code), options),
     read_surface_context: async () => ({ ok: true, result: await options.surface() }),
   };
   return {
@@ -70,10 +71,25 @@ export function excelRuntime(options: Options): ClientToolRuntime<ExcelToolName>
   };
 }
 
-/** The enums of the ``Excel`` namespace, without its classes and functions. */
-export function excelEnums(namespace: object): Record<string, Readonly<Record<string, string>>> {
-  return Object.fromEntries(Object.entries(namespace).filter(([, value]) => value && typeof value === 'object'
-    && Object.values(value).every(item => typeof item === 'string')));
+/** The code, telling the queue the ranges it wrote to. */
+async function runCode(code: string, { run, enums, writes }: Options): Promise<ClientToolResponse> {
+  const ranges: Excel.Range[] = [];
+  const response = await runOfficeCode({ name: 'Excel', run: run as CodeHost['run'], enums, screen: screenExcelWrite,
+    // Loaded ahead of the write, the address is the range's as the write found it, whatever the write does to it.
+    writing: target => 'address' in target && ranges.push((target as Excel.Range).load('address')) }, code);
+  for (const range of ranges) {
+    try {
+      writes.touch(range.address);
+    } catch {
+      // The code never synced this write: it did not land, and the address never came.
+    }
+  }
+  return response;
+}
+
+/** An address of cells on a sheet, as Excel writes one. */
+function onSheet(sheetName: string, cells: string): string {
+  return `'${sheetName.replace(/'/g, "''")}'!${cells}`;
 }
 
 interface Sheet {
@@ -359,7 +375,7 @@ function written(value: unknown): unknown {
 }
 
 async function writeCells(
-  context: Excel.RequestContext, input: JsonObject, host: OfficeHost,
+  context: Excel.RequestContext, input: JsonObject, host: OfficeHost, writes: HostWriteQueue,
 ): Promise<ClientToolResponse> {
   const entries = Object.entries(input.cells as Record<string, CellInput>).map(([address, cell]) => {
     const block = parseBlock(address, { rows: 0, columns: 0 });
@@ -395,6 +411,7 @@ async function writeCells(
     const range = sheet.getRange(at);
     if (cell.formula !== undefined) range.formulas = [[cell.formula]];
     else if (cell.value !== undefined) range.values = [[written(cell.value)]];
+    if (cell.formula !== undefined || cell.value !== undefined) writes.touch(onSheet(String(input.sheetName), at));
     if (cell.cellStyles) applyStyles(range, cell.cellStyles);
     if (cell.borderStyles) applyBorders(range, cell.borderStyles);
   }
@@ -435,7 +452,9 @@ const COPY_TYPES: Record<string, Excel.RangeCopyType> = {
   values: 'Values' as Excel.RangeCopyType, formulas: 'Formulas' as Excel.RangeCopyType,
 };
 
-async function copyRange(context: Excel.RequestContext, input: JsonObject): Promise<ClientToolResponse> {
+async function copyRange(
+  context: Excel.RequestContext, input: JsonObject, writes: HostWriteQueue,
+): Promise<ClientToolResponse> {
   const sourceName = typeof input.sourceSheetName === 'string' ? input.sourceSheetName : await activeSheetName(context);
   const destName = String(input.destSheetName ?? sourceName);
   const source = await sheetNamed(context, sourceName);
@@ -500,6 +519,7 @@ async function copyRange(context: Excel.RequestContext, input: JsonObject): Prom
   }
   // The blocks checked above, not the addresses: a whole column is checked as far as its sheet is used only.
   rangeOf(dest.sheet, area).copyFrom(rangeOf(source.sheet, from), COPY_TYPES[copyType]);
+  writes.touch(onSheet(destName, blockName(area)));
   await context.sync();
   if (destName !== sourceName && (copyType === 'all' || copyType === 'formulas')) {
     messages.push('Copied to another sheet: relative references now point at the destination sheet. If the source '

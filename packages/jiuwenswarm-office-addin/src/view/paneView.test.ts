@@ -73,7 +73,7 @@ function mounted(initial: Partial<PaneState> = {}) {
   const root = document.createElement('div');
   document.body.replaceChildren(root);
   mountPane(root, controller, documentCopy.presentation,
-    { now: () => clockNow, every: (_ms, tick) => ticks.push(tick) });
+    { clock: { now: () => clockNow, every: (_ms, tick) => ticks.push(tick) } });
   const set = (change: Partial<PaneState>): void => {
     state = { ...state, ...change };
     listeners.forEach(listener => listener(state));
@@ -288,6 +288,25 @@ describe('the composer', () => {
     await vi.waitFor(() => expect(text('.composer-note')).toBe('图片类型不支持：brief.pdf（支持 PNG、JPEG、WebP、GIF）；'
       + '图片太大：big.png（单张最大 10 MB）；图片读取失败：gone.png'));
     expect(root.querySelector('.composer-image img')?.getAttribute('alt')).toBe('ok.png');
+    expect(button('发送').disabled).toBe(false);
+  });
+
+  it('shows an image as soon as it is added, and one that never reads holds the message only until removed or given up', async () => {
+    const { root, button, text, input } = mounted();
+    vi.spyOn(FileReader.prototype, 'readAsDataURL').mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => undefined);
+    root.querySelector('.composer-card')!.dispatchEvent(withData('drop', 'dataTransfer',
+      { files: [png('a.png'), png('b.png')] }));
+    input().value = '看图';
+    input().dispatchEvent(new Event('input'));
+    expect(root.querySelectorAll('.composer-image')).toHaveLength(2);
+    expect(button('发送').disabled).toBe(true);
+
+    button('移除图片 a.png').click();
+    expect(root.querySelectorAll('.composer-image')).toHaveLength(1);
+    vi.advanceTimersByTime(10_000);
+    await vi.waitFor(() => expect(text('.composer-note')).toBe('图片读取失败：b.png'));
+    expect(root.querySelectorAll('.composer-image')).toHaveLength(0);
     expect(button('发送').disabled).toBe(false);
   });
 

@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import type { ModelPlan, VendorPreset, VendorPresetMap } from '../../../../types';
 import { getProviderLogoUrl, getVendorLogoUrl } from '../../../../assets/providers';
 import { settingsCustomModelIcon } from '../../../../assets/settings';
+import { Loading } from '../../../../components/ui';
 import {
   CUSTOM_VENDOR_SELECTION,
   OPENAI_ACCOUNT_SELECTION,
@@ -47,6 +48,7 @@ export function ModelProviderSelect({
   catalog,
   includeOpenAIAccount = true,
   groups = DEFAULT_GROUPS,
+  loading = false,
   disabled,
   invalid,
   onChange,
@@ -60,6 +62,7 @@ export function ModelProviderSelect({
   /** 哪些厂商分组要出现在下拉里，以及顺序——默认全部分组;传入子集可以在某些
    *  场景（比如视频/图像生成配置）只保留"API"和"其他"，隐藏套餐类分组。 */
   groups?: Array<ModelPlan | 'other'>;
+  loading?: boolean;
   disabled: boolean;
   invalid: boolean;
   onChange: (value: string) => void;
@@ -124,7 +127,7 @@ export function ModelProviderSelect({
       : selected.kind === 'account'
         ? t('settingsPanel.models.openaiAccount')
         : vendorLabel(selected.preset.vendor_key)
-    : t('settingsPanel.models.vendorPlaceholder');
+    : t(loading ? 'common.loading' : 'settingsPanel.models.vendorPlaceholder');
   const selectedLogo =
     selected?.kind === 'custom'
       ? settingsCustomModelIcon
@@ -236,6 +239,7 @@ export function ModelProviderSelect({
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
         aria-invalid={invalid || undefined}
+        aria-busy={loading || undefined}
         title={selectedApiAddress || undefined}
         disabled={disabled}
         data-testid="settings-model-provider-select-trigger"
@@ -251,7 +255,7 @@ export function ModelProviderSelect({
           {selectedLogo ? <img src={selectedLogo} alt="" aria-hidden /> : null}
           <span>{selectedLabel}</span>
         </span>
-        <ChevronDown aria-hidden />
+        {loading ? <Loading size="sm" aria-label="" /> : <ChevronDown aria-hidden />}
       </button>
       {open && portalHost && position
         ? createPortal(

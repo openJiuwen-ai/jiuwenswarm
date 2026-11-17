@@ -142,7 +142,8 @@ def test_python_linux_updater_forwards_its_attempt_receipt_before_replacing_file
     method = next(node for node in runtime_class.body if isinstance(node, ast.FunctionDef)
                   and node.name == "_launch_linux_install_helper")
     namespace = {"Path": Path, "os": os, "shlex": shlex, "EXECUTABLE_NAME": "workswarm",
-                 "get_user_workspace_dir": lambda: tmp_path, "logger": logging.getLogger(__name__),
+                 "get_user_workspace_dir": lambda: tmp_path,
+                 "get_infra_data_dir": lambda: tmp_path, "logger": logging.getLogger(__name__),
                  "subprocess": SimpleNamespace(DEVNULL=-3, Popen=Mock())}
     exec(compile(ast.Module(body=[method], type_ignores=[]), "linux-updater", "exec"), namespace)
     receipt = create_shutdown_receipt(tmp_path / "attempt with spaces")
