@@ -18,6 +18,7 @@ interface MarketCardProps {
   onOpenDetail: () => void;
   onQuickAdd: () => void;
   quickAction?: 'install' | 'connect';
+  actionMode?: 'auto' | 'use';
   actionDisabled?: boolean;
   onUse?: () => void;
 }
@@ -33,6 +34,7 @@ export function MarketCard({
   onOpenDetail,
   onQuickAdd,
   quickAction = 'install',
+  actionMode = 'auto',
   actionDisabled = false,
   onUse,
 }: MarketCardProps) {
@@ -64,8 +66,8 @@ export function MarketCard({
         {t(busyLabelKey(busyKind))}
       </span>
     );
-  } else if (state === 'connected') {
-    actionSlot = <button type="button" className="connector-market-card-install" data-testid="connector-market-card-use" disabled={!onUse} onClick={event => { event.stopPropagation(); onUse?.(); }}>{t('connectorMarket.card.use')}</button>;
+  } else if (state === 'connected' || actionMode === 'use') {
+    actionSlot = <button type="button" className="connector-market-card-install" data-testid="connector-market-card-use" disabled={actionDisabled || !onUse} onClick={event => { event.stopPropagation(); onUse?.(); }}>{t('connectorMarket.card.use')}</button>;
   } else if (state === 'idle' || state === 'error') {
     actionSlot = (
       <button
