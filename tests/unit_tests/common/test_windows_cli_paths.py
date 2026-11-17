@@ -775,7 +775,9 @@ def test_inno_compiles_preservation_hooks(tmp_path, monkeypatch, name):
     scripts.mkdir(parents=True)
     for filename in (name, "windows-cli-preservation.iss", "preserve-windows-cli.ps1"):
         shutil.copyfile(ROOT / "scripts" / filename, scripts / filename)
-    shutil.copytree(ROOT / "scripts" / "license", scripts / "license")
+    license_dir = ROOT / "scripts" / "license"
+    if license_dir.is_dir():
+        shutil.copytree(license_dir, scripts / "license")
     icon = project / "jiuwenswarm/channels/web/frontend/public/logo.ico"
     icon.parent.mkdir(parents=True)
     shutil.copyfile(ROOT / "jiuwenswarm/channels/web/frontend/public/logo.ico", icon)
