@@ -610,7 +610,7 @@ export function DesignerChatPanel() {
             <button
               type="button"
               className="designer-chat-panel__model-warning-action"
-              onClick={() => requestSettingsModule('models')}
+              onClick={() => requestSettingsModule('models', 'multimodal')}
               data-testid="designer-chat-model-warning-action"
             >
               {t('designer.models.openModelSettings')}
