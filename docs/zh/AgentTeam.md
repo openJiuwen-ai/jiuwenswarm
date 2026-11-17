@@ -487,6 +487,28 @@ Agent Team 不是一次性分完工就结束，而是依靠事件驱动持续推
 
 ---
 
+
+### 私信的投递模式（本地补丁）
+
+普通集群的 Agent 间私信 `send_message` 可以加 `mode`；省略时沿用原行为。广播、多收件人消息、发给用户的消息和 SwarmChat 群聊不使用此字段。
+
+| 模式 | 行为 |
+| --- | --- |
+| `steer` | 空闲时直接处理；忙时在下一次模型决策前插入，不打断正在运行的工具。 |
+| `follow_up` | 空闲时直接处理；忙时等发送时所绑定的任务不再由该成员执行，再按后续输入投递。没有任务记录时等当前轮结束。 |
+| `abort` | 仅 Leader 可发送。直接停止当前执行，清空运行时 follow_up 队列及中止之前的邮箱 follow_up；其他旧邮箱输入标记 held，保留历史供 Leader 复核，不自动重放，不执行 abort 正文。成员保持停止，只有 Leader 后续的新私信才能恢复；队友、广播和任务调度不能恢复。中止不受任务数量或任务版本变化限制。中止不移除成员、不把任务标为完成，也不撤销已发生的文件修改。 |
+
+普通成员需要中止时，用私信向 Leader 说明任务和原因，由 Leader 决定。消息发送成功表示已入收件箱，不代表成员已经停止。
+
+如需停止后汇报现状，Leader 应先发 abort，再单独发一条新的私信要求汇报。旧 follow_up 已丢弃，恢复后不会重放。
+
+实现位于本仓库锁定的 `agent-core` 依赖。将 [补丁](../../patches/agent-core-private-message.patch) 应用到该依赖的固定提交 `2f4bedb9c5d85ab70d7c79d36183e6a98799e94e`。在已同步 JiuwenSwarm 环境的仓库根目录，用 `uv pip install --no-deps -e <agent-core目录>` 使用修改后的依赖，随后用 `uv run --no-sync jiuwenswarm-start` 启动服务。
+
+
+普通集群用 `send_message(to="*")` 发广播时，发送方不指定模式。已启动的接收成员用 Jev 从 `steer`、`follow_up`、`drop` 中选择。广播不会启动尚未运行的成员，也不能中止任务。Jev 未配置、不可用或返回非法结果时退回原投递机制（空闲直接处理、忙时 steer）；使用现有 `JEV_BASE_URL`、`JEV_MODEL`、`JEV_API_KEY` 配置。广播逐条记录接收状态：较早的 follow_up 等待时，较新的广播仍可独立判断和投递，旧广播不会被读水位跳过。
+
+公开群聊沿用 @ 点名路由：未被点名不唤起；空闲时直接处理；被点名且忙碌时由 Jev 在 steer 与 follow_up 中选择。Jev 未配置、超时或返回非法结果时退回原机制（忙时 steer），不丢弃点名消息。已有 follow_up 在 Native 团队忙时 steer 中作为上下文合并，提交成功后移出原队列；晚到输入保留。Jev 支持 JEV_ENDPOINT_PATH，默认 /v1/systemone；Mindshub 使用 JEV_BASE_URL=https://api.mindshub.ai、JEV_MODEL=jev-1.13.0、JEV_ENDPOINT_PATH=/v1/decisions，密钥通过 JEV_API_KEY 注入。
+
 ## 五、常见问题
 
 ### Q1：Agent Team 和普通对话有什么区别？
@@ -548,3 +570,20 @@ Leader 在会话内发起的 **SwarmFlow 后台工作流**同样跟随团队生�
 
 - [返回文档首页](../README.md)
 - [返回项目首页](../../README_CN.md)
+
+
+### 本地补丁：状态查询与撤回
+
+私信和广播均返回 message_id。用 send_message(action="status", message_id="...") 查询，不发送新消息。Leader 可查询同团队消息，其他成员只能查询自己发送的消息。pending/deferred 是等待；dispatching 是认领中；submitted 仅表示运行时接受，不代表已读或任务完成；stopped 是中止已执行；cleared 是 follow_up 已清除；held 是旧输入保留历史且不自动重放。
+
+替换旧要求时，先 send_message(action="withdraw", message_id="旧ID")，再发送新要求并注明替代关系。撤回仅影响尚未认领的输入；已 dispatching/submitted 的接收方仍需明确纠正。广播逐个接收方返回结果。
+
+契约同步、固定快照验收、交接不等于完成及避免无效回执已写入中英文团队提示词。这些是协作要求，目前没有程序强制的全局契约版本门禁。
+
+
+## Steer 合并 follow_up 上下文（本地补丁，2026-11-16）
+
+Native TeamHarness 忙时 steer 将此前 follow_up 邮箱输入及相同调用上下文的运行时 FIFO 快照合并，保留原消息 ID、发送者、原模式、时间、任务绑定和正文。成功提交 steering 通道后移出原队列，反馈记 merged；失败保留输入，快照之后的新输入不清除。merged 只表示上下文提交，不代表阅读、执行或任务完成。
+
+不新增待办队列、不增加 pending/resolve 工具、不维护消息完成状态、不发送自动后续提醒。成员按当前任务看板、契约版本和最新有效指令判断旧信息的适用性，有冲突询问 Leader。原定后续工作仍由任务看板管理。外部 CLI 运行时保持原行为。
+

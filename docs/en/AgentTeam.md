@@ -503,6 +503,23 @@ Agent Team does not stop after a one-time assignment; it advances through events
 
 ---
 
+### Private message delivery modes (local patch)
+
+In a normal team, agents can set `mode` on a private `send_message`. Omitting it preserves existing behavior. Broadcasts, multicast, messages to the user, and SwarmChat do not use this field.
+
+- `steer`: Deliver immediately if idle. Otherwise inject before the next model decision without stopping a running tool.
+- `follow_up`: Deliver immediately if idle. Otherwise wait for the task active at send time to leave the recipient's active work. If there is no tracked task, wait for the current round.
+- `abort`: Leader only. Stop execution directly, clear runtime follow-ups and preceding mailbox follow-ups; preserve other old inputs as held history without replay, and do not execute the abort body. Only a NEW direct leader message resumes the member; peers, broadcasts and automatic task scheduling cannot resume it. Abort targets the member runtime regardless of task count or task changes. The member stays on the team, the task is not marked completed, and existing file changes are not undone. To request a handover report, send a separate direct message after the abort. Cleared follow-ups are not replayed.
+
+Members can ask the leader to stop a task by sending a private message with the task and reason. A successful send confirms mailbox submission, not execution cancellation.
+
+Apply the [patch](../../patches/agent-core-private-message.patch) to the pinned `agent-core` revision `2f4bedb9c5d85ab70d7c79d36183e6a98799e94e`. From the JiuwenSwarm checkout with its environment already synced, install the patched dependency with `uv pip install --no-deps -e <agent-core-path>`, then start the service with `uv run --no-sync jiuwenswarm-start`.
+
+
+For ordinary team broadcasts sent with `send_message(to="*")`, the sender does not select a mode. Each running recipient uses Jev to choose `steer`, `follow_up`, or `drop`. A broadcast does not start an unstarted member or abort work. If Jev is unconfigured, unavailable, or invalid, use original delivery: direct input when idle and steer when busy. Configure Jev using the existing `JEV_BASE_URL`, `JEV_MODEL`, and `JEV_API_KEY`. A deferred broadcast does not block later broadcasts or direct messages; each recipient input has its own handled state.
+
+Public group chat keeps mention-based routing: unmentioned members are not woken; idle recipients process immediately; busy mentioned recipients use Jev to choose steer or follow_up. Missing configuration, errors, or invalid choices fall back to the original steer delivery, never dropping a mention. For native team members, a busy steer folds earlier follow-ups into context and removes them from the delivery FIFO only after acceptance; later inputs remain queued. JEV_ENDPOINT_PATH defaults to /v1/systemone; for Mindshub use JEV_BASE_URL=https://api.mindshub.ai, JEV_MODEL=jev-1.13.0 and JEV_ENDPOINT_PATH=/v1/decisions. Inject credentials through JEV_API_KEY.
+
 ## FAQ
 
 ### Q1: Agent Team vs normal chat?
@@ -563,3 +580,19 @@ Distributed runtime keeps single-active-session semantics per channel. Creating 
 ---
 
 *Simplified Chinese: [Agent Team](../zh/AgentTeam.md)*
+
+
+### Local patch: delivery repair
+
+Ordinary receiver-routed broadcasts use individual recipient state, so deferred older input does not block later broadcasts or disappear below a watermark. Missing or failed Jev decisions restore original delivery instead of dropping messages. Public group chat keeps its existing context cursor.
+Private messages also return message_id and support send_message(action="status", message_id="..."). The sender or same-team leader can query feedback. submitted means runtime acceptance, not reading or completion.
+Use action="withdraw" with the old message_id before sending a replacement. Only the sender can withdraw pending inputs. dispatching/submitted cannot be recalled; broadcast withdrawal reports each recipient separately. stopped, cleared, and held distinguish abort, removed follow-ups, and old inputs preserved without automatic replay.
+Team prompts require one versioned contract owner, task version checks, acceptance against file hashes or commits, and separation of handoff from completion. These are model instructions, not a hard global version isolation mechanism.
+
+
+### Steer with earlier follow-up context
+
+Native teams preserve message IDs, senders, original timing, task bindings and content when folding earlier follow-ups into a busy steer. Failed admission keeps inputs retryable; later arrivals and distinct run contexts remain queued. `merged` is a delivery receipt, not proof of reading or task completion. There is no second task queue, no pending/resolve API, and no automatic duty reminder. Members assess stale information against the existing task board and current authoritative instructions. External CLI runtimes retain their prior behavior.
+
+
+Repeating the currently installed model selection while sending a follow-up does not switch models, including sessions started with an implicit default. Changing to a different model or group while executing remains unsupported.
