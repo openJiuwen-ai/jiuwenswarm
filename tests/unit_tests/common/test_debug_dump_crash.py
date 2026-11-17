@@ -18,6 +18,7 @@ def crash_env(monkeypatch, tmp_path):
     import faulthandler
 
     exits: list[int] = []
+    (tmp_path / "agent").mkdir()
     monkeypatch.setattr(debug_dump, "get_logs_dir", lambda: tmp_path)
     monkeypatch.setattr(debug_dump, "_crash_exit", exits.append)
     monkeypatch.setattr(faulthandler, "enable", lambda **_kwargs: None)

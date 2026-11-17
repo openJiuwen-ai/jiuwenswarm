@@ -37,6 +37,7 @@ from tests.unit_tests.agentserver.client_attachments_support import CLIENT_APP, 
 # The packages JiuwenSwarm ships for the apps, read before a test's ``isolated`` fixture replaces the apps.
 POWERPOINT_PACKAGE = registry.client_apps()[CLIENT_APP].package_dir
 WORD_PACKAGE = registry.client_apps()["office-word"].package_dir
+EXCEL_PACKAGE = registry.client_apps()["office-excel"].package_dir
 
 
 @pytest.fixture(autouse=True)
