@@ -29,6 +29,7 @@ _EXPORTS = {
     ),
     "TaskMemoryService": ("openjiuwen.extensions.context_evolver.service.task_memory_service", "TaskMemoryService"),
     "AddMemoryRequest": ("openjiuwen.extensions.context_evolver.service.task_memory_service", "AddMemoryRequest"),
+    "read_pptx": (".pptx_tools", "read_pptx"),
 }
 __all__ = list(_EXPORTS)
 

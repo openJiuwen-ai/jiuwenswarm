@@ -19,6 +19,7 @@ generated: true
 | [jiuwenswarm](#module-jiuwenswarm) |
 | [jiuwenswarm/agents/harness](#module-jiuwenswarm-agents-harness) |
 | [jiuwenswarm/agents/harness/common/rails](#module-jiuwenswarm-agents-harness-common-rails) |
+| [jiuwenswarm/agents/harness/common/rails/permissions](#module-jiuwenswarm-agents-harness-common-rails-permissions) |
 | [jiuwenswarm/agents/harness/common/recommendation](#module-jiuwenswarm-agents-harness-common-recommendation) |
 | [jiuwenswarm/agents/harness/common/tools](#module-jiuwenswarm-agents-harness-common-tools) |
 | [jiuwenswarm/agents/harness/team/rails](#module-jiuwenswarm-agents-harness-team-rails) |
@@ -79,6 +80,14 @@ generated: true
 | [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
 | [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 
+<a id="module-jiuwenswarm-agents-harness-common-rails-permissions"></a>
+
+## jiuwenswarm/agents/harness/common/rails/permissions
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261116_2200_pptx-reading-tool](F_20261116_2200_pptx-reading-tool.md) | feature | read_pptx PowerPoint Presentation Reading Tool | zxj0302 | 无独立 D：Atomic tool addition for PowerPoint presentation ingestion |
+
 <a id="module-jiuwenswarm-agents-harness-common-recommendation"></a>
 
 ## jiuwenswarm/agents/harness/common/recommendation
@@ -95,6 +104,7 @@ generated: true
 |---|---|---|---|---|
 | [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
 | [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
+| [F_20261116_2200_pptx-reading-tool](F_20261116_2200_pptx-reading-tool.md) | feature | read_pptx PowerPoint Presentation Reading Tool | zxj0302 | 无独立 D：Atomic tool addition for PowerPoint presentation ingestion |
 
 <a id="module-jiuwenswarm-agents-harness-team-rails"></a>
 
@@ -129,6 +139,7 @@ generated: true
 | [F_20261029_1757_mcp-app-agent-stack-refresh](F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |
 | [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 | [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
+| [F_20261116_2200_pptx-reading-tool](F_20261116_2200_pptx-reading-tool.md) | feature | read_pptx PowerPoint Presentation Reading Tool | zxj0302 | 无独立 D：Atomic tool addition for PowerPoint presentation ingestion |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-features-settings"></a>
 
@@ -209,6 +220,7 @@ generated: true
 | [F_20261029_1757_mcp-app-agent-stack-refresh](F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |
 | [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 | [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
+| [F_20261116_2200_pptx-reading-tool](F_20261116_2200_pptx-reading-tool.md) | feature | read_pptx PowerPoint Presentation Reading Tool | zxj0302 | 无独立 D：Atomic tool addition for PowerPoint presentation ingestion |
 
 <a id="module-scripts"></a>
 

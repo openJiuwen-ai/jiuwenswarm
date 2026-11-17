@@ -133,6 +133,10 @@ BUILTIN_TOOL_DISCOVERY: dict[str, ToolDiscoveryMetadata] = {
     "delete_collection": _entry("Delete items from the user's saved knowledge collections.", "删除 收藏 知识"),
     "add_collection": _entry("Save public knowledge to the user's personal collection.", "添加 保存 收藏 知识"),
     "xiaoyi_gui_agent": _entry("Operate phone apps through screen interaction.", "操作 手机应用 点击 屏幕 GUI"),
+    "read_pptx": _entry(
+        "Read PowerPoint (.pptx) presentation slides, tables, and notes.",
+        "读取 ppt pptx 幻灯片 演示文稿 幻灯片表格 演讲备注",
+    ),
 }
 
 

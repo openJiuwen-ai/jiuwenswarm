@@ -66,6 +66,7 @@ _PATH_TOOLS = {
     "lsp",
     "read_file",
     "read_pdf",
+    "read_pptx",
     "write_file",
     "edit_file",
     "read_text_file",

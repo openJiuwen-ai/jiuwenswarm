@@ -25,6 +25,7 @@ generated: true
 | [jiuwenswarm/agents/harness/code/rails/heartbeat](#module-jiuwenswarm-agents-harness-code-rails-heartbeat) |
 | [jiuwenswarm/agents/harness/common/prompt](#module-jiuwenswarm-agents-harness-common-prompt) |
 | [jiuwenswarm/agents/harness/common/rails](#module-jiuwenswarm-agents-harness-common-rails) |
+| [jiuwenswarm/agents/harness/common/rails/permissions](#module-jiuwenswarm-agents-harness-common-rails-permissions) |
 | [jiuwenswarm/agents/harness/common/recommendation](#module-jiuwenswarm-agents-harness-common-recommendation) |
 | [jiuwenswarm/agents/harness/common/rsi](#module-jiuwenswarm-agents-harness-common-rsi) |
 | [jiuwenswarm/agents/harness/common/tools](#module-jiuwenswarm-agents-harness-common-tools) |
@@ -165,6 +166,14 @@ generated: true
 | [S_01_tool-discovery-language](specs/jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | — |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
+<a id="module-jiuwenswarm-agents-harness-common-rails-permissions"></a>
+
+## jiuwenswarm/agents/harness/common/rails/permissions
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261116_2200_pptx-reading-tool](features/F_20261116_2200_pptx-reading-tool.md) | feature | read_pptx PowerPoint Presentation Reading Tool | zxj0302 | 无独立 D：Atomic tool addition for PowerPoint presentation ingestion |
+
 <a id="module-jiuwenswarm-agents-harness-common-recommendation"></a>
 
 ## jiuwenswarm/agents/harness/common/recommendation
@@ -193,6 +202,7 @@ generated: true
 | [F_20261103_1124_sdk-web-retrieval](features/F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 | [S_01_tool-discovery-language](specs/jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | — |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
+| [F_20261116_2200_pptx-reading-tool](features/F_20261116_2200_pptx-reading-tool.md) | feature | read_pptx PowerPoint Presentation Reading Tool | zxj0302 | 无独立 D：Atomic tool addition for PowerPoint presentation ingestion |
 
 <a id="module-jiuwenswarm-agents-harness-common-tools-cron"></a>
 
@@ -272,6 +282,7 @@ generated: true
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
 | [S_01_plugin-marketplace](specs/jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
+| [F_20261116_2200_pptx-reading-tool](features/F_20261116_2200_pptx-reading-tool.md) | feature | read_pptx PowerPoint Presentation Reading Tool | zxj0302 | 无独立 D：Atomic tool addition for PowerPoint presentation ingestion |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-features-rsi"></a>
 
@@ -424,6 +435,7 @@ generated: true
 | [S_01_tool-discovery-language](specs/jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | — |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 | [S_03_native-plugin-runtime](specs/jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | — |
+| [F_20261116_2200_pptx-reading-tool](features/F_20261116_2200_pptx-reading-tool.md) | feature | read_pptx PowerPoint Presentation Reading Tool | zxj0302 | 无独立 D：Atomic tool addition for PowerPoint presentation ingestion |
 
 <a id="module-jiuwenswarm-server-runtime-skill"></a>
 
