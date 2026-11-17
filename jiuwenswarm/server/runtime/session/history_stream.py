@@ -23,7 +23,11 @@ _SPECIAL = re.compile(rb'["\\\x00-\x1f]')
 _WHITE = re.compile(rb'[^ \t\r\n]')
 _LARGE_FIELDS = {"content", "rendered_result", "result", "raw_output"}
 _OMIT_FIELDS = {"prompt", "event_payload", "usage", "session_usage"}
-_METADATA_FIELDS = {"role", "event_type", "request_id", "channel_id", "id", "compact_metadata", "cron_failure_record"}
+_METADATA_FIELDS = {
+    "role", "event_type", "request_id", "channel_id", "id", "compact_metadata", "cron_failure_record",
+    # Migration needs cancellation boundaries even when the row has no context content.
+    "status",
+}
 
 
 class _JSONStream:
