@@ -1,4 +1,4 @@
-"""Enterprise sessions reconcile MCPs from the routed Agent's effective policy."""
+"""Enterprise sessions union Agent policy MCPs with per-message selection."""
 
 from __future__ import annotations
 
@@ -72,8 +72,8 @@ def enterprise(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("picker", [None, [], ["unauthorized-picker-entry"]])
-async def test_enterprise_policy_loads_without_picker_and_is_idempotent(enterprise, picker):
+@pytest.mark.parametrize("picker", [None, []])
+async def test_enterprise_policy_loads_when_picker_empty_and_is_idempotent(enterprise, picker):
     child = _child([{"name": "policy-mcp", "enabled": True}, {"name": "disabled", "enabled": False}])
     original_base = child._config_base_cache
     baseline = copy.deepcopy(original_base)
@@ -97,20 +97,56 @@ async def test_enterprise_policy_loads_without_picker_and_is_idempotent(enterpri
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("servers", [[], [{"name": "old-mcp", "enabled": False}]])
-async def test_enterprise_removed_or_disabled_template_unloads(enterprise, servers):
-    child = _child(servers)
-    child._session_selected_mcp.add("old-mcp")
+async def test_enterprise_unions_marketplace_picker_with_template(enterprise):
+    child = _child([{"name": "policy-mcp", "enabled": True}])
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
     adapter._get_or_create_session_adapter = AsyncMock(return_value=child)
 
     await adapter.reconcile_session_mcp(
-        "session-a", ["old-mcp"], execution_request=SimpleNamespace(channel_id="web"),
+        "session-a",
+        ["harmonyos-mcp"],
+        execution_request=SimpleNamespace(channel_id="web"),
+    )
+
+    assert child._session_selected_mcp == {"policy-mcp", "harmonyos-mcp"}
+    assert {call.args[0] for call in child.register_mcp_by_name.await_args_list} == {
+        "policy-mcp",
+        "harmonyos-mcp",
+    }
+
+
+@pytest.mark.asyncio
+async def test_enterprise_empty_picker_unloads_marketplace_only_mcp(enterprise):
+    child = _child([])
+    child._session_selected_mcp.add("harmonyos-mcp")
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._get_or_create_session_adapter = AsyncMock(return_value=child)
+
+    await adapter.reconcile_session_mcp(
+        "session-a", [], execution_request=SimpleNamespace(channel_id="web"),
     )
 
     assert child._session_selected_mcp == set()
-    child.unregister_mcp_by_name.assert_awaited_once_with("old-mcp")
+    child.unregister_mcp_by_name.assert_awaited_once_with("harmonyos-mcp")
     child.register_mcp_by_name.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_enterprise_keeps_marketplace_mcp_when_not_in_template(enterprise):
+    child = _child([{"name": "other-policy", "enabled": True}])
+    child._session_selected_mcp.add("harmonyos-mcp")
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._get_or_create_session_adapter = AsyncMock(return_value=child)
+
+    await adapter.reconcile_session_mcp(
+        "session-a",
+        ["harmonyos-mcp"],
+        execution_request=SimpleNamespace(channel_id="web"),
+    )
+
+    assert child._session_selected_mcp == {"harmonyos-mcp", "other-policy"}
+    child.unregister_mcp_by_name.assert_not_awaited()
+    child.register_mcp_by_name.assert_awaited_once_with("other-policy")
 
 
 @pytest.mark.asyncio
@@ -122,14 +158,34 @@ async def test_enterprise_agent_sessions_keep_distinct_policies(enterprise):
         return children[session_id]
 
     adapter._get_or_create_session_adapter = get_child
-    for session_id in children:
-        await adapter.reconcile_session_mcp(
-            session_id, ["only-a"], execution_request=SimpleNamespace(channel_id="web"),
-        )
+    await adapter.reconcile_session_mcp(
+        "a", [], execution_request=SimpleNamespace(channel_id="web"),
+    )
+    await adapter.reconcile_session_mcp(
+        "b", ["picked-on-b"], execution_request=SimpleNamespace(channel_id="web"),
+    )
 
     assert children["a"]._session_selected_mcp == {"only-a"}
-    assert children["b"]._session_selected_mcp == set()
-    children["b"].register_mcp_by_name.assert_not_awaited()
+    assert children["b"]._session_selected_mcp == {"picked-on-b"}
+    children["a"].register_mcp_by_name.assert_awaited_once_with("only-a")
+    children["b"].register_mcp_by_name.assert_awaited_once_with("picked-on-b")
+
+
+@pytest.mark.asyncio
+async def test_enterprise_policy_load_failure_keeps_picker(enterprise):
+    child = _child([])
+    child._load_enterprise_config = AsyncMock(side_effect=RuntimeError("policy down"))
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._get_or_create_session_adapter = AsyncMock(return_value=child)
+
+    await adapter.reconcile_session_mcp(
+        "session-a",
+        ["harmonyos-mcp"],
+        execution_request=SimpleNamespace(channel_id="web"),
+    )
+
+    assert child._session_selected_mcp == {"harmonyos-mcp"}
+    child.register_mcp_by_name.assert_awaited_once_with("harmonyos-mcp")
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,11 @@ import { UploadFileCreateModal } from './UploadFileCreateModal';
 import { Toast } from './Toast';
 import { toast } from '../ui/Toast/toastStore';
 import { equipmentListFilter } from '../../features/equipmentMarketplace';
+import { isEnterprise } from '../../edition';
+import {
+  connectorApi,
+  type ConnectorSourceProvider,
+} from '../../services/connectorApi';
 
 // "管理我的插件/MCP" 一次性跳转握手：调用方（InputArea.tsx 的扩展面板）先把目标 tab 存进这个
 // 模块级变量，再触发 `jiuwen:nav` 切到 connectorMarket——ConnectorMarketPanel 挂载是这次导航
@@ -80,18 +85,29 @@ export function ConnectorMarketPanel({
 }: ConnectorMarketPanelProps = {}) {
   const { t } = useTranslation();
   const [view, setView] = useState<View>({ name: 'market' });
-  const [topTab, setTopTab] = useState<TopTab>(() => (pendingManageView ? 'my' : 'plugin'));
+  // Enterprise hides the plugin plaza; personal keeps the original default.
+  const [topTab, setTopTab] = useState<TopTab>(() =>
+    pendingManageView ? 'my' : isEnterprise() ? 'mcp' : 'plugin',
+  );
   const [myKind, setMyKind] = useState<MarketKind>(() => {
+    if (isEnterprise()) {
+      // Enterprise "我的扩展" only keeps the connector sub-tab.
+      pendingManageView = null;
+      return 'mcp';
+    }
     const kind = pendingManageView?.myKind ?? 'plugin';
     pendingManageView = null;
     return kind;
   });
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [connectorSources, setConnectorSources] = useState<ConnectorSourceProvider[]>([]);
+  const [selectedConnectorSourceId, setSelectedConnectorSourceId] = useState('');
 
   const loadConnectorList = useConnectorStore((s) => s.loadList);
   const loadPluginList = usePluginPackageStore((s) => s.loadList);
   const importPluginLocal = usePluginPackageStore((s) => s.importLocal);
+  const enterpriseEdition = isEnterprise();
 
   // 2026-08-11：connectorStore/pluginPackageStore 的所有 action（connect/disconnect/enable/
   // disable/registerCustom/deleteConnector/saveCredentialsAndConnect/waitAuth，插件那边同理）
@@ -182,6 +198,47 @@ export function ConnectorMarketPanel({
   // 就是它本身，topTab 是 'my'（我的扩展）时看 myKind 子筛选。
   const activeKind: MarketKind = topTab === 'my' ? myKind : topTab;
 
+  // 企业版拉取连接器远端源；单机不请求，避免多源页签（CMS-V-04）。
+  useEffect(() => {
+    if (!enterpriseEdition) {
+      setConnectorSources([]);
+      setSelectedConnectorSourceId('');
+      return;
+    }
+    let cancelled = false;
+    void connectorApi
+      .listSourceProviders()
+      .then((providers) => {
+        if (cancelled) return;
+        const enabled = providers.filter(
+          (item) =>
+            item.enabled !== false &&
+            (!item.capabilities || item.capabilities.length === 0 || item.capabilities.includes('search')),
+        );
+        // Enterprise catalogue requires source_id; fall back to default Hub when
+        // providers is empty so the square still loads (SPI default source).
+        const effective =
+          enabled.length > 0
+            ? enabled
+            : [{ source_id: 'openjiuwen-hub', display_name: 'OpenJiuwen Hub', enabled: true, capabilities: ['search'] }];
+        setConnectorSources(effective);
+        setSelectedConnectorSourceId((current) => {
+          if (current && effective.some((item) => item.source_id === current)) return current;
+          return effective[0]?.source_id || 'openjiuwen-hub';
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setConnectorSources([
+          { source_id: 'openjiuwen-hub', display_name: 'OpenJiuwen Hub', enabled: true, capabilities: ['search'] },
+        ]);
+        setSelectedConnectorSourceId((current) => current || 'openjiuwen-hub');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [enterpriseEdition]);
+
   // 进入市场或切换插件/连接器范围时，直接请求当前列表。
   useEffect(() => {
     if (view.name !== 'market') return;
@@ -192,11 +249,28 @@ export function ConnectorMarketPanel({
     // 能覆盖两个 tab 的。
     const scope = topTab === 'my' ? 'mine' : 'catalog';
     if (activeKind === 'mcp') {
-      void loadConnectorList(equipmentListFilter('mcp', scope));
+      // Enterprise catalogue aligns with skills.source.search: no list until a
+      // source is selected; source_id is always sent. Personal omits source_id.
+      if (enterpriseEdition && scope === 'catalog' && !selectedConnectorSourceId) {
+        return;
+      }
+      const catalogSourceId =
+        enterpriseEdition && scope === 'catalog' ? selectedConnectorSourceId : undefined;
+      void loadConnectorList(equipmentListFilter('mcp', scope), {
+        sourceId: catalogSourceId,
+      });
     } else {
       void loadPluginList(equipmentListFilter('plugin', scope));
     }
-  }, [activeKind, topTab, view.name, loadConnectorList, loadPluginList]);
+  }, [
+    activeKind,
+    topTab,
+    view.name,
+    loadConnectorList,
+    loadPluginList,
+    enterpriseEdition,
+    selectedConnectorSourceId,
+  ]);
 
   // "会话使用"按钮目前没有真实目的地——真正的会话内使用入口是 ChatPanel 输入框的"+"面板
   // （backend-requests.md 需求11/12），不在这次连接器市场的范围内，点击先给个明确提示，
@@ -227,6 +301,9 @@ export function ConnectorMarketPanel({
             setUploadModalOpen(true);
           }}
           onRegisterCustomMcp={() => setView({ name: 'register-mcp' })}
+          connectorSources={enterpriseEdition ? connectorSources : []}
+          selectedConnectorSourceId={selectedConnectorSourceId}
+          onConnectorSourceChange={setSelectedConnectorSourceId}
         />
       )}
 
