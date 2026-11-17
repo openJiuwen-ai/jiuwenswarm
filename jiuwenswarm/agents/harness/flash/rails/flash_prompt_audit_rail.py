@@ -49,6 +49,14 @@ _KNOWN_SAFE_PLACEHOLDERS = frozenset({
 _UNRENDERED_VAR_RE = re.compile(r"\{([^{}:]+)\}")
 
 
+def _is_static_section(section: Any) -> bool:
+    """段是否属于静态区（carrier=system）——供 _static_hash / _prefix_metric 复用。"""
+    return resolve_carrier(
+        int(getattr(section, "priority", 0) or 0),
+        str(getattr(section, "name", "") or ""),
+    ) == "system"
+
+
 @dataclass
 class AuditReport:
     """一次合规检查的结构化结果。"""
@@ -73,10 +81,15 @@ class AuditReport:
 
     @property
     def ok(self) -> bool:
-        """硬违规清零才算通过（advisory 项不计入）。"""
+        """硬违规清零才算通过（advisory 项不计入）。
+
+        ``duplicate_priorities`` 是 advisory（与 ``unregistered_priorities`` 口径一致）：
+        迁移期 ``_SAME_ORDER_GROUPS`` 刻意保留同号组（offload+compression_recall@450、
+        workspace+tool_navigation@70 等），撞号裁决靠 ``summary()`` 打点，不计入硬失败——
+        否则 ``fail_closed=True`` 会因这些预期同号组直接中断全部模型调用。
+        """
         return not (
-            self.duplicate_priorities
-            or self.duplicate_names
+            self.duplicate_names
             or self.unrendered_vars
             or self.static_hash_drift
         )
@@ -132,6 +145,13 @@ class FlashPromptAuditRail(DeepAgentRail):
         self._ability_manager = None
 
     async def before_model_call(self, ctx) -> None:
+        # 与其他 flash rail 口径一致：每轮从 ctx 取活 builder（热重载会重建
+        # system_prompt_builder），而不是只用 init 时抓到的旧实例——否则审计对象
+        # 停留在旧 builder，新 prompt 从未被审计、旧 builder 变化时 static_hash_drift
+        # 持续误报，fail_closed=True 时还会基于 stale 数据打断模型调用。
+        builder = getattr(getattr(ctx, "agent", None), "system_prompt_builder", None)
+        if builder is not None:
+            self.system_prompt_builder = builder
         report = self.check_compliance()
         if self._static_hash_seed is None and report.static_hash:
             self._static_hash_seed = report.static_hash
@@ -150,7 +170,7 @@ class FlashPromptAuditRail(DeepAgentRail):
             )
         if not report.ok:
             logger.warning("[FlashPromptAudit] %s", report.summary())
-        elif report.unregistered_priorities or report.ghost_tools:
+        elif report.duplicate_priorities or report.unregistered_priorities or report.ghost_tools:
             logger.info("[FlashPromptAudit] advisory: %s", report.summary())
         if self.fail_closed and not report.ok:
             raise AuditViolation(f"prompt audit failed: {report.summary()}")
@@ -307,14 +327,7 @@ class FlashPromptAuditRail(DeepAgentRail):
 
     @staticmethod
     def _static_hash(sections: list[Any]) -> str:
-        static = [
-            s
-            for s in sections
-            if resolve_carrier(
-                int(getattr(s, "priority", 0) or 0),
-                str(getattr(s, "name", "") or ""),
-            ) == "system"
-        ]
+        static = [s for s in sections if _is_static_section(s)]
         payload_lines: list[str] = []
         for s in sorted(static, key=lambda s: int(getattr(s, "priority", 0) or 0)):
             name = str(s.name)
@@ -334,14 +347,7 @@ class FlashPromptAuditRail(DeepAgentRail):
         ``prefix_chars`` 是静态前缀的字符长度（影响 KV 命中与成本）。
         """
         static = sorted(
-            (
-                s
-                for s in sections
-                if resolve_carrier(
-                    int(getattr(s, "priority", 0) or 0),
-                    str(getattr(s, "name", "") or ""),
-                ) == "system"
-            ),
+            (s for s in sections if _is_static_section(s)),
             key=lambda s: int(getattr(s, "priority", 0) or 0),
         )
         parts: list[str] = []

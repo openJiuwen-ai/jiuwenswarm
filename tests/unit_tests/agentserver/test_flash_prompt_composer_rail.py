@@ -261,6 +261,42 @@ def test_composer_default_takeover_is_empty() -> None:
     assert FlashPromptComposerRail()._takeover_domains == frozenset()
 
 
+@pytest.mark.asyncio
+async def test_takeover_skips_when_source_sections_absent() -> None:
+    """接管域源段全部缺失时整域跳过（与 rail 路径对齐），不凭空新增 Flash 段。"""
+    agent = _FakeAgent([])  # 空 builder：无任何 Deep 源段
+    rail = FlashPromptComposerRail(
+        persona_enabled=False,
+        tool_guide_enabled=False,
+        safety_enabled=True,
+        response_enabled=True,
+        takeover_domains=frozenset({"safety", "response"}),
+    )
+    rail.init(agent)
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+    builder = agent.system_prompt_builder
+    # 源段缺失 → safety/response 都不注入新段（与 rail 路径「源段缺失即跳过」一致）。
+    assert builder.get_section("safety_general") is None
+    assert builder.get_section("thinking_discipline") is None
+
+
+@pytest.mark.asyncio
+async def test_verify_only_keyerror_does_not_escape(monkeypatch) -> None:
+    """verify_only 诊断模式：reconcile 抛 KeyError（未登记段号）也不打断模型调用。"""
+    import jiuwenswarm.agents.harness.flash.prompt.composer as composer_mod
+
+    def _boom(_ctx):
+        raise KeyError("未登记的段号 9999")
+
+    monkeypatch.setattr(composer_mod, "reconcile", _boom)
+
+    agent = _agent()
+    rail = FlashPromptComposerRail(verify_only=True)
+    rail.init(agent)
+    # 不应抛异常
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+
+
 # ── E：声明式接管与旧 Rail 路径逐字节等价（真实 Deep 源装配证据）────────────────
 def _extract_lang_text(section, language: str) -> str:
     content = getattr(section, "content", None)

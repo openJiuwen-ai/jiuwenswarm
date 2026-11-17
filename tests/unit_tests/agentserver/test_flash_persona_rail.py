@@ -189,3 +189,28 @@ class TestMaybeSplitIdentity:
         rail.init(agent)
         await rail.before_model_call(_FakeCtx(agent))
         assert agent.system_prompt_builder.get_section("workspace_model").priority == 200
+
+    def test_intro_title_localized_for_en(self) -> None:
+        """intro 段段顶标题按语言选择：en 会话补 # Identity，而非硬编码 # 身份。"""
+        en_identity = (
+            "You are a JiuwenSwarm agent.\n\n"
+            "# JiuwenSwarm Internal Data\ninternal\n\n"
+            "## Directory Interpretation Rules\ndir\n\n"
+            "## JiuwenSwarm Startup Configuration\nstartup\n\n"
+            "## Runtime Environment\nruntime\n\n"
+            "## Task Execution Principles\nprinciples\n\n"
+            "## Output File Placement\nplacement\n\n"
+            "## Artifact Format Preference\nformat\n\n"
+            "## Sending Files\nfiles\n"
+        )
+        section = SimpleNamespace(
+            name="identity", content={"cn": _IDENTITY_CN, "en": en_identity}, priority=10
+        )
+        agent = _FakeAgent("en", [section])
+        rail = FlashPersonaRail()
+        rail.init(agent)
+        rail._maybe_split_identity(agent.system_prompt_builder)
+
+        intro = agent.system_prompt_builder.get_section("identity")
+        assert intro.content["en"].startswith("# Identity\n\n")
+        assert not intro.content["en"].startswith("# 身份")

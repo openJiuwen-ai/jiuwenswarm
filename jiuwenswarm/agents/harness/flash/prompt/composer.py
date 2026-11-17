@@ -184,6 +184,20 @@ class FlashPromptComposerRail(DeepAgentRail):
                     exc,
                 )
                 continue
+            # 与 rail 路径对齐：源段（supersedes）全部缺失时整域跳过，不凭空新增段。
+            # rail 路径以「builder 上是否存在源段」为准（response/safety 源段缺失即跳过），
+            # 接管路径必须一致——否则源段缺失时「跳过」会退化为「注入整域 Flash 新段」，
+            # 与 TAKEOVERABLE_DOMAINS 声明的「逐字节等价」矛盾（静默行为回归）。
+            if block.supersedes and not any(
+                self._get_section(builder, name) is not None for name in block.supersedes
+            ):
+                logger.warning(
+                    "[FlashPromptComposerRail] takeover %s skipped: source sections %s "
+                    "absent from builder",
+                    block.key,
+                    list(block.supersedes),
+                )
+                continue
             for name in block.supersedes:
                 builder.remove_section(name)
             for section in sections:
@@ -207,10 +221,11 @@ class FlashPromptComposerRail(DeepAgentRail):
         language = self._resolve_language(builder)
         try:
             expected = reconcile(build_default_context(language))
-        except AssertionError as exc:
-            # verify-only 诊断模式：上游 Deep safety/tools 源正文漂移触发 registry guard 时，
-            # 仅告警不裁决（与 _apply_declarative 的降级同构），不把异常抛进 before_model_call
-            # 打断本轮模型调用。
+        except Exception as exc:  # noqa: BLE001
+            # verify-only 诊断模式：reconcile 的失败面不止 AssertionError——registry 侧对
+            # 每个产出段调用 get_section_order 领号校验，未登记段号会抛 KeyError。诊断模式
+            # 本就不应让任何注册表异常影响主流程，故放宽到 Exception，仅告警不裁决（与
+            # _apply_declarative 的降级同构），不把异常抛进 before_model_call 打断本轮模型调用。
             logger.warning(
                 "[FlashPromptComposerRail] declarative reconcile guard hit (verify-only): %s",
                 exc,

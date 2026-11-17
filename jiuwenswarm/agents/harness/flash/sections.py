@@ -49,7 +49,7 @@ FLASH_SECTION_BANDS: dict[str, range] = {
     "identity": range(0, 40),  # 0xx 身份与总则（020/030 存疑）
     "security": range(100, 130),  # 1xx 安全与边界
     "workspace": range(200, 230),  # 2xx 工作空间（230/240 已迁 4xx，留空号）
-    "tools": range(300, 360),  # 3xx 工具（320 存疑；350 渐进式工具导航，tool_nav 大块静态驻留）
+    "tools": range(300, 360),  # 3xx 工具（320 存疑；350 渐进式工具导航，tool_navigation 大块静态驻留）
     "execution": range(400, 470),  # 4xx 任务执行（400–460 连续段）
     "interaction": range(500, 550),  # 5xx 交互与输出（530 空号，已迁 410）
     "memory": range(600, 660),  # 6xx 记忆（内容回退 deep 原样巨石段，仅占 600 一号）
@@ -164,7 +164,7 @@ FLASH_SECTION_REGISTRY: dict[int, SectionSpec] = {
                      current=[("identity", 10, "构造期"), ("BrowserToolPolicy", 0, "SDK 待核验")],
                      plan="从 400 第 8 条拆出 + Browser Policy 合并"),
     350: SectionSpec("渐进式工具导航", "system", "merged",
-                     current=[("tool_nav", 70, "ProgressiveToolRail 清单全量")],
+                     current=[("tool_navigation", 70, "ProgressiveToolRail 清单全量")],
                      plan="工具导航大块静态驻留工具域（拍板：大块不沉动态 1000+）；flash 侧 re-add 迁号 350，ProgressiveToolRail 注入不动（deep 共用）"),
 
     # ═══ 4xx 任务执行（400–460 连续段）═══
@@ -287,7 +287,7 @@ FLASH_SECTION_REGISTRY: dict[int, SectionSpec] = {
 _SAME_ORDER_GROUPS: list[dict[str, Any]] = [
     {"code_priority": 40, "members": {"skills", "tool_call_goal", "skill_selection"}},
     {"code_priority": 45, "members": {"skill_turbo_guide", "skill_protocol"}},
-    {"code_priority": 70, "members": {"workspace", "tool_nav"}},
+    {"code_priority": 70, "members": {"workspace", "tool_navigation"}},
 ]
 
 

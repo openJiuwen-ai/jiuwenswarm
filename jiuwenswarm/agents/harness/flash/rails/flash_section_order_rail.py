@@ -65,15 +65,15 @@ _IMAGE_ROUTER_MARKERS: dict[str, str] = {
 
 # 域 → 域头标题（双语）。键与 sections.FLASH_SECTION_BANDS 一致。
 _DOMAIN_HEADERS: dict[str, dict[str, str]] = {
-    "identity":    {"cn": "身份与总则", "en": "Identity & General Rules"},
-    "security":    {"cn": "安全与边界", "en": "Safety & Boundaries"},
-    "workspace":   {"cn": "工作空间与文件", "en": "Workspace & Files"},
-    "tools":       {"cn": "工具", "en": "Tools"},
-    "execution":   {"cn": "任务执行", "en": "Task Execution"},
+    "identity": {"cn": "身份与总则", "en": "Identity & General Rules"},
+    "security": {"cn": "安全与边界", "en": "Safety & Boundaries"},
+    "workspace": {"cn": "工作空间与文件", "en": "Workspace & Files"},
+    "tools": {"cn": "工具", "en": "Tools"},
+    "execution": {"cn": "任务执行", "en": "Task Execution"},
     "interaction": {"cn": "交互与输出", "en": "Interaction & Output"},
-    "memory":      {"cn": "记忆", "en": "Memory"},
-    "skills":      {"cn": "技能", "en": "Skills"},
-    "facts":       {"cn": "运行事实", "en": "Runtime Facts"},
+    "memory": {"cn": "记忆", "en": "Memory"},
+    "skills": {"cn": "技能", "en": "Skills"},
+    "facts": {"cn": "运行事实", "en": "Runtime Facts"},
 }
 
 # 严格 markdown 标题：行首 1–6 个 # + 空白（# 后必须有空格，避免误伤 #注释/正文）。

@@ -97,7 +97,9 @@ class TestDuplicateChecks:
         rail = _make_rail(agent)
         report = rail.check_compliance()
 
-        assert not report.ok
+        # 撞号是 advisory（与 unregistered_priorities 口径一致）：迁移期同号组刻意
+        # 保留，不计入硬失败——但 summary 仍打点，供撞号裁决。
+        assert report.ok
         assert (400, ["执行质量准则", "另一段"]) in report.duplicate_priorities
 
     def test_detects_duplicate_name(self) -> None:
@@ -215,6 +217,19 @@ class TestStaticHashBaseline:
         report = rail.check_compliance()
         assert not report.static_hash_drift
 
+    @pytest.mark.asyncio
+    async def test_before_model_call_refreshes_builder_from_ctx(self) -> None:
+        """热重载重建 system_prompt_builder 后，audit 每轮从 ctx 取活 builder 再审计。"""
+        agent = _FakeAgent(_CLEAN)
+        rail = _make_rail(agent)
+        assert rail.system_prompt_builder is agent.system_prompt_builder
+
+        # 热重载：新 agent 带新 builder（内容不同，模拟重建）。
+        rebuilt = _FakeAgent(_CLEAN + [_sec("新准则", 460, "新增的静态段。")])
+        await rail.before_model_call(SimpleNamespace(agent=rebuilt))
+
+        assert rail.system_prompt_builder is rebuilt.system_prompt_builder
+
 
 class TestResolveCarrierNameAware:
     """110 撞号：relay ``request_system_prompt`` 与 flash ``refusal_behavior`` 同占 110。
@@ -278,14 +293,16 @@ class TestFailClosed:
     @pytest.mark.asyncio
     async def test_warn_only_by_default(self) -> None:
         """默认 fail_closed=False：有硬违规也不抛，只走告警分支。"""
-        agent = _FakeAgent(_CLEAN + [_sec("撞号", 400, "同 priority。")])
+        # {name} 不在已知安全占位符内 → 未渲染变量，属硬违规。
+        agent = _FakeAgent(_CLEAN + [_sec("未渲染测试段", 110, "你好 {name}。")])
         rail = _make_rail(agent, fail_closed=False)
         # 不应抛异常
         await rail.before_model_call(SimpleNamespace())
 
     @pytest.mark.asyncio
     async def test_fail_closed_raises(self) -> None:
-        agent = _FakeAgent(_CLEAN + [_sec("撞号", 400, "同 priority。")])
+        # {name} 不在已知安全占位符内 → 未渲染变量，属硬违规。
+        agent = _FakeAgent(_CLEAN + [_sec("未渲染测试段", 110, "你好 {name}。")])
         rail = _make_rail(agent, fail_closed=True)
         with pytest.raises(AuditViolation):
             await rail.before_model_call(SimpleNamespace())

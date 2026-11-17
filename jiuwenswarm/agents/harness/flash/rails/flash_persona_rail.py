@@ -19,6 +19,8 @@ from jiuwenswarm.agents.harness.flash.prompt.content.persona import (
     _IDENTITY_BLOCKS_CN,
     _IDENTITY_BLOCKS_EN,
     _INTRO_NAME,
+    _INTRO_TITLE_CN,
+    _INTRO_TITLE_EN,
     _NAME_EXEC_PRIORITY,
     _NAME_PATH_PERMISSION,
     _PATH_PERMISSION_CN,
@@ -99,10 +101,11 @@ class FlashPersonaRail(DeepAgentRail):
             return
 
         builder.remove_section(_SECTION_IDENTITY)
+        intro_title = _INTRO_TITLE_CN if language == "cn" else _INTRO_TITLE_EN
         for name, priority, text in split:
-            # 000 身份：intro 原以正文开头、无标题，补 ``# 身份``（收口器统一降为 H2 段标题）。
+            # 000 身份：intro 原以正文开头、无标题，按语言补 H1（cn「# 身份」/ en「# Identity」）。
             if name == _INTRO_NAME and text.strip() and not text.lstrip().startswith("#"):
-                text = "# 身份\n\n" + text
+                text = intro_title + "\n\n" + text
             # 210 运行环境残留 → 独立实体「Python 库与权限」（一次性裁剪：库清单 + 沙箱权限），
             # 迁到 1001 与 env@1000 并列；丢弃与 env 重复的平台/Shell/命令表。
             elif name == "runtime_environment":

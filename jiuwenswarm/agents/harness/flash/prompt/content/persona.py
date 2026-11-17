@@ -180,6 +180,10 @@ The following principles take effect when a task involves the corresponding scen
 _INTRO_NAME = "identity"
 _INTRO_PRIORITY = 0
 
+# 000 身份段段顶标题（intro 原以正文开头、无标题，拆分后按语言补 H1）。
+_INTRO_TITLE_CN = "# 身份"
+_INTRO_TITLE_EN = "# Identity"
+
 # ── 020 执行优先级（新段，06-目标提示词-完整版.md §020）。────────────────────
 _NAME_EXEC_PRIORITY = "execution_priority"
 _PRIO_EXEC_PRIORITY = 20

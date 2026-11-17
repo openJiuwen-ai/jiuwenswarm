@@ -190,6 +190,26 @@ def test_multimodal_image_rail_is_in_keep():
     assert [info.attr_name for info in filtered] == ["_multimodal_image_rail"]
 
 
+def test_flash_prompt_static_rails_are_in_keep():
+    """A1 三 rail（段序收口 / 最后审计 / 静态正文 composer）必须进白名单并冷启动装配。
+
+    漏掉任何一个：FlashSectionOrderRail 段序收口与剥除不执行、FlashPromptAuditRail
+    每轮校验不执行、FlashPromptComposerRail（persona/safety/tools/response 四域重组
+    的唯一入口）整段静默丢失——sections.py 已写明「审计对账」会误导后续维护者。
+    """
+    keep = JiuwenSwarmFlashAdapter._FLASH_RAIL_KEEP
+    assert "_flash_section_order_rail" in keep
+    assert "_flash_prompt_audit_rail" in keep
+    assert "_flash_prompt_composer_rail" in keep
+
+
+def test_flash_owned_config_keys_cover_static_rail_switches():
+    """静态区三 rail 及其四域开关都在 flash.* 命名空间内（_flash_config 双读范围）。"""
+    owned = interface_flash._FLASH_OWNED_CONFIG_KEYS
+    for key in ("composer", "section_order", "audit", "persona", "safety", "tool_guide", "response"):
+        assert key in owned
+
+
 # ---------------------------------------------------------------------------
 # #4 _update_rails_for_mode does not penetrate the whitelist
 # ---------------------------------------------------------------------------
