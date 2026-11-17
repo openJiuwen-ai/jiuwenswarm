@@ -27,7 +27,6 @@ from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
     get_deepagent_user_md_path,
 )
-from jiuwenswarm.server.runtime.session.session_history import load_history_records
 from jiuwenswarm.server.runtime.session.session_metadata import (
     get_all_sessions_metadata,
 )
@@ -774,11 +773,12 @@ def collect_user_evidence() -> list[dict[str, Any]]:
     sessions, _ = get_all_sessions_metadata(limit=_MAX_SESSIONS, offset=0)
     cutoff = time.time() - _LOOKBACK_SECONDS
     evidence: list[dict[str, Any]] = []
+    from . import topic_history as history
     for metadata in sessions:
         session_id = str(metadata.get("session_id") or "").strip()
         if not session_id:
             continue
-        for record in load_history_records(session_id):
+        for record in history.load_recommendation_source_records(session_id):
             if str(record.get("role") or "").strip().lower() not in {"user", "human"}:
                 continue
             content = str(record.get("content") or "").strip()[:_MAX_EVIDENCE_CHARS]
@@ -1819,7 +1819,8 @@ class TopicStarterService:
     async def get_topic_starters(self, session_id: str) -> dict[str, Any]:
         intervened_prompts = self.store.intervened_prompts()
         evidence: list[dict[str, Any]] = []
-        for item in collect_user_evidence():
+        # History I/O; keep the read off the event loop.
+        for item in await asyncio.to_thread(collect_user_evidence):
             prompt_key = (
                 str(item.get("session_id") or ""),
                 str(item.get("content") or "").strip(),

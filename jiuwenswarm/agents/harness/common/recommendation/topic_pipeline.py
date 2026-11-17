@@ -64,7 +64,6 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
     DEFAULT_TOPIC_WORK_MODE,
     TOPIC_WORK_MODES,
     GLOBAL_NEW_CHAT_SCOPE,
-    GLOBAL_PROJECT_BUCKETS,
     GROUNDING_DECISION_RECEIPT_VERSION,
     GROUNDING_EVIDENCE_RECEIPT_VERSION,
     HOT_LIST_ENTRY_RECEIPT_VERSION,
@@ -188,6 +187,10 @@ from jiuwenswarm.server.runtime.session.session_history import (
 )
 from jiuwenswarm.server.runtime.session.session_metadata import (
     get_session_metadata,
+)
+from .topic_primitives import (
+    GLOBAL_PROJECT_BUCKETS,
+    scope_matches_project as _scope_matches,
 )
 
 SESSION_SUMMARY_CONFIG_VERSION = "topic-starter-v6-session-summary-api-v10"
@@ -1347,6 +1350,34 @@ def _restating_plans(
                 "similarity": similarity,
             }))
     return restating
+
+
+def _already_offered_payload(
+    offered_titles: Mapping[str, Sequence[str]],
+    ranked: Sequence[RankedStarterInterest],
+) -> list[dict[str, Any]]:
+    """The titles already offered for the interests this run ranks."""
+
+    ranked_ids = {item.interest_summary_id for item in ranked}
+    return [
+        {"interest_summary_id": key, "titles": list(value)}
+        for key, value in offered_titles.items()
+        if key in ranked_ids
+    ]
+
+
+def _restatement_surface(
+    offered_titles: Mapping[str, Sequence[str]],
+    offered_questions: Sequence[Mapping[str, Any]],
+    dismissed_titles: Sequence[str],
+) -> list[str]:
+    """Every title a new plan must not restate: offered, shown, or dismissed."""
+
+    return [
+        *(title for titles in offered_titles.values() for title in titles),
+        *(str(item["title"]) for item in offered_questions),
+        *dismissed_titles,
+    ]
 
 
 def _project_continuation_plan(
@@ -2846,12 +2877,6 @@ def _high_intent_kind(action_type: str) -> str | None:
         "correction": "correction",
         "recent_action": "recent_action",
     }.get(action_type)
-
-
-def _scope_matches(project_id: str | None, context_scope: str) -> bool:
-    if context_scope == GLOBAL_NEW_CHAT_SCOPE:
-        return str(project_id or "") in GLOBAL_PROJECT_BUCKETS
-    return str(project_id or "") == context_scope.removeprefix("project:")
 
 
 def _work_mode_matches(session_work_mode: Any, work_mode: str) -> bool:
@@ -7052,11 +7077,7 @@ class TopicPipeline:
                     "dismissed_questions": list(feedback.dismissed_card_titles),
                     # Questions only shown stay out: listed here they were copied back;
                     # the host's restatement rule and utility judge them.
-                    "already_offered": [
-                        {"interest_summary_id": key, "titles": list(value)}
-                        for key, value in offered_titles.items()
-                        if any(item.interest_summary_id == key for item in ranked)
-                    ],
+                    "already_offered": _already_offered_payload(offered_titles, ranked),
                     "page_demand": {
                         "pool_size": list_size,
                         "carried_over": carried_over,
@@ -7119,10 +7140,9 @@ class TopicPipeline:
             for plan in withheld
         ]
         # So is a generated plan that restates a title this scope already offers or a question it dismissed.
-        offered = [
-            *(title for titles in offered_titles.values() for title in titles),
-            *(str(item["title"]) for item in offered_questions), *feedback.dismissed_card_titles,
-        ]
+        offered = _restatement_surface(
+            offered_titles, offered_questions, feedback.dismissed_card_titles,
+        )
         restated: list[dict[str, Any]] = []
         for plan, record in _restating_plans(generated, offered):
             if plan in wanted:
@@ -7637,11 +7657,7 @@ class TopicPipeline:
                         }
                         for item in event_by_id.values()
                     ],
-                    "already_offered": [
-                        {"interest_summary_id": key, "titles": list(value)}
-                        for key, value in offered_titles.items()
-                        if any(item.interest_summary_id == key for item in ranked)
-                    ],
+                    "already_offered": _already_offered_payload(offered_titles, ranked),
                     "dismissed_questions": list(dismissed_titles),
                     "previously_offered": offered_questions,
                     "candidate_slots": continuation_candidate_slots,
@@ -7714,8 +7730,8 @@ class TopicPipeline:
             generated = [*continuation, *domain]
             # A plan that restates a title this project already offers or a question it dismissed is left out.
             restated = _restating_plans(
-                generated, [*(title for titles in offered_titles.values() for title in titles),
-                            *(str(item["title"]) for item in offered_questions), *dismissed_titles],
+                generated,
+                _restatement_surface(offered_titles, offered_questions, dismissed_titles),
             )
             if restated:
                 logger.info(

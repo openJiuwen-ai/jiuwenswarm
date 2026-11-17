@@ -19,6 +19,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_terminal import (
     LearnedComponentBinding,
     LearnedComponentReceipt,
 )
+from .topic_primitives import nonempty as _nonempty, plain_int as _plain_int, valid_scope as _valid_scope
 
 PA_RETRIEVER_COMPONENT_ID = "pa_bridge_fixed_retriever"
 PA_API_FALLBACK_PROVIDER_ID = "api-ranker-fallback"
@@ -46,25 +47,6 @@ GLOBAL_FIXED_CATEGORIES = frozenset(
     {"adjacent_explanation", "broad_timely_practical"}
 )
 _IGNORED_PROVIDER_TEXT_FIELDS = frozenset({"title", "text", "prompt"})
-
-
-def _plain_int(value: Any) -> bool:
-    # bool is an int subclass; a JSON boolean is never a version or a count.
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _nonempty(value: Any) -> bool:
-    return isinstance(value, str) and bool(value.strip())
-
-
-def _valid_scope(value: Any) -> bool:
-    return value == "global_new_chat" or (
-        isinstance(value, str)
-        and value.startswith("project:")
-        and bool(value.removeprefix("project:").strip())
-        and value.removeprefix("project:")
-        == value.removeprefix("project:").strip()
-    )
 
 
 class TerminalRetrievalContractError(ValueError):

@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Awaitable, Callable
 
 from jiuwenswarm.agents.harness.common.recommendation import topic_history as history
+from .topic_primitives import plain_int as _plain_int
 
 I2_PROMPT_VERSION = "topic-starter-v5-i2-rank-v1"
 I4_PROMPT_VERSION = "topic-starter-v5-i4-generate-v1"
@@ -101,11 +102,6 @@ _FRESHNESS_CLASSES = frozenset(
 
 ApiAdapter = Callable[[dict[str, Any]], Awaitable[Any]]
 StageInvoker = Callable[[str, str, str], Awaitable[Any]]
-
-
-def _plain_int(value: Any) -> bool:
-    # bool is an int subclass; a JSON boolean is never a version or a count.
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 class ArkInterestRankingAdapter:

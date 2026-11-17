@@ -54,12 +54,12 @@ def _build_topic_starter_services(
     )
     from jiuwenswarm.agents.harness.common.recommendation.topic_history import (
         load_all_session_records,
+        scrub_legacy_negative_preferences,
     )
     from jiuwenswarm.agents.harness.common.recommendation.topic_outcomes import (
         NewPageOutcomeQueue,
         TopicStarterStoreOutcomeSink,
-        migrate_dismissal_records,
-    )
+        )
     from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
         TopicPipeline,
     )
@@ -79,6 +79,11 @@ def _build_topic_starter_services(
         control = load_recommendation_controls()
         return {sid: permitted_recommendation_history(rows, control)
                 for sid, rows in load_all_session_records().items()}
+
+    try:
+        scrub_legacy_negative_preferences(topic_starter_store, now=time.time())
+    except Exception:  # noqa: BLE001 - a corrupt legacy row must not block startup
+        logger.warning("[Topic] legacy dismissal scrub failed", exc_info=True)
 
     topic_prepare_service = prepare_service
     if topic_prepare_service is None:
@@ -131,8 +136,6 @@ def _build_topic_starter_services(
                 project_ids.add(str(project_id))
         return sorted(project_ids)
 
-    # Dismissals written before strikes were counted take their time from the ledger, once.
-    migrate_dismissal_records(topic_starter_store, now=time.time())
     topic_service = TopicService(
         topic_starter_store,
         generate=topic_pipeline.generate,
@@ -144,7 +147,6 @@ def _build_topic_starter_services(
         prepare_short_intent=topic_pipeline.refresh_short_intent,
         # Training / outcome labels are not required for live pools; keep them
         # out of recommendation.db and investigate generation via process logs.
-        prepare_outcomes=None,
         input_revision_loader=topic_pipeline.scope_input_revision,
         config_loader=recommendation_model_config,
         enabled=bool(load_recommendation_controls()["enabled"]),

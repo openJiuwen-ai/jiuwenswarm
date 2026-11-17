@@ -31,6 +31,7 @@ from jiuwenswarm.common.utils import get_agent_workspace_dir
 from jiuwenswarm.server.runtime.session.history_replay import latest_completed_request_bounded
 
 from .topic_starter import TopicStarterStore
+from .topic_primitives import plain_int as _plain_int
 
 logger = logging.getLogger(__name__)
 
@@ -81,11 +82,6 @@ _FENCED_BLOCK_RE = re.compile(
     r"^```(?:json)?\s*\r?\n?(.*?)\r?\n?```\s*$",
     re.IGNORECASE | re.DOTALL,
 )
-
-
-def _plain_int(value: Any) -> bool:
-    # bool is an int subclass; a JSON boolean is never a version or a count.
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def consent_epoch() -> float | None:
@@ -290,9 +286,6 @@ class PromptSuggestionForks:
         # Sessions whose running turn may fork, with the latest main model call seen in it.
         self._turns: dict[str, _MainCall | None] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
-        # Each session's latest successful turn and its last main model call, which the project's
-        # requirement update forks once the gateway hears the turn completed.
-        self._answered: dict[str, tuple[str, _MainCall]] = {}
 
     def request_started(self, session_id: str, *, person_turn: bool) -> None:
         """A new request drops the previous suggestion still being generated.
@@ -318,8 +311,6 @@ class PromptSuggestionForks:
         if session_id not in self._turns:
             return
         call = self._turns.pop(session_id)
-        if status == "success" and call is not None and not getattr(call.answer, "tool_calls", None):
-            self._answered[session_id] = (request_id, call)
         epoch = consent_epoch()
         if epoch is None:
             # Recommendations are off: no suggestion and no record of one.
@@ -344,11 +335,6 @@ class PromptSuggestionForks:
         _record(epoch, "prompt_suggestion_generation", session_id, request_id, uuid.uuid4().hex,
                 outcome="suppressed", reason=reason, parent_uncached_tokens=uncached, answer_tokens=answer)
 
-    def answered_call(self, session_id: str, request_id: str) -> _MainCall | None:
-        """The last main model call of ``request_id``, while it is the session's latest successful turn."""
-        answered = self._answered.get(session_id)
-        return answered[1] if answered is not None and answered[0] == request_id else None
-
     def in_flight(self) -> list[asyncio.Task[None]]:
         return list(self._tasks.values())
 
@@ -366,7 +352,6 @@ class PromptSuggestionForks:
         if task is not None:
             task.cancel()
         self._turns.pop(session_id, None)
-        self._answered.pop(session_id, None)
 
     async def shutdown(self) -> None:
         """AgentServer stops: cancel the generations in flight and wait for them to unwind."""

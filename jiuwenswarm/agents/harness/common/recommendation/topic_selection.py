@@ -17,6 +17,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
 from jiuwenswarm.agents.harness.common.recommendation.topic_terminal import (
     LearnedComponentReceipt,
 )
+from .topic_primitives import nonempty as _nonempty, plain_int as _plain_int
 
 UTILITY_COMPONENT_ID = "interaction_utility_scorer"
 # Where a fixed condition on a card comes from, as the utility scorer lists it.
@@ -47,15 +48,6 @@ _PROJECT_QUOTAS = {
     "project_continuation": 3,
     "project_domain_progress": 1,
 }
-
-
-def _plain_int(value: Any) -> bool:
-    # bool is an int subclass; a JSON boolean is never a version or a count.
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _nonempty(value: Any) -> bool:
-    return isinstance(value, str) and bool(value.strip())
 
 
 def _nullable_score(value: Any, *, field_name: str) -> float | None:

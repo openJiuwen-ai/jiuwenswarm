@@ -88,10 +88,9 @@ async def dispatch_recommendation(
         return await _select_model(host, params, auth_session)
     if action == "profile":
         host.ensure_services()
-        return _profile(host)
-    if action == "restore_direction":
-        host.ensure_services()
-        return _restore_direction(host, params)
+        # Both actions read the source sessions' history for the evidence view;
+        # keep that scan off the worker's event loop.
+        return await asyncio.to_thread(_profile, host)
     if action == "control":
         host.ensure_services()
         return await _control(host, params, auth_session)
@@ -113,11 +112,13 @@ async def dispatch_recommendation(
 
 async def _prompt_suggestion_event(host: Any, params: dict[str, Any]) -> RecommendationResult:
     from jiuwenswarm.agents.harness.common.recommendation import prompt_suggestion
-    from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
-        load_recommendation_controls,
+    from jiuwenswarm.agents.harness.common.recommendation.switches import (
+        is_prompt_suggestion_enabled,
     )
 
-    if not load_recommendation_controls()["enabled"]:
+    # Page events belong to the prompt-suggestion switch, not the topic switch:
+    # the two are independent and prompt suggestions are on by default.
+    if not is_prompt_suggestion_enabled():
         return _ok({"recorded": False, "reason": "disabled"})
     if params.get("event_type") == "input_changed":
         target_session = params.get("session_id")
@@ -199,21 +200,6 @@ def _profile(host: Any) -> RecommendationResult:
     )
 
     return _ok(inspect_recommendation_profile(_history_store(host), now=time.time()))
-
-
-def _restore_direction(host: Any, params: dict[str, Any]) -> RecommendationResult:
-    from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
-        inspect_recommendation_profile,
-        restore_dismissed_direction,
-    )
-
-    direction_id = params.get("direction_id")
-    store = _history_store(host)
-    if not isinstance(direction_id, str) or not restore_dismissed_direction(
-        store, direction_id, now=time.time(),
-    ):
-        return _fail("no such permanent direction", "BAD_REQUEST")
-    return _ok(inspect_recommendation_profile(store, now=time.time()))
 
 
 async def _control(
@@ -313,6 +299,18 @@ async def _get(host: Any, params: dict[str, Any], session_id: str) -> Recommenda
     context_scope = str(params.get("context_scope") or "")
     project_id = params.get("project_id")
     if policy_id == PREPARE_POLICY_ID:
+        from jiuwenswarm.agents.harness.common.recommendation.switches import (
+            is_topic_recommendation_enabled,
+        )
+
+        if not is_topic_recommendation_enabled():
+            return _ok({
+                "available": False,
+                "reason": "disabled",
+                "preparation_state": "disabled",
+                "session_id": requested_session_id,
+                "policy_id": PREPARE_POLICY_ID,
+            })
         failed = (
             ("context_scope" in params and context_scope != GLOBAL_NEW_CHAT_SCOPE)
             or ("project_id" in params and project_id is not None)
@@ -420,10 +418,6 @@ async def _event(
     selection_mode = str(event.get("selection_mode") or "").strip()
     from jiuwenswarm.agents.harness.common.recommendation.topic_pool import (
         POLICY_ID as PREPARE_POLICY_ID,
-    )
-    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
-        GLOBAL_NEW_CHAT_SCOPE,
-        project_id_for_scope,
     )
     from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
         POLICY_ID as TOPIC_POLICY_ID,

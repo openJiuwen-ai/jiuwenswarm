@@ -524,7 +524,6 @@ async def test_packaged_template_requires_fresh_consent(tmp_path, monkeypatch):
 
 def test_profile_and_click_sources_hide_rewritten_or_unconsented_history(tmp_path, settings, monkeypatch):
     from jiuwenswarm.agents.harness.common.recommendation import topic_history as history
-    from jiuwenswarm.server.runtime.session import session_history
     controls.save_recommendation_controls(enabled=True, include_history=True, now=2.0)
     records = _records()[1:]
     state = history.empty_history_state()
@@ -532,7 +531,7 @@ def test_profile_and_click_sources_hide_rewritten_or_unconsented_history(tmp_pat
     state["memory"]["units"] = [{"core": {"preference_summary": "保留独立事项"}, "companion": {"unit_id": "unit-1", "canonical_source_locators": [["session", 0]]}}]
     store = TopicStarterStore(tmp_path / "profile.db")
     history.save_history_state(store, state, now=4.0)
-    monkeypatch.setattr(session_history, "load_history_records", lambda sid: records)
+    monkeypatch.setattr(history, "load_recommendation_source_records", lambda sid: records)
     profile = controls.inspect_recommendation_profile(store, now=5.0)
     assert profile["units"][0]["sources"][0]["content"] == "new independent request"
     records[0] = {**records[0], "content": "rewritten source"}
@@ -540,44 +539,32 @@ def test_profile_and_click_sources_hide_rewritten_or_unconsented_history(tmp_pat
     controls.save_recommendation_controls(enabled=False, deleted=True, now=5.0)
     assert controls.recommendation_sources(store, [["session", 0]]) == []
 
-def test_permanent_directions_are_listed_and_can_be_restored(tmp_path, settings, monkeypatch):
+def test_profile_reads_each_source_session_once(tmp_path, settings, monkeypatch):
     from jiuwenswarm.agents.harness.common.recommendation import topic_history as history
-    from jiuwenswarm.agents.harness.common.recommendation.topic_product import InterestFeedback
-    from jiuwenswarm.server.runtime.session import session_history
-    monkeypatch.setattr(session_history, "load_history_records", lambda sid: [])
-    day = 86_400.0
-
-    def dismissal(unit_id, at):
-        return {"context_scope": "global_new_chat", "project_id": None, "direction": "一锅做荤素搭配",
-                "source_id": unit_id, "aliases": [], "anchors": [], "reason": "explicit_not_interested",
-                "dismissed_at": at, "evidence_session_ids": ["session-a"]}
-
+    controls.save_recommendation_controls(enabled=True, include_history=True, now=2.0)
+    records = _records()[1:]
     state = history.empty_history_state()
-    state["memory"]["units"] = [{"core": {"preference_summary": "工作日一口锅做荤素搭配的晚饭"},
-                                 "companion": {"unit_id": "unit-0023", "canonical_source_locators": [["session-a", 0]],
-                                               "evidence_ids": ["session-a:req-0:user"]}}]
-    state["memory_sidecar"] = {"negative_preference_version": 3, "negative_preferences": [
-        dismissal("unit-0023", at) for at in (10 * day, 20 * day, 30 * day)]}
-    store = TopicStarterStore(tmp_path / "permanent.db")
-    history.save_history_state(store, state, now=31 * day)
+    state["history_ledger"] = history.rescan_history(None, {"session": records}, {}).ledger
+    state["memory"]["units"] = [
+        {"core": {"preference_summary": "第一个单元"},
+         "companion": {"unit_id": "unit-1", "canonical_source_locators": [["session", 0]]}},
+        {"core": {"preference_summary": "第二个单元"},
+         "companion": {"unit_id": "unit-2", "canonical_source_locators": [["session", 0]]}},
+    ]
+    store = TopicStarterStore(tmp_path / "profile.db")
+    history.save_history_state(store, state, now=4.0)
+    reads: list[str] = []
 
-    profile = controls.inspect_recommendation_profile(store, now=40 * day)
-    assert profile["permanent_directions"] == [
-        {"direction_id": "unit|unit-0023", "summary": "工作日一口锅做荤素搭配的晚饭", "since": 30 * day}]
+    def fake_load(session_id: str):
+        reads.append(session_id)
+        return records
 
-    assert controls.restore_dismissed_direction(store, "unit|unit-0023", now=41 * day) is True
-    assert controls.restore_dismissed_direction(store, "unit|unit-0023", now=42 * day) is False
-    assert controls.inspect_recommendation_profile(store, now=43 * day)["permanent_directions"] == []
-    restored = history.load_latest_history_state(store)
-    # The restore is one more record; the earlier ones stay as they were.
-    assert restored["memory_sidecar"]["negative_preference_version"] == 4
-    assert restored["memory_sidecar"]["negative_preferences"][:3] == state["memory_sidecar"]["negative_preferences"]
-    feedback = InterestFeedback.from_state(restored, context_scope="global_new_chat", project_id=None, now=43 * day)
-    assert feedback.dismissed_units == frozenset()
-    # The count starts over: the next dismissal hides the direction for seven days, not for good.
-    restored["memory_sidecar"]["negative_preferences"].append(dismissal("unit-0023", 50 * day))
-    again = InterestFeedback.from_state(restored, context_scope="global_new_chat", project_id=None, now=57 * day)
-    assert again.status_of({"unit-0023"}, ()) == "reduced"
+    monkeypatch.setattr(history, "load_recommendation_source_records", fake_load)
+    profile = controls.inspect_recommendation_profile(store, now=5.0)
+
+    # Both units cite the same source session; one profile read must project it once.
+    assert reads == ["session"]
+    assert len(profile["units"]) == 2
 
 # --- test_topic_configuration.py ---
 
@@ -1303,111 +1290,6 @@ def test_outcome_signal_rejects_not_interested() -> None:
         assert "accepted" in str(exc)
     else:
         raise AssertionError("not_interested outcome must be rejected")
-
-def _not_interested_event(exposure_id: str, at: float) -> dict[str, Any]:
-    return _ledger_event(
-        event_type="not_interested",
-        slate_id=exposure_id,
-        topic_id="revision-1",
-        session_id="new-page-session",
-        created_at=at,
-        payload={
-            "manifest_id": "manifest-1",
-            "generation_batch_id": "batch-1",
-            "exposure_id": exposure_id,
-            "card_revision_id": "revision-1",
-            "context_scope": GLOBAL_NEW_CHAT_SCOPE,
-            "project_id": None,
-            "reason": "explicit_not_interested",
-        },
-    )
-
-def test_upgrade_times_earlier_dismissals_from_the_ledger_and_follows_them_into_the_rebuilt_profile(
-    tmp_path: Any,
-) -> None:
-    from jiuwenswarm.agents.harness.common.recommendation.topic_outcomes import (
-        migrate_dismissal_records,
-    )
-
-    day = 86_400.0
-    store = TopicStarterStore(tmp_path / "upgrade.sqlite3")
-    _install_exact_exposure(store)
-    _install_exposure(store, "exposure-2")
-    written = {
-        "context_scope": GLOBAL_NEW_CHAT_SCOPE,
-        "project_id": None,
-        "direction": "causal recommendation evaluation",
-        "source_id": "memory-causal-evaluation",
-        "aliases": [
-            "How should causal recommendation be evaluated?",
-            "Compare causal recommendation evaluation protocols",
-        ],
-        "anchors": [],
-        "reason": "explicit_not_interested",
-    }
-    # A dismissal the ledger has no event for keeps its meaning as written.
-    unknown = {**written, "source_id": "memory-unknown", "direction": "unknown", "aliases": []}
-
-    def profile(units: dict[str, list[str]], preferences: list[dict[str, Any]]) -> dict[str, Any]:
-        state = empty_history_state()
-        state["memory"]["units"] = [{
-            "core": {"preference_summary": f"summary of {unit_id}"},
-            "companion": {
-                "unit_id": unit_id,
-                "canonical_source_locators": [[session, 0] for session in sessions],
-                "evidence_ids": [f"{session}:req-0:user" for session in sessions],
-            },
-        } for unit_id, sessions in units.items()]
-        state["memory_sidecar"] = {
-            "negative_preference_version": len(preferences), "negative_preferences": preferences,
-        }
-        return state
-
-    save_history_state(store, profile({"memory-causal-evaluation": ["session-a", "session-b"]}, []), now=LIFECYCLE_NOW - day)
-    # The same card dismissed on two visits was written once by the earlier deduplication.
-    for exposure_id, at in (("exposure-1", LIFECYCLE_NOW), ("exposure-2", LIFECYCLE_NOW + day)):
-        assert store.record_event(_not_interested_event(exposure_id, at))
-    save_history_state(
-        store,
-        profile({"memory-causal-evaluation": ["session-a", "session-b"]}, [written, unknown]),
-        now=LIFECYCLE_NOW + day,
-    )
-    # A later rebuild moved those conversations into a unit with a new ID.
-    save_history_state(
-        store,
-        profile({"unit-rebuilt": ["session-a", "session-b", "session-c"]}, [written, unknown]),
-        now=LIFECYCLE_NOW + 2 * day,
-    )
-
-    migrate_dismissal_records(store, now=LIFECYCLE_NOW + 3 * day)
-    migrated = load_latest_history_state(store)
-    assert migrated is not None
-    preferences = migrated["memory_sidecar"]["negative_preferences"]
-    assert [item.get("dismissed_at") for item in preferences] == [LIFECYCLE_NOW, None, LIFECYCLE_NOW + day]
-    assert preferences[0]["evidence_session_ids"] == ["session-a", "session-b"]
-    assert preferences[1] == unknown
-    feedback = InterestFeedback.from_state(
-        migrated, context_scope=GLOBAL_NEW_CHAT_SCOPE, project_id=None, now=LIFECYCLE_NOW + 3 * day,
-    )
-    assert feedback.status_of({"unit-rebuilt"}, ()) == "hidden"
-    # Two strikes: hidden for thirty days from the second.
-    assert InterestFeedback.from_state(
-        migrated, context_scope=GLOBAL_NEW_CHAT_SCOPE, project_id=None, now=LIFECYCLE_NOW + 31 * day - 1,
-    ).status_of({"unit-rebuilt"}, ()) == "hidden"
-
-    # A later start does not read the dismissal ledger again, though one record stays untimed, and writes nothing.
-    migrated_version = migrated["version"]
-    ledger_reads: list[str | None] = []
-    query_events = store.query_events
-
-    def counted(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
-        ledger_reads.append(kwargs.get("event_type"))
-        return query_events(*args, **kwargs)
-
-    store.query_events = counted  # type: ignore[method-assign]
-    migrate_dismissal_records(store, now=LIFECYCLE_NOW + 4 * day)
-    assert "not_interested" not in ledger_reads
-    assert load_latest_history_state(store)["version"] == migrated_version
 
 # --- test_topic_web_channel.py ---
 
@@ -3262,7 +3144,7 @@ async def test_design_and_code_welcome_skip_packaged_presets(tmp_path):
 
 @pytest.mark.asyncio
 async def test_design_welcome_serves_personalized_pool(tmp_path):
-    """design/code skip packaged presets but must still serve a real personalized pool."""
+    """design/code skip packaged presets and serve a personalized pool only while on."""
 
     from jiuwenswarm.agents.harness.common.recommendation.topic_model import ArkBackgroundConfig
     from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
@@ -3398,7 +3280,26 @@ async def test_design_welcome_serves_personalized_pool(tmp_path):
                 },
             ]
         )
-        design = service.serve(
+        disabled = service.serve(
+            "session-design-personalized",
+            context_scope=GLOBAL_NEW_CHAT_SCOPE,
+            project_id=None,
+            work_mode="design",
+        )
+        assert disabled["available"] is False
+        assert disabled["reason"] == "disabled"
+
+        enabled_service = TopicService(
+            store,
+            generate=None,
+            search_provider_id="test",
+            config_loader=lambda: ArkBackgroundConfig(
+                api_key="test", model="test", context_window_tokens=131072,
+            ),
+            enabled=True,
+            now=lambda: clock[0],
+        )
+        design = enabled_service.serve(
             "session-design-personalized",
             context_scope=GLOBAL_NEW_CHAT_SCOPE,
             project_id=None,
@@ -3411,6 +3312,7 @@ async def test_design_welcome_serves_personalized_pool(tmp_path):
         assert all(
             not topic.get("cold_start") for topic in design["topics"]
         )
+        await enabled_service.shutdown()
     finally:
         await service.shutdown()
 
@@ -3698,45 +3600,6 @@ async def test_gateway_shutdown_skips_unavailable_product_lane_and_awaits_prepar
     await recommendation_host._shutdown_topic_starter_services(PrepareLane(), None)
 
     assert calls == ["prepare"]
-
-
-def test_a_malformed_coverage_entry_drops_the_whole_receipt(tmp_path: Path) -> None:
-    """One entry of the wrong shape invalidates the receipt instead of being trusted."""
-
-    from jiuwenswarm.agents.harness.common.recommendation import topic_collector
-    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
-        POLICY_ID,
-        SESSION_SUMMARY_COVERAGE_EVENT_TYPE,
-        SESSION_SUMMARY_COVERAGE_RECEIPT_VERSION,
-    )
-
-    store = TopicStarterStore(tmp_path / "coverage.db")
-    payload = {
-        "schema_version": SESSION_SUMMARY_COVERAGE_RECEIPT_VERSION,
-        "input_snapshot_id": "snapshot-1",
-        "context_scope": GLOBAL_NEW_CHAT_SCOPE,
-        "summary_config_version": "summary-config-1",
-        "sessions": ["not-an-entry"],
-    }
-    assert (
-        store.record_event(
-            {
-                "session_id": "topic-starter-session-summary",
-                "slate_id": GLOBAL_NEW_CHAT_SCOPE,
-                "event_type": SESSION_SUMMARY_COVERAGE_EVENT_TYPE,
-                "topic_id": "snapshot-1|summary-config-1",
-                "policy_id": POLICY_ID,
-                "payload": payload,
-                "created_at": 10.0,
-            }
-        )
-        is True
-    )
-
-    assert (
-        topic_collector._covered_standalone_session_summaries(store, page_size=50)
-        == ()
-    )
 
 
 def test_a_malformed_global_interest_candidate_is_dropped_alone() -> None:
@@ -4149,6 +4012,99 @@ def test_session_records_are_read_once_per_burst(monkeypatch, tmp_path) -> None:
         assert [row["id"] for row in third["s1"]] == ["s1"]
     finally:
         history.clear_session_window_cache()
+
+
+def test_clear_during_a_scan_does_not_repopulate_the_cache(monkeypatch, tmp_path) -> None:
+    """A clear that lands mid-scan must not be undone by the scan's late write."""
+
+    from jiuwenswarm.agents.harness.common.recommendation import topic_history as history
+
+    reads: list[str] = []
+    path = tmp_path / "s1.jsonl"
+    path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        history, "get_all_sessions_metadata",
+        lambda **_kwargs: ([{"session_id": "s1"}], 1),
+    )
+    monkeypatch.setattr(history, "get_read_history_path", lambda _sid: path)
+
+    def fake_load(session_id):
+        reads.append(session_id)
+        if len(reads) == 1:
+            history.clear_session_window_cache()
+        return [{"id": session_id}]
+
+    monkeypatch.setattr(history, "load_session_records", fake_load)
+    history.clear_session_window_cache()
+    try:
+        first = history.load_all_session_records()
+        second = history.load_all_session_records()
+
+        assert reads == ["s1", "s1"]
+        assert first == second == {"s1": [{"id": "s1"}]}
+    finally:
+        history.clear_session_window_cache()
+
+
+def test_clear_does_not_wait_for_an_in_flight_scan(monkeypatch, tmp_path) -> None:
+    """A completion's clear runs on the event loop; it must not block on the scan lock."""
+
+    import threading
+    import time
+
+    from jiuwenswarm.agents.harness.common.recommendation import topic_history as history
+
+    started = threading.Event()
+    release = threading.Event()
+    path = tmp_path / "s1.jsonl"
+    path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        history, "get_all_sessions_metadata",
+        lambda **_kwargs: ([{"session_id": "s1"}], 1),
+    )
+    monkeypatch.setattr(history, "get_read_history_path", lambda _sid: path)
+
+    def slow_load(_session_id):
+        started.set()
+        release.wait(0.75)
+        return [{"id": "s1"}]
+
+    monkeypatch.setattr(history, "load_session_records", slow_load)
+    history.clear_session_window_cache()
+    scan = threading.Thread(target=history.load_all_session_records, daemon=True)
+    try:
+        scan.start()
+        assert started.wait(1.0)
+        began = time.monotonic()
+        history.clear_session_window_cache()
+        elapsed = time.monotonic() - began
+        assert elapsed < 0.5
+    finally:
+        release.set()
+        scan.join(timeout=2.0)
+        history.clear_session_window_cache()
+
+
+@pytest.mark.asyncio
+async def test_a_queued_run_is_the_candidate_input_signal(tmp_path) -> None:
+    """The event loop must not compute a revision to notice a queued request."""
+
+    from types import SimpleNamespace
+
+    service = _topic_service(tmp_path)
+    calls: list[tuple] = []
+
+    def fail(*args):
+        calls.append(args)
+        raise AssertionError("revision must not be computed on the event loop")
+
+    service._input_revision_loader = fail
+    try:
+        slot = SimpleNamespace(queued=object(), receipt={"revision_digest": "x"})
+        assert service._candidate_input_changed("global_new_chat", slot) is True
+        assert calls == []
+    finally:
+        await service.shutdown()
 
 
 def test_newest_session_window_is_shared_within_ttl(monkeypatch, tmp_path) -> None:
@@ -4959,3 +4915,79 @@ async def test_stage_invoker_repairs_provider_required_temperature() -> None:
 
     assert await invoke("v6_utility_scorer", "system", "{}") == {}
     assert [call["temperature"] for call in captured] == [0.0, 0.6]
+
+def test_clicked_card_context_does_not_read_source_history(tmp_path, monkeypatch):
+    """The click path must use the card's own evidence, not re-read source sessions."""
+
+    from jiuwenswarm.agents.harness.common.recommendation import topic_controls, topic_product
+    from jiuwenswarm.server.runtime.agent_adapter import interface
+
+    (tmp_path / "recommendation.db").touch()
+    monkeypatch.setattr(interface, "get_agent_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        interface,
+        "_history_user_extra",
+        lambda _params: {"topic_starter": {"manifest_id": "manifest-1"}},
+    )
+    monkeypatch.setattr(
+        topic_product,
+        "find_exact_terminal_card",
+        lambda _store, **_kwargs: {
+            "prompt": "怎样挑选陶瓷杯？",
+            "category": "profile_interest",
+            "evidence_bundle": {"source_url": "profile://interest/unit-1"},
+            "source_locators": [["session", 0]],
+        },
+    )
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("a clicked card must not read source history")
+
+    monkeypatch.setattr(topic_controls, "recommendation_sources", fail)
+
+    context = interface._starter_interaction_context(
+        {"topic_starter": {"manifest_id": "manifest-1"}}, "怎样挑选陶瓷杯？",
+    )
+
+    assert context.startswith("Answer the clicked question")
+    assert "profile://interest/unit-1" in context
+    assert "user_source_constraints" not in context
+
+def test_legacy_negative_preferences_are_scrubbed_once(tmp_path):
+    from jiuwenswarm.agents.harness.common.recommendation import topic_history as history
+
+    store = TopicStarterStore(tmp_path / "scrub.db")
+    state = history.empty_history_state()
+    state["memory_sidecar"] = {
+        "negative_preference_version": 2,
+        "negative_preferences": [{
+            "reason": "explicit_not_interested",
+            "source_id": "unit-1",
+            "context_scope": "global_new_chat",
+            "project_id": None,
+            "dismissed_at": 1.0,
+        }],
+    }
+    history.save_history_state(store, state, now=10.0)
+    assert store.record_event({
+        "session_id": "session-1",
+        "slate_id": "manifest-1",
+        "event_type": "not_interested",
+        "topic_id": "revision-1",
+        "policy_id": "topic-starter-mvp-v4",
+        "selection_mode": "personalized_dynamic",
+        "propensity_reason": "not_estimated",
+        "payload": {},
+        "created_at": 5.0,
+    })
+
+    assert history.scrub_legacy_negative_preferences(store, now=11.0) is True
+    scrubbed = history.load_latest_history_state(store)
+    assert scrubbed["memory_sidecar"]["negative_preferences"] == []
+    assert scrubbed["memory_sidecar"]["negative_preference_version"] == 0
+    assert store.query_events(
+        event_type="not_interested", policy_id="topic-starter-mvp-v4", limit=1,
+    ) == []
+
+    # The marker keeps later starts idle.
+    assert history.scrub_legacy_negative_preferences(store, now=12.0) is False

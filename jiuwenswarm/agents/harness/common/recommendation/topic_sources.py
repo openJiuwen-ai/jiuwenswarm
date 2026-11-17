@@ -26,6 +26,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_page_fetch import (
     fetch_topic_page_sync,
     msn_detail_api_url,
 )
+from .topic_primitives import plain_int as _plain_int
 
 RETRIEVAL_CONFIG_VERSION = "topic-starter-live-retrieval-v3"
 MAX_SEARCH_RESULTS = 5
@@ -39,11 +40,6 @@ SearchFn = Callable[
     Awaitable[tuple[str, list[dict[str, str]]]],
 ]
 FetchFn = Callable[[str, int], Awaitable[dict[str, Any]]]
-
-
-def _plain_int(value: Any) -> bool:
-    # bool is an int subclass; a JSON boolean is never a version or a count.
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 @dataclass(frozen=True, slots=True)

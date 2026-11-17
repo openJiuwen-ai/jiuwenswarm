@@ -39,13 +39,14 @@ from jiuwenswarm.server.runtime.session import (
     session_history as _session_history_module,
 )
 from jiuwenswarm.server.runtime.session.session_history import (
-    collapse_file_content_blocks,
     get_read_history_path,
+    iter_history_jsonl_rows,
     load_history_records,
 )
 from jiuwenswarm.server.runtime.session.session_metadata import (
     get_all_sessions_metadata,
 )
+from .topic_primitives import plain_int as _plain_int
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,10 @@ _SESSION_RECORDS_CACHE: dict[
     tuple[str, int], tuple[float, dict[str, list[dict[str, Any]]]]
 ] = {}
 _SESSION_RECORDS_LOCK = threading.Lock()
+# A clear must not wait for an in-flight scan. The epoch lets a scan that
+# started before the clear finish without repopulating the just-cleared cache.
+_SESSION_CACHE_EPOCH = 0
+_SESSION_EPOCH_LOCK = threading.Lock()
 # One successor run must see one history snapshot from revision through
 # summaries, short intent and generation. The TTL cache below only covers
 # calls that start together; model stages can put minutes between them.
@@ -272,11 +277,6 @@ _MEMORY_INCREMENTAL_SYSTEM_PROMPT = (
 )
 
 
-def _plain_int(value: Any) -> bool:
-    # bool is an int subclass; a JSON boolean is never a version or a count.
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
 class ContextCountingUnverified(Exception):
     """Raised when the strict tiktoken counting protocol cannot be verified."""
 
@@ -426,47 +426,18 @@ def _recommendation_record(record: Any) -> Any:
 def _read_recommendation_jsonl(path: Path) -> list[dict[str, Any]]:
     """Stream one JSONL history, retaining only recommendation fields.
 
-    Iterating the file keeps the whole transcript out of memory; text-mode
-    iteration breaks on newlines only, so a U+2028 inside a record stays part
-    of its line (the same reason the shared reader refuses ``splitlines``).
+    The row parsing is the shared JSONL reader; the projection is what keeps a
+    recommendation scan's peak memory below a full transcript.
     """
 
-    if not path.exists():
-        return []
-    records: list[dict[str, Any]] = []
     try:
-        with path.open("r", encoding="utf-8") as source:
-            for lineno, raw_line in enumerate(source, start=1):
-                line = raw_line.rstrip("\r").strip()
-                if not line:
-                    continue
-                try:
-                    item = json.loads(line)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "读取 history.jsonl 第 %d 行失败，已跳过: %s", lineno, exc,
-                    )
-                    continue
-                if not isinstance(item, dict):
-                    logger.warning(
-                        "读取 history.jsonl 第 %d 行不是对象记录，已跳过: %s",
-                        lineno,
-                        type(item).__name__,
-                    )
-                    continue
-                content = item.get("content")
-                if (
-                    item.get("role") in {"user", "human"}
-                    and isinstance(content, str)
-                    and "<file-content" in content
-                ):
-                    item = dict(item)
-                    item["content"] = collapse_file_content_blocks(content)
-                records.append(_recommendation_record(item))
+        return [
+            _recommendation_record(item)
+            for item in iter_history_jsonl_rows(path)
+        ]
     except (OSError, UnicodeError) as exc:
         logger.warning("读取 history 失败，已跳过: %s", exc)
         return []
-    return records
 
 
 def load_session_records(session_id: str) -> list[dict[str, Any]]:
@@ -488,6 +459,31 @@ def load_session_records(session_id: str) -> list[dict[str, Any]]:
         return _read_recommendation_jsonl(path)
 
 
+def load_recommendation_source_records(session_id: str) -> list[dict[str, Any]]:
+    """Read one locator-source session under the scan's per-file budget.
+
+    A source is named by physical ordinal, so it cannot be read from the tail
+    alone; this still streams the file through the recommendation projection and
+    reads it under the same write lock a scan uses. A file above
+    ``_MAX_SESSION_FILE_BYTES`` is skipped exactly as a scan skips it, leaving
+    the source unresolved rather than retaining a pathological transcript whole.
+    """
+
+    try:
+        size = get_read_history_path(session_id).stat().st_size
+    except OSError:
+        size = 0
+    if size > _MAX_SESSION_FILE_BYTES:
+        logger.warning(
+            "[Topic] source history skipped as oversized: session_id=%s bytes=%d limit=%d",
+            session_id,
+            size,
+            _MAX_SESSION_FILE_BYTES,
+        )
+        return []
+    return load_session_records(session_id)
+
+
 def set_run_records_snapshot(records: dict[str, list[dict[str, Any]]]) -> object:
     """Pin one history snapshot for the current run's copied contexts."""
 
@@ -498,9 +494,22 @@ def reset_run_records_snapshot(token: object) -> None:
     _RUN_RECORDS.reset(token)  # type: ignore[arg-type]
 
 
-def clear_session_window_cache() -> None:
-    """Drop the short-window session ids and records; a completion makes them stale."""
+def _session_cache_epoch() -> int:
+    with _SESSION_EPOCH_LOCK:
+        return _SESSION_CACHE_EPOCH
 
+
+def clear_session_window_cache() -> None:
+    """Drop the short-window session ids and records; a completion makes them stale.
+
+    The epoch changes before the dictionaries are cleared, and scans never hold
+    these locks while reading history: a completion on the event loop must not
+    wait for an in-flight scan.
+    """
+
+    global _SESSION_CACHE_EPOCH
+    with _SESSION_EPOCH_LOCK:
+        _SESSION_CACHE_EPOCH += 1
     with _SESSION_RECORDS_LOCK:
         _SESSION_RECORDS_CACHE.clear()
     with _SESSION_WINDOW_LOCK:
@@ -516,15 +525,21 @@ def _newest_session_ids(cap: int) -> tuple[str, ...]:
         cached = _SESSION_WINDOW_CACHE.get(key)
         if cached is not None and now - cached[0] < _SESSION_WINDOW_TTL_SECONDS:
             return cached[1]
-        sessions, _ = get_all_sessions_metadata(limit=cap, offset=0)
-        ids = tuple(
-            session_id
-            for session_id in (
-                str(item.get("session_id") or "").strip() for item in sessions
-            )
-            if session_id
+    epoch = _session_cache_epoch()
+    sessions, _ = get_all_sessions_metadata(limit=cap, offset=0)
+    ids = tuple(
+        session_id
+        for session_id in (
+            str(item.get("session_id") or "").strip() for item in sessions
         )
-        _SESSION_WINDOW_CACHE[key] = (now, ids)
+        if session_id
+    )
+    with _SESSION_WINDOW_LOCK:
+        cached = _SESSION_WINDOW_CACHE.get(key)
+        if cached is not None and now - cached[0] < _SESSION_WINDOW_TTL_SECONDS:
+            return cached[1]
+        if _session_cache_epoch() == epoch:
+            _SESSION_WINDOW_CACHE[key] = (time.monotonic(), ids)
         return ids
 
 
@@ -560,36 +575,47 @@ def load_all_session_records(
             session_id: list(rows) for session_id, rows in run_snapshot.items()
         }
     key = (str(get_agent_sessions_dir()), cap)
-    now = time.monotonic()
     with _SESSION_RECORDS_LOCK:
         cached = _SESSION_RECORDS_CACHE.get(key)
-        if cached is not None and now - cached[0] < _SESSION_WINDOW_TTL_SECONDS:
+        if (
+            cached is not None
+            and time.monotonic() - cached[0] < _SESSION_WINDOW_TTL_SECONDS
+        ):
             return {session_id: list(rows) for session_id, rows in cached[1].items()}
-        result: dict[str, list[dict[str, Any]]] = {}
-        scanned_bytes = 0
-        for session_id in _newest_session_ids(cap):
-            try:
-                size = get_read_history_path(session_id).stat().st_size
-            except OSError:
-                size = 0
-            if size > _MAX_SESSION_FILE_BYTES:
-                logger.warning(
-                    "[Topic] history skipped as oversized: session_id=%s bytes=%d limit=%d",
-                    session_id,
-                    size,
-                    _MAX_SESSION_FILE_BYTES,
-                )
-                continue
-            if result and scanned_bytes + size > _MAX_SCAN_BYTES:
-                logger.info(
-                    "[Topic] history scan budget reached: sessions=%d bytes=%d",
-                    len(result),
-                    scanned_bytes,
-                )
-                break
-            scanned_bytes += size
-            result[session_id] = load_session_records(session_id)
-        _SESSION_RECORDS_CACHE[key] = (now, result)
+    epoch = _session_cache_epoch()
+    result: dict[str, list[dict[str, Any]]] = {}
+    scanned_bytes = 0
+    for session_id in _newest_session_ids(cap):
+        try:
+            size = get_read_history_path(session_id).stat().st_size
+        except OSError:
+            size = 0
+        if size > _MAX_SESSION_FILE_BYTES:
+            logger.warning(
+                "[Topic] history skipped as oversized: session_id=%s bytes=%d limit=%d",
+                session_id,
+                size,
+                _MAX_SESSION_FILE_BYTES,
+            )
+            continue
+        if result and scanned_bytes + size > _MAX_SCAN_BYTES:
+            logger.info(
+                "[Topic] history scan budget reached: sessions=%d bytes=%d",
+                len(result),
+                scanned_bytes,
+            )
+            break
+        scanned_bytes += size
+        result[session_id] = load_session_records(session_id)
+    with _SESSION_RECORDS_LOCK:
+        cached = _SESSION_RECORDS_CACHE.get(key)
+        if (
+            cached is not None
+            and time.monotonic() - cached[0] < _SESSION_WINDOW_TTL_SECONDS
+        ):
+            return {session_id: list(rows) for session_id, rows in cached[1].items()}
+        if _session_cache_epoch() == epoch:
+            _SESSION_RECORDS_CACHE[key] = (time.monotonic(), result)
         return {session_id: list(rows) for session_id, rows in result.items()}
 
 
@@ -3068,6 +3094,69 @@ def load_history_state_at(store: TopicStarterStore, at: float) -> dict[str, Any]
             if isinstance(value, dict) and value.get("schema_version") == _V4_SCHEMA_VERSION:
                 return value
     return None
+
+
+_LEGACY_NEGATIVE_PREFERENCE_SCRUB_EVENT = "legacy_negative_preferences_scrubbed"
+_LEGACY_NEGATIVE_PREFERENCE_EVENT_TYPES = ("not_interested", "not_interested_undone")
+
+
+def scrub_legacy_negative_preferences(store: TopicStarterStore, *, now: float) -> bool:
+    """Remove the dismissals no code reads any more, once.
+
+    The not-interested entry point is gone and generation ignores
+    ``memory_sidecar.negative_preferences``. Old snapshots and ledger rows still
+    hold that data, so one migration clears every snapshot's sidecar and drops
+    the legacy events, then records a marker that keeps later starts idle.
+    """
+
+    if store.query_events(
+        event_type=_LEGACY_NEGATIVE_PREFERENCE_SCRUB_EVENT,
+        policy_id=_V4_POLICY_ID,
+        limit=1,
+    ):
+        return False
+    snapshots = 0
+    with sqlite3.connect(store.path) as connection:
+        connection.row_factory = sqlite3.Row
+        for row in connection.execute(
+            "SELECT version, snapshot_json FROM profile_snapshot"
+        ):
+            try:
+                state = json.loads(row["snapshot_json"])
+            except (TypeError, ValueError):
+                continue
+            sidecar = state.get("memory_sidecar")
+            if not isinstance(sidecar, dict):
+                continue
+            if (
+                not sidecar.get("negative_preferences")
+                and not sidecar.get("negative_preference_version")
+            ):
+                continue
+            sidecar["negative_preferences"] = []
+            sidecar["negative_preference_version"] = 0
+            connection.execute(
+                "UPDATE profile_snapshot SET snapshot_json = ? WHERE version = ?",
+                (json.dumps(state, ensure_ascii=False), row["version"]),
+            )
+            snapshots += 1
+        placeholders = ",".join("?" for _ in _LEGACY_NEGATIVE_PREFERENCE_EVENT_TYPES)
+        events = connection.execute(
+            f"DELETE FROM recommendation_event WHERE event_type IN ({placeholders})",
+            _LEGACY_NEGATIVE_PREFERENCE_EVENT_TYPES,
+        ).rowcount
+    store.record_event({
+        "session_id": "maintenance",
+        "slate_id": "maintenance",
+        "event_type": _LEGACY_NEGATIVE_PREFERENCE_SCRUB_EVENT,
+        "topic_id": f"maintenance:{int(now)}",
+        "policy_id": _V4_POLICY_ID,
+        "selection_mode": "usage_retention",
+        "propensity_reason": "not_applicable",
+        "payload": {"snapshots": snapshots, "events": events},
+        "created_at": now,
+    })
+    return True
 
 
 def save_history_state(

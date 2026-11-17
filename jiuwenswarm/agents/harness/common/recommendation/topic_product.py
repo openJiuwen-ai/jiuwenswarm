@@ -65,13 +65,17 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_terminal import (
     RID_RESULT_SCHEMA_VERSION,
     SessionSummaryArtifact,
 )
+from .topic_primitives import (
+    GLOBAL_NEW_CHAT_SCOPE,
+    nonempty as _nonempty,
+    plain_int as _plain_int,
+)
 
 POLICY_ID = "topic-starter-mvp-v6"
 PAYLOAD_VERSION = "topic-starter-pool-v2"
 GENERATION_CONFIG_VERSION = "topic-starter-market-generation-v19"
 ARK_REASONING_POLICY_VERSION = "topic-starter-v6-reasoning-policy-v4"
 
-GLOBAL_NEW_CHAT_SCOPE = "global_new_chat"
 DEFAULT_TOPIC_WORK_MODE = "work"
 TOPIC_WORK_MODES = frozenset({"work", "design", "code"})
 PROJECT_LOCATOR_RECEIPT_VERSION = "topic-starter-v6-project-locator-v1"
@@ -199,15 +203,6 @@ _OPENJIUWEN_NATIVE_SEARCH_RECEIPT_FIELDS = frozenset(
 _SEARCH_USAGE_FIELDS = frozenset(
     {"input_tokens", "output_tokens", "total_tokens", "tool_usage"}
 )
-
-
-def _plain_int(value: Any) -> bool:
-    # bool is an int subclass; a JSON boolean is never a version or a count.
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _nonempty(value: Any) -> bool:
-    return isinstance(value, str) and bool(value.strip())
 
 
 def card_copy_rejection_reason(
@@ -598,10 +593,6 @@ def provider_receipt_applies_to_card(
     if binding_scope == "starter":
         return card.get("source_starter_id") in lineage.get("starter_ids", ())
     return False
-
-
-# Project IDs under which chat keeps the sessions of the global new-chat page.
-GLOBAL_PROJECT_BUCKETS = frozenset({"", "default", "default_code"})
 
 
 def scope_for_project(project_id: str) -> str:
@@ -2201,30 +2192,6 @@ def _project_sources_still_belong(manifest: Mapping[str, Any], card: Mapping[str
     return True
 
 
-def _exact_scoped_negative_preferences(
-    preferences: Any,
-    *,
-    context_scope: str,
-    project_id: str | None,
-) -> list[dict[str, Any]]:
-    """Return only preferences written for this exact scope/project pair."""
-
-    if not isinstance(preferences, list):
-        return []
-    result: list[dict[str, Any]] = []
-    for preference in preferences:
-        if not isinstance(preference, dict):
-            continue
-        if preference.get("context_scope") != context_scope:
-            continue
-        if "project_id" not in preference:
-            continue
-        if preference.get("project_id") != project_id:
-            continue
-        result.append(dict(preference))
-    return result
-
-
 def _within(events: Collection[str], evidence: Collection[str]) -> bool:
     """A conversation's interest lies within evidence that holds every one of its events."""
 
@@ -2320,13 +2287,10 @@ class InterestFeedback:
         project_id: str | None,
         now: float,
     ) -> InterestFeedback:
-        sidecar = state.get("memory_sidecar")
+        # Dismissals are no longer read: the not-interested entry point was
+        # removed from the product, and historical records must not suppress.
+        del context_scope, project_id
         return cls(
-            negative_preferences=tuple(_exact_scoped_negative_preferences(
-                sidecar.get("negative_preferences") if isinstance(sidecar, Mapping) else None,
-                context_scope=context_scope,
-                project_id=project_id,
-            )),
             evidence_by_unit=_memory_evidence_by_unit(state),
             sessions_by_unit=memory_sessions_by_unit(state),
             now=now,
@@ -2342,50 +2306,11 @@ class InterestFeedback:
         project_id: str | None,
         now: float,
     ) -> InterestFeedback:
-        """The feedback at ``now``, with what reset strikes since the first timed dismissal."""
+        """Compatibility entry point; no dismissal data is read any more."""
 
-        feedback = cls.from_state(state, context_scope=context_scope, project_id=project_id, now=now)
-        since = min(
-            (
-                float(preference["dismissed_at"])
-                for preference in feedback.negative_preferences
-                if _is_dismissal(preference) and "dismissed_at" in preference
-            ),
-            default=None,
-        )
-        if since is None:
-            return feedback
-        # Strikes count per scope, and so does talking the direction over.
-        natural_conversations = []
-        for row in _rows_since(
-            store, "session_summary", since,
-            payload_equals={"context_scope": context_scope},
-        ):
-            row_payload = row.get("payload")
-            if not isinstance(row_payload, Mapping):
-                continue
-            if row_payload.get("natural_revisit_eligible") is not True:
-                continue
-            natural_conversations.append((
-                float(row_payload.get("completed_at") or row["created_at"]),
-                frozenset(
-                    memory_evidence_id(str(row_payload.get("session_id")), str(event_id))
-                    for event_id in row_payload.get("source_event_ids") or ()
-                ),
-                _natural_direction_sources(row_payload, state, since),
-            ))
-        opened_cards = []
-        for row in _rows_since(
-            store, "topic_click", since,
-            payload_equals={"context_scope": context_scope, "project_id": project_id},
-        ):
-            opened_card = _opened_card(store, row)
-            if opened_card is not None:
-                opened_cards.append(opened_card)
-        return replace(
-            feedback,
-            natural_conversations=tuple(natural_conversations),
-            opened_cards=tuple(opened_cards),
+        del store
+        return cls.from_state(
+            state, context_scope=context_scope, project_id=project_id, now=now
         )
 
     @property
@@ -2678,24 +2603,6 @@ class InterestFeedback:
         return frozenset().union(*(item.held_units for item in self._directions_with(_IN_FORCE)))
 
     @property
-    def permanent_directions(self) -> list[DismissedDirection]:
-        return self._directions_with(("permanent",))
-
-    def restore_record(self, direction: DismissedDirection, *, at: float) -> dict[str, Any]:
-        """The record that lifts a direction: its strikes start over and it may return."""
-
-        return {
-            "context_scope": GLOBAL_NEW_CHAT_SCOPE,
-            "project_id": None,
-            "reason": "restored",
-            "restored_at": at,
-            "source_id": direction.unit_id,
-            "evidence_session_ids": sorted(self.sessions_by_unit.get(direction.unit_id, ())),
-            **({} if direction.unit_id else {"source_event_ids": sorted(direction.evidence)}),
-            **({"direction_anchor": direction.direction_anchor, "direction": direction.direction_anchor}
-               if direction.direction_anchor else {}),
-        }
-
     @property
     def dismissed_card_titles(self) -> tuple[str, ...]:
         """The questions of the cards dismissed and not undone, so a reworded one is not asked again."""
@@ -2845,90 +2752,6 @@ class InterestFeedback:
         return frozenset(
             unit_id for unit_id, evidence in self.evidence_by_unit.items() if evidence.intersection(events)
         )
-
-
-def _rows_since(
-    store: TopicStarterStore,
-    event_type: str,
-    since: float,
-    *,
-    payload_equals: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    """Ledger rows of one type written after ``since``, newest first."""
-
-    rows: list[dict[str, Any]] = []
-    page = 200
-    while True:
-        batch = store.query_events(
-            event_type=event_type,
-            policy_id=POLICY_ID,
-            payload_equals=payload_equals,
-            limit=page,
-            offset=len(rows),
-            newest_first=True,
-        )
-        for row in batch:
-            if float(row.get("created_at") or 0.0) <= since:
-                return rows
-            rows.append(row)
-        if len(batch) < page:
-            return rows
-
-
-def _natural_direction_sources(
-    summary: Mapping[str, Any], state: Mapping[str, Any], since: float,
-) -> tuple[tuple[float, str], ...]:
-    """New natural user witnesses at this summary's exact source locators."""
-
-    sessions = state.get("history_ledger", {}).get("sessions", {})
-    sources = []
-    for locator in summary.get("source_locators") or ():
-        entries = sessions.get(str(locator["session_id"]), {}).get("entries", ())
-        entry = None
-        for item in entries:
-            if item.get("ordinal") != locator["ordinal"]:
-                continue
-            if item.get("retracted"):
-                continue
-            entry = item
-            break
-        witness = entry.get("witness", {}) if entry else {}
-        observed_at = float(witness.get("timestamp_or_0") or 0.0)
-        if (witness.get("supported") is True and witness.get("role") == "user"
-                and since < observed_at <= float(summary.get("completed_at") or 0.0)):
-            sources.append((observed_at, str(witness.get("content") or "")))
-    return tuple(sources)
-
-
-def _opened_card(
-    store: TopicStarterStore, click: Mapping[str, Any],
-) -> tuple[float, frozenset[str], frozenset[str], str] | None:
-    """When a card was opened, with the units and conversation events of its interest."""
-
-    payload = click.get("payload")
-    if not isinstance(payload, Mapping):
-        return None
-    manifest_id = str(payload.get("manifest_id") or "")
-    cards = store.query_events(
-        event_type="starter_card", slate_id=manifest_id, topic_id=str(payload.get("card_revision_id") or ""),
-        policy_id=POLICY_ID, limit=1, newest_first=True,
-    )
-    card = cards[0].get("payload") if cards else None
-    if not isinstance(card, Mapping):
-        return None
-    manifests = store.query_events(
-        event_type="starter_slate_manifest", slate_id=manifest_id, policy_id=POLICY_ID, limit=1, newest_first=True,
-    )
-    manifest = manifests[0].get("payload") if manifests else None
-    events = interest_evidence_ids(manifest if isinstance(manifest, Mapping) else {}).get(
-        str(card.get("interest_summary_id") or ""), ()
-    )
-    return (
-        float(click.get("created_at") or 0.0),
-        frozenset(str(unit) for unit in card.get("source_memory_unit_ids") or ()),
-        frozenset(events),
-        str(card.get("direction") or ""),
-    )
 
 
 def _belongs(unit_id: str, evidence: frozenset[str], units: Collection[str], events: Collection[str]) -> bool:

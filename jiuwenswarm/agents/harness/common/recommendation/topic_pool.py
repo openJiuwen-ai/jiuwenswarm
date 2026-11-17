@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, NamedTuple
+from .topic_primitives import plain_int as _plain_int
 
 logger = logging.getLogger(__name__)
 
@@ -77,11 +78,6 @@ _MANIFEST_REQUIRED_FIELDS = frozenset(
         "payload_version",
     }
 )
-
-
-def _plain_int(value: Any) -> bool:
-    # bool is an int subclass; a JSON boolean is never a version or a count.
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def build_generation_trigger_key(
