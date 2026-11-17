@@ -71,6 +71,16 @@ async def test_gateway_session_events_carry_project_id(archive, monkeypatch):
     await methods["session.archive"](
         object(), "req", {"session_ids": ["sess_a"]}, None, "alice"
     )
+    accepted = channel.send_response.await_args.kwargs["payload"]["results"][0]
+    assert accepted["project_id"] == "default"
+    assert accepted["stop_pending"] is True
+    assert events == []
+    # The fixture drains real finalizers, but the first response remains the
+    # acceptance snapshot. A repeated request now observes completed cleanup.
+    assert (root / "sessions_archived" / "sess_a").is_dir()
+    await methods["session.archive"](
+        object(), "req-completed", {"session_ids": ["sess_a"]}, None, "alice"
+    )
     # session.archived 直接事件必须符合 §5.10.11 契约：project_id 必返。
     assert len(events) == 1
     event, payload = events[0]
@@ -79,9 +89,8 @@ async def test_gateway_session_events_carry_project_id(archive, monkeypatch):
     assert payload["project_id"] == "default"
     assert payload["archived"] is True
     assert isinstance(payload["archived_at"], float)
-    # Archive now returns before the directory move; the event says cleanup is
-    # still pending instead of pretending it already finished.
-    assert payload["stop_pending"] is True
+    assert payload["stop_pending"] is False
+    assert payload["finalizing"] is False
     await methods["session.delete"](
         object(), "req", {"session_id": "sess_a"}, None, "alice"
     )

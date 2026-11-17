@@ -5276,7 +5276,10 @@
     "skippedSummary": "已跳过"
   },
   "skillPackagePrompt": {
-    "creating": "正在创建…"
+    "creating": "正在创建…",
+    "nameConflict": "创建失败：本地已有同名技能或技能包，原内容未覆盖。可选择“暂不创建”，或处理同名冲突后重试。",
+    "createFailed": "创建技能包失败，确认卡已保留。请稍后重试，或选择“暂不创建”。",
+    "resultUnavailable": "暂未确认技能包创建结果，确认卡已保留。请检查技能列表后重试，或选择“暂不创建”。"
   },
   "qaSummary": {
     "title": "问题澄清"

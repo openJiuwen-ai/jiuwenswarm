@@ -767,6 +767,9 @@ export class WebHttpClient {
       error.httpRouteMissing = true;
       throw error;
     }
+    if (method === 'chat.user_answer' && options.awaitUserAnswerResult === true) {
+      assembled.query = { ...assembled.query, wait_for_result: 'true' };
+    }
 
     const controller = new AbortController();
     this.inflight.set(requestId, controller);

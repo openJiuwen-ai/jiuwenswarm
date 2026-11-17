@@ -43,6 +43,8 @@ export interface WebRequestOptions {
   isStream?: boolean;
   /** Keep the existing request pending until the runtime confirms acceptance. */
   awaitRuntimeAccepted?: boolean;
+  /** Ignore the admission ACK for chat.user_answer and wait for its resolved result. */
+  awaitUserAnswerResult?: boolean;
   /** Called before sending, so supplemental receipts can be associated with this request. */
   onRequestId?: (requestId: string) => void;
 }
