@@ -44,6 +44,9 @@ try {
     vite.ssrLoadModule('/src/features/settings/services/SettingsServicesProvider'),
     vite.ssrLoadModule('/src/stores/teamSelectorStore.ts'),
     vite.ssrLoadModule('/src/features/teamOrganization/featureConfig.ts'),
+    vite.ssrLoadModule('/src/stores/workspaceStore.ts'),
+    vite.ssrLoadModule('/src/components/ui/Toast/Toast.tsx'),
+    vite.ssrLoadModule('/src/components/ui/Toast/toastStore.ts'),
   ]);
 } finally {
   await vite.close();
@@ -77,6 +80,9 @@ const [
   { SettingsServicesProvider },
   { useTeamSelectorStore },
   { setTeamOrganizationUiEnabled, isTeamOrganizationUiEnabled },
+  { useWorkspaceStore },
+  { ToastStack },
+  { toast, toastStore, TOAST_EXIT_ANIMATION_MS },
 ] = modules;
 
 const resources = Object.fromEntries(
@@ -113,6 +119,9 @@ async function withFixture(run, language = 'en') {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: 'http://localhost/',
   });
+  const toastStyle = dom.window.document.createElement('style');
+  toastStyle.textContent = readFileSync(new URL('../src/components/ui/Toast/Toast.css', import.meta.url), 'utf8');
+  dom.window.document.head.appendChild(toastStyle);
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   if (!dom.window.ResizeObserver) {
@@ -145,6 +154,7 @@ async function withFixture(run, language = 'en') {
   const previousSession = useSessionStore.getState();
   const previousChat = useChatStore.getState();
   const previousAuth = useAuthStore.getState();
+  const previousWorkspace = useWorkspaceStore.getState();
   const previousCollaboration = isMultiModelCollaborationEnabled();
   setMultiModelCollaborationEnabled(false);
   // 预置成「状态已查过、活动没开」：否则组件挂载时会真的去查登录状态，测试环境里
@@ -157,7 +167,9 @@ async function withFixture(run, language = 'en') {
   const byId = (id) => document.querySelector(`[data-testid="${id}"]`);
   const mount = async (...children) =>
     act(async () => {
-      root.render(createElement(I18nextProvider, { i18n }, createElement(Fragment, null, ...children)));
+      root.render(
+        createElement(I18nextProvider, { i18n }, createElement(Fragment, null, ...children, createElement(ToastStack))),
+      );
     });
   const click = async (element) => {
     assert.ok(element, 'click target exists');
@@ -175,9 +187,15 @@ async function withFixture(run, language = 'en') {
     await run({ dom, mount, click, byId });
   } finally {
     await act(async () => root.unmount());
+    const activeToasts = toastStore.getSnapshot();
+    for (const record of activeToasts) toast.close(record.key);
+    if (activeToasts.length > 0) {
+      await new Promise((resolve) => setTimeout(resolve, TOAST_EXIT_ANIMATION_MS + 20));
+    }
     useSessionStore.setState(previousSession, true);
     useChatStore.setState(previousChat, true);
     useAuthStore.setState(previousAuth, true);
+    useWorkspaceStore.setState(previousWorkspace, true);
     setMultiModelCollaborationEnabled(previousCollaboration);
     for (const [name, descriptor] of previousGlobals) {
       if (descriptor) Object.defineProperty(globalThis, name, descriptor);
@@ -411,8 +429,209 @@ test('run now waits for navigation and reports a session restore failure', async
     assert.equal(byId('cron-confirm-dialog'), null);
     assert.match(byId('cron-error-toast').textContent, /task was triggered.*session list/);
     assert.equal(byId('cron-success-toast'), null);
+    const runNowToast = toastStore.getSnapshot().find((record) => record.id === 'cron-error');
+    assert.equal(runNowToast.closable, true);
+    assert.equal(runNowToast.durationMs, 5000);
   });
 });
+
+test('scheduled tasks follow the selected work mode without mixing status counts', async (t) => {
+  const base = {
+    description: 'Task', mode: 'agent', cron_expr: '0 0 2 * * ? *', timezone: 'Asia/Shanghai',
+    targets: 'web', expired: false, project_id: 'default', wake_offset_seconds: 0,
+  };
+  t.mock.method(webClient, 'request', async (method) => {
+    if (method === 'cron.job.list') return { jobs: [
+      { ...base, id: 'work', name: 'Work task', work_mode: 'work', enabled: true },
+      { ...base, id: 'code', name: 'Code task', work_mode: 'code', enabled: false },
+      { ...base, id: 'legacy', name: 'Legacy task', enabled: true },
+    ] };
+    if (method === 'project.list') return { projects: [] };
+    if (method === 'channel.get') return { channels: [{ channel_id: 'web' }] };
+    if (method === 'channel.xiaoyi.get_conf') return { config: {} };
+    throw new Error(`Unexpected request: ${method}`);
+  });
+  const previousMode = useWorkspaceStore.getState().workMode;
+  try {
+    useWorkspaceStore.setState({ workMode: 'work' });
+    await withFixture(async ({ mount, byId }) => {
+      await mount(createElement(CronPanel, { sessionId, onCreateViaChat() {}, onSelectSession() {} }));
+      assert.match(byId('cron-jobs-table').textContent, /Work task/);
+      assert.match(byId('cron-jobs-table').textContent, /Legacy task/);
+      assert.doesNotMatch(byId('cron-jobs-table').textContent, /Code task/);
+      assert.match(byId('cron-stats-total').textContent, /2/);
+      await act(async () => useWorkspaceStore.setState({ workMode: 'code' }));
+      assert.match(byId('cron-jobs-table').textContent, /Code task/);
+      assert.doesNotMatch(byId('cron-jobs-table').textContent, /Work task|Legacy task/);
+      assert.match(byId('cron-stats-total').textContent, /1/);
+      await act(async () => useWorkspaceStore.setState({ workMode: 'design' }));
+      assert.match(byId('cron-jobs-table').textContent, /Work task/);
+      assert.match(byId('cron-jobs-table').textContent, /Legacy task/);
+      assert.doesNotMatch(byId('cron-jobs-table').textContent, /Code task/);
+      assert.match(byId('cron-stats-total').textContent, /2/);
+    });
+  } finally {
+    useWorkspaceStore.setState({ workMode: previousMode });
+  }
+});
+
+test('create and edit failures use a fixed body toast above the scheduled task drawer', async (t) => {
+  const job = {
+    id: 'edit-job', name: 'Existing task', description: 'Task description', mode: 'agent',
+    cron_expr: '0 0 2 * * ? *', timezone: 'Asia/Shanghai', targets: 'web',
+    enabled: true, expired: false, project_id: 'default', work_mode: 'work', wake_offset_seconds: 0,
+  };
+  let jobs = [];
+  t.mock.method(webClient, 'request', async (method) => {
+    if (method === 'cron.job.list') return { jobs };
+    if (method === 'project.list') return { projects: [] };
+    if (method === 'channel.get') return { channels: [{ channel_id: 'web' }] };
+    if (method === 'channel.xiaoyi.get_conf') return { config: {} };
+    if (method === 'cron.job.create' || method === 'cron.job.update') throw new Error('server rejected request');
+    throw new Error(`Unexpected request: ${method}`);
+  });
+  const previousMode = useWorkspaceStore.getState().workMode;
+  try {
+    useWorkspaceStore.setState({ workMode: 'work' });
+    await withFixture(async ({ dom, mount, click, byId }) => {
+      await mount(createElement(CronPanel, { sessionId, onCreateViaChat() {}, onSelectSession() {} }));
+      byId('cron-panel').scrollTop = 500;
+      await click(byId('cron-empty-template-card'));
+      await click(byId('cron-drawer-submit-btn'));
+      assert.match(byId('cron-error-toast').textContent, /server rejected request/);
+      assert.equal(byId('cron-drawer-submit-error'), null);
+      const stack = byId('ui-toast-stack');
+      assert.equal(stack.parentElement, document.body);
+      assert.equal(byId('cron-panel').contains(byId('cron-error-toast')), false);
+      const stackStyle = dom.window.getComputedStyle(stack);
+      assert.equal(stackStyle.position, 'fixed');
+      assert.equal(stackStyle.top, '16px');
+      assert.ok(Number(stackStyle.zIndex) > 50, 'toast sits above the drawer (40) and confirm dialog (50)');
+      assert.ok(byId('cron-drawer-overlay'));
+      assert.equal(byId('cron-panel').scrollTop, 500);
+      byId('cron-panel').scrollTop = 1000;
+      assert.equal(dom.window.getComputedStyle(stack).top, '16px');
+      assert.match(byId('cron-error-toast').textContent, /server rejected request/);
+      const firstToast = toastStore.getSnapshot().find((record) => record.id === 'cron-error');
+      assert.equal(firstToast.closable, true);
+      assert.equal(firstToast.durationMs, 8000);
+      assert.ok(byId('cron-error-toast').querySelector('[data-testid="ui-toast-close"]'));
+      await click(byId('cron-drawer-submit-btn'));
+      assert.equal(document.querySelectorAll('[data-testid="cron-error-toast"]').length, 1);
+      const retriedToast = toastStore.getSnapshot().find((record) => record.id === 'cron-error');
+      assert.equal(retriedToast.key, firstToast.key);
+      assert.ok(retriedToast.updatedAt > firstToast.updatedAt, 'identical errors refresh the toast lifetime');
+      await click(byId('cron-error-toast').querySelector('[data-testid="ui-toast-close"]'));
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, TOAST_EXIT_ANIMATION_MS + 20));
+      });
+      assert.equal(byId('cron-error-toast'), null);
+      await click(byId('cron-drawer-close-btn'));
+      jobs = [job];
+    });
+    await withFixture(async ({ mount, click, byId }) => {
+      await mount(createElement(CronPanel, { sessionId, onCreateViaChat() {}, onSelectSession() {} }));
+      await click(byId('cron-job-edit-btn'));
+      assert.equal(byId('cron-drawer-submit-error'), null);
+      await click(byId('cron-drawer-submit-btn'));
+      assert.match(byId('cron-error-toast').textContent, /server rejected request/);
+      assert.equal(byId('cron-drawer-submit-error'), null);
+      const editToast = toastStore.getSnapshot().find((record) => record.id === 'cron-error');
+      assert.equal(editToast.closable, true);
+      assert.equal(editToast.durationMs, 8000);
+      assert.ok(byId('cron-error-toast').querySelector('[data-testid="ui-toast-close"]'));
+    });
+  } finally {
+    useWorkspaceStore.setState({ workMode: previousMode });
+  }
+});
+
+test('a subsequent successful submit clears the active cron error toast and reasonless failures use 5s duration', async (t) => {
+  let failCreate = true;
+  let errorMode = 'empty';
+  const createdJob = {
+    id: 'created-job', name: 'Created task', description: 'Task description', mode: 'agent',
+    cron_expr: '0 0 2 * * ? *', timezone: 'Asia/Shanghai', targets: 'web',
+    enabled: true, expired: false, project_id: 'default', work_mode: 'work', wake_offset_seconds: 0,
+  };
+  let jobs = [];
+  t.mock.method(webClient, 'request', async (method) => {
+    if (method === 'cron.job.list') return { jobs };
+    if (method === 'project.list') return { projects: [] };
+    if (method === 'channel.get') return { channels: [{ channel_id: 'web' }] };
+    if (method === 'channel.xiaoyi.get_conf') return { config: {} };
+    if (method === 'cron.job.create') {
+      if (failCreate) {
+        if (errorMode === 'empty') throw new Error('');
+        throw new Error('detailed reason');
+      }
+      jobs = [createdJob];
+      return { job: createdJob };
+    }
+    throw new Error(`Unexpected request: ${method}`);
+  });
+  await withFixture(async ({ mount, click, byId }) => {
+    useWorkspaceStore.setState({ workMode: 'work' });
+    await mount(createElement(CronPanel, { sessionId, onCreateViaChat() {}, onSelectSession() {} }));
+    await click(byId('cron-empty-template-card'));
+    await click(byId('cron-drawer-submit-btn'));
+    const reasonlessToast = toastStore.getSnapshot().find((record) => record.id === 'cron-error');
+    assert.equal(reasonlessToast.closable, true);
+    assert.equal(reasonlessToast.durationMs, 5000);
+    errorMode = 'reason';
+    await click(byId('cron-drawer-submit-btn'));
+    const detailedToast = toastStore.getSnapshot().find((record) => record.id === 'cron-error');
+    assert.equal(detailedToast.durationMs, 8000);
+    failCreate = false;
+    await click(byId('cron-drawer-submit-btn'));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, TOAST_EXIT_ANIMATION_MS + 20));
+    });
+    assert.equal(byId('cron-error-toast'), null);
+    assert.ok(byId('cron-success-toast'));
+  });
+});
+
+for (const operation of ['create', 'update']) {
+  test(`a late ${operation} failure remains visible after closing and reopening the drawer`, async (t) => {
+    let rejectRequest;
+    const pendingRequest = new Promise((resolve, reject) => { rejectRequest = reject; });
+    const job = {
+      id: 'edit-job', name: 'Existing task', description: 'Task description', mode: 'agent',
+      cron_expr: '0 0 2 * * ? *', timezone: 'Asia/Shanghai', targets: 'web',
+      enabled: true, expired: false, project_id: 'default', work_mode: 'work', wake_offset_seconds: 0,
+    };
+    t.mock.method(webClient, 'request', async (method) => {
+      if (method === 'cron.job.list') return { jobs: operation === 'update' ? [job] : [] };
+      if (method === 'project.list') return { projects: [] };
+      if (method === 'channel.get') return { channels: [{ channel_id: 'web' }] };
+      if (method === 'channel.xiaoyi.get_conf') return { config: {} };
+      if (method === `cron.job.${operation}`) return pendingRequest;
+      throw new Error(`Unexpected request: ${method}`);
+    });
+    const previousMode = useWorkspaceStore.getState().workMode;
+    try {
+      useWorkspaceStore.setState({ workMode: 'work' });
+      await withFixture(async ({ mount, click, byId }) => {
+        await mount(createElement(CronPanel, { sessionId, onCreateViaChat() {}, onSelectSession() {} }));
+        const openButtonId = operation === 'update' ? 'cron-job-edit-btn' : 'cron-empty-template-card';
+        await click(byId(openButtonId));
+        await click(byId('cron-drawer-submit-btn'));
+        assert.equal(byId('cron-error-toast'), null);
+        await click(byId('cron-drawer-close-btn'));
+        assert.equal(byId('cron-drawer'), null);
+        await act(async () => { rejectRequest(new Error('late server rejection')); });
+        assert.match(byId('cron-error-toast').textContent, /late server rejection/);
+        await click(byId(openButtonId));
+        assert.ok(byId('cron-drawer'));
+        assert.equal(byId('cron-drawer-submit-error'), null);
+        assert.equal(byId('cron-drawer').textContent.includes('late server rejection'), false);
+      });
+    } finally {
+      useWorkspaceStore.setState({ workMode: previousMode });
+    }
+  });
+}
 
 test('a historical chat alias still resolves to the selected model after extraction', async () => {
   await withFixture(async ({ mount, click, byId }) => {

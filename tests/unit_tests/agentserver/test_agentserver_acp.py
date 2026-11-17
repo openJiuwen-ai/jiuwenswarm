@@ -951,7 +951,19 @@ def test_sync_team_identity_metadata_updates_only_for_create_kinds(monkeypatch):
     ]
 
 
-def test_sync_team_identity_metadata_skips_recover_kinds(monkeypatch):
+@pytest.mark.parametrize(
+    "activation_kind",
+    [
+        RunActionKind.NEW_TEAM_IN_SESSION.value,
+        RunActionKind.CREATE.value,
+    ],
+)
+def test_sync_team_identity_metadata_keeps_existing_name_across_activation_kinds(
+    monkeypatch,
+    activation_kind,
+):
+    """Keep the existing team name on mismatch, whatever activation kind
+    reported runtime readiness."""
     updates = []
 
     monkeypatch.setattr(
@@ -969,31 +981,7 @@ def test_sync_team_identity_metadata_skips_recover_kinds(monkeypatch):
         channel_id="web",
         session_id="team_sess_001",
         ready_team_name="new-team",
-        activation_kind=RunActionKind.NEW_TEAM_IN_SESSION.value,
-    )
-
-    assert updates == []
-
-
-def test_sync_team_identity_metadata_keeps_existing_name_on_mismatch(monkeypatch):
-    updates = []
-
-    monkeypatch.setattr(
-        team_helpers_module,
-        "get_session_metadata",
-        lambda _session_id: {"mode": "team", "team_name": "existing-team"},
-    )
-    monkeypatch.setattr(
-        team_helpers_module,
-        "update_session_metadata",
-        lambda **kwargs: updates.append(kwargs),
-    )
-
-    TeamHelpersHarness.sync_team_identity_metadata_for_test(
-        channel_id="web",
-        session_id="team_sess_001",
-        ready_team_name="new-team",
-        activation_kind=RunActionKind.CREATE.value,
+        activation_kind=activation_kind,
     )
 
     assert updates == []

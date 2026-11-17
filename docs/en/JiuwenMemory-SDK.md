@@ -58,6 +58,16 @@ SDK mode auto-assembles the memory kernel in-process. The three backends answer 
 
 ---
 
+### 1.4 Import video into memory from Web chat
+
+Enable the built-in JiuwenMemory SDK (`memory.engine: builtin`, `memory.builtin.provider: jiuwen`, and `memory.builtin.jiuwen.mode: sdk`) and turn on the agent's memory. Use a version of agent-memory with the automatic video assembly from `config_dict` introduced in commit `92e8624`.
+
+1. In **Settings → Agent → Tools**, configure and enable **Video Understanding** and **Audio Processing** for the capabilities your deployment does not already provide. Save the model, API URL, and API key for each. The video endpoint must support OpenAI-compatible vision chat. The audio endpoint must support OpenAI-compatible transcription with segment timestamps.
+2. In a local Web chat in Work mode, select **Full access**, click **+** next to the composer, choose a local video, and send “Remember this video.” Swarm saves the browser upload in the current session's upload directory and generates a `file:///` URI for `agent_memory_video_submit`. Use `agent_memory_video_status` with the returned `job_id` to check progress.
+3. You can also submit a URI manually. The file must be in a deployment-configured import directory or in the automatically authorized project directory or session workspace under **Full access**.
+
+Swarm forwards each enabled, complete model configuration under any permission profile. If the deployment already configures one model, set the other in the Web UI. Automatic workspace grants are bound to the current memory identity. Model and effective directory changes apply to subsequent turns. With the SDK's default in-memory job store, old video job IDs become unavailable after the memory rail is rebuilt.
+
 ## 2. Built-in Memory vs. JiuwenMemory
 
 JiuwenSwarm defaults to **built-in memory** (`memory.engine: builtin`), based on local Markdown files; switching to JiuwenMemory uses remote structured backends. The key difference is not "tool names" but **how memory is triggered**:

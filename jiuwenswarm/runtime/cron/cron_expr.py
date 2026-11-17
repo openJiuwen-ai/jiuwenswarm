@@ -61,12 +61,21 @@ def normalize_cron_expr(raw: str) -> str:
     )
 
 
-def iso_to_seven_field_cron(at_iso: str, *, timezone: str) -> str:
+def iso_to_one_shot_cron(at_iso: str, *, timezone: str) -> tuple[str, str]:
     """Convert ISO8601 datetime into 7-field cron (Quartz format):
-    second minute hour day month dow year.
+    second minute hour day month dow year, plus the timezone to evaluate it in.
+
+    Returns ``(cron_expr, cron_timezone)``.  ``cron_timezone`` is normally the
+    given ``timezone`` and the expression is the local wall clock.  When the
+    instant falls in the hour repeated at a DST fall-back, that wall clock
+    denotes two different instants while a cron expression can only name the
+    first one, so the expression is rendered in UTC and ``cron_timezone`` is
+    ``"UTC"``.  A one-shot job scheduled this way still fires at the exact
+    instant the caller asked for.
 
     If the input has no timezone, interpret it in `timezone`.
-    Reject local times that do not exist during a timezone transition.
+    Reject local times that do not exist during a timezone transition, and
+    local times that are ambiguous because they occur twice.
     """
     s = (at_iso or "").strip()
     if not s:
@@ -83,9 +92,25 @@ def iso_to_seven_field_cron(at_iso: str, *, timezone: str) -> str:
             raise ValueError(
                 f"local time '{s}' does not exist in timezone '{timezone}'"
             )
+        # Probing ambiguity only after the gap check: a nonexistent local time
+        # also reports two different offsets for fold=0 and fold=1.
+        if dt.replace(fold=0).utcoffset() != dt.replace(fold=1).utcoffset():
+            raise ValueError(
+                f"local time '{s}' is ambiguous in timezone '{timezone}': it "
+                "occurs twice when daylight saving time ends; add an explicit "
+                "UTC offset to choose one"
+            )
     else:
         dt = dt.astimezone(tz)
-    return f"{dt.second} {dt.minute} {dt.hour} {dt.day} {dt.month} ? {dt.year}"
+    cron_timezone = timezone
+    if dt.fold == 1:
+        # The local wall clock cannot single out this second occurrence.
+        dt = dt.astimezone(UTC)
+        cron_timezone = "UTC"
+    return (
+        f"{dt.second} {dt.minute} {dt.hour} {dt.day} {dt.month} ? {dt.year}",
+        cron_timezone,
+    )
 
 
 def validate_cron_expression(expr: str, *, timezone: str) -> None:

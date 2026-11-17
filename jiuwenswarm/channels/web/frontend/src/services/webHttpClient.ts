@@ -210,6 +210,24 @@ const ROUTES: Record<string, RouteRow> = {
   'im.hosting.history': { verb: 'GET', path: '/im/hosting/targets/{id}/history', kind: 'unary' },
   'im.hosting.login.start': { verb: 'POST', path: '/im/hosting/login/start', kind: 'unary' },
   'im.hosting.login.status': { verb: 'GET', path: '/im/hosting/login/status', kind: 'unary' },
+  'a4p.config.get': { verb: 'GET', path: '/a4p/config', kind: 'unary' },
+  'a4p.config.update': { verb: 'PUT', path: '/a4p/config', kind: 'unary' },
+  'a4p.authorization.pending': { verb: 'GET', path: '/a4p/authorization/pending', kind: 'unary' },
+  'a4p.authorization.complete': {
+    verb: 'POST',
+    path: '/a4p/authorization/actions/complete',
+    kind: 'unary',
+  },
+  'a4p.authorization.reject': {
+    verb: 'POST',
+    path: '/a4p/authorization/actions/reject',
+    kind: 'unary',
+  },
+  'a4p.authorization.reprepare': {
+    verb: 'POST',
+    path: '/a4p/authorization/actions/reprepare',
+    kind: 'unary',
+  },
 };
 
 const PATH_PLACEHOLDER = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;

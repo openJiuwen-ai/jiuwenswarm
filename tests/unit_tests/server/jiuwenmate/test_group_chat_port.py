@@ -91,11 +91,24 @@ def test_dingtalk_markdown_receipt_matches_the_verified_rendered_bot_echo(record
     assert merged.text == echo.text
 
 
-@pytest.mark.parametrize('receipt_text,echo_text', [
-    ('## 看点\n\n- 西湖\n- 断桥', '看点\n•西湖\n•断桥'),
-    ('推荐**西湖**。', '推荐西湖。'),
+@pytest.mark.parametrize('receipt_text,echo_text,expected_reconciled', [
+    # Layout variants of the same content project to the same rendered text and reconcile.
+    ('## 看点\n\n- 西湖\n- 断桥', '看点\n•西湖\n•断桥', 1),
+    ('推荐**西湖**。', '推荐西湖。', 1),
+    # Distinct content or complex markdown must not be erased by the projection: no reconcile.
+    ('金额**12**元。', '金额 13 元。', 0),
+    ('金额**12**元。', '金额 12 元？', 0),
+    ('1 2', '12', 0),
+    ('`**literal**`', 'literal', 0),
+    ('[文档](https://example.com/first)', '文档', 0),
+    (r'\*\*literal\*\*', 'literal', 0),
+    ('    - 12', '12', 0),
+    ('    **literal**', 'literal', 0),
+    (' \t- 12', '12', 0),
+    ('~~~\n- literal\n~~~', '~~~\nliteral\n~~~', 0),
 ])
-def test_dingtalk_display_projection_preserves_the_content_across_layout_variants(records, receipt_text, echo_text):
+def test_dingtalk_display_projection_reconciles_layout_variants_not_distinct_content(
+        records, receipt_text, echo_text, expected_reconciled):
     group = records.groups.resolve('local', 'dingtalk', 'cid', now=NOW)
     for mid, source, sender, text in [
         ('process', 'delivery:del', 'app', receipt_text),
@@ -105,32 +118,7 @@ def test_dingtalk_display_projection_preserves_the_content_across_layout_variant
             1, message_id=mid, sender_id=sender, sender_kind='agent', text=text), source_ref=source)
     assert records.archive.reconcile_dingtalk_deliveries(
         'local', group.group_chat_id, {'app': 'dingtalk-open:bot'},
-        observed_since=NOW - timedelta(seconds=20), observed_through=NOW + timedelta(seconds=30)) == 1
-
-
-@pytest.mark.parametrize('receipt_text,echo_text', [
-    ('金额**12**元。', '金额 13 元。'),
-    ('金额**12**元。', '金额 12 元？'),
-    ('1 2', '12'),
-    ('`**literal**`', 'literal'),
-    ('[文档](https://example.com/first)', '文档'),
-    (r'\*\*literal\*\*', 'literal'),
-    ('    - 12', '12'),
-    ('    **literal**', 'literal'),
-    (' \t- 12', '12'),
-    ('~~~\n- literal\n~~~', '~~~\nliteral\n~~~'),
-])
-def test_dingtalk_display_projection_does_not_erase_content_or_complex_markdown(records, receipt_text, echo_text):
-    group = records.groups.resolve('local', 'dingtalk', 'cid', now=NOW)
-    for mid, source, sender, text in [
-        ('process', 'delivery:del', 'app', receipt_text),
-        ('echo', 'dingtalk:message:echo', 'dingtalk-open:bot', echo_text),
-    ]:
-        records.archive.append('local', group.group_chat_id, message(
-            1, message_id=mid, sender_id=sender, sender_kind='agent', text=text), source_ref=source)
-    assert records.archive.reconcile_dingtalk_deliveries(
-        'local', group.group_chat_id, {'app': 'dingtalk-open:bot'},
-        observed_since=NOW - timedelta(seconds=20), observed_through=NOW + timedelta(seconds=30)) == 0
+        observed_since=NOW - timedelta(seconds=20), observed_through=NOW + timedelta(seconds=30)) == expected_reconciled
 
 
 def test_dingtalk_formatted_candidates_remain_separate_when_two_receipts_match_one_echo(records):

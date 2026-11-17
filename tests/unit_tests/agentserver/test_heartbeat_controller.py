@@ -95,19 +95,18 @@ async def test_web_rpc_create_requires_channel_and_session(ctrl: HeartbeatContro
 # ---------------------------------------------------------------------------
 
 
-async def test_create_rejects_mode(ctrl: HeartbeatController) -> None:
+@pytest.mark.parametrize(
+    ("forbidden_field", "forbidden_value"),
+    [("mode", "agent"), ("model", "claude-x")],
+)
+async def test_create_rejects_mode_and_model(
+    ctrl: HeartbeatController, forbidden_field: str, forbidden_value: str
+) -> None:
     with pytest.raises(ValueError, match="forbidden"):
         await ctrl.create_job({
             "name": "x", "channel_id": "web", "session_id": "s", "prompt": "p", "source": "web_rpc",
-            "schedule": {"type": "interval", "interval_seconds": 120}, "mode": "agent",
-        })
-
-
-async def test_create_rejects_model(ctrl: HeartbeatController) -> None:
-    with pytest.raises(ValueError, match="forbidden"):
-        await ctrl.create_job({
-            "name": "x", "channel_id": "web", "session_id": "s", "prompt": "p", "source": "web_rpc",
-            "schedule": {"type": "interval", "interval_seconds": 120}, "model": "claude-x",
+            "schedule": {"type": "interval", "interval_seconds": 120},
+            forbidden_field: forbidden_value,
         })
 
 

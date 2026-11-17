@@ -3,6 +3,7 @@ import JSZip from 'jszip';
 import { SaxesParser, type SaxesTagNS } from 'saxes';
 import SSF from 'ssf';
 import { officeFontStack } from './officeFontStack';
+import { conformOoxmlArchivePartNames } from './ooxmlArchiveParts';
 import { SPREADSHEET_ARCHIVE_LIMITS, inspectOoxmlArchive } from './ooxmlArchiveLimits';
 import {
   parseCellRange,
@@ -175,9 +176,11 @@ class StyleRegistry {
 
 export async function parseSpreadsheetWorkbook(buffer: ArrayBuffer): Promise<SpreadsheetWorkbookData> {
   inspectOoxmlArchive(buffer, SPREADSHEET_ARCHIVE_LIMITS);
-  const archive = await JSZip.loadAsync(buffer);
+  // ExcelJS looks parts up by exact name, so a Windows-packaged workbook needs OPC names.
+  const conformingBuffer = await conformOoxmlArchivePartNames(buffer);
+  const archive = await JSZip.loadAsync(conformingBuffer);
   const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.load(await prepareWorkbookBuffer(archive, buffer), { ignoreNodes: ['drawing'] });
+  await workbook.xlsx.load(await prepareWorkbookBuffer(archive, conformingBuffer), { ignoreNodes: ['drawing'] });
   if (workbook.worksheets.length === 0) throw new Error('The workbook contains no worksheets');
 
   const palette = parseThemePalette(workbook);

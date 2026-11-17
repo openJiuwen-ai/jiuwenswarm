@@ -53,6 +53,21 @@ describe('SessionFacade', () => {
     );
   });
 
+  it.each([[true], [false]])('sends the document state with each message, told only once sent: %s',
+    async accepted => {
+      const request = vi.fn().mockImplementation(async () => {
+        if (!accepted) throw new Error('offline');
+        return {};
+      });
+      const sent = vi.fn();
+      const text = '<doc_state>Hello</doc_state>';
+      const sending = new SessionFacade({ request }, 'office-word', async () => ({ text, sent })).sendText(S1, 'hello');
+      await (accepted ? sending : expect(sending).rejects.toThrow('offline'));
+      expect(request).toHaveBeenCalledWith('chat.send', expect.objectContaining({ client_state: text }),
+        expect.anything());
+      expect(sent).toHaveBeenCalledTimes(accepted ? 1 : 0);
+    });
+
   it('persists images before chat.send and sends only their paths', async () => {
     const request = vi.fn()
       .mockResolvedValueOnce({

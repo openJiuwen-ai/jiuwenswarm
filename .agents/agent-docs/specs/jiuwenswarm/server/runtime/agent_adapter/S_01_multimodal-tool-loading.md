@@ -14,7 +14,7 @@ files: []
 | --- | --- |
 | 类型 | spec |
 | 关联模块 | `jiuwenswarm/server/runtime/agent_adapter`、`jiuwenswarm/agents/harness/code`、`jiuwenswarm/agents/harness/common/tools` |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-11-12 |
 | 关联 feature | — |
 | 修复依据 | [B_20261026_1602_code-multimodal-loading](../../../../../bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261026_1602_code-multimodal-loading.md) |
 
@@ -44,6 +44,8 @@ files: []
 
 ## 生命周期和失败行为
 
+内置 JiuwenMemory SDK 在 Web 会话使用本地文件执行时，独立透传每组已启用且完整的模型配置。音频模型传为 `asr_*`，视频模型传为 `video_*`。SDK 可以从部署配置补齐另一组模型。部署没有显式导入目录时，只有当前会话开启完全访问权限且至少透传一组模型，才自动授权当前项目或会话工作区的已存在本地目录，使用与记忆 Provider 一致的 org、space、user、agent、session 五维绑定。SDK 配置指纹包含这份运行时输入的哈希，后续轮次随有效模型或导入目录变化重建记忆 rail。自动输入只在内存中合并。
+
 初始装配按能力组构建并注册。构建异常时记录警告并跳过该组；组内注册异常时还需清理本组已尝试的 owned 注册，其他组仍可装配。该降级行为不代表模型调用成功。
 
 热更新复用相同工具组：启用后注册并加入能力管理器；禁用后移除本 Agent 的工具卡和能力；更新视觉／音频模型参数时保留已注册实例。默认 Code 同步维护 Spec build context 的实例记录和 `deep_config.tools`，供后续全量配置替换及回滚使用。
@@ -58,3 +60,4 @@ files: []
 - 开关热更新和实例参数刷新：`tests/unit_tests/agentserver/test_multimodal_capability_hot_reload.py`。
 - Spec 全量重载与失败回滚：`tests/unit_tests/agentserver/test_code_spec_reload.py`。
 - 配置解析和 ownership：`tests/unit_tests/agents/harness/test_multimodal_config.py`、`tests/unit_tests/agentserver/test_deep_adapter_tool_ownership.py`。
+- 内置记忆 SDK 装配、目录和身份边界、配置变更重建：`tests/unit_tests/agentserver/memory/test_jiuwen_rail_builder.py`。

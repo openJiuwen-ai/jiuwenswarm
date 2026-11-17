@@ -509,15 +509,19 @@ async def test_code_round_does_not_overwrite_worktree_cwd_within_request(
 
 
 @pytest.mark.asyncio
-async def test_code_runtime_config_uses_projectless_task_workspace(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    ("adapter_cls", "mode"),
+    [(JiuWenSwarmDeepAdapter, "agent"), (JiuwenSwarmCodeAdapter, "code")],
+)
+async def test_runtime_config_uses_projectless_task_workspace(
+    tmp_path, monkeypatch, adapter_cls, mode,
 ):
     internal_dir = tmp_path / "internal"
     internal_dir.mkdir()
     monkeypatch.setenv("JIUWENSWARM_TASKS_DIR", str(tmp_path / "Documents"))
     monkeypatch.setenv("JIUWENSWARM_TASK_REGISTRY_DIR", str(tmp_path / "registry"))
 
-    adapter = JiuwenSwarmCodeAdapter()
+    adapter = adapter_cls()
     runtime_rail = _RecordingRuntimeRail()
     deep_config = SimpleNamespace(cwd=None, project_root=None)
     adapter._instance = SimpleNamespace(
@@ -535,7 +539,8 @@ async def test_code_runtime_config_uses_projectless_task_workspace(
     adapter._eternal_conversation_rail = None
     adapter._force_english_runtime_prompt = False
     monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "en")
-    monkeypatch.setattr(adapter, "_resolve_output_language", lambda: "en")
+    if mode == "code":
+        monkeypatch.setattr(adapter, "_resolve_output_language", lambda: "en")
     monkeypatch.setattr(adapter, "_resolve_prompt_channel", lambda _sid: "web")
     monkeypatch.setattr(adapter, "_resolve_model_name", lambda: "model")
     monkeypatch.setattr(adapter, "_write_runtime_state", lambda **_kwargs: None)
@@ -547,10 +552,14 @@ async def test_code_runtime_config_uses_projectless_task_workspace(
     monkeypatch.setattr(adapter, "_update_prompt_for_mode", lambda *_args: None)
     monkeypatch.setattr(adapter, "_register_shared_tool", lambda *_args: None)
 
+    if mode == "agent":
+        await adapter.configure_session_runtime(session_id="runtime-session", channel_id="web", mode=mode)
+        assert adapter._memory_media_workspace is None
+
     await adapter._update_runtime_config(
         adapter._RuntimeConfig(
-            session_id="code-session",
-            mode="code",
+            session_id="runtime-session",
+            mode=mode,
             request_id="request-1",
             channel_id="web",
             cwd=str(tmp_path / "ignored-cwd"),
@@ -560,6 +569,8 @@ async def test_code_runtime_config_uses_projectless_task_workspace(
 
     task_root = Path(runtime_rail.execution_paths["workspace"])
     assert task_root.name == "chat-1"
+    if mode == "agent":
+        assert adapter._memory_media_workspace == str(task_root)
     assert runtime_rail.execution_paths == {
         "cwd": str(task_root / "work"),
         "project_root": str(task_root),
@@ -574,8 +585,8 @@ async def test_code_runtime_config_uses_projectless_task_workspace(
     explicit_project.mkdir()
     await adapter._update_runtime_config(
         adapter._RuntimeConfig(
-            session_id="code-session",
-            mode="code",
+            session_id="runtime-session",
+            mode=mode,
             request_id="request-2",
             channel_id="web",
             project_dir=str(explicit_project),
@@ -591,6 +602,8 @@ async def test_code_runtime_config_uses_projectless_task_workspace(
     }
     assert deep_config.cwd == str(explicit_project)
     assert deep_config.project_root == str(explicit_project)
+    if mode == "agent":
+        assert adapter._memory_media_workspace == str(explicit_project)
 
 
 def test_agent_projectless_resolution_does_not_promote_legacy_cwd(tmp_path):

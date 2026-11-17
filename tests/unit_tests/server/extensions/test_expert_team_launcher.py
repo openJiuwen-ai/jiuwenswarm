@@ -359,6 +359,13 @@ def agent_group_loader(monkeypatch: pytest.MonkeyPatch, tmp_path):
         assert path == package_dir
         return package
 
+    def locate(name):
+        return SimpleNamespace(name=name, path=_resolve(name))
+
+    monkeypatch.setattr(
+        "openjiuwen.agent_teams.experts.catalog._process_catalog",
+        SimpleNamespace(locate_group=AsyncMock(side_effect=locate)),
+    )
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_dir",
         _resolve,
@@ -416,8 +423,9 @@ async def test_expert_spec_snapshots_group_name_without_changing_team_alias(monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("explicit_team_id", [None, "org-expert-specified"])
 async def test_launch_creates_resolvable_team(
-    monkeypatch: pytest.MonkeyPatch, agent_group_loader
+    monkeypatch: pytest.MonkeyPatch, agent_group_loader, explicit_team_id,
 ) -> None:
     shared_db = _FakeDb()
     runtime = _FakeRuntime(shared_db)
@@ -433,10 +441,14 @@ async def test_launch_creates_resolvable_team(
         agent_group_name="sample-expert-group",
         session_id="sess-1",
         display_name="Sample",
+        team_id=explicit_team_id,
     )
 
     assert launched.team_id.startswith("org-expert-")
-    assert len(launched.team_id.removeprefix("org-expert-")) == 12
+    if explicit_team_id is None:
+        assert len(launched.team_id.removeprefix("org-expert-")) == 12
+    else:
+        assert launched.team_id == explicit_team_id
     assert launched.agent_group_name == "sample-expert-group"
     from jiuwenswarm.server.runtime.team_organization_identity_store import load_organization_team_identity
 

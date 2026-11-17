@@ -55,27 +55,134 @@ _SHELL_COMMAND_PARAM_KEYS = {
     "create_terminal": "cmd",
 }
 
+# Enterprise merges a4p/permissions into per-agent config_base; process get_config()
+# often stays off. Bind both slices by session for tools / interrupt / RPC / prompt.
+_session_a4p_gates: dict[str, dict[str, Any]] = {}
+
 
 @dataclass(frozen=True)
 class A4PIdentity:
     agent_id: str
 
 
-def get_a4p_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
-    cfg = config if isinstance(config, dict) else get_config()
+def bind_session_a4p_config(
+    session_id: str | None,
+    a4p_cfg: dict[str, Any] | None,
+    *,
+    permissions: dict[str, Any] | None = None,
+    request_id: str | None = None,
+) -> None:
+    """Publish effective ``a4p`` (+ optional permissions) for a live session.
+
+    When ``request_id`` is set it becomes the gate owner (last writer wins), so
+    a later ``unbind_session_a4p_config`` from another request cannot wipe it.
+    Rebinds without ``request_id`` keep any existing owner.
+    """
+    sid = str(session_id or "").strip()
+    if not sid:
+        return
+    rid = str(request_id or "").strip()
+    if not isinstance(a4p_cfg, dict):
+        # Clearing is also ownership-aware so a peer request cannot drop the gate.
+        unbind_session_a4p_config(sid, rid or None)
+        return
+    gate: dict[str, Any] = {"a4p": dict(a4p_cfg)}
+    if isinstance(permissions, dict):
+        gate["permissions"] = dict(permissions)
+    if rid:
+        gate["request_id"] = rid
+    else:
+        existing = _session_a4p_gates.get(sid)
+        owner = (
+            str(existing.get("request_id") or "").strip()
+            if isinstance(existing, dict)
+            else ""
+        )
+        if owner:
+            gate["request_id"] = owner
+    _session_a4p_gates[sid] = gate
+
+
+def unbind_session_a4p_config(
+    session_id: str | None,
+    request_id: str | None = None,
+) -> None:
+    """Drop the session-scoped a4p gate when the owning run ends.
+
+    Mirrors ``AUTHORIZATION_EXECUTION_CONTEXTS.release``: when ``request_id`` is
+    provided, only the matching owner may clear the gate. Omitting ``request_id``
+    force-clears (tests / session teardown).
+    """
+    sid = str(session_id or "").strip()
+    if not sid:
+        return
+    current = _session_a4p_gates.get(sid)
+    if current is None:
+        return
+    rid = str(request_id or "").strip()
+    if rid:
+        owner = str(current.get("request_id") or "").strip()
+        if owner and owner != rid:
+            return
+    _session_a4p_gates.pop(sid, None)
+
+
+def _session_a4p_gate(session_id: str | None) -> dict[str, Any] | None:
+    sid = str(session_id or "").strip()
+    if not sid:
+        return None
+    gate = _session_a4p_gates.get(sid)
+    return dict(gate) if isinstance(gate, dict) else None
+
+
+def get_a4p_config(
+    config: dict[str, Any] | None = None,
+    *,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    if isinstance(config, dict):
+        a4p_cfg = config.get("a4p")
+        if isinstance(a4p_cfg, dict):
+            return dict(a4p_cfg)
+        return {}
+    gate = _session_a4p_gate(session_id)
+    if gate is not None:
+        a4p_cfg = gate.get("a4p")
+        return dict(a4p_cfg) if isinstance(a4p_cfg, dict) else {}
+    cfg = get_config()
     a4p_cfg = cfg.get("a4p") if isinstance(cfg, dict) else None
     if not isinstance(a4p_cfg, dict):
         return {}
     return dict(a4p_cfg)
 
 
-def is_a4p_enabled(config: dict[str, Any] | None = None) -> bool:
-    return bool(get_a4p_config(config).get("enabled", False))
+def is_a4p_enabled(
+    config: dict[str, Any] | None = None,
+    *,
+    session_id: str | None = None,
+) -> bool:
+    return bool(get_a4p_config(config, session_id=session_id).get("enabled", False))
 
 
-def is_a4p_preauthorization_active(config: dict[str, Any] | None = None) -> bool:
-    """Enable preauthorization only for the default permission profile."""
-    cfg = config if isinstance(config, dict) else get_config()
+def is_a4p_preauthorization_active(
+    config: dict[str, Any] | None = None,
+    *,
+    session_id: str | None = None,
+) -> bool:
+    """Enable preauthorization only for the default permission profile.
+
+    Session bind wins when present (enterprise config_base). Otherwise use the
+    provided ``config`` so callers/tests that monkeypatch ``get_config`` still
+    work; only then fall back to process ``get_config()``.
+    """
+    gate = _session_a4p_gate(session_id)
+    if gate is not None:
+        cfg = dict(gate)
+    elif isinstance(config, dict):
+        cfg = dict(config)
+    else:
+        base = get_config()
+        cfg = dict(base) if isinstance(base, dict) else {}
     permissions = cfg.get("permissions")
     permissions = permissions if isinstance(permissions, dict) else {}
     return (
@@ -511,6 +618,7 @@ __all__ = [
     "CRON_INTENT_TOKENS_VERSION",
     "DEFAULT_CRON_INTENT_VALIDITY_SECONDS",
     "INTERNAL_A4P_USER_ID",
+    "bind_session_a4p_config",
     "get_a4p_config",
     "get_a4p_runtime",
     "is_a4p_enabled",
@@ -519,4 +627,5 @@ __all__ = [
     "reconfigure_a4p_runtime",
     "reset_a4p_runtime_for_tests",
     "resolve_a4p_identity",
+    "unbind_session_a4p_config",
 ]

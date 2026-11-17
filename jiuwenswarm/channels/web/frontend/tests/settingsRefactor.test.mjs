@@ -38,7 +38,7 @@ import {
 const root = new URL('../', import.meta.url);
 const source = (path) => readFileSync(new URL(path, root), 'utf8');
 
-test('model resource payload explicitly clears reasoning when returning to the provider default', () => {
+function loadBuildModelResourcePayload() {
   const page = ts.createSourceFile(
     'ModelsSettings.tsx',
     source('src/features/settings/modules/models/ModelsSettings.tsx'),
@@ -53,7 +53,11 @@ test('model resource payload explicitly clears reasoning when returning to the p
   const javascript = ts.transpileModule(declaration.getText(page).replace(/^export\s+/, ''), {
     compilerOptions: { target: ts.ScriptTarget.ES2020 },
   }).outputText;
-  const buildPayload = new Function(`${javascript}; return buildModelResourcePayload;`)();
+  return new Function(`${javascript}; return buildModelResourcePayload;`)();
+}
+
+test('model resource payload explicitly clears reasoning when returning to the provider default', () => {
+  const buildPayload = loadBuildModelResourcePayload();
   for (const level of ['on', 'off', '']) {
     const payload = buildPayload({
       model_id: 'mdl-reasoning', model_name: 'Qwen3.8-Flash', model_provider: 'OpenAI',
@@ -62,6 +66,22 @@ test('model resource payload explicitly clears reasoning when returning to the p
     assert.equal(payload.model_config_obj.reasoning_level, level);
     assert.equal('api_key' in payload.model_client_config, false);
   }
+});
+
+test('model resource payload clears each unselected preset field explicitly', () => {
+  const buildPayload = loadBuildModelResourcePayload();
+  const custom = {
+    model_id: 'mdl-custom', model_name: 'custom-model', model_provider: 'OpenAI',
+    api_base: 'https://example.test/v1', api_key: '',
+  };
+  assert.deepEqual(buildPayload(custom).model_client_config, {
+    model_name: 'custom-model', client_provider: 'OpenAI', api_base: 'https://example.test/v1',
+    vendor_key: null, plan: null, endpoint_profile: '',
+  });
+  const preset = buildPayload({ ...custom, vendor_key: 'deepseek', plan: 'custom_api' });
+  assert.equal(preset.model_client_config.vendor_key, 'deepseek');
+  assert.equal(preset.model_client_config.plan, 'custom_api');
+  assert.equal(preset.model_client_config.endpoint_profile, '');
 });
 
 function sourceFilesUnder(path) {
@@ -75,6 +95,27 @@ function sourceFilesUnder(path) {
 }
 const zh = JSON.parse(source('src/i18n/locales/zh.json'));
 const en = JSON.parse(source('src/i18n/locales/en.json'));
+
+test('DDG and Bing retain independent persisted switches after removing 360', () => {
+  for (const name of ['ddg', 'bing']) {
+    const key = `free_search_${name}_enabled`;
+    assert.deepEqual(SETTINGS_CONFIG_FIELDS.find((item) => item.key === key), {
+      key, category: 'agent', kind: 'boolean', persistence: '.env', path: `FREE_SEARCH_${name.toUpperCase()}_ENABLED`,
+    });
+    for (const enabled of ['true', 'false']) {
+      assert.deepEqual(buildConfigSavePayload({ [key]: enabled }), { config: { [key]: enabled } });
+    }
+  }
+  assert.equal(SETTINGS_CONFIG_FIELDS.some((item) => item.key === 'free_search_360_enabled'), false);
+  assert.throws(() => buildConfigSavePayload({ free_search_360_enabled: 'true' }), /Unknown settings config key/);
+  for (const locale of [zh, en]) {
+    assert.equal(locale.settingsPanel.fields.free_search_360_enabled, undefined);
+    assert.ok(locale.settingsPanel.fields.free_search_ddg_enabled.title.includes('DuckDuckGo'));
+    assert.ok(locale.settingsPanel.fields.free_search_bing_enabled.title.includes('Bing'));
+  }
+  const definition = source('src/features/settings/modules/agent/definition.ts');
+  assert.doesNotMatch(definition, /free_search_360_enabled|360-search/);
+});
 
 function leafKeys(value, prefix = '') {
   return Object.entries(value).flatMap(([key, child]) => {
@@ -589,14 +630,14 @@ test('open-source Settings composition preserves the registered modules and edit
   );
 });
 
-test('KV Cache affinity remains registered but hidden until product release', () => {
+test('KV Cache affinity is editable in experimental settings', () => {
   const context = { compositionMode: 'base' };
   assert.deepEqual(
     openSourceSettingsAccessPolicy.evaluate(
       { kind: 'section', moduleId: 'experimental', sectionId: 'kv-cache-affinity' },
       context,
     ),
-    { level: 'hidden' },
+    { level: 'editable' },
   );
   assert.deepEqual(
     openSourceSettingsAccessPolicy.evaluate(
@@ -1533,7 +1574,7 @@ test('SettingRow exposes a business-agnostic subSettings slot for dependent rows
   assert.match(uiComponents, /export \{ CollapsibleText, type CollapsibleTextProps \}/);
   assert.doesNotMatch(settingsComponents, /CollapsibleText/);
   assert.match(itemRenderer, /subSettings=\{[\s\S]*item\.subItems\.items\.map/);
-  assert.match(itemRenderer, /item\.subItems\?\.show === 'always' \|\| checked/);
+  assert.match(itemRenderer, /item\.subItems\?\.show === 'always' \|\| enabled/);
   assert.match(itemRenderer, /item\.subItems\?\.disabled === 'when-parent-unchecked'/);
   assert.match(experimentalDefinition, /show: 'always',[\s\S]*disabled: 'when-parent-unchecked'/);
   assert.doesNotMatch(browserDefinition, /component: 'switch'|key: 'enabled'|subItems:/);

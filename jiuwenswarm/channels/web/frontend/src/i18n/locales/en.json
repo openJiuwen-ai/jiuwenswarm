@@ -468,6 +468,9 @@
     "qwenOnly": "Only Qwen full-duplex is currently supported. Configure Qwen Omni Realtime in Settings."
   },
   "settingsPanel": {
+    "affinity": {
+      "noSupportingModel": "No configured model supports affinity. Configure one in Models first."
+    },
     "voice": {
       "connectionFailed": "Connection failed. Check the endpoint, API key and model, then try again.",
       "connectionSuccess": "Model connection verified",
@@ -626,6 +629,10 @@
       }
     },
     "models": {
+      "affinityCapability": "This service supports Ascend KV-Cache affinity",
+      "affinityCapabilityDescription": "Only for custom services implementing the agent_hint protocol. This is a manual declaration; connection tests do not verify affinity support.",
+      "affinityAutoDisabled": "Model configuration saved. KV-Cache affinity was automatically disabled because a control model no longer supports it. Restart if required.",
+
       "customModels": "Custom models",
       "tabsLabel": "Model settings categories",
       "modelsTab": "Models",
@@ -792,6 +799,7 @@
       "catalogLoading": "Loading model providers and reasoning options. Please wait.",
       "catalogLoadFailed": "Model providers and reasoning options failed to load. Retry before saving.",
       "saveResponseInvalid": "The model-save response is invalid. Reload to verify the server state.",
+      "execResolveFailed": "The model was saved, but resolving its exec: reference command failed; model calls use an empty key until it succeeds. Check the secret-manager command, then re-save or probe.",
       "savedApplied": "Saved and applied",
       "savedRestartRequired": "Saved; takes effect after restart",
       "refreshTitle": "Background model refresh",
@@ -1219,7 +1227,7 @@
       },
       "kv_cache_affinity_enabled": {
         "title": "Enable compute affinity",
-        "description": "Supported only for models deployed with Ascend vLLM inference services, not models accessed through third-party API keys."
+        "description": "Use affinity for declared endpoints; ordinary cloud models keep normal requests."
       },
       "external_cli_agent_claude_enabled": {
         "title": "Enable Claude",
@@ -1861,6 +1869,7 @@
     "previewFailed": "Failed to load the file preview",
     "docxPreviewFailed": "Failed to load the Word document preview",
     "presentationPreviewFailed": "Failed to load the PowerPoint presentation preview",
+    "presentationLoadFailed": "Failed to download the PowerPoint presentation. Please try again.",
     "presentationResourceLimitExceeded": "The PowerPoint presentation content exceeds the browser preview limit. Download the file to view it.",
     "presentationTooLarge": "PowerPoint presentations larger than {{size}} cannot be previewed in the browser. Download the file to view it.",
     "presentationSlides": "Slides",
@@ -5322,7 +5331,7 @@
       "saving": "Saving...",
       "name": "Name",
       "type": "Type",
-      "typeStdio": "STUDIO",
+      "typeStdio": "STDIO",
       "typeHttp": "Streamable HTTP",
       "command": "Startup command",
       "args": "Arguments",
@@ -6067,6 +6076,7 @@
       "namePlaceholder": "For example: After-sales assistant",
       "description": "Abilities",
       "descriptionPlaceholder": "Describe what this employee is good at, what it owns and how it should work",
+      "descriptionTooLong": "The capability description must be {{limit}} characters or fewer. Shorten it before saving.",
       "role": "Work domains",
       "preview": "Card preview",
       "previewName": "New employee",
@@ -6109,7 +6119,9 @@
         "starterPrompts": "Add quick prompt"
       },
       "starterPromptsLimit": "Up to {{count}} prompts",
-      "starterPromptDuplicate": "Duplicates an earlier prompt; only one is kept when saved",
+      "starterPromptDuplicate": "Duplicates an earlier prompt; edit or remove it.",
+      "starterPromptsDuplicateTitle": "Duplicate starter prompts",
+      "starterPromptsDuplicateMessage": "Starter prompts must be unique. Edit or remove the duplicates before creating the employee.",
       "empty": {
         "skills": "No skills",
         "connectors": "No connectors",
@@ -6472,6 +6484,11 @@
       }
     },
     "schedule": {
+      "save": "Save",
+      "saveAndEnable": "Save and enable",
+      "pausedEditHint": "This task is paused. Saving keeps it paused; choose Save and enable to resume automatic execution.",
+      "actionFailed": "Scheduled task action failed",
+      "resumeExpired": "Enable (edit schedule first)",
       "add": "Add",
       "createTitle": "New scheduled task",
       "editTitle": "Edit scheduled task",
@@ -6555,6 +6572,7 @@
         "running": "Running"
       },
       "error": {
+        "enableExpired": "This task has expired. Update its schedule before enabling it.",
         "nameRequired": "Enter a task name.",
         "promptRequired": "Enter a task description.",
         "required": "Enter a name and a description",

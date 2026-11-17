@@ -146,6 +146,27 @@ describe('chatting', () => {
       ['改标题', '检查标题', '只看前 3 页'].map(text => ({ kind: 'user', text })));
   });
 
+  it('sends the images picked with the message, and shows them in it; during a turn they wait', async () => {
+    const path = { filename: 'logo.png', mime_type: 'image/png', path: '/u/logo.png' };
+    gateway.answer('media.persist', { media_items: [{ type: 'image', ...path }] });
+    const controller = pane();
+    await controller.open();
+    await settle();
+    const logo = { filename: 'logo.png', mimeType: 'image/png', base64Data: 'QUJD' };
+
+    expect(await controller.send('', [logo])).toBe(true);
+    expect(gateway.sent('chat.send')).toEqual(
+      [expect.objectContaining({ content: '', files: { uploaded_images: [path] } })]);
+    expect(transcript(controller).at(-1)).toEqual(
+      { kind: 'user', text: '', images: [{ filename: 'logo.png', src: 'data:image/png;base64,QUJD' }] });
+
+    expect(controller.state().conversation.turn).toBe('running');
+    const shown = transcript(controller);
+    expect(await controller.send('照这个改', [logo])).toBe(false);
+    expect(gateway.sent('chat.interrupt')).toEqual([]);
+    expect(transcript(controller)).toEqual(shown);
+  });
+
   it('says why a message did not go out, takes it off the transcript and leaves the turn idle', async () => {
     gateway.answer('chat.send', new GatewayRequestError('连接已断开'));
     const controller = pane();

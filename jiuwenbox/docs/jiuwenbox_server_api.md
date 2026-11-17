@@ -118,13 +118,24 @@ JIUWENBOX_URL=unix:///tmp/jiuwenbox-sock/jiuwenbox.sock jiuwenbox health
 }
 ```
 
-部分代理接口使用 FastAPI 默认错误格式：
+未捕获异常返回：
+
+```json
+{
+  "error": "internal_server_error",
+  "detail": "..."
+}
+```
+
+部分接口（代理管理、`PUT /api/v1/timeout` 的字段校验、proxy-only 部署下的沙箱接口）使用 FastAPI 默认错误格式：
 
 ```json
 {
   "detail": "Proxy 'openai' not found"
 }
 ```
+
+policy 文件只配置了 `inference_privacy_proxies`、没有沙箱配置时，服务以 proxy-only 模式启动，沙箱接口返回 `503`，`detail` 说明沙箱子系统未启用。`/health` 与代理接口仍可用。
 
 ### 常见状态码
 
@@ -134,9 +145,11 @@ JIUWENBOX_URL=unix:///tmp/jiuwenbox-sock/jiuwenbox.sock jiuwenbox health
 | `201` | 资源创建成功 |
 | `204` | 请求成功，无响应体 |
 | `400` | 请求参数错误或 policy 校验失败 |
-| `404` | 沙箱、策略、文件、目录或代理不存在 |
-| `409` | 当前状态不允许执行该操作 |
+| `401` | 已启用 API token，但请求未携带或 token 不匹配 |
+| `404` | 沙箱、策略、文件、目录、后台任务或代理不存在 |
+| `409` | 当前状态不允许执行该操作，或 `sandbox_id` / `job_id` 冲突 |
 | `500` | 服务端内部错误 |
+| `503` | proxy-only 部署下调用了沙箱接口 |
 
 ## 通用数据结构
 
@@ -146,10 +159,11 @@ JIUWENBOX_URL=unix:///tmp/jiuwenbox-sock/jiuwenbox.sock jiuwenbox health
 | --- | --- | --- |
 | `id` | string | 沙箱 ID |
 | `phase` | string | 沙箱状态，取值为 `provisioning`、`ready`、`stopped`、`error`、`deleting` |
-| `runtime` | string | 当前固定为 `process` |
-| `pid` | integer/null | 沙箱生命周期进程 PID |
-| `created_at` | string | 创建时间 |
-| `started_at` | string/null | 启动时间 |
+| `runtime` | string | `process`（bubblewrap，创建时 `sandbox_runtime` 省略、空字符串或 `bwrap`）或 `conch` |
+| `pid` | integer/null | 沙箱生命周期进程 PID。`stopped` 时为 `null` |
+| `created_at` | string | 创建时间，本地墙上时钟，无时区偏移 |
+| `started_at` | string/null | 最近一次成功启动时间，同样是无偏移的本地时间 |
+| `last_active_at` | string/null | 最近一次活动时间，无偏移的本地时间。创建、启动、重启成功时写入；`exec`、`exec_background`、终止后台任务、上传、下载、列目录、搜索文件也会刷新。空闲回收（`GET/PUT /api/v1/timeout`）用它判断是否超时，缺失时回退到 `started_at`，再回退到 `created_at`。查询沙箱、列出或查询后台任务不会刷新 |
 | `error_message` | string/null | 错误信息 |
 | `env` | object | 创建沙箱时注入的环境变量 |
 | `ip_address` | string/null | 最近一次成功 create/start 后确认的 IPv4 快照。`network.mode=isolated` 时为沙箱 veth 地址；`host` 时为 jiuwenbox 与沙箱共享网络命名空间的出口 IPv4（若服务运行在 Docker/WSL 中，可能是容器或 WSL 地址，不承诺物理宿主机 LAN 地址）。`provisioning`、创建/启动失败的 `error` 为 `null`；`stopped` 保留停止前最后一次有效地址。get/list 不重新探测，只返回该快照 |
@@ -163,7 +177,8 @@ JIUWENBOX_URL=unix:///tmp/jiuwenbox-sock/jiuwenbox.sock jiuwenbox health
   "runtime": "process",
   "pid": 12345,
   "created_at": "2026-04-25T11:30:00.000000",
-  "started_at": "2026-04-25T11:30:01.000000+00:00",
+  "started_at": "2026-04-25T11:30:01.000000",
+  "last_active_at": "2026-04-25T11:30:01.000000",
   "error_message": null,
   "env": {
     "DEMO_KEY": "demo-value"
@@ -182,11 +197,16 @@ JIUWENBOX_URL=unix:///tmp/jiuwenbox-sock/jiuwenbox.sock jiuwenbox health
 
 ### 后台执行结果
 
+`POST .../exec_background` 的响应是返回时刻的快照。
+
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `started` | boolean | 后台进程是否创建成功 |
-| `pid` | integer/null | supervisor 进程 PID |
+| `job_id` | string/null | 任务 ID。失败时可能为 `null` |
+| `pid` | integer/null | 沙箱 PID 命名空间内的用户进程 PID |
 | `command` | string[] | 实际执行的命令 |
+| `running` | boolean/null | 返回时刻进程是否仍在运行 |
+| `exit_code` | integer/null | 返回时刻已退出时的退出码 |
 | `error_message` | string/null | 创建失败原因 |
 
 ### 健康检查结果
@@ -205,7 +225,9 @@ JIUWENBOX_URL=unix:///tmp/jiuwenbox-sock/jiuwenbox.sock jiuwenbox health
 
 接口：`GET /health`
 
-用途：检查服务是否存活，并返回运行时信息。
+用途：检查服务是否存活，并返回运行时信息。`sandboxes_active` 只统计 `phase=ready` 的沙箱；proxy-only 模式下为 `0`。
+
+设置环境变量 `JIUWENBOX_HEALTH_RESPONSE_BODY` 为非空字符串后，成功响应改为该字符串原文，`Content-Type: text/plain`，状态码仍是 `200`。空字符串视为未设置。认证和其它接口不受影响。
 
 Python 请求示例：
 
@@ -241,10 +263,11 @@ print(resp.json())
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `env` | object | 否 | 沙箱公共环境变量 |
+| `env` | object | 否 | 沙箱公共环境变量。键 `SANDBOX_IP` 由运行时保留，传入返回 `400` |
 | `policy` | object/null | 否 | 覆盖或追加的 policy 数据 |
 | `policy_mode` | string | 否 | `override` 或 `append`，默认 `override` |
-| `sandbox_id` | string/null | 否 | 可选，指定沙箱 ID。长度 4~16，仅允许小写字母、数字、减号（`-`）和下划线（`_`）。省略或空字符串时服务端自动生成（形如 `6011f5ca-76a`）。格式非法返回 400；与已有 ID 冲突返回 409 |
+| `sandbox_id` | string/null | 否 | 可选，指定沙箱 ID。长度 4~40，仅允许小写字母、数字、减号（`-`）和下划线（`_`）。省略或空字符串时服务端取 `uuid4` 前 12 个字符（形如 `6011f5ca-76a`）。格式非法返回 400；与已有 ID 冲突返回 409 |
+| `sandbox_runtime` | string/null | 否 | 省略、空字符串或 `bwrap` 时响应 `runtime` 为 `process`；`conch` 时为 `conch`。其它值返回 `400` |
 
 Python 请求示例：
 
@@ -275,7 +298,8 @@ print(resp.json())
   "runtime": "process",
   "pid": 12345,
   "created_at": "2026-04-25T11:30:00.000000",
-  "started_at": "2026-04-25T11:30:01.000000+00:00",
+  "started_at": "2026-04-25T11:30:01.000000",
+  "last_active_at": "2026-04-25T11:30:01.000000",
   "error_message": null,
   "env": {
     "DEMO_KEY": "demo-value"
@@ -310,7 +334,8 @@ print(resp.json())
     "runtime": "process",
     "pid": 12345,
     "created_at": "2026-04-25T11:30:00.000000",
-    "started_at": "2026-04-25T11:30:01.000000+00:00",
+    "started_at": "2026-04-25T11:30:01.000000",
+    "last_active_at": "2026-04-25T11:30:01.000000",
     "error_message": null,
     "env": {},
     "ip_address": "100.64.12.34"
@@ -344,7 +369,8 @@ print(resp.json())
   "runtime": "process",
   "pid": 12345,
   "created_at": "2026-04-25T11:30:00.000000",
-  "started_at": "2026-04-25T11:30:01.000000+00:00",
+  "started_at": "2026-04-25T11:30:01.000000",
+  "last_active_at": "2026-04-25T11:30:01.000000",
   "error_message": null,
   "env": {},
   "ip_address": "100.64.12.34"
@@ -399,7 +425,8 @@ print(resp.json())
   "runtime": "process",
   "pid": 12345,
   "created_at": "2026-04-25T11:30:00.000000",
-  "started_at": "2026-04-25T11:31:00.000000+00:00",
+  "started_at": "2026-04-25T11:31:00.000000",
+  "last_active_at": "2026-04-25T11:31:00.000000",
   "error_message": null,
   "env": {},
   "ip_address": "100.64.12.34"
@@ -410,7 +437,7 @@ print(resp.json())
 
 接口：`POST /api/v1/sandboxes/{sandbox_id}/stop`
 
-用途：停止沙箱。
+用途：停止进程沙箱（`runtime=process`）。`runtime=conch` 不支持 stop，返回 `409`；销毁用 `DELETE`，冷重建用 `POST .../restart`。停止后 `pid` 为 `null`，`ip_address` 与 `last_active_at` 保留停止前的值。
 
 Python 请求示例：
 
@@ -432,7 +459,8 @@ print(resp.json())
   "runtime": "process",
   "pid": null,
   "created_at": "2026-04-25T11:30:00.000000",
-  "started_at": "2026-04-25T11:31:00.000000+00:00",
+  "started_at": "2026-04-25T11:31:00.000000",
+  "last_active_at": "2026-04-25T11:31:00.000000",
   "error_message": null,
   "env": {},
   "ip_address": "100.64.12.34"
@@ -443,7 +471,7 @@ print(resp.json())
 
 接口：`POST /api/v1/sandboxes/{sandbox_id}/restart`
 
-用途：重启沙箱。
+用途：重启沙箱。进程沙箱先 stop 再 start。Conch 没有 stop，走删除后重建（冷重启），成功后刷新 `started_at`、`last_active_at` 和 `ip_address`。
 
 Python 请求示例：
 
@@ -465,7 +493,8 @@ print(resp.json())
   "runtime": "process",
   "pid": 22345,
   "created_at": "2026-04-25T11:30:00.000000",
-  "started_at": "2026-04-25T11:32:00.000000+00:00",
+  "started_at": "2026-04-25T11:32:00.000000",
+  "last_active_at": "2026-04-25T11:32:00.000000",
   "error_message": null,
   "env": {},
   "ip_address": "100.64.12.34"
@@ -484,7 +513,7 @@ print(resp.json())
 | --- | --- | --- | --- |
 | `command` | string[] | 是 | 待执行命令 |
 | `workdir` | string/null | 否 | 命令工作目录 |
-| `env` | object/null | 否 | 本次执行追加环境变量 |
+| `env` | object/null | 否 | 本次执行追加环境变量。键 `SANDBOX_IP` 保留，传入返回 `400` |
 | `stdin` | string/null | 否 | 标准输入文本 |
 | `timeout_seconds` | integer/null | 否 | 超时时间，单位秒 |
 
@@ -531,9 +560,9 @@ print(resp.json())
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `command` | string[] | 是 | 要执行的命令 argv |
-| `job_id` | string | 否 | 自定义 job id（4–16 位，`[0-9a-z_-]`）；省略则服务端自动生成 |
+| `job_id` | string | 否 | 自定义 job id（4–40 位，`[0-9a-z_-]`）；省略则服务端取 `uuid4` 前 12 个字符 |
 | `workdir` | string | 否 | 沙箱内工作目录 |
-| `env` | object | 否 | 额外环境变量 |
+| `env` | object | 否 | 额外环境变量。键 `SANDBOX_IP` 保留，传入返回 `400` |
 | `stdin` | string | 否 | 标准输入文本 |
 | `timeout_seconds` | int | 否 | 预留字段 |
 
@@ -646,7 +675,7 @@ jiuwenbox sandbox bg-kill my-sb http-srv --signal 9
 
 接口：`GET /api/v1/sandboxes/{sandbox_id}/logs`
 
-用途：读取沙箱审计日志。
+用途：读取该沙箱的审计 JSONL 原文（`text/plain`）。默认不落盘，响应体为空字符串；启动时传入 `--save-logs DIR` 或设置 `JIUWENBOX_SAVE_LOGS_DIR` 后，事件写入 `{sandbox_id}-{ts}.audit.log`。每行一个 JSON 对象，字段为 `timestamp`、`event_type`、`sandbox_id`、`details`。`event_type` 取值为 `sandbox_created`、`sandbox_started`、`sandbox_stopped`、`sandbox_deleted`、`policy_applied`、`exec_command`、`kill_background_job`、`file_transfer`。`exec_command` 在命令返回后写一行，`details` 含命令、退出码、截断后的 stdout/stderr 和耗时。
 
 Python 请求示例：
 
@@ -659,11 +688,11 @@ print(resp.status_code)
 print(resp.text)
 ```
 
-响应示例：
+响应示例（已开启 `--save-logs`）：
 
 ```text
-[2026-04-25T11:30:00.000000] sandbox_created
-[2026-04-25T11:30:01.000000] sandbox_started
+{"timestamp":"2026-04-25T11:30:00.000000","event_type":"sandbox_created","sandbox_id":"abc123def456","details":{}}
+{"timestamp":"2026-04-25T11:30:01.000000","event_type":"sandbox_started","sandbox_id":"abc123def456","details":{}}
 ```
 
 ### 上传文件
@@ -737,7 +766,7 @@ print(resp.content)
 
 接口：`GET /api/v1/sandboxes/{sandbox_id}/files`
 
-用途：列出沙箱目录下的文件和目录。
+用途：列出沙箱目录下的文件和目录。路径不存在返回 `404`；路径不是目录返回 `409`。目录项的 `size` 为 `0`，`type` 为 `null`；文件的 `type` 为扩展名（无扩展名时为 `null`）。结果按 `path` 排序。调用会刷新 `last_active_at`。
 
 查询参数：
 
@@ -791,7 +820,7 @@ print(resp.json())
 
 接口：`GET /api/v1/sandboxes/{sandbox_id}/search`
 
-用途：按 glob 模式搜索文件。
+用途：按 shell glob 搜索文件。路径不存在返回 `404`；路径不是目录返回 `409`。命中项 `is_directory` 固定为 `false`。`exclude_patterns` 可重复传多个 query 值。调用会刷新 `last_active_at`。
 
 查询参数：
 
@@ -838,6 +867,24 @@ print(resp.json())
 ```
 
 ## Policy 接口
+
+### 查询默认策略
+
+接口：`GET /api/v1/policies`
+
+用途：返回服务端当前默认 `SecurityPolicy`（JSON）。新沙箱在请求未带 `policy`、或 `policy_mode=append` 时，以此为基准合并。内容来自启动时加载的 YAML（存在 `update_policy.yaml` 时用它），以及之后 `PUT /api/v1/policies` 且 `update_default_policy=true` 的结果。
+
+Python 请求示例：
+
+```python
+import requests
+
+resp = requests.get("http://127.0.0.1:8321/api/v1/policies", timeout=30)
+print(resp.status_code)
+print(resp.json())
+```
+
+响应是完整策略对象，主要字段包括 `version`、`name`、`environment`、`filesystem_policy`、`process`、`namespace`、`capabilities`、`landlock`、`syscall`、`network`、`cgroup`、`timeout`、`conch`、`inference_privacy_proxies`。`network.mode` 默认 `isolated`。`timeout.idle_timeout` 为 `null` 时不回收空闲沙箱。
 
 ### 查询沙箱策略
 
@@ -1136,8 +1183,9 @@ print(resp.json())
 ```
 
 校验失败（如 `idle_check_interval <= 0`，或显式传入
-`idle_check_interval: null`）返回 `400 Bad Request`，body 中包含
-具体错误描述。
+`idle_check_interval: null`）返回 `400`，body 为 FastAPI 的
+`{"detail": "..."}`。`{"idle_timeout": null}` 会关闭回收，且不改
+`idle_check_interval`。
 
 ## 代理接口
 
@@ -1646,8 +1694,29 @@ curl -s -X POST http://127.0.0.1:8322/neo4j/db/neo4j/tx/commit \
   -d '{"statements":[{"statement":"RETURN 1 AS value"}]}'
 ```
 
+## MCP
+
+接口：`POST /mcp`（Streamable HTTP，挂在应用根路径，不在 `/api/v1` 下）
+
+用途：对外暴露一个工具 `sandbox_run_command`，在沙箱里执行命令。启用 `JIUWENBOX_API_TOKEN` 后同样要带 Bearer token。Host 校验默认允许 `localhost`、`localhost:8321`、`127.0.0.1`、`127.0.0.1:8321`；额外主机用逗号分隔写进 `JIUWENBOX_MCP_ALLOWED_HOSTS`。
+
+工具参数：
+
+| 字段 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `command` | string[] | 必填 | 空数组直接返回 `exit_code=-1`，不创建沙箱 |
+| `timeout_seconds` | integer | `10` | 小于 1 按 1 处理，大于 300 按 300 处理 |
+| `workdir` | string/null | `null` | 工作目录 |
+| `env` | object/null | `null` | 额外环境变量；未指定 `sandbox_id` 时也会作为新建沙箱的 `env` |
+| `stdin` | string/null | `null` | 标准输入 |
+| `sandbox_id` | string/null | `null` | 省略时新建临时沙箱 |
+| `keep_sandbox` | boolean | `false` | 仅对本次新建的沙箱有效；为 `false` 时执行结束后删除 |
+
+返回字段：`sandbox_id`、`exit_code`、`stdout`、`stderr`、`duration_ms`、`created_sandbox`、`deleted_sandbox`。执行抛错时 `exit_code` 为 `-1`，`stderr` 为异常文本；若沙箱是本次创建且 `keep_sandbox` 为 `false`，仍会尝试删除。
+
 ## 说明
 
-- `sandbox.exec` 和 `sandbox.exec_background` 中的 `workdir`、`env`、`timeout_seconds` 仍然有效。
+- `sandbox.exec` 和 `sandbox.exec_background` 中的 `workdir`、`env`、`timeout_seconds` 仍然有效。后台任务的 `timeout_seconds` 目前只是预留字段。
+- 创建、同步执行、后台执行的 `env` 都不能包含 `SANDBOX_IP`。policy 的 `environment` 同样拒绝这个键。
 - CLI 后台任务命令：`sandbox bg-exec`、`sandbox bg-get`、`sandbox bg-list`、`sandbox bg-kill`（除 `sandbox exec` 外，CLI 默认输出 JSON）
-- 文档示例中的时间、PID、ID 仅为示意。
+- 文档示例中的时间、PID、ID 仅为示意。时间字段中，沙箱引用的 `created_at` / `started_at` / `last_active_at` 是无时区偏移的本地时间。

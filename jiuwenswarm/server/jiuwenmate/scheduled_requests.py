@@ -29,7 +29,7 @@ from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WORKSPACE_READ,
 from jiuwenswarm.server.jiuwenmate.session_scheduler import SessionScheduler
 from jiuwenswarm.server.jiuwenmate.spec_provider import ConfigSnapshot
 from jiuwenswarm.server.jiuwenmate.sqlite_store import SQLiteStore
-from jiuwenswarm.server.jiuwenmate.web_conversations import WebConversationStore
+from jiuwenswarm.server.jiuwenmate.web_conversations import APPROVAL_CONVERSATION, WebConversationStore
 
 CATCH_UP_LIMIT = 48
 DEFAULT_TIMEZONE = "Asia/Shanghai"
@@ -381,15 +381,25 @@ class ScheduleService:
         )
 
     def _window_id(self, namespace_id: str, agent_id: str) -> str:
-        """The colleague's current chat: a pinned one, otherwise the latest, otherwise a stable new id."""
-        listed = self._chats.list(namespace_id, agent_id)
+        """Choose the latest ordinary private chat by activity, independently of pin state."""
+        listed = [
+            conversation for conversation in self._chats.list(namespace_id, agent_id)
+            if conversation.conversation_id != APPROVAL_CONVERSATION
+        ]
         if listed:
-            return listed[0].conversation_id
+            latest = max(listed, key=lambda conversation: (conversation.updated_at, conversation.created_at))
+            return latest.conversation_id
         return employee_conversation_id(agent_id)
 
     def _open_chat(self, plan: ScheduledPlan, now: datetime) -> ConversationRef:
         """List the colleague's chat and return it so the reminder is visible in that window."""
         conversation_id = self._window_id(plan.namespace_id, plan.agent_id)
+        try:
+            self._chats.require_open(plan.namespace_id, plan.agent_id, conversation_id)
+        except PersistentAgentError as exc:
+            if exc.code != "NOT_FOUND":
+                raise
+            conversation_id = uuid.uuid4().hex
         self._chats.touch(
             plan.namespace_id,
             plan.agent_id,

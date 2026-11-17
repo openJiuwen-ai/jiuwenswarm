@@ -28,6 +28,9 @@ class _IdleSession:
     def _uses_smart_permission_lifecycle(self, _config_base=None) -> bool:
         return False
 
+    def _is_session_live(self, _session_id: str) -> bool:
+        return False
+
 
 def _parent_with_pending(enabled: bool) -> JiuWenSwarmDeepAdapter:
     parent = JiuWenSwarmDeepAdapter()

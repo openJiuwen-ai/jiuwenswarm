@@ -11,6 +11,7 @@ from openjiuwen.core.foundation.llm.schema.message import (
 
 from jiuwenswarm.server.runtime.session import session_history
 from jiuwenswarm.server.runtime.session.history_replay import (
+    HistoryReplayCursor,
     HistoryReplayError,
     read_history_replay,
 )
@@ -64,11 +65,18 @@ async def sync_conversation_context(agent, session_id):
 
 async def _sync_conversation_context(agent, session_id, context, react):
     cursor = getattr(context, "duplex_history_cursor", None)
+    if not isinstance(cursor, HistoryReplayCursor):
+        # 与 context_snapshot_lock 同款防御：context 上混入的陌生游标
+        # （如测试替身的魔术属性）按"无游标"处理——全量重读，而不是误判
+        # history 已变更而拒绝整条请求。
+        cursor = None
     batch = await _load_voice_batch(session_id, cursor)
     records = batch.records
     # Retain consumed IDs even if Core compacts its message window.
     seen = getattr(context, "duplex_history_ids", None)
-    if seen is None:
+    if not isinstance(seen, set):
+        # 与上游标守卫同源：context 上混入的陌生去重集合（如测试替身的
+        # 魔法属性、外部写入的 dict）按"未建集合"处理，从当前消息窗口重建。
         seen = {
             (getattr(message, "metadata", None) or {}).get(HISTORY_ID)
             for message in context.get_messages()
