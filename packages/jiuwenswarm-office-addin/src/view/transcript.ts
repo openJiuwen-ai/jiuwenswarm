@@ -242,7 +242,11 @@ function actionButton(name: IconName, label: string, key: string, onclick: () =>
 function entryNode(entry: Exclude<Entry, Step | { kind: 'changes' }>, streaming: boolean): HTMLElement {
   switch (entry.kind) {
     case 'user':
-      return h('div', { class: 'entry entry-user' }, h('div', { class: 'bubble' }, entry.text));
+      return h('div', { class: 'entry entry-user' },
+        entry.images ? h('div', { class: 'user-images' }, ...entry.images.map(({ filename, src }) => (src
+          ? h('img', { class: 'user-image', src, alt: filename })
+          : h('span', { class: 'chip', title: filename }, icon('image'), filename)))) : null,
+        entry.text ? h('div', { class: 'bubble' }, entry.text) : null);
     case 'assistant':
       return h('div', { class: `entry entry-assistant${streaming ? ' is-streaming' : ''}` },
         h('div', { class: 'reply' }, ...renderMarkdown(entry.text)));

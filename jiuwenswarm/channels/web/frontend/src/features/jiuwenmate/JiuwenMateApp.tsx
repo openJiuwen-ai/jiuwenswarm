@@ -83,12 +83,17 @@ import type {
 } from './types';
 import { useGroupDirectory } from '../groupChat/useGroupDirectory';
 import { useModelRefreshStatus } from '../settings/modules/models/useModelRefreshStatus';
-import { requestSettingsModule, SETTINGS_MODULE_NAVIGATION_EVENT, type SettingsModuleTarget } from '../settings/settingsNavigation';
+import {
+  requestSettingsModule,
+  SETTINGS_MODULE_NAVIGATION_EVENT,
+  type SettingsModuleTarget,
+  type SettingsNavigationTarget,
+} from '../settings/settingsNavigation';
 import './jiuwenmate.css';
 
 export interface JiuwenMateAppProps {
   onExit: () => void;
-  renderExistingPage: (nav: JiuwenMateExistingPage, initialSettingsModuleId?: SettingsModuleTarget) => ReactNode;
+  renderExistingPage: (nav: JiuwenMateExistingPage, settingsNavigation?: SettingsNavigationTarget) => ReactNode;
   confirmDiscardSettings?: () => boolean;
   /** Plaza "use" on an installed expert opens the employee creation page for that package. */
   useInstalledExpertRef?: MutableRefObject<(packageName: string) => void>;
@@ -159,7 +164,7 @@ export function JiuwenMateApp({
   const [modelCatalog, setModelCatalog] = useState<JiuwenMateModelCatalog>(EMPTY_MODEL_CATALOG);
   const [activeRailView, setActiveRailView] = useState<JiuwenMateRailView>('office');
   const [existingPage, setExistingPage] = useState<JiuwenMateExistingPage | null>(null);
-  const [requestedSettingsModuleId, setRequestedSettingsModuleId] = useState<SettingsModuleTarget>();
+  const [requestedSettingsNavigation, setRequestedSettingsNavigation] = useState<SettingsNavigationTarget>();
   const [installedExperts, setInstalledExperts] = useState<readonly JiuwenMateTemplate[]>([]);
   const visibleInstalledExperts = useMemo(
     () =>
@@ -428,19 +433,19 @@ export function JiuwenMateApp({
   };
 
   const handleOpenExistingPage = useCallback(
-    (nav: JiuwenMateExistingPage, labelKey: string, settingsModuleId?: SettingsModuleTarget) => {
+    (nav: JiuwenMateExistingPage, labelKey: string, settingsTarget?: SettingsModuleTarget | SettingsNavigationTarget) => {
       if (!canLeaveSettings(nav)) return;
       setExistingPage(nav);
       setPublicLabel(labelKey);
-      setRequestedSettingsModuleId(settingsModuleId);
+      setRequestedSettingsNavigation(typeof settingsTarget === 'string' ? { moduleId: settingsTarget } : settingsTarget);
     },
     [canLeaveSettings],
   );
 
   useEffect(() => {
     const handler = (event: Event) => {
-      const moduleId = (event as CustomEvent<SettingsModuleTarget>).detail;
-      handleOpenExistingPage('settings', 'jiuwenmate.nav.settings', moduleId);
+      const target = (event as CustomEvent<SettingsModuleTarget | SettingsNavigationTarget>).detail;
+      handleOpenExistingPage('settings', 'jiuwenmate.nav.settings', target);
     };
     window.addEventListener(SETTINGS_MODULE_NAVIGATION_EVENT, handler);
     return () => window.removeEventListener(SETTINGS_MODULE_NAVIGATION_EVENT, handler);
@@ -1071,7 +1076,7 @@ export function JiuwenMateApp({
       >
         {existingPage ? (
           <div className="jiuwenmate-reused-page" data-testid="jiuwenmate-reused-page" data-variant={existingPage}>
-            {renderExistingPage(existingPage, requestedSettingsModuleId)}
+            {renderExistingPage(existingPage, requestedSettingsNavigation)}
           </div>
         ) : (
           renderFeature()

@@ -10,7 +10,7 @@ import { GatewayClient } from './gatewayClient';
 import { HostWriteQueue } from './hostWriteQueue';
 import { followOfficeTheme } from './officeTheme';
 import { TaskPaneController } from './paneController';
-import { SessionFacade } from './sessionFacade';
+import { type ClientState, SessionFacade } from './sessionFacade';
 import type { SlideSnapshots } from './slideSnapshots';
 import { mountPane } from './view/paneView';
 
@@ -23,10 +23,12 @@ export interface HostContext {
   displayName: () => Promise<string>;
 }
 
-/** The host's tools, and the undo of its turns where the host has one. */
+/** The host's tools, the undo of its turns and the document's state for each message, where the host has them. */
 export interface HostTools {
   runtime: ClientToolRuntime;
   snapshots?: SlideSnapshots;
+  /** The state a message to conversation ``sessionId`` carries. */
+  clientState?: (sessionId: string) => Promise<ClientState>;
 }
 
 export function startPane(app: OfficeApp, tools: (context: HostContext) => HostTools): void {
@@ -41,9 +43,9 @@ export function startPane(app: OfficeApp, tools: (context: HostContext) => HostT
       worker: typeof Worker === 'function',
     };
     const writes = new HostWriteQueue();
-    const { runtime, snapshots } = tools({ office, host, writes, displayName });
+    const { runtime, snapshots, clientState } = tools({ office, host, writes, displayName });
     const gateway = new GatewayClient(app.appId);
-    const sessions = new SessionFacade(gateway, app.clientApp);
+    const sessions = new SessionFacade(gateway, app.clientApp, clientState);
     const attachment = new ClientAttachment({
       gateway,
       executor: new ClientToolDispatcher(app, runtime, writes),

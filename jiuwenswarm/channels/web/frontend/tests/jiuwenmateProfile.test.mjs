@@ -52,6 +52,64 @@ const feishuConnection = { channel: 'feishu', connectionKey: 'cli-app', agentId:
 
 const noop = () => undefined;
 
+test('settings navigation preserves module and tab targets and honors the discard guard', async (t) => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
+  const { window: previousWindow, document: previousDocument, IS_REACT_ACT_ENVIRONMENT: previousAct } = globalThis;
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  t.mock.method(webClient, 'request', async (method) => {
+    if (method === 'group.list') return { groups: [], total: 0 };
+    if (method === 'jiuwenmate.colleague.list') return { colleagues: [] };
+    return {};
+  });
+  const root = createRoot(document.getElementById('root'));
+  let renderedPage;
+  let allowDiscard = false;
+  const confirmDiscardSettings = t.mock.fn(() => allowDiscard);
+  const navigate = async (detail) => {
+    await act(async () => window.dispatchEvent(new dom.window.CustomEvent('jiuwen:settings-module', { detail })));
+  };
+  const clickRail = async (label) => {
+    const button = document.querySelector(`[data-testid="jiuwenmate-rail-existing-item"][data-variant="${label}"]`);
+    assert.ok(button);
+    await act(async () => button.click());
+  };
+  try {
+    await act(async () => root.render(React.createElement(JiuwenMateApp, {
+      onExit: noop,
+      confirmDiscardSettings,
+      renderExistingPage: (nav, target) => {
+        renderedPage = { nav, target };
+        return null;
+      },
+    })));
+    await navigate('agent');
+    assert.deepEqual(renderedPage, { nav: 'settings', target: { moduleId: 'agent' } });
+    const multimodalTarget = { moduleId: 'models', tabId: 'multimodal' };
+    await navigate(multimodalTarget);
+    assert.deepEqual(renderedPage, { nav: 'settings', target: multimodalTarget });
+    assert.equal(confirmDiscardSettings.mock.callCount(), 0);
+
+    await clickRail('jiuwenmate.nav.skills');
+    assert.equal(confirmDiscardSettings.mock.callCount(), 1);
+    assert.deepEqual(renderedPage, { nav: 'settings', target: multimodalTarget });
+    allowDiscard = true;
+    await clickRail('jiuwenmate.nav.skills');
+    assert.equal(confirmDiscardSettings.mock.callCount(), 2);
+    assert.deepEqual(renderedPage, { nav: 'skills', target: undefined });
+    await clickRail('jiuwenmate.nav.settings');
+    assert.deepEqual(renderedPage, { nav: 'settings', target: undefined });
+  } finally {
+    await act(async () => root.unmount());
+    dom.window.close();
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    globalThis.IS_REACT_ACT_ENVIRONMENT = previousAct;
+  }
+});
+
 for (const { language, expectedMessage, rejects } of [
   { language: 'zh', expectedMessage: '解除连接成功' },
   { language: 'en', expectedMessage: 'Disconnected' },

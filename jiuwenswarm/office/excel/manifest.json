@@ -3,7 +3,10 @@
   "name": "office-excel",
   "description": "Spreadsheet analyst working in the user's open Excel workbook.",
   "persona": {"dir": "persona"},
-  "rails": [{"file": "rails/office_tools.py", "class": "OfficeToolsRail"}],
+  "rails": [
+    {"file": "rails/office_tools.py", "class": "OfficeToolsRail"},
+    {"file": "rails/reminders.py", "class": "ExcelReminderRail"}
+  ],
   "skills": [
     "skills/financial-modeling",
     "skills/charts",

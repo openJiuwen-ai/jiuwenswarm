@@ -52,6 +52,8 @@ class EffectiveEnterpriseConfig:
     mcp: list[dict[str, Any]] | None = None
     permissions: list[dict[str, Any]] | None = None
     a2a_access_policy: list[dict[str, Any]] | None = None
+    # Gateway advanced_config 表行（按 agent_template_id）；含 a4p_enabled 等。
+    advanced_config: dict[str, Any] | None = None
     service_id: str | None = None
     send_file_allowed: bool = True
     debug: dict[str, Any] = field(default_factory=dict)
@@ -71,6 +73,7 @@ class EffectiveEnterpriseConfig:
             "mcp": self.mcp,
             "permissions": self.permissions,
             "a2a_access_policy": self.a2a_access_policy,
+            "advanced_config": self.advanced_config,
             "service_id": self.service_id,
             "send_file_allowed": self.send_file_allowed,
             "debug": dict(self.debug),
