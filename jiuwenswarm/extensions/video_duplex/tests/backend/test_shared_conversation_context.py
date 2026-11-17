@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -40,9 +40,43 @@ async def test_voice_history_never_reads_unflushed_records(monkeypatch):
     monkeypatch.setattr(sync.session_history, "flush_pending_writes", lambda **_: False)
     read = AsyncMock()
     monkeypatch.setattr(sync.session_history, "load_history_records", read)
-    with pytest.raises(RuntimeError, match="still saving"):
+    with pytest.raises(sync.VoiceHistoryBusyError, match="still saving"):
         await sync.load_voice_history("chat")
     read.assert_not_called()
+
+
+async def test_dispatch_skips_voice_import_while_history_is_saving(monkeypatch):
+    messages = [UserMessage(content="typed question")]
+    context = SimpleNamespace(get_messages=lambda: messages, add_messages=AsyncMock())
+    agent = SimpleNamespace(react_agent=SimpleNamespace(
+        context_engine=SimpleNamespace(get_context=lambda **_: context, save_contexts=AsyncMock())),
+        _interaction_session=SimpleNamespace(get_session_id=lambda: "web-chat"))
+    monkeypatch.setattr(sync.session_history, "flush_pending_writes", lambda **_: False)
+    read = Mock()
+    monkeypatch.setattr(sync, "read_history_replay", read)
+
+    await sync.sync_conversation_context(agent, "web-chat")
+
+    read.assert_not_called()
+    context.add_messages.assert_not_awaited()
+    assert getattr(context, "duplex_history_cursor", None) is None
+
+
+async def test_design_voice_context_skips_import_while_history_is_saving(monkeypatch):
+    from jiuwenswarm.extensions.video_duplex.backend import conversation_context
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.design_execution import add_voice_context
+    from jiuwenswarm.server.runtime.agent_adapter.user_turn import TEAM_USER_TURN_KEY, UserTurn
+
+    async def busy(_session_id):
+        raise conversation_context.VoiceHistoryBusyError("Voice history is still saving; retry the request")
+
+    monkeypatch.setattr(conversation_context, "load_voice_history", busy)
+    turn = UserTurn(text="draw a login page", channel="video_tool", language="zh", files={})
+    inputs = {TEAM_USER_TURN_KEY: turn}
+
+    await add_voice_context(SimpleNamespace(session_id="chat", params={}), inputs)
+
+    assert inputs[TEAM_USER_TURN_KEY] is turn
 
 
 def test_saved_chat_tasks_share_session_but_have_distinct_execution_ids():

@@ -33,13 +33,17 @@ async def add_voice_context(request, inputs):
     if request.params.get("answers"):
         return
     from jiuwenswarm.server.runtime.agent_adapter.user_turn import TEAM_USER_TURN_KEY, UserTurn
-    from ..conversation_context import load_voice_history
+    from ..conversation_context import VoiceHistoryBusyError, load_voice_history
     from ..realtime_context import RESTORE_INSTRUCTIONS
 
     turn = inputs.get(TEAM_USER_TURN_KEY)
     if not isinstance(turn, UserTurn) or not isinstance(turn.text, str):
         return
-    records = await load_voice_history(request.session_id)
+    try:
+        records = await load_voice_history(request.session_id)
+    except VoiceHistoryBusyError:
+        # Recent speech is background only; a busy history writer just skips it.
+        return
     recent = [{"role": item["role"], "text": str(item.get("content") or "")[:1000]}
               for item in records][-6:]
     if recent:
