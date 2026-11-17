@@ -317,9 +317,10 @@ class SessionInputGuard(AgentRail):
         session = getattr(ctx, "session", None)
         context = getattr(ctx, "context", None)
         active_round = getattr(self.owner, "active_round", None)
+        if session is None or context is None or active_round is None:
+            return
         if (
-            session is None or context is None or active_round is None
-            or getattr(ctx, "agent", None) is not getattr(self.owner, "react_agent", None)
+            getattr(ctx, "agent", None) is not getattr(self.owner, "react_agent", None)
             or session is not getattr(self.owner, "loop_session", None)
         ):
             return
@@ -329,12 +330,15 @@ class SessionInputGuard(AgentRail):
             if getattr(work, "kind", None) == "user":
                 request_ids.append(getattr(work, "request_id", None))
         elif ctx.inputs.source == "steering":
-            request_ids.extend(
-                part.request_id for part in parts
-                if isinstance(part, QueuedSessionInput)
-                and part.boundary_ready.is_set() and part.boundary_error is None
-                and part.delivery_round is active_round
-            )
+            for part in parts:
+                if not isinstance(part, QueuedSessionInput):
+                    continue
+                if (
+                    not part.boundary_ready.is_set() or part.boundary_error is not None
+                    or part.delivery_round is not active_round
+                ):
+                    continue
+                request_ids.append(part.request_id)
         consumed = {
             value for value in request_ids
             if isinstance(value, str) and value.strip() and len(value) <= 256
@@ -613,12 +617,15 @@ class SessionInputGuard(AgentRail):
             getattr(ctx, "agent", None) is not getattr(self.owner, "react_agent", None)
             or getattr(ctx, "session", None) is None
             or ctx.session is not getattr(self.owner, "loop_session", None)
-            or getattr(work, "kind", None) != "user"
-            or not isinstance(query, InteractiveInput) or query.raw_inputs is not None
-            or not (query.user_inputs or query.interrupt_answers)
-            or not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 256
-            or not isinstance(ctx.inputs, ToolCallInputs)
         ):
+            return
+        if getattr(work, "kind", None) != "user" or not isinstance(query, InteractiveInput):
+            return
+        if query.raw_inputs is not None or not (query.user_inputs or query.interrupt_answers):
+            return
+        if not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 256:
+            return
+        if not isinstance(ctx.inputs, ToolCallInputs):
             return
         message = resolve_tool_message(ctx.inputs, getattr(ctx, "exception", None))
         call_id = getattr(ctx.inputs.tool_call, "id", None)
