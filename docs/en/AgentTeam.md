@@ -305,6 +305,7 @@ A few things to know:
 
 - Only installed experts can be used; nothing is downloaded during a conversation.
 - When the session is bound to an expert group, the Leader can spawn more instances of a group member (for example `clip-2` next to `clip`); they are identical to the member the team started with, even if the package is upgraded later.
+- When installing a third-party expert imported from a file, set `runtime.provider_name` in `manifest.json` to `claudecode` or `codex`.
 - An expert that runs on an external CLI (Claude Code / Codex) needs that CLI enabled for teams, just like other external CLI members.
 - A spawned expert keeps the version it was spawned with: upgrading or uninstalling the package later does not change members already in the team.
 

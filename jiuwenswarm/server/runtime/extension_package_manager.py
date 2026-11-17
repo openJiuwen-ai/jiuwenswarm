@@ -97,9 +97,8 @@ _AGENT_TEMPLATE_KIND = "agent_templates"
 _AGENT_GROUP_KIND = "agent_groups"
 _PLUGIN_PACKAGE_KIND = "plugin_packages"
 _HUB_PREVIEW_ARCHIVE_LIMIT = 8
-_EXTERNAL_HARNESS_PROVIDERS = frozenset({"claudecode", "codex", "dsh"})
+_EXTERNAL_HARNESS_PROVIDERS = frozenset({"claudecode", "codex"})
 _EXTERNAL_HARNESS_UNSUPPORTED_FIELDS = ("tools", "rails", "subagents")
-_FORM_HARNESS_PROVIDERS = frozenset({"claudecode", "codex"})
 _EXTERNAL_HARNESS_TAG = {"zh": "三方Harness", "en": "External Harness"}
 
 
@@ -1888,8 +1887,8 @@ def _require_form_runtime(params: dict) -> dict[str, Any] | None:
     if not isinstance(runtime, dict):
         raise ValueError("missing or invalid runtime")
     provider_name = runtime.get("provider_name")
-    if provider_name not in _FORM_HARNESS_PROVIDERS:
-        allowed = ", ".join(sorted(_FORM_HARNESS_PROVIDERS))
+    if provider_name not in _EXTERNAL_HARNESS_PROVIDERS:
+        allowed = ", ".join(sorted(_EXTERNAL_HARNESS_PROVIDERS))
         raise ValueError(
             f"runtime.provider_name must be one of: {allowed}; got {provider_name!r}"
         )
