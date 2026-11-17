@@ -852,3 +852,55 @@ async def test_moa_rail_emits_transient_reference_and_verification_status(moa_co
         assert all(statuses == ["started", "completed"] for statuses in by_operation.values())
     finally:
         await runtime.aclose()
+
+
+def test_moa_members_carry_the_caller_session_scope(moa_config):
+    from jiuwenswarm.common.opencode_go import (
+        OPENCODE_GO_SESSION_HEADER,
+        derive_session_id,
+    )
+
+    for entry in moa_config["models"]["defaults"]:
+        entry["model_client_config"]["vendor_key"] = "opencode-go"
+
+    _, group, _ = resolve_moa_settings(moa_config, SELECTION, scope="session:moa-1")
+
+    expected = derive_session_id("session:moa-1")
+    assert group.routes
+    assert all(
+        route.model.client_options["custom_headers"][OPENCODE_GO_SESSION_HEADER]
+        == expected
+        for route in group.routes
+    )
+
+
+def test_fingerprint_ignores_the_request_scope(moa_config):
+    """A scoped build and the unscoped per-turn re-validation must agree.
+
+    ``resolve_moa_settings`` is called with a scope when the adapter builds the
+    runtime and without one on every later turn (and by ``moa_status`` /
+    ``session_provisioner``). The session header is a per-request value, so if
+    it entered the fingerprint the adapter's comparison would differ on every
+    turn and rebuild the whole group each time.
+    """
+    for entry in moa_config["models"]["defaults"]:
+        entry["model_client_config"]["vendor_key"] = "opencode-go"
+
+    scoped = resolve_moa_settings(moa_config, SELECTION, scope="session:moa-1")
+    unscoped = resolve_moa_settings(moa_config, SELECTION)
+    other_scope = resolve_moa_settings(moa_config, SELECTION, scope="session:moa-2")
+
+    assert scoped[2] == unscoped[2] == other_scope[2]
+    # The header itself still differs per scope: only the hash is scope-free.
+    from jiuwenswarm.common.opencode_go import derive_session_id
+
+    first_headers = [
+        group.routes[0].model.client_options["custom_headers"][
+            "x-opencode-session"
+        ]
+        for _, group, _ in (scoped, other_scope)
+    ]
+    assert first_headers == [
+        derive_session_id("session:moa-1"),
+        derive_session_id("session:moa-2"),
+    ]
