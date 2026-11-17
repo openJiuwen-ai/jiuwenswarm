@@ -63,6 +63,74 @@ export function memberNameOfSubjectId(subjectId: string): string | null {
   return memberName === '' ? null : memberName;
 }
 
+/** Swarmflow worker identity as the team member events carry it. */
+export interface SwarmflowWorkerIdentity {
+  /** Engine member id: `wf_<runid>:<call key JSON>`. */
+  memberId: string;
+  /** The engine label the worker's member name was minted from. */
+  name: string;
+}
+
+/**
+ * Swarmflow worker identities among session team members: entries whose
+ * member id carries the engine's `wf_<runid>:<call key>` shape.
+ */
+export function swarmflowIdentitiesOfMembers(
+  members: readonly { member_id: string; name?: string }[],
+): SwarmflowWorkerIdentity[] {
+  const identities: SwarmflowWorkerIdentity[] = [];
+  for (const member of members) {
+    if (parseEngineSwarmflowMemberId(member.member_id) === null) continue;
+    identities.push({ memberId: member.member_id, name: member.name ?? '' });
+  }
+  return identities;
+}
+
+/** Split a `wf_<runid>:<call key>` member id into its two parts. */
+export function parseEngineSwarmflowMemberId(
+  memberId: string,
+): { runId: string; callKey: string } | null {
+  if (!memberId.startsWith('wf_')) return null;
+  const colon = memberId.indexOf(':');
+  if (colon === -1) return null;
+  const runId = memberId.slice(0, colon);
+  const callKey = memberId.slice(colon + 1);
+  if (runId === '' || callKey === '') return null;
+  return { runId, callKey };
+}
+
+/**
+ * The worker member name the backend mints for an engine identity:
+ * ``{slug(run_id)}-{slug(label)}-{ident}`` (TeamWorkerBackend._next_member_name,
+ * where ``ident = sha256(call_key)[:12]``). The label slug mirrors the backend's
+ * `_SLUG_RE` rules, which `slugifyRunId` already implements.
+ */
+export function swarmflowWorkerMemberName(
+  runId: string,
+  label: string,
+  ident: string,
+): string {
+  const labelSlug = slugifyRunId(label) || 'worker';
+  return `${slugifyRunId(runId)}-${labelSlug}-${ident}`;
+}
+
+/**
+ * The hover "full name" of a lane: the worker's engine member id
+ * (``wf_<runid>:[["par", 0, 0], ["call", 0]]`` — which branch and call the
+ * operator is) once its worker member name is known, else the plain worker
+ * member name; `null` for non-worker subjects so the caller keeps the label.
+ */
+export function swarmflowLaneFullName(
+  lane: TeamMemberLaneModel,
+  memberIdByWorkerName: ReadonlyMap<string, string>,
+): string | null {
+  const memberName = memberNameOfSubjectId(lane.subjectId);
+  if (memberName === null) return null;
+  const engineMemberId = memberIdByWorkerName.get(memberName);
+  if (engineMemberId !== undefined) return engineMemberId;
+  return UNTRACKED_RUN_PATTERN.test(memberName) ? memberName : null;
+}
+
 /** Map one `WorkflowStatus` onto the lane status dot vocabulary. */
 export function workflowRunLaneStatus(status: string | undefined): TeamMemberLaneStatus {
   if (typeof status !== 'string') return 'idle';

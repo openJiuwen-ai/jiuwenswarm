@@ -71,6 +71,14 @@ test('trajectory host relies on native sidebar controls', () => {
     new URL('../src/features/trajectory/TrajectoryAnalysisToolbar.tsx', import.meta.url),
     'utf8',
   );
+  const analysisToolbarStyles = readFileSync(
+    new URL('../src/features/trajectory/TrajectoryAnalysisToolbar.module.css', import.meta.url),
+    'utf8',
+  );
+  const analysisPageStyles = readFileSync(
+    new URL('../src/features/trajectory/TrajectoryAnalysisPage.module.css', import.meta.url),
+    'utf8',
+  );
   assert.match(panelSource, /data-testid="trajectory-archive-import"/);
   assert.match(panelSource, /data-testid="trajectory-archive-export"/);
   assert.match(analysisToolbarSource, /data-testid="trajectory-archive-import"/);
@@ -78,6 +86,21 @@ test('trajectory host relies on native sidebar controls', () => {
   assert.doesNotMatch(panelSource, /preferBrowserFilePicker/);
   assert.match(panelSource, /data-testid="trajectory-archive-exit"/);
   assert.match(analysisToolbarSource, /data-testid="trajectory-archive-exit"/);
+  // Dropdown labels never wrap; squeezed panes wrap the toolbar instead of
+  // clipping its controls out of sight.
+  assert.match(
+    analysisToolbarStyles,
+    /\.menuButton\s*\{[\s\S]*?flex: none[\s\S]*?white-space: nowrap/,
+  );
+  assert.match(analysisToolbarStyles, /\.menu,\s*\.folds\s*\{[\s\S]*?flex: none/);
+  assert.match(analysisToolbarStyles, /\.root\s*\{[\s\S]*?flex-wrap: wrap/);
+  // The header summary stays one ellipsized line and the tab bar wraps under
+  // squeeze.
+  assert.match(
+    analysisPageStyles,
+    /\.summary\s*\{[\s\S]*?text-overflow: ellipsis[\s\S]*?white-space: nowrap/,
+  );
+  assert.match(analysisPageStyles, /\.tabBar\s*\{[\s\S]*?flex-wrap: wrap/);
   assert.doesNotMatch(panelSource, /if \(!active \|\| sessionId === 'new'/);
   assert.match(panelSource, /'harness\.session_finished'/);
   assert.match(panelSource, /subjectGroups\.groups\.map/);
@@ -118,10 +141,18 @@ test('trajectory host relies on native sidebar controls', () => {
     teamWorkspaceSource,
     /const selected = group\.lanes\.some\([\s\S]*?css\.workflowGroupSelected/,
   );
-  assert.match(teamWorkspaceStyles, /\.workflowGroupSelected\s*\{[\s\S]*?height: 100%[\s\S]*?flex: 0 0 100%/);
   assert.match(
     teamWorkspaceStyles,
-    /\.workflowGroupSelected \.workflowGroupLanes\s*\{[\s\S]*?min-height: 0[\s\S]*?flex: 1 1 0/,
+    /\.workflowGroupSelected \.laneRowExpanded\s*\{[\s\S]*?height: clamp\(360px, 52vh, 420px\)[\s\S]*?flex: 0 0 clamp\(360px, 52vh, 420px\)/,
+  );
+  // The selected group must size to its content: a 100%-pinned group spills its
+  // sibling operator lanes onto the next workflow group's header.
+  assert.doesNotMatch(teamWorkspaceStyles, /\.workflowGroupSelected\s*\{[\s\S]*?flex: 0 0 100%/);
+  // Folding a group closes the trajectory drawer opened inside it, so the
+  // header toggle keeps working while a lane is selected.
+  assert.match(
+    teamWorkspaceSource,
+    /const next = !expanded;\s*if \(!next && selected\) onSelectSubject\(null\);/,
   );
   assert.match(teamWorkspaceSource, /lanesElement\.scrollTop \+= rowBounds\.top - lanesBounds\.top/);
   assert.match(chatPanelSource, /export const ChatPanel = React\.memo/);

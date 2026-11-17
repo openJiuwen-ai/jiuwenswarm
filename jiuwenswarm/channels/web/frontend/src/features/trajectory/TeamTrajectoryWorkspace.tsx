@@ -3,6 +3,7 @@
 import {
   memo,
   useCallback,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -20,6 +21,10 @@ import {
 } from './teamTrajectoryLanes';
 import {
   groupTeamMemberLanesByWorkflowRun,
+  parseEngineSwarmflowMemberId,
+  swarmflowLaneFullName,
+  swarmflowWorkerMemberName,
+  type SwarmflowWorkerIdentity,
   type WorkflowRunLaneSummary,
 } from './teamTrajectoryWorkflowGroups';
 import {
@@ -55,6 +60,13 @@ export interface TeamTrajectoryWorkspaceProps {
    * `wf-<12hex>` member-name pattern.
    */
   workflowRuns?: readonly WorkflowRunLaneSummary[];
+  /**
+   * Swarmflow worker identities from the session's team member events. A lane
+   * whose worker member name matches one gets its engine member id
+   * (`wf_<runid>:[["par", 0, 0], ["call", 0]]`) as the hover full name, so
+   * same-label operators stay distinguishable.
+   */
+  swarmflowMembers?: readonly SwarmflowWorkerIdentity[];
   /** Currently expanded member subject id, or `null` when every lane is collapsed. */
   selectedSubjectId: string | null;
   onSelectSubject: (subjectId: string | null) => void;
@@ -95,6 +107,22 @@ export interface TeamTrajectoryWorkspaceProps {
     /** Checked agents that currently own a time window. */
     isHighlighted?: (subjectId: string) => boolean;
   };
+}
+
+const EMPTY_WORKER_NAME_INDEX: ReadonlyMap<string, string> = new Map();
+
+/** `sha256(text)[:12]` — the ident the backend mints worker member names with. */
+async function sha256Ident(text: string): Promise<string | null> {
+  const subtle = globalThis.crypto?.subtle;
+  if (subtle === undefined) return null;
+  try {
+    const digest = await subtle.digest('SHA-256', new TextEncoder().encode(text));
+    let hex = '';
+    for (const byte of new Uint8Array(digest)) hex += byte.toString(16).padStart(2, '0');
+    return hex.slice(0, 12);
+  } catch {
+    return null;
+  }
 }
 
 function MemberToolbarControl({
@@ -224,6 +252,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
   groups,
   messages,
   workflowRuns,
+  swarmflowMembers,
   selectedSubjectId,
   onSelectSubject,
   memberView,
@@ -289,6 +318,38 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
   const [collapsedTaskRuns, setCollapsedTaskRuns] = useState<ReadonlySet<string>>(() => new Set());
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(() => new Set());
   const [collapsedReviews, setCollapsedReviews] = useState<ReadonlySet<string>>(() => new Set());
+  // Worker member name -> engine member id (`wf_<runid>:[["par", 0, 0], ["call", 0]]`).
+  // The ident bridge is async (WebCrypto); until it resolves, lanes fall back
+  // to the plain worker member name.
+  const [memberIdByWorkerName, setMemberIdByWorkerName] = useState<
+    ReadonlyMap<string, string>
+  >(() => EMPTY_WORKER_NAME_INDEX);
+  useEffect(() => {
+    const identities = swarmflowMembers ?? [];
+    if (identities.length === 0) {
+      setMemberIdByWorkerName(current =>
+        current.size === 0 ? current : EMPTY_WORKER_NAME_INDEX);
+      return undefined;
+    }
+    let cancelled = false;
+    void (async () => {
+      const entries: Array<[string, string]> = [];
+      for (const identity of identities) {
+        const parsed = parseEngineSwarmflowMemberId(identity.memberId);
+        if (parsed === null) continue;
+        const ident = await sha256Ident(parsed.callKey);
+        if (ident === null) continue;
+        entries.push([
+          swarmflowWorkerMemberName(parsed.runId, identity.name, ident),
+          identity.memberId,
+        ]);
+      }
+      if (!cancelled) setMemberIdByWorkerName(new Map(entries));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [swarmflowMembers]);
   const localViewState = useMemo<TrajectoryViewState>(() => ({
     actualDuration,
     actualTime,
@@ -314,6 +375,13 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
   }, [pinToken, selectedSubjectId]);
 
   const renderLane = (lane: TeamMemberLaneModel) => {
+    // Scheduled lanes carry their own fullLabel; swarmflow worker lanes get
+    // the engine member id (call key) so same-label operators stay
+    // distinguishable on hover.
+    const fullName = lane.fullLabel ?? swarmflowLaneFullName(lane, memberIdByWorkerName);
+    const laneModel = fullName === null || fullName === lane.fullLabel
+      ? lane
+      : { ...lane, fullLabel: fullName };
     const expanded = lane.subjectId === selectedSubjectId;
     const select = () => onSelectSubject(expanded ? null : lane.subjectId);
     const expand = () => {
@@ -342,7 +410,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
           viewState,
           toolbarAddon: (
             <MemberToolbarControl
-              lane={lane}
+              lane={laneModel}
               expanded={expanded}
               onClick={select}
               {...(agentSelection === undefined
@@ -500,15 +568,19 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
 
   const renderWorkflowGroup = (group: (typeof workflowGroups)[number]) => {
     // The selected member's group stays expanded so its lane never disappears
-    // behind a collapse the toggle cannot undo.
+    // behind a collapse the toggle cannot undo. The toggle still flips such a
+    // group: folding closes the lane's trajectory drawer with it, so the
+    // selection never points at a hidden lane.
     const selected = group.lanes.some((lane) => lane.subjectId === selectedSubjectId);
     const expanded = expandedGroups.has(group.runId) || selected;
     const toggle = () => {
+      const next = !expanded;
+      if (!next && selected) onSelectSubject(null);
       setExpandedGroups((current) => {
-        const next = new Set(current);
-        if (next.has(group.runId)) next.delete(group.runId);
-        else next.add(group.runId);
-        return next;
+        const updated = new Set(current);
+        if (next) updated.add(group.runId);
+        else updated.delete(group.runId);
+        return updated;
       });
     };
     return (
