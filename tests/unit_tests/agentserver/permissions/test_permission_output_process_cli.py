@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import traceback
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -34,8 +33,8 @@ from tests.unit_tests.runtime.test_runtime_service import FakeAgentManager, Fake
 
 
 class _CliRun:
-    def __init__(self, host, runtime, client, manager):
-        self.host, self.runtime, self.client, self.manager = host, runtime, client, manager
+    def __init__(self, host, runtime, client):
+        self.host, self.runtime, self.client = host, runtime, client
         self.reader, self.output = QueueReader(), ObservedOutput()
         self.writer = OneShotWriter(self.output, request_id="external-cli-run")
         self.control = DuplexController(self.reader, self.writer)
@@ -46,7 +45,7 @@ class _CliRun:
         self.waits = asyncio.Queue()
         self.cancels = []
         self.snapshot = None
-        self.failures = []
+        self.interrupted_at_cleanup = None
         self.task = None
 
     def start(self, *, timeout=10):
@@ -61,7 +60,7 @@ class _CliRun:
         async with asyncio.timeout(10):
             while True:
                 if self.task.done():
-                    raise AssertionError(f"CLI ended before its card: {self.task.result()} {self.failures}")
+                    raise AssertionError(f"CLI ended before its card: {self.task.result()}")
                 record_task = asyncio.create_task(self.output.events.get())
                 try:
                     done, _ = await asyncio.wait((record_task, self.task),
@@ -91,7 +90,7 @@ class _CliRun:
             waiter = asyncio.create_task(self.waits.get())
             try:
                 done, _ = await asyncio.wait((waiter, self.task), return_when=asyncio.FIRST_COMPLETED)
-                assert waiter in done, f"CLI ended before handoff: {self.task.result()} {self.failures}"
+                assert waiter in done, f"CLI ended before handoff: {self.task.result()}"
                 assert waiter.result().owner is self.host.adapter._instance
             finally:
                 waiter.cancel()
@@ -181,15 +180,8 @@ async def cli_host(answer_host, monkeypatch):
                                plan_controller=FakePlanController())
         assert get_session(SessionGetInput(channel_id="process_cli", session_id=sid)) is not None
         client = InProcessRuntimeClient(runtime)
-        run = _CliRun(h, runtime, client, manager)
+        run = _CliRun(h, runtime, client)
         runs.append(run)
-        original_error = machine._exception_info
-
-        def error_info(error):
-            run.failures.append("".join(traceback.format_exception(error)))
-            return original_error(error)
-
-        monkeypatch.setattr(machine, "_exception_info", error_info)
         original_wait = OutputHandoff.wait
 
         async def wait_for_owner(handoff):
@@ -238,6 +230,7 @@ async def cli_host(answer_host, monkeypatch):
         async def cleanup_session(*, channel_id, session_id):
             assert channel_id == "process_cli" and session_id == sid
             run.snapshot = runtime._session_coordinator.snapshot_session(sid)
+            run.interrupted_at_cleanup = h.adapter._instance.loop_session.get_state(INTERRUPTION_KEY)
             manager.cleanup_session_calls.append((channel_id, session_id))
             await h.adapter.stop_interaction()
             return True
@@ -294,13 +287,16 @@ async def test_cli_real_runtime_early_answer_keeps_output_and_finishes(cli_host,
         assert "ONCE-1" in repr(tool_results)
     assert h.executions == ([{"value": "ONCE-1"}] if action == "allow_once" else [])
     assert len(h.dispatches) == 2 and len(run.answers) == 1
+    assert len(h.script.calls) == 2 and not run.interrupted_at_cleanup
     assert run.answers[0].request_id != "external-cli-run"
     assert run.answers[0].interaction_id == run.cards[0]["request_id"]
     assert run.answers[0].source == "permission_interrupt"
     assert not h.adapter._root_permission_queue.has_live(root_session_id=h.adapter._parent_session_id)
     executions = run.snapshot.executions
     parent = next(row for row in executions if row.request_id == "external-cli-run")
-    control = next(row for row in executions if row.work_kind.value == "control_input")
+    controls = [row for row in executions if row.work_kind.value == "control_input"]
+    assert len(controls) == 1
+    control = controls[0]
     assert control.parent_execution_id == parent.execution_id
     assert parent.state.value == control.state.value == "succeeded"
     assert not parent.waiting_control_id and not control.waiting_control_id
@@ -330,14 +326,20 @@ async def test_cli_real_runtime_two_cards_do_not_finish_on_suspended_tail(cli_ho
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("ending", ["timeout", "cancel", "eof"])
-async def test_cli_real_runtime_wait_is_cancellable_without_approval(cli_host, ending):
-    run = await cli_host()
+@pytest.mark.parametrize("ending,card", [("timeout", 1), ("cancel", 1), ("eof", 1),
+                                         ("cancel", 2), ("timeout", 2)])
+async def test_cli_real_runtime_wait_is_cancellable_without_approval(cli_host, ending, card):
+    run = await cli_host(two_cards=card == 2)
     run.start(timeout=2 if ending == "timeout" else 10)
     notice = await run.notice()
-    if ending != "eof":
+    if card == 2:
         run.answer(notice)
         await run.waiting(dispatches=1)
+        run.gates[0].set()
+        notice = await run.notice()
+    if ending != "eof":
+        run.answer(notice)
+        await run.waiting(dispatches=card)
     if ending == "cancel":
         run.reader.send({"schema_version": "0.1", "type": "cancel",
                          "request_id": "external-cli-run"})
@@ -349,38 +351,10 @@ async def test_cli_real_runtime_wait_is_cancellable_without_approval(cli_host, e
     assert (result.error.code, result.exit_code) == expected[ending]
     assert not result.error.details.get("cleanup_errors"), result.error
     assert run.cancels == [{"locked": False, "answers_done": True, "root_cancelled": False}]
-    assert not run.host.executions
-    assert len(run.host.dispatches) == 1, [
-        (item.request_id, type(item.inputs.get("query")).__name__,
-         getattr(item.inputs.get("query"), "user_inputs", None))
-        for item in run.host.dispatches
-    ]
+    assert run.host.executions == ([{"value": "ONCE-1"}] if card == 2 else [])
+    assert len(run.host.dispatches) == card
+    assert len(run.answers) == (0 if ending == "eof" else card)
     assert not run.control._pending
-    assert all(row.state.terminal for row in run.snapshot.executions)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("ending", ["cancel", "timeout"])
-async def test_cli_cancels_all_answer_owners_before_the_waiting_second_answer(cli_host, ending):
-    run = await cli_host(two_cards=True)
-    run.start(timeout=2 if ending == "timeout" else 10)
-    first = await run.notice()
-    run.answer(first)
-    await run.waiting(dispatches=1)
-    run.gates[0].set()
-    second = await run.notice()
-    run.answer(second)
-    await run.waiting(dispatches=2)
-    if ending == "cancel":
-        run.reader.send({"schema_version": "0.1", "type": "cancel",
-                         "request_id": "external-cli-run"})
-    result = await run.finish()
-    expected = ("CANCELLED", 130) if ending == "cancel" else ("TIMEOUT", 124)
-    assert (result.error.code, result.exit_code) == expected
-    assert not result.error.details.get("cleanup_errors"), result.error
-    assert run.host.executions == [{"value": "ONCE-1"}]
-    assert len(run.host.dispatches) == 2 and len(run.answers) == 2
-    assert run.cancels == [{"locked": False, "answers_done": True, "root_cancelled": False}]
     assert all(row.state.terminal for row in run.snapshot.executions)
 
 
