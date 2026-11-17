@@ -1933,6 +1933,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                 ? {}
                 : { mapTime: timeAxis.mapSharedTime }),
               live: active && replayArchive === null && sessionIsProcessing,
+              ...(timeAxis.domain === null || timeAxis.toWall === undefined
+                ? {}
+                : { recordedWallEndMs: timeAxis.toWall(timeAxis.domain.endMs) }),
             },
           }
           : {})}
