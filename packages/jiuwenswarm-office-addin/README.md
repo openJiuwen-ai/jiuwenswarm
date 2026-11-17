@@ -164,7 +164,7 @@ separate straight segments.
 
 | Module | Owns |
 |---|---|
-| `gatewayClient` | The WebSocket to the Gateway: requests, events, reconnects. A refusal rejects with its `code`. |
+| `gatewayClient` | The WebSocket to the Gateway: requests, events, reconnects. A refusal rejects with its `code`. It connects as the user named by the pane URL's `u` (the desktop install gives every host the same one), else as a user it keeps per app in `localStorage` (a development sideload). |
 | `clientAttachment` | `client.attach` / `client.renew` of one document to one conversation, and the client tool calls of that conversation: each runs once, and the finished ones are answered in one `chat.send` (`source: "client_tool_interrupt"`) while the turn is not running. An answer goes only to the conversation that asked for it. A failed attach tries again; a window another window displaced answers its calls as run there. The renews run on `workerTimer`. |
 | `workerTimer` | A timer that keeps time while the pane is hidden: the wait runs in a dedicated Worker (`timerWorker`), as a hidden pane's own timers are throttled and could let the lease lapse. |
 | `documentIdentity` | The document's GUID (`jiuwenswarm.doc_id` in the document settings), which is the attach `resource.key`, and its display name. |
@@ -218,6 +218,11 @@ Gateway's web channel (`JIUWENSWARM_WEB_CHANNEL_URL`, by default
 `ws://127.0.0.1:19000`), and `/file-api/download` to the web frontend's server
 (`JIUWENSWARM_FILE_API_URL`, by default `http://127.0.0.1:5173`). Sideload `manifest.<host>.xml` into the host to
 open its pane.
+
+`npm run build:desktop` builds the three pages under `/office/` into the web
+frontend's `dist/office/`, each with its `manifest.<host>.xml` beside it; the
+desktop serves them from there and installs the three panes
+(`jiuwenswarm/office/README.md`, 桌面安装).
 
 ## Checks
 

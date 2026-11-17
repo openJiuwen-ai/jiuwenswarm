@@ -178,6 +178,9 @@ export class GatewayClient {
 }
 
 function getOrCreateOfficeUserId(appId: string): string {
+  // The desktop install puts one id for every host in the pane URL; a development sideload has none.
+  const installed = new URLSearchParams(window.location.search).get('u');
+  if (installed) return installed;
   const storageKey = `jiuwenswarm-office-user-id:${appId}`;
   const existing = window.localStorage.getItem(storageKey);
   if (existing) return existing;

@@ -563,6 +563,16 @@ try {
     }
     npm run build
     if ($LASTEXITCODE -ne 0) { $FrontendBuildExit = $LASTEXITCODE; throw "vite build failed" }
+    # Office task pane, served by the desktop at /office/ (inside the frontend dist built above).
+    Push-Location (Join-Path $ProjectRoot "packages\jiuwenswarm-office-addin")
+    try {
+        npm ci --prefer-offline --no-audit --no-fund
+        if ($LASTEXITCODE -ne 0) { $FrontendBuildExit = $LASTEXITCODE; throw "office add-in npm ci failed" }
+        npm run build:desktop
+        if ($LASTEXITCODE -ne 0) { $FrontendBuildExit = $LASTEXITCODE; throw "office add-in build failed" }
+    } finally {
+        Pop-Location
+    }
 } finally {
     Pop-Location
     if ($null -ne $PreviousElectronEnv) { $env:ELECTRON = $PreviousElectronEnv } else { Remove-Item Env:\ELECTRON -ErrorAction SilentlyContinue }

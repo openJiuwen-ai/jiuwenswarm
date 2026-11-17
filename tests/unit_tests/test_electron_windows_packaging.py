@@ -165,6 +165,19 @@ def test_normal_upgrade_does_not_run_uninstall_config_cleanup():
     assert '--desktop-reset-external-cli-config' not in prepare
 
 
+def test_uninstall_takes_the_office_add_ins_back_out():
+    old = (ROOT / "scripts/installer.iss").read_text(encoding="utf-8")
+    electron = (ROOT / "scripts/installer-electron.iss").read_text(encoding="utf-8")
+    entry = (ROOT / "scripts/jiuwenswarm_exe_entry.py").read_text(encoding="utf-8")
+    for script in (old, electron):
+        uninstall_run = script[script.index("[UninstallRun]"):script.index("[Icons]")]
+        assert "--desktop-remove-office-addins" in uninstall_run
+        assert 'RunOnceId: "RemoveOfficeAddins"' in uninstall_run
+    prepare = electron[electron.index("function PrepareToInstall"):]
+    assert "--desktop-remove-office-addins" not in prepare
+    assert "_pop_flag(_DESKTOP_REMOVE_OFFICE_ADDINS)" in entry and "remove_all(get_user_workspace_dir())" in entry
+
+
 @pytest.mark.parametrize("receipt_state", ["ok", "missing", "pending", "failed"])
 def test_windows_update_helper_waits_then_launches_interactive_installer(tmp_path, receipt_state):
     # Isolate the real helper function from optional GUI imports.

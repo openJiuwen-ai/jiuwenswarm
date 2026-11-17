@@ -135,6 +135,7 @@ app.whenReady
 JIUWENSWARM_DESKTOP=1  JIUWENSWARM_ELECTRON=1
 WEB_PORT=<gatewayApi>  GATEWAY_PORT=<gatewayInternal>
 AGENT_SERVER_PORT=AGENT_PORT=<agentServer>  FRONTEND_PORT=<frontend>
+OFFICE_TLS_PORT=<officeTls>（Office 加载项任务窗格的 HTTPS 监听端口）
 JIUWENSWARM_RUNTIME_WORKSPACE_READY=1
 删除 AGENT_SERVER_URL（防 .env 里的陈旧 URL 绕过重映射端口）
 ```

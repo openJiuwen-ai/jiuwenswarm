@@ -100,6 +100,8 @@ Type: files; Name: "{app}\logo-*.ico"; Check: IsExistingPerUserInstallDir
 ; 卸载前重置外部 CLI 开关（与 installer.iss 一致；Web UI 也能安装外部 CLI，
 ; 其配置在用户目录，需要后端 exe 显式清理）。FrontendOnly 包无后端，跳过。
 Filename: "{app}\resources\backend\{#BackendExecutableName}"; Parameters: "--desktop-reset-external-cli-config"; Flags: runhidden waituntilterminated; RunOnceId: "ResetExternalCliConfig"
+; 撤销 Office 加载项的注册与 localhost 证书信任（都在用户目录与注册表里，卸载程序看不到）。
+Filename: "{app}\resources\backend\{#BackendExecutableName}"; Parameters: "--desktop-remove-office-addins"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveOfficeAddins"
 #endif
 
 [Icons]

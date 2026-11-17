@@ -101,6 +101,40 @@ handle 时，`build_request` 给出 `/file-api/download` 链接；这个下载�
 的链接一样，不检查过期和对话，任务窗格下载后按 descriptor 的大小和 SHA-256 校验。
 后端不保存文档副本，撤销靠宿主自己的撤销。
 
+## 桌面安装
+
+桌面版把任务窗格装进本机的 PowerPoint、Word 和 Excel，代码在 `jiuwenswarm/channels/desktop/office_addins/`：
+
+- 窗格构建在前端 dist 的 `office/` 下（`npm run build:desktop`，桌面构建脚本在前端之后执行，失败则构建失败），
+  由桌面的 web 进程提供：三个宿主的页面 `taskpane.<host>.html`，旁边是各自的 `manifest.<host>.xml`。
+  Office 只从 HTTPS 加载窗格，所以 web 进程在端口分配表的 `office_tls`（默认 5443，
+  随实例 +1000）上另开一个只绑 127.0.0.1 的 HTTPS 监听，用同一个 handler，`/ws`、`/file-api/download` 照常可用。
+- 证书在 `<数据目录>/office-addin/tls/`：一个本地 CA 和它签发的 `localhost` 证书；系统只信任这个 CA，
+  CA 私钥不落盘，所以它签不了别的证书。距过期不足 30 天时，再点一次安装会换新的一对，先撤销旧 CA 的信任。
+- 注册用 Microsoft 的侧载位置（与 office-addin-dev-settings 相同）：Mac 写各应用容器
+  `~/Library/Containers/<com.microsoft.Powerpoint|Word|Excel>/Data/Documents/wef/`，Windows 在
+  `HKCU\SOFTWARE\Microsoft\Office\16.0\Wef\Developer` 下按 add-in Id 各写一个值。`registration.py` 的 `HOSTS`
+  一张表记每个应用的容器和安装版 Id。清单由 `manifest.<host>.xml` 渲染：开发 origin 换成本进程的 HTTPS origin、
+  路径加 `/office/`（窗格页是 `/office/taskpane.<host>.html`），`<Id>` 换成安装版自己的，不与开发侧载互相覆盖。
+- 窗格地址带 `?u=<用户 id>`：安装器第一次渲染清单时在 `<数据目录>/office-addin/user-id` 生成一个 id，各宿主的清单
+  都用它，所以 Word、Excel、PowerPoint 的窗格是同一个用户，能互相看到打开的文档、互发消息（服务端按用户隔离）。
+  移除后再装仍用原 id，Windows 卸载才删除。清单里的 id 不对或没有，和端口变了一样算 `stale_origin`。
+- 用户安装的单位是套件：`SUITES` 一张表定义每个套件含哪些应用（`office` → PowerPoint、Word、Excel）。
+  一次安装为整个套件做一次证书、信任和监听，再注册套件里本机有的每个应用；本机没有的应用（Mac 上容器不存在）
+  不算套件的问题，装好并打开一次后再点安装即可补上。
+- 接口只在桌面模式下存在，且只认桌面窗口的 Cookie，否则 404：`GET /desktop-api/office-addins` 返回
+  `{"suites": {"office": {"installed", "problems", "apps": {"powerpoint": "installed", ...}}}}`；
+  `POST /desktop-api/office-addins/<suite>/install|remove` 返回该套件的状态。每个应用是 `installed`、
+  `not_installed` 或 `host_not_found`；`installed` 表示本机有的应用都已注册，且至少有一个。
+  状态每次现读注册和证书，`problems` 取值 `permission_denied`、`certificate_untrusted`、
+  `certificate_expiring`、`tls_unavailable`、`stale_origin`；修复就是再点一次安装。web 进程启动后会按当前端口
+  重写已装的清单。
+- 没有任何应用还注册着时，移除会撤销 CA 信任、删除证书并关掉 HTTPS 监听。Windows 卸载程序执行
+  `--desktop-remove-office-addins` 做同样的清理。
+- 已知限制：Mac 没有卸载钩子，删除 app 前要先在桌面里移除；macOS 上每个 Office 应用必须先打开过一次；
+  Office 应用可能要重启才读到新清单；从源码运行桌面版时要先在 `packages/jiuwenswarm-office-addin` 执行
+  `npm run build:desktop`。
+
 ## 测试
 
 ```bash

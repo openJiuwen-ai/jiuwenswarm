@@ -23,8 +23,8 @@ let updateShutdownReceipt = null;
 const BACKEND_HOST = '127.0.0.1';
 const FRONTEND_HOST = '127.0.0.1';
 // Port-group layout mirrors jiuwenswarm.instance_manager.config.BASE_PORTS:
-// one instance index occupies all four ports (+ index * 1000).
-const BASE_PORTS = { agentServer: 18092, gatewayApi: 19000, gatewayInternal: 19001, frontend: 5173 };
+// one instance index occupies all five ports (+ index * 1000).
+const BASE_PORTS = { agentServer: 18092, gatewayApi: 19000, gatewayInternal: 19001, frontend: 5173, officeTls: 5443 };
 // Aligned with desktop_app.STARTUP_TIMEOUT_SECONDS: gateway binds the API port only
 // after its ~60s agent-connect budget, so this must stay above that.
 const STARTUP_TIMEOUT_MS = 120_000;
@@ -337,6 +337,7 @@ function spawnService(name, ports, extraArgs = []) {
   env.AGENT_SERVER_PORT = String(ports.agentServer);
   env.AGENT_PORT = String(ports.agentServer);
   env.FRONTEND_PORT = String(ports.frontend);
+  env.OFFICE_TLS_PORT = String(ports.officeTls);
   // Gateway prefers AGENT_SERVER_URL over AGENT_SERVER_PORT; drop any stale
   // URL from the parent shell so the remapped port is used.
   delete env.AGENT_SERVER_URL;
