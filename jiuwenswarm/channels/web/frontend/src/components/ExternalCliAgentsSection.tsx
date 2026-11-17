@@ -1463,9 +1463,7 @@ export function ExternalCliAgentsSection({
                   <div className="flex flex-shrink-0 items-center gap-2">
                     <Switch
                       checked={enabled}
-                      disabled={disabled
-                        || (!installed && (!result || !enabled || result.status === 'missing' || result.status === 'unsupported'))
-                        || committing[cliAgent] || agentInstalling || editing[cliAgent]}
+                      disabled={disabled || (!installed && !enabled) || committing[cliAgent] || agentInstalling || editing[cliAgent]}
                       onChange={(next) => void toggleAgentEnabled(cliAgent, next, useBuiltin, cliPath)}
                       aria-label={t('config.externalCli.toggleEnable', { agent: label })}
                       data-testid="settings-panel-external-cli-agent-enable-switch"
