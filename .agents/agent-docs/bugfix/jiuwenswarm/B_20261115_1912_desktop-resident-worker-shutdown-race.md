@@ -2,8 +2,8 @@
 id: B_20261115_1912_desktop-resident-worker-shutdown-race
 title: 桌面端关闭竞速导致常驻 Worker 优雅收尾必现失败
 type: B
-author: Claude Opus
-author_email: noreply@anthropic.com
+author: CharlesWang2030
+author_email: 93426525@qq.com
 designs: []
 design_note: 依据真实运行日志（7/7 必现）与源码调用链定位，无独立设计文档；修复为进程生命周期收尾汇合点补齐与子进程降级兜底。
 modules:
