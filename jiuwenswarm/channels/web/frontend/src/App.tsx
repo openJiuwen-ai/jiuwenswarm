@@ -4809,6 +4809,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         <div className="app-page-body">
           <div className="page-content">
             <ConnectorMarketPanel
+              sessionUse={false}
               onCreateViaChat={() => window.dispatchEvent(new CustomEvent('jiuwen:new-conversation', {
                 detail: {
                   skillName: 'plugin-creator',
@@ -4816,25 +4817,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                   metadata: { scene: 'create_plugin' },
                 },
               }))}
-              onUseExample={(initialInputValue, mcpName, displayName) =>
-                requestSessionNavigation('new', {
-                  initialInputValue,
-                  initialEnabledMcps: [mcpName],
-                  forceMode: 'agent',
-                  metadata: { prefer_mcp: { id: mcpName, display_name: displayName ?? mcpName } },
-                })
-              }
-              onUsePluginExample={(initialInputValue, pluginId) =>
-                requestSessionNavigation('new', { initialInputValue, initialEnabledPlugins: [pluginId], forceMode: 'agent' })
-              }
-              onUseExtension={({ kind, id }) =>
-                requestSessionNavigation(
-                  'new',
-                  kind === 'plugin'
-                    ? { initialEnabledPlugins: [id], forceMode: 'agent' }
-                    : { initialEnabledMcps: [id], forceMode: 'agent' },
-                )
-              }
             />
           </div>
         </div>

@@ -42,7 +42,7 @@ interface MarketplacePageProps {
   /** "会话使用"点击——跳新会话并顺带打开这个扩展的会话内启用开关，跟详情页顶部"使用"按钮
    * 是同一条 onUseExtension 通道（见 ConnectorMarket/index.tsx），这里需要知道点的是卡片列表
    * 里的哪一个，所以带上 kind/id。 */
-  onUse: (payload: { kind: 'plugin' | 'mcp'; id: string }) => void;
+  onUse?: (payload: { kind: 'plugin' | 'mcp'; id: string }) => void;
   onCreateManual: () => void;
   onCreateWithSkill: () => void;
   onCreateWithUpload: () => void;
@@ -621,7 +621,7 @@ export function MarketplacePage({
                     busyKind={busyMap[connector.id] ?? busyMap[connector.runtimePackageName]}
                     onOpenDetail={() => onOpenConnectorDetail(connector.id)}
                     canOpenDetail={mcpInstalled}
-                    onUse={() => onUse({ kind: 'mcp', id: connector.runtimePackageName })}
+                    onUse={onUse ? () => onUse?.({ kind: 'mcp', id: connector.runtimePackageName }) : undefined}
                     onQuickInstall={cs === 'connected' ? undefined : () => handleConnectorQuickAdd(connector.id)}
                     quickAction={mcpInstalled ? 'connect' : 'install'}
                   />
@@ -642,7 +642,15 @@ export function MarketplacePage({
                     actionMode="use"
                     actionDisabled={!!pluginInstallingIds[pkg.id]}
                     onOpenDetail={() => onOpenPluginDetail(pkg.id)}
-                    onUse={() => pluginInstalled && pluginConnected ? onUse({ kind: 'plugin', id: pkg.runtimePackageName }) : onOpenPluginDetail(pkg.id)}
+                    onUse={onUse ? () => (pluginConnected ? onUse({ kind: 'plugin', id: pkg.runtimePackageName }) : onOpenPluginDetail(pkg.id)) : undefined}
+                    // 触发条件要跟着卡片态走，不能只看 installed——"已安装但 MCP 未连接"这个
+                    // 组合下 derivePluginCardState 也会算出 'idle'（见该函数注释），"+"按钮同样
+                    // 要能点（点击后重新触发安装，对应按钮矩阵"已安装+未连接：+号"这一格）。
+                    onQuickInstall={
+                      derivePluginCardState(pluginInstalled, pluginConnected) === 'connected'
+                        ? undefined
+                        : () => installPlugin(pkg.id)
+                    }
                   />
                 );
               })
@@ -662,7 +670,7 @@ export function MarketplacePage({
                     onOpenDetail={() => onOpenConnectorDetail(connector.id)}
                     onQuickAdd={() => handleConnectorQuickAdd(connector.id)}
                     quickAction={mcpInstalled ? 'connect' : 'install'}
-                    onUse={() => onUse({ kind: 'mcp', id: connector.runtimePackageName })}
+                    onUse={onUse ? () => onUse?.({ kind: 'mcp', id: connector.runtimePackageName }) : undefined}
                   />
                 );
               })
@@ -681,7 +689,8 @@ export function MarketplacePage({
                     actionDisabled={!!pluginInstallingIds[pkg.id]}
                     canOpenDetail
                     onOpenDetail={() => onOpenPluginDetail(pkg.id)}
-                    onUse={() => pluginConnected ? onUse({ kind: 'plugin', id: pkg.runtimePackageName }) : onOpenPluginDetail(pkg.id)}
+                    onUse={onUse ? () => (pluginConnected ? onUse({ kind: 'plugin', id: pkg.runtimePackageName }) : onOpenPluginDetail(pkg.id)) : undefined}
+                    // 同款修正：不能只看 installed，见上面"我的插件"卡片同名 prop 的注释。
                     // Marketplace installation can resume pending connector setup.
                     onQuickAdd={() => {
                       if (derivePluginCardState(pluginInstalled, pluginConnected) !== 'connected')

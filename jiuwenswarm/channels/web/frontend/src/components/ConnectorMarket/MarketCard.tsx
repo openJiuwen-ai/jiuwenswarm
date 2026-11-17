@@ -66,8 +66,8 @@ export function MarketCard({
         {t(busyLabelKey(busyKind))}
       </span>
     );
-  } else if (state === 'connected' || actionMode === 'use') {
-    actionSlot = <button type="button" className="connector-market-card-install" data-testid="connector-market-card-use" disabled={actionDisabled || !onUse} onClick={event => { event.stopPropagation(); onUse?.(); }}>{t('connectorMarket.card.use')}</button>;
+  } else if ((state === 'connected' || actionMode === 'use') && onUse) {
+    actionSlot = <button type="button" className="connector-market-card-install" data-testid="connector-market-card-use" disabled={actionDisabled} onClick={event => { event.stopPropagation(); onUse(); }}>{t('connectorMarket.card.use')}</button>;
   } else if (state === 'idle' || state === 'error') {
     actionSlot = (
       <button
