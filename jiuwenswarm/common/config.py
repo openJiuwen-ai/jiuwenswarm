@@ -19,6 +19,7 @@ from ruamel.yaml.scalarstring import DoubleQuotedScalarString, PlainScalarString
 import yaml
 import portalocker
 
+from jiuwenswarm.common.cua_config import is_cua_agent_enabled
 from jiuwenswarm.common.kv_cache_affinity_config import (
     APPLICATION_KV_CACHE_CONFIG_KEY,
     KV_CACHE_AFFINITY_ENABLED_KEY,
@@ -1070,21 +1071,27 @@ def update_rsi_enabled_in_config(value: bool) -> None:
     update_config(mutator)
 
 
-def update_cua_agent_enabled_in_config(value: bool | None) -> None:
-    """Persist an explicit desktop preference, or null to follow the release default."""
+def update_cua_agent_enabled_in_config(value: bool | None) -> bool:
+    """Persist the desktop preference and report a transition to enabled."""
     if value is not None and not isinstance(value, bool):
         raise ValueError("cua_agent.enabled must be true, false or null")
 
+    just_enabled = False
+
     def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        nonlocal just_enabled
         current = data
         for key in ("react", "subagents", "cua_agent"):
             if not isinstance(current.get(key), dict):
                 current[key] = {}
             current = current[key]
+        was_enabled = is_cua_agent_enabled(current)
         current["enabled"] = value
+        just_enabled = is_cua_agent_enabled(current) and not was_enabled
         return data
 
     update_config(mutator)
+    return just_enabled
 
 
 def update_enable_free_models_in_config(value: bool) -> None:

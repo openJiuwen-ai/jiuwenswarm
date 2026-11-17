@@ -4,7 +4,7 @@
 
 import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import yaml
@@ -52,6 +52,80 @@ async def test_desktop_preference_round_trips_through_both_config_readers(panel_
         assert payload["cua_agent_enabled"] == ("true" if expected else "false")
         assert payload["cua_backend_available"] == "false"
         assert payload["cua_backend_unavailable_reason"] == "native_build_failed"
+
+
+@pytest.fixture
+def permission_guide_sdk(tmp_path, monkeypatch):
+    bundle = tmp_path / "runtime" / "Jiuwen CUA.app"
+    driver = Mock(return_value={"command": str(bundle / "Contents/MacOS/computer-use-driver")})
+    launch = Mock()
+    monkeypatch.setitem(sys.modules, "computer_use.paths", SimpleNamespace(native_driver=driver))
+    monkeypatch.setitem(sys.modules, "computer_use.native.macos_app", SimpleNamespace(open_permission_guide=launch))
+    return bundle, driver, launch
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("save_all", [True, False], ids=["config.save_all", "config.set"])
+async def test_enabling_desktop_control_opens_the_macos_guide_once(
+    panel_config, permission_guide_sdk, monkeypatch, save_all,
+):
+    bundle, driver, launch = permission_guide_sdk
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(cua_config, "cua_repl_unavailable_reason", lambda: "")
+    channel = SimpleNamespace(send_response=AsyncMock())
+    saved_during_launch = []
+
+    def capture_saved_preference(_bundle, *, timeout):
+        saved = yaml.safe_load(panel_config.read_text(encoding="utf-8"))
+        saved_during_launch.append(saved["react"]["subagents"]["cua_agent"]["enabled"])
+
+    launch.side_effect = capture_saved_preference
+    for value in ("true", True, False, None):
+        params = {"cua_agent_enabled": value}
+        if save_all:
+            await handlers.config_save_all_handler(channel, None, "save", {"config": params}, None)
+        else:
+            await handlers.config_set_handler(channel, None, "save", params, None)
+        assert channel.send_response.call_args.kwargs["ok"] is True
+    driver.assert_called_once_with()
+    launch.assert_called_once()
+    assert launch.call_args.args == (bundle,)
+    assert saved_during_launch == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("system", "reason"), [("win32", ""), ("linux", ""), ("darwin", "backend_missing")])
+async def test_enabling_desktop_control_skips_the_guide_without_a_macos_backend(
+    panel_config, permission_guide_sdk, monkeypatch, system, reason,
+):
+    _, driver, launch = permission_guide_sdk
+    monkeypatch.setattr(sys, "platform", system)
+    monkeypatch.setattr(cua_config, "cua_repl_unavailable_reason", lambda: reason)
+    channel = SimpleNamespace(send_response=AsyncMock())
+    await handlers.config_save_all_handler(
+        channel, None, "save", {"config": {"cua_agent_enabled": True}}, None,
+    )
+    assert channel.send_response.call_args.kwargs["ok"] is True
+    driver.assert_not_called()
+    launch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_macos_guide_launch_failure_keeps_the_saved_preference(
+    panel_config, permission_guide_sdk, monkeypatch, caplog,
+):
+    _, _, launch = permission_guide_sdk
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(cua_config, "cua_repl_unavailable_reason", lambda: "")
+    launch.side_effect = RuntimeError("launch failed")
+    channel = SimpleNamespace(send_response=AsyncMock())
+    await handlers.config_save_all_handler(
+        channel, None, "save", {"config": {"cua_agent_enabled": True}}, None,
+    )
+    assert channel.send_response.call_args.kwargs["ok"] is True
+    saved = yaml.safe_load(panel_config.read_text(encoding="utf-8"))
+    assert saved["react"]["subagents"]["cua_agent"]["enabled"] is True
+    assert "launch failed" in caplog.text
 
 
 @pytest.mark.parametrize("value", ["yes", 1, {}, []])
