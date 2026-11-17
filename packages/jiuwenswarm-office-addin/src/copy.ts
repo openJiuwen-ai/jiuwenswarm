@@ -28,6 +28,8 @@ export const documentCopy: Record<Surface, DocumentCopy> = {
 /** Every text the task pane shows, in one place. */
 export const copy = {
   history: '本文档的对话',
+  openFiles: (noun: string) => `打开的${noun}`,
+  thisFile: '本文件',
   justNow: '刚刚',
   minutesAgo: (minutes: number) => `${minutes}分钟`,
   hoursAgo: (hours: number) => `${hours}小时`,
