@@ -34,7 +34,9 @@ await build({
     },
   }],
 });
-const result = spawnSync(process.execPath, ['--test', 'tests/permissionAnswerTransport.test.mjs'], {
+const result = spawnSync(process.execPath, [
+  '--test', 'tests/permissionAnswerTransport.test.mjs', 'tests/skillPackageHttpTransport.test.mjs',
+], {
   cwd: root, stdio: 'inherit',
 });
 if (result.error) throw result.error;

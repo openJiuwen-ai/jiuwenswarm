@@ -716,7 +716,8 @@ class WebClient {
       return;
     }
     const pending = this.pending.get(requestId);
-    if (!pending?.awaitRuntimeAccepted) {
+    if (!pending || (!pending.awaitRuntimeAccepted &&
+      !(message.event === 'chat.error' && pending.awaitUserAnswerResult))) {
       return;
     }
     window.clearTimeout(pending.timeoutId);

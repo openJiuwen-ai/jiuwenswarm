@@ -473,6 +473,34 @@ test('disconnect while awaiting the installation receipt keeps the card actionab
   assert.equal(useChatStore.getState().getRuntime(sessionId).pendingQuestions.length, 1);
 }));
 
+test('a matching chat.error ends the installation wait without accepting the card', async () => mounted(async ({ socket, observed }) => {
+  await i18n.changeLanguage('zh');
+  await deliver(socket, skillPackagePayload);
+  await act(async () => createPackageButton().click());
+  const request = socket.requests.at(-1);
+  await packageReceipt(socket, { accepted: true });
+  await runtimeAck(socket, request.id);
+  await act(async () => socket.receive({
+    type: 'event', event: 'chat.error',
+    payload: { request_id: 'another-rpc', error: 'unrelated failure', code: 'INTERNAL_ERROR' },
+  }));
+  assert.deepEqual(observed.results, [], 'neither admission nor another request settles this answer');
+  assert.equal(createPackageButton().disabled, true);
+  await act(async () => socket.receive({
+    type: 'event', event: 'chat.error',
+    payload: { request_id: request.id, error: 'answer failed', code: 'INTERNAL_ERROR' },
+  }));
+  assert.deepEqual(observed.results, [false], 'the final error must not wait for the 120-second timeout');
+  assert.equal(createPackageButton().disabled, false);
+  assert.equal(deferPackageButton().disabled, false);
+  assert.ok(packageError());
+  assert.equal(useChatStore.getState().getRuntime(sessionId).pendingQuestions.length, 1);
+  await act(async () => createPackageButton().click());
+  await packageReceipt(socket, { accepted: true, resolved: true, installed: true });
+  assert.deepEqual(observed.results, [false, true]);
+  assert.equal(createPackageButton(), null);
+}));
+
 for (const receipt of [
   { accepted: false, resolved: false, installed: false, reason: 'install_failed' },
   { accepted: true, resolved: true, installed: false, reason: 'install_failed' },
