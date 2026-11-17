@@ -195,27 +195,41 @@ async def reconcile_group(session_id: str) -> None:
                         await store.publish(record, "updated")
                     except Exception:
                         logger.warning("Organization recovery publication failed session=%s", session_id, exc_info=True)
-        # Release deferred requests after leaving the group write lock.
-        plans = await _file_io(partial(groups.group_organization_plans, session_id))
-        # Expire stale plans before using the snapshot to release direct replies.
-        # Keep task/event mutations on this loop; only persistence runs in a thread.
+        # Check and persist expiration under the same cross-process lock as writers.
         expired = []
-        if (any(plan.get("cleanup_status") == "done" for plan in plans)
-                and any(key[0] == session_id and not job.get("started")
-                        for key, job in boot._deferred_direct.items())):
-            for plan in plans:
-                plan_id = str(plan.get("plan_id") or "")
-                if (plan.get("status") in {"pending", "running"}
-                        and not boot._owner_run_active(session_id, plan_id)
-                        and not boot._queue_run_active(session_id, plan_id)
-                        and boot._now_ms() - int(plan.get("created_at") or 0)
-                        > int(boot.PLAN_STALE_SECONDS * 1000)):
+        async with groups.group_lock(session_id):
+            plans = await _file_io(partial(groups.group_organization_plans, session_id))
+            if (any(plan.get("cleanup_status") == "done" for plan in plans)
+                    and any(key[0] == session_id and not job.get("started")
+                            for key, job in boot._deferred_direct.items())):
+                for plan in plans:
+                    plan_id = str(plan.get("plan_id") or "")
+                    if (plan.get("status") not in {"pending", "running"}
+                            or _active(session_id, plan_id)
+                            or boot._now_ms() - int(plan.get("created_at") or 0)
+                            <= int(boot.PLAN_STALE_SECONDS * 1000)):
+                        continue
+                    owner = plan.get("run_owner")
+                    if not owner:
+                        continue
+                    try:
+                        alive = await _file_io(partial(lifecycle.runtime_owner_alive, owner))
+                        if alive and owner != await _file_io(lifecycle.current_runtime_owner):
+                            continue
+                        current = await _file_io(partial(boot._plan_record, session_id, plan_id))
+                    except Exception:
+                        logger.warning("Organization expiration ownership unavailable session=%s plan=%s",
+                                       session_id, plan_id, exc_info=True)
+                        continue
+                    if current != plan or _active(session_id, plan_id):
+                        continue
                     await _file_io(partial(groups.update_group_organization_plan, session_id,
                                            plan_id, status="expired"))
                     expired.append(plan_id)
                     boot._plan_event(session_id, plan_id).set()
-            if expired:
-                plans = await _file_io(partial(groups.group_organization_plans, session_id))
+                if expired:
+                    plans = await _file_io(partial(groups.group_organization_plans, session_id))
+        # Schedule direct replies only after releasing the cross-process lock.
         for plan in plans:
             if plan.get("cleanup_status") == "done" or plan["plan_id"] in expired:
                 boot.release_deferred_direct(session_id, plan["plan_id"], plans=plans)
