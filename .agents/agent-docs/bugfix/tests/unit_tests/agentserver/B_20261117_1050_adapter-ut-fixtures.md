@@ -1,0 +1,84 @@
+---
+id: B_20261117_1050_adapter-ut-fixtures
+title: 图片降级提示与付费搜索 UT 的测试替身和断言漂移
+type: B
+author: TwZhang
+author_email: zhangtangwei@huawei.com
+modules:
+  - tests/unit_tests/agentserver
+files:
+  - tests/unit_tests/agentserver/test_image_fallback_notice_nonstreaming.py
+  - tests/unit_tests/agentserver/test_paid_search_configuration.py
+designs: []
+design_note: 根据用户提供的 UT 报告修正测试替身及副作用断言，无独立设计。
+---
+
+# 图片降级提示与付费搜索 UT 的测试替身和断言漂移
+
+## 现象与影响
+
+用户提供的 `unit_test_report (1).html` 对应候选
+`67755e9d49f9b4c22abc680973bc6313588971ee`，运行环境为 Linux、Python 3.11.5、pytest 9.0.3。
+报告统计为 24532 passed、9 failed、224 skipped。
+
+- `test_image_fallback_notice_nonstreaming.py` 的 8 项均在输入派发前抛出 `HISTORY_RESTORE_CHANGED`，
+  导致图片提示、正常文本、空回复及错误回复断言未执行。
+- `test_paid_search_configuration.py` 的现有 MCP agent 刷新用例观察到全局工具注册调用 5 次，
+  与预期总次数 2 不符。
+
+## 当前契约与根因
+
+图片提示用例通过真实 `process_message_impl` 入口收集模拟执行流。
+其运行时替身使用无规格的 `MagicMock`，访问 `react_agent.context_engine.get_context()` 时会生成模拟上下文，
+后续 `duplex_history_cursor` 同样成为模拟对象。严格历史读取器按真实游标契约校验这些属性，
+在正式消息执行前拒绝该游标。
+
+付费搜索用例要验证 Bocha 启用、切换 Serper、禁用后的模型工具列表与付费工具注册。
+原断言统计 `Runner.resource_mgr.add_tool` 的全部调用，统计范围包含同一进程内其他工具注册。
+报告证实多出三次调用，本地单独执行该用例时原总次数断言通过，无法仅凭报告确定额外调用的工具来源。
+
+## 修复决策
+
+- 将图片运行时替身的 `react_agent` 显式设为 `None`，准确表达仅提供输出流的运行时。
+  真实输入派发入口继续执行，其无 ReAct 上下文路径正常返回。
+- 从注册调用记录中筛选参数对象为唯一 `mcp_paid_search` 的调用，精确断言两次注册均使用
+  `skip_if_exists=True`。继续验证模型看到的 provider 枚举和禁用后的工具移除。
+- 搜索用例增加普通及额外工具注册两个参数场景。
+  第二个场景在三次工具列表读取时注册无关工具，覆盖原报告中总调用数从 2 增为 5 的形态。
+
+曾考虑捕获历史读取异常，但这会削弱真实会话恢复的游标校验。
+曾考虑把工具注册总次数改为 5 或下限断言，但真实付费工具漏注册或重复注册仍需要被精确检测。
+
+## 验证证据与范围
+
+本地使用 Windows、Python 3.12.13、pytest 9.0.3。
+初次收集发现 `.venv` 缺少 `e2a`，随后执行 `uv sync --frozen` 按现有锁定依赖同步环境。
+安装的 openjiuwen 对应锁定提交 `2f4bedb9c5d85ab70d7c79d36183e6a98799e94e`。
+
+运行前激活 `.venv` 并设置 `PYTHONPATH`。
+所有验证使用 `uv run --no-sync pytest`，通过 `-o addopts=` 关闭默认覆盖率产物，
+使用 `-o log_cli=false --tb=short -q` 控制输出。
+
+修复前两个报告失败文件本地运行结果为 8 failed、26 passed，图片提示的八种失败全部复现。
+修复后两个文件运行结果为 34 passed。补充额外工具注册参数场景后，相关六个文件共 113 passed。
+
+```text
+tests/unit_tests/agentserver/test_image_fallback_notice_nonstreaming.py
+tests/unit_tests/agentserver/test_image_fallback_notice_language.py
+tests/unit_tests/agentserver/test_image_input_status.py
+tests/unit_tests/agentserver/test_paid_search_configuration.py
+tests/unit_tests/agentserver/permissions/test_trusted_search_tool_adapter.py
+tests/unit_tests/test_context_snapshots.py
+```
+
+额外扩展到 `test_history_replay.py`、`test_history_review_regressions.py` 时，
+第一次合并运行结果为 165 passed、3 failed，单独重验这两个文件为 51 passed、5 failed。
+共同错误来自 `history_replay._read_prefix` 的文件身份校验 `HISTORY_RESTORE_CHANGED`，
+失败项随运行变化。上述两个文件及其生产实现均为原候选内容，本轮未修改。
+因此 113 项通过仅归属于上面六个已完成回归的文件，完整 Linux CI 尚待重跑。
+
+## 防错模式与资料同步
+
+运行时替身显式声明可选子系统是否存在，避免 `MagicMock` 自动属性被当作真实生命周期状态。
+全局副作用断言按被测资源身份筛选，同时保留精确调用参数和次数。
+本次规则随测试注释及故障记录维护，文档索引由同步工具生成。

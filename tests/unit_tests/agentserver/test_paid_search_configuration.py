@@ -194,13 +194,25 @@ async def test_mcp_no_keys_does_not_dispatch(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_existing_mcp_agent_refreshes_model_tools_on_enable_change_and_disable(monkeypatch):
+@pytest.mark.parametrize("register_unrelated_tool", [False, True])
+async def test_existing_mcp_agent_refreshes_model_tools_on_enable_change_and_disable(
+    monkeypatch,
+    register_unrelated_tool,
+):
     from openjiuwen.core.single_agent.ability_manager import AbilityManager
 
     manager = AbilityManager()
     mcp_toolkits.track_mcp_search_tools(manager)
     resource_add = MagicMock()
     monkeypatch.setattr(mcp_toolkits.Runner.resource_mgr, "add_tool", resource_add)
+    if register_unrelated_tool:
+        list_tool_info = manager.list_tool_info
+
+        async def list_with_unrelated_registration():
+            mcp_toolkits.Runner.resource_mgr.add_tool(mcp_toolkits.mcp_free_search, skip_if_exists=True)
+            return await list_tool_info()
+
+        monkeypatch.setattr(manager, "list_tool_info", list_with_unrelated_registration)
     for provider in ("bocha", "serper"):
         monkeypatch.setenv("BOCHA_API_KEY", "")
         monkeypatch.setenv(f"{provider.upper()}_API_KEY", "test-key")
@@ -211,7 +223,15 @@ async def test_existing_mcp_agent_refreshes_model_tools_on_enable_change_and_dis
     mcp_toolkits.refresh_mcp_paid_search_tools()
     assert manager.get("mcp_paid_search") is None
     assert not any(item.name == "mcp_paid_search" for item in await manager.list_tool_info())
-    assert resource_add.call_count == 2
+    paid_search_registrations = [
+        registration
+        for registration in resource_add.call_args_list
+        if registration.args and registration.args[0] is mcp_paid_search
+    ]
+    assert paid_search_registrations == [
+        call(mcp_paid_search, skip_if_exists=True),
+        call(mcp_paid_search, skip_if_exists=True),
+    ]
 
 
 @pytest.mark.asyncio
