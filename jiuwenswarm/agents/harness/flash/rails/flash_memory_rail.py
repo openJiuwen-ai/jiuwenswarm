@@ -39,6 +39,13 @@ class FlashMemoryRail(MemoryRail):
         ("edit_memory", "memory(mode=edit)"),
     )
 
+    # 内容松绑：deep 原样正文里的「每轮强制检索」→「任务开始检索一次」。
+    # 与工具名替换同序执行（先 5→1 再内容），命中守卫两套一起判。
+    _MEMORY_CONTENT_REPLACEMENTS = (
+        ("是每轮回答前的固定第一步，没有任何例外", "在任务开始时做一次，之后仅在需要新的用户上下文时再做"),
+        ("is the mandatory first step before every answer, with no exceptions", "should be done once at task start, then only when new user context is needed"),
+    )
+
     def __init__(
         self,
         embedding_config: EmbeddingConfig,
@@ -156,15 +163,25 @@ class FlashMemoryRail(MemoryRail):
             self.system_prompt_builder.add_section(dm_section)
 
     def _rewrite_section(self, section):
-        """把 section 文案里的五件套工具名改写为统一入口形式。"""
+        """把 section 文案里的五件套工具名改写为统一入口形式（带命中守卫）。"""
         content = getattr(section, "content", None)
         if not isinstance(content, dict):
             return section
         new_content = {}
         for lang_key, text in content.items():
             if isinstance(text, str):
+                original = text
                 for old, new in self._MEMORY_NAME_REPLACEMENTS:
                     text = text.replace(old, new)
+                for old, new in self._MEMORY_CONTENT_REPLACEMENTS:
+                    text = text.replace(old, new)
+                # 命中守卫：上游 build_memory_section 改文案（工具名/检索句变体）时，
+                # 盲替换会静默失效。这里检测「两套都无命中」，告警而非无声放行。
+                if text == original:
+                    logger.warning(
+                        "[FlashMemoryRail] 记忆文案未命中五件套工具名/每轮检索句，"
+                        "上游可能改了文案——统一名改写失效"
+                    )
             new_content[lang_key] = text
         try:
             return type(section)(
