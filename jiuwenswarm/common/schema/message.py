@@ -229,6 +229,7 @@ class ReqMethod(Enum):
     # Gateway owns voice task records; AgentServer returns execution facts/files.
     VOICE_TASK_CHECKPOINT_ACK = "voice.task.checkpoint.ack"
     VOICE_TASK_FILES = "voice.task.files"
+    VIDEO_CONVERSATION_APPEND = "video.conversation.append"
 
     # HarmonyOS TUI DevEco bootstrap（Phase 3：用户态在目标 AgentServer 注入目录执行）
     HARMONYOS_PROJECT_INIT = "harmonyos.project_init"

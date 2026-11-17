@@ -42,6 +42,26 @@ assert dict(ProtocolMethod.__members__) == before
 assert all(ReqMethod[name].value == member.value for name, member in before.items())
 assert ReqMethod.SKILLDEV_START.value == 'skilldev.start'
 assert ReqMethod.CLIENT_ATTACH.value == 'client.attach'
+assert ReqMethod.VIDEO_CONVERSATION_APPEND.value == 'video.conversation.append'
+"""],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_gateway_catalog_methods_have_matching_local_members():
+    result = subprocess.run(
+        [sys.executable, "-c", """
+from jiuwenswarm.common.schema.message import ReqMethod
+from agent_gateway.common.protocol_methods import ReqMethod as GatewayMethod
+assert ReqMethod is not GatewayMethod
+missing = {name: member.value for name, member in GatewayMethod.__members__.items()
+           if name not in ReqMethod.__members__}
+assert not missing, f'Gateway methods missing locally: {missing}'
+mismatched = {name: (member.value, ReqMethod[name].value)
+              for name, member in GatewayMethod.__members__.items()
+              if member.value != ReqMethod[name].value}
+assert not mismatched, f'Gateway/local wire values differ: {mismatched}'
 """],
         capture_output=True, text=True, check=False,
     )
@@ -129,7 +149,9 @@ def test_gateway_string_request_resolves_to_local_member():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("name", ["FILE_READ_UPLOAD_CHUNK", "TRAJECTORY_USAGE_GET"])
+@pytest.mark.parametrize("name", [
+    "FILE_READ_UPLOAD_CHUNK", "TRAJECTORY_USAGE_GET", "VIDEO_CONVERSATION_APPEND",
+])
 async def test_gateway_fetch_restores_host_method_and_routing_identity(name):
     from agent_gateway.common.protocol_methods import ReqMethod as GatewayReqMethod
     from agent_gateway.routing.e2a_proxy import fetch_agent_unary
