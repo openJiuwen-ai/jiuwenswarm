@@ -124,7 +124,7 @@ async def test_enterprise_raw_file_reuses_tenant_rpc_and_streaming(upload, monke
         tenant = utils.build_tenant_key(routing["group_id"], routing["bot_id"], kwargs["user_id"])
         with TenantContext.scoped(tenant):
             response = await WorkspaceFileAdapter().handle(AgentRequest(
-                request_id="read", channel_id="web", req_method=kwargs["req_method"],
+                request_id="read", channel_id="web", req_method=ReqMethod(kwargs["req_method"].value),
                 session_id=kwargs["session_id"], user_id=kwargs["user_id"],
                 params=kwargs["params"], metadata=identity,
             ))
@@ -153,7 +153,7 @@ async def test_enterprise_raw_file_reuses_tenant_rpc_and_streaming(upload, monke
         assert missing.status_code == 404
         bad = await client.get("/file-api/raw-file", params={"path": str(upload.path)})
         assert bad.status_code == 400
-    assert all(call["req_method"] == ReqMethod.FILE_READ_UPLOAD_CHUNK for call in calls)
+    assert all(call["req_method"].value == ReqMethod.FILE_READ_UPLOAD_CHUNK.value for call in calls)
     assert all(0 < call["params"]["limit"] <= UPLOAD_READ_CHUNK_BYTES for call in calls)
 
 
