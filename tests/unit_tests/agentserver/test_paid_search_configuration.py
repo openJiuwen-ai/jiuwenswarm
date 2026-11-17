@@ -202,7 +202,11 @@ async def test_existing_mcp_agent_refreshes_model_tools_on_enable_change_and_dis
     manager = AbilityManager()
     mcp_toolkits.track_mcp_search_tools(manager)
     resource_add = MagicMock()
-    monkeypatch.setattr(mcp_toolkits.Runner.resource_mgr, "add_tool", resource_add)
+    monkeypatch.setattr(
+        mcp_toolkits,
+        "Runner",
+        SimpleNamespace(resource_mgr=SimpleNamespace(add_tool=resource_add)),
+    )
     for provider in ("bocha", "serper"):
         monkeypatch.setenv("BOCHA_API_KEY", "")
         monkeypatch.setenv(f"{provider.upper()}_API_KEY", "test-key")
