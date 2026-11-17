@@ -1,6 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Contracts for the shared Inno Setup compiler bootstrap used by Windows builds."""
 
+import os
 import shutil
 import subprocess
 import sys
@@ -178,3 +179,154 @@ def test_shared_bootstrap_download_is_pinned_and_hash_verified_before_execution(
     assert "download.php/is.exe" not in source
     for script in (BUILD_EXE, BUILD_ELECTRON):
         assert "download.php/is.exe" not in script.read_text(encoding="utf-8")
+
+
+def test_build_scripts_reject_inno_setup_6_when_payload_exceeds_max_path() -> None:
+    """ISCC 6 + a payload path over MAX_PATH must fail before compression starts."""
+    source = MODULE.read_text(encoding="utf-8")
+    finder = source[source.index("function Find-MaxPathViolation"):]
+    # MAX_PATH is 260 characters for Inno Setup 6; the device prefix only makes
+    # the over-limit tree enumerable, it must not shift the measured length.
+    assert "$EntryName.Length -gt 260" in finder
+    assert "MAX_PATH (260 chars)" in finder
+    device_prefix = "\\\\?\\"
+    assert f"if ($EntryName.StartsWith('{device_prefix}')) {{ $EntryName = $EntryName.Substring(4) }}" in finder
+    assert "return \"payload directory not found: $SourceRoot\"" in finder
+    assert 'Join-Path (Join-Path $ProjectRoot "dist") $SourceDir' in source
+
+    for script, source_dir in (
+        (BUILD_EXE, "-SourceDir $BuildDistDirName"),
+        (BUILD_ELECTRON, '-SourceDir "$BuildDisplayName-Electron"'),
+    ):
+        text = script.read_text(encoding="utf-8")
+        iscc_6_branch = text.index("if (-not (Test-InnoSetup7OrNewer -IsccPath $Iscc))")
+        gate = text.index("$PayloadRoot = Get-InnoSetupSourceRoot -ProjectRoot $ProjectRoot", iscc_6_branch)
+        violation = text.index("Find-MaxPathViolation -SourceRoot $PayloadRoot", gate)
+        failure = text.index("Inno Setup 6 cannot build this payload", violation)
+        invocation = text.index("& $Iscc @", failure)
+        assert iscc_6_branch < gate < violation < failure < invocation
+        assert source_dir in text[gate:failure]
+        # The message must name both escapes: Inno Setup 7 or a shorter tree.
+        assert "Install Inno Setup 7" in text[failure:invocation]
+        assert "shorter directory" in text[failure:invocation]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="executes PowerShell path-length scanning")
+@pytest.mark.parametrize(
+    "target_length, expected_hit",
+    [
+        # 260 characters is still within MAX_PATH for Inno Setup 6.
+        (260, False),
+        (261, True),
+    ],
+)
+def test_find_max_path_violation_uses_the_260_char_boundary(tmp_path, target_length, expected_hit) -> None:
+    source_root = tmp_path / "dist" / "payload"
+    source_root.mkdir(parents=True)
+    file_name = "f" * (target_length - len(str(source_root)) - 1)
+    if not 0 < len(file_name) <= 255:
+        pytest.skip("tmp_path leaves no room for a single file name at the boundary")
+    long_file = source_root / file_name
+    assert len(str(long_file)) == target_length
+    # Without the device prefix Win32 rejects paths over MAX_PATH outright.
+    with open("\\\\?\\" + str(long_file), "w", encoding="utf-8") as handle:
+        handle.write("payload")
+
+    result = _run_scan_script(tmp_path, source_root)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert ("exceed MAX_PATH" in result.stdout) == expected_hit
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="executes PowerShell path-length scanning")
+def test_find_max_path_violation_reports_deep_trees_and_missing_payloads(tmp_path) -> None:
+    source_root = tmp_path / "deep" / "payload"
+    source_root.mkdir(parents=True)
+    long_dir = str(source_root)
+    level = 0
+    while len(long_dir) < 300:
+        level += 1
+        long_dir = long_dir + "\\" + f"segment{level:02d}-" + "x" * 40
+        os.makedirs("\\\\?\\" + long_dir)
+    with open("\\\\?\\" + long_dir + "\\payload.bin", "w", encoding="utf-8") as handle:
+        handle.write("payload")
+
+    result = _run_scan_script(tmp_path, source_root)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "exceed MAX_PATH" in result.stdout
+    # The report must show a concrete offending path, not only a count.
+    assert "payload.bin" in result.stdout
+    # The device prefix is implementation detail and must not leak into output.
+    assert "\\\\?\\" not in result.stdout
+
+    missing = _run_scan_script(tmp_path, tmp_path / "absent")
+    assert missing.returncode == 0, missing.stdout + missing.stderr
+    assert "payload directory not found" in missing.stdout
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="executes PowerShell installer discovery")
+@pytest.mark.parametrize(
+    "payload, expected_exit, expected_text",
+    [
+        # Payloads within MAX_PATH stay buildable with Inno Setup 6.
+        ("short", 0, "continuing with Inno Setup 6"),
+        # An over-limit payload must stop the build before signing/compression.
+        ("long", 1, "Inno Setup 6 cannot build this payload"),
+    ],
+)
+def test_iscc_6_gate_stops_over_limit_payload_before_compression(
+    tmp_path, payload, expected_exit, expected_text
+) -> None:
+    source = BUILD_EXE.read_text(encoding="utf-8")
+    start = source.index("$Iscc = Resolve-InnoSetupCompiler")
+    fragment = source[start:source.index('Write-Host "Using ISCC: $Iscc"', start)]
+
+    project_root = tmp_path / "project"
+    payload_root = project_root / "dist" / "payload"
+    payload_root.mkdir(parents=True)
+    (payload_root / "ok.bin").write_text("payload", encoding="utf-8")
+    if payload == "long":
+        long_dir = str(payload_root)
+        level = 0
+        while len(long_dir) < 300:
+            level += 1
+            long_dir = long_dir + "\\" + f"segment{level:02d}-" + "x" * 40
+            os.makedirs("\\\\?\\" + long_dir)
+        with open("\\\\?\\" + long_dir + "\\payload.bin", "w", encoding="utf-8") as handle:
+            handle.write("payload")
+
+    script = tmp_path / "gate.ps1"
+    script.write_text(
+        "$ErrorActionPreference = 'Stop'\n"
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()\n"
+        f"Import-Module '{MODULE}' -Force\n"
+        f"$ProjectRoot = '{project_root}'\n"
+        "$BuildDistDirName = 'payload'\n"
+        "function Resolve-InnoSetupCompiler { return 'C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe' }\n"
+        "function Install-InnoSetup7 { throw 'Inno Setup 7 must not be installed when 6 is present' }\n"
+        "function Test-InnoSetup7OrNewer { param($IsccPath) return $false }\n"
+        + fragment
+        + "\nWrite-Output 'gate-passed'\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [shutil.which("pwsh") or "powershell", "-NoProfile", "-File", str(script)],
+        capture_output=True, text=True, encoding="utf-8", check=False,
+    )
+    assert result.returncode == expected_exit, result.stdout + result.stderr
+    assert expected_text in result.stdout + result.stderr
+
+
+def _run_scan_script(tmp_path: Path, source_root: Path) -> subprocess.CompletedProcess:
+    script = tmp_path / "scan.ps1"
+    script.write_text(
+        "$ErrorActionPreference = 'Stop'\n"
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()\n"
+        f"Import-Module '{MODULE}' -Force\n"
+        f"$result = Find-MaxPathViolation -SourceRoot '{source_root}'\n"
+        "if ($null -eq $result) { Write-Output 'no-violation' } else { Write-Output $result }\n",
+        encoding="utf-8",
+    )
+    return subprocess.run(
+        [shutil.which("pwsh") or "powershell", "-NoProfile", "-File", str(script)],
+        capture_output=True, text=True, encoding="utf-8", check=False,
+    )

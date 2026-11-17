@@ -933,9 +933,24 @@ if (-not $Iscc) {
     }
 }
 if (-not (Test-InnoSetup7OrNewer -IsccPath $Iscc)) {
+    # Inno Setup 6 fails late ("The system cannot find the path specified")
+    # whenever a payload path exceeds MAX_PATH. The assembled app is final here,
+    # so validate it before compression and fail fast with an actionable message.
+    # This gate stays after the -SkipInstaller return above: directory-only
+    # builds must not resolve a compiler or care about payload path length.
+    $PayloadRoot = Get-InnoSetupSourceRoot -ProjectRoot $ProjectRoot -SourceDir "$BuildDisplayName-Electron"
+    $MaxPathViolation = Find-MaxPathViolation -SourceRoot $PayloadRoot
+    if ($null -ne $MaxPathViolation) {
+        throw (
+            "Inno Setup 6 cannot build this payload: $MaxPathViolation`n" +
+            "Install Inno Setup 7 (no MAX_PATH limit) or move the build tree " +
+            "to a shorter directory so every payload path stays within 260 chars."
+        )
+    }
     Write-Host (
-        "Warning: Inno Setup 7 was not detected; Inno Setup 6 cannot handle paths longer than " +
-        "MAX_PATH. Install Inno Setup 7 when the build tree uses long paths."
+        "Warning: Inno Setup 7 was not detected; continuing with Inno Setup 6. " +
+        "Inno Setup 6 cannot handle paths longer than MAX_PATH; all current " +
+        "payload paths are within 260 chars, but install Inno Setup 7 to stay safe."
     ) -ForegroundColor Yellow
 }
 

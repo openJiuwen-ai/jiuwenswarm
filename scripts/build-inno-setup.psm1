@@ -112,4 +112,55 @@ function Test-InnoSetup7OrNewer {
     return (Split-Path -Leaf (Split-Path -Parent $IsccPath)) -like "Inno Setup 7*"
 }
 
-Export-ModuleMember -Function Resolve-InnoSetupCompiler, Install-InnoSetup7, Get-InnoSetupMajorVersion, Test-InnoSetup7OrNewer
+function Get-InnoSetupSourceRoot {
+    # Directory that Inno Setup packs: the .iss Source entries glob below it
+    # (dist\<name>\* for installer.iss, dist\<name>-Electron\* for
+    # installer-electron.iss). Inno Setup 6 resolves every file it visits
+    # against the MAX_PATH limit, so this tree decides whether 6 is usable.
+    param([Parameter(Mandatory)][string]$ProjectRoot, [Parameter(Mandatory)][string]$SourceDir)
+
+    return (Join-Path (Join-Path $ProjectRoot "dist") $SourceDir)
+}
+
+function Find-MaxPathViolation {
+    # Inno Setup 6 fails late ("The system cannot find the path specified")
+    # whenever any file it visits exceeds MAX_PATH (260 chars). Enumerate the
+    # payload up front so a machine that only has Inno Setup 6 fails fast with
+    # an actionable message instead of breaking at the very end of packaging.
+    # Enumeration itself uses the \\?\ device prefix where possible: without it,
+    # Get-ChildItem -Recurse on systems without LongPathsEnabled silently skips
+    # exactly the long subtrees this check must see.
+    param([Parameter(Mandatory)][string]$SourceRoot)
+
+    $EnumerateRoot = $SourceRoot
+    if ($SourceRoot -match '^[A-Za-z]:\\') {
+        $EnumerateRoot = "\\?\$SourceRoot"
+    }
+    # [System.IO.Directory]::Exists understands the device prefix, so a root that
+    # is itself longer than MAX_PATH is still enumerated instead of being
+    # reported missing on systems without LongPathsEnabled.
+    if (-not [System.IO.Directory]::Exists($EnumerateRoot)) {
+        return "payload directory not found: $SourceRoot"
+    }
+
+    $LongEntries = @(
+        Get-ChildItem -LiteralPath $EnumerateRoot -Recurse -Force -ErrorAction SilentlyContinue |
+            Where-Object {
+                $EntryName = [string]$_.FullName
+                if ($EntryName.StartsWith('\\?\')) { $EntryName = $EntryName.Substring(4) }
+                $EntryName.Length -gt 260
+            } |
+            Select-Object -First 3
+    )
+    if ($LongEntries.Count -gt 0) {
+        $Examples = ($LongEntries | ForEach-Object {
+            $EntryName = [string]$_.FullName
+            if ($EntryName.StartsWith('\\?\')) { $EntryName = $EntryName.Substring(4) }
+            "  $EntryName ($($EntryName.Length) chars)"
+        }) -join "`n"
+        return "payload entries under '$SourceRoot' exceed MAX_PATH (260 chars); showing up to 3:`n$Examples"
+    }
+    return $null
+}
+
+Export-ModuleMember -Function Resolve-InnoSetupCompiler, Install-InnoSetup7, Get-InnoSetupMajorVersion, Test-InnoSetup7OrNewer, Get-InnoSetupSourceRoot, Find-MaxPathViolation

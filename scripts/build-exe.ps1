@@ -443,6 +443,35 @@ if (Test-Truthy $BundleUv) {
     Write-Host "`n[3.6/4] Skipping bundled uv runtime (BUNDLE_UV=$BundleUv)" -ForegroundColor Yellow
 }
 
+# Resolve the compiler once the payload is final and before signing: Inno Setup 6
+# cannot pack paths longer than MAX_PATH and only reports that failure at the
+# very end of compression, so an unusable compiler must stop the build here.
+$Iscc = Resolve-InnoSetupCompiler
+if (-not $Iscc) {
+    Install-InnoSetup7
+    $Iscc = Resolve-InnoSetupCompiler
+    if (-not $Iscc) {
+        throw "ISCC.exe was not found after installing Inno Setup 7. Install Inno Setup 7 and rerun the build."
+    }
+}
+if (-not (Test-InnoSetup7OrNewer -IsccPath $Iscc)) {
+    $PayloadRoot = Get-InnoSetupSourceRoot -ProjectRoot $ProjectRoot -SourceDir $BuildDistDirName
+    $MaxPathViolation = Find-MaxPathViolation -SourceRoot $PayloadRoot
+    if ($null -ne $MaxPathViolation) {
+        throw (
+            "Inno Setup 6 cannot build this payload: $MaxPathViolation`n" +
+            "Install Inno Setup 7 (no MAX_PATH limit) or move the build tree " +
+            "to a shorter directory so every payload path stays within 260 chars."
+        )
+    }
+    Write-Host (
+        "Warning: Inno Setup 7 was not detected; continuing with Inno Setup 6. " +
+        "Inno Setup 6 cannot handle paths longer than MAX_PATH; all current " +
+        "payload paths are within 260 chars, but install Inno Setup 7 to stay safe."
+    ) -ForegroundColor Yellow
+}
+Write-Host "Using ISCC: $Iscc" -ForegroundColor Gray
+
 # Sign every PE payload only after all bundled runtimes are in place. Existing
 # valid vendor signatures are preserved; unsigned PE files receive our release
 # signature and timestamp before Inno Setup compresses them.
@@ -463,21 +492,6 @@ if (Test-Truthy $BundleNode) {
 
 # 4. Build installer (Inno Setup)
 Write-Host "`n[4/4] Building installer (Inno Setup)..." -ForegroundColor Yellow
-$Iscc = Resolve-InnoSetupCompiler
-if (-not $Iscc) {
-    Install-InnoSetup7
-    $Iscc = Resolve-InnoSetupCompiler
-    if (-not $Iscc) {
-        throw "ISCC.exe was not found after installing Inno Setup 7. Install Inno Setup 7 and rerun the build."
-    }
-}
-if (-not (Test-InnoSetup7OrNewer -IsccPath $Iscc)) {
-    Write-Host (
-        "Warning: Inno Setup 7 was not detected; Inno Setup 6 cannot handle paths longer than " +
-        "MAX_PATH. Install Inno Setup 7 when the build tree uses long paths."
-    ) -ForegroundColor Yellow
-}
-Write-Host "Using ISCC: $Iscc" -ForegroundColor Gray
 $InnoDefines = @(
     "/DBuildDisplayName=$BuildDisplayName",
     "/DBuildVersion=$BuildVersion",
