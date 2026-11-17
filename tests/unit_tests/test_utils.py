@@ -534,6 +534,61 @@ def test_prepare_workspace_overwrite_preserves_external_cli_agents(tmp_path):
     assert team["external_cli_path_histories"]["claude"] == ["D:/tools/claude-old.exe"]
 
 
+def test_prepare_workspace_restores_external_cli_agents_from_sidecar(tmp_path, monkeypatch):
+    """数据目录被整体删除（无旧 config 可保留）时，从状态旁路恢复三方 agent 配置。"""
+    import json as json_lib
+    import yaml
+
+    sidecar = tmp_path / "outside" / "external_cli_state.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(
+        json_lib.dumps({
+            "agents": [{"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}],
+            "histories": {"claude": ["D:/tools/claude-old.exe"]},
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(utils, "external_cli_state_sidecar_path", lambda: sidecar)
+
+    workspace_dir = tmp_path / ".jiuwenswarm"
+
+    utils.prepare_workspace(
+        overwrite=True,
+        preferred_language="en",
+        workspace_dir=workspace_dir,
+    )
+
+    restored = yaml.safe_load((workspace_dir / "config" / "config.yaml").read_text(encoding="utf-8"))
+    team = restored["modes"]["team"]["jiuwen_team"]
+    assert team["external_cli_agents"] == [
+        {"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}
+    ]
+    assert team["external_cli_path_histories"]["claude"] == ["D:/tools/claude-old.exe"]
+
+
+def test_refresh_external_cli_state_sidecar_mirrors_config(tmp_path, monkeypatch):
+    """旁路文件镜像 config.yaml 里的三方 agent 配置与路径历史。"""
+    import yaml
+
+    sidecar = tmp_path / "outside" / "external_cli_state.json"
+    monkeypatch.setattr(utils, "external_cli_state_sidecar_path", lambda: sidecar)
+
+    workspace_dir = tmp_path / ".jiuwenswarm"
+    utils.prepare_workspace(overwrite=True, preferred_language="en", workspace_dir=workspace_dir)
+    config_path = workspace_dir / "config" / "config.yaml"
+
+    # 保存管线落盘启用 agent 后刷新旁路（等价于 config.py 更新函数的挂接点）
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    data["modes"]["team"]["jiuwen_team"]["external_cli_agents"] = [
+        {"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}
+    ]
+    config_path.write_text(yaml.dump(data), encoding="utf-8")
+    utils.refresh_external_cli_state_sidecar(config_path)
+
+    mirrored = yaml.safe_load(sidecar.read_text(encoding="utf-8"))
+    assert mirrored["agents"] == [{"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}]
+
+
 
 @pytest.mark.parametrize("skill_name", ["rsi-program-dataset-creator", "agent-group-creator"])
 def test_ensure_default_builtin_skills_installs_program_evolution_design(

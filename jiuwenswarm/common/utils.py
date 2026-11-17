@@ -1172,6 +1172,58 @@ def _restore_previous_external_cli_state(config_path: Path, state: dict[str, Any
         logger.warning(f"保留覆盖前的三方 agent 配置失败: {exc}")
 
 
+def external_cli_state_sidecar_path() -> Path:
+    """三方 agent 启用状态的旁路文件路径（位于 .jiuwenswarm 数据目录之外）。
+
+    数据目录被整体删除（重装/重置）后 config.yaml 不复存在，启用态无处
+    保留；旁路文件落在用户级应用数据目录，重装不会清除，init 时用于恢复
+    三方 agent 的启用配置。
+    """
+    display_name = "WorkSwarm"
+    if os.name == "nt":
+        local_app_data = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+        return local_app_data / display_name / "external_cli_state.json"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / display_name / "external_cli_state.json"
+    return Path.home() / ".config" / display_name / "external_cli_state.json"
+
+
+def refresh_external_cli_state_sidecar(config_path: Path) -> None:
+    """把 config.yaml 里的三方 agent 配置镜像到数据目录之外的旁路文件。
+
+    配置里没有启用中的 agent 时写入空态，init 依据空态不做恢复。
+    任一失败仅记录告警——旁路只是恢复手段，不允许影响正常保存。
+    """
+    try:
+        state = _read_previous_external_cli_state(config_path)
+        payload = state or {"agents": [], "histories": {}}
+        sidecar = external_cli_state_sidecar_path()
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"写入三方 agent 状态旁路文件失败: {exc}")
+
+
+def _read_external_cli_state_sidecar() -> Optional[dict[str, Any]]:
+    """读取状态旁路文件；缺失/解析失败/无启用 agent 时返回 None。"""
+    try:
+        sidecar = external_cli_state_sidecar_path()
+        if not sidecar.exists():
+            return None
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        agents = payload.get("agents") if isinstance(payload, dict) else None
+        if not isinstance(agents, list) or not agents:
+            return None
+        histories = payload.get("histories")
+        return {
+            "agents": agents,
+            "histories": histories if isinstance(histories, dict) else {},
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"读取三方 agent 状态旁路文件失败: {exc}")
+        return None
+
+
 def prepare_workspace(
     overwrite: bool = True,
     preferred_language: Optional[str] = None,
@@ -1218,6 +1270,12 @@ def prepare_workspace(
             shutil.copy2(config_yaml_src, config_yaml_dest)
         if preserved_external_cli is not None:
             _restore_previous_external_cli_state(config_yaml_dest, preserved_external_cli)
+        else:
+            # 数据目录被整体删除（重装/重置）的场景：旧 config 已不存在，无从
+            # 保留；从数据目录之外的状态旁路恢复三方 agent 的启用配置。
+            sidecar_state = _read_external_cli_state_sidecar()
+            if sidecar_state is not None:
+                _restore_previous_external_cli_state(config_yaml_dest, sidecar_state)
 
     resolved_lang = _resolve_preferred_language(config_yaml_dest, preferred_language)
 
