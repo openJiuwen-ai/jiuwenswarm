@@ -17429,14 +17429,8 @@ class JiuWenSwarmDeepAdapter:
             if permission_rail is not None:
                 cleanup.callback(setattr, permission_rail, "run_permission_levels", previous_rail_levels)
                 permission_rail.run_permission_levels = tool_levels
-<<<<<<< RELEASE
             context_token = CURRENT_RUN_CONTEXT.set(context)
             cleanup.callback(_reset_context_variable, CURRENT_RUN_CONTEXT, context_token)
-||||||| BEFORE_PR_9610
-            context_token = CURRENT_RUN_CONTEXT.set(context)
-            cleanup.callback(CURRENT_RUN_CONTEXT.reset, context_token)
-=======
->>>>>>> DEVELOP
             run_permissions_token = RUN_PERMISSIONS.set(tool_levels)
             cleanup.callback(_reset_context_variable, RUN_PERMISSIONS, run_permissions_token)
             runtime_mode = str(request_params.get("mode") or "agent").strip().lower()

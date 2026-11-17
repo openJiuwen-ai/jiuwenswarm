@@ -1,5 +1,4 @@
 {
-<<<<<<< RELEASE
   "extensionCommand": {
     "invalidArgs": "Invalid command arguments. Usage:",
     "singleLineOnly": "Enter one extension command per line. Run /extension for usage.",
@@ -37,59 +36,6 @@
     "currentState": "Current state at reconciliation time; this does not confirm the original operation succeeded:",
     "queryFailed": "State reconciliation failed: {{reason}}"
   },
-||||||| BEFORE_PR_9610
-=======
-  "pluginReplacement": {
-    "title": "Plugin already exists",
-    "message": "Local plugin {{id}} (version {{localVersion}}) already exists. Replace it with marketplace version {{hubVersion}}? Local changes will be overwritten.",
-    "confirm": "Replace local version",
-    "busy": "The previous plugin is executing or closing resources. Retry replacement when it is idle.",
-    "stale": "The local plugin has changed. Start installation again and confirm replacement.",
-    "unknownVersion": "unknown"
-  },
-  "userLogin": {
-    "language": "Interface language",
-    "title": "JiuwenSwarm Sign In",
-    "username": "Username",
-    "password": "Password",
-    "signIn": "Sign in",
-    "signingIn": "Signing in…",
-    "enterprise": "Or use an enterprise account",
-    "signInWith": "Sign in with {{name}}",
-    "failed": "Sign-in failed. Please retry.",
-    "back": "Back to sign in"
-  },
-  "enterpriseEntry": {
-    "invalidIdentity": "Identity returned no user ID.",
-    "emptyTitle": "No Agent Available",
-    "backToLogin": "Back to Sign in",
-    "language": "Interface language",
-    "noContext": "No Agent is available for this account. Please grant access in the Manager console first.",
-    "loadFailed": "Failed to load Agent contexts.",
-    "switchFailed": "Failed to switch context.",
-    "errorTitle": "Unable to enter workspace",
-    "loadingTitle": "Loading workspace",
-    "loading": "Loading the Agents available to this account.",
-    "retry": "Retry",
-    "login": "Go to login"
-  },
-  "skillPackInstall": {
-    "title": "Review SkillPack installation",
-    "summary": "Review the Pack and its locked member versions. Matching local Skills will be reused; missing members will be downloaded from this Hub. Nothing is installed until you confirm.",
-    "actions": {
-      "reuse": "Reuse local",
-      "download": "Download",
-      "blocked": "Blocked"
-    },
-    "blocked": "Resolve the listed conflicts before installing. Existing Skills will not be overwritten.",
-    "cancel": "Cancel",
-    "confirm": "Confirm installation",
-    "invalidPlan": "The installation plan is incomplete. Refresh the marketplace and try again.",
-    "changed": "The installation plan changed. Select the SkillPack again to review the latest plan.",
-    "refreshed": "The installation plan has changed. Review the members and confirm again.",
-    "validationFailed": "SkillPack validation failed. Download it again and check its members."
-  },
->>>>>>> DEVELOP
   "common": {
     "searchName": "Search names",
     "noData": "No data",
@@ -529,45 +475,8 @@
       "channels": "Channels",
       "personalContext": "Knowledge",
       "archivedTasks": "Archived Tasks",
-<<<<<<< RELEASE
       "experimental": "Experimental",
       "systemPluginRecovery": "System plugin recovery"
-||||||| BEFORE_PR_9610
-      "experimental": "Experimental"
-=======
-      "experimental": "Experimental",
-      "appearance": "Appearance"
-    },
-    "appearance": {
-      "uiFont": "Interface font",
-      "uiFontDescription": "Font used for chat, settings and other interface text. Stored on this device only.",
-      "uiFontDefault": "Follow default",
-      "uiFontZhHei": "Chinese sans (Microsoft YaHei / PingFang)",
-      "uiFontZhSong": "Chinese serif (SimSun / Source Han Serif)",
-      "uiFontZhKai": "Chinese Kai (KaiTi / LXGW WenKai)",
-      "uiFontCustom": "Custom",
-      "customFontPlaceholder": "Font names, separated by commas",
-      "customFontHint": "Fonts are matched in order against locally installed fonts. Generic families such as sans-serif and monospace are also allowed.",
-      "fontSize": "Interface font size",
-      "fontSizeDescription": "Scales interface text proportionally. 100% matches the current default.",
-      "fontSizeSmaller": "Smaller (90%)",
-      "fontSizeDefault": "Default (100%)",
-      "fontSizeLarger": "Larger (110%)",
-      "fontSizeLarge": "Large (125%)",
-      "fontSizeXLarge": "Extra large (140%)",
-      "codeFont": "Code font",
-      "codeFontDescription": "Font for monospace content such as code blocks, commands and traces.",
-      "codeFontDefault": "Follow default",
-      "codeFontJetbrainsFira": "JetBrains Mono / Fira Code",
-      "codeFontCascadia": "Cascadia Code",
-      "codeFontCustom": "Custom",
-      "preview": "Preview",
-      "previewBody": "Interface text preview: organizing today's task summary for you.",
-      "previewCodeSample": "npm run build",
-      "resetTitle": "Restore default appearance",
-      "resetDescription": "Clears appearance preferences saved on this device and restores theme defaults.",
-      "resetButton": "Restore defaults"
->>>>>>> DEVELOP
     },
     "feedback": {
       "loadFailed": "Failed to load settings",

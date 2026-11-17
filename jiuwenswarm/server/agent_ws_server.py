@@ -229,60 +229,8 @@ from jiuwenswarm.server.runtime.gateway_adapter import (
 from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import (
     reload_runtime_after_config_save,
 )
-<<<<<<< RELEASE
 from jiuwenswarm.extensions_v2.webui.adapter import WebUIDispatchAdapter
 from jiuwenswarm.extensions_v2.management.adapter import PackageManagementAdapter
-||||||| BEFORE_PR_9610
-=======
-from jiuwenswarm.server.runtime.session.history_io import run_history_io
-from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter
-from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
-from jiuwenswarm.server.utils.utils import is_team_params
-from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported for tests / handlers
-    _HISTORY_PAGE_SIZE,
-    _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES,
-    _HISTORY_WIRE_DEPTH_LIMIT,
-    _HISTORY_WIRE_LIST_LIMIT,
-    _HISTORY_WIRE_METADATA_STRING_LIMIT,
-    _HISTORY_WIRE_RECORD_MAX_BYTES,
-    _HISTORY_WIRE_STRING_LIMIT,
-    _SPLITTABLE_AGENT_FIELDS,
-    _TEAM_HISTORY_DEFAULT_LIMIT,
-    _TEAM_HISTORY_DEFAULT_MAX_BYTES,
-    _TEAM_HISTORY_FRAME_OVERHEAD_BYTES,
-    _TEAM_HISTORY_MAX_LIMIT,
-    _TEAM_HISTORY_MAX_MAX_BYTES,
-    _TEAM_HISTORY_MIN_MAX_BYTES,
-    _WORKFLOW_AGENT_DEFAULT_LIMIT,
-    _WORKFLOW_AGENT_FIELD_PART_BYTES,
-    _WORKFLOW_AGENT_MAX_LIMIT,
-    _WORKFLOW_LIST_DEFAULT_LIMIT,
-    _WORKFLOW_LIST_MAX_LIMIT,
-    _WORKFLOW_PHASE_DEFAULT_LIMIT,
-    _WORKFLOW_PHASE_MAX_LIMIT,
-    _build_agent_detail,
-    _build_phase_detail_paginated,
-    _build_workflow_detail_paginated,
-    _build_workflow_list_payload,
-    _coerce_int,
-    _collapse_oversized_history_record,
-    _compact_wire_metadata_value,
-    _find_agent,
-    _find_phase,
-    _json_wire_size,
-    _minimal_history_record_for_wire,
-    _sanitize_history_record_for_wire,
-    _sanitize_history_wire_value,
-    _select_history_record_page,
-    _split_oversized_agent_fields,
-    _truncate_string_by_bytes,
-    _workflow_list_summary_item,
-    _workflow_phase_summary,
-    _workflow_run_meta,
-    split_history_record_for_stream,
-)
-from jiuwenswarm.server.ws_send import send_wire_payload
->>>>>>> DEVELOP
 
 logger = logging.getLogger(__name__)
 _MANUAL_COMPACT_PROCESSOR_TYPES = [
@@ -1279,13 +1227,8 @@ class AgentWebSocketServer:
             DesignerAdapter(),
             HarmonyOSAdapter(),
             ConfigAdapter(on_config_saved=self._reload_after_config_save),
-<<<<<<< RELEASE
             WebUIDispatchAdapter(),
             PackageManagementAdapter(),
-||||||| BEFORE_PR_9610
-=======
-            self._jiuwenmate_web,
->>>>>>> DEVELOP
         ):
             self._adapter_registry.register(adapter)
         # AgentServer-side tokenizer cache/download service. The Gateway only
@@ -2173,13 +2116,8 @@ class AgentWebSocketServer:
                     DesignerAdapter(),
                     HarmonyOSAdapter(),
                     ConfigAdapter(on_config_saved=self._reload_after_config_save),
-<<<<<<< RELEASE
                     WebUIDispatchAdapter(),
                     PackageManagementAdapter(),
-||||||| BEFORE_PR_9610
-=======
-                    self._jiuwenmate_web,
->>>>>>> DEVELOP
                 ):
                     self._adapter_registry.register(adapter)
 

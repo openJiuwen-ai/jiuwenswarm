@@ -8,14 +8,7 @@ export type ChatRoute =
 export function parseChatRoute(pathname: string): ChatRoute | null {
   const path = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname;
   if (path === '/' || path === '/chat' || path === '/chat/new') return { kind: 'chat-new' };
-<<<<<<< RELEASE
   if (path === '/system-plugin-recovery') return { kind: 'system-plugin-recovery' };
-||||||| BEFORE_PR_9610
-=======
-  if (path === '/groups') return { kind: 'group-chat' };
-  const groupMatch = path.match(/^\/groups\/([^/]+)$/);
-  if (groupMatch) return { kind: 'group-chat', groupId: decodeURIComponent(groupMatch[1]) };
->>>>>>> DEVELOP
   const designSessionMatch = path.match(/^\/design\/([^/]+)\/([^/]+)$/);
   if (designSessionMatch) {
     return {
@@ -35,18 +28,9 @@ export function parseChatRoute(pathname: string): ChatRoute | null {
 }
 
 export function chatRoutePath(route: ChatRoute): string {
-<<<<<<< RELEASE
   if (route.kind === 'chat-new') return '/chat/new';
   if (route.kind === 'system-plugin-recovery') return '/system-plugin-recovery';
   if (route.kind === 'chat-session') return `/chat/${encodeURIComponent(route.sessionId)}`;
-||||||| BEFORE_PR_9610
-  if (route.kind === 'chat-new') return '/chat/new';
-  if (route.kind === 'chat-session') return `/chat/${encodeURIComponent(route.sessionId)}`;
-=======
-  if (route.kind === 'chat-new') return withBasePath('/chat/new');
-  if (route.kind === 'chat-session') return withBasePath(`/chat/${encodeURIComponent(route.sessionId)}`);
-  if (route.kind === 'group-chat') return withBasePath(route.groupId ? `/groups/${encodeURIComponent(route.groupId)}` : '/groups');
->>>>>>> DEVELOP
   if (route.kind === 'design-project') {
     const projectPath = `/design/${encodeURIComponent(route.projectId)}`;
     return route.sessionId
