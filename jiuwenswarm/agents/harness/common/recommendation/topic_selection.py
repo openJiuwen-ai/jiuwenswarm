@@ -71,7 +71,6 @@ class SelectionCandidate:
     stable_rank: int
     evidence_eligible: bool
     freshness_eligible: bool
-    negative_preference_hit: bool
     interest_summary_id: str | None
     identity_anchor: str | None
     source_memory_unit_ids: tuple[str, ...]
@@ -88,7 +87,6 @@ class SelectionCandidate:
         _value_items = (
             self.evidence_eligible,
             self.freshness_eligible,
-            self.negative_preference_hit,
         )
         if any(
             not isinstance(value, bool)
@@ -764,8 +762,6 @@ def _candidate_hard_reasons(
         reasons.append("evidence_ineligible")
     if not candidate.freshness_eligible:
         reasons.append("freshness_ineligible")
-    if candidate.negative_preference_hit:
-        reasons.append("negative_preference")
     if constraints.context_scope == _GLOBAL_SCOPE:
         if not _nonempty(candidate.interest_summary_id):
             reasons.append("missing_personalized_interest")

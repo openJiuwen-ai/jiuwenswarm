@@ -4983,3 +4983,34 @@ def test_legacy_negative_preferences_are_scrubbed_once(tmp_path):
 
     # The marker keeps later starts idle.
     assert history.scrub_legacy_negative_preferences(store, now=12.0) is False
+
+def test_selection_candidates_no_longer_need_dismissal_flags():
+    from jiuwenswarm.agents.harness.common.recommendation.topic_pipeline import (
+        _selection_candidates,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        GLOBAL_NEW_CHAT_SCOPE,
+        InterestFeedback,
+    )
+
+    plan = {
+        "candidate_id": "candidate-1",
+        "category": "profile_recent_progress",
+        "interest_summary_id": "interest-1",
+        "identity_anchor": "anchor",
+        "source_memory_unit_ids": [],
+        "title": "标题",
+        "prompt": "问题",
+        "intent": "意图",
+        "freshness_class": "recent_development",
+        "evidence_bundle": {"content_boundary": {"text": "证据"}},
+    }
+    candidates = _selection_candidates(
+        [plan],
+        context_scope=GLOBAL_NEW_CHAT_SCOPE,
+        feedback=InterestFeedback(now=0.0),
+        news_plan=None,
+    )
+
+    assert candidates[0].candidate_id == "candidate-1"
+
