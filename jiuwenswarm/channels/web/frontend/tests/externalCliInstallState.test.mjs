@@ -646,11 +646,16 @@ test('the detection hint distinguishes PATH lookup from executable validation', 
   assert.match(section, /!onCommitAgent \|\| committing\[cliAgent\] \|\| installInFlight\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]/);
   assert.match(section, /loading=\{installInFlight\[cliAgent\]\}/);
   assert.doesNotMatch(section, /loading=\{committing\[cliAgent\]\}/);
-  // The enable switch is disabled only when the CLI is not installed AND the
-  // agent is already disabled — so a page reload (installed=false until the
-  // auto-detect runs) does not lock the user out of an enabled agent, and a
-  // disabled agent cannot be turned on before installing the CLI.
-  assert.match(section, /disabled=\{disabled \|\| \(!installed && !enabled\) \|\| committing\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]\}/);
+  // The enable switch freezes once a completed probe confirms the CLI is
+  // missing or the path is a non-executable — 未安装时开关必须禁用，不能再切
+  // 到启用态。A page reload (installed=false until the auto-detect runs) and
+  // an 'unavailable' probe (the executable is there but the version command
+  // failed) still leave the switch operable, so the user can recover or
+  // disable a broken agent instead of being locked out.
+  assert.match(
+    section,
+    /disabled=\{disabled\s+\|\| \(!installed && \(!result \|\| !enabled \|\| result\.status === 'missing' \|\| result\.status === 'unsupported'\)\)\s+\|\| committing\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]\}/,
+  );
 });
 
 test('uploaded custom agents are listed after Claude and Codex', async () => {
