@@ -128,6 +128,7 @@ class AppMarketManager:
                     "run_type": a.run_type,
                     "default_port": a.default_port,
                     "status_mode": a.status_mode,
+                    "startup_timeout_seconds": a.startup_timeout_seconds,
                     "created_at": a.created_at,
                 }
                 for a in apps

@@ -1,6 +1,10 @@
 import { webRequest } from '../../services/webClient';
 import { webAppViews } from './webAppViews';
 
+export function appMarketStartTimeoutMs(seconds = 30) {
+  return Math.max(120_000, (seconds + 30) * 1000);
+}
+
 export interface InstanceInfo {
   instance_id: string;
   app_id: string;

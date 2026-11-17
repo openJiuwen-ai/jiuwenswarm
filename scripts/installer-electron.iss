@@ -1,9 +1,13 @@
 ; JiuwenSwarm Electron Installer Script (Windows)
-; 用法: "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" scripts\installer-electron.iss
+; 使用 build-electron-exe.ps1，从实际载荷计算 MaxPayloadRelativePath。
 ; 应用名 / 版本号 / 壳 exe 名 / 后端 exe 名由 build-electron-exe.ps1 经
 ; /DMyAppName=... /DMyAppVersion=... /DMyAppExeName=... /DBackendExecutableName=...
 ; 传入（来自 build_config，与 pyproject 单一来源，与 installer.iss 的 WorkSwarm
 ; 显示名一致）；直接编译且未传 /D 时使用下方默认值。
+
+#ifndef MaxPayloadRelativePath
+  #error MaxPayloadRelativePath is required. Use scripts/build-electron-exe.ps1.
+#endif
 
 #ifndef MyAppName
   #define MyAppName "WorkSwarm"
@@ -279,6 +283,12 @@ begin
   // Do not remove the installed app until the user confirms installation.
   // This also leaves it intact when a distribution's license is declined.
   Result := '';
+  { Reserve room for the path separator and Inno Setup temporary filenames. }
+  if Length(ExpandConstant('{app}')) + 1 + {#MaxPayloadRelativePath} > 249 then
+  begin
+    Result := '安装路径太长。请选择更短的目录，例如 D:\WorkSwarm。';
+    Exit;
+  end;
   if not PreserveWindowsCli(ExpandConstant('{app}'), 'Preserve') then
   begin
     Result := 'External CLI preservation failed; installation stopped before cleanup.';

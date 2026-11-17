@@ -15,6 +15,8 @@ import logging
 import argparse
 import re
 import sys
+import tempfile
+import zipfile
 from pathlib import Path
 
 from lxml import etree
@@ -42,6 +44,7 @@ def emit(line):
     _OUT.info(line)
 
 SCHEMA_ROOT = Path(__file__).resolve().parent / "schemas"
+ISO_SCHEMA_DIR = "ISO-IEC29500-4_2016"
 
 # Pick the schema from the part's ROOT ELEMENT NAMESPACE, not its path. A
 # chart under ppt/charts/ is drawingml, not presentationml, and validating it
@@ -49,19 +52,19 @@ SCHEMA_ROOT = Path(__file__).resolve().parent / "schemas"
 # vendor extension with no published schema, and is skipped.
 NS_TO_XSD = {
     "http://schemas.openxmlformats.org/presentationml/2006/main":
-        "ISO-IEC29500-4_2016/pml.xsd",
+        f"{ISO_SCHEMA_DIR}/pml.xsd",
     "http://schemas.openxmlformats.org/wordprocessingml/2006/main":
-        "ISO-IEC29500-4_2016/wml.xsd",
+        f"{ISO_SCHEMA_DIR}/wml.xsd",
     "http://schemas.openxmlformats.org/spreadsheetml/2006/main":
-        "ISO-IEC29500-4_2016/sml.xsd",
+        f"{ISO_SCHEMA_DIR}/sml.xsd",
     "http://schemas.openxmlformats.org/drawingml/2006/main":
-        "ISO-IEC29500-4_2016/dml-main.xsd",
+        f"{ISO_SCHEMA_DIR}/dml-main.xsd",
     "http://schemas.openxmlformats.org/drawingml/2006/chart":
-        "ISO-IEC29500-4_2016/dml-chart.xsd",
+        f"{ISO_SCHEMA_DIR}/dml-chart.xsd",
     "http://schemas.openxmlformats.org/drawingml/2006/chartDrawing":
-        "ISO-IEC29500-4_2016/dml-chartDrawing.xsd",
+        f"{ISO_SCHEMA_DIR}/dml-chartDrawing.xsd",
     "http://schemas.openxmlformats.org/drawingml/2006/diagram":
-        "ISO-IEC29500-4_2016/dml-diagram.xsd",
+        f"{ISO_SCHEMA_DIR}/dml-diagram.xsd",
     "http://schemas.openxmlformats.org/package/2006/relationships":
         "ecma/fouth-edition/opc-relationships.xsd",
     "http://schemas.openxmlformats.org/package/2006/content-types":
@@ -73,29 +76,44 @@ NS_TO_XSD = {
 # PowerPoint opening the file.
 SKIP_PARTS = re.compile(r"(^|/)docProps/", re.I)
 
-_schema_cache: dict[str, etree.XMLSchema | None] = {}
+_schema_cache: dict[Path, etree.XMLSchema | None] = {}
 
 
-def schema_for(root_ns: str | None):
+def schema_for(root_ns: str | None, schema_root: Path = SCHEMA_ROOT):
     """Return a compiled XMLSchema for this namespace, or None if unchecked."""
     xsd = NS_TO_XSD.get(root_ns or "")
     if not xsd:
         return None
-    if xsd not in _schema_cache:
-        path = SCHEMA_ROOT / xsd
+    path = schema_root / xsd
+    if path not in _schema_cache:
         if not path.is_file():
             return None
         try:
-            _schema_cache[xsd] = etree.XMLSchema(etree.parse(str(path)))
+            _schema_cache[path] = etree.XMLSchema(etree.parse(str(path)))
         except etree.XMLSchemaParseError as exc:
             # A schema we cannot compile (usually an unresolvable import) must
             # not take the whole run down — skip that family and say so once.
             LOGGER.error(f"validate: skipping {xsd} — {exc}")
-            _schema_cache[xsd] = None
-    return _schema_cache[xsd]
+            _schema_cache[path] = None
+    return _schema_cache[path]
 
 
 def validate_schemas(unpacked: Path) -> list[str]:
+    archive = SCHEMA_ROOT.with_suffix(".zip")
+    if not archive.is_file():
+        return _validate_schemas(unpacked, SCHEMA_ROOT)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        schema_root = Path(tmp)
+        try:
+            with zipfile.ZipFile(archive) as bundled_schemas:
+                bundled_schemas.extractall(schema_root)
+        except (zipfile.BadZipFile, OSError) as exc:
+            raise ValueError(f"Could not open bundled OOXML schemas: {exc}") from exc
+        return _validate_schemas(unpacked, schema_root)
+
+
+def _validate_schemas(unpacked: Path, schema_root: Path) -> list[str]:
     errors: list[str] = []
     for part in sorted(unpacked.rglob("*")):
         if not part.is_file() or part.suffix.lower() not in {".xml", ".rels"}:
@@ -108,7 +126,7 @@ def validate_schemas(unpacked: Path) -> list[str]:
         except etree.XMLSyntaxError as exc:
             errors.append(f"{rel}: not well-formed XML — {exc}")
             continue
-        schema = schema_for(etree.QName(doc.getroot()).namespace)
+        schema = schema_for(etree.QName(doc.getroot()).namespace, schema_root)
         if schema is None:
             continue
         if not schema.validate(doc):
@@ -178,9 +196,6 @@ def validate(unpacked: Path, baseline: Path | None = None) -> list[str]:
     if baseline is None or not errors:
         return errors
 
-    import tempfile
-    import zipfile
-
     with tempfile.TemporaryDirectory() as tmp:
         base_dir = Path(tmp) / "baseline"
         base_dir.mkdir()
@@ -201,8 +216,12 @@ def main():
     ap.add_argument("--baseline", help="original package; only report defects it lacks")
     args = ap.parse_args()
 
-    errors = validate(Path(args.unpacked),
-                      Path(args.baseline) if args.baseline else None)
+    try:
+        errors = validate(Path(args.unpacked),
+                          Path(args.baseline) if args.baseline else None)
+    except ValueError as exc:
+        LOGGER.error(str(exc))
+        return 1
     if errors:
         LOGGER.error(f"Validation FAILED with {len(errors)} error(s):")
         for err in errors[:40]:

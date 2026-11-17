@@ -73,11 +73,11 @@ description: |
 1. 按展示质量规范生成应用页面、图标、版本、名称和简介，写入标准 HTML 元信息。
 2. 接入应用自己的 Gateway 客户端，按会话管理规范验证数量上限、复用、重置及退出清理，并完成真实 AI 请求。团队玩法按 [Team NPC 接入指南](references/team-npc.md#验收) 验证各角色独立发言及回合收口；需要存档时另测保存与恢复。
 3. 在现有对话中展示应用及所需 `ai` 能力；主动选择技能时验证通过后自动发布，自动匹配时提示并等待确认。验证失败不得登记。
-4. 确认后执行本 Skill 的发布脚本（复用 WorkSwarm GatewayClient 调用 `app_market.publish`，不直接改市场数据）：
+4. 确认后执行本 Skill 的发布脚本（使用随 Electron 提供的 Node.js，通过 WebChannel 调用 `app_market.publish`，不直接改市场数据）：
 
    ```bash
-   {python} "{skill_directory}/scripts/publish.py" --entry <入口绝对路径> --session-id <当前会话ID> --gateway-url <实际 WebChannel WebSocket 地址> --confirmed
+   node "{skill_directory}/scripts/publish.mjs" --entry <入口绝对路径> --session-id <当前会话ID> --gateway-url <实际 WebChannel WebSocket 地址> --confirmed
    ```
 
-   地址从当前运行配置取得，不猜测端口，不使用通用 TUI 端口替代 WebChannel。
+   优先读取当前会话的 WORKSWARM_GATEWAY_API_URL；否则从当前 Electron 实例的运行配置取得实际 WebChannel 地址。勿使用 AgentServer 或 TUI 通道。发布脚本先验证市场列表，再发送发布请求。
 5. 以返回的 `app_id` 报告结果，进入市场核对卡片。页面需要市场注入运行配置；直接双击页面应提示需要从应用市场启动。

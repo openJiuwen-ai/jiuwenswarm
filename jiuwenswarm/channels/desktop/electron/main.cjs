@@ -98,7 +98,7 @@ async function findAvailablePorts(scanRange = 10) {
 let hasCdp = false;
 
 function mainLogPath() {
-  return path.join(app.getPath('home'), '.jiuwenswarm', 'logs', 'electron-main.log');
+  return path.join(userWorkspaceDir(), 'logs', 'electron-main.log');
 }
 
 function installMainConsoleTee() {
@@ -210,7 +210,7 @@ const logStreams = new Map();
 function logStreamFor(name) {
   if (!app.isPackaged) return 'inherit';
   if (logStreams.has(name)) return logStreams.get(name);
-  const logDir = path.join(app.getPath('home'), '.jiuwenswarm', 'logs');
+  const logDir = path.join(userWorkspaceDir(), 'logs');
   const logFile = path.join(logDir, `electron-${name}.log`);
   let fd;
   try {
@@ -492,11 +492,12 @@ const GATEWAY_LOCK_FILENAME = '.gateway.lock';
 const GATEWAY_PREFLIGHT_WAIT_MS = 15_000;
 
 function userWorkspaceDir() {
-  return path.join(app.getPath('home'), '.jiuwenswarm');
+  const home = process.env.JIUWENSWARM_HOME || app.getPath('home');
+  return process.env.JIUWENSWARM_DATA_DIR || path.join(home, '.jiuwenswarm');
 }
 
 function desktopWindowPreferencesPath() {
-  const workspaceDir = process.env.JIUWENSWARM_DATA_DIR || userWorkspaceDir();
+  const workspaceDir = userWorkspaceDir();
   return path.join(workspaceDir, 'config', DESKTOP_WINDOW_PREFERENCES_FILENAME);
 }
 

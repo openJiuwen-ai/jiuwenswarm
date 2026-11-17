@@ -5,7 +5,7 @@ import asyncio
 import uuid
 from typing import Any, Awaitable, Callable
 
-from openjiuwen_protocol.message import ReqMethod
+from jiuwenswarm.common.schema.message import ReqMethod
 
 from .app_market.storage import MarketStorage
 

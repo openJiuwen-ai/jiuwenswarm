@@ -156,6 +156,22 @@ class SkillAdapter:
     def _generate_windows_start(self, run_type: str, status_mode: str) -> str:
         if run_type != "static":
             return self._legacy_windows_start(run_type, status_mode)
+        return (
+            '$ErrorActionPreference = "Stop"\n'
+            '$appServer = Join-Path $PSScriptRoot "app_server.py"\n'
+            'if (-not (Test-Path -LiteralPath $appServer -PathType Leaf)) { $appServer = $env:WORKSWARM_STATIC_SERVER }\n'
+            '$info = New-Object System.Diagnostics.ProcessStartInfo\n'
+            '$info.FileName = $env:WORKSWARM_PYTHON\n'
+            '$info.Arguments = \'"\' + $appServer + \'"\'\n'
+            '$info.UseShellExecute = $false\n'
+            '$info.CreateNoWindow = $true\n'
+            '$server = [System.Diagnostics.Process]::Start($info)\n'
+            '$server.WaitForExit()\n'
+            'exit $server.ExitCode\n'
+        )
+
+    @staticmethod
+    def _previous_windows_static_start() -> str:
         return ('$ErrorActionPreference = "Stop"\n'
                 '$appServer = Join-Path $PSScriptRoot \"app_server.py\"\n'
                 'if (Test-Path $appServer) { & $env:WORKSWARM_PYTHON $appServer } else { & $env:WORKSWARM_PYTHON $env:WORKSWARM_STATIC_SERVER }\n'
@@ -167,7 +183,7 @@ class SkillAdapter:
         return '#!/bin/sh\nset -e\napp_server="$(dirname "$0")/app_server.py"\nif [ -f "$app_server" ]; then exec "$WORKSWARM_PYTHON" "$app_server"; fi\nexec "$WORKSWARM_PYTHON" "$WORKSWARM_STATIC_SERVER"\n'
 
     def upgrade_static_scripts(self, manifest: AppManifest) -> None:
-        """Replace only the original generated static start template."""
+        """Replace only known generated static start templates."""
         if manifest.run_type != "static":
             return
         from pathlib import Path
@@ -178,10 +194,13 @@ class SkillAdapter:
         path = Path(manifest.work_dir) / relative
         legacy = self._legacy_windows_start if pk == "windows" else self._legacy_unix_start
         try:
-            original = path.read_text(encoding="utf-8") if path.is_file() else ""
+            original = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
         except UnicodeError:
             return
-        if original == legacy("static", manifest.status_mode):
+        generated_templates = {legacy("static", manifest.status_mode)}
+        if pk == "windows":
+            generated_templates.add(self._previous_windows_static_start())
+        if original in generated_templates:
             content = self._generate_windows_start if pk == "windows" else self._generate_unix_start
             path.write_text(content("static", manifest.status_mode), encoding="utf-8")
 

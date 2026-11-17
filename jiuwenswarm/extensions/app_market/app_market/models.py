@@ -28,6 +28,11 @@ class AppManifest:
     owner_id: str = ""
     editor_session_id: str = ""
     editor_create_token: str = ""
+    startup_timeout_seconds: int = 30
+
+    def __post_init__(self) -> None:
+        timeout = self.startup_timeout_seconds
+        self.startup_timeout_seconds = min(timeout, 300) if type(timeout) is int and timeout > 0 else 30
 
 
 @dataclass

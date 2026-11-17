@@ -299,6 +299,8 @@ hiddenimports = webview_hiddenimports + http2_submodules + [
     "aiosqlite",
     "croniter",
     "websockets",
+    # The extension loader opens extension.py from disk in frozen builds.
+    *collect_submodules("jiuwenswarm.extensions.app_market"),
     "loguru",
     "dotenv",
     "webview",
