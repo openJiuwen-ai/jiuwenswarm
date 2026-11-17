@@ -2392,6 +2392,7 @@ function AppContent({
       cli_agent: ExternalCliAgentKind;
       status: "ok" | "warning" | "missing" | "unsupported" | "unavailable";
       path?: string;
+      builtin_path?: string;
       version?: string;
       reference_version?: string;
       message?: string;

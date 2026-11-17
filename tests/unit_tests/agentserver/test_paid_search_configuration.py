@@ -20,6 +20,10 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmD
 def isolated_search_env(monkeypatch):
     for provider in ("bocha", "perplexity", "serper", "jina"):
         monkeypatch.setenv(f"{provider.upper()}_API_KEY", "")
+    # Free-search flags are ambient in CI; leaving them set would register an
+    # extra tool and make refresh call counts order-dependent.
+    for flag in ("FREE_SEARCH_DDG_ENABLED", "FREE_SEARCH_BING_ENABLED"):
+        monkeypatch.delenv(flag, raising=False)
     monkeypatch.setattr(mcp_paid_search.card, "description", mcp_paid_search.card.description)
     monkeypatch.setattr(mcp_paid_search.card, "input_params", deepcopy(mcp_paid_search.card.input_params))
     monkeypatch.setattr(mcp_toolkits, "_SEARCH_ABILITY_MANAGERS", WeakSet())
