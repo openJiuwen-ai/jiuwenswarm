@@ -3,8 +3,12 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 
-import { RealtimeDuplexSession } from '../../../../channels/web/frontend/node_modules/.cache/realtime-duplex/realtimeDuplex.mjs';
-import { SpeechGate } from '../../../../channels/web/frontend/node_modules/.cache/realtime-duplex/speechGate.mjs';
+import { loadModules, webSource } from './testSupport.mjs';
+const { RealtimeDuplexSession, SpeechGate } = await loadModules([
+  "VideoLivePanel/qwenOmniSession.ts",
+  webSource("utils/speechDetection/speechGate.ts"),
+]);
+
 
 test('tool output diagnostics distinguish sending from provider acknowledgement without result text', () => {
   const { session, diagnostics, sent } = createSession();
@@ -26,14 +30,11 @@ test('accepted delegation returns its ID before completion and never sends two o
   const {session,sent}=createSession();
   session.enqueueOperationResult('create-a',{state:'accepted',job_id:'a'});
   assert.equal(JSON.parse(sent[0].item.output).job_id,'a');
-  assert.equal(typeof sent[1].response.instructions, 'string', 'operation receipt carries response-level guidance');
-  session.handleEvent({type:'response.created',response:{id:'ack'}});
-  session.handleEvent({type:'response.done',response:{id:'ack'}});
+  assert.equal(sent.filter(e=>e.type==='response.create').length,0);
   session.enqueueToolResult({jobId:'a',callId:'create-a',question:'杭州',brief:realtimeBrief('完成')});
   assert.equal(sent.filter(e=>e.item?.type==='function_call_output').length,1);
-  assert.equal(sent.filter(e=>e.type==='response.create').length,2);
-  assert.equal(sent.at(-1).response, undefined, 'completion notice uses its own existing presentation path');
-  assert.match(sent.at(-2).item.content[0].text,/杭州/);
+  assert.equal(sent.filter(e=>e.type==='response.create').length,1);
+  assert.match(JSON.stringify(sent),/杭州/);
 });
 
 test('a tool receipt delayed past a new spoken turn does not use its expired call ID', () => {
@@ -41,7 +42,7 @@ test('a tool receipt delayed past a new spoken turn does not use its expired cal
   session.handleEvent({ type: 'response.function_call_arguments.done', name: 'jiuwen_delegate',
     call_id: 'call-old', arguments: JSON.stringify({ task: 'First task' }) });
   session.handleEvent({ type: 'input_audio_buffer.speech_started', item_id: 'new-input' });
-  session.enqueueOperationResult('call-old', { state: 'accepted', job_id: 'first-job' });
+  session.enqueueOperationResult('call-old', { state: 'accepted', operation: 'query', job_id: 'first-job' });
   session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'new-input' });
   session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed',
     item_id: 'new-input', transcript: 'Second task' });
@@ -58,7 +59,7 @@ test('a tool receipt delayed past a new spoken turn does not use its expired cal
 test('provider speech and its pending automatic answer exclude notification responses', () => {
   const {session,sent}=createSession();
   session.handleEvent({type:'input_audio_buffer.speech_started'});
-  session.enqueueOperationResult('op',{state:'accepted'});
+  session.enqueueOperationResult('op',{state: 'accepted', operation: 'query'});
   session.handleEvent({type:'input_audio_buffer.speech_stopped'});
   session.dispatchQueuedToolResult();
   assert.equal(sent.length,0);
@@ -73,7 +74,7 @@ test('cancel request does not free a response slot before cancellation acknowled
   const {session,sent}=createSession();
   session.handleEvent({type:'response.created',response:{id:'old'}});
   session.interruptQwenResponse('turn',300,1000,80);
-  session.enqueueOperationResult('op',{state:'accepted'});
+  session.enqueueOperationResult('op',{state: 'accepted', operation: 'query'});
   assert.equal(sent.filter(e=>e.type==='response.create').length,0);
   session.handleEvent({type:'response.done',response:{id:'old',status:'cancelled'}});
   assert.equal(sent.filter(e=>e.type==='response.create').length,1);
@@ -81,7 +82,7 @@ test('cancel request does not free a response slot before cancellation acknowled
 
 test('active-response conflict retries only response creation after done, without replaying receipts', () => {
   const {session,sent}=createSession();
-  session.enqueueOperationResult('op',{state:'accepted'});
+  session.enqueueOperationResult('op',{state: 'accepted', operation: 'query'});
   session.handleEvent({type:'error',error:{message:'Conversation already has an active response'}});
   assert.equal(sent.length,2);
   session.handleEvent({type:'response.done',response:{id:'server-active'}});
@@ -145,7 +146,7 @@ test('pending information questions are announced once without completing their 
   session.enqueueQuestion('trip', question);
   assert.equal(sent.filter(event => event.type === 'response.create').length, 1);
   assert.match(sent[0].item.content[0].text, /预算是多少/);
-  assert.match(sent[0].item.content[0].text, /call jiuwen_queue_manage/);
+  assert.match(sent[0].item.content[0].text, /call jiuwen_form_answer/);
   assert.doesNotMatch(sent[0].item.content[0].text, /call jiuwen_task_answer/);
   assert.deepEqual(dispatchedToolResults, []);
   assert.equal(session.acceptedToolResultIds.has('trip'), false);
@@ -246,34 +247,30 @@ test('while a card is open the client answers speech after the card status, with
   assert.equal(sent.filter(e => e.type === 'response.cancel').length, 0);
 });
 
-test('a short spoken answer to the only card is submitted directly, and its receipt is spoken as a notice', () => {
+test('a short spoken answer to the only card is submitted directly, and its successful receipt updates context silently', () => {
   // The realtime model often only talked about "允许" or read the call out as text, so the client submits it.
   const { session, sent, functionCalls } = createSession();
   session.enqueueQuestion('', { id: 'card-b', request_id: 'chat-approval', state: 'pending', source: 'confirm_interrupt',
     questions: [{ header: '操作确认: cua_agent', question: '打开计算器',
       options: [{ label: '本次允许' }, { label: '会话内记住' }, { label: '永久记住' }, { label: '拒绝' }] }] });
-  session.handleEvent({ type: 'response.created', response: { id: 'notice' } });
-  session.handleEvent({ type: 'response.done', response: { id: 'notice', status: 'completed' } });
+  finishResponse(session, 'notice');
   sent.length = 0;
 
-  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'u2' });
-  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'u2', transcript: '本会话保持同意。' });
+  spokenTurn(session, '本会话保持同意。', 'u2');
   assert.equal(functionCalls.length, 1);
   assert.equal(functionCalls[0].name, 'jiuwen_task_answer');
   assert.deepEqual(JSON.parse(functionCalls[0].arguments), { job_id: '', interaction_id: 'card-b', answers: ['会话内记住'] });
   assert.deepEqual(sent.map(e => e.type), [], 'the model is not asked to answer again');
 
   session.enqueueOperationResult(functionCalls[0].callId, { state: 'accepted', applied: true });
-  assert.deepEqual(sent.map(e => e.type), ['conversation.item.create', 'response.create']);
+  assert.deepEqual(sent.map(e => e.type), ['conversation.item.create']);
   assert.equal(sent[0].item.type, 'message');
-  assert.match(sent[0].item.content[0].text, /"会话内记住" was submitted.*"applied":true/);
+  assert.match(sent[0].item.content[0].text, /"applied":true/);
 
   // A new request is never taken as an answer: it goes to the model with the card status.
   sent.length = 0;
-  session.handleEvent({ type: 'response.created', response: { id: 'r2' } });
-  session.handleEvent({ type: 'response.done', response: { id: 'r2', status: 'completed' } });
-  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'u3' });
-  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'u3', transcript: '打开计算器。' });
+  finishResponse(session, 'r2');
+  spokenTurn(session, '打开计算器。', 'u3');
   assert.equal(functionCalls.length, 1);
   assert.deepEqual(sent.map(e => e.type), ['conversation.item.create', 'response.create']);
   assert.match(sent[0].item.content[0].text, /The user just said: "打开计算器。"/);
@@ -326,8 +323,7 @@ test('closing the last card lets the provider answer speech by itself again', ()
 test('without an open card, and for the assistant notices, replies are left alone', () => {
   const { session, sent } = createSession();
   session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'u1' });
-  session.handleEvent({ type: 'response.created', response: { id: 'r1' } });
-  session.handleEvent({ type: 'response.done', response: { id: 'r1', status: 'completed' } });
+  finishResponse(session, 'r1');
   openCard(session); // its notice reply is not a user turn
   session.handleEvent({ type: 'response.created', response: { id: 'notice' } });
   assert.equal(sent.filter(e => e.type === 'response.cancel').length, 0);
@@ -367,11 +363,79 @@ test('a card that opens while an assistant notice plays leaves the notice alone'
   assert.equal(sent.filter(e => e.type === 'response.cancel').length, 0);
 });
 
-test('information questions do not add approval instructions', () => {
+test('information questions persist until closed and leave approval rules separate', () => {
   const { session, sent } = createSession();
-  session.enqueueQuestion('ask', { id: 'q-a', request_id: 'ask-1', state: 'pending',
-    source: 'ask_user_interrupt', questions: [{ question: '预算多少？' }] });
-  assert.equal(sent.filter(e => e.type === 'session.update').length, 0);
+  const card = { id: 'q-a', request_id: 'ask-1', state: 'pending',
+    source: 'ask_user_interrupt', questions: [{ question: '预算多少？' }] };
+  session.enqueueQuestion('ask', card);
+  const updates = () => sent.filter(e => e.type === 'session.update');
+  assert.match(updates()[0].session.instructions, /Pending information forms.*预算多少/);
+  assert.doesNotMatch(updates()[0].session.instructions, /\[Pending approval cards\]/);
+  assert.equal(updates()[0].session.turn_detection.create_response, false);
+  session.enqueueQuestion('ask', card);
+  assert.equal(updates().length, 1);
+  finishResponse(session, 'notice');
+  sent.length = 0;
+  spokenTurn(session, '两百元', 'answer');
+  assert.deepEqual(sent.map(e => e.type), ['conversation.item.create', 'response.create']);
+  assert.match(sent[0].item.content[0].text, /预算多少.*jiuwen_form_answer.*两百元/);
+  session.enqueueQuestion('ask', { ...card, state: 'accepted' });
+  assert.equal(updates().at(-1).session.turn_detection.create_response, true);
+  assert.doesNotMatch(updates().at(-1).session.instructions, /Pending information forms/);
+});
+
+const informationCard = (id = 'form') => ({ id, request_id: id, state: 'pending', source: 'ask_user_interrupt',
+  questions: [{ question: '笑话的主题？', multi_select: true, options: [{ label: '程序员/码农' }, { label: '学生/老师' }] }] });
+const spokenTurn = (session, transcript, id = 'answer') => {
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: id });
+  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: id, transcript });
+};
+
+test('a spoken form option submits once without relying on a Qwen call and reports its receipt', () => {
+  const { session, sent, functionCalls } = createSession();
+  session.enqueueQuestion('ask', informationCard());
+  finishResponse(session, 'notice');
+  sent.length = 0;
+  spokenTurn(session, '程序员吧。');
+  assert.equal(functionCalls.length, 1);
+  assert.equal(functionCalls[0].name, 'jiuwen_form_answer');
+  assert.deepEqual(JSON.parse(functionCalls[0].arguments), { answers: ['程序员/码农'] });
+  assert.equal(sent.length, 0, 'no success speech before the receipt');
+  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'answer', transcript: '程序员吧。' });
+  assert.equal(functionCalls.length, 1, 'duplicate transcription does not resubmit');
+  session.enqueueOperationResult(functionCalls[0].callId, { state: 'accepted' });
+  assert.deepEqual(sent.map(e => e.type), ['conversation.item.create', 'response.create']);
+  assert.equal(sent[0].item.type, 'message', 'client calls have no provider function output');
+  assert.match(sent[0].item.content[0].text, /Information form answer receipt.*"state":"accepted"/);
+});
+
+test('ambiguous forms, new tasks and partial multi-question answers never submit automatically', () => {
+  for (const cards of [[informationCard()], [informationCard(), informationCard('other')],
+    [{ ...informationCard(), questions: [...informationCard().questions, { question: '多长？' }] }]]) {
+    const { session, sent, functionCalls } = createSession();
+    cards.forEach((card, i) => session.enqueueQuestion(`ask-${i}`, card));
+    finishResponse(session, 'notice');
+    sent.length = 0;
+    spokenTurn(session, cards.length === 1 && cards[0].questions.length === 1 ? '打开微信' : '程序员');
+    assert.equal(functionCalls.length, 0);
+    assert.match(sent[0].item.content[0].text, /Pending information forms.*The user just said/);
+    assert.match(sent[0].item.content[0].text, /New requests are not form answers/);
+    session.cancelToolTask('ask-0', 'cancel');
+    assert.equal(session.sessionUpdate().session.turn_detection.create_response, cards.length === 1);
+  }
+});
+
+test('shared option aliases and concurrent approval cards cannot be auto-answered as an information form', () => {
+  for (const approval of [false, true]) {
+    const { session, functionCalls } = createSession();
+    const card = informationCard();
+    if (!approval) card.questions[0].options.push({ label: '程序员/工程师' });
+    session.enqueueQuestion('ask', card);
+    if (approval) openCard(session);
+    finishResponse(session, 'notice');
+    spokenTurn(session, '程序员');
+    assert.equal(functionCalls.length, 0);
+  }
 });
 
 test('delegation retains valid scheduling arguments and dispatches only once', () => {
@@ -407,9 +471,9 @@ test('confirmed cancellation sends one terminal notice and rejects a late result
   const { session, sent } = createSession();
   session.cancelToolTask('stopped-job', 'stopped-call');
   session.cancelToolTask('stopped-job', 'stopped-call');
-  assert.equal(sent.length, 2);
+  assert.equal(sent.length, 1);
   assert.match(sent[0].item.content[0].text, /Task stop confirmed/);
-  assert.equal(sent.filter(event => event.type === 'response.create').length, 1);
+  assert.equal(sent.filter(event => event.type === 'response.create').length, 0);
   assert.equal(session.enqueueToolResult({ jobId: 'stopped-job', callId: 'stopped-call', question: '已取消任务', brief: { summary: '迟到的成功结果' } }), false);
 });
 
@@ -483,7 +547,7 @@ function realtimeBrief(summary, resultKind = 'generic') {
   };
 }
 
-test('speech before and after delegation is discarded; acceptance is spoken exactly once', async () => {
+test('speech accompanying delegation is retained alongside acceptance', async () => {
   const { session, assistantTexts, posted, sent, functionCalls } = createSession();
   session.handleEvent({ type: 'response.created', response: { id: 'delegate' } });
   session.handleEvent({ type: 'response.audio_transcript.delta', response_id: 'delegate', delta: 'I will check your files.' });
@@ -498,10 +562,10 @@ test('speech before and after delegation is discarded; acceptance is spoken exac
   session.handleEvent(call);
   assert.equal(functionCalls.length, 1);
   session.handleEvent({ type: 'response.text.delta', response_id: 'delegate', delta: 'Already working on it.' });
-  session.enqueueOperationResult('files', { state: 'accepted', job_id: 'files-job' });
+  session.enqueueOperationResult('files', { state: 'accepted', operation: 'query', job_id: 'files-job' });
   assert.deepEqual(sent, []);
   session.handleEvent({ type: 'response.done', response: { id: 'delegate', status: 'completed' } });
-  assert.deepEqual(assistantTexts, []);
+  assert.deepEqual(assistantTexts.filter(item => item.final).map(item => item.text), ['I will check your files.']);
   assert.equal(sent.filter(event => event.type === 'response.create').length, 1);
   session.handleEvent({ type: 'response.created', response: { id: 'accepted' } });
   session.handleEvent({ type: 'response.text.delta', response_id: 'accepted', delta: 'Your desktop file request was accepted.' });
@@ -511,8 +575,8 @@ test('speech before and after delegation is discarded; acceptance is spoken exac
   session.handleEvent({ type: 'response.done', response: { id: 'accepted', status: 'completed' } });
   session.handleEvent({ type: 'response.audio.delta', response_id: 'delegate', delta: btoa('cc') });
   await session.playbackOperation;
-  assert.deepEqual(assistantTexts.map(item => item.text), ['Your desktop file request was accepted.']);
-  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
+  assert.deepEqual(assistantTexts.map(item => item.text), ['I will check your files.', 'Your desktop file request was accepted.']);
+  assert.equal(posted.filter(item => item.type === 'audio').length, 2);
 });
 
 test('a spoken action promise and its later tool receipt both retain audio', async () => {
@@ -537,7 +601,7 @@ test('a spoken action promise and its later tool receipt both retain audio', asy
   session.handleEvent({ type: 'response.done', response: { id: 'wechat-response', status: 'completed' } });
   assert.equal(functionCalls.length, 1);
   assert.deepEqual(assistantTexts.filter(item => item.final).map(item => item.text), ['这就帮你把微信打开。']);
-  session.enqueueOperationResult('wechat-call', { state: 'accepted', job_id: 'wechat-job' });
+  session.enqueueOperationResult('wechat-call', { state: 'accepted', operation: 'query', job_id: 'wechat-job' });
   assert.equal(sent.filter(event => event.type === 'response.create').length, 1);
   session.handleEvent({ type: 'response.created', response: { id: 'wechat-receipt' } });
   session.handleEvent({ type: 'response.text.done', response_id: 'wechat-receipt', text: '微信任务已排队。' });
@@ -585,17 +649,6 @@ test('direct answers release text and audio once, only after response.done', asy
   assert.equal(assistantTexts.length, 1);
   assert.equal(assistantTexts[0].text, 'Hello.');
   assert.deepEqual(posted.map(item => item.type), ['audio', 'drain']);
-});
-
-test('a tool listed only in response.done still suppresses the buffered answer', async () => {
-  const { session, assistantTexts, posted } = createSession();
-  session.handleEvent({ type: 'response.created', response: { id: 'late-tool' } });
-  session.handleEvent({ type: 'response.text.done', response_id: 'late-tool', text: 'I will do it.' });
-  session.handleEvent({ type: 'response.audio.delta', response_id: 'late-tool', delta: btoa('aa') });
-  session.handleEvent({ type: 'response.done', response: { id: 'late-tool', status: 'completed', output: [{ type: 'function_call', name: 'jiuwen_delegate' }] } });
-  await session.playbackOperation;
-  assert.deepEqual(assistantTexts, []);
-  assert.ok(posted.every(item => item.type !== 'audio'));
 });
 
 test('message item text and audio stream before response.done and finalize only once', async () => {
@@ -688,7 +741,7 @@ test('a message following a tool item retains audio without executing incomplete
   session.handleEvent({ type: 'response.text.done', response_id: 'tool', text: 'Unverified answer' });
   session.handleEvent({ type: 'response.done', response: { id: 'tool', status: 'completed' } });
   await session.playbackOperation;
-  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
+  assert.equal(posted.filter(item => item.type === 'audio').length, 2);
   assert.equal(assistantTexts.at(-1).text, 'Unverified answer');
   assert.equal(assistantTexts.at(-1).final, true);
   assert.deepEqual(functionCalls, [], 'an item announcement must not execute incomplete arguments');
@@ -744,6 +797,11 @@ test('user interruption clears streaming audio and late item events cannot reope
   await session.playbackOperation;
   assert.equal(posted.filter(item => item.type === 'audio').length, 1);
 });
+
+function finishResponse(session, id) {
+  session.handleEvent({ type: 'response.created', response: { id } });
+  session.handleEvent({ type: 'response.done', response: { id, status: 'completed' } });
+}
 
 function createSession(videoFrame = null, callbackOverrides = {}) {
   const states = [];
@@ -913,8 +971,7 @@ test('rejected Qwen image frame stays diagnostic and does not report voice failu
   });
   session.sendAudio(new Int16Array([1]), true);
   session.sendAudio(new Int16Array([2]), true);
-  session.handleEvent({ type: 'response.created', response: { id: 'answered' } });
-  session.handleEvent({ type: 'response.done', response: { id: 'answered', status: 'completed' } });
+  finishResponse(session, 'answered');
   session.handleEvent({
     type: 'error', error: { type: 'invalid_request_error', message: 'Error append image before append audio.' },
   });
@@ -953,7 +1010,7 @@ test('user speech cancels an active response and discards unclassified text', ()
 test('continuous speech cancels a reserved response only after response.created', () => {
   const errors = [];
   const { session, sent, diagnostics } = createSession(undefined, { onError: (message) => errors.push(message) });
-  session.enqueueOperationResult('alarm', { state: 'accepted', job_id: 'alarm-job' });
+  session.enqueueOperationResult('alarm', { state: 'accepted', operation: 'query', job_id: 'alarm-job' });
   assert.equal(session.responseId, null);
   for (let i = 0; i < 5; i++) session.interruptQwenResponse('next-speech', 256 + i * 32, 900, 80);
   assert.equal(sent.filter((event) => event.type === 'response.cancel').length, 0);
@@ -1002,7 +1059,7 @@ test('text input uses a native conversation item and response request', async ()
 test('busy text turns keep their order ahead of task notifications without competing responses', async () => {
   const { session, sent } = createSession();
   session.handleEvent({ type: 'response.created', response: { id: 'speaking' } });
-  session.enqueueToolResult({ jobId: 'a', question: 'report', brief: realtimeBrief('Done') });
+  session.enqueueToolResult({ jobId: 'a', question: 'report', brief: failedBrief('Done') });
   await session.sendTextTurn('First instruction');
   await session.sendTextTurn('Second instruction');
   assert.deepEqual(sent, []);
@@ -1091,25 +1148,13 @@ test('a separate tool response preserves the earlier message and its delayed aud
   assert.deepEqual(assistantTexts.filter(item => item.final).map(item => item.text), ['这就帮你查查今天香港的天气情况。']);
 });
 
-test('a new response cannot release an earlier unclassified acknowledgement', () => {
-  const { session, assistantTexts } = createSession();
-  session.handleEvent({ type: 'input_audio_buffer.speech_started', item_id: 'input-task' });
-  session.handleEvent({ type: 'response.created', response: { id: 'ack' } });
-  session.handleEvent({ type: 'response.audio_transcript.delta', response_id: 'ack', delta: '我来处理。' });
-  session.handleEvent({ type: 'response.created', response: { id: 'delegate' } });
-  session.handleEvent({ type: 'response.function_call_arguments.done', response_id: 'delegate', name: 'jiuwen_delegate', call_id: 'split-call', arguments: '{"task":"List files"}' });
-  session.handleEvent({ type: 'response.done', response: { id: 'ack', status: 'completed' } });
-  session.handleEvent({ type: 'response.done', response: { id: 'delegate', status: 'completed' } });
-  assert.deepEqual(assistantTexts, []);
-});
-
 test('Qwen tool receipt remains visible and response.done finalizes it', () => {
   const { session, assistantTexts } = createSession();
   session.enqueueToolResult({
     jobId: 'code-job',
     question: '请生成代码',
     callId: 'code-call',
-    brief: realtimeBrief('代码已显示在界面中。', 'code'),
+    brief: failedBrief('代码已显示在界面中。', 'code'),
   });
   session.handleEvent({ type: 'response.created', response: { id: 'receipt' } });
   session.handleEvent({
@@ -1159,7 +1204,7 @@ test('tool results wait for active generation but dispatch during queued audio p
     session.enqueueToolResult({
       jobId: 'search-weather',
       question: '香港今天的天气',
-      brief: realtimeBrief('香港今天有雨，出门记得带伞。', 'research'),
+      brief: failedBrief('香港今天有雨，出门记得带伞。', 'research'),
       result: '```python\nprint("这段完整代码绝不能发送给Qwen")\n```',
       callId: 'call-weather',
     }),
@@ -1213,7 +1258,7 @@ test('an earlier task still gets a spoken follow-up after a newer question', () 
       jobId: 'old-file-task',
       turnId: 'turn-old',
       question: '打开旧文件',
-      brief: realtimeBrief('旧文件任务已完成。', 'file'),
+      brief: failedBrief('旧文件任务已完成。', 'file'),
       callId: 'call-old-file',
     }),
     true,
@@ -1249,7 +1294,7 @@ test('a completed earlier task avoids a function output after a newer spoken inp
     item_id: 'new-input', transcript: 'Check the weather' });
   session.handleEvent({ type: 'response.created', response: { id: 'new-answer' } });
   session.enqueueToolResult({ jobId: 'earlier-job', question: 'Read a file',
-    brief: realtimeBrief('The file was read.', 'file'), callId: 'call-earlier' });
+    brief: failedBrief('The file was read.', 'file'), callId: 'call-earlier' });
   session.handleEvent({ type: 'response.done', response: { id: 'new-answer' } });
 
   assert.deepEqual(sent.map((event) => event.type), ['conversation.item.create', 'response.create']);
@@ -1264,14 +1309,14 @@ test('each task waits for user speech to finish and is sent exactly once in comp
     jobId: 'first-async-task',
     turnId: 'old-turn',
     question: '打开复习提纲',
-    brief: realtimeBrief('复习提纲已打开。'),
+    brief: failedBrief('复习提纲已打开。'),
     callId: 'call-first-async',
   };
   const second = {
     jobId: 'second-async-task',
     turnId: 'another-turn',
     question: '解释差分约束',
-    brief: realtimeBrief('差分约束的解题思路已整理。'),
+    brief: failedBrief('差分约束的解题思路已整理。'),
     callId: 'call-second-async',
   };
   assert.equal(session.enqueueToolResult(first), true);
@@ -1312,7 +1357,7 @@ test('a disconnected socket does not consume a queued tool result', () => {
   session.enqueueToolResult({
     jobId: 'waiting-for-connection',
     question: '查看文档',
-    brief: realtimeBrief('已查看'),
+    brief: failedBrief('已查看'),
     callId: 'call-wait',
   });
   assert.equal(session.pendingToolResults.length, 1);
@@ -1330,13 +1375,13 @@ test('tool responses retain their own job id after another result is queued', ()
   session.enqueueToolResult({
     jobId: 'job-first',
     question: '第一个问题',
-    brief: realtimeBrief('第一个结果已完成。'),
+    brief: failedBrief('第一个结果已完成。'),
     callId: 'call-first',
   });
   session.enqueueToolResult({
     jobId: 'job-second',
     question: '第二个问题',
-    brief: realtimeBrief('第二个结果已完成。'),
+    brief: failedBrief('第二个结果已完成。'),
     callId: 'call-second',
   });
   session.handleEvent({ type: 'response.created', response: { id: 'response-first' } });
@@ -1395,8 +1440,9 @@ test('session update includes Gateway-provided tools', async () => {
 
   assert.deepEqual(socket.sent[0].session.tools, tools);
 
-  assert.match(socket.sent[0].session.instructions, /call the required tool before giving a spoken acknowledgement/);
-  assert.match(socket.sent[0].session.instructions, /acknowledgement describes work in progress only/);
+  assert.match(socket.sent[0].session.instructions, /make the required tool call and respond naturally in the same turn/);
+  assert.doesNotMatch(socket.sent[0].session.instructions, /call the required tool before giving a spoken acknowledgement/);
+  assert.match(socket.sent[0].session.instructions, /When the result arrives, answer the pending request/);
   assert.match(
     socket.sent[0].session.instructions,
     /Until the function result for that specific request arrives, do not provide facts/,
@@ -1549,11 +1595,11 @@ test('task operation receipts wait for the active response and retain accepted s
   session.enqueueOperationResult('modify-call', { task_id: 'task-a', state: 'pending' });
   assert.equal(sent.length, 0);
   session.handleEvent({ type: 'response.done', response_id: 'speaking' });
-  assert.deepEqual(sent.map(e => e.type), ['conversation.item.create', 'response.create']);
+  assert.deepEqual(sent.map(e => e.type), ['conversation.item.create']);
   assert.equal(sent[0].item.call_id, 'modify-call');
   assert.equal(JSON.parse(sent[0].item.output).state, 'pending');
   session.enqueueOperationResult('modify-call', { state: 'pending' });
-  assert.equal(sent.length, 2);
+  assert.equal(sent.length, 1);
   assert.equal(sent.filter(e => e.item?.type === 'message').length, 0, 'no completion notice is fabricated');
 });
 
@@ -1573,7 +1619,7 @@ test('late tool call retains its input item instead of a newer transcript', () =
 
 test('successor completion is a notification without an invented function call', () => {
   const {session,sent}=createSession();
-  assert.equal(session.enqueueToolResult({jobId:'child',question:'杭州两日修订',brief:realtimeBrief('两日文件已生成')}),true);
+  assert.equal(session.enqueueToolResult({jobId:'child',question:'杭州两日修订',brief:failedBrief('两日文件已生成')}),true);
   assert.equal(sent.filter(e=>e.item?.type==='function_call_output').length,0);
   assert.equal(sent.filter(e=>e.type==='response.create').length,1);
   assert.match(sent[0].item.content[0].text,/杭州两日修订/);
@@ -1753,7 +1799,7 @@ test('cancelling context initialization rejects the old startup and ignores late
 test('completed cancellation receipt permits Core follow-up for the user requested effects', () => {
   const { session, sent, functionCalls } = createSession();
   session.enqueueOperationResult('stop-created', {
-    task_id: 'created', task_status: 'completed', state: 'completed', stopped: false,
+    task_id: 'created', task_status: 'completed', state: 'rejected', stopped: false,
   });
   const continuation = sent.find(event => event.type === 'response.create').response.instructions;
   assert.match(continuation, /call jiuwen_queue_manage/);
@@ -1770,16 +1816,13 @@ test('completed cancellation receipt permits Core follow-up for the user request
 });
 
 
-test('converted completed cancellation is announced as a pending Core followup', () => {
+test('converted completed cancellation updates context silently as a pending Core followup', () => {
   const { session, sent } = createSession();
   session.enqueueOperationResult('cancel', {
     state: 'followup', converted_to: 'modify', task_status: 'completed', stopped: false, successor_id: 'child',
   });
   assert.equal(sent.filter(event => event.item?.type === 'function_call_output').length, 1);
-  const continuation = sent.find(event => event.type === 'response.create').response.instructions;
-  assert.match(continuation, /backend already submitted the original user action to Core/);
-  assert.match(continuation, /do not issue another cancellation/);
-  assert.match(continuation, /followup means a linked revision/);
+  assert.equal(sent.filter(event => event.type === 'response.create').length, 0);
 });
 
 
@@ -1793,8 +1836,7 @@ test('permission cards stay manual and never submit spoken consent', () => {
   assert.match(JSON.stringify(sent), /click the on-screen permission card manually/);
   assert.equal(sent.some(event => event.type === "session.update"), false);
   session.handleEvent({ type: 'input_audio_buffer.speech_started', item_id: 'consent' });
-  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'consent' });
-  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'consent', transcript: '同意' });
+  spokenTurn(session, '同意', 'consent');
   assert.equal(functionCalls.length, 0);
   assert.equal(diagnostics.some(event => event.event === 'qwen_card_spoken_answer'), false);
 });
@@ -1806,8 +1848,7 @@ test('execution confirmations accept explicit execute speech using the actual ca
     id: 'execute-card', request_id: 'execute-request', state: 'pending', source: 'confirm_interrupt',
     questions: [{ question: '执行此计划？', options: [{ label: '执行' }, { label: '跳过' }] }],
   });
-  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'execute-input' });
-  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'execute-input', transcript: '按计划执行' });
+  spokenTurn(session, '按计划执行', 'execute-input');
   assert.equal(functionCalls.length, 1);
   assert.deepEqual(JSON.parse(functionCalls[0].arguments), {
     job_id: 'execute-job', interaction_id: 'execute-card', answers: ['执行'],
@@ -1822,20 +1863,44 @@ test('a permission card replaces a stale execution confirmation without carrying
     questions: [{ question: '允许访问文件？', options: [{ label: '本次允许' }, { label: '拒绝' }] }],
   });
   assert.equal(session.pendingApprovals.size, 0);
-  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'permission-input' });
-  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'permission-input', transcript: '同意' });
+  spokenTurn(session, '同意', 'permission-input');
   assert.equal(functionCalls.length, 0);
 });
 
 
-test('converted completed cancellation is announced as a pending Core followup', () => {
+
+
+
+test('successful task completion requests one spoken result after silent acceptance', () => {
   const { session, sent } = createSession();
-  session.enqueueOperationResult('cancel', {
-    state: 'followup', converted_to: 'modify', task_status: 'completed', stopped: false, successor_id: 'child',
-  });
+  session.enqueueOperationResult('quiet-create', { state: 'accepted', job_id: 'quiet' });
   assert.equal(sent.filter(event => event.item?.type === 'function_call_output').length, 1);
-  const continuation = sent.find(event => event.type === 'response.create').response.instructions;
-  assert.match(continuation, /backend already submitted the original user action to Core/);
-  assert.match(continuation, /do not issue another cancellation/);
-  assert.match(continuation, /followup means a linked revision/);
+  assert.equal(sent.filter(event => event.type === 'response.create').length, 0);
+  session.enqueueToolResult({ jobId: 'quiet', callId: 'quiet-create', question: 'Open Notepad', brief: realtimeBrief('Opened') });
+  assert.equal(session.enqueueToolResult({ jobId: 'quiet', callId: 'quiet-create', question: 'Open Notepad', brief: realtimeBrief('Opened') }), false);
+  assert.equal(sent.filter(event => event.type === 'response.create').length, 1);
+  assert.equal(session.responseActive, true);
+  assert.ok(sent.some(event => JSON.stringify(event).includes('Opened')));
+  assert.ok(sent.every(event => !JSON.stringify(event).includes('future context only')));
 });
+
+for (const receipt of [
+  { state: 'rejected', error: 'Permission denied' },
+  { state: 'incomplete', receipts: [] },
+  { operation: 'query', applied: false, jobs: [] },
+]) test(`exception or requested query still requests a response: ${receipt.state || receipt.operation}`, () => {
+  const { session, sent } = createSession();
+  session.enqueueOperationResult('explain', receipt);
+  assert.equal(sent.filter(event => event.type === 'response.create').length, 1);
+});
+
+test('successful queue writes do not announce their bootstrap query', () => {
+  const { session, sent } = createSession();
+  session.enqueueOperationResult('stop', { managed_by: 'text_queue_manager', receipts: [
+    { name: 'jiuwen_task_query', receipt: { operation: 'query', applied: false } },
+    { name: 'jiuwen_task_cancel', receipt: { state: 'cancelled', stopped: true } },
+  ] });
+  assert.equal(sent.filter(event => event.type === 'response.create').length, 0);
+});
+
+function failedBrief(summary) { return { ...realtimeBrief(summary), status: "failed" }; }

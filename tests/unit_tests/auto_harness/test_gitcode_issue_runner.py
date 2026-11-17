@@ -218,53 +218,20 @@ async def test_process_issues_once_staggers_multiple_started_tasks(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_process_issues_once_skips_issue_with_merged_pr(tmp_path: Path):
-    """list_issue_pull_requests returns merged PRs → issue should be skipped."""
+@pytest.mark.parametrize("pr_state", ["merged", "open"])
+async def test_process_issues_once_skips_issue_with_existing_pr(tmp_path: Path, pr_state):
+    """list_issue_pull_requests returns merged/open PRs → issue should be skipped."""
     client = FakeGitCodeClient(
         [_issue(12, labels=("bug",))],
         pulls={
             12: [
                 {
                     "number": 20,
-                    "state": "merged",
+                    "state": pr_state,
                     "html_url": "https://gitcode.com/openJiuwen/jiuwenswarm/pull/20",
                 }
             ]
         },
-    )
-    service = FakeHarnessService()
-    runner = GitCodeIssueRunner(
-        client=client,
-        state_store=IssueStateStore(tmp_path),
-        harness_service=service,
-    )
-
-    result = await runner.process_issues_once(
-        IssueWatchOptions(
-            owner="openJiuwen",
-            repo="jiuwenswarm",
-            issue_numbers=(12,),
-        )
-    )
-
-    assert result["started"] == []
-    assert "issue 已有关联 PR" in result["skipped"][0]["reason"]
-    assert service.queries == []
-
-
-@pytest.mark.asyncio
-async def test_process_issues_once_skips_explicit_issue_with_existing_open_pr(tmp_path: Path):
-    client = FakeGitCodeClient(
-        [_issue(12, labels=("bug",))],
-        pulls={
-            12: [
-                {
-                    "number": 20,
-                    "state": "open",
-                    "html_url": "https://gitcode.com/openJiuwen/jiuwenswarm/pull/20"
-                }
-            ]
-        }
     )
     service = FakeHarnessService()
     runner = GitCodeIssueRunner(

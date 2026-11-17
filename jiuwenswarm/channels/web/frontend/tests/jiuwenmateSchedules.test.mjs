@@ -50,3 +50,16 @@ test('all finished schedule plans are expired while execution outcomes stay inta
   assert.deepEqual(state.filterSchedules(plans, '', '', 'failed').map(p => p.id), ['once-failed']);
   assert.equal(plans[0].lastStatus, 'completed', 'Display filtering must not change the recorded execution outcome');
 });
+
+
+test('expired plans cannot enable while future paused plans can', () => {
+  const now = Date.parse('2026-11-15T08:00:00Z');
+  const future = { ...draft, lastStatus: 'paused', nextFireAt: '2026-11-16T01:00:00Z' };
+  assert.equal(state.canEnableSchedule(future, now), true);
+  assert.equal(state.canEnableSchedule({ ...future, lastStatus: 'completed' }, now), false);
+  assert.equal(state.canEnableSchedule({ ...future, endsAt: '2026-11-14T08:00:00Z' }, now), false);
+  assert.equal(state.canEnableSchedule({ ...future, endsAt: '2026-11-15T20:00:00Z' }, now), false);
+  assert.equal(state.canEnableSchedule({ ...future, scheduleKind: 'once', runAt: '2026-11-16T01:00:00Z' }, now), true);
+  assert.equal(state.canEnableSchedule({ ...future, scheduleKind: 'once', runAt: '2026-11-14T01:00:00Z' }, now), false);
+  assert.equal(state.canEnableSchedule({ ...future, scheduleKind: 'once', runAt: '2026-11-16T01:00:00Z', nextFireAt: null }, now), false);
+});

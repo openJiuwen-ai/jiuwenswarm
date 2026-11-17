@@ -5,7 +5,7 @@ import type { ModelEntry, ModelGroup, VendorPresetMap } from '../../../../types'
 import { Button, Tag } from '../../../../components/ui';
 import { settingsActionIcons, settingsEmptyBoxIllustration } from '../../../../assets/settings';
 import { getModelLogoUrl } from '../../../../assets/providers';
-import { buildModelValidationPayload } from '../../services/settingsContract';
+import { SETTINGS_CONFIG_CHANGED_EVENT, buildModelValidationPayload } from '../../services/settingsContract';
 import type { SettingsSaveErrorScope } from '../../services/SettingsSaveQueue';
 import {
   SettingsConfirmDialog,
@@ -21,6 +21,7 @@ import { ModelGroupDialog } from './ModelGroupDialog';
 import { ModelGroupsSettings } from './ModelGroupsSettings';
 import { parseVendorCatalog, withoutGenerationOnlyPresets } from './modelAdapters';
 import { formatModelMetadata, getModelDisplayName } from './modelPresentation';
+import { MultimodalModelsSettings } from './MultimodalModelsSettings';
 import { JevSettings } from './JevSettings';
 import {
   extractModelSelectionReferences,
@@ -58,7 +59,13 @@ type ModelConfirmation =
 type ValidationToast = { success: boolean; message: string };
 type SaveModelsOptions = { errorScope?: SettingsSaveErrorScope };
 
-type ModelResourceResult = { model?: unknown; applied_without_restart?: unknown };
+type ModelResourceResult = {
+  model?: unknown;
+  applied_without_restart?: unknown;
+  kv_cache_affinity_auto_disabled?: boolean;
+  /** Present when the saved api_key is an exec: reference whose command failed to resolve. */
+  exec_resolve_error?: unknown;
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -92,6 +99,7 @@ export function parseModelResource(payload: unknown): ModelEntry {
         ? client.plan
         : undefined,
     endpoint_profile: typeof client.endpoint_profile === 'string' ? client.endpoint_profile : undefined,
+    extensions: isRecord(client.extensions) ? client.extensions as ModelEntry['extensions'] : undefined,
     is_agentos: model.is_agentos === true,
     source: typeof model.source === 'string' ? model.source : undefined,
     read_only: model.read_only === true,
@@ -106,9 +114,10 @@ export function buildModelResourcePayload(model: ModelEntry): Record<string, unk
   };
   if (model.api_key.trim()) client.api_key = model.api_key;
   if (model.timeout !== undefined) client.timeout = model.timeout;
-  if (model.vendor_key) client.vendor_key = model.vendor_key;
-  if (model.plan) client.plan = model.plan;
-  if (model.endpoint_profile) client.endpoint_profile = model.endpoint_profile;
+  client.vendor_key = model.vendor_key ?? null;
+  client.plan = model.plan ?? null;
+  client.endpoint_profile = model.endpoint_profile ?? '';
+  if (model.extensions) client.extensions = model.extensions;
   const config: Record<string, unknown> = {};
   if (model.temperature !== undefined) config.temperature = model.temperature;
   config.reasoning_level = model.reasoning_level ?? '';
@@ -122,7 +131,7 @@ export function buildModelResourcePayload(model: ModelEntry): Record<string, unk
   };
 }
 
-export type ModelSettingsTabId = 'models' | 'groups' | 'jev';
+export type ModelSettingsTabId = 'models' | 'groups' | 'jev' | 'multimodal';
 
 type ModelsSettingsProps = {
   tabs: readonly SettingsTabDefinition<ModelSettingsTabId>[];
@@ -170,7 +179,7 @@ export function parseModelsPayload(payload: unknown): {
 
 export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSettingsProps) {
   const { t } = useTranslation();
-  const { isConnected, request, saveQueue } = useSettingsServices();
+  const { isConnected, request, saveQueue, navigationTarget } = useSettingsServices();
   const { refreshStatus, checkRefreshStatus } = useModelRefreshStatus(isConnected, request);
   const setAvailableModels = useSessionStore((state) => state.setAvailableModels);
   const setAvailableModelGroups = useSessionStore((state) => state.setAvailableModelGroups);
@@ -332,16 +341,22 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
       if (typeof result.applied_without_restart !== 'boolean') {
         throw new Error(t('settingsPanel.models.saveResponseInvalid'));
       }
+      window.dispatchEvent(new window.Event(SETTINGS_CONFIG_CHANGED_EVENT));
       checkRefreshStatus();
       const refreshedPayload = await request('models.list');
       applyCatalog(parseModelsPayload(refreshedPayload));
+      const execResolveFailed = Boolean(result.exec_resolve_error);
       showValidationToast({
-        success: true,
-        message: t(
-          result.applied_without_restart
-            ? 'settingsPanel.feedback.saved'
-            : 'settingsPanel.models.savedRestartRequired',
-        ),
+        success: !execResolveFailed,
+        message: execResolveFailed
+          ? t('settingsPanel.models.execResolveFailed')
+          : t(
+              result.kv_cache_affinity_auto_disabled
+                ? 'settingsPanel.models.affinityAutoDisabled'
+                : result.applied_without_restart
+                ? 'settingsPanel.feedback.saved'
+                : 'settingsPanel.models.savedRestartRequired',
+            ),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed');
@@ -371,11 +386,12 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
     try {
       const result = await saveQueue.enqueue(
         group.model_group_id ? 'model_group.edit' : 'model_group.add',
-        () => request<{ group?: unknown; applied_without_restart?: boolean }>(
+        () => request<{ group?: unknown; applied_without_restart?: boolean; kv_cache_affinity_auto_disabled?: boolean }>(
           'model_groups.upsert', { group }, { timeoutMs: 600_000 },
         ),
         { errorScope: 'caller' },
       );
+      window.dispatchEvent(new window.Event(SETTINGS_CONFIG_CHANGED_EVENT));
       checkRefreshStatus();
       const savedGroup = parseModelGroup(result?.group);
       if (savedGroup) {
@@ -388,7 +404,9 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
       applyCatalog(parseModelsPayload(refreshedPayload));
       showValidationToast({
         success: true,
-        message: t(result?.applied_without_restart === false
+        message: t(result?.kv_cache_affinity_auto_disabled
+          ? 'settingsPanel.models.affinityAutoDisabled'
+          : result?.applied_without_restart === false
           ? 'settingsPanel.models.savedRestartRequired' : 'settingsPanel.feedback.saved'),
       });
     } catch (error) {
@@ -424,10 +442,13 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
           () => request('models.delete', { model_id: confirmation.model.model_id }, { timeoutMs: 600_000 }),
           { errorScope: 'page' },
         );
+        window.dispatchEvent(new window.Event(SETTINGS_CONFIG_CHANGED_EVENT));
         checkRefreshStatus();
         const refreshedPayload = await request('models.list');
         applyCatalog(parseModelsPayload(refreshedPayload));
-        showValidationToast({ success: true, message: t(result?.applied_without_restart === false
+        showValidationToast({ success: true, message: t(result?.kv_cache_affinity_auto_disabled
+          ? 'settingsPanel.models.affinityAutoDisabled'
+          : result?.applied_without_restart === false
           ? 'settingsPanel.models.savedRestartRequired' : 'settingsPanel.feedback.saved') });
       } else if (confirmation.type === 'remove-group-route') {
         const nextGroup = removeGroupRoute(confirmation.group, confirmation.routeId);
@@ -451,6 +472,7 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
               ),
             { errorScope: 'page' },
           );
+          window.dispatchEvent(new window.Event(SETTINGS_CONFIG_CHANGED_EVENT));
           checkRefreshStatus();
         } catch (error) {
           const referenced = extractModelSelectionReferences(error);
@@ -466,7 +488,9 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
         }
         const refreshedPayload = await request('models.list');
         applyCatalog(parseModelsPayload(refreshedPayload));
-        showValidationToast({ success: true, message: t(result?.applied_without_restart === false
+        showValidationToast({ success: true, message: t(result?.kv_cache_affinity_auto_disabled
+          ? 'settingsPanel.models.affinityAutoDisabled'
+          : result?.applied_without_restart === false
           ? 'settingsPanel.models.savedRestartRequired' : 'settingsPanel.feedback.saved') });
       }
       setConfirmation(null);
@@ -643,6 +667,7 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
         </SettingsSection>
       ) : null}
       <SettingsTabLayout
+        requestedTab={navigationTarget?.moduleId === 'models' ? navigationTarget : undefined}
         tabs={tabs}
         defaultTab={defaultTab}
         ariaLabelKey="settingsPanel.models.tabsLabel"
@@ -709,6 +734,8 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
         </div>
         ) : activeTab === 'jev' ? (
         <JevSettings disabled={disabled} />
+        ) : activeTab === 'multimodal' ? (
+        <MultimodalModelsSettings disabled={disabled} />
         ) : (
         <ModelGroupsSettings
           models={models}

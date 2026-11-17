@@ -14,6 +14,9 @@ from jiuwenswarm.extensions.video_duplex.backend import queue_manager, video_sea
 from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import parse_qwen_omni_tool_call, qwen_omni_tools
 from jiuwenswarm.extensions.video_duplex.backend.task_adapter import task_identity
 from jiuwenswarm.extensions.video_duplex.backend.tasks.errors import QueueVersionConflict, TaskRevisionConflict
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import (
+    run_queue, tool_proposal,
+)
 
 
 def test_voice_query_excludes_unbounded_progress_and_preserves_control_identity():
@@ -889,7 +892,7 @@ def management_call():
 
 def test_qwen_exposes_queue_manager_and_preserves_voice_approval_answers():
     names = {t["function"]["name"] for t in qwen_omni_tools(queue_manager=True)}
-    assert names == {"jiuwen_delegate", "jiuwen_queue_manage", "jiuwen_task_answer"}
+    assert names == {"jiuwen_delegate", "jiuwen_queue_manage", "jiuwen_task_answer", "jiuwen_form_answer"}
     for args in ({}, {"instruction": " "}, {"instruction": "move", "job_id": "invented"}):
         with pytest.raises(ValueError):
             parse_qwen_omni_tool_call({"name": "jiuwen_queue_manage", "call_id": "m", "arguments": args})
@@ -946,14 +949,272 @@ async def test_joyai_manager_cannot_submit_information_answers(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_failure_after_write_preserves_receipt_without_repeating(monkeypatch):
-    manager = SimpleNamespace(operate=AsyncMock(side_effect=[
-        {"jobs": [{"job_id": "feishu", "revision": 1}]}, {"state": "cancelling"},
-    ]))
-    monkeypatch.setattr(queue_manager, "request_step", AsyncMock(side_effect=[
-        json.dumps({"tool": {"name": "jiuwen_task_cancel", "arguments": {"job_id": "feishu"}}}),
-        TimeoutError(),
-    ]))
-    result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "取消飞书任务")
+    result, operate, _ = await run_queue(monkeypatch, [
+        tool_proposal("jiuwen_task_cancel", {"job_id": "feishu"}), TimeoutError(),
+    ], [{"jobs": [{"job_id": "feishu", "revision": 1}]}, {"state": "cancelling"}])
     assert result["state"] == "incomplete"
     assert result["receipts"][-1]["receipt"]["state"] == "cancelling"
-    assert manager.operate.await_count == 2
+    assert operate.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["", "not json", '{"tool":{"name":[],"arguments":{}}}',
+    '{"tool":{"name":"jiuwen_task_modify","arguments":{"job_id":"a","revision":0,"instruction":"change"}}}'])
+async def test_invalid_proposal_is_corrected_without_user_error(monkeypatch, invalid):
+    result, operate, step = await run_queue(monkeypatch, [invalid, '{"response":"已查询当前任务。"}'],
+                                          {"jobs": [{"job_id": "a", "revision": 1}]})
+    assert "error" not in result
+    assert result["response"] == "已查询当前任务。"
+    assert operate.await_count == 1
+    assert json.loads(step.call_args.args[0][-1]["content"])["applied"] is False
+
+
+@pytest.mark.asyncio
+async def test_duplicate_write_reuses_receipt_without_dispatch(monkeypatch):
+    write = tool_proposal("jiuwen_task_cancel", {"job_id": "a"})
+    result, operate, _ = await run_queue(monkeypatch, [write, write, '{"response":"正在停止。"}'],
+                                        [{"jobs": [{"job_id": "a", "revision": 1}]}, {"state": "cancelling"}])
+    assert "error" not in result
+    assert operate.await_count == 2
+    assert result["receipts"][1]["receipt"] == result["receipts"][2]["receipt"]
+
+
+@pytest.mark.asyncio
+async def test_operational_exception_is_not_replayed_as_validation_error(monkeypatch):
+    result, operate, step = await run_queue(monkeypatch, tool_proposal("jiuwen_task_cancel", {"job_id": "a"}),
+        [{"jobs": [{"job_id": "a", "revision": 1}]}, RuntimeError("connection lost after dispatch")])
+    assert result["state"] == "incomplete"
+    assert result["error"] == "connection lost after dispatch"
+    assert operate.await_count == 2
+    assert step.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_revision_conflict_can_query_then_correct_without_replaying_old_write(monkeypatch):
+    def modification(revision):
+        return tool_proposal("jiuwen_task_modify", {"job_id": "a", "revision": revision, "instruction": "change"})
+
+    result, operate, _ = await run_queue(monkeypatch, [
+        modification(1), tool_proposal("jiuwen_task_query", {}), modification(2), '{"response":"修改已受理。"}',
+    ], [
+        {"jobs": [{"job_id": "a", "revision": 1}]},
+        {"state": "rejected", "applied": False, "error": "revision changed"},
+        {"jobs": [{"job_id": "a", "revision": 2}]}, {"state": "accepted"},
+    ])
+    assert "error" not in result
+    assert operate.await_count == 4
+    assert operate.await_args_list[1].args[2].arguments["revision"] == 1
+    assert operate.await_args_list[3].args[2].arguments["revision"] == 2
+
+
+@pytest.mark.asyncio
+async def test_gateway_duplicate_call_shares_execution(monkeypatch):
+    from jiuwenswarm.extensions.video_duplex.backend.task_adapter import VideoSearchManager
+
+    channel = SimpleNamespace(send_response=AsyncMock())
+    manager = VideoSearchManager(channel, None, log_event=lambda *a, **k: None, qwen_active=lambda: True)
+    manager.scope = AsyncMock(return_value=("alice", "voice"))
+    gate = asyncio.Event()
+
+    async def run(*args, **kwargs):
+        await gate.wait()
+        return {"managed_by": "text_queue_manager", "receipts": []}
+
+    mocked = AsyncMock(side_effect=run)
+    monkeypatch.setattr(queue_manager, "manage_queue", mocked)
+    params = {"name": "jiuwen_queue_manage", "call_id": "m", "arguments": {"instruction": "调整顺序"}}
+    tasks = [asyncio.create_task(manager.handle_qwen_tool(None, str(i), params, "")) for i in range(2)]
+    await asyncio.sleep(0)
+    gate.set()
+    await asyncio.gather(*tasks)
+    assert mocked.await_count == 1
+    assert channel.send_response.await_count == 2
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_text_manager_changes_real_queue_order(tmp_path, monkeypatch):
+    from jiuwenswarm.extensions.video_duplex.backend.task_adapter import VideoSearchManager
+    from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
+
+    service = TaskService(TaskStore(tmp_path / "tasks.sqlite"), None)
+    service.started = True
+    service.kick = Mock()
+    wechat = service.submit("alice", "voice", "create-wechat", "打开微信")
+    feishu = service.submit("alice", "voice", "create-feishu", "打开飞书")
+    manager = VideoSearchManager(None, None, log_event=lambda *a, **k: None, qwen_active=lambda: True)
+    manager._service = service
+    monkeypatch.setattr(queue_manager, "request_step", AsyncMock(side_effect=[
+        json.dumps({"tool": {"name": "jiuwen_task_reorder", "arguments": {
+            "job_id": feishu["id"], "action": "before", "before_job_id": wechat["id"]}}}),
+        json.dumps({"response": "飞书已排在微信前面"}),
+    ]))
+    try:
+        result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "先飞书再微信")
+        assert "state" not in result
+        tasks, _ = service.snapshot("alice", "voice")
+        assert [t["id"] for t in sorted(tasks, key=lambda t: t["position"])] == [feishu["id"], wechat["id"]]
+        assert result["receipts"][-1]["receipt"]["operation"]["state"] == "reordered"
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_pending_management_is_cancellable_and_does_not_repeat_operations(monkeypatch):
+    manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": []}))
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def pending_step(messages):
+        entered.set()
+        await release.wait()
+        return json.dumps({"response": "队列为空"})
+
+    monkeypatch.setattr(queue_manager, "request_step", pending_step)
+    pending = asyncio.create_task(queue_manager.manage_queue(
+        manager, "alice", "voice", management_call(), "查询队列",
+    ))
+    await entered.wait()
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    assert manager.operate.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_model_request_preserves_configured_network_timeout(monkeypatch):
+    from jiuwenswarm.common import config
+    from openjiuwen.core.foundation import llm
+
+    monkeypatch.delenv("DUPLEX_QUEUE_MANAGER_MODEL", raising=False)
+    monkeypatch.setattr(config, "get_default_models", lambda: [{
+        "model_client_config": {
+            "model_name": "test-model", "client_provider": "OpenAI",
+            "api_key": "test-only", "api_base": "https://example.invalid", "timeout": 77,
+        },
+    }])
+    received = []
+    invoke = AsyncMock(return_value=SimpleNamespace(content='{"response":"done"}'))
+
+    def model(**kwargs):
+        received.append(kwargs["model_client_config"])
+        return SimpleNamespace(invoke=invoke)
+
+    monkeypatch.setattr(llm, "Model", model)
+    assert await queue_manager.request_step([]) == '{"response":"done"}'
+    assert received[0].timeout == 77
+    invoke.assert_awaited_once_with([])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("proposal, decisions, queries, error", [
+    ("invalid", 4, 1, ""),
+    (json.dumps({"tool": {"name": "jiuwen_task_query", "arguments": {}}}), 6, 7, "operation limit"),
+])
+async def test_management_budgets_are_bounded(monkeypatch, proposal, decisions, queries, error):
+    result, operate, step = await run_queue(monkeypatch, proposal, {"jobs": []})
+    assert result["state"] == "incomplete"
+    assert error in result["error"]
+    assert step.await_count == decisions
+    assert operate.await_count == queries
+
+
+@pytest.mark.parametrize(
+    "model_name,login,model_field",
+    [("glm-5#3", "login-session", "model"), ("glm-5#3", None, "model"),
+     ("configured", "login-session", "model"), ("glm-5#3", "expired-session", "model"),
+     ("glm-5#3", "revoked-session", "model"), ("glm-5#3", "login-session", "model_name")],
+)
+async def test_duplex_login_auth_is_bound_to_caller_and_sent_on_each_model_request(
+    monkeypatch, tmp_path, model_name, login, model_field,
+):
+    from agent_gateway.auth import apig, login_credentials, model_catalog, passthrough, service
+    from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.extensions.video_duplex.backend.task_adapter import VideoSearchManager
+    from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import RecordingChannel
+
+    monkeypatch.setattr(login_credentials, "_ref_key_cache", b"k" * 32)
+    monkeypatch.setattr(model_catalog, "get_models", lambda *args, **kwargs: [
+        model_catalog.LoginModel("glm-5", "GLM-5"),
+    ])
+    monkeypatch.setattr(apig, "resolve_apig_config", lambda **kwargs: SimpleNamespace(
+        invoke_base_url="https://apig.example/v1",
+    ))
+    live_session = Mock(return_value=SimpleNamespace(
+        user_id="account-alice", credential=SimpleNamespace(id_token="id-initial"),
+    ))
+    monkeypatch.setattr(service, "live_session", live_session)
+    expired, refresh = object(), Mock()
+    monkeypatch.setattr(passthrough, "expired_login_session", lambda params, session: (
+        expired if session == "expired-session" else None
+    ))
+    monkeypatch.setattr(service, "get_auth_service", lambda: SimpleNamespace(try_refresh=refresh))
+    monkeypatch.setattr(passthrough, "refreshed_credential_for_ref", lambda ref: (
+        {"credential_ref": ref, "revoked": True} if login == "revoked-session" else
+        {"credential_ref": ref, "api_key": "id-fresh"}
+    ))
+    sent = []
+
+    async def send_request(envelope):
+        payload = {}
+        if envelope.method == ReqMethod.SESSION_GET_METADATA.value:
+            payload = {
+                "user_id": "alice", "mode": "agent", model_field: model_name,
+                "model_selection": {"type": "model", "id": "selected-login-model"},
+            }
+        elif envelope.method == ReqMethod.CHAT_SEND.value:
+            sent.append(envelope)
+            payload = {"content": "任务已完成"}
+        return SimpleNamespace(ok=True, payload=payload)
+
+    manager = VideoSearchManager(
+        RecordingChannel(), SimpleNamespace(send_request=send_request),
+        log_event=lambda event: None, qwen_active=lambda: True, path=tmp_path / "tasks.sqlite",
+    )
+    try:
+        public = await manager.start(
+            SimpleNamespace(_web_connection_user_id="alice", _jiuwen_auth_session=login),
+            question="执行任务", query="执行任务", search_session_id="task-duplex:saved",
+            command_id="task-call", scheduling={"login_credential_ref": "forged"},
+        )
+        await until(lambda: manager.service.store.read(public["id"])["status"] == "completed")
+        task = manager.service.store.read(public["id"])
+        bound = model_name.startswith("glm-5") and login is not None
+        authenticated = bound and login != "revoked-session"
+        ref = login_credentials.credential_ref_for_user("account-alice")
+        assert task["request"].get("login_credential_ref") == (ref if bound else None)
+        persisted = json.dumps(task)
+        assert all(secret not in persisted for secret in ("id-initial", "id-fresh", "login-session", "expired-session"))
+        assert "login_credential_ref" not in json.dumps(public)
+
+        task["interaction"] = {
+            "request_id": "question", "operation_id": "answer-op", "source": "ask_user_interrupt",
+            "answers": [{"question": "预算？", "answer": "100"}],
+        }
+        await manager.service.executor.answer(task)
+        task["resume_answer"] = True
+        await manager.service.executor._run(task, AsyncMock(), [])
+        assert len(sent) == 3
+        for envelope in sent:
+            auth = envelope.params.get(E2A_MODEL_AUTH_PARAM_KEY)
+            if authenticated:
+                assert auth == {
+                    "api_base": "https://apig.example/v1", "api_key": "id-fresh", "credential_ref": ref,
+                }
+                assert envelope.params["model_name"] == model_name
+            else:
+                assert auth is None
+            assert envelope.params.get("model_selection") == {
+                "type": "model", "id": "selected-login-model",
+            }
+        if bound:
+            live_session.assert_called_once_with(login, allow_refresh=False)
+        else:
+            live_session.assert_not_called()
+        if login == "expired-session":
+            refresh.assert_called_once_with(expired)
+        else:
+            refresh.assert_not_called()
+    finally:
+        await manager.close()

@@ -530,6 +530,54 @@ async def test_finished_stream_is_not_cancelled() -> None:
 
 
 @pytest.mark.asyncio
+async def test_enterprise_sse_keepalive_comment_then_stop(monkeypatch) -> None:
+    import jiuwenswarm.server.transports.http_sink as http_sink
+
+    monkeypatch.setattr(http_sink, "is_enterprise", lambda: True)
+    monkeypatch.setattr(http_sink, "_SSE_KEEPALIVE_INTERVAL_SECONDS", 0.01)
+    sink = SSESink()
+    keepalive = sink.open_stream_keepalive(None)
+    assert isinstance(keepalive, http_sink._EnterpriseSseKeepalive)
+    keepalive.start()
+    try:
+        frame = await asyncio.wait_for(sink._queue.get(), timeout=1)
+        assert frame == ": keepalive\n\n"
+        await keepalive.stop()
+        while not sink._queue.empty():
+            sink._queue.get_nowait()
+        await asyncio.sleep(0.05)
+        assert sink._queue.empty()
+    finally:
+        await keepalive.stop()
+
+
+@pytest.mark.asyncio
+async def test_personal_sse_keepalive_stays_quiet(monkeypatch) -> None:
+    import jiuwenswarm.server.transports.http_sink as http_sink
+
+    monkeypatch.setattr(http_sink, "is_enterprise", lambda: False)
+    monkeypatch.setattr(http_sink, "_SSE_KEEPALIVE_INTERVAL_SECONDS", 0.01)
+    sink = SSESink()
+    keepalive = sink.open_stream_keepalive(None)
+    assert type(keepalive) is http_sink._QuietKeepalive
+    keepalive.start()
+    await asyncio.sleep(0.05)
+    assert sink._queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_sse_keepalive_comment_is_dropped_when_queue_is_full() -> None:
+    import jiuwenswarm.server.transports.http_sink as http_sink
+
+    sink = SSESink()
+    for _ in range(http_sink._SSE_FRAME_QUEUE_LIMIT):
+        sink._queue.put_nowait("data: {}\n\n")
+    sink.offer_keepalive()
+    assert sink._queue.qsize() == http_sink._SSE_FRAME_QUEUE_LIMIT
+    assert sink._queue.get_nowait() == "data: {}\n\n"
+
+
+@pytest.mark.asyncio
 async def test_sse_queue_stops_at_the_limit() -> None:
     sink = SSESink()
     pending = [
@@ -734,20 +782,17 @@ async def test_events_stream_stays_open_until_the_client_leaves(monkeypatch) -> 
 
     state = {"ticks": 0}
 
-    async def _wait_for(awaitable, timeout=None):
-        _ = timeout
+    async def _wait(aws, *, timeout=None, return_when=asyncio.ALL_COMPLETED):
+        _ = timeout, return_when
         state["ticks"] += 1
-        close = getattr(awaitable, "close", None)
-        if callable(close):
-            close()
-        raise asyncio.TimeoutError
+        return set(), set(aws)
 
     async def _gone() -> bool:
         return state["ticks"] >= 2
 
     monkeypatch.setattr(
-        "jiuwenswarm.server.agent_http_routes.asyncio.wait_for",
-        _wait_for,
+        "jiuwenswarm.server.agent_http_routes.asyncio.wait",
+        _wait,
     )
     request = SimpleNamespace(is_disconnected=_gone)
     frames = [frame async for frame in _event_frames(request)]
@@ -788,6 +833,30 @@ async def test_events_stream_forwards_http_hub_server_push() -> None:
     await asyncio.wait_for(task, timeout=2)
     assert "gateway.push_ready" in seen[0]
     assert "x-jiuwen-server-push" in seen[1]
+
+
+@pytest.mark.asyncio
+async def test_enterprise_events_stream_forwards_fanout(monkeypatch) -> None:
+    monkeypatch.setattr("jiuwenswarm.enterprise.edition.is_enterprise", lambda: True)
+    from jiuwenswarm.server.agent_http_routes import _event_frames
+    from jiuwenswarm.enterprise.team.push_fanout import publish, reset
+
+    reset()
+
+    async def _stay() -> bool:
+        return False
+
+    request = SimpleNamespace(is_disconnected=_stay)
+    gen = _event_frames(request)
+    try:
+        first = await gen.__anext__()
+        assert "gateway.push_ready" in first
+        publish({"request_id": "team-session-live:s", "session_id": "s"})
+        second = await asyncio.wait_for(gen.__anext__(), timeout=1)
+        assert "team-session-live:s" in second
+    finally:
+        await gen.aclose()
+        reset()
 
 
 @pytest.mark.asyncio
@@ -877,3 +946,16 @@ def test_unhandled_urls_are_not_registered() -> None:
     assert ("POST", "/api/v1/sessions/{session_id}/swarmflow/actions/pause") in routes
     assert ("POST", "/api/v1/proactive/actions/feedback") in routes
     assert ("POST", "/api/v1/rpc/{method}") not in routes
+
+
+@pytest.mark.asyncio
+async def test_background_chat_error_propagates_without_current_task(monkeypatch) -> None:
+    from jiuwenswarm.server.agent_http_routes import _stop_background_chat
+
+    async def fail():
+        raise RuntimeError("background chat failed")
+
+    task = asyncio.create_task(fail())
+    monkeypatch.setattr(asyncio, "current_task", lambda: None)
+    with pytest.raises(RuntimeError, match="background chat failed"):
+        await _stop_background_chat(task)

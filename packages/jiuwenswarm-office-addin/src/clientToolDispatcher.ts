@@ -5,7 +5,7 @@ import { isRecord, type JsonObject } from './gatewayClient';
 import type { HostWriteQueue } from './hostWriteQueue';
 import { fitToolResultJson } from './toolResultBudget';
 
-const MAX_TOOL_RESULT_CHARS = 9500;
+export const MAX_TOOL_RESULT_CHARS = 9500;
 /**
  * A call the host has not finished by then is answered as timed out. This only
  * guards against a host that hangs: a write keeps the write queue until the
@@ -95,10 +95,12 @@ export class ClientToolDispatcher implements ClientToolExecutor {
     };
     let queueWait = 0;
     const settled = mutating
-      ? this.writes.exclusive(() => {
+      ? new Promise<ClientToolResponse>(answer => void this.writes.exclusive(async () => {
         queueWait = Date.now() - started;
-        return run();
-      }).then(withMutationRecord)
+        const response = await run();
+        answer(withMutationRecord(response));
+        await response.settled;
+      }))
       : run();
     let deadline: ReturnType<typeof setTimeout> | undefined;
     const response = await Promise.race([settled, new Promise<ClientToolResponse>(resolve => {
@@ -128,11 +130,14 @@ export class ClientToolDispatcher implements ClientToolExecutor {
   }
 
   private answer(toolName: string, response: ClientToolResponse, telemetry: ToolTelemetry): ClientToolResult {
-    return toolResult(response, telemetry, this.app.flatResults?.has(toolName) ?? false);
+    return toolResult(response, telemetry, this.app.flatResults?.has(toolName) ?? false,
+      this.app.resultChars ?? MAX_TOOL_RESULT_CHARS);
   }
 }
 
-function toolResult(response: ClientToolResponse, telemetry: ToolTelemetry, flat: boolean): ClientToolResult {
+function toolResult(
+  response: ClientToolResponse, telemetry: ToolTelemetry, flat: boolean, limit: number,
+): ClientToolResult {
   const mutation = response.mutation ? { mutation: response.mutation } : {};
   let value: JsonObject;
   if (!response.ok) {
@@ -148,7 +153,7 @@ function toolResult(response: ClientToolResponse, telemetry: ToolTelemetry, flat
     value = { success: true, ...response.successFields,
       ...(response.result === undefined ? {} : { result: response.result }), ...mutation };
   }
-  const content: ContentBlock[] = [{ type: 'text', text: fitToolResultJson(value, MAX_TOOL_RESULT_CHARS) }];
+  const content: ContentBlock[] = [{ type: 'text', text: fitToolResultJson(value, limit) }];
   if (response.ok && response.imageBase64) {
     content.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: response.imageBase64 } });
   }
@@ -235,6 +240,8 @@ interface ResponseRecords {
   mutationEvidence?: Record<string, unknown>;
   mutation?: MutationRecord;
   hostTimings?: HostTimings;
+  /** Host work that goes on past the answer (a timed-out run's code); the write queue stays held until it ends. */
+  settled?: Promise<unknown>;
 }
 
 /** What a tool runtime returns for one call. */

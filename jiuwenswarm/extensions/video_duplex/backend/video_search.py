@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable
 import uuid
 
 from jiuwenswarm.extensions.video_duplex.backend.video_files import normalize_file_items
+from jiuwenswarm.common.utils import mask_sensitive
 
 from .core_receipts import (
     MAX_REALTIME_BRIEF_CHARS, core_agent_brief_protocol, full_answer_language_rule, present_core_agent_result,
@@ -189,6 +190,49 @@ def core_agent_progress(payload: dict[str, Any]) -> dict[str, Any] | None:
             raw_result = result.get("data")
         if raw_result is None:
             raw_result = result.get("error") or result.get("summary")
+        # Structured tools can report failure inside their compatibility result.
+        sources = [result]
+        for key in ("raw_output", "result", "data"):
+            value = result.get(key)
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except (ValueError, TypeError):
+                    continue
+            if isinstance(value, dict):
+                sources.append(value)
+                if isinstance(value.get("data"), dict):
+                    sources.append(value["data"])
+        failed = failed or any(
+            source.get("success") is False or source.get("isError") is True
+            or str(source.get("status") or "").lower() in {
+                "error", "failed", "failure", "timeout", "timed_out",
+            }
+            or bool(source.get("error"))
+            or (isinstance(source.get("exit_code"), int) and source["exit_code"] != 0)
+            for source in sources
+        )
+        if raw_status == "pending":
+            failed = False
+        if failed:
+            diagnostics = []
+            for source in sources:
+                for key in ("error", "message", "code", "error_code", "exit_code", "stderr"):
+                    value = source.get(key)
+                    if value is not None and value != "":
+                        text = f"{key}: {value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)}"
+                        if text not in diagnostics:
+                            diagnostics.append(text)
+            rendered = result.get("rendered_result")
+            if isinstance(rendered, str) and rendered.strip():
+                diagnostics.append(rendered)
+            failure_text = mask_sensitive("\n".join(diagnostics) or core_agent_text(raw_result, limit=8000))
+            detail = core_agent_text(failure_text)
+            # Preserve native fields and artifact references; add diagnostics for
+            # the existing tool-result renderer rather than replacing the receipt.
+            result = {**result, "success": False, "status": "failed",
+                      "rendered_result": failure_text}
+            payload = {**payload, "tool_result": result} if isinstance(payload.get("tool_result"), dict) else result
         return {
             "stage": "tool_result",
             "tool_payload": payload,
@@ -229,6 +273,22 @@ def core_agent_progress(payload: dict[str, Any]) -> dict[str, Any] | None:
                 if isinstance(item, dict)
             ],
         }
+    if event_type in {"chat.subtask_update", "chat.subagent_activity"}:
+        # Carry the exact frame so the Web subagent panel reuses its typed-path
+        # normalization. Each frame is a distinct roster/activity fact.
+        name = str(
+            payload.get("display_name")
+            or payload.get("subagent_type")
+            or payload.get("subagent_id")
+            or "子智能体"
+        ).strip()
+        return {
+            "stage": "subagent",
+            "title": f"子智能体：{name}",
+            "detail": core_agent_text(payload.get("summary") or payload.get("message")),
+            "status": "running",
+            "subagent_event": dict(payload),
+        }
     if event_type == "chat.delta" and str(payload.get("content") or "").strip():
         return {"stage": "answer", "title": "正在整理执行结果", "status": "running"}
     if event_type == "chat.error":
@@ -259,8 +319,10 @@ async def execute_core_agent(
     interaction_answer: Any = None,
     managed_task_binding: dict[str, str] | None = None,
     execution_target: dict[str, Any] | None = None,
+    model_auth: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one delegated video task through the standard, full Core Agent API."""
+    from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
     from jiuwenswarm.common.schema.message import ReqMethod
 
@@ -309,6 +371,12 @@ async def execute_core_agent(
         params = {**answer_request.params, "log_as_user": False}
     if managed_task_binding is not None:
         params["managed_task_binding"] = managed_task_binding
+    if execution_target:
+        for key in ("model_name", "model_selection"):
+            if execution_target.get(key) is not None:
+                params.setdefault(key, execution_target[key])
+    if model_auth is not None:
+        params[E2A_MODEL_AUTH_PARAM_KEY] = model_auth
     env = e2a_from_agent_fields(
         request_id=request_id,
         channel_id=VIDEO_TOOL_CHANNEL_ID,

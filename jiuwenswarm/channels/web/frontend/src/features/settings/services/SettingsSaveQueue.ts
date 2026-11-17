@@ -4,7 +4,7 @@ export type SettingsSaveStatus = {
   error: string | null;
 };
 export type SettingsSaveErrorScope = 'page' | 'caller';
-export type SettingsSaveOptions = { errorScope?: SettingsSaveErrorScope };
+export type SettingsSaveOptions = { errorScope?: SettingsSaveErrorScope; successFeedback?: boolean };
 type Listener = (status: SettingsSaveStatus) => void;
 
 const SAVE_SUCCESS_VISIBLE_MS = 2000;
@@ -24,7 +24,7 @@ export class SettingsSaveQueue {
   enqueue<T>(
     operation: string,
     write: () => Promise<T>,
-    { errorScope = 'page' }: SettingsSaveOptions = {},
+    { errorScope = 'page', successFeedback = true }: SettingsSaveOptions = {},
   ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       this.tail = this.tail
@@ -33,7 +33,7 @@ export class SettingsSaveQueue {
           this.publish({ status: 'saving', operation, error: null });
           try {
             const result = await write();
-            this.publish({ status: 'saved', operation, error: null });
+            this.publish({ status: successFeedback ? 'saved' : 'idle', operation, error: null });
             resolve(result);
           } catch (error) {
             this.publish(
