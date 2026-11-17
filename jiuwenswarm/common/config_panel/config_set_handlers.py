@@ -1521,15 +1521,16 @@ def apply_config_payload(
             raise ConfigPanelInternalError("failed to update modes.team") from exc
 
     external_cli_agents_updated = False
-    try:
+    if "design_generation_video_gen" in params or "design_generation_visual_gen" in params:
         from jiuwenswarm.server.runtime.designer.generation_selection import (
             DesignSelectionError,
             apply_design_generation_config,
         )
 
-        yaml_updated.extend(apply_design_generation_config(params))
-    except DesignSelectionError as exc:
-        raise ConfigPanelBadRequest(str(exc)) from exc
+        try:
+            yaml_updated.extend(apply_design_generation_config(params))
+        except DesignSelectionError as exc:
+            raise ConfigPanelBadRequest(str(exc)) from exc
 
     for param_key in (*CONFIG_YAML_KEYS, *custom_external_cli_config_keys()):
         if param_key not in params:
