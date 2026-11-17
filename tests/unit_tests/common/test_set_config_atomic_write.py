@@ -19,18 +19,26 @@ def test_crash_mid_write_leaves_original_file_intact(
     monkeypatch: pytest.MonkeyPatch,
     temp_config_file: Path,
 ) -> None:
-    """If the dump fails, the on-disk config must be untouched."""
+    """If the write fails, the on-disk config must be untouched.
+
+    The failure is injected at _atomic_replace — after the serializer has
+    written the tmp file — so set_config walks its real write path. A
+    regression back to truncating open(path, "w") first would empty the file
+    before any dump call and fail this assertion.
+    """
     monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", temp_config_file)
     original = temp_config_file.read_bytes()
 
-    def failing_dump(path, data):
-        raise OSError("disk full")
+    def fail_replace(src, dst, *args, **kwargs):
+        raise OSError("injected write failure")
 
-    monkeypatch.setattr(config_module, "dump_yaml_round_trip", failing_dump)
+    monkeypatch.setattr(config_module, "_atomic_replace", fail_replace)
     with pytest.raises(OSError):
         set_config({"model": {"name": "x"}})
 
     assert temp_config_file.read_bytes() == original
+    # the tmp file the serializer staged must not linger after the failure
+    assert not list(temp_config_file.parent.glob("*.yaml.tmp"))
 
 
 def test_write_runs_under_the_config_write_lock(
