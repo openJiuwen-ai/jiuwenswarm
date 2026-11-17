@@ -79,7 +79,9 @@ def _adapter(
     adapter._vision_model_config = SimpleNamespace(model_name="vision-stub")
     adapter._stream_event_rail = None
     adapter._instance = MagicMock()
-    # This stream-only runtime has no live ReAct context or history cursor.
+    # process_message_impl syncs video-duplex history through react_agent.
+    # A bare MagicMock invents a duplex_history_cursor and trips the restore
+    # guard; these tests are about the image-tool notice, not voice history.
     adapter._instance.react_agent = None
     adapter._instance.attach_output = AsyncMock(
         return_value=_Stream(

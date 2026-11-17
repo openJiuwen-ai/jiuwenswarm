@@ -110,6 +110,18 @@ for (const chunks of [[error + final + end], [error, final, end]]) {
   });
 }
 
+test('enterprise idle end keeps reading the reply', async () => {
+  const idle = frame('chat.processing_status', { is_processing: false, idle: true });
+  const delta = frame('chat.delta', { content: 'still coming' });
+  const { events, cancelled } = await pump([idle, delta, end]);
+  assert.deepEqual(
+    events.map(e => e.event),
+    ['chat.processing_status', 'chat.delta', 'chat.processing_status'],
+  );
+  assert.equal(events[0].payload.idle, true);
+  assert.equal(cancelled, true);
+});
+
 test('error EOF emits exactly one scoped fallback, including an unterminated final frame', async () => {
   for (const chunks of [[error], [error, final.trimEnd()], [error.trimEnd()]]) {
     const { events } = await pump(chunks);

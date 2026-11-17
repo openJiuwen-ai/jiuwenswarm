@@ -90,6 +90,18 @@ tests/unit_tests/test_context_snapshots.py
 CLI 授权、host OAuth、扩展依赖连接、卸载守卫及装备广场五组前端回归共 33 项通过。
 本轮验证覆盖冲突处的测试行为和本分支的授权生命周期修复。
 
+### 再次同步 develop
+
+后续同步 upstream/develop `4771ebb77e88c2a8082595d6bd061eb56e24938a` 时，
+图片提示测试的 `react_agent=None` 修复已在 upstream 出现，冲突范围仅为其说明注释。
+采用 upstream 对模拟游标触发恢复校验的说明，合并后的该测试文件与 upstream 完全一致。
+
+合并候选的五组前端回归共 33 项通过。
+六个 Python 文件首次执行为 112 passed、1 failed，失败用例为
+`test_legacy_voice_ids_survive_compaction_and_restart`，错误为历史文件身份校验
+`HISTORY_RESTORE_CHANGED`。该用例单独重跑通过，随后六个文件整体重跑为 113 passed。
+该历史回放用例仍存在本地间歇性失败证据，完整 CI 结果需要独立确认。
+
 ## 防错模式与资料同步
 
 运行时替身显式声明可选子系统是否存在，避免 `MagicMock` 自动属性被当作真实生命周期状态。
