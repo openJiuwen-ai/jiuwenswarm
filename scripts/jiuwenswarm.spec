@@ -24,6 +24,8 @@ block_cipher = None
 
 SPEC_DIR = os.path.abspath(globals().get("SPECPATH", os.getcwd()))
 project_root = os.path.abspath(os.path.join(SPEC_DIR, os.pardir))
+release_dependencies = runpy.run_path(os.path.join(project_root, "scripts", "release_dependencies.py"))
+release_dependencies["validate_release_dependencies"](Path(project_root))
 build_config_module = runpy.run_path(os.path.join(project_root, "scripts", "build_config.py"))
 build_config = build_config_module["load_build_config"](Path(project_root))
 computer_use_build = runpy.run_path(os.path.join(project_root, "scripts", "build_computer_use.py"))
@@ -241,7 +243,7 @@ datas += collect_data_files(
 datas += collect_data_files(
     "jiuwenswarm.office",
     include_py_files=True,
-    includes=["powerpoint/**/*"],
+    includes=["powerpoint/**/*", "word/**/*", "excel/**/*"],
 )
 # DesignRail 的 config.yaml + skills/ 树（SKILL.md / workflows / references / scripts）
 # 含 .mjs 脚本和 _templates/ 模板（脚本运行时读取），需额外 pattern
@@ -258,12 +260,6 @@ symphony_submodules = collect_submodules("jiuwenswarm.runtime.symphony")
 # import_module(), so PyInstaller cannot discover them from the import graph.
 gateway_adapter_submodules = collect_submodules(
     "jiuwenswarm.server.runtime.gateway_adapter"
-)
-# Client attachments are re-exported through the package-level __getattr__ and
-# import_module(); agent_ws_server imports the exported names, not the modules,
-# so PyInstaller cannot discover attach/directory/watch from the import graph.
-client_attachment_submodules = collect_submodules(
-    "jiuwenswarm.server.client_attachments"
 )
 # The standalone Gateway also loads transport implementations dynamically.
 gateway_submodules = collect_submodules("agent_gateway")
@@ -294,6 +290,7 @@ for lazy_package in (
     "jiuwenswarm.agents.harness.common.rails",
     "jiuwenswarm.common.auth",
     "jiuwenswarm.agents.swarm",
+    "jiuwenswarm.server.client_attachments",
     # An app template's rail file imports its rail (jiuwenswarm.office.rails) at load time.
     "jiuwenswarm.office",
 ):
@@ -335,14 +332,7 @@ hiddenimports = lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdo
     "webview",
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
     "jiuwenswarm.channels.desktop.desktop_app",  # 桌面入口
-] + (
-    openjiuwen_submodules
-    + symphony_submodules
-    + gateway_adapter_submodules
-    + client_attachment_submodules
-    + runtime_worker_submodules
-    + cli_channel_submodules
-)
+] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + cli_channel_submodules
 hiddenimports += gateway_submodules
 
 # 排除不需要的模块以减小体积（pandas 为 pymilvus/openjiuwen 所需，不可排除）

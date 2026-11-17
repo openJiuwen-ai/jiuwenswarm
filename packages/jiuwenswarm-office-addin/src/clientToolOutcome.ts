@@ -1,4 +1,4 @@
-import type { ClientToolResponse, PresentationMutationRecord } from './presentationToolTypes';
+import type { ClientToolResponse, MutationRecord } from './clientToolDispatcher';
 
 /** Convert what a write reports about itself into the one mutation contract seen by the agent. */
 export function withMutationRecord(response: ClientToolResponse): ClientToolResponse {
@@ -30,7 +30,7 @@ export function withMutationRecord(response: ClientToolResponse): ClientToolResp
   const lastCompletedStage = stringValue(evidence.last_completed_stage)
     ?? stringValue(details.last_completed_stage);
   const resolvedSlides = resolvedSlideList(evidence.resolved_slides ?? details.resolved_slides);
-  const mutation: PresentationMutationRecord = {
+  const mutation: MutationRecord = {
     state,
     native_mutation_started: nativeMutationStarted,
     ...(lastCompletedStage ? { last_completed_stage: lastCompletedStage } : {}),
@@ -45,7 +45,7 @@ export function withMutationRecord(response: ClientToolResponse): ClientToolResp
   return { ...response, mutation };
 }
 
-function normalizeMutationState(value: unknown, succeeded: boolean): PresentationMutationRecord['state'] {
+function normalizeMutationState(value: unknown, succeeded: boolean): MutationRecord['state'] {
   if (value === 'not_applied') return 'not_applied';
   if (value === 'applied') return 'applied';
   if (value === 'partial' || value === 'partially_applied') return 'partial';

@@ -67,9 +67,7 @@ from jiuwenswarm.common.config import (
 )
 from jiuwenswarm.common.cua_config import is_cua_agent_enabled, is_cua_backend_available
 from jiuwenswarm.common.kv_cache_affinity_config import (
-    build_kv_cache_affinity_config,
-    get_kv_cache_control_model_client_config,
-    get_kv_cache_control_model_provider,
+    build_application_kv_cache_affinity_config,
 )
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     get_context_engine_enabled,
@@ -90,11 +88,7 @@ _CODE_MODES: frozenset[str] = frozenset(
 
 
 def _kv_cache_affinity_config(config: dict[str, Any]) -> KVCacheAffinityConfig:
-    return build_kv_cache_affinity_config(
-        config,
-        provider=get_kv_cache_control_model_provider(config),
-        model_client_config=get_kv_cache_control_model_client_config(config),
-    )
+    return build_application_kv_cache_affinity_config(config)
 
 
 # Rails common to both roles, in mount order. Each entry is a ``swarm.*``
@@ -221,6 +215,9 @@ _REVIEWER_TEAM_RAIL_NAMES: tuple[str, ...] = (
     registry.MODEL_ANOMALY_DETECTION,
     registry.MULTIMODAL_IMAGE,
     registry.CONTEXT_PROCESSOR,
+    # The reviewer makes model calls of its own; without this rail an OpenCode
+    # Go reviewer sends no session header while every other member sends one.
+    registry.OPENCODE_SESSION,
 )
 _REVIEWER_CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.CODE_RUNTIME_PROMPT,
@@ -233,6 +230,7 @@ _REVIEWER_CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.CONTEXT_PROCESSOR,
     registry.CODE_LSP,
     registry.CODE_AGENT_MD,
+    registry.OPENCODE_SESSION,
 )
 # The Skill rail stays so a reviewer can use installed Skills (e.g. to read a
 # PDF deliverable); installing / removing Skills is a separate rail left out.
@@ -863,6 +861,9 @@ def build_member_capability_specs(
         rails, tools = _build_team_capability_specs(
             config, mode, role, enable_permissions=enable_permissions
         )
+    # OpenCode Go models need a member-scoped session header; the rail is a
+    # no-op for every other vendor, so mounting it needs no config gate.
+    rails.append(RailSpec(type=registry.OPENCODE_SESSION))
     if availability is not None:
         rails.append(availability)
     if (config.get("experimental") or {}).get("team_organization_ui_enabled", False):
@@ -919,7 +920,7 @@ def _code_subagent_spec(
     elif name == "statusline-setup":
         max_iterations = registry.DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS
     else:
-        max_iterations = react_cfg.get("max_iterations", 100)
+        max_iterations = react_cfg.get("max_iterations", 1000)
     if isinstance(sub_cfg, dict) and sub_cfg.get("max_iterations") is not None:
         max_iterations = sub_cfg["max_iterations"]
     if max_iterations is not None:

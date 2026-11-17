@@ -60,6 +60,9 @@ from agent_gateway.routing.agent_client import WebSocketAgentServerClient  # pyl
 from agent_gateway.routing.keys import AgentRef, RoutingKey  # pylint: disable=wrong-import-order
 
 
+
+
+
 class FakeWebChannel:
     def __init__(self):
         self.channel_id = "web"
@@ -207,7 +210,8 @@ async def test_external_cli_detect_finds_compatible_sdk_on_cold_gateway(
         lambda name: str(competing_cli) if name == cli_agent and runtime_state == "current" else None,
     )
     monkeypatch.setattr(_gw_config_set_handlers, "external_cli_reference_version", lambda _agent: "1.2.3")
-    monkeypatch.setattr(_gw_config_set_handlers, "run_external_cli_version_command", lambda *_args: ("1.2.3", ""))
+    version_output = "1.2.3 (Claude Code)" if cli_agent == "claude" else "codex-cli 1.2.3"
+    monkeypatch.setattr(_gw_config_set_handlers, "run_external_cli_version_command", lambda *_args: (version_output, ""))
     assert _gw_config_set_handlers.external_cli_managed_cli_path(cli_agent) == ""
     channel = FakeWebChannel()
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=SimpleNamespace(server_ready=True)))
@@ -1974,6 +1978,8 @@ async def test_config_save_handlers_respond_before_agent_reload_finishes(monkeyp
         ({"api_base": "https://example.com/one"}, {"API_BASE"}, ["model"]),
         ({"bocha_api_key": "test-key"}, {"BOCHA_API_KEY"}, ["search"]),
         ({"serper_api_key": ""}, {"SERPER_API_KEY"}, ["search"]),
+        ({"free_search_ddg_enabled": "true"}, {"FREE_SEARCH_DDG_ENABLED"}, ["search"]),
+        ({"free_search_bing_enabled": "true"}, {"FREE_SEARCH_BING_ENABLED"}, ["search"]),
         (
             {"bocha_api_key": "test-key", "vision_api_key": "test-vision-key"},
             {"BOCHA_API_KEY", "VISION_API_KEY"},
@@ -1989,7 +1995,7 @@ async def test_config_set_applies_scoped_reload_before_responding(monkeypatch, t
 
     monkeypatch.setattr(
         "agent_gateway.extensions.registry.ExtensionRegistry.get_instance",
-        lambda: SimpleNamespace(get_crypto_provider=lambda: None),
+        lambda: SimpleNamespace(get_crypto_provider=lambda: None, get_crypto_utility_extension=lambda: None),
     )
     for key in keys:
         monkeypatch.setenv(key, "")
@@ -2152,7 +2158,7 @@ async def test_config_get_returns_setup_guide_switch(monkeypatch, raw_config, ex
     monkeypatch.setattr(
         ExtensionRegistry,
         "get_instance",
-        lambda: SimpleNamespace(get_crypto_provider=lambda: None),
+        lambda: SimpleNamespace(get_crypto_provider=lambda: None, get_crypto_utility_extension=lambda: None),
     )
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
@@ -2178,7 +2184,7 @@ async def test_config_get_returns_jev_credentials_like_model_settings(monkeypatc
     monkeypatch.setattr(
         ExtensionRegistry,
         "get_instance",
-        lambda: SimpleNamespace(get_crypto_provider=lambda: None),
+        lambda: SimpleNamespace(get_crypto_provider=lambda: None, get_crypto_utility_extension=lambda: None),
     )
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
@@ -2418,8 +2424,10 @@ def test_task_chat_uses_general_asr_config_independent_from_joyai():
 async def test_task_asr_rpc_returns_transcript(monkeypatch):
     channel = FakeWebChannel()
 
-    async def fake_transcribe(params):
+    async def fake_transcribe(params, *, environ):
         assert params == {"audio_base64": "YXVkaW8=", "mime_type": "audio/webm"}
+        # 8ce9b60d 起远端配置路径会把 AgentServer 的 ASR 配置透传进来
+        assert set(environ) >= {"ASR_API_BASE", "ASR_API_KEY", "ASR_MODEL_NAME"}
         return "transcribed speech"
 
     monkeypatch.setattr(app_web_handlers, "transcribe_task_audio", fake_transcribe)
@@ -2515,7 +2523,7 @@ async def test_config_get_returns_canonical_permission_profile(
     monkeypatch.setattr(
         ExtensionRegistry,
         "get_instance",
-        lambda: SimpleNamespace(get_crypto_provider=lambda: None),
+        lambda: SimpleNamespace(get_crypto_provider=lambda: None, get_crypto_utility_extension=lambda: None),
     )
     monkeypatch.setattr(
         config_set_handlers, "flatten_modes_team_for_config_panel", lambda raw: {}
@@ -2694,27 +2702,18 @@ async def test_config_save_all_kvc_failure_does_not_persist_permission_profile(
     saved: list[str] = []
     affinity_checks: list[None] = []
 
-    def invalid_affinity():
+    def invalid_affinity(_models, *, affinity_enabled):
+        assert affinity_enabled is True
         affinity_checks.append(None)
-        return False, ["invalid affinity"]
+        raise ValueError("invalid affinity")
 
     monkeypatch.setattr(
         ExtensionRegistry,
         "get_instance",
-        lambda: SimpleNamespace(get_crypto_provider=lambda: None),
+        lambda: SimpleNamespace(get_crypto_provider=lambda: None, get_crypto_utility_extension=lambda: None),
     )
     monkeypatch.setattr(config_set_handlers, "get_config_raw", lambda: {})
-    monkeypatch.setattr(config_set_handlers, "is_affinity_enabled", lambda _config: False)
-    monkeypatch.setattr(
-        config_set_handlers,
-        "update_default_models_in_config",
-        lambda _models: None,
-    )
-    monkeypatch.setattr(
-        config_set_handlers,
-        "validate_persisted_kv_cache_affinity",
-        invalid_affinity,
-    )
+    monkeypatch.setattr(config_set_handlers, "update_default_models_in_config", invalid_affinity)
     monkeypatch.setattr(
         config_set_handlers,
         "update_kv_cache_affinity_enabled_in_config",
@@ -2731,7 +2730,7 @@ async def test_config_save_all_kvc_failure_does_not_persist_permission_profile(
         object(),
         "req-save-all-invalid-kvc",
         {
-            "config": {"permissions_profile": "automatic"},
+            "config": {"permissions_profile": "automatic", "kv_cache_affinity_enabled": "true"},
             "models": [
                 {
                     "model_name": "model-one",
@@ -2748,7 +2747,7 @@ async def test_config_save_all_kvc_failure_does_not_persist_permission_profile(
     assert affinity_checks == [None]
     assert saved == []
     assert channel.responses[-1]["ok"] is False
-    assert channel.responses[-1]["code"] == "INTERNAL_ERROR"
+    assert channel.responses[-1]["code"] == "BAD_REQUEST"
 
 
 @pytest.mark.asyncio
@@ -5060,12 +5059,15 @@ async def test_channel_feishu_set_conf_apps_mode(monkeypatch, tmp_path):
     monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", config_path)
 
     _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
-
     apps_payload = [
-        {"name": "应用A", "is_default": True, "app_id": "cli_a",
-         "app_secret": "sec_a", "encrypt_key": "key_a", "verification_token": "token_a"},
-        {"name": "应用B", "is_default": False, "app_id": "cli_b",
-         "app_secret": "sec_b", "encrypt_key": "key_b", "verification_token": "token_b"},
+        {
+            "name": "应用A", "is_default": True, "app_id": "cli_a",
+            "app_secret": "sec_a", "encrypt_key": "key_a", "verification_token": "token_a",
+        },
+        {
+            "name": "应用B", "is_default": False, "app_id": "cli_b",
+            "app_secret": "sec_b", "encrypt_key": "key_b", "verification_token": "token_b",
+        },
     ]
     await channel.methods["channel.feishu.set_conf"](
         object(), "req-apps", {"apps": apps_payload}, "sess-1"
@@ -5076,22 +5078,17 @@ async def test_channel_feishu_set_conf_apps_mode(monkeypatch, tmp_path):
     assert len(written_apps) == 2
     assert written_apps[0]["name"] == "应用A"
     assert written_apps[0]["app_id"] == "cli_a"
-    assert written_apps[0]["enabled"] is True  # 默认值已补充
-    assert written_apps[0]["allow_from"] == ["0.0.0.0/0"]  # 默认值已补充
+    assert written_apps[0]["enabled"] is True
+    assert written_apps[0]["allow_from"] == ["0.0.0.0/0"]
     assert written_apps[1]["name"] == "应用B"
-
-    # 验证 cm 中存储了归一化后的 apps
     assert "apps" in cm.configs.get("feishu", {})
-    cm_apps = cm.configs["feishu"]["apps"]
-    assert len(cm_apps) == 2
-
-    # 验证响应包含归一化后的完整配置
+    assert len(cm.configs["feishu"]["apps"]) == 2
     assert channel.responses[-1]["ok"] is True
     config = channel.responses[-1]["payload"]["config"]
     assert len(config["apps"]) == 2
-    # 缺省字段已被填充
     assert config["apps"][0]["allow_from"] == ["0.0.0.0/0"]
     assert config["apps"][0]["enable_streaming"] is True
+
 
 
 @pytest.mark.asyncio
@@ -5332,6 +5329,7 @@ async def test_channel_feishu_set_conf_apps_empty_list(monkeypatch, tmp_path):
     assert config_module.load_yaml_round_trip(config_path)["channels"]["feishu"]["apps"] == []
     assert channel.responses[-1]["ok"] is True
     assert channel.responses[-1]["payload"]["config"]["apps"] == []
+
 
 
 @pytest.mark.asyncio
@@ -5703,8 +5701,8 @@ async def test_pre_persist_large_media_splits_or_keeps_oversized_images(
 
 
 def _a4p_config_request(method, params, channel="web", session="session"):
-    from openjiuwen_protocol.e2a.agent_models import AgentRequest
-    from openjiuwen_protocol.message import ReqMethod
+    from e2a.agent_models import AgentRequest
+    from e2a.message import ReqMethod
     return AgentRequest(request_id="rpc", channel_id=channel, session_id=session,
                         req_method=ReqMethod(method), params=params)
 
@@ -6107,6 +6105,8 @@ async def test_cron_live_uses_routed_metadata_for_normal_web_session_ids(monkeyp
     request = SimpleNamespace(is_disconnected=AsyncMock(return_value=True))
     response = await endpoint("web_allocated_session", request)
     assert response.status_code == expected
+    if expected == 404:
+        assert json.loads(response.body) == {"error": "not_cron_session"}
     lookup.assert_awaited_once_with(request, channel, "session.get_metadata", {"session_id": "web_allocated_session"})
     if expected == 200:
         assert isinstance(response, StreamingResponse)

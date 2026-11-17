@@ -13,11 +13,13 @@ globalThis.window = browser.window;
 globalThis.document = browser.window.document;
 const { createRoot } = await import('react-dom/client');
 
+const { JiuwenMateApp } = await import('../node_modules/.cache/jiuwenmate-profile/JiuwenMateApp.js');
 const { ColleagueProfilePage } = await import('../node_modules/.cache/jiuwenmate-profile/pages/ColleagueProfilePage.js');
 const { OfficeDashboardPage } = await import('../node_modules/.cache/jiuwenmate-profile/pages/OfficeDashboardPage.js');
 const { ScheduleBoard } = await import('../node_modules/.cache/jiuwenmate-profile/schedules/ScheduleBoard.js');
 const { ColleagueDeleteDialog } = await import('../node_modules/.cache/jiuwenmate-profile/components/ColleagueDeleteDialog.js');
 const { ImAuthorizeDialog } = await import('../node_modules/.cache/jiuwenmate-profile/components/ImAuthorizeDialog.js');
+const { webClient } = await import('../node_modules/.cache/jiuwenmate-profile/webClient.js');
 
 const zh = JSON.parse(readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8'));
 const en = JSON.parse(readFileSync(new URL('../src/i18n/locales/en.json', import.meta.url), 'utf8'));
@@ -49,6 +51,146 @@ const colleague = {
 const feishuConnection = { channel: 'feishu', connectionKey: 'cli-app', agentId: 'agent-feishu', workspaceDir: null };
 
 const noop = () => undefined;
+
+test('settings navigation preserves module and tab targets and honors the discard guard', async (t) => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
+  const { window: previousWindow, document: previousDocument, IS_REACT_ACT_ENVIRONMENT: previousAct } = globalThis;
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  t.mock.method(webClient, 'request', async (method) => {
+    if (method === 'group.list') return { groups: [], total: 0 };
+    if (method === 'jiuwenmate.colleague.list') return { colleagues: [] };
+    return {};
+  });
+  const root = createRoot(document.getElementById('root'));
+  let renderedPage;
+  let allowDiscard = false;
+  const confirmDiscardSettings = t.mock.fn(() => allowDiscard);
+  const navigate = async (detail) => {
+    await act(async () => window.dispatchEvent(new dom.window.CustomEvent('jiuwen:settings-module', { detail })));
+  };
+  const clickRail = async (label) => {
+    const button = document.querySelector(`[data-testid="jiuwenmate-rail-existing-item"][data-variant="${label}"]`);
+    assert.ok(button);
+    await act(async () => button.click());
+  };
+  try {
+    await act(async () => root.render(React.createElement(JiuwenMateApp, {
+      onExit: noop,
+      confirmDiscardSettings,
+      renderExistingPage: (nav, target) => {
+        renderedPage = { nav, target };
+        return null;
+      },
+    })));
+    await navigate('agent');
+    assert.deepEqual(renderedPage, { nav: 'settings', target: { moduleId: 'agent' } });
+    const multimodalTarget = { moduleId: 'models', tabId: 'multimodal' };
+    await navigate(multimodalTarget);
+    assert.deepEqual(renderedPage, { nav: 'settings', target: multimodalTarget });
+    assert.equal(confirmDiscardSettings.mock.callCount(), 0);
+
+    await clickRail('jiuwenmate.nav.skills');
+    assert.equal(confirmDiscardSettings.mock.callCount(), 1);
+    assert.deepEqual(renderedPage, { nav: 'settings', target: multimodalTarget });
+    allowDiscard = true;
+    await clickRail('jiuwenmate.nav.skills');
+    assert.equal(confirmDiscardSettings.mock.callCount(), 2);
+    assert.deepEqual(renderedPage, { nav: 'skills', target: undefined });
+    await clickRail('jiuwenmate.nav.settings');
+    assert.deepEqual(renderedPage, { nav: 'settings', target: undefined });
+  } finally {
+    await act(async () => root.unmount());
+    dom.window.close();
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    globalThis.IS_REACT_ACT_ENVIRONMENT = previousAct;
+  }
+});
+
+for (const { language, expectedMessage, rejects } of [
+  { language: 'zh', expectedMessage: '解除连接成功' },
+  { language: 'en', expectedMessage: 'Disconnected' },
+  { language: 'zh', rejects: true },
+]) {
+  test(`Feishu unbind ${rejects ? 'shows only the error when rejected' : `confirms success before refreshing the profile in ${language}`}`, async (t) => {
+    const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
+    const { window: previousWindow, document: previousDocument, IS_REACT_ACT_ENVIRONMENT: previousAct } = globalThis;
+    globalThis.window = dom.window;
+    globalThis.document = dom.window.document;
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const root = createRoot(document.getElementById('root'));
+    const find = (id) => document.querySelector(`[data-testid="${id}"]`);
+    const click = async (selector) => {
+      const button = document.querySelector(selector);
+      assert.ok(button, `Missing ${selector}`);
+      await act(async () => button.click());
+    };
+    const { promise: unbindResult, resolve: finishUnbind, reject: rejectUnbind } = deferred();
+    const { promise: refreshResult, resolve: finishRefresh } = deferred();
+    const wireColleague = { agent_id: 'agent-1', config_id: 'agent-1', name: 'Test colleague' };
+    const unbindMethod = 'channel.feishu.unbind_agent';
+    const refreshMethod = 'jiuwenmate.colleague.get';
+    const request = t.mock.method(webClient, 'request', async (method) => {
+      if (method === 'group.list') return { groups: [], total: 0 };
+      if (method === 'jiuwenmate.colleague.list') {
+        return { colleagues: [{
+          ...wireColleague,
+          connections: [{ channel: 'feishu', connection_key: 'cli-app', agent_id: 'agent-feishu' }],
+        }] };
+      }
+      if (method === unbindMethod) return unbindResult;
+      if (method === refreshMethod) return refreshResult;
+      return {};
+    });
+    const noticeId = 'jiuwenmate-profile-im-notice';
+    try {
+      await i18n.changeLanguage(language);
+      await act(async () => root.render(React.createElement(JiuwenMateApp, { onExit: noop, renderExistingPage: noop })));
+      await click('.jiuwenmate-colleague-card__action--primary');
+      await click('[data-testid="jiuwenmate-profile-section"][data-variant="channels"]');
+      await click('[data-testid="jiuwenmate-profile-im-remove"]');
+      await click('[data-testid="jiuwenmate-confirm-button"]');
+
+      const callsFor = (method) => request.mock.calls.filter(({ arguments: args }) => args[0] === method);
+      assert.deepEqual(callsFor(unbindMethod).map(({ arguments: args }) => args[1]), [{ app_id: 'cli-app' }]);
+      assert.equal(find(noticeId), null);
+      assert.equal(callsFor(refreshMethod).length, 0);
+
+      if (rejects) {
+        await act(async () => rejectUnbind(new Error('Unbind rejected')));
+        assert.equal(find(noticeId), null);
+        assert.match(find('jiuwenmate-action-error').textContent, /Unbind rejected/);
+        assert.ok(find('jiuwenmate-profile-im-remove'));
+        assert.equal(callsFor(refreshMethod).length, 0);
+      } else {
+        await act(async () => finishUnbind({ unbound: true }));
+        const notification = find(noticeId);
+        assert.ok(notification);
+        assert.equal(notification.getAttribute('role'), 'status');
+        assert.equal(notification.textContent, expectedMessage);
+        assert.ok(find('jiuwenmate-profile-im-remove'));
+        assert.equal(callsFor(refreshMethod).length, 1);
+        await act(async () => finishRefresh({ colleague: wireColleague }));
+        assert.equal(find('jiuwenmate-profile-im-remove'), null);
+      }
+    } finally {
+      await act(async () => {
+        root.unmount();
+        t.mock.timers.tick(1000);
+      });
+      dom.window.close();
+      globalThis.window = previousWindow;
+      globalThis.document = previousDocument;
+      globalThis.IS_REACT_ACT_ENVIRONMENT = previousAct;
+      await i18n.changeLanguage('zh');
+    }
+  });
+}
 
 const catalog = {
   skills: [{ name: 'report-writer', label: '报告', description: '整理周报' }],
@@ -324,8 +466,12 @@ test('DingTalk CLI is automatic and has no per-employee authorization page', () 
 
 function deferred() {
   let resolve;
-  const promise = new Promise((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject;
+  const promise = new Promise((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
 }
 
 const dingtalkConnection = { channel: 'dingtalk', connectionKey: 'ding-app', agentId: 'agent-ding', workspaceDir: null };
@@ -1366,6 +1512,55 @@ test('the overview shows the employee activity instead of an empty log', () => {
   assert.doesNotMatch(markup, /暂无执行记录/);
 });
 
+test('a legacy long description stays intact and must be shortened to 200 characters before saving', async () => {
+  const description = '1'.repeat(2000);
+  const saved = [];
+  const view = await mountProfile({
+    colleague: { ...colleague, description },
+    initialSection: 'overview',
+    onSaveSettings: async (edit) => { saved.push(edit); },
+  });
+  try {
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__description').textContent, description);
+    await view.click('edit');
+    const editor = view.find('identity-editor');
+    const input = editor.querySelector('textarea');
+    assert.equal(input.value, description);
+    assert.equal(input.hasAttribute('maxlength'), false, 'Legacy descriptions must remain editable above the save limit');
+    const save = editor.querySelector('.jiuwenmate-dark-button');
+    assert.equal(save.disabled, true);
+    assert.equal(input.getAttribute('aria-invalid'), 'true');
+    assert.match(view.find('description-limit-error').textContent, /200/);
+    assert.equal(view.find('description-count').textContent, '2000/200');
+    await act(async () => save.click());
+    assert.equal(saved.length, 0);
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__description'), null);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(input, description + ' edited');
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+    assert.equal(input.value, description + ' edited', 'Editing must not silently truncate legacy content');
+    assert.equal(save.disabled, true, 'Editing over-limit content must not bypass save validation');
+    const updated = '2'.repeat(200);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(input, `  ${updated}  `);
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+    assert.equal(view.find('description-count').textContent, '200/200');
+    assert.equal(view.find('description-limit-error'), null);
+    assert.equal(input.getAttribute('aria-invalid'), 'false');
+    assert.equal(save.disabled, false);
+    await act(async () => save.click());
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].description, updated);
+    assert.equal(view.find('identity-editor'), null);
+    await view.rerender({ colleague: { ...colleague, description: saved[0].description } });
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__description').textContent, updated);
+  } finally {
+    await view.close();
+  }
+});
+
 test('the pencil edits the current page and stays there', () => {
   const overview = renderProfile({ initialSection: 'overview', initialEditing: true });
   assert.match(overview, /aria-current="true"[^>]*data-variant="overview"/);
@@ -1422,7 +1617,7 @@ test('channel reply mode renders a compact selected state and disables changes w
 });
 
 
-test('each bound app is listed with its own platform, and another app can be added', () => {
+test('each bound app is listed with its own platform without an add connection action', () => {
   const dingtalk = { channel: 'dingtalk', connectionKey: 'ding-app', agentId: 'agent-ding', workspaceDir: null };
   const markup = renderProfile({
     initialSection: 'channels',
@@ -1434,12 +1629,48 @@ test('each bound app is listed with its own platform, and another app can be add
   assert.match(markup, /data-testid="jiuwenmate-profile-connection" data-variant="cli-app"/);
   assert.match(markup, /data-testid="jiuwenmate-profile-connection" data-variant="ding-app"/);
   assert.equal(markup.match(/data-testid="jiuwenmate-profile-im-remove"/g).length, 2);
-  assert.match(markup, /data-testid="jiuwenmate-profile-im-add"/);
+  assert.doesNotMatch(markup, /data-testid="jiuwenmate-profile-im-add"/);
+  assert.equal(markup.match(/data-testid="jiuwenmate-profile-im-modify"/g).length, 2);
   assert.doesNotMatch(markup, /data-testid="jiuwenmate-profile-quick-im"/);
 
   const unbound = renderProfile({ initialSection: 'channels' });
   assert.doesNotMatch(unbound, /data-testid="jiuwenmate-profile-connection"/);
   assert.match(unbound, />授权</);
+});
+
+test('a bound platform hides authorization while other platforms remain available', () => {
+  const markup = renderProfile({
+    initialSection: 'channels',
+    colleague: { ...colleague, connections: [...colleague.connections, feishuConnection] },
+  });
+  const document = new JSDOM(markup).window.document;
+  const platform = (name) => document.querySelector('[data-testid="jiuwenmate-profile-im-platform"][data-variant="' + name + '"]');
+  assert.equal(platform('feishu').querySelector('[data-testid="jiuwenmate-profile-im-add"]'), null);
+  assert.equal(platform('feishu').querySelector('[data-testid="jiuwenmate-profile-im-authorize"]'), null);
+  assert.ok(platform('feishu').querySelector('[data-testid="jiuwenmate-profile-im-modify"]'));
+  assert.ok(platform('feishu').querySelector('[data-testid="jiuwenmate-profile-im-remove"]'));
+  assert.ok(platform('dingtalk').querySelector('[data-testid="jiuwenmate-profile-im-authorize"]'));
+
+  const unbound = new JSDOM(renderProfile({ initialSection: 'channels' })).window.document;
+  assert.ok(unbound.querySelector('[data-variant="feishu"] [data-testid="jiuwenmate-profile-im-authorize"]'));
+});
+
+test('duplicate starter prompts prevent saving a changed prompt list', async () => {
+  const view = await mountProfile({
+    initialSection: 'persona',
+    colleague: { ...colleague, capabilities: { ...colleague.capabilities, starterPrompts: ['写周报', '写月报'] } },
+  });
+  try {
+    const input = view.container.querySelectorAll('[data-testid="jiuwenmate-starter-prompt-input"]')[1];
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, ' 写周报 ');
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+    assert.ok(view.container.querySelector('[data-testid="jiuwenmate-starter-prompt-duplicate"]'));
+    assert.equal(view.container.querySelector('.jiuwenmate-profile__save-button').disabled, true);
+  } finally {
+    await view.close();
+  }
 });
 
 
@@ -1901,6 +2132,108 @@ async function changeScheduleField(view, selector, value) {
 }
 
 for (const language of ['zh', 'en']) {
+  const cases = [
+    { mode: 'once', field: 'onceDate', empty: '', corrected: '2030-02-01',
+      zh: '请选择执行日期', en: 'Select an execution date.' },
+    { mode: 'once', field: 'time', empty: '', corrected: '10:00', date: '2030-02-01',
+      zh: '请选择执行时间', en: 'Select an execution time.' },
+    { mode: 'period', field: 'time', empty: '', corrected: '10:00',
+      zh: '请选择执行时间', en: 'Select an execution time.' },
+    { mode: 'period', field: 'monthDay', empty: '', corrected: '15', monthly: true,
+      zh: '请输入 1 到 31 之间的每月执行日期', en: 'Enter a day of the month between 1 and 31.' },
+    { mode: 'interval', field: 'interval', empty: '', corrected: '2',
+      zh: '请输入执行间隔', en: 'Enter an execution interval.' },
+    { mode: 'interval', field: 'interval', empty: '0', corrected: '2',
+      zh: '间隔必须是正整数', en: 'The interval must be a positive integer' },
+    { mode: 'once', field: 'onceDate', empty: '2020-01-01', corrected: '2030-02-01',
+      zh: '单次执行时间必须晚于当前时间', en: 'A one-time run must be in the future' },
+  ];
+  for (const scenario of cases) {
+    test(`schedule plan validation highlights ${scenario.mode} ${scenario.field} ${scenario.empty || 'empty'} in ${language}`, async () => {
+      await i18n.changeLanguage(language);
+      const created = [];
+      const view = await mountDashboard({ onCreateSchedule: (...args) => { created.push(args); } });
+      try {
+        await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+        await view.click(view.find('.jiuwenmate-schedule-board .jiuwenmate-dark-button'));
+        await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-executor"]', 'agent-1');
+        await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-name"]', 'Reminder');
+        await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-prompt"]', 'Take a break');
+        const mode = [...view.container.querySelectorAll('[role="tab"]')]
+          .find((item) => item.textContent === i18n.t(`jiuwenmate.schedule.mode.${scenario.mode}`));
+        await view.click(mode);
+        const selector = `[aria-label="${i18n.t(`jiuwenmate.schedule.${scenario.field}`)}"]`;
+        if (scenario.monthly) {
+          await changeScheduleField(view, `[aria-label="${i18n.t('jiuwenmate.schedule.frequency')}"]`, 'monthly');
+        }
+        if (scenario.date) {
+          await changeScheduleField(view, `[aria-label="${i18n.t('jiuwenmate.schedule.onceDate')}"]`, scenario.date);
+        }
+        await changeScheduleField(view, selector, scenario.empty);
+        const field = view.find(selector);
+        assert.equal(field.getAttribute('aria-invalid'), null);
+        await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+        assert.deepEqual(created, [], 'Missing or invalid schedule fields must not submit');
+        assert.equal(field.getAttribute('aria-invalid'), 'true');
+        assert.equal(field.ownerDocument.activeElement, field);
+        const error = field.ownerDocument.getElementById(field.getAttribute('aria-describedby'));
+        assert.ok(error, 'The invalid control must link to its visible field error');
+        assert.equal(error.getAttribute('role'), 'alert');
+        assert.equal(error.textContent, scenario[language]);
+        await changeScheduleField(view, '[data-testid="jiuwenmate-schedule-name"]', 'Updated reminder');
+        assert.equal(field.getAttribute('aria-invalid'), 'true', 'Unrelated edits must not dismiss the error');
+        await changeScheduleField(view, selector, scenario.corrected);
+        assert.equal(field.getAttribute('aria-invalid'), null);
+        assert.equal(field.getAttribute('aria-describedby'), null);
+        assert.equal(view.find('[data-testid="jiuwenmate-schedule-dialog"] [role="alert"]'), null);
+        await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+        assert.equal(created.length, 1);
+      } finally { await view.close(); await i18n.changeLanguage('zh'); }
+    });
+  }
+}
+
+for (const language of ['zh', 'en']) {
+  test(`schedule plan validation also guards paused edits and clears inactive mode errors in ${language}`, async () => {
+    await i18n.changeLanguage(language);
+    const updated = [];
+    const enabled = [];
+    const view = await mountDashboard({
+      schedules: [{ ...dashboardPlan, enabled: false, scheduleKind: 'once', runAt: '2030-02-01T01:00:00Z' }],
+      onUpdateSchedule: (...args) => { updated.push(args); },
+      onSetScheduleEnabled: (...args) => { enabled.push(args); },
+    });
+    try {
+      await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+      const row = view.find('[data-testid="jiuwenmate-schedule-board-row"]');
+      await view.click([...row.querySelectorAll('button')].find(item => item.textContent === i18n.t('jiuwenmate.schedule.edit')));
+      const dateSelector = `[aria-label="${i18n.t('jiuwenmate.schedule.onceDate')}"]`;
+      const timeSelector = `[aria-label="${i18n.t('jiuwenmate.schedule.time')}"]`;
+      await changeScheduleField(view, dateSelector, '');
+      await changeScheduleField(view, timeSelector, '');
+      await view.click(view.find('[data-testid="jiuwenmate-schedule-save-enable"]'));
+      assert.equal(view.find(dateSelector).getAttribute('aria-invalid'), 'true');
+      assert.equal(view.find(dateSelector).ownerDocument.activeElement, view.find(dateSelector));
+      await changeScheduleField(view, dateSelector, '2030-02-01');
+      assert.equal(view.find(dateSelector).getAttribute('aria-invalid'), null);
+      assert.equal(view.find(timeSelector).getAttribute('aria-invalid'), 'true');
+      await view.click(view.find('[data-testid="jiuwenmate-schedule-save-enable"]'));
+      assert.equal(view.find(timeSelector).ownerDocument.activeElement, view.find(timeSelector));
+      assert.deepEqual(updated, []);
+      assert.deepEqual(enabled, []);
+      await view.click([...view.container.querySelectorAll('[role="tab"]')]
+        .find(item => item.textContent === i18n.t('jiuwenmate.schedule.mode.period')));
+      assert.equal(view.find('[data-testid="jiuwenmate-schedule-dialog"] [role="alert"]'), null);
+      await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
+      assert.equal(updated.length, 1);
+      assert.equal(updated[0][0], dashboardPlan.id);
+      assert.equal(updated[0][1].scheduleKind, 'cron');
+      assert.equal(updated[0][1].startsAt, null);
+      assert.equal(updated[0][1].endsAt, null);
+      assert.deepEqual(enabled, []);
+    } finally { await view.close(); await i18n.changeLanguage('zh'); }
+  });
+
   test(`schedule required fields highlight and independently clear on correction in ${language}`, async () => {
     await i18n.changeLanguage(language);
     const created = [];
@@ -1973,6 +2306,50 @@ for (const language of ['zh', 'en']) {
       assert.deepEqual(created, []);
       await view.click(view.find('[data-testid="jiuwenmate-schedule-save"]'));
       assert.equal(created.length, 1);
+    } finally { await view.close(); await i18n.changeLanguage('zh'); }
+  });
+}
+
+for (const [language, expected] of [['zh', '已过期'], ['en', 'Expired']]) {
+  test(`finished schedule plans are expired and successful history records remain completed in ${language}`, async () => {
+    await i18n.changeLanguage(language);
+    const view = await mountDashboard({ schedules: [
+      { ...dashboardPlan, id: 'once-done', name: 'One-off', scheduleKind: 'once', runCount: 1, enabled: false, nextFireAt: null },
+      { ...dashboardPlan, id: 'period-done', name: 'Periodic', runCount: 1, enabled: false, nextFireAt: null },
+      { ...dashboardPlan, id: 'interval-done', name: 'Interval', scheduleKind: 'interval', intervalSeconds: 60, runCount: 1, enabled: false, nextFireAt: null },
+      { ...dashboardPlan, id: 'period-active', name: 'Active periodic', lastStatus: 'running', runCount: 1 },
+      { ...dashboardPlan, id: 'interval-active', name: 'Active interval', scheduleKind: 'interval', intervalSeconds: 60, lastStatus: 'running', runCount: 1 },
+    ], onLoadScheduleHistory: async () => ({ plan: dashboardPlan, runs: [
+      { requestId: 'run-ok', scheduledFor: '2026-11-10T01:00:00Z', status: 'completed', description: '' },
+      { requestId: 'run-failed', scheduledFor: '2026-11-09T01:00:00Z', status: 'failed', description: '' },
+    ] }) });
+    try {
+      await view.click(view.find('[data-testid="jiuwenmate-segmented-tab"][data-variant="tasks"]'));
+      const row = view.find('[data-testid="jiuwenmate-schedule-board-row"][data-variant="once-done"]');
+      assert.equal(row.querySelector('.jiuwenmate-schedule-board__status').textContent, expected);
+      for (const id of ['period-done', 'interval-done']) {
+        assert.equal(view.find(`[data-variant="${id}"] .jiuwenmate-schedule-board__status`).textContent,
+          expected);
+      }
+      for (const id of ['period-active', 'interval-active']) {
+        assert.equal(view.find(`[data-variant="${id}"] .jiuwenmate-schedule-board__status`).textContent,
+          language === 'zh' ? '运行中' : 'Running');
+      }
+      const status = view.find('select[aria-label="' + i18n.t('jiuwenmate.schedule.runStatus') + '"]');
+      assert.ok(status.querySelector('option[value="expired"]'));
+      assert.equal(status.querySelector('option[value="completed"]'), null);
+      await act(async () => {
+        status.value = 'expired';
+        status.dispatchEvent(new window.Event('change', { bubbles: true }));
+      });
+      assert.deepEqual([...view.container.querySelectorAll('[data-testid="jiuwenmate-schedule-board-row"]')]
+        .map(item => item.dataset.variant), ['once-done', 'period-done', 'interval-done']);
+      await view.click(view.find('[data-variant="once-done"] .jiuwenmate-menu__trigger'));
+      await view.click(view.find('[role="menuitem"][data-variant="history"]'));
+      const history = view.find('[data-testid="jiuwenmate-schedule-history"]');
+      assert.ok(history);
+      assert.deepEqual([...history.querySelectorAll('.jiuwenmate-schedule-history__status')].map(item => item.textContent),
+        language === 'zh' ? ['已完成', '运行失败'] : ['Completed', 'Failed']);
     } finally { await view.close(); await i18n.changeLanguage('zh'); }
   });
 }

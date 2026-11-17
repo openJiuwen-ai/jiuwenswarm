@@ -34,8 +34,12 @@ async def handshake():
         connection.close()
         await connection.wait_closed()
 
-# The engine's SessionExecutor.run(factory) awaits factory(): pass the callable, not a coroutine.
-print(json.dumps(session_executor().run(handshake)))
+# SessionExecutor.run(factory) awaits factory() and returns its value (execution.py `_wait`):
+# pass the callable itself, never a coroutine object.
+outcome = session_executor().run(handshake)
+if not isinstance(outcome, dict):
+    raise TypeError(f"session_executor().run must return the handshake dict, got {outcome!r}")
+print(json.dumps(outcome))
 packaged_value = 41
 """
 

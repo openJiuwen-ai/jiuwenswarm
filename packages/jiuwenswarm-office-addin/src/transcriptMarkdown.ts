@@ -1,9 +1,10 @@
 /** The conversation as a Markdown file the user keeps: who said what, and the steps between, by name. */
 import type { Entry } from './conversationModel';
 import { copy, toolLabel } from './copy';
+import type { OpenDocument } from './sessionFacade';
 
 export function transcriptMarkdown(
-  title: string, entries: readonly Entry[], documents: ReadonlyMap<string, string>,
+  title: string, entries: readonly Entry[], documents: ReadonlyMap<string, OpenDocument>,
 ): string {
   const blocks = [`# ${title}`];
   let steps: string[] = [];
@@ -14,13 +15,14 @@ export function transcriptMarkdown(
   for (const entry of entries) {
     if (entry.kind === 'tool' || entry.kind === 'outgoing') {
       steps.push(entry.kind === 'tool' ? toolLabel(entry.name)
-        : copy.outgoingTo(documents.get(entry.targetSessionId) || copy.otherConversation));
+        : copy.outgoingTo(documents.get(entry.targetSessionId)?.name || copy.otherConversation));
       continue;
     }
     flush();
     switch (entry.kind) {
       case 'user':
-        blocks.push(`**${copy.transcriptUser}**`, entry.text);
+        blocks.push(`**${copy.transcriptUser}**`, [entry.text, ...(entry.images ?? []).map(image => (
+          copy.transcriptImage(image.filename)))].filter(Boolean).join('\n'));
         break;
       case 'assistant':
         if (entry.text) blocks.push(`**${copy.transcriptAssistant}**`, entry.text);

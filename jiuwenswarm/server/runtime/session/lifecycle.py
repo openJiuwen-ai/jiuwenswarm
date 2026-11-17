@@ -718,7 +718,11 @@ def runtime_owner_alive(owner: dict) -> bool:
                 if owner_start_ticks is None:
                     raise
         if owner_start_ticks is not None or owner_started_at is not None:
-            return True
+            status = process.status()
+            if status == psutil.STATUS_ZOMBIE:
+                # A zombie group leader may still have threads owning writers.
+                return process.num_threads() > 1
+            return status != psutil.STATUS_DEAD
         raise LifecycleError(
             "OPERATION_IN_PROGRESS", "cannot verify the previous runtime owner"
         )

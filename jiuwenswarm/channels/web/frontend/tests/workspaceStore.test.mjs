@@ -152,6 +152,74 @@ test('an authoritative list still clears selection for a removed project', async
   assert.equal(useWorkspaceStore.getState().selectedProject, null);
 });
 
+for (const slowResource of ['projects', 'cron']) {
+  test(`project removal completes while ${slowResource} reconciliation is pending`, async (t) => {
+    const refresh = deferred();
+    const result = { project_id: project.project_id, hidden: true, affected_sessions: 0 };
+    t.mock.method(projectRegistryClient, 'remove', async () => result);
+    t.mock.method(projectRegistryClient, 'list', () => (
+      slowResource === 'projects' ? refresh.promise : Promise.resolve({ projects: [] })
+    ));
+    const cronMock = t.mock.method(useCronStore.getState(), 'loadJobs', () => (
+      slowResource === 'cron' ? refresh.promise : Promise.resolve(true)
+    ));
+    const previousWindow = globalThis.window;
+    globalThis.window = { location: { pathname: '/chat/new' } };
+    t.after(() => {
+      if (previousWindow === undefined) delete globalThis.window;
+      else globalThis.window = previousWindow;
+    });
+    useWorkspaceStore.setState({ projects: [project], selectedProject: project });
+    let resolved = false;
+    const removal = useWorkspaceStore.getState().removeProject(project.project_id).then((value) => {
+      resolved = true;
+      return value;
+    });
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(resolved, true, 'successful removal must not wait for list requests');
+      assert.deepEqual(useWorkspaceStore.getState().projects, []);
+      assert.equal(useWorkspaceStore.getState().selectedProject, null);
+      assert.deepEqual(await removal, result);
+    } finally {
+      refresh.resolve(slowResource === 'projects' ? { projects: [] } : true);
+      await removal;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(cronMock.mock.callCount(), 1, 'removal refreshes cron jobs only once');
+  });
+}
+
+test('a failed project removal keeps the local project and does not reconcile lists', async (t) => {
+  const error = new Error('removal rejected');
+  t.mock.method(projectRegistryClient, 'remove', async () => { throw error; });
+  const refresh = t.mock.method(useWorkspaceStore.getState(), 'refreshWorkspaceAndCron', async () => {});
+  useWorkspaceStore.setState({ projects: [project], selectedProject: project });
+  await assert.rejects(useWorkspaceStore.getState().removeProject(project.project_id), error);
+  assert.deepEqual(useWorkspaceStore.getState().projects, [project]);
+  assert.equal(useWorkspaceStore.getState().selectedProject, project);
+  assert.equal(refresh.mock.callCount(), 0);
+});
+
+test('a failed background refresh does not reject a completed project removal', async (t) => {
+  const result = { project_id: project.project_id, hidden: true };
+  t.mock.method(projectRegistryClient, 'remove', async () => result);
+  t.mock.method(useWorkspaceStore.getState(), 'refreshWorkspaceAndCron', async () => {
+    throw new Error('refresh failed');
+  });
+  const warning = t.mock.method(console, 'warn', () => {});
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: { pathname: '/chat/new' } };
+  t.after(() => {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  });
+  useWorkspaceStore.setState({ projects: [project] });
+  assert.deepEqual(await useWorkspaceStore.getState().removeProject(project.project_id), result);
+  assert.deepEqual(useWorkspaceStore.getState().projects, []);
+  assert.equal(warning.mock.callCount(), 1);
+});
+
 test('switching away and back invalidates the first request for the same mode', async (t) => {
   const lists = [deferred(), deferred(), deferred()];
   let calls = 0;

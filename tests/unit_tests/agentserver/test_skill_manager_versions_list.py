@@ -66,51 +66,6 @@ def _write_version_content(skill_dir: Path, storage_id: str, *, name: str, body:
     return content_root
 
 
-@pytest.fixture
-def manager(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SkillManager:
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
-    state_file = skills_dir / "skills_state.json"
-    state_file.write_text(
-        json.dumps(
-            {
-                "marketplaces": [],
-                "installed_plugins": [],
-                "local_skills": [],
-                "skill_configs": {},
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager.get_agent_skills_dir",
-        lambda: skills_dir,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager.get_builtin_skills_dir",
-        lambda: tmp_path / "builtin_missing",
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager._get_agent_root_dir",
-        lambda: tmp_path,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager._get_marketplace_dir",
-        lambda: skills_dir / "_marketplace",
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager._get_state_file",
-        lambda: state_file,
-    )
-    # skilldev state_utils 也走同一 state 文件
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skilldev.state_utils.get_state_file",
-        lambda: state_file,
-    )
-    return SkillManager()
-
-
 @pytest.mark.asyncio
 async def test_skills_list_returns_null_version_and_skill_type(manager: SkillManager) -> None:
     skill_dir = manager._skills_dir / "document-review"

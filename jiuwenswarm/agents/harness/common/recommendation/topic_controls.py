@@ -458,6 +458,8 @@ def recommendation_model_config(environ: Any = None) -> ArkBackgroundConfig | No
                 parse_positive_int(dedicated.get("context_window_tokens"))
                 or RECOMMENDATION_CONTEXT_WINDOW_TOKENS
             ),
+            client_provider=str(dedicated.get("provider") or "OpenAI"),
+            endpoint_profile=str(dedicated.get("endpoint_profile") or "").strip() or None,
         )
     entries = [entry for entry in get_default_models(config) if _model_name(entry)]
     entry = _chosen_entry(config, entries)
@@ -474,6 +476,8 @@ def recommendation_model_config(environ: Any = None) -> ArkBackgroundConfig | No
         base_url=base_url,
         context_window_tokens=parse_positive_int((entry.get("model_config_obj") or {}).get("context_window"))
         or RECOMMENDATION_CONTEXT_WINDOW_TOKENS,
+        client_provider=str(client.get("client_provider") or "OpenAI"),
+        endpoint_profile=str(client.get("endpoint_profile") or "").strip() or None,
     )
 
 

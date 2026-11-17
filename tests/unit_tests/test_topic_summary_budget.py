@@ -128,36 +128,53 @@ def test_identity_and_model_payload_cover_the_same_bounded_turns() -> None:
     )
 
 
+def test_fit_summary_session_succeeds_on_small_context_window() -> None:
+    """Half-window output budget must leave real prompt room (not window - 1)."""
+
+    payload = pipeline._session_model_payload(
+        "s",
+        [_message("s", ordinal, "用" * 200, "答" * 200) for ordinal in range(3)],
+    )
+    snapshot = _snapshot(tuple())
+    for window in (8192, 32768):
+        fitted = pipeline._fit_summary_session(
+            payload,
+            counter=_CharCounter(),
+            snapshot=snapshot,
+            limit=window,
+        )
+        assert fitted is not None, window
+        assert fitted["messages"]
+        reserved = pipeline._output_budget_for_stage("v6_session_summarizer", window)
+        assert reserved == window // 2
+        assert reserved < window - 1
+
+
 def test_fit_summary_session_drops_the_oldest_turns_to_meet_the_limit() -> None:
     payload = pipeline._session_model_payload(
         "s",
         [_message("s", ordinal, "用" * 400) for ordinal in range(4)],
     )
     snapshot = _snapshot(tuple())
-    full_limit = pipeline._summary_batch_estimate(
-        _CharCounter(),
-        snapshot,
-        [payload],
-        reserved_output=(
-            pipeline._SUMMARY_BASE_RESERVED_OUTPUT_TOKENS
-            + pipeline._SUMMARY_RESERVED_OUTPUT_TOKENS
-        ),
+    # Half-window reserved means prompt fits iff prompt_tokens <= limit/2. Choose a
+    # limit between 2*single_prompt and 2*full_prompt so dropping turns is required.
+    prompt_full = pipeline._summary_batch_estimate(
+        _CharCounter(), snapshot, [payload], reserved_output=0,
     )
-    single_limit = pipeline._summary_batch_estimate(
+    prompt_single = pipeline._summary_batch_estimate(
         _CharCounter(),
         snapshot,
         [{**payload, "messages": payload["messages"][-1:]}],
-        reserved_output=(
-            pipeline._SUMMARY_BASE_RESERVED_OUTPUT_TOKENS
-            + pipeline._SUMMARY_RESERVED_OUTPUT_TOKENS
-        ),
+        reserved_output=0,
     )
+    assert prompt_full > prompt_single
+    limit = prompt_single + prompt_full
 
     fitted = pipeline._fit_summary_session(
         payload,
         counter=_CharCounter(),
         snapshot=snapshot,
-        limit=(single_limit + full_limit) // 2,
+        limit=limit,
     )
 
     assert fitted is not None
@@ -179,21 +196,21 @@ def test_plan_summary_batches_covers_every_session_once() -> None:
         )
         for index in range(5)
     ]
-    two = pipeline._summary_batch_estimate(
-        _CharCounter(),
-        snapshot,
-        payloads[:2],
-        reserved_output=(
-            pipeline._SUMMARY_BASE_RESERVED_OUTPUT_TOKENS
-            + pipeline._SUMMARY_RESERVED_OUTPUT_TOKENS * 2
-        ),
+    prompt_two = pipeline._summary_batch_estimate(
+        _CharCounter(), snapshot, payloads[:2], reserved_output=0,
     )
+    prompt_three = pipeline._summary_batch_estimate(
+        _CharCounter(), snapshot, payloads[:3], reserved_output=0,
+    )
+    assert prompt_three > prompt_two
+    # Two sessions fit (prompt_two <= limit/2); three do not.
+    limit = prompt_two + prompt_three
 
     batches = pipeline._plan_summary_batches(
         payloads,
         counter=_CharCounter(),
         snapshot=snapshot,
-        limit=two,
+        limit=limit,
     )
 
     assert batches is not None
@@ -347,25 +364,15 @@ async def test_summarize_sessions_splits_a_long_first_preparation() -> None:
         )
         for index in range(4)
     ]
-    one = pipeline._summary_batch_estimate(
-        counter,
-        snapshot,
-        payloads[:1],
-        reserved_output=(
-            pipeline._SUMMARY_BASE_RESERVED_OUTPUT_TOKENS
-            + pipeline._SUMMARY_RESERVED_OUTPUT_TOKENS
-        ),
+    prompt_one = pipeline._summary_batch_estimate(
+        counter, snapshot, payloads[:1], reserved_output=0,
     )
-    two = pipeline._summary_batch_estimate(
-        counter,
-        snapshot,
-        payloads[:2],
-        reserved_output=(
-            pipeline._SUMMARY_BASE_RESERVED_OUTPUT_TOKENS
-            + pipeline._SUMMARY_RESERVED_OUTPUT_TOKENS * 2
-        ),
+    prompt_two = pipeline._summary_batch_estimate(
+        counter, snapshot, payloads[:2], reserved_output=0,
     )
-    assert two > one
+    assert prompt_two > prompt_one
+    # One session fits under half-window reserved; two need another batch.
+    window = prompt_one + prompt_two
 
     async def invoke_stage(
         stage: str, system_prompt: str, payload: str
@@ -394,7 +401,7 @@ async def test_summarize_sessions_splits_a_long_first_preparation() -> None:
         api_key="key",
         model="gpt-4o",
         base_url="https://example.invalid",
-        context_window_tokens=one + (two - one) // 2,
+        context_window_tokens=window,
     )
 
     batch = await topic._summarize_sessions(
@@ -458,16 +465,17 @@ def test_fit_rid_inputs_drops_oldest_optional_summaries_first() -> None:
         "decision_context": {},
     }
     counter = _CharCounter()
-    full_tokens = counter.estimate_stage_tokens(
+    prompt_full = counter.estimate_stage_tokens(
         pipeline._RID_API_SYSTEM_PROMPT,
         pipeline._rid_request_estimate_payload(rid_inputs),
-        pipeline._RID_RESERVED_OUTPUT_TOKENS,
+        0,
     )
-    # Force at least one optional summary drop while keeping the required one.
+    # With reserved = limit // 2, full prompt overflows when limit < 2 * prompt_full.
+    limit = max(2 * prompt_full - 100, prompt_full + 2)
     ok = pipeline._fit_rid_inputs_to_budget(
         rid_inputs,
         counter=counter,
-        limit=max(full_tokens - 50, 1),
+        limit=limit,
         required_summary_ids={"s-keep"},
     )
     assert ok is True

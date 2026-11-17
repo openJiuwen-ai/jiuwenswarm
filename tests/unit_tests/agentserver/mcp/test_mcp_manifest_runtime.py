@@ -84,8 +84,42 @@ def test_builtin_list_skips_invalid_package_without_hiding_valid_package(
 
     assert [item["name"] for item in items] == ["valid"]
     assert items[0]["source"] == "built_in"
-    warning.assert_called_once()
-    assert "broken" in str(warning.call_args)
+    assert any("broken" in str(call) for call in warning.call_args_list)
+
+
+def test_missing_display_fields_fall_back_to_name_and_description(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    package = tmp_path / "mcp" / "mcp_hub" / "arxiv-zh-mcp"
+    _write_json(
+        package / "manifest.json",
+        {
+            "version": "1.0.0",
+            "package_type": "mcp",
+            "id": "arxiv-zh-mcp",
+            "name": "arXiv 中文化",
+            "description": "Translate arXiv LaTeX sources into scholarly Chinese",
+            "integration": {"type": "stdio-mcp", "file": "mcp.json"},
+            "credentials": {"type": "token", "file": "token-schema.json"},
+        },
+    )
+    _write_json(
+        package / "mcp.json",
+        {"mcpServers": {"arxiv-zh-mcp": {"command": "uvx", "args": ["arxiv-zh-mcp"]}}},
+    )
+    _write_json(package / "token-schema.json", {"fields": []})
+    monkeypatch.setattr(registry, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(credential, "get_workspace_dir", lambda: tmp_path)
+
+    summary = next(
+        item
+        for item in registry.list_marketplace_mcps("builtin")
+        if item["name"] == "arxiv-zh-mcp"
+    )
+
+    assert summary["display_name"] == "arXiv 中文化"
+    assert summary["description"] == "Translate arXiv LaTeX sources into scholarly Chinese"
 
 
 def test_oauth_credential_kind_is_supported(tmp_path: Path, monkeypatch) -> None:

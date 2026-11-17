@@ -486,6 +486,20 @@ async def load_effective_enterprise_config(
         if entities:
             _apply_slot_entities(result, slot, entities)
 
+    try:
+        result.advanced_config = await db_queries.fetch_advanced_config(
+            ref_template_id
+        )
+    except Exception:
+        logger.warning(
+            "[enterprise_config] advanced_config load failed: resource_id=%r "
+            "agent_template_id=%r",
+            rid,
+            ref_template_id,
+            exc_info=True,
+        )
+        result.advanced_config = None
+
     if not _any_requested_slot_loaded(result, load_slots):
         logger.warning(
             "[enterprise_config] no template entities loaded for resource_id=%r "
@@ -498,9 +512,15 @@ async def load_effective_enterprise_config(
         return None
 
     logger.info(
-        "[enterprise_config] loaded enterprise config by resource_id=%r slots=%s",
+        "[enterprise_config] loaded enterprise config by resource_id=%r slots=%s "
+        "a4p_enabled=%s",
         rid,
         sorted(load_slots),
+        (
+            result.advanced_config.get("a4p_enabled")
+            if isinstance(result.advanced_config, dict)
+            else None
+        ),
     )
     return result
 

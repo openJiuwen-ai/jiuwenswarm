@@ -103,6 +103,12 @@ button:disabled { cursor: default; }
 .icon-button .icon { width: 18px; height: 18px; }
 .icon-button:hover:not(:disabled), .icon-button[aria-expanded="true"] { background: var(--color-hover); color: var(--color-text); }
 .icon-button:disabled { opacity: .4; }
+.files-button { position: relative; }
+.files-count {
+  position: absolute; right: 1px; bottom: 1px; min-width: 14px; padding: 0 3px; border-radius: 7px;
+  background: var(--color-hover); color: var(--color-text-secondary); font-size: 10px; line-height: 14px;
+}
+.files-count:empty { display: none; }
 
 .menu {
   position: absolute; top: calc(100% + 4px); left: var(--space-3); right: var(--space-3);
@@ -140,7 +146,12 @@ button:disabled { cursor: default; }
 .transcript-loading { margin: auto; color: var(--color-text-tertiary); font-size: var(--text-secondary); }
 .entry { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 
-.entry-user { align-self: flex-end; max-width: 85%; }
+.entry-user { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; align-self: flex-end; max-width: 85%; }
+.user-images { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.user-image {
+  display: block; max-width: 160px; max-height: 160px; border: 1px solid var(--color-border);
+  border-radius: var(--radius-md); object-fit: contain;
+}
 .bubble {
   padding: 8px 14px; border-radius: var(--radius-lg);
   background: var(--color-muted); white-space: pre-wrap;
@@ -185,6 +196,27 @@ code {
 .incoming-title { min-width: 0; }
 .incoming-body { margin-top: 4px; color: var(--color-text-secondary); font-size: var(--text-secondary); }
 .incoming-body p { margin: 0; }
+
+/* Suggestion cards under a propose_doc_edits call. */
+.edit-cards { display: grid; gap: var(--space-2); }
+.edit-card {
+  display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--color-border);
+  border-radius: var(--radius-md); background: var(--color-card); font-size: var(--text-secondary);
+}
+.edit-card.status-dismissed, .edit-card.status-withdrawn, .edit-card.status-undone { color: var(--color-text-tertiary); }
+.edit-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-2); }
+.edit-summary { min-width: 0; font-weight: 600; }
+.edit-section { margin: 0; color: var(--color-text-tertiary); font-size: var(--text-meta); }
+.edit-diff { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.edit-diff del { color: var(--color-danger-ink); background: var(--color-danger-soft); }
+.edit-diff ins { color: var(--color-success-ink); background: var(--color-success-soft); }
+.edit-context { color: var(--color-text-tertiary); }
+.edit-reason { margin: 0; color: var(--color-text-secondary); font-size: var(--text-meta); }
+.edit-error { margin: 0; color: var(--color-danger-ink); font-size: var(--text-meta); }
+.edit-options { display: grid; gap: 4px; }
+.edit-options .choice { min-height: 32px; padding: 4px 8px; }
+.edit-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.edit-actions .edit-button { flex: 0 0 auto; min-height: 28px; padding: 0 10px; font-size: var(--text-meta); }
 
 .turn-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; margin: -10px 0 0 -6px; color: var(--color-text-tertiary); font-size: var(--text-meta); }
 .turn-actions:empty { display: none; }
@@ -388,11 +420,32 @@ button.step-head:hover .step-title { text-decoration: underline; text-underline-
 /* Composer */
 .composer { padding: 0 var(--space-3) var(--space-2); }
 .composer-card {
-  display: flex; align-items: flex-end; gap: var(--space-2); padding: 8px 8px 8px 16px;
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-2); padding: 8px;
   border: 1px solid var(--color-border-strong); border-radius: var(--radius-lg); background: var(--color-card);
   transition: border-color .15s ease, box-shadow .15s ease;
 }
 .composer-card:focus-within { box-shadow: 0 2px 10px rgb(0 0 0 / 6%); }
+.composer-card.is-dropping { border-color: var(--color-brand); background: var(--color-brand-soft); }
+.attach-button { width: 28px; height: 28px; }
+.composer-images { display: flex; flex-wrap: wrap; flex-basis: 100%; gap: var(--space-2); margin: 0; padding: 6px 0 0 4px; list-style: none; }
+.composer-images[hidden] { display: none; }
+.composer-image { position: relative; width: 56px; height: 56px; }
+.composer-image img {
+  width: 100%; height: 100%; border: 1px solid var(--color-border); border-radius: var(--radius-sm); object-fit: cover;
+}
+.composer-image.is-reading {
+  display: grid; place-items: center; border: 1px solid var(--color-border); border-radius: var(--radius-sm);
+  color: var(--color-text-tertiary);
+}
+.composer-image.is-reading > .icon { width: 18px; height: 18px; }
+.composer-image .icon-button {
+  position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; border-radius: 50%;
+  background: var(--color-primary); color: var(--color-on-primary);
+}
+.composer-image .icon-button .icon { width: 12px; height: 12px; }
+.composer-note { margin: 4px 4px 0; color: var(--color-text-tertiary); font-size: var(--text-meta); }
+.composer-note.is-error { color: var(--color-danger-ink); }
+.composer-note[hidden] { display: none; }
 .composer-input {
   display: block; flex: 1; min-width: 0; min-height: 28px; max-height: 160px; padding: 2px 0; border: 0;
   background: transparent; line-height: 1.6; resize: none;
@@ -436,11 +489,12 @@ button.step-head:hover .step-title { text-decoration: underline; text-underline-
 /* Windows high contrast: the system colors, with borders where fills told things apart. */
 @media (forced-colors: active) {
   .activity.is-running .activity-summary { background: none; color: CanvasText; }
-  .bubble, .chip, .tray-item, .sheet, .composer-card, .entry-incoming,
+  .bubble, .chip, .tray-item, .sheet, .composer-card, .entry-incoming, .edit-card,
   .approval-payload, .step-detail, .menu, .suggestion, .choice, .entry-notice.tone-error { border: 1px solid CanvasText; }
   .send-button, .tray-action, .button-primary { border: 1px solid ButtonText; background: ButtonFace; color: ButtonText; }
   .menu-item[aria-current="true"], .choice:has(input:checked) { outline: 2px solid Highlight; }
   .step-node { background: Canvas; }
+  .edit-diff del, .edit-diff ins { background: Canvas; color: CanvasText; }
   .is-streaming .reply > :last-child::after, .thinking span { background: CanvasText; }
   .icon-button:disabled, .send-button:disabled, .button:disabled { color: GrayText; opacity: 1; }
 }

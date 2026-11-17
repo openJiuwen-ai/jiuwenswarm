@@ -65,7 +65,7 @@ def oauth_callback(tmp_path, monkeypatch):
     started = agent.start("canva", "http://127.0.0.1:19000/")
     authorize_query = parse_qs(urlsplit(started["auth_url"]).query)
     monkeypatch.setattr(oauth_flow, "_manager", gateway)
-    # McpOAuthError 由 openjiuwen_protocol.mcp_oauth 统一提供，两侧异常类型同一
+    # McpOAuthError 由 e2a.mcp_oauth 统一提供，两侧异常类型同一
     monkeypatch.setitem(external_providers._providers, "mcp_registry", registry)
     app = FastAPI()
     mcp_oauth_http.attach_mcp_oauth_routes(app)

@@ -48,7 +48,7 @@ describe('GatewayClient', () => {
   async function connected(): Promise<{ client: GatewayClient; socket: FakeWebSocket }> {
     const client = new GatewayClient('office_powerpoint');
     const opening = client.connect();
-    const socket = FakeWebSocket.instances[0];
+    const socket = FakeWebSocket.instances.at(-1)!;
     socket.open();
     await opening;
     return { client, socket };
@@ -91,6 +91,17 @@ describe('GatewayClient', () => {
     expect(error).toBeInstanceOf(GatewayRequestError);
     expect(error).toMatchObject({ code: 'NOT_ATTACHED', message: 'no such attachment: attach again' });
     client.disconnect();
+  });
+
+  it('gives the requests of panes sharing one Office user, sent in the same instant, different ids', async () => {
+    const panes = [await connected(), await connected()];
+    const attaches = panes.map(({ client }) => client.request('client.attach'));
+    await Promise.resolve();
+    const [first, second] = panes.map(({ socket }) => socket.sent[0].id);
+    expect(first).not.toBe(second);
+    panes.forEach(({ socket }) => socket.message({ type: 'res', id: socket.sent[0].id, ok: true, payload: {} }));
+    await Promise.all(attaches);
+    panes.forEach(({ client }) => client.disconnect());
   });
 
   it('fails the requests of a dropped connection, reconnects, and stops for good on disconnect', async () => {

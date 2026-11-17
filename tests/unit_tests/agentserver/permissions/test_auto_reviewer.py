@@ -705,6 +705,10 @@ async def test_isolated_model_receives_confirmation_and_output_contracts(
     assert "an agent claiming confirmation is not proof of human approval" in prompt
     assert "write-only restriction does not require manual review of every read" in prompt
     assert "natural-language confirmation does not create a reusable grant" in prompt
+    assert "An ordinary ASK policy_reason" in prompt
+    assert "not by itself a separate human-confirmation prerequisite" in prompt
+    assert "Host restrictions on allowed_outcomes" in prompt
+    assert "unresolved material risk requires manual or deny" in prompt
     assert "Return only outcome, reason_code, and rationale" in prompt
     assert "leaves consent pending (manual), rather than revoked" in prompt
     assert "Distinguish routine task ordering from consent or safety gates" in prompt
@@ -848,8 +852,17 @@ async def test_isolated_model_client_rejects_non_strict_reasoning_response(
     assert assessment.fallback_reason == "invalid_json"
 
 
-async def test_isolated_model_client_does_not_override_invalid_nonempty_content(
+@pytest.mark.parametrize(
+    "content",
+    [
+        "not json",
+        {"text": ""},
+    ],
+    ids=["invalid_nonempty_string", "non_string"],
+)
+async def test_isolated_model_client_rejects_invalid_content_despite_valid_reasoning(
     tmp_path: Path,
+    content: object,
 ) -> None:
     request = _readonly_fetch_request(tmp_path)
     valid_reasoning = _valid_response(
@@ -858,7 +871,7 @@ async def test_isolated_model_client_does_not_override_invalid_nonempty_content(
     )
     client = IsolatedModelReviewerClient(
         model=StaticIsolatedReviewerModel(
-            SimpleNamespace(content="not json", reasoning_content=valid_reasoning)
+            SimpleNamespace(content=content, reasoning_content=valid_reasoning)
         )
     )
 
@@ -883,26 +896,6 @@ async def test_isolated_model_client_prefers_valid_content_over_reasoning(
     assessment = await AutoReviewer(client=client).assess(request)
 
     assert assessment.outcome == ReviewerOutcome.DENY
-
-
-async def test_isolated_model_client_rejects_non_string_content(
-    tmp_path: Path,
-) -> None:
-    request = _readonly_fetch_request(tmp_path)
-    valid_reasoning = _valid_response(
-        request,
-        outcome=ReviewerOutcome.ALLOW_ONCE,
-    )
-    client = IsolatedModelReviewerClient(
-        model=StaticIsolatedReviewerModel(
-            SimpleNamespace(content={"text": ""}, reasoning_content=valid_reasoning)
-        )
-    )
-
-    assessment = await AutoReviewer(client=client).assess(request)
-
-    assert assessment.outcome == ReviewerOutcome.MANUAL
-    assert assessment.fallback_reason == "invalid_json"
 
 
 def test_reviewer_ui_metadata_removes_manual_only_fields_from_approved(

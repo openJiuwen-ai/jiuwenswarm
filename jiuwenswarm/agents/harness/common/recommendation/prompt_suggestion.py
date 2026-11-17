@@ -28,10 +28,7 @@ from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, AgentRa
 
 from jiuwenswarm.common.schema.message import Message
 from jiuwenswarm.common.utils import get_agent_workspace_dir
-from jiuwenswarm.server.runtime.session.session_history import (
-    SESSION_REQUEST_COMPLETED_EVENT,
-    load_history_records,
-)
+from jiuwenswarm.server.runtime.session.history_replay import latest_completed_request_bounded
 
 from .topic_starter import TopicStarterStore
 
@@ -510,15 +507,7 @@ def _latest_completed_request(session_id: str) -> str | None:
     An answer to the agent's question is written under the request that asked, after that
     request's completion; it belongs to the next request, which completes after it.
     """
-    records = load_history_records(session_id)
-    for index in range(len(records) - 1, -1, -1):
-        row = records[index]
-        if row.get("event_type") != SESSION_REQUEST_COMPLETED_EVENT:
-            continue
-        request_id = row.get("request_id")
-        later = {later_row.get("request_id") for later_row in records[index + 1:]}
-        return request_id if row.get("status") == "success" and later <= {request_id} else None
-    return None
+    return latest_completed_request_bounded(session_id)
 
 
 def current_suggestions(store: TopicStarterStore, session_id: str) -> dict[str, Any]:

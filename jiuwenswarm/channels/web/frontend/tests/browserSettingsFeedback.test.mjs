@@ -38,14 +38,19 @@ await build({
   },
   outfile: 'node_modules/.cache/browser-settings-feedback.mjs',
   bundle: true, platform: 'node', format: 'esm', packages: 'external',
-  define: { 'import.meta.env': '{"DEV":false}' },
+  define: { 'import.meta.env': '{"DEV":false}', 'import.meta.glob': 'testAssetGlob' },
+  banner: { js: 'const testAssetGlob = () => ({});' },
   loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl', '.jpg': 'dataurl' },
   plugins: [{
     name: 'settings-icons',
     setup(builder) {
       builder.onResolve({ filter: /assets\/settings$/ }, () => ({ path: 'settings-icons', namespace: 'test-icons' }));
       builder.onLoad({ filter: /.*/, namespace: 'test-icons' }, () => ({
-        contents: 'export const settingsNavigationIcons = { browser: () => null, experimental: () => null }; export const settingsActionIcons = {};', loader: 'js',
+        contents: 'export const settingsNavigationIcons = { browser: () => null, experimental: () => null }; export const settingsActionIcons = {}; export const settingsCustomModelIcon = () => null;', loader: 'js',
+      }));
+      builder.onResolve({ filter: /assets\/providers$/ }, () => ({ path: 'providers', namespace: 'test-providers' }));
+      builder.onLoad({ filter: /.*/, namespace: 'test-providers' }, () => ({
+        contents: 'export const getModelLogoUrl = () => "provider.svg"; export const getProviderLogoUrl = () => "provider.svg"; export const getVendorLogoUrl = () => "vendor.svg";', loader: 'js',
       }));
     },
   }],

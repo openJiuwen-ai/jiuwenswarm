@@ -640,6 +640,8 @@
 }
 
 .jiuwenmate-menu__list {
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   position: absolute;
   z-index: 40;
   top: calc(100% + 4px);
@@ -1039,6 +1041,20 @@
   bottom: 6px;
   color: var(--jm-text-3);
   font-size: 11px;
+}
+
+.jiuwenmate-field__error {
+  color: var(--color-feedback-danger);
+  font-size: 12px;
+}
+
+.jiuwenmate-field textarea[aria-invalid='true'] {
+  border-color: var(--color-feedback-danger);
+}
+
+.jiuwenmate-field textarea[aria-invalid='true']:focus {
+  outline: 2px solid var(--color-feedback-danger);
+  outline-offset: 2px;
 }
 
 .jiuwenmate-field__secret {
@@ -2075,9 +2091,30 @@
   overflow: hidden;
   color: var(--jm-text);
   font-size: 12px;
-  padding-right: 38px;
+  padding-right: 8px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.jiuwenmate-schedule-status {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.jiuwenmate-schedule-status[data-tone='failed'] {
+  color: var(--color-feedback-danger);
+}
+
+.jiuwenmate-side-panel__schedule-item > .jiuwenmate-schedule-status {
+  margin-right: 32px;
+}
+
+.jiuwenmate-schedule-dialog__paused-hint {
+  margin: 0 0 12px;
+  color: var(--color-text-muted);
+  font-size: 12px;
 }
 
 .jiuwenmate-side-panel__schedule-item > .jiuwenmate-menu {
@@ -3234,6 +3271,10 @@
 
 .jiuwenmate-schedule-board__status {
   gap: 6px;
+}
+
+.jiuwenmate-schedule-board__status[data-tone='expired'] i {
+  background: var(--jm-text-3);
 }
 
 .jiuwenmate-schedule-board__status[data-tone='completed'] i {
@@ -4598,6 +4639,7 @@
 
 .jiuwenmate-profile__content {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
   align-content: start;
   gap: 18px;
@@ -4644,6 +4686,7 @@
 
 .jiuwenmate-profile__description {
   margin-top: -4px;
+  overflow-wrap: anywhere;
   color: var(--jm-text-2);
   font-size: 12px;
   line-height: 1.8;

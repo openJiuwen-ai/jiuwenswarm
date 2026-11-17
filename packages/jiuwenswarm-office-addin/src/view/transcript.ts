@@ -1,8 +1,10 @@
 import type { Entry } from '../conversationModel';
-import { copy } from '../copy';
+import { copy, type DocumentCopy } from '../copy';
 import type { UndoState } from '../paneController';
+import type { OpenDocument } from '../sessionFacade';
 import { activityGroup, running, StepClock, tickSeconds, type Step } from './activity';
 import { h, syncChildren } from './dom';
+import type { ToolCards } from './editCards';
 import { writeClipboard } from './clipboard';
 import { icon, type IconName } from './icons';
 import { renderMarkdown } from './markdown';
@@ -18,11 +20,13 @@ interface TurnEnd { reply: string; changes?: string }
 
 /**
  * A transcript item: one entry, a run of steps shown as one timeline, the
- * actions under a finished turn, or the dots while the agent works unseen.
+ * cards under a finished call, the actions under a finished turn, or the dots
+ * while the agent works unseen.
  */
 type Item =
   | { id: string; entry: Exclude<Entry, Step | { kind: 'changes' }> }
   | { id: string; steps: Step[] }
+  | { id: string; cards: Extract<Step, { kind: 'tool' }> }
   | { id: string; end: TurnEnd }
   | { id: string; thinking: true };
 
@@ -31,7 +35,9 @@ function isStep(entry: Entry): entry is Step {
 }
 
 /** A turn starts at a message to the agent; it ends at the next one, or when the agent is done. */
-function items(entries: readonly Entry[], working: boolean, openReply: string | undefined): Item[] {
+function items(
+  entries: readonly Entry[], working: boolean, openReply: string | undefined, cards: ToolCards | undefined,
+): Item[] {
   const result: Item[] = [];
   let turn = { id: 'start', end: { reply: '' } as TurnEnd };
   const close = (): void => {
@@ -53,6 +59,9 @@ function items(entries: readonly Entry[], working: boolean, openReply: string | 
     if (!isStep(entry)) result.push({ id: entry.id, entry });
     else if (last && 'steps' in last) last.steps.push(entry);
     else result.push({ id: entry.id, steps: [entry] });
+    if (entry.kind === 'tool' && entry.status === 'done' && entry.args && cards?.tools.has(entry.name)) {
+      result.push({ id: `cards:${entry.id}`, cards: entry });
+    }
   }
   if (!working) close();
   else if (unseen(entries.at(-1), openReply)) result.push({ id: 'thinking', thinking: true });
@@ -67,7 +76,7 @@ function unseen(last: Entry | undefined, openReply: string | undefined): boolean
 
 export interface TranscriptState {
   entries: readonly Entry[];
-  documents: ReadonlyMap<string, string>;
+  documents: ReadonlyMap<string, OpenDocument>;
   /** The reply that streams now. */
   openReply?: string;
   /** The agent works on a turn and waits for no answer. */
@@ -102,16 +111,22 @@ export class Transcript {
   private copiedTimer: ReturnType<typeof setTimeout> | undefined;
   private last: TranscriptState | undefined;
   private readonly loading = h('p', { class: 'transcript-loading' }, copy.loadingHistory);
-  private readonly suggestions = copy.suggestions.map(text => h('button', {
-    type: 'button', class: 'suggestion', onclick: () => this.suggest(text),
-  }, text));
-  private readonly welcomeNode = h('div', { class: 'welcome' },
-    h('img', { class: 'welcome-mascot', src: BEE, alt: '', width: '80', height: '80' }),
-    h('h2', { class: 'welcome-title' }, copy.welcomeTitle),
-    h('p', { class: 'welcome-body' }, copy.welcomeBody),
-    h('div', { class: 'suggestions' }, ...this.suggestions));
+  private readonly suggestions: HTMLButtonElement[];
+  private readonly welcomeNode: HTMLElement;
 
-  constructor(private readonly suggest: (text: string) => void, private readonly actions: UndoActions) {}
+  constructor(
+    words: DocumentCopy, suggest: (text: string) => void, private readonly actions: UndoActions,
+    private readonly cards?: ToolCards,
+  ) {
+    this.suggestions = words.suggestions.map(text => h('button', {
+      type: 'button', class: 'suggestion', onclick: () => suggest(text),
+    }, text));
+    this.welcomeNode = h('div', { class: 'welcome' },
+      h('img', { class: 'welcome-mascot', src: BEE, alt: '', width: '80', height: '80' }),
+      h('h2', { class: 'welcome-title' }, copy.welcomeTitle),
+      h('p', { class: 'welcome-body' }, words.welcomeBody),
+      h('div', { class: 'suggestions' }, ...this.suggestions));
+  }
 
   update(state: TranscriptState): void {
     this.last = state;
@@ -120,7 +135,7 @@ export class Transcript {
     const focusKey = document.activeElement?.closest('[data-key]')?.getAttribute('data-key');
     this.clock.note(state.entries.filter(isStep), Date.now());
     const next = new Map<string, { signature: unknown[]; node: HTMLElement }>();
-    const nodes = items(state.entries, state.working, state.openReply).map(item => {
+    const nodes = items(state.entries, state.working, state.openReply, this.cards).map(item => {
       const signature = this.signature(item, state);
       const before = this.rendered.get(item.id);
       const node = before && sameSignature(before.signature, signature) ? before.node : this.itemNode(item, state);
@@ -148,6 +163,7 @@ export class Transcript {
   private signature(item: Item, state: TranscriptState): unknown[] {
     if ('entry' in item) return [item.entry, state.openReply === item.id];
     if ('thinking' in item) return [];
+    if ('cards' in item) return [item.cards.args, this.cards?.version()];
     if ('end' in item) {
       const { reply, changes } = item.end;
       const { offers, confirm } = state.undo;
@@ -175,6 +191,7 @@ export class Transcript {
         },
       });
     }
+    if ('cards' in item) return this.cards?.render(item.cards.id, item.cards.args ?? {}) ?? h('div', { hidden: true });
     if ('thinking' in item) {
       return h('div', { class: 'entry thinking', role: 'img', 'aria-label': copy.thinking }, h('span'), h('span'), h('span'));
     }
@@ -239,7 +256,11 @@ function actionButton(name: IconName, label: string, key: string, onclick: () =>
 function entryNode(entry: Exclude<Entry, Step | { kind: 'changes' }>, streaming: boolean): HTMLElement {
   switch (entry.kind) {
     case 'user':
-      return h('div', { class: 'entry entry-user' }, h('div', { class: 'bubble' }, entry.text));
+      return h('div', { class: 'entry entry-user' },
+        entry.images ? h('div', { class: 'user-images' }, ...entry.images.map(({ filename, src }) => (src
+          ? h('img', { class: 'user-image', src, alt: filename })
+          : h('span', { class: 'chip', title: filename }, icon('image'), filename)))) : null,
+        entry.text ? h('div', { class: 'bubble' }, entry.text) : null);
     case 'assistant':
       return h('div', { class: `entry entry-assistant${streaming ? ' is-streaming' : ''}` },
         h('div', { class: 'reply' }, ...renderMarkdown(entry.text)));

@@ -21,7 +21,10 @@
   },
   "enterpriseEntry": {
     "invalidIdentity": "Identity returned no user ID.",
-    "noContext": "No Agent is available for this account. Ask an administrator to grant access.",
+    "emptyTitle": "No Agent Available",
+    "backToLogin": "Back to Sign in",
+    "language": "Interface language",
+    "noContext": "No Agent is available for this account. Please grant access in the Manager console first.",
     "loadFailed": "Failed to load Agent contexts.",
     "switchFailed": "Failed to switch context.",
     "errorTitle": "Unable to enter workspace",
@@ -94,6 +97,7 @@
     "work": "Tasks",
     "agent": "Experts",
     "design": "Design",
+    "teams": "Teams",
     "experiments": "RSI",
     "sessions": "Sessions",
     "cron": "Scheduled Tasks",
@@ -120,6 +124,25 @@
     "noSettings": "This plugin does not provide a settings page."
   },
   "designer": {
+    "modelConfiguration": {
+      "title": "Model configuration",
+      "help": "Choose a chat model and view the generation models available to tasks.",
+      "bindingHint": "Uses the model bound in Settings → Agent → Tools. View only; change it there.",
+      "bindingModel": "Currently bound model",
+      "chat": "Chat",
+      "video_gen": "Video generation",
+      "visual_gen": "Image generation",
+      "missing": "Not configured",
+      "incomplete": "Missing required fields",
+      "disabled": "Not enabled",
+      "problem": "{{name}}: {{status}}",
+      "separator": "; ",
+      "configure": "Configure",
+      "enable": "Enable",
+      "retry": "Reload",
+      "loading": "Loading model configuration…",
+      "loadFailed": "Could not load generation model configuration. Please retry."
+    },
     "loading": "Loading design workflow…",
     "emptyTitle": "No design workflow yet",
     "emptyDescription": "Describe a project to create a dedicated Design workspace and workflow.",
@@ -465,6 +488,60 @@
     "qwenOnly": "Only Qwen full-duplex is currently supported. Configure Qwen Omni Realtime in Settings."
   },
   "settingsPanel": {
+    "multimodal": {
+      "tab": "Multimodal models",
+      "tabHelp": "Manage models for image, audio and video understanding, and image and video generation. Adjust tool switches and model bindings in Settings → Agent → Tools.",
+      "purpose": "Model purpose",
+      "capabilities": "Model capabilities",
+      "understanding": "Multimodal understanding",
+      "generation": "Multimodal generation",
+      "selectCapabilities": "Select model capabilities",
+      "capabilityHint": "Select only capabilities that this model supports.",
+      "displayName": "Model display name",
+      "displayNamePlaceholder": "Defaults to the model name; you can change it",
+      "nameInvalid": "Enter a model display name between 1 and 100 characters",
+      "completeFields": "Complete the required model configuration fields.",
+      "add": "Add multimodal model",
+      "edit": "Edit multimodal model",
+      "deleteTitle": "Delete model?",
+      "changeTitle": "Change model capabilities?",
+      "confirmDelete": "Delete",
+      "confirmChanges": "Confirm changes",
+      "deleteReferences": "This model is used by: {{tools}}.",
+      "editReferences": "This change affects the model selections for: {{tools}}.",
+      "replacementRule": "After confirmation, affected tools will switch to another matching model and keep their current on/off state. Tools without a matching model will be turned off and their model configuration cleared.",
+      "deleteUnbound": "This model will be removed from the multimodal model list.",
+      "applyFailed": "Saved, but could not be applied. Please retry.",
+      "shortcutChanged": "Model added. It does not include {{tool}}, so this tool’s settings are unchanged.",
+      "separator": ", ",
+      "empty": "No multimodal models configured",
+      "emptyDescription": "Add a model and select its capabilities. Matching tools without a selected model will be enabled automatically.",
+      "tools": {
+        "vision": "Image processing",
+        "audio": "Audio processing",
+        "video": "Video understanding",
+        "visual_gen": "Image generation",
+        "video_gen": "Video generation"
+      },
+      "errors": {
+        "MM_VALIDATION_FAILED": "Check the model configuration and complete all required fields.",
+        "MM_CONFIRM_REQUIRED": "Model references have changed. Confirm the affected tools again.",
+        "MM_MODEL_NOT_FOUND": "This model no longer exists. Select another model.",
+        "MM_MODEL_ID_CONFLICT": "The model ID is already in use. Reopen the add dialog.",
+        "MM_CAPABILITY_MISMATCH": "The selected model does not support this tool. Select another model.",
+        "MM_MODEL_REQUIRED": "Add a model with the required capability first.",
+        "MM_STORAGE_FAILED": "Could not save the configuration. Please retry.",
+        "MM_RECOVERY_REQUIRED": "The configuration transaction could not be recovered. Check the configuration files before retrying.",
+        "MM_CONFIG_READ_FAILED": "Could not read the model configuration. Check the files and credentials.",
+        "MM_UNSUPPORTED_SCHEMA": "This configuration version is unsupported. Update the components.",
+        "MM_LEGACY_WRITE_UNSUPPORTED": "Use Multimodal models to change this configuration.",
+        "METHOD_NOT_FOUND": "Component versions do not match. Update Gateway, the protocol package, and AgentServer.",
+        "unknown": "The operation failed. Please retry."
+      }
+    },
+    "affinity": {
+      "noSupportingModel": "No configured model supports affinity. Configure one in Models first."
+    },
     "voice": {
       "connectionFailed": "Connection failed. Check the endpoint, API key and model, then try again.",
       "connectionSuccess": "Model connection verified",
@@ -623,6 +700,10 @@
       }
     },
     "models": {
+      "affinityCapability": "This service supports Ascend KV-Cache affinity",
+      "affinityCapabilityDescription": "Only for custom services implementing the agent_hint protocol. This is a manual declaration; connection tests do not verify affinity support.",
+      "affinityAutoDisabled": "Model configuration saved. KV-Cache affinity was automatically disabled because a control model no longer supports it. Restart if required.",
+
       "customModels": "Custom models",
       "tabsLabel": "Model settings categories",
       "modelsTab": "Models",
@@ -749,11 +830,15 @@
         "maas": "Maas Pangu",
         "minimax": "MiniMax",
         "mimo": "Xiaomi MiMo",
+        "opencode-go": "OpenCode Go",
         "openrouter": "OpenRouter",
         "vllm-omni": "vLLM-Omni",
         "volcengine": "Volcengine",
         "zhipu": "Zhipu GLM",
         "unrecognized": "Unrecognized provider ({{vendor}})"
+      },
+      "apiBasePlaceholders": {
+        "opencode-go": "e.g. https://opencode.ai/zen/go/v1"
       },
       "protocols": {
         "openai": "OpenAI",
@@ -785,6 +870,7 @@
       "catalogLoading": "Loading model providers and reasoning options. Please wait.",
       "catalogLoadFailed": "Model providers and reasoning options failed to load. Retry before saving.",
       "saveResponseInvalid": "The model-save response is invalid. Reload to verify the server state.",
+      "execResolveFailed": "The model was saved, but resolving its exec: reference command failed; model calls use an empty key until it succeeds. Check the secret-manager command, then re-save or probe.",
       "savedApplied": "Saved and applied",
       "savedRestartRequired": "Saved; takes effect after restart",
       "refreshTitle": "Background model refresh",
@@ -934,6 +1020,38 @@
       "requiredFields": "Fields marked * are required. Complete them to save. Saved API keys do not need to be entered again."
     },
     "fields": {
+      "vision_enabled": {
+        "title": "Image processing",
+        "description": "Use the selected model for this media type. Turning this off retains the model selection."
+      },
+      "audio_enabled": {
+        "title": "Audio processing",
+        "description": "Use the selected model for this media type. Turning this off retains the model selection."
+      },
+      "video_enabled": {
+        "title": "Video understanding",
+        "description": "Use the selected model for this media type. Turning this off retains the model selection."
+      },
+      "vision_model_id": {
+        "title": "Selected model",
+        "description": "Select a multimodal model with this capability"
+      },
+      "audio_model_id": {
+        "title": "Selected model",
+        "description": "Select a multimodal model with this capability"
+      },
+      "video_model_id": {
+        "title": "Selected model",
+        "description": "Select a multimodal model with this capability"
+      },
+      "visual_gen_model_id": {
+        "title": "Selected model",
+        "description": "Select a multimodal model with this capability"
+      },
+      "video_gen_model_id": {
+        "title": "Selected model",
+        "description": "Select a multimodal model with this capability"
+      },
       "preferred_language": {
         "title": "Language",
         "description": "Set the display language for the application interface."
@@ -1212,7 +1330,7 @@
       },
       "kv_cache_affinity_enabled": {
         "title": "Enable compute affinity",
-        "description": "Supported only for models deployed with Ascend vLLM inference services, not models accessed through third-party API keys."
+        "description": "Use affinity for declared endpoints; ordinary cloud models keep normal requests."
       },
       "external_cli_agent_claude_enabled": {
         "title": "Enable Claude",
@@ -1287,7 +1405,6 @@
     },
     "team": {
       "memberLanes": "Member trajectory lanes",
-      "members": "Members",
       "workflowGroupAria": "Workflow {{name}}, {{count}} operators",
       "workflowGroupOperators": "{{count}} operators",
       "schedule": {
@@ -1307,6 +1424,7 @@
         "expandReviews": "Expand review records",
         "collapseReviews": "Collapse review records",
         "noReviews": "No reviews yet",
+        "directCompleted": "Completed directly without review",
         "reviewCount_one": "{{count}} Review",
         "reviewCount_other": "{{count}} Reviews",
         "phase": {
@@ -1568,8 +1686,47 @@
       "showTasks": "Show tasks"
     }
   },
+  "teams": {
+    "title": "Team Management",
+    "subtitle": "View existing teams, or stop and delete them",
+    "teamList": "Existing teams",
+    "count": "{{count}} team(s)",
+    "quota": "{{used}} used / {{limit}} limit (default {{default}})",
+    "orgQuota": "Org {{used}} used / {{limit}} limit",
+    "quotaUnavailable": "Quota status unavailable",
+    "createUserFull": "Create failed. A user can have at most {{limit}} teams",
+    "createOrgFull": "Create failed. An organization can have at most {{limit}} teams",
+    "sessionCount": "{{count}} session(s)",
+    "listLabel": "Session for this team: {{title}}",
+    "untitledSession": "Untitled session",
+    "createdAt": "Created {{time}}",
+    "createdAtWithId": "Created {{time}} · …{{suffix}}",
+    "sessionSuffix": "…{{suffix}}",
+    "empty": "No teams",
+    "deleteTeam": "Delete team",
+    "deleting": "Deleting...",
+    "deleteConfirm": "Delete team {{team}}?\nThis will delete the team runtime, linked sessions, and directory.",
+    "stopTeam": "Stop",
+    "stopping": "Stopping...",
+    "humanMembers": "{{count}} human member(s)",
+    "status": {
+      "creating": "Creating",
+      "running": "Running",
+      "paused": "Paused",
+      "stopping": "Stopping",
+      "stopped": "Stopped",
+      "deleted": "Deleted"
+    },
+    "errors": {
+      "loadTeams": "Failed to load teams",
+      "deleteTeam": "Failed to delete team: {{team}}",
+      "stopTeam": "Failed to stop team"
+    }
+  },
   "team": {
     "members": "Team Members",
+    "quotaUsage": "Teams {{used}}/{{limit}}",
+    "orgQuotaUsage": "Org {{used}}/{{limit}}",
     "membersTab": "Team",
     "statusTab": "Status",
     "filesTab": "Files",
@@ -1721,6 +1878,14 @@
     "planning": {
       "tab": "Task Planning",
       "progressTitle": "Task Progress",
+      "taskCompletion": "Tasks completed",
+      "executionProgress": "Execution progress",
+      "estimatedProgress": "Execution progress (estimated)",
+      "agentProgress": "Loaded workflow nodes: {{ended}} / {{total}} ended",
+      "phaseAgentProgress": "Phase nodes: {{ended}} / {{total}} ended",
+      "agentProgressUnavailable": "Loaded workflow nodes: some workflow node counts are unavailable",
+      "teamMetricScope": "Task counts include team tasks and workflow phases, excluding application tasks. Progress combines ordinary tasks and workflows, using workflow node counts when available.",
+      "teamBoardMetricScope": "Progress includes team tasks and workflows only. Status counts include all board tasks, including application tasks.",
       "token": "Token",
       "taskList": "Task List",
       "taskListAria": "{{task}} task list",
@@ -1854,6 +2019,7 @@
     "previewFailed": "Failed to load the file preview",
     "docxPreviewFailed": "Failed to load the Word document preview",
     "presentationPreviewFailed": "Failed to load the PowerPoint presentation preview",
+    "presentationLoadFailed": "Failed to download the PowerPoint presentation. Please try again.",
     "presentationResourceLimitExceeded": "The PowerPoint presentation content exceeds the browser preview limit. Download the file to view it.",
     "presentationTooLarge": "PowerPoint presentations larger than {{size}} cannot be previewed in the browser. Download the file to view it.",
     "presentationSlides": "Slides",
@@ -1962,6 +2128,7 @@
     "topicStarter": {
       "statusMissingConfiguration": "Topic recommendations are unavailable. Check Settings.",
       "recommendedForYou": "Recommended for you",
+      "statusLoading": "Loading…",
       "heading": "What would you like to explore today?",
       "notInterested": "Skip for now",
       "dateAndVersion": "See this day",
@@ -4186,6 +4353,7 @@
       "detailError": "Unable to load Expert details. Try again.",
       "hubAssetChanged": "This expert has changed or been removed on Hub. The catalog is refreshing; go back and select it again.",
       "actionError": "The action could not be completed. Try again in a moment.",
+      "agentAccessDenied": "You are outside the authorized scope. The action was denied.",
       "duplicateName": "An Expert with this name already exists. Choose a different name and try again.",
       "agentUnavailable": "This Expert is no longer available. Refresh the list and try again.",
       "agentDefinitionUnavailable": "This Expert definition is incomplete and cannot be used right now.",
@@ -4449,6 +4617,7 @@
     "historyPreviewEmpty": "No messages to show after the same filtering as history restore (or the file is empty). Turn off preview to see raw JSON.",
     "edit": "Edit",
     "unknownError": "Unknown error",
+    "saveFailedForPath": "Failed to save {{path}}: ",
     "fileMissingPrefix": "This file does not exist. Create the file at",
     "fileMissingSuffix": "before editing.",
     "notPreviewable": "This file cannot be previewed. Only Markdown/JSON (.md/.mdx/.json) files are supported."
@@ -5314,7 +5483,7 @@
       "saving": "Saving...",
       "name": "Name",
       "type": "Type",
-      "typeStdio": "STUDIO",
+      "typeStdio": "STDIO",
       "typeHttp": "Streamable HTTP",
       "command": "Startup command",
       "args": "Arguments",
@@ -6059,6 +6228,7 @@
       "namePlaceholder": "For example: After-sales assistant",
       "description": "Abilities",
       "descriptionPlaceholder": "Describe what this employee is good at, what it owns and how it should work",
+      "descriptionTooLong": "The capability description must be {{limit}} characters or fewer. Shorten it before saving.",
       "role": "Work domains",
       "preview": "Card preview",
       "previewName": "New employee",
@@ -6101,7 +6271,9 @@
         "starterPrompts": "Add quick prompt"
       },
       "starterPromptsLimit": "Up to {{count}} prompts",
-      "starterPromptDuplicate": "Duplicates an earlier prompt; only one is kept when saved",
+      "starterPromptDuplicate": "Duplicates an earlier prompt; edit or remove it.",
+      "starterPromptsDuplicateTitle": "Duplicate starter prompts",
+      "starterPromptsDuplicateMessage": "Starter prompts must be unique. Edit or remove the duplicates before creating the employee.",
       "empty": {
         "skills": "No skills",
         "connectors": "No connectors",
@@ -6464,6 +6636,11 @@
       }
     },
     "schedule": {
+      "save": "Save",
+      "saveAndEnable": "Save and enable",
+      "pausedEditHint": "This task is paused. Saving keeps it paused; choose Save and enable to resume automatic execution.",
+      "actionFailed": "Scheduled task action failed",
+      "resumeExpired": "Enable (edit schedule first)",
       "add": "Add",
       "createTitle": "New scheduled task",
       "editTitle": "Edit scheduled task",
@@ -6531,10 +6708,11 @@
         "paused": "Paused",
         "failed": "Failed",
         "completed": "Completed",
-        "queued": "Queued"
+        "queued": "Queued",
+        "expired": "Expired"
       },
       "run": {
-        "success": "Succeeded",
+        "success": "Completed",
         "failed": "Failed",
         "stopped": "Stopped",
         "running": "Running"
@@ -6546,10 +6724,15 @@
         "running": "Running"
       },
       "error": {
+        "enableExpired": "This task has expired. Update its schedule before enabling it.",
         "nameRequired": "Enter a task name.",
         "promptRequired": "Enter a task description.",
         "required": "Enter a name and a description",
         "executorRequired": "Select an AI employee to run this task.",
+        "onceDateRequired": "Select an execution date.",
+        "timeRequired": "Select an execution time.",
+        "monthDayInvalid": "Enter a day of the month between 1 and 31.",
+        "intervalRequired": "Enter an execution interval.",
         "intervalInvalid": "The interval must be a positive integer",
         "futureRequired": "A one-time run must be in the future",
         "rangeInvalid": "The effective end must be after the start"
@@ -6694,6 +6877,7 @@
     }
   },
   "groupChat": {
+    "organizationInterrupted": "The organization task was interrupted by a service restart or process exit. Completed work is retained. Please submit a new request.",
     "externalRuntimeDisabled": "{{agents}} is not enabled. Enable it in Settings → Agents → External Agents, then add the member again.",
     "useTeam": "Use this team",
     "teamMembers": "Team members ({{count}})",
@@ -6701,6 +6885,10 @@
     "taskTitle": "Task",
     "unnamedTask": "Untitled subtask",
     "noSubtasks": "No subtask records",
+    "expertTasks": "Team tasks for this request",
+    "expertTasksProgress": "Completed {{completed}} / {{total}}",
+    "expertTasksUnavailable": "Team tasks could not be refreshed. Existing records may be out of date.",
+    "expertTaskUnassigned": "Unassigned",
     "generatingTasks": "Generating tasks",
     "organizationStage": {
       "starting": "Starting expert teams",
@@ -6726,6 +6914,11 @@
     "modelLocked": "The model cannot be changed after the group chat starts",
     "processing": "Processing…",
     "mentionPhase": {
+      "organizationFailed": "This request did not complete. Please send it again.",
+      "organizationPending": "Received, processing…",
+      "organizationClarification": "Waiting for clarification…",
+      "organizationReceived": "Organization received your request, processing…",
+      "organizationSummarizing": "Summarizing…",
       "dispatching": "Received, processing…",
       "planning": "Planning tasks…",
       "generating": "Generating task plan…",

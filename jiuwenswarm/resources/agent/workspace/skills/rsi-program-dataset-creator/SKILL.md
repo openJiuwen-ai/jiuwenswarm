@@ -1,6 +1,7 @@
 ---
 name: rsi-program-dataset-creator
-description: Use for program evolution — improving a working program by repeated search against a measured score, rather than by one edit. Covers both halves: deciding what is measured and how a candidate program is scored, and writing that decision into the task folder the run reads (`task.json`, `seed/`, `run/scorecard.json`, every parameter set). Triggers on "make this code faster", "search for a better implementation", staging or debugging a task folder, writing a scorecard or an evaluator, and on a `PROBE_REFUSED`, `SEARCH_FAILED` or `ARTIFACT_BUNDLE_INCOMPLETE` a run came back with.
+description: >-
+  Use for program evolution — improving a working program by repeated search against a measured score, rather than by one edit. Covers both halves: deciding what is measured and how a candidate program is scored, and writing that decision into the task folder the run reads (`task.json`, `seed/`, `run/scorecard.json`, every parameter set). Triggers on "make this code faster", "search for a better implementation", staging or debugging a task folder, writing a scorecard or an evaluator, and on a `PROBE_REFUSED`, `SEARCH_FAILED` or `ARTIFACT_BUNDLE_INCOMPLETE` a run came back with.
 metadata:
   version: 3.0.0
 ---

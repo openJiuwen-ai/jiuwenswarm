@@ -2,9 +2,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { SessionId } from '../clientAttachment';
-import { applyEvent, emptyConversation, type Conversation } from '../conversationModel';
+import { addUserMessage, applyEvent, emptyConversation, type Conversation } from '../conversationModel';
+import { documentCopy } from '../copy';
 import type { GatewayEvent, JsonObject } from '../gatewayClient';
 import type { PaneState } from '../paneController';
+import { POWERPOINT } from '../powerPointApp';
 import { ENTER_GUARD_MS } from './interaction';
 import { mountPane } from './paneView';
 
@@ -25,7 +27,8 @@ const PERMISSION: JsonObject = {
 };
 
 function conversationOf(...events: [string, JsonObject][]): Conversation {
-  return events.map(([event, payload]): GatewayEvent => ({ event, payload })).reduce(applyEvent, emptyConversation);
+  return events.map(([event, payload]): GatewayEvent => ({ event, payload }))
+    .reduce((conversation, event) => applyEvent(conversation, event, POWERPOINT.contract), emptyConversation);
 }
 
 let ticks: (() => void)[];
@@ -46,7 +49,7 @@ afterEach(() => {
 /** The pane on a controller whose state the test sets and whose actions it records. */
 function mounted(initial: Partial<PaneState> = {}) {
   let state: PaneState = {
-    attachment: ATTACHED, conversation: emptyConversation, conversations: [], documents: new Map([['s9', '市场分析.pptx']]),
+    attachment: ATTACHED, conversation: emptyConversation, conversations: [], documents: new Map([['s9', { name: '市场分析.pptx', kind: 'presentation', current: false }]]),
     loadingHistory: false, connection: { kind: 'open' }, models: [], undo: { offers: new Set() }, ...initial,
   };
   const listeners = new Set<(state: PaneState) => void>();
@@ -69,7 +72,8 @@ function mounted(initial: Partial<PaneState> = {}) {
   };
   const root = document.createElement('div');
   document.body.replaceChildren(root);
-  mountPane(root, controller, { now: () => clockNow, every: (_ms, tick) => ticks.push(tick) });
+  mountPane(root, controller, documentCopy.presentation,
+    { clock: { now: () => clockNow, every: (_ms, tick) => ticks.push(tick) } });
   const set = (change: Partial<PaneState>): void => {
     state = { ...state, ...change };
     listeners.forEach(listener => listener(state));
@@ -91,6 +95,12 @@ function mounted(initial: Partial<PaneState> = {}) {
   };
   return { root, controller, set, button, buttons, input, text, announced, second };
 }
+
+const png = (name: string): File => new File(['ABC'], name, { type: 'image/png' });
+
+/** A paste or drop event with the clipboard or dragged data jsdom does not build. */
+const withData = (type: string, field: string, data: object): Event => (
+  Object.assign(new Event(type, { bubbles: true, cancelable: true }), { [field]: data }));
 
 const key = (name: string, target: EventTarget = document.body): void => {
   target.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }));
@@ -219,7 +229,7 @@ describe('the composer', () => {
     controller.send.mockResolvedValueOnce(false);
     input().value = '检查标题';
     key('Enter', input());
-    expect(controller.send).toHaveBeenCalledWith('检查标题');
+    expect(controller.send).toHaveBeenCalledWith('检查标题', []);
     expect(input().value).toBe('');
     await vi.waitFor(() => expect(input().value).toBe('检查标题'));
   });
@@ -242,7 +252,85 @@ describe('the composer', () => {
     input().value = '顺便检查字号';
     input().dispatchEvent(new Event('input'));
     button('发送').click();
-    expect(controller.send).toHaveBeenCalledWith('顺便检查字号');
+    expect(controller.send).toHaveBeenCalledWith('顺便检查字号', []);
+  });
+
+  it('sends the images picked, pasted or dropped with the next message, less the ones removed', async () => {
+    const { root, controller, input, button } = mounted();
+    const picker = root.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(picker, 'files', { value: [png('a.png')] });
+    picker.dispatchEvent(new Event('change'));
+    const pasted = (text: string): Event => withData('paste', 'clipboardData',
+      { getData: () => text, items: [{ kind: 'file', getAsFile: () => png('b.png') }], files: [] });
+    const textWins = pasted('标题文字');
+    input().dispatchEvent(textWins);
+    expect(textWins.defaultPrevented).toBe(false);
+    input().dispatchEvent(pasted(''));
+    root.querySelector('.composer-card')!.dispatchEvent(withData('drop', 'dataTransfer', { files: [png('c.png')] }));
+    await vi.waitFor(() => expect(root.querySelectorAll('.composer-image img')).toHaveLength(3));
+
+    button('移除图片 b.png').click();
+    button('发送').click();
+    expect(controller.send).toHaveBeenCalledWith('', ['a.png', 'c.png'].map(
+      filename => ({ filename, mimeType: 'image/png', base64Data: 'QUJD' })));
+    expect(root.querySelectorAll('.composer-image')).toHaveLength(0);
+  });
+
+  it('says which files it did not take, and why', async () => {
+    const { root, button, text } = mounted();
+    const big = png('big.png');
+    Object.defineProperty(big, 'size', { value: 11 * 1024 * 1024 });
+    vi.spyOn(FileReader.prototype, 'readAsDataURL').mockImplementationOnce(function (this: FileReader) {
+      this.dispatchEvent(new ProgressEvent('error'));
+    });
+    root.querySelector('.composer-card')!.dispatchEvent(withData('drop', 'dataTransfer',
+      { files: [new File(['%PDF'], 'brief.pdf', { type: 'application/pdf' }), big, png('gone.png'), png('ok.png')] }));
+    await vi.waitFor(() => expect(text('.composer-note')).toBe('图片类型不支持：brief.pdf（支持 PNG、JPEG、WebP、GIF）；'
+      + '图片太大：big.png（单张最大 10 MB）；图片读取失败：gone.png'));
+    expect(root.querySelector('.composer-image img')?.getAttribute('alt')).toBe('ok.png');
+    expect(button('发送').disabled).toBe(false);
+  });
+
+  it('shows an image as soon as it is added, and one that never reads holds the message only until removed or given up', async () => {
+    const { root, button, text, input } = mounted();
+    vi.spyOn(FileReader.prototype, 'readAsDataURL').mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => undefined);
+    root.querySelector('.composer-card')!.dispatchEvent(withData('drop', 'dataTransfer',
+      { files: [png('a.png'), png('b.png')] }));
+    input().value = '看图';
+    input().dispatchEvent(new Event('input'));
+    expect(root.querySelectorAll('.composer-image')).toHaveLength(2);
+    expect(button('发送').disabled).toBe(true);
+
+    button('移除图片 a.png').click();
+    expect(root.querySelectorAll('.composer-image')).toHaveLength(1);
+    vi.advanceTimersByTime(10_000);
+    await vi.waitFor(() => expect(text('.composer-note')).toBe('图片读取失败：b.png'));
+    expect(root.querySelectorAll('.composer-image')).toHaveLength(0);
+    expect(button('发送').disabled).toBe(false);
+  });
+
+  it('holds images until the running turn ends, as a supplement carries text only', async () => {
+    const { root, set, button, text, input } = mounted();
+    root.querySelector('.composer-card')!.dispatchEvent(withData('drop', 'dataTransfer', { files: [png('a.png')] }));
+    await vi.waitFor(() => expect(root.querySelectorAll('.composer-image img')).toHaveLength(1));
+    set({ conversation: conversationOf(['chat.processing_status', { is_processing: true }]) });
+    expect(button('停止').disabled).toBe(false);
+    expect(text('.composer-note')).toBe('图片要等这一轮结束后发送');
+    input().value = '用这张图';
+    input().dispatchEvent(new Event('input'));
+    expect(button('发送').disabled).toBe(true);
+  });
+
+  it('shows the images a message carried, and a replayed message\'s by name', () => {
+    const sent = addUserMessage(
+      emptyConversation, '照这个配色改', [{ filename: 'logo.png', src: 'data:image/png;base64,QUJD' }]);
+    const { root } = mounted({ conversation: addUserMessage(sent, '', [{ filename: 'old.png' }]) });
+    const [live, replayed] = root.querySelectorAll('.entry-user');
+    expect(live.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,QUJD');
+    expect(live.querySelector('.bubble')?.textContent).toBe('照这个配色改');
+    expect(replayed.querySelector('img')).toBeNull();
+    expect(replayed.textContent).toBe('old.png');
   });
 
   it('offers no Stop in a window another one displaced, as the turn goes on there', () => {
@@ -339,7 +427,7 @@ describe('the tool timeline', () => {
     expect(text('.step:last-child .step-time')).toBe('2 秒');
 
     set({ conversation: applyEvent(running, { event: 'chat.tool_result', payload: { tool_result: {
-      tool_call_id: 'c2', status: 'success' } } }) });
+      tool_call_id: 'c2', status: 'success' } } }, POWERPOINT.contract) });
     expect(text('.activity-summary')).toBe('查看过程');
     expect(root.querySelector('.activity-steps')!.hasAttribute('hidden')).toBe(false);
     root.querySelector<HTMLButtonElement>('.activity-head')!.click();
@@ -468,6 +556,19 @@ describe('the end of a turn', () => {
 });
 
 describe('the header', () => {
+  it('lists the open files of this kind, this one first and marked', () => {
+    const { root, button } = mounted({ documents: new Map([
+      ['s9', { name: '市场分析.pptx', kind: 'presentation', current: false }],
+      ['s8', { name: '预算.xlsx', kind: 'workbook', current: false }],
+      [S1, { name: '季度汇报.pptx', kind: 'presentation', current: true }],
+    ]) });
+    expect(root.querySelector('.files-count')?.textContent).toBe('2');
+    button('打开的演示文稿').click();
+    const items = [...root.querySelectorAll('#files-menu .menu-item')];
+    expect(items.map(item => item.querySelector('.menu-item-title')!.textContent)).toEqual(['季度汇报.pptx', '市场分析.pptx']);
+    expect(items.map(item => item.querySelector('.menu-item-meta')?.textContent)).toEqual(['本文件', undefined]);
+  });
+
   it('lists the document\'s conversations, marks the current one, and switches', () => {
     const now = Math.floor(Date.now() / 1000);
     const { root, button, controller } = mounted({ conversations: [

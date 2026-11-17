@@ -20,6 +20,7 @@ export const OPENAI_ACCOUNT_SELECTION = 'openai-account';
 export const OPENAI_ACCOUNT_DEFAULT_API_BASE = 'https://chatgpt.com/backend-api/codex';
 
 export type ModelDraft = {
+  kv_cache_affinity: boolean;
   alias: string;
   protocol: ModelProtocol;
   vendor_selection: string;
@@ -33,6 +34,7 @@ export type ModelDraft = {
 };
 
 const MODEL_DRAFT_FIELDS: readonly (keyof ModelDraft)[] = [
+  'kv_cache_affinity',
   'alias',
   'protocol',
   'vendor_selection',
@@ -137,13 +139,17 @@ export function findVendorPreset(catalog: VendorPresetMap, selection: string): V
 
 /** Normalize the draft after capabilities load or the model changes; never persist it here. */
 export function reconcileModelReasoning(draft: ModelDraft, catalog: VendorPresetMap): ModelDraft {
+  if (!catalog.reasoning) return draft;
+  if (draft.vendor_selection === CUSTOM_VENDOR_SELECTION) {
+    return draft.reasoning_level ? { ...draft, reasoning_level: '' } : draft;
+  }
   const capability = resolveModelReasoning(
     catalog,
     findVendorPreset(catalog, draft.vendor_selection),
     draft.model_name,
     draft.protocol,
   );
-  return capability && !isReasoningLevelSupported(draft.reasoning_level, capability)
+  return (!capability || !isReasoningLevelSupported(draft.reasoning_level, capability))
     ? { ...draft, reasoning_level: '' }
     : draft;
 }
@@ -159,7 +165,10 @@ export function selectProviderDefaultModel(currentModel: string, options: readon
 }
 
 /** Keep display name in sync with model_name until the user customizes it. */
-export function syncDisplayNameWithModelName(draft: ModelDraft, previousModelName: string): ModelDraft {
+export function syncDisplayNameWithModelName<T extends { alias: string; model_name: string }>(
+  draft: T,
+  previousModelName: string,
+): T {
   const nextModelName = draft.model_name.trim();
   const currentAlias = draft.alias.trim();
   const previous = previousModelName.trim();
@@ -181,6 +190,7 @@ export function resolveModelPreset(model: ModelEntry, catalog: VendorPresetMap):
 export function createModelDraft(model: ModelEntry | undefined, catalog: VendorPresetMap): ModelDraft {
   if (!model) {
     return {
+      kv_cache_affinity: false,
       alias: '',
       protocol: 'openai',
       vendor_selection: '',
@@ -200,6 +210,7 @@ export function createModelDraft(model: ModelEntry | undefined, catalog: VendorP
 
   if (model.model_provider === 'OpenAIAccount') {
     return {
+      kv_cache_affinity: false,
       alias,
       protocol: 'openai',
       vendor_selection: OPENAI_ACCOUNT_SELECTION,
@@ -221,6 +232,7 @@ export function createModelDraft(model: ModelEntry | undefined, catalog: VendorP
       ? ''
       : CUSTOM_VENDOR_SELECTION;
   return {
+    kv_cache_affinity: model.extensions?.kv_cache?.mode === 'affinity' || model.model_provider === 'AscendAffinity',
     alias,
     protocol,
     vendor_selection: vendorSelection,
@@ -228,7 +240,7 @@ export function createModelDraft(model: ModelEntry | undefined, catalog: VendorP
     model_input_mode: preset ? 'options' : 'manual',
     api_key: model.api_key,
     api_base: model.api_base,
-    reasoning_level: model.reasoning_level ?? '',
+    reasoning_level: vendorSelection === CUSTOM_VENDOR_SELECTION ? '' : (model.reasoning_level ?? ''),
     context_window_tokens: contextWindowTokens,
     is_default: model.is_default ?? false,
   };
@@ -237,7 +249,7 @@ export function createModelDraft(model: ModelEntry | undefined, catalog: VendorP
 export function applyVendorSelection(draft: ModelDraft, selection: string, catalog: VendorPresetMap): ModelDraft {
   if (selection === OPENAI_ACCOUNT_SELECTION) {
     return {
-      ...draft,
+      ...draft, kv_cache_affinity: false,
       protocol: 'openai',
       vendor_selection: selection,
       model_name: '',
@@ -249,23 +261,24 @@ export function applyVendorSelection(draft: ModelDraft, selection: string, catal
 
   if (selection === CUSTOM_VENDOR_SELECTION) {
     return {
-      ...draft,
+      ...draft, kv_cache_affinity: false,
       vendor_selection: selection,
       model_name: '',
       model_input_mode: 'manual',
       api_key: '',
       api_base: '',
+      reasoning_level: '',
     };
   }
 
   const preset = findVendorPreset(catalog, selection);
-  if (!preset) return { ...draft, vendor_selection: selection };
+  if (!preset) return { ...draft, kv_cache_affinity: false, vendor_selection: selection };
   const anthropic = draft.protocol === 'anthropic' && preset.supports_anthropic;
   return {
-    ...draft,
+    ...draft, kv_cache_affinity: false,
     protocol: anthropic ? 'anthropic' : 'openai',
     vendor_selection: selection,
-    model_name: '',
+    model_name: preset.default_model,
     model_input_mode: 'options',
     api_key: '',
     api_base: anthropic ? (preset.anthropic_base ?? '') : preset.api_base,
@@ -275,10 +288,37 @@ export function applyVendorSelection(draft: ModelDraft, selection: string, catal
 export function applyModelProtocol(draft: ModelDraft, protocol: ModelProtocol, catalog: VendorPresetMap): ModelDraft {
   const preset = findVendorPreset(catalog, draft.vendor_selection);
   return {
-    ...draft,
+    ...draft, kv_cache_affinity: false,
     protocol,
     api_base: preset ? (protocol === 'anthropic' ? (preset.anthropic_base ?? '') : preset.api_base) : draft.api_base,
   };
+}
+
+/**
+ * Resolve the address a preset entry saves with.
+ *
+ * A preset that names its own address always wins. A preset that leaves it to
+ * the user (OpenCode Go) saves the draft value, but not one the draft merely
+ * inherited: an address that is still byte-for-byte the edited entry's own and
+ * belongs to another vendor would point the new entry at the previous provider.
+ * Switching vendors in the dialog already clears the field, so this only guards
+ * the untouched value; anything the user typed, even over a switched vendor, is
+ * kept (FR-002 lets the user name any usable address).
+ */
+function resolvePresetApiBase(
+  preset: VendorPreset,
+  protocol: ModelProtocol,
+  existing: ModelEntry | undefined,
+  draftApiBase: string,
+): string {
+  const presetApiBase = protocol === 'anthropic' ? (preset.anthropic_base ?? '') : preset.api_base;
+  if (presetApiBase) return presetApiBase;
+  const inherited =
+    existing !== undefined &&
+    existing.vendor_key !== undefined &&
+    existing.vendor_key !== preset.vendor_key &&
+    draftApiBase === existing.api_base.trim();
+  return inherited ? '' : draftApiBase;
 }
 
 export function modelDraftToEntry(
@@ -287,6 +327,7 @@ export function modelDraftToEntry(
   catalog: VendorPresetMap,
   connectionChanged: boolean,
 ): ModelEntry {
+  const normalizedDraft = reconcileModelReasoning(draft, catalog);
   const next: ModelEntry = {
     ...existing,
     alias: draft.alias.trim(),
@@ -294,10 +335,20 @@ export function modelDraftToEntry(
     api_key: draft.api_key.trim(),
     api_base: draft.api_base.trim(),
     model_provider: existing?.model_provider ?? '',
-    reasoning_level: draft.reasoning_level,
+    reasoning_level: normalizedDraft.reasoning_level,
     context_window_tokens: resolveDraftContextWindowTokens(draft.context_window_tokens),
     is_default: draft.is_default,
   };
+
+  const affinityEditable = draft.vendor_selection === CUSTOM_VENDOR_SELECTION && draft.protocol === 'openai';
+  const wasAffinity = existing?.extensions?.kv_cache?.mode === 'affinity' || existing?.model_provider === 'AscendAffinity';
+  if (existing && wasAffinity && !affinityEditable && !connectionChanged &&
+    draft.vendor_selection === createModelDraft(existing, catalog).vendor_selection &&
+    draft.protocol === displayModelProtocol(existing) &&
+    next.model_name === existing.model_name && next.api_base === existing.api_base) {
+    // Hidden legacy declarations survive unrelated edits, but never a change of service identity.
+    return next;
+  }
 
   if (draft.vendor_selection === OPENAI_ACCOUNT_SELECTION) {
     next.model_provider = 'OpenAIAccount';
@@ -305,7 +356,7 @@ export function modelDraftToEntry(
     delete next.vendor_key;
     delete next.plan;
     delete next.endpoint_profile;
-    return next;
+    return applyDraftAffinity(next, draft, existing);
   }
 
   const preset = findVendorPreset(catalog, draft.vendor_selection);
@@ -314,15 +365,15 @@ export function modelDraftToEntry(
     next.plan = preset.plan;
     if (draft.protocol === 'anthropic') {
       next.model_provider = preset.anthropic_client_provider ?? '';
-      next.api_base = preset.anthropic_base ?? '';
+      next.api_base = resolvePresetApiBase(preset, 'anthropic', existing, next.api_base);
       delete next.endpoint_profile;
     } else {
       next.model_provider = preset.client_provider;
-      next.api_base = preset.api_base;
+      next.api_base = resolvePresetApiBase(preset, 'openai', existing, next.api_base);
       if (preset.endpoint_profile) next.endpoint_profile = preset.endpoint_profile;
       else delete next.endpoint_profile;
     }
-    return next;
+    return applyDraftAffinity(next, draft, existing);
   }
 
   delete next.vendor_key;
@@ -331,9 +382,23 @@ export function modelDraftToEntry(
     next.model_provider = draft.protocol === 'anthropic' ? 'Anthropic' : 'OpenAI';
     delete next.endpoint_profile;
   }
-  return next;
+  return applyDraftAffinity(next, draft, existing);
 }
 
 export function displayModelProtocol(model: ModelEntry): ModelProtocol {
   return model.model_provider === 'Anthropic' ? 'anthropic' : 'openai';
+}
+
+function applyDraftAffinity(next: ModelEntry, draft: ModelDraft, existing: ModelEntry | undefined): ModelEntry {
+  const allowed = draft.vendor_selection === CUSTOM_VENDOR_SELECTION && draft.protocol === 'openai';
+  const enabled = allowed && draft.kv_cache_affinity;
+  const wasAffinity = existing?.extensions?.kv_cache?.mode === 'affinity' || existing?.model_provider === 'AscendAffinity';
+  if (enabled || wasAffinity) {
+    next.extensions = {
+      ...next.extensions,
+      kv_cache: { ...next.extensions?.kv_cache, mode: enabled ? 'affinity' : 'none' },
+    };
+  }
+  if (next.model_provider === 'AscendAffinity' && !enabled) next.model_provider = 'OpenAI';
+  return next;
 }

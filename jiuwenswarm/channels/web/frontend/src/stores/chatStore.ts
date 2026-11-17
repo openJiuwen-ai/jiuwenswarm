@@ -5,6 +5,7 @@
  * 组件通过 activeSessionId 读取当前会话的运行态。
  */
 
+import { foldEnterpriseStreamText } from '../features/enterpriseStreamText';
 import { create } from 'zustand';
 import { mergeUniqueMessages, toOwnerTeamMessage } from '../components/ChatPanel/teamEventUtils';
 import { subscribeWithSelector } from 'zustand/middleware';
@@ -424,6 +425,11 @@ interface ChatState {
   setInterruptResult: (sessionId: string, result: InterruptResultPayload | null) => void;
   markInterruptSettled: (sessionId: string) => void;
   clearInterruptSettled: (sessionId: string) => void;
+  /**
+   * 会话生命周期动作（归档/删除）已停掉本轮：后端不会补发终态线帧，
+   * 需要在前端显式收尾，否则恢复会话后会一直显示执行中。
+   */
+  settleLifecycleStoppedSession: (sessionId: string) => void;
   setSwitchingMode: (sessionId: string, switching: boolean) => void;
   setNewSession: (sessionId: string, isNew: boolean) => void;
   addToolCall: (
@@ -695,7 +701,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       if (!runtime || !runtime.currentStreamId) return state;
 
       const existingBuffer = runtime.streamBuffers.get(streamKey) || '';
-      const nextContent = existingBuffer + content;
+      const nextContent = foldEnterpriseStreamText(existingBuffer, content);
 
       return {
         runtimes: {
@@ -1391,6 +1397,38 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         },
       };
     });
+  },
+
+  settleLifecycleStoppedSession: (sessionId) => {
+    // Archive/delete cancel the live turn inside the runtime without emitting
+    // the usual terminal frames (chat.processing_status(false) / chat.final).
+    // Close the local turn here, otherwise reopening a restored Session in the
+    // same page keeps its spinner, stop button and open tool cards running
+    // forever (GitCode #6533).
+    if (!get().runtimes[sessionId]) return;
+    // Keep lagging metadata snapshots from relighting the settled turn; the
+    // next real processing_status(true) frame or a new user send clears it.
+    get().markInterruptSettled(sessionId);
+    get().setPaused(sessionId, false);
+    get().setOrganizationProcessing(sessionId, false);
+    get().setProcessing(sessionId, false);
+    get().setThinking(sessionId, false);
+    get().closeReasoning(sessionId);
+    get().stopStreaming(sessionId);
+    // Team-leader bubbles stream outside currentStreamId; stopStreaming does
+    // not close them, so close their cursors explicitly.
+    const messages = get().runtimes[sessionId]?.messages ?? [];
+    for (const message of messages) {
+      if (message.id.startsWith('team-leader-') && message.isStreaming) {
+        get().updateMessage(sessionId, message.id, { isStreaming: false });
+      }
+    }
+    get().clearPermissionQuestions(sessionId);
+    get().clearPendingQuestions(sessionId);
+    // The stopped turn will never deliver a tool_result. Settle its orphan
+    // tool calls now (isProcessing is already false) so they stop rendering as
+    // "执行中"; the next history reload would do the same.
+    get().settleHistoricalToolExecutions(sessionId);
   },
 
   setSwitchingMode: (sessionId, switching) => {

@@ -11,13 +11,15 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 import pytest_asyncio
-
-from jiuwenswarm.common.schema.message import Message, ReqMethod
 from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.channel_manager import ChannelManager
 from agent_gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import DingTalkChannel, DingTalkConfig
 from agent_gateway.message_handler.message_handler import MessageHandler
 from agent_gateway.routing.keys import ChannelKey
+from openjiuwen.harness import persistent_agent as core
+from agent_gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
+
+from jiuwenswarm.common.schema.message import Message, ReqMethod
 from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
 from jiuwenswarm.server.jiuwenmate.budget_repository import BudgetRepository
 from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
@@ -36,10 +38,8 @@ from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatReposit
 from jiuwenswarm.server.jiuwenmate.models import ConnectionRecord
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
 from jiuwenswarm.server.jiuwenmate.ports.workspace_access import WorkspaceStore
-from openjiuwen.harness import persistent_agent as core
 from tests.unit_tests.server.jiuwenmate.test_session_scheduler import FakeCore, FakeService, settle, stub_invocation_builder
 from tests.unit_tests.gateway.test_app_web_handlers import FakeWebChannel, FakeChannelManager
-from agent_gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
 
 NOW = datetime(2026, 10, 25, tzinfo=timezone.utc)
 DINGTALK_APP = {"client_id": "app-dingtalk", "client_secret": "fake-secret", "persistent_agent_id": "agent-dingtalk",
@@ -895,7 +895,7 @@ async def test_only_dingtalk_binding_starts_the_existing_im_runtime(monkeypatch)
 async def test_server_dispatches_dingtalk_without_personal_chat(monkeypatch):
     from jiuwenswarm.server import agent_ws_server as module
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-    from jiuwenswarm.common.e2a.models import E2AEnvelope
+    from e2a.models import E2AEnvelope
 
     inbound = SimpleNamespace(handle=AsyncMock(return_value=InboundDisposition.HANDLED))
     server = object.__new__(module.AgentWebSocketServer)

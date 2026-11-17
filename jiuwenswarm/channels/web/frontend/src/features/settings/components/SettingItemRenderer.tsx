@@ -1,6 +1,6 @@
 import { useCallback, useContext, useEffect, useId, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Input, Select, Switch } from '../../../components/ui';
+import { Button, Input, Select, Switch, toast } from '../../../components/ui';
 import { useAdaptiveTooltip } from '../../../hooks/useAdaptiveTooltip';
 import type { SettingItemDefinition } from '../registry/types';
 import { parseConfigBoolean } from '../services/settingsContract';
@@ -168,8 +168,11 @@ function SimpleSettingItem({
         checked={checked}
         disabled={controlDisabled || configuring || editingSubItems.size > 0 || unavailable}
         onChange={(next) => {
-          if (next && Configuration) setConfiguring(true);
-          else void source.save(buildSwitchUpdates(next), item.id).catch(() => undefined);
+          if (next && Configuration && (source.requiresConfiguration?.(item.key) ?? true)) setConfiguring(true);
+          else void source.save(
+            buildSwitchUpdates(next), item.id,
+            item.optimistic === undefined ? undefined : { optimistic: item.optimistic },
+          ).catch(() => undefined);
         }}
         data-testid="settings-switch"
         data-variant={item.id}
@@ -219,8 +222,12 @@ function SimpleSettingItem({
   }
 
   if (item.component === 'select') {
-    const selectedIndex = item.options.findIndex((option) => Object.is(option.value, source.values[item.key]));
-    const options = item.options.map((option, index) => ({ value: String(index), label: t(option.labelKey) }));
+    if (item.optionsFromSource && !source.optionsFor) throw new Error(`Settings source has no options for ${item.key}`);
+    const entries = item.optionsFromSource ? source.optionsFor!(item.key)
+      : item.options.map((option) => ({ ...option, label: t(option.labelKey) }));
+    const selectedIndex = entries.findIndex((option) => Object.is(option.value, source.values[item.key]));
+    const options = entries.map((option, index) => ({ value: String(index), label: option.label }));
+    if (item.configure) options.push({ value: 'configure', label: t('settingsPanel.models.addModel') });
     control = (
       <Select
         aria-label={title}
@@ -228,7 +235,11 @@ function SimpleSettingItem({
         disabled={controlDisabled}
         options={options}
         onChange={(index) => {
-          const option = item.options[Number(index)];
+          if (index === 'configure') {
+            setConfiguring(true);
+            return;
+          }
+          const option = entries[Number(index)];
           if (option) void source.save({ [item.key]: option.value }, item.id).catch(() => undefined);
         }}
         data-testid="settings-select"
@@ -240,13 +251,18 @@ function SimpleSettingItem({
   }
 
   return (
-    <SettingRow title={title} description={description}>
-      {control}
-    </SettingRow>
+    <>
+      <SettingRow title={title} description={description}>
+        {control}
+      </SettingRow>
+      {item.component === 'select' && configuring && item.configure ? (
+        <item.configure onClose={() => setConfiguring(false)} />
+      ) : null}
+    </>
   );
 }
 
-function InlineFeedbackSettingItem({
+function FeedbackSettingItem({
   item,
   disabled,
   onEditingChange,
@@ -262,9 +278,18 @@ function InlineFeedbackSettingItem({
   const subscribe = useCallback((listener: () => void) => saveQueue.subscribe(listener), [saveQueue]);
   const saveStatus = useSyncExternalStore(subscribe, saveQueue.getSnapshot, saveQueue.getSnapshot);
   useEffect(() => registerInlineFeedback(item.id), [item.id, registerInlineFeedback]);
-  const error = saveStatus.status === 'error' && saveStatus.operation === item.id
-    ? { id: errorId, message: formatSettingsSaveError(saveStatus.error, t) }
+  const message = saveStatus.status === 'error' && saveStatus.operation === item.id
+    ? formatSettingsSaveError(saveStatus.error, t)
     : undefined;
+  useEffect(() => {
+    if (item.errorDisplay !== 'toast' || !message) return undefined;
+    const key = toast.open({
+      id: `settings-save-error:${item.id}`, content: message, variant: 'error', wide: true,
+      testId: 'settings-item-error-toast', dataVariant: item.id,
+    });
+    return () => toast.close(key);
+  }, [item.errorDisplay, item.id, message]);
+  const error = item.errorDisplay === 'inline' && message ? { id: errorId, message } : undefined;
   return <SimpleSettingItem item={item} disabled={disabled} onEditingChange={onEditingChange} error={error} />;
 }
 
@@ -298,8 +323,8 @@ export function SettingItemRenderer({
     const CustomItem = item.render;
     return <CustomItem disabled={disabled} onEditingChange={reportCustomEditing} />;
   }
-  if (item.component === 'switch' && item.errorDisplay === 'inline') {
-    return <InlineFeedbackSettingItem item={item} disabled={disabled} onEditingChange={onEditingChange} />;
+  if (item.component === 'switch' && item.errorDisplay !== undefined) {
+    return <FeedbackSettingItem item={item} disabled={disabled} onEditingChange={onEditingChange} />;
   }
   return <SimpleSettingItem item={item} disabled={disabled} onEditingChange={onEditingChange} />;
 }

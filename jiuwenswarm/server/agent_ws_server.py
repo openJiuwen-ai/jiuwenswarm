@@ -9,7 +9,6 @@ import datetime as _dt
 import inspect
 import json
 import logging
-import math
 import os
 import shutil
 import sys
@@ -22,7 +21,6 @@ from weakref import WeakValueDictionary
 
 from openjiuwen.core.common.logging import server_logger
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
-
 from agent_gateway.common.mode_matrix import (
     deprecate_mode,
     is_plan_mode,
@@ -49,6 +47,18 @@ from agent_gateway.common.ws_diagnostics import (
     format_ws_diagnostics,
 )
 from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
+from e2a.constants import (
+    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
+    E2A_INTERNAL_CANCEL_SOURCE_KEY,
+    E2A_WIRE_INTERNAL_METADATA_KEYS,
+)
+from e2a.models import E2AEnvelope
+from e2a.wire_codec import (
+    encode_agent_chunk_for_wire,
+    encode_agent_response_for_wire,
+    encode_json_parse_error_wire,
+)
+
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_MODE_EXITED_EVENT_TYPE,
 )
@@ -92,21 +102,10 @@ from jiuwenswarm.common.config import (
 )
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.request_ext import lift_from_metadata, reset_ext
-from jiuwenswarm.common.e2a.constants import (
-    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
-    E2A_INTERNAL_CANCEL_SOURCE_KEY,
-    E2A_WIRE_INTERNAL_METADATA_KEYS,
-)
 from jiuwenswarm.common.e2a.gateway_normalize import (
     E2A_FALLBACK_FAILED_KEY,
     E2A_INTERNAL_CONTEXT_KEY,
     E2A_LEGACY_AGENT_REQUEST_KEY,
-)
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.e2a.wire_codec import (
-    encode_agent_chunk_for_wire,
-    encode_agent_response_for_wire,
-    encode_json_parse_error_wire,
 )
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.sqlite_config import workspace_sqlite_journal_mode
@@ -123,6 +122,7 @@ from jiuwenswarm.common.utils import (
     get_agent_root_dir,
     get_agent_sessions_dir,
     get_config_file,
+    get_domain_data_dir,
     get_user_workspace_dir,
     mask_sensitive,
 )
@@ -195,16 +195,15 @@ from jiuwenswarm.server.runtime.session.session_message_store import (
     SessionMessageRecord,
     SessionMessageStore,
 )
+from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
 from jiuwenswarm.server.runtime.session.session_history import (
     HistorySnapshotChanged,
     InvalidHistoryCursor,
     append_compact_history_records,
     append_history_record,
     enqueue_history_request_completion,
-    history_exists,
     is_valid_session_id,
     list_session_subagent_ids,
-    load_history_records,
     read_history_cursor_page,
     read_member_history_records,
     read_team_history_records,
@@ -226,6 +225,7 @@ from jiuwenswarm.server.runtime.agent_manager import (
 from jiuwenswarm.server.runtime.gateway_adapter import (
     AdapterRegistry,
     ConfigAdapter,
+    MultimodalConfigAdapter,
     DesignerAdapter,
     HarmonyOSAdapter,
     MemoryAdapter,
@@ -243,6 +243,7 @@ from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported for tests / handlers
     _HISTORY_PAGE_SIZE,
     _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES,
+    history_assistant_event_is_restorable,
     _HISTORY_WIRE_DEPTH_LIMIT,
     _HISTORY_WIRE_LIST_LIMIT,
     _HISTORY_WIRE_METADATA_STRING_LIMIT,
@@ -955,7 +956,7 @@ def _is_restorable_history_record(record: Any) -> bool:
     event_type = record.get("event_type")
     if not event_type:
         return has_content
-    return event_type in _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES
+    return history_assistant_event_is_restorable(record)
 
 
 def _todo_snapshot_session_fields(session_id: str) -> dict[str, str | None]:
@@ -1382,6 +1383,7 @@ class AgentWebSocketServer:
             DesignerAdapter(),
             HarmonyOSAdapter(),
             ConfigAdapter(on_config_saved=self._reload_after_config_save),
+            MultimodalConfigAdapter(on_config_saved=self._reload_after_config_save),
             self._jiuwenmate_web,
         ):
             self._adapter_registry.register(adapter)
@@ -1413,12 +1415,13 @@ class AgentWebSocketServer:
         self._jiuwenbox_runner = JiuwenBoxRunner.instance()
         # AgentServer 内唯一持有的进程内 PersonalContext Host；Context Rail 使用同一固定目录。
         self._personal_context_host = PersonalContextHostAPI(
-            home=get_user_workspace_dir() / ".personal_context",
+            home=get_domain_data_dir() / ".personal_context",
         )
         self._personal_context_start_task: asyncio.Task[None] | None = None
         self._sandbox_start_task: asyncio.Task[None] | None = None
         # checkpointer 后台预热任务 (start() 里 fire-and-forget, stop() 时 cancel)
         self._checkpointer_warmup_task: Optional[asyncio.Task] = None
+        self._team_session_reconcile_task: Optional[asyncio.Task] = None
         # MCP 连接缓存预热任务 (同上, 建 Runner.resource_mgr 供首轮对话命中)
         self._mcp_prewarm_task: Optional[asyncio.Task] = None
         # 图像模态探针重探任务 (模型配置变更时拉起, stop() 时 cancel)
@@ -1846,6 +1849,16 @@ class AgentWebSocketServer:
                 # Optional imports, downloads and recovery may start only after
                 # the required Runtime/Heartbeat initialization succeeded.
                 preparation.mark_minimum_ready()
+
+                from jiuwenswarm.enterprise.team.session_cleanup import (
+                    bind_startup_sweep,
+                    run_startup_sweep,
+                )
+
+                self._team_session_reconcile_task = asyncio.create_task(
+                    run_startup_sweep(), name="team-session-reconcile",
+                )
+                bind_startup_sweep(self._team_session_reconcile_task)
                 return
 
         self._checkpointer_warmup_task = asyncio.create_task(
@@ -2322,6 +2335,16 @@ class AgentWebSocketServer:
             await jiuwenmate_web.aclose()
         await self._heartbeat_runtime.stop()
         # 同理取消 MCP 连接缓存预热任务.
+        team_reconcile = self._team_session_reconcile_task
+        self._team_session_reconcile_task = None
+        if team_reconcile is not None and not team_reconcile.done():
+            team_reconcile.cancel()
+            try:
+                await team_reconcile
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[AgentWebSocketServer] team reconcile cancel failed: %s", exc)
         mcp_prewarm = self._mcp_prewarm_task
         self._mcp_prewarm_task = None
         if mcp_prewarm is not None and not mcp_prewarm.done():
@@ -2415,6 +2438,7 @@ class AgentWebSocketServer:
                     DesignerAdapter(),
                     HarmonyOSAdapter(),
                     ConfigAdapter(on_config_saved=self._reload_after_config_save),
+                    MultimodalConfigAdapter(on_config_saved=self._reload_after_config_save),
                     self._jiuwenmate_web,
                 ):
                     self._adapter_registry.register(adapter)
@@ -5614,7 +5638,9 @@ class AgentWebSocketServer:
                         error_value
                         if error_value is not None
                         else "Runtime execution failed"
-                    )
+                    ),
+                    **({"code": event.payload["code"]}
+                       if isinstance(event.payload, dict) and isinstance(event.payload.get("code"), str) else {}),
                 },
                 agent_ref=event.agent_ref,
                 metadata=event.metadata,
@@ -5623,6 +5649,7 @@ class AgentWebSocketServer:
                 message,
                 response_id=event.request_id,
             )
+            wire["session_id"] = event.session_id
         elif streaming:
             payload = dict(event.payload) if event.payload is not None else None
             if not event.ok:
@@ -7215,11 +7242,20 @@ class AgentWebSocketServer:
         session_id = params.get("session_id")
         page_idx = params.get("page_idx")
         subagent_id = params.get("subagent_id")
-        data = self.get_conversation_history(
-            session_id=session_id,
-            page_idx=page_idx,
-            subagent_id=subagent_id if isinstance(subagent_id, str) else None,
-        )
+        try:
+            data = await asyncio.to_thread(
+                self.get_conversation_history, session_id=session_id, page_idx=page_idx,
+                subagent_id=subagent_id if isinstance(subagent_id, str) else None,
+            )
+        except HistoryReplayError as exc:
+            resp = AgentResponse(
+                request_id=request.request_id, channel_id=request.channel_id, ok=False,
+                payload={"error": str(exc), "code": exc.code},
+            )
+            wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+            async with send_lock:
+                await send_wire_payload(ws, wire)
+            return
         if data is None:
             resp = AgentResponse(
                 request_id=request.request_id,
@@ -9117,11 +9153,13 @@ class AgentWebSocketServer:
                     page_idx=page_idx,
                     subagent_id=subagent_id if isinstance(subagent_id, str) else None,
                 )
-        except (InvalidHistoryCursor, HistorySnapshotChanged) as exc:
+        except (InvalidHistoryCursor, HistorySnapshotChanged, HistoryReplayError) as exc:
             error_code = (
-                "HISTORY_SNAPSHOT_CHANGED"
-                if isinstance(exc, HistorySnapshotChanged)
-                else "INVALID_HISTORY_CURSOR"
+                exc.code if isinstance(exc, HistoryReplayError) else (
+                    "HISTORY_SNAPSHOT_CHANGED"
+                    if isinstance(exc, HistorySnapshotChanged)
+                    else "INVALID_HISTORY_CURSOR"
+                )
             )
             error_chunk = AgentResponseChunk(
                 request_id=request.request_id,
@@ -13662,22 +13700,12 @@ class AgentWebSocketServer:
         async with send_lock:
             await send_wire_payload(ws, wire)
 
-    def _recommendation_active_request_ids(self) -> frozenset[str]:
-        runtime = self._execution_runtime()
-        pending = getattr(runtime, "_pending_chat_requests", None) or {}
-        return frozenset(
-            request_id
-            for bucket in pending.values()
-            for request_id in bucket
-        )
-
     def _recommendation_host_instance(self) -> Any:
         from jiuwenswarm.server.runtime.recommendation_host import RecommendationHost
 
         host = getattr(self, "_recommendation_host", None)
         if host is None:
             host = RecommendationHost()
-            host.bind_active_requests(self._recommendation_active_request_ids)
             host.bind_push(self._push_recommendation_event)
             self._recommendation_host = host
         return host
@@ -13877,72 +13905,9 @@ class AgentWebSocketServer:
         *,
         subagent_id: str | None = None,
     ) -> dict[str, Any] | None:
-        # 按照 session_id 和分页消息获取历史记录
-        if not isinstance(session_id, str) or not session_id.strip():
-            return None
-        if not isinstance(page_idx, int) or page_idx <= 0:
-            return None
+        from jiuwenswarm.server.control.history_service import load_history_page
 
-        normalized_session_id = session_id.strip()
-        normalized_subagent_id = (
-            subagent_id.strip() if isinstance(subagent_id, str) and subagent_id.strip() else None
-        )
-        if normalized_subagent_id:
-            if not history_exists(normalized_session_id, subagent_id=normalized_subagent_id):
-                return {
-                    "messages": [],
-                    "total_pages": 1,
-                    "page_idx": page_idx,
-                    "subagent_id": normalized_subagent_id,
-                }
-        elif not history_exists(normalized_session_id):
-            return None
-        try:
-            raw = load_history_records(
-                normalized_session_id,
-                subagent_id=normalized_subagent_id,
-            )
-        except Exception:
-            return None
-        if not isinstance(raw, list):
-            return None
-
-        page_size = _HISTORY_PAGE_SIZE
-        restorable = [
-            item for item in raw
-            if _is_restorable_history_record(item)
-        ]
-        total = len(restorable)
-        total_pages = max(1, math.ceil(total / page_size))
-        if page_idx > total_pages:
-            return None
-
-        ordered = list(reversed(restorable))
-        start = (page_idx - 1) * page_size
-        end = start + page_size
-        # 不在此处 sanitize：split_history_record_for_stream（在 _handle_history_get_stream
-        # 里调）需要拿到原文 content 才能正确切片；先 sanitize 会把 content 砍到 16KB，
-        # 切片器拿到的就只剩 16KB，分片就失去意义。
-        page_messages = list(ordered[start:end])
-        logger.debug(
-            "[history.get] session_id=%s subagent_id=%s page_idx=%s "
-            "raw_total=%s restorable_total=%s total_pages=%s returned=%s",
-            normalized_session_id,
-            normalized_subagent_id or "",
-            page_idx,
-            len(raw),
-            total,
-            total_pages,
-            len(page_messages),
-        )
-        result = {
-            "messages": page_messages,
-            "total_pages": total_pages,
-            "page_idx": page_idx,
-        }
-        if normalized_subagent_id:
-            result["subagent_id"] = normalized_subagent_id
-        return result
+        return load_history_page(session_id, page_idx, subagent_id=subagent_id)
 
     @staticmethod
     def get_conversation_history_cursor(
