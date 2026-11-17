@@ -569,6 +569,7 @@ export function ExternalCliAgentsSection({
         !!result && (result.status === 'missing' || result.status === 'unsupported');
       const probedPersistedChoice =
         (cliPath || '').trim() === (persistedValues[cliPathKey] ?? '').trim()
+        && (useBuiltin ?? false) === (persistedValues[useBuiltinKey] === 'true')
         && persistedValues[enabledKey] === 'true';
       if (confirmedMissing && probedPersistedChoice) {
         try {
