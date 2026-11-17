@@ -650,7 +650,10 @@ test('the detection hint distinguishes PATH lookup from executable validation', 
   // agent — 检测确认地址缺失时由手动检测的自动落闸把开关置回禁用，而不是
   // 冻结开关堵死关闭入口；刷新窗口（尚无探测结果）也不锁。
   assert.match(section, /disabled=\{disabled \|\| \(!installed && !enabled\) \|\| committing\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]\}/);
-  assert.match(section, /检测确认当前配置的可执行文件缺失/);
+  assert.match(section, /检测确认当前配置的可执行文件不存在/);
+  // 自动落闸只认 missing/unsupported（地址不存在/不可执行）；unavailable
+  // （可执行文件在、版本命令失败）不落闸，保留手动关闭的能力。
+  assert.match(section, /result\.status === 'missing' \|\| result\.status === 'unsupported'/);
   assert.match(section, /await commit\(cliAgent, \{\s+enabled: false,\s+useBuiltin: draftValues\[useBuiltinKey\] === 'true',/);
 });
 

@@ -552,23 +552,30 @@ export function ExternalCliAgentsSection({
         showHint(t('config.externalCli.detectSucceeded'));
         return;
       }
-      // 检测确认当前配置的可执行文件缺失/不可执行，而 agent 还处于启用态：
-      // 自动把开关落掉并持久化，让状态行"未安装"与开关一致（未安装 → 禁用，
-      // 重新启用需先安装或修正路径）。仅手动检测触发——自动探测不得静默
-      // 改写配置。
+      // 检测确认当前配置的可执行文件不存在（missing）或路径不可执行
+      // （unsupported），而 agent 还处于启用态：自动把开关落掉并持久化，让
+      // 状态行"未安装"与开关一致（未安装 → 禁用，重新启用需先安装或修正
+      // 路径）。仅手动检测触发——自动探测不得静默改写配置；unavailable
+      // （可执行文件在、版本命令失败）不落闸，保留手动关闭的能力。
       const enabledKey = externalCliKey(cliAgent, 'enabled');
       const useBuiltinKey = externalCliKey(cliAgent, 'use_builtin');
       const cliPathKey = externalCliKey(cliAgent, 'cli_path');
-      if (result && draftValues[enabledKey] === 'true') {
-        await commit(cliAgent, {
-          enabled: false,
-          useBuiltin: draftValues[useBuiltinKey] === 'true',
-          cliPath: draftValues[cliPathKey] ?? '',
-        });
-        showHint(t('config.externalCli.savedHint'));
+      const confirmedMissing =
+        !!result && (result.status === 'missing' || result.status === 'unsupported');
+      if (confirmedMissing && draftValues[enabledKey] === 'true') {
+        try {
+          await commit(cliAgent, {
+            enabled: false,
+            useBuiltin: draftValues[useBuiltinKey] === 'true',
+            cliPath: draftValues[cliPathKey] ?? '',
+          });
+          showHint(t('config.externalCli.savedHint'));
+        } catch (error) {
+          setAgentError(cliAgent, error instanceof Error ? error.message : String(error));
+        }
       }
     },
-    [commit, detect, draftValues, showHint, t],
+    [commit, detect, draftValues, setAgentError, showHint, t],
   );
 
   const clearDetectResult = useCallback(

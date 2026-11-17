@@ -1189,7 +1189,7 @@ def _restore_previous_external_cli_state(config_path: Path, state: dict[str, Any
         logger.warning(f"保留覆盖前的三方 agent 配置失败: {exc}")
 
 
-def external_cli_state_sidecar_path(workspace_dir: Optional[Path] = None) -> Path:
+def external_cli_state_sidecar_path(workspace_dir: Path) -> Path:
     """三方 agent 启用状态的旁路文件路径（位于 .jiuwenswarm 数据目录之外）。
 
     数据目录被整体删除（重装/重置）后 config.yaml 不复存在，启用态无处
@@ -1228,7 +1228,7 @@ def refresh_external_cli_state_sidecar(config_path: Path, workspace_dir: Optiona
         logger.warning(f"写入三方 agent 状态旁路文件失败: {exc}")
 
 
-def _read_external_cli_state_sidecar(workspace_dir: Optional[Path] = None) -> Optional[dict[str, Any]]:
+def _read_external_cli_state_sidecar(workspace_dir: Path) -> Optional[dict[str, Any]]:
     """读取状态旁路文件；缺失/解析失败/无启用 agent 时返回 None。"""
     try:
         sidecar = external_cli_state_sidecar_path(workspace_dir)
@@ -1280,19 +1280,16 @@ def prepare_workspace(
 
     config_initialized = overwrite or not config_yaml_dest.exists()
     if config_initialized:
-        # init/重新部署用模板覆盖 config.yaml 时，保留用户已启用的三方 agent
-        # 配置与路径历史：托管安装的 CLI 运行时（runtime/external-cli/...）
-        # 并不随 init 删除，配置若一并清空，已安装的 agent 会在 UI 上回到
-        # "已关闭"，与磁盘上仍然存在的安装状态不一致。
-        # 旧 config 存在但没有任何启用中的 agent（用户主动全部禁用过）时，
-        # 空列表就是用户的真实意图，不能落到旁路恢复把禁用状态又翻回来。
-        # 强制重置（init -f / overwrite）例外：重置语义完整生效——跳过恢复
-        # 并清除旁路文件，否则"重置"名存实亡，且被恢复的 cli_path 指向已
-        # 删除的安装。
-        config_existed = config_yaml_dest.exists()
-        preserved_external_cli = (
-            _read_previous_external_cli_state(config_yaml_dest)
-            if config_existed and not overwrite
+        # init/重新部署用模板覆盖 config.yaml——三方 agent 的启用配置不取自被
+        # 覆盖的旧文件，而是从数据目录之外的状态旁路恢复（旁路在每次保存/清理
+        # 时镜像，见 dump_yaml_round_trip 的挂接点）。强制重置（init -f /
+        # overwrite）例外：重置语义完整生效——跳过恢复并清除旁路文件，否则
+        # "重置"名存实亡，且被恢复的 cli_path 指向已删除的安装。
+        if overwrite:
+            external_cli_state_sidecar_path(workspace_dir).unlink(missing_ok=True)
+        pre_restore_state = (
+            _read_external_cli_state_sidecar(workspace_dir)
+            if not overwrite and not config_yaml_dest.exists()
             else None
         )
         with TrackCopyDiff(
@@ -1302,17 +1299,8 @@ def prepare_workspace(
             overwrite=overwrite,
         ):
             shutil.copy2(config_yaml_src, config_yaml_dest)
-        if overwrite:
-            # 强制重置：跳过恢复并清除旁路文件
-            external_cli_state_sidecar_path(workspace_dir).unlink(missing_ok=True)
-        elif preserved_external_cli is not None:
-            _restore_previous_external_cli_state(config_yaml_dest, preserved_external_cli)
-        elif not config_existed:
-            # 非强制 init 且数据目录全新（首次部署/恢复场景）：旧 config 已不
-            # 存在，从数据目录之外的状态旁路恢复三方 agent 的启用配置。
-            sidecar_state = _read_external_cli_state_sidecar(workspace_dir)
-            if sidecar_state is not None:
-                _restore_previous_external_cli_state(config_yaml_dest, sidecar_state)
+        if pre_restore_state is not None:
+            _restore_previous_external_cli_state(config_yaml_dest, pre_restore_state)
 
     resolved_lang = _resolve_preferred_language(config_yaml_dest, preferred_language)
 
