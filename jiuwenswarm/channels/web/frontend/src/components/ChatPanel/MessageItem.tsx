@@ -1377,7 +1377,9 @@ export function FileDownloadList({
     let cancelled = false;
     files.forEach((file, index) => {
       if (!file.download_url) return;
-      const head = needsGatewayResource(file.download_url)
+      const gatewayResource = needsGatewayResource(file.download_url);
+      const enterpriseDownload = !gatewayResource && isEnterprise();
+      const head = gatewayResource
         ? gatewayFetch(file.download_url, { method: 'HEAD' })
         : fileDownloadHead(file.download_url);
       head
@@ -1385,14 +1387,14 @@ export function FileDownloadList({
           if (!cancelled) {
             setExpiredSet((prev) => {
               const next = new Set(prev);
-              if (res.ok && isEnterprise()) next.delete(index);
-              else if (!res.ok && (!isEnterprise() || [403, 404, 410].includes(res.status))) next.add(index);
+              if (res.ok && enterpriseDownload) next.delete(index);
+              else if (!res.ok && (!enterpriseDownload || [403, 404, 410].includes(res.status))) next.add(index);
               return next;
             });
           }
         })
         .catch(() => {
-          if (!cancelled && !isEnterprise()) {
+          if (!cancelled && !enterpriseDownload) {
             setExpiredSet((prev) => new Set(prev).add(index));
           }
         });
