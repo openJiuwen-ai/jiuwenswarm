@@ -115,6 +115,7 @@ class PromptRenderContext:
     subagent_types: frozenset[str] = frozenset()
     skill_catalog: str | None = None
     persona_override: str | None = None
+    safety_content: str | None = None
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @property
@@ -155,18 +156,23 @@ def _tool_enabled(tool: str) -> Callable[[PromptRenderContext], bool]:
 
 # ── 各域 render（与 flash 转换 rail / offline 组装同构，输出逐字节一致）──────────────
 def _render_safety(ctx: PromptRenderContext) -> tuple[PromptSection, ...]:
-    src = build_safety_section(ctx.lang)
-    if src is None:
-        raise AssertionError(
-            "build_safety_section returned None — upstream safety source missing"
-        )
-    content = _section_text(src, ctx.lang)
+    # 运行时接管：基于当前 builder 上的 safety 段正文转换（保留上游/租户追加的自定义规则，
+    # 见 FlashAgent设计/PR1/评审意见.md #6）；离线 reconcile 无 builder，回退 SDK 标准模板。
+    if ctx.safety_content is not None:
+        content = ctx.safety_content
+    else:
+        src = build_safety_section(ctx.lang)
+        if src is None:
+            raise AssertionError(
+                "build_safety_section returned None — upstream safety source missing"
+            )
+        content = _section_text(src, ctx.lang)
     anchors = _ANCHORS_CN if ctx.is_cn else _ANCHORS_EN
     result = _transform_safety(content, anchors)
     if result is None:
         raise AssertionError(
-            "safety transform guard hit on real Deep source — upstream safety content "
-            "drifted; flash split/rewrite anchors no longer match"
+            "safety transform guard hit — current safety content drifted or carries "
+            "unrecognized extensions; flash split/rewrite anchors no longer match"
         )
     return tuple(
         PromptSection(name=name, content={ctx.lang: text}, priority=priority)

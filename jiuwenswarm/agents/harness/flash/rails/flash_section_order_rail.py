@@ -50,19 +50,6 @@ _EXEMPT_HEADERS: dict[str, dict[str, str]] = {
     "request_system_prompt": {"cn": "会话策略包", "en": "Session Policy Pack"},
 }
 
-# 图片理解引导并入工具执行路由：MultimodalImageRail 的非原生模型策略段
-# （multimodal_image_policy，纯文本无标题）并入 340 tool_result，作为「图片理解路由」子块。
-_IMAGE_POLICY_SECTION = "multimodal_image_policy"
-_IMAGE_ROUTER_SECTION = "tool_result"
-_IMAGE_ROUTER_HEADINGS: dict[str, str] = {
-    "cn": "## 图片理解路由",
-    "en": "## Image Understanding Routing",
-}
-_IMAGE_ROUTER_MARKERS: dict[str, str] = {
-    "cn": "图片理解路由",
-    "en": "Image Understanding Routing",
-}
-
 # 域 → 域头标题（双语）。键与 sections.FLASH_SECTION_BANDS 一致。
 _DOMAIN_HEADERS: dict[str, dict[str, str]] = {
     "identity": {"cn": "身份与总则", "en": "Identity & General Rules"},
@@ -183,7 +170,9 @@ class FlashSectionOrderRail(DeepAgentRail):
             return
         self._rehome(builder)
         self._strip(builder)
-        self._merge_image_router(builder)
+        # 图片理解引导不再并入静态 tool_result：MultimodalImageRail 每轮按实际发送的
+        # 像素更新 multimodal_image_policy，若并入静态 340 会把「无图→有图」误判为
+        # 静态漂移（评审 #3）；保留为独立动态段（carrier=attachment，不进静态 hash）。
         self._normalize_hierarchy(builder)
 
     def _rehome(self, builder: Any) -> None:
@@ -210,8 +199,16 @@ class FlashSectionOrderRail(DeepAgentRail):
             logger.debug("[FlashSectionOrderRail] rehome %s -> %s", name, priority)
 
     def _strip(self, builder: Any) -> None:
-        """按名剥除被新段取代的冗余段（存在才剥）。"""
+        """按名剥除被新段取代的冗余段（存在才剥）。
+
+        ``workspace`` 例外：其正文含实际根路径，仅在替代段（200 目录模型 + 1010
+        路径事实）已承载该路径后才剥——Persona 关闭或运行时未注入 trusted/tui
+        路径事实时保留 workspace 兜底，避免根路径静默丢失（评审 #4）。
+        """
         for name in _REMOVE:
+            if name == "workspace" and not self._workspace_replaced(builder):
+                logger.debug("[FlashSectionOrderRail] keep workspace: 替代段未承载根路径")
+                continue
             if self._get_section(builder, name) is None:
                 continue
             builder.remove_section(name)
@@ -225,51 +222,15 @@ class FlashSectionOrderRail(DeepAgentRail):
             builder.remove_section("skill_protocol")
             logger.debug("[FlashSectionOrderRail] remove redundant skill_protocol")
 
-    # ── 图片理解路由并入（工具执行指导）──────────────────────────────
-    def _merge_image_router(self, builder: Any) -> None:
-        """把 ``multimodal_image_policy`` 段原样并入 340 ``tool_result`` 的「图片理解路由」子块。
-
-        - 文案原样搬运（不改旧行为）；用 ``##`` 标题，经重锚后变 ``### 图片理解路由``；
-        - 守卫：``tool_result`` 缺失 → 保留游离段（不丢内容）；
-        - 幂等：目标已含「图片理解路由」标记则不重复追加（tool_result 跨轮驻留时）。
-        """
-        image_section = self._get_section(builder, _IMAGE_POLICY_SECTION)
-        if image_section is None:
-            return
-        target = self._get_section(builder, _IMAGE_ROUTER_SECTION)
-        if target is None:
-            return  # 兜底：目标段缺失，保留游离段
-        image_content = getattr(image_section, "content", None)
-        target_content = getattr(target, "content", None)
-        if not isinstance(image_content, dict) or not isinstance(target_content, dict):
-            return
-
-        merged: dict[str, str] = dict(target_content)
-        changed = False
-        covered = 0
-        for lang, text in image_content.items():
-            base = merged.get(lang)
-            if not isinstance(text, str) or not text.strip() or not isinstance(base, str):
-                continue  # 目标无该语言（非渲染语言）→ 忽略
-            covered += 1
-            is_cn = lang in ("cn", "zh")
-            marker = _IMAGE_ROUTER_MARKERS["cn" if is_cn else "en"]
-            if marker in base:  # 已并入（幂等），无需重复追加
-                continue
-            heading = _IMAGE_ROUTER_HEADINGS["cn" if is_cn else "en"]
-            merged[lang] = base.rstrip() + f"\n\n{heading}\n\n{text.strip()}"
-            changed = True
-        if covered == 0:
-            return  # 目标无任何对应语言，保守保留游离段（不丢内容）
-        # 目标已覆盖图片段的渲染语言 → 删除游离段（无论本轮是否新追加）。
-        builder.remove_section(_IMAGE_POLICY_SECTION)
-        if changed:
-            builder.add_section(PromptSection(
-                name=target.name,
-                content=merged,
-                priority=target.priority,
-            ))
-        logger.debug("[FlashSectionOrderRail] merge %s -> %s", _IMAGE_POLICY_SECTION, _IMAGE_ROUTER_SECTION)
+    @staticmethod
+    def _workspace_replaced(builder: Any) -> bool:
+        """workspace 的根路径是否已被替代段承载（200 目录模型 + 1010 路径事实）。"""
+        has_model = FlashSectionOrderRail._get_section(builder, "workspace_model") is not None
+        has_path = (
+            FlashSectionOrderRail._get_section(builder, "trusted_dirs_policy") is not None
+            or FlashSectionOrderRail._get_section(builder, "tui_current_project_policy") is not None
+        )
+        return has_model and has_path
 
     # ── 标题层级重整 ──────────────────────────────────────────────
     def _normalize_hierarchy(self, builder: Any) -> None:

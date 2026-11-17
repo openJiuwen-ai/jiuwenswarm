@@ -277,6 +277,10 @@ def _build_env_residual_entity(block: str, language: str) -> str:
 
     丢弃与 env@1000 重复的平台/Shell/命令差异表。两个锚点都缺失时**原样返回 block**
     （兜底不丢内容，只会在极端改文案时出现重复）。用一次性的确定性裁剪，无跨轮状态。
+
+    注意：库清单必须保留在此（1001 是库清单的新家），env 的去重逻辑
+    ``runtime_prompt_rail._prompt_has_library_list`` 会同时识别 identity 与本段，
+    避免第二轮重复注入。
     """
     if not block:
         return block

@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from openjiuwen.core.runner.callback.errors import AbortError
 from openjiuwen.harness.rails.base import DeepAgentRail
 
 from jiuwenswarm.agents.harness.flash.prompt.snapshot import (
@@ -111,8 +112,13 @@ class AuditReport:
         return " | ".join(parts)
 
 
-class AuditViolation(RuntimeError):
-    """CI 期 fail_closed 时抛出的硬违规。"""
+class AuditViolation(AbortError):
+    """CI 期 fail_closed 时抛出的硬违规。
+
+    必须继承 :class:`AbortError` 而非 ``RuntimeError``：普通回调异常会被 agent-core
+    的 callback manager 记录后继续执行，导致 ``fail_closed`` 形同虚设；``AbortError``
+    才会中断回调执行并从 ``trigger()`` 边界传播出去。
+    """
 
 
 class FlashPromptAuditRail(DeepAgentRail):
@@ -191,7 +197,6 @@ class FlashPromptAuditRail(DeepAgentRail):
         self._check_unregistered_priorities(sections, report)
         self._check_ghost_tools(sections, report)
         report.static_hash = self._static_hash(sections)
-        report.prefix_hash, report.prefix_chars = self._prefix_metric(sections)
         snapshot = self.build_snapshot(sections)
         if snapshot is not None:
             report.snapshot_full_hash = snapshot.full_hash
@@ -200,6 +205,13 @@ class FlashPromptAuditRail(DeepAgentRail):
             report.snapshot_prefix_chars = snapshot.prefix_chars
             report.section_hashes = list(snapshot.section_hashes)
             report.band_hashes = snapshot.band_hashes
+            # 前缀度量与 SDK 渲染对齐（当前语言 + 双换行 + 过滤空段），直接复用
+            # snapshot 结果；覆盖旧 _prefix_metric 口径（首个非空语言 + 单换行），
+            # 否则日志里的 prefix_chars/hash 与模型实际收到的文本不符。
+            report.prefix_hash = snapshot.prefix_hash
+            report.prefix_chars = snapshot.prefix_chars
+        else:
+            report.prefix_hash, report.prefix_chars = self._prefix_metric(sections)
         report.static_hash_drift = (
             self._static_hash_seed is not None
             and report.static_hash != self._static_hash_seed

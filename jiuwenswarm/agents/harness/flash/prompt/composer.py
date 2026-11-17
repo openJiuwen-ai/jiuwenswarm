@@ -140,14 +140,22 @@ class FlashPromptComposerRail(DeepAgentRail):
             self._verify_declarative(builder)
 
     def _build_render_context(self, builder: Any) -> PromptRenderContext:
-        """为声明式 render 构建渲染上下文（语言 + 工具面）。
+        """为声明式 render 构建渲染上下文（语言 + 工具面 + 当前 safety 正文）。
 
         被接管域（safety/response/tools）均无工具门控，``enabled_tools`` 置空；
         todo/subagent/memory 虽有门控但归各自独立 rail，不在此接管。
+        ``safety_content`` 传 builder 上当前 safety 段正文，让声明式接管「基于当前
+        内容转换」而非从 SDK 模板重生成——否则上游/租户追加的安全规则会被静默丢弃
+        （见 FlashAgent设计/PR1/评审意见.md #6）。
         """
+        section = self._get_section(builder, "safety")
+        safety_content = (
+            self._extract_content(section, builder) if section is not None else None
+        )
         return PromptRenderContext(
             lang=self._resolve_language(builder),
             enabled_tools=frozenset(),
+            safety_content=safety_content,
         )
 
     def _apply_declarative(self, builder: Any) -> None:

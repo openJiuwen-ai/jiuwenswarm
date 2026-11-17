@@ -313,6 +313,29 @@ class TestFailClosed:
         rail = _make_rail(agent, fail_closed=True)
         await rail.before_model_call(SimpleNamespace())  # 不应抛
 
+    @pytest.mark.asyncio
+    async def test_fail_closed_abort_propagates_from_callback_manager(self) -> None:
+        """从回调管理器入口验证：AbortError 从 trigger() 传播、不被记录后继续（评审 #7）。"""
+        from uuid import uuid4
+
+        from openjiuwen.core.single_agent.agent_callback_manager import AgentCallbackManager
+        from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, AgentCallbackEvent
+
+        # {name} 不在已知安全占位符内 → 未渲染变量，属硬违规。
+        agent = _FakeAgent(_CLEAN + [_sec("未渲染测试段", 110, "你好 {name}。")])
+        rail = FlashPromptAuditRail(fail_closed=True)
+        rail.init(agent)
+
+        callbacks = AgentCallbackManager("flash-audit-test-" + uuid4().hex)
+        try:
+            await callbacks.register_rail(rail, agent)
+            ctx = AgentCallbackContext(agent=agent)
+            with pytest.raises(AuditViolation):
+                await callbacks.execute(AgentCallbackEvent.BEFORE_MODEL_CALL, ctx)
+        finally:
+            # 全局回调框架是单例：用后清理，避免泄漏到其它用例。
+            await callbacks.clear()
+
 
 class TestRegistryConsistency:
     def test_registry_numbers_unique(self) -> None:

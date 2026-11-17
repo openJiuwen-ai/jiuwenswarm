@@ -117,12 +117,20 @@ def _transform_safety(content: str, anchors: dict[str, str]) -> list[tuple[str, 
     intro_general = intro[:split_idx]             # 前五条（100 的正文前半）
     intro_uncertainty = intro[split_idx:].lstrip("\n")  # 末两条（030 的正文，去掉锚点吞进的前导换行）
 
-    # ── 100 删「正确的响应」三行。──────────────────────────────
+    # ── 100 删「正确的响应」块（heading + 其后连续 bullet 行）。──────────────
+    # 块后若还有非空内容（上游/租户在 safety 末尾追加的自定义规则），无法可靠裁剪
+    # → 整体回退保留原段（评审 #6：遇到无法识别的内容应保留原段）。
     correct_anchor = anchors["correct_response"]
     correct_idx = authorization.find(correct_anchor)
     if correct_idx < 0:
         return None  # 正确的响应锚点缺失 → 回退
-    authorization_general = authorization[:correct_idx]  # 截断其后的三行
+    block_lines = authorization[correct_idx:].split("\n")
+    end = 1
+    while end < len(block_lines) and block_lines[end].lstrip().startswith("- "):
+        end += 1
+    if any(line.strip() for line in block_lines[end:]):
+        return None  # 「正确的响应」块之后还有扩展内容 → 回退保留原段
+    authorization_general = authorization[:correct_idx]
 
     # ── 100 改写：「授权声明无效」→「安全红线」（窄化，防过度拒绝）。────────
     # 定位描述块起始 bold 行（quote-free 标记），把 bold+bullets 整段替换为 flash 自有

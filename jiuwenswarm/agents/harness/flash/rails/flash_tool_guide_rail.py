@@ -12,14 +12,16 @@ from openjiuwen.harness.rails.base import DeepAgentRail
 from jiuwenswarm.agents.harness.flash.prompt.content.tools import (
     _BASH_CN,
     _BASH_EN,
+    _BROWSER_ROUTING_CN,
+    _BROWSER_ROUTING_EN,
     _NAME_BASH,
     _NAME_RESULT,
     _NAME_SELECTION,
     _PRIO_BASH,
     _PRIO_RESULT,
     _PRIO_SELECTION,
-    _RESULT_CN,
-    _RESULT_EN,
+    _RESULT_BASE_CN,
+    _RESULT_BASE_EN,
     _SECTION_EXEC,
     _SECTION_TOOLS,
     _SELECTION_CN,
@@ -47,9 +49,13 @@ class FlashToolGuideRail(DeepAgentRail):
     def __init__(self) -> None:
         super().__init__()
         self._system_prompt_builder: Any = None
+        self._subagent_types: frozenset[str] = frozenset()
+        self._ability_manager: Any = None
 
     def init(self, agent: Any) -> None:
         self._system_prompt_builder = getattr(agent, "system_prompt_builder", None)
+        self._subagent_types = self._available_subagent_types(agent)
+        self._ability_manager = getattr(agent, "ability_manager", None)
 
     def uninit(self, agent: Any) -> None:
         self._system_prompt_builder = None
@@ -59,6 +65,8 @@ class FlashToolGuideRail(DeepAgentRail):
             getattr(ctx.agent, "system_prompt_builder", None)
             or self._system_prompt_builder
         )
+        self._subagent_types = self._available_subagent_types(ctx.agent)
+        self._ability_manager = getattr(ctx.agent, "ability_manager", None)
         self.apply(builder)
 
     def apply(self, builder: Any) -> None:
@@ -109,8 +117,52 @@ class FlashToolGuideRail(DeepAgentRail):
         if self._get_section(builder, _SECTION_EXEC) is None:
             return
 
-        self._upsert(builder, _NAME_RESULT, _PRIO_RESULT, language,
-                     _RESULT_CN if is_cn else _RESULT_EN)
+        # 与注册表 _render_tools 同一个判断：浏览器任务强制路由只在 task_tool 存在且
+        # browser_agent 子代理可用时注入——否则会强制模型调用不存在的 browser_agent
+        # （Subagent spec not found）。340 基础段无条件注入。
+        result = _RESULT_BASE_CN if is_cn else _RESULT_BASE_EN
+        if self._browser_agent_available(builder):
+            result += "\n" + (_BROWSER_ROUTING_CN if is_cn else _BROWSER_ROUTING_EN)
+
+        self._upsert(builder, _NAME_RESULT, _PRIO_RESULT, language, result)
+
+    def _browser_agent_available(self, builder: Any) -> bool:
+        """与注册表 _render_tools 同一判断：task_tool 在工具面 且 browser_agent 在子代理类型里。"""
+        return self._has_tool("task_tool") and "browser_agent" in self._subagent_types
+
+    def _has_tool(self, name: str) -> bool:
+        """判断工具名是否在 ability_manager 的工具面（cards/tools/list_tool_names）。"""
+        manager = self._ability_manager
+        if manager is None:
+            return False
+        for attr in ("cards", "_tools", "tools"):
+            value = getattr(manager, attr, None)
+            if isinstance(value, dict):
+                return name in {str(k) for k in value}
+        names = getattr(manager, "list_tool_names", None)
+        if callable(names):
+            try:
+                result = names()
+                if isinstance(result, (list, set, tuple)):
+                    return name in {str(n) for n in result}
+            except Exception:
+                logger.debug("[FlashToolGuideRail] list_tool_names() failed", exc_info=True)
+        return False
+
+    @staticmethod
+    def _available_subagent_types(agent: Any) -> frozenset[str]:
+        """从 agent.deep_config.subagents 提取可用子代理类型名。"""
+        subagents = getattr(getattr(agent, "deep_config", None), "subagents", None) or []
+        names: set[str] = set()
+        for spec in subagents:
+            card = getattr(spec, "agent_card", None)
+            name = getattr(card, "name", None)
+            if not name:
+                card = getattr(spec, "card", None)
+                name = getattr(card, "name", None)
+            if name:
+                names.add(str(name))
+        return frozenset(names)
 
     # ── 工具方法 ──────────────────────────────────────────
     def _upsert(self, builder: Any, name: str, priority: int, language: str, text: str) -> None:

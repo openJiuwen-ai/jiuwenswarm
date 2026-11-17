@@ -78,11 +78,28 @@ class TestRehome:
 
 class TestStrip:
     def test_workspace_and_stale_protocol_removed(self) -> None:
-        b = _legacy_session()
+        # workspace 仅在替代段（200 目录模型 + 1010 路径事实）承载根路径后才剥。
+        b = _builder(
+            _sec("workspace", 70, text="# 工作空间\n工作目录路径"),
+            _sec("workspace_model", 200),
+            _sec("trusted_dirs_policy", 90),
+            _sec("skill_protocol", 45),
+            _sec("skill_execution_rules", 730),
+        )
         FlashSectionOrderRail()._strip(b)
         assert b.get_section("workspace") is None
         assert b.get_section("skill_protocol") is None
         assert b.get_section("skill_execution_rules") is not None
+
+    def test_workspace_kept_when_replacement_missing(self) -> None:
+        # 关闭 Persona（无 workspace_model@200）时保留 workspace，避免实际根路径丢失。
+        b = _builder(
+            _sec("workspace", 70, text="# 工作空间\n工作目录路径"),
+            _sec("trusted_dirs_policy", 90),
+            _sec("skill_protocol", 45),
+        )
+        FlashSectionOrderRail()._strip(b)
+        assert b.get_section("workspace") is not None
 
     def test_protocol_kept_when_domain_not_taken_over(self) -> None:
         b = _builder(_sec("skill_protocol", 45, "protocol body"), _sec("env", 89))
@@ -172,49 +189,7 @@ class TestHierarchyNormalize:
         assert _EXEMPT == frozenset({"request_system_prompt"})
 
 
-class TestImageRouterMerge:
-    _IMG = "本次请求可能包含用户上传的图片。当前模型不支持原生图片理解；如需理解图片内容，请调用 visual_question_answering 或 image_reading 工具。"
-    _RESULT = "# 工具结果与专用路由\n\n- 以工具返回为准\n\n## 浏览器任务强制路由\n- 浏览器任务走 browser"
+# 图片理解引导不再并入静态 tool_result（评审 #3）：MultimodalImageRail 每轮按实际发送
+# 像素更新 multimodal_image_policy，并入静态 340 会把「无图→有图」误判为静态漂移；
+# 现保留为独立动态段（carrier=attachment，不进静态 hash）。
 
-    def test_merges_into_tool_result_and_removes_standalone(self) -> None:
-        b = _builder(
-            _sec("tool_result", 340, self._RESULT),
-            _sec("multimodal_image_policy", 96, self._IMG),
-        )
-        FlashSectionOrderRail()._merge_image_router(b)
-        assert b.get_section("multimodal_image_policy") is None
-        text = b.get_section("tool_result").content["cn"]
-        assert "## 图片理解路由" in text
-        assert self._IMG in text
-
-    def test_full_apply_rebinds_router_to_h3(self) -> None:
-        b = _builder(
-            _sec("tool_result", 340, self._RESULT),
-            _sec("multimodal_image_policy", 96, self._IMG),
-        )
-        FlashSectionOrderRail().apply(b)
-        assert b.get_section("multimodal_image_policy") is None
-        text = b.get_section("tool_result").content["cn"]
-        # 340 段顶 H1→H2，图片路由 ##→###
-        assert "## 工具结果与专用路由" in text
-        assert "### 图片理解路由" in text
-        assert "### 浏览器任务强制路由" in text
-
-    def test_guard_keeps_standalone_when_target_missing(self) -> None:
-        b = _builder(_sec("multimodal_image_policy", 96, self._IMG))
-        FlashSectionOrderRail()._merge_image_router(b)
-        assert b.get_section("multimodal_image_policy") is not None
-
-    def test_idempotent_when_already_merged(self) -> None:
-        b = _builder(
-            _sec("tool_result", 340, self._RESULT),
-            _sec("multimodal_image_policy", 96, self._IMG),
-        )
-        rail = FlashSectionOrderRail()
-        rail._merge_image_router(b)
-        once = b.get_section("tool_result").content["cn"]
-        # 再放入一个图片段重放（模拟跨轮）：目标已含标记 → 不重复追加，且新游离段被删除。
-        b.add_section(_sec("multimodal_image_policy", 96, self._IMG))
-        rail._merge_image_router(b)
-        assert b.get_section("tool_result").content["cn"] == once
-        assert b.get_section("multimodal_image_policy") is None
