@@ -421,9 +421,13 @@ async def test_recovery_releases_direct_reply_without_reading_files_on_loop(case
     gs.add_group_organization_plan(case.sid, dict(
         plan_id='next', organization_id='next-org', status='running',
         members=['owner'], created_at=boot._now_ms() if live else 1,
+        run_owner={'pid': 111, 'started_at': 1},
     ))
     original = gs.read_group
     loop_thread = threading.get_ident()
+    owner = {'pid': 111, 'started_at': 1}
+    monkeypatch.setattr(recovery.lifecycle, 'current_runtime_owner', lambda: owner)
+    monkeypatch.setattr(recovery.lifecycle, 'runtime_owner_alive', lambda value: value == owner)
 
     def read(group_id):
         assert threading.get_ident() != loop_thread
@@ -462,3 +466,66 @@ async def test_recovery_notification_reads_group_outside_business_loop(case, mon
     await _original_publish(case.store, record, 'updated')
     assert reads == [case.sid]
     push.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('protection', ['other_alive', 'owner_unknown', 'member', 'missing_owner', 'changed'])
+async def test_recovery_never_expires_a_possibly_live_plan(case, monkeypatch, protection):
+    owner = {'pid': 111, 'started_at': 1}
+    own = {'pid': 222, 'started_at': 1}
+    gs.add_group_organization_plan(case.sid, dict(
+        plan_id='next', organization_id='next-org', status='running',
+        members=['owner'], created_at=1, run_owner=None if protection == 'missing_owner' else owner,
+    ))
+    job = {'member': 'owner', 'started': False}
+    monkeypatch.setattr(boot, '_deferred_direct', {(case.sid, 'direct'): job})
+    schedule = Mock()
+    monkeypatch.setattr(boot, '_schedule_direct_member', schedule)
+    monkeypatch.setattr(recovery.lifecycle, 'current_runtime_owner', lambda: own)
+    member = None
+    if protection == 'other_alive':
+        monkeypatch.setattr(recovery.lifecycle, 'runtime_owner_alive', lambda value: value == owner)
+    elif protection == 'owner_unknown':
+        def check(value):
+            if value == owner:
+                raise RuntimeError('owner unavailable')
+            return False
+        monkeypatch.setattr(recovery.lifecycle, 'runtime_owner_alive', check)
+    elif protection == 'member':
+        member = asyncio.get_running_loop().create_future()
+        boot._member_runs[(case.sid, 'next', 'owner')] = member
+    elif protection == 'changed':
+        original = boot.organization_plan_record
+        def changed(session_id, plan_id):
+            plan = original(session_id, plan_id)
+            if plan_id == 'next':
+                return {**plan, 'run_owner': own}
+            return plan
+        monkeypatch.setattr(boot, 'organization_plan_record', changed)
+    try:
+        await recovery.reconcile_group(case.sid)
+        assert gs.group_organization_plans(case.sid)[1]['status'] == 'running'
+        assert not job['started']
+        schedule.assert_not_called()
+    finally:
+        if member is not None:
+            boot._member_runs.pop((case.sid, 'next', 'owner'), None)
+            member.cancel()
+
+
+@pytest.mark.asyncio
+async def test_stale_plan_owned_by_this_worker_can_expire(case, monkeypatch):
+    owner = {'pid': 111, 'started_at': 1}
+    gs.add_group_organization_plan(case.sid, dict(
+        plan_id='next', organization_id='next-org', status='running',
+        members=['owner'], created_at=1, run_owner=owner,
+    ))
+    job = {'member': 'owner', 'started': False}
+    monkeypatch.setattr(boot, '_deferred_direct', {(case.sid, 'direct'): job})
+    schedule = Mock()
+    monkeypatch.setattr(boot, '_schedule_direct_member', schedule)
+    monkeypatch.setattr(recovery.lifecycle, 'current_runtime_owner', lambda: owner)
+    monkeypatch.setattr(recovery.lifecycle, 'runtime_owner_alive', lambda value: value == owner)
+    await recovery.reconcile_group(case.sid)
+    assert boot._plan_record(case.sid, 'next')['status'] == 'expired'
+    schedule.assert_called_once_with(case.sid, job)
