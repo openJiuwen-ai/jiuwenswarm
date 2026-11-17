@@ -26,6 +26,7 @@ from jiuwenswarm.common.config import (
     get_sandbox_startup_mode,
 )
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
+from jiuwenswarm.common.projectless_workspace import get_projectless_tasks_dir
 from jiuwenswarm.common.utils import (
     get_agent_root_dir,
     get_agent_workspace_dir,
@@ -273,7 +274,7 @@ def _sandbox_isolation_custom_id(project_dir: str | Path | None) -> str:
 
 
 def _resolve_posix_id(value: str, *, kind: Literal["user", "group"]) -> str | None:
-    """Return a numeric uid/gid string; resolve name lookups when ``value`` is not digits."""
+    """Resolve names against the AgentServer's account database before dispatch."""
     if value.isdigit():
         return value
     try:
@@ -286,7 +287,7 @@ def _resolve_posix_id(value: str, *, kind: Literal["user", "group"]) -> str | No
         return str(grp.getgrnam(value).gr_gid)
     except KeyError:
         logger.warning(
-            "[sysop_builder] yuanrong sandbox %s %r could not be resolved to a numeric id",
+            "[sysop_builder] sandbox %s %r could not be resolved to a numeric id",
             kind,
             value,
         )
@@ -300,21 +301,9 @@ def _resolve_posix_id(value: str, *, kind: Literal["user", "group"]) -> str | No
         return None
 
 
-def _yuanrong_sandbox_user(endpoint: dict[str, Any]) -> str | None:
-    """Build yuanrong docker ``user`` as numeric ``"<uid>:<gid>"`` from sandbox config."""
-    user = "" if endpoint.get("user") is None else str(endpoint["user"]).strip()
-    group = "" if endpoint.get("group") is None else str(endpoint["group"]).strip()
-    if not user or not group:
-        return None
-    uid = _resolve_posix_id(user, kind="user")
-    gid = _resolve_posix_id(group, kind="group")
-    if uid is None or gid is None:
-        return None
-    return f"{uid}:{gid}"
-
-
+# Map application directories independently of the selected runtime backend.
 def _resolve_agent_root_dir() -> Path | None:
-    """Resolve develop's original YuanRong identity mount for personal use."""
+    """Resolve the application identity directory for mounted tool providers."""
     try:
         agent_root = Path(get_agent_root_dir()).expanduser().resolve()
     except OSError as exc:
@@ -337,31 +326,12 @@ def _resolve_agent_root_dir() -> Path | None:
     return agent_root
 
 
-def _merge_yuanrong_mounts(
-    agent_root_mount: dict[str, Any],
-    config_mounts: list[Any] | None,
-) -> list[dict[str, Any]]:
-    """Keep develop's personal mount merge and source/target deduplication."""
-    merged = [dict(agent_root_mount)]
-    seen = {(str(agent_root_mount.get("source") or ""), str(agent_root_mount.get("target") or ""))}
-    for entry in config_mounts or []:
-        if not isinstance(entry, dict):
-            continue
-        source = str(entry.get("source") or "").strip()
-        target = str(entry.get("target") or source).strip()
-        if not source or not target or (source, target) in seen:
-            continue
-        seen.add((source, target))
-        merged.append({"source": source, "target": target, "readonly": bool(entry.get("readonly", False))})
-    return merged
-
-
-def _build_agentos_yuanrong_mounts() -> tuple[list[dict[str, Any]], str]:
+def _build_agentos_workspace_mounts() -> tuple[list[dict[str, Any]], str]:
     """Port agent_os's workspace and host user-directory mapping."""
     workspace = _resolve_workspace_dir()
     project = Path("~/workspace").expanduser().resolve()
     if workspace is None:
-        raise ValueError("yuanrong sandbox requires a resolvable workspace directory")
+        raise ValueError("mounted sandbox requires a resolvable workspace directory")
     real_workspace = None
     real_project = None
     user_dir = os.environ.get("JIUWENSWARM_USER_DIRECTORY", None)
@@ -392,61 +362,58 @@ def _build_agentos_yuanrong_mounts() -> tuple[list[dict[str, Any]], str]:
                 project,
             )
 
+    # Projectless task cwd and outputs live outside the persistent Agent workspace.
+    # Mount the task root so a shared tool environment can serve later sessions too.
+    tasks = get_projectless_tasks_dir()
+    tasks.mkdir(parents=True, exist_ok=True)
+    real_tasks = tasks
+    home = Path.home()
+    if user_dir and tasks.is_relative_to(home):
+        real_tasks = Path(user_dir) / tasks.relative_to(home)
+    if str(tasks) not in {entry["target"] for entry in mounts}:
+        mounts.append({"source": str(real_tasks), "target": str(tasks), "readonly": False})
+
     return mounts, workspace_str
 
 
-def _build_yuanrong_extra_params() -> dict[str, Any]:
-    """Select AgentOS mounts explicitly; preserve develop's personal config."""
+def _build_adx_extra_params() -> dict[str, Any]:
+    """Carry the existing tool configuration and workspace mapping into ADX."""
     endpoint = get_sandbox_endpoint()
-    executor = str(endpoint.get("executor") or "docker").strip().lower().strip("'\"") or "docker"
-    agentos = is_agentos_runtime()
-    if agentos:
-        mounts, default_workdir = _build_agentos_yuanrong_mounts()
+    keys = ("image", "rootfs_template", "runtime", "cpu", "cpu_limit", "memory", "mem_limit",
+            "idle_timeout", "user", "group", "network", "connection", "env", "create_timeout",
+            "schedule_timeout", "endpoint_file", "restart_policy")
+    extra = {key: endpoint[key] for key in keys if key in endpoint}
+    if is_agentos_runtime():
+        # Preserve caller-side POSIX lookup; ADX receives the numeric pair separately.
+        user = "" if endpoint.get("user") is None else str(endpoint["user"]).strip()
+        group = "" if endpoint.get("group") is None else str(endpoint["group"]).strip()
+        extra.pop("user", None)
+        extra.pop("group", None)
+        if user and group:
+            uid = _resolve_posix_id(user, kind="user")
+            gid = _resolve_posix_id(group, kind="group")
+            if uid is not None and gid is not None:
+                extra.update(user=uid, group=gid)
+        workspace_mounts, default_workdir = _build_agentos_workspace_mounts()
     else:
         agent_root = _resolve_agent_root_dir()
         if agent_root is None:
-            raise ValueError("yuanrong sandbox requires a resolvable agent_root directory")
+            raise ValueError("ADX sandbox requires a resolvable agent_root directory")
         default_workdir = str(agent_root)
-        agent_root_mount = {"source": default_workdir, "target": default_workdir, "readonly": False}
-        config_mounts = endpoint.get("mounts")
-        mounts = _merge_yuanrong_mounts(
-            agent_root_mount, config_mounts if isinstance(config_mounts, list) else None,
-        )
-
-    extra_params: dict[str, Any] = {"executor": executor, "mounts": mounts}
-    if agentos:
-        sandbox_user = _yuanrong_sandbox_user(endpoint)
-        if sandbox_user is not None:
-            extra_params["user"] = sandbox_user
-
-    workdir = endpoint.get("workdir")
-    if workdir is not None and str(workdir).strip():
-        extra_params["workdir"] = str(workdir).strip()
-    else:
-        extra_params["workdir"] = default_workdir
-
-    for key in ("image", "cpu", "cpu_limit", "memory", "mem_limit", "rootfs", "idle_timeout"):
-        if key not in endpoint:
-            continue
-        value = endpoint[key]
-        if key == "rootfs":
-            if isinstance(value, dict):
-                rootfs = dict(value)
-                if agentos:
-                    rootfs["mounts"] = mounts
-                else:
-                    existing = rootfs.get("mounts")
-                    rootfs["mounts"] = _merge_yuanrong_mounts(
-                        agent_root_mount, existing if isinstance(existing, list) else None,
-                    )
-                if "workdir" not in rootfs or not str(rootfs.get("workdir") or "").strip():
-                    rootfs["workdir"] = extra_params["workdir"]
-                extra_params["rootfs"] = rootfs
-            continue
-        if value is not None:
-            extra_params[key] = value
-    _apply_tool_sandbox_env_overrides(extra_params)
-    return extra_params
+        workspace_mounts = [{"source": default_workdir, "target": default_workdir, "readonly": False}]
+    mounts = [{"host_path": entry["source"], "target": entry["target"],
+               "options": ["ro" if entry.get("readonly") else "rw"]} for entry in workspace_mounts]
+    targets = {entry["target"] for entry in mounts}
+    # Keep platform workspace bindings authoritative, as in the previous provider.
+    mounts.extend(dict(entry) for entry in endpoint.get("mounts", []) if entry.get("target") not in targets)
+    extra["mounts"] = mounts
+    extra["workdir"] = str(endpoint.get("workdir") or default_workdir)
+    _apply_tool_sandbox_env_overrides(extra)
+    for env_name, request, limit in (("TOOL_SANDBOX_CPU", "cpu", "cpu_limit"),
+                                     ("TOOL_SANDBOX_MEMORY", "memory", "mem_limit")):
+        if os.environ.get(env_name, "").strip() and limit in extra:
+            extra[limit] = max(extra[limit], extra[request])
+    return extra
 
 
 _TOOL_SANDBOX_ENV_OVERRIDES = (
@@ -457,7 +424,7 @@ _TOOL_SANDBOX_ENV_OVERRIDES = (
 
 
 def _apply_tool_sandbox_env_overrides(extra_params: dict[str, Any]) -> None:
-    """Override yuanrong cpu / memory / idle_timeout when the env vars are set."""
+    """Override tool CPU, memory and idle timeout when the env vars are set."""
     for env_name, key in _TOOL_SANDBOX_ENV_OVERRIDES:
         raw = os.environ.get(env_name)
         if raw is None or not str(raw).strip():
@@ -469,36 +436,19 @@ def _apply_tool_sandbox_env_overrides(extra_params: dict[str, Any]) -> None:
             raise ValueError(f"{env_name} must be an integer, got {raw!r}") from exc
 
 
-def build_yuanrong_sandbox_status_view() -> dict[str, Any]:
-    """Read-only yuanrong status for TUI ``/sandbox`` (enabled / executor / mounts)."""
+
+
+def build_adx_sandbox_status_view() -> dict[str, Any]:
+    """Read the configured native tool runtime without creating an environment."""
     runtime = get_sandbox_runtime()
     endpoint = get_sandbox_endpoint()
-    executor = str(endpoint.get("executor") or "docker").strip().lower().strip("'\"") or "docker"
     try:
-        mounts = list(_build_yuanrong_extra_params().get("mounts") or [])
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "[sysop_builder] yuanrong status mounts fallback: %s",
-            exc,
-        )
-        mounts = []
-        if not is_agentos_runtime():
-            config_mounts = endpoint.get("mounts")
-            mounts = [
-                {
-                    "source": str(entry.get("source") or "").strip(),
-                    "target": str(entry.get("target") or entry.get("source") or "").strip(),
-                    "readonly": bool(entry.get("readonly", False)),
-                }
-                for entry in (config_mounts if isinstance(config_mounts, list) else [])
-                if isinstance(entry, dict) and str(entry.get("source") or "").strip()
-            ]
-    return {
-        "type": "yuanrong",
-        "enabled": bool(runtime.get("enabled")),
-        "executor": executor,
-        "mounts": mounts,
-    }
+        mounts = _build_adx_extra_params()["mounts"]
+    except Exception as exc:
+        logger.warning("[sysop_builder] tool status mount resolution failed: %s", exc)
+        mounts = [] if is_agentos_runtime() else list(endpoint.get("mounts") or [])
+    return {"type": "adx-environment", "enabled": bool(runtime.get("enabled")),
+            "runtime": endpoint.get("runtime", "runsc"), "mounts": mounts}
 
 
 def build_filesystem_policy(
@@ -692,7 +642,7 @@ def create_sandbox_sysop_card(
     is_code_agent: bool = False,
     startup_mode: str | None = None,
 ) -> SysOperationCard | None:
-    """Create sandbox SysOperationCard (jiuwenbox or yuanrong)."""
+    """Create sandbox SysOperationCard (configured provider)."""
     # 触发 sandbox provider 注册（@SandboxRegistry.provider 装饰器副作用）
     import openjiuwen.extensions.sys_operation.sandbox.providers  # noqa: F401
 
@@ -705,39 +655,35 @@ def create_sandbox_sysop_card(
 
             install_no_host_fallback_jiuwenbox_providers()
 
-        if normalized_type == "yuanrong":
-            extra_params = _build_yuanrong_extra_params()
-            isolation_custom_id = "default"
-            gateway_config = SandboxGatewayConfig(
-                isolation=SandboxIsolationConfig(
-                    container_scope=ContainerScope.CUSTOM,
-                    custom_id=isolation_custom_id,
-                ),
-                launcher_config=PreDeployLauncherConfig(
-                    base_url=sandbox_url,
-                    sandbox_type="yuanrong",
-                    idle_ttl_seconds=idle_ttl_seconds,
-                    extra_params=extra_params,
-                ),
-            )
+
+        if normalized_type == "adx-environment":
+            extra_params = _build_adx_extra_params()
             sysop_card = SysOperationCard(
                 mode=OperationMode.SANDBOX,
                 work_config=LocalWorkConfig(shell_allowlist=None),
-                gateway_config=gateway_config,
+                gateway_config=SandboxGatewayConfig(
+                    isolation=SandboxIsolationConfig(container_scope=ContainerScope.CUSTOM, custom_id="default"),
+                    launcher_config=PreDeployLauncherConfig(
+                        base_url=sandbox_url, sandbox_type="adx-environment", idle_ttl_seconds=idle_ttl_seconds,
+                        extra_params=extra_params,
+                    ),
+                ),
             )
             logger.info(
-                "[sysop_builder] yuanrong SysOperationCard created:\n"
-                "  base_url=%s sandbox_type=yuanrong\n"
+                "[sysop_builder] ADX SysOperationCard created:\n"
+                "  base_url=%s sandbox_type=adx-environment\n"
                 "  isolation_custom_id=%s\n"
-                "  idle_ttl=%s\n"
-                "  executor=%s workdir=%s user=%s\n"
+                "  idle_ttl=%s idle_timeout=%s\n"
+                "  runtime=%s workdir=%s user=%s group=%s\n"
                 "  mounts(%d)=%s",
                 sandbox_url,
-                isolation_custom_id,
+                sysop_card.gateway_config.isolation.custom_id,
                 idle_ttl_seconds,
-                extra_params.get("executor"),
+                extra_params.get("idle_timeout"),
+                extra_params.get("runtime", "runsc"),
                 extra_params.get("workdir"),
                 extra_params.get("user"),
+                extra_params.get("group"),
                 len(extra_params.get("mounts") or []),
                 extra_params.get("mounts") or [],
             )
@@ -1131,9 +1077,9 @@ def find_auto_managed_match(
 
 
 __all__ = [
+    "build_adx_sandbox_status_view",
     "PreserveFileSharingMode",
     "build_filesystem_policy",
-    "build_yuanrong_sandbox_status_view",
     "create_sandbox_sysop_card",
     "create_local_sysop_card",
     "effective_files_from_policy",

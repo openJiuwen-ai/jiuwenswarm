@@ -31,7 +31,7 @@ There is no way to ask the source "which config paths does this read": the
 reads are ``dict.get`` calls on sub-dicts assembled at runtime, sometimes
 forwarded wholesale into a dataclass or a pydantic model that decides for
 itself which names it recognises. What can be checked is the project's own
-configuration files. The distributed-team configs and the yuanrong deployment
+configuration files. The distributed-team configs and the AgentOS deployment
 template are full configs maintained beside the code, and in practice a new
 option reaches one of them at about the time it reaches the code. Every key
 they carry that the default template omits is therefore either a gap in the
@@ -83,14 +83,14 @@ _TEMPLATE = _REPO_ROOT / "jiuwenswarm" / "resources" / "config.yaml"
 _SHIPPED_CONFIGS = (
     "jiuwenswarm/resources/config.team.distributed.leader.yaml",
     "jiuwenswarm/resources/config.team.distributed.teammate.yaml",
-    "deploy/yuanrong/conf/gateway-config-yuanrong.template.yaml",
+    "deploy/adx/conf/gateway-config.template.yaml",
 )
 
 # Whole subtrees a shipped config carries and the default template does not,
 # for a reason that is not a missing option. Each entry is a path prefix.
 _ACCEPTED_SUBTREES: dict[tuple[str, ...], str] = {
     ("channels", "feishu"): (
-        "The distributed and yuanrong files configure a single Feishu app with "
+        "The distributed and AgentOS files configure a single Feishu app with "
         "the fields flat under channels.feishu; the default template nests the "
         "same fields inside an `apps:` list, which the merge hands over whole. "
         "Same options, different nesting."
@@ -104,9 +104,15 @@ _ACCEPTED_SUBTREES: dict[tuple[str, ...], str] = {
         "multi-process deployment has. The single-node template has no use for "
         "it and an operator of one has nothing to lose there."
     ),
+    ("gateway", "adx"): (
+        "AgentOS extension connection settings are prepared by deployment. "
+        "The personal WebSocket template does not need an ADX connection; "
+        "template merging preserves unknown mappings and managed AgentOS "
+        "configuration skips personal-template migration."
+    ),
     ("sandbox",): (
-        "yuanrong-only: the sandbox section describes the YuanRong instance "
-        "the gateway runs inside, not an option of this process."
+        "Sandbox backend settings are consumed by AgentServer and its provider, "
+        "rather than by the Gateway process."
     ),
     ("code_graph",): (
         "AgentOS deployment-only capability (profile default off). Personal "
@@ -127,7 +133,7 @@ _ACCEPTED_SUBTREES: dict[tuple[str, ...], str] = {
 # only so this check does not re-report it.
 _HEARTBEAT_PROBE_REASON = (
     "Retired from the template in favour of health_check.{every,target,"
-    "active_hours}. The yuanrong deployment file still carries the old names. "
+    "active_hours}. The AgentOS deployment file still carries the old names. "
     "Carrying an operator's legacy value across is tracked separately."
 )
 
@@ -169,7 +175,7 @@ _ACCEPTED_KEYS: dict[tuple[str, ...], str] = {
     ("react", "max_iterations"): (
         "The default template no longer ships a generic inner ReAct cap so "
         "an unconfigured main agent stays unbounded. Distributed team and "
-        "yuanrong configs keep an explicit value as a per-deployment choice."
+        "AgentOS configs keep an explicit value as a per-deployment choice."
     ),
     ("symphony", "fingerprint", "normalization"): (
         "Retired. SymphonyConfig builds `fingerprint` from `scan` and "
@@ -184,7 +190,7 @@ _ACCEPTED_KEYS: dict[tuple[str, ...], str] = {
         "Retired deliberately. The team-level switch was removed from this "
         "template when _resolve_enable_permissions stopped reading it and took "
         "the team's setting from the global permissions.enabled instead. The "
-        "yuanrong deployment file still carries the old key; it controls "
+        "AgentOS deployment file still carries the old key; it controls "
         "nothing, so the template does not owe it to an operator."
     ),
     ("heartbeat", "every"): _HEARTBEAT_PROBE_REASON,
