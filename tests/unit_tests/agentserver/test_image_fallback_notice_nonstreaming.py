@@ -79,9 +79,6 @@ def _adapter(
     adapter._vision_model_config = SimpleNamespace(model_name="vision-stub")
     adapter._stream_event_rail = None
     adapter._instance = MagicMock()
-    # This runtime stub has no restored conversation context. An unconfigured
-    # MagicMock would fabricate a context and an invalid history cursor.
-    adapter._instance.react_agent.context_engine.get_context.return_value = None
     adapter._instance.attach_output = AsyncMock(
         return_value=_Stream(
             [SimpleNamespace(type="answer", payload={"content": ANSWER})]
@@ -162,6 +159,13 @@ def quiet_runtime(monkeypatch):
     monkeypatch.setattr(
         "openjiuwen.harness.observability.close_agent_run_span",
         lambda *args, **kwargs: None,
+    )
+    # Conversation-context sync reads the real session history through the
+    # agent instance. These tests exercise the notice, not history replay, and
+    # their mock instance would otherwise trip the replay cursor check.
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.video_duplex.backend.conversation_context.sync_conversation_context",
+        AsyncMock(),
     )
 
 

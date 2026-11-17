@@ -51,6 +51,9 @@ from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.models
     ToolInvocation,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.native_path_context import NATIVE_PATH_ACCESS
+from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_stream_metadata import (
+    peek_reviewer_tool_result_metadata,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_binding import resolve_tool_binding
 from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.readonly_tool_bindings import (
     trusted_readonly_binding,
@@ -400,16 +403,27 @@ class AutoPermissionBeforeToolMixin:
                 and decision_source == "manual_approval"
                 and classify_permission_result(result) == "allow"
             ):
+                approval_metadata = peek_reviewer_tool_result_metadata(
+                    getattr(invocation.ctx, "extra", None), tool_call_id=tool_call_id,
+                ) or {}
+                reason = (
+                    "manual_allow_once_remember_unavailable"
+                    if approval_metadata.get("reviewer_reason_code") == "manual_allow_once_remember_unavailable"
+                    else "manual_approval"
+                )
+                success_metadata = {
+                    "decision_source": "manual_approval",
+                    "reviewer_status": "approved",
+                    "final_reviewer_status": "approved",
+                }
+                if reason != "manual_approval":
+                    success_metadata["reviewer_reason_code"] = reason
                 self._record_reviewer_success_metadata(
                     invocation.ctx,
                     facts,
                     tool_call_id=tool_call_id,
-                    reason="manual_approval",
-                    metadata={
-                        "decision_source": "manual_approval",
-                        "reviewer_status": "approved",
-                        "final_reviewer_status": "approved",
-                    },
+                    reason=reason,
+                    metadata=success_metadata,
                 )
             self._emit_permission_result_observation(
                 facts,
