@@ -52,8 +52,8 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_pool import (
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_sources import (
     ArkFixedStarterRankingAdapter,
-    CORPUS_VERSION,
     FetchFn,
+    corpus_version_for_language,
     I3_RETRIEVAL_PROMPT_VERSION,
     RankedInterest as CorpusRankedInterest,
     RETRIEVAL_CONFIG_VERSION,
@@ -70,6 +70,14 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_sources import (
 from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
     TopicStarterStore,
 )
+
+def _corpus_version() -> str:
+    """The prepare lane follows the same UI-language corpus as the product lane."""
+
+    from .topic_controls import recommendation_language
+
+    return corpus_version_for_language(recommendation_language())
+
 
 CURRENT_EVENT_TTL_SECONDS = 48 * 60 * 60
 RECENT_DEVELOPMENT_TTL_SECONDS = 7 * 24 * 60 * 60
@@ -812,7 +820,7 @@ class TopicPreparePipeline:
         try:
             hits = await retrieve_fixed_starters(
                 _corpus_ranked_interests(ranked, context_by_id),
-                CORPUS_VERSION,
+                _corpus_version(),
                 adapter=ArkFixedStarterRankingAdapter(invoke_stage),
             )
         except Exception:  # noqa: BLE001 - I3 contract fails the whole batch
@@ -943,7 +951,9 @@ class TopicPreparePipeline:
         }
         corpus_text_by_id = {
             starter.starter_id: starter.text
-            for starter in load_fixed_starter_corpus(CORPUS_VERSION)
+            for starter in load_fixed_starter_corpus(
+                str(trigger_key.get("corpus_version") or _corpus_version())
+            )
         }
         return BackgroundGenerationResult(
             cards=cards,
@@ -1031,7 +1041,7 @@ class TopicPrepareService:
                 else 0
             ),
             prompt_versions=PROMPT_VERSIONS,
-            corpus_version=CORPUS_VERSION,
+            corpus_version=_corpus_version(),
             retrieval_config_version=RETRIEVAL_CONFIG_VERSION,
         )
 

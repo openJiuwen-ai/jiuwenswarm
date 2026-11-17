@@ -237,7 +237,9 @@ def card_copy_rejection_reason(
         return "evaluative"
     if _COPY_ASSISTANT_VOICE_RE.search(value):
         return "assistant_voice"
-    sentence_ends = re.findall(r"[。！？!?]|[.](?=\s*(?:[A-Z]|$))", value)
+    # A period inside an abbreviation (D.C., U.S.) is not a sentence break:
+    # require whitespace after it and do not let a single capital precede it.
+    sentence_ends = re.findall(r"[。！？!?]|[.](?<![A-Z])(?=\s+[A-Z]|$)", value)
     if len(sentence_ends) > 1:
         return "multiple_sentences"
     return None
@@ -1531,7 +1533,9 @@ def build_cold_start_cards(
     )
     live = [
         starter
-        for starter in load_fixed_starter_corpus(CORPUS_VERSION)
+        for starter in load_fixed_starter_corpus(
+            str(trigger_key.get("corpus_version") or CORPUS_VERSION)
+        )
         if _corpus_starter_is_live(starter, now)
     ]
     by_topic: dict[str, list[Any]] = {}
