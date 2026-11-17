@@ -284,9 +284,14 @@ from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported fo
     _workflow_run_meta,
     split_history_record_for_stream,
 )
+from jiuwenswarm.server.interrupt_intent import (
+    normalize_interrupt_intent,
+    unknown_interrupt_intent_error,
+)
 from jiuwenswarm.server.ws_send import send_wire_payload
 
 logger = logging.getLogger(__name__)
+
 _MANUAL_COMPACT_PROCESSOR_TYPES = [
     "MessageSummaryOffloader",
     "RoundLevelCompressor",
@@ -3886,6 +3891,37 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.CHAT_CANCEL:
                 params = request.params if isinstance(request.params, dict) else {}
+                # 契约校验前置：归一化 intent（缺省/null/空串→cancel、大小写/空白对齐
+                # runtime、stop→cancel 别名）并回写 request，保证 WS 判定与下游
+                # （_handle_cancel / 定向 expert / organization）读到的 intent 一致；
+                # 未知 intent 直接回错误应答、不做任何会话/任务操作（早退分支也覆盖）。
+                intent = normalize_interrupt_intent(request.params)
+                intent_error = unknown_interrupt_intent_error(intent)
+                if intent_error:
+                    logger.error(
+                        "[AgentWebSocketServer] cancel: 拒绝未知 intent（未做任何会话操作）: session_id=%s intent=%s",
+                        request.session_id or "default",
+                        intent,
+                    )
+                    response = AgentResponse(
+                        request_id=request.request_id, channel_id=request.channel_id,
+                        ok=False,
+                        payload={
+                            "event_type": "chat.interrupt_result",
+                            "success": False,
+                            "error": intent_error,
+                        },
+                    )
+                    async with send_lock:
+                        await send_wire_payload(
+                            ws, encode_agent_response_for_wire(response, response_id=request.request_id)
+                        )
+                    return
+                if isinstance(request.params, dict) and request.params.get("intent") != intent:
+                    from dataclasses import replace as _replace_dataclass
+
+                    request = _replace_dataclass(request, params={**request.params, "intent": intent})
+                    params = request.params
                 # Runtime owns exact execution cancellation for a
                 # target_request_id. Do not first terminate every response
                 # stream in the Session bucket.
@@ -3919,7 +3955,6 @@ class AgentWebSocketServer:
                     return
                 # 中断请求：根据 intent 决定是否取消流式任务
                 sid = request.session_id or "default"
-                intent = request.params.get("intent", "cancel") if isinstance(request.params, dict) else "cancel"
                 cleanup_after_cancel = self._is_client_disconnect_cancel_request(request)
 
                 # 只有 cancel/supplement 才取消流式任务
