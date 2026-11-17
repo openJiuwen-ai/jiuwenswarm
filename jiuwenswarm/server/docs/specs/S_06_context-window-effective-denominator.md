@@ -7,9 +7,9 @@
 | 类型 | spec |
 | 编号 / slug | S_06 / context-window-effective-denominator |
 | 关联模块 | `jiuwenswarm/server/runtime/agent_adapter/deep/context_window.py`；`interface_deep.py`（Deep 主对话接线）；协议字段 `jiuwenswarm/common/schema/chat_send.py` |
-| 最近一次修订日期 | 2026-11-17（同日修订：一元 reload 时序改回历史顺序） |
+| 最近一次修订日期 | 2026-11-17 |
 | 关联 feature | [[F_03_context-window-effective-denominator]] |
-| 设计依据 | 仓库根目录 `方案_模型思考强度与上下文窗口.md` §3.2 / §3.4 |
+| 设计依据 | [#5227](https://gitcode.com/openJiuwen/jiuwenswarm/issues/5227)；OfficeAce 混合窗口契约（catalog 上限 + chat.send 选用） |
 
 ## 范围 / 边界
 
@@ -58,7 +58,7 @@
 
 ## 修改检查单
 
-- 改生效合成或字段名 → 同步本 spec N1–N3、`ChatSendParams`、方案文档、单测字段字面量。
+- 改生效合成或字段名 → 同步本 spec N1–N3、`ChatSendParams`、单测字段字面量。
 - 改 catalog 反查 → 禁止回到 Model `is`；不要为窗口特性改动一元 reload 时序。
 - 改写入槽位 → 确认 compressor / overflow 仍读 `_context_window_tokens`；圆环口径若纳入范围另开条款。
 - 扩展 Team/Flash → 本 spec 增路径或明确仍排除；不得静默只改 Deep。
