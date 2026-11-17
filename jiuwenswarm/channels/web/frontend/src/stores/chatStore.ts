@@ -50,6 +50,26 @@ import {
 const TOOL_TIMEOUT_MS = 12_000_000;
 const EVOLUTION_STATUS_END_VISIBLE_MS = 3_000;
 
+// A live or already-answered interaction supersedes only its own unanswered echo.
+// Keep this at store ingress so restore, pagination, and late snapshots agree.
+function omitLiveQuestionHistory(
+  sessionId: string,
+  messages: Message[],
+  pendingQuestions: readonly AskUserQuestionPayload[],
+): Message[] {
+  const pendingIds = new Set(pendingQuestions.map((question) => question.request_id));
+  const filtered = messages.filter((message) => {
+    const question = message.unansweredQuestion;
+    if (!question) return true;
+    return !pendingIds.has(question.requestId) && !isAnsweredAskUserQuestion(sessionId, {
+      request_id: question.requestId,
+      source: question.source,
+      questions: [],
+    });
+  });
+  return filtered.length === messages.length ? messages : filtered;
+}
+
 /**
  * 会话视图键。
  *
@@ -638,7 +658,9 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       if (runtime.evolutionStatusClearTimer) {
         clearTimeout(runtime.evolutionStatusClearTimer);
       }
-      const assigned = assignMessageRenderKeys(runtime, messages);
+      const assigned = assignMessageRenderKeys(
+        runtime, omitLiveQuestionHistory(sessionId, messages, runtime.pendingQuestions),
+      );
       return {
         runtimes: {
           ...state.runtimes,
@@ -1914,7 +1936,8 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       if (!runtime) return state;
       // History pages may overlap live Team events whose transport IDs differ.
       const existing = new Set(runtime.messages);
-      const incoming = mergeUniqueMessages([...runtime.messages, ...olderFirst])
+      const history = omitLiveQuestionHistory(sessionId, olderFirst, runtime.pendingQuestions);
+      const incoming = mergeUniqueMessages([...runtime.messages, ...history])
         .filter((message) => !existing.has(message));
       if (!incoming.length) return state;
       const assigned = assignMessageRenderKeys(runtime, incoming);
@@ -2233,6 +2256,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           [sessionId]: {
             ...runtime,
             pendingQuestions,
+            messages: omitLiveQuestionHistory(sessionId, runtime.messages, pendingQuestions),
           },
         },
       };
@@ -2262,13 +2286,15 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
       const pendingQuestions = dropAnsweredAskUserQuestions(sessionId, runtime.pendingQuestions);
-      if (pendingQuestions.length === runtime.pendingQuestions.length) return state;
+      const messages = omitLiveQuestionHistory(sessionId, runtime.messages, pendingQuestions);
+      if (pendingQuestions.length === runtime.pendingQuestions.length && messages === runtime.messages) return state;
       return {
         runtimes: {
           ...state.runtimes,
           [sessionId]: {
             ...runtime,
             pendingQuestions,
+            messages,
           },
         },
       };

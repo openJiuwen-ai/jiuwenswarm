@@ -1786,6 +1786,7 @@ function buildUnansweredQaSummaryMessage(
     role: 'assistant',
     content: buildQaSummaryContent({ title: i18n.t('qaSummary.title'), items }),
     timestamp: at,
+    unansweredQuestion: { requestId: pending.request_id, source: pending.source },
   };
 }
 
