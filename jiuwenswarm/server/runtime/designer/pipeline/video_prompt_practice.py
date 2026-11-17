@@ -549,6 +549,23 @@ def resolve_clip_prompt_budget() -> int:
     return 2200
 
 
+_SENTENCE_END = "。！？；.!?;"
+
+
+def split_sentences(text: str) -> list[str]:
+    """Split at sentence terminators, keeping each terminator with its sentence."""
+    parts: list[str] = []
+    buf: list[str] = []
+    for ch in str(text or ""):
+        buf.append(ch)
+        if ch in _SENTENCE_END:
+            parts.append("".join(buf))
+            buf = []
+    if buf:
+        parts.append("".join(buf))
+    return [part.strip() for part in parts if part.strip()]
+
+
 def fit_prompt_to_budget(text: str, budget: int | None = None) -> tuple[str, list[str]]:
     """Trim a prompt at sentence boundaries, never mid-word, and say what was lost.
 
@@ -559,7 +576,7 @@ def fit_prompt_to_budget(text: str, budget: int | None = None) -> tuple[str, lis
     text = str(text or "").strip()
     if len(text) <= limit:
         return text, []
-    parts = [p for p in re.split(r"(?<=[.。!?！？；;])\s*", text) if p and p.strip()]
+    parts = split_sentences(text)
     kept: list[str] = []
     size = 0
     dropped: list[str] = []
@@ -1387,6 +1404,47 @@ def _compose_cfg_for_user_origin(cfg: dict[str, Any], *, camera: str) -> dict[st
     return out
 
 
+_TOKEN_TRIM = ".,;:!?()[]{}\"'“”‘’"
+_WORD_EXTRA = "_'-’"
+
+
+def _plain_word(token: str) -> bool:
+    return bool(token) and all(ch.isalnum() or ch in _WORD_EXTRA for ch in token)
+
+
+def _wearing_hits(text: str) -> list[tuple[str, list[str]]]:
+    """Every "wearing" with the word before it and the plain words after it.
+
+    Plain word scan on purpose: no pattern engine, so a sentence is read the way a
+    writer would read it.
+    """
+    tokens = [token.strip(_TOKEN_TRIM) for token in str(text or "").split()]
+    hits: list[tuple[str, list[str]]] = []
+    for index, token in enumerate(tokens):
+        if token.casefold() != "wearing":
+            continue
+        following: list[str] = []
+        for nxt in tokens[index + 1 : index + 9]:
+            if not _plain_word(nxt):
+                break
+            following.append(nxt)
+        previous = tokens[index - 1].casefold() if index else ""
+        hits.append((previous, following))
+    return hits
+
+
+def _mentions_wearing(text: str) -> bool:
+    return bool(_wearing_hits(text))
+
+
+def _restates_wardrobe(text: str) -> bool:
+    """An outfit spelled out in words beside a sheet that already shows it."""
+    return any(
+        previous != "now" and len(following) >= 3
+        for previous, following in _wearing_hits(text)
+    )
+
+
 def prompt_respects_practice(
     prompt: str,
     *,
@@ -1431,14 +1489,12 @@ def prompt_respects_practice(
     if (
         str(cfg.get("costume_lock") or "").strip()
         and not plates
-        and not re.search(r"(?i)\bwearing\b", text)
+        and not _mentions_wearing(text)
     ):
         reasons.append("missing_wardrobe_lock")
     # With sheets attached, an outfit described in words is a second version of the
     # wardrobe the plates already show. A stated delta ("now wearing …") is fine.
-    if plates and re.search(r"(?i)\bwearing\b(?:\s+[\w'’-]+){3,}", text) and not re.search(
-        r"(?i)\bnow wearing\b", text
-    ):
+    if plates and _restates_wardrobe(text):
         reasons.append("wardrobe_restated")
     # A stated speech line must reach the clip verbatim, or the shot loses its line.
     speech = str(cfg.get("speech_line") or "").strip()
