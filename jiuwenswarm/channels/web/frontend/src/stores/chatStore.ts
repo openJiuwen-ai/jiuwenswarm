@@ -194,6 +194,7 @@ export interface ChatRuntime {
   /** Aggregate busy state; foreground and organization lifecycles update their own flags. */
   isProcessing: boolean;
   foregroundIsProcessing: boolean;
+  turnRevision: number;
   organizationIsProcessing: boolean;
   activeExecutionId: string | null;
   executionError: string | null;
@@ -272,6 +273,7 @@ function createEmptyRuntime(): ChatRuntime {
     messages: [],
     isProcessing: false,
     foregroundIsProcessing: false,
+    turnRevision: 0,
     organizationIsProcessing: false,
     activeExecutionId: null,
     executionError: null,
@@ -404,7 +406,7 @@ interface ChatState {
   bumpThinkingAnchor: (sessionId: string) => void;
   setExecutionError: (sessionId: string, error: string | null) => void;
   setAgentGroupUnavailable: (sessionId: string, unavailable: boolean) => void;
-  setProcessing: (sessionId: string, status: boolean) => void;
+  setProcessing: (sessionId: string, status: boolean, options?: { newTurn?: boolean }) => void;
   setOrganizationProcessing: (sessionId: string, status: boolean) => void;
   setActiveExecutionId: (sessionId: string, executionId: string) => void;
   setThinking: (sessionId: string, status: boolean) => void;
@@ -1087,7 +1089,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     });
   },
 
-  setProcessing: (sessionId, status) => {
+  setProcessing: (sessionId, status, options) => {
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
@@ -1099,6 +1101,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           [sessionId]: {
             ...runtime,
             foregroundIsProcessing: status,
+            ...(status && (turnStart || options?.newTurn) ? { turnRevision: runtime.turnRevision + 1 } : {}),
             isProcessing: status || runtime.organizationIsProcessing,
             ...(!status ? {
               activeExecutionId: null,
