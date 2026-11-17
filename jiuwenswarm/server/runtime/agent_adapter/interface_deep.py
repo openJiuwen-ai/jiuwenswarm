@@ -12538,6 +12538,19 @@ class JiuWenSwarmDeepAdapter:
                     "[JiuWenSwarmDeepAdapter] stop failed during cleanup: %s",
                     exc,
                 )
+        # 任务规划 rail 的 todo 工具按实例唯一 id 注册在进程级 resource_mgr，
+        # purge 的 owner 后缀模式覆盖不到；随 adapter 生命周期逐条注销，
+        # 否则残留工具经 sys_operation 钉住整棵会话对象图（每会话 ~100KB）。
+        task_planning_rail = getattr(self, "_task_planning_rail", None)
+        rail_close = getattr(task_planning_rail, "close", None)
+        if callable(rail_close):
+            try:
+                rail_close()
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] task planning rail deregister failed: %s",
+                    exc,
+                )
             try:
                 from jiuwenswarm.agents.harness.common.tools.send_file_to_user import (
                     clear_sent_files_for_session,

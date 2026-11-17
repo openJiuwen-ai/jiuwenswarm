@@ -349,3 +349,67 @@ async def test_registry_keeps_workspace_and_filesystem_bindings_isolated(
         for rail, expected in ((first, "a"), (second, "b")):
             for tool in rail.tools:
                 assert [todo.id for todo in await tool.load_todos("same-session")] == [expected]
+
+
+@pytest.mark.asyncio
+async def test_close_deregisters_only_self_registered_tools(tmp_path, monkeypatch):
+    """rail.close() 注销自己绑定且无其他持有者的 todo 工具；幂等。"""
+    registry = {}
+    removed: list[str] = []
+    manager = SimpleNamespace(
+        get_tool=lambda tool_id: registry.get(tool_id),
+        add_tool=lambda tool: registry.setdefault(tool.card.id, tool),
+        remove_tool=lambda tool_id: removed.append(tool_id) or registry.pop(tool_id, None),
+    )
+    monkeypatch.setattr(module, "Runner", SimpleNamespace(resource_mgr=manager))
+    fs = LocalFiles()
+    rail = module.ConcurrentSafeTaskPlanningRail()
+    rail.init(make_agent(tmp_path, fs))
+    registered = list(rail._registered_tool_ids)
+    assert len(registered) == 3
+    assert all(rid in registry for rid in registered)
+
+    # 同一 rail 再次 init：命中 registry 走复用路径，binder 集合不重复。
+    rail.init(make_agent(tmp_path, fs))
+    assert rail._registered_tool_ids == registered
+
+    rail.close()
+    assert removed == registered
+    assert all(rid not in registry for rid in registered)
+    assert rail._registered_tool_ids == []
+
+    # 幂等：重复 close 不再移除、不抛错。
+    rail.close()
+    assert removed == registered
+
+
+@pytest.mark.asyncio
+async def test_close_keeps_entries_while_another_rail_still_bound(tmp_path, monkeypatch):
+    """binding 一致时第二个 rail 复用条目：前者 close 只摘自己，不移除条目；
+    最后一个持有者关闭时才真正注销。"""
+    registry = {}
+    removed: list[str] = []
+    manager = SimpleNamespace(
+        get_tool=lambda tool_id: registry.get(tool_id),
+        add_tool=lambda tool: registry.setdefault(tool.card.id, tool),
+        remove_tool=lambda tool_id: removed.append(tool_id) or registry.pop(tool_id, None),
+    )
+    monkeypatch.setattr(module, "Runner", SimpleNamespace(resource_mgr=manager))
+    fs = LocalFiles()
+    first = module.ConcurrentSafeTaskPlanningRail()
+    first.init(make_agent(tmp_path, fs))
+    second = module.ConcurrentSafeTaskPlanningRail()
+    second.init(make_agent(tmp_path, fs))
+    # 同 fs、同 workspace → binding 一致 → 第二个 rail 复用并记账。
+    first_ids = list(first._registered_tool_ids)
+    assert first_ids
+    assert second._registered_tool_ids == first_ids
+
+    first.close()
+    assert removed == []                       # second 仍持有，条目保留
+    assert all(rid in registry for rid in first_ids)
+
+    second.close()
+    assert sorted(removed) == sorted(first_ids)
+    assert all(rid not in registry for rid in first_ids)
+
