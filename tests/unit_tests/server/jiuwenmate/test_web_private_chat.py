@@ -390,7 +390,7 @@ async def test_failed_requests_show_a_notice_while_ignored_requests_stay_silent(
     assert done["outcome"] == outcome
     if mode == "raise":
         assert len(done["replies"]) == 1
-        assert "RuntimeError" in done["replies"][0] and request["request_id"] in done["replies"][0]
+        assert "内部异常" in done["replies"][0] and request["request_id"] in done["replies"][0]
     else:
         assert done["replies"] == []
 
