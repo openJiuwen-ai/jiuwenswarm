@@ -529,3 +529,31 @@ async def test_stale_plan_owned_by_this_worker_can_expire(case, monkeypatch):
     await recovery.reconcile_group(case.sid)
     assert boot._plan_record(case.sid, 'next')['status'] == 'expired'
     schedule.assert_called_once_with(case.sid, job)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_file_io_preserves_worker_exception():
+    entered, release = threading.Event(), threading.Event()
+
+    def fail():
+        entered.set()
+        assert release.wait(3)
+        raise OSError('write failed')
+
+    task = asyncio.create_task(recovery._file_io(fail))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await task
+        assert isinstance(caught.value.__cause__, OSError)
+        assert str(caught.value.__cause__) == 'write failed'
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task

@@ -704,6 +704,11 @@ def queued_direct_result(plan: dict) -> Any:
     )
 
 
+def has_deferred_direct(session_id: str) -> bool:
+    """Return whether this session has a direct reply waiting to start."""
+    return any(key[0] == session_id and not job.get("started") for key, job in _deferred_direct.items())
+
+
 def release_deferred_direct(
     session_id: str, plan_id: str, *, plans: list[dict] | None = None,
 ) -> None:

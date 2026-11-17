@@ -29,9 +29,9 @@ async def _file_io(operation: Callable[[], _T]) -> _T:
             if task.cancelled():
                 raise
             cancellation = exc
-        except Exception:
+        except Exception as exc:
             if cancellation is not None:
-                raise cancellation
+                raise cancellation from exc
             raise
     if cancellation is not None:
         raise cancellation
@@ -200,13 +200,17 @@ async def reconcile_group(session_id: str) -> None:
                 # any subsequent point leaves a retryable cleanup marker.
                 try:
                     await asyncio.wait_for(pool.dissolve_organization(), 15)
-                    await _file_io(partial(groups.clear_group_organization_binding, session_id, saved["organization_id"]))
+                    await _file_io(partial(
+                        groups.clear_group_organization_binding, session_id, saved["organization_id"],
+                    ))
                     await _file_io(partial(groups.update_group_organization_plan, session_id, plan_id,
                                            cleanup_status="done", cleanup_error=None))
                 except Exception as exc:
                     await _file_io(partial(groups.update_group_organization_plan, session_id, plan_id,
                                            cleanup_status="pending", cleanup_error=str(exc)[:500]))
-                    logger.warning("Organization cleanup pending session=%s plan=%s", session_id, plan_id, exc_info=True)
+                    logger.warning(
+                        "Organization cleanup pending session=%s plan=%s", session_id, plan_id, exc_info=True,
+                    )
                 boot.organization_plan_event(session_id, plan_id).set()
                 for record in changed:
                     try:
@@ -218,13 +222,12 @@ async def reconcile_group(session_id: str) -> None:
         async with groups.group_lock(session_id):
             plans = await _file_io(partial(groups.group_organization_plans, session_id))
             if (any(plan.get("cleanup_status") == "done" for plan in plans)
-                    and any(key[0] == session_id and not job.get("started")
-                            for key, job in boot._deferred_direct.items())):
+                    and boot.has_deferred_direct(session_id)):
                 for plan in plans:
                     plan_id = str(plan.get("plan_id") or "")
                     if (plan.get("status") not in {"pending", "running"}
                             or _active(session_id, plan_id)
-                            or boot._now_ms() - int(plan.get("created_at") or 0)
+                            or int(time.time() * 1000) - int(plan.get("created_at") or 0)
                             <= int(boot.PLAN_STALE_SECONDS * 1000)):
                         continue
                     owner = plan.get("run_owner")
