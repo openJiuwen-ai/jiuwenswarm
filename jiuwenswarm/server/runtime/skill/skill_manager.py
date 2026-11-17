@@ -167,13 +167,11 @@ _SKILL_ZIP_MAX_PATH_DEPTH = 20
 
 
 def _discard_uploaded_skill_zip(src: Path) -> None:
-    """删除两阶段上传留下的临时 zip（仅限受控上传根，best-effort）."""
-    try:
-        from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
-            discard_skill_upload,
-        )
-    except ImportError:  # pragma: no cover - 防御性兜底
-        return
+    """删除两阶段上传留下的临时 zip（仅限上传专属目录，best-effort）。"""
+    from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
+        discard_skill_upload,
+    )
+
     discard_skill_upload(str(src))
 
 
@@ -5684,7 +5682,7 @@ class SkillManager:
             ):
                 _discard_uploaded_skill_zip(src)
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001 - 清理后仍向上抛出原始异常
             _discard_uploaded_skill_zip(src)
             raise
         _discard_uploaded_skill_zip(src)

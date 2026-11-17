@@ -19,9 +19,14 @@ import pytest
 
 from jiuwenswarm.channels.web.app_web import _SpaStaticHandler
 from jiuwenswarm.server.runtime.skill import skill_manager as skill_manager_module
-from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager, SkillRpcError
+from jiuwenswarm.server.runtime.skill.skill_manager import (
+    ERROR_SKILL_ALREADY_EXISTS,
+    SkillManager,
+    SkillRpcError,
+)
 from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
-    SKILL_UPLOAD_ROOT_NAME,
+    SKILL_UPLOAD_DISCARD_MAX_REQUEST_BYTES,
+    SKILL_UPLOAD_PREFIX,
     cleanup_stale_skill_uploads,
     discard_skill_upload,
 )
@@ -156,6 +161,7 @@ async def test_uploaded_zip_remains_available_and_can_be_imported(upload_server,
     assert uploaded.is_absolute()
     assert uploaded.resolve().is_relative_to(upload_root.resolve())
     assert uploaded.name == "中文技能.zip"
+    assert uploaded.parent.name.startswith(SKILL_UPLOAD_PREFIX)
     assert uploaded.read_bytes() == package
 
     status, second_payload = _post_upload(port, "中文技能.zip", other_package)
@@ -196,7 +202,7 @@ async def test_conflict_keeps_upload_until_overwrite(upload_server, manager):
     second = Path(payload["path"])
     with pytest.raises(SkillRpcError) as exc_info:
         await manager.handle_skills_import_upload({"path": str(second), "overwrite": False})
-    assert exc_info.value.code == "SKILL_ALREADY_EXISTS"
+    assert exc_info.value.code == ERROR_SKILL_ALREADY_EXISTS
     # 同名冲突保留文件，等待覆盖确认后的二次导入
     assert second.is_file()
 
@@ -237,14 +243,58 @@ def test_upload_discard_rejects_path_outside_root(upload_server, tmp_path):
     assert outside.is_file()
 
 
+def test_upload_discard_rejects_oversized_body(upload_server):
+    port, _ = upload_server
+    status, payload = _post_upload(port, "temp.zip", b"zip-content")
+    assert status == 200, payload
+    uploaded = Path(payload["path"])
+    assert uploaded.is_file()
+
+    body = json.dumps(
+        {
+            "path": str(uploaded),
+            "pad": "x" * (SKILL_UPLOAD_DISCARD_MAX_REQUEST_BYTES + 1),
+        }
+    )
+    connection = HTTPConnection("127.0.0.1", port, timeout=10)
+    try:
+        connection.request(
+            "POST",
+            "/file-api/skills/upload-discard",
+            body=body,
+            headers={"Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        status = response.status
+        result = json.loads(response.read())
+    finally:
+        connection.close()
+    assert status == 413
+    assert result["code"] == "SKILL_FILE_TOO_LARGE"
+    # 超限请求不读 body，也不得删除已上传的文件
+    assert uploaded.is_file()
+
+
+def test_stale_dangling_symlink_upload_dirs_are_cleaned(upload_server):
+    _, upload_root = upload_server
+    link = upload_root / f"{SKILL_UPLOAD_PREFIX}dangling"
+    try:
+        link.symlink_to(upload_root / "missing-target")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is not permitted on this platform")
+
+    # 负数 TTL 让所有候选直接过期，无需设置 symlink 自身的 mtime。
+    assert cleanup_stale_skill_uploads(max_age_seconds=-1) == 1
+    assert not link.is_symlink()
+
+
 def test_stale_upload_dirs_are_cleaned(upload_server):
     _, upload_root = upload_server
-    root = upload_root / SKILL_UPLOAD_ROOT_NAME
-    fresh = root / "jiuwenswarm_skill_upload_fresh"
-    stale = root / "jiuwenswarm_skill_upload_stale"
-    legacy = upload_root / "jiuwenswarm_skill_upload_legacy"
+    fresh = upload_root / f"{SKILL_UPLOAD_PREFIX}fresh"
+    stale = upload_root / f"{SKILL_UPLOAD_PREFIX}stale"
+    legacy = upload_root / f"{SKILL_UPLOAD_PREFIX}legacy"
     for directory in (fresh, stale, legacy):
-        directory.mkdir(parents=True)
+        directory.mkdir()
         (directory / "pkg.zip").write_bytes(b"zip")
 
     expired = time.time() - 2 * 24 * 60 * 60
