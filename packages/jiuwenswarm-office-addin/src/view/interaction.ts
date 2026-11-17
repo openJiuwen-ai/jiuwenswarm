@@ -1,6 +1,7 @@
 import type { Prompt, PromptChoice, PromptOption, PromptQuestion } from '../conversationModel';
 import { copy, toolLabel } from '../copy';
 import type { JsonObject } from '../gatewayClient';
+import type { OpenDocument } from '../sessionFacade';
 import { h } from './dom';
 import { icon } from './icons';
 import { isImeKey } from './ime';
@@ -48,7 +49,7 @@ const OWN_ESCAPE = 'input, textarea, select, [contenteditable]';
  * another key is ignored. It takes no focus of its own accord.
  */
 export function approvalSheet(
-  prompt: Prompt, documents: ReadonlyMap<string, string>, answer: Answer,
+  prompt: Prompt, documents: ReadonlyMap<string, OpenDocument>, answer: Answer,
   now: () => number = () => performance.now(),
 ): Interaction {
   const [question] = prompt.questions;
@@ -94,11 +95,11 @@ export function approvalSheet(
 }
 
 /** The arguments the user most needs to judge a request, in words; the rest stay in the full arguments. */
-function payloadSummary(payload: JsonObject, documents: ReadonlyMap<string, string>): HTMLElement | null {
+function payloadSummary(payload: JsonObject, documents: ReadonlyMap<string, OpenDocument>): HTMLElement | null {
   const rows = Object.entries(payload).flatMap(([key, value]): [string, string][] => {
     const label = copy.payloadLabels[key];
     if (!label || (typeof value !== 'string' && typeof value !== 'number')) return [];
-    return [[label, key === 'target_session_id' ? documents.get(String(value)) || copy.otherConversation : String(value)]];
+    return [[label, key === 'target_session_id' ? documents.get(String(value))?.name || copy.otherConversation : String(value)]];
   });
   if (!rows.length) return null;
   return h('dl', { class: 'approval-payload' }, ...rows.flatMap(([name, value]) => [h('dt', {}, name), h('dd', {}, value)]));

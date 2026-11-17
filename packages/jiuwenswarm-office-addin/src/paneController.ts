@@ -16,7 +16,7 @@ import type { DocumentId } from './documentIdentity';
 import type { ConnectionState, GatewayClient, GatewayEvent } from './gatewayClient';
 import type { ToolContract } from './appContract';
 import {
-  imageDataUrl, type OutgoingImageAttachment, type ResourceConversation, type SessionFacade,
+  imageDataUrl, type OpenDocument, type OutgoingImageAttachment, type ResourceConversation, type SessionFacade,
 } from './sessionFacade';
 import type { SlideSnapshots } from './slideSnapshots';
 
@@ -33,8 +33,8 @@ export interface PaneState {
   conversation: Conversation;
   /** The document's conversations, the most recently active first. */
   conversations: readonly ResourceConversation[];
-  /** The user's attached documents' names, by their conversation. */
-  documents: ReadonlyMap<string, string>;
+  /** The user's attached documents, by their conversation. */
+  documents: ReadonlyMap<string, OpenDocument>;
   /** The shown conversation's history is on its way; its live events wait for it. */
   loadingHistory: boolean;
   connection: ConnectionState;
