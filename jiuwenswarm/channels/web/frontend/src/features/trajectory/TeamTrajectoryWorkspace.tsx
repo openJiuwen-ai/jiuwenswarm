@@ -499,14 +499,14 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
   };
 
   const renderWorkflowGroup = (group: (typeof workflowGroups)[number]) => {
-    // The selected member's group stays expanded so its lane never disappears
-    // behind a collapse the toggle cannot undo.
+    // Keep a selected lane visible, including when it is selected from outside the group.
     const selected = group.lanes.some((lane) => lane.subjectId === selectedSubjectId);
     const expanded = expandedGroups.has(group.runId) || selected;
     const toggle = () => {
+      if (selected) onSelectSubject(null);
       setExpandedGroups((current) => {
         const next = new Set(current);
-        if (next.has(group.runId)) next.delete(group.runId);
+        if (expanded) next.delete(group.runId);
         else next.add(group.runId);
         return next;
       });
