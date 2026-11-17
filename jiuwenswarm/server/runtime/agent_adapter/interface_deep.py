@@ -10822,7 +10822,8 @@ class JiuWenSwarmDeepAdapter:
 
     def _skill_scan_dirs(self) -> list[str]:
         """Skill scan roots: agent skills dir + this session's selected MCP
-        skill dirs.
+        skill dirs. A client app that leaves out the skill library scans
+        no agent skills dir; its template binds its own skills.
 
         Centralized so _build_skill_rail (init) and refresh_skill_rails
         (reload) compute the same roots. Only a session-scoped child scans MCP
@@ -10836,7 +10837,7 @@ class JiuWenSwarmDeepAdapter:
         scanned ALL connected MCP dirs, leaking cli/skill skills into rewind/
         cron/admin root runs).
         """
-        roots = [str(get_agent_skills_dir())]
+        roots = [] if self._leaves_out(Capability.SKILL_LIBRARY) else [str(get_agent_skills_dir())]
         if not getattr(self, "_is_session_scoped_adapter", False):
             return roots
         try:
