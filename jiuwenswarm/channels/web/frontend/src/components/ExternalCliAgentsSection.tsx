@@ -522,6 +522,24 @@ export function ExternalCliAgentsSection({
     [onDetect, onCleanupPathHistories, setAgentError, updateResults],
   );
 
+  // Persists one agent's choice; errors propagate to the caller so it can
+  // decide where to surface them (edit form vs. card message line). Declared
+  // before the detect flows: the manual detect's auto-disable commits through
+  // it (未安装 → 自动落闸), so it must exist before those callbacks.
+  const commit = useCallback(
+    async (cliAgent: ExternalCliAgentKind, choice: ExternalCliAgentChoice) => {
+      if (!onCommitAgent) return;
+      setCommitting((prev) => ({ ...prev, [cliAgent]: true }));
+      setAgentError(cliAgent, '');
+      try {
+        await onCommitAgent(cliAgent, choice);
+      } finally {
+        setCommitting((prev) => ({ ...prev, [cliAgent]: false }));
+      }
+    },
+    [onCommitAgent, setAgentError],
+  );
+
   // Manual "Detect" click: toasts the outcome like the models settings'
   // connection test. Automatic detection calls detect() directly and stays
   // silent.
@@ -532,9 +550,25 @@ export function ExternalCliAgentsSection({
       const result = await detect(cliAgent, cliPath, useBuiltin, { cleanupHistory: true });
       if (result?.status === 'ok' || result?.status === 'warning') {
         showHint(t('config.externalCli.detectSucceeded'));
+        return;
+      }
+      // 检测确认当前配置的可执行文件缺失/不可执行，而 agent 还处于启用态：
+      // 自动把开关落掉并持久化，让状态行"未安装"与开关一致（未安装 → 禁用，
+      // 重新启用需先安装或修正路径）。仅手动检测触发——自动探测不得静默
+      // 改写配置。
+      const enabledKey = externalCliKey(cliAgent, 'enabled');
+      const useBuiltinKey = externalCliKey(cliAgent, 'use_builtin');
+      const cliPathKey = externalCliKey(cliAgent, 'cli_path');
+      if (result && draftValues[enabledKey] === 'true') {
+        await commit(cliAgent, {
+          enabled: false,
+          useBuiltin: draftValues[useBuiltinKey] === 'true',
+          cliPath: draftValues[cliPathKey] ?? '',
+        });
+        showHint(t('config.externalCli.savedHint'));
       }
     },
-    [detect, showHint, t],
+    [commit, detect, draftValues, showHint, t],
   );
 
   const clearDetectResult = useCallback(
@@ -621,22 +655,6 @@ export function ExternalCliAgentsSection({
       }
     },
     [changeCliPath, detect, draftValues, onSelectFile, t, updateResults],
-  );
-
-  // Persists one agent's choice; errors propagate to the caller so it can
-  // decide where to surface them (edit form vs. card message line).
-  const commit = useCallback(
-    async (cliAgent: ExternalCliAgentKind, choice: ExternalCliAgentChoice) => {
-      if (!onCommitAgent) return;
-      setCommitting((prev) => ({ ...prev, [cliAgent]: true }));
-      setAgentError(cliAgent, '');
-      try {
-        await onCommitAgent(cliAgent, choice);
-      } finally {
-        setCommitting((prev) => ({ ...prev, [cliAgent]: false }));
-      }
-    },
-    [onCommitAgent, setAgentError],
   );
 
   // Preserve explicit choices and prefer PATH when no executable was selected.
@@ -1429,9 +1447,7 @@ export function ExternalCliAgentsSection({
                   <div className="flex flex-shrink-0 items-center gap-2">
                     <Switch
                       checked={enabled}
-                      disabled={disabled
-                        || (!installed && (!result || !enabled || result.status === 'missing' || result.status === 'unsupported'))
-                        || committing[cliAgent] || agentInstalling || editing[cliAgent]}
+                      disabled={disabled || (!installed && !enabled) || committing[cliAgent] || agentInstalling || editing[cliAgent]}
                       onChange={(next) => void toggleAgentEnabled(cliAgent, next, useBuiltin, cliPath)}
                       aria-label={t('config.externalCli.toggleEnable', { agent: label })}
                       data-testid="settings-panel-external-cli-agent-enable-switch"

@@ -537,7 +537,7 @@ def test_prepare_workspace_overwrite_preserves_external_cli_agents(tmp_path):
     )
 
     utils.prepare_workspace(
-        overwrite=True,
+        overwrite=False,
         preferred_language="en",
         workspace_dir=workspace_dir,
     )
@@ -564,12 +564,12 @@ def test_prepare_workspace_restores_external_cli_agents_from_sidecar(tmp_path, m
         }),
         encoding="utf-8",
     )
-    monkeypatch.setattr(utils, "external_cli_state_sidecar_path", lambda: sidecar)
+    monkeypatch.setattr(utils, "external_cli_state_sidecar_path", lambda *a, **k: sidecar)
 
     workspace_dir = tmp_path / ".jiuwenswarm"
 
     utils.prepare_workspace(
-        overwrite=True,
+        overwrite=False,
         preferred_language="en",
         workspace_dir=workspace_dir,
     )
@@ -596,7 +596,7 @@ def test_prepare_workspace_keeps_deliberately_empty_external_cli(tmp_path, monke
         }),
         encoding="utf-8",
     )
-    monkeypatch.setattr(utils, "external_cli_state_sidecar_path", lambda: sidecar)
+    monkeypatch.setattr(utils, "external_cli_state_sidecar_path", lambda *a, **k: sidecar)
 
     workspace_dir = tmp_path / ".jiuwenswarm"
     config_dir = workspace_dir / "config"
@@ -612,7 +612,7 @@ def test_prepare_workspace_keeps_deliberately_empty_external_cli(tmp_path, monke
     )
 
     utils.prepare_workspace(
-        overwrite=True,
+        overwrite=False,
         preferred_language="en",
         workspace_dir=workspace_dir,
     )
@@ -627,7 +627,7 @@ def test_refresh_external_cli_state_sidecar_mirrors_config(tmp_path, monkeypatch
     import yaml
 
     sidecar = tmp_path / "outside" / "external_cli_state.json"
-    monkeypatch.setattr(utils, "external_cli_state_sidecar_path", lambda: sidecar)
+    monkeypatch.setattr(utils, "external_cli_state_sidecar_path", lambda *a, **k: sidecar)
 
     workspace_dir = tmp_path / ".jiuwenswarm"
     utils.prepare_workspace(overwrite=True, preferred_language="en", workspace_dir=workspace_dir)
@@ -639,10 +639,52 @@ def test_refresh_external_cli_state_sidecar_mirrors_config(tmp_path, monkeypatch
         {"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}
     ]
     config_path.write_text(yaml.dump(data), encoding="utf-8")
-    utils.refresh_external_cli_state_sidecar(config_path)
+    utils.refresh_external_cli_state_sidecar(config_path, workspace_dir)
 
     mirrored = yaml.safe_load(sidecar.read_text(encoding="utf-8"))
     assert mirrored["agents"] == [{"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}]
+
+
+def test_prepare_workspace_force_reset_clears_sidecar(tmp_path, monkeypatch):
+    """init -f 强制重置：跳过恢复并清除旁路文件，重置语义完整生效（!10406 检视）。"""
+    import json as json_lib
+    import yaml
+
+    sidecar = tmp_path / "outside" / "external_cli_state.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(
+        json_lib.dumps({
+            "agents": [{"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}],
+            "histories": {},
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(utils, "external_cli_state_sidecar_path", lambda *a, **k: sidecar)
+
+    workspace_dir = tmp_path / ".jiuwenswarm"
+    config_dir = workspace_dir / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.yaml").write_text(
+        "\n".join([
+            "modes:",
+            "  team:",
+            "    jiuwen_team:",
+            "      external_cli_agents:",
+            "        - cli_agent: claude",
+            "          cli_path: D:/tools/claude.exe",
+        ]),
+        encoding="utf-8",
+    )
+
+    utils.prepare_workspace(
+        overwrite=True,
+        preferred_language="en",
+        workspace_dir=workspace_dir,
+    )
+
+    assert not sidecar.exists()
+    restored = yaml.safe_load((config_dir / "config.yaml").read_text(encoding="utf-8"))
+    assert not restored["modes"]["team"]["jiuwen_team"].get("external_cli_agents")
 
 
 

@@ -1167,26 +1167,30 @@ def _restore_previous_external_cli_state(config_path: Path, state: dict[str, Any
         logger.warning(f"保留覆盖前的三方 agent 配置失败: {exc}")
 
 
-def external_cli_state_sidecar_path() -> Path:
+def external_cli_state_sidecar_path(workspace_dir: Optional[Path] = None) -> Path:
     """三方 agent 启用状态的旁路文件路径（位于 .jiuwenswarm 数据目录之外）。
 
     数据目录被整体删除（重装/重置）后 config.yaml 不复存在，启用态无处
     保留；旁路文件落在用户级应用数据目录，重装不会清除，init 时用于恢复
-    三方 agent 的启用配置。
+    三方 agent 的启用配置。文件名按 workspace_dir 的摘要区分——项目支持
+    多工作区/多实例（JIUWENSWARM_DATA_DIR），旁路不能互相串台。
     """
     try:
         from jiuwenswarm.common._build_config import DISPLAY_NAME
     except Exception:  # noqa: BLE001
         DISPLAY_NAME = "WorkSwarm"
+    if workspace_dir is None:
+        workspace_dir = get_user_workspace_dir()
+    identity = hashlib.sha1(str(Path(workspace_dir).resolve()).encode("utf-8")).hexdigest()[:10]
     if os.name == "nt":
         local_app_data = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
-        return local_app_data / DISPLAY_NAME / "external_cli_state.json"
+        return local_app_data / DISPLAY_NAME / f"external_cli_state-{identity}.json"
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / DISPLAY_NAME / "external_cli_state.json"
-    return Path.home() / ".config" / DISPLAY_NAME / "external_cli_state.json"
+        return Path.home() / "Library" / "Application Support" / DISPLAY_NAME / f"external_cli_state-{identity}.json"
+    return Path.home() / ".config" / DISPLAY_NAME / f"external_cli_state-{identity}.json"
 
 
-def refresh_external_cli_state_sidecar(config_path: Path) -> None:
+def refresh_external_cli_state_sidecar(config_path: Path, workspace_dir: Optional[Path] = None) -> None:
     """把 config.yaml 里的三方 agent 配置镜像到数据目录之外的旁路文件。
 
     配置里没有启用中的 agent 时写入空态，init 依据空态不做恢复。
@@ -1195,17 +1199,17 @@ def refresh_external_cli_state_sidecar(config_path: Path) -> None:
     try:
         state = _read_previous_external_cli_state(config_path)
         payload = state or {"agents": [], "histories": {}}
-        sidecar = external_cli_state_sidecar_path()
+        sidecar = external_cli_state_sidecar_path(workspace_dir)
         sidecar.parent.mkdir(parents=True, exist_ok=True)
         sidecar.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"写入三方 agent 状态旁路文件失败: {exc}")
 
 
-def _read_external_cli_state_sidecar() -> Optional[dict[str, Any]]:
+def _read_external_cli_state_sidecar(workspace_dir: Optional[Path] = None) -> Optional[dict[str, Any]]:
     """读取状态旁路文件；缺失/解析失败/无启用 agent 时返回 None。"""
     try:
-        sidecar = external_cli_state_sidecar_path()
+        sidecar = external_cli_state_sidecar_path(workspace_dir)
         if not sidecar.exists():
             return None
         payload = json.loads(sidecar.read_text(encoding="utf-8"))
@@ -1259,11 +1263,15 @@ def prepare_workspace(
         # 并不随 init 删除，配置若一并清空，已安装的 agent 会在 UI 上回到
         # "已关闭"，与磁盘上仍然存在的安装状态不一致。
         # 旧 config 存在但没有任何启用中的 agent（用户主动全部禁用过）时，
-        # 空列表就是用户的真实意图，不能落到旁路恢复把禁用状态又翻回来；
-        # 只有旧 config 不存在（数据目录被整体删除）才从旁路兜底恢复。
+        # 空列表就是用户的真实意图，不能落到旁路恢复把禁用状态又翻回来。
+        # 强制重置（init -f / overwrite）例外：重置语义完整生效——跳过恢复
+        # 并清除旁路文件，否则"重置"名存实亡，且被恢复的 cli_path 指向已
+        # 删除的安装。
         config_existed = config_yaml_dest.exists()
         preserved_external_cli = (
-            _read_previous_external_cli_state(config_yaml_dest) if config_existed else None
+            _read_previous_external_cli_state(config_yaml_dest)
+            if config_existed and not overwrite
+            else None
         )
         with TrackCopyDiff(
             dest=config_yaml_dest,
@@ -1272,12 +1280,15 @@ def prepare_workspace(
             overwrite=overwrite,
         ):
             shutil.copy2(config_yaml_src, config_yaml_dest)
-        if preserved_external_cli is not None:
+        if overwrite:
+            # 强制重置：跳过恢复并清除旁路文件
+            external_cli_state_sidecar_path(workspace_dir).unlink(missing_ok=True)
+        elif preserved_external_cli is not None:
             _restore_previous_external_cli_state(config_yaml_dest, preserved_external_cli)
         elif not config_existed:
-            # 数据目录被整体删除（重装/重置）的场景：旧 config 已不存在，无从
-            # 保留；从数据目录之外的状态旁路恢复三方 agent 的启用配置。
-            sidecar_state = _read_external_cli_state_sidecar()
+            # 非强制 init 且数据目录全新（首次部署/恢复场景）：旧 config 已不
+            # 存在，从数据目录之外的状态旁路恢复三方 agent 的启用配置。
+            sidecar_state = _read_external_cli_state_sidecar(workspace_dir)
             if sidecar_state is not None:
                 _restore_previous_external_cli_state(config_yaml_dest, sidecar_state)
 
