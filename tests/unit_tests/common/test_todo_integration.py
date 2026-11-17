@@ -135,15 +135,20 @@ async def test_code_read_tools_preserve_read_only_legacy_backend(env):
 @pytest.mark.parametrize("language", ["cn", "en"])
 def test_flash_prompt_keeps_explicit_rebuild_rule(language):
     from jiuwenswarm.agents.harness.flash.rails.flash_todo_rail import FlashTodoRail
+    from jiuwenswarm.agents.harness.flash.prompt.offline import assemble
 
     sections = []
     rail = FlashTodoRail()
     rail.system_prompt_builder = SimpleNamespace(language=language, add_section=sections.append)
+    rail._tools = [object()]
     rail._inject_todo_section()
     content = sections[0].content[language]
     assert "plan_action=new/rebuild" in content
     assert "todo(action=modify)" in content
     assert "todo_create" not in content
+    offline = next(section for section in assemble(language) if section.name == "todo")
+    assert content == offline.content[language]
+    assert sections[0].priority == offline.priority == 430
 
 
 @pytest.mark.asyncio

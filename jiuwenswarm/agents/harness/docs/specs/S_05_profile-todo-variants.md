@@ -4,7 +4,7 @@
 |---|---|
 | Spec ID | S_05 |
 | 状态 | 当前实现的真实描述（含未装配遗留的登记） |
-| 修订日期 | 2026-11-10 |
+| 修订日期 | 2026-11-17 |
 | 关联模块 | `jiuwenswarm/agents/harness/code/rails/code_task_planning_rail.py`（code 侧装配 rail，~290 行）<br>`jiuwenswarm/agents/harness/code/tools/code_todo_tools.py`（四子类，115 行）<br>`jiuwenswarm/agents/harness/code/prompt/code_todo_tool_prompts.py`（CC 对齐描述与 schema，174 行）<br>`jiuwenswarm/agents/harness/flash/tools/flash_todo.py`（UnifiedTodoTool 4 合 1，222 行）<br>`jiuwenswarm/agents/harness/flash/rails/flash_todo_rail.py`（flash 侧挂载 rail，310 行）<br>`jiuwenswarm/agents/harness/flash/permissions/tool_policy_projection.py`（统一名权限投影，~95-126）<br>`jiuwenswarm/agents/harness/common/tools/todo_compat.py`（openjiuwen 兼容 shim + 持久提醒，404 行）<br>`jiuwenswarm/agents/harness/common/tools/todo_resume.py`（持久提醒 / 代际 token / 续跑词汇层，476 行）<br>`jiuwenswarm/agents/harness/common/tools/user_todo_tool.py`（用户个人待办，400 行）<br>`jiuwenswarm/agents/harness/common/tools/todo_toolkits.py`（markdown 行式工具链，**未装配遗留**，367 行） |
 | 装配点 | code：`server/runtime/agent_adapter/interface_code.py` `_build_code_task_planning_rail()`（~885）+ `agents/swarm/providers/code_rails.py`（~434，swarm 编排路径）<br>flash：`server/runtime/agent_adapter/interface_flash.py` `_build_task_planning_rail()`（~994，替换 stock `TaskPlanningRail` 的 4→1 位点）<br>compat：`interface_deep.py` 模块级 `install_todo_modify_compat_patch()`（~744，import 时执行，详见 [[S_01]]）<br>user_todos：`interface_code.py` 工具构建映射 `"user_todos" → _build_user_todos_tool`（~309/~1593）+ `agents/swarm/providers/tools.py` `build_user_todos`（~565）+ `resources/config*.yaml` 三份的工具清单 |
 | 消费点 | 前端 `channels/web/frontend/src/utils/toolProtocol.ts`（工具名白名单 + `todo_` 前缀兜底）、`AvatarPermEditor.tsx`（权限编辑器列五个历史名）、subagent 展示层（`includes('todo')` 宽匹配） |
@@ -56,6 +56,8 @@
 
 **N8 FlashTodoRail 独立继承，不继承 TaskPlanningRail**
 创建引擎显式开启 require_explicit_plan_action，并绑定会话 lifecycle guard。FlashAdapter 的宿主修改获取同一 engines["modify"]，不得另建无 guard 引擎；统一入口仅转发原字段，结果内部属性不进入工具返回 JSON，事件版本元信息按接入策略输出。
+
+430正文由Flash本仓中英文常量提供，运行时与离线注册表共用，明确活动计划继续/追加使用todo(action=modify)，显式替换使用plan_action=new/rebuild；不再从SDK正文做工具名或整句替换。正文迁移不撤销创建保护，也不改变取消回执和版本事件配对。
 
 拒答后的取消更新优先使用修改引擎返回的提交快照，不重新读取另一并发提交。默认 legacy 保持原字段与展示；显式 versioned 时连同该快照的 todo_meta 发送，无法确认快照时不发送无版本替代包。提交结果标记 unknown 的异常不得转换成“校验拒绝、未提交”提示。
 
@@ -117,7 +119,6 @@ modify 的 update/append 必须提供 `todos` 数组，单项修改也使用数�
 | `CODE_TODO_TOOL_PROMPTS` + `get_code_todo_*_input_params()` ×3 | `code/prompt/code_todo_tool_prompts.py` | 四子类 `__init__` |
 | `UnifiedTodoTool(engines, language, agent_id)` | `flash/tools/flash_todo.py` | `FlashTodoRail.init` |
 | `FlashTodoRail` | `flash/rails/flash_todo_rail.py` | `interface_flash._build_task_planning_rail` |
-| `_TODO_NAME_REPLACEMENTS`（四对：`todo_create → todo(action=create)` 等） | `flash/tools/flash_todo.py` | `FlashTodoRail.before_model_call` |
 | `project_operations("todo", args)` | `flash/permissions/tool_policy_projection.py` | flash 权限面 |
 | `install_todo_modify_compat_patch()` | `common/tools/todo_compat.py` | `interface_deep` 模块级（[[S_01]]） |
 | `is_persistent_todo` / `mark_persistent_todo` / `clear_persistent_todo` | `common/tools/todo_resume.py` | todo_compat / TaskExecutionRail / 广播层 |
@@ -143,7 +144,7 @@ modify 的 update/append 必须提供 `todos` 数组，单项修改也使用数�
 `interface_code._build_code_task_planning_rail()` 或 swarm `code_rails` → `CodeTaskPlanningRail()`（构造即关 progress_repeat）→ `init(agent)`：幂等扫描 + 补注册四子类 → 每轮 `before_model_call`：双阈值判定 → 命中则 `_load_fresh_todos` + `add_section` 注入 task_reminder 附件 → `after_tool_call`：`todo_` 前缀命中即清零计数 + 清附件 → `after_invoke`：finally 清 session 态。
 
 **P2 flash 装配**
-`interface_flash._build_task_planning_rail(config)`（兼容带参与不带参两种调用）→ `FlashTodoRail()` → `init(agent)`：取 workspace TODO 节点 + `shared_lock = TodoLockManager()` + 四引擎 + `UnifiedTodoTool` → `add_ability` 原子注册 → `before_model_call`：stock `build_todo_section` + 四对名称替换（`todo_create → todo(action=create)`…）注入，section 为 None 时移除。
+`interface_flash._build_task_planning_rail(config)`（兼容带参与不带参两种调用）→ `FlashTodoRail()` → `init(agent)`：取 workspace TODO 节点 + `shared_lock = TodoLockManager()` + 四引擎 + `UnifiedTodoTool` → `add_ability` 原子注册 → `before_model_call`：直接读取 Flash 目标正文（`_TODO_DISCIPLINE_*` + `NO_MODEL_SELECTION_PROMPT`）注入。撤段行为（`todo` 被 `react.disabled_tools` 禁用时移除 430）依赖 `interface_flash` 的 `disabled_tools` 接线（冷启动传参 + 热更新重灌），**当前待批次 C1 接线落地**。
 
 **P3 flash 统一调用**
 模型发 `todo(action=..., ...)` → `invoke` 透传 session → 按 action 分发引擎 → modify 再按 modify_action 分发 → 结构化 ToolOutput 整包返回（无增量流式）→ 权限面 `project_operations` 展开引擎名 + 历史 fallback 名。

@@ -13,8 +13,9 @@ from openjiuwen.core.foundation.llm import ToolMessage
 from openjiuwen.core.session.stream import OutputSchema
 from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
 from openjiuwen.core.single_agent.rail.base import ToolCallInputs
+from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.prompts.sections import SectionName
-from openjiuwen.harness.prompts.sections.todo import build_todo_section
+from openjiuwen.harness.prompts.sections.todo import NO_MODEL_SELECTION_PROMPT
 from openjiuwen.harness.rails.base import DeepAgentRail
 from openjiuwen.harness.schema.task import TodoStatus
 from openjiuwen.harness.tools.todo_store import (
@@ -30,7 +31,6 @@ from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
 from jiuwenswarm.agents.harness.common.rails.todo_close_gate import TodoCloseGate
 from jiuwenswarm.agents.harness.common.tools.todo_resume import is_persistent_todo
 from jiuwenswarm.agents.harness.flash.tools.flash_todo import (
-    _TODO_NAME_REPLACEMENTS,
     _UNIFIED_TODO_NAME,
     UnifiedTodoTool,
 )
@@ -43,6 +43,12 @@ from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.server.runtime.agent_adapter.refusal_text_scrub import (
     RefusalScrubGate,
     is_canned_refusal_text,
+)
+
+from jiuwenswarm.agents.harness.flash.prompt.content.todo import (
+    _TODO_DISCIPLINE_CN,
+    _TODO_DISCIPLINE_EN,
+    _TODO_SECTION_PRIORITY,
 )
 
 logger = logging.getLogger(__name__)
@@ -132,10 +138,11 @@ class FlashTodoRail(DeepAgentRail):
     priority = 90
     inherit_to_subagents = False
 
-    def __init__(self) -> None:
+    def __init__(self, disabled_tools: list[str] | set[str] | None = None) -> None:
         super().__init__()
         self.system_prompt_builder = None
         self._tools: list = []
+        self._disabled_tools: set[str] = set(disabled_tools or [])
         self.engines: dict = {}
         self._agent: Any = None
         self._close_gate = TodoCloseGate(_UNIFIED_TODO_NAME)
@@ -484,42 +491,38 @@ class FlashTodoRail(DeepAgentRail):
         return iteration <= max_iterations - 2
 
     def _inject_todo_section(self) -> None:
-        """Inject the todo anchor section with unified tool names."""
-        if self.system_prompt_builder is None:
+        """注入 430 todo 纪律段（三段合一目标正文 + 模型选择说明）。
+
+        仅在统一 todo 工具已注册（``self._tools`` 非空）且未被 ``react.disabled_tools``
+        禁用时注入，避免「提示词要求调用 todo，但工具不可见」（与注册表
+        ``enabled_when=_tool_enabled("todo")`` 对齐）。DisabledToolsRail priority=1 在
+        本 rail（90）之后才注销禁用工具，故须直接比对 ``disabled_tools`` 配置而非
+        读运行中的工具面。
+        """
+        builder = self.system_prompt_builder
+        if builder is None or not self._tools:
             return
-        section = build_todo_section(
-            language=self.system_prompt_builder.language,
+        if _UNIFIED_TODO_NAME in self._disabled_tools:
+            # 热禁用：撤下可能残留的 430 段。本 rail 每轮 add_section（upsert），
+            # 一旦注入就不会被其它 rail 清除；若只 return 不撤段，todo 从「未禁用」
+            # 翻成「禁用」后 430 仍残留，模型会看到「要求调 todo」但工具面已无 todo。
+            builder.remove_section(SectionName.TODO)
+            return
+        language = builder.language
+        language = "cn" if language in ("cn", "zh") else "en"
+        discipline = _TODO_DISCIPLINE_CN if language == "cn" else _TODO_DISCIPLINE_EN
+        model_note = NO_MODEL_SELECTION_PROMPT.get(
+            language, NO_MODEL_SELECTION_PROMPT["cn"]
         )
-        if section is not None:
-            adapted = section
-            content = getattr(section, "content", None)
-            if isinstance(content, dict):
-                new_content = {}
-                for lang_key, text in content.items():
-                    if isinstance(text, str):
-                        text = text.replace(
-                            "Once a planning need is identified, call todo_create immediately "
-                            "before starting execution.",
-                            "When a new plan is needed, call todo_create before execution. Continue or adjust "
-                            "an existing plan with todo_modify; replace it only with explicit plan_action=new/rebuild.",
-                        ).replace(
-                            "识别到规划需求后，在开始执行前立即调用 todo_create。",
-                            "需要新计划时在执行前调用 todo_create；继续、追加或调整已有计划使用 todo_modify，明确替换时才传 plan_action=new/rebuild。",
-                        )
-                        for old, new in _TODO_NAME_REPLACEMENTS:
-                            text = text.replace(old, new)
-                    new_content[lang_key] = text
-                try:
-                    adapted = type(section)(
-                        name=section.name,
-                        content=new_content,
-                        priority=section.priority,
-                    )
-                except Exception:
-                    adapted = section
-            self.system_prompt_builder.add_section(adapted)
-        else:
-            self.system_prompt_builder.remove_section(SectionName.TODO)
+        builder.add_section(PromptSection(
+            name=SectionName.TODO,
+            content={language: discipline + model_note},
+            priority=_TODO_SECTION_PRIORITY,
+        ))
+
+    def update_disabled_tools(self, disabled_tools: list[str] | set[str] | None) -> None:
+        """刷新保留实例的禁用工具配置，供后续 reload 接线使用。"""
+        self._disabled_tools = set(disabled_tools or [])
 
 
 def _todo_action(tool_args: Any) -> str:

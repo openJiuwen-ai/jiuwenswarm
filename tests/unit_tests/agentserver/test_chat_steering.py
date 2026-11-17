@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -658,3 +659,430 @@ async def test_non_owner_stream_preserves_original_steering_binding(
     assert outputs == [{"event_type": "runtime.accepted"}]
     assert original.active
     assert (await control.handle(control_request(), query=False))["status"] == "accepted"
+
+
+# ---------------------------------------------------------------------------
+# steer 携带 files:合并进活跃清单 + 引用行追加(wire 原文与幂等摘要不受影响)
+# ---------------------------------------------------------------------------
+
+def _steer_files():
+    return [{"type": "image", "name": "new.png", "path": "/tmp/new.png"}]
+
+
+@pytest.mark.asyncio
+async def test_steer_files_merge_into_manifest_and_append_reference_lines():
+    control, _, agent, _ = session()
+    result = await control.handle(control_request(files=_steer_files()), query=False)
+    assert result["status"] == "accepted"
+    kwargs = agent.steer_active.await_args.kwargs
+    assert kwargs["content"].startswith("Only analyse East China")
+    assert "[image #1] path=/tmp/new.png filename=new.png mime=image/png" in kwargs["content"]
+    from jiuwenswarm.agents.harness.common.multimodal import (
+        current_multimodal_image_files_from_agent,
+    )
+
+    manifest = current_multimodal_image_files_from_agent(agent)
+    assert manifest and manifest[0]["path"] == "/tmp/new.png"
+
+
+@pytest.mark.asyncio
+async def test_steer_files_dedupe_against_existing_manifest():
+    control, _, agent, _ = session()
+    from jiuwenswarm.agents.harness.common.multimodal import (
+        store_current_multimodal_image_files_on_agent,
+    )
+
+    store_current_multimodal_image_files_on_agent(
+        agent,
+        [
+            {
+                "type": "image",
+                "filename": "new.png",
+                "path": "/tmp/new.png",
+                "mime_type": "image/png",
+            }
+        ],
+    )
+    result = await control.handle(control_request(files=_steer_files()), query=False)
+    assert result["status"] == "accepted"
+    kwargs = agent.steer_active.await_args.kwargs
+    assert kwargs["content"] == "Only analyse East China"
+
+
+@pytest.mark.asyncio
+async def test_steer_without_files_keeps_content_unchanged():
+    control, _, agent, _ = session()
+    await control.handle(control_request(), query=False)
+    agent.steer_active.assert_awaited_once_with(
+        active_request_id="run-1", input_id="input-1", content="Only analyse East China"
+    )
+
+
+@pytest.mark.asyncio
+async def test_steer_files_retries_stay_idempotent_on_wire_content():
+    """幂等摘要按 wire 原文计算——重试同一 files 请求不产生二次投递。"""
+    control, _, agent, _ = session()
+    request = control_request(files=_steer_files())
+    await control.handle(request, query=False)
+    agent.receipts["input-1"]["status"] = "consumed"
+    result = await control.handle(request, query=False)
+    assert result["status"] == "consumed"
+    assert agent.steer_active.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_steer_files_replay_with_swapped_files_reports_idempotency_conflict():
+    """同 input_id 换图重放：摘要覆盖 files，报冲突而非静默吞掉新图。"""
+    control, _, agent, _ = session()
+    await control.handle(control_request(files=_steer_files()), query=False)
+    swapped = await control.handle(
+        control_request(
+            files=[{"type": "image", "name": "other.png", "path": "/tmp/other.png"}]
+        ),
+        query=False,
+    )
+    assert swapped["status"] == "not_applied"
+    assert swapped["reason"] == "IDEMPOTENCY_CONFLICT"
+    assert agent.steer_active.await_count == 1
+
+
+def _team_agent_with_bound_rail(agent, bound_files):
+    """给 runtime 挂上 leader 形态的 harness：find_rails 返回绑定清单的 rail。"""
+    from jiuwenswarm.agents.harness.common.rails.multimodal_image_rail import (
+        MultimodalImageRail,
+    )
+
+    rail = MultimodalImageRail(image_files=bound_files)
+    agent.harness = SimpleNamespace(
+        find_rails=lambda rail_type: [rail] if rail_type is MultimodalImageRail else []
+    )
+    return rail
+
+
+@pytest.mark.asyncio
+async def test_steer_files_append_into_live_rail_bound_manifest():
+    """team leader 本轮生效：补充图片追加进活跃轮 rail 的绑定清单快照。"""
+    control, _, agent, _ = session(mode="team")
+    rail = _team_agent_with_bound_rail(
+        agent, [{"type": "image", "path": "/tmp/first.png"}]
+    )
+    result = await control.handle(control_request(files=_steer_files()), query=False)
+    assert result["status"] == "accepted"
+    resolved = rail._resolve_request_image_files()
+    assert [item["path"] for item in resolved] == ["/tmp/first.png", "/tmp/new.png"]
+
+
+@pytest.mark.asyncio
+async def test_steer_files_second_input_dedupes_in_rail_bound_manifest():
+    """同一张图经两个不同 input steer：rail 快照不重复追加。"""
+    control, _, agent, _ = session(mode="team")
+    rail = _team_agent_with_bound_rail(agent, [])
+    await control.handle(
+        control_request(input_id="input-1", client_message_id="client-1", files=_steer_files()),
+        query=False,
+    )
+    await control.handle(
+        control_request(input_id="input-2", client_message_id="client-2", files=_steer_files()),
+        query=False,
+    )
+    assert [item["path"] for item in rail._resolve_request_image_files()] == ["/tmp/new.png"]
+
+
+def _team_agent_with_round_metadata(agent, bound_files):
+    """leader 形态 runtime：真实可写的 request_metadata + 绑定清单的 rail。"""
+    from jiuwenswarm.agents.harness.common.rails.multimodal_image_rail import (
+        MultimodalImageRail,
+    )
+
+    rail = MultimodalImageRail(image_files=bound_files)
+    metadata: dict = {}
+    agent.harness = SimpleNamespace(
+        build_context=SimpleNamespace(request_metadata=metadata),
+        find_rails=lambda rail_type: [rail] if rail_type is MultimodalImageRail else [],
+    )
+    return metadata, rail
+
+
+@pytest.mark.asyncio
+async def test_steer_files_next_round_does_not_inherit_previous_round_mirror():
+    """跨轮不复活：轮 2 steer B 只写 [B]，上一轮 steer 的 A 不经 agent 镜像回流。"""
+    from jiuwenswarm.agents.harness.common.multimodal import (
+        current_multimodal_image_files_from_agent,
+        store_team_request_image_files,
+        team_request_image_files,
+    )
+
+    control, _, agent, _ = session(mode="team")
+    metadata, _rail = _team_agent_with_round_metadata(agent, [])
+    # 轮 1（无上传开轮）：steer A —— metadata 与镜像均落 [A]。
+    store_team_request_image_files(metadata, [])
+    await control.handle(
+        control_request(
+            input_id="input-1",
+            client_message_id="client-1",
+            files=[{"type": "image", "name": "a.png", "path": "/tmp/a.png"}],
+        ),
+        query=False,
+    )
+    assert [image["path"] for image in team_request_image_files(metadata)] == ["/tmp/a.png"]
+    assert [image["path"] for image in current_multimodal_image_files_from_agent(agent)] == [
+        "/tmp/a.png"
+    ]
+    # 轮 2 开新轮（覆盖写清空 metadata）；agent 镜像无人清除、仍残留 [A]。
+    store_team_request_image_files(metadata, [])
+    assert [image["path"] for image in current_multimodal_image_files_from_agent(agent)] == [
+        "/tmp/a.png"
+    ]
+    # steer B：request_metadata 通道优先，本轮清单只含 B，旧图 A 不回流。
+    await control.handle(
+        control_request(
+            input_id="input-2",
+            client_message_id="client-2",
+            files=[{"type": "image", "name": "b.png", "path": "/tmp/b.png"}],
+        ),
+        query=False,
+    )
+    assert [image["path"] for image in team_request_image_files(metadata)] == ["/tmp/b.png"]
+
+
+@pytest.mark.asyncio
+async def test_steer_files_ambiguous_delivery_compensates_on_confirmed_receipt():
+    """模糊投递窗口：异常但实际已送达 → 同 input_id 查询回执 consumed 时补落地。"""
+    from jiuwenswarm.agents.harness.common.multimodal import (
+        current_multimodal_image_files_from_agent,
+    )
+
+    control, _, agent, _ = session()
+    # 首次投递抛异常（模糊失败）——引用行已投、按规则不落地清单。
+    agent.steer_active = AsyncMock(side_effect=RuntimeError("ambiguous transport failure"))
+    first = await control.handle(control_request(files=_steer_files()), query=False)
+    assert first["status"] == "unknown"
+    assert not current_multimodal_image_files_from_agent(agent)
+    # runtime 侧回执显示该 input 实际已消费（模拟「其实送到了」）。
+    agent.receipts["input-1"] = {"input_id": "input-1", "status": "consumed"}
+    # 客户端按协议同 input_id 状态查询：回执 consumed，且清单被补落地。
+    retry = await control.handle(control_request(query=True), query=True)
+    assert retry["status"] == "consumed"
+    manifest = current_multimodal_image_files_from_agent(agent)
+    assert manifest and manifest[0]["path"] == "/tmp/new.png"
+    # 补偿一次即清：再次查询不重复落地（manifest 仍单条）。
+    again = await control.handle(control_request(query=True), query=True)
+    assert again["status"] == "consumed"
+    assert len(current_multimodal_image_files_from_agent(agent)) == 1
+
+
+@pytest.mark.asyncio
+async def test_steer_files_metadata_channel_failure_warns_only_for_team_runtime():
+    """metadata 通道判返回值：team 写失败告警；单代理无 harness 的 no-op 不误报。"""
+    from jiuwenswarm.agents.harness.common.rails.multimodal_image_rail import (
+        MultimodalImageRail,
+    )
+
+    # team 形态：harness 存在但 build_context 缺 request_metadata → bind 返回
+    # False 且非 no-op，应告警。
+    control, _, agent, _ = session(mode="team")
+    rail = MultimodalImageRail(image_files=[])
+    agent.harness = SimpleNamespace(
+        build_context=None,
+        find_rails=lambda rail_type: [rail] if rail_type is MultimodalImageRail else [],
+    )
+    handler = _ListLogHandler()
+    logging.getLogger("jiuwenswarm").addHandler(handler)
+    try:
+        result = await control.handle(control_request(files=_steer_files()), query=False)
+    finally:
+        logging.getLogger("jiuwenswarm").removeHandler(handler)
+    assert result["status"] == "accepted"
+    warnings = [r.getMessage() for r in handler.records if r.levelno >= logging.WARNING]
+    assert any("request_metadata write failed" in message for message in warnings)
+
+    # 单代理形态：无 harness，bind 返回 False 属 no-op，不得误报告警。
+    control2, _, agent2, _ = session()
+    handler2 = _ListLogHandler()
+    logging.getLogger("jiuwenswarm").addHandler(handler2)
+    try:
+        result2 = await control2.handle(control_request(files=_steer_files()), query=False)
+    finally:
+        logging.getLogger("jiuwenswarm").removeHandler(handler2)
+    assert result2["status"] == "accepted"
+    warnings2 = [r.getMessage() for r in handler2.records if r.levelno >= logging.WARNING]
+    assert not any("request_metadata write failed" in message for message in warnings2)
+
+
+class _ListLogHandler(logging.Handler):
+    """jiuwenswarm 根 logger propagate=False，caplog 收不到，手动挂 handler。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@pytest.mark.asyncio
+async def test_steer_files_commit_write_failures_log_warning_and_degrade():
+    """三通道写入失败：不阻断投递（仍 accepted），且每处失败都有 warning 日志。"""
+    import jiuwenswarm.agents.harness.common.multimodal as multimodal_module
+
+    control, _, agent, _ = session(mode="team")
+    metadata, _rail = _team_agent_with_round_metadata(agent, [])
+    multimodal_module.store_team_request_image_files(metadata, [])
+    # 注入两处失败：镜像写入抛异常 + rail 同步抛异常（find_rails 炸）。
+    def _raise_mirror(*args, **kwargs):
+        raise RuntimeError("mirror write boom")
+
+    monkeypatch_target = multimodal_module.store_current_multimodal_image_files_on_agent
+    original = monkeypatch_target
+    multimodal_module.store_current_multimodal_image_files_on_agent = _raise_mirror
+    agent.harness.find_rails = lambda rail_type: (_ for _ in ()).throw(
+        RuntimeError("find_rails boom")
+    )
+    handler = _ListLogHandler()
+    logging.getLogger("jiuwenswarm").addHandler(handler)
+    try:
+        result = await control.handle(control_request(files=_steer_files()), query=False)
+    finally:
+        multimodal_module.store_current_multimodal_image_files_on_agent = original
+        logging.getLogger("jiuwenswarm").removeHandler(handler)
+    assert result["status"] == "accepted"
+    warnings = [
+        record.getMessage() for record in handler.records if record.levelno >= logging.WARNING
+    ]
+    assert any("agent mirror write failed" in message for message in warnings)
+    assert any("bound-manifest sync failed" in message for message in warnings)
+    assert any("input-1" in message for message in warnings)
+
+
+@pytest.mark.asyncio
+async def test_steer_files_do_not_bind_manifest_on_unbound_rail():
+    """未绑定清单的 rail 不被第三通道激活：保持实时读 agent 属性的旧行为。"""
+    control, _, agent, _ = session()
+    rail = _team_agent_with_bound_rail(agent, None)
+    result = await control.handle(control_request(files=_steer_files()), query=False)
+    assert result["status"] == "accepted"
+    assert rail._bound_image_files is None
+    from jiuwenswarm.agents.harness.common.multimodal import (
+        current_multimodal_image_files_from_agent,
+    )
+
+    assert current_multimodal_image_files_from_agent(agent)[0]["path"] == "/tmp/new.png"
+
+
+@pytest.mark.asyncio
+async def test_steer_files_delivery_failure_leaves_manifest_untouched():
+    """投递异常（unknown）不落地清单：重试不被本轮去重吞掉。"""
+    control, _, agent, _ = session()
+    agent.steer_active = AsyncMock(side_effect=RuntimeError("transport died"))
+    result = await control.handle(control_request(files=_steer_files()), query=False)
+    assert result["status"] == "unknown"
+    # 引用行随投递内容发出了（投递失败 ≠ 不应尝试），但清单零落地。
+    assert "[image #1] path=/tmp/new.png" in agent.steer_active.await_args.kwargs[
+        "content"
+    ]
+    from jiuwenswarm.agents.harness.common.multimodal import (
+        current_multimodal_image_files_from_agent,
+    )
+
+    assert not current_multimodal_image_files_from_agent(agent)
+
+
+@pytest.mark.asyncio
+async def test_steer_files_not_applied_leaves_manifest_untouched():
+    """not_applied 是确定未投递：同样不落地清单。"""
+    control, _, agent, _ = session()
+
+    async def not_applied(**kwargs):
+        return {
+            "input_id": kwargs["input_id"],
+            "status": "not_applied",
+            "reason": "not_active",
+        }
+
+    agent.steer_active = AsyncMock(side_effect=not_applied)
+    result = await control.handle(control_request(files=_steer_files()), query=False)
+    assert result["status"] == "not_applied"
+    assert result["reason"] == "RUN_NOT_ACTIVE"
+    from jiuwenswarm.agents.harness.common.multimodal import (
+        current_multimodal_image_files_from_agent,
+    )
+
+    assert not current_multimodal_image_files_from_agent(agent)
+
+
+@pytest.mark.asyncio
+async def test_steer_files_retry_after_failure_delivers_and_materializes():
+    """失败后换 input_id 重试同图：清单未污染，引用行与落地完整走通（自愈）。"""
+    control, _, agent, _ = session()
+    agent.steer_active = AsyncMock(side_effect=RuntimeError("transport died"))
+    await control.handle(
+        control_request(input_id="input-1", client_message_id="client-1", files=_steer_files()),
+        query=False,
+    )
+    agent.steer_active = AsyncMock(
+        side_effect=lambda **kwargs: {
+            "input_id": kwargs["input_id"],
+            "status": "accepted",
+        }
+    )
+    result = await control.handle(
+        control_request(input_id="input-2", client_message_id="client-2", files=_steer_files()),
+        query=False,
+    )
+    assert result["status"] == "accepted"
+    assert "[image #1] path=/tmp/new.png" in agent.steer_active.await_args.kwargs[
+        "content"
+    ]
+    from jiuwenswarm.agents.harness.common.multimodal import (
+        current_multimodal_image_files_from_agent,
+    )
+
+    assert current_multimodal_image_files_from_agent(agent)[0]["path"] == "/tmp/new.png"
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        "not-a-list",
+        [{"nope": 1}],
+        [{"type": "image", "path": ""}],
+        [{"type": "image", "path": "x" * 513}],
+        [{"type": "image", "path": f"/tmp/{i}.png"} for i in range(17)],
+    ],
+)
+def test_steer_validate_rejects_malformed_files(files):
+    from jiuwenswarm.server.handlers.steering import _validate
+
+    params = dict(control_request().params)
+    params["files"] = files
+    assert _validate(params, query=False) == "CONTENT_UNSUPPORTED"
+
+
+def test_steer_validate_allows_files_with_valid_shape():
+    from jiuwenswarm.server.handlers.steering import _validate
+
+    params = dict(control_request().params)
+    params["files"] = _steer_files()
+    assert _validate(params, query=False) is None
+
+
+def test_steer_validate_rejects_files_on_status_query():
+    from jiuwenswarm.server.handlers.steering import _validate
+
+    params = dict(control_request(query=True).params)
+    params.pop("client_message_id", None)
+    params.pop("content", None)
+    params["files"] = _steer_files()
+    assert _validate(params, query=True) == "INVALID_REQUEST"
+
+
+def test_steer_validate_still_rejects_other_attachment_shapes():
+    from jiuwenswarm.server.handlers.steering import _validate
+
+    params = dict(control_request().params)
+    params["attachments"] = [{"path": "/tmp/a.png"}]
+    assert _validate(params, query=False) == "CONTENT_UNSUPPORTED"
+
+    params = dict(control_request().params)
+    params["media_items"] = [{"type": "image", "path": "/tmp/a.png"}]
+    assert _validate(params, query=False) == "CONTENT_UNSUPPORTED"
