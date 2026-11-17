@@ -7,9 +7,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterator, Mapping
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from typing import Any
 
@@ -75,6 +76,44 @@ def bind_request_subject(metadata: Mapping[str, Any] | None) -> Iterator[None]:
         yield
     finally:
         _REQUEST_PACKAGES.reset(token)
+
+
+async def _current_packages(bot_id: str) -> list[dict[str, Any]]:
+    """Expand the bot's current template bindings using the Gateway contract."""
+    try:
+        from agent_gateway.enterprise.capabilities.experts.bound_packages import packages_for_bot
+
+        packages = await packages_for_bot(bot_id)
+        return _packages_from_metadata({METADATA_KEY: packages})
+    except Exception:
+        logger.warning("[package_allowlist] background grants unavailable, treating as empty", exc_info=True)
+        return []
+
+
+@asynccontextmanager
+async def bind_background_subject(session_id: str, *, enabled: bool = True) -> AsyncIterator[None]:
+    """Bind fresh grants for the session's bot, never another task's authority."""
+    from jiuwenswarm.enterprise.edition import is_enterprise
+
+    if not enabled or not is_enterprise():
+        yield
+        return
+
+    from jiuwenswarm.server.runtime.session import session_metadata
+    from jiuwenswarm.common.request_identity import web_routing_identity
+
+    metadata = await asyncio.to_thread(session_metadata.get_session_metadata, session_id, cache_bust=True)
+    channel_metadata = metadata.get("channel_metadata") if isinstance(metadata, Mapping) else None
+    if isinstance(channel_metadata, Mapping):
+        subject_metadata = dict(channel_metadata)
+        # Stored request grants are historical; revocation must apply to the next turn.
+        bot_id = web_routing_identity(channel_metadata).get("bot_id", "")
+        subject_metadata[METADATA_KEY] = await _current_packages(bot_id)
+    else:
+        logger.warning("[package_allowlist] background session identity unavailable: %s", session_id)
+        subject_metadata = None
+    with bind_request_subject(subject_metadata):
+        yield
 
 
 def _request_packages() -> list[dict[str, Any]]:

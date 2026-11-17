@@ -57,7 +57,7 @@ def deep_member_group(extension_workspace):
     return params, root, relative, member
 
 
-def test_create_and_install_group_preserves_deep_external_skills(deep_member_group):
+def test_create_and_install_group_preserves_deep_external_skills(deep_member_group, path_limits):
     params, root, relative, _ = deep_member_group
     assert catalog.create_agent_group(params) == {"id": _GROUP_ID}
     package = root / _GROUP_ID
@@ -72,7 +72,7 @@ def test_create_and_install_group_preserves_deep_external_skills(deep_member_gro
 
 
 @pytest.mark.parametrize("failure", ["copy", "validation", "registration"])
-def test_group_creation_cleans_deep_trees_after_failure(deep_member_group, monkeypatch, failure):
+def test_group_creation_cleans_deep_trees_after_failure(deep_member_group, monkeypatch, path_limits, failure):
     import openjiuwen.agent_teams.experts as experts
 
     params, root, _, _ = deep_member_group
@@ -113,9 +113,15 @@ def test_group_creation_still_rejects_deep_symlinks(deep_member_group, tmp_path)
     assert not list(root.glob(".ag_*"))
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Requires native Windows filesystem APIs")
-@pytest.mark.parametrize("failure", [None, "copy", "validation", "registration"])
-def test_windows_group_copy_does_not_depend_on_long_paths_registry(deep_member_group, monkeypatch, failure):
+@pytest.fixture(params=["native", "legacy-windows"])
+def path_limits(request, monkeypatch):
+    """Run each test with native paths and, on Windows, legacy 248-char limits."""
+    if request.param == "native":
+        yield
+        return
+    if sys.platform != "win32":
+        pytest.skip("Requires native Windows filesystem APIs")
+
     original_copy = shutil.copytree
 
     def check_path(path):
@@ -140,7 +146,4 @@ def test_windows_group_copy_does_not_depend_on_long_paths_registry(deep_member_g
     monkeypatch.setattr(shutil, "rmtree", guarded_method(shutil.rmtree))
     for name in ("mkdir", "read_text", "write_text", "rglob", "replace", "unlink"):
         monkeypatch.setattr(Path, name, guarded_method(getattr(Path, name)))
-    if failure is None:
-        test_create_and_install_group_preserves_deep_external_skills(deep_member_group)
-    else:
-        test_group_creation_cleans_deep_trees_after_failure(deep_member_group, monkeypatch, failure)
+    yield

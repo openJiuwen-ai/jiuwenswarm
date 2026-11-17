@@ -21,6 +21,10 @@ function isDuplicate(prompts: readonly string[], index: number): boolean {
   return value.length > 0 && prompts.slice(0, index).some((item) => item.trim() === value);
 }
 
+export function hasDuplicateStarterPrompts(prompts: readonly string[]): boolean {
+  return prompts.some((_, index) => isDuplicate(prompts, index));
+}
+
 interface StarterPromptsProps {
   prompts: readonly string[];
   onChange: (prompts: string[]) => void;

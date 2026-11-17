@@ -37,15 +37,17 @@ import datetime
 import shutil
 import socket
 import stat
+import threading
 import time
 import zipfile
 from pathlib import Path
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Optional
 import logging
-from logging.handlers import BaseRotatingHandler
+from logging.handlers import BaseRotatingHandler, RotatingFileHandler
 import portalocker
 from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
 
 from e2a.logging_config import (
     LOGGING_LEVEL_FIELDS,
@@ -58,6 +60,8 @@ from jiuwenswarm.enterprise import is_enterprise
 
 _LOG_FILE_MAX_BYTES = 20 * 1024 * 1024
 _LOG_FILE_BACKUP_COUNT = 20
+_JSONL_LOG_LOCK = threading.Lock()
+
 
 # gateway 支持独立的日志目录（与其余组件日志分离），轮转归档文件同样落在该目录下。
 # 默认不启用（gateway.log 与其它日志同目录），由环境变量 AGENTOS_GATEWAY_LOG_DIR 指定，
@@ -464,6 +468,15 @@ def get_user_workspace_dir() -> Path:
     return _workspace_base_dir
 
 
+def get_infra_data_dir() -> Path:
+    """System-data root for code restored with enterprise team mode.
+
+    Develop keeps one data root. Sockets, update files, and team-control
+    paths stay under the user workspace instead of an ``infra/`` partition.
+    """
+    return get_user_workspace_dir()
+
+
 
 
 # Cache for resolved paths
@@ -564,6 +577,18 @@ def _resolve_preferred_language(
         except Exception as e:
             logger.error(f"Failed to load config.yaml: {e}")
     return "zh"
+
+
+def _uses_jiuwen_memory(config_path: Path) -> bool:
+    """Read the builtin memory provider during workspace bootstrap."""
+    if not config_path.is_file():
+        return False
+    try:
+        with config_path.open(encoding="utf-8") as config_file:
+            config = YAML(typ="safe").load(config_file) or {}
+        return str(config["memory"]["builtin"]["provider"]).strip() == "jiuwen"
+    except (KeyError, TypeError, ValueError, OSError, YAMLError):
+        return False
 
 
 def _is_interactive() -> bool:
@@ -1243,8 +1268,9 @@ def prepare_workspace(
         (f"AGENT{suffix}.md", "AGENT.md"),
         (f"IDENTITY{suffix}.md", "IDENTITY.md"),
         (f"SOUL{suffix}.md", "SOUL.md"),
-        (f"memory/MEMORY{suffix}.md", "memory/MEMORY.md"),
     ]
+    if not _uses_jiuwen_memory(config_yaml_dest):
+        multilang_files.append((f"memory/MEMORY{suffix}.md", "memory/MEMORY.md"))
     for src_name, dst_name in multilang_files:
         src_path = template_agent_workspace / src_name
         dst_path = deepagent_workspace / dst_name
@@ -2487,6 +2513,104 @@ def get_checkpoint_dir() -> Path:
 def get_logs_dir() -> Path:
     _migrate_legacy_checkpoint_and_logs()
     return get_agent_root_dir() / ".logs"
+
+
+def append_jsonl_log(
+    path: Path,
+    record: dict[str, Any],
+    *,
+    max_bytes: int = _LOG_FILE_MAX_BYTES,
+    backup_count: int = _LOG_FILE_BACKUP_COUNT,
+) -> None:
+    """Append one JSON record with bounded backups and cross-process rotation.
+
+    Use the same numbered rotation as Worker logs. Open and close the handler
+    under the file lock so other processes cannot retain a rotated file handle.
+    A single oversized record is kept intact and rotated on the next append.
+    """
+    line = json.dumps(record, ensure_ascii=False, default=str, separators=(",", ":")) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _JSONL_LOG_LOCK, portalocker.Lock(str(path) + ".lock", mode="a", timeout=1):
+        handler = RotatingFileHandler(path, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
+        try:
+            size = path.stat().st_size
+            added_bytes = len(line.encode("utf-8")) + len(os.linesep) - 1
+            rotation_enabled = max_bytes > 0 and backup_count > 0
+            if rotation_enabled and size and size + added_bytes > max_bytes:
+                handler.doRollover()
+            handler.stream.write(line)
+            handler.flush()
+        finally:
+            handler.close()
+
+
+def configure_openjiuwen_runtime_logging() -> None:
+    """Point openjiuwen_runtime file logs at the current log directory.
+
+    The SDK resolves its file handler relative to the process cwd. Call this
+    before the first ``get_logger()``. Failures are logged and swallowed.
+    """
+    try:
+        from openjiuwen_runtime.foundation.log import setup_logging
+
+        setup_logging(
+            log_file=str(get_logs_dir() / "runtime" / "openjiuwen_runtime.log")
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("openjiuwen runtime logging bootstrap failed: %s", exc)
+
+
+def configure_openjiuwen_core_logging(*, suppress_level: int | None = None) -> bool:
+    """Point openjiwen core logs at the current log directory.
+
+    When ``config/logging.yaml`` exists it is loaded as-is. Otherwise a
+    built-in config writes under :func:`get_logs_dir`. Failures are logged
+    and swallowed.
+
+    Args:
+        suppress_level: Level applied to every core logger when the user does
+            not manage ``logging.yaml``. ``None`` leaves the built-in level.
+
+    Returns:
+        True when the user's ``logging.yaml`` was applied.
+    """
+    user_managed = False
+    logging_yaml = get_config_dir() / "logging.yaml"
+    if logging_yaml.exists():
+        try:
+            from openjiuwen.core.common.logging.log_config import configure_log
+
+            configure_log(str(logging_yaml))
+            user_managed = True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "openjiwen core logging: failed to load %s; using built-in config: %s",
+                logging_yaml,
+                exc,
+            )
+    if not user_managed:
+        try:
+            from openjiuwen.core.common.logging.log_config import configure_log_config
+
+            configure_log_config({
+                "backend": "default",
+                "level": "INFO",
+                "log_path": f"{get_logs_dir() / 'core'}/",
+                "log_file": "jiuwen.log",
+                "output": ["console", "file"],
+                "structured_output_format": "json",
+                "interface_log_file": "interface/jiuwen_interface.log",
+                "prompt_builder_interface_log_file": "interface/jiuwen_prompt_builder_interface.log",
+                "performance_log_file": "performance/jiuwen_performance.log",
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("openjiwen core logging bootstrap failed: %s", exc)
+        if suppress_level is not None:
+            from openjiuwen.core.common.logging import LogManager
+
+            for core_logger in LogManager.get_all_loggers().values():
+                core_logger.set_level(suppress_level)
+    return user_managed
 
 
 def get_gateway_log_dir() -> Optional[Path]:

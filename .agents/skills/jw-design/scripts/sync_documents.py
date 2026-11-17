@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-import datetime as dt
 import os
 from pathlib import Path
 import re
@@ -164,11 +163,18 @@ def document_modules(doc: Document) -> list[str]:
             name = name.removeprefix(_MODULE_PREFIX)
         if name and name not in names:
             names.append(name)
-    return names or ["未分类"]
+    return names or [generate_index.UNCLASSIFIED]
 
 
 def index_row(doc: Document, parent: Path, designs: dict[str, Document]) -> str:
-    """Render one source document without altering author or design metadata."""
+    """Render one source document without altering author or design metadata.
+
+    The module column is omitted because rows are already grouped by module and a
+    cross-module document is repeated in every group; listing modules again would
+    make one metadata edit rewrite every copy of the row. Code files stay in the
+    source frontmatter only: they are long, change often and would be repeated
+    for every module group.
+    """
     data = doc.metadata
     label = cell(data.get("id", doc.path.stem))
     author = cell(data.get("author")) if data.get("author") else "待确认"
@@ -178,41 +184,45 @@ def index_row(doc: Document, parent: Path, designs: dict[str, Document]) -> str:
         cell(data.get("type", "说明")),
         cell(data.get("title")),
         author,
-        cell(data.get("modules")),
-        cell(data.get("files")),
         relation,
     ]
     return "| " + " | ".join(fields) + " |"
 
 
-def render_index(path: Path, title: str, docs: list[Document], identity: GitIdentity, designs: dict[str, Document]) -> str:
-    """Generate module navigation and document listings without global totals."""
-    metadata = generate_index.index_metadata(path, title, identity)
-    header = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).rstrip()
+def render_index(path: Path, title: str, docs: list[Document], designs: dict[str, Document]) -> str:
+    """Generate module navigation and document listings without global totals.
+
+    Args:
+        path: Target INDEX.md path; links are rendered relative to its directory.
+        title: Index title used for both frontmatter and heading.
+        docs: Source documents to list.
+        designs: Design documents keyed by id, used to resolve design links.
+    """
     unique_docs = list({doc.path: doc for doc in docs}.values())
     grouped: dict[str, list[Document]] = {}
     for doc in unique_docs:
         for name in document_modules(doc):
             grouped.setdefault(name, []).append(doc)
-    names = sorted(grouped, key=lambda name: (name == "未分类", name))
+    names = sorted(grouped, key=lambda name: (name == generate_index.UNCLASSIFIED, name))
+    columns = ["ID / 文档", "类型", "标题", "作者", "关联 D"]
     lines = [
-        f"---\n{header}\n---", "", f"# {title}", "",
+        generate_index.index_header(title).rstrip(), "", f"# {title}", "",
         "由 sync_documents.py 从文档 frontmatter 自动生成；请修改源文档后重新生成，不手工维护。", "",
         "按模块分组；跨模块文档在各相关分组展示。", "",
         "## 模块导航", "", "| 模块 |", "|---|",
     ]
-    for number, name in enumerate(names, start=1):
-        lines.append(f"| [{cell(name)}](#module-{number}) |")
+    for name in names:
+        lines.append(f"| [{cell(name)}](#{generate_index.module_anchor(name)}) |")
     if not names:
         lines.extend(["| — |", "", "暂无文档。"])
     else:
         lines.append("")
     type_order = {"D": 0, "F": 1, "B": 2, "S": 3}
-    for number, name in enumerate(names, start=1):
+    for name in names:
         lines.extend([
-            f'<a id="module-{number}"></a>', "", f"## {cell(name)}", "",
-            "| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |",
-            "|---|---|---|---|---|---|---|",
+            f'<a id="{generate_index.module_anchor(name)}"></a>', "", f"## {cell(name)}", "",
+            "| " + " | ".join(columns) + " |",
+            "|" + "|".join(["---"] * len(columns)) + "|",
         ])
         ordered = sorted(grouped[name], key=lambda doc: (
             type_order.get(str(doc.metadata.get("type")), 4),
@@ -246,8 +256,10 @@ def synchronize(root: Path, identity: GitIdentity, current_document: Path | None
             designs[identifier] = doc
     for section in ("features", "bugfix", "specs"):
         path = root / section / "INDEX.md"
-        writes[path] = render_index(path, _NAMES[section] + "索引", [doc for doc in docs if doc.section == section], identity, designs)
-    writes[root / "INDEX.md"] = render_index(root / "INDEX.md", "D/F/B/S 文档总索引", [doc for doc in docs if doc.section != "testing"], identity, designs)
+        section_docs = [doc for doc in docs if doc.section == section]
+        writes[path] = render_index(path, _NAMES[section] + "索引", section_docs, designs)
+    root_docs = [doc for doc in docs if doc.section != "testing"]
+    writes[root / "INDEX.md"] = render_index(root / "INDEX.md", "D/F/B/S 文档总索引", root_docs, designs)
     design_root = root / "designs"
     if design_root.is_dir():
         records = lib_frontmatter.iter_docs(design_root)
@@ -256,15 +268,8 @@ def synchronize(root: Path, identity: GitIdentity, current_document: Path | None
             if record.path in by_path:
                 record.fm = by_path[record.path].metadata
                 record.parse_error = None
-        timestamp = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).isoformat(timespec="minutes")
-        index_body = generate_index.build_index(records, timestamp)
-        design_index_metadata = generate_index.index_metadata(design_root / "INDEX.md", "设计文档索引", identity)
-        header = yaml.safe_dump(design_index_metadata, allow_unicode=True, sort_keys=False).rstrip()
-        writes[design_root / "INDEX.md"] = f"---\n{header}\n---\n\n{index_body}"
+        writes[design_root / "INDEX.md"] = generate_index.render_design_index(records)
     for path, content in writes.items():
-        if path.exists() and generate_index.normalize(path.read_text(encoding="utf-8")) == generate_index.normalize(content):
-            # Only the generation timestamp would change: keep the file as is.
-            continue
         if not path.exists() or path.read_text(encoding="utf-8") != content:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")

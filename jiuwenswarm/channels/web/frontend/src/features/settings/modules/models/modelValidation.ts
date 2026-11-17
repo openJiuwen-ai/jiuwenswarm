@@ -83,7 +83,9 @@ export function validateModelDraft(
     else if (!apiKey && !hasUnchangedApiKey) errors.api_key = t('config.modelList.apiKeyRequired');
   }
 
-  const reasoning = resolveModelReasoning(catalog, preset, modelName, value.protocol);
+  const reasoning = value.vendor_selection === CUSTOM_VENDOR_SELECTION
+    ? null
+    : resolveModelReasoning(catalog, preset, modelName, value.protocol);
   if (!catalog.reasoning) {
     errors.reasoning_level = t('settingsPanel.models.validation.reasoningUnavailable');
   } else if (reasoning && !isReasoningLevelSupported(value.reasoning_level, reasoning)) {

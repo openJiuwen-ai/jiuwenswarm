@@ -88,7 +88,7 @@ test('preset protocol mapping uses only the exact server fields', () => {
     vendorSelectionKey('token_plan', 'alibaba'),
     catalog,
   );
-  assert.equal(draft.model_name, '');
+  assert.equal(draft.model_name, 'qwen-default');
   assert.equal(createModelDraft(undefined, catalog).protocol, 'openai');
   const openAi = modelDraftToEntry({ ...draft, alias: 'qwen-main', api_key: 'secret' }, undefined, catalog, true);
   assert.equal(openAi.model_provider, 'OpenAI');
@@ -108,6 +108,196 @@ test('preset protocol mapping uses only the exact server fields', () => {
   assert.equal(anthropic.model_provider, 'Anthropic');
   assert.equal(anthropic.api_base, 'https://anthropic.example');
   assert.equal('endpoint_profile' in anthropic, false);
+});
+
+test('empty api_base preset keeps the address editable and never overwrites a typed value', () => {
+  const catalogWithEmptyAddress = parseVendorCatalog({
+    reasoning,
+    token_plan: [preset()],
+    coding_plan: [preset({ plan: 'coding_plan', api_base: 'https://coding.example/v1' })],
+    custom_api: [preset({
+      vendor_key: 'opencode-go',
+      display_name: 'OpenCode Go',
+      plan: 'custom_api',
+      api_base: '',
+      endpoint_profile: null,
+      default_model: '',
+      model_options: [],
+      icon_key: 'opencode-go',
+      models_endpoint: null,
+      supports_anthropic: false,
+      anthropic_base: null,
+      anthropic_client_provider: null,
+    })],
+  });
+
+  const draft = applyVendorSelection(
+    createModelDraft(undefined, catalogWithEmptyAddress),
+    vendorSelectionKey('custom_api', 'opencode-go'),
+    catalogWithEmptyAddress,
+  );
+  assert.equal(draft.api_base, '');
+
+  const typed = {
+    ...draft,
+    alias: 'opencode-go',
+    api_key: 'sk-test-not-a-real-key',
+    model_name: 'deepseek-v4.1-flash',
+    api_base: 'https://opencode.ai/zen/go/v1',
+  };
+  const entry = modelDraftToEntry(typed, undefined, catalogWithEmptyAddress, true);
+  assert.equal(entry.api_base, 'https://opencode.ai/zen/go/v1');
+  assert.equal(entry.model_name, 'deepseek-v4.1-flash');
+  assert.equal(entry.vendor_key, 'opencode-go');
+  assert.equal(entry.plan, 'custom_api');
+  assert.equal('endpoint_profile' in entry, false);
+
+  const missing = validateModelDraft(
+    { ...typed, api_base: '', api_key: '' },
+    [],
+    undefined,
+    catalogWithEmptyAddress,
+    t,
+  );
+  assert.ok(missing.api_base);
+  assert.ok(missing.api_key);
+
+  const dialog = source('src/features/settings/modules/models/ModelDialog.tsx');
+  assert.match(dialog, /custom \|\| !preset\?\.api_base/);
+});
+
+test('switching to a user-addressed preset never inherits the previous vendor address', () => {
+  const catalogWithEmptyAddress = parseVendorCatalog({
+    reasoning,
+    token_plan: [preset()],
+    coding_plan: [preset({ plan: 'coding_plan', api_base: 'https://coding.example/v1' })],
+    custom_api: [preset({
+      vendor_key: 'opencode-go',
+      display_name: 'OpenCode Go',
+      plan: 'custom_api',
+      api_base: '',
+      endpoint_profile: null,
+      default_model: '',
+      model_options: [],
+      icon_key: 'opencode-go',
+      models_endpoint: null,
+      supports_anthropic: false,
+      anthropic_base: null,
+      anthropic_client_provider: null,
+    })],
+  });
+  const selection = vendorSelectionKey('custom_api', 'opencode-go');
+  const previousEntry = {
+    alias: 'prev',
+    model_name: 'prev',
+    api_base: 'https://previous.example/v1',
+    api_key: 'k',
+    model_provider: 'OpenAI',
+    vendor_key: 'alibaba',
+  };
+
+  // Editing an entry of another vendor and saving its untouched address: the
+  // old address must not follow, or the entry would keep addressing alibaba.
+  const inheritedEntry = modelDraftToEntry(
+    {
+      ...createModelDraft(previousEntry, catalogWithEmptyAddress),
+      vendor_selection: selection,
+    },
+    previousEntry,
+    catalogWithEmptyAddress,
+    false,
+  );
+  assert.equal(inheritedEntry.api_base, '');
+  assert.equal(inheritedEntry.vendor_key, 'opencode-go');
+
+  // The dialog clears the field on a vendor switch; saving that empty draft
+  // stays empty and requires the user to name an address.
+  const switchedEntry = modelDraftToEntry(
+    { ...applyVendorSelection(createModelDraft(undefined, catalogWithEmptyAddress), selection, catalogWithEmptyAddress), alias: 'x' },
+    previousEntry,
+    catalogWithEmptyAddress,
+    true,
+  );
+  assert.equal(switchedEntry.api_base, '');
+  assert.equal(switchedEntry.vendor_key, 'opencode-go');
+
+  // An address the user typed is theirs to keep, even after switching vendors:
+  // FR-002 accepts any usable OpenCode Go address, not just one the preset knows.
+  const typedEntry = modelDraftToEntry(
+    {
+      ...applyVendorSelection(createModelDraft(undefined, catalogWithEmptyAddress), selection, catalogWithEmptyAddress),
+      alias: 'x',
+      api_base: 'https://opencode.ai/zen/go/v1',
+    },
+    previousEntry,
+    catalogWithEmptyAddress,
+    true,
+  );
+  assert.equal(typedEntry.api_base, 'https://opencode.ai/zen/go/v1');
+
+  // A brand-new entry has no previous address to inherit anyway.
+  const freshEntry = modelDraftToEntry(
+    applyVendorSelection(createModelDraft(undefined, catalogWithEmptyAddress), selection, catalogWithEmptyAddress),
+    undefined,
+    catalogWithEmptyAddress,
+    true,
+  );
+  assert.equal(freshEntry.api_base, '');
+
+  // Editing an existing entry of the same vendor keeps the address it shows,
+  // which is how an already-configured OpenCode Go entry keeps working.
+  const sameVendorEntry = modelDraftToEntry(
+    {
+      ...createModelDraft(undefined, catalogWithEmptyAddress),
+      alias: 'oc',
+      vendor_selection: selection,
+      api_base: 'https://opencode.ai/zen/go/v1',
+    },
+    {
+      alias: 'oc',
+      model_name: 'oc-model',
+      api_base: 'https://opencode.ai/zen/go/v1',
+      api_key: 'k',
+      model_provider: 'OpenAI',
+      vendor_key: 'opencode-go',
+    },
+    catalogWithEmptyAddress,
+    false,
+  );
+  assert.equal(sameVendorEntry.api_base, 'https://opencode.ai/zen/go/v1');
+});
+
+test('opencode-go vendor label resolves in both locales and falls back to a custom icon', () => {
+  const labels = source('src/features/settings/modules/models/modelVendorLabels.ts');
+  assert.match(labels, /'opencode-go': 'opencode-go'/);
+
+  const zh = JSON.parse(source('src/i18n/locales/zh.json'));
+  const en = JSON.parse(source('src/i18n/locales/en.json'));
+  assert.equal(zh.settingsPanel.models.vendors['opencode-go'], 'OpenCode Go');
+  assert.equal(en.settingsPanel.models.vendors['opencode-go'], 'OpenCode Go');
+
+  const providers = source('src/assets/providers/index.ts');
+  assert.match(providers, /getVendorLogoUrl\(vendorKey: string\): string \| undefined/);
+  assert.match(providers, /getVendorLogoUrl\(vendorKey\) \?\? customModelIcon/);
+
+  // The provider dropdown renders its own logo lookup, so the fallback has to
+  // live there too. Without it a vendor with no bundled asset draws no <img>
+  // at all and the card looks like it has lost its icon.
+  const providerSelect = source('src/features/settings/modules/models/ModelProviderSelect.tsx');
+  assert.match(providerSelect, /getVendorLogoUrl\(selected\.preset\.vendor_key\) \?\? settingsCustomModelIcon/);
+  assert.match(providerSelect, /getVendorLogoUrl\(option\.preset\.vendor_key\) \?\? settingsCustomModelIcon/);
+
+  // The address field is empty for OpenCode Go, so the placeholder is the only
+  // thing telling the user what to type. The generic hint names api.openai.com.
+  assert.deepEqual(zh.settingsPanel.models.apiBasePlaceholders, {
+    'opencode-go': '例如：https://opencode.ai/zen/go/v1',
+  });
+  assert.deepEqual(en.settingsPanel.models.apiBasePlaceholders, {
+    'opencode-go': 'e.g. https://opencode.ai/zen/go/v1',
+  });
+
+  const dialog = source('src/features/settings/modules/models/ModelDialog.tsx');
+  assert.match(dialog, /getPresetApiBasePlaceholder\(preset\.vendor_key, t\)/);
 });
 
 test('model context windows stay editable and expose common presets', () => {
@@ -187,7 +377,7 @@ test('OpenAI account drafts use OAuth credentials while preserving the shared mo
   assert.equal(entry.api_key, '');
   assert.equal(entry.model_name, 'gpt-5.2-codex');
   assert.equal(entry.alias, 'my-codex');
-  assert.equal(entry.reasoning_level, 'high');
+  assert.equal(entry.reasoning_level, '');
   assert.equal('vendor_key' in entry, false);
   assert.equal('plan' in entry, false);
 });
@@ -647,7 +837,7 @@ test('Anthropic is rejected when the exact vendor preset does not support it', (
   assert.match(validateModelDraft(draft, [], undefined, restrictedCatalog, t).protocol, /anthropicUnavailable/);
 });
 
-test('custom vendor uses server reasoning data even when there are no built-in presets', () => {
+test('custom vendor clears and ignores reasoning data even when the catalog has protocol defaults', () => {
   const emptyCatalog = parseVendorCatalog({ reasoning, token_plan: [], coding_plan: [], custom_api: [] });
   const draft = {
     alias: 'custom-only',
@@ -661,10 +851,13 @@ test('custom vendor uses server reasoning data even when there are no built-in p
     context_window_tokens: '262144',
     is_default: false,
   };
-  assert.deepEqual(validateModelDraft(draft, [], undefined, emptyCatalog, t), {});
-  const entry = modelDraftToEntry(draft, undefined, emptyCatalog, true);
+  const historicalDraft = { ...draft, reasoning_level: 'high' };
+  assert.deepEqual(validateModelDraft(historicalDraft, [], undefined, emptyCatalog, t), {});
+  assert.equal(reconcileModelReasoning(historicalDraft, emptyCatalog).reasoning_level, '');
+  const entry = modelDraftToEntry(historicalDraft, undefined, emptyCatalog, true);
   assert.equal(entry.model_provider, 'Anthropic');
   assert.equal(entry.api_base, 'https://custom.example/v1');
+  assert.equal(entry.reasoning_level, '');
   assert.equal('vendor_key' in entry, false);
   assert.equal('plan' in entry, false);
   assert.match(
@@ -718,7 +911,9 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
   const operations = source('src/features/settings/modules/models/modelListOperations.ts');
   assert.match(page, /request<ModelResourceResult>\(\s*'models\.upsert'/);
   assert.match(page, /request\('models\.get', \{ model_id: nextDialog\.model\.model_id \}\)/);
-  assert.doesNotMatch(page, /models\.references|MODEL_SELECTION_REFERENCED/);
+  // References come back with a rejected delete; no separate references RPC.
+  assert.doesNotMatch(page, /models\.references/);
+  assert.match(page, /MODEL_SELECTION_REFERENCED/);
   assert.match(page, /formatModelSelectionReferenceScopes|extractModelSelectionReferences/);
   assert.match(page, /request\('models\.delete', \{ model_id: confirmation\.model\.model_id \}/);
   assert.doesNotMatch(page, /models\.replace_all/);
@@ -737,7 +932,7 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
   assert.match(page, /activeTab === 'jev'/);
   assert.match(page, /<JevSettings disabled=\{disabled\}/);
   assert.match(definition, /defaultModelSettingsTab: ModelSettingsTabId = 'models'/);
-  assert.match(tabLayout, /const \[activeTab, setActiveTab\] = useState<TabId>\(defaultTab\)/);
+  assert.match(tabLayout, /const \[activeTab, setActiveTab\] = useState<TabId>\(\(\) =>[\s\S]*?\?\? defaultTab,/);
   assert.match(tabLayout, /value: tab\.id,[\s\S]*label: t\(tab\.labelKey\)/);
   assert.match(tabLayout, /suffix: tab\.helpKey \? <HelpTips content=\{t\(tab\.helpKey\)\} size="large" \/> : undefined/);
   assert.match(page, /void loadCatalog\(\);[\s\S]{0,180}setDialog\(nextDialog\)/);

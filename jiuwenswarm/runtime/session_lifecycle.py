@@ -196,8 +196,8 @@ class SessionRuntimeLifecyclePort(Protocol):
         context: SessionLifecycleContext,
         *,
         reason: str,
-    ) -> None:
-        """Stop one Team Session generation."""
+    ) -> bool:
+        """Return whether one Team Session generation was stopped."""
         ...
 
     async def publish_pause_completed(

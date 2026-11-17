@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 import { SaxesParser } from 'saxes';
 import { OoxmlArchiveLimitError, PRESENTATION_ARCHIVE_LIMITS, inspectOoxmlArchive, isOoxmlArchiveLimitError } from './ooxmlArchiveLimits';
+import { indexOoxmlArchiveParts, normalizeOoxmlPartName } from './ooxmlArchiveParts';
 import {
   MAX_PRESENTATION_UNCOMPRESSED_BYTES,
   type PresentationBounds,
@@ -62,16 +63,14 @@ const MEDIUM_STYLE_2_ACCENT_1 = '{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}';
 export async function parsePresentation(buffer: ArrayBuffer): Promise<PresentationData> {
   inspectOoxmlArchive(buffer, PRESENTATION_ARCHIVE_LIMITS);
   const archive = await JSZip.loadAsync(buffer, { checkCRC32: true, createFolders: false });
-  const entries = Object.values(archive.files).filter(entry => !entry.dir);
-  if (entries.length === 0) throw new Error('The presentation archive is empty');
+  const files = indexOoxmlArchiveParts(Object.values(archive.files));
+  if (files.size === 0) throw new Error('The presentation archive is empty');
 
-  const files = new Map<string, JSZip.JSZipObject>();
-  for (const entry of entries) {
-    if (entry.name.includes('..') || entry.name.startsWith('/')) throw new Error('The presentation contains an unsafe archive path');
-    files.set(entry.name, entry);
-  }
   const presentationFile = files.get('ppt/presentation.xml');
-  if (!presentationFile) throw new Error('This is not a PPTX or PPTM presentation');
+  if (!presentationFile) {
+    const sample = [...files.keys()].sort().slice(0, 8).join(', ');
+    throw new Error(`This is not a PPTX or PPTM presentation (entries: ${sample})`);
+  }
 
   let unpackedBytes = 0;
   const textCache = new Map<string, string>();
@@ -152,6 +151,7 @@ export async function parsePresentation(buffer: ArrayBuffer): Promise<Presentati
   const slideIdList = direct<XmlNode | undefined>(child(presentationXml, 'sldIdLst'));
   const slideReferences = direct<XmlNode[]>(child(slideIdList, 'sldId', true));
   const slides: PresentationSlide[] = [];
+  const slideFailures: string[] = [];
   for (let index = 0; index < slideReferences.length; index += 1) {
     const relationId = attr(slideReferences[index], 'r:id');
     const relationship = relationId ? presentationRels.get(relationId) : undefined;
@@ -161,10 +161,7 @@ export async function parsePresentation(buffer: ArrayBuffer): Promise<Presentati
     }
     try {
       const slidePart = await getSlidePart(resolveTarget('ppt/presentation.xml', relationship.target));
-      if (!slidePart) {
-        slides.push(invalidSlide(index));
-        continue;
-      }
+      if (!slidePart) throw new Error('the slide part is missing from the archive');
       const layoutRelationship = findRelationship(slidePart.part.rels, 'slideLayout');
       const layoutPart =
         layoutRelationship && !layoutRelationship.external ? await getPart(resolveTarget(slidePart.part.path, layoutRelationship.target)) : undefined;
@@ -177,9 +174,13 @@ export async function parsePresentation(buffer: ArrayBuffer): Promise<Presentati
       slides.push(await parseSlide(slidePart.part, index, theme, masterTemplate, layoutTemplate, readBlob, readXml));
     } catch (error) {
       if (isOoxmlArchiveLimitError(error)) throw error;
+      slideFailures.push(`slide ${index + 1} (${relationship.target}): ${error instanceof Error ? error.message : String(error)}`);
       slides.push(invalidSlide(index));
     }
   }
+  // A slide that cannot be read is rendered blank, so surface why in the console:
+  // the user only sees an incomplete deck and has nothing actionable to report.
+  if (slideFailures.length > 0) console.warn('Presentation preview skipped unreadable slides', slideFailures);
   if (slides.length === 0) throw new Error('The presentation contains no readable slides');
   return { width, height, slides };
 }
@@ -281,7 +282,9 @@ async function readRelationships(path: string, readXml: (path: string) => Promis
 
 function resolveTarget(sourcePath: string, target: string): string {
   const base = sourcePath.slice(0, sourcePath.lastIndexOf('/') + 1);
-  const parts = `${base}${target}`.split('/');
+  // Producers that store entry names with '\' also write '\' into relationship
+  // targets; resolve both spellings or the layout/master/theme chain breaks.
+  const parts = `${base}${normalizeOoxmlPartName(target)}`.split('/');
   const normalized: string[] = [];
   for (const part of parts) {
     if (!part || part === '.') continue;

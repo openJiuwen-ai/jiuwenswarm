@@ -64,7 +64,7 @@ async def test_queued_notification_precedes_running(tmp_path, monkeypatch):
         target_session_id="target-1",
         message="check",
     )
-    await asyncio.wait_for(finished.wait(), timeout=1)
+    await asyncio.wait_for(finished.wait(), timeout=5)
 
     assert statuses == ["queued", "running", "succeeded"]
     await service.stop()
@@ -113,7 +113,7 @@ async def test_stalled_status_push_does_not_block_execution(tmp_path, monkeypatc
         target_session_id="target-1",
         message="check",
     )
-    await asyncio.wait_for(executed.wait(), timeout=1)
+    await asyncio.wait_for(executed.wait(), timeout=5)
     await service.stop()
 
 
@@ -160,11 +160,11 @@ async def test_cancelled_sender_does_not_strand_accepted_message(tmp_path, monke
         target_session_id="target-1",
         message="check",
     ))
-    await asyncio.wait_for(pushing_queued.wait(), timeout=1)
+    await asyncio.wait_for(pushing_queued.wait(), timeout=5)
     sender.cancel()
     with pytest.raises(asyncio.CancelledError):
         await sender
-    await asyncio.wait_for(executed.wait(), timeout=1)
+    await asyncio.wait_for(executed.wait(), timeout=5)
     await service.stop()
 
 

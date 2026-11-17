@@ -124,7 +124,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--source", help="Local harmonyos-agent-skills checkout")
     parser.add_argument(
         "--target",
-        default="~/.jiuwenswarm/agent/workspace/skills",
+        default="~/.jiuwenswarm/domain/agent/workspace/skills",
         help="JiuwenSwarm skills directory",
     )
     parser.add_argument("--skill", help="Atomic Skill name to install")

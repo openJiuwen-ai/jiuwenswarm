@@ -285,15 +285,28 @@ test('installed cards keep the detect+install pair and not-installed ones show t
   // The path dropdown merges the persisted backend history between the saved
   // path and the PATH-detected candidate, so switching addresses never loses
   // the previous ones; explicit actions prune stale entries via
-  // external_cli.validate_paths (backend history, not localStorage).
+  // external_cli.validate_paths (backend history, not localStorage). The
+  // built-in (managed) CLI path reported by every detection result is offered
+  // last and stays constant across local-path switches (#6647) — switching to
+  // a local executable must not wipe the built-in entry from the dropdown.
   assert.match(
     sectionSource,
-    /for \(const path of \[cliPath, \.\.\.historyPaths, pathCandidates\[cliAgent\] \|\| '', detectedPath\]\)/,
+    /for \(const path of \[\s+cliPath,\s+\.\.\.historyPaths,\s+pathCandidates\[cliAgent\] \|\| '',\s+detectedPath,\s+builtinPaths\[cliAgent\] \|\| '',\s+\]\)/,
   );
   assert.match(
     sectionSource,
     /parseExternalCliPathHistories\(draftValues\[externalCliKey\(cliAgent, 'path_histories'\)\]\)/,
   );
+  // Built-in paths come from the detection payload (builtin_path), tracked
+  // per agent; no localStorage history may reappear here.
+  assert.match(sectionSource, /builtin_path \|\| prev\[cliAgent\]/);
+  // Selecting the managed built-in path switches back to built-in mode
+  // (use_builtin=true, no custom path) instead of pinning the installer-
+  // managed path as a custom cli_path, and mirrors the post-commit echo
+  // bookkeeping so the config echo never flashes "not installed" (!10307).
+  assert.match(sectionSource, /next === builtinPaths\[cliAgent\]/);
+  assert.match(sectionSource, /toggleAgentEnabled\(cliAgent, true, true, ''\)/);
+  assert.match(sectionSource, /observedCliPathsRef\.current\[cliAgent\] = ''/);
   assert.doesNotMatch(sectionSource, /rememberBuiltinPath|removePathHistory|PATH_HISTORY/);
   assert.doesNotMatch(sectionSource, /config\.externalCli\.removePath/);
 });
@@ -626,7 +639,13 @@ test('the detection hint distinguishes PATH lookup from executable validation', 
   assert.match(enLocale, /"redetectHint": "Re-check the current CLI executable and validate its version"/);
   assert.match(section, /title=\{t\('config\.externalCli\.redetectHint'\)\}/);
   assert.match(section, /disabled=\{disabled \|\| !onDetect \|\| editing\[cliAgent\]\}/);
-  assert.match(section, /!onCommitAgent \|\| agentInstalling \|\| editing\[cliAgent\]/);
+  // The install buttons freeze like their siblings while a commit runs or an
+  // install is in flight; the one-click install spinner must only reflect its
+  // own action (installInFlight), never a generic card commit — re-enabling an
+  // already-installed agent toggles the switch, not a re-install (#6620).
+  assert.match(section, /!onCommitAgent \|\| committing\[cliAgent\] \|\| installInFlight\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]/);
+  assert.match(section, /loading=\{installInFlight\[cliAgent\]\}/);
+  assert.doesNotMatch(section, /loading=\{committing\[cliAgent\]\}/);
   // The enable switch is disabled only when the CLI is not installed AND the
   // agent is already disabled — so a page reload (installed=false until the
   // auto-detect runs) does not lock the user out of an enabled agent, and a

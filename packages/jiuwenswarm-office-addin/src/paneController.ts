@@ -15,7 +15,9 @@ import { copy, reasonOf } from './copy';
 import type { DocumentId } from './documentIdentity';
 import type { ConnectionState, GatewayClient, GatewayEvent } from './gatewayClient';
 import type { ToolContract } from './appContract';
-import type { ResourceConversation, SessionFacade } from './sessionFacade';
+import {
+  imageDataUrl, type OpenDocument, type OutgoingImageAttachment, type ResourceConversation, type SessionFacade,
+} from './sessionFacade';
 import type { SlideSnapshots } from './slideSnapshots';
 
 /** The turns the transcript offers to undo, by their ``changes`` entry. */
@@ -31,8 +33,8 @@ export interface PaneState {
   conversation: Conversation;
   /** The document's conversations, the most recently active first. */
   conversations: readonly ResourceConversation[];
-  /** The user's attached documents' names, by their conversation. */
-  documents: ReadonlyMap<string, string>;
+  /** The user's attached documents, by their conversation. */
+  documents: ReadonlyMap<string, OpenDocument>;
   /** The shown conversation's history is on its way; its live events wait for it. */
   loadingHistory: boolean;
   connection: ConnectionState;
@@ -64,6 +66,10 @@ export class TaskPaneController {
   private undoNote: string | undefined;
   /** An undo is under way; a second click waits for none. */
   private undoing = false;
+  /** A conversation nobody has written in: created by this pane, or its history read back with no messages. */
+  private unwritten: SessionId | undefined;
+  /** A new conversation being created; a click meanwhile waits for it instead of creating another. */
+  private creating: Promise<void> | undefined;
   private readonly listeners = new Set<(state: PaneState) => void>();
 
   constructor(private readonly options: {
@@ -104,8 +110,14 @@ export class TaskPaneController {
     await this.options.attachment.start(latest);
   }
 
-  /** A new conversation of this document; the one it leaves stays in the list. */
+  /** A new conversation of this document; the one it leaves stays in the list. One nobody has written in is kept. */
   async newConversation(): Promise<void> {
+    if (this.shown && this.shown === this.unwritten) return;
+    this.creating ??= this.createConversation().finally(() => { this.creating = undefined; });
+    await this.creating;
+  }
+
+  private async createConversation(): Promise<void> {
     const { sessions, attachment } = this.options;
     let fresh: SessionId;
     try {
@@ -114,6 +126,7 @@ export class TaskPaneController {
       this.update({ alert: { tone: 'error', text: copy.newConversationFailed(reasonOf(error)) } });
       return;
     }
+    this.unwritten = fresh;
     await attachment.attach(fresh);
   }
 
@@ -139,18 +152,21 @@ export class TaskPaneController {
   }
 
   /**
-   * Send a message; while the turn runs, it stops the turn and the next one takes it as a supplement. After an
+   * Send a message and its images; while the turn runs, it stops the turn and the next one takes the text as a
+   * supplement. A supplement carries no images, so a message with images is refused until the turn ends. After an
    * undo the message starts with a line saying so, as the agent's slide ids went stale.
    */
-  async send(text: string): Promise<boolean> {
+  async send(text: string, images: readonly OutgoingImageAttachment[] = []): Promise<boolean> {
     const content = text.trim();
     const { attachment } = this.value;
-    if (!content || attachment.kind !== 'attached' || this.value.conversation.prompt) return false;
-    const { sessionId } = attachment;
     const running = this.value.conversation.turn === 'running';
+    if ((!content && !images.length) || (running && images.length) || attachment.kind !== 'attached'
+        || this.value.conversation.prompt) return false;
+    const { sessionId } = attachment;
     const note = this.undoNote;
     const message = note ? `${note}\n${content}` : content;
-    const sent = addUserMessage(running ? this.value.conversation : startTurn(this.value.conversation), content);
+    const sent = addUserMessage(running ? this.value.conversation : startTurn(this.value.conversation), content,
+      images.map(image => ({ filename: image.filename, src: imageDataUrl(image) })));
     const messageId = sent.entries[sent.entries.length - 1].id;
     this.update({ conversation: sent, alert: undefined });
     try {
@@ -159,9 +175,10 @@ export class TaskPaneController {
         // The next turn starts over from the message; a write the stopped turn still had queued would surprise it.
         this.options.attachment.cancelToolCalls();
       } else {
-        await this.options.sessions.sendText(sessionId, message, [], this.value.model);
+        await this.options.sessions.sendText(sessionId, message, images, this.value.model);
       }
       if (this.undoNote === note) this.undoNote = undefined;
+      if (this.unwritten === sessionId) this.unwritten = undefined;
       return true;
     } catch (error) {
       if (sessionId !== this.shown) return false;
@@ -263,7 +280,9 @@ export class TaskPaneController {
     const load = this.loads;
     let conversation: Conversation;
     try {
-      conversation = replayHistory(await this.options.sessions.history(sessionId));
+      const messages = await this.options.sessions.history(sessionId);
+      conversation = replayHistory(messages);
+      if (!messages.length && load === this.loads) this.unwritten = sessionId;
     } catch (error) {
       conversation = emptyConversation;
       if (load === this.loads) this.update({ alert: { tone: 'error', text: copy.historyFailed(reasonOf(error)) } });

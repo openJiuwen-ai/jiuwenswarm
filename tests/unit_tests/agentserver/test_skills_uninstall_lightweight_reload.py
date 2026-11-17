@@ -191,6 +191,7 @@ async def test_refresh_skill_rails_removes_deleted_skill_from_real_skill_use_rai
     adapter._skill_manager = _NoDisabledSkillManager()
     adapter._skill_rail = skill_rail
     adapter._skill_evolution_rail = None
+    adapter._instance_overrides = {}
 
     # refresh_skill_rails rebuilds scan roots via _skill_scan_dirs(), which
     # always prepends get_agent_skills_dir() (the global skills dir). Point

@@ -508,17 +508,6 @@ def create_voice_handlers(
                 "ignored_reason": "filler_only",
             })
         await asyncio.to_thread(log_asr, asr_event)
-        await asyncio.to_thread(log_event, {
-            "stage": "asr_ignored_filler" if ignored_filler else "asr_completed",
-            "request_id": str(req_id),
-            "transcript": transcript,
-            "has_transcript": bool(transcript.strip()),
-            **(
-                {"raw_transcript": raw_transcript, "ignored_reason": "filler_only"}
-                if ignored_filler
-                else {}
-            ),
-        })
         await channel.send_response(
             ws,
             req_id,
