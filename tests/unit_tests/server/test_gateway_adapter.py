@@ -299,6 +299,14 @@ def patched_sessions(monkeypatch: pytest.MonkeyPatch):
 
 
 class TestSessionAdapter:
+    @pytest.fixture(autouse=True)
+    def checkpoint_store(self, monkeypatch):
+        """Session cleanup owns its checkpoint state, including the real release hook."""
+        from openjiuwen.core.session.checkpointer import CheckpointerFactory
+        from openjiuwen.core.session.checkpointer.inmemory import InMemoryCheckpointer
+
+        monkeypatch.setattr(CheckpointerFactory, "_default_checkpointer", InMemoryCheckpointer())
+
     async def test_history_list_turns_is_handled_as_session_rpc(self, monkeypatch) -> None:
         from jiuwenswarm.agents.harness.common import session_ops_service
 
@@ -544,6 +552,7 @@ class TestSessionAdapter:
         """
         evict_calls: list[dict] = []
         metadata_reads: list[bool] = []
+        monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
         monkeypatch.setattr(
             "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
             lambda sid, cache_bust=False: (
@@ -561,6 +570,38 @@ class TestSessionAdapter:
         assert resp.payload["code"] == "AGENT_UNAVAILABLE"
         assert evict_calls == []
         assert metadata_reads == [True]
+
+    async def test_enterprise_offline_team_delete_purges_by_session(self, monkeypatch) -> None:
+        purged: list[dict] = []
+        monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+        monkeypatch.setenv("GATEWAY_DB_TYPE", "mysql")
+        monkeypatch.setenv("GATEWAY_DB_HOST", "127.0.0.1")
+        monkeypatch.setenv("GATEWAY_DB_PORT", "3306")
+        monkeypatch.setenv("GATEWAY_DB_USER", "team")
+        monkeypatch.setenv("GATEWAY_DB_PASSWORD", "team")
+        monkeypatch.setenv("GATEWAY_DB_NAME", "team")
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+            lambda sid, cache_bust=False: {"mode": "team"},
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.enterprise.team.session_cleanup.purge_team_for_deleted_session",
+            lambda **kwargs: purged.append(kwargs),
+        )
+        resp = await SessionAdapter().handle(
+            _request(
+                ReqMethod.SESSION_DELETE,
+                {"session_id": "sess-team-1", "user_id": "user-1"},
+                user_id="user-1",
+            )
+        )
+        assert resp.ok is False
+        assert resp.payload["code"] == "AGENT_UNAVAILABLE"
+        assert purged == [{
+            "session_id": "sess-team-1",
+            "owner_user_id": "user-1",
+            "require_owner": True,
+        }]
 
     async def test_session_delete_missing_offline_returns_runtime_result_without_evict(
         self, monkeypatch, tmp_path,

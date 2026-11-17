@@ -94,8 +94,8 @@ const cancelSessionTasks = async (targetSessionId: string) => {
         search_session_id: task.searchSessionId,
         action: "cancel",
       },
-      // Same timeout as the task panel's video.search.control request.
-      { timeoutMs: 30_000 },
+      // Core owns the control operation lifetime.
+      { timeoutMs: 0 },
     );
   const results = await Promise.allSettled([
     ...tasks.filter((task) => task.status === "queued").map(cancel),
@@ -459,6 +459,14 @@ export function TaskFullDuplexRuntime({
               success: entry.tool_success !== false && entry.status !== "failed",
               summary: entry.tool_summary,
             });
+            if (entry.status === "failed") {
+              normalized.success = false;
+              const receipt = nativePayload?.tool_result || nativePayload;
+              if (receipt && typeof receipt === "object" && "rendered_result" in receipt
+                && typeof receipt.rendered_result === "string") {
+                normalized.result = receipt.rendered_result;
+              }
+            }
             emitToolResult(
               targetSessionId,
               { ...normalized, toolCallId: id },
@@ -592,7 +600,7 @@ export function TaskFullDuplexRuntime({
               queue_version: task.queueVersion,
               before_job_id: beforeId,
             },
-            { timeoutMs: 30_000 },
+            { timeoutMs: 0 },
           );
           traceTaskUi("control_received", { action, job_id: task.id, ...result });
           acceptQueue(result);

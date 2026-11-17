@@ -44,7 +44,8 @@ export function mountPane(
     },
   });
   const composer = new Composer(words.noun, {
-    send: text => controller.send(text), stop: () => void controller.stop(), chooseModel: model => controller.chooseModel(model),
+    send: (text, images) => controller.send(text, images), stop: () => void controller.stop(),
+    chooseModel: model => controller.chooseModel(model),
   });
   const transcript = new Transcript(words, text => composer.fill(text), {
     undo: (...choice) => void controller.undo(...choice),

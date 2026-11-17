@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.runtime.session_provisioner import SessionCreateInput
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.server.runtime.agent_adapter.permission_runtime_state import SessionPermissionState
@@ -65,6 +66,7 @@ def router(monkeypatch):
             persist_skill_retrieval_session_profile=lambda: None,
             mark_session_mcp_reconcile_started=lambda: None,
             _register_session_agent_task=lambda _: None,
+            _requested_model_name=parent._requested_model_name,
         )
         child._is_session_live = lambda _: child.busy
         child._has_live_root_permission_owner = lambda _: False
@@ -222,6 +224,161 @@ async def test_busy_session_still_rejects_a_different_model_snapshot(router, dif
 
     with pytest.raises(RuntimeError, match="Model selection cannot change"):
         await parent._get_or_create_session_adapter("chat-a", model_selection=selection)
+
+
+@pytest.mark.asyncio
+async def test_selection_accepted_while_idle_survives_reload_on_busy_session(router):
+    parent, _, metadata, built, _ = router
+    parent._session_instance_mode = "team"
+    # An attach-only subscription builds the child before any model is chosen.
+    child = await parent._get_or_create_session_adapter("chat-a")
+    assert child._collaboration_model_selection is None
+
+    assert await parent._get_or_create_session_adapter("chat-a", model_selection=MODEL) is child
+    assert child._collaboration_model_selection.model_dump() == metadata["chat-a"]["model_selection"]
+    # A config reload rebuilds the model and empties the stable selection cache.
+    child._stable_selection_cache = {}
+    child._last_resolved_model = object()
+    child.busy = True
+
+    assert await parent._get_or_create_session_adapter("chat-a", model_selection=MODEL) is child
+    with pytest.raises(RuntimeError, match="Model selection cannot change"):
+        await parent._get_or_create_session_adapter("chat-a", model_selection={"type": "model", "id": "model-b"})
+    assert len(built) == 1
+    child.cleanup.assert_not_awaited()
+
+
+@pytest.fixture
+def legacy_router(router, monkeypatch):
+    from agent_gateway.common.model_selection import ModelSelection
+    from jiuwenswarm.common import model_catalog
+    from jiuwenswarm.server.runtime.session import model_selection_store
+
+    parent, config, metadata, _, _ = router
+    config["models"]["defaults"][0]["alias"] = "current-alias"
+    config["models"]["defaults"].append({
+        "model_id": "model-b", "is_default": False,
+        "model_client_config": {"model_name": "other"},
+    })
+    monkeypatch.setattr(model_catalog, "get_config", lambda: deepcopy(config))
+
+    def stored_selection(sid):
+        raw = metadata.get(sid, {}).get("model_selection")
+        return ModelSelection.model_validate(raw) if raw is not None else None
+
+    monkeypatch.setattr(model_selection_store, "get_session_model_selection", stored_selection)
+    return router
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["agent.work.normal", "team"])
+@pytest.mark.parametrize("legacy_name", ["current", "current-alias", "current#0"])
+async def test_idle_selection_accepts_same_legacy_model_while_busy(legacy_router, mode, legacy_name):
+    parent, _, metadata, built, _ = legacy_router
+    parent._session_instance_mode = mode
+    child = await parent._get_or_create_session_adapter("chat-a")
+    await parent._get_or_create_session_adapter("chat-a", model_selection=MODEL)
+    child._stable_selection_cache = {}
+    child._last_resolved_model = object()
+    child.busy = True
+    before = deepcopy(metadata)
+
+    assert await parent._get_or_create_session_adapter("chat-a", model_name=legacy_name) is child
+    assert await parent._get_or_create_session_adapter("chat-a") is child
+    assert child._collaboration_model_selection.id == MODEL["id"]
+    assert metadata == before
+    assert len(built) == 1
+    child.cleanup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_name", ["current", "current-alias", "current#0"])
+async def test_busy_legacy_name_resolves_catalog_when_session_choice_is_absent(legacy_router, legacy_name):
+    parent, _, metadata, _, _ = legacy_router
+    child = await parent._get_or_create_session_adapter("chat-a")
+    await parent._get_or_create_session_adapter("chat-a", model_selection=MODEL)
+    metadata["chat-a"]["model_selection"] = None
+    child.busy = True
+
+    assert await parent._get_or_create_session_adapter("chat-a", model_name=legacy_name) is child
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["agent.work.normal", "team"])
+@pytest.mark.parametrize("legacy_name", ["other", "other#1", "unknown"])
+async def test_busy_legacy_model_rejects_a_different_or_unresolved_model(legacy_router, mode, legacy_name):
+    parent, _, metadata, _, _ = legacy_router
+    parent._session_instance_mode = mode
+    child = await parent._get_or_create_session_adapter("chat-a")
+    await parent._get_or_create_session_adapter("chat-a", model_selection=MODEL)
+    metadata["chat-a"]["model_selection"] = None
+    child.busy = True
+
+    with pytest.raises(RuntimeError, match="Model selection cannot change"):
+        await parent._get_or_create_session_adapter("chat-a", model_name=legacy_name)
+
+
+@pytest.mark.asyncio
+async def test_busy_legacy_transport_uses_persisted_model_before_display_name(legacy_router):
+    parent, _, metadata, _, _ = legacy_router
+    parent._session_instance_mode = "team"
+    child = await parent._get_or_create_session_adapter("chat-a")
+    await parent._get_or_create_session_adapter("chat-a", model_selection=MODEL)
+    child.busy = True
+
+    assert await parent._get_or_create_session_adapter("chat-a", model_name="other") is child
+    metadata["chat-a"]["model_selection"] = {"type": "model", "id": "model-b"}
+    with pytest.raises(RuntimeError, match="Model selection cannot change"):
+        await parent._get_or_create_session_adapter("chat-a", model_name="current")
+
+
+@pytest.mark.asyncio
+async def test_busy_moa_snapshot_does_not_accept_legacy_ordinary_switch(legacy_router):
+    parent, *_ = legacy_router
+    child = await parent._get_or_create_session_adapter("chat-a", model_selection=GROUP)
+    assert child._moa_enabled
+    child.busy = True
+
+    with pytest.raises(RuntimeError, match="Model selection cannot change"):
+        await parent._get_or_create_session_adapter("chat-a", model_name="current")
+
+
+@pytest.mark.asyncio
+async def test_busy_legacy_group_route_uses_ordinary_team_routing(legacy_router):
+    parent, config, metadata, _, _ = legacy_router
+    parent._session_instance_mode = "team"
+    route = {**GROUP, "route_id": "primary"}
+    child = await parent._get_or_create_session_adapter("chat-a")
+    await parent._get_or_create_session_adapter("chat-a", model_selection=route)
+    assert not child._moa_enabled
+    child.busy = True
+
+    assert await parent._get_or_create_session_adapter("chat-a", model_name="current") is child
+    config["models"]["groups"][0]["routes"].append({"route_id": "other", "model_id": "model-b"})
+    metadata["chat-a"]["model_selection"] = {**GROUP, "route_id": "other"}
+    with pytest.raises(RuntimeError, match="Model selection cannot change"):
+        await parent._get_or_create_session_adapter("chat-a", model_name="current")
+
+
+@pytest.mark.asyncio
+async def test_busy_legacy_normalization_keeps_execution_request(legacy_router):
+    parent, *_ = legacy_router
+    child = await parent._get_or_create_session_adapter("chat-a")
+    await parent._get_or_create_session_adapter("chat-a", model_selection=MODEL)
+    child.busy = True
+    child._is_cron_execution = False
+    child._restored_permission_fresh_input = lambda _: False
+    resolver = Mock(wraps=child._requested_model_name)
+    child._requested_model_name = resolver
+    request = AgentRequest(
+        request_id="legacy-followup", session_id="chat-a", channel_id="web",
+        params={"model_name": "current"}, metadata={"source": "legacy-client"},
+    )
+
+    assert await parent._get_or_create_session_adapter(
+        "chat-a", model_name="current", execution_request=request,
+    ) is child
+    resolver.assert_called_once_with(request)
 
 
 @pytest.mark.asyncio

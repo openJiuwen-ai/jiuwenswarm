@@ -67,9 +67,7 @@ from jiuwenswarm.common.config import (
 )
 from jiuwenswarm.common.cua_config import is_cua_agent_enabled, is_cua_backend_available
 from jiuwenswarm.common.kv_cache_affinity_config import (
-    build_kv_cache_affinity_config,
-    get_kv_cache_control_model_client_config,
-    get_kv_cache_control_model_provider,
+    build_application_kv_cache_affinity_config,
 )
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     get_context_engine_enabled,
@@ -90,11 +88,7 @@ _CODE_MODES: frozenset[str] = frozenset(
 
 
 def _kv_cache_affinity_config(config: dict[str, Any]) -> KVCacheAffinityConfig:
-    return build_kv_cache_affinity_config(
-        config,
-        provider=get_kv_cache_control_model_provider(config),
-        model_client_config=get_kv_cache_control_model_client_config(config),
-    )
+    return build_application_kv_cache_affinity_config(config)
 
 
 # Rails common to both roles, in mount order. Each entry is a ``swarm.*``
@@ -919,7 +913,7 @@ def _code_subagent_spec(
     elif name == "statusline-setup":
         max_iterations = registry.DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS
     else:
-        max_iterations = react_cfg.get("max_iterations", 100)
+        max_iterations = react_cfg.get("max_iterations", 1000)
     if isinstance(sub_cfg, dict) and sub_cfg.get("max_iterations") is not None:
         max_iterations = sub_cfg["max_iterations"]
     if max_iterations is not None:

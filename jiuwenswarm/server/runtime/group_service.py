@@ -50,6 +50,19 @@ GROUP_METHODS = frozenset(
 _locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
+async def _finish_group_lock_io(task: asyncio.Task) -> asyncio.CancelledError | None:
+    """Defer cancellation until an uncancellable lock worker has actually finished."""
+    cancellation = None
+    while True:
+        try:
+            await asyncio.shield(task)
+            return cancellation
+        except asyncio.CancelledError as exc:
+            if task.cancelled():
+                raise
+            cancellation = exc
+
+
 @asynccontextmanager
 async def group_lock(group_id: str):
     """Keep writer ownership across processes, outside the deletable session directory."""
@@ -59,21 +72,16 @@ async def group_lock(group_id: str):
             get_agent_sessions_dir().parent / "group-locks" / group_id
         )
         acquisition = asyncio.create_task(asyncio.to_thread(guard.__enter__))
+        cancellation = await _finish_group_lock_io(acquisition)
         try:
-            await asyncio.shield(acquisition)
-        except asyncio.CancelledError:
-            # The worker can still acquire the lock after its caller is cancelled.
-            def release_abandoned(task: asyncio.Task[Path]) -> None:
-                if not task.cancelled() and task.exception() is None:
-                    guard.__exit__(None, None, None)
-
-            acquisition.add_done_callback(release_abandoned)
-            raise
-        try:
+            if cancellation is not None:
+                raise cancellation
             yield
         finally:
-            # Unlock and close without a suspension point that cancellation can interrupt.
-            guard.__exit__(None, None, None)
+            release = asyncio.create_task(asyncio.to_thread(guard.__exit__, None, None, None))
+            cancellation = await _finish_group_lock_io(release)
+            if cancellation is not None:
+                raise cancellation
 
 
 class GroupError(ValueError):

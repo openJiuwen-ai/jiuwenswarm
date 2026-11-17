@@ -32,6 +32,7 @@ export interface ApplicationTaskProgress {
   sequence: number;
   detail: string;
   createdAt: number;
+  finishedAt?: number;
   steps?: Array<{ id: string; content: string; status: string }>;
   queuePosition?: number;
   queueVersion?: number;
@@ -65,6 +66,9 @@ export const useApplicationTaskStore = create<{
         ...existing,
         ...task,
         createdAt: existing?.createdAt ?? task.createdAt,
+        finishedAt: terminal(task.status)
+          ? existing?.finishedAt ?? task.finishedAt ?? (existing && !terminal(existing.status) ? Date.now() : undefined)
+          : undefined,
         steps: task.steps ?? existing?.steps,
       };
       const next = existing ? tasks.map((item) => (item === existing ? updated : item)) : [...tasks, updated];
