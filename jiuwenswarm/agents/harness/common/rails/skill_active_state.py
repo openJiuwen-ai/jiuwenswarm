@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import os
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -37,6 +38,35 @@ _current_session_var: contextvars.ContextVar[Optional[str]] = contextvars.Contex
     "skill_active_session_id",
     default=None,
 )
+
+# 存储降级注册表（进程本地）：标记期间 get_session_active_skill 一律返回
+# None（本轮不注入技能凭据），以「少授权」方向达成与 fail-closed 同等的
+# 安全目标（不使用未清理的旧授权），但不中止整轮对话。跨进程的旧 state
+# 保护仍由磁盘文件本身承担。set 的 add/discard 在 GIL 下原子。
+_DEGRADED_SESSIONS: set[str] = set()
+
+
+def mark_skill_state_degraded(session_id: str) -> None:
+    _DEGRADED_SESSIONS.add(str(session_id or "").strip())
+
+
+def clear_skill_state_degraded(session_id: str) -> None:
+    _DEGRADED_SESSIONS.discard(str(session_id or "").strip())
+
+
+def is_skill_state_degraded(session_id: str) -> bool:
+    return str(session_id or "").strip() in _DEGRADED_SESSIONS
+
+
+class SkillStateUnavailable(AbortError):
+    """技能状态存储不可用（授权关键路径专用，携带 error_code 供上层映射）。
+
+    不带 cause：回调框架对带 cause 的 AbortError 会改抛 cause 本身，
+    这里让异常自身穿透 trigger() 边界，上层才能按 error_code 分类；
+    原始异常已由调用方以 WARNING 级别完整记录。
+    """
+
+    error_code = "skill_state_unavailable"
 
 
 @dataclass
@@ -70,12 +100,59 @@ def _shared_store(session_id: str):
     return store if isinstance(store, FileSkillGrantStore) else FileSkillGrantStore()
 
 
+def _storage_error_diag(session_id: str, exc: Exception) -> str:
+    """存储失败的 best-effort 诊断摘要（errno/winerror/只读属性）。
+
+    锁文件打不开可能由 ACL 拒绝、只读属性、句柄占用等多种磁盘原因
+    导致，诊断字段是归因的最低要求；诊断自身绝不允许再抛异常。
+    """
+    parts = [
+        f"errno={getattr(exc, 'errno', None)}",
+        f"winerror={getattr(exc, 'winerror', None)}",
+    ]
+    try:
+        from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.file_store import (
+            _PRIVATE_DIR,
+        )
+
+        store = _shared_store(session_id)
+        if store is not None:
+            directory = store.session_directory(session_id) / _PRIVATE_DIR
+            for label, target in (
+                ("dir", directory),
+                ("lock", directory / "state.lock"),
+            ):
+                try:
+                    st = target.stat()
+                    if os.name == "nt":
+                        readonly = bool(getattr(st, "st_file_attributes", 0) & 0x1)
+                    else:
+                        readonly = not (st.st_mode & 0o200)
+                    parts.append(f"{label}[exists readonly={readonly}]")
+                except OSError as stat_exc:
+                    parts.append(f"{label}[stat errno={stat_exc.errno}]")
+    except Exception:  # noqa: BLE001 - 诊断路径必须吞掉一切
+        pass
+    return " ".join(parts)
+
+
 def _update_state(
     session_id: str,
     update: Callable[[_SkillSessionState], None],
     *,
     revive_main: bool = False,
+    strict: bool = True,
 ) -> None:
+    """持久化活跃技能状态。
+
+    strict=True（默认，授权关键路径：skill_tool 激活/切换/skill_complete）：
+    存储失败抛 SkillStateUnavailable 中止本轮——授权状态不可信时不能
+    继续假装激活/完成已生效。
+    strict=False（记账路径：before_invoke 过期计数、显式去激活清理）：
+    存储失败降级——标记 degraded（本轮起不再注入技能凭据）并放行本轮。
+    两条路径的安全目标一致：不使用未清理的旧授权；降级路径以
+    get_session_active_skill 短路返回 None 达成同一目标。
+    """
     store = _shared_store(session_id)
     if store is None:
         logger.warning(
@@ -100,24 +177,91 @@ def _update_state(
         portalocker.exceptions.LockException,
     ) as exc:
         logger.warning(
-            "[SkillActiveStateRail] state update failed session=%s: %s",
-            session_id, exc,
+            "[SkillActiveStateRail] state update failed session=%s strict=%s "
+            "[SkillStateUnavailable] %s error=%r",
+            session_id, strict, _storage_error_diag(session_id, exc), exc,
         )
+        mark_skill_state_degraded(session_id)
+        if not strict:
+            # 记账型写入失败：降级放行。degraded 标记使本轮及后续轮次
+            # 不注入技能凭据（见 get_session_active_skill 短路）。
+            return
         # An ordinary exception is swallowed by the callback framework. Abort
-        # this turn so failed expiry/switch/completion cannot use the old state.
-        raise AbortError("Skill state storage unavailable; retry the request") from exc
+        # this turn so a failed switch/completion cannot pretend to take effect.
+        raise SkillStateUnavailable(
+            f"Skill state storage unavailable ({type(exc).__name__}: {exc}); "
+            "retry the request"
+        ) from None
+    else:
+        clear_skill_state_degraded(session_id)
 
 
 def clear_session_skill_state(session_id: str, *, local_only: bool = False) -> None:
     """Clear session files on explicit deactivation; adapter eviction has no state."""
     if local_only:
+        # Adapter eviction / teardown: clear the process-local degraded marker
+        # only when the on-disk state is confirmed clean. Unconditional clearing
+        # would resurrect stale credentials in the "write fails, read works"
+        # failure mode this fix targets: a successor adapter whose first invoke
+        # is a HITL resume (or runs with stale_invoke_limit <= 0) performs no
+        # bookkeeping write, so the marker would not be re-marked while the
+        # credential rail reads the stale active_skill from disk. This branch
+        # must never raise: it runs inside adapter eviction / teardown chains
+        # where an escaping exception would skip the remaining cleanup steps
+        # (e.g. _forget_skill_sleep_session, _sync_personal_context_rail).
+        store = _shared_store(session_id)
+        try:
+            if store is None or not store.session_directory(session_id).is_dir():
+                # Default session or deleted session directory: the disk state
+                # can no longer hold a stale active_skill.
+                clear_skill_state_degraded(session_id)
+                return
+            state = store.operate(
+                session_id, lambda _store, doc: doc.get("active_skill"), write=False
+            )
+        except (
+            OSError, ValueError, TypeError, RuntimeError,
+            portalocker.exceptions.LockException,
+        ) as exc:
+            # Read failed / cannot confirm the on-disk state is clean (invalid
+            # session id, unreadable state, unexpected payload): keep the
+            # degraded guard (fail-safe) and leave a diagnostic trail.
+            logger.warning(
+                "[SkillActiveStateRail] local_only clear skipped session=%s error=%r",
+                session_id, exc,
+            )
+            return
+        if state is None or (
+            isinstance(state, dict) and not state.get("active_skill")
+        ):
+            clear_skill_state_degraded(session_id)
         return
     store = _shared_store(session_id)
-    if store is not None and store.session_directory(session_id).is_dir():
-        store.update_active_skill_state(session_id, lambda _state: None)
+    if store is None:
+        return
+    try:
+        if store.session_directory(session_id).is_dir():
+            store.update_active_skill_state(session_id, lambda _state: None)
+    except (
+        OSError, ValueError, TypeError, RuntimeError,
+        portalocker.exceptions.LockException,
+    ) as exc:
+        # 清理失败：旧 state 留盘，标记 degraded 防止后续轮次注入旧凭据。
+        logger.warning(
+            "[SkillActiveStateRail] state clear failed session=%s "
+            "[SkillStateUnavailable] %s error=%r",
+            session_id, _storage_error_diag(session_id, exc), exc,
+        )
+        mark_skill_state_degraded(session_id)
+    else:
+        clear_skill_state_degraded(session_id)
 
 
 def get_session_active_skill(session_id: str) -> str | None:
+    if is_skill_state_degraded(session_id):
+        # 存储降级期间一律视为无激活技能：凭据注入等全部消费方经此
+        # 函数读取，短路即全局生效（fail-safe：少授权）。
+        return None
     store = _shared_store(session_id)
     if store is None:
         return None
@@ -377,7 +521,7 @@ class SkillActiveStateRail(DeepAgentRail):
                 return
             state.invokes_since_skill_tool += 1
 
-        _update_state(session_id, expire)
+        _update_state(session_id, expire, strict=False)
 
     async def before_invoke(self, ctx: AgentCallbackContext) -> None:
         session_id = self._resolve_session_id(ctx)
@@ -578,13 +722,17 @@ class SkillActiveStateRail(DeepAgentRail):
 
 __all__ = [
     "SkillActiveStateRail",
+    "SkillStateUnavailable",
     "_CHAT_SEND_SOURCE_EXTRA_KEY",
     "_DEFAULT_SESSION_ID",
     "_SESSION_ID_EXTRA_KEY",
     "_current_session_var",
     "adopt_default_active_skill",
     "clear_session_skill_state",
+    "clear_skill_state_degraded",
     "get_session_active_skill",
+    "is_skill_state_degraded",
+    "mark_skill_state_degraded",
     "resolve_skill_session_id",
     "resolve_stale_invoke_limit",
 ]

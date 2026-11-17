@@ -3,6 +3,7 @@
 """Tests for skill active-state lifecycle: activation, switch, completion, teardown."""
 
 import asyncio
+import logging
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -55,15 +56,50 @@ def session_files(tmp_path, monkeypatch):
     monkeypatch.setattr(file_store, "get_agent_sessions_dir", lambda: sessions)
     monkeypatch.setattr(file_store, "get_user_workspace_dir", lambda: tmp_path)
     token = skill_active_state._current_session_var.set(None)
+    skill_active_state._DEGRADED_SESSIONS.clear()
     yield
+    skill_active_state._DEGRADED_SESSIONS.clear()
     skill_active_state._current_session_var.reset(token)
     file_store._session_file_context.reset(context_token)
 
 
+class _LogCapture:
+    """In-memory log capture.
+
+    caplog 的捕获 handler 挂在 root logger 上，一旦进程内祖先 logger 被
+    设过 propagate=False（如导入 app_agentserver / setup_logging 后），
+    caplog.records 恒为空——日志断言必须挂在目标 logger 上的自定义
+    Handler 上（同 test_extra_tools_env.py 的结论）。
+    """
+
+    def __init__(self) -> None:
+        self.records: list[logging.LogRecord] = []
+
+    def add_record(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+    @property
+    def text(self) -> str:
+        return "\n".join(record.getMessage() for record in self.records)
+
+
+def _make_log_capture() -> tuple[_LogCapture, logging.Handler]:
+    capture = _LogCapture()
+    handler = logging.Handler()
+    handler.emit = capture.add_record
+    return capture, handler
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["timeout", "corruption"])
-async def test_state_write_failure_stops_callback_chain(monkeypatch, failure):
-    from openjiuwen.core.runner.callback.errors import AbortError
+@pytest.mark.parametrize("failure", ["permission", "timeout", "corruption"])
+async def test_before_invoke_storage_failure_degrades_instead_of_abort(
+    monkeypatch, failure
+):
+    """记账型写入失败（如 state.lock 被拒绝访问）不得中止整轮。
+
+    before_invoke 的过期计数是纯记账：存储失败时应降级放行本轮，
+    并以 degraded 标记阻断旧凭据注入，而不是抛 AbortError 中止回调链。
+    """
     from openjiuwen.core.runner.callback.framework import AsyncCallbackFramework
 
     from jiuwenswarm.agents.harness.common.rails import skill_active_state
@@ -78,6 +114,10 @@ async def test_state_write_failure_stops_callback_chain(monkeypatch, failure):
         (store.session_directory(sid) / ".skill_authorization/state.json").write_text("{")
     else:
         def fail_write(*_args, **_kwargs):
+            if failure == "permission":
+                exc = PermissionError(13, "Permission denied", "state.lock")
+                exc.winerror = 5
+                raise exc
             raise TimeoutError("injected lock timeout")
         monkeypatch.setattr(store, "update_active_skill_state", fail_write)
 
@@ -93,9 +133,447 @@ async def test_state_write_failure_stops_callback_chain(monkeypatch, failure):
     callbacks = AsyncCallbackFramework()
     await callbacks.register("before_invoke", rail.before_invoke, priority=10)
     await callbacks.register("before_invoke", use_credentials, priority=0)
-    with pytest.raises(AbortError, match="Skill state storage unavailable"):
-        await callbacks.trigger("before_invoke", ctx)
-    assert not later_callback
+    capture, handler = _make_log_capture()
+    skill_active_state.logger.addHandler(handler)
+    try:
+        await callbacks.trigger("before_invoke", ctx)  # 不得抛 AbortError
+    finally:
+        skill_active_state.logger.removeHandler(handler)
+
+    assert later_callback  # 本轮继续（降级而非中止）
+    assert get_session_active_skill(sid) is None  # degraded → 不注入旧凭据
+    assert "[SkillStateUnavailable]" in capture.text
+
+
+@pytest.mark.asyncio
+async def test_degraded_blocks_credential_injection_even_when_reads_work(monkeypatch):
+    """降级标记必须挡住「写坏读好」场景的旧凭据注入。
+
+    只有 update 写失败、读路径正常时，磁盘上仍是旧 active_skill——
+    若无 degraded 短路，注入 rail 会继续注入旧技能凭据，这正是
+    fail-closed 要防的「使用未清理的旧授权」。
+    """
+    from jiuwenswarm.agents.harness.common.rails import skill_active_state
+
+    sid = "officeclaw_degrade_inject_sess"
+    store = skill_active_state._shared_store(sid)
+    store.update_active_skill_state(
+        sid, lambda _: {"active_skill": "hwocr", "invokes_since_skill_tool": 0}
+    )
+    monkeypatch.setattr(skill_active_state, "_shared_store", lambda _sid: store)
+
+    def fail_write(*_args, **_kwargs):
+        raise PermissionError(13, "Permission denied", "state.lock")
+
+    monkeypatch.setattr(store, "update_active_skill_state", fail_write)
+
+    rail = SkillActiveStateRail(session_id=sid, sessions_root=store.sessions_root())
+    ctx = AgentCallbackContext(agent=MagicMock())
+    ctx.inputs = InvokeInputs(query="q", conversation_id=sid)
+    ctx.extra = {}
+    await rail.before_invoke(ctx)  # 触发降级
+
+    # 读路径未坏：直接读 store 仍能拿到旧 state
+    assert store.get_active_skill_state(sid)["active_skill"] == "hwocr"
+    # 但经 degraded 短路后，消费方一律视为无激活技能
+    assert get_session_active_skill(sid) is None
+
+    inject = SkillCredentialInjectionRail(
+        skill_envs={"hwocr": {"HWOCR_AK": "ak"}},
+        preset_session_id=sid,
+    )
+    bash_ctx = AgentCallbackContext(agent=MagicMock())
+    bash_ctx.inputs = ToolCallInputs(
+        tool_call=MagicMock(),
+        tool_name="bash",
+        tool_args={"command": "hwocr.exe general-text"},
+        tool_result=None,
+        tool_msg=None,
+    )
+    bash_ctx.extra = {}
+    await inject.before_tool_call(bash_ctx)
+    assert "env" not in bash_ctx.inputs.tool_args  # 未注入旧凭据
+
+
+@pytest.mark.asyncio
+async def test_degraded_cleared_after_storage_recovers(monkeypatch):
+    """存储恢复后，下一次成功写入自动解除 degraded，凭据注入恢复。"""
+    from jiuwenswarm.agents.harness.common.rails import skill_active_state
+
+    sid = "officeclaw_degrade_recover_sess"
+    store = skill_active_state._shared_store(sid)
+    store.update_active_skill_state(
+        sid, lambda _: {"active_skill": "hwocr", "invokes_since_skill_tool": 0}
+    )
+    real_update = store.update_active_skill_state
+    fail = {"on": True}
+
+    def flaky_update(sess, update, **kwargs):
+        if fail["on"]:
+            raise PermissionError(13, "Permission denied", "state.lock")
+        return real_update(sess, update, **kwargs)
+
+    monkeypatch.setattr(skill_active_state, "_shared_store", lambda _sid: store)
+    monkeypatch.setattr(store, "update_active_skill_state", flaky_update)
+
+    rail = SkillActiveStateRail(session_id=sid, sessions_root=store.sessions_root())
+    ctx = AgentCallbackContext(agent=MagicMock())
+    ctx.inputs = InvokeInputs(query="q", conversation_id=sid)
+    ctx.extra = {}
+    await rail.before_invoke(ctx)
+    assert get_session_active_skill(sid) is None  # degraded
+
+    fail["on"] = False  # 存储恢复
+    await rail.before_invoke(ctx)
+    assert get_session_active_skill(sid) == "hwocr"  # 解除降级，注入恢复
+
+
+@pytest.mark.asyncio
+async def test_local_only_clear_keeps_degraded_when_disk_state_stale(monkeypatch):
+    """盘上仍留有旧 active_skill 时，驱逐（local_only）不得清除 degraded。
+
+    「写失败读正常」失效面下（本修复针对的 state.lock 权限拒绝），磁盘
+    state 读出来仍是旧 active_skill——degraded 是唯一护栏；若驱逐时
+    无条件清除，重激活首轮（HITL resume / limit<=0 无记账写）不会重新
+    mark，凭据注入 rail 将读到旧 active_skill 注入旧授权（PR #10399
+    检视意见）。
+    """
+    from jiuwenswarm.agents.harness.common.rails import skill_active_state
+
+    sid = "officeclaw_degrade_evict_sess"
+    store = skill_active_state._shared_store(sid)
+    store.update_active_skill_state(
+        sid, lambda _: {"active_skill": "hwocr", "invokes_since_skill_tool": 0}
+    )
+    monkeypatch.setattr(skill_active_state, "_shared_store", lambda _sid: store)
+
+    def fail_write(*_args, **_kwargs):
+        raise PermissionError(13, "Permission denied", "state.lock")
+
+    monkeypatch.setattr(store, "update_active_skill_state", fail_write)
+    rail = SkillActiveStateRail(session_id=sid, sessions_root=store.sessions_root())
+    ctx = AgentCallbackContext(agent=MagicMock())
+    ctx.inputs = InvokeInputs(query="q", conversation_id=sid)
+    ctx.extra = {}
+    await rail.before_invoke(ctx)
+    assert skill_active_state.is_skill_state_degraded(sid)  # 已降级
+
+    clear_session_skill_state(sid, local_only=True)  # 适配器淘汰
+    # 盘上仍是旧 active_skill（读正常）：标记必须保留
+    assert store.get_active_skill_state(sid)["active_skill"] == "hwocr"
+    assert skill_active_state.is_skill_state_degraded(sid)
+    assert get_session_active_skill(sid) is None  # 护栏仍在
+
+
+@pytest.mark.asyncio
+async def test_local_only_clear_removes_degraded_when_disk_state_clean(monkeypatch):
+    """盘上 state 已确认干净（无 active_skill）时，驱逐清除 degraded 标记。
+
+    清理出口（防长期运行进程无界积累）：仅在能确认磁盘 state 干净时清除。
+    """
+    from jiuwenswarm.agents.harness.common.rails import skill_active_state
+
+    sid = "officeclaw_degrade_evict_clean"
+    store = skill_active_state._shared_store(sid)
+    store.update_active_skill_state(
+        sid, lambda _: {"active_skill": "hwocr", "invokes_since_skill_tool": 0}
+    )
+    monkeypatch.setattr(skill_active_state, "_shared_store", lambda _sid: store)
+    # 成功显式清理：盘上 active_skill 已清空
+    clear_session_skill_state(sid)
+    # 再手动标记（模拟另一路径写失败），盘上已无 active_skill
+    skill_active_state.mark_skill_state_degraded(sid)
+    assert store.get_active_skill_state(sid) is None  # 盘上干净
+
+    clear_session_skill_state(sid, local_only=True)  # 驱逐
+    assert not skill_active_state.is_skill_state_degraded(sid)  # 干净 → 清除
+
+
+@pytest.mark.asyncio
+async def test_local_only_clear_removes_degraded_when_session_dir_gone(monkeypatch):
+    """会话目录已删除时，驱逐清除 degraded 标记（磁盘已不可能持有旧 state）。"""
+    import shutil
+
+    from jiuwenswarm.agents.harness.common.rails import skill_active_state
+
+    sid = "officeclaw_degrade_evict_gone"
+    store = skill_active_state._shared_store(sid)
+    store.update_active_skill_state(
+        sid, lambda _: {"active_skill": "hwocr", "invokes_since_skill_tool": 0}
+    )
+    skill_active_state.mark_skill_state_degraded(sid)
+    monkeypatch.setattr(skill_active_state, "_shared_store", lambda _sid: store)
+    shutil.rmtree(store.session_directory(sid))
+
+    clear_session_skill_state(sid, local_only=True)  # 驱逐
+    assert not skill_active_state.is_skill_state_degraded(sid)
+
+
+@pytest.mark.asyncio
+async def test_local_only_clear_never_raises_on_invalid_session_id():
+    """非法 session id 的驱逐（local_only）不得抛异常（检视复审）。
+
+    session_directory 对非法 id（含 ``:`` / 超长 / 成员子会话 id）抛
+    ValueError；该分支运行在适配器淘汰 / teardown 链上，逃逸异常会
+    跳过 _forget_skill_sleep_session、_sync_personal_context_rail 等
+    后续清理步骤。必须捕获、保留护栏并留诊断日志。
+    """
+    from jiuwenswarm.agents.harness.common.rails import skill_active_state
+
+    sid = "bad:id"  # is_valid_session_id 不通过
+    skill_active_state.mark_skill_state_degraded(sid)
+    capture, handler = _make_log_capture()
+    skill_active_state.logger.addHandler(handler)
+    try:
+        clear_session_skill_state(sid, local_only=True)  # 不得抛
+    finally:
+        skill_active_state.logger.removeHandler(handler)
+
+    assert skill_active_state.is_skill_state_degraded(sid)  # 保留护栏
+    assert get_session_active_skill(sid) is None  # 护栏仍在
+    assert "local_only clear skipped" in capture.text  # 诊断日志
+
+
+@pytest.mark.asyncio
+async def test_local_only_clear_keeps_degraded_when_state_not_dict(monkeypatch):
+    """盘上 active_skill 被写成非 dict（历史脏数据）时：不抛、保留护栏。
+
+    不可确认的状态不得误判为干净，也不得让 AttributeError 逃逸出
+    淘汰 / teardown 清理链（检视复审）。
+    """
+    from jiuwenswarm.agents.harness.common.rails import skill_active_state
+
+    sid = "officeclaw_degrade_corrupt_sess"
+    store = skill_active_state._shared_store(sid)
+    store.update_active_skill_state(
+        sid, lambda _: {"active_skill": "hwocr", "invokes_since_skill_tool": 0}
+    )
+    # 历史脏数据：active_skill 被写成字符串
+    (store.session_directory(sid) / ".skill_authorization/state.json").write_text(
+        '{"active_skill": "corrupted"}', encoding="utf-8"
+    )
+    skill_active_state.mark_skill_state_degraded(sid)
+    monkeypatch.setattr(skill_active_state, "_shared_store", lambda _sid: store)
+
+    clear_session_skill_state(sid, local_only=True)  # 不得抛 AttributeError
+
+    assert skill_active_state.is_skill_state_degraded(sid)  # 不可确认 → 保留
+    assert get_session_active_skill(sid) is None  # 护栏仍在
+
+
+@pytest.mark.asyncio
+async def test_local_only_clear_keeps_degraded_when_read_fails(monkeypatch):
+    """读失败（无法确认盘上干净）时：不抛、保留护栏、记诊断日志。
+
+    锁超时等读失败与「盘上留旧 active_skill」同样不可确认为干净，
+    必须保留 degraded 护栏（fail-safe）并留 `local_only clear skipped`
+    日志（PR #10423 检视意见）。
+    """
+    from jiuwenswarm.agents.harness.common.rails import skill_active_state
+
+    sid = "officeclaw_degrade_read_fail_sess"
+    store = skill_active_state._shared_store(sid)
+    store.update_active_skill_state(
+        sid, lambda _: {"active_skill": "hwocr", "invokes_since_skill_tool": 0}
+    )
+    skill_active_state.mark_skill_state_degraded(sid)
+    monkeypatch.setattr(skill_active_state, "_shared_store", lambda _sid: store)
+
+    def fail_read(*_args, **_kwargs):
+        raise TimeoutError("injected lock timeout")
+
+    monkeypatch.setattr(store, "operate", fail_read)
+
+    capture, handler = _make_log_capture()
+    skill_active_state.logger.addHandler(handler)
+    try:
+        clear_session_skill_state(sid, local_only=True)  # 不得抛
+    finally:
+        skill_active_state.logger.removeHandler(handler)
+
+    assert skill_active_state.is_skill_state_degraded(sid)  # 保留护栏
+    assert get_session_active_skill(sid) is None  # 护栏仍在
+    assert "local_only clear skipped" in capture.text  # 诊断日志
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reactivation", ["limit_disabled", "hitl_resume"])
+async def test_stale_degraded_marker_survives_eviction_and_blocks_credentials(
+    monkeypatch, reactivation
+):
+    """去激活清理失败 → 驱逐 → 重激活（limit 关闭 / resume，读成功写失败）→ 不注入凭据。
+
+    PR #10399 检视要求的完整失效链回归：驱逐清除 degraded 的前提必须是
+    「盘上 state 已确认干净」，否则写坏读好 + 无记账写的重激活首轮会
+    注入旧技能凭据。
+    """
+    from jiuwenswarm.agents.harness.common.rails import skill_active_state
+
+    sid = "officeclaw_degrade_revive_sess"
+    store = skill_active_state._shared_store(sid)
+    store.update_active_skill_state(
+        sid, lambda _: {"active_skill": "hwocr", "invokes_since_skill_tool": 0}
+    )
+    monkeypatch.setattr(skill_active_state, "_shared_store", lambda _sid: store)
+
+    def fail_write(*_args, **_kwargs):
+        raise PermissionError(13, "Permission denied", "state.lock")
+
+    monkeypatch.setattr(store, "update_active_skill_state", fail_write)
+
+    # 1) 显式去激活清理失败 → degraded（盘上留旧 active_skill）
+    clear_session_skill_state(sid)
+    assert skill_active_state.is_skill_state_degraded(sid)
+
+    # 2) 适配器驱逐（local_only）→ 标记必须保留（盘上 state 未确认干净）
+    clear_session_skill_state(sid, local_only=True)
+    assert skill_active_state.is_skill_state_degraded(sid)
+
+    # 3) 同进程重激活：首轮无记账写（limit<=0 或 HITL resume），不重新 mark
+    if reactivation == "limit_disabled":
+        rail = SkillActiveStateRail(
+            session_id=sid, sessions_root=store.sessions_root(), stale_invoke_limit=0
+        )
+        ctx = AgentCallbackContext(agent=MagicMock())
+        ctx.inputs = InvokeInputs(query="next", conversation_id=sid)
+        ctx.extra = {}
+    else:
+        rail = SkillActiveStateRail(session_id=sid, sessions_root=store.sessions_root())
+        ctx = AgentCallbackContext(agent=MagicMock())
+        run_context = MagicMock()
+        run_context.extra = {"chat_send_source": "permission_interrupt"}
+        ctx.inputs = InvokeInputs(
+            query="resume", conversation_id=sid, run_context=run_context
+        )
+        ctx.extra = {}
+    await rail.before_invoke(ctx)  # 无记账写
+
+    # 4) 读成功写失败：盘上旧 active_skill 仍可读，但 degraded 护栏挡住注入
+    assert store.get_active_skill_state(sid)["active_skill"] == "hwocr"  # 读正常
+    assert get_session_active_skill(sid) is None  # 短路
+
+    inject = SkillCredentialInjectionRail(
+        skill_envs={"hwocr": {"HWOCR_AK": "ak"}},
+        preset_session_id=sid,
+    )
+    bash_ctx = AgentCallbackContext(agent=MagicMock())
+    bash_ctx.inputs = ToolCallInputs(
+        tool_call=MagicMock(),
+        tool_name="bash",
+        tool_args={"command": "hwocr.exe general-text"},
+        tool_result=None,
+        tool_msg=None,
+    )
+    bash_ctx.extra = {}
+    await inject.before_tool_call(bash_ctx)
+    assert "env" not in bash_ctx.inputs.tool_args  # 未注入旧凭据
+
+
+@pytest.mark.asyncio
+async def test_clear_session_state_storage_failure_degrades(monkeypatch):
+    """clear_session_skill_state 显式清理失败：降级标记而非抛异常中止。"""
+    from jiuwenswarm.agents.harness.common.rails import skill_active_state
+
+    sid = "officeclaw_degrade_clear_sess"
+    store = skill_active_state._shared_store(sid)
+    store.update_active_skill_state(
+        sid, lambda _: {"active_skill": "hwocr", "invokes_since_skill_tool": 0}
+    )
+    monkeypatch.setattr(skill_active_state, "_shared_store", lambda _sid: store)
+
+    def fail_write(*_args, **_kwargs):
+        raise PermissionError(13, "Permission denied", "state.lock")
+
+    monkeypatch.setattr(store, "update_active_skill_state", fail_write)
+
+    capture, handler = _make_log_capture()
+    skill_active_state.logger.addHandler(handler)
+    try:
+        clear_session_skill_state(sid)  # 不得抛
+    finally:
+        skill_active_state.logger.removeHandler(handler)
+
+    assert skill_active_state.is_skill_state_degraded(sid)
+    assert get_session_active_skill(sid) is None  # degraded 短路
+    assert "[SkillStateUnavailable]" in capture.text
+
+
+@pytest.mark.asyncio
+async def test_clear_session_state_success_clears_degraded(monkeypatch):
+    """显式清理成功后解除 degraded 标记。"""
+    from jiuwenswarm.agents.harness.common.rails import skill_active_state
+
+    sid = "officeclaw_degrade_clear_ok_sess"
+    store = skill_active_state._shared_store(sid)
+    store.update_active_skill_state(
+        sid, lambda _: {"active_skill": "hwocr", "invokes_since_skill_tool": 0}
+    )
+    monkeypatch.setattr(skill_active_state, "_shared_store", lambda _sid: store)
+    skill_active_state.mark_skill_state_degraded(sid)
+    assert skill_active_state.is_skill_state_degraded(sid)
+
+    clear_session_skill_state(sid)  # 清理成功
+    assert not skill_active_state.is_skill_state_degraded(sid)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", ["skill_tool", "skill_complete"])
+async def test_strict_paths_storage_failure_raises_skill_state_unavailable(
+    monkeypatch, tool
+):
+    """授权关键路径（激活/完成）保持 fail-closed，但异常携带专用 error_code。
+
+    SkillStateUnavailable 不带 cause：回调框架对带 cause 的 AbortError
+    会改抛 cause 本身，这里让异常自身穿透 trigger() 边界，上层才能按
+    error_code 分类。
+    """
+    from openjiuwen.core.runner.callback.framework import AsyncCallbackFramework
+
+    from jiuwenswarm.agents.harness.common.rails import skill_active_state
+    from jiuwenswarm.agents.harness.common.rails.skill_active_state import (
+        SkillStateUnavailable,
+    )
+
+    sid = "officeclaw_strict_sess"
+    store = skill_active_state._shared_store(sid)
+    monkeypatch.setattr(skill_active_state, "_shared_store", lambda _sid: store)
+
+    def fail_write(*_args, **_kwargs):
+        exc = PermissionError(13, "Permission denied", "state.lock")
+        exc.winerror = 5
+        raise exc
+
+    monkeypatch.setattr(store, "update_active_skill_state", fail_write)
+
+    rail = SkillActiveStateRail(session_id=sid, sessions_root=store.sessions_root())
+    ctx = AgentCallbackContext(agent=MagicMock())
+    tool_call = MagicMock()
+    tool_call.arguments = {"skill_name": "hwocr"}
+    tool_msg = MagicMock()
+    tool_msg.metadata = {"skill_name": "hwocr"} if tool == "skill_tool" else {}
+    ctx.inputs = ToolCallInputs(
+        tool_call=tool_call,
+        tool_name=tool,
+        tool_args={"skill_name": "hwocr"},
+        tool_result=None,
+        tool_msg=tool_msg,
+    )
+    ctx.extra = {}
+    later_callback = []
+
+    async def after_activation(_ctx):
+        later_callback.append(True)
+
+    callbacks = AsyncCallbackFramework()
+    await callbacks.register("after_tool", rail.after_tool_call, priority=10)
+    await callbacks.register("after_tool", after_activation, priority=0)
+    with pytest.raises(SkillStateUnavailable) as excinfo:
+        await callbacks.trigger("after_tool", ctx)
+
+    assert excinfo.value.error_code == "skill_state_unavailable"
+    assert "PermissionError" in excinfo.value.reason  # 原始异常摘要保留
+    assert not later_callback  # strict 路径仍中止回调链
+    assert get_session_active_skill(sid) is None  # degraded 同步标记
 
 
 @pytest.mark.asyncio
