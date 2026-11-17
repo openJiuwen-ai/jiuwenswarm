@@ -21,6 +21,7 @@ from jiuwenswarm.channels.web.app_web import _SpaStaticHandler
 from jiuwenswarm.server.runtime.skill import skill_manager as skill_manager_module
 from jiuwenswarm.server.runtime.skill.skill_manager import (
     ERROR_SKILL_ALREADY_EXISTS,
+    ERROR_SKILL_INVALID_PACKAGE,
     SkillManager,
     SkillRpcError,
 )
@@ -195,6 +196,40 @@ async def test_conflict_keeps_upload_until_overwrite(upload_server, manager):
     assert result["success"] is True
     assert not second.exists()
     assert not second.parent.exists()
+
+
+@pytest.mark.asyncio
+async def test_invalid_package_import_failure_reclaims_upload(upload_server, manager):
+    """非法包（非同名冲突）导入失败后，上传文件与专属目录都应被回收."""
+    port, _ = upload_server
+    status, payload = _post_upload(port, "broken.zip", b"not-a-zip")
+    assert status == 200, payload
+    uploaded = Path(payload["path"])
+    assert uploaded.is_file()
+
+    with pytest.raises(SkillRpcError) as exc_info:
+        await manager.handle_skills_import_upload({"path": str(uploaded), "overwrite": False})
+    assert exc_info.value.code == ERROR_SKILL_INVALID_PACKAGE
+    assert not uploaded.exists()
+    assert not uploaded.parent.exists()
+
+
+@pytest.mark.asyncio
+async def test_unexpected_import_error_reclaims_upload(upload_server, manager, monkeypatch):
+    """解包阶段抛出非 SkillRpcError 时，兜底分支同样回收上传目录."""
+    port, _ = upload_server
+    status, payload = _post_upload(port, "pkg.zip", _skill_zip(b"asset"))
+    assert status == 200, payload
+    uploaded = Path(payload["path"])
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("extract failed")
+
+    monkeypatch.setattr(manager, "_safe_extract_zip_to_dir", _boom)
+    with pytest.raises(RuntimeError):
+        await manager.handle_skills_import_upload({"path": str(uploaded), "overwrite": False})
+    assert not uploaded.exists()
+    assert not uploaded.parent.exists()
 
 
 def test_discard_rejects_path_outside_upload_root(upload_server, tmp_path):
