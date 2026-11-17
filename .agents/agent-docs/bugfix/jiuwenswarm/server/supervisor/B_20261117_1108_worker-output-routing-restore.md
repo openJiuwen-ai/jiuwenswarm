@@ -9,6 +9,7 @@ modules:
 files:
   - jiuwenswarm/server/supervisor/worker_process.py
   - tests/unit_tests/agentserver/test_ipc_backpressure.py
+  - tests/unit_tests/common/test_exec_secret_resolve.py
   - docs/zh/runtime-worker-lifecycle.md
   - docs/en/runtime-worker-lifecycle.md
 designs: []
@@ -43,3 +44,15 @@ Issue #6596 的启动截图出现外层 `ERROR [Worker stderr ...]` 包裹内层
 初轮补充回归的本地失败来自测试覆盖 `PYTHONPATH` 后子进程缺少协议依赖，以及独立环境重复路径使父子依赖指纹不同。使用锁定依赖的独立环境并去重测试启动器路径后，上述组合回归通过；未修改产品的身份校验逻辑。Windows 日志句柄由仓库外测试启动器关闭，未改动通用测试基础设施。
 
 详细日志、JUnit、类全文比较和子进程对照保存在任务证据目录 `artifacts/issue6596-restore-20261117/`，不提交运行产物。安装包验证使用内置 stub Runtime，没有执行完整模型业务；未执行 slow 用例、Linux/macOS 或鸿蒙真机验收。候选代码、锁定依赖或启动模式改变时，需重新验证受影响范围。
+
+## 2026-11-17 UT 修订
+
+用户提供的 CI 附件对应 !10352 的 `b65af9b7581233614c0dcfb955b3afc371ccae04`：Linux / Python 3.11.5，全量结果为 1 failed、24779 passed、229 skipped。唯一失败是 `TestSaveTrackHeaders.test_upsert_save_track_resolves_reference_header`：`upsert_model_resource` 保存普通测试 API key 时经 `_protect_model_key` 调用全局 crypto bridge，`ExtensionRegistry.get_instance()` 因未初始化抛错；Worker 输出测试均已通过。
+
+该用例的目标是验证凭据 Header 的保存/解析，普通 API key 的加密不是被测行为。按同文件既有测试惯例，用 `monkeypatch` 将本用例的 `config.get_crypto_provider` 明确设为返回 None；补丁仅作用于该测试并在结束后恢复，不调整生产加密逻辑、Registry 生命周期或凭据解析规则。两分支的输出测试同时断言 `spawn()` 后 loopback 参数已生成且端口有效，明确覆盖真实监听初始化。
+
+在“Registry 为空但全局 crypto bridge 已安装”的受控条件下，原用例复现与 CI 相同的堆栈，修复后通过。该对照证明测试对外部 crypto 状态的依赖，未追溯 CI 中具体哪个前置用例留下该状态。
+
+补充回归覆盖完整 `test_exec_secret_resolve.py`、配置并发写、运行模型配置、会话加密及非 slow IPC 输出测试：96 passed、2 skipped、18 deselected。企业模型模板测试所需 foundation 使用附件 CI 的 `d4a8761c8a561b1ee1b8a4333def0077b308e709`；补齐该依赖后组合回归通过。证据位于 `artifacts/issue6596-ut-fix-20261117/` 及原证据目录的 `develop-ut-fix-final.*`。
+
+本轮没有修改产品源码；`WorkerProcess` 类仍与 !9920 父提交逐字一致。新提交的远端全量 CI 待流水线重新执行，不把本地定向通过视作全量 CI 通过。
