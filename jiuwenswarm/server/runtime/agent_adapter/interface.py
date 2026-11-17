@@ -5873,19 +5873,15 @@ class JiuWenSwarm:
         checker = getattr(self._adapter, "has_active_goal", None)
         return bool(callable(checker) and checker(session_id))
 
-<<<<<<< RELEASE
     def get_session_workspace_paths(self, session_id: str) -> RuntimeWorkspacePaths | None:
         """Inspect an already-bound session without initializing an adapter."""
         getter = getattr(self._adapter, "get_session_workspace_paths", None)
         return getter(session_id) if callable(getter) else None
 
-||||||| BEFORE_PR_9610
-=======
     async def pending_interactions(self, session_id: str) -> list[dict[str, Any]]:
         """What this Session's paused turn still asks, as the events that asked it."""
         return await self._adapter.pending_interactions(session_id) if self._adapter is not None else []
 
->>>>>>> DEVELOP
     def has_auto_permission_session(self, session_id: str | None) -> bool:
         adapter = self._adapter
         checker = getattr(adapter, "has_auto_permission_session", None)

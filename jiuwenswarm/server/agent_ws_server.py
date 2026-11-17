@@ -21,7 +21,6 @@ from weakref import WeakValueDictionary
 
 from openjiuwen.core.common.logging import server_logger
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
-<<<<<<< RELEASE
 
 from jiuwenswarm.server.runtime.session.history_io import run_history_io
 from jiuwenswarm.server.runtime.session.workspace_files import SessionWorkspaceFiles
@@ -36,27 +35,6 @@ from jiuwenswarm.common.utils import (
     get_agent_sessions_dir,
     get_config_file,
     mask_sensitive,
-||||||| BEFORE_PR_9610
-
-from jiuwenswarm.server.runtime.session.history_io import run_history_io
-
-from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService, reset_harness_packages_state
-from jiuwenswarm.agents.harness.code.rails.heartbeat.runtime import HeartbeatRailRuntime
-from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
-from jiuwenswarm.server.ws_send import send_wire_payload
-from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_acp_output_manager
-from jiuwenswarm.common.utils import (
-    get_agent_root_dir,
-    get_agent_sessions_dir,
-    get_config_file,
-    mask_sensitive,
-=======
-from agent_gateway.common.mode_matrix import (
-    deprecate_mode,
-    is_plan_mode,
-    is_single_agent_mode,
-    is_team_mode,
->>>>>>> DEVELOP
 )
 from jiuwenswarm.common.session_message import (
     SESSION_MESSAGE_INTERNAL_KEY,
@@ -146,7 +124,7 @@ from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     validate_sandbox_files_runtime,
 )
 from jiuwenswarm.server.utils.utils import is_team_params
-from jiuwenswarm.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     deprecate_mode,
     is_plan_mode,
     is_single_agent_mode,

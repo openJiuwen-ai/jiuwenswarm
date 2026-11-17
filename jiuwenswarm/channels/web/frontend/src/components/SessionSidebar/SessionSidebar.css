@@ -126,7 +126,6 @@
   flex: 1 1;
   min-height: 8px;
 }
-<<<<<<< RELEASE
 
 /* ============================================
    WebUI user entry (application.sidebar.footer)
@@ -185,8 +184,6 @@
   border-radius: 8px;
   font-size: 12px;
 }
-||||||| BEFORE_PR_9610
-=======
 
 .icon-rail-nav-item--mode-switch {
   margin-top: 8px;
@@ -376,4 +373,3 @@
 .editable-combobox__option:hover {
   background: var(--color-surface-hover);
 }
->>>>>>> DEVELOP
