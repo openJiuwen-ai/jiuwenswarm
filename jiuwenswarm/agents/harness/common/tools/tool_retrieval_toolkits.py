@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Static in-code tool category catalogue for progressive ``tool_search``.
 
 The deferred-tool directory is a flat category table frozen into this
@@ -66,6 +68,14 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
         description_en=(
             "Read, write and edit project coding memory: persistent facts, "
             "decisions and lessons across sessions."
+        ),
+    ),
+    ToolCategory(
+        path="archive",
+        description="安全查看和解压本地压缩包（.zip, .tar, .tar.gz, .tgz, .bz2）内容。",
+        tools=("inspect_archive", "extract_archive"),
+        description_en=(
+            "Safely inspect and extract archive files (.zip, .tar, .tar.gz, .tgz, .bz2)."
         ),
     ),
     ToolCategory(
