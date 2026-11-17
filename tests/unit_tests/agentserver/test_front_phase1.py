@@ -951,14 +951,15 @@ def test_runtime_start_defaults_to_no_transport_bind() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_construct_is_off_front_process(monkeypatch, worker_callback_framework) -> None:
+async def test_runtime_construct_is_off_front_process(
+    monkeypatch, worker_callback_framework, clean_extension_registry,
+) -> None:
     import threading
     from pathlib import Path
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
     from agent_gateway.extensions.manager import ExtensionManager
-    from agent_gateway.extensions.registry import ExtensionRegistry
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.server.worker import runtime_backend, runtime_bootstrap
     from jiuwenswarm.server.worker.telemetry import StartupTelemetry
@@ -975,7 +976,6 @@ async def test_runtime_construct_is_off_front_process(monkeypatch, worker_callba
         return server
 
     monkeypatch.setattr(AgentWebSocketServer, "get_instance", construct)
-    monkeypatch.setattr(ExtensionRegistry, "_instance", None)
     monkeypatch.setattr(ExtensionManager, "load_all_extensions", AsyncMock())
     monkeypatch.setattr(runtime_backend, "preload_shared_execution_code", lambda: None)
     owned = AsyncMock()
