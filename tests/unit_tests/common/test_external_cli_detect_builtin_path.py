@@ -27,7 +27,7 @@ def builtin_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     managed.write_text("stub", encoding="utf-8")
     monkeypatch.setattr(handlers, "external_cli_managed_cli_path", lambda _agent: str(managed))
     monkeypatch.setattr(
-        handlers, "run_external_cli_version_command", lambda _agent, _path: ("1.2.3", "")
+        handlers, "run_external_cli_version_command", lambda _agent, _path: ("1.2.3 (Claude Code)", "")
     )
     # 参考版本与桩版本一致，避免环境里真实 SDK 版本把状态推成 warning。
     monkeypatch.setattr(handlers, "external_cli_reference_version", lambda _agent: "1.2.3")
