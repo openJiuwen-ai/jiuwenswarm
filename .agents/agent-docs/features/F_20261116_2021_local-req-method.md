@@ -154,3 +154,25 @@ Linux / Python 3.11.5，生成于 2026-11-16 22:03:06，结果为
 的删除及 `gateway_server_fakes` 导入调整，不恢复重复用例；保留仍在本仓的
 trajectory HTTP 与 A4P 测试边界修复。最终基线为 `598a0ca1b`，仍为三个
 线性提交，最终候选再次运行同一组合得到 `673 passed, 1 deselected`。
+
+## 2026-11-17 补齐 Gateway 动态注册的视频方法
+
+`fe428f551` 的本地枚举遗漏 `VIDEO_CONVERSATION_APPEND`，导致 dispatch 构建
+handler 表时发生 AttributeError。该成员不在锁定 E2A 原始目录中，而由锁定
+Gateway 的 `common/protocol_methods.py` 动态注册；此前共享枚举时可以间接获取，
+改为本地独立枚举后不再随 Gateway 导入补齐。此前目录比对只覆盖 E2A 和本仓
+补齐，未覆盖 Gateway 补齐，因此不能作为运行时完整目录的证据。
+
+- 在本地静态声明 `VIDEO_CONVERSATION_APPEND = "video.conversation.append"`，
+  当前共 540 个成员，不恢复生产代码对 E2A/Gateway 枚举的依赖或动态修改。
+- 新增独立子进程回归，将锁定 Gateway 实际注册后的完整目录作为外部预期，
+  检查本地成员是否缺失、同名线协议值是否一致，避免只遍历本地已有成员。
+- 独立 schema 导入测试确认无需先导入 Gateway 即可使用此成员；真实
+  `fetch_agent_unary -> JSON -> Front -> IPC` 回归增加该方法，验证本地身份与租户路由。
+
+在补齐生产代码前，两项新增回归均失败，明确报告缺失的视频方法；补齐后，
+Windows / Python 3.14 下同一定向组合得到 `676 passed, 1 deselected`。
+所排除转发名单测试及完整 dispatch 导入仍受缺少 openjiuwen 限制，完整 UT 待 CI。
+额外尝试视频会话追加用例时，采集在既有 `task_adapter.py` 导入不存在的
+`jiuwenswarm.common.e2a.constants` 处失败；该文件的导入不属于本次改动，
+因此不将该用例记为通过，也不扩大本次枚举修复范围。
