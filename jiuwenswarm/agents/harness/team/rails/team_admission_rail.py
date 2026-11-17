@@ -21,6 +21,7 @@ from openjiuwen.harness.rails.base import DeepAgentRail
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_TEAM_MAX_CONCURRENT_LLM_CALLS = 15
 _CTX_HOLD_KEY = "_team_llm_admission_hold"
 
 _sem_guard = threading.Lock()
@@ -112,7 +113,9 @@ class TeamAdmissionRail(DeepAgentRail):
 
     priority = 95
 
-    def __init__(self, *, max_concurrent_llm_calls: int = 4) -> None:
+    def __init__(
+        self, *, max_concurrent_llm_calls: int = DEFAULT_TEAM_MAX_CONCURRENT_LLM_CALLS,
+    ) -> None:
         super().__init__()
         self._limit = max(1, int(max_concurrent_llm_calls))
 
@@ -261,15 +264,15 @@ def resolve_team_admission_limit(team_cfg: dict[str, Any] | None) -> int:
 
     Reads ``resource_admission.max_concurrent_llm_calls``. When Swarmflow is
     enabled the default is ``0`` (governor already caps agents); when Swarmflow
-    is off the default is ``4``.
+    is off the default is ``15``.
     """
     if not isinstance(team_cfg, dict):
-        return 4
+        return DEFAULT_TEAM_MAX_CONCURRENT_LLM_CALLS
     admission = team_cfg.get("resource_admission")
     if not isinstance(admission, dict):
         admission = {}
     enable_swarmflow = bool(team_cfg.get("enable_swarmflow", False))
-    default = 0 if enable_swarmflow else 4
+    default = 0 if enable_swarmflow else DEFAULT_TEAM_MAX_CONCURRENT_LLM_CALLS
     raw = admission.get("max_concurrent_llm_calls")
     if raw is None:
         return default

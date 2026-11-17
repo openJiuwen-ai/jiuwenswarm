@@ -1859,7 +1859,7 @@ modes:
 
       # Process-wide Team LLM admission (especially when enable_swarmflow is false).
       # max_concurrent_llm_calls: concurrent member LLM calls across the process.
-      #   null/omitted → 4 when swarmflow off, 0 (disabled) when swarmflow on
+      #   null/omitted → 15 when swarmflow off, 0 (disabled) when swarmflow on
       #   0            → disable this rail
       #   N>0          → hard ceiling (queues excess callers)
       resource_admission:
