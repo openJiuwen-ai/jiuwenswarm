@@ -1134,6 +1134,8 @@ async def test_health_retirement_failure_marks_failed_and_wakes_waiters(monkeypa
     await asyncio.wait_for(supervisor._loop_task, 1)
     assert readiness.state is ReadinessState.FAILED
     assert supervisor._conn is None and supervisor._ipc_ready.is_set()
+    assert not supervisor._retryable_failure
+    assert supervisor._automatic_recovery_task is None
     with pytest.raises(RuntimeError, match="unhealthy Worker could not be retired"):
         await asyncio.wait_for(supervisor.run_until_ipc_ready(), 1)
 

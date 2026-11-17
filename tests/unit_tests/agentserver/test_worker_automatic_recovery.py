@@ -96,7 +96,7 @@ async def test_bootstrap_recovers_automatically_after_resource_failure(monkeypat
 async def test_stop_cancels_delayed_recovery_without_starting_worker(monkeypatch):
     monkeypatch.setattr(module, "_RECOVERY_BACKOFF_INITIAL", 60)
     supervisor = RuntimeSupervisor(Readiness())
-    supervisor._mark_restart_exhausted("temporary resource pressure")
+    supervisor._mark_retryable_failure("temporary resource pressure")
     delayed = supervisor._automatic_recovery_task
     await supervisor.stop()
     assert delayed.done()

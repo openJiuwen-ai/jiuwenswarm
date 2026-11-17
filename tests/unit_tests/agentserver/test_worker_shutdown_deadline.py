@@ -11,7 +11,6 @@ from types import SimpleNamespace
 
 import psutil
 import pytest
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from jiuwenswarm.server.lifecycle import Readiness
@@ -115,7 +114,7 @@ def test_validated_reaper_reserves_observation_time_and_reports_survivor(monkeyp
     if exits:
         front._reap_validated_worker(deadline=1.0)
     else:
-        with pytest.raises(RuntimeError, match="exit could not be observed"):
+        with pytest.raises(supervisor_module.WorkerExitUnconfirmed, match="exit could not be observed"):
             front._reap_validated_worker(deadline=1.0)
     assert killed == [True]
     assert len(budgets) == 2 and budgets[1] > 0
