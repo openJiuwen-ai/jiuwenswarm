@@ -497,6 +497,20 @@ def unanswered_permission_batch(instance: Any, target_sid: str, loop_session_id:
     return message
 
 
+def _calls_without_index(calls: Any) -> list[Any]:
+    """Comparison copies of *calls* with ``ToolCall.index`` cleared.
+
+    A restored context deserialized from the snapshot carries no ``index`` on
+    its calls while Core's interrupted batch records 0/1, so an exact object
+    comparison rejects the same batch. Every other field and the order stay
+    significant; the original calls are left untouched.
+    """
+    return [
+        call.model_copy(update={"index": None}) if hasattr(call, "model_copy") else call
+        for call in (calls or ())
+    ]
+
+
 async def discard_restored_permission_batch(
     instance: Any, target_sid: str, loop_session_id: str | None,
 ) -> bool:
@@ -526,7 +540,10 @@ async def discard_restored_permission_batch(
         calls = getattr(item, "tool_calls", None) or []
         if any(getattr(call, "id", None) in ids for call in calls):
             existing.append(item)
-    if existing and (len(existing) != 1 or existing[0].tool_calls != message.tool_calls):
+    if existing and (
+        len(existing) != 1
+        or _calls_without_index(existing[0].tool_calls) != _calls_without_index(message.tool_calls)
+    ):
         raise RootPermissionQueueError("permission_continuation_context_mismatch")
     try:
         if not existing:

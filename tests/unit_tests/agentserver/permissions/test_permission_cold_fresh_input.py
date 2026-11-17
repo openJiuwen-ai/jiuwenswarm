@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from openjiuwen.core.foundation.llm import AssistantMessage
+from openjiuwen.core.foundation.llm import AssistantMessage, ToolMessage
 from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY, InterruptAnswer
 
 from jiuwenswarm.agents.harness.common import session_ops_service
@@ -336,3 +336,207 @@ async def test_default_cold_batch_validates_identity_without_mutation(hosts, mon
             continuation.unanswered_permission_batch(instance, "cold-default-invalid", "cold-default-invalid")
     assert instance.loop_session.get_state(INTERRUPTION_KEY) == before
     assert h.executions == []
+
+
+# ---------------------------------------------------------------------------
+# The rebuilt context never matches Core's batch byte for byte. A fresh user
+# turn must still settle the restored batch instead of failing every send.
+# ---------------------------------------------------------------------------
+
+
+def pending_calls(h) -> list[dict[str, str]]:
+    """The exact calls Core holds pending, in the shape history records them."""
+    state = h.adapter._instance.loop_session.get_state(INTERRUPTION_KEY)
+    return [
+        {"id": entry.tool_call.id, "name": entry.tool_call.name,
+         "arguments": entry.tool_call.arguments}
+        for entry in state.interrupted_tools.values()
+    ]
+
+
+def crash_history(calls) -> list[dict]:
+    """The records a turn paused on an approval leaves behind in history.jsonl."""
+    records = [
+        {"role": "user", "request_id": "crashed",
+         "content": "Delete file_15.txt from the desktop", "timestamp": 1.0},
+        {"role": "assistant", "request_id": "crashed", "event_type": "chat.reasoning",
+         "content": "Preparing the delete", "timestamp": 1.1},
+    ]
+    for call in calls:
+        records.append({
+            "role": "assistant", "request_id": "crashed", "event_type": "chat.tool_call",
+            "tool_call": {
+                "name": call["name"], "tool_call_id": call["id"], "arguments": call["arguments"],
+            },
+            "timestamp": 1.2,
+        })
+    return records
+
+
+def history_parent(h, monkeypatch, records):
+    """A parent whose restart rebuild replays the given history, not a stub."""
+    parent = parent_for(h, monkeypatch)
+    monkeypatch.setattr(session_ops_service, "read_history_replay", lambda _sid, **_kwargs: SimpleNamespace(
+        records=[dict(item) for item in records],
+        prefix_cursor=None,
+    ))
+    return parent
+
+
+def assert_settled(child, request, ids):
+    """The batch is gone from Core and the context stays well formed."""
+    assert not getattr(child._instance.loop_session.get_state(INTERRUPTION_KEY), "interrupted_tools", None)
+    context = child._instance.react_agent.context_engine.get_context(session_id=request.session_id)
+    messages = context.get_messages()
+    calls = [call.id for message in messages for call in (getattr(message, "tool_calls", None) or [])]
+    results = [getattr(message, "tool_call_id", None) for message in messages
+               if getattr(message, "tool_call_id", None)]
+    assert set(results) <= set(calls)  # no tool message without its call
+    assert set(calls) <= set(results)  # no call left without a result
+    for call_id in ids & set(calls):
+        assert results.count(call_id) == 1
+    return messages, set(calls) & ids
+
+
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+@pytest.mark.parametrize("count", [1, 2])
+@pytest.mark.parametrize("wrapper_goal", [None, "call_goal"])
+async def test_trimmed_restored_batch_still_settles_on_fresh_input(
+    hosts, sqlite_checkpoint, monkeypatch, mode, count, wrapper_goal,
+):
+    """The paused call is absent from the restored window; it is re-added once."""
+    old = await hosts("old", "cold-trimmed", mode=mode)
+    await _interrupt(old, monkeypatch, mode=mode, kind="permission", count=count)
+    if wrapper_goal:
+        session = old.adapter._instance.loop_session
+        session.update_state({INTERRUPTION_KEY: wrap_batch(
+            deepcopy(session.get_state(INTERRUPTION_KEY)), wrapper_goal,
+        )})
+        await session.commit()
+    calls = pending_calls(old)
+    ids = {call["id"] for call in calls}
+    await stopped_checkpoint(old, sqlite_checkpoint)
+
+    h = await hosts("new", "cold-trimmed", mode=mode)
+    if wrapper_goal:
+        # Production wraps the call before Core records it, so its snapshot and
+        # its batch agree. This fixture wraps a batch that a snapshot already
+        # holds unwrapped, so restore through the replay path a session without
+        # a usable snapshot takes instead.
+        from jiuwenswarm.server.runtime.session import context_snapshot
+
+        monkeypatch.setattr(context_snapshot, "restore_checkpoint_context", AsyncMock(return_value=False))
+    parent = history_parent(h, monkeypatch, crash_history(calls))
+    request = fresh(h)
+    child = await parent._get_or_create_session_adapter(
+        request.session_id, execution_request=request, host_external_input=True,
+    )
+    assert child is h.adapter
+    _, present = assert_settled(child, request, ids)
+    assert present == ids
+    h.script.responses = [AssistantMessage(content="FRESH-COLD-COMPLETED")]
+    result = await _request(h, query=request.params["query"])
+    assert result.ok and "FRESH-COLD-COMPLETED" in repr(result.payload)
+    assert h.executions == [], "the superseded tool must never execute"
+    await sqlite_checkpoint()
+    assert await _recovered_ids(h) == set()
+
+
+def restored_batch_message(context, ids):
+    """The restored assistant message that carries Core's batch."""
+    for message in context.get_messages():
+        calls = getattr(message, "tool_calls", None) or []
+        if any(getattr(call, "id", None) in ids for call in calls):
+            return message
+    raise AssertionError("the restored window lost Core's batch")
+
+
+async def prewarmed(h, monkeypatch):
+    """Restore the window and keep the adapter, as a page-status prewarm does."""
+    parent = parent_for(h, monkeypatch)
+    request = fresh(h)
+    assert await parent._get_or_create_session_adapter(request.session_id) is h.adapter
+    context = h.adapter._instance.react_agent.context_engine.get_context(session_id=request.session_id)
+    return parent, request, context
+
+
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+@pytest.mark.parametrize("count", [1, 2])
+async def test_restored_batch_settles_when_only_index_differs(
+    hosts, sqlite_checkpoint, monkeypatch, mode, count,
+):
+    """Core records ToolCall.index 0/1 while the restored window keeps None.
+
+    That representation difference alone must not reject Core's own batch.
+    """
+    old = await hosts("old", "cold-index", mode=mode)
+    await _interrupt(old, monkeypatch, mode=mode, kind="permission", count=count)
+    calls = pending_calls(old)
+    ids = {call["id"] for call in calls}
+    await stopped_checkpoint(old, sqlite_checkpoint)
+
+    h = await hosts("new", "cold-index", mode=mode)
+    parent, request, _context = await prewarmed(h, monkeypatch)
+    instance = h.adapter._instance
+    state = instance.loop_session.get_state(INTERRUPTION_KEY)
+    for position, entry in enumerate(state.interrupted_tools.values()):
+        entry.tool_call = entry.tool_call.model_copy(update={"index": position})
+    state.ai_message.tool_calls = [
+        call.model_copy(update={"index": position})
+        for position, call in enumerate(state.ai_message.tool_calls)
+    ]
+    instance.loop_session.update_state({INTERRUPTION_KEY: state})
+
+    child = await parent._get_or_create_session_adapter(
+        request.session_id, execution_request=request, host_external_input=True,
+    )
+    assert child is h.adapter
+    _, present = assert_settled(child, request, ids)
+    assert present == ids
+    h.script.responses = [AssistantMessage(content="FRESH-COLD-COMPLETED")]
+    result = await _request(h, query=request.params["query"])
+    assert result.ok and "FRESH-COLD-COMPLETED" in repr(result.payload)
+    assert h.executions == [], "the superseded tool must never execute"
+    await sqlite_checkpoint()
+    assert await _recovered_ids(h) == set()
+
+
+@pytest.mark.parametrize("shape", ["result_present", "duplicate_batch", "arguments_drift", "order_swap"])
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+@pytest.mark.parametrize("count", [1, 2])
+async def test_restored_batch_rejects_a_context_it_cannot_trust(
+    hosts, sqlite_checkpoint, monkeypatch, mode, count, shape,
+):
+    """A context that disagrees beyond ``index`` stays fail-closed."""
+    if shape == "order_swap" and count < 2:
+        pytest.skip("reordering needs a two-call batch")
+    old = await hosts("old", "cold-reject", mode=mode)
+    await _interrupt(old, monkeypatch, mode=mode, kind="permission", count=count)
+    calls = pending_calls(old)
+    ids = {call["id"] for call in calls}
+    await stopped_checkpoint(old, sqlite_checkpoint)
+
+    h = await hosts("new", "cold-reject", mode=mode)
+    parent, request, context = await prewarmed(h, monkeypatch)
+    instance = h.adapter._instance
+    if shape == "result_present":
+        await context.add_messages(ToolMessage(tool_call_id=calls[0]["id"], content="deleted"))
+    else:
+        message = restored_batch_message(context, ids)
+        if shape == "duplicate_batch":
+            await context.add_messages(deepcopy(message))
+        elif shape == "arguments_drift":
+            message.tool_calls = [
+                call.model_copy(update={"arguments": '{"value":"foreign"}'})
+                for call in message.tool_calls
+            ]
+        else:
+            message.tool_calls = list(reversed(message.tool_calls))
+
+    with pytest.raises(continuation.RootPermissionQueueError, match="permission_continuation_context_mismatch"):
+        await parent._get_or_create_session_adapter(
+            request.session_id, execution_request=request, host_external_input=True,
+        )
+    state = instance.loop_session.get_state(INTERRUPTION_KEY)
+    assert getattr(state, "interrupted_tools", None), "a rejected batch must stay pending"
+    assert h.executions == [], "the superseded tool must never execute"
