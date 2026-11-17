@@ -226,7 +226,7 @@ def test_a_test_without_caplog_leaves_propagation_alone():
 
 @pytest.mark.parametrize("name", [
     "CHAT_SEND", "A4P_CONFIG_GET", "A4P_CONFIG_UPDATE", "WORKSPACE_TREE",
-    "FILE_READ_UPLOAD_CHUNK", "SKILLS_ENTERPRISE_INSTALL",
+    "FILE_READ_UPLOAD_CHUNK", "SKILLS_SOURCE_INSTALL",
 ])
 def test_rpc_members_share_identity_across_protocol_consumers(name):
     local = getattr(ReqMethod, name)

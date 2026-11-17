@@ -252,9 +252,6 @@ const ENTERPRISE_ASSEMBLE = [
   ['cron.job.preview', 'POST', '/api/v1/cron/jobs/job-1/actions/preview', { id: 'job-1', count: 3 }, 'unary'],
   ['cron.job.run_now', 'POST', '/api/v1/cron/jobs/job-1/actions/run-now', { id: 'job-1' }, 'unary'],
   ['skills.list', 'GET', '/api/v1/skills', {}, 'unary'],
-  ['skills.enterprise.list', 'GET', '/api/v1/skills/enterprise', {}, 'unary'],
-  ['skills.enterprise.install', 'POST', '/api/v1/skills/enterprise/actions/install', { url: 'http://x' }, 'unary'],
-  ['skills.enterprise.uninstall', 'POST', '/api/v1/skills/enterprise/actions/uninstall', { name: 's' }, 'unary'],
   ['skills.marketplace.list', 'GET', '/api/v1/skills/marketplace', {}, 'unary'],
   ['skills.marketplace.add', 'POST', '/api/v1/skills/marketplace', { name: 'm', url: 'http://m' }, 'unary'],
   ['skills.marketplace.remove', 'POST', '/api/v1/skills/marketplace/actions/remove', { name: 'm' }, 'unary'],
@@ -390,7 +387,7 @@ test('chat.send dual-write and does not clobber both fields', () => {
 
 test('skills static prefixes are not /skills/{name}', () => {
   const prefixes = [
-    ['skills.enterprise.list', '/api/v1/skills/enterprise'],
+    ['skills.source.providers', '/api/v1/skills/sources'],
     ['skills.marketplace.list', '/api/v1/skills/marketplace'],
     ['skills.clawhub.get_token', '/api/v1/skills/clawhub/token'],
     ['skills.skillnet.search', '/api/v1/skills/skillnet/actions/search'],

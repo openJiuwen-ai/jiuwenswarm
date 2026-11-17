@@ -5493,21 +5493,53 @@ class SkillManager:
     @inventory_mutation
     @_state_transactional
     def _handle_enterprise_skills_uninstall(self, params: dict) -> dict:
-        raw_name = str(params.get("name") or "")
-        raw_origin = str(params.get("origin") or "").strip() or None
-        installation = (
-            self._find_skill_installation(name=raw_name, origin=raw_origin)
-            if raw_name
-            else None
+        name_raw = params.get("name")
+        if name_raw is not None and not isinstance(name_raw, str):
+            return {
+                "success": False,
+                "error_code": "invalid_params",
+                "error_message": "name must be a string",
+                "detail": "name must be a string",
+            }
+        origin_raw = params.get("origin")
+        if origin_raw is not None and not isinstance(origin_raw, str):
+            return {
+                "success": False,
+                "error_code": "invalid_params",
+                "error_message": "origin must be a string",
+                "detail": "origin must be a string",
+            }
+        raw_name = str(name_raw or "").strip()
+        raw_origin = str(origin_raw or "").strip()
+        if not raw_name:
+            return {
+                "success": False,
+                "error_code": "missing_params",
+                "error_message": "name is required",
+                "detail": "缺少参数: name",
+            }
+        installation = self._find_uninstall_installation(
+            name=raw_name,
+            origin=raw_origin,
         )
+        if installation is None:
+            if raw_origin:
+                logger.warning(
+                    "[SkillManager] uninstall not found: name=%s origin=%s",
+                    raw_name,
+                    raw_origin,
+                )
+                return {
+                    "success": False,
+                    "error_code": "not_found",
+                    "error_message": f"skill `{raw_name}` is not installed",
+                    "detail": f"未找到 skill: {raw_name}",
+                }
+            return self._uninstall_skill_body(params)
         # 预置与内置在各版本都不可卸载。内置安装副本和源码目录一样不能删；
         # 账本已标明 user/prebuilt 的同名技能仍按原记录卸载。
-        source_type = (
-            str(installation.get("source_type") or "").strip()
-            if installation is not None
-            else ""
-        )
-        if installation is not None and self._is_builtin_installation_record(installation):
+        source_type = str(installation.get("source_type") or "").strip()
+        if self._is_builtin_installation_record(installation):
             return {
                 "success": False,
                 "error_code": "prebuilt_not_removable",
@@ -5521,13 +5553,16 @@ class SkillManager:
                 "error_message": "prebuilt skill is managed by administrator",
                 "detail": "企业预置技能由管理员统一管理，不允许卸载。",
             }
-        if installation is not None and installation.get("entity_dir"):
+        try:
+            logical_name = _safe_path_name(
+                str(installation.get("name") or raw_name),
+                "skill",
+            )
+        except ValueError as exc:
+            return {"success": False, "detail": str(exc)}
+        if installation.get("entity_dir"):
             try:
                 entity_name = _safe_path_name(str(installation.get("entity_dir")), "skill")
-                logical_name = _safe_path_name(
-                    str(installation.get("name") or raw_name),
-                    "skill",
-                )
             except ValueError as exc:
                 return {"success": False, "detail": str(exc)}
             dest = _safe_child_path(self._skills_dir, entity_name, "skill")
@@ -5547,7 +5582,12 @@ class SkillManager:
             self.remove_skill_config(logical_name)
             self._refresh_agent_data_indexes()
             return {"success": True, "name": logical_name}
-        return self._uninstall_skill_body(params)
+        return self._uninstall_skill_body(
+            {
+                "name": logical_name,
+                "origin": str(installation.get("origin") or raw_origin or ""),
+            }
+        )
 
     def _referenced_member_uninstall_error(self, *names: str) -> dict | None:
         referenced_packs = set()
@@ -11409,31 +11449,6 @@ class SkillManager:
             display_name=display_name,
         )
 
-    async def handle_skills_enterprise_list(self, params: dict) -> dict:
-        """企业兼容列表：复用 workspace 安装 DTO，并保留租户标识字段。"""
-        payload = await self.handle_skills_installed(params)
-        service_id = str(
-            params.get("service_id") or self._service_id or ""
-        ).strip()
-        agent_id = str(
-            params.get("agent_id") or self._agent_id or ""
-        ).strip()
-        for skill in payload.get("skills", []):
-            if not isinstance(skill, dict):
-                continue
-            skill.update(
-                {
-                    "skill_name": skill.get("name"),
-                    "skill_source": skill.get("origin"),
-                    "skill_version": skill.get("version"),
-                    "service_id": service_id,
-                    "agent_id": agent_id,
-                }
-            )
-        payload["service_id"] = service_id
-        payload["agent_id"] = agent_id
-        return payload
-
     @staticmethod
     def _source_error(code: str, message: str) -> dict[str, Any]:
         return {
@@ -12206,329 +12221,6 @@ class SkillManager:
             self._normalize_skill_permissions(dest)
         return {"ok": True, "skill_name": skill_name, "meta": meta}
 
-    def _download_web_skill_bytes(self, download_url: str) -> bytes:
-        """同步下载技能归档（仅 Web 验签安装使用；不改 import_local 远程路径）。"""
-        self._assert_import_local_download_url_allowed(download_url)
-        timeout = max(30.0, _IMPORT_LOCAL_REMOTE_TIMEOUT)
-        ssl_verify = _get_ssl_verify()
-        _maybe_disable_insecure_warning()
-        with requests.Session() as session:
-            # 仅在关闭证书校验时挂载跳过校验的 Adapter；开启时走 requests 默认校验。
-            if not ssl_verify:
-                session.mount("https://", _ImportLocalTLSAdapter())
-            logger.info(
-                "[SkillManager] web skill download: url=%s ssl_verify=%s",
-                download_url,
-                ssl_verify,
-            )
-            with session.get(
-                download_url.strip(),
-                timeout=timeout,
-                stream=True,
-                allow_redirects=False,
-                verify=ssl_verify,
-            ) as response:
-                response.raise_for_status()
-                chunks: list[bytes] = []
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        chunks.append(chunk)
-                body = b"".join(chunks)
-        if not body:
-            raise RuntimeError("下载内容为空")
-        return body
-
-    def _install_web_skill_dir(self, skill_dir: Path, *, skill_name: str) -> dict[str, Any]:
-        """企业 Web 安装专用：先完成实体落盘，再由调用方提交 workspace 状态。"""
-        name = str(skill_name or "").strip()
-        if not name:
-            return {"success": False, "detail": "skill name is required"}
-        if not _is_dir_long(skill_dir):
-            return {"success": False, "detail": f"skill dir missing: {skill_dir}"}
-        try:
-            safe = _safe_path_name(name, "skill")
-        except ValueError as exc:
-            return {"success": False, "detail": str(exc)}
-        dest = _safe_child_path(self._skills_dir, safe, "skill")
-        if _exists_long(dest):
-            _safe_rmtree(dest)
-        _copytree_long(skill_dir, dest)
-        self._normalize_skill_permissions(dest)
-        logger.info(
-            "[SkillManager] web skill installed to disk: name=%s dest=%s",
-            safe,
-            dest,
-        )
-        return {"success": True, "skill": {"name": safe}}
-
-    def remove_skill_directory(self, skill_name: str) -> None:
-        name = str(skill_name or "").strip()
-        if not name:
-            return
-        try:
-            safe = _safe_path_name(name, "skill")
-        except ValueError:
-            return
-        dest = _safe_child_path(self._skills_dir, safe, "skill")
-        if _is_dir_long(dest):
-            _safe_rmtree(dest)
-
-    @_state_transactional
-    def _commit_web_skill_install(
-        self,
-        skill_dir: Path,
-        *,
-        skill_name: str,
-        skill_version: str | None,
-        source_url: str,
-    ) -> dict[str, Any]:
-        """Commit the user Skill entity and ledger record in one transaction."""
-        existing = self._find_skill_installation(name=skill_name)
-        if existing is not None:
-            existing_type = str(existing.get("source_type") or "").strip()
-            existing_origin = str(existing.get("origin") or "").strip()
-            existing_version = str(existing.get("version") or "").strip()
-            if existing_type == "prebuilt":
-                return {
-                    "success": False,
-                    "installed": False,
-                    "error_code": "skill_name_conflict",
-                    "error_message": (
-                        f"skill `{skill_name}` is prebuilt and cannot be overwritten"
-                    ),
-                }
-            if existing_type != "user" or existing_origin != source_url:
-                return {
-                    "success": False,
-                    "installed": False,
-                    "error_code": "skill_name_conflict",
-                    "error_message": f"skill name already installed: {skill_name}",
-                }
-            if existing_version == str(skill_version or ""):
-                return {
-                    "success": False,
-                    "installed": False,
-                    "already_installed": True,
-                    "error_code": "skill_already_installed",
-                    "name": skill_name,
-                    "error_message": (
-                        f"skill `{skill_name}` already installed with the same version"
-                    ),
-                }
-
-        import_result = self._install_web_skill_dir(skill_dir, skill_name=skill_name)
-        if not import_result.get("success"):
-            return {
-                "success": False,
-                "error_code": "install_failed",
-                "error_message": str(import_result.get("detail") or "install failed"),
-            }
-        installed_name = str(
-            (import_result.get("skill") or {}).get("name") or skill_name
-        ).strip()
-
-        try:
-            self.record_skill_installation(
-                name=installed_name,
-                source_type="user",
-                source="web",
-                origin=source_url,
-                version=str(skill_version or ""),
-            )
-        except SkillNameConflictError as exc:
-            self.remove_skill_directory(installed_name)
-            return {
-                "success": False,
-                "installed": False,
-                "error_code": "skill_name_conflict",
-                "error_message": str(exc),
-            }
-        except Exception as exc:  # noqa: BLE001
-            self.remove_skill_directory(installed_name)
-            return {
-                "success": False,
-                "error_code": "state_write_failed",
-                "error_message": str(exc)[:500],
-            }
-        return {
-            "success": True,
-            "skill": {"name": installed_name, "version": skill_version},
-        }
-
-    async def handle_skills_web_install(self, params: dict) -> dict:
-        """企业 Web 安装兼容入口：下载、校验、落盘并提交 workspace JSON。"""
-        from jiuwenswarm.server.runtime.skill.artifact_security import (
-            verify_skill_download_hmac,
-        )
-
-        url = str(params.get("url") or "").strip()
-        signature = str(params.get("signature") or "").strip()
-        if not url:
-            return {
-                "success": False,
-                "error_code": "missing_params",
-                "error_message": "url is required",
-            }
-
-        service_id = str(params.get("service_id") or self._service_id or "").strip()
-        agent_id = str(params.get("agent_id") or self._agent_id or "").strip()
-        if not service_id or not agent_id:
-            return {
-                "success": False,
-                "error_code": "missing_tenant",
-                "error_message": "service_id and agent_id are required",
-            }
-
-        try:
-            content = await asyncio.to_thread(self._download_web_skill_bytes, url)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[SkillManager] enterprise install download failed: %s", exc)
-            return {
-                "success": False,
-                "error_code": "download_failed",
-                "error_message": str(exc)[:500],
-            }
-
-        # 签名可选：有则验 HMAC；无则跳过验签直接解压安装
-        if signature and not verify_skill_download_hmac(content, signature):
-            return {
-                "success": False,
-                "error_code": "signature_invalid",
-                "error_message": "HMAC verification failed",
-            }
-
-        with tempfile.TemporaryDirectory(prefix="jiuwenclaw_enterprise_install_") as tmpdir:
-            tmp_path = Path(tmpdir)
-            try:
-                self._extract_archive_bytes_to_dir(content, tmp_path)
-            except Exception as exc:  # noqa: BLE001
-                return {
-                    "success": False,
-                    "error_code": "extract_failed",
-                    "error_message": str(exc)[:500],
-                }
-            skill_dir = self._locate_skill_dir(tmp_path)
-            if skill_dir is None:
-                return {
-                    "success": False,
-                    "error_code": "invalid_package",
-                    "error_message": "downloaded content missing SKILL.md",
-                }
-            md = self._try_find_skill_file(skill_dir)
-            meta = self._parse_skill_md(md) if md is not None else {}
-            meta = meta or {}
-            raw_name = meta.get("name") or skill_dir.name
-            try:
-                skill_name = _safe_path_name(str(raw_name), "skill")
-            except ValueError as exc:
-                return {
-                    "success": False,
-                    "error_code": "invalid_skill_name",
-                    "error_message": str(exc),
-                }
-            skill_version = str(meta.get("version") or "").strip() or None
-
-            return await asyncio.to_thread(
-                self._commit_web_skill_install,
-                skill_dir,
-                skill_name=skill_name,
-                skill_version=skill_version,
-                source_url=url,
-            )
-
-    async def handle_skills_web_uninstall(self, params: dict) -> dict:
-        """Web 卸载兼容入口。
-
-        与 ``handle_skills_uninstall`` 一致：预置各版本不可卸；内置仅企业版不可卸；
-        user / 未标记可卸。真正删除仍委托 ``handle_skills_uninstall``。
-        """
-
-        name_raw = params.get("name")
-        if name_raw is not None and not isinstance(name_raw, str):
-            return {
-                "success": False,
-                "error_code": "invalid_params",
-                "error_message": "name must be a string",
-            }
-        name = str(name_raw or "").strip()
-        if not name:
-            return {
-                "success": False,
-                "error_code": "missing_params",
-                "error_message": "name is required",
-            }
-        try:
-            name = _safe_path_name(name, "skill")
-        except ValueError as exc:
-            return {
-                "success": False,
-                "error_code": "invalid_skill_name",
-                "error_message": str(exc),
-            }
-
-        service_id = str(params.get("service_id") or self._service_id or "").strip()
-        agent_id = str(params.get("agent_id") or self._agent_id or "").strip()
-        if not service_id or not agent_id:
-            return {
-                "success": False,
-                "error_code": "missing_tenant",
-                "error_message": "service_id and agent_id are required",
-            }
-
-        # Type-invalid origins must never silently degrade to name-only
-        # matching: a wrongly-typed origin would otherwise uninstall a
-        # different same-named installation (#5882).
-        origin_raw = params.get("origin")
-        if origin_raw is not None and not isinstance(origin_raw, str):
-            return {
-                "success": False,
-                "error_code": "invalid_params",
-                "error_message": "origin must be a string",
-            }
-        origin = str(origin_raw or "").strip()
-        installation = self._find_web_uninstall_installation(name=name, origin=origin)
-        if installation is None:
-            logger.warning(
-                "[SkillManager] web uninstall not found: service_id=%s agent_id=%s name=%s origin=%s",
-                service_id,
-                agent_id,
-                name,
-                origin,
-            )
-            return {
-                "success": False,
-                "error_code": "not_found",
-                "error_message": f"skill `{name}` is not installed",
-            }
-        # 与 handle_skills_uninstall 一致：内置、预置在各版本都不可卸载。
-        source_type = str(installation.get("source_type") or "").strip()
-        if self._is_builtin_installation_record(installation):
-            return {
-                "success": False,
-                "error_code": "prebuilt_not_removable",
-                "error_message": "内置技能不允许删除",
-            }
-        if source_type == "prebuilt":
-            return {
-                "success": False,
-                "error_code": "prebuilt_not_removable",
-                "error_message": f"skill `{name}` is prebuilt and cannot be uninstalled",
-            }
-
-        name = str(installation.get("name") or "").strip()
-        result = await self.handle_skills_uninstall(
-            {"name": name, "origin": str(installation.get("origin") or "")}
-        )
-        if result.get("success"):
-            return {"success": True, "name": name}
-        return {
-            "success": False,
-            "error_code": str(result.get("error_code") or "uninstall_failed"),
-            "error_message": str(
-                result.get("error_message") or result.get("detail") or "uninstall failed"
-            ),
-        }
-
     def _assert_skill_download_url_allowed(
         self,
         download_url: str,
@@ -12776,7 +12468,7 @@ class SkillManager:
         if source:
             payload["source"] = source
 
-    def _find_web_uninstall_installation(
+    def _find_uninstall_installation(
         self,
         *,
         name: str,
