@@ -646,16 +646,12 @@ test('the detection hint distinguishes PATH lookup from executable validation', 
   assert.match(section, /!onCommitAgent \|\| committing\[cliAgent\] \|\| installInFlight\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]/);
   assert.match(section, /loading=\{installInFlight\[cliAgent\]\}/);
   assert.doesNotMatch(section, /loading=\{committing\[cliAgent\]\}/);
-  // The enable switch freezes once a completed probe confirms the CLI is
-  // missing or the path is a non-executable — 未安装时开关必须禁用，不能再切
-  // 到启用态。A page reload (installed=false until the auto-detect runs) and
-  // an 'unavailable' probe (the executable is there but the version command
-  // failed) still leave the switch operable, so the user can recover or
-  // disable a broken agent instead of being locked out.
-  assert.match(
-    section,
-    /disabled=\{disabled\s+\|\| \(!installed && \(!result \|\| !enabled \|\| result\.status === 'missing' \|\| result\.status === 'unsupported'\)\)\s+\|\| committing\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]\}/,
-  );
+  // The enable switch stays operable so the user can always disable a broken
+  // agent — 检测确认地址缺失时由手动检测的自动落闸把开关置回禁用，而不是
+  // 冻结开关堵死关闭入口；刷新窗口（尚无探测结果）也不锁。
+  assert.match(section, /disabled=\{disabled \|\| \(!installed && !enabled\) \|\| committing\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]\}/);
+  assert.match(section, /检测确认当前配置的可执行文件缺失/);
+  assert.match(section, /await commit\(cliAgent, \{\s+enabled: false,\s+useBuiltin: draftValues\[useBuiltinKey\] === 'true',/);
 });
 
 test('uploaded custom agents are listed after Claude and Codex', async () => {

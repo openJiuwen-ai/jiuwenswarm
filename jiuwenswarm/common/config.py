@@ -35,6 +35,7 @@ from jiuwenswarm.common.runtime_model_config import apply_runtime_model_config
 from jiuwenswarm.common.utils import (
     get_config_dir,
     get_config_file,
+    get_user_workspace_dir,
     refresh_external_cli_state_sidecar,
 )
 
@@ -637,6 +638,11 @@ def dump_yaml_round_trip(config_path: Path, data: Any) -> None:
         except FileNotFoundError:
             pass
         raise
+    # config.yaml 的唯一写出口：落盘后同步三方 agent 状态旁路，覆盖所有更新
+    # 路径（agents/histories/prune/teams/builtin_models/reset）。仅对主配置
+    # 文件生效——其它 yaml 落盘不含该配置节，镜像空态会覆盖旁路。
+    if Path(config_path) == Path(CONFIG_YAML_PATH):
+        refresh_external_cli_state_sidecar(get_user_workspace_dir())
 
 
 def _atomic_replace(src: Path, dst: Path, max_attempts: int = 10) -> None:
@@ -2993,7 +2999,6 @@ def prune_external_cli_path_histories_in_config(cli_agent: str, remove_paths: li
     if not histories:
         current.pop(key, None)
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    refresh_external_cli_state_sidecar(CONFIG_YAML_PATH)
     return surviving
 
 
@@ -3213,8 +3218,6 @@ def update_external_cli_agents_in_config(agents: list[str | dict[str, Any]], pub
         current.pop(EXTERNAL_TRANSPORT_CONFIG_PATH[-1], None)
 
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    # 镜像到数据目录之外的状态旁路：数据目录被整体删除（重装）后仍可恢复启用态
-    refresh_external_cli_state_sidecar(CONFIG_YAML_PATH)
 
 
 def update_external_cli_path_histories_in_config(histories: dict[str, list[str]]) -> None:
@@ -3251,7 +3254,6 @@ def update_external_cli_path_histories_in_config(histories: dict[str, list[str]]
     else:
         current.pop(EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[-1], None)
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    refresh_external_cli_state_sidecar(CONFIG_YAML_PATH)
 
 
 def update_external_cli_builtin_models_in_config(catalogs: dict[str, list[dict[str, Any]]]) -> None:
