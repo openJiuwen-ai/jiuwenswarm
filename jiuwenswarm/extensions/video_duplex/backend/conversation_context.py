@@ -1,6 +1,7 @@
 """Import persisted realtime speech into the shared chat Agent before dispatch."""
 
 import asyncio
+import logging
 
 from openjiuwen.core.foundation.llm import AssistantMessage, UserMessage
 from openjiuwen.core.foundation.llm.schema.message import (
@@ -17,6 +18,12 @@ from jiuwenswarm.server.runtime.session.history_replay import (
 )
 
 HISTORY_ID = "duplex_history_id"
+
+logger = logging.getLogger(__name__)
+
+
+class VoiceHistoryBusyError(RuntimeError):
+    """The history writer is still saving, so no complete voice batch is readable."""
 
 
 def conversation_record_id(record):
@@ -40,7 +47,7 @@ def _is_voice_input(record):
 
 async def _load_voice_batch(session_id, cursor=None):
     if not await asyncio.to_thread(session_history.flush_pending_writes, timeout=5):
-        raise RuntimeError("Voice history is still saving; retry the request")
+        raise VoiceHistoryBusyError("Voice history is still saving; retry the request")
     return await asyncio.to_thread(read_history_replay, session_id, cursor=cursor,
                                    is_restorable=_is_voice_input, voice_only=True)
 
@@ -70,7 +77,12 @@ async def _sync_conversation_context(agent, session_id, context, react):
         # （如测试替身的魔术属性）按"无游标"处理——全量重读，而不是误判
         # history 已变更而拒绝整条请求。
         cursor = None
-    batch = await _load_voice_batch(session_id, cursor)
+    try:
+        batch = await _load_voice_batch(session_id, cursor)
+    except VoiceHistoryBusyError as exc:
+        # The cursor stays put, so the next sync imports these records.
+        logger.warning("skipping voice history import: session_id=%s (%s)", session_id, exc)
+        return
     records = batch.records
     # Retain consumed IDs even if Core compacts its message window.
     seen = getattr(context, "duplex_history_ids", None)
