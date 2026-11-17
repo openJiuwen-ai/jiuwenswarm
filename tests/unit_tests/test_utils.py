@@ -846,6 +846,49 @@ def test_prepare_workspace_force_reset_clears_sidecar(tmp_path, monkeypatch):
     assert not restored["modes"]["team"]["jiuwen_team"].get("external_cli_agents")
 
 
+def test_sidecar_refreshes_through_the_config_write_exit(tmp_path, monkeypatch):
+    """agents/histories 更新走 config.py 的真实写出口（dump_yaml_round_trip
+    的挂接点）后，旁路必须同步——防住"写路径未刷新旁路"的回归（!10406 检视）。"""
+    import yaml
+    from jiuwenswarm.common import config as config_module
+    from jiuwenswarm.common.config import update_external_cli_path_histories_in_config
+
+    sidecar = tmp_path / "outside" / "external_cli_state.json"
+    monkeypatch.setattr(utils, "external_cli_state_sidecar_path", lambda *a, **k: sidecar)
+
+    workspace_dir = tmp_path / ".jiuwenswarm"
+    utils.prepare_workspace(overwrite=True, preferred_language="en", workspace_dir=workspace_dir)
+    config_path = workspace_dir / "config" / "config.yaml"
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", config_path)
+    monkeypatch.setattr(utils, "get_user_workspace_dir", lambda: workspace_dir)
+
+    update_external_cli_agents_in_config = config_module.update_external_cli_agents_in_config
+    update_external_cli_agents_in_config([{"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}])
+    mirrored = yaml.safe_load(sidecar.read_text(encoding="utf-8"))
+    assert mirrored["agents"] == [{"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}]
+
+    update_external_cli_path_histories_in_config({"claude": ["D:/tools/claude-old.exe"]})
+    mirrored = yaml.safe_load(sidecar.read_text(encoding="utf-8"))
+    assert mirrored["histories"]["claude"] == ["D:/tools/claude-old.exe"]
+
+
+def test_refresh_external_cli_state_sidecar_keeps_sidecar_on_read_failure(tmp_path, monkeypatch):
+    """config.yaml 读取失败时跳过旁路刷新：瞬时读失败不得把恢复备份覆盖成空态。"""
+    config_dir = tmp_path / ".jiuwenswarm" / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.yaml").mkdir()
+
+    existing = {"agents": [{"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}], "histories": {}}
+    sidecar = tmp_path / "outside" / "external_cli_state.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(json.dumps(existing), encoding="utf-8")
+    monkeypatch.setattr(utils, "external_cli_state_sidecar_path", lambda *a, **k: sidecar)
+
+    utils.refresh_external_cli_state_sidecar(config_dir / "config.yaml", tmp_path / ".jiuwenswarm")
+
+    assert json.loads(sidecar.read_text(encoding="utf-8")) == existing
+
+
 
 @pytest.mark.parametrize("skill_name", ["rsi-program-dataset-creator", "agent-group-creator"])
 def test_ensure_default_builtin_skills_installs_program_evolution_design(
