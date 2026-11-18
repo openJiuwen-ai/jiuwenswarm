@@ -431,14 +431,6 @@ def get_runtime_tool_session_id() -> str | None:
     return _CRON_TOOL_SESSION_ID.get()
 
 logger = logging.getLogger(__name__)
-_SESSION_PREPARE_TIMEOUT_SECONDS = 120.0
-
-
-class AgentRuntimeNotReadyError(RuntimeError):
-    """The session could not obtain a live runtime within its setup budget."""
-
-    code = "AGENT_RUNTIME_NOT_READY"
-
 
 # xiaoyi 渠道计费上报（common/billing_client.py）：NEW 在一轮 query 实际开跑前
 # 派发（team/auto_harness/goal/slash 早退分支不触发），终态在流式/非流式 finally
@@ -10957,20 +10949,10 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         # "entering runner streaming" line so the pre-dispatch work is visible.
         stream_impl_started_at = time.monotonic()
         if not self._is_session_scoped_adapter:
-            # 硬预算刻意为之：会话准备挂死曾以"完成帧假成功"或无限等待收场
-            # （1112 问题 2/问题 8 同族——无终态家族）。超过预算按可重试的
-            # 初始化失败处理（AgentRuntimeNotReadyError）；内层 wait_for 的
-            # 超时逃逸到此处也归入该类——语义仍成立（准备确实没完成）。
-            try:
-                async with asyncio.timeout(_SESSION_PREPARE_TIMEOUT_SECONDS):
-                    session_adapter = await self._get_or_create_session_adapter(
-                        request.session_id,
-                        warmup_exclude_request_id=request.request_id,
-                    )
-            except TimeoutError as exc:
-                raise AgentRuntimeNotReadyError(
-                    f"Session preparation exceeded {_SESSION_PREPARE_TIMEOUT_SECONDS:g}s; retry after initialization"
-                ) from exc
+            session_adapter = await self._get_or_create_session_adapter(
+                request.session_id,
+                warmup_exclude_request_id=request.request_id,
+            )
             try:
                 # 委托层也拥有内层流；关闭不能依赖 async generator 的 GC。
                 async with aclosing(session_adapter.process_message_stream_impl(request, inputs)) as stream:
@@ -10981,7 +10963,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 await self._evict_idle_session_adapters()
 
         if self._instance is None:
-            raise AgentRuntimeNotReadyError("JiuWenSwarmDeepAdapter 未初始化，请先调用 create_instance()")
+            raise RuntimeError("JiuWenSwarmDeepAdapter 未初始化，请先调用 create_instance()")
 
         self._bind_invoke_workspace_context()
         # 新一轮普通消息不能被上一轮残留的 HITL 中断状态吃掉：并行子代理里只要有
