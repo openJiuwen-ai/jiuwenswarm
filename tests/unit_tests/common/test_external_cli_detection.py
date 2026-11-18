@@ -44,6 +44,40 @@ def test_saving_rejects_another_agents_executable(tmp_path, monkeypatch, agent, 
     assert raw["modes"]["team"]["jiuwen_team"]["external_cli_agents"] == []
 
 
+def test_path_histories_append_the_kept_path_when_a_save_disables_the_agent():
+    """禁用转换（enabled true→false，agent 将从列表移除）时，被保留的路径
+    在服务端按磁盘历史追加——前端不得用快照整组覆盖磁盘历史（!10561 检视）。"""
+    raw = {"modes": {"team": {"jiuwen_team": {
+        "external_cli_agents": [{"cli_agent": "claude", "cli_path": "/local/claude"}],
+        "external_cli_path_histories": {"claude": ["/older/claude"]},
+    }}}}
+    disable = {
+        "external_cli_agent_claude_enabled": "false",
+        "external_cli_agent_claude_use_builtin": "false",
+        "external_cli_agent_claude_cli_path": "/local/claude",
+    }
+    merged = handlers.external_cli_path_histories_from_switches(raw, disable)
+    assert merged["claude"] == ["/older/claude", "/local/claude"]
+    # params 不带历史数组时（前端不再整组写回），以磁盘历史为基础追加
+    assert merged == handlers.external_cli_path_histories_from_switches(raw, disable)
+
+
+def test_path_histories_do_not_append_on_disable_from_built_in():
+    raw = {"modes": {"team": {"jiuwen_team": {
+        "external_cli_agents": [],
+        "external_cli_path_histories": {"claude": ["/older/claude"]},
+    }}}}
+    disable_builtin = {
+        "external_cli_agent_claude_enabled": "false",
+        "external_cli_agent_claude_use_builtin": "true",
+        "external_cli_agent_claude_cli_path": "",
+    }
+    # 内置模式没有可保留的自定义路径：历史原样保留
+    assert handlers.external_cli_path_histories_from_switches(raw, disable_builtin) == {
+        "claude": ["/older/claude"],
+    }
+
+
 def test_disabled_modes_record_the_mode_at_disable_time():
     raw = {"modes": {"team": {"jiuwen_team": {"external_cli_agents": []}}}}
     # 本地路径模式下禁用：记录自定义模式，重开时恢复本地路径

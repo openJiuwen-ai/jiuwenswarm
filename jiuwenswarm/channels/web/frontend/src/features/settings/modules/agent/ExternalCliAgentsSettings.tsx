@@ -411,13 +411,10 @@ function ExternalCliSettings({
         // custom path must still join the local history.
         if (!oldPath || oldPath === newPath) continue;
         const historyKey = externalCliKey(agent, 'path_histories');
-        // 禁用写入（updates 已带 historyKey，含本次捕获的保留路径）时以其为
-        // 基础追加 oldPath——historyPatch 若仍按 savedValues 旧快照整组覆盖，
-        // 会把同一次保存里新捕获的保留路径抹掉（!10561 检视）。
-        const base = parseExternalCliPathHistories(updates[historyKey] ?? savedValues[historyKey]);
-        if (base.includes(oldPath)) continue;
+        const history = parseExternalCliPathHistories(savedValues[historyKey]);
+        if (history.includes(oldPath)) continue;
         historyPatch[historyKey] = JSON.stringify(
-          [...base, oldPath].slice(-EXTERNAL_CLI_PATH_HISTORY_LIMIT),
+          [...history, oldPath].slice(-EXTERNAL_CLI_PATH_HISTORY_LIMIT),
         );
       }
       for (const [key, value] of Object.entries(historyPatch)) {
@@ -473,16 +470,10 @@ function ExternalCliSettings({
       };
       const updates: Record<string, string> = {};
       applyExternalCliAgentAtomicUpdates(updates, cliAgent, effectiveDrafts, savedValues);
-      // 关闭开关时把保留的路径写入路径历史：重新启用时才能从历史恢复本地
-      // 路径，而不是回退内置 CLI（#6753 问题二）。
-      if (!choice.enabled) {
-        const historyKey = externalCliKey(cliAgent, 'path_histories');
-        const history = parseExternalCliPathHistories(savedValues[historyKey] ?? draftValues[historyKey]);
-        const preservedPath = effectiveDrafts[externalCliKey(cliAgent, 'cli_path')] ?? '';
-        if (preservedPath && !history.includes(preservedPath)) {
-          updates[historyKey] = JSON.stringify([...history, preservedPath].slice(-EXTERNAL_CLI_PATH_HISTORY_LIMIT));
-        }
-      }
+      // The kept path joins path_histories SERVER-SIDE (the disable append in
+      // external_cli_path_histories_from_switches) — the frontend must not
+      // write the whole history array from its own snapshot, which could roll
+      // back entries appended concurrently on disk (!10561 第二轮检视).
       if (!Object.keys(updates).length) {
         if (!choice.force) return;
         // An install click must always produce a payload: the backend only

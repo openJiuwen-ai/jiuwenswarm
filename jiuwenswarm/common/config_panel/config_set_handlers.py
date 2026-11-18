@@ -1224,10 +1224,12 @@ def external_cli_path_histories_from_switches(raw: dict[str, Any], params: dict[
     Returns:
         ``cli_agent`` to its merged history paths. Kinds whose history key is
         absent from ``params`` keep their persisted history verbatim. When a
-        save switches an agent from one external path to another, the
-        previously effective path is appended so switching never loses it;
-        the currently effective path stays out of the history because it is
-        always the dropdown's first option.
+        save switches an agent from one external path to another, or disables
+        it (the agent leaves the list), the previously effective path is
+        appended SERVER-SIDE against the pre-save config so the frontend never
+        overwrites the disk history with its own snapshot; the currently
+        effective path stays out of the history because it is always the
+        dropdown's first option.
     """
     current = flatten_external_cli_agents_for_config_panel(raw)
     merged: dict[str, list[str]] = {}
@@ -1242,12 +1244,17 @@ def external_cli_path_histories_from_switches(raw: dict[str, Any], params: dict[
         if isinstance(parsed, list):
             history = [str(path) for path in parsed if str(path or "").strip()]
         cli_path_key = external_cli_agent_key(cli_agent, "cli_path")
-        if cli_path_key in params:
+        enabled_key = external_cli_agent_key(cli_agent, "enabled")
+        if cli_path_key in params or enabled_key in params:
             old_path = str(current.get(cli_path_key, "") or "").strip()
-            _, _, new_path = external_cli_agent_effective_state(cli_agent, current, params)
-            # Switching to the built-in CLI reports an empty new path; the
-            # replaced custom path must still land in the history.
-            if old_path and old_path != new_path and old_path not in history:
+            enabled, _, new_path = external_cli_agent_effective_state(cli_agent, current, params)
+            was_enabled = current.get(enabled_key) == "true"
+            # A path replacement (old != new) and the disable transition (the
+            # agent leaves the list) both append the previously effective path
+            # SERVER-SIDE — a frontend snapshot array must never roll back
+            # entries appended concurrently on disk (!10561 第二轮检视).
+            disabled_now = was_enabled and not enabled
+            if old_path and (old_path != new_path or disabled_now) and old_path not in history:
                 history = [*history, old_path]
         if history:
             merged[cli_agent] = history

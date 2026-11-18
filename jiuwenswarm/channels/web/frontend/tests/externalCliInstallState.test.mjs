@@ -366,8 +366,7 @@ test('a saved cli_path change appends the previous path to the local history', (
   assert.match(settingsSource, /const EXTERNAL_CLI_PATH_HISTORY_LIMIT = 10;/);
   assert.match(settingsSource, /if \(!oldPath \|\| oldPath === newPath\) continue;/);
   assert.match(settingsSource, /historyPatch\[historyKey\] = JSON\.stringify\(/);
-  assert.match(settingsSource, /parseExternalCliPathHistories\(updates\[historyKey\] \?\? savedValues\[historyKey\]\)/);
-  assert.match(settingsSource, /\[\.\.\.base, oldPath\]\.slice\(-EXTERNAL_CLI_PATH_HISTORY_LIMIT\)/);
+  assert.match(settingsSource, /\[\.\.\.history, oldPath\]\.slice\(-EXTERNAL_CLI_PATH_HISTORY_LIMIT\)/);
   // The mirrored history reaches savedValues, draftValues, and the config store.
   assert.match(settingsSource, /for \(const \[key, value\] of Object\.entries\(historyPatch\)\) \{\s*next\[key\] = value;\s*\}/);
 });
