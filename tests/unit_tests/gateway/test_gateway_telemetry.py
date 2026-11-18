@@ -525,7 +525,7 @@ def test_nested_derived_request_reuses_its_span_and_inherits_sampling():
 
 
 def test_clearing_request_scope_also_clears_response_owner():
-    from openjiuwen_protocol.message import Message
+    from e2a.message import Message
 
     telemetry.configure_gateway_telemetry({"telemetry": {"enabled": True, "exporter": "none"}})
     operation = telemetry.start_request_trace("r", "history.get", channel="web", connection_id="c")
@@ -542,7 +542,7 @@ def test_clearing_request_scope_also_clears_response_owner():
 
 
 def test_late_response_does_not_rebind_to_same_id_on_another_connection():
-    from openjiuwen_protocol.message import Message
+    from e2a.message import Message
 
     telemetry.configure_gateway_telemetry({"telemetry": {"enabled": True, "exporter": "none"}})
     first = telemetry.start_request_trace("same", "chat.send", channel="web", connection_id="first")

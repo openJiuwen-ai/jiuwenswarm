@@ -8,7 +8,7 @@ import types
 from collections import deque
 
 import pytest
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from e2a.message import EventType, Message, ReqMethod
 
 from agent_gateway.channel_manager.protocol.acp.acp_connect import AcpChannel, AcpChannelConfig
 

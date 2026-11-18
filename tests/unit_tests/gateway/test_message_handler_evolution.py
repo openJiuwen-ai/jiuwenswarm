@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from types import SimpleNamespace
 
 import pytest
-from openjiuwen_protocol.message import EventType, ReqMethod
+from e2a.message import EventType, ReqMethod
 from agent_gateway.message_handler.message_handler import MessageHandler
 
 from jiuwenswarm.common.schema import Message

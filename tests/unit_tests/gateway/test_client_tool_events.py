@@ -7,7 +7,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from openjiuwen_protocol.message import EventType, Message
+from e2a.message import EventType, Message
 from agent_gateway.channel_manager.web.web_connect import WebChannel
 from agent_gateway.message_handler import MessageHandler
 

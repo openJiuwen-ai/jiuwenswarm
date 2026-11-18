@@ -42,7 +42,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from openjiuwen_protocol.session_assets import (
+from e2a.session_assets import (
     ASSET_ID_PREFIX,
     ASSET_KIND_AUDIO,
     ASSET_KIND_DOCUMENT,

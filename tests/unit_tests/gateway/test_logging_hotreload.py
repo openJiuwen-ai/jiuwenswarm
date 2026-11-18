@@ -4,7 +4,7 @@
 
 update_gateway_log_levels 只经标准库基类 + 文件名映射分类 handler，
 独立安装（gateway 自有装配）与共同安装（复用母仓 jiuwenswarm 树装配）
-两种形态都必须正确；payload 转换沿用 openjiuwen_protocol 字段契约。
+两种形态都必须正确；payload 转换沿用 e2a 字段契约。
 """
 
 from __future__ import annotations

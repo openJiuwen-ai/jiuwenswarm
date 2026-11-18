@@ -26,9 +26,9 @@ dependencies = [
     # openjiuwen's FS read-write lock acquires and releases on different tasks;
     # filelock>=4.0.2 binds async locks to their acquiring task, stranding them.
     "filelock>=3.25.0,<4",
-    "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@267c077fa832b25f7f64a913461c2124353bc911#subdirectory=openjiuwen-protocol",
+    "openjiuwen-e2a @ git+https://gitcode.com/openJiuwen/agent-protocol.git@10ad4a2eeff11e0600c06a8235a797c5dd9f0a38#subdirectory=openjiuwen-e2a",
     # Gateway 传输层已拆分为独立仓 agent-gateway
-    "agent-gateway @ git+https://gitcode.com/openJiuwen/agent-gateway.git@4e0f2a8fc68605169a0bbee99d09d5b5dcf65496",
+    "agent-gateway @ git+https://gitcode.com/openJiuwen/agent-gateway.git@4887ae3ac6f59b77d6ea9bb4594384aca2e0ae25",
     "pgvector>=0.4.2,<0.5",
     "portalocker>=3.2.0,<4",
     "prompt-toolkit>=3.0,<4.0",
@@ -240,13 +240,11 @@ override-dependencies = [
     "openjiuwen[claude] @ git+https://gitcode.com/openJiuwen/agent-core.git@ce89516ddc45e3154a6c2719e4b8740f3cc5e78b ; extra == 'claude'",
     "openjiuwen[codex] @ git+https://gitcode.com/openJiuwen/agent-core.git@ce89516ddc45e3154a6c2719e4b8740f3cc5e78b ; extra == 'codex'",
     "openjiuwen[postgres,zmq] @ git+https://gitcode.com/openJiuwen/agent-core.git@ce89516ddc45e3154a6c2719e4b8740f3cc5e78b ; extra == 'distribute'",
-    "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@267c077fa832b25f7f64a913461c2124353bc911#subdirectory=openjiuwen-protocol",
 ]
 
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
-agent-gateway = { git = "https://gitcode.com/openJiuwen/agent-gateway.git", rev = "4e0f2a8fc68605169a0bbee99d09d5b5dcf65496" }
-openjiuwen-protocol = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", rev = "267c077fa832b25f7f64a913461c2124353bc911", subdirectory = "openjiuwen-protocol" }
+agent-gateway = { git = "https://gitcode.com/openJiuwen/agent-gateway.git", rev = "4887ae3ac6f59b77d6ea9bb4594384aca2e0ae25" }
 openjiuwen-runtime-foundation = { git = "https://gitcode.com/openJiuwen/agent-runtime.git", branch = "develop", subdirectory = "foundation" }
 
 [dependency-groups]

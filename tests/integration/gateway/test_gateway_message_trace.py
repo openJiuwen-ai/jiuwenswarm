@@ -17,10 +17,10 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
-from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
-from openjiuwen_protocol.e2a.models import E2AEnvelope
-from openjiuwen_protocol.e2a.wire_codec import encode_agent_response_for_wire, encode_agent_chunk_for_wire
-from openjiuwen_protocol.message import ReqMethod
+from e2a.agent_models import AgentResponse, AgentResponseChunk
+from e2a.models import E2AEnvelope
+from e2a.wire_codec import encode_agent_response_for_wire, encode_agent_chunk_for_wire
+from e2a.message import ReqMethod
 
 from agent_gateway import app_gateway, telemetry
 from agent_gateway.channel_manager.base import RobotMessageRouter

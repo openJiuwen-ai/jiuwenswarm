@@ -50,7 +50,7 @@ import portalocker
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from openjiuwen_protocol.logging_config import (
+from e2a.logging_config import (
     LOGGING_LEVEL_FIELDS,
     LOG_CONFIG_OP_DELETE,
     LOG_CONFIG_OP_FIELD,

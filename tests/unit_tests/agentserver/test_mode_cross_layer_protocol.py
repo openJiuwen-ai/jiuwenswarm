@@ -10,7 +10,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
-from openjiuwen_protocol.message import EventType
+from e2a.message import EventType
 
 from agent_gateway.channel_manager.tui.tui_channel import TuiChannel
 from agent_gateway.channel_manager.web.web_connect import WebChannel

@@ -431,7 +431,7 @@ Server 自己的 `TEAM_SKILLS_HUB_BASE_URL` 决定查询哪个 Hub。WebSocket �
 管理接口保持 `{code: 200, message: "success", data: {items: [...], error: ""}}`
 结构；Server 不可用、传输失败或 Hub 查询失败时，返回空 `items` 与错误说明。
 不回退到 Gateway 本地查询。缓存冷启动与后台刷新语义沿用 Server 现有实现。
-`hub.expert_packages.catalog` 由锁定版本的 `openjiuwen-protocol` 正式定义，无需应用侧临时注册。
+`hub.expert_packages.catalog` 由锁定版本的 `openjiuwen-e2a` 正式定义，无需应用侧临时注册。
 
 ## 历史原文引用与分块读取
 

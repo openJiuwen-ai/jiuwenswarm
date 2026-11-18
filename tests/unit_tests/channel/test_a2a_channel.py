@@ -1,7 +1,7 @@
 import time
 
 import pytest
-from openjiuwen_protocol.message import EventType, Message
+from e2a.message import EventType, Message
 
 from agent_gateway.channel_manager.protocol.a2a.a2a_connect import (
     A2A_THOUGHT_METADATA_KEY,

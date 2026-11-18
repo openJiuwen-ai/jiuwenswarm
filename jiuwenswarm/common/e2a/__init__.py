@@ -3,7 +3,7 @@
 """E2A（Everything-to-Agent）：统一信封；ACP / A2A 等经转换进入 E2A，并由 provenance 记录出处。
 
 **转发别名（过渡形态）**：E2A wire 契约（常量/模型/规范化/适配/线编解码/ACP 辅助）
-已迁 ``openjiuwen_protocol.e2a``；本包 re-export 同一对象，仓内既有
+已迁 ``e2a``；本包 re-export 同一对象，仓内既有
 ``from jiuwenswarm.common.e2a import ...`` 与 ``from jiuwenswarm.common.e2a.acp import ...``
 全部保持可用。唯一真源在协议包，本仓不持有实现，过渡期结束后随收敛删除。
 
@@ -16,30 +16,30 @@
 协议说明（中英）：仓库 ``docs/zh/E2A-protocol.md``、``docs/en/E2A-protocol.md``。
 """
 
-from openjiuwen_protocol.e2a.adapters import (
+from e2a.adapters import (
     e2a_response_to_a2a_stream_payload,
     e2a_response_to_acp_jsonrpc_response,
     envelope_from_a2a_send_message,
     envelope_from_acp_jsonrpc,
     envelope_to_acp_jsonrpc_call,
 )
-from openjiuwen_protocol.e2a.acp.protocol import (
+from e2a.acp.protocol import (
     build_acp_initialize_result,
     build_acp_prompt_result,
 )
-from openjiuwen_protocol.e2a.acp.session_updates import (
+from e2a.acp.session_updates import (
     AcpSessionUpdateState,
     build_acp_final_text_update,
     build_acp_session_update,
     build_acp_usage_update,
 )
-from openjiuwen_protocol.e2a.agent_models import (
+from e2a.agent_models import (
     AgentRequest,
     AgentResponse,
     AgentResponseChunk,
     PermissionContext,
 )
-from openjiuwen_protocol.e2a.constants import (
+from e2a.constants import (
     ACP_AGENT_TO_CLIENT_METHODS,
     ACP_CLIENT_TO_AGENT_METHODS,
     ACP_NOTIFICATION_NAMES,
@@ -66,7 +66,7 @@ from openjiuwen_protocol.e2a.constants import (
     E2A_SOURCE_PROTOCOL_ACP,
     E2A_SOURCE_PROTOCOL_E2A,
 )
-from openjiuwen_protocol.e2a.gateway_normalize import (
+from e2a.gateway_normalize import (
     E2A_FALLBACK_FAILED_KEY,
     E2A_INTERNAL_CONTEXT_KEY,
     E2A_LEGACY_AGENT_REQUEST_KEY,
@@ -80,13 +80,13 @@ from openjiuwen_protocol.e2a.gateway_normalize import (
     message_to_e2a_or_fallback,
     message_to_legacy_agent_dict,
 )
-from openjiuwen_protocol.e2a.wire_codec import (
+from e2a.wire_codec import (
     encode_agent_response_for_wire,
     encode_json_parse_error_wire,
     is_e2a_response_wire_dict,
     parse_agent_server_wire_unary,
 )
-from openjiuwen_protocol.e2a.models import (
+from e2a.models import (
     E2A_PROTOCOL_VERSION,
     E2AAuth,
     E2AEnvelope,

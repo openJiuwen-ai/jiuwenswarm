@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from openjiuwen_protocol.e2a.agent_models import AgentRef
+from e2a.agent_models import AgentRef
 from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.web.web_connect import (
     WebChannel,

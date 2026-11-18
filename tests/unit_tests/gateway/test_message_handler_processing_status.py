@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 
 from agent_gateway.message_handler.message_handler import MessageHandler
-from openjiuwen_protocol.message import EventType
+from e2a.message import EventType
 
 
 def _bare_handler() -> MessageHandler:

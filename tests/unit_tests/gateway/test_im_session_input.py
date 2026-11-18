@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from openjiuwen_protocol.message import Message, ReqMethod
+from e2a.message import Message, ReqMethod
 from agent_gateway.im_pipeline.im_inbound import IMInboundPipeline
 from agent_gateway.im_pipeline.im_session_input import (
     is_shared_im_channel,

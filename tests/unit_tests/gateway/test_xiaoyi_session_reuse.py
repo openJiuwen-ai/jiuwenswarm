@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from openjiuwen_protocol.message import Message, ReqMethod
+from e2a.message import Message, ReqMethod
 from agent_gateway.message_handler.message_handler import MessageHandler
 
 _CONVERSATION_ID = "5a423bc9f2ce471cab9e316d2d06edbf"
