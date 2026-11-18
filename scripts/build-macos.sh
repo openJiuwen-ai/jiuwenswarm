@@ -153,6 +153,10 @@ if [[ ! -x "$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" ]]; then
   exit 1
 fi
 
+printf 'Verifying frozen JiuwenMemory SDK and video tools...\n'
+uv run --no-sync python "$PROJECT_ROOT/scripts/verify_memory_bundle.py" \
+    --executable "$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME"
+
 printf 'Verifying frozen A2UI v0.8 bundle...\n'
 "$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_a2ui_bundle.py"
 
