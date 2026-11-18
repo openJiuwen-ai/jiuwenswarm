@@ -840,10 +840,27 @@ def create_sandbox_sysop_card(
 
         if normalized_type == "adx-environment":
             extra_params = _build_adx_extra_params()
+            connection = extra_params.pop("connection", None) or {}
+            token = connection.get("token")
+            if is_agentos_runtime() and os.getenv("ADX_TOKEN"):
+                extra_params["token_env"] = "ADX_TOKEN"
+                token = None
+            if extra_params.get("rootfs_template"):
+                extra_params.pop("image", None)
+            network = extra_params.get("network")
+            if network and "schemaVersion" not in network:
+                if "traffic" in network or "dns" in network:
+                    from agent_gateway.extensions.adx.network import http_policy
+
+                    extra_params["network"] = http_policy(network)
+                else:
+                    legacy_fields = {"block_network": "blockNetwork", "dns_blacklist": "dnsBlacklist"}
+                    extra_params["network"] = {legacy_fields.get(key, key): value for key, value in network.items()}
             sysop_card = SysOperationCard(
                 mode=OperationMode.SANDBOX,
                 work_config=LocalWorkConfig(shell_allowlist=None),
                 gateway_config=SandboxGatewayConfig(
+                    auth_headers={"Authorization": f"Bearer {token}"} if token else {},
                     isolation=SandboxIsolationConfig(container_scope=ContainerScope.CUSTOM, custom_id="default"),
                     launcher_config=PreDeployLauncherConfig(
                         base_url=sandbox_url, sandbox_type="adx-environment", idle_ttl_seconds=idle_ttl_seconds,

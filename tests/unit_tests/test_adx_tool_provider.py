@@ -27,6 +27,7 @@ def tool_workspace(monkeypatch, tmp_path):
     monkeypatch.setenv('JIUWENSWARM_TASKS_DIR', str(home / 'Documents/JiuwenSwarm'))
     for key in ('TOOL_SANDBOX_CPU', 'TOOL_SANDBOX_MEMORY', 'TOOL_SANDBOX_IDLE_TIMEOUT'):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv('ADX_TOKEN', raising=False)
     return home, workspace, project
 
 
@@ -51,12 +52,18 @@ def test_adx_tool_card_reads_configuration_and_maps_existing_user_workspace(monk
     assert launch.sandbox_type == 'adx-environment'
     assert str(launch.base_url).rstrip('/') == source['url']
     assert card.gateway_config.isolation.custom_id == 'default'
+    assert card.gateway_config.auth_headers == {'Authorization': 'Bearer test-token'}
     extra = launch.extra_params
-    for name in ('runtime', 'image', 'cpu', 'memory', 'idle_timeout', 'user', 'group',
-                 'connection', 'env', 'network', 'endpoint_file', 'restart_policy'):
+    for name in ('runtime', 'cpu', 'memory', 'idle_timeout', 'user', 'group',
+                 'env', 'endpoint_file', 'restart_policy'):
         assert extra[name] == source[name]
+    assert 'connection' not in extra
+    assert extra['network'] == {'blockNetwork': True}
     if runtime == 'runsc':
         assert extra['rootfs_template'] == 'offline-rootfs'
+        assert 'image' not in extra
+    else:
+        assert extra['image'] == source['image']
     assert extra['workdir'] == str(workspace)
     assert extra['mounts'] == [
         {'host_path': '/home/agentos/users/alice/.jiuwenswarm/agent/workspace',
@@ -67,6 +74,29 @@ def test_adx_tool_card_reads_configuration_and_maps_existing_user_workspace(monk
         {'host_path': '/shared/data', 'target': '/data', 'options': ['ro']},
     ]
     assert source == original
+
+
+def test_managed_adx_tool_uses_node_token_and_http_network_policy(monkeypatch, tool_workspace):
+    source = {
+        'type': 'adx-environment', 'runtime': 'runsc', 'connection': {'token': 'retained-token'},
+        'network': {
+            'traffic': {'ingress_default_action': 'deny', 'egress_default_action': 'deny',
+                        'rules': [{'domain': 'tools.example', 'port_range': 443}]},
+            'dns': {'default_action': 'deny', 'rules': []},
+        },
+    }
+    monkeypatch.setenv('ADX_TOKEN', 'injected-token')
+    monkeypatch.setattr(config, 'get_config', lambda: {'sandbox': source})
+    card = builder.create_sandbox_sysop_card('https://worker.example:8443', 'adx-environment')
+    assert card.gateway_config.auth_headers == {}
+    extra = card.gateway_config.launcher_config.extra_params
+    assert extra['token_env'] == 'ADX_TOKEN'
+    network = extra['network']
+    assert network['schemaVersion'] == 2
+    assert network['traffic']['egressDefaultAction'] == 'deny'
+    assert network['traffic']['rules'][0]['peer'] == {
+        'domain': 'tools.example', 'portRange': {'first': 443, 'last': 443},
+    }
 
 
 def test_tool_card_preserves_explicit_restart_disable(monkeypatch, tool_workspace):

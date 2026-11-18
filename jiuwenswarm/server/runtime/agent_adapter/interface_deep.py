@@ -10530,7 +10530,7 @@ class JiuWenSwarmDeepAdapter:
           字典让 provider 下次 exec 时读到新值（provider 持 dict 引用）。
         - ``files_changed=True`` 时:
           - jiuwenbox: 调用 ``force_recreate_jiuwenbox_sandbox``
-          - adx-environment: 调用 ``delete_adx_environment``，下次 op 懒创建新实例
+          - adx-environment: 调用 ``delete_adx_sandbox``，下次 op 懒创建新实例
 
         Args:
             runtime: ``get_sandbox_runtime()`` 当前完整 runtime。
@@ -10560,13 +10560,13 @@ class JiuWenSwarmDeepAdapter:
             )
             if files_changed:
                 try:
-                    from openjiuwen.extensions.sys_operation.sandbox.providers.adx_environment import (
+                    from openjiuwen.extensions.sys_operation.sandbox.providers.adx import (
                         build_adx_shared_scope_key,
-                        delete_adx_environment,
+                        delete_adx_sandbox,
                     )
                 except Exception as exc:
                     logger.warning(
-                        "[JiuWenSwarmDeepAdapter] delete_adx_environment import "
+                        "[JiuWenSwarmDeepAdapter] delete_adx_sandbox import "
                         "failed: %s",
                         exc,
                     )
@@ -10580,7 +10580,7 @@ class JiuWenSwarmDeepAdapter:
                         if isolation_key
                         else None
                     )
-                    deleted = await delete_adx_environment(
+                    deleted = await delete_adx_sandbox(
                         shared_key=shared_key,
                         base_url=(
                             str(launcher.base_url)
@@ -10596,7 +10596,7 @@ class JiuWenSwarmDeepAdapter:
                     )
                 except Exception as exc:
                     logger.warning(
-                        "[JiuWenSwarmDeepAdapter] delete_adx_environment failed: %s",
+                        "[JiuWenSwarmDeepAdapter] delete_adx_sandbox failed: %s",
                         exc,
                     )
             return
