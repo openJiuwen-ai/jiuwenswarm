@@ -299,7 +299,6 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261116_1636_custom-model-reasoning-policy](bugfix/jiuwenswarm/channels/web/frontend/B_20261116_1636_custom-model-reasoning-policy.md) | B | 自定义模型误展示推理配置修复 | lizhiyuan | 无独立 D：用户已确认的既有设置页能力边界收敛；不新增模型发现或跨仓接口，属于局部回归修复。 |
-| [B_20261118_1056_issue6785-snapshot-owner-cancellation](bugfix/jiuwenswarm/server/supervisor/B_20261118_1056_issue6785-snapshot-owner-cancellation.md) | B | Issue 6785 快照发送回收取消传播与模型列表自动恢复 | 刘瑜 | 无独立 D：对既有快照查询取消边界和模型列表自动恢复的小范围修复，无独立设计。 |
 
 <a id="module-jiuwenswarm-common"></a>
 
@@ -443,7 +442,6 @@ generated: true
 |---|---|---|---|---|
 | [B_20261107_1505_6226-forwarding-replay](bugfix/jiuwenswarm/server/supervisor/B_20261107_1505_6226-forwarding-replay.md) | B | 历史回放触发转发队列溢出及前端计时不收尾 | kdgmpw | 无独立 D：对现有有界转发及前端终态处理的小范围修复，无独立设计。 |
 | [B_20261110_1042_issue6191-ipc-recovery](bugfix/jiuwenswarm/server/ipc/B_20261110_1042_issue6191-ipc-recovery.md) | B | IPC 突发积压与降级就绪重连导致 Runtime 失败 | 刘瑜 | 无独立 D：对现有有界 IPC 和 Runtime 恢复状态机的小范围修复，无独立设计。 |
-| [B_20261118_1056_issue6785-snapshot-owner-cancellation](bugfix/jiuwenswarm/server/supervisor/B_20261118_1056_issue6785-snapshot-owner-cancellation.md) | B | Issue 6785 快照发送回收取消传播与模型列表自动恢复 | 刘瑜 | 无独立 D：对既有快照查询取消边界和模型列表自动恢复的小范围修复，无独立设计。 |
 
 <a id="module-jiuwenswarm-server-worker"></a>
 
