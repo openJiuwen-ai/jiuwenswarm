@@ -1012,22 +1012,15 @@ def _starter_interaction_context(params: Any, query: Any) -> str:
     if card is None or card.get("prompt") != query:
         return ""
     evidence = card.get("evidence_bundle") or {}
-    from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
-        recommendation_sources,
-    )
-    sources = recommendation_sources(TopicStarterStore(database), card.get("source_locators") or [])
+    # The clicked answer is scoped to the card's own evidence. Earlier source
+    # conversations are deliberately not read back: the click path must not pay
+    # for a history scan, and the user's earlier constraints are not inherited.
     return (
-        "Answer the clicked question using the stored topic context below. The user's "
-        "own messages supply facts about the user and continuing constraints for this "
-        "question. Earlier assistant replies, in this or another conversation, only show "
-        "what was already discussed: a claim taken from them needs support like any other, "
-        "and they are not documentation to quote. "
+        "Answer the clicked question using the stored topic context below. "
         "No modification forbids writes, not inspection or read-only checks. "
         "Explanation only asks for proposed steps rather than execution. It permits "
         "reading relevant files; running a disposable sample requires the user's explicit "
-        "request for execution or operational verification. Keep conditions attached to their own action, preserve "
-        "restrictions on changes, purchases and access, and follow the reply "
-        "preferences the sources state, such as length.\n"
+        "request for execution or operational verification.\n"
         "The clicked question is the answer scope; stored context must not add a request "
         "or premise. When the question takes an effect, cause or pattern for granted, that is the first "
         "claim to support: say whether it holds, holds only under stated conditions, or "
@@ -1074,7 +1067,6 @@ def _starter_interaction_context(params: Any, query: Any) -> str:
             "source_url": evidence.get("source_url"),
             "published_at": evidence.get("published_at"),
             "source_context": evidence.get("exact_spans") or evidence.get("content_boundary"),
-            "user_source_constraints": sources,
             "publication_date_provenance": evidence.get("publication_date_provenance"),
         }, ensure_ascii=False)
     )

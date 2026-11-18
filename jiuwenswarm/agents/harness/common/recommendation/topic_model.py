@@ -136,6 +136,14 @@ class ArkBackgroundConfig:
             top_p = float(str(values.get("ARK_TOP_P") or "1"))
         except ValueError:
             return None
+        # Endpoints with mandated sampling (Kimi) reject any other value; the
+        # requirement wins over the background default even on this path.
+        from jiuwenswarm.common.reasoning_config import resolve_sampling_override
+
+        sampling = resolve_sampling_override(base_url, model) or {}
+        if sampling:
+            temperature = float(sampling.get("temperature", temperature))
+            top_p = float(sampling.get("top_p", top_p))
         expected_model = str(values.get("ARK_EXPECTED_MODEL") or "").strip() or None
         return cls(
             api_key=api_key,
@@ -433,6 +441,22 @@ def _parse_stage_json(text: str) -> Any:
                 return data
             except json.JSONDecodeError as exc:
                 last_error = exc
+    # General models occasionally quote an English title inside a Chinese JSON
+    # string without escaping it. Repair syntax only; business validators still
+    # decide whether the decoded value is usable.
+    try:
+        import json_repair
+    except ImportError:  # pragma: no cover - declared dependency, kept optional
+        json_repair = None
+    if json_repair is not None:
+        for candidate in candidates:
+            try:
+                repaired = json_repair.loads(candidate)
+            except Exception:  # noqa: BLE001 - malformed input stays malformed
+                continue
+            if isinstance(repaired, (dict, list)):
+                logger.warning("[Topic] stage JSON repaired after parse failure")
+                return repaired
     if last_error is not None:
         raise last_error
     raise json.JSONDecodeError("unparseable stage content", raw, 0)
@@ -507,6 +531,38 @@ def _provider_http_status(detail: BaseException) -> int | None:
     return None
 
 
+# Providers that accept exactly one sampling value name it in the 400, e.g.
+# Kimi's "invalid temperature: only 0.6 is allowed for this model".
+_REQUIRED_TEMPERATURE_PATTERNS = (
+    re.compile(r"only\s+(\d+(?:\.\d+)?)\s+is\s+allowed", re.IGNORECASE),
+    re.compile(r"temperature\s+(?:must|should)\s+be\s+(\d+(?:\.\d+)?)", re.IGNORECASE),
+)
+
+
+def _required_temperature_from_error(exc: BaseException) -> float | None:
+    """The temperature a provider demands in a 400 refusal, if it names one.
+
+    The recommendation stages pin deterministic decoding, which some endpoints
+    (Kimi) refuse outright. Parsing the refusal lets one call repair the value
+    instead of failing every stage of the run.
+    """
+
+    if _provider_http_status(exc) != 400:
+        return None
+    text = str(exc)
+    for pattern in _REQUIRED_TEMPERATURE_PATTERNS:
+        match = pattern.search(text)
+        if match is None:
+            continue
+        try:
+            value = float(match.group(1))
+        except ValueError:
+            continue
+        if 0.0 <= value <= 2.0:
+            return value
+    return None
+
+
 async def _invoke_model_prefer_thinking_disabled(
     model: Any,
     messages: list[dict[str, str]],
@@ -529,6 +585,10 @@ async def _invoke_model_prefer_thinking_disabled(
         try:
             return await model.invoke(messages, **kwargs), False
         except Exception as exc:
+            # A sampling refusal is not about ``reasoning``: let the caller
+            # repair the temperature instead of burning a retry here.
+            if _required_temperature_from_error(exc) is not None:
+                raise
             if kwargs.get("reasoning") is None or _provider_http_status(exc) != 400:
                 raise
             logger.warning(
@@ -642,21 +702,51 @@ def build_ark_stage_invoker(
 
         invocation_receipts.append(receipt)
         save()
+        effective_temperature = config.effective_temperature
+
+        async def send(perform: Callable[[], Awaitable[Any]]) -> Any:
+            """Run one provider call, repairing a named sampling refusal once.
+
+            Some endpoints accept exactly one temperature; when the pinned
+            deterministic value is refused, retry with the value the provider
+            names and keep it for the rest of this invoker's stages.
+            """
+
+            nonlocal effective_temperature
+            try:
+                return await perform()
+            except Exception as exc:
+                required = _required_temperature_from_error(exc)
+                if required is None or required == effective_temperature:
+                    raise
+                logger.warning(
+                    "[Topic] endpoint requires temperature=%s for model=%s "
+                    "(pinned %s); retrying.",
+                    required,
+                    config.model,
+                    effective_temperature,
+                )
+                effective_temperature = required
+                return await perform()
+
         try:
             refusal: Any = None
             if client is not None:
-                request: dict[str, Any] = {
-                    "model": config.model,
-                    "messages": messages,
-                    "temperature": config.effective_temperature,
-                    "top_p": config.effective_top_p,
-                    "max_tokens": max_tokens,
-                    "extra_body": dict(_THINKING_DISABLED_EXTRA_BODY),
-                }
-                response = await _create_completion_prefer_thinking_disabled(
-                    client.chat.completions.create,
-                    request,
-                )
+                async def send_client() -> Any:
+                    request: dict[str, Any] = {
+                        "model": config.model,
+                        "messages": messages,
+                        "temperature": effective_temperature,
+                        "top_p": config.effective_top_p,
+                        "max_tokens": max_tokens,
+                        "extra_body": dict(_THINKING_DISABLED_EXTRA_BODY),
+                    }
+                    return await _create_completion_prefer_thinking_disabled(
+                        client.chat.completions.create,
+                        request,
+                    )
+
+                response = await send(send_client)
                 usage = getattr(response, "usage", None)
                 choices = getattr(response, "choices", None)
                 choice = choices[0] if choices else None
@@ -673,19 +763,23 @@ def build_ark_stage_invoker(
             else:
                 if model is None:
                     raise RuntimeError("recommendation model is not configured")
-                invoke_kwargs: dict[str, Any] = {
-                    "temperature": config.effective_temperature,
-                    "top_p": config.effective_top_p,
-                    "max_tokens": max_tokens,
-                    "extra_body": dict(_THINKING_DISABLED_EXTRA_BODY),
-                }
-                if reasoning is not None:
-                    invoke_kwargs["reasoning"] = dict(reasoning)
-                assistant, reasoning_dropped = await _invoke_model_prefer_thinking_disabled(
-                    model,
-                    messages,
-                    invoke_kwargs,
-                )
+
+                async def send_model() -> tuple[Any, bool]:
+                    invoke_kwargs: dict[str, Any] = {
+                        "temperature": effective_temperature,
+                        "top_p": config.effective_top_p,
+                        "max_tokens": max_tokens,
+                        "extra_body": dict(_THINKING_DISABLED_EXTRA_BODY),
+                    }
+                    if reasoning is not None:
+                        invoke_kwargs["reasoning"] = dict(reasoning)
+                    return await _invoke_model_prefer_thinking_disabled(
+                        model,
+                        messages,
+                        invoke_kwargs,
+                    )
+
+                assistant, reasoning_dropped = await send(send_model)
                 usage = getattr(assistant, "usage_metadata", None)
                 receipt.update({
                     "provider_response_id": getattr(assistant, "response_id", None),
@@ -699,6 +793,8 @@ def build_ark_stage_invoker(
                 if reasoning_dropped:
                     receipt["reasoning_dropped"] = True
                 content = getattr(assistant, "content", None)
+            if effective_temperature != config.effective_temperature:
+                receipt["temperature_repaired"] = effective_temperature
             status = "received"
             save()
             status = (
