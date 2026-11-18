@@ -36,13 +36,15 @@ async def test_voice_history_filters_result_echoes_and_blank_or_non_text_records
     assert await sync.load_voice_history("chat") == [records[0]]
 
 
-async def test_voice_history_never_reads_unflushed_records(monkeypatch):
-    monkeypatch.setattr(sync.session_history, "flush_pending_writes", lambda **_: False)
-    read = AsyncMock()
-    monkeypatch.setattr(sync.session_history, "load_history_records", read)
-    with pytest.raises(RuntimeError, match="still saving"):
-        await sync.load_voice_history("chat")
-    read.assert_not_called()
+async def test_voice_history_read_does_not_wait_for_unrelated_writes(monkeypatch):
+    from unittest.mock import Mock
+
+    barrier = Mock(side_effect=AssertionError("No global history barrier in voice reads"))
+    monkeypatch.setattr(sync.session_history, "flush_pending_writes", barrier)
+    record = dict(id="voice", channel_id="video_duplex", role="user", content="My project is Cedar")
+    monkeypatch.setattr(sync.session_history, "load_history_records", lambda _: [record])
+    assert await sync.load_voice_history("chat") == [record]
+    barrier.assert_not_called()
 
 
 def test_saved_chat_tasks_share_session_but_have_distinct_execution_ids():
