@@ -171,8 +171,9 @@ Notes:
 Runtime exception logs retain file names, line numbers, function names, exception chains/groups,
 and redacted messages and notes. Source lines and local variables are omitted. Redaction reads
 the traceback in memory without source lookup through `linecache`, keeping slow filesystem
-access off the business thread. Frames, exception count, nesting depth, and diagnostic text
-have limits; omitted content is marked explicitly.
+access off the business thread. Frames, exception count, and nesting depth have limits.
+Individual exception text and the assembled diagnostic each use a 64 KiB UTF-8 byte budget;
+omitted content is marked explicitly.
 
 #### Backend Code Changes
 

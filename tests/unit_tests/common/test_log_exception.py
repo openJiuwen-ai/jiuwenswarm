@@ -278,3 +278,61 @@ def test_reused_group_members_are_rendered_and_counted():
     text = format_log_exception((type(group), group, None))
     assert "additional exceptions omitted" in text
     assert len(text) < 64 * 1024
+
+
+@pytest.mark.parametrize("character", ["x", "汉", "😀"])
+@pytest.mark.parametrize("extra_bytes", [-1, 0, 1])
+def test_exception_utf8_budget_includes_type_and_newline(character, extra_bytes):
+    from jiuwenswarm.common.log_exception import format_log_exception
+
+    prefix = "ValueError: "
+    message_bytes = 64 * 1024 - len((prefix + "\n").encode("utf-8")) + extra_bytes
+    width = len(character.encode("utf-8"))
+    message = character * (message_bytes // width) + "x" * (message_bytes % width)
+    exc = ValueError(message)
+    text = format_log_exception((type(exc), exc, None))
+    assert len(text.encode("utf-8")) <= 64 * 1024
+    assert utils._sanitize_record_text(text) == text
+    if extra_bytes <= 0:
+        assert text == prefix + message + "\n"
+        assert len(text.encode("utf-8")) == 64 * 1024 + extra_bytes
+    else:
+        assert "exception diagnostics omitted" in text
+
+
+@pytest.mark.parametrize("character,count", [("汉", 30_000), ("😀", 20_000)])
+def test_oversized_utf8_exception_keeps_type_and_redaction(character, count, source_masking):
+    exc = ValueError(character * count + " api_key=multibyte-private-value")
+    record = logging.getLogRecordFactory()(
+        "third-party", logging.ERROR, __file__, 1, "failed", (), (type(exc), exc, None),
+    )
+    assert record.exc_info is None
+    assert "ValueError:" in record.exc_text
+    assert "exception text omitted" in record.exc_text
+    assert "multibyte-private-value" not in record.exc_text
+    assert not record.exc_text.startswith("[log payload omitted:")
+    assert len(record.exc_text.encode("utf-8")) <= 64 * 1024
+    assert utils._source_masking_failures == 0
+
+
+@pytest.mark.parametrize("character", ["汉", "😀"])
+@pytest.mark.parametrize("structure", ["chain", "notes", "group"])
+def test_exception_utf8_budget_counts_all_diagnostic_parts(character, structure):
+    from jiuwenswarm.common.log_exception import format_log_exception
+
+    # Each piece fits; the assembled diagnostic exceeds the UTF-8 byte budget.
+    piece = character * 12_000
+    assert len(piece.encode("utf-8")) < 64 * 1024
+    if structure == "chain":
+        exc = RuntimeError(piece)
+        exc.__cause__ = ValueError(piece)
+    elif structure == "notes":
+        exc = ValueError("noted error")
+        exc.add_note(piece)
+        exc.add_note(piece)
+    else:
+        exc = ExceptionGroup("group", [ValueError(piece), RuntimeError(piece)])
+    text = format_log_exception((type(exc), exc, None))
+    assert "exception diagnostics omitted" in text
+    assert len(text.encode("utf-8")) <= 64 * 1024
+    assert utils._sanitize_record_text(text) == text
