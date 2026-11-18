@@ -2178,6 +2178,13 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             if not file_name:
                 file_name = os.path.basename(file_path)
             mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+            # Only an inline document can run script in this origin; attachments
+            # are downloaded, so they keep ``nosniff`` alone.
+            secured_mime = (
+                _declared_mime_type(mime_type, Path(file_path), file_name)
+                if inline
+                else ""
+            )
             byte_range = None
             range_header = self.headers.get("Range")
             if range_header:
@@ -2185,6 +2192,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 if byte_range is None:
                     self.send_response(416)
                     self.send_header("Content-Range", f"bytes */{file_size}")
+                    self._apply_raw_file_security_headers(secured_mime)
                     self.end_headers()
                     return
             start, end = byte_range or (0, max(0, file_size - 1))
@@ -2201,6 +2209,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 f"{'inline' if inline else 'attachment'}; filename*=UTF-8''{quote(file_name, safe='')}",
             )
             self.send_header("Cache-Control", "no-store")
+            self._apply_raw_file_security_headers(secured_mime)
             if byte_range is not None:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
             self.end_headers()
@@ -2258,6 +2267,17 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     value = upstream.headers.get(header_name)
                     if value:
                         self.send_header(header_name, value)
+                # The frontend requests ``inline=1`` so the desktop browser can
+                # render HTML/Markdown instead of saving it. An inline document
+                # from upstream needs the same hardening as the local paths,
+                # otherwise its script would run in this origin.
+                disposition = str(upstream.headers.get("Content-Disposition") or "")
+                inline_document = "inline" in disposition.lower()
+                self._apply_raw_file_security_headers(
+                    str(upstream.headers.get("Content-Type") or "")
+                    if inline_document
+                    else ""
+                )
                 self.end_headers()
                 if self.command != "HEAD":
                     shutil.copyfileobj(upstream, self.wfile, length=65536)

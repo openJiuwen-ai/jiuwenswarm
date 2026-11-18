@@ -349,6 +349,75 @@ def test_verified_download_get_and_head_use_conventional_staged_file_handler(
         server.server_close()
 
 
+def test_inline_verified_download_sandboxes_documents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "report.html"
+    source.write_text("<script>alert(1)</script>", encoding="utf-8")
+    owner = VerifiedDownloadAssetOwner(
+        root=tmp_path / "assets",
+        now_fn=lambda: 100.0,
+        start_sweeper=False,
+    )
+    asset = owner.stage(source, file_name=source.name, expires_at=160.0)
+    manager = WebFileDownloadManager("s" * 32, asset_owner=owner)
+    monkeypatch.setattr(
+        "jiuwenswarm.common.file_download_token.time.time",
+        lambda: 100.0,
+    )
+    monkeypatch.setattr(WebFileDownloadManager, "_instance", manager)
+    token = manager.generate_verified_asset_token(
+        asset,
+        file_name=source.name,
+        session_id="session-a",
+    )
+
+    class Handler(_SpaStaticHandler):
+        project_root = tmp_path
+        workspace_root = tmp_path
+        agent_teams_root = tmp_path / "agent-teams"
+        logs_root = tmp_path / "logs"
+        auto_harness_root = tmp_path / "auto-harness"
+        api_target = ""
+        ws_target = ""
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", server.server_port)
+        connection.request("GET", f"/file-api/download?token={quote(token)}&inline=1")
+        response = connection.getresponse()
+        try:
+            assert response.status == 200
+            assert response.headers["Content-Disposition"].startswith("inline;")
+            assert response.headers["Content-Type"].startswith("text/html")
+            assert response.headers["X-Content-Type-Options"] == "nosniff"
+            assert response.headers["Content-Security-Policy"] == (
+                "sandbox allow-scripts allow-popups"
+            )
+            response.read()
+        finally:
+            connection.close()
+        # An attachment is downloaded instead of rendered, so it keeps
+        # ``nosniff`` but does not need the sandbox CSP.
+        connection = HTTPConnection("127.0.0.1", server.server_port)
+        connection.request("GET", f"/file-api/download?token={quote(token)}")
+        response = connection.getresponse()
+        try:
+            assert response.status == 200
+            assert response.headers["Content-Disposition"].startswith("attachment;")
+            assert response.headers["X-Content-Type-Options"] == "nosniff"
+            assert "Content-Security-Policy" not in response.headers
+            response.read()
+        finally:
+            connection.close()
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
 def test_raw_file_document_responses_are_sandboxed_and_never_sniffed(tmp_path):
     agent_root = tmp_path / "agent"
     uploads = agent_root / "sessions" / "session-1" / "uploads"
@@ -502,10 +571,12 @@ def test_ws_proxy_rejects_foreign_origin(tmp_path, monkeypatch: pytest.MonkeyPat
         "Sec-WebSocket-Version": "13",
     }
 
-    def handshake(origin: str | None) -> int:
+    def handshake(origin: str | None, host: str | None = None) -> int:
         headers = dict(upgrade_headers)
         if origin is not None:
             headers["Origin"] = origin
+        if host is not None:
+            headers["Host"] = host
         connection = HTTPConnection("127.0.0.1", port)
         try:
             connection.request("GET", "/ws", headers=headers)
@@ -524,6 +595,16 @@ def test_ws_proxy_rejects_foreign_origin(tmp_path, monkeypatch: pytest.MonkeyPat
         # ``ws_target`` then fails with 500 instead of the 403 above.
         assert handshake(f"http://127.0.0.1:{port}") == 500
         assert handshake(f"http://localhost:{port}") == 500
+        # A hostname outside the allowlist falls back to the Host comparison:
+        # the same host on a different port is a different origin, while the
+        # exact host and port passes the gate.
+        assert (
+            handshake(f"http://proxy.example:{port + 1}", f"proxy.example:{port}")
+            == 403
+        )
+        assert (
+            handshake(f"http://proxy.example:{port}", f"proxy.example:{port}") == 500
+        )
         assert handshake(None) == 500
         # A reverse proxy that rewrites Host (nginx only sends the upstream
         # address unless told otherwise) stays usable once its browser-facing
