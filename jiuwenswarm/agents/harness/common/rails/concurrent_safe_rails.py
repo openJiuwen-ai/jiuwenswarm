@@ -210,7 +210,7 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
         # 记账本 rail 绑定的全局条目：todo 工具的注册 id 内嵌 binding（含
         # id(fs)），每实例唯一且无人复用；不注销会经 tool.sys_operation 钉住
         # 整棵会话对象图。复用命中（binding 一致）的条目同样记账——close 时
-        # 按 _rail_binders 计数递减，最后一个持有者才真正移除。
+        # 按 rail_binders 计数递减，最后一个持有者才真正移除。
         self._registered_tool_ids = list(getattr(self, "_registered_tool_ids", []))
         try:
             new_tools = []
@@ -221,9 +221,9 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
                     if registered_tool is not None:
                         if not isinstance(registered_tool, tool_class) or not matches_binding(registered_tool):
                             raise _TodoBindingMismatchError(f"Todo tool binding mismatch: {new_tool.card.id}")
-                        binders = getattr(registered_tool, "_rail_binders", None) or set()
+                        binders = getattr(registered_tool, "rail_binders", None) or set()
                         binders.add(id(self))
-                        registered_tool._rail_binders = binders
+                        registered_tool.rail_binders = binders
                         tools.append(registered_tool)
                         if registered_tool.card.id not in self._registered_tool_ids:
                             self._registered_tool_ids.append(registered_tool.card.id)
@@ -236,7 +236,7 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
                 agent.ability_manager.remove(name)
             for tool in new_tools:
                 Runner.resource_mgr.add_tool(tool)
-                tool._rail_binders = {id(self)}
+                tool.rail_binders = {id(self)}
                 if tool.card.id not in self._registered_tool_ids:
                     self._registered_tool_ids.append(tool.card.id)
             for tool in tools:
@@ -253,7 +253,7 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
 
         init() 注册进 Runner.resource_mgr 的 todo 工具 id 内嵌 binding（含
         id(fs)），每实例唯一且无人复用，adapter 释放后这些全局条目会经
-        ``tool.sys_operation`` 钉住整棵会话对象图。注册条目按 ``_rail_binders``
+        ``tool.sys_operation`` 钉住整棵会话对象图。注册条目按 ``rail_binders``
         （绑定过的 rail 身份集合）计数：存在其他 rail 仍绑定时只摘除自己、
         不移除条目；最后一个持有者关闭时才逐条 remove_tool。幂等：可重复调用。
         """
@@ -264,10 +264,10 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
         for tool_id in ids:
             try:
                 tool = Runner.resource_mgr.get_tool(tool_id)
-                binders = getattr(tool, "_rail_binders", None) or set()
+                binders = getattr(tool, "rail_binders", None) or set()
                 binders.discard(id(self))
                 if tool is not None:
-                    tool._rail_binders = binders
+                    tool.rail_binders = binders
                 if not binders:
                     Runner.resource_mgr.remove_tool(tool_id)
                     removed += 1
