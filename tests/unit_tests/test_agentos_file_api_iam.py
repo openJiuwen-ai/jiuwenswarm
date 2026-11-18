@@ -18,7 +18,7 @@ from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
 from agent_gateway.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
 from agent_gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
 from agent_gateway.extensions.auth.credential_authenticator import AuthContext, AuthResult
-from agent_gateway.extensions.yuanrong_frontend_client import (
+from agent_gateway.extensions.agentos.agentos_router.backend import (
     AgentFileDownloadChunk,
     SandboxInfo,
 )
@@ -35,9 +35,9 @@ class _FakeRegistry:
         del service_id, kwargs
 
 
-class _FakeYuanrong:
+class _FakeControl:
     server_ready = True
-    frontend_endpoint = "http://yuanrong.test:8888"
+    ingress_url = "http://yuanrong.test:8888"
     agent_namespace = "default"
 
     async def connect(self, uri: str) -> None:
@@ -70,7 +70,7 @@ def _make_router() -> AgentOSRouterClient:
         key_fields=("user_id", "agent_type", "session_id"),
     )
     router = AgentOSRouterClient(
-        _FakeYuanrong(),  # type: ignore[arg-type]
+        _FakeControl(),  # type: ignore[arg-type]
         _FakeRegistry(),  # type: ignore[arg-type]
         manager,
     )
