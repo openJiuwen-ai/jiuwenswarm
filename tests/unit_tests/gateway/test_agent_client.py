@@ -5,14 +5,14 @@ import logging
 import pytest
 from websockets.exceptions import ConnectionClosedError
 
-from openjiuwen_protocol.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
-from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-from openjiuwen_protocol.e2a.wire_codec import (
+from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+from e2a.gateway_normalize import e2a_from_agent_fields
+from e2a.wire_codec import (
     encode_agent_chunk_for_wire,
     encode_agent_response_for_wire,
     parse_agent_server_wire_chunk,
 )
-from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
+from e2a.agent_models import AgentResponse, AgentResponseChunk
 from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from agent_gateway.routing import agent_client
 from agent_gateway.routing.agent_client import (

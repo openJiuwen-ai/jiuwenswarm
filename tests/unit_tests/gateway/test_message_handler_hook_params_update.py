@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from e2a.message import EventType, Message, ReqMethod
 from agent_gateway.extensions.registry import ExtensionRegistry
 from agent_gateway.message_handler.message_handler import MessageHandler
 

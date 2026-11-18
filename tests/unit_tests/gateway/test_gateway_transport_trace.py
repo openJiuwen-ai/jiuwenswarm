@@ -8,9 +8,9 @@ import uuid
 import pytest
 from opentelemetry import trace
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
-from openjiuwen_protocol.e2a.models import E2AEnvelope
-from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
-from openjiuwen_protocol.e2a.wire_codec import encode_agent_response_for_wire, encode_agent_chunk_for_wire
+from e2a.models import E2AEnvelope
+from e2a.agent_models import AgentResponse, AgentResponseChunk
+from e2a.wire_codec import encode_agent_response_for_wire, encode_agent_chunk_for_wire
 from agent_gateway import telemetry
 from agent_gateway.routing.agent_client import WebSocketAgentServerClient
 from agent_gateway.extensions.yuanrong_frontend_client import YuanrongFrontendAgentClient

@@ -11,8 +11,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 import pytest
 
-from openjiuwen_protocol.e2a.agent_models import AgentResponse
-from openjiuwen_protocol.message import Message
+from e2a.agent_models import AgentResponse
+from e2a.message import Message
 from agent_gateway.message_handler.command_parser.slash_command import (
     ParsedChannelControl,
     ParsedControlAction,

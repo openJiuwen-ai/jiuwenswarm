@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from openjiuwen_protocol.message import EventType, Message
+from e2a.message import EventType, Message
 
 from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.web.app_web_handlers import (

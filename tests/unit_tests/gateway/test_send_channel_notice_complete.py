@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from openjiuwen_protocol.message import EventType
+from e2a.message import EventType
 from agent_gateway.message_handler.message_handler import MessageHandler
 
 

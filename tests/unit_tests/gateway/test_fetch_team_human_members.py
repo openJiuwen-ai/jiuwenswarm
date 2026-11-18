@@ -13,7 +13,7 @@ from unittest import mock
 
 import pytest
 
-from openjiuwen_protocol.e2a.agent_models import AgentResponse
+from e2a.agent_models import AgentResponse
 from agent_gateway.message_handler.join_exit_handlers import JoinExitHandlers
 
 

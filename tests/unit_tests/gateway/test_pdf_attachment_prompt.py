@@ -9,8 +9,8 @@ from typing import Any
 
 import pytest
 from openjiuwen.core.runner.callback.framework import AsyncCallbackFramework
-from openjiuwen_protocol.e2a.agent_models import AgentResponse
-from openjiuwen_protocol.message import Message, ReqMethod
+from e2a.agent_models import AgentResponse
+from e2a.message import Message, ReqMethod
 
 from agent_gateway.extensions import base_crypto
 from agent_gateway.extensions.registry import ExtensionRegistry

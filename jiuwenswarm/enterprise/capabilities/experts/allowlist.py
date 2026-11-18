@@ -5,7 +5,7 @@
 个人版先看产品形态并放行，不读名单，不组装租户平面。
 
 名单的键名、内部 HTTP 头、规范化与编解码规则、隐藏包清单是 gateway / server
-双端契约，唯一实现在 ``openjiuwen_protocol.package_allowlist``；本模块只保留
+双端契约，唯一实现在 ``e2a.package_allowlist``；本模块只保留
 依赖进程内运行时（ContextVar、Hub/市场包查找）的准入判断。
 """
 
@@ -18,8 +18,8 @@ from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from typing import Any
 
-from openjiuwen_protocol.match_expressions import matches, validate_match_expr
-from openjiuwen_protocol.package_allowlist import (
+from e2a.match_expressions import matches, validate_match_expr
+from e2a.package_allowlist import (
     HIDDEN_HUB_ASSET_IDS,
     PACKAGE_ALLOWLIST_METADATA_KEY as METADATA_KEY,
     PACKAGE_KIND_DIRS,

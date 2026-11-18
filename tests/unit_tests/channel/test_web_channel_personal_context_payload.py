@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from openjiuwen_protocol.message import Message
+from e2a.message import Message
 from agent_gateway.channel_manager.web.web_connect import WebChannel
 
 
