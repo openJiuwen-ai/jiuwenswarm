@@ -22,6 +22,7 @@ import {
   type NamedAsset,
 } from '../features/sessionAssets/sessionAssets';
 import { useEffect, useRef, useCallback, useState } from 'react';
+import { registerApplicationQuestionController } from '../applicationPlugins/taskProgressStore';
 import { toast } from '../components/ui/Toast/toastStore';
 import { isSkillPackagePrompt } from '../components/InteractionSlot/promptRouting';
 import { useTranslation } from 'react-i18next';
@@ -3127,6 +3128,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     },
     [clearFailedAgentGroupBinding, markPendingAgentGroupBinding, reconcileAgentGroupBinding, request, t]
   );
+
+  useEffect(() => registerApplicationQuestionController(sendUserAnswer), [sendUserAnswer]);
 
   const respondActivate = useCallback(
     async (sessionId: string, interactionId: string, action: 'accept' | 'reject', feedback?: string) => {

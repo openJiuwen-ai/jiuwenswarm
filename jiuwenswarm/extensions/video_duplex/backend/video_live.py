@@ -552,6 +552,11 @@ def register_video_live_handler(
                     }
                     result = {**result, "delegation": call.task}
                     break
+                if call.name == "jiuwen_task_answer" and scope.startswith("task-duplex:"):
+                    # The original browser question controller owns validation and submission.
+                    result = {**result, "decision": "response", "response": "", "delegation": "",
+                              "interaction_answer": call.arguments}
+                    break
                 receipt = await search_manager.operate(
                     owner, scope, call, ws=ws, approvals_only=True, user_instruction=question or instruction,
                 )
@@ -620,6 +625,7 @@ def register_video_live_handler(
                 "timing": result.get("timing"),
                 "tools_used": tools_used,
                 "search_job": search_job,
+                **({"interaction_answer": result["interaction_answer"]} if result.get("interaction_answer") else {}),
                 **({"queue_management": queue_management} if queue_management is not None else {}),
             },
         )
@@ -630,6 +636,7 @@ def register_video_live_handler(
             payload={
                 "response": result.get("response"),
                 "search_job": search_job,
+                **({"interaction_answer": result["interaction_answer"]} if result.get("interaction_answer") else {}),
                 **({"queue_management": queue_management} if queue_management is not None else {}),
             },
         )
