@@ -119,6 +119,12 @@ class _InvalidAnswersTypeError(ValueError):
     """Raised when HITL continuation answers is not a list."""
 
 
+class EmptyAgentStreamError(RuntimeError):
+    """An ordinary chat exhausted its producer without any response event."""
+
+    code = "AGENT_STREAM_EMPTY"
+
+
 def _schedule_symphony_session_feedback(session_id: str, request_id: str) -> None:
     """Submit session-based Symphony learning without delaying the response."""
 
@@ -2687,6 +2693,8 @@ class JiuWenSwarm:
         stream_queue = asyncio.Queue(maxsize=self.STREAM_QUEUE_MAXSIZE)
         stream_done = asyncio.Event()
         producer_cancellation: asyncio.CancelledError | None = None
+        stream_error_payload: dict[str, Any] | None = None
+        _rewind_task: asyncio.Task | None = None
         final_answer_content = ""
         final_answer_chunks: list[str] = []
         durable_pending_final_chunks: list[str] = []
@@ -2772,15 +2780,39 @@ class JiuWenSwarm:
             )
             durable_final_content = pending_text
 
+        def _log_rewind_done(task: asyncio.Task) -> None:
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is not None:
+                logger.warning("[JiuWenSwarm] 后台 rewind 任务异常: %s", exc)
+
         async def _prepare_rewind_for_error():
+            # 后台执行、无硬超时：rewind 正常耗时可达数十秒（ProjectMemoryRail
+            # 扫描/历史全量重放），硬超时截断会留下半成品 rewind 上下文——
+            # 比不写更难排查（interface_deep 的"下一轮丢失本轮消息"回归）。
+            # 错误收执不等待它：错误帧立即下发，清理在后台完成。
             try:
-                _get_sa = getattr(adapter, "_get_or_create_session_adapter", None)
-                _sa = await _get_sa(session_id) if callable(_get_sa) else adapter
+                # Error reporting must not create another runtime or re-enter a
+                # failed initialization. Only rewind an already cached child.
+                _get_sa = getattr(adapter, "_get_cached_session_adapter", None)
+                _sa = (_get_sa(session_id) if callable(_get_sa)
+                       and not getattr(adapter, "_is_session_scoped_adapter", False) else adapter)
                 _prep = getattr(_sa, "_prepare_rewind_session_for_next_invoke", None)
                 if callable(_prep):
                     await _prep(session_id, reason="stream_error")
+            except asyncio.CancelledError:
+                raise
             except Exception as _rewind_err:
                 logger.warning("[JiuWenSwarm] chat.error 后预置 rewind session 失败: %s", _rewind_err)
+
+        def _schedule_rewind_for_error() -> None:
+            # 单飞：同一流内已有 rewind 在跑则不重复排队（多入口并发触发去重）
+            nonlocal _rewind_task
+            if _rewind_task is not None and not _rewind_task.done():
+                return
+            _rewind_task = asyncio.get_running_loop().create_task(_prepare_rewind_for_error())
+            _rewind_task.add_done_callback(_log_rewind_done)
 
         async def run_stream_task():
             nonlocal producer_cancellation
@@ -2802,6 +2834,16 @@ class JiuWenSwarm:
                     if asyncio.current_task().cancelling():
                         raise asyncio.CancelledError
                     payload = chunk if isinstance(chunk, dict) else getattr(chunk, "payload", None)
+                    if not is_team_mode and _put_count == 0 and (
+                        getattr(chunk, "is_complete", False)
+                        or isinstance(chunk, dict) and chunk.get("is_complete")
+                    ) and (not isinstance(payload, dict) or (
+                        payload.get("event_type") in (None, "e2a.complete")
+                        and not payload.get("content") and not payload.get("error")
+                    )):
+                        # Completion alone cannot establish that chat ran. The
+                        # wrapper emits its own terminal receipt after draining.
+                        continue
                     if isinstance(payload, dict) and not payload.get("member_name"):
                         raw_output = payload.get("raw_output")
                         if (
@@ -2834,6 +2876,10 @@ class JiuWenSwarm:
                         # the bounded queue's consumer reaches its final frame.
                         notice_state = get_notice_state(session_id) or notice_state
                     await stream_queue.put(("chunk", (chunk, notice_state)))
+                if not is_team_mode and _put_count == 0:
+                    raise EmptyAgentStreamError(
+                        "Agent returned no response events; retry after session initialization"
+                    )
             except asyncio.CancelledError as exc:
                 producer_cancellation = exc
                 logger.info("[JiuWenSwarm] 流式任务被取消: request_id=%s session_id=%s", rid, session_id)
@@ -2843,14 +2889,6 @@ class JiuWenSwarm:
                 raise
             except Exception as exc:
                 logger.exception("[JiuWenSwarm] 流式任务异常: %s", exc)
-                try:
-                    _get_sa = getattr(adapter, "_get_or_create_session_adapter", None)
-                    _sa = await _get_sa(session_id) if callable(_get_sa) else adapter
-                    _prep_rewind = getattr(_sa, "_prepare_rewind_session_for_next_invoke", None)
-                    if callable(_prep_rewind):
-                        await _prep_rewind(session_id, reason="stream_error")
-                except Exception as _prep_err:
-                    logger.warning("[JiuWenSwarm] 错误后预置 rewind session 失败: %s", _prep_err)
                 try:
                     await stream_queue.put(("error", exc))
                 except asyncio.CancelledError as cancel_exc:
@@ -2935,7 +2973,7 @@ class JiuWenSwarm:
                     )
 
                 if event_type == "error":
-                    await _prepare_rewind_for_error()
+                    _schedule_rewind_for_error()
                     if isinstance(data, asyncio.CancelledError):
                         logger.info("[JiuWenSwarm] 流式处理被中断: request_id=%s", rid)
                         raise data
@@ -2955,6 +2993,7 @@ class JiuWenSwarm:
                         error_payload["code"] = error_code
                     if error_message:
                         error_payload["message"] = error_message
+                    stream_error_payload = error_payload
                     append_history_record(
                         session_id=session_id,
                         request_id=rid,
@@ -2996,11 +3035,16 @@ class JiuWenSwarm:
                                 continue
                         if isinstance(data.payload, dict) and isinstance(data.payload.get("event_type"), str):
                             et = str(data.payload.get("event_type"))
+                            if et in ("chat.delta", "chat.final"):
+                                # 恢复产出清除错误收执（team_helpers 语义边界：错误通知后
+                                # 恢复产出的 chat.delta/chat.final 才是错误的语义边界）——
+                                # 重试成功/续跑产出覆盖此前错误，终帧回归成功回执
+                                stream_error_payload = None
                             should_record = et.startswith("chat.")
                             if not should_record and et == EventType.TEAM_MESSAGE.value:
                                 should_record = True
                             if et == "chat.error":
-                                await _prepare_rewind_for_error()
+                                _schedule_rewind_for_error()
                             # DeepAgent round 级异常（round_execution_error，如模型调用失败）：
                             # agent-core 只以 execution.error 下发，客户端没有对应分支时会在
                             # 流尾判成「已完成」（长任务中途失败 → 假完成，只剩琥珀「本轮曾
@@ -3009,7 +3053,7 @@ class JiuWenSwarm:
                             # 语义依赖它）。带 goal 的属于 goal 尝试失败、后续可能继续，不补，
                             # 避免打断续跑。
                             if et == "execution.error" and not data.payload.get("goal"):
-                                await _prepare_rewind_for_error()
+                                _schedule_rewind_for_error()
                                 _round_err_text = str(
                                     data.payload.get("message")
                                     or data.payload.get("error")
@@ -3021,6 +3065,7 @@ class JiuWenSwarm:
                                 }
                                 if data.payload.get("code"):
                                     _round_err_payload["code"] = data.payload.get("code")
+                                stream_error_payload = _round_err_payload
                                 yield AgentResponseChunk(
                                     request_id=rid,
                                     channel_id=cid,
@@ -3143,6 +3188,18 @@ class JiuWenSwarm:
                                 and is_retry_notice_payload(data.payload)
                             ):
                                 should_record = False
+                            # 错误回执收集（与上方落盘排除同口径）：只收终态性错误——
+                            # 团队模式 chat.error 是轮内 warning（落盘所有权在
+                            # team_helpers）、重试通知是过程不是结果；可恢复错误若
+                            # 之后仍有产出，由下方 delta/final 的清除逻辑覆盖。
+                            # 终态错误最终由统一终帧携带（gateway → e2a.error）。
+                            if (
+                                et == "chat.error"
+                                and not is_team_mode
+                                and not data.payload.get("member_name")
+                                and not is_retry_notice_payload(data.payload)
+                            ):
+                                stream_error_payload = data.payload
                             if should_record:
                                 payload_dict = dict(data.payload)
                                 # role/error/rid 等事件路由键不能进 extra：
@@ -3191,10 +3248,17 @@ class JiuWenSwarm:
                                     final_answer_content = next_final_content
                                     final_answer_chunks.clear()
                         if getattr(data, "is_complete", False):
+                            if stream_error_payload is not None:
+                                # Keep exactly one terminal frame, emitted below
+                                # with the infrastructure failure preserved.
+                                continue
                             completed_yielded = True
                         yield data
                     elif isinstance(data, dict) and isinstance(data.get("event_type"), str):
                         et = str(data.get("event_type"))
+                        if et in ("chat.delta", "chat.final"):
+                            # 与 chunk 分支同规：恢复产出清除错误收执
+                            stream_error_payload = None
                         should_record = et.startswith("chat.")
                         if not should_record and et == EventType.TEAM_MESSAGE.value:
                             should_record = True
@@ -3334,6 +3398,13 @@ class JiuWenSwarm:
                             if next_final_content:
                                 final_answer_content = next_final_content
                                 final_answer_chunks.clear()
+                        if (
+                            et == "chat.error"
+                            and not is_team_mode
+                            and not data.get("member_name")
+                            and not is_retry_notice_payload(data)
+                        ):
+                            stream_error_payload = data
                         yield AgentResponseChunk(
                             request_id=rid,
                             channel_id=cid,
@@ -3498,7 +3569,7 @@ class JiuWenSwarm:
         yield AgentResponseChunk(
             request_id=rid,
             channel_id=cid,
-            payload={"is_complete": True},
+            payload=stream_error_payload or {"is_complete": True},
             is_complete=True,
         )
 
