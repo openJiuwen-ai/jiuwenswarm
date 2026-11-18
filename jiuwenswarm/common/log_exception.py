@@ -10,7 +10,7 @@ _MAX_DEPTH = 8
 _MAX_FRAMES = 64
 _MAX_GROUP_WIDTH = 15
 _MAX_NOTES = 8
-_MAX_TEXT_CHARACTERS = 64 * 1024
+_MAX_TEXT_BYTES = 64 * 1024
 
 
 def _exception_text(value: object) -> str:
@@ -18,9 +18,11 @@ def _exception_text(value: object) -> str:
         text = str(value)
     except Exception:
         return "<exception str() failed>"
-    if len(text) > _MAX_TEXT_CHARACTERS:
+    if len(text) > _MAX_TEXT_BYTES or (
+        not text.isascii() and len(text.encode("utf-8", errors="replace")) > _MAX_TEXT_BYTES
+    ):
         # Do not keep a prefix that could contain a partially masked secret.
-        return "[exception text omitted: exceeds character limit]"
+        return "[exception text omitted: exceeds UTF-8 byte limit]"
     return text
 
 
@@ -37,19 +39,24 @@ def format_log_exception(
     parts: list[str] = []
     active: set[int] = set()
     rendered = 0
-    characters = 0
+    bytes_used = 0
     omitted = False
 
     def append(text: str) -> None:
-        nonlocal characters, omitted
+        nonlocal bytes_used, omitted
         if omitted:
             return
-        characters += len(text)
-        if characters > _MAX_TEXT_CHARACTERS:
+        remaining = _MAX_TEXT_BYTES - bytes_used
+        size = len(text)
+        # Reject oversized text before allocating its UTF-8 encoding.
+        if size <= remaining and not text.isascii():
+            size = len(text.encode("utf-8", errors="replace"))
+        if size > remaining:
             parts.clear()
-            parts.append("[exception diagnostics omitted: exceeds character limit]\n")
+            parts.append("[exception diagnostics omitted: exceeds UTF-8 byte limit]\n")
             omitted = True
         else:
+            bytes_used += size
             parts.append(text)
 
     def render(exc: BaseException | None, tb: TracebackType | None, depth: int) -> None:
