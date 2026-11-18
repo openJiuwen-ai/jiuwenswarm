@@ -508,7 +508,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
           <Switch
             checked={selectedSkill.enabled !== false}
             onChange={() => onToggleSkillDisabled(selectedSkill.name)}
-            disabled={actionTarget === `toggle:${selectedSkill.name}` || isPackBlocked}
+            disabled={Boolean(actionTarget?.startsWith('toggle:')) || isPackBlocked}
           />
           <span
             className="text-sm text-text whitespace-nowrap"

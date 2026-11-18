@@ -4143,6 +4143,7 @@
       "published": "Skill {{name}} published successfully",
       "publishFailed": "Publishing failed",
       "rebuilding": "Rebuilding skill, please wait…",
+      "rebuildStillRunning": "Rebuild is still running in the background. Check the version list later.",
       "rebuildCompleted": "Skill rebuild completed",
       "rebuildFailed": "Rebuild failed: {{detail}}"
     },
