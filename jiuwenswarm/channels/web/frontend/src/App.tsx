@@ -115,6 +115,7 @@ import {
   type MessageForkPoint,
   type ModelSelection,
   type Session,
+  type WebError,
 } from './types';
 import { parseModelGroups, parseModelSelection } from './features/settings/modules/models/modelGroupAdapters';
 import { isModelCatalogPending, resolveAvailableModelSelection } from './stores/sessionStore';
@@ -2213,7 +2214,7 @@ function AppContent({
       return session;
     } catch (error) {
       console.warn('Failed to fetch session metadata:', error);
-      if (sessionIdRef.current === targetSessionId) {
+      if (sessionIdRef.current === targetSessionId && (error as WebError | undefined)?.code === 'NOT_FOUND') {
         setMissingSessionId(targetSessionId);
       }
       return null;
