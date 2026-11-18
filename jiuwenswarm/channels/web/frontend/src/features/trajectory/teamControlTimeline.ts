@@ -15,6 +15,7 @@ import { detailRecordIdentity, spansOf } from './trajectoryWindow';
 export type ScheduledTaskPhase =
   | 'pending'
   | 'blocked'
+  | 'suspended'
   | 'running'
   | 'in_review'
   | 'rework'
@@ -28,6 +29,8 @@ export type ScheduledControlEventKind =
   | 'updated'
   | 'unblocked'
   | 'started'
+  | 'suspended'
+  | 'resumed'
   | 'submitted'
   | 'vote'
   | 'revision'
@@ -74,6 +77,15 @@ export interface ScheduledReviewRun {
   feedback?: string;
 }
 
+/**
+ * A stretch where a member split this task into subtasks and the task waited
+ * for them. `endMs` is absent while the subtasks are still running.
+ */
+export interface ScheduledTaskWait {
+  startMs: number;
+  endMs?: number;
+}
+
 export interface ScheduledTask {
   taskId: string;
   phase: ScheduledTaskPhase;
@@ -83,6 +95,7 @@ export interface ScheduledTask {
   completedAtMs?: number;
   events: ScheduledControlEvent[];
   reviews: ScheduledReviewRun[];
+  waits: ScheduledTaskWait[];
 }
 
 export interface ScheduledAnomaly {
@@ -119,6 +132,8 @@ export function shouldUseScheduledTeamControl(
 interface ParsedControlRecord {
   event: ScheduledControlEvent;
   status?: string;
+  /** Set on a member-split subtask's creation: the parent it suspended. */
+  parentTaskId?: string;
 }
 
 interface MutableTask {
@@ -131,9 +146,19 @@ interface MutableTask {
   reviewRoundCursor: number;
   events: ScheduledControlEvent[];
   reviews: Map<string, ScheduledReviewRun>;
+  waits: ScheduledTaskWait[];
 }
 
 const MAIN_SUBJECT_ID = 'main';
+const TASK_PARENT_ID_ATTRIBUTE = 'agentteam.task.parent_id';
+/** Events after which a suspended parent is no longer waiting on its subtasks. */
+const WAIT_ENDING_EVENT_KINDS = new Set<ScheduledControlEventKind>([
+  'unblocked',
+  'started',
+  'resumed',
+  'completed',
+  'cancelled',
+]);
 const TASK_CREATED = /^task\.(.+)\.created$/;
 const TASK_CHANGED = /^task\.(.+)\.(updated|unblocked|completed|cancelled)$/;
 const PHASE_FIXED_EVENT_KINDS = new Set<ScheduledControlEventKind>([
@@ -293,6 +318,7 @@ function parseControlRecord(record: TrajectoryDetailRecord): ParsedControlRecord
         memberName: taskAssignee(span, data),
       },
       status: readString(data.status) ?? attributeText(span, 'agentteam.task.status'),
+      parentTaskId: attributeText(span, TASK_PARENT_ID_ATTRIBUTE) ?? readString(data.parent_task_id),
     };
   }
 
@@ -333,7 +359,7 @@ function parseControlRecord(record: TrajectoryDetailRecord): ParsedControlRecord
 
   switch (span.name) {
     case 'event.task.started':
-      return { event: { ...base, kind: 'started', taskId, memberName } };
+      return { event: { ...base, kind: data.resumed === true ? 'resumed' : 'started', taskId, memberName } };
     case 'event.task.submitted.for.review': {
       const reviewers = readReviewers(data.reviewer);
       return {
@@ -400,33 +426,51 @@ function upsertReview(
   });
 }
 
+function ensureTask(tasks: Map<string, MutableTask>, taskId: string): MutableTask {
+  let task = tasks.get(taskId);
+  if (task === undefined) {
+    task = {
+      taskId,
+      phase: 'unknown',
+      reviewRoundCursor: 1,
+      events: [],
+      reviews: new Map(),
+      waits: [],
+    };
+    tasks.set(taskId, task);
+  }
+  return task;
+}
+
+function openWait(task: MutableTask): ScheduledTaskWait | undefined {
+  const last = task.waits[task.waits.length - 1];
+  return last !== undefined && last.endMs === undefined ? last : undefined;
+}
+
 function applyRecord(
   tasks: Map<string, MutableTask>,
   event: ScheduledControlEvent,
   status?: string,
 ): void {
   if (event.taskId === undefined) return;
-  let task = tasks.get(event.taskId);
-  if (task === undefined) {
-    task = {
-      taskId: event.taskId,
-      phase: 'unknown',
-      reviewRoundCursor: 1,
-      events: [],
-      reviews: new Map(),
-    };
-    tasks.set(event.taskId, task);
-  }
+  const task = ensureTask(tasks, event.taskId);
   task.events.push(event);
   task.updatedAtMs = Math.max(task.updatedAtMs ?? 0, event.timestampMs);
   task.assignee = event.memberName ?? task.assignee;
+
+  const wait = openWait(task);
+  if (wait !== undefined && WAIT_ENDING_EVENT_KINDS.has(event.kind)) {
+    wait.endMs = event.timestampMs;
+  }
 
   if (!isTerminalPhase(task.phase)) {
     if (event.kind === 'created') {
       task.createdAtMs = Math.min(task.createdAtMs ?? event.timestampMs, event.timestampMs);
       task.phase = 'pending';
-    } else if (event.kind === 'started') {
+    } else if (event.kind === 'started' || event.kind === 'resumed') {
       task.phase = 'running';
+    } else if (event.kind === 'suspended') {
+      task.phase = 'suspended';
     } else if (event.kind === 'unblocked') {
       task.phase = 'pending';
     } else if (event.kind === 'submitted') {
@@ -485,6 +529,29 @@ function applyRecord(
   }
 }
 
+/**
+ * A member-split subtask suspends its parent in the same transaction that
+ * creates it, and the backend publishes nothing for the parent itself. Derive
+ * the parent's "waiting on subtasks" stretch from the first subtask of a batch.
+ */
+function suspendParent(
+  tasks: Map<string, MutableTask>,
+  parentTaskId: string,
+  subtaskCreated: ScheduledControlEvent,
+): void {
+  const parent = ensureTask(tasks, parentTaskId);
+  if (isTerminalPhase(parent.phase) || openWait(parent) !== undefined) return;
+  applyRecord(tasks, {
+    eventId: `${subtaskCreated.eventId}:suspend`,
+    recordId: subtaskCreated.recordId,
+    kind: 'suspended',
+    spanName: subtaskCreated.spanName,
+    timestampMs: subtaskCreated.timestampMs,
+    taskId: parentTaskId,
+  });
+  parent.waits.push({ startMs: subtaskCreated.timestampMs });
+}
+
 function finalizeTask(task: MutableTask): ScheduledTask {
   return {
     taskId: task.taskId,
@@ -499,6 +566,7 @@ function finalizeTask(task: MutableTask): ScheduledTask {
     reviews: [...task.reviews.values()].sort((left, right) => (
       left.round - right.round || left.reviewer.localeCompare(right.reviewer)
     )),
+    waits: task.waits.map(wait => ({ ...wait })),
   };
 }
 
@@ -538,6 +606,7 @@ export function buildTeamControlModel(
       teamCompletedAtMs = event.timestampMs;
     } else {
       applyRecord(tasks, event, control.status);
+      if (control.parentTaskId !== undefined) suspendParent(tasks, control.parentTaskId, event);
     }
   }
 

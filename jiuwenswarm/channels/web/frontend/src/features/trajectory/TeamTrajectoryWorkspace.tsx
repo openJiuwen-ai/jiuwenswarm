@@ -1,6 +1,7 @@
 /** Team member navigation using the native trajectory overview and ledger. */
 
 import {
+  Fragment,
   memo,
   useCallback,
   useEffect,
@@ -20,6 +21,7 @@ import {
   type TeamMemberLaneModel,
 } from './teamTrajectoryLanes';
 import {
+  attachWorkflowGroupsToHostLanes,
   groupTeamMemberLanesByWorkflowRun,
   parseEngineSwarmflowMemberId,
   swarmflowLaneFullName,
@@ -307,6 +309,28 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
     workflowGroupingLanes,
     workflowRuns ?? [],
   );
+  // Place each run group right under the lane of the member who executed it
+  // (issue #6381: a teammate-launched swarmflow otherwise reads as the
+  // leader's). In scheduled mode a task assignee's lane lives inside its task
+  // run row, not in `ungrouped`, so its runs attach there; groups without
+  // resolvable attribution keep the trailing slot. The plan is keyed by the
+  // host lane object, so interleaved task runs of the same member render a
+  // group exactly once.
+  const {
+    attached: attachedWorkflowGroups,
+    trailing: trailingWorkflowGroups,
+  } = useMemo(() => (
+    attachWorkflowGroupsToHostLanes(workflowGroups, [
+      ...ungrouped,
+      ...taskRuns.flatMap(run => (run.member === undefined ? [] : [run.member])),
+    ])
+  ), [workflowGroups, ungrouped, taskRuns]);
+  const renderMemberWithRuns = (lane: TeamMemberLaneModel) => (
+    <Fragment key={lane.subjectId}>
+      {renderLane(lane)}
+      {(attachedWorkflowGroups.get(lane) ?? []).map(renderWorkflowGroup)}
+    </Fragment>
+  );
   const translate = useMemo(() => trajectoryTranslator(messages), [messages]);
   const [actualDuration, setActualDuration] = useState(false);
   const [actualTime, setActualTime] = useState(false);
@@ -583,6 +607,9 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
         {collapsed ? null : (
           <div className={css.taskBody}>
             {run.member === undefined ? null : renderLane(run.member)}
+            {run.member === undefined
+              ? null
+              : (attachedWorkflowGroups.get(run.member) ?? []).map(renderWorkflowGroup)}
             <div className={css.taskRunReviews}>
               {run.tasks.length === 1
                 ? renderReviewRounds(firstTask)
@@ -712,8 +739,8 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
           <>
             {standaloneMembers.length === 0 ? null : (
               <div className={css.laneSection} data-testid="team-trajectory-member-group">
-                {ungrouped.map(renderLane)}
-                {workflowGroups.map(renderWorkflowGroup)}
+                {ungrouped.map(renderMemberWithRuns)}
+                {trailingWorkflowGroups.map(renderWorkflowGroup)}
               </div>
             )}
             {taskRuns.map(renderTaskRun)}
@@ -725,8 +752,8 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
           </>
         ) : (
           <>
-            {ungrouped.map(renderLane)}
-            {workflowGroups.map(renderWorkflowGroup)}
+            {ungrouped.map(renderMemberWithRuns)}
+            {trailingWorkflowGroups.map(renderWorkflowGroup)}
           </>
         )}
       </div>
