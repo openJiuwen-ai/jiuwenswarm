@@ -113,14 +113,17 @@ def _load_catalogue(path) -> tuple[str, dict | None, dict | None]:
     """One locked read and validate. Status is absent, error, or present."""
     if not path.is_file():
         return "absent", None, None
-    with config_write_lock(config_path=path):
-        try:
+    try:
+        with config_write_lock(config_path=path):
             raw, state = MultimodalStore.load_catalogue_locked(path)
-        except MultimodalError as exc:
-            if exc.code == "MM_NOT_CONFIGURED":
-                return "absent", None, None
-            return "error", None, None
-        return "present", raw, state
+    except MultimodalError as exc:
+        if exc.code == "MM_NOT_CONFIGURED":
+            return "absent", None, None
+        return "error", None, None
+    except Exception:
+        # Lock acquisition (recovery, timeout) must not fail the design operation.
+        return "error", None, None
+    return "present", raw, state
 
 
 @dataclass(frozen=True)

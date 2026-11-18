@@ -1,6 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Design generation uses the multimodal catalogue, not the agent tool binding."""
 
+import json
 from uuid import uuid4
 
 import pytest
@@ -255,3 +256,48 @@ def test_enforce_leaf_agents_loads_the_catalogue_once(monkeypatch: pytest.Monkey
     assert counts["n"] == 1
     assert "media_prompt_limits" in graph["nodes"][0]["config"]
     assert graph["nodes"][0]["config"]["prompt_char_limit"]
+
+
+def test_stale_multimodal_journal_resolves_as_catalogue_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = _prepare(monkeypatch)
+    _create(store, _model("video_gen", "wan-journal"))
+    get_config_file().with_name(".multimodal-transaction.json").write_text(
+        json.dumps({
+            "transaction_id": "deadbeef",
+            "old_yaml_hash": "0" * 64,
+            "new_yaml_hash": "1" * 64,
+            "old_env": "",
+            "new_env": "",
+        }),
+        encoding="utf-8",
+    )
+    found = catalogue_generation_model("video_gen")
+    assert found.present is True
+    assert found.model is None
+    assert generation_selection_view() == {"video_gen": None, "visual_gen": None}
+    with reuse_catalogue_snapshot():
+        nested = catalogue_generation_model("video_gen")
+        assert nested.present is True
+        assert nested.model is None
+
+
+def test_config_lock_timeout_resolves_as_catalogue_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    import jiuwenswarm.common.design_generation_selection as selection
+
+    store = _prepare(monkeypatch)
+    _create(store, _model("video_gen", "wan-lock"))
+
+    class _TimeoutLock:
+        def __call__(self, **_kwargs: object):
+            return self
+
+        def __enter__(self):
+            raise TimeoutError("config write lock timed out")
+
+        def __exit__(self, *_args: object) -> bool:
+            return False
+
+    monkeypatch.setattr(selection, "config_write_lock", _TimeoutLock())
+    found = catalogue_generation_model("video_gen")
+    assert found.present is True
+    assert found.model is None
