@@ -19,7 +19,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 VALID_PERMISSION_SCOPES: frozenset[str] = frozenset(
-    {"", "path_read", "path_write", "public_web_read", "internal_readonly"}
+    {"path_read", "path_write", "public_web_read", "internal_readonly"}
 )
 
 
@@ -92,20 +92,30 @@ def _spec_from_dict(raw: dict[str, Any], default_module: str) -> BuiltinToolSpec
     )
 
 
+_POSITIONAL_FIELDS: tuple[str, ...] = ("name", "module", "symbol")
+
+
 def _eval_call_keywords(node: ast.Call) -> dict[str, Any] | None:
-    func_name = node.func.id if isinstance(node.func, ast.Name) else ""
-    if func_name != "BuiltinToolSpec":
+    """Evaluate a ``BuiltinToolSpec(...)`` call; log a warning on any dropped spec."""
+    if not isinstance(node.func, ast.Name) or node.func.id != "BuiltinToolSpec":
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "BuiltinToolSpec":
+            logger.warning("[builtin_tool_registry] Attribute-form BuiltinToolSpec skipped")
         return None
+    if len(node.args) > len(_POSITIONAL_FIELDS):
+        logger.warning("[builtin_tool_registry] Too many positional args in spec")
+        return None
+    pairs = list(zip(_POSITIONAL_FIELDS, node.args))
+    pairs += [(kw.arg, kw.value) for kw in node.keywords]
     raw_kw: dict[str, Any] = {}
-    for kw in node.keywords:
-        if kw.arg is None:
-            return None
+    for key, value_node in pairs:
         try:
-            raw_kw[kw.arg] = ast.literal_eval(kw.value)
+            if key is None:
+                raise ValueError("**kwargs unsupported")
+            raw_kw[key] = ast.literal_eval(value_node)
         except (ValueError, SyntaxError):
+            logger.warning("[builtin_tool_registry] Non-literal spec argument %r", key)
             return None
     return raw_kw
-
 
 def _eval_spec_node(node: ast.AST, default_module: str) -> BuiltinToolSpec | None:
     if isinstance(node, ast.Dict):
@@ -149,7 +159,7 @@ def _candidate_spec_files(base_dir: Path) -> list[tuple[Path, str]]:
     if specs_dir.is_dir():
         for path in sorted(specs_dir.glob("*.py")):
             if not path.name.startswith("_"):
-                candidates.append((path, f".{path.stem}"))
+                candidates.append((path, f".specs.{path.stem}"))
     for path in sorted(base_dir.glob("*_tools.py")):
         candidates.append((path, f".{path.stem}"))
     return candidates
@@ -218,8 +228,15 @@ def merge_discovered_categories(
     return tuple(by_path[path] for path in order)
 
 
-def discover_permission_sets(tools_dir: Path | None = None) -> dict[str, frozenset[str]]:
-    """Group discovered tool names by permission scope for ``tool_capabilities``."""
+def discover_permission_sets(
+    tools_dir: Path | None = None,
+    exclude: frozenset[str] = frozenset(),
+) -> dict[str, frozenset[str]]:
+    """Group discovered tool names by permission scope for ``tool_capabilities``.
+
+    Names are lower-cased to match ``classify_tool`` lookups. Names in ``exclude``
+    (already classified by static sets) keep their existing behavior.
+    """
     grouped: dict[str, list[str]] = {
         "path_read": [],
         "path_write": [],
@@ -227,6 +244,7 @@ def discover_permission_sets(tools_dir: Path | None = None) -> dict[str, frozens
         "internal_readonly": [],
     }
     for spec in discover_builtin_tool_specs(tools_dir):
-        if spec.permission_scope in grouped:
-            grouped[spec.permission_scope].append(spec.name)
+        lowered = spec.name.lower()
+        if spec.permission_scope in grouped and lowered not in exclude:
+            grouped[spec.permission_scope].append(lowered)
     return {key: frozenset(names) for key, names in grouped.items()}

@@ -177,7 +177,8 @@ def _sync_discovered_permission_sets() -> None:
         discover_permission_sets,
     )
 
-    perms = discover_permission_sets()
+    known = frozenset(_PATH_TOOLS | _PUBLIC_WEB_READ_TOOLS | _INTERNAL_READONLY_TOOLS)
+    perms = discover_permission_sets(exclude=known)
     _PATH_TOOLS.update(perms["path_read"] | perms["path_write"])
     _DISCOVERED_WRITE_PATH_TOOLS.update(perms["path_write"])
     _PUBLIC_WEB_READ_TOOLS.update(perms["public_web_read"])

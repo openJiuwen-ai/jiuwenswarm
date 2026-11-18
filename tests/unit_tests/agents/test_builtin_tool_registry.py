@@ -180,3 +180,41 @@ def test_gitattributes_configures_union_merge_for_doc_indexes() -> None:
     gitattributes = (repo_root / ".gitattributes").read_text(encoding="utf-8")
     assert ".agents/agent-docs/INDEX.md merge=union" in gitattributes
     assert ".agents/agent-docs/*/INDEX.md merge=union" in gitattributes
+
+
+def test_specs_dir_default_module_includes_specs_package(tmp_path: Path) -> None:
+    specs_dir = tmp_path / "specs"
+    specs_dir.mkdir()
+    (specs_dir / "beta_spec.py").write_text(
+        "BUILTIN_TOOL_SPECS = ({'name': 'beta_tool'},)\n",
+        encoding="utf-8",
+    )
+    found = {s.name: s for s in discover_builtin_tool_specs(tmp_path)}
+    assert found["beta_tool"].module == ".specs.beta_spec"
+
+
+def test_positional_args_are_mapped_and_unsupported_forms_are_skipped(tmp_path: Path) -> None:
+    (tmp_path / "pos_tools.py").write_text(
+        "BUILTIN_TOOL_SPECS = (\n"
+        "    BuiltinToolSpec('pos_tool', '.pos_tools', 'run_pos'),\n"
+        "    BuiltinToolSpec('kw_tool', module='.pos_tools'),\n"
+        "    registry.BuiltinToolSpec(name='attr_tool', module='.pos_tools'),\n"
+        "    BuiltinToolSpec(name=compute(), module='.pos_tools'),\n"
+        ")\n",
+        encoding="utf-8",
+    )
+    found = {s.name: s for s in discover_builtin_tool_specs(tmp_path)}
+    assert set(found) == {"pos_tool", "kw_tool"}
+    assert found["pos_tool"].resolved_symbol() == "run_pos"
+
+
+def test_permission_sets_lowercase_names_and_respect_exclude(tmp_path: Path) -> None:
+    (tmp_path / "perm_tools.py").write_text(
+        "BUILTIN_TOOL_SPECS = (\n"
+        "    {'name': 'Mixed_Case', 'permission_scope': 'path_write'},\n"
+        "    {'name': 'existing_tool', 'permission_scope': 'path_write'},\n"
+        ")\n",
+        encoding="utf-8",
+    )
+    sets = discover_permission_sets(tmp_path, exclude=frozenset({"existing_tool"}))
+    assert sets["path_write"] == frozenset({"mixed_case"})
