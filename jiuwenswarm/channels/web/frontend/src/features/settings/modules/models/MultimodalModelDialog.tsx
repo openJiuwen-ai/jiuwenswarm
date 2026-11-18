@@ -23,10 +23,11 @@ type Confirmation = {
 };
 
 export function MultimodalModelDialog({
-  model, defaultCapability, onClose,
+  model, defaultCapability, enableToolOnSave, onClose,
 }: {
   model?: MultimodalModel;
   defaultCapability?: MultimodalCapability;
+  enableToolOnSave?: boolean;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
@@ -128,6 +129,12 @@ export function MultimodalModelDialog({
     const params: Record<string, unknown> = { mode: model ? 'update' : 'create', model: {
       model_id: modelId, ...metadata, display_name: metadata.display_name.trim(), connection: nextConnection,
     } };
+    if (
+      enableToolOnSave && defaultCapability && metadata.purpose === multimodalPurpose(defaultCapability) &&
+      metadata.capabilities.length === 1 && metadata.capabilities[0] === defaultCapability
+    ) {
+      params.tool_activation = { tools: [defaultCapability], enabled: true };
+    }
     const result = await saveWithConfirmation(params);
     if (defaultCapability && !metadata.capabilities.includes(defaultCapability)) store.announceShortcutChange(defaultCapability);
     return result;

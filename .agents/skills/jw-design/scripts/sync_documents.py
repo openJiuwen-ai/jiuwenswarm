@@ -185,10 +185,8 @@ def index_row(doc: Document, parent: Path, designs: dict[str, Document]) -> str:
     return "| " + " | ".join(fields) + " |"
 
 
-def render_index(path: Path, title: str, docs: list[Document], identity: GitIdentity, designs: dict[str, Document]) -> str:
+def render_index(path: Path, title: str, docs: list[Document], designs: dict[str, Document]) -> str:
     """Generate module navigation and document listings without global totals."""
-    metadata = {"title": title, "author": identity.name, "author_email": identity.email, "generated": True}
-    header = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).rstrip()
     unique_docs = list({doc.path: doc for doc in docs}.values())
     grouped: dict[str, list[Document]] = {}
     for doc in unique_docs:
@@ -196,7 +194,7 @@ def render_index(path: Path, title: str, docs: list[Document], identity: GitIden
             grouped.setdefault(name, []).append(doc)
     names = sorted(grouped, key=lambda name: (name == "未分类", name))
     lines = [
-        f"---\n{header}\n---", "", f"# {title}", "",
+        generate_index.index_header(title).rstrip(), "", f"# {title}", "",
         "由 sync_documents.py 从文档 frontmatter 自动生成；请修改源文档后重新生成，不手工维护。", "",
         "按模块分组；跨模块文档在各相关分组展示。", "",
         "## 模块导航", "", "| 模块 |", "|---|",
@@ -246,8 +244,8 @@ def synchronize(root: Path, identity: GitIdentity, current_document: Path | None
             designs[identifier] = doc
     for section in ("features", "bugfix", "specs"):
         path = root / section / "INDEX.md"
-        writes[path] = render_index(path, _NAMES[section] + "索引", [doc for doc in docs if doc.section == section], identity, designs)
-    writes[root / "INDEX.md"] = render_index(root / "INDEX.md", "D/F/B/S 文档总索引", [doc for doc in docs if doc.section != "testing"], identity, designs)
+        writes[path] = render_index(path, _NAMES[section] + "索引", [doc for doc in docs if doc.section == section], designs)
+    writes[root / "INDEX.md"] = render_index(root / "INDEX.md", "D/F/B/S 文档总索引", [doc for doc in docs if doc.section != "testing"], designs)
     design_root = root / "designs"
     if design_root.is_dir():
         records = lib_frontmatter.iter_docs(design_root)
@@ -258,9 +256,9 @@ def synchronize(root: Path, identity: GitIdentity, current_document: Path | None
                 record.parse_error = None
         timestamp = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).isoformat(timespec="minutes")
         index_body = generate_index.build_index(records, timestamp)
-        index_metadata = {"title": "设计文档索引", "author": identity.name, "author_email": identity.email, "generated": True}
-        header = yaml.safe_dump(index_metadata, allow_unicode=True, sort_keys=False).rstrip()
-        writes[design_root / "INDEX.md"] = f"---\n{header}\n---\n\n{index_body}"
+        writes[design_root / "INDEX.md"] = (
+            f"{generate_index.index_header('设计文档索引')}\n{index_body}"
+        )
     for path, content in writes.items():
         if not path.exists() or path.read_text(encoding="utf-8") != content:
             path.parent.mkdir(parents=True, exist_ok=True)

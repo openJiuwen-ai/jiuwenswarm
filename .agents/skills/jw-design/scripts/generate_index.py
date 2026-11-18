@@ -20,10 +20,13 @@ import sys
 from pathlib import Path
 
 import lib_frontmatter as lib
-from document_identity import git_identity
 import yaml
 
 _GENERATED_AT_RE = re.compile(r"^<!-- generated-at:.*-->\s*$", re.MULTILINE)
+
+# Generated indexes carry a fixed author so that regenerating them from another
+# Git identity does not rewrite the header; the source documents keep real authors.
+INDEX_AUTHOR = "sync_documents.py"
 
 # 索引内分组：标题 + 该组包含的 (stage, status) 过滤条件
 STAGE_GROUPS = (
@@ -34,6 +37,12 @@ STAGE_GROUPS = (
 )
 
 _COLUMNS = ("ID", "标题", "状态", "作者", "领域", "更新日期")
+
+
+def index_header(title: str) -> str:
+    """Render the frontmatter shared by every generated index."""
+    metadata = {"title": title, "author": INDEX_AUTHOR, "generated": True}
+    return "---\n" + yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).rstrip() + "\n---\n"
 
 
 def _cell(value) -> str:
@@ -161,10 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         records = lib.iter_docs(root, None)
         timestamp = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8))).isoformat(timespec="minutes")
         content = build_index(records, timestamp)
-        identity = git_identity(root.resolve())
-        metadata = {"title": "设计文档索引", "author": identity.name, "author_email": identity.email, "generated": True}
-        header = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).rstrip()
-        content = f"---\n{header}\n---\n\n{content}"
+        content = f"{index_header('设计文档索引')}\n{content}"
         index_path = root / lib.INDEX_FILE
 
         if args.check:
