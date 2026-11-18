@@ -2749,7 +2749,8 @@
       "loadDiscord": "Failed to load Discord settings",
       "loadSlack": "Failed to load Slack settings",
       "loadWhatsApp": "Failed to load WhatsApp settings",
-      "saveGeneric": "Save failed, please try again later"
+      "saveGeneric": "Save failed, please try again later",
+      "boundToEmployee": "This bot is already bound to a team employee. Unbind it first or use another bot."
     },
     "xiaoyiApps": {
       "defaultAppName": "Default Xiaoyi App",
@@ -6347,6 +6348,7 @@
       "dingtalkHint": "Assign tasks through DingTalk direct messages. Text messages are supported.",
       "isolationHint": "Web, Feishu and DingTalk share one colleague and workspace. Sessions stay separate; cross-group sharing requires authorization.",
       "channelAlreadyBound": "This channel is already bound to another employee. Remove the existing binding first.",
+      "channelUsedInPersonalEdition": "This bot is already configured in the personal edition. Remove that configuration first or use another bot.",
       "robotCode": "Robot Code (optional)",
       "robotCodePlaceholder": "Use the app robot code; defaults to Client ID",
       "welinkTitle": "Bind WeLink",

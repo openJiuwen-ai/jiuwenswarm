@@ -98,6 +98,7 @@ export function useSettingsChannelsController({
     setMethod: 'channel.feishu.set_conf',
     loadErrorMessage: t('channels.errors.loadFeishu'),
     saveErrorMessage: t('channels.errors.saveGeneric'),
+    saveErrorByCode: { CHANNEL_BOUND_TO_EMPLOYEE: t('channels.errors.boundToEmployee') },
     savedMessage: t('channels.saved.feishu'),
     onSaved: loadChannels,
   });
@@ -110,6 +111,7 @@ export function useSettingsChannelsController({
     setMethod: 'channel.dingtalk.set_conf',
     loadErrorMessage: t('channels.errors.loadDingtalk'),
     saveErrorMessage: t('channels.errors.saveGeneric'),
+    saveErrorByCode: { CHANNEL_BOUND_TO_EMPLOYEE: t('channels.errors.boundToEmployee') },
     savedMessage: t('channels.saved.dingtalk'),
     onSaved: loadChannels,
   });

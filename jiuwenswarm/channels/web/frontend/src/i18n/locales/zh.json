@@ -2749,7 +2749,8 @@
       "loadDiscord": "获取 Discord 配置失败",
       "loadSlack": "获取 Slack 配置失败",
       "loadWhatsApp": "获取 WhatsApp 配置失败",
-      "saveGeneric": "保存失败，请稍后重试"
+      "saveGeneric": "保存失败，请稍后重试",
+      "boundToEmployee": "该机器人已绑定团队版员工。请先解除原绑定，或使用另一个机器人。"
     },
     "xiaoyiApps": {
       "defaultAppName": "默认小艺应用",
@@ -6344,6 +6345,7 @@
       "dingtalkHint": "绑定后可通过钉钉单聊分派任务，当前支持文本消息。",
       "isolationHint": "Web、飞书和钉钉共用同一员工与工作空间；各会话独立，跨群分享须按授权处理。",
       "channelAlreadyBound": "该渠道已绑定其他员工，请先解除原绑定。",
+      "channelUsedInPersonalEdition": "该机器人已用于个人版渠道。请先移除原配置，或使用另一个机器人。",
       "robotCode": "Robot Code（可选）",
       "robotCodePlaceholder": "按应用配置填写，留空沿用 Client ID",
       "welinkTitle": "绑定 WeLink",
