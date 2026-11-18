@@ -23,7 +23,6 @@ generated: true
 | [jiuwenswarm/agents/harness/common/tools/cron](#module-jiuwenswarm-agents-harness-common-tools-cron) |
 | [jiuwenswarm/agents/harness/team](#module-jiuwenswarm-agents-harness-team) |
 | [jiuwenswarm/agents/swarm](#module-jiuwenswarm-agents-swarm) |
-| [jiuwenswarm/channels/desktop](#module-jiuwenswarm-channels-desktop) |
 | [jiuwenswarm/channels/tui](#module-jiuwenswarm-channels-tui) |
 | [jiuwenswarm/channels/web](#module-jiuwenswarm-channels-web) |
 | [jiuwenswarm/channels/web/frontend](#module-jiuwenswarm-channels-web-frontend) |
@@ -121,14 +120,6 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261106_1132_organization-round-cleanup](jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
-
-<a id="module-jiuwenswarm-channels-desktop"></a>
-
-## jiuwenswarm/channels/desktop
-
-| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
-|---|---|---|---|---|
-| [B_20261118_1017_issue6796-desktop-worker-shutdown](jiuwenswarm/channels/desktop/B_20261118_1017_issue6796-desktop-worker-shutdown.md) | B | Python 桌面退出等待常驻 Worker 清理 | 刘瑜 | 无独立 D：对现有应用退出契约的时序修复，无独立设计。 |
 
 <a id="module-jiuwenswarm-channels-tui"></a>
 
