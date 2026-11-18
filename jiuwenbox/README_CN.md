@@ -611,7 +611,7 @@ sandbox:
 
 此模式下 agent-server **不会**尝试拉起 jiuwenbox，`sandbox.policy_file` 也**不生效**（policy 由你启动 jiuwenbox-server 时通过 `JIUWENBOX_DEFAULT_POLICY_PATH` 指定）。jiuwenbox-server 的启动方式见前文 [`启动服务`](#启动服务) 与 [`通过 Unix Domain Socket 部署`](#通过-unix-domain-socket-部署)。
 
-跨机部署要求 jiuwenbox 主机能访问 jiuwenswarm 的固有 agent 文件路径——`preserve_file_sharing_mode` 现在只支持 `mount` jiuwenswarm 会把 intrinsic 文件（`AGENT.md` / `HEARTBEAT.md` / `IDENTITY.md` / `SOUL.md` / `USER.md` / `memory/daily_memory/`）和 `project_dir` 通过 bind mount 暴露给沙箱，因此目标主机必须能在同样的 host path 下看到这些文件（例如共享文件系统、容器 volume 等）。
+跨机部署要求 jiuwenbox 主机能访问 jiuwenswarm 的固有 agent 文件路径——`preserve_file_sharing_mode` 现在只支持 `mount` jiuwenswarm 会把 intrinsic 文件（`AGENT.md` / `IDENTITY.md` / `SOUL.md` / `USER.md` / `memory/daily_memory/`）和 `project_dir` 通过 bind mount 暴露给沙箱，因此目标主机必须能在同样的 host path 下看到这些文件（例如共享文件系统、容器 volume 等）。
 
 ## 远程 MCP
 

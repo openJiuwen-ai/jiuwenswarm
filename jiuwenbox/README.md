@@ -643,7 +643,7 @@ sandbox:
 
 Under this mode agent-server **does not** try to spawn jiuwenbox, and `sandbox.policy_file` has **no effect** (the policy is whatever you passed to `jiuwenbox-server` via `JIUWENBOX_DEFAULT_POLICY_PATH`). See [`Start The Server`](#start-the-server) and [`Unix Domain Socket Deployment`](#unix-domain-socket-deployment) above for how to start jiuwenbox-server in TCP or UDS mode.
 
-For cross-host setups, the jiuwenbox host has to be able to reach jiuwenswarm's intrinsic agent files on the same host paths: `preserve_file_sharing_mode` is now fixed to `mount`, so jiuwenswarm bind-mounts the intrinsic files (`AGENT.md`, `HEARTBEAT.md`, `IDENTITY.md`, `SOUL.md`, `USER.md`, `memory/daily_memory/`) and `project_dir` into the sandbox. Make the relevant directories visible on the jiuwenbox machine (via shared filesystem, container volume, etc.) and confirm the policy allows writes into them (the bundled `jiuwenbox/configs/code-agent-policy.yaml` already does).
+For cross-host setups, the jiuwenbox host has to be able to reach jiuwenswarm's intrinsic agent files on the same host paths: `preserve_file_sharing_mode` is now fixed to `mount`, so jiuwenswarm bind-mounts the intrinsic files (`AGENT.md`, `IDENTITY.md`, `SOUL.md`, `USER.md`, `memory/daily_memory/`) and `project_dir` into the sandbox. Make the relevant directories visible on the jiuwenbox machine (via shared filesystem, container volume, etc.) and confirm the policy allows writes into them (the bundled `jiuwenbox/configs/code-agent-policy.yaml` already does).
 
 
 ## Remote MCP
