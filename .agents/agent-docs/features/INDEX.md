@@ -129,6 +129,10 @@ generated: true
 | [F_20261029_1757_mcp-app-agent-stack-refresh](F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |
 | [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 | [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
+| [F_20261116_2135_web-article-tool](F_20261116_2135_web-article-tool.md) | F | 补齐智能网页长文提取与降噪工具 (read_web_article) | zhuxiangju | 无独立 D：接入内部安全守卫与 trafilatura 的智能长文提取落地。 |
+| [F_20261116_2215_grep-code-tool](F_20261116_2215_grep-code-tool.md) | F | grep_code Cross-Platform Code Search and Pattern Matching Tool | zhuxiangju | 无独立 D：Cross-platform regex/literal code search tool for agent codebase navigation |
+| [F_20261116_2220_chart-tool](F_20261116_2220_chart-tool.md) | F | generate_chart Zero-Dependency Vector SVG Visualization Tool | zhuxiangju | 无独立 D：Lightweight zero-dependency vector SVG chart generator for data visualization |
+| [F_20261117_1730_diff-files-tool](F_20261117_1730_diff-files-tool.md) | F | 新增跨平台文件与文本结构化差异对比工具 (diff_files) | zhuxiangju | 无独立 D：新增基于标准库 difflib 的跨平台文件与文本差异比对工具 diff_files，无独立前置设计文档。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-features-settings"></a>
 
