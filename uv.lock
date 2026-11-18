@@ -3567,7 +3567,7 @@ wheels = [
 [[package]]
 name = "openjiuwen"
 version = "0.1.16"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable#ae59e31982878544dd4ed00f9065de7416fc4957" }
+source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable#64eed1f0310623a3ddee6de8ae4b9dbd81b332f2" }
 dependencies = [
     { name = "agent-shield" },
     { name = "agentdescent" },
