@@ -7688,7 +7688,16 @@ async def test_cancelled_stream_preserves_stderr_before_reraising(tmp_path):
     sdk_logs = tmp_path / "service-logs" / "DeepResearch" / "output" / "logs"
     proc = _CancellationProc()
     original_stderr = b"FIRST_CAUSE before cancellation\n" + b"g" * 30_000
-    proc.stderr = _Reader(original_stderr)
+    stderr_written = asyncio.Event()
+
+    class Reader(_Reader):
+        async def read(self, size: int = -1) -> bytes:
+            if self.reads:
+                # 首块 stderr 写完后，排空任务才会读取下一块。
+                stderr_written.set()
+            return await super().read(size)
+
+    proc.stderr = Reader(original_stderr)
     manager = Mock()
     patches = list(_stream_patches(proc))
     patches[2] = patch.object(dt, "_build_deepresearch_request_config", return_value=_valid_config(
@@ -7705,19 +7714,16 @@ async def test_cancelled_stream_preserves_stderr_before_reraising(tmp_path):
             )
 
     task = asyncio.create_task(invoke())
-    for _ in range(100):
-        if proc.stderr.reads:
-            break
-        await asyncio.sleep(0)
-    task.cancel()
-    for _ in range(100):
-        if proc.terminated:
-            break
-        await asyncio.sleep(0)
-    proc.release_wait.set()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    try:
+        await asyncio.wait_for(stderr_written.wait(), timeout=5)
+    finally:
+        task.cancel()
+        proc.release_wait.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
+    assert proc.waited >= 1
+    assert proc.returncode is not None
     journal_files = list((sdk_logs.parent.parent / "runner").glob("C-cancel-log.*.stderr.log"))
     assert len(journal_files) == 1
     assert journal_files[0].read_bytes() == original_stderr
