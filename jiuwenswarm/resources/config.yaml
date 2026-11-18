@@ -16,7 +16,8 @@ sensitive_mask:
   enabled: false
   rules:
     - title: 邮箱
-      pattern: '\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}\b'
+      # (?<!:) 避免把 http://user:password@host.tld 里的 password@host 误当成邮箱
+      pattern: '(?<!:)\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}\b'
     - title: 手机号
       pattern: '(?<!\d)(?:\+?86[-\s]?)?1[3-9]\d{9}(?!\d)'
     - title: 身份证号
@@ -25,6 +26,9 @@ sensitive_mask:
       pattern: '(?:sk|rk|pk|ak)-[A-Za-z0-9]{8,}'
     - title: Token
       pattern: 'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
+    # http(s)://user:password@host，掩 password（HTTP_PROXY / HTTPS_PROXY 等）
+    - title: URL 密码
+      pattern: '(?<=:)[^:@/\s]+(?=@)'
 
 # Web 首次模型配置引导；用户确认完成后会自动关闭，可通过侧栏问号再次打开
 setup_guide:
