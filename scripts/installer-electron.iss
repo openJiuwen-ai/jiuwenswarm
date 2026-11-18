@@ -1,5 +1,6 @@
 ; JiuwenSwarm Electron Installer Script (Windows)
-; 用法: "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" scripts\installer-electron.iss
+; 用法: "C:\Program Files\Inno Setup 7\ISCC.exe" scripts\installer-electron.iss
+; （优先 Inno Setup 7；Inno Setup 6 仍可编译）
 ; 应用名 / 版本号 / 壳 exe 名 / 后端 exe 名由 build-electron-exe.ps1 经
 ; /DMyAppName=... /DMyAppVersion=... /DMyAppExeName=... /DBackendExecutableName=...
 ; 传入（来自 build_config，与 pyproject 单一来源，与 installer.iss 的 WorkSwarm
