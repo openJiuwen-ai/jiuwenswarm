@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_02 / skill-routing-and-registration |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（environment.py、planner.py、skill_meta.py、turbo_package_loader.py、tools_loader.py、skill_turbo_tools.py） |
-| 最近一次修订日期 | 2026-11-03 |
+| 最近一次修订日期 | 2026-11-18 |
 | 关联 feature | F_03_multi-deliverable-todo-guide.md；F_05_enable-turbo-switch.md |
 
 ## 范围 / 边界
@@ -141,11 +141,11 @@ def get_tool_function(self, tool_name) -> Callable | None
 | 维度 | enable_for_models | vendor_map |
 |---|---|---|
 | 机制 | DeepAgent 层 ProgressiveToolRail 工具**懒加载**白名单（`progressive_tool_rail.py` 构造参数，`_is_lazy_load_enabled_for_model`） | thinking 参数**注入**的模型白名单（`common/thinking/vendor_map.py`） |
-| 配置 | `config.yaml react.tool_lazy_load.enable_for_models`，当前默认 `["glm", "deepseek"]` | 代码内 GLM-5.x 窄正则（防误匹配 glm-4 / glm-50）+ DeepSeek keyword 全版本 |
-| 匹配语义 | **空白名单 = 全部模型启用懒加载**；非空对 model_name 做小写子串匹配，不匹配 → 懒加载整体 bypass（全部工具常驻） | 白名单外模型不注入 thinking kwargs |
+| 配置 | `config.yaml react.tool_lazy_load.enable_for_models`，当前默认 `["glm", "deepseek", "kimi", "openpangu"]` | 代码内 GLM-5.x 窄正则 + Kimi K3 窄正则 + DeepSeek keyword 全版本 |
+| 匹配语义 | **空白名单 = 全部模型启用懒加载**；非空对 model_name 做小写子串匹配，不匹配 → 懒加载整体 bypass（全部工具常驻）。宽子串匹配：`glm` 同样命中 glm-4 / glm-50，与 thinking 的窄正则不同 | 白名单外模型不注入 thinking kwargs |
 | 影响 | 不影响 thinking | 不影响工具加载 |
 
-同一模型可以只在其中一个白名单内（如 deepseek 在 thinking 白名单内但不在懒加载白名单内 → 工具全常驻）。**新模型接入 checklist：两处 + vision/audio 等能力 config 三项都要核对。**
+两个白名单可以只命中其一：`openpangu` 在懒加载白名单内但不在 thinking 白名单内（不注入 thinking）；`kimi` 系列只有 K3 命中 thinking，其他 Kimi 变体同样只在懒加载白名单内。**新模型接入 checklist：两处 + vision/audio 等能力 config 三项都要核对。**
 
 ## 数据结构
 
@@ -282,7 +282,7 @@ HITL resume 不走 planner：直接使用持久化的 `resume_ctx["plan_code"]`�
 - **改准入/排除规则** → 必查已删的 `__skill_turbo_prior_artifacts__` 增量判定分支不被复活（字段无注入方，规则悬空；残留产物拦截归 [[F_01]] fresh 守卫）；多技能场景先重构为 per-skill 规则结构再增规则。
 - **改 tools_loader 分组** → 必同步 [[S_03]] 审批卡清单 `SKILL_TURBO_APPROVAL_TOOLS` + tool_info.json 消费方 + 回归测试 `test_skill_turbo_approval_tools.py`。
 - **改拦截关键词/正则** → 必查双防线同源（`region_edit.REGION_EDIT_KEYWORDS`）+ SkillTurboPromptRail 排除提示词同步；删除拦截块前先确认主防线覆盖。
-- **新模型接入** → checklist：`enable_for_models`（懒加载白名单）/ `vendor_map`（thinking 白名单）/ vision 等能力 config 三处逐一核对，缺一即行为分裂。
+- **新模型接入** → checklist：`enable_for_models`（懒加载白名单，当前 glm/deepseek/kimi/openpangu）/ `vendor_map`（thinking 白名单，当前 GLM-5.x / Kimi K3 / DeepSeek；openpangu 未登记）/ vision 等能力 config 三处逐一核对，缺一即行为分裂。
 - **改外部 turbo 约定路径** → 必同步 `discover_external_turbo_skills` 发现协议、`ensure_turbo_package` 注册、validator 前缀派生（[[S_03]] / [[S_05]]）三处。
 - **改 skill_root 解析** → 必查 `resolve_agent_registered_skill_dirs` 三级顺序与请求级绑定时序（绑定晚于解析则首目录取错）。
 - **改扫描缓存结构** → 必保 mtime 快照失效语义 + 缓存命中路径仍执行 `ensure_turbo_package` 幂等重注册，二者缺一即"已缓存但 import 失败"。
