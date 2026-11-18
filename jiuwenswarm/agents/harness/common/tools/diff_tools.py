@@ -307,12 +307,14 @@ def _format_numbered_diff(
     old_lineno = 0
     new_lineno = 0
 
+    in_header = True
     for line in diff_lines:
-        if line.startswith("--- ") or line.startswith("+++ "):
+        if in_header and (line.startswith("--- ") or line.startswith("+++ ")):
             rendered.append(line)
             continue
         hunk_match = _HUNK_HEADER_RE.match(line)
         if hunk_match:
+            in_header = False
             hunks += 1
             old_lineno = int(hunk_match.group(1))
             new_lineno = int(hunk_match.group(3))

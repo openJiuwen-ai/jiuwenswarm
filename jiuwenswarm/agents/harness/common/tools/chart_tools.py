@@ -59,17 +59,14 @@ def _resolve_chart_path(raw_path: str) -> Path:
     path = Path(cleaned).expanduser()
     ws = _get_workspace()
 
-    if ws is not None:
-        ws_path = Path(ws).resolve()
-        if not path.is_absolute():
-            path = ws_path / path
-        resolved = path.resolve()
-        if not resolved.is_relative_to(ws_path):
-            raise ValueError(f"Output path must be inside workspace: {raw_path}")
-    else:
-        if not path.is_absolute():
-            path = Path.cwd() / path
-        resolved = path.resolve()
+    if ws is None:
+        raise ValueError("runtime workspace is unavailable")
+    ws_path = Path(ws).resolve()
+    if not path.is_absolute():
+        path = ws_path / path
+    resolved = path.resolve()
+    if not resolved.is_relative_to(ws_path):
+        raise ValueError(f"Output path must be inside workspace: {raw_path}")
 
     if resolved.suffix.lower() != ".svg":
         resolved = resolved.with_suffix(".svg")
@@ -140,7 +137,18 @@ def _render_line_chart(req: GenerateChartRequest, labels: list[str], values: lis
     elements, _, _, chart_w, chart_h = _svg_header_and_grid(
         req.title, req.width, req.height, max_val
     )
-    if len(values) > 1:
+    if len(values) == 1:
+        cx = 60 + chart_w / 2
+        cy = 70 + chart_h - ((values[0] / max_val) * chart_h if max_val > 0 else 0)
+        elements.extend((
+            f'<text x="{cx:.1f}" y="{90 + chart_h}" font-size="12" '
+            f'text-anchor="middle" fill="#475569">{_escape(labels[0])}</text>',
+            f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="5" fill="#3b82f6" '
+            'stroke="#ffffff" stroke-width="2"/>',
+            f'<text x="{cx:.1f}" y="{cy - 10:.1f}" font-size="11" font-weight="bold" '
+            f'text-anchor="middle" fill="#1e293b">{values[0]:g}</text>',
+        ))
+    elif len(values) > 1:
         points: list[tuple[float, float]] = []
         for idx, (label, val) in enumerate(zip(labels, values)):
             x = 60 + idx * (chart_w / (len(values) - 1))
@@ -273,6 +281,8 @@ def _validate_series_data(
         values = [float(x) for x in values_raw]
     except (ValueError, TypeError) as exc:
         return [], [], f"[ERROR]: All entries in 'values' must be numeric: {exc}"
+    if not all(math.isfinite(v) for v in values):
+        return [], [], "[ERROR]: values must be finite numbers."
     if any(v < 0 for v in values):
         return [], [], "[ERROR]: All entries in 'values' must be non-negative (>= 0)."
     if chart_type in ("pie", "donut") and sum(values) <= 0:
@@ -373,4 +383,7 @@ async def generate_chart(  # pylint: disable=too-many-arguments,huawei-too-many-
         width=capped_w,
         height=capped_h,
     )
-    return await asyncio.to_thread(_generate_chart_sync, req)
+    try:
+        return await asyncio.to_thread(_generate_chart_sync, req)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        return f"[ERROR]: Failed to generate chart: {exc}"

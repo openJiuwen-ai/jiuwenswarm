@@ -98,8 +98,10 @@ def _find_matching_files(root_dir: Path, file_pattern: str) -> Iterator[Path]:
     for root, dirs, files in os.walk(root_dir):
         dirs[:] = [d for d in dirs if d not in IGNORED_DIRECTORIES and not d.startswith(".")]
         for file_name in files:
-            if fnmatch.fnmatchcase(file_name, file_pattern):
-                yield Path(root) / file_name
+            file_path = Path(root) / file_name
+            rel_posix = file_path.relative_to(root_dir).as_posix()
+            if fnmatch.fnmatchcase(file_name, file_pattern) or fnmatch.fnmatchcase(rel_posix, file_pattern):
+                yield file_path
 
 
 def _compile_pattern(query: str, is_regex: bool, case_sensitive: bool) -> re.Pattern[str]:

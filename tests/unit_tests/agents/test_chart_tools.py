@@ -14,6 +14,14 @@ from jiuwenswarm.agents.harness.common.tools.chart_tools import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _mock_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "openjiuwen.core.sys_operation.cwd.get_workspace",
+        lambda: str(tmp_path),
+    )
+
+
 def test_escape() -> None:
     """Test HTML/XML character escaping."""
     assert _escape("Sales & Revenue <Q1>") == "Sales &amp; Revenue &lt;Q1&gt;"
