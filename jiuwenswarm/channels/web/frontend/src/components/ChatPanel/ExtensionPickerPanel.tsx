@@ -194,7 +194,6 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
         ),
         variant: 'info',
         duration: 6,
-        wide: true,
         closable: true,
         testId: 'chat-panel-ttse-work-mode-notice',
       });

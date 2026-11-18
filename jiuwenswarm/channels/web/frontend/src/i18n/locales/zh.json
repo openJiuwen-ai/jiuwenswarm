@@ -506,11 +506,15 @@
       "displayName": "模型展示名称",
       "displayNamePlaceholder": "默认使用模型名称，可自行修改",
       "nameInvalid": "请输入 1–100 个字符的模型展示名称",
-      "completeFields": "请完善模型配置中的必填项。",
       "add": "添加多模态模型",
       "edit": "编辑多模态模型",
       "deleteTitle": "删除模型？",
       "changeTitle": "确认修改模型能力？",
+      "enableTitle": "开启对应工具？",
+      "enableTools": "以下工具当前处于关闭状态：{{tools}}。是否一起开启，并使用模型“{{model}}”？",
+      "enableAndUse": "开启并使用当前模型",
+      "keepDisabled": "保持关闭",
+      "keepDisabledRule": "选择“保持关闭”仍会保存模型：已有模型选择保持不变，未选择模型的工具会选中当前模型。",
       "confirmDelete": "确认删除",
       "confirmChanges": "确认修改",
       "deleteReferences": "该模型已被以下工具绑定：{{tools}}。",
@@ -530,7 +534,7 @@
         "video_gen": "视频生成"
       },
       "errors": {
-        "MM_VALIDATION_FAILED": "请检查模型配置，确保所有必填项符合要求。",
+        "MM_VALIDATION_FAILED": "模型配置校验失败，请检查后重试。",
         "MM_CONFIRM_REQUIRED": "模型绑定发生变化，请重新确认受影响的工具。",
         "MM_MODEL_NOT_FOUND": "该模型已不存在，请重新选择。",
         "MM_MODEL_ID_CONFLICT": "模型标识冲突，请重新打开添加弹框。",
@@ -5538,6 +5542,7 @@
     "upload": {
       "hint": "支持.zip和.tar文件，解压后的文件夹需要至少包含 manifest.json 文件和 README.md，.json 文件需包含 packageType 声明包类型。",
       "dropHint": "点击或拖动文件到此处",
+      "webHint": "点击上传文件",
       "invalidType": "仅支持 .zip / .tar 文件",
       "importSuccess": "插件导入成功",
       "missingManifest": "插件包缺少 manifest.json，或文件已损坏",
