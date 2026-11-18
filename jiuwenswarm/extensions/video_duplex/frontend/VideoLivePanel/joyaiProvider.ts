@@ -33,6 +33,7 @@ function isJoyAIRateLimit(error: unknown): boolean {
 }
 
 export interface JoyAIProviderCallbacks {
+  answerQuestion: (sessionId: string, answers: Record<string, unknown>) => Promise<{ state: string; message: string }>;
   getLatestFrameDataUrl: () => string;
   getFrameCount: () => number;
   getSearchSessionId: () => string;
@@ -505,6 +506,12 @@ export class JoyAIProvider {
           this.callbacks.setStatus('');
         }
         this.framePollingPausedUntil = 0;
+      }
+      const cardAnswer = (result as JoyAIFrameResult & { interaction_answer?: Record<string, unknown> }).interaction_answer;
+      if (cardAnswer) {
+        if (!this.active || this.sessionId !== activeSessionId) return null;
+        const receipt = await this.callbacks.answerQuestion(searchSessionId.replace(/^task-duplex:/, ''), cardAnswer);
+        if (receipt.state === 'rejected') throw new Error(receipt.message);
       }
       // A stopped media run may still have created backend work. Preserve its conversation owner.
       this.callbacks.rememberSearchJob(result.search_job, this.active && this.sessionId === activeSessionId);

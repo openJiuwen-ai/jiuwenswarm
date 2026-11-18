@@ -109,6 +109,44 @@ async def test_file_lookup_does_not_erase_execution_result(tmp_path, monkeypatch
         await service.close()
 
 
+@pytest.mark.parametrize("explicit", [True, False])
+async def test_core_failure_preserves_error_or_uncertainty(tmp_path, monkeypatch, explicit):
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.errors import CoreExecutionError
+
+    store = TaskStore(tmp_path / "explicit-core-error.sqlite")
+    executor = task_adapter.AgentTaskExecutor(None, store, None)
+    service = TaskService(store, executor)
+    task = service.submit("alice", "voice", "weather", "Check weather", {
+        "execution_target": {"mode": "agent", "work_mode": "work"},
+    })
+    error = "[181001] Insufficient Balance (request_id: provider-request-1)"
+
+    async def failed_execution(current, _progress, _context):
+        store.update(current["id"], lambda t: t.update(execution_bound=True))
+
+        async def settle():
+            await asyncio.sleep(0.01)
+            store.update(current["id"], lambda t: t.update(execution_settled=True))
+
+        if explicit:
+            asyncio.create_task(settle())
+            raise CoreExecutionError(error)
+        raise ConnectionError("Agent transport disconnected")
+
+    monkeypatch.setattr(executor, "_run", failed_execution)
+    try:
+        await until(lambda: store.read(task["id"])["output_closed"])
+        current = store.read(task["id"])
+        assert current["status"] == ("failed" if explicit else "unknown")
+        assert current["error"] == (
+            error if explicit else "Execution cleanup is unconfirmed; no work was replayed"
+        )
+        assert current["execution_settled"] is explicit
+        assert task_adapter.VideoSearchManager.public(current)["error"] == current["error"]
+    finally:
+        await service.close()
+
+
 @pytest.mark.parametrize("earlier_lookup_fails", [False, True])
 async def test_files_survive_multiple_clarification_rounds(tmp_path, monkeypatch, earlier_lookup_fails):
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
