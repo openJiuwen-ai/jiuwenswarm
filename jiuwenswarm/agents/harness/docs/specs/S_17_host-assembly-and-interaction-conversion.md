@@ -8,14 +8,14 @@
 | 编号 / slug | S_17 / host-assembly-and-interaction-conversion |
 | 关联模块（agent-core 仓） | `openjiuwen/harness/security/host.py`（`ToolPermissionHost` 回调接口——本 spec 管宿主侧实现）、`openjiuwen/harness/security/models.py`（`PermissionConfirmResponse`）、`openjiuwen/harness/security/skill_authorization`（`SKILL_APPROVAL_CARD_EXTENSION_KEY` / 子代理审批注册表） |
 | 关联模块（jiuwenswarm 仓） | `jiuwenswarm/agents/harness/common/rails/interrupt/interrupt_helpers.py`（1529 行：`build_permission_rail` / `convert_interactions_to_ask_user_question` / scene hook / hosted confirm 闭包族）、`common/rails/permissions/config_loader.py`（`get_effective_permissions_config` / `merge_session_permissions_overlay` / `persist_permissions_mutate`）、`common/rails/permissions/owner_scopes.py`（`TOOL_PERMISSION_CONTEXT` / `check_avatar_permission`）、`common/rails/permissions/tool_permission_context.py`（`TOOL_PERMISSION_CHANNEL_ID`）、`common/rails/subagent_skill_authorization_rail.py`（`emit_subagent_approval`）、`openjiuwen_streaming_tool_patch.py`（`streaming_tool_wait_timeout_paused`）、`code/rails/code_plan_approval_interrupt_rail.py`（plan approval 提取） |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-11-17（装配点：build_permission_rail 增加 meta-tool 展开契约注册，见 B_06 / issue #6499；同日 review 修正：注册失败 fail-open 降级 + 提取器 strip 归一） |
 | 关联 feature | issue #1976（ask_user 豁免）、#2331（非数组 options 防字符迭代） |
 
 ## 范围 / 边界
 
 本规约管 **jiuwenswarm 宿主对 agent-core 中断体系的装配与前后端交互转换**——`ToolPermissionHost` 全部回调的实现、权限 rail 的构建与三级变体选择、interrupt 结果到 `chat.ask_user_question` 前端卡片的转换：
 
-- **rail 构建**（`build_permission_rail`）：配置来源二分、enabled 门、tool_names 标签收集、host 闭包族组装、三级 rail 变体选择
+- **rail 构建**（`build_permission_rail`）：配置来源二分、enabled 门、**meta-tool 展开契约注册**（enabled 门通过后经 `permission_runtime.install_meta_tool_expanders` 把 invoke_tool 等转发器注册进 agent_shield——外层判定展开到内层真实调用并取最严，堵外层 `defaults` 放行携带内层命令穿透的绕过路径，B_06 / issue #6499；**注册失败不冒泡**——import 与调用一并包 try/except，告警降级为仅外层判定、rail 照常构建，铁律 34 同一 fail-open 语义）、tool_names 标签收集、host 闭包族组装、三级 rail 变体选择
 - **hosted confirm 通道分流**（`_request_permission_confirmation`）：hosted parent-card（web / officeclaw / tui）/ interrupt 弹卡 / ACP 原生 JSON-RPC 三路
 - **场景豁免链**（`_permission_scene_hook`）：ask_user 豁免、deepresearch workflow 状态、数字分身、owner_scopes
 - **持久化回调**（`_persist_allow_rule`）：只 mutate 三键的磁盘写
@@ -104,7 +104,7 @@
 
 ## 执行路径
 
-1. **P1 rail 构建**：装配点调 `build_permission_rail` → N1 配置二分 → enabled 门 → tool_names 标签 → 闭包族（persist / confirm / scene_hook / snapshot）→ host 组装 → N13 三级 rail 选择 → 实例化（失败 None）
+1. **P1 rail 构建**：装配点调 `build_permission_rail` → N1 配置二分 → enabled 门 → **meta-tool 展开契约注册**（B_06；失败告警降级仅外层判定，不阻断构建）→ tool_names 标签 → 闭包族（persist / confirm / scene_hook / snapshot）→ host 组装 → N13 三级 rail 选择 → 实例化（失败 None）
 2. **P2 hosted confirm**：rail ASK → `_request_permission_confirmation` → channel 读取（`TOOL_PERMISSION_CHANNEL_ID`，默认 web）→ parent_session 解析 → N4 分流：hosted parent-card（N19 注册表审批）/ 非 acp `"interrupt"` / acp JSON-RPC（N6 预算保护 + N7 响应分类）
 3. **P3 scene hook 豁免**：rail 首查先过 hook → N8 ask_user → N9 workflow → N10 数字分身 → N11 owner_scopes → None 回落 [[S_16]] N3 主序
 4. **P4 交互转换**：agent 返回 interrupt dict → `convert_interactions_to_ask_user_question` → N14 三轮扫描 → structured / plain / permission-confirm 分类 → N15 plan 附加 / N16 Skill 卡透传 → 前端 `chat.ask_user_question` 事件

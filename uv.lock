@@ -57,7 +57,7 @@ wheels = [
 [[package]]
 name = "agent-shield"
 version = "0.1.0"
-source = { git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=agent_shield&rev=74a6c48647092b8c1ebcbfa8124020202afff278#74a6c48647092b8c1ebcbfa8124020202afff278" }
+source = { git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=agent_shield&rev=b65eb19100320764c4245c8415e4cea650711b89#b65eb19100320764c4245c8415e4cea650711b89" }
 dependencies = [
     { name = "pyyaml" },
     { name = "tree-sitter" },
@@ -2378,7 +2378,7 @@ requires-dist = [
     { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'test'", specifier = "==1.0.0" },
     { name = "a2ui-agent-sdk", specifier = "==0.2.1" },
     { name = "a2ui-agent-sdk", marker = "extra == 'harmony'", specifier = "==0.2.1" },
-    { name = "agent-shield", git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=agent_shield&rev=74a6c48647092b8c1ebcbfa8124020202afff278" },
+    { name = "agent-shield", git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=agent_shield&rev=b65eb19100320764c4245c8415e4cea650711b89" },
     { name = "agent-ssas", git = "https://gitcode.com/openJiuwen/agent-security.git?subdirectory=agent_ssas&rev=74a6c48647092b8c1ebcbfa8124020202afff278" },
     { name = "aiosqlite", specifier = ">=0.22.1" },
     { name = "aiosqlite", marker = "extra == 'harmony'", specifier = ">=0.22.1" },
@@ -3567,7 +3567,7 @@ wheels = [
 [[package]]
 name = "openjiuwen"
 version = "0.1.16"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable#c30cbec5e92b9944c2bf3e5334828e54dedc1bea" }
+source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable#ae59e31982878544dd4ed00f9065de7416fc4957" }
 dependencies = [
     { name = "agent-shield" },
     { name = "agentdescent" },
