@@ -969,8 +969,13 @@ function ensureTray() {
 }
 
 function destroyTray() {
-  if (tray && !tray.isDestroyed()) tray.destroy();
-  tray = null;
+  try {
+    if (tray && !tray.isDestroyed()) tray.destroy();
+  } catch (error) {
+    console.error('[electron] failed to destroy tray', error);
+  } finally {
+    tray = null;
+  }
 }
 
 async function promptCloseAction() {
@@ -3267,7 +3272,11 @@ app.on('before-quit', event => {
   event.preventDefault();
   if (finalShutdownPromise) return;
   // Hide before stopping services so intentional disconnects are never shown.
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+  } catch (error) {
+    console.error('[electron] failed to hide main window before shutdown', error);
+  }
   destroyTray();
   // 冲刷待写的会话页面 URL（取消防抖定时器），保证重启还原不丢最后一次导航。
   saveSessionLastUrls();
