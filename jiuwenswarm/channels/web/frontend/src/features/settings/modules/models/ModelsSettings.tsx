@@ -76,6 +76,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+function isOptionalNumberOrNull(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === 'number';
+}
+
 export function parseModelResource(payload: unknown): ModelEntry {
   if (!isRecord(payload) || !isRecord(payload.model)) throw new Error('INVALID_MODEL_RESOURCE');
   const model = payload.model;
@@ -97,6 +101,7 @@ export function parseModelResource(payload: unknown): ModelEntry {
     temperature: typeof config.temperature === 'number' ? config.temperature : undefined,
     reasoning_level: typeof config.reasoning_level === 'string' ? config.reasoning_level : '',
     context_window_tokens: typeof config.context_window === 'number' ? config.context_window : undefined,
+    max_tokens: typeof config.max_tokens === 'number' ? config.max_tokens : undefined,
     is_default: model.is_default === true,
     vendor_key: typeof client.vendor_key === 'string' ? client.vendor_key : undefined,
     plan:
@@ -127,6 +132,7 @@ export function buildModelResourcePayload(model: ModelEntry): Record<string, unk
   if (model.temperature !== undefined) config.temperature = model.temperature;
   config.reasoning_level = model.reasoning_level ?? '';
   if (model.context_window_tokens !== undefined) config.context_window = model.context_window_tokens;
+  if (model.max_tokens !== undefined) config.max_tokens = model.max_tokens;
   return {
     ...(model.model_id ? { model_id: model.model_id } : {}),
     alias: model.alias ?? '',
@@ -167,7 +173,8 @@ export function parseModelsPayload(payload: unknown): {
         ((model as ModelEntry).api_key === undefined || typeof (model as ModelEntry).api_key === 'string') &&
         ((model as ModelEntry).has_api_key === undefined || typeof (model as ModelEntry).has_api_key === 'boolean') &&
         typeof (model as ModelEntry).model_provider === 'string' &&
-        typeof (model as ModelEntry).reasoning_level === 'string',
+        typeof (model as ModelEntry).reasoning_level === 'string' &&
+        isOptionalNumberOrNull((model as ModelEntry).max_tokens),
     )
   ) {
     throw new Error('INVALID_MODELS_LIST');
@@ -178,6 +185,7 @@ export function parseModelsPayload(payload: unknown): {
   const normalizedModels = (models as ModelEntry[]).map((model) => ({
     ...model,
     api_key: typeof model.api_key === 'string' ? model.api_key : '',
+    max_tokens: typeof model.max_tokens === 'number' ? model.max_tokens : undefined,
   }));
   return { models: normalizedModels, modelGroups, activeModel };
 }
