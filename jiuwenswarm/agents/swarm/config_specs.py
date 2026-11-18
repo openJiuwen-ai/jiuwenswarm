@@ -638,13 +638,39 @@ def _model_entry_alias(entry: dict[str, Any]) -> str:
     return str(entry.get("alias") or "").strip()
 
 
+def _positive_context_window_tokens(raw: Any) -> int | None:
+    """Accept positive integer settings; ignore empty or invalid window limits."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 def _team_context_engine_config(
     config: dict[str, Any], base_spec: DeepAgentSpec,
 ) -> ContextEngineConfig:
-    """仅在 Team 成员副本上限制窗口，保留已有配置和更小的模型窗口。"""
-    context_config = ContextEngineConfig.model_validate(
-        base_spec.context_engine_config or {},
-    ).model_copy(deep=True)
+    """在 Team 副本继承产品配置，并保留产品、成员及模型的更小窗口。"""
+    product_config = _config_section(
+        _config_section(config, "react"), "context_engine_config",
+    )
+    member_config = base_spec.context_engine_config or {}
+    if isinstance(member_config, ContextEngineConfig):
+        # SDK 默认值不应覆盖产品配置；成员明确声明的字段才有覆盖权。
+        member_config = member_config.model_dump(exclude_unset=True)
+    product_window = _positive_context_window_tokens(product_config.get("context_window_tokens"))
+    member_window = _positive_context_window_tokens(member_config.get("context_window_tokens"))
+    merged_config = {
+        key: value
+        for source in (product_config, member_config)
+        for key, value in source.items()
+        if key in ContextEngineConfig.model_fields
+    }
+    # 窗口单独取各来源的最小正整数，非法值不进入 SDK 校验或掩盖更小上限。
+    merged_config["context_window_tokens"] = None
+    context_config = ContextEngineConfig.model_validate(merged_config).model_copy(deep=True)
     model_name = context_config.model_name or _member_model_name(base_spec)
     entries = _declared_model_entries(config)
     if not model_name and entries:
@@ -664,8 +690,16 @@ def _team_context_engine_config(
     window = min(
         _TEAM_CONTEXT_WINDOW_TOKENS,
         model_window,
-        context_config.context_window_tokens or _TEAM_CONTEXT_WINDOW_TOKENS,
+        product_window or _TEAM_CONTEXT_WINDOW_TOKENS,
+        member_window or _TEAM_CONTEXT_WINDOW_TOKENS,
     )
+    if any(explicit is not None and window < explicit for explicit in (product_window, member_window)):
+        logger.info(
+            "Team context window capped: model=%s product_window=%s member_window=%s "
+            "model_window=%s team_limit=%s window=%s",
+            model_name or "<default>", product_window, member_window,
+            model_window, _TEAM_CONTEXT_WINDOW_TOKENS, window,
+        )
     return context_config.model_copy(update={"context_window_tokens": window})
 
 
