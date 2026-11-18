@@ -163,12 +163,14 @@ class TaskService:
             state = card.get("card_state")
             if state not in {"pending", "applied", "ended"}:
                 return
+
             def observe_card(current):
                 current_card = current.get("interaction") or {}
                 if (current["request_id"] != task["request_id"]
                         or current["status"] not in {"unknown", "waiting_user"}
-                        or current_card.get("id") != interaction.get("id")
-                        or current_card.get("state") != "pending"):
+                        or current_card.get("id") != interaction.get("id")):
+                    return
+                if current_card.get("state") != "pending":
                     return
                 if card.get("card_binding"):
                     current_card["card_binding"] = card["card_binding"]
@@ -186,6 +188,7 @@ class TaskService:
             if state == "pending":
                 await self._notify(task)
                 return
+            self.pending_interrupts.discard(task["core_session_id"])
         elif task["status"] == "waiting_user":
             return
         local_settled = task.get("execution_settled") and task.get("output_closed")
@@ -250,11 +253,15 @@ class TaskService:
         else:
             self.pending_interrupts.discard(core_session_id)
         with self.store.transaction() as db:
-            waiting = [t for t in self.store.rows(db) if (t["status"] in {"waiting_user", "unknown"}
-                       or t.get("recovery_observer"))
-                       and (core_session_id is None or t["core_session_id"] == core_session_id)
-                       and (t["owner"], t["session"]) in self.active_scopes
-                       and t["id"] not in self.workers]
+            waiting = []
+            for task in self.store.rows(db):
+                if task["status"] not in {"waiting_user", "unknown"} and not task.get("recovery_observer"):
+                    continue
+                if core_session_id is not None and task["core_session_id"] != core_session_id:
+                    continue
+                if (task["owner"], task["session"]) not in self.active_scopes or task["id"] in self.workers:
+                    continue
+                waiting.append(task)
         for task in waiting:
             self._spawn_reconcile(task)
         self.kick()
@@ -688,10 +695,13 @@ class TaskService:
         # Without a worker (e.g. after restart) nothing else closes the output.
         while task["id"] in self.workers and not self.store.read(task["id"])["output_closed"]:
             await asyncio.sleep(0.05)
+
         def finish_cancel(t):
             if t["request_id"] != task["request_id"] or t["status"] != "cancelling":
                 return
-            result = t.get("observed_result") or t.get("result")
+            result = t.get("observed_result")
+            if result is None:
+                result = t.get("result")
             if result is not None and not t["execution_cancelled"]:
                 t.update(status="completed", result=result, error="")
             else:

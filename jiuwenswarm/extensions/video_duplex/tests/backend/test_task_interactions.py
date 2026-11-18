@@ -995,8 +995,10 @@ async def test_typed_card_holds_voice_task_until_turn_ends(approval_system, monk
     core.card_live = False
     if notification == "unavailable":
         original = core.pending_interrupt
+
         async def disconnected(task):
             raise ConnectionError("probe unavailable")
+
         monkeypatch.setattr(core, "pending_interrupt", disconnected)
         await service.refresh("alice", SCOPE)
         await asyncio.sleep(0.06)
