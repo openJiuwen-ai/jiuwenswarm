@@ -35,6 +35,7 @@ from jiuwenswarm.common.runtime_model_config import apply_runtime_model_config
 from jiuwenswarm.common.utils import (
     get_config_dir,
     get_config_file,
+    refresh_external_cli_state_sidecar,
 )
 
 logger = logging.getLogger(__name__)
@@ -636,6 +637,13 @@ def dump_yaml_round_trip(config_path: Path, data: Any) -> None:
         except FileNotFoundError:
             pass
         raise
+    # config.yaml 的唯一写出口：落盘后同步三方 agent 状态旁路，覆盖所有更新
+    # 路径（agents/histories/prune/teams/builtin_models/reset）。仅对主配置
+    # 文件生效——其它 yaml 落盘不含该配置节，镜像空态会覆盖旁路。
+    # 旁路刷新的首参是要读取的 config.yaml 路径，workspace 取其上两级
+    # （config/config.yaml → 数据目录），不能传数据目录本身（!10406 检视）。
+    if Path(config_path) == Path(CONFIG_YAML_PATH):
+        refresh_external_cli_state_sidecar(config_path, Path(config_path).parent.parent)
 
 
 def _atomic_replace(src: Path, dst: Path, max_attempts: int = 10) -> None:
