@@ -583,3 +583,347 @@ async def test_sharing_posture_lists_named_members_not_audience_types():
 
     p._drive_json = drive_json
     assert await p.sharing_posture(DOC) == [("ou_a", "edit"), ("ou_b", "view")]
+
+
+# --------------------------------------------------------------------- regions
+
+SHEET_URL = "https://x.feishu.cn/sheets/SheetTok12345"
+
+
+_SHEET_REPLIES = {
+    "sheets +workbook-info": {
+        "sheets": [{"title": "Sheet1",
+                    "grid_properties": {"row_count": 3, "column_count": 2}}],
+    },
+    # The live shape (TENANT-VERIFY 2026-09-02): the grid nests inside ranges[0]
+    # with the actual_range the platform really answered.
+    "sheets +cells-get": {
+        "ranges": [{
+            "actual_range": "A1:B3",
+            "cells": [["项目", "状态"], ["区域机械", "待验证"], ["回执链", "待验证"]],
+        }],
+    },
+    "sheets +cells-set": {},
+}
+
+
+class _RegionSink(_Sink):
+    def __init__(self) -> None:
+        super().__init__()
+        self.unverified: list = []
+
+    def mark_unverified(self, receipt_id, *, detail):
+        self.unverified.append((receipt_id, detail))
+
+
+class _EchoingSheetCli(_StubCli):
+    """After a write, the platform shows what was written; the stub does too, or the
+    read-back verification under test would always disagree with itself.
+    """
+
+    async def json(self, args, *, timeout=None):
+        data = await super().json(args, timeout=timeout)
+        if args[:2] == ["sheets", "+cells-set"]:
+            self._replies["sheets +cells-get"] = {
+                "ranges": [{
+                    "actual_range": "A1:B3",
+                    "cells": [["项目", "状态"], ["区域机械", "已验证"], ["回执链", "待验证"]],
+                }],
+            }
+        return data
+
+
+@pytest.mark.asyncio
+async def test_a_sheets_link_teaches_the_format():
+    """A pasted link is the only place a spreadsheet announces itself: there is no
+    listing on this platform to learn it from, and without the marker the token would
+    read as a docx and fail on the fetch.
+    """
+    p, _ = _provider()
+    ref = p.parse_doc_ref(SHEET_URL)
+    assert ref == "SheetTok12345"
+    assert await p.doc_kind(ref) == "spreadsheet"
+    assert p._drive_type(ref) == "sheet"
+
+
+@pytest.mark.asyncio
+async def test_a_region_write_lands_with_a_sheet_qualified_receipt():
+    p = FeishuDocsProvider(profile="p", self_open_id="ou_bot")
+    stub = _EchoingSheetCli(dict(_SHEET_REPLIES))
+    p.cli = stub
+    sink = _RegionSink()
+    p.receipt_sink = sink
+    ref = p.parse_doc_ref(SHEET_URL)
+
+    res = await p.write_regions(ref, [("Sheet1!B2", [["已验证"]])])
+    assert res.status == "applied"
+    written = next(c for c in stub.calls if c[:2] == ["sheets", "+cells-set"])
+    assert "--sheet-name" in written and written[written.index("--sheet-name") + 1] == "Sheet1"
+    assert written[written.index("--range") + 1] == "B2:B2"
+    # The receipt's two ends are the region's content before and after, and the
+    # address is sheet-qualified so the revert's anchor check can read it back.
+    entry = sink.begun[0]["edits"][0]
+    assert entry["region"] == "Sheet1!B2:B2"
+    assert entry["old_grid"] == [["待验证"]]
+    assert (entry["old"], entry["new"]) == ("待验证", "已验证")
+    assert sink.committed and not sink.unverified
+
+
+@pytest.mark.asyncio
+async def test_a_multi_region_batch_is_refused_because_it_cannot_be_atomic():
+    """The platform's only multi-range write is fail-fast without rollback, so a
+    cross-rectangle move sent as one batch can land half. Declared, not simulated.
+    """
+    p, _ = _provider(dict(_SHEET_REPLIES))
+    ref = p.parse_doc_ref(SHEET_URL)
+    res = await p.write_regions(ref, [("Sheet1!A1", [["x"]]), ("Sheet1!B1", [["y"]])])
+    assert res.status == "refused"
+    assert "原子" in res.detail
+
+
+@pytest.mark.asyncio
+async def test_a_region_whose_shape_disagrees_is_refused():
+    p, _ = _provider(dict(_SHEET_REPLIES))
+    ref = p.parse_doc_ref(SHEET_URL)
+    with pytest.raises(ProviderError) as err:
+        await p.write_regions(ref, [("Sheet1!A1:B1", [["only one"]])])
+    assert "形状" in str(err.value)
+
+
+@pytest.mark.asyncio
+async def test_a_formula_cell_anywhere_in_the_region_refuses_the_batch():
+    """Writing over a formula replaces it with a literal that looks identical, and
+    nothing on the document shows it happened (IC-7).
+    """
+    replies = dict(_SHEET_REPLIES)
+    replies["sheets +cells-get"] = {
+        "ranges": [{
+            "actual_range": "A1:B3",
+            "cells": [["项目", "状态"],
+                      ["区域机械", {"value": "待验证", "formula": "=A1&\"!\""}],
+                      ["回执链", "待验证"]],
+        }],
+    }
+    p, stub = _provider(replies)
+    ref = p.parse_doc_ref(SHEET_URL)
+    with pytest.raises(ProviderError) as err:
+        await p.write_regions(ref, [("Sheet1!A2:B2", [["区域机械", "已验证"]])])
+    assert "公式" in str(err.value)
+    assert not any(c[:2] == ["sheets", "+cells-set"] for c in stub.calls)
+
+
+@pytest.mark.asyncio
+async def test_a_read_back_that_disagrees_demotes_the_receipt():
+    """D19 tier 3b: "the platform accepted the request" and "the document shows the
+    result" are different facts, and acceptance must read the second.
+    """
+    p, _ = _provider(dict(_SHEET_REPLIES))  # the stub never echoes the write back
+    sink = _RegionSink()
+    p.receipt_sink = sink
+    ref = p.parse_doc_ref(SHEET_URL)
+    res = await p.write_regions(ref, [("Sheet1!B2", [["已验证"]])])
+    assert res.status == "applied"
+    assert sink.unverified and sink.unverified[0][0] == "rcpt1"
+
+
+@pytest.mark.asyncio
+async def test_region_reading_answers_in_receipt_form():
+    p, _ = _provider(dict(_SHEET_REPLIES))
+    ref = p.parse_doc_ref(SHEET_URL)
+    got = await p.read_regions(ref, ["Sheet1!B2", "Sheet1!A1:B1"])
+    assert got == ["待验证", "项目\t状态"]
+
+
+# ------------------------------------------------------ presentation (slides)
+
+_SLIDE_XML = (
+    '<slide id="p1">\n  <style/>\n  <data>\n'
+    '    <shape width="800" height="100" type="text" id="sTitle">'
+    '<content textType="title"><p>标题形状</p></content></shape>\n'
+    '    <shape width="800" height="200" type="text" id="sBody">'
+    '<content fontSize="16"><p>正文甲行一</p><p>正文甲行二</p></content></shape>\n'
+    '  </data>\n  <note id="sNote"><content><p>讲稿</p></content></note>\n</slide>'
+)
+
+
+_DECK_XML = (
+    '<presentation xmlns="https://www.larkoffice.com/sml/2.0">' + _SLIDE_XML + "</presentation>"
+)
+_DECK_REPLIES = {
+    "slides +xml-get": {"slide": {"content": _SLIDE_XML},
+                        "xml_presentation": {"content": _DECK_XML}},
+    "slides +replace-slide": {},
+}
+
+
+@pytest.mark.asyncio
+async def test_a_slides_link_teaches_the_format():
+    p, _ = _provider()
+    ref = p.parse_doc_ref("https://x.feishu.cn/slides/DeckTok12345")
+    assert await p.doc_kind(ref) == "presentation"
+    assert p._drive_type(ref) == "slides"
+
+
+@pytest.mark.asyncio
+async def test_a_deck_flattens_one_run_per_shape_with_page_shape_addresses():
+    p, _ = _provider(dict(_DECK_REPLIES))
+    ref = p.parse_doc_ref("https://x.feishu.cn/slides/DeckTok12345")
+    snap = await p.read(ref)
+    by = {s.address: snap.text[s.char_start:s.char_end] for s in snap.segments}
+    assert by["p1/sTitle"] == "标题形状"
+    assert by["p1/sBody"] == "正文甲行一\n正文甲行二"
+    assert by["p1/sNote"] == "讲稿"  # notes flatten too, behind the divider
+
+
+@pytest.mark.asyncio
+async def test_a_shape_region_write_swaps_text_and_keeps_the_element():
+    """The shape's full XML is sent with only its text nodes swapped: styling and
+    geometry survive, and the receipt carries the shape's before-text.
+    """
+    p = FeishuDocsProvider(profile="p", self_open_id="ou_bot")
+    p.cli = _StubCli(dict(_DECK_REPLIES))
+    sink = _RegionSink()
+    p.receipt_sink = sink
+    ref = p.parse_doc_ref("https://x.feishu.cn/slides/DeckTok12345")
+    res = await p.write_regions(ref, [("p1/sTitle", [["新标题"]])])
+    assert res.status == "applied"
+    sent = next(c for c in p.cli.calls if c[:2] == ["slides", "+replace-slide"])
+    parts = json.loads(sent[sent.index("--parts") + 1])
+    assert parts[0]["target_id"] == "sTitle"
+    assert "新标题" in parts[0]["shape"] and 'textType="title"' in parts[0]["shape"]
+    entry = sink.begun[0]["edits"][0]
+    assert entry["region"] == "p1/sTitle" and entry["old_grid"] == [["标题形状"]]
+
+
+@pytest.mark.asyncio
+async def test_cross_slide_regions_are_refused_as_unatomic():
+    p, _ = _provider(dict(_DECK_REPLIES))
+    ref = p.parse_doc_ref("https://x.feishu.cn/slides/DeckTok12345")
+    res = await p.write_regions(ref, [("p1/sTitle", [["x"]]), ("p2/sOther", [["y"]])])
+    assert res.status == "refused" and "同一页" in res.detail
+
+
+@pytest.mark.asyncio
+async def test_a_deck_text_replacement_refuses_with_directions():
+    """Without this the docx fallback would receive a slides token and fail with the
+    platform's document-flavored error -- the wrong repair path.
+    """
+    p, stub = _provider(dict(_DECK_REPLIES))
+    ref = p.parse_doc_ref("https://x.feishu.cn/slides/DeckTok12345")
+    res = await p.edit_batch(ref, [("标题形状", "新")], required_revision_id="")
+    assert res.status == "refused" and "区域" in res.detail
+    assert not any(c[:2] == ["docs", "+update"] for c in stub.calls)
+
+
+@pytest.mark.asyncio
+async def test_a_vanished_shape_refuses_the_revert_read():
+    p, _ = _provider(dict(_DECK_REPLIES))
+    ref = p.parse_doc_ref("https://x.feishu.cn/slides/DeckTok12345")
+    with pytest.raises(ProviderError) as err:
+        await p.read_regions(ref, ["p1/sGone"])
+    assert "不在幻灯片" in str(err.value)
+
+
+class _FailingWriteCli(_StubCli):
+    """Answers every read, and fails the one write verb with the given kind."""
+
+    def __init__(self, replies: dict, verb: list[str], kind: str) -> None:
+        super().__init__(replies)
+        self._verb, self._kind = verb, kind
+
+    async def json(self, args, *, timeout=None):
+        if list(args[:2]) == self._verb:
+            self.calls.append(list(args))
+            raise ProviderError(self._kind, "the write failed")
+        return await super().json(args, timeout=timeout)
+
+
+_FORMAT_WRITES = {
+    "sheet-text": (SHEET_URL, _SHEET_REPLIES, ["sheets", "+cells-set"],
+                   lambda p, ref: p.edit_batch(ref, [("区域机械", "已改")], required_revision_id="")),
+    "sheet-region": (SHEET_URL, _SHEET_REPLIES, ["sheets", "+cells-set"],
+                     lambda p, ref: p.write_regions(ref, [("Sheet1!B2", [["已验证"]])])),
+    "slide-region": ("https://x.feishu.cn/slides/DeckTok12345", _DECK_REPLIES,
+                     ["slides", "+replace-slide"],
+                     lambda p, ref: p.write_regions(ref, [("p1/sTitle", [["新标题"]])])),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("write", sorted(_FORMAT_WRITES))
+@pytest.mark.parametrize("kind,closed", [("forbidden", True), ("transport", False)])
+async def test_a_format_write_closes_its_receipt_only_when_the_platform_refused(write, kind, closed):
+    """A refusal is known not to have landed, so its receipt is aborted. A timeout
+    after the request went out may have landed it, so the receipt stays pending for
+    the sweep -- the rule the docx path and add_page follow.
+    """
+    url, replies, verb, do_write = _FORMAT_WRITES[write]
+    p = FeishuDocsProvider(profile="p", self_open_id="ou_bot")
+    p.cli = _FailingWriteCli(dict(replies), verb, kind)
+    sink = _RegionSink()
+    p.receipt_sink = sink
+    with pytest.raises(ProviderError):
+        await do_write(p, p.parse_doc_ref(url))
+    assert len(sink.begun) == 1 and sink.committed == []
+    assert bool(sink.aborted) is closed
+
+
+# ------------------------------------------ review round: slides swap integrity
+
+_COMPLEX_SLIDE = (
+    '<slide id="p1"><data>'
+    '<shape type="text" id="sTwo">'
+    '<content textType="title"><p>头</p></content>'
+    '<content><p>尾</p></content></shape>'
+    '</data></slide>'
+)
+
+
+@pytest.mark.asyncio
+async def test_a_shape_with_several_content_elements_refuses_the_swap():
+    """The swap writes into the first content's direct <p> children; a shape holding
+    text anywhere else would get its new text appended while the old stayed --
+    visible duplication and an inverse that no longer anchors. Refused instead.
+    """
+    p = FeishuDocsProvider(profile="p", self_open_id="ou_bot")
+    p.cli = _StubCli({"slides +xml-get": {"slide": {"content": _COMPLEX_SLIDE}},
+                      "slides +replace-slide": {}})
+    ref = p.parse_doc_ref("https://x.feishu.cn/slides/DeckTok99999")
+    with pytest.raises(ProviderError) as err:
+        await p.write_regions(ref, [("p1/sTwo", [["新文本"]])])
+    assert "较复杂" in str(err.value)
+    assert not any(c[:2] == ["slides", "+replace-slide"] for c in p.cli.calls)
+
+
+@pytest.mark.asyncio
+async def test_grouped_shapes_flatten_each_leaf_exactly_once():
+    """A group's text lives in its child shapes; emitting the parent too duplicated
+    every grouped text in the flat, and quotes on it failed the uniqueness anchor.
+    """
+    xml = ('<slide id="p1"><data>'
+           '<shape type="group" id="g1">'
+           '<shape type="text" id="child1"><content><p>组内文字</p></content></shape>'
+           '</shape>'
+           '</data></slide>')
+    p = FeishuDocsProvider(profile="p", self_open_id="ou_bot")
+    p.cli = _StubCli({"slides +xml-get": {
+        "slide": {"content": xml},
+        "xml_presentation": {"content": "<presentation>" + xml + "</presentation>"}}})
+    ref = p.parse_doc_ref("https://x.feishu.cn/slides/DeckTok88888")
+    snap = await p.read(ref)
+    assert snap.text.count("组内文字") == 1
+    assert [g.address for g in snap.segments] == ["p1/child1"]
+
+
+@pytest.mark.asyncio
+async def test_an_untitled_slide_is_refused_because_the_platform_folds_identical_pages():
+    """Measured: three byte-identical ``+add-slide`` requests answered one slide id and
+    added one page. An untitled page is the same request every time, so it is refused
+    up front with the reason rather than answering an id that already existed.
+    """
+    p, stub = _provider(dict(_DECK_REPLIES))
+    ref = p.parse_doc_ref("https://x.feishu.cn/slides/DeckTok12345")
+    with pytest.raises(ProviderError) as err:
+        await p.add_page(ref, "")
+    assert "title" in str(err.value)
+    assert not any(c[:2] == ["slides", "+add-slide"] for c in stub.calls)

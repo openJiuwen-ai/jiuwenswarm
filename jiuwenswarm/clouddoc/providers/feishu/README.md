@@ -12,9 +12,8 @@ CLI's own conversion. `comments.py` adds comment
 threads: every page of cards and replies, authors told apart by id, and the bot's own
 comments recognised by its open id. `provider.py` adds the write path --
 one edit per command, each written ahead as a receipt -- and creating, sharing,
-trashing and discovering documents, and confirming a document is really gone. `formats.py` holds the tables the
-provider dispatches Sheets and Slides through; their handlers follow, and until then
-those formats are refused rather than read as a docx.
+trashing and discovering documents, and confirming a document is really gone. `formats.py` holds the Sheets and
+Slides halves.
 
 **Public names.** `LarkCli`, `LarkResult`; `FeishuReader`, `FeishuCommenter`, `FeishuDocsProvider`; in `formats`:
 `TEXT_DOMAIN` and the readers and writers the provider calls.

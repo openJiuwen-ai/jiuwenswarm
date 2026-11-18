@@ -12,7 +12,7 @@ asserts that), so each PR is inert and reviewable on its own.
 | Module | Status | What it holds |
 |---|---|---|
 | `wording`, `settings` | landed | text normalisation; the one place below `host` that reads the deployment's configuration |
-| `providers` | contract and Google landed | the platform contract, the text map, shared format helpers, the Google implementation; the Feishu implementation, the factory and the router follow |
+| `providers` | contract, Google and Feishu landed | the platform contract, the text map, shared format helpers, both platform implementations; the factory and the router follow |
 | `edits`, `receipts`, `workmode` | pending | range and result rails, the receipt ledger, the working-style file |
 | `tools` | pending | the tools the agent calls |
 | `authority`, `state` | pending | watch grants and the audit journal; the watcher's state |
