@@ -3,7 +3,7 @@
 """SshChannel - northbound SSH server channel into MessageHandler.
 
 SSH client -> SshChannel -> MessageHandler (``ssh.relay``) ->
-AgentOS Router / YuanRong southbound PTY relay.
+AgentOS Router / ADX southbound PTY relay.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ class SshRelaySession:
     # Used for AgentOS agent_type selection and southbound exec forwarding.
     command: str | None = None
     # Background southbound relay task (set by AgentOS Router); cancelled on
-    # northbound timeout or disconnect so the YuanRong SSH connection is
+    # northbound timeout or disconnect so the ADX SSH connection is
     # torn down instead of lingering until relay_timeout_sec / TCP timeout.
     relay_task: asyncio.Task[Any] | None = None
 

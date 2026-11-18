@@ -4369,6 +4369,7 @@ class JiuWenSwarmDeepAdapter:
                     or existing._has_live_root_permission_owner(sid)  # pylint: disable=protected-access
                 )
                 if busy:
+                    effective_moa = getattr(existing, "_moa_enabled", False)
                     installed_selection = existing._collaboration_model_selection  # pylint: disable=protected-access
                     if (
                         installed_selection is None
@@ -4391,7 +4392,13 @@ class JiuWenSwarmDeepAdapter:
                         if cached is not None and cached[1] is getattr(existing, "_last_resolved_model", None):
                             installed_selection = selection
                     explicit_switch = model_selection is not None or bool(model_name)
-                    if not retain_moa_snapshot and explicit_switch and selection != installed_selection:
+                    changes_moa_runtime = effective_moa and selection != installed_selection
+                    if not effective_moa and explicit_switch and not retain_moa_snapshot:
+                        changes_moa_runtime = effective_moa_enabled(
+                            get_config(), raw_selection, mode=mode,
+                            is_cron=self._is_cron_execution_session(sid),
+                        )
+                    if not retain_moa_snapshot and explicit_switch and changes_moa_runtime:
                         logger.warning(
                             "[JiuWenSwarm] model switch rejected on busy session: session_id=%s "
                             "requested=%s model_name=%s installed=%s",
@@ -4401,10 +4408,10 @@ class JiuWenSwarmDeepAdapter:
                             installed_selection,
                         )
                         raise RuntimeError("Model selection cannot change while the session is executing")
-                    # Global settings and metadata changes never replace a running
-                    # or permission-suspended invocation's installed snapshot.
-                    effective_moa = getattr(existing, "_moa_enabled", False)
-                    selection = installed_selection
+                    # Preserve snapshots for MoA work and passive lookups.
+                    # Ordinary requests keep their request-scoped model selection.
+                    if effective_moa or not explicit_switch:
+                        selection = installed_selection
                     moa_fingerprint = getattr(existing, "_moa_fingerprint", None)
                     if effective_moa and moa_can_access is not None:
                         # Read the same-class child's installed snapshot, not global settings.
@@ -4434,6 +4441,18 @@ class JiuWenSwarmDeepAdapter:
                         )
                     else:
                         moa_snapshot = None
+                # Retained single-agent answers can echo a group without installing MoA.
+                # Keep the ordinary session's saved selection for the next turn.
+                retained_ordinary_group = (
+                    busy
+                    and retain_moa_snapshot
+                    and not effective_moa
+                    and selection is not None
+                    and selection.type == "model_group"
+                    and not is_team_mode(mode)
+                    and not self._is_cron_execution_session(sid)
+                )
+                if (not busy or not effective_moa) and not retained_ordinary_group:
                     if model_selection is not None and selection is not None:
                         from jiuwenswarm.server.runtime.session.session_metadata import update_session_model_selection
                         update_session_model_selection(sid, selection.model_dump())
@@ -9282,7 +9301,7 @@ class JiuWenSwarmDeepAdapter:
         的同名字段。
 
         注意: 每次都从 ``get_sandbox_endpoint()`` 读最新 sandbox.url/type, 因为
-        ``/sandbox enable`` 会动态写入这两个字段; yuanrong 也会填默认占位 url。
+        ``/sandbox enable`` 会动态写入这两个字段。
 
         副作用: 在 ``self._sys_operation_card`` 保存生成或复用的 SysOperationCard，
         供 ``apply_sandbox_runtime_patch`` 等运行时热更使用。
@@ -9353,7 +9372,7 @@ class JiuWenSwarmDeepAdapter:
           字典让 provider 下次 exec 时读到新值（provider 持 dict 引用）。
         - ``files_changed=True`` 时:
           - jiuwenbox: 调用 ``force_recreate_jiuwenbox_sandbox``
-          - yuanrong: 调用 ``delete_yuanrong_sandbox``，下次 op 懒创建新实例
+          - adx-environment: 调用 ``delete_adx_environment``，下次 op 懒创建新实例
 
         Args:
             runtime: ``get_sandbox_runtime()`` 当前完整 runtime。
@@ -9375,21 +9394,21 @@ class JiuWenSwarmDeepAdapter:
             return
 
         sandbox_type = str(getattr(launcher, "sandbox_type", "") or "").strip().lower()
-        if sandbox_type == "yuanrong":
+        if sandbox_type == "adx-environment":
             logger.info(
-                "[JiuWenSwarmDeepAdapter] yuanrong runtime patch "
+                "[JiuWenSwarmDeepAdapter] ADX runtime patch "
                 "(files_changed=%s; policy/exclude ignored)",
                 files_changed,
             )
             if files_changed:
                 try:
-                    from openjiuwen.extensions.sys_operation.sandbox.providers.yuanrong import (
-                        build_yuanrong_shared_scope_key,
-                        delete_yuanrong_sandbox,
+                    from openjiuwen.extensions.sys_operation.sandbox.providers.adx_environment import (
+                        build_adx_shared_scope_key,
+                        delete_adx_environment,
                     )
                 except Exception as exc:
                     logger.warning(
-                        "[JiuWenSwarmDeepAdapter] delete_yuanrong_sandbox import "
+                        "[JiuWenSwarmDeepAdapter] delete_adx_environment import "
                         "failed: %s",
                         exc,
                     )
@@ -9397,13 +9416,13 @@ class JiuWenSwarmDeepAdapter:
                 try:
                     isolation_key = self._sys_operation_isolation_key(card)
                     shared_key = (
-                        build_yuanrong_shared_scope_key(
+                        build_adx_shared_scope_key(
                             str(launcher.base_url), str(isolation_key)
                         )
                         if isolation_key
                         else None
                     )
-                    deleted = await delete_yuanrong_sandbox(
+                    deleted = await delete_adx_environment(
                         shared_key=shared_key,
                         base_url=(
                             str(launcher.base_url)
@@ -9413,13 +9432,13 @@ class JiuWenSwarmDeepAdapter:
                         reason="files_changed",
                     )
                     logger.info(
-                        "[JiuWenSwarmDeepAdapter] yuanrong sandbox deleted for "
+                        "[JiuWenSwarmDeepAdapter] ADX environment deleted for "
                         "recreate: %s",
                         deleted,
                     )
                 except Exception as exc:
                     logger.warning(
-                        "[JiuWenSwarmDeepAdapter] delete_yuanrong_sandbox failed: %s",
+                        "[JiuWenSwarmDeepAdapter] delete_adx_environment failed: %s",
                         exc,
                     )
             return
@@ -15731,15 +15750,14 @@ class JiuWenSwarmDeepAdapter:
             raise RootPermissionQueueError("permission_dispatch_handoff_missing")
         stream = None
         try:
-            # Plain interrupt rounds finish their output before a resume starts.
+            # Ordinary and Smart interrupt answers wait for the old reader.
             # An ACK-only inject into a lease with EOF already queued can lose
-            # all resumed output. Goal readers and permission-queue callbacks
-            # remain live owners and must keep their existing injection path.
+            # all resumed output. Active Goal readers keep their live-owner
+            # injection path instead of waiting for a stream that stays open.
             previous = getattr(self, "_interaction_output_handoff", None)
             if previous is not None and previous.owner is self._instance:
                 if (
                     self._is_interrupt_resume_dispatch(request.params)
-                    and answer is None
                     and not self._goal_record_is_active()
                 ):
                     await previous.wait()

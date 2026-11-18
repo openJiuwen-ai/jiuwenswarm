@@ -8,6 +8,9 @@ import asyncio
 import logging
 from typing import Any
 
+from opentelemetry import context as otel_context, trace
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+
 from jiuwenswarm.common.external_cli_runtime import activate_external_cli_runtime_paths
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.ipc.protocol import (
@@ -226,6 +229,20 @@ class WorkerDispatcher:
         return True
 
     async def _run_request(self, request: AgentRequest, generation: int) -> None:
+        trace_token = None
+        if isinstance(request.traceparent, str) and request.traceparent:
+            parent = TraceContextTextMapPropagator().extract(
+                {"traceparent": request.traceparent}, context=otel_context.Context(),
+            )
+            if trace.get_current_span(parent).get_span_context().is_valid:
+                trace_token = otel_context.attach(parent)
+        try:
+            await self._run_request_inner(request, generation)
+        finally:
+            if trace_token is not None:
+                otel_context.detach(trace_token)
+
+    async def _run_request_inner(self, request: AgentRequest, generation: int) -> None:
         async with self._state_lock:
             if self._draining or generation != self._bridge.holder.generation:
                 logger.info(

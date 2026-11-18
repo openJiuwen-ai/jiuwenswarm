@@ -8,6 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+from openjiuwen.core.single_agent.interrupt.response import InterruptRequest
 from openjiuwen.harness.schema.interaction import (
     InteractionOutputStream,
     OutputLeaseManager,
@@ -15,6 +17,14 @@ from openjiuwen.harness.schema.interaction import (
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.runtime.events import RuntimeEvent
+from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
+    RootPermissionQueue,
+    RootPermissionQueueError,
+)
+from jiuwenswarm.server.runtime.agent_adapter.permission_dispatch import (
+    ROOT_PERMISSION_ANSWER_KEY,
+    RootPermissionDispatch,
+)
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
 )
@@ -161,27 +171,151 @@ async def test_active_goal_keeps_ack_only_injection():
     await old.close(abort_active_round=False)
 
 
-@pytest.mark.asyncio
-async def test_permission_queue_keeps_existing_output_unavailable_error():
-    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
-
+async def _smart_handoff():
     core = LeaseCore()
     adapter = _adapter(core)
     old, _ = await adapter._attach_and_send_inputs(
         _request(), {}, send_without_output=False
     )
-    answer = object.__new__(interface_deep.RootPermissionAnswer)
+    queue = RootPermissionQueue()
+    card = queue.begin(root_session_id="session", request_id="root",
+                       execution_session_id="session", tool_call_id="card", tool_name="bash")
+    card = queue.mark_pending(card.key, request=InterruptRequest(
+        message="Approve bash", metadata={"tool_invocation_key": card.key.to_wire()},
+    ),
+                              auto_manual=True, root_context={"request_id": "root"})
+    queue.reconcile({"result_type": "interrupt", "interrupt_ids": ["card"],
+                     "state": [{"id": "card", "value": card.request}]}, root_session_id="session")
+    adapter._enable_auto_permission = True
+    adapter._permission_dispatch = RootPermissionDispatch(queue)
+    return SimpleNamespace(core=core, adapter=adapter, old=old, queue=queue, card=card)
+
+
+async def _reserve_smart(h):
+    incoming = InteractiveInput()
+    incoming.update("card", {"approved": True, "auto_confirm": False, "feedback": ""})
+    handoff = await h.adapter._permission_dispatch.acquire("session")
+    answer = h.queue.reserve_answer("session", incoming)
+    return h.adapter._permission_dispatch.prepare(
+        {"query": answer.interactive_input, ROOT_PERMISSION_ANSWER_KEY: answer}, handoff,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finishing", [False, True])
+@pytest.mark.parametrize("channel_id", ["web", "tui", "process_cli"])
+async def test_smart_answer_waits_for_old_reader_and_dispatches_once(finishing, channel_id):
+    h = await _smart_handoff()
+    if finishing:
+        await h.core.output.finish_current()
+    inputs = await _reserve_smart(h)
+    task = asyncio.create_task(h.adapter._attach_and_send_inputs(
+        _request("permission_interrupt", channel_id), inputs, send_without_output=True,
+    ))
+    try:
+        await asyncio.sleep(0)
+        assert not task.done() and len(h.core.sent) == 1
+        assert h.adapter._permission_dispatch.lock.locked()
+        assert h.queue.get(h.card.key).state == "resuming"
+        assert h.core.output.has_consumer()
+        if not finishing:
+            await h.core.output.finish_current()
+        assert [item async for item in h.old] == []
+        assert not task.done()
+        await h.old.close(abort_active_round=False)
+        async with asyncio.timeout(1):
+            resumed, dispatched = await task
+            assert [item async for item in resumed] == ["continued exactly once"]
+            await resumed.close(abort_active_round=False)
+        assert dispatched is True and len(h.core.sent) == 2
+        assert isinstance(h.core.sent[-1].inputs["query"], InteractiveInput)
+        assert not h.adapter._permission_dispatch.lock.locked()
+        assert not h.core.output.has_consumer()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await h.core.output.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_smart_wait_cancellation_releases_reservation_and_allows_normal_retry():
+    h = await _smart_handoff()
+    inputs = await _reserve_smart(h)
+    task = asyncio.create_task(h.adapter._attach_and_send_inputs(
+        _request("permission_interrupt"), inputs, send_without_output=True,
+    ))
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert h.queue.get(h.card.key).state == "pending"
+    assert not h.adapter._permission_dispatch.lock.locked()
+    assert len(h.core.sent) == 1 and h.core.output.has_consumer()
+    await h.core.output.finish_current()
+    assert [item async for item in h.old] == []
+    await h.old.close(abort_active_round=False)
+    resumed, dispatched = await h.adapter._attach_and_send_inputs(
+        _request("permission_interrupt"), await _reserve_smart(h), send_without_output=True,
+    )
+    assert dispatched is True and len(h.core.sent) == 2
+    assert [item async for item in resumed] == ["continued exactly once"]
+    await resumed.close(abort_active_round=False)
+
+
+@pytest.mark.asyncio
+async def test_smart_close_failure_keeps_answer_pending_and_fails_closed(monkeypatch):
+    h = await _smart_handoff()
+    task = asyncio.create_task(h.adapter._attach_and_send_inputs(
+        _request("permission_interrupt"), await _reserve_smart(h), send_without_output=True,
+    ))
+    await asyncio.sleep(0)
+    assert not task.done() and h.adapter._permission_dispatch.lock.locked()
+    monkeypatch.setattr(h.old.stream, "close", AsyncMock(side_effect=OSError("close failed")))
+    with pytest.raises(OSError, match="close failed"):
+        await h.old.close(abort_active_round=False)
+    with pytest.raises(RuntimeError, match="Previous output owner failed"):
+        await task
+    assert h.queue.get(h.card.key).state == "pending"
+    assert not h.adapter._permission_dispatch.lock.locked()
+    with pytest.raises(RuntimeError, match="Previous output owner failed"):
+        await h.adapter._attach_and_send_inputs(
+            _request("permission_interrupt"), await _reserve_smart(h), send_without_output=True,
+        )
+    assert h.queue.get(h.card.key).state == "pending"
+    assert not h.adapter._permission_dispatch.lock.locked()
+    assert len(h.core.sent) == 1
+    await h.core.output.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", ["missing", "foreign", "goal", "shutdown", "other_consumer"])
+async def test_smart_answer_without_eligible_reader_keeps_output_unavailable(owner):
+    h = await _smart_handoff()
+    if owner == "missing":
+        h.adapter._interaction_output_handoff = None
+    elif owner == "foreign":
+        h.old.owner = object()
+    elif owner == "goal":
+        h.adapter._goal_record_is_active = lambda: True
+    elif owner == "shutdown":
+        await h.old.close(abort_active_round=False)
+        await h.core.output.shutdown()
+    else:
+        await h.old.close(abort_active_round=False)
+        assert await h.core.attach_output() is not None
     async with asyncio.timeout(1):
-        with pytest.raises(
-            interface_deep.RootPermissionQueueError, match="output_unavailable"
-        ):
-            await adapter._attach_and_send_inputs(
+        with pytest.raises(RootPermissionQueueError, match="output_unavailable"):
+            await h.adapter._attach_and_send_inputs(
                 _request("permission_interrupt"),
-                {interface_deep._ROOT_PERMISSION_ANSWER_KEY: answer},
+                await _reserve_smart(h),
                 send_without_output=True,
             )
-    assert len(core.sent) == 1
-    await old.close(abort_active_round=False)
+    assert h.queue.get(h.card.key).state == "pending"
+    assert not h.adapter._permission_dispatch.lock.locked()
+    assert len(h.core.sent) == 1
+    await h.core.output.shutdown()
+
+
 
 
 @pytest.mark.asyncio

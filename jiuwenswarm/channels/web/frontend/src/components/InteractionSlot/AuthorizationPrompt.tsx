@@ -6,7 +6,7 @@
  * 语义与选项值原样回传，不改任何后端行为。确认后不在对话中回显。
  *
  * 结构：标题行（后端 header，如「权限审批: write_file」）+ 动作按钮；
- * 下方正文用 markdown 渲染，收起时渲染首行、展开时渲染完整内容。
+ * Reviewer reasons use literal text; other permission bodies retain Markdown.
  * 动作按钮 hover 说明用 portal 挂到 body，避免被容器 overflow 截断。
  */
 
@@ -126,9 +126,15 @@ export function AuthorizationQuestionDetails({
             </div>
           )}
           <AutoReviewerDetails reviewer={question.reviewer_metadata} />
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-            {translatePermissionText(question.question, i18n.language)}
-          </ReactMarkdown>
+          {question.reviewer_metadata ? (
+            <div className="whitespace-pre-wrap break-words" data-testid="interaction-slot-auth-reason">
+              {translatePermissionText(question.question, i18n.language)}
+            </div>
+          ) : (
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {translatePermissionText(question.question, i18n.language)}
+            </ReactMarkdown>
+          )}
           {question.tool_payload !== undefined && (
             <details
               className="mt-3 rounded-lg border border-border bg-card p-3 text-xs"

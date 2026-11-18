@@ -699,7 +699,7 @@ class AutoReviewer:
             )
 
         reason_code = _sanitize_reason_code(payload["reason_code"])
-        reason_summary = _sanitize_reason_summary(payload["rationale"])
+        reason_summary = payload["rationale"]
         if (
             outcome == ReviewerOutcome.MANUAL
             and OPTIONAL_REVIEWER_FIELDS.intersection(payload)
@@ -713,10 +713,8 @@ class AutoReviewer:
             manual_reason_code = _sanitize_reason_code(
                 payload.get("manual_reason_code") or reason_code
             )
-            manual_reason_summary = _sanitize_reason_summary(
-                payload.get("manual_reason_summary") or reason_summary
-            )
-            user_review_hint = _sanitize_reason_summary(
+            manual_reason_summary = payload.get("manual_reason_summary") or reason_summary
+            user_review_hint = (
                 payload.get("user_review_hint")
                 or "Review the request manually before approving it."
             )

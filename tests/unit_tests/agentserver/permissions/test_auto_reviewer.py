@@ -1493,7 +1493,7 @@ async def test_auto_reviewer_applies_same_valid_response_to_independent_requests
     assert first_assessment.outcome == second_assessment.outcome == "allow_once"
 
 
-async def test_auto_reviewer_bounds_oversized_rationale(tmp_path: Path) -> None:
+async def test_auto_reviewer_preserves_oversized_rationale(tmp_path: Path) -> None:
     descriptor, candidate = _candidate(tmp_path)
     request = _build_request(
         candidate=candidate,
@@ -1507,8 +1507,49 @@ async def test_auto_reviewer_bounds_oversized_rationale(tmp_path: Path) -> None:
     assessment = await AutoReviewer(client=client).assess(request)
 
     assert assessment.outcome == ReviewerOutcome.ALLOW_ONCE
-    assert len(assessment.reason_summary) == AUTO_REVIEW_REASON_SUMMARY_LIMIT
-    assert assessment.reason_summary.endswith("...")
+    assert assessment.reason_summary == rationale
+
+
+@pytest.mark.parametrize("outcome", ["allow_once", "manual", "deny"])
+async def test_complete_reason_survives_assessment_and_metadata(tmp_path, outcome):
+    facts, candidate = _candidate(tmp_path)
+    request = _build_request(candidate=candidate, policy_reason="policy_ask")
+    rationale = (
+        "核对 /home/user/reports/报告.txt，保留后续说明。\n"
+        "Windows C:\\Users\\User\\report.txt；file://user:FAKE@fileserver/report。\n"
+        "token=FAKE_SECRET\n" + "完整理由。" * 400 + "末尾约束。"
+    )
+    hint = "检查 /home/user/reports/报告.txt\n再决定。token=FAKE_HINT"
+    manual = rationale + "\n必须先人工确认。"
+    client = StaticReviewerClient(_valid_response(
+        request,
+        outcome=outcome,
+        rationale=rationale,
+        extra={"manual_reason_summary": manual, "user_review_hint": hint}
+        if outcome == "manual" else None,
+    ))
+
+    assessment = await AutoReviewer(client=client).assess(request)
+    assert assessment.outcome == outcome
+    assert assessment.reason_summary == rationale
+    metadata = reviewer_metadata_module._reviewer_ui_metadata(
+        facts,
+        reason="reviewer_" + outcome,
+        metadata={
+            "decision_source": "auto_reviewer",
+            "final_reviewer_status": assessment.status,
+            "reviewer_reason_code": assessment.reason_code,
+            "reviewer_reason_summary": assessment.reason_summary,
+            "manual_reason_summary": assessment.manual_reason_summary,
+        },
+    )
+    assert metadata["evidence_summary"] == rationale
+    assert metadata["final_reviewer_status"] == assessment.status
+    if outcome == "manual":
+        assert metadata["manual_reason_summary"] == manual
+        assert assessment.user_review_hint == hint
+    else:
+        assert "manual_reason_summary" not in metadata
 
 
 async def test_auto_reviewer_rejects_forbidden_privilege_fields(tmp_path: Path) -> None:

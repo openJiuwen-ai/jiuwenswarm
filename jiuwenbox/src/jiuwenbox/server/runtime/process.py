@@ -54,7 +54,7 @@ from jiuwenbox.server.runtime.base import (
     RuntimeExecRequest,
     RuntimeFileOpResult,
 )
-from jiuwenbox.server.runtime.errors import BackgroundJobNotFoundError
+from jiuwenbox.server.runtime.errors import BackgroundJobNotFoundError, SandboxCreateError
 from jiuwenbox.server.workspace import SANDBOX_WORKSPACE
 from jiuwenbox.supervisor import cgroup as cgroup_module
 from jiuwenbox.supervisor import network as network_module
@@ -920,6 +920,7 @@ class ProcessRuntime(RuntimeAdapter):
         self._sandbox_host_firewall_rules: dict[str, list[tuple[int, int]]] = {}
         self._cgroup_handles: dict[str, cgroup_module.CgroupHandle] = {}
         self._warm_pool: Any | None = None
+        self._warm_pool_skip_reason = "pool was not started"
         self._mount_client: Any | None = None
         self._warm_commits: dict[str, int] = {}
         self._warm_logs: dict[str, Any] = {}
@@ -1229,6 +1230,18 @@ class ProcessRuntime(RuntimeAdapter):
         scripts, seccomp BPF, landlock payload) keep the per-call cost low.
         """
         config = BwrapConfig.from_policy(policy, list(command))
+        daemon_python = PYTHON_EXECUTABLE
+        if command == SANDBOX_DAEMON_COMMAND:
+            daemon_python = sys.executable
+            config.command[0] = daemon_python
+            # Parked slots start with system paths only. Bind the server's
+            # venv and standard library before starting the daemon.
+            for prefix in dict.fromkeys((sys.base_prefix, sys.prefix)):
+                if prefix != "/" and not any(
+                    source == target and Path(prefix).is_relative_to(target)
+                    for source, target in config.ro_binds
+                ):
+                    config.ro_binds.append((prefix, prefix))
         process_uid = config.uid
         process_gid = config.gid
         if sandbox_env:
@@ -1301,7 +1314,7 @@ class ProcessRuntime(RuntimeAdapter):
             # keep ``/run`` outside the Landlock allowlist so user code
             # cannot read the launcher / daemon scripts at runtime.
             config.command = [
-                PYTHON_EXECUTABLE,
+                daemon_python,
                 "-S",
                 "-u",
                 SANDBOX_LAUNCHER_PATH,
@@ -2276,14 +2289,27 @@ class ProcessRuntime(RuntimeAdapter):
 
     def start_warm_pool(self, template: SecurityPolicy) -> None:
         """Park sandboxes in the background. No-op when the pool size is 0."""
-        from jiuwenbox.server.runtime.warm_pool import WarmPool, warm_pool_size
+        from jiuwenbox.server.runtime.warm_pool import (
+            ENV_WARM_POOL,
+            WarmPool,
+            warm_pool_size,
+        )
 
+        if self._warm_pool is not None:
+            return
         size = warm_pool_size()
-        if size <= 0 or self._warm_pool is not None:
+        if size <= 0:
+            raw = os.environ.get(ENV_WARM_POOL, "")
+            self._warm_pool_skip_reason = f"disabled ({ENV_WARM_POOL}={raw.strip()!r})"
+            logger.info(
+                "Warm pool %s; sandbox create stays on the cold path",
+                self._warm_pool_skip_reason,
+            )
             return
         pool = WarmPool(self, template, size)
         self._warm_pool = pool
         pool.start()
+        self._warm_pool_skip_reason = ""
 
     def stop_warm_pool(self) -> None:
         pool = self._warm_pool
@@ -2349,6 +2375,20 @@ class ProcessRuntime(RuntimeAdapter):
         self._teardown_cgroup(slot_id)
         self._cleanup_sandbox_artifacts(slot_id, netns_name)
 
+    def attach_warm_pool(self, pool: Any) -> None:
+        """Install ``pool`` without parking real sandboxes. Tests use this."""
+        self._warm_pool = pool
+
+    async def claim_warm_sandbox(
+        self,
+        sandbox_id: str,
+        policy: SecurityPolicy,
+        policy_path: Path,
+        env: dict[str, str] | None = None,
+    ) -> int | None:
+        """Adopt a parked sandbox, or return None when create stays on the cold path."""
+        return await self._try_warm_adopt(sandbox_id, policy, policy_path, env)
+
     async def _try_warm_adopt(
         self,
         sandbox_id: str,
@@ -2358,12 +2398,28 @@ class ProcessRuntime(RuntimeAdapter):
     ) -> int | None:
         pool = self._warm_pool
         if pool is None:
+            logger.info(
+                "Warm pool not used for %s: %s",
+                sandbox_id,
+                self._warm_pool_skip_reason,
+            )
             return None
         matched, slot_id = pool.acquire(policy)
         if not matched:
+            reasons = pool.mismatch_reasons(policy)
+            logger.info(
+                "Warm pool not used for %s: policy incompatible: %s",
+                sandbox_id,
+                "; ".join(reasons) or "no differing field recorded",
+            )
             return None
         with perf_trace.span("pool.checkout", sandbox_id):
             if slot_id is None:
+                logger.info(
+                    "Warm pool not used for %s: no parked sandbox available (depth=%d)",
+                    sandbox_id,
+                    pool.depth,
+                )
                 return None
         try:
             return await asyncio.to_thread(
@@ -2636,9 +2692,8 @@ class ProcessRuntime(RuntimeAdapter):
                 _close_identity_map_pipes(
                     info_r, info_w, block_r, block_w, install=False,
                 )
-                raise RuntimeError(
-                    f"Failed to apply cgroup limits for warm slot {slot_id}: {exc}"
-                ) from exc
+                public_message = "Failed to apply Supervisor cgroup limits"
+                raise SandboxCreateError(public_message, diagnostic=str(exc)) from exc
             cgroup_procs_paths = [
                 str(group_dir / "cgroup.procs") for group_dir in cgroup_handle.paths
             ]
@@ -2877,10 +2932,8 @@ class ProcessRuntime(RuntimeAdapter):
                     info_r, info_w, block_r, block_w, install=False,
                 )
                 self._cleanup_sandbox_artifacts(sandbox_id, netns_name)
-                raise RuntimeError(
-                    f"Failed to apply cgroup limits for sandbox "
-                    f"{sandbox_id}: {exc}"
-                ) from exc
+                public_message = "Failed to apply Supervisor cgroup limits"
+                raise SandboxCreateError(public_message, diagnostic=str(exc)) from exc
             cgroup_procs_paths = [
                 str(group_dir / "cgroup.procs") for group_dir in cgroup_handle.paths
             ]
@@ -3075,7 +3128,10 @@ class ProcessRuntime(RuntimeAdapter):
                 f"{message} No stdout/stderr was captured before the "
                 f"daemon exited."
             )
-        raise RuntimeError(message)
+        public_message = f"Sandbox daemon exited during startup with code {proc.returncode}."
+        if proc.returncode == 126 and "landlock" in log_excerpt.lower():
+            public_message = "Sandbox daemon could not enforce the required Landlock policy."
+        raise SandboxCreateError(public_message, diagnostic=message)
 
     @staticmethod
     def _read_daemon_startup_log(startup_log_file: Any | None) -> str:

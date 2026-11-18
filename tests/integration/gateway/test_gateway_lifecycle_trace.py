@@ -18,7 +18,6 @@ from websockets.legacy.server import serve
 from jiuwenswarm.gateway import telemetry
 from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
 from jiuwenswarm.extensions.agentos.agentos_router.registry_client import RegistryClient, RegistryConfig
-from jiuwenswarm.extensions.yuanrong_frontend_client import YuanrongFrontendAgentClient
 
 
 def _setup_trace(monkeypatch, request_id="r", method="chat.send", connection_id="c"):
@@ -89,7 +88,7 @@ async def test_gateway_startup_sweep_tracing_is_configured_before_connect(monkey
         if enabled:
             runtime.provider.add_span_processor(SimpleSpanProcessor(exporter))
 
-    router._yuanrong = SimpleNamespace(connect=connect_frontend, delete_sandbox=AsyncMock())
+    router._backend = SimpleNamespace(connect=connect_frontend, delete_sandbox=AsyncMock())
 
     class Client:
         async def connect(self, uri):
@@ -114,7 +113,7 @@ async def test_gateway_startup_sweep_tracing_is_configured_before_connect(monkey
 
     assert telemetry._runtime is None
     router._registry.list_instances.assert_awaited_once_with(include_unhealthy=True)
-    router._yuanrong.delete_sandbox.assert_awaited_once_with("sandbox")
+    router._backend.delete_sandbox.assert_awaited_once_with("sandbox")
     assert [span.name for span in exporter.get_finished_spans()] == (["gw.agent.sweep"] if enabled else [])
 
 
@@ -128,72 +127,6 @@ def prep_tracing(monkeypatch):
         runtime.provider.shutdown()
 
 
-@pytest.mark.asyncio
-async def test_create_poll_and_registry_headers_reach_real_http_server(prep_tracing):
-    parent, exporter = prep_tracing
-    requests = []
-    poll_count = 0
-
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, format, *args):
-            pass
-
-        def respond(self):
-            nonlocal poll_count
-            size = int(self.headers.get("Content-Length", "0"))
-            body = json.loads(self.rfile.read(size)) if size else {}
-            requests.append((self.command, self.path, dict(self.headers), body))
-            if self.path == "/api/agent":
-                response = {"code": 200, "instance_id": "instance-one"}
-            elif self.path.startswith("/api/agent/"):
-                poll_count += 1
-                response = {"code": 200, "instance": {"status": "starting" if poll_count == 1 else "running"}}
-            elif "launch-spec" in self.path:
-                response = {"framework": "third", "framework_version": "v1"}
-            else:
-                response = {"service_id": "service-one", **body}
-            raw = json.dumps(response).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(raw)))
-            self.end_headers()
-            self.wfile.write(raw)
-
-        do_GET = respond
-        do_POST = respond
-        do_PATCH = respond
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    endpoint = f"http://127.0.0.1:{server.server_port}"
-    frontend = YuanrongFrontendAgentClient(frontend_endpoint=endpoint, function_version_urn="fn",
-                                           wait_running_interval_s=0)
-    registry = RegistryClient(RegistryConfig(endpoint=endpoint))
-    try:
-        await frontend.connect("")
-        with telemetry.bind_request_trace(parent):
-            sandbox = await frontend.create_sandbox(namespace="default", name="agent", workspace="/workspace",
-                runtime_spec={"runtime": "docker", "rootfs": {"imageurl": "runtime:latest"}})
-            assert sandbox.sandbox_id == "instance-one"
-            assert (await frontend.wait_until_running(sandbox.sandbox_id))["status"] == "running"
-            await registry.get_launch_spec("third")
-            await registry.register_instance(service_id="service-one", kind="agent", framework="third",
-                framework_version="v1", node="", address="", user="user", instance_id=sandbox.sandbox_id)
-            await registry.update_instance("service-one", node="node-one", address="10.0.0.1")
-        spans = [span for span in exporter.get_finished_spans() if span.name != "gw.frontend.wait_running"]
-        assert len(requests) == len(spans) == 6
-        for request, span in zip(requests, spans):
-            _check_trace_headers(request[2], span)
-            assert span.attributes["http.response.status_code"] == 200
-        assert requests[0][3]["name"] == "agent"
-        assert requests[-1][3]["address"] == "10.0.0.1"
-    finally:
-        await registry.close()
-        await frontend.disconnect()
-        server.shutdown()
-        server.server_close()
-        worker.join(timeout=2)
 
 
 @pytest.mark.asyncio
@@ -223,62 +156,3 @@ async def test_preparation_headers_reach_real_websocket_handshake(prep_tracing):
         await client.disconnect()
         server.close()
         await server.wait_closed()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("cas_mismatch", [False, True])
-async def test_delete_headers_and_cas_result_over_real_http(monkeypatch, cas_mismatch):
-    monkeypatch.setattr(telemetry, "_runtime", None)
-    monkeypatch.delenv("OTEL_ENABLED", raising=False)
-    monkeypatch.delenv("OTEL_TRACES_SAMPLER", raising=False)
-    runtime = telemetry.configure_gateway_telemetry({"telemetry": {"enabled": True, "exporter": "none"}})
-    exporter = InMemorySpanExporter()
-    runtime.provider.add_span_processor(SimpleSpanProcessor(exporter))
-    observed = []
-
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, format, *args):
-            pass
-
-        def do_DELETE(self):
-            observed.append((self.path, dict(self.headers)))
-            registry_call = self.path.startswith("/api/instances/")
-            status = 409 if registry_call and cas_mismatch else 200
-            body = {"deleted": not cas_mismatch} if registry_call else {"code": 200}
-            raw = json.dumps(body).encode()
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(raw)))
-            self.end_headers()
-            self.wfile.write(raw)
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    endpoint = f"http://127.0.0.1:{server.server_port}"
-    frontend = YuanrongFrontendAgentClient(frontend_endpoint=endpoint, function_version_urn="fn")
-    registry = RegistryClient(RegistryConfig(endpoint=endpoint))
-    try:
-        await frontend.connect("")
-        with telemetry.trace_operation("gw.agent.delete", root=True, attributes={"source": "explicit"}) as operation:
-            with telemetry.bind_cleanup_trace(operation):
-                assert await frontend.delete_sandbox("instance-one") is None
-                result = await registry.unregister_instance("service-one", expected_instance_id="instance-one")
-        assert result["deleted"] is (not cas_mismatch)
-        assert parse_qs(urlsplit(observed[1][0]).query) == {"instance_id": ["instance-one"]}
-        spans = [span for span in exporter.get_finished_spans() if span.name != "gw.agent.delete"]
-        assert [span.name for span in spans] == ["gw.frontend.delete", "registry.unregister"]
-        for (_, headers), span in zip(observed, spans):
-            _check_trace_headers(headers, span)
-            assert span.context.trace_id == operation.span.get_span_context().trace_id
-            assert span.parent.span_id == operation.span.get_span_context().span_id
-            assert span.attributes["http.request.method"] == "DELETE"
-        assert operation.span.attributes["cleanup.result"] == ("partial" if cas_mismatch else "success")
-        assert operation.outcome == ("incomplete" if cas_mismatch else "success")
-    finally:
-        await frontend.disconnect()
-        await registry.close()
-        server.shutdown()
-        server.server_close()
-        worker.join(timeout=2)
-        runtime.provider.shutdown()

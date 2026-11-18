@@ -82,6 +82,7 @@ def dump_agent_request(request: AgentRequest) -> dict[str, Any]:
         "agent_ref": _dump_agent_ref(request.agent_ref),
         "user_id": request.user_id,
         "trusted_session_message_route": request.trusted_session_message_route,
+        "traceparent": request.traceparent,
     }
 
 
@@ -108,6 +109,7 @@ def load_agent_request(payload: dict[str, Any]) -> AgentRequest:
         permission_context=permission,
         agent_ref=_load_agent_ref(payload.get("agent_ref")),
         user_id=str(payload.get("user_id") or ""),
+        traceparent=payload.get("traceparent"),
         trusted_session_message_route=(
             payload.get("trusted_session_message_route")
             if isinstance(payload.get("trusted_session_message_route"), dict)

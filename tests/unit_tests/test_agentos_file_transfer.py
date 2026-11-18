@@ -26,11 +26,10 @@ from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
     normalize_agent_file_download_path,
     normalize_agent_file_upload_path,
 )
-from jiuwenswarm.extensions.yuanrong_frontend_client import (
+from jiuwenswarm.extensions.agentos.agentos_router.backend import (
     AgentFileDownloadChunk,
     SandboxInfo,
-    YuanrongAgentFileError,
-    YuanrongFrontendAgentClient,
+    AgentFileError,
 )
 from jiuwenswarm.gateway.channel_manager.web import app_web_handlers
 from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
@@ -48,9 +47,9 @@ class _FakeRegistry:
         del service_id, kwargs
 
 
-class _FakeYuanrong:
+class _FakeControl:
     server_ready = True
-    frontend_endpoint = "http://yuanrong.test:8888"
+    ingress_url = "http://yuanrong.test:8888"
     agent_namespace = "default"
 
     def __init__(self) -> None:
@@ -205,7 +204,7 @@ class _FakeYuanrong:
 
 
 def _make_router_with_runtime(*, sandbox_id: str = "inst-1") -> AgentOSRouterClient:
-    yuanrong = _FakeYuanrong()
+    yuanrong = _FakeControl()
     manager = AgentManager(creating_timeout_seconds=1.0, key_fields=("user_id", "agent_type", "session_id"))
     router = AgentOSRouterClient(
         yuanrong,  # type: ignore[arg-type]
@@ -304,25 +303,16 @@ def test_normalize_agent_file_download_path_requires_absolute_under_home_agentos
     assert traversal.value.code == "BAD_REQUEST"
 
 
-def test_yuanrong_file_upload_http_error_maps_to_file_too_large() -> None:
-    client = YuanrongFrontendAgentClient(
-        frontend_endpoint="http://yuanrong.test:8888",
-        function_version_urn="urn:test:function:1",
-    )
-    with pytest.raises(YuanrongAgentFileError) as exc:
-        client._raise_agent_file_http_error(413, b'{"error":"payload too large"}')  # noqa: SLF001
-    assert exc.value.error_code == "file_too_large"
-    assert exc.value.http_status == 413
 
 
 @pytest.mark.asyncio
 async def test_router_upload_propagates_yuanrong_file_too_large() -> None:
     router = _make_router_with_runtime()
-    yuanrong: _FakeYuanrong = router._yuanrong  # type: ignore[assignment]
+    yuanrong: _FakeControl = router._backend  # type: ignore[assignment]
 
     async def _too_large(*args: Any, **kwargs: Any) -> dict[str, Any]:
         del args, kwargs
-        raise YuanrongAgentFileError(
+        raise AgentFileError(
             "payload too large",
             http_status=413,
             error_code="file_too_large",
@@ -342,7 +332,7 @@ async def test_router_upload_propagates_yuanrong_file_too_large() -> None:
 @pytest.mark.asyncio
 async def test_router_upload_container_file_resolves_instance_and_forwards_auth() -> None:
     router = _make_router_with_runtime()
-    yuanrong: _FakeYuanrong = router._yuanrong  # type: ignore[assignment]
+    yuanrong: _FakeControl = router._backend  # type: ignore[assignment]
 
     payload = await router.upload_container_file(
         user_id="user-1",
@@ -370,7 +360,7 @@ async def test_router_upload_container_file_resolves_instance_and_forwards_auth(
 @pytest.mark.asyncio
 async def test_router_download_container_file_returns_chunk_payload() -> None:
     router = _make_router_with_runtime()
-    yuanrong: _FakeYuanrong = router._yuanrong  # type: ignore[assignment]
+    yuanrong: _FakeControl = router._backend  # type: ignore[assignment]
 
     chunk = await router.download_container_file(
         user_id="user-1",
@@ -389,7 +379,7 @@ async def test_router_download_container_file_returns_chunk_payload() -> None:
 @pytest.mark.asyncio
 async def test_router_list_container_files_forwards_dir_and_auth() -> None:
     router = _make_router_with_runtime()
-    yuanrong: _FakeYuanrong = router._yuanrong  # type: ignore[assignment]
+    yuanrong: _FakeControl = router._backend  # type: ignore[assignment]
 
     items = await router.list_container_files(
         user_id="user-1",
@@ -425,7 +415,7 @@ async def test_router_list_container_files_forwards_dir_and_auth() -> None:
 @pytest.mark.asyncio
 async def test_router_mkdir_container_dir_forwards_path_mode_and_auth() -> None:
     router = _make_router_with_runtime()
-    yuanrong: _FakeYuanrong = router._yuanrong  # type: ignore[assignment]
+    yuanrong: _FakeControl = router._backend  # type: ignore[assignment]
 
     payload = await router.mkdir_container_dir(
         user_id="user-1",
@@ -461,7 +451,7 @@ async def test_router_mkdir_container_dir_forwards_path_mode_and_auth() -> None:
 @pytest.mark.asyncio
 async def test_router_mkdir_container_dir_idempotent_created_false() -> None:
     router = _make_router_with_runtime()
-    yuanrong: _FakeYuanrong = router._yuanrong  # type: ignore[assignment]
+    yuanrong: _FakeControl = router._backend  # type: ignore[assignment]
     yuanrong.mkdir_result = {
         "success": True,
         "path": "/home/agentos/sub",
@@ -483,7 +473,7 @@ async def test_router_third_party_upload_acquires_and_releases_runtime() -> None
     """Third-party path must acquire so idle reaper cannot reap mid-transfer."""
     router = _make_router_with_runtime()
     manager = router._agent_manager  # noqa: SLF001 - test helper
-    yuanrong: _FakeYuanrong = router._yuanrong  # type: ignore[assignment]
+    yuanrong: _FakeControl = router._backend  # type: ignore[assignment]
     key = next(iter(manager._runtimes))  # noqa: SLF001 - test helper
     seen_counts: list[int] = []
 
@@ -522,7 +512,7 @@ async def test_router_resolve_instance_missing_runtime_raises() -> None:
 
 @pytest.mark.asyncio
 async def test_router_jiuwenswarm_creates_sandbox_then_uploads(tmp_path) -> None:
-    yuanrong = _FakeYuanrong()
+    yuanrong = _FakeControl()
     workspace_root = tmp_path / "ws"
     (workspace_root / "user-1").mkdir(parents=True)
     router = AgentOSRouterClient(
@@ -552,7 +542,7 @@ async def test_router_jiuwenswarm_creates_sandbox_then_uploads(tmp_path) -> None
 
 @pytest.mark.asyncio
 async def test_router_jiuwenswarm_default_agent_type_creates_sandbox(tmp_path) -> None:
-    yuanrong = _FakeYuanrong()
+    yuanrong = _FakeControl()
     workspace_root = tmp_path / "ws"
     (workspace_root / "user-1").mkdir(parents=True)
     router = AgentOSRouterClient(
@@ -571,234 +561,22 @@ async def test_router_jiuwenswarm_default_agent_type_creates_sandbox(tmp_path) -
     assert yuanrong.create_calls == 1
 
 
-def test_yuanrong_parse_agent_file_upload_response_success() -> None:
-    client = YuanrongFrontendAgentClient(
-        frontend_endpoint="http://yuanrong.test:8888",
-        function_version_urn="urn:test:function:1",
-    )
-    client._connected = True  # noqa: SLF001 - test setup
-    parsed = client._parse_agent_file_upload_response(  # noqa: SLF001 - test helper
-        json.dumps({"success": True, "path": "/home/agentos/a.md", "size": 3}),
-        200,
-        "/home/agentos/a.md",
-        3,
-    )
-    assert parsed["success"] is True
-    assert parsed["size"] == 3
 
 
-def test_yuanrong_parse_content_range_total() -> None:
-    client = YuanrongFrontendAgentClient(
-        frontend_endpoint="http://yuanrong.test:8888",
-        function_version_urn="urn:test:function:1",
-    )
-    total = client._parse_content_range_total(  # noqa: SLF001 - test helper
-        "bytes 0-1023/2048",
-        fallback_size=1024,
-    )
-    assert total == 2048
-    unsatisfiable = client._parse_content_range_total(  # noqa: SLF001 - test helper
-        "bytes */10",
-        fallback_size=0,
-    )
-    assert unsatisfiable == 10
 
 
-def test_yuanrong_file_download_http_error_maps_to_file_not_found() -> None:
-    client = YuanrongFrontendAgentClient(
-        frontend_endpoint="http://yuanrong.test:8888",
-        function_version_urn="urn:test:function:1",
-    )
-    with pytest.raises(YuanrongAgentFileError) as exc:
-        client._raise_agent_file_http_error(404, b'{"error":"file not found"}')  # noqa: SLF001
-    assert exc.value.error_code == "file_not_found"
 
 
-@pytest.mark.parametrize(
-    ("body", "expected"),
-    [
-        (b"", "file_not_found"),
-        (b'{"error":"directory not found"}', "file_not_found"),
-        (b'{"error":"path not found"}', "file_not_found"),
-        (b'{"message":"no such file or directory"}', "file_not_found"),
-        (b'{"error":"instance not found"}', "instance_not_found"),
-        (b'{"error":"sandbox not found"}', "instance_not_found"),
-    ],
-)
-def test_yuanrong_file_http_404_classifies_path_vs_instance(body: bytes, expected: str) -> None:
-    client = YuanrongFrontendAgentClient(
-        frontend_endpoint="http://yuanrong.test:8888",
-        function_version_urn="urn:test:function:1",
-    )
-    with pytest.raises(YuanrongAgentFileError) as exc:
-        client._raise_agent_file_http_error(404, body)  # noqa: SLF001
-    assert exc.value.error_code == expected
-    assert exc.value.http_status == 404
 
 
-@pytest.mark.asyncio
-async def test_yuanrong_download_agent_file_reads_binary_with_range() -> None:
-    client = YuanrongFrontendAgentClient(
-        frontend_endpoint="http://yuanrong.test:8888",
-        function_version_urn="urn:test:function:1",
-    )
-    client._connected = True  # noqa: SLF001 - test setup
-
-    response = MagicMock()
-    response.status = 206
-    response.headers = {
-        "Content-Type": "application/pdf",
-        "Content-Range": "bytes 0-4/10",
-        "Content-Length": "5",
-    }
-    response.read.return_value = b"12345"
-    response.__enter__.return_value = response
-    response.__exit__.return_value = False
-
-    with patch("urllib.request.urlopen", return_value=response):
-        chunk = await client.download_agent_file(
-            "inst-1",
-            "/home/agentos/docs/report.pdf",
-            offset=0,
-            limit=5,
-        )
-
-    assert chunk.data == b"12345"
-    assert chunk.size == 10
-    assert chunk.eof is False
-    assert chunk.content_type == "application/pdf"
 
 
-@pytest.mark.asyncio
-async def test_yuanrong_download_agent_file_offset_past_eof_returns_empty_chunk() -> None:
-    client = YuanrongFrontendAgentClient(
-        frontend_endpoint="http://yuanrong.test:8888",
-        function_version_urn="urn:test:function:1",
-    )
-    client._connected = True  # noqa: SLF001 - test setup
-
-    def _raise_416(req, timeout=None):
-        del timeout
-        raise _http_error(
-            req.full_url,
-            416,
-            body=b'{"error":"Requested Range Not Satisfiable"}',
-            headers={"Content-Range": "bytes */10", "Content-Type": "application/json"},
-        )
-
-    with patch("urllib.request.urlopen", side_effect=_raise_416):
-        chunk = await client.download_agent_file(
-            "inst-1",
-            "/home/agentos/docs/report.pdf",
-            offset=10,
-            limit=5,
-        )
-
-    assert chunk.data == b""
-    assert chunk.chunk_size == 0
-    assert chunk.offset == 10
-    assert chunk.size == 10
-    assert chunk.eof is True
-    assert chunk.content_type == "application/octet-stream"
 
 
-@pytest.mark.asyncio
-async def test_yuanrong_download_agent_file_416_without_range_uses_offset() -> None:
-    client = YuanrongFrontendAgentClient(
-        frontend_endpoint="http://yuanrong.test:8888",
-        function_version_urn="urn:test:function:1",
-    )
-    client._connected = True  # noqa: SLF001 - test setup
-
-    def _raise_416(req, timeout=None):
-        del timeout
-        raise _http_error(req.full_url, 416, body=b"Requested Range Not Satisfiable")
-
-    with patch("urllib.request.urlopen", side_effect=_raise_416):
-        chunk = await client.download_agent_file(
-            "inst-1",
-            "/home/agentos/docs/report.pdf",
-            offset=1000,
-            limit=64,
-        )
-
-    assert chunk.data == b""
-    assert chunk.size == 1000
-    assert chunk.eof is True
 
 
-def test_yuanrong_parse_agent_file_list_response_array_and_wrapped() -> None:
-    client = YuanrongFrontendAgentClient(
-        frontend_endpoint="http://yuanrong.test:8888",
-        function_version_urn="urn:test:function:1",
-    )
-    array_body = json.dumps(
-        [
-            {
-                "name": "a.md",
-                "path": "/home/agentos/a.md",
-                "size": 1,
-                "is_directory": False,
-            }
-        ]
-    )
-    parsed = client._parse_agent_file_list_response(array_body, 200)  # noqa: SLF001
-    assert parsed[0]["name"] == "a.md"
-
-    wrapped = client._parse_agent_file_list_response(  # noqa: SLF001
-        json.dumps({"items": [{"name": "b.py", "path": "/home/agentos/b.py"}]}),
-        200,
-    )
-    assert wrapped[0]["name"] == "b.py"
-
-    with pytest.raises(YuanrongAgentFileError) as missing:
-        client._parse_agent_file_list_response('{"error":"file not found"}', 404)  # noqa: SLF001
-    assert missing.value.error_code == "file_not_found"
-    with pytest.raises(YuanrongAgentFileError) as dir_missing:
-        client._parse_agent_file_list_response('{"error":"directory not found"}', 404)  # noqa: SLF001
-    assert dir_missing.value.error_code == "file_not_found"
 
 
-@pytest.mark.asyncio
-async def test_yuanrong_list_agent_files_sends_query_params() -> None:
-    client = YuanrongFrontendAgentClient(
-        frontend_endpoint="http://yuanrong.test:8888",
-        function_version_urn="urn:test:function:1",
-    )
-    client._connected = True  # noqa: SLF001 - test setup
-
-    captured: dict[str, Any] = {}
-
-    def _fake_urlopen(req, timeout=None):
-        del timeout
-        captured["url"] = req.full_url
-        captured["method"] = req.get_method()
-        captured["authorization"] = dict(req.header_items()).get("Authorization")
-        response = MagicMock()
-        response.status = 200
-        response.read.return_value = json.dumps(
-            [{"name": "a.md", "path": "/home/agentos/a.md", "is_directory": False}]
-        ).encode()
-        response.__enter__.return_value = response
-        response.__exit__.return_value = False
-        return response
-
-    with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
-        items = await client.list_agent_files(
-            "inst-1",
-            "/home/agentos",
-            recursive=True,
-            max_depth=2,
-            auth_headers={"Authorization": "Bearer tok-list"},
-        )
-
-    assert items[0]["name"] == "a.md"
-    assert captured["method"] == "GET"
-    assert captured["authorization"] == "Bearer tok-list"
-    assert "/api/agent/inst-1/files/list?" in captured["url"]
-    assert "path=%2Fhome%2Fagentos" in captured["url"]
-    assert "recursive=true" in captured["url"]
-    assert "max_depth=2" in captured["url"]
 
 
 class _RecordingChannel:
@@ -1561,3 +1339,9 @@ async def test_container_file_http_mkdir() -> None:
     assert kwargs["user_id"] == "user-1"
     assert kwargs["session_id"] == "sess-1"
     assert "auth_headers" not in kwargs
+
+
+def test_normalize_upload_preserves_hidden_parent_directories() -> None:
+    for relative in (".jiuwenswarm/agent/sessions/s/uploads/a.txt", "docs./a.txt", "./.cache/a.txt"):
+        from pathlib import PurePosixPath
+        assert normalize_agent_file_upload_path(relative) == "/home/agentos/" + str(PurePosixPath(relative))

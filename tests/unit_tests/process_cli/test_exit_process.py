@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from jiuwenswarm.channels.process_cli.protocol import decode_jsonl
+from jiuwenswarm.channels.process_cli.protocol import OneShotRunResult, decode_jsonl
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKER = Path(__file__).parent / "fixtures" / "exit_worker.py"
@@ -171,3 +171,57 @@ async def test_parent_signal_during_execution_and_again_during_close(signum):
         assert b"EXIT_TEST:runtime-closed" in stderr
     finally:
         await dispose(process)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["normal", "answer", "empty_answer"])
+async def test_normal_process_exits_with_stdin_open_after_real_pipe_input(scenario):
+    process = await start(scenario)
+    answered = []
+    lines = []
+
+    async def read_stdout():
+        async for line in process.stdout:
+            lines.append(line)
+            record = json.loads(line)
+            if record.get("event_type") == "interaction.requested":
+                assert not answered
+                answered.append(record)
+                process.stdin.write((json.dumps({
+                    "schema_version": "0.1", "type": "answer",
+                    "request_id": record["request_id"], "session_id": record["session_id"],
+                    "interaction_id": record["payload"]["interaction_id"],
+                    "answers": [{"question": "Approve?", "selected_options": ["yes"]}],
+                }) + "\n").encode())
+                await process.stdin.drain()
+
+    stdout_task = asyncio.create_task(read_stdout())
+    stderr_task = asyncio.create_task(process.stderr.read())
+    try:
+        process.stdin.write(document(timeout_seconds=5))
+        await process.stdin.drain()
+        assert not process.stdin.is_closing()
+        # Closing stdin (including communicate()) would hide the exit regression.
+        async with asyncio.timeout(15):
+            await process.wait()
+            await stdout_task
+            stderr = await stderr_task
+        assert process.returncode == 0, stderr.decode()
+        records = decode_jsonl(b"".join(lines).decode())
+        results = [record for record in records if isinstance(record, OneShotRunResult)]
+        assert len(results) == 1 and records[-1] == results[0]
+        assert results[0].status == "completed" and results[0].exit_code == 0
+        assert {record.request_id for record in records} == {"exit-process"}
+        assert bool(answered) is (scenario != "normal")
+        assert b"EXIT_TEST:runtime-closed" in stderr
+        assert stderr.index(b"EXIT_TEST:stream-closed") < stderr.index(b"EXIT_TEST:runtime-closed")
+        if scenario == "empty_answer":
+            assert results[0].output is None
+            assert any(json.loads(line).get("payload", {}).get("content") == "" for line in lines)
+        elif scenario == "answer":
+            assert results[0].output == "answered once"
+    finally:
+        await dispose(process)
+        for task in (stdout_task, stderr_task):
+            task.cancel()
+        await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
