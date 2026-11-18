@@ -18,7 +18,7 @@ files:
   - jiuwenswarm/channels/web/frontend/src/features/settings/services/SettingsSourceProvider.tsx
 designs: [D-20261116-1104-duplex-tool-call-adapter]
 created: 2026-11-16
-updated: 2026-11-16
+updated: 2026-11-18
 ---
 
 # Duplex WebSocket 工具适配器实施与验证
@@ -121,3 +121,20 @@ PR SHA 源码已固定；使用现有 `Qwen3-Omni-30B-A3B-Instruct`，没有使�
 通过 pr-source-manifest.json 核对本地/远端 38 个变更源文件和依赖文件，仅归一化已知 CRLF/LF 传输差异。最终预约 976a7cfa 已释放，模型父进程及 3 个 GPU 子进程停止；未触碰其他用户预约。设计保持 active，待实际交付确认后按既有生命周期归档。
 
 PR #11838 建立后，develop 更新至 `a64caf423`；再次整合时仅自动生成索引冲突，通过同步工具重建，保留全部上游文档。runtime/tool_calls、video_duplex（含测试）及前端 src 与已验证候选逐文件相同；上游新增一项 Settings 测试，测试服务器重新运行设置面板为 69 passed。上游依赖变更涉及构建工具及 harmony extra，不改变本轮默认 Core/Gateway/E2A pin。737 项后端（含真实模型）证据对应前述 b6d82411b 集成候选，不声称在 a64caf423 上重新运行完整 E2E；新基线只补验受影响的设置测试。
+
+## 2026-11-18 上游 main E2E 复验
+
+用户要求在 #9909 合并后使用最新 main 重新验证。测试服务器隔离 vLLM-Omni checkout 从合并提交 `320cf50cfd30c463d5ed598d5cd08fc7eb2e37a1` 快转合并到本次 fetch 的 main `16ad661a496c6466b09e85860b4c8647bce0c7da`，工作树无受管文件修改。重新 editable 安装版本为 `0.33.0rc2.dev360+g16ad661a4`；vLLM 0.33.0、Torch 2.14.0+cu130、Transformers 5.19.0，模型仍为 Qwen3-Omni-30B-A3B-Instruct，沿用三 stage 测试部署配置及 CPFS 抽象 IPC 启动适配。
+
+JiuwenSwarm 候选为 `53774939acf274db2332d780f77ac77f0ad4d08c`，没有修改实现或测试；38 个源码/依赖文件的远端指纹与本地候选一致。只重跑现有 opt-in `test_vllm_omni_live.py`，设置 `VLLM_OMNI_E2E_URL` 和上述 main SHA 的 `VLLM_OMNI_E2E_REVISION`，执行 `python -m pytest jiuwenswarm/extensions/video_duplex/tests/backend/test_vllm_omni_live.py --no-cov -q`，各轮使用独立 basetemp。
+
+| 运行 | 结果 | 日志 |
+| --- | --- | --- |
+| 最新 main 首轮 | **1 passed，11.95 秒，零 skipped** | e2e-main-20261118.log |
+| 显式 workspace 缓存后独立重启复验 | **1 passed，11.49 秒，零 skipped** | e2e-main-workspace-20261118.log |
+
+两轮分别在独立模型进程中执行同一场景，不合计为两个不同用例，也不代表本次重新运行了此前 737 项全后端测试。首轮启动发现 FlashInfer 暖机默认使用家目录缓存；正式复验显式设置 FLASHINFER_WORKSPACE_BASE、FLASHINFER_AUTOTUNE_CACHE_DIR、XDG_CACHE_HOME、CUDA_CACHE_PATH、TORCH_HOME 和 NUMBA_CACHE_DIR 到任务工作区后重新启动，保留原 VLLM/TRITON/TorchInductor 工作区缓存设置，没有清理共享家目录缓存。
+
+独立读取正式复验的 TaskService SQLite、tool-executions.jsonl 和 e2e-evidence.json，确认任务 completed、外部执行一次、JPEG 已传至委托执行端、关联 output 接纳，以及模型回答 `The measured test value is 17 degrees.`；协议记录同时包含完整工具投影、音频完成及播放确认事件。证据位于任务目录 `pytest-main-workspace-20261118/test_real_duplex_model_execute0/`，独立核对摘要为 main-workspace-evidence-20261118.txt。原始日志及 SQLite 等仅存测试工作区和本地忽略/仓库外产物目录，不提交。
+
+两次 GPU 预约均使用 canhazgpu，只占用 GPU 0、1；正式复验后释放预约及模型父/子进程。没有发现本场景需要修复的适配器或上游协议问题。Core 外部执行仍为受控文件写入器，音频为 headless PCM 消费/ACK；不扩大为完整 Core/Gateway、真实 Core LLM、物理麦克风/扬声器、性能或跨平台验收。
