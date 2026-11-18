@@ -1361,6 +1361,16 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         base_type = (mime_type or "").split(";", 1)[0].strip().lower()
         self.send_header("X-Content-Type-Options", "nosniff")
         if base_type in self._DOCUMENT_MIME_TYPES:
+            # ``allow-scripts allow-popups`` keep HTML artifacts rendering and
+            # opening windows as before. The missing ``allow-same-origin`` is
+            # the actual protection: it forces an opaque origin, so the
+            # document cannot read application storage or cookies, touch the
+            # parent DOM, or navigate the top-level window. Never add
+            # ``allow-same-origin`` here; that would restore the same-origin
+            # script execution this header exists to stop. Keep this value
+            # aligned with ``HTML_PREVIEW_SANDBOX`` in the frontend. Types
+            # outside ``_DOCUMENT_MIME_TYPES`` (for example PDF) are rendered
+            # by a separate viewer origin and are intentionally not listed.
             self.send_header(
                 "Content-Security-Policy",
                 "sandbox allow-scripts allow-popups",
@@ -1402,6 +1412,12 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         host_hostname = host_hostname.lower().rstrip(".")
         if origin_hostname == host_hostname:
             return origin_port is None or host_port is None or origin_port == host_port
+        # Local Vite dev serves the SPA on a different port than this proxy, so
+        # loopback hostnames are treated as one origin regardless of port.
+        # This is a development convenience, not a security boundary: any other
+        # local web page can reach /ws through it. Shared deployments must keep
+        # the gateway allowlist (JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS) enabled,
+        # and a non-debug build should tighten this to an exact host:port match.
         return (
             origin_hostname in self._LOOPBACK_HOSTNAMES
             and host_hostname in self._LOOPBACK_HOSTNAMES
