@@ -10,6 +10,7 @@ import pytest
 
 from jiuwenswarm.common.config_panel.models_handlers import (
     build_probe_model_client_config,
+    resolve_model_config_obj_for_validate,
     resolve_persisted_mcc_for_validate,
     resolve_validate_endpoint_profile,
 )
@@ -89,6 +90,17 @@ class TestResolvePersistedMccForValidate:
         result = resolve_persisted_mcc_for_validate("gpt-4")
         result["custom_headers"]["X-Trace"] = "mutated"
         assert entries[0]["model_client_config"]["custom_headers"] == {"X-Trace": "1"}
+
+    def test_draft_output_limit_overrides_or_clears_persisted_value(self, mock_models):
+        entry = _entry("claude-test", {})
+        entry["model_config_obj"] = {"max_tokens": 4096, "reasoning_level": "high"}
+        mock_models([entry])
+
+        overridden = resolve_model_config_obj_for_validate("claude-test", {"max_tokens": 8192})
+        assert overridden["max_tokens"] == 8192
+
+        cleared = resolve_model_config_obj_for_validate("claude-test", {"max_tokens": None})
+        assert "max_tokens" not in cleared
 
     def test_first_matching_entry_wins_over_later_alias_match(self, mock_models):
         """First hit in ``models.defaults`` order wins (same lookup as

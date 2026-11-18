@@ -305,6 +305,10 @@ if ($DoSign) {
     Write-Host "Signing: skipped because no usable code-signing certificate was found; output is for local testing only" -ForegroundColor Yellow
 }
 
+# Inno Setup 编译器发现与 SHA-256 校验后的安装函数在共享模块
+# build-inno-setup.psm1，与 build-electron-exe.ps1 单一来源。
+Import-Module (Join-Path $PSScriptRoot "build-inno-setup.psm1") -Force
+
 # node/uv 运行时的解析与绑定函数在共享模块 build-runtimes.psm1，与
 # build-electron-exe.ps1 单一来源；契约测试 test_desktop_electron_contract.py 钉住两侧同步。
 Import-Module (Join-Path $PSScriptRoot "build-runtimes.psm1") -Force
@@ -368,6 +372,12 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # Verify the actual frozen runtime, not only the PyInstaller source configuration.
 $FrozenDir = Join-Path $ProjectRoot "dist\$BuildDistDirName"
 $FrozenExe = Join-Path $FrozenDir $BuildExecutableNameWindows
+$MemoryVerifier = Join-Path $ProjectRoot "scripts\verify_memory_bundle.py"
+uv run --no-sync python $MemoryVerifier --executable $FrozenExe
+if ($LASTEXITCODE -ne 0) {
+    throw "Frozen JiuwenMemory SDK and video tool verification failed. See verifier output above."
+}
+
 $A2UIVerifier = Join-Path $ProjectRoot "scripts\verify_a2ui_bundle.py"
 $VerifyProcess = Start-Process `
     -FilePath $FrozenExe `
@@ -439,6 +449,35 @@ if (Test-Truthy $BundleUv) {
     Write-Host "`n[3.6/4] Skipping bundled uv runtime (BUNDLE_UV=$BundleUv)" -ForegroundColor Yellow
 }
 
+# Resolve the compiler once the payload is final and before signing: Inno Setup 6
+# cannot pack paths longer than MAX_PATH and only reports that failure at the
+# very end of compression, so an unusable compiler must stop the build here.
+$Iscc = Resolve-InnoSetupCompiler
+if (-not $Iscc) {
+    Install-InnoSetup7
+    $Iscc = Resolve-InnoSetupCompiler
+    if (-not $Iscc) {
+        throw "ISCC.exe was not found after installing Inno Setup 7. Install Inno Setup 7 and rerun the build."
+    }
+}
+if (-not (Test-InnoSetup7OrNewer -IsccPath $Iscc)) {
+    $PayloadRoot = Get-InnoSetupSourceRoot -ProjectRoot $ProjectRoot -SourceDir $BuildDistDirName
+    $MaxPathViolation = Find-MaxPathViolation -SourceRoot $PayloadRoot
+    if ($null -ne $MaxPathViolation) {
+        throw (
+            "Inno Setup 6 cannot build this payload: $MaxPathViolation`n" +
+            "Install Inno Setup 7 (no MAX_PATH limit) or move the build tree " +
+            "to a shorter directory so every payload path stays within 260 chars."
+        )
+    }
+    Write-Host (
+        "Warning: Inno Setup 7 was not detected; continuing with Inno Setup 6. " +
+        "Inno Setup 6 cannot handle paths longer than MAX_PATH; all current " +
+        "payload paths are within 260 chars, but install Inno Setup 7 to stay safe."
+    ) -ForegroundColor Yellow
+}
+Write-Host "Using ISCC: $Iscc" -ForegroundColor Gray
+
 # Sign every PE payload only after all bundled runtimes are in place. Existing
 # valid vendor signatures are preserved; unsigned PE files receive our release
 # signature and timestamp before Inno Setup compresses them.
@@ -459,32 +498,6 @@ if (Test-Truthy $BundleNode) {
 
 # 4. Build installer (Inno Setup)
 Write-Host "`n[4/4] Building installer (Inno Setup)..." -ForegroundColor Yellow
-$IsccPaths = @(
-    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
-    "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
-    "C:\Program Files\Inno Setup 6\ISCC.exe"
-)
-$Iscc = $IsccPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-if (-not $Iscc) {
-    $Iscc = Get-Command iscc -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
-}
-if (-not $Iscc) {
-    Write-Host "Downloading Inno Setup 6..." -ForegroundColor Yellow
-    $InnoUrl = "https://jrsoftware.org/download.php/is.exe"
-    $InnoExe = "$env:TEMP\innosetup-6.7.1.exe"
-    Invoke-WebRequest -Uri $InnoUrl -OutFile $InnoExe -UseBasicParsing
-    Write-Host "Installing Inno Setup 6 (silent)..." -ForegroundColor Yellow
-    Start-Process `
-        -FilePath $InnoExe `
-        -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" `
-        -Wait `
-        -NoNewWindow
-    $Iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-    if (-not (Test-Path $Iscc)) {
-        Write-Host "ERROR: Inno Setup installation failed" -ForegroundColor Red
-        exit 1
-    }
-}
 $InnoDefines = @(
     "/DBuildDisplayName=$BuildDisplayName",
     "/DBuildVersion=$BuildVersion",

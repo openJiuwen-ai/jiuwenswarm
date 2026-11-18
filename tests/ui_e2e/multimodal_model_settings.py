@@ -278,22 +278,24 @@ async def verify(base_url: str, data_dir: Path, output: Path, browser_executable
             assert current["tools"]["video_gen"] == {"model_id": None, "enabled": False}
             record("generation deletion independently selects fallback or clears and disables each tool")
 
-            await page.get_by_test_id("settings-multimodal-add-btn").click()
-            await metadata("purpose").click()
-            await page.locator('[data-testid="ui-select-option"][data-variant="generation"]').click()
-            await capabilities(["video_gen"])
+            await nav("agent")
+            await toggle("video_gen").click()
+            await expect(metadata("purpose")).to_contain_text("多模态生成")
+            await expect(page.get_by_test_id("settings-multimodal-capabilities-select")).to_contain_text("视频生成")
             await page.get_by_test_id("settings-model-provider-select-trigger").click()
             await page.locator('[data-testid="settings-model-provider-select-option"][data-variant="custom_api:vllm-omni"]').click()
             await editor().locator('[data-variant="api_base"] input').fill("http://127.0.0.1:8000")
             await metadata("display_name").fill("vLLM Omni 本地")
             await shot("10-optional-generation-credentials.png")
-            await save(["video_gen"])
+            await save()
+            await expect(toggle("video_gen")).to_have_attribute("aria-checked", "true")
             current = state()
             omni = next(m for m in current["models"] if m["display_name"] == "vLLM Omni 本地")
             assert omni["connection"]["api_key"] == "" and omni["connection"]["model_name"] == ""
             assert current["tools"]["video_gen"] == {"model_id": omni["model_id"], "enabled": True}
-            record("vLLM Omni preserves optional key/model validation and automatically binds an unbound tool")
+            record("unchanged switch shortcut enables and binds the tool directly with optional vLLM Omni credentials")
 
+            await models()
             await edit_model(b_id)
             await capabilities(["vision", "audio", "video"])
             await editor().locator('[data-variant="api_base"] input').fill("https://updated.example.invalid/v1")

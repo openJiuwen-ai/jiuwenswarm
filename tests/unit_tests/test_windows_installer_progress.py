@@ -16,9 +16,21 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def _inno_setup_compiler() -> Path | None:
+    candidates = [
+        Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Inno Setup 7/ISCC.exe",
+        Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Inno Setup 7/ISCC.exe",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs/Inno Setup 7/ISCC.exe",
+        Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Inno Setup 6/ISCC.exe",
+        Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Inno Setup 6/ISCC.exe",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs/Inno Setup 6/ISCC.exe",
+    ]
+    return next((path for path in candidates if path.is_file()), None)
+
+
 def _run_edge_installer(tmp_path, monkeypatch, body, *, visible=False):
-    compiler = Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Inno Setup 6/ISCC.exe"
-    if not compiler.is_file():
+    compiler = _inno_setup_compiler()
+    if compiler is None:
         pytest.skip("Inno Setup is not installed")
     monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
     shutil.copyfile(ROOT / "scripts/windows-cli-preservation.iss", tmp_path / "windows-cli-preservation.iss")
@@ -62,7 +74,7 @@ end;
     return run, log.read_text(encoding="utf-8-sig")
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows and Inno Setup 6")
+@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows and Inno Setup")
 @pytest.mark.parametrize("detail", ["", "4 / 10 files"])
 def test_progress_writer_updates_status_with_optional_detail(tmp_path, monkeypatch, detail):
     source = (ROOT / "scripts/preserve-windows-cli.ps1").read_text(encoding="utf-8")
@@ -92,7 +104,7 @@ end;
     assert f"[report] status=CLI environment ready.; detail={detail}; end" in text
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows and Inno Setup 6")
+@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows and Inno Setup")
 def test_preparation_failure_after_preservation_restores_error_page_and_exit(tmp_path, monkeypatch):
     run, text = _run_edge_installer(tmp_path, monkeypatch, r'''
 function PrepareToInstall(var NeedsRestart: Boolean): String;
@@ -119,7 +131,7 @@ end;
         assert "AbortCliProgress;" in failure
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows and Inno Setup 6")
+@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows and Inno Setup")
 @pytest.mark.parametrize("cancel_download", [False, True])
 def test_prerequisite_download_keeps_common_gauge_and_cancel_button_visible(tmp_path, monkeypatch, cancel_download):
     payload = b"isolated prerequisite download\n" * 20000
@@ -207,11 +219,11 @@ end;
     assert "[after-prerequisite] start=400; same=1" in text
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows and Inno Setup 6")
+@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows and Inno Setup")
 @pytest.mark.parametrize("outcome", ["success", "exit-error", "missing-executable"])
 def test_installer_wait_tracks_process_exit_and_preserves_total_progress(tmp_path, monkeypatch, outcome):
-    compiler = Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Inno Setup 6/ISCC.exe"
-    if not compiler.is_file():
+    compiler = _inno_setup_compiler()
+    if compiler is None:
         pytest.skip("Inno Setup is not installed")
     monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
     shutil.copyfile(ROOT / "scripts/windows-cli-preservation.iss", tmp_path / "windows-cli-preservation.iss")
@@ -293,10 +305,10 @@ end;
         assert not values or values[-1] < 300
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows and Inno Setup 6")
+@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows and Inno Setup")
 def test_common_progress_window_survives_native_stage_transitions(tmp_path, monkeypatch):
-    compiler = Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Inno Setup 6/ISCC.exe"
-    if not compiler.is_file():
+    compiler = _inno_setup_compiler()
+    if compiler is None:
         pytest.skip("Inno Setup is not installed")
     monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
     # Observe actual native window handles/visibility/position, rather than

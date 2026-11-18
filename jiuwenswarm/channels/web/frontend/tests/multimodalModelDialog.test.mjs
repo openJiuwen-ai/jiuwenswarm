@@ -111,6 +111,7 @@ async function mountDialog(t, purpose, language, options = {}) {
         createElement(MultimodalSettingsFeedback),
         createElement(MultimodalModelDialog, {
           defaultCapability: options.add ? (purpose === 'generation' ? 'visual_gen' : 'vision') : undefined,
+          enableToolOnSave: options.enableToolOnSave,
           model: options.add ? undefined : {
             model_id: 'mm_test', display_name: options.displayName ?? 'Test model', purpose, capabilities: [],
             connection: {
@@ -478,6 +479,22 @@ function activationError(activationTools, affectedTools = []) {
     payload: { code: 'MM_CONFIRM_REQUIRED', affected_tools: affectedTools, activation_tools: activationTools },
   });
 }
+
+test('saving the original capability from a tool switch sends its activation with the model', async (t) => {
+  const state = await mountDialog(t, 'understanding', 'zh', {
+    add: true,
+    enableToolOnSave: true,
+    error: (attempt) => attempt === 1 && state.writes[0].tool_activation?.enabled !== true
+      ? activationError(['vision']) : null,
+  });
+  await fillConnection('understanding', 'switch');
+  await act(async () => saveButton('understanding').click());
+  assert.equal(state.writes.length, 1);
+  assert.deepEqual(state.writes[0].model.capabilities, ['vision']);
+  assert.deepEqual(state.writes[0].tool_activation, { tools: ['vision'], enabled: true });
+  assert.equal(document.querySelector('[data-testid="settings-multimodal-activation-tools"]'), null);
+  assert.equal(state.closed(), 1);
+});
 
 function confirmationButton(key) {
   const button = [...document.querySelectorAll('dialog[open] .settings-confirm-dialog__footer button')]
