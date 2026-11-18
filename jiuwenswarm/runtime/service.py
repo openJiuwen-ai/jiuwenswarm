@@ -2372,6 +2372,11 @@ class AgentRuntime:
                 if request.is_stream
                 else SessionWorkKind.CHAT_UNARY
             )
+        if work_kind is SessionWorkKind.SESSION_INPUT:
+            custom_answer = await self._free_text_as_custom_answer(request)
+            if custom_answer is not None:
+                request = custom_answer
+                work_kind = SessionWorkKind.CONTROL_INPUT
         if work_kind is not None:
             await self._ensure_session_registered(request)
             if work_kind is SessionWorkKind.CONTROL_INPUT:
@@ -3835,6 +3840,158 @@ class AgentRuntime:
             return False
         answers = params.get("answers")
         return isinstance(answers, list) and bool(answers)
+
+    @staticmethod
+    def _question_offers_other_option(question: object) -> bool:
+        """Whether an ask_user question documents free text via an ``other`` option."""
+        if not isinstance(question, dict):
+            return False
+        options = question.get("options")
+        if not isinstance(options, list):
+            return False
+        for option in options:
+            if not isinstance(option, dict):
+                continue
+            if str(option.get("label") or option.get("value") or "").strip().lower() == "other":
+                return True
+        return False
+
+    @staticmethod
+    def _question_is_text_answerable(question: object) -> bool:
+        """Whether a question accepts plain typed text as its answer.
+
+        Two shapes qualify: questions carrying the ``other`` option (free
+        text documented as legal) and questions with no button options at
+        all — ``_build_multi_questions`` never appends ``other`` there
+        because the front-end answers them in free-input mode, so text is
+        the only possible answer (#10451 review P2).
+        """
+        if not isinstance(question, dict):
+            return False
+        options = question.get("options")
+        if options is None:
+            return True
+        if isinstance(options, list) and not any(isinstance(option, dict) for option in options):
+            return True
+        return AgentRuntime._question_offers_other_option(question)
+
+    async def _free_text_as_custom_answer(self, request: AgentRequest) -> AgentRequest | None:
+        """Route plain text into a waiting ask_user question as its custom answer.
+
+        Issue #6792: while an interaction was open, plain channel text (a
+        Feishu reply, a web-sidebar note) was hard-rejected with
+        "session is waiting for an interaction answer; supplemental input
+        was not sent".  A question that carries the ``other`` option
+        documents free text as a legal answer, but the Feishu card has no
+        input box for it — replying with text was the only escape and it
+        was refused, stranding the waiting execution and its user.
+
+        Exactly one text-answerable ask_user question (it offers the
+        ``other`` option, or carries no button options at all) turns an
+        answer-less plain input into the custom ("other") answer — the
+        same ``custom_input`` wire payload a web client submits for free
+        text (``InlineQuestionCard.buildAnswers``).
+        Every other case keeps the previous behaviour: structured answers,
+        interrupt resumes, expected-execution steering, internal session
+        messages, media supplements, multi-question pauses and fixed-choice
+        (permission/confirm) interactions still never consume stray text.
+        """
+        params = request.params if isinstance(request.params, dict) else {}
+        if request.req_method not in (ReqMethod.CHAT_SEND, ReqMethod.CHAT_RESUME):
+            return None
+        # G.CTL.03 (static check, PR !10451): keep if conditions to three or
+        # fewer boolean terms; the keys that mark a non-free-text intake
+        # collapse into an any() sweep, same short-circuit order as before.
+        _non_text_keys = (
+            "answers",
+            "expected_execution_id",
+            "media_items",
+            "source",
+            SESSION_MESSAGE_INTERNAL_KEY,
+        )
+        if any(params.get(key) for key in _non_text_keys):
+            return None
+        text = str(params.get("content") or params.get("query") or "").strip()
+        if not text:
+            return None
+        # pylint: disable-next=import-outside-toplevel
+        from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+            is_interrupt_resume_payload,
+        )
+        if is_interrupt_resume_payload(params):
+            return None
+        session_id = request.session_id or "default"
+        if not self._session_coordinator.unanswered_interactions(session_id):
+            return None
+        try:
+            events = await self.pending_interactions(session_id)
+        except Exception:  # noqa: BLE001 - no reliable question picture -> keep rejection
+            logger.warning(
+                "[runtime] pending interaction lookup failed for session %s; keeping supplemental-input rejection",
+                session_id,
+            )
+            return None
+        candidates: list[tuple[str, str, str]] = []
+        for event in events or []:
+            if not isinstance(event, dict):
+                continue
+            # P2（atomgit 2026-11-18）：候选按 source 过滤——仅凭提问形态判定
+            # 时，权限/确认类提问（permission_interrupt/confirm_interrupt）在
+            # options 缺失或非 dict 形态下同样被判「文本可答」，随手输入的
+            # 文本会构成对危险操作的代答。自由文本只绑定 ask_user_interrupt
+            # 挂起提问（与转换后 payload 赋的 source 同源）；真实事件面的
+            # chat.ask_user_question 投影恒携 source，严格 allow-list 不误伤。
+            if str(event.get("source") or "").strip() != "ask_user_interrupt":
+                continue
+            questions = event.get("questions")
+            if not isinstance(questions, list) or len(questions) != 1:
+                continue
+            question = questions[0]
+            if not self._question_is_text_answerable(question):
+                continue
+            control_id = str(event.get("request_id") or "").strip()
+            if not control_id:
+                continue
+            candidates.append(
+                (
+                    control_id,
+                    str(question.get("question") or ""),
+                    str(event.get("interrupt_id") or "").strip(),
+                )
+            )
+        if len(candidates) != 1:
+            # Ambiguity never guesses: with two or more text-answerable
+            # questions the text must not silently bind to whichever
+            # event sorts first (#10451 review P2) — leave all waiting.
+            if len(candidates) > 1:
+                logger.info(
+                    "[runtime] %d text-answerable questions pending for session %s; text input left unreplied",
+                    len(candidates),
+                    session_id,
+                )
+            return None
+        control_id, question_text, interrupt_id = candidates[0]
+        new_params = dict(params)
+        new_params.update(
+            {
+                "content": "",
+                "query": "",
+                "request_id": control_id,
+                # Web free-text contract: empty selected_options plus
+                # custom_input routes through the backend ``elif
+                # custom_input`` branch, so the literal word "Other" can
+                # not be normalised away and sensitive-input masking keeps
+                # applying (#10451 review P2).
+                "answers": [
+                    {"question": question_text, "selected_options": [], "custom_input": text}
+                ],
+                "source": "ask_user_interrupt",
+                "supports_user_interaction": True,
+            }
+        )
+        if interrupt_id:
+            new_params["interrupt_id"] = interrupt_id
+        return replace(request, params=new_params)
 
     def _defer_stale_ask_user_to_chat(self, request: AgentRequest) -> bool:
         """Route a stale ask_user answer to a normal chat round.

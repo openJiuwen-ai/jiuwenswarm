@@ -612,7 +612,10 @@ class RuntimeSessionCoordinator:
         )
         if any(handle.waiting_control_ids for handle in active):
             raise SessionInputRejectedError(
+                # P3（atomgit 2026-11-18，issue #6792 第二期望）：向用户裸抛
+                # 英文内部串改为附中文指引；英文原句保留以兼容既有 match 断言。
                 "session is waiting for an interaction answer; supplemental input was not sent"
+                "（会话正在等待交互作答，补充输入未发送；请先回答待答问题）"
             )
         parents = []
         for handle in active:

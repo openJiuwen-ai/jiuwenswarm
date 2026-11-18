@@ -2,6 +2,7 @@
 """New Session inputs must neither wait for nor resume the current task."""
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -51,6 +52,8 @@ class GatedAgent:
         self.hold_input = False
         self.input_entered = asyncio.Event()
         self.input_cancelled = asyncio.Event()
+        self.control_entered = asyncio.Event()
+        self.control_params: list[dict] = []
         self.question = False
 
     async def execute_message(self, req):
@@ -92,6 +95,20 @@ class GatedAgent:
             payload={"event_type": "runtime.accepted", "request_id": req.request_id},
         )
 
+    async def deliver_control_input(self, req):
+        """控制通道投递（文本→自定义答案的 CONTROL_INPUT 流级路径）。
+
+        atomgit 2026-11-18 #201711504：夹具此前缺本方法，控制投递在
+        _stream_control_started 处抛 RuntimeError 被上游吞掉，流级用例恒绿。
+        """
+        assert get_current_runtime() is not None
+        self.control_entered.set()
+        self.control_params.append(dict(req.params or {}))
+        yield AgentResponseChunk(
+            request_id=req.request_id, channel_id=req.channel_id,
+            payload={"event_type": "runtime.accepted", "request_id": req.request_id},
+        )
+
 
 @pytest.fixture
 async def setup_runtime(monkeypatch):
@@ -100,6 +117,8 @@ async def setup_runtime(monkeypatch):
         cancel_all_inflight_work=AsyncMock(), cleanup=AsyncMock(),
         begin_foreground_chat=AsyncMock(), end_foreground_chat=AsyncMock(),
         get_agent_for_session_nowait=Mock(return_value=agent),
+        # _borrow_paused_agent 走 borrow_agent_nowait（atomgit #201711504）
+        borrow_agent_nowait=Mock(side_effect=lambda borrowed: borrowed),
     )
     plan = SimpleNamespace(
         active_sessions=set(),
@@ -372,3 +391,130 @@ async def test_invalid_execution_binding_is_rejected(setup_runtime, params):
         await collect(runtime.stream(request(**params)))
     assert not agent.delivered
     runtime._prepare_chat_turn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_free_text_converts_only_for_single_other_question(setup_runtime):
+    """#6792: 唯一文本可答题（带 Other 或无选项）才转自定义答案；歧义/固定项保持原判。"""
+    runtime, agent, _ = setup_runtime
+    agent.question = True
+    await collect(runtime.stream(request("original", input_mode=None)))
+    snapshot = runtime._session_coordinator.snapshot_session("input-session").executions[0]
+    assert snapshot.state is SessionExecutionState.WAITING_FOR_CONTROL
+
+    runtime.pending_interactions = AsyncMock(return_value=[{
+        "request_id": "question-1",
+        "interrupt_id": "int-1",
+        "source": "ask_user_interrupt",
+        "questions": [{"question": "选个颜色",
+                       "options": [{"label": "Other", "description": "Custom input"}]}],
+    }])
+    converted = await runtime._free_text_as_custom_answer(request("text-reply"))
+    assert converted is not None
+    assert converted.params["source"] == "ask_user_interrupt"
+    assert converted.params["request_id"] == "question-1"
+    assert converted.params["interrupt_id"] == "int-1"
+    assert converted.params["answers"] == [
+        {"question": "选个颜色", "selected_options": [], "custom_input": "text-reply"}
+    ]
+
+    runtime.pending_interactions = AsyncMock(return_value=[{
+        "request_id": "question-1",
+        "source": "ask_user_interrupt",
+        "questions": [{"question": "固定项", "options": [{"label": "A", "value": "a"}]}],
+    }])
+    assert await runtime._free_text_as_custom_answer(request("text-reply")) is None
+
+    # 无按钮选项的开放提问：文本即唯一答案（#10451 检视 P2）
+    runtime.pending_interactions = AsyncMock(return_value=[{
+        "request_id": "question-1",
+        "source": "ask_user_interrupt",
+        "questions": [{"question": "给出目标路径", "options": []}],
+    }])
+    converted = await runtime._free_text_as_custom_answer(request("/data/target"))
+    assert converted is not None
+    assert converted.params["answers"] == [
+        {"question": "给出目标路径", "selected_options": [], "custom_input": "/data/target"}
+    ]
+
+    # 多个可答题并存：不猜第一个，保持全量等待（#10451 检视 P2）
+    runtime.pending_interactions = AsyncMock(return_value=[
+        {"request_id": "q-1", "source": "ask_user_interrupt",
+         "questions": [{"question": "A", "options": [{"label": "Other"}]}]},
+        {"request_id": "q-2", "source": "ask_user_interrupt",
+         "questions": [{"question": "B", "options": [{"label": "Other"}]}]},
+    ])
+    assert await runtime._free_text_as_custom_answer(request("text-reply")) is None
+
+    runtime.pending_interactions = AsyncMock(return_value=[{
+        "request_id": "question-1",
+        "source": "ask_user_interrupt",
+        "questions": [
+            {"question": "一", "options": [{"label": "Other"}]},
+            {"question": "二", "options": [{"label": "Other"}]},
+        ],
+    }])
+    assert await runtime._free_text_as_custom_answer(request("text-reply")) is None
+
+    runtime.pending_interactions = AsyncMock(return_value=[])
+    assert await runtime._free_text_as_custom_answer(request("text-reply")) is None
+
+    runtime.pending_interactions = AsyncMock(return_value=[{
+        "request_id": "question-1",
+        "source": "ask_user_interrupt",
+        "questions": [{"question": "选个颜色", "options": [{"label": "Other"}]}],
+    }])
+    assert await runtime._free_text_as_custom_answer(
+        request("text-reply", expected_execution_id=snapshot.execution_id)) is None
+    assert await runtime._free_text_as_custom_answer(
+        request("text-reply", query="", content="随手补充")) is not None
+
+
+@pytest.mark.asyncio
+async def test_permission_questions_never_consume_free_text(setup_runtime):
+    """P2 回归（atomgit 2026-11-18）：source 非 ask_user_interrupt 的提问不得被
+    自由文本绑定。权限/确认提问在 options 缺失或非 dict 形态下按纯形态判定
+    也会被误判「文本可答」，随手输入的文本即构成危险操作代答。
+    修复前：converted is not None＝红。"""
+    runtime, agent, _ = setup_runtime
+    agent.question = True
+    await collect(runtime.stream(request("original", input_mode=None)))
+    for bad_source in ("permission_interrupt", "confirm_interrupt", ""):
+        runtime.pending_interactions = AsyncMock(return_value=[{
+            "request_id": "perm-1",
+            "source": bad_source,
+            "questions": [{"question": "确认执行危险命令？", "options": []}],
+        }])
+        assert await runtime._free_text_as_custom_answer(request("确认")) is None, bad_source
+
+
+@pytest.mark.asyncio
+async def test_stream_routes_converted_text_into_control_channel(setup_runtime):
+    """#10451 检视 P3：流级覆盖 SESSION_INPUT → CONTROL_INPUT 路由改写。"""
+    runtime, agent, _ = setup_runtime
+    agent.question = True
+    await collect(runtime.stream(request("original", input_mode=None)))
+    assert runtime._session_coordinator.unanswered_interactions("input-session")
+    runtime.pending_interactions = AsyncMock(return_value=[{
+        "request_id": "question-1",
+        "source": "ask_user_interrupt",
+        "questions": [{"question": "选个颜色", "options": [{"label": "Other"}]}],
+    }])
+    # input_mode 必须取会话输入语义（生产补充输入同形）；None 会分类为
+    # CHAT_STREAM 新回合，转换路径根本不进入——原用例 input_mode=None 即
+    # atomgit #201711504 点名的假绿根因（仅查错误串不出现恒真）。
+    events = await collect(runtime.stream(request("text-reply")))
+    rendered = json.dumps(events, ensure_ascii=False, default=str)
+    assert "supplemental input was not sent" not in rendered
+    # 强化断言（atomgit 2026-11-18 #201711504）：控制通道必须真实收到转换后的
+    # 答案载荷，而非仅检查旧错误串不出现（夹具缺 deliver_control_input 时
+    # 投递被吞、断言恒绿的假绿形态）。
+    assert agent.control_entered.is_set(), "控制通道投递未发生（此前绿为假绿）"
+    assert agent.control_params, "deliver_control_input 未收到请求"
+    delivered = agent.control_params[-1]
+    assert delivered["source"] == "ask_user_interrupt"
+    assert delivered["request_id"] == "question-1"
+    assert delivered["answers"] == [
+        {"question": "选个颜色", "selected_options": [], "custom_input": "text-reply"}
+    ]
+    assert not agent.input_entered.is_set()  # 文本不得再进会话输入通道
