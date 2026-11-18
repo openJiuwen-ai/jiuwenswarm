@@ -65,7 +65,7 @@
     "dev": "vite",
     "test:web-build-base": "node --test tests/webBuildBase.test.mjs",
     "build": "tsc && vite build",
-    "test:session-assets": "esbuild src/features/sessionAssets/assetReferences.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/session-assets/assetReferences.mjs && node --test tests/sessionAssetReferences.test.mjs",
+    "test:session-assets": "esbuild src/features/sessionAssets/assetReferences.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/session-assets/assetReferences.mjs && node --test tests/sessionAssetReferences.test.mjs tests/mediaRenderer.test.mjs",
     "test:task-asr": "node --test tests/taskAsr.test.mjs tests/taskAsrRecording.test.mjs",
     "test:joyai-workflow": "node --test ../../../extensions/video_duplex/tests/frontend/joyaiVoice.test.mjs ../../../extensions/video_duplex/tests/frontend/joyaiProvider.test.mjs",
     "test:task-full-duplex": "node --test tests/taskFullDuplex.test.mjs tests/taskDuplexLifecycle.test.mjs tests/applicationTaskControls.test.mjs tests/voiceTaskPanel.test.mjs tests/designerDuplex.test.mjs tests/designerConversation.test.mjs",
