@@ -409,6 +409,51 @@ def test_inline_proxy_treats_missing_content_type_as_document(
     )
 
 
+def test_proxy_sandboxes_document_without_inline_flag_or_disposition(
+    tmp_path,
+    fake_agent_server,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing disposition renders inline even when the client asked to save."""
+    file_path = tmp_path / "report.html"
+    file_path.write_text("<script>alert(1)</script>", encoding="utf-8")
+    handler = _serve_file(
+        monkeypatch,
+        fake_agent_server,
+        file_path,
+        {"token": "signed-token"},
+        omit_headers=("Content-Disposition",),
+    )
+
+    assert handler.status == 200
+    assert handler.response_headers["Content-Type"] == "text/html"
+    assert handler.response_headers["X-Content-Type-Options"] == "nosniff"
+    assert handler.response_headers["Content-Security-Policy"] == (
+        "sandbox allow-scripts allow-popups"
+    )
+
+
+def test_proxy_leaves_attachment_downloads_without_sandbox_csp(
+    tmp_path,
+    fake_agent_server,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit attachment response is saved, so it needs no sandbox."""
+    file_path = tmp_path / "report.html"
+    file_path.write_text("<script>alert(1)</script>", encoding="utf-8")
+    handler = _serve_file(
+        monkeypatch,
+        fake_agent_server,
+        file_path,
+        {"token": "signed-token"},
+    )
+
+    assert handler.status == 200
+    assert "attachment" in handler.response_headers["Content-Disposition"]
+    assert handler.response_headers["X-Content-Type-Options"] == "nosniff"
+    assert "Content-Security-Policy" not in handler.response_headers
+
+
 @pytest.mark.parametrize(
     ("range_header", "expected_body", "expected_content_range"),
     [

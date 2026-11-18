@@ -2270,14 +2270,15 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 # The frontend requests ``inline=1`` so the desktop browser can
                 # render HTML/Markdown instead of saving it. An inline document
                 # from upstream needs the same hardening as the local paths,
-                # otherwise its script would run in this origin. The request
-                # flag is authoritative: a legacy upstream may omit the header
-                # and the browser would still render the body inline. A missing
-                # Content-Type is treated as a document because ``nosniff`` does
-                # not prevent sniffing for top-level navigations.
+                # otherwise its script would run in this origin. Only an
+                # explicit ``attachment`` disposition makes the browser save the
+                # body; a missing header still renders inline, so every other
+                # response is treated as a document. A missing Content-Type is
+                # hardened too because ``nosniff`` does not prevent sniffing for
+                # top-level navigations.
                 content_type = str(upstream.headers.get("Content-Type") or "")
                 disposition = str(upstream.headers.get("Content-Disposition") or "")
-                inline_document = inline or "inline" in disposition.lower()
+                inline_document = inline or "attachment" not in disposition.lower()
                 self._apply_raw_file_security_headers(
                     (content_type or "text/html") if inline_document else ""
                 )
