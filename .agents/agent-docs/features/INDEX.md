@@ -194,6 +194,7 @@ generated: true
 | [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 | [F_20261110_2026_affinity-settings](F_20261110_2026_affinity-settings.md) | F | 实验功能算力亲和开关与自定义模型能力接入 | MengHan18 | 无独立 D：外部初始方案为 docs_HM_kvc/E前端开关打开/01 和 02；全局准入和交互按用户确认的 04 小白版文档替代，无仓库内 D 标识。 |
 | [F_20261111_1528_unified-observability-config](F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
+| [F_20261117_1720_fetch-docs-tool](F_20261117_1720_fetch-docs-tool.md) | F | 新增技术文档抓取与本地缓存工具 (fetch_docs) | zhuxiangju | 无独立 D：新增 fetch_docs 工具实现技术文档抓取、提纯与缓存，无独立前置设计文档。 |
 
 <a id="module-jiuwenswarm-common-config_panel"></a>
 

@@ -106,6 +106,10 @@ BUILTIN_TOOL_DISCOVERY: dict[str, ToolDiscoveryMetadata] = {
     "session_new": _entry("Start asynchronous subagent sessions for a list of tasks.", "创建 启动 子智能体 子任务 会话"),
     "session_cancel": _entry("Cancel a running subagent session.", "取消 停止 子智能体 子任务 会话"),
     "send_file_to_user": _entry("Deliver a generated file or report to the user.", "发送 交付 文件 报告 给用户"),
+    "fetch_docs": _entry(
+        "Crawl and cache technical documentation pages as Markdown with optional local query.",
+        "抓取 文档 技术文档 文档站 缓存 Markdown API 参考",
+    ),
     "create_alarm": _entry("Create an alarm on the user's phone.", "创建 手机闹钟 提醒"),
     "search_alarms": _entry("Search alarms on the user's phone.", "搜索 查找 手机闹钟"),
     "modify_alarm": _entry("Modify an alarm on the user's phone.", "修改 手机闹钟"),

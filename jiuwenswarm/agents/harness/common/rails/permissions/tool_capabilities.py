@@ -90,6 +90,7 @@ _SUBAGENT_RUNTIME_CONTROL_TOOLS = {
     "subagent_spawn",
     "subagent_wait",
 }
+_PUBLIC_WEB_READ_TOOLS.add("fetch_docs")
 _HOST_TODO_TOOLS = {
     "todo_create",
     "todo_list",
