@@ -58,6 +58,7 @@ generated: true
 | [tests](#module-tests) |
 | [tests/fixtures/ttse_plugin](#module-tests-fixtures-ttse_plugin) |
 | [tests/unit_tests/agentserver](#module-tests-unit_tests-agentserver) |
+| [tests/unit_tests/common](#module-tests-unit_tests-common) |
 | [tests/unit_tests/gateway](#module-tests-unit_tests-gateway) |
 | [tests/unit_tests/personal_context](#module-tests-unit_tests-personal_context) |
 | [tests/unit_tests/server](#module-tests-unit_tests-server) |
@@ -128,6 +129,7 @@ generated: true
 | [B_20261030_2020_pause-refires-consumed-popups](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261030_2020_pause-refires-consumed-popups.md) | B | 暂停/取消后已消费的 human 弹窗被重放层重投 | xiajing | 无独立 D：重放层过滤由主干既有机制承载，本修复补触发层清场与消费层去重两段。 |
 | [B_20261031_0946_ttse-codecheck-boundaries](bugfix/jiuwenswarm/B_20261031_0946_ttse-codecheck-boundaries.md) | B | TTSE 相关 CodeCheck 受保护访问与关闭条件复杂度修复 | xinyang_bali | 无独立 D：按用户提供的 20 项 CodeCheck 清单修复实现边界，沿用当前 TTSE 通用运行契约，无独立 D。 |
 | [B_20261031_1053_atomgit-review](bugfix/jiuwenswarm/server/B_20261031_1053_atomgit-review.md) | B | PR 9317 AtomGit 取消、补丁兼容与注销恢复修复 | xinyang_bali | 无独立 D：根据机器人检视修复现有资源生命周期和可选补丁边界，不引入独立方案。 |
+| [B_20261118_1127_tui-env-atomic-write](bugfix/jiuwenswarm/common/config_panel/B_20261118_1127_tui-env-atomic-write.md) | B | TUI 配置保存写回 .env 非原子且静默失败 | taozhenyu | 无独立 D：对齐上游 Web 路径既有原子写契约的小范围修复，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-agents-harness"></a>
 
@@ -328,6 +330,7 @@ generated: true
 | [F_20261103_1124_sdk-web-retrieval](features/F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 | [F_20261110_1438_opencode-go-provider](features/F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 | [B_20261117_1727_model-output-token-limit](bugfix/jiuwenswarm/channels/web/frontend/B_20261117_1727_model-output-token-limit.md) | B | 模型单次最大输出配置修复 | lizhiyuan | 无独立 D：用户在本轮会话确认的模型设置范围调整，未形成独立设计文档。 |
+| [B_20261118_1127_tui-env-atomic-write](bugfix/jiuwenswarm/common/config_panel/B_20261118_1127_tui-env-atomic-write.md) | B | TUI 配置保存写回 .env 非原子且静默失败 | taozhenyu | 无独立 D：对齐上游 Web 路径既有原子写契约的小范围修复，无独立设计文档。 |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
 <a id="module-jiuwenswarm-extensions-sdk"></a>
@@ -496,6 +499,14 @@ generated: true
 | [B_20261031_1048_ttse-core-dependent-ut](bugfix/tests/unit_tests/agentserver/B_20261031_1048_ttse-core-dependent-ut.md) | B | 暂时移除依赖未合入 core 工厂能力的插件 UT | xinyang_bali | 无独立 D：用户明确要求暂时删除依赖 core 的相关 UT，不调整依赖或运行实现，无独立 D。 |
 | [B_20261116_1701_my-plugin-installed-only](bugfix/jiuwenswarm/server/runtime/B_20261116_1701_my-plugin-installed-only.md) | B | 未安装插件草稿混入我的扩展并显示安装按钮 | lizhiyuan | 无独立 D：用户在本次对话明确确认插件列表归属及按钮策略，属于现有市场行为的小范围修复，无独立设计文档。 |
 | [B_20261117_1050_adapter-ut-fixtures](bugfix/tests/unit_tests/agentserver/B_20261117_1050_adapter-ut-fixtures.md) | B | 图片降级提示与付费搜索 UT 的测试替身和断言漂移 | TwZhang | 无独立 D：根据用户提供的 UT 报告修正测试替身及副作用断言，无独立设计。 |
+
+<a id="module-tests-unit_tests-common"></a>
+
+## tests/unit_tests/common
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261118_1127_tui-env-atomic-write](bugfix/jiuwenswarm/common/config_panel/B_20261118_1127_tui-env-atomic-write.md) | B | TUI 配置保存写回 .env 非原子且静默失败 | taozhenyu | 无独立 D：对齐上游 Web 路径既有原子写契约的小范围修复，无独立设计文档。 |
 
 <a id="module-tests-unit_tests-gateway"></a>
 
