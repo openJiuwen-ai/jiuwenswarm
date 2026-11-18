@@ -185,6 +185,7 @@ generated: true
 |---|---|---|---|---|
 | [B_20261112_1716_affinity-status-read](jiuwenswarm/server/control/B_20261112_1716_affinity-status-read.md) | B | 控制面遗漏亲和状态导致开关与说明不一致 | MengHan18 | 无独立 D：修复 F_20261110_2026_affinity-settings 的读入口遗漏及用户反馈的开启交互。 |
 | [B_20261112_2025_permission-profile-refresh](jiuwenswarm/server/B_20261112_2025_permission-profile-refresh.md) | B | 刷新后智能审批档位错误回显为默认权限 | nypdmax | 无独立 D：补齐既有 config.get/config.set 权限档位回显契约，无独立设计；审批决策与持久化格式不变。 |
+| [B_20261118_1607_issue6809-source-free-exception-logging](jiuwenswarm/common/B_20261118_1607_issue6809-source-free-exception-logging.md) | B | Issue 6809 异常日志脱敏同步源码读取修复 | 刘瑜 | 无独立 D：针对现有源头脱敏与 Worker 日志隔离契约的小范围缺陷修复，无独立设计。 |
 
 <a id="module-jiuwenswarm-server"></a>
 
