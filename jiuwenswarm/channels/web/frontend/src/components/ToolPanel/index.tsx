@@ -21,6 +21,7 @@ import { mergeTaskTimeline } from '../teamArea/groupChatTimeline';
 import { mergeEnterpriseTeamTasks } from '../../stores/teamSliceApply';
 import { TaskPlanningPanel } from '../teamArea/TaskPlanningPanel';
 import { TeamMembersPanel } from '../teamArea/TeamMembersPanel';
+import { TEAM_PANEL_MIN_WIDTH_PX } from '../teamArea/teamPanelLayout';
 import { CompactTaskList } from '../teamArea/CompactTaskList';
 import { RunGroupHeader } from '../teamArea/RunGroupHeader';
 import { groupByWorkflowRun } from '../teamArea/runGrouping';
@@ -516,6 +517,7 @@ export function ToolPanel({
       <div
         data-testid={testId}
         className="bg-panel h-full overflow-hidden flex flex-1 flex-col min-w-[320px]"
+        style={isTeam ? { minWidth: TEAM_PANEL_MIN_WIDTH_PX } : undefined}
       >
         <div className="h-full bg-panel flex flex-col overflow-hidden">
           <ExpandedPanel
