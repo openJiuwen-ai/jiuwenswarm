@@ -76,6 +76,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import json
 import logging
 import os
 from contextlib import contextmanager
@@ -977,9 +978,6 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         指纹变化 = 已生效的合法配置变更，audit 据此重置静态 hash 基线；verify_only /
         fail_closed 不影响提示词正文，不纳入。语言由 audit rail 拼入指纹（热重载改语言同触发）。
         """
-        import hashlib
-        import json
-
         composer = self._read_composer_config()
         section_order = self._flash_config("section_order", {})
         payload = {
