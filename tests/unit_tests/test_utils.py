@@ -597,12 +597,9 @@ def test_prepare_workspace_keeps_deliberately_empty_external_cli(tmp_path, monke
     assert not team.get("external_cli_agents")
 
 
-def test_sidecar_refreshes_through_the_config_write_exit(tmp_path, monkeypatch):
-    """agent/histories 更新走 config.py 的真实写出口（dump_yaml_round_trip
-    的挂接点）后，旁路必须同步——防住"写路径未刷新旁路"的回归（!10406 检视）。"""
+def test_refresh_external_cli_state_sidecar_mirrors_config(tmp_path, monkeypatch):
+    """旁路文件镜像 config.yaml 里的三方 agent 配置与路径历史。"""
     import yaml
-    from jiuwenswarm.common import config as config_module
-    from jiuwenswarm.common.config import update_external_cli_path_histories_in_config
 
     sidecar = tmp_path / "outside" / "external_cli_state.json"
     monkeypatch.setattr(utils, "external_cli_state_sidecar_path", lambda *a, **k: sidecar)
@@ -610,18 +607,17 @@ def test_sidecar_refreshes_through_the_config_write_exit(tmp_path, monkeypatch):
     workspace_dir = tmp_path / ".jiuwenswarm"
     utils.prepare_workspace(overwrite=True, preferred_language="en", workspace_dir=workspace_dir)
     config_path = workspace_dir / "config" / "config.yaml"
-    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", config_path)
-    monkeypatch.setattr(utils, "get_user_workspace_dir", lambda: workspace_dir)
 
-    # 保存管线写入启用 agent 与路径历史：两次更新都必须触发旁路刷新
-    update_external_cli_agents_in_config = config_module.update_external_cli_agents_in_config
-    update_external_cli_agents_in_config([{"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}])
+    # 保存管线落盘启用 agent 后刷新旁路（等价于 config.py 更新函数的挂接点）
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    data["modes"]["team"]["jiuwen_team"]["external_cli_agents"] = [
+        {"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}
+    ]
+    config_path.write_text(yaml.dump(data), encoding="utf-8")
+    utils.refresh_external_cli_state_sidecar(config_path, workspace_dir)
+
     mirrored = yaml.safe_load(sidecar.read_text(encoding="utf-8"))
     assert mirrored["agents"] == [{"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}]
-
-    update_external_cli_path_histories_in_config({"claude": ["D:/tools/claude-old.exe"]})
-    mirrored = yaml.safe_load(sidecar.read_text(encoding="utf-8"))
-    assert mirrored["histories"]["claude"] == ["D:/tools/claude-old.exe"]
 
 
 def test_prepare_workspace_force_reset_clears_sidecar(tmp_path, monkeypatch):

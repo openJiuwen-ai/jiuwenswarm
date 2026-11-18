@@ -683,6 +683,198 @@ test('a confirmed miss on the persisted path auto-disables the agent', async () 
   }
 });
 
+test('switching to a local path keeps the built-in CLI path in the dropdown', async () => {
+  // 场景：内置已安装（内置模式），切换/保存为本地可用地址后，下拉框里的
+  // 内置路径应仍然保留（#6647 修复的行为不回归）。
+  const initial = {
+    external_cli_agent_claude_enabled: 'false',
+    external_cli_agent_claude_use_builtin: 'true',
+    external_cli_agent_claude_cli_path: '',
+  };
+  const BUILTIN = '/bundled/claude';
+  const onDetect = async (agent, path) => ({
+    cli_agent: agent,
+    status: 'ok',
+    path: path || BUILTIN,
+    builtin_path: BUILTIN,
+  });
+  const env = await mountCliSection(initial, onDetect);
+  try {
+    // 切到本地路径草稿并点开关启用 → 提交本地路径
+    await env.render({
+      ...initial,
+      external_cli_agent_claude_use_builtin: 'false',
+      external_cli_agent_claude_cli_path: '/local/claude',
+    });
+    await env.click('[data-testid="settings-panel-external-cli-agent-enable-switch"][data-variant="claude"]');
+    assert.deepEqual(env.commits.at(-1), ['claude', {
+      enabled: true, useBuiltin: false, cliPath: '/local/claude',
+    }]);
+    // 配置回显（真实流程由 persistUpdates + 配置刷新同步草稿）
+    await env.render({
+      ...initial,
+      external_cli_agent_claude_enabled: 'true',
+      external_cli_agent_claude_use_builtin: 'false',
+      external_cli_agent_claude_cli_path: '/local/claude',
+    });
+    // 保存后打开下拉：内置路径应仍在选项中
+    const select = '[data-testid="settings-panel-external-cli-agent-cli-path-select"][data-variant="claude"]';
+    await env.click(select);
+    const optionTexts = [...document.querySelectorAll('[role="option"]')].map((item) => item.textContent);
+    assert.ok(optionTexts.some((t) => t.includes(BUILTIN)), '内置路径应仍在下拉选项中（#6647）');
+    assert.ok(optionTexts.some((t) => t.includes('/local/claude')), '本地路径也应在选项中');
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('DIAG1: initial state shows the one-click install entry', async () => {
+  // #6753 问题一：三方 agent 初始化状态应有一键安装入口
+  const initial = {
+    external_cli_agent_claude_enabled: 'false',
+    external_cli_agent_claude_use_builtin: 'false',
+    external_cli_agent_claude_cli_path: '',
+  };
+  const env = await mountCliSection(initial, async (agent, path) => ({
+    cli_agent: agent,
+    status: 'missing',
+    path: '',
+    message: 'not found',
+  }));
+  try {
+    // 初始状态（探测尚未落结果）：一键安装横幅应可见
+    let banner = document.querySelector('[data-testid="settings-panel-external-cli-agent-install-hint"][data-variant="claude"]');
+    console.error('[DIAG-A1] initial banner:', !!banner);
+    assert.ok(banner, '初始状态应有一键安装入口');
+    // 探测确认缺失后：横幅仍应可见（未安装 → 禁用）
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 500)));
+    banner = document.querySelector('[data-testid="settings-panel-external-cli-agent-install-hint"][data-variant="claude"]');
+    console.error('[DIAG-A2] after-missing-probe banner:', !!banner);
+    assert.ok(banner, '探测确认缺失后一键安装入口应保留');
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('DIAG2: disable then re-enable keeps the local path', async () => {
+  // #6753 问题二：本地路径配置后，关闭开关再打开，路径不得变回内置 CLI
+  const initial = {
+    external_cli_agent_claude_enabled: 'true',
+    external_cli_agent_claude_use_builtin: 'false',
+    external_cli_agent_claude_cli_path: '/local/claude',
+    // 持久化的路径历史：真实流程由关闭时的历史捕获写入，harness 直接预置
+    external_cli_agent_claude_path_histories: JSON.stringify(['/local/claude']),
+  };
+  const onDetect = async (agent, path) => ({
+    cli_agent: agent,
+    status: path === '/local/claude' ? 'ok' : 'missing',
+    path: path === '/local/claude' ? '/local/claude' : '',
+    message: path === '/local/claude' ? '' : 'not found',
+  });
+  const env = await mountCliSection(initial, onDetect);
+  try {
+    const toggle = '[data-testid="settings-panel-external-cli-agent-enable-switch"][data-variant="claude"]';
+    // 关闭开关
+    await env.click(toggle);
+    assert.deepEqual(env.commits.at(-1), ['claude', { enabled: false, useBuiltin: false, cliPath: '/local/claude' }]);
+    // 重新打开：应恢复本地路径，而不是回退内置 CLI
+    await env.render({
+      ...initial,
+      external_cli_agent_claude_enabled: 'false',
+      external_cli_agent_claude_use_builtin: 'false',
+      external_cli_agent_claude_cli_path: '',
+    });
+    // 关闭后探测结果被清空 → 开关按设计禁用，重开走安装横幅的一键安装
+    await env.click('[data-testid="settings-panel-external-cli-agent-install-btn"][data-variant="claude"]');
+    const last = env.commits.at(-1);
+    assert.equal(last[1].enabled, true, '重开应恢复启用');
+    assert.equal(last[1].useBuiltin, false, '重开不应回退内置 CLI');
+    assert.equal(last[1].cliPath, '/local/claude', '重开应恢复本地路径');
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('DIAG3: disable then re-enable keeps the local path (full cycle)', async () => {
+  // #6753 问题二完整链路：本地路径 → 关闭 → 重开，路径不得回退内置 CLI
+  const initial = {
+    external_cli_agent_claude_enabled: 'true',
+    external_cli_agent_claude_use_builtin: 'false',
+    external_cli_agent_claude_cli_path: '/local/claude',
+    external_cli_agent_claude_path_histories: JSON.stringify(['/local/claude']),
+  };
+  const onDetect = async (agent, path) => ({
+    cli_agent: agent,
+    status: path === '/local/claude' ? 'ok' : 'missing',
+    path: path === '/local/claude' ? '/local/claude' : '',
+    message: path === '/local/claude' ? '' : 'not found',
+  });
+  const env = await mountCliSection(initial, onDetect);
+  try {
+    const toggle = '[data-testid="settings-panel-external-cli-agent-enable-switch"][data-variant="claude"]';
+    // 1) 关闭开关（禁用保留路径）
+    await env.click(toggle);
+    assert.deepEqual(env.commits.at(-1), ['claude', { enabled: false, useBuiltin: false, cliPath: '/local/claude' }]);
+    // 2) 配置回显：禁用态（cli_path 清空，历史保留本地路径）
+    await env.render({
+      ...initial,
+      external_cli_agent_claude_enabled: 'false',
+      external_cli_agent_claude_use_builtin: 'false',
+      external_cli_agent_claude_cli_path: '',
+      external_cli_agent_claude_path_histories: JSON.stringify(['/local/claude']),
+    });
+    // 3) 重新打开：开关此时按设计禁用（未安装须先安装），重开走安装横幅的
+    // 一键安装 → resolveEnabledChoice 先探测 PATH、再探测路径历史 → 恢复本地路径
+    await env.click('[data-testid="settings-panel-external-cli-agent-install-btn"][data-variant="claude"]');
+    const last = env.commits.at(-1);
+    console.error('[DIAG3] re-enable commit:', JSON.stringify(last));
+    assert.equal(last[1].enabled, true, '重开应恢复启用');
+    assert.equal(last[1].useBuiltin, false, '重开不应回退内置 CLI');
+    assert.equal(last[1].cliPath, '/local/claude', '重开应恢复本地路径');
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('re-enable restores the local path from histories written in the same session', async () => {
+  // 检视回归（!10548）：path_histories 由关闭开关的同会话写入，挂载快照里没有。
+  // resolveEnabledChoice 若缺 draftValues 依赖，会持挂载时快照跳过历史回退而
+  // 回退内置 CLI——本用例挂载不带历史、仅在关闭回显中携带历史，可暴露该问题。
+  const initial = {
+    external_cli_agent_claude_enabled: 'true',
+    external_cli_agent_claude_use_builtin: 'false',
+    external_cli_agent_claude_cli_path: '/local/claude',
+  };
+  const onDetect = async (agent, path) => ({
+    cli_agent: agent,
+    status: path === '/local/claude' ? 'ok' : 'missing',
+    path: path === '/local/claude' ? '/local/claude' : '',
+    message: path === '/local/claude' ? '' : 'not found',
+  });
+  const env = await mountCliSection(initial, onDetect);
+  try {
+    const toggle = '[data-testid="settings-panel-external-cli-agent-enable-switch"][data-variant="claude"]';
+    // 关闭开关：保留路径由上层写入 path_histories
+    await env.click(toggle);
+    assert.deepEqual(env.commits.at(-1), ['claude', { enabled: false, useBuiltin: false, cliPath: '/local/claude' }]);
+    // 配置回显：禁用态 cli_path 清空，同会话写入的 path_histories 随之到达（非挂载预置）
+    await env.render({
+      ...initial,
+      external_cli_agent_claude_enabled: 'false',
+      external_cli_agent_claude_use_builtin: 'false',
+      external_cli_agent_claude_cli_path: '',
+      external_cli_agent_claude_path_histories: JSON.stringify(['/local/claude']),
+    });
+    await env.click('[data-testid="settings-panel-external-cli-agent-install-btn"][data-variant="claude"]');
+    const last = env.commits.at(-1);
+    assert.equal(last[1].enabled, true, '重开应恢复启用');
+    assert.equal(last[1].useBuiltin, false, '过期闭包会把重开回退成内置 CLI');
+    assert.equal(last[1].cliPath, '/local/claude', '重开应恢复本地路径');
+  } finally {
+    env.cleanup();
+  }
+});
+
 test('uploaded custom agents are listed after Claude and Codex', async () => {
   const section = await import('../node_modules/.cache/external-cli-section/components/ExternalCliAgentsSection.mjs');
   const customAgents = section.parseExternalCliCustomAgents(
