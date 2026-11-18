@@ -2588,7 +2588,13 @@ class DesktopRuntime:
   // Durable stub: never leave Python without a callable ingest hook.
   if (typeof window.__JIUWEN_INGEST_LOCAL_FILES__ !== 'function') {
     window.__JIUWEN_INGEST_LOCAL_FILES__ = function (detail) {
-      try { window.__JIUWEN_DROP_QUEUE__.push(detail); } catch (err) {}
+      try {
+        // Same rule as localFilePicker.ts: do not replay a drop into a later
+        // chat when the composer was not mounted.
+        if (document.querySelector('.chat-panel-shell')) {
+          window.__JIUWEN_DROP_QUEUE__.push(detail);
+        }
+      } catch (err) {}
       window.dispatchEvent(new CustomEvent('jiuwen-desktop-local-files', { detail: detail }));
     };
   }
