@@ -42,10 +42,12 @@ generated: true
 | [jiuwenswarm/common](#module-jiuwenswarm-common) |
 | [jiuwenswarm/common/config_panel](#module-jiuwenswarm-common-config_panel) |
 | [jiuwenswarm/extensions/sdk](#module-jiuwenswarm-extensions-sdk) |
+| [jiuwenswarm/extensions/video_duplex](#module-jiuwenswarm-extensions-video_duplex) |
 | [jiuwenswarm/gateway/channel_manager/web](#module-jiuwenswarm-gateway-channel_manager-web) |
 | [jiuwenswarm/observability](#module-jiuwenswarm-observability) |
 | [jiuwenswarm/resources](#module-jiuwenswarm-resources) |
 | [jiuwenswarm/resources/plugins/ttse](#module-jiuwenswarm-resources-plugins-ttse) |
+| [jiuwenswarm/runtime](#module-jiuwenswarm-runtime) |
 | [jiuwenswarm/server](#module-jiuwenswarm-server) |
 | [jiuwenswarm/server/control](#module-jiuwenswarm-server-control) |
 | [jiuwenswarm/server/ipc](#module-jiuwenswarm-server-ipc) |
@@ -289,6 +291,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [F_20261110_2026_affinity-settings](features/F_20261110_2026_affinity-settings.md) | F | 实验功能算力亲和开关与自定义模型能力接入 | MengHan18 | 无独立 D：外部初始方案为 docs_HM_kvc/E前端开关打开/01 和 02；全局准入和交互按用户确认的 04 小白版文档替代，无仓库内 D 标识。 |
+| [F_20261116_1142_duplex-tool-call-adapter](features/F_20261116_1142_duplex-tool-call-adapter.md) | F | Duplex WebSocket 工具适配器实施与验证 | chickeyton | [D-20261116-1104-duplex-tool-call-adapter](designs/active/D-20261116-1104-duplex-tool-call-adapter/design.md) |
 | [B_20261112_1716_affinity-status-read](bugfix/jiuwenswarm/server/control/B_20261112_1716_affinity-status-read.md) | B | 控制面遗漏亲和状态导致开关与说明不一致 | MengHan18 | 无独立 D：修复 F_20261110_2026_affinity-settings 的读入口遗漏及用户反馈的开启交互。 |
 | [S_01_affinity-settings](specs/jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | — |
 
@@ -332,6 +335,16 @@ generated: true
 | [F_20261027_1843_ttse-plugin-rail](features/F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 | [S_03_native-plugin-runtime](specs/jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | — |
 
+<a id="module-jiuwenswarm-extensions-video_duplex"></a>
+
+## jiuwenswarm/extensions/video_duplex
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [D-20261116-1104-duplex-tool-call-adapter](designs/active/D-20261116-1104-duplex-tool-call-adapter/design.md) | D | 双工后端工具调用适配器设计方案 | chickeyton | — |
+| [F_20261116_1142_duplex-tool-call-adapter](features/F_20261116_1142_duplex-tool-call-adapter.md) | F | Duplex WebSocket 工具适配器实施与验证 | chickeyton | [D-20261116-1104-duplex-tool-call-adapter](designs/active/D-20261116-1104-duplex-tool-call-adapter/design.md) |
+| [S_01_duplex-tool-calls](specs/jiuwenswarm/runtime/S_01_duplex-tool-calls.md) | S | 双工工具调用与后端接纳规约 | chickeyton | — |
+
 <a id="module-jiuwenswarm-gateway-channel_manager-web"></a>
 
 ## jiuwenswarm/gateway/channel_manager/web
@@ -365,6 +378,16 @@ generated: true
 |---|---|---|---|---|
 | [F_20261027_1843_ttse-plugin-rail](features/F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 | [S_02_ttse-plugin-runtime](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_ttse-plugin-runtime.md) | S | TTSE Coding 插件运行契约 | xinyang_bali | — |
+
+<a id="module-jiuwenswarm-runtime"></a>
+
+## jiuwenswarm/runtime
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [D-20261116-1104-duplex-tool-call-adapter](designs/active/D-20261116-1104-duplex-tool-call-adapter/design.md) | D | 双工后端工具调用适配器设计方案 | chickeyton | — |
+| [F_20261116_1142_duplex-tool-call-adapter](features/F_20261116_1142_duplex-tool-call-adapter.md) | F | Duplex WebSocket 工具适配器实施与验证 | chickeyton | [D-20261116-1104-duplex-tool-call-adapter](designs/active/D-20261116-1104-duplex-tool-call-adapter/design.md) |
+| [S_01_duplex-tool-calls](specs/jiuwenswarm/runtime/S_01_duplex-tool-calls.md) | S | 双工工具调用与后端接纳规约 | chickeyton | — |
 
 <a id="module-jiuwenswarm-server"></a>
 
@@ -411,6 +434,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [D-20261116-1104-duplex-tool-call-adapter](designs/active/D-20261116-1104-duplex-tool-call-adapter/design.md) | D | 双工后端工具调用适配器设计方案 | chickeyton | — |
 | [F_20261027_1843_ttse-plugin-rail](features/F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 | [F_20261027_2015_bilingual-progressive-tool-discovery](features/jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
 | [F_20261029_1757_mcp-app-agent-stack-refresh](features/F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |

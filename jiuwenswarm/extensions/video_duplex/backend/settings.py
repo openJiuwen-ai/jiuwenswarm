@@ -12,6 +12,10 @@ from jiuwenswarm.dotenv_early import get_parsed_dotenv
 
 
 SETTING_ENV_KEYS = {
+    "vllm_omni_realtime_url": "VLLM_OMNI_REALTIME_URL",
+    "vllm_omni_api_key": "VLLM_OMNI_API_KEY",
+    "vllm_omni_model": "VLLM_OMNI_MODEL_NAME",
+    "vllm_omni_tool_timeout_s": "VLLM_OMNI_TOOL_TIMEOUT_S",
     "joyai_api_base": "JOYAI_API_BASE",
     "joyai_api_key": "JOYAI_API_KEY",
     "joyai_model": "JOYAI_MODEL_NAME",
@@ -28,9 +32,13 @@ SETTING_ENV_KEYS = {
     "voice_tts_model": "VOICE_TTS_MODEL",
     "voice_tts_voice": "VOICE_TTS_VOICE",
 }
-SECRET_SETTINGS = {"joyai_api_key", "qwen_omni_api_key", "voice_api_key"}
+SECRET_SETTINGS = {"joyai_api_key", "qwen_omni_api_key", "voice_api_key", "vllm_omni_api_key"}
 ALLOWED_REPLY_LANGUAGES = frozenset({"match", "zh-CN", "en"})
 DEFAULTS = {
+    "vllm_omni_realtime_url": "",
+    "vllm_omni_api_key": "",
+    "vllm_omni_model": "",
+    "vllm_omni_tool_timeout_s": "120",
     "joyai_api_base": "",
     "joyai_api_key": "",
     "joyai_model": "",
@@ -86,6 +94,8 @@ def _persist_env_updates(updates: Mapping[str, str]) -> None:
 def _provider() -> str:
     mode = (os.getenv("VIDEO_LIVE_MODE") or "realtime").strip().casefold()
     realtime_provider = (os.getenv("VIDEO_REALTIME_PROVIDER") or "").strip().casefold()
+    if mode == "realtime" and realtime_provider == "vllm_omni_ws":
+        return realtime_provider
     return "qwen_omni" if mode == "realtime" and realtime_provider in {"", "qwen_omni"} else "joyai"
 
 
@@ -125,8 +135,14 @@ def _validated_values(values: Mapping[str, Any]) -> dict[str, str]:
         normalized[key] = value.strip()
 
     provider = normalized.get("video_live_provider", _provider())
-    if provider not in {"joyai", "qwen_omni"}:
-        raise ValueError("video_live_provider must be joyai or qwen_omni")
+    if provider not in {"joyai", "qwen_omni", "vllm_omni_ws"}:
+        raise ValueError("video_live_provider must be joyai, qwen_omni or vllm_omni_ws")
+    if "vllm_omni_tool_timeout_s" in normalized:
+        import math
+
+        timeout = float(normalized["vllm_omni_tool_timeout_s"])
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("vllm_omni_tool_timeout_s must be positive and finite")
     protocol = normalized.get(
         "voice_protocol",
         (os.getenv("VOICE_PROTOCOL") or "openai_http").strip().casefold(),
@@ -148,8 +164,8 @@ def update_settings(values: Mapping[str, Any], *, clear_secrets: bool = False) -
     normalized = _validated_values(values)
     provider = normalized.pop("video_live_provider", _provider())
     updates = {
-        "VIDEO_LIVE_MODE": "realtime" if provider == "qwen_omni" else "joyai",
-        "VIDEO_REALTIME_PROVIDER": "qwen_omni" if provider == "qwen_omni" else "",
+        "VIDEO_LIVE_MODE": "joyai" if provider == "joyai" else "realtime",
+        "VIDEO_REALTIME_PROVIDER": provider if provider != "joyai" else "",
     }
     for key, value in normalized.items():
         if key in SECRET_SETTINGS and not value and not clear_secrets:

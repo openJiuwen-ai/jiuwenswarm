@@ -18,8 +18,11 @@ generated: true
 | [agent_teams/workflow](#module-agent_teams-workflow) |
 | [jiuwenswarm](#module-jiuwenswarm) |
 | [jiuwenswarm/channels/web/frontend](#module-jiuwenswarm-channels-web-frontend) |
+| [jiuwenswarm/extensions/video_duplex](#module-jiuwenswarm-extensions-video_duplex) |
 | [jiuwenswarm/gateway/channel_manager/web](#module-jiuwenswarm-gateway-channel_manager-web) |
 | [jiuwenswarm/observability](#module-jiuwenswarm-observability) |
+| [jiuwenswarm/runtime](#module-jiuwenswarm-runtime) |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-jiuwenswarm-server-runtime-agent_adapter) |
 
 <a id="module-agent_teams"></a>
 
@@ -65,6 +68,16 @@ generated: true
 |---|---|---|---|---|---|
 | [SDD-0026](proposals/SDD-0026-trajectory-observability-web-ui/design.md) | 轨迹观测前端：单 Agent、Subagent 与 Team 多 Agent 轨迹 UI | draft | @alan_cheng | observability | 2026-09-15 |
 
+<a id="module-jiuwenswarm-extensions-video_duplex"></a>
+
+## jiuwenswarm/extensions/video_duplex
+
+### 开发中 (active)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261116-1104-duplex-tool-call-adapter](active/D-20261116-1104-duplex-tool-call-adapter/design.md) | 双工后端工具调用适配器设计方案 | in-development | chickeyton | harness | 2026-11-16 |
+
 <a id="module-jiuwenswarm-gateway-channel_manager-web"></a>
 
 ## jiuwenswarm/gateway/channel_manager/web
@@ -84,3 +97,23 @@ generated: true
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
 | [SDD-0025](proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | draft | @alan_cheng | observability | 2026-09-15 |
+
+<a id="module-jiuwenswarm-runtime"></a>
+
+## jiuwenswarm/runtime
+
+### 开发中 (active)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261116-1104-duplex-tool-call-adapter](active/D-20261116-1104-duplex-tool-call-adapter/design.md) | 双工后端工具调用适配器设计方案 | in-development | chickeyton | harness | 2026-11-16 |
+
+<a id="module-jiuwenswarm-server-runtime-agent_adapter"></a>
+
+## jiuwenswarm/server/runtime/agent_adapter
+
+### 开发中 (active)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261116-1104-duplex-tool-call-adapter](active/D-20261116-1104-duplex-tool-call-adapter/design.md) | 双工后端工具调用适配器设计方案 | in-development | chickeyton | harness | 2026-11-16 |

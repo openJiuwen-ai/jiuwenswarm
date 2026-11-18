@@ -1192,6 +1192,11 @@ test('every visible Settings control maps to an exact persistence field or RPC',
       'team_member_messaging_enabled',
       'team_member_subtasks_enabled',
       'progressive_tool_optimize',
+      'video_live_provider',
+      'vllm_omni_realtime_url',
+      'vllm_omni_model',
+      'vllm_omni_api_key',
+      'vllm_omni_tool_timeout_s',
     ].sort(),
   );
   assert.deepEqual([...contractByCategory('experimental')].sort(), [
@@ -1299,7 +1304,9 @@ test('every visible Settings control maps to an exact persistence field or RPC',
   const settingsConfigMethods = findRequestMethods(parseTsx('src/features/settings/services/useSettingsConfig.ts'));
   assert.deepEqual([...settingsConfigMethods].sort(), ['config.get', 'config.save_all']);
   const sourceMethods = findRequestMethods(parseTsx('src/features/settings/services/SettingsSourceProvider.tsx'));
-  assert.deepEqual([...sourceMethods].sort(), ['locale.set_conf', 'path.get', 'path.set']);
+  assert.deepEqual([...sourceMethods].sort(), [
+    'locale.set_conf', 'path.get', 'path.set', 'video.duplex.settings.get', 'video.duplex.settings.update',
+  ]);
   const channelController = source('src/features/settings/modules/channels/useSettingsChannelsController.ts');
   const channelFormHook = source('src/features/settings/modules/channels/useChannelForm.ts');
   assert.match(channelFormHook, /request<\{ config\?: unknown \}>\(getMethod\)/);

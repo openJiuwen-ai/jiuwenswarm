@@ -26,6 +26,81 @@ test('tool output diagnostics distinguish sending from provider acknowledgement 
   assert.equal(JSON.stringify(diagnostics).includes('private result body'), false);
 });
 
+test('managed duplex ignores browser tool delivery and sends only explicit user text', async () => {
+  const { session, sent, functionCalls } = createSession();
+  session.config.serverManagedTools = true;
+  session.enqueueOperationResult('call-a', { state: 'accepted' });
+  session.enqueueToolResult({ jobId: 'job-a', callId: 'call-a', question: 'q', brief: realtimeBrief('done') });
+  session.enqueueQuestion('job-a', { request_id: 'card', state: 'pending', source: 'confirm_interrupt' });
+  session.handleManagedEvent({ type: 'response.function_call_arguments.done', name: 'jiuwen_delegate', call_id: 'call-a', arguments: '{"task":"work"}' });
+  assert.equal(sent.length, 0);
+  assert.equal(functionCalls.length, 0);
+  assert.equal(await session.sendTextTurn('hello'), true);
+  assert.deepEqual(sent, [{ type: 'duplex.user_text', text: 'hello' }]);
+});
+
+test('managed duplex media does not use Qwen cloud video commands', () => {
+  const { session, sent } = createSession('frame');
+  session.config.serverManagedTools = true;
+  session.sendAudio(new Int16Array([1, 2]), true);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].type, 'input_audio_buffer.append');
+  assert.deepEqual(sent[0].video_frames, ['data:image/jpeg;base64,frame']);
+});
+
+test('managed typed questions include the current camera even without a spoken turn', async () => {
+  const { session, sent } = createSession('frame');
+  session.config.serverManagedTools = true;
+  assert.equal(await session.sendTextTurn('What is in view?'), true);
+  assert.deepEqual(sent, [{ type: 'duplex.user_text', text: 'What is in view?',
+    video_frames: ['data:image/jpeg;base64,frame'] }]);
+});
+
+test('managed text and audio transcript describe one answer without duplicate text', () => {
+  const { session, assistantTexts } = createSession();
+  session.config.serverManagedTools = true;
+  session.handleManagedEvent({ type: 'response.created', response: { id: 'r' } });
+  session.handleManagedEvent({ type: 'response.output_text.delta', response_id: 'r', delta: '17' });
+  session.handleManagedEvent({ type: 'response.output_audio_transcript.delta', response_id: 'r', delta: '17' });
+  session.handleManagedEvent({ type: 'response.done', response: { id: 'r' } });
+  assert.equal(assistantTexts.at(-1).text, '17');
+  assert.equal(assistantTexts.at(-1).final, true);
+});
+
+test('managed turn input retains bounded pre-roll instead of uploading unbounded idle silence', () => {
+  const { session, sent } = createSession();
+  session.config.serverManagedTools = true;
+  session.managedTurnBased = true;
+  for (let index = 0; index < 10; index += 1) session.sendAudio(new Int16Array([index]), false);
+  assert.equal(sent.length, 0);
+  assert.equal(session.managedPreRoll.length, 2);
+  session.managedTurnActive = true;
+  session.sendAudio(new Int16Array([10]), false);
+  assert.equal(sent.length, 1);
+  assert.equal(Buffer.from(sent[0].audio, 'base64').length, 6);
+  assert.equal(session.managedPreRoll.length, 0);
+});
+
+test('managed backend interruption clears queued audio and refuses late cancelled audio', async () => {
+  const { session, posted } = createSession();
+  session.config.serverManagedTools = true;
+  session.handleManagedEvent({ type: 'response.created', response: { id: 'r' } });
+  session.handleManagedEvent({ type: 'response.output_audio.delta', response_id: 'r', delta: 'AAA=' });
+  session.handleManagedEvent({ type: 'output_audio_buffer.cleared', response_id: 'r' });
+  session.handleManagedEvent({ type: 'response.output_audio.delta', response_id: 'r', delta: 'AAA=' });
+  await session.playbackOperation;
+  assert.deepEqual(posted, [{ type: 'clear', cancelResponse: false }]);
+});
+
+test('late managed response terminal cannot free or clear a newer response', () => {
+  const { session, posted } = createSession();
+  session.config.serverManagedTools = true;
+  session.handleManagedEvent({ type: 'response.created', response: { id: 'new' } });
+  session.handleManagedEvent({ type: 'response.done', response: { id: 'old', status: 'cancelled' } });
+  assert.equal(session.responseActive, true);
+  assert.equal(posted.length, 0);
+});
+
 test('accepted delegation returns its ID before completion and never sends two outputs for one call', () => {
   const {session,sent}=createSession();
   session.enqueueOperationResult('create-a',{state:'accepted',job_id:'a'});

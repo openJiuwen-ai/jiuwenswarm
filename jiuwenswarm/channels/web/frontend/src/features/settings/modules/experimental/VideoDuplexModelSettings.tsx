@@ -7,6 +7,7 @@ import { Button, Select, Switch } from '../../../../components/ui';
 import { FormDialog } from '../../../../components/form';
 import { SettingRow, SettingsConfirmDialog } from '../../components';
 import { webRequest } from '../../../../services/webClient';
+import { DUPLEX_SETTINGS_CHANGED_EVENT, publishDuplexSettings } from '../../services/duplexSettingsEvents';
 import {
   isConfigured,
   type SettingsValues,
@@ -15,6 +16,10 @@ import {
 import './VideoDuplexModelSettings.css';
 
 const DEFAULTS: SettingsValues = {
+  vllm_omni_realtime_url: '',
+  vllm_omni_api_key: '',
+  vllm_omni_model: '',
+  vllm_omni_tool_timeout_s: '120',
   video_live_provider: 'qwen_omni',
   joyai_api_base: '',
   joyai_api_key: '',
@@ -107,12 +112,21 @@ export function VideoDuplexModelSettings({
 
   useEffect(() => {
     let active = true;
+    let changedWhileLoading = false;
+    const changed = (event: Event) => {
+      changedWhileLoading = true;
+      applyPayload((event as CustomEvent<Payload>).detail);
+      setConnection('idle');
+      setConnectionError('');
+      setLoading(false);
+    };
+    window.addEventListener(DUPLEX_SETTINGS_CHANGED_EVENT, changed);
     void webRequest<Payload>('video.duplex.settings.get', {}, { timeoutMs: 10_000 })
       .then((payload) => {
-        if (active) applyPayload(payload);
+        if (active && !changedWhileLoading) applyPayload(payload);
       })
       .catch((loadError: unknown) => {
-        if (!active) return;
+        if (!active || changedWhileLoading) return;
         if (loadError instanceof Error && 'httpRouteMissing' in loadError && loadError.httpRouteMissing === true) {
           setError(t('settingsPanel.videoDuplex.httpRouteUnavailable'));
           return;
@@ -128,12 +142,14 @@ export function VideoDuplexModelSettings({
       });
     return () => {
       active = false;
+      window.removeEventListener(DUPLEX_SETTINGS_CHANGED_EVENT, changed);
     };
   }, [t]);
 
   const configured = isConfigured(values, secretLengths);
-  const modelName = values.qwen_omni_model;
-  const providerName = 'Qwen Omni Realtime';
+  const managedProvider = values.video_live_provider === 'vllm_omni_ws';
+  const modelName = managedProvider ? values.vllm_omni_model : values.qwen_omni_model;
+  const providerName = managedProvider ? 'vLLM-Omni Duplex' : 'Qwen Omni Realtime';
   const updateDraft = <K extends keyof SettingsValues>(key: K, value: SettingsValues[K]) => {
     setDraft((current) => (current ? { ...current, [key]: value } : current));
   };
@@ -169,6 +185,7 @@ export function VideoDuplexModelSettings({
         { timeoutMs: 10_000 },
       );
       applyPayload(payload);
+      publishDuplexSettings(payload.values, payload.configured_secret_lengths);
       setConnection('idle');
       setConnectionError('');
       await onConfigured?.();
@@ -188,6 +205,7 @@ export function VideoDuplexModelSettings({
       emptyValues.video_live_provider = DEFAULTS.video_live_provider;
       emptyValues.reply_language = DEFAULTS.reply_language;
       emptyValues.voice_protocol = DEFAULTS.voice_protocol;
+      emptyValues.vllm_omni_tool_timeout_s = DEFAULTS.vllm_omni_tool_timeout_s || '120';
       const payload = await webRequest<Payload>(
         'video.duplex.settings.update',
         { values: emptyValues, clear_secrets: true },
@@ -195,6 +213,7 @@ export function VideoDuplexModelSettings({
       );
       applyPayload(payload);
       setConnection('idle');
+      publishDuplexSettings(payload.values, payload.configured_secret_lengths);
       setConnectionError('');
       if (enabled) await onEnabledChange(false);
       setDeleteOpen(false);
@@ -228,6 +247,7 @@ export function VideoDuplexModelSettings({
         { timeoutMs: 10_000 },
       );
       applyPayload(payload);
+      publishDuplexSettings(payload.values, payload.configured_secret_lengths);
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : t('settingsPanel.videoDuplex.saveError'));
     } finally {
@@ -321,6 +341,7 @@ export function VideoDuplexModelSettings({
                     aria-label={`${t('common.modify')} ${providerName}`}
                     disabled={disabled || saving || deleting || connection === 'testing'}
                     onClick={openEditor}
+                    hidden={managedProvider}
                     data-testid="settings-task-full-duplex-edit-btn"
                   />
                   <Button

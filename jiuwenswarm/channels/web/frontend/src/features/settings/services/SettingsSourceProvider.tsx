@@ -6,6 +6,7 @@ import { useMultimodalSettings } from './useMultimodalSettings';
 import { MULTIMODAL_CAPABILITIES, multimodalModelOptions, type MultimodalCapability } from './multimodalSettings';
 import { useSettingsServices } from './SettingsServicesProvider';
 import { serializeConfigSettingValue } from './settingsSourceContract';
+import { DUPLEX_SETTINGS_CHANGED_EVENT, publishDuplexSettings } from './duplexSettingsEvents';
 import { useSettingsConfig } from './useSettingsConfig';
 import { applyBrowserDisplaySettings, browserDisplayRevision } from '../../desktopBrowserDisplay';
 
@@ -273,6 +274,61 @@ function LocaleSourceProvider({ children }: { children: ReactNode }) {
   return <SettingsSourceContext.Provider value={value}>{children}</SettingsSourceContext.Provider>;
 }
 
+function DuplexSourceProvider({ children }: { children: ReactNode }) {
+  const { request, saveQueue } = useSettingsServices();
+  const [values, setValues] = useState<Record<string, unknown>>({});
+  const [savingKeys, setSavingKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState('');
+  const revision = useRef(0);
+  useEffect(() => {
+    let active = true;
+    const loadingRevision = revision.current;
+    const changed = (event: Event) => {
+      revision.current += 1;
+      setValues((event as CustomEvent<{ values: Record<string, unknown> }>).detail.values);
+      setLoaded(true);
+      setError('');
+    };
+    window.addEventListener(DUPLEX_SETTINGS_CHANGED_EVENT, changed);
+    void request<{ values: Record<string, unknown> }>('video.duplex.settings.get', {})
+      .then((payload) => {
+        if (active && revision.current === loadingRevision) {
+          setValues(payload.values);
+          setLoaded(true);
+        }
+      })
+      .catch((reason: unknown) => {
+        if (active && revision.current === loadingRevision) setError(String(reason));
+      });
+    return () => {
+      active = false;
+      window.removeEventListener(DUPLEX_SETTINGS_CHANGED_EVENT, changed);
+    };
+  }, [request]);
+  const save = useCallback(async (updates: Record<string, SettingValue>, operation: string) => {
+    setSavingKeys(new Set(Object.keys(updates)));
+    try {
+      const serialized = Object.fromEntries(Object.entries(updates).map(([key, value]) => [key, String(value)]));
+      const payload = await saveQueue.enqueue(operation, () => request<{
+        values: Record<string, unknown>; configured_secret_lengths: Record<string, number>;
+      }>(
+        'video.duplex.settings.update', { values: serialized },
+      ));
+      setValues(payload.values);
+      publishDuplexSettings(payload.values, payload.configured_secret_lengths);
+      return payload;
+    } finally {
+      setSavingKeys(new Set());
+    }
+  }, [request, saveQueue]);
+  const patchLocal = useCallback((updates: Record<string, unknown>) => setValues((current) => ({ ...current, ...updates })), []);
+  const value = useMemo(() => ({ values, savingKeys, save, patchLocal }), [values, savingKeys, save, patchLocal]);
+  if (error) return <div role="alert" data-testid="settings-source-error" data-variant="duplex">{error}</div>;
+  if (!loaded) return <Loading data-testid="settings-source-loading" data-variant="duplex" />;
+  return <SettingsSourceContext.Provider value={value}>{children}</SettingsSourceContext.Provider>;
+}
+
 function MultimodalSourceProvider({ children }: { children: ReactNode }) {
   const { snapshot, store } = useMultimodalSettings();
   const [savingKeys, setSavingKeys] = useState<ReadonlySet<string>>(() => new Set());
@@ -311,6 +367,7 @@ function MultimodalSourceProvider({ children }: { children: ReactNode }) {
 }
 
 export function SettingsSourceProvider({ source, children }: { source?: SettingsSource; children: ReactNode }) {
+  if (source === 'duplex') return <DuplexSourceProvider>{children}</DuplexSourceProvider>;
   if (source === 'config') return <ConfigSourceProvider>{children}</ConfigSourceProvider>;
   if (source === 'browser') return <BrowserSourceProvider>{children}</BrowserSourceProvider>;
   if (source === 'locale') return <LocaleSourceProvider>{children}</LocaleSourceProvider>;

@@ -56,6 +56,9 @@ class VideoDuplexApplicationPlugin(ApplicationPluginExtension):
     async def shutdown(self) -> None:
         manager = getattr(self, "_task_manager", None)
         if manager is not None:
+            bridges = getattr(manager, "duplex_bridges", None)
+            if bridges is not None:
+                await bridges.close()
             await manager.close()
 
     def bind_web_channel(
@@ -176,7 +179,18 @@ class VideoDuplexApplicationPlugin(ApplicationPluginExtension):
             serve_qwen_omni_websocket,
         )
 
+        async def vllm_endpoint(websocket):
+            manager = getattr(self, "_task_manager", None)
+            registry = getattr(manager, "duplex_bridges", None)
+            if registry is None:
+                await websocket.close(code=1013)
+                return
+            await registry.serve(websocket)
+
         return (
+            WebSocketRouteContribution(
+                path="/ws/video/vllm-omni", endpoint=vllm_endpoint,
+            ),
             WebSocketRouteContribution(
                 path=QWEN_OMNI_PROXY_PATH,
                 endpoint=serve_qwen_omni_websocket,

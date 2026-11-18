@@ -29,8 +29,10 @@ generated: true
 | [jiuwenswarm/common](#module-jiuwenswarm-common) |
 | [jiuwenswarm/common/config_panel](#module-jiuwenswarm-common-config_panel) |
 | [jiuwenswarm/extensions/sdk](#module-jiuwenswarm-extensions-sdk) |
+| [jiuwenswarm/extensions/video_duplex](#module-jiuwenswarm-extensions-video_duplex) |
 | [jiuwenswarm/resources](#module-jiuwenswarm-resources) |
 | [jiuwenswarm/resources/plugins/ttse](#module-jiuwenswarm-resources-plugins-ttse) |
+| [jiuwenswarm/runtime](#module-jiuwenswarm-runtime) |
 | [jiuwenswarm/server/control](#module-jiuwenswarm-server-control) |
 | [jiuwenswarm/server/runtime](#module-jiuwenswarm-server-runtime) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-jiuwenswarm-server-runtime-agent_adapter) |
@@ -137,6 +139,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [F_20261110_2026_affinity-settings](F_20261110_2026_affinity-settings.md) | F | 实验功能算力亲和开关与自定义模型能力接入 | MengHan18 | 无独立 D：外部初始方案为 docs_HM_kvc/E前端开关打开/01 和 02；全局准入和交互按用户确认的 04 小白版文档替代，无仓库内 D 标识。 |
+| [F_20261116_1142_duplex-tool-call-adapter](F_20261116_1142_duplex-tool-call-adapter.md) | F | Duplex WebSocket 工具适配器实施与验证 | chickeyton | [D-20261116-1104-duplex-tool-call-adapter](../designs/active/D-20261116-1104-duplex-tool-call-adapter/design.md) |
 
 <a id="module-jiuwenswarm-common"></a>
 
@@ -165,6 +168,14 @@ generated: true
 |---|---|---|---|---|
 | [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 
+<a id="module-jiuwenswarm-extensions-video_duplex"></a>
+
+## jiuwenswarm/extensions/video_duplex
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261116_1142_duplex-tool-call-adapter](F_20261116_1142_duplex-tool-call-adapter.md) | F | Duplex WebSocket 工具适配器实施与验证 | chickeyton | [D-20261116-1104-duplex-tool-call-adapter](../designs/active/D-20261116-1104-duplex-tool-call-adapter/design.md) |
+
 <a id="module-jiuwenswarm-resources"></a>
 
 ## jiuwenswarm/resources
@@ -181,6 +192,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
+
+<a id="module-jiuwenswarm-runtime"></a>
+
+## jiuwenswarm/runtime
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261116_1142_duplex-tool-call-adapter](F_20261116_1142_duplex-tool-call-adapter.md) | F | Duplex WebSocket 工具适配器实施与验证 | chickeyton | [D-20261116-1104-duplex-tool-call-adapter](../designs/active/D-20261116-1104-duplex-tool-call-adapter/design.md) |
 
 <a id="module-jiuwenswarm-server-control"></a>
 

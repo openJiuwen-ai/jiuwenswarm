@@ -11,9 +11,16 @@ const BROWSER_SETTING_COMPONENTS = new Map<string, SimpleSettingComponent>([
   ['decision_provider', 'select'],
 ]);
 const LOCALE_SETTING_COMPONENTS = new Map<string, SimpleSettingComponent>([['preferred_language', 'select']]);
+const DUPLEX_SETTING_COMPONENTS = new Map<string, SimpleSettingComponent>([
+  ['video_live_provider', 'select'],
+  ['vllm_omni_realtime_url', 'input'],
+  ['vllm_omni_model', 'input'],
+  ['vllm_omni_api_key', 'input'],
+  ['vllm_omni_tool_timeout_s', 'input'],
+]);
 
 export function isSettingsSource(value: unknown): value is SettingsSource {
-  return value === 'config' || value === 'browser' || value === 'locale' || value === 'multimodal';
+  return value === 'config' || value === 'browser' || value === 'locale' || value === 'duplex' || value === 'multimodal';
 }
 
 export function isSettingsSourceKey(source: SettingsSource, key: string): boolean {
@@ -21,6 +28,7 @@ export function isSettingsSourceKey(source: SettingsSource, key: string): boolea
   if (source === 'config') return SETTINGS_CONFIG_FIELD_BY_KEY.has(key);
   if (source === 'browser') return BROWSER_SETTING_COMPONENTS.has(key);
   if (source === 'locale') return LOCALE_SETTING_COMPONENTS.has(key);
+  if (source === 'duplex') return DUPLEX_SETTING_COMPONENTS.has(key);
   return false;
 }
 
@@ -33,6 +41,7 @@ export function isSettingsSourceComponent(
     && ((key.endsWith('_enabled') && component === 'switch') || (key.endsWith('_model_id') && component === 'select'));
   if (source === 'browser') return BROWSER_SETTING_COMPONENTS.get(key) === component;
   if (source === 'locale') return LOCALE_SETTING_COMPONENTS.get(key) === component;
+  if (source === 'duplex') return DUPLEX_SETTING_COMPONENTS.get(key) === component;
   const field = SETTINGS_CONFIG_FIELD_BY_KEY.get(key);
   if (!field) return false;
   if (component === 'switch') return field.kind === 'boolean';

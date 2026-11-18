@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Any
 
-from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+from e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskModification
 from jiuwenswarm.extensions.video_duplex.backend.tasks.store import task_database
@@ -517,7 +517,7 @@ class VideoSearchManager:
                 self.client, ReqMethod.SESSION_GET_METADATA,
                 {"session_id": saved_session}, saved_session, owner,
             )
-            if not metadata or str(metadata.get("user_id") or "").strip() != owner:
+            if not metadata or metadata.get("archived") or str(metadata.get("user_id") or "").strip() != owner:
                 raise ValueError("Conversation is unavailable to this user")
             from .mode_routing import execution_target
 
@@ -891,6 +891,32 @@ class VideoSearchManager:
 
         target = await resolve_execution_target(self.client, owner, scope)
         credential_ref = await task_login_credential_ref(ws, target)
+        return self.submit_task(
+            owner, scope, target, question=question, query=query, visual_context=visual_context,
+            frame_data_url=frame_data_url, tool_call_id=tool_call_id, tool_name=tool_name,
+            turn_id=turn_id, command_id=command_id, scheduling=scheduling, title=title,
+            credential_ref=credential_ref,
+        )
+
+    def submit_task(
+        self,
+        owner: str,
+        scope: str,
+        target: dict[str, Any],
+        *,
+        question: str,
+        query: str,
+        visual_context: str = "",
+        frame_data_url: str = "",
+        tool_call_id: str = "",
+        tool_name: str = "",
+        turn_id: str = "",
+        command_id: str = "",
+        scheduling: dict[str, Any] | None = None,
+        title: str = "",
+        credential_ref: str = "",
+    ) -> dict[str, Any]:
+        """Shared task admission after the transport has established owner and routing."""
         request = dict(
             title=title,
             query=query,
@@ -1019,6 +1045,13 @@ class VideoSearchManager:
             ))
             self._queue_requests[key] = (signature, task)
         return await asyncio.shield(self._queue_requests[key][1])
+
+    async def cancel_queue_call(self, owner: str, scope: str, command_id: str) -> None:
+        """Cancel the exact shielded management worker without touching its target tasks."""
+        cached = self._queue_requests.get((owner, scope, command_id))
+        if cached is not None and not cached[1].done():
+            cached[1].cancel()
+            await asyncio.gather(cached[1], return_exceptions=True)
 
     async def operate(self, owner, scope, call, *, ws=None, approvals_only=False, user_instruction=""):
         args = call.arguments

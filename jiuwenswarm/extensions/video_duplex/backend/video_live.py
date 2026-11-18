@@ -230,6 +230,9 @@ def register_video_live_handler(
     from .realtime_context import ContextRestoreExpired, RealtimeContextRestorer
 
     context_restorer = RealtimeContextRestorer(search_manager)
+    from .duplex_session_bridge import DuplexBridgeRegistry
+
+    search_manager.duplex_bridges = DuplexBridgeRegistry(search_manager)
 
     async def _realtime_config(ws, req_id, params, session_id):
         del session_id
@@ -243,6 +246,25 @@ def register_video_live_handler(
             )
             return
         context_payload = {"context_restore": restored} if restored else {}
+        if settings.settings_payload(enabled=True)["values"]["video_live_provider"] == "vllm_omni_ws":
+            from .tool_adapters.vllm_omni import VllmOmniConfig
+
+            try:
+                config = VllmOmniConfig.from_environment()
+                config.endpoint()
+                url = await search_manager.duplex_bridges.issue(
+                    ws, str((params or {}).get("search_session_id") or ""),
+                    joyai_provider.response_language_instruction(settings.reply_language())
+                    + "\n" + (restored or {}).get("instructions", ""),
+                )
+            except ValueError as exc:
+                await channel.send_response(ws, req_id, ok=False, error=str(exc), code="VIDEO_CONFIG_ERROR")
+                return
+            await channel.send_response(ws, req_id, ok=True, payload={
+                "provider": "vllm_omni_ws", "url": url, "model": config.model,
+                "reply_language": settings.reply_language(),
+            })
+            return
         if _video_live_mode() == "joyai":
             api_base, _, model = joyai_provider.model_config()
             if not api_base or not model:

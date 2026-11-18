@@ -13,10 +13,30 @@ from jiuwenswarm.extensions.video_duplex.backend.settings import settings_payloa
 
 
 async def check_saved_connection():
-    """Check Qwen session initialization or a minimal JoyAI completion."""
+    """Check the saved provider's session handshake or minimal completion."""
     values = settings_payload(enabled=True)["values"]
     async with asyncio.timeout(15):
-        if values["video_live_provider"] == "qwen_omni":
+        if values["video_live_provider"] == "vllm_omni_ws":
+            from .duplex_session_bridge import tools
+            from .tool_adapters.vllm_omni import VllmOmniConfig, VllmOmniToolAdapter
+
+            config = VllmOmniConfig.from_environment()
+            headers = {"Authorization": "Bearer " + config.api_key} if config.api_key else {}
+            async with websockets.connect(config.endpoint(), additional_headers=headers, close_timeout=1) as socket:
+                async def send(event: dict) -> None:
+                    await socket.send(json.dumps(event))
+
+                adapter = VllmOmniToolAdapter(send)
+                await adapter.configure(tools(), config)
+                async for raw in socket:
+                    event = json.loads(raw)
+                    if event.get("type") == "error":
+                        raise ValueError("The backend rejected duplex configuration")
+                    if event.get("type") == "session.created":
+                        adapter.adopt(event["session"], tool_count=len(tools()))
+                        await send({"type": "session.close"})
+                        return
+        elif values["video_live_provider"] == "qwen_omni":
             config = QwenOmniRealtimeConfig.from_environment()
             async with websockets.connect(
                 config.upstream_with_model(),

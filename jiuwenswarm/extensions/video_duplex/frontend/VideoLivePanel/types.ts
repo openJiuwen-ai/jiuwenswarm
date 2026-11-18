@@ -114,7 +114,7 @@ export interface AgentAction {
 
 export interface VideoSessionConfig {
   context_restore?: { token: string; instructions: string };
-  provider?: 'joyai' | 'qwen_omni';
+  provider?: 'joyai' | 'qwen_omni' | 'vllm_omni_ws';
   url?: string;
   model: string;
   voice?: string;

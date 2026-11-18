@@ -1,4 +1,5 @@
 {
+  "duplexBackend": { "title": "Duplex backend", "qwen": "Qwen Omni Realtime", "vllm": "vLLM-Omni WebSocket" },
   "pluginReplacement": {
     "title": "Plugin already exists",
     "message": "Local plugin {{id}} (version {{localVersion}}) already exists. Replace it with marketplace version {{hubVersion}}? Local changes will be overwritten.",
@@ -1324,6 +1325,11 @@
         "title": "Allow members to split tasks",
         "description": "Members can split the task they are working on into subtasks for themselves or other existing members. The task pauses until its subtasks finish, then resumes with their results. Subtasks can nest up to 2 levels."
       },
+      "video_live_provider": { "title": "Duplex backend", "description": "Applies when opening the next duplex session." },
+      "vllm_omni_realtime_url": { "placeholder": "ws://localhost:8099/v1/realtime", "title": "vLLM-Omni WebSocket URL", "description": "Use the duplex Realtime endpoint, for example ws://localhost:8099/v1/realtime." },
+      "vllm_omni_model": { "placeholder": "model", "title": "vLLM-Omni model", "description": "The model identifier served by this deployment." },
+      "vllm_omni_api_key": { "placeholder": "", "title": "vLLM-Omni API key", "description": "Optional for deployments without authentication. An empty save preserves the existing key." },
+      "vllm_omni_tool_timeout_s": { "placeholder": "120", "title": "Duplex tool timeout", "description": "Positive timeout in seconds, including approval wait time." },
       "task_full_duplex_enabled": {
         "title": "Enable Full-duplex in task chat",
         "description": "Full-duplex is only available in single-Agent mode; its entry is hidden in swarm/team mode. Show a Full-duplex action when the composer is empty. Start a continuous voice conversation; the switch below controls optional screen sharing."

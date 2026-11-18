@@ -122,8 +122,9 @@ def test_unconfigured_duplex_settings_do_not_prefill_models_or_endpoints(monkeyp
     assert values["video_live_provider"] == "qwen_omni"
     assert values["voice_protocol"] == "openai_http"
     assert values["reply_language"] == "match"
+    assert values["vllm_omni_tool_timeout_s"] == "120"
     for key in settings.SETTING_ENV_KEYS:
-        if key not in {"voice_protocol", "reply_language"}:
+        if key not in {"voice_protocol", "reply_language", "vllm_omni_tool_timeout_s"}:
             assert values[key] == ""
     assert not joyai_provider.uses_native_voice_channel("joyai")
     assert joyai_provider.voice_config() == ("", "", "")
@@ -702,6 +703,28 @@ async def test_video_config_selects_joyai_without_realtime_reference_audio(
         "model": "jdopensource/JoyAI-VL-Interaction",
         "reply_language": "match",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["en", "zh-CN", "match"])
+async def test_managed_video_config_keeps_language_on_server_and_never_returns_backend_key(monkeypatch, language):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setenv("VIDEO_LIVE_MODE", "realtime")
+    monkeypatch.setenv("VIDEO_REALTIME_PROVIDER", "vllm_omni_ws")
+    monkeypatch.setenv("VLLM_OMNI_REALTIME_URL", "ws://localhost:18809/v1/realtime")
+    monkeypatch.setenv("VLLM_OMNI_MODEL_NAME", "test-model")
+    monkeypatch.setenv("VLLM_OMNI_API_KEY", "private-backend-key")
+    monkeypatch.setenv("VIDEO_DUPLEX_REPLY_LANGUAGE", language)
+    channel = _video_channel()
+    issue = AsyncMock(return_value="/ws/video/vllm-omni?ticket=opaque")
+    channel.manager.duplex_bridges.issue = issue
+    await channel.handlers["video.realtime.config"](object(), "config", {}, "web-session")
+    response = channel.responses[-1][1]
+    assert response["ok"] is True
+    assert response["payload"]["provider"] == "vllm_omni_ws"
+    assert issue.await_args.args[2].startswith(joyai_provider.response_language_instruction(language))
+    assert "private-backend-key" not in json.dumps(response)
 
 
 @pytest.mark.asyncio
