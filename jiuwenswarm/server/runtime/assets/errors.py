@@ -129,3 +129,23 @@ def map_internal_error(exc: BaseException) -> AssetError | None:
         str(exc) or internal_code,
         details={"internal_code": internal_code},
     )
+
+
+def converge_error_payload(exc: BaseException) -> dict[str, Any]:
+    """把任意异常收敛为入口响应 payload（``{"error", "code"}`` 形状）。
+
+    收敛顺序（WS handler 与 WS 适配器两条入口共用，保证同错同码）：
+
+    1. :class:`AssetError` —— 契约异常原样透传；
+    2. 带 ``.code`` 的内部异常 —— :func:`map_internal_error` 查表收敛；
+    3. 无内部码的 ``ValueError`` —— 契约层参数校验失败，``INVALID_PARAMS``；
+    4. 其余 —— ``INTERNAL_ERROR`` 兜底。
+    """
+    if isinstance(exc, AssetError):
+        return exc.to_payload()
+    mapped = map_internal_error(exc)
+    if mapped is not None:
+        return mapped.to_payload()
+    if isinstance(exc, ValueError) and not hasattr(exc, "code"):
+        return {"error": str(exc) or "invalid params", "code": "INVALID_PARAMS"}
+    return {"error": str(exc) or "internal error", "code": "INTERNAL_ERROR"}

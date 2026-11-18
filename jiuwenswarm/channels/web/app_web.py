@@ -2073,6 +2073,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
         try:
             from jiuwenswarm.agents.harness.common.tools.web_file_download import (
+                PURPOSE_ASSET_EXPORT,
                 PURPOSE_SKILL_CONTENT_IMAGE,
                 validate_file_download_token,
             )
@@ -2126,6 +2127,12 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 return
             self._serve_verified_local_download(str(file_path), inline=True)
             return
+        # 资产导出 token 为短时效令牌，不享受交付产物的过期豁免：过期即 403，
+        # 未过期则继续走下方通用文件桥（含 AgentOS 代理）。
+        if payload is not None and str(payload.get("purpose") or "") == PURPOSE_ASSET_EXPORT:
+            if validate_file_download_token(token, check_expiry=True) is None:
+                self._write_json(403, {"error": "invalid_or_expired_token"})
+                return
         verified_download_name: str | None = None
         if payload is not None:
             # 本进程 secret 能校验并不意味着 token 的路径位于 Gateway 宿主机。

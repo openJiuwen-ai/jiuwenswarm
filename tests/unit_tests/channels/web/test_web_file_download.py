@@ -659,6 +659,46 @@ def test_expired_skill_image_remains_rejected(monkeypatch):
     assert responses == [(403, {"error": "invalid_or_expired_token"})]
 
 
+def test_expired_asset_export_token_is_rejected(monkeypatch, tmp_path):
+    monkeypatch.delenv("JIUWENSWARM_AGENT_DOWNLOAD_HTTP_BASE", raising=False)
+    monkeypatch.delenv("JIUWENSWARM_AGENT_HTTP_BASE", raising=False)
+    manager = WebFileDownloadManager(secret="s" * 32)
+    monkeypatch.setattr(WebFileDownloadManager, "_instance", manager)
+    file_path = tmp_path / "my-expert.zip"
+    file_path.write_bytes(b"zip-bytes")
+    info = web_file_download.build_file_download_info(
+        str(file_path), "my-expert.zip", expires_in=-60, purpose="asset_export",
+    )
+    token = info["download_token"]
+    # 过期豁免只属于交付产物 token：签名与路径均有效，purpose 标记过期即 403
+    assert manager.validate_token(token, check_expiry=False)["purpose"] == "asset_export"
+    handler = _DownloadHandlerStub()
+    responses = []
+    handler._write_json = lambda status, body: responses.append((status, body))
+
+    _SpaStaticHandler._handle_file_download(handler, {"token": token})
+
+    assert responses == [(403, {"error": "invalid_or_expired_token"})]
+
+
+def test_valid_asset_export_token_still_downloads(monkeypatch, tmp_path):
+    manager = WebFileDownloadManager(secret="s" * 32)
+    monkeypatch.setattr(WebFileDownloadManager, "_instance", manager)
+    file_path = tmp_path / "my-expert-1.2.0.zip"
+    file_path.write_bytes(b"zip-bytes")
+    token = manager.generate_token(str(file_path), expires_in=600, purpose="asset_export")
+    handler = _DownloadHandlerStub(command="GET")
+
+    _SpaStaticHandler._handle_file_download(handler, {"token": token})
+
+    assert handler.status == 200
+    assert handler.wfile.getvalue() == b"zip-bytes"
+    # 落盘 basename 即契约文件名，通用文件桥据此生成 Content-Disposition
+    assert handler.response_headers["Content-Disposition"] == (
+        "attachment; filename*=UTF-8''my-expert-1.2.0.zip"
+    )
+
+
 def test_expired_upload_remains_invalid_after_artifact_download(monkeypatch, tmp_path):
     manager = WebFileDownloadManager(secret="s" * 32)
     monkeypatch.setattr(WebFileDownloadManager, "_instance", manager)

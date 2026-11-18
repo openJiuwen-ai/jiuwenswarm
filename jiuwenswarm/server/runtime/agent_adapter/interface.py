@@ -2877,6 +2877,51 @@ class JiuWenSwarm:
             metadata=request.metadata,
         )
 
+    async def _handle_assets_package_request(self, request: AgentRequest) -> AgentResponse | None:
+        """Handle unified asset transfer requests (assets.export / assets.import);
+        None means not one of them."""
+        if request.req_method not in (ReqMethod.ASSETS_EXPORT, ReqMethod.ASSETS_IMPORT):
+            return None
+        from jiuwenswarm.server.runtime.assets import service
+        from jiuwenswarm.server.runtime.assets.errors import converge_error_payload
+
+        params = dict(request.params) if isinstance(request.params, dict) else {}
+        try:
+            # 打包/解包为同步磁盘操作，移出事件循环；与 HTTP 北向
+            # （dispatch.HANDLERS → handlers/assets.py）共用同一编排层。
+            if request.req_method == ReqMethod.ASSETS_EXPORT:
+                payload = await asyncio.to_thread(
+                    service.export_asset,
+                    params,
+                    session_id=str(request.session_id or ""),
+                    user_id=str(request.user_id or ""),
+                )
+            else:
+                payload = await asyncio.to_thread(service.import_asset, params)
+        except Exception as exc:  # noqa: BLE001 入口统一收敛，异常不出栈
+            err_payload = converge_error_payload(exc)
+            log = logger.error if err_payload.get("code") == "INTERNAL_ERROR" else logger.warning
+            log(
+                "[JiuWenSwarm] assets request rejected: method=%s code=%s error=%s",
+                request.req_method, err_payload.get("code"), err_payload.get("error"),
+            )
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload=err_payload,
+                metadata=request.metadata,
+            )
+        # 不打 payload 内容：导出成功响应携带含下载 token 的 URL，不入日志。
+        logger.info("[JiuWenSwarm] %s ok", request.req_method)
+        return AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload=payload,
+            metadata=request.metadata,
+        )
+
     @staticmethod
     def _is_skills_rebuild_followup(payload: Any) -> bool:
         """判断 skills.rebuild 响应是否需要静默 follow-up."""
@@ -3824,6 +3869,10 @@ class JiuWenSwarm:
         session_asset_response = await self._handle_session_asset_request(request)
         if session_asset_response is not None:
             return session_asset_response
+
+        assets_package_response = await self._handle_assets_package_request(request)
+        if assets_package_response is not None:
+            return assets_package_response
 
         plugins_response = await self._handle_plugins_request(request)
         if plugins_response is not None:
