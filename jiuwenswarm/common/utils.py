@@ -33,6 +33,7 @@ import json
 import os
 import re
 import sys
+import uuid
 import datetime
 import shutil
 import socket
@@ -1116,6 +1117,164 @@ def cleanup_stale_openjiuwen_descs() -> None:
                 ) from exc
 
 
+def _read_previous_external_cli_state(config_path: Path) -> dict[str, Any]:
+    """读取 config.yaml 里用户的三方 agent 配置。
+
+    返回 external_cli_agents 列表、路径历史与 external_transport 节点。
+    文件缺失（全新数据目录）返回不含 agent 的空态；**读取/解析失败抛异常**，
+    由调用方区分"读取失败"与"确认无启用 agent"——旁路刷新不得把读取失败
+    当成空态覆盖唯一的恢复备份（!10406 第五轮检视）。
+    """
+    if not config_path.exists():
+        return {"agents": [], "histories": {}, "transport": None}
+    import yaml
+
+    with config_path.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    team = ((data.get("modes") or {}).get("team") or {}).get("jiuwen_team") or {}
+    agents = team.get("external_cli_agents")
+    histories = team.get("external_cli_path_histories")
+    if not isinstance(agents, list) or not agents:
+        return {"agents": [], "histories": {}, "transport": team.get("external_transport")}
+    return {
+        "agents": agents,
+        "histories": histories if isinstance(histories, dict) else {},
+        "transport": team.get("external_transport"),
+    }
+
+
+def _restore_previous_external_cli_state(config_path: Path, state: dict[str, Any]) -> None:
+    """把覆盖前的三方 agent 配置写回新 config.yaml（ruamel round-trip 保格式）。
+
+    直接对被覆盖的目标文件做节点级更新——不能用全局 CONFIG_YAML_PATH 的更新
+    函数：prepare_workspace 可能带着与默认数据目录不同的 workspace_dir 被调用。
+    条目按当前允许清单过滤：旧配置里已不被支持的 agent 若原样回写，会在后续
+    配置归一化时抛 ValueError 导致保存失败。任一失败仅记录告警并保留模板
+    默认值，不阻塞 init。
+    """
+    try:
+        from jiuwenswarm.common.config import _allowed_external_cli_agents
+
+        allowed = set(_allowed_external_cli_agents())
+
+        def _allowed_entry(item: Any) -> bool:
+            if isinstance(item, dict):
+                name = str(item.get("cli_agent") or "").strip()
+            elif isinstance(item, str):
+                name = item.strip()
+            else:
+                return False
+            return bool(name) and name in allowed
+
+        agents = [item for item in state["agents"] if _allowed_entry(item)]
+        if not agents:
+            logger.info("覆盖前没有仍受支持的三方 agent 配置可保留")
+            return
+        yaml_rt = YAML()
+        yaml_rt.preserve_quotes = True
+        with config_path.open("r", encoding="utf-8") as handle:
+            data = yaml_rt.load(handle) or {}
+        modes = data.setdefault("modes", {})
+        team = modes.setdefault("team", {})
+        jiuwen_team = team.setdefault("jiuwen_team", {})
+        jiuwen_team["external_cli_agents"] = agents
+        histories = state.get("histories") or {}
+        if histories:
+            jiuwen_team["external_cli_path_histories"] = histories
+        # 跨进程 transport 不变式随 agents 一起恢复：agents 需要跨进程而
+        # transport 节点缺失时，后续配置归一化会直接抛错（!10406 第五轮）。
+        transport = state.get("transport")
+        if transport is not None:
+            jiuwen_team["external_transport"] = transport
+        # 原子写回：恢复写一半崩溃会留下半截 config.yaml，启动直接失败
+        # （!10406 检视），与 config.py 的落盘出口保持同样的原子语义。
+        tmp = config_path.with_name(f"{config_path.stem}.{uuid.uuid4().hex}.yaml.tmp")
+        try:
+            with tmp.open("w", encoding="utf-8") as handle:
+                yaml_rt.dump(data, handle)
+            os.replace(tmp, config_path)
+        except BaseException:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+        logger.info("已保留覆盖前的三方 agent 配置与路径历史")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"保留覆盖前的三方 agent 配置失败: {exc}")
+
+
+def external_cli_state_sidecar_path(workspace_dir: Path) -> Path:
+    """三方 agent 启用状态的旁路文件路径（位于 .jiuwenswarm 数据目录之外）。
+
+    数据目录被整体删除（重装/重置）后 config.yaml 不复存在，启用态无处
+    保留；旁路文件落在用户级应用数据目录，重装不会清除，init 时用于恢复
+    三方 agent 的启用配置。文件名按 workspace_dir 的摘要区分——项目支持
+    多工作区/多实例（JIUWENSWARM_DATA_DIR），旁路不能互相串台。
+    """
+    try:
+        from jiuwenswarm.common._build_config import DISPLAY_NAME as display_name
+    except Exception:  # noqa: BLE001
+        display_name = "WorkSwarm"
+    identity = hashlib.sha1(str(Path(workspace_dir).resolve()).encode("utf-8")).hexdigest()[:10]
+    if os.name == "nt":
+        local_app_data = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+        return local_app_data / display_name / f"external_cli_state-{identity}.json"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / display_name / f"external_cli_state-{identity}.json"
+    return Path.home() / ".config" / display_name / f"external_cli_state-{identity}.json"
+
+
+def refresh_external_cli_state_sidecar(config_path: Path, workspace_dir: Path) -> None:
+    """把 config.yaml 里的三方 agent 配置镜像到数据目录之外的旁路文件。
+
+    配置里没有启用中的 agent 时写入空态，init 依据空态不做恢复。
+    **读取失败与空态语义不同**：读取/解析失败时跳过刷新并保留既有旁路，
+    避免瞬时读失败把唯一的恢复备份覆盖成空态（!10406 第五轮检视）；旁路
+    本身用临时文件 + os.replace 原子写回，避免写一半截断恢复数据。
+    """
+    try:
+        state = _read_previous_external_cli_state(config_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"读取三方 agent 配置失败，跳过旁路刷新（保留既有旁路）: {exc}")
+        return
+    payload = state or {"agents": [], "histories": {}, "transport": None}
+    sidecar = external_cli_state_sidecar_path(workspace_dir)
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    tmp = sidecar.with_name(f"{sidecar.stem}.{uuid.uuid4().hex}.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False)
+        os.replace(tmp, sidecar)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _read_external_cli_state_sidecar(workspace_dir: Path) -> Optional[dict[str, Any]]:
+    """读取状态旁路文件；缺失/解析失败/无启用 agent 时返回 None。"""
+    try:
+        sidecar = external_cli_state_sidecar_path(workspace_dir)
+        if not sidecar.exists():
+            return None
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        agents = payload.get("agents") if isinstance(payload, dict) else None
+        if not isinstance(agents, list) or not agents:
+            return None
+        histories = payload.get("histories")
+        return {
+            "agents": agents,
+            "histories": histories if isinstance(histories, dict) else {},
+            "transport": payload.get("transport"),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"读取三方 agent 状态旁路文件失败: {exc}")
+        return None
+
+
 def prepare_workspace(
     overwrite: bool = True,
     preferred_language: Optional[str] = None,
@@ -1148,6 +1307,22 @@ def prepare_workspace(
 
     config_initialized = overwrite or not config_yaml_dest.exists()
     if config_initialized:
+        # init/重新部署用模板覆盖 config.yaml——三方 agent 的启用配置不取自被
+        # 覆盖的旧文件，而是从数据目录之外的状态旁路恢复（旁路在每次保存/清理
+        # 时镜像，见 dump_yaml_round_trip 的挂接点）。强制重置（init -f /
+        # overwrite）例外：重置语义完整生效——跳过恢复并清除旁路文件，否则
+        # "重置"名存实亡，且被恢复的 cli_path 指向已删除的安装。
+        if overwrite:
+            # 强制重置：跳过恢复并清除旁路文件（删除失败仅告警，不阻塞 init）
+            try:
+                external_cli_state_sidecar_path(workspace_dir).unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning(f"清除三方 agent 状态旁路失败: {exc}")
+        pre_restore_state = (
+            _read_external_cli_state_sidecar(workspace_dir)
+            if not overwrite and not config_yaml_dest.exists()
+            else None
+        )
         with TrackCopyDiff(
             dest=config_yaml_dest,
             is_file=True,
@@ -1155,6 +1330,8 @@ def prepare_workspace(
             overwrite=overwrite,
         ):
             shutil.copy2(config_yaml_src, config_yaml_dest)
+        if pre_restore_state is not None:
+            _restore_previous_external_cli_state(config_yaml_dest, pre_restore_state)
 
     resolved_lang = _resolve_preferred_language(config_yaml_dest, preferred_language)
 
