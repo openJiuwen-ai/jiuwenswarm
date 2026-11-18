@@ -46,6 +46,7 @@ from jiuwenswarm.common.config import (
     get_configured_read_image_multimodal,
     get_default_models,
 )
+from jiuwenswarm.common.model_config_validation import is_placeholder_model_entry
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +149,11 @@ def _enumerate_probe_targets(config_base: dict[str, Any]) -> dict[tuple[str, str
         label = _entry_label(origin, index, entry)
         if not model_client_config.get("model_name"):
             logger.info("[ImageModalityWarmup] %s: no model_name, not probed", label)
+            continue
+        if is_placeholder_model_entry(model_client_config):
+            # A template placeholder means "not configured yet". Probing it
+            # would send real traffic to example.com.
+            logger.info("[ImageModalityWarmup] %s: placeholder entry, not probed", label)
             continue
         try:
             model = build_model_from_entry(model_client_config, model_config_obj)

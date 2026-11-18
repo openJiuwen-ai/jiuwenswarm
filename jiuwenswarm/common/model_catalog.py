@@ -130,6 +130,7 @@ class ModelCatalog:
             "model_id": entry.get("model_id"), "alias": entry.get("alias", ""),
             "model_name": mcc.get("model_name", ""), "provider": mcc.get("client_provider", ""),
             "source": source, "is_agentos": source == "agentos", "is_default": bool(entry.get("is_default")),
+            "is_explicit_default": bool(entry.get("_explicit_default")),
             "enabled": bool(mcc.get("model_name")), "context_window": mco.get("context_window"),
         }
 
@@ -152,6 +153,8 @@ class ModelCatalog:
 
         hit = self.get_model(model_id)
         entry = deepcopy(hit["entry"])
+        # Runtime-only marker; persisting it would leak internal state into config.yaml.
+        entry.pop("_explicit_default", None)
         model_config = entry.get("model_config_obj")
         if isinstance(model_config, dict) and isinstance(model_config.get("reasoning_level"), bool):
             model_config["reasoning_level"] = "on" if model_config["reasoning_level"] else "off"
