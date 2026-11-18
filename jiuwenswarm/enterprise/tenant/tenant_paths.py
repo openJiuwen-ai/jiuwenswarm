@@ -90,7 +90,7 @@ def seed_tenant_agent_workspace(tenant_root: Path) -> None:
 
     ``prepare_workspace`` 只初始化默认工作区（个人版 ``~/.jiuwenswarm``），
     企业版各租户目录（``workspace_{tenant_key}``）由 ``TenantAgentPool`` 懒创建，
-    此前从未播种 AGENT/SOUL/IDENTITY/HEARTBEAT/USER/MEMORY.md 等模板。
+    此前从未播种 AGENT/SOUL/IDENTITY/USER/MEMORY.md 等模板。
     首次进入某租户请求时调用本函数补齐，使 write_memory/read_memory 等记忆工具
     有完整的工作区骨架。
     """
@@ -121,7 +121,6 @@ def seed_tenant_agent_workspace(tenant_root: Path) -> None:
     # (模板内相对路径, 落盘相对路径)，多语言文件去掉 _ZH/_EN 后缀
     entries: list[tuple[str, str]] = [
         (f"AGENT{suffix}.md", "AGENT.md"),
-        (f"HEARTBEAT{suffix}.md", "HEARTBEAT.md"),
         (f"IDENTITY{suffix}.md", "IDENTITY.md"),
         (f"SOUL{suffix}.md", "SOUL.md"),
         ("USER.md", "USER.md"),
