@@ -162,16 +162,6 @@ def _gateway_preflight_wait_seconds() -> float:
     return float(default.value)
 
 
-def _python_shutdown_budget_seconds() -> float:
-    """DesktopRuntime.shutdown 内 SIGTERM→强杀的统一预算(desktop_app.py 字面量)。"""
-    fn = _function_def(_desktop_app_module(), "shutdown")
-    segment = ast.get_source_segment(_read(DESKTOP_APP_PY), fn)
-    assert segment is not None
-    match = re.search(r"time\.monotonic\(\) \+ (\d+(?:\.\d+)?)", segment)
-    assert match, "shutdown 预算字面量未找到, 请同步更新本测试"
-    return float(match.group(1))
-
-
 def _data_url_export_specs() -> dict[str, dict[str, frozenset]]:
     value = _desktop_app_assignments()["DATA_URL_EXPORT_SPECS"]
     assert isinstance(value, ast.Dict)
@@ -413,7 +403,7 @@ def test_shutdown_budget_is_the_documented_divergence() -> None:
     Electron 单个传输进程 SIGTERM 等待 5s + 强杀等待 1.5s。
     钉住当前值: 任一侧改动都会红灯, 迫使重新评审该分歧。
     """
-    assert _python_shutdown_budget_seconds() == 30.0
+    assert _py_assignment_value(DESKTOP_APP_PY, "DESKTOP_SHUTDOWN_TIMEOUT_SECONDS") == 30.0
     assert _js_number_const(_read(MAIN_CJS), "RUNTIME_SHUTDOWN_TIMEOUT_MS") == 30_000
     assert _js_number_const(_read(MAIN_CJS), "SERVICE_SHUTDOWN_TIMEOUT_MS") == 5_000
     assert _js_number_const(_read(MAIN_CJS), "SERVICE_KILL_TIMEOUT_MS") == 1_500
