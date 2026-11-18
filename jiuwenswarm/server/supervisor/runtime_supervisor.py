@@ -74,6 +74,7 @@ _SNAPSHOT_WAIT_ATTEMPTS = 3
 _WATCHDOG_INTERVAL = 5.0
 _FORWARD_QUEUE_SIZE = 256
 _FORWARD_TIMEOUT = 10.0
+_MODELS_READY_RETRY_INITIAL = 1.0
 _FORWARD_DRAIN_TIMEOUT = 1.0
 # Transport stays alive (pongs flow) but the Worker's business loop has not
 # run: warn once it outlasts a heartbeat window, replace the Worker only when
@@ -212,6 +213,7 @@ class RuntimeSupervisor:
         self._worker_reached_ready = False
         self._crash_retry_at = 0.0
         self._generation = 0
+        self._models_ready_notification: tuple[int, Any] | None = None
         self._peer_generation: int | None = None
         self._last_rx = 0.0
         self._worker_last_beat = 0.0
@@ -347,6 +349,7 @@ class RuntimeSupervisor:
         self._gateway_ws = ws
         self._gateway_lock = send_lock
         self._schedule(self._notify_gateway(attached=True))
+        self._notify_models_when_ready()
 
     async def on_gateway_disconnect(self, ws: Any, remote: Any) -> None:
         if self._gateway_ws is ws:
@@ -1361,6 +1364,7 @@ class RuntimeSupervisor:
             return
         if kind == KIND_READINESS:
             self._apply_readiness(message)
+            self._notify_models_when_ready()
             return
         if kind == KIND_HEARTBEAT:
             return
@@ -1483,6 +1487,52 @@ class RuntimeSupervisor:
             if not message.get("ok", False) and dispatch_id in self._streams:
                 self._retire_stream(dispatch_id)
             future.set_result(message)
+
+    def _notify_models_when_ready(self) -> None:
+        """Invalidate model reads once per ready IPC generation and Gateway."""
+        ws, lock = self._gateway_ws, self._gateway_lock
+        if (self._stopping or self._closing or not self._readiness.snapshot()["agent_ready"]
+                or self._validated_conn is None
+                or self._forwarder is None or ws is None or lock is None):
+            return
+        notification = (self._generation, ws)
+        if self._models_ready_notification == notification:
+            return
+        self._models_ready_notification = notification
+        self._side_tasks.append(asyncio.create_task(
+            self._send_models_ready(notification, lock), name="runtime-models-ready",
+        ))
+
+    async def _send_models_ready(self, notification: tuple[int, Any], lock: asyncio.Lock) -> None:
+        from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+
+        generation, ws = notification
+        connection = self._validated_conn
+        delivered = False
+        delay = _MODELS_READY_RETRY_INITIAL
+        wire = build_server_push_wire({
+            "request_id": f"runtime-models-ready-{generation}",
+            "channel_id": "web",
+            "payload": {"event_type": "models.updated"},
+        })
+        try:
+            while (not self._stopping and not self._closing
+                    and generation == self._generation and ws is self._gateway_ws
+                    and connection is self._validated_conn and connection is self._conn
+                    and self._models_ready_notification == notification
+                    and self._readiness.snapshot()["agent_ready"]):
+                try:
+                    async with asyncio.timeout(_FORWARD_TIMEOUT):
+                        delivered = await self._forwarder.send(wire, ws=ws, send_lock=lock)
+                    if delivered:
+                        return
+                except Exception:
+                    logger.warning("[Supervisor] ready model invalidation push failed; retrying", exc_info=True)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 10.0)
+        finally:
+            if not delivered and self._models_ready_notification == notification:
+                self._models_ready_notification = None
 
     def _apply_readiness(self, message: dict[str, Any]) -> None:
         state = str(message.get("state") or "")

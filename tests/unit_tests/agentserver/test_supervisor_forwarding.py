@@ -400,3 +400,66 @@ async def test_real_worker_and_websocket_survive_gateway_stall(monkeypatch) -> N
         )
     finally:
         await supervisor.stop(terminate_worker=True)
+
+@pytest.mark.asyncio
+async def test_ready_reconnect_invalidates_models_once_per_gateway_and_generation() -> None:
+    from unittest.mock import AsyncMock
+
+    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+
+    readiness = Readiness()
+    supervisor = RuntimeSupervisor(readiness, forwarder=EventForwarder())
+    ws = _WebSocket()
+    supervisor._gateway_ws, supervisor._gateway_lock = ws, asyncio.Lock()
+    supervisor._conn = supervisor._validated_conn = _Connection()
+    supervisor._conn.send = AsyncMock()
+    supervisor._generation = 1
+    readiness.mark_runtime_warming()
+    await supervisor._handle({"kind": KIND_READINESS, "state": "RUNTIME_WARMING"})
+    await asyncio.sleep(0)
+    assert not ws.frames
+
+    await supervisor._handle({"kind": KIND_READINESS, "state": "AGENT_READY"})
+    await _until(lambda: len(ws.frames) == 1)
+    await supervisor._handle({"kind": KIND_READINESS, "state": "DEGRADED", "agent_ready": True})
+    await asyncio.sleep(0)
+    assert len(ws.frames) == 1
+
+    readiness.mark_runtime_warming()
+    supervisor._generation = 2
+    await supervisor._handle({"kind": KIND_READINESS, "state": "DEGRADED", "agent_ready": True})
+    await _until(lambda: len(ws.frames) == 2)
+    for wire in ws.frames:
+        assert wire["metadata"][E2A_WIRE_SERVER_PUSH_KEY] is True
+        assert parse_agent_server_wire_chunk(wire).payload["event_type"] == "models.updated"
+
+    replacement = _WebSocket()
+    supervisor.attach_gateway_connection(replacement, asyncio.Lock())
+    await _until(lambda: len(replacement.frames) == 1)
+
+
+@pytest.mark.asyncio
+async def test_ready_model_push_retries_after_gateway_send_timeout(monkeypatch) -> None:
+    monkeypatch.setattr(module, "_FORWARD_TIMEOUT", 0.02)
+    monkeypatch.setattr(module, "_MODELS_READY_RETRY_INITIAL", 0.01)
+    readiness = Readiness()
+    supervisor = RuntimeSupervisor(readiness, forwarder=EventForwarder())
+    ws, lock = _WebSocket(), asyncio.Lock()
+    supervisor._gateway_ws, supervisor._gateway_lock = ws, lock
+    supervisor._conn = supervisor._validated_conn = _Connection()
+    supervisor._generation = 1
+    await lock.acquire()
+    try:
+        await supervisor._handle({"kind": KIND_READINESS, "state": "AGENT_READY"})
+        await _until(lambda: supervisor._models_ready_notification is not None)
+        await asyncio.sleep(0.05)
+        assert not ws.frames
+        lock.release()
+        # No new readiness/attach message arrives after the Gateway becomes writable.
+        await _until(lambda: len(ws.frames) == 1)
+        await asyncio.sleep(0.05)
+        assert len(ws.frames) == 1
+    finally:
+        if lock.locked():
+            lock.release()
+        await supervisor._cancel_side_tasks()
