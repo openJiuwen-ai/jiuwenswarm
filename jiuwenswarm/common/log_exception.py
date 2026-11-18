@@ -2,12 +2,14 @@
 
 """Render bounded exception diagnostics without source-file or linecache IO."""
 
+from collections import deque
 from types import TracebackType
 
 
 _MAX_EXCEPTIONS = 32
 _MAX_DEPTH = 8
 _MAX_FRAMES = 64
+_MAX_FRAME_SCAN = 4096
 _MAX_GROUP_WIDTH = 15
 _MAX_NOTES = 8
 _MAX_TEXT_BYTES = 64 * 1024
@@ -24,6 +26,38 @@ def _exception_text(value: object) -> str:
         # Do not keep a prefix that could contain a partially masked secret.
         return "[exception text omitted: exceeds UTF-8 byte limit]"
     return text
+
+
+def _exception_stack(tb: TracebackType | None) -> list[str]:
+    """Keep innermost locations without retaining frames or scanning forever."""
+    locations: deque[tuple[str, int, str]] = deque(maxlen=_MAX_FRAMES)
+    scanned = 0
+    while tb is not None and scanned < _MAX_FRAME_SCAN:
+        code = tb.tb_frame.f_code
+        locations.append((code.co_filename, tb.tb_lineno, code.co_name))
+        tb = tb.tb_next
+        scanned += 1
+    lines = []
+    if scanned > _MAX_FRAMES:
+        lines.append("  [additional frames omitted: showing innermost scanned locations]\n")
+    lines.extend(f'  File "{filename}", line {lineno}, in {name}\n' for filename, lineno, name in locations)
+    if tb is not None:
+        lines.append("  [traceback scan limit reached; inner frames unavailable]\n")
+    return lines
+
+
+def _exception_notes(exc: BaseException) -> list[str]:
+    """Treat broken metadata as unavailable, without rendering its failure."""
+    try:
+        notes = getattr(exc, "__notes__", ())
+        if not isinstance(notes, (list, tuple)):
+            return []
+        lines = [f"{_exception_text(note)}\n" for note in notes[:_MAX_NOTES]]
+        if len(notes) > _MAX_NOTES:
+            lines.append("[additional exception notes omitted]\n")
+        return lines
+    except Exception:
+        return ["[exception notes omitted: metadata unavailable]\n"]
 
 
 def format_log_exception(
@@ -82,28 +116,18 @@ def format_log_exception(
             render(prior, prior.__traceback__, depth + 1)
             append(separator)
 
-        if tb is not None:
+        if tb is not None and not omitted:
             append("Traceback (most recent call last):\n")
-            for _ in range(_MAX_FRAMES):
-                if tb is None or omitted:
-                    break
-                code = tb.tb_frame.f_code
-                append(f'  File "{code.co_filename}", line {tb.tb_lineno}, in {code.co_name}\n')
-                tb = tb.tb_next
-            if tb is not None:
-                append("  [additional frames omitted]\n")
+            for line in _exception_stack(tb):
+                append(line)
 
         cls = type(exc)
         name = cls.__qualname__
         if cls.__module__ not in ("builtins", "__main__"):
             name = f"{cls.__module__}.{name}"
         append(f"{name}: {_exception_text(exc)}\n")
-        notes = getattr(exc, "__notes__", ())
-        if isinstance(notes, (list, tuple)):
-            for note in notes[:_MAX_NOTES]:
-                append(f"{_exception_text(note)}\n")
-            if len(notes) > _MAX_NOTES:
-                append("[additional exception notes omitted]\n")
+        for line in _exception_notes(exc):
+            append(line)
         if isinstance(exc, BaseExceptionGroup):
             for index, child in enumerate(exc.exceptions[:_MAX_GROUP_WIDTH], 1):
                 if omitted or rendered >= _MAX_EXCEPTIONS:

@@ -61,6 +61,12 @@ class SlowShellProbe:
             }
 
 
+class BadNotesValueError(ValueError):
+    @property
+    def __notes__(self):
+        raise RuntimeError("token=notes-injection-private-value")
+
+
 class TrafficRuntime:
     def __init__(self, mode: str) -> None:
         self.mode = mode
@@ -156,8 +162,9 @@ class TrafficRuntime:
     async def dispatch_parsed_request(self, ws, request, send_lock) -> None:
         if self.mode == "exception-logging":
             started = time.monotonic()
+            error_type = BadNotesValueError if request.params.get("bad_notes") else ValueError
             try:
-                raise ValueError("api_key=source-injection-private-value")
+                raise error_type("api_key=source-injection-private-value")
             except ValueError:
                 self.exception_logger.exception("injected exception")
             log_seconds = time.monotonic() - started
@@ -169,7 +176,9 @@ class TrafficRuntime:
                 "request_id": request.request_id, "phase": "final",
                 "log_seconds": log_seconds, "source_lookups": self.source_lookups,
                 "traceback_present": "Traceback" in text and "ValueError:" in text,
-                "redacted": "source-injection-private-value" not in text and "******" in text,
+                "redacted": "source-injection-private-value" not in text
+                and "notes-injection-private-value" not in text and "******" in text,
+                "notes_omitted": "exception notes omitted" in text,
                 "utils_origin": self.utils_origin,
             }))
             return

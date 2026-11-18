@@ -172,8 +172,12 @@ Runtime exception logs retain file names, line numbers, function names, exceptio
 and redacted messages and notes. Source lines and local variables are omitted. Redaction reads
 the traceback in memory without source lookup through `linecache`, keeping slow filesystem
 access off the business thread. Frames, exception count, and nesting depth have limits.
-Individual exception text and the assembled diagnostic each use a 64 KiB UTF-8 byte budget;
-omitted content is marked explicitly.
+Individual exception text, the assembled diagnostic, and its redacted result each use a 64 KiB
+UTF-8 byte budget; omitted content is marked explicitly. Unreadable notes are omitted.
+Formatting or redaction failures produce fixed safe summaries and release raw arguments and
+exception frames; source failures remain counted in `_source_masking_failures`.
+Long tracebacks retain the innermost 64 locations within a bounded scan of 4096 frames.
+Reaching the scan limit explicitly marks deeper locations as unavailable.
 
 #### Backend Code Changes
 
