@@ -896,6 +896,86 @@ async def test_worker_internal_call_cancel_is_tool_error(
 
 
 @pytest.mark.asyncio
+async def test_worker_transport_group_cancel_is_tool_error(transport, patched, monkeypatch):
+    worker = mcp_config._PooledMcpWorker("test")
+    params = {
+        "_mcp_client_type": "streamable-http", "server_name": "test",
+        "server_path": config("streamable-http")["url"],
+    }
+    worker.task = asyncio.create_task(mcp_config._run_mcp_worker(params, worker))
+    try:
+        await asyncio.wait_for(worker.call_tool("echo", {}), 1)
+        session = transport.sessions[-1]
+
+        async def crash_transport(self, name, arguments):
+            async def post_failed():
+                raise RuntimeError("Client error '401 Unauthorized'")
+
+            self.group.start_soon(post_failed)
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(type(session), "call_tool", crash_transport)
+        caller = asyncio.create_task(worker.call_tool("echo", {}))
+        with pytest.raises(mcp_config.McpWorkerStoppedError, match="cancelled internally"):
+            await asyncio.wait_for(caller, 1)
+        assert not caller.cancelled() and caller.cancelling() == 0
+        await asyncio.wait_for(asyncio.gather(worker.task, return_exceptions=True), 1)
+        assert not worker.alive
+    finally:
+        await mcp_config.shutdown_pooled_mcp_worker(worker)
+    await settled(transport)
+
+
+@pytest.mark.asyncio
+async def test_request_scoped_tool_rebuilds_after_transport_group_cancel(
+    transport, patched, monkeypatch,
+):
+    """transport 内部取消后，请求级工具重建 worker 重试一次即成功，调用者不被取消。"""
+    from openjiuwen.core.foundation.tool import ToolCard
+
+    monkeypatch.setattr(mcp_config, "ensure_request_scoped_mcp_tool_allowed", lambda _tool_id: None)
+    monkeypatch.setattr(mcp_config, "ensure_office_claw_tool_invocation_matches_active", lambda _tool: None)
+    request_id = "req-transport-cancel"
+    tool = mcp_config.RequestScopedOfficeClawMcpTool(
+        ToolCard(id="office-claw-request-x.pptx-mcp.echo", name="echo", input_params={}),
+        {
+            "_mcp_client_type": "streamable-http", "server_name": "pptx-mcp",
+            "server_path": config("streamable-http")["url"],
+        },
+        request_id,
+        "pptx-mcp",
+    )
+    crashed = False
+
+    def crash_once(original):
+        async def call_tool(self, name, arguments):
+            nonlocal crashed
+            if crashed:
+                return await original(self, name, arguments)
+            crashed = True
+
+            async def post_failed():
+                raise RuntimeError("Client error '401 Unauthorized'")
+
+            self.group.start_soon(post_failed)
+            await asyncio.Event().wait()
+
+        return call_tool
+
+    try:
+        assert (await asyncio.wait_for(tool.invoke({}), 1)) == {"result": "ok"}
+        session_cls = type(transport.sessions[-1])
+        monkeypatch.setattr(session_cls, "call_tool", crash_once(session_cls.call_tool))
+        caller = asyncio.create_task(tool.invoke({}))
+        assert (await asyncio.wait_for(caller, 2)) == {"result": "ok"}
+        assert crashed and not caller.cancelled() and caller.cancelling() == 0
+        assert transport.connects == 2
+    finally:
+        await mcp_config.release_request_scoped_mcp_sessions(request_id)
+    await settled(transport)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["streamable-http", "sse"])
 async def test_external_cancel_during_internal_cancel_cleanup(
     transport, patched, monkeypatch, kind,
