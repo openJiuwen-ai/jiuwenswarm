@@ -239,3 +239,36 @@ def test_publish_time_gives_up_within_budget_when_upstream_hangs(monkeypatch):
     assert release.version == "1.2.3"
     assert release.assets[0].name == "workswarm-1.2.3-py3-none-any.whl"
     assert elapsed < 1.0
+
+
+@pytest.mark.parametrize("uv_command,index_flag", [(None, "-i"), ("uv", "--index-url")])
+@pytest.mark.parametrize(
+    "mirror,expected_index",
+    [
+        # Legacy configs saved by older builds must be migrated at the final
+        # pip boundary even when they bypass UpdaterService._load_config
+        # (issue 6288).
+        ("https://mirrors.aliyun.com/pypi", "https://mirrors.aliyun.com/pypi/simple/"),
+        ("https://mirrors.aliyun.com/pypi/", "https://mirrors.aliyun.com/pypi/simple/"),
+        # Explicit index URLs and empty mirrors keep their current semantics.
+        (
+            "https://pypi.tuna.tsinghua.edu.cn/simple",
+            "https://pypi.tuna.tsinghua.edu.cn/simple",
+        ),
+        ("", ""),
+    ],
+)
+def test_install_args_normalize_legacy_mirror_at_pip_boundary(
+    monkeypatch, uv_command, index_flag, mirror, expected_index
+):
+    monkeypatch.setattr(
+        upgrade_executor.PipExecutor, "_resolve_uv_command", staticmethod(lambda: uv_command)
+    )
+    executor = upgrade_executor.PipExecutor({"pypi_mirror": mirror}, lambda updates: None)
+    args = executor._build_install_args("workswarm", 20)
+
+    assert "workswarm" in args
+    if expected_index:
+        assert args[args.index(index_flag) + 1] == expected_index
+    else:
+        assert index_flag not in args
