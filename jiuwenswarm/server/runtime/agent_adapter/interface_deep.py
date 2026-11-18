@@ -5709,10 +5709,16 @@ class JiuWenSwarmDeepAdapter:
         )
 
         params = request.params if isinstance(getattr(request, "params", None), dict) else {}
+        entry_by_ref = getattr(self, "_model_entry_by_ref", None)
+        identity_to_keys = getattr(self, "_model_identity_to_keys", None)
+        if not isinstance(entry_by_ref, dict):
+            entry_by_ref = {}
+        if not isinstance(identity_to_keys, dict):
+            identity_to_keys = {}
         return resolve_catalog_window_tokens(
             params=params,
-            entry_by_ref=self._model_entry_by_ref,
-            identity_to_keys=self._model_identity_to_keys,
+            entry_by_ref=entry_by_ref,
+            identity_to_keys=identity_to_keys,
             normalize_ref=normalize_model_identity_reference,
         )
 
@@ -5728,44 +5734,65 @@ class JiuWenSwarmDeepAdapter:
         Deep main chat only. Call after model apply and pending reload, before invoke.
         Catalog max is resolved from request identity (model_ref / model_name), not
         Model object identity, so reload order need not change for this feature.
+
+        Failures here must not abort the chat turn: window is a compression budget
+        override, not a hard dependency of invoke.
         """
         from jiuwenswarm.server.runtime.agent_adapter.deep.context_window import (
             run_request_context_window_apply,
         )
 
-        sid = str(session_id or "").strip()
-        if not sid:
-            return
-        params = request.params if isinstance(getattr(request, "params", None), dict) else {}
-        catalog_max = self._catalog_context_window_tokens_for_request(request)
-
-        react_agent = None
-        if self._instance is not None:
-            react_agent = getattr(self._instance, "react_agent", None) or getattr(
-                self._instance, "_react_agent", None
+        try:
+            sid = str(session_id or "").strip()
+            if not sid:
+                return
+            params = (
+                request.params if isinstance(getattr(request, "params", None), dict) else {}
             )
-        context_engine = getattr(react_agent, "context_engine", None) if react_agent else None
-        context = None
-        if context_engine is not None:
-            try:
-                context = context_engine.get_context(session_id=sid)
-            except Exception:
-                logger.debug(
-                    "[ModelWindow] get_context failed session=%s", sid, exc_info=True
-                )
-                context = None
+            catalog_max = self._catalog_context_window_tokens_for_request(request)
 
-        log_model = str(model_name or params.get("model_name") or "").strip()
-        run_request_context_window_apply(
-            session_id=sid,
-            params=params,
-            catalog_max=catalog_max,
-            context=context,
-            context_engine=context_engine,
-            snapshots=self._context_window_override_snapshots,
-            model_name=log_model,
-            log=logger,
-        )
+            react_agent = None
+            if self._instance is not None:
+                react_agent = getattr(self._instance, "react_agent", None) or getattr(
+                    self._instance, "_react_agent", None
+                )
+            context_engine = (
+                getattr(react_agent, "context_engine", None) if react_agent else None
+            )
+            context = None
+            if context_engine is not None:
+                try:
+                    context = context_engine.get_context(session_id=sid)
+                except Exception:
+                    logger.debug(
+                        "[ModelWindow] get_context failed session=%s", sid, exc_info=True
+                    )
+                    context = None
+
+            snapshots = getattr(self, "_context_window_override_snapshots", None)
+            if not isinstance(snapshots, dict):
+                self._context_window_override_snapshots = {}
+                snapshots = self._context_window_override_snapshots
+
+            log_model = str(model_name or params.get("model_name") or "").strip()
+            run_request_context_window_apply(
+                session_id=sid,
+                params=params,
+                catalog_max=catalog_max,
+                context=context,
+                context_engine=context_engine,
+                snapshots=snapshots,
+                model_name=log_model,
+                log=logger,
+            )
+        except Exception:
+            logger.warning(
+                "[ModelWindow] apply failed; continuing without window override "
+                "session=%s model=%s",
+                session_id,
+                model_name,
+                exc_info=True,
+            )
 
     def _apply_model_to_react_agent(self, model: Model) -> None:
         """将指定模型应用到 react_agent 实例（替换 _llm 和 _config 字段）。

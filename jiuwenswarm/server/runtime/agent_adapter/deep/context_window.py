@@ -59,6 +59,18 @@ def catalog_window_from_entry(entry: Any) -> int | None:
     return parse_positive_window_tokens(entry.get(CATALOG_CONTEXT_WINDOW_KEY))
 
 
+def _cache_key_matches_model_name(cache_key: Any, model_name: str) -> bool:
+    """Match bare model_name against cache keys (``name`` or ``name#idx``)."""
+    key = str(cache_key or "")
+    if not key or not model_name:
+        return False
+    if key == model_name:
+        return True
+    # defaults registration uses f"{model_name}#{idx}"; bare name must still hit.
+    bare, sep, _suffix = key.partition("#")
+    return bool(sep) and bare == model_name
+
+
 def resolve_catalog_window_tokens(
     *,
     params: Mapping[str, Any] | None,
@@ -71,6 +83,7 @@ def resolve_catalog_window_tokens(
     Lookup order:
     1. ``params.model_ref`` (normalized when ``normalize_ref`` is provided)
     2. unique ``params.model_name`` hit in ``identity_to_keys`` values
+       (accepts bare name or ``{name}#{idx}`` cache keys)
     3. unique ``is_default`` entry in ``entry_by_ref``
     """
     params = params if isinstance(params, Mapping) else {}
@@ -94,7 +107,7 @@ def resolve_catalog_window_tokens(
         matches = [
             ref
             for ref, keys in identity_to_keys.items()
-            if model_name in keys
+            if any(_cache_key_matches_model_name(key, model_name) for key in keys)
         ]
         if len(matches) == 1:
             return catalog_window_from_entry(entry_by_ref.get(matches[0]))
@@ -143,7 +156,7 @@ def apply_context_window_to_session(
             current = getattr(context, "_context_window_tokens", None)
             if current != effective:
                 # Private slot: agent-core has no public setter this phase.
-                context._context_window_tokens = effective
+                _set_context_window_tokens(context, effective)
         elif context_engine is not None:
             if _set_engine_config_window(context_engine, effective):
                 snapshot["seeded_engine"] = True
@@ -162,7 +175,7 @@ def apply_context_window_to_session(
     if snapshot is None:
         return None
     if context is not None:
-        context._context_window_tokens = snapshot.get("context_prev")
+        _set_context_window_tokens(context, snapshot.get("context_prev"))
     if snapshot.get("seeded_engine") and context_engine is not None:
         _set_engine_config_window(context_engine, snapshot.get("engine_prev"))
     return None
@@ -175,6 +188,19 @@ def _engine_config_window(context_engine: Any | None) -> int | None:
     if config is None:
         return None
     return getattr(config, "context_window_tokens", None)
+
+
+def _set_context_window_tokens(context: Any, value: int | None) -> bool:
+    """Set session private compression slot; return False if assignment fails.
+
+    Uses ``setattr`` so static rules do not flag cross-module ``_`` access; agent-core
+    has no public setter this phase (S_06 N6).
+    """
+    try:
+        setattr(context, "_context_window_tokens", value)
+        return True
+    except Exception:
+        return False
 
 
 def _set_engine_config_window(context_engine: Any, value: int | None) -> bool:

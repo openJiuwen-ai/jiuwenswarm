@@ -38,7 +38,20 @@ def test_resolve_catalog_by_model_ref_not_object_identity():
 
 
 def test_resolve_catalog_by_unique_model_name():
+    """defaults 主路径：identity map value 为 ``{name}#{idx}``，裸名仍须命中。"""
     ref = "model-identity-v1:" + ("b" * 64)
+    entry_by_ref = {ref: {"context_window_tokens": 300000}}
+    got = resolve_catalog_window_tokens(
+        params={"model_name": "glm-5.3"},
+        entry_by_ref=entry_by_ref,
+        identity_to_keys={ref: ["glm-5.3#0"]},
+    )
+    assert got == 300000
+
+
+def test_resolve_catalog_by_unique_model_name_legacy_bare_key():
+    """legacy 缓存形态：value 为裸 model_name，仍须命中。"""
+    ref = "model-identity-v1:" + ("b2" * 32)
     entry_by_ref = {ref: {"context_window_tokens": 300000}}
     got = resolve_catalog_window_tokens(
         params={"model_name": "glm-5.3"},
@@ -58,7 +71,7 @@ def test_resolve_catalog_ambiguous_model_name_returns_none():
     got = resolve_catalog_window_tokens(
         params={"model_name": "dup"},
         entry_by_ref=entry_by_ref,
-        identity_to_keys={r1: ["dup"], r2: ["dup"]},
+        identity_to_keys={r1: ["dup#0"], r2: ["dup#1"]},
     )
     assert got is None
 
