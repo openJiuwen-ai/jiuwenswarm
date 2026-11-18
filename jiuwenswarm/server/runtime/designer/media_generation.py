@@ -2,7 +2,7 @@
 """Designer image / video generation on the shared generation backends.
 
 Design uses its own model choice from the multimodal catalogue
-(``generation_selection``), not the Settings > Agent tool switch or the single
+(``design_generation_selection``), not the Settings > Agent tool switch or the single
 model bound there. A process that has no catalogue yet still reads the
 ``VIDEO_GEN_*`` / ``VISUAL_GEN_*`` environment slots, so existing callers keep
 working before settings are migrated. Unlike the chat tool, a clip waits for
@@ -117,7 +117,7 @@ def slot_settings(kind: Kind) -> SlotSettings:
     A stored multimodal catalogue wins, including when the agent tool for that
     modality is switched off. Without a catalogue, the environment slot remains.
     """
-    from jiuwenswarm.server.runtime.designer.generation_selection import catalogue_generation_model
+    from jiuwenswarm.common.design_generation_selection import catalogue_generation_model
 
     found = catalogue_generation_model(_CAPABILITY[kind])
     if not found.present:
@@ -154,7 +154,7 @@ def image_tool_timeout_seconds() -> float:
 
 def _catalogue_has_model(kind: Kind) -> bool | None:
     """True/False when a catalogue exists, None when Design still uses the env slot."""
-    from jiuwenswarm.server.runtime.designer.generation_selection import catalogue_generation_model
+    from jiuwenswarm.common.design_generation_selection import catalogue_generation_model
 
     found = catalogue_generation_model(_CAPABILITY[kind])
     if not found.present:

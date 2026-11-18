@@ -10,16 +10,16 @@ from jiuwenswarm.common.config_panel.config_set_handlers import (
     ConfigPanelBadRequest,
     apply_config_payload,
 )
+from jiuwenswarm.common.design_generation_selection import (
+    DesignSelectionError,
+    generation_selection_view,
+    set_generation_selection,
+)
 from jiuwenswarm.common.multimodal_models import CAPABILITIES
 from jiuwenswarm.common.multimodal_projection import ALIASES, FIELDS
 from jiuwenswarm.common.multimodal_store import MultimodalStore
 from jiuwenswarm.common.utils import get_config_file
 from jiuwenswarm.server.runtime.designer import media_generation as mg
-from jiuwenswarm.server.runtime.designer.generation_selection import (
-    DesignSelectionError,
-    generation_selection_view,
-    set_generation_selection,
-)
 
 
 def _model(capability: str, name: str, **connection: str) -> dict:

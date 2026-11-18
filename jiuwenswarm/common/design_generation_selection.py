@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Design mode's own image and video model choice.
+"""Catalogue-backed image and video model choices for Design mode.
 
 The choice is global for Design: every canvas uses the same selected model
 for a modality. It is stored beside the multimodal catalogue and resolved

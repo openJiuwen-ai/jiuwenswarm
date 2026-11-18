@@ -1536,7 +1536,7 @@ def apply_config_payload(
 
     external_cli_agents_updated = False
     try:
-        from jiuwenswarm.server.runtime.designer.generation_selection import (
+        from jiuwenswarm.common.design_generation_selection import (
             DesignSelectionError,
             apply_design_generation_config,
         )
@@ -1929,7 +1929,7 @@ async def config_get_handler(
         resolved = get_config()
         models_cfg = resolved.get("models") or {}
         payload["enable_free_models"] = "true" if models_cfg.get("enable_free_models", False) else "false"
-        from jiuwenswarm.server.runtime.designer.generation_selection import saved_generation_config
+        from jiuwenswarm.common.design_generation_selection import saved_generation_config
 
         payload.update(saved_generation_config())
     except Exception:  # noqa: BLE001
