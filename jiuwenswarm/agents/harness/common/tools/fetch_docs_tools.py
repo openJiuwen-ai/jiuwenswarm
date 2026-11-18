@@ -289,6 +289,18 @@ def _is_ip_literal(host: str) -> bool:
         return False
 
 
+def _is_invalid_ip_range(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Return True if IP is in non-global or special scope."""
+    return (
+        not ip.is_global
+        or ip.is_multicast
+        or ip.is_unspecified
+        or ip.is_reserved
+        or ip.is_loopback
+        or ip.is_link_local
+    )
+
+
 def _is_public_ip(ip_text: str) -> bool:
     """Return True only when ``ip_text`` is a publicly routable unicast address."""
     cleaned = _strip_ip_literal(ip_text)
@@ -298,14 +310,7 @@ def _is_public_ip(ip_text: str) -> bool:
         ip = ipaddress.ip_address(cleaned)
     except ValueError:
         return False
-    if (
-        not ip.is_global
-        or ip.is_multicast
-        or ip.is_unspecified
-        or ip.is_reserved
-        or ip.is_loopback
-        or ip.is_link_local
-    ):
+    if _is_invalid_ip_range(ip):
         return False
     if ip.version == 6:
         if ip.ipv4_mapped is not None and not _is_public_ip(str(ip.ipv4_mapped)):
@@ -484,6 +489,11 @@ def _extract_declared_charset(content_type: str, head_bytes: bytes) -> str:
     return ""
 
 
+def _is_trailing_byte_error(exc: UnicodeDecodeError, length: int, truncated: bool) -> bool:
+    """Check if decode error is likely due to truncation on last multibyte character."""
+    return truncated and exc.end == length and exc.start >= length - 4
+
+
 def _decode_response_bytes(
     raw_bytes: bytes,
     content_type: str,
@@ -508,7 +518,7 @@ def _decode_response_bytes(
         try:
             return raw_bytes.decode(norm, errors="strict")
         except UnicodeDecodeError as exc:
-            if truncated_by_bytes and exc.end == len(raw_bytes) and exc.start >= len(raw_bytes) - 4:
+            if _is_trailing_byte_error(exc, len(raw_bytes), truncated_by_bytes):
                 return raw_bytes.decode(norm, errors="replace")
             continue
         except LookupError:
@@ -1332,7 +1342,7 @@ def _read_cached_page_record(
     """Load one cached page entry from disk, returning None on invalid data."""
     if not isinstance(item, dict):
         return None
-    rel_file = str(item.get("file") or "")
+    rel_file = str(item.get("file") or "").strip()
     if not rel_file:
         return None
     page_path = (cache_dir / rel_file).resolve()
@@ -1340,12 +1350,9 @@ def _read_cached_page_record(
         return None
     try:
         markdown = page_path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    try:
         status_code = int(item.get("status_code", 200))
         depth = int(item.get("depth", 0))
-    except (ValueError, TypeError):
+    except (OSError, ValueError, TypeError):
         return None
     return _FetchedPage(
         url=str(item.get("url") or ""),

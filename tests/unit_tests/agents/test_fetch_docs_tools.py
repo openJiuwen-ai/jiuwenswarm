@@ -240,7 +240,7 @@ _CHROME_SAMPLE_HTML = """
         <tr><td>timeout</td><td>15</td></tr>
       </table>
     </main>
-    <footer>Footer Copyright Noise <a href="/guide/footer-only.html">Footer</a></footer>
+    <footer>Footer Boilerplate Noise <a href="/guide/footer-only.html">Footer</a></footer>
   </body>
 </html>
 """
@@ -271,7 +271,7 @@ async def test_html_to_markdown_strips_chrome_and_preserves_structure(
     requested = _install_mock_http(monkeypatch, _make_chrome_sample_handler())
     result = await fetch_docs.invoke({"url": ROOT_URL, "max_depth": 1})
 
-    for noise in ("Nav Menu Noise", "Sidebar Noise", "Footer Copyright Noise", "secret script"):
+    for noise in ("Nav Menu Noise", "Sidebar Noise", "Footer Boilerplate Noise", "secret script"):
         assert noise not in result
 
     assert "https://docs.invalid/guide/install.html" in requested
