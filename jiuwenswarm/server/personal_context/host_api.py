@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import logging
 import stat
+import sys
 import tempfile
 from collections.abc import Awaitable, Callable
 from typing import NoReturn, cast
@@ -214,6 +215,7 @@ def _unconfigured_projection() -> dict[str, object]:
     strategy_profile, model_index, model_id = _default_strategy_and_model()
     return {
         "configured": False,
+        "host_platform": sys.platform,
         "master_enabled": False,
         "collection_enabled": False,
         "agent_use_enabled": False,
@@ -548,6 +550,7 @@ def _project_service(service: dict[str, object]) -> dict[str, object]:
 
 def _project_stored_config(stored: dict[str, object]) -> dict[str, object]:
     projected = deepcopy(stored)
+    projected["host_platform"] = sys.platform
     if "master_enabled" not in projected:
         projected["master_enabled"] = bool(
             projected.get("collection_enabled") or projected.get("agent_use_enabled")
