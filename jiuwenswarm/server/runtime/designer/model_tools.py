@@ -17,10 +17,7 @@ from urllib.parse import unquote, urlparse
 
 from jiuwenswarm.common.config import get_config, get_default_models
 from jiuwenswarm.common.reasoning_config import (
-    SUPPORTED_REASONING_LEVELS,
-    effective_endpoint_profile,
-    reasoning_config_for_level,
-    reasoning_level_options,
+    minimal_reasoning,
     resolve_endpoint_profile_override,
     resolve_sampling_override,
 )
@@ -33,7 +30,7 @@ logger = logging.getLogger(__name__)
 # DeepSeek/Ark allow very large completions; keep a high practical ceiling so
 # storyboard/plan JSON is not truncated mid-object (truncation → parse retry → slow).
 # Thinking mode shares this budget with final content — calls run at the
-# model's lowest reasoning setting (see ``_minimal_reasoning``).
+# model's lowest reasoning setting (see ``minimal_reasoning``).
 _DESIGNER_MAX_TOKENS_CAP = 65536
 _DESIGNER_DEFAULT_MAX_TOKENS = 16384
 # Large plans need more wall time than a chat turn.
@@ -55,6 +52,14 @@ def use_preferred_designer_model(model_name: str | None) -> Iterator[None]:
         yield
     finally:
         _preferred_designer_model.reset(token)
+
+
+def preferred_designer_model_ref(graph: dict[str, Any] | None) -> str:
+    """Return the graph's chosen model, preferring a stable id over a shared name."""
+    metadata = graph.get("metadata") if isinstance(graph, dict) else None
+    if not isinstance(metadata, dict):
+        return ""
+    return str(metadata.get("model_id") or metadata.get("model_name") or "").strip()
 
 
 def _clamp_max_tokens(value: int | None) -> int:
@@ -93,33 +98,6 @@ def _self_hosted_endpoint_profile(client_config: dict[str, Any]) -> str | None:
     except ValueError:
         return None
     return "vllm"
-
-
-def _minimal_reasoning(client_config: dict[str, Any], model_name: str) -> dict[str, str] | None:
-    """Lowest reasoning setting the model accepts, as core's provider-neutral config.
-
-    Reasoning shares ``max_tokens`` with the visible reply, so Designer calls
-    turn it off where the model allows and otherwise pick the lowest level
-    core lists for it. Core owns the capability table and the per-endpoint
-    wire format; ``None`` means the model exposes no control at all.
-    """
-    from openjiuwen.core.foundation.llm import get_reasoning_capability
-
-    provider = str(client_config.get("client_provider") or "OpenAI")
-    api_base = str(client_config.get("api_base") or "")
-    capability = get_reasoning_capability(
-        provider=provider,
-        model=model_name,
-        protocol="anthropic" if provider.strip().lower() == "anthropic" else "openai",
-        api_base=api_base,
-        endpoint_profile=effective_endpoint_profile(api_base, client_config.get("endpoint_profile")),
-    )
-    options = set(reasoning_level_options(capability))
-    for level in SUPPORTED_REASONING_LEVELS:
-        # A bare "on" is a toggle without a lower setting to choose.
-        if level != "on" and level in options:
-            return reasoning_config_for_level(level)
-    return None
 
 
 def _message_text(msg: AssistantMessage) -> str:
@@ -406,6 +384,16 @@ def model_text_or_raise(result: dict[str, Any] | None) -> str:
     return text
 
 
+def _configured_model_matches(model: dict[str, Any], preferred_model: str) -> bool:
+    """Match a catalog row without stacking boolean expressions in the caller."""
+    stable_id = model.get("model_id")
+    if stable_id and stable_id == preferred_model:
+        return True
+    if model.get("id") == preferred_model:
+        return True
+    return model.get("model_name") == preferred_model
+
+
 def list_configured_models() -> list[dict[str, Any]]:
     """Return models from Settings / config.yaml for agent tool use.
 
@@ -425,6 +413,7 @@ def list_configured_models() -> list[dict[str, Any]]:
         out.append(
             {
                 "id": alias or name,
+                "model_id": str(entry.get("model_id") or "").strip(),
                 "model_name": name,
                 "alias": alias,
                 "api_base": str(mcc.get("api_base") or ""),
@@ -535,7 +524,9 @@ async def call_model_tool(
     chosen: dict[str, Any] | None = None
     if preferred_model:
         for m in models:
-            if m.get("id") == preferred_model or m.get("model_name") == preferred_model:
+            # Stable id first: several custom rows can share model_name, and
+            # ``id`` is only the alias or that shared name.
+            if _configured_model_matches(m, preferred_model):
                 chosen = m
                 break
     if chosen is None:
@@ -581,7 +572,7 @@ async def call_model_tool(
 
     try:
         model = _build_chat_model(client_config, request_config)
-        reasoning = _minimal_reasoning(client_config, model_name)
+        reasoning = minimal_reasoning(client_config, model_name)
 
         async def _once(*, temperature: float, attempt: int) -> dict[str, Any]:
             nonlocal reasoning

@@ -26,13 +26,6 @@ class _FakeWebSocket:
         self.sent_frames.append(json.loads(data))
 
 
-def test_ws_auth_session_falls_back_to_query_for_cookie_less_webviews():
-    ws = _FakeWebSocket()
-    ws.request_headers = {}
-
-    assert _resolve_ws_auth_session(ws, {"auth_session": ["query-session"]}) == "query-session"
-
-
 def _req(*, req_id: str, method: str, params: dict[str, Any] | None = None) -> str:
     return json.dumps(
         {
@@ -43,102 +36,6 @@ def _req(*, req_id: str, method: str, params: dict[str, Any] | None = None) -> s
         },
         ensure_ascii=False,
     )
-
-
-@pytest.mark.asyncio
-async def test_ws_sessions_tracks_explicit_session_id():
-    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
-    ws = _FakeWebSocket()
-    channel.on_message(lambda msg: None)
-
-    await channel._handle_raw_message(
-        ws,
-        _req(
-            req_id="req-chat",
-            method="chat.send",
-            params={"session_id": "sess-real", "content": "hi"},
-        ),
-        {},
-    )
-
-    assert channel._ws_sessions.get(id(ws)) == {"sess-real"}
-
-
-@pytest.mark.asyncio
-async def test_ws_sessions_ignores_temporary_session_without_explicit_id():
-    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
-    ws = _FakeWebSocket()
-    seen = []
-
-    channel.on_message(lambda msg: seen.append(msg))
-
-    await channel._handle_raw_message(
-        ws,
-        _req(req_id="req-config", method="config.get", params={}),
-        {},
-    )
-
-    assert id(ws) not in channel._ws_sessions
-    assert len(seen) == 1
-    assert seen[0].session_id.startswith("sess_")
-
-
-@pytest.mark.asyncio
-async def test_ws_sessions_does_not_accumulate_temp_ids_across_requests():
-    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
-    ws = _FakeWebSocket()
-    channel.on_message(lambda msg: None)
-
-    await channel._handle_raw_message(
-        ws,
-        _req(
-            req_id="req-1",
-            method="chat.send",
-            params={"session_id": "sess-a", "content": "a"},
-        ),
-        {},
-    )
-    for i in range(5):
-        await channel._handle_raw_message(
-            ws,
-            _req(req_id=f"req-poll-{i}", method="skills.list", params={}),
-            {},
-        )
-    await channel._handle_raw_message(
-        ws,
-        _req(
-            req_id="req-2",
-            method="chat.send",
-            params={"session_id": "sess-b", "content": "b"},
-        ),
-        {},
-    )
-    await channel._handle_raw_message(
-        ws,
-        _req(req_id="req-history", method="history.get", params={}),
-        {},
-    )
-
-    assert channel._ws_sessions.get(id(ws)) == {"sess-a", "sess-b"}
-
-
-@pytest.mark.asyncio
-async def test_ws_sessions_ignores_empty_string_session_id():
-    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
-    ws = _FakeWebSocket()
-    channel.on_message(lambda msg: None)
-
-    await channel._handle_raw_message(
-        ws,
-        _req(
-            req_id="req-empty-sid",
-            method="config.get",
-            params={"session_id": ""},
-        ),
-        {},
-    )
-
-    assert id(ws) not in channel._ws_sessions
 
 
 @pytest.mark.asyncio

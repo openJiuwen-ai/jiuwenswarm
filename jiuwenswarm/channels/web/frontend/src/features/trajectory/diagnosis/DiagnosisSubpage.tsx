@@ -25,16 +25,16 @@ import {
   stageViews,
   suggestionParts,
   suggestionsState,
-  truncateText,
   type ArtifactSuggestionItem,
   type StageView,
   type StageViewStatus,
 } from './diagnosisView';
 import { FillButton } from './DiagnosisFillButton';
 import { RewardSummary } from './DiagnosisReward';
-import { Findings, FoldableItem } from './DiagnosisFindings';
+import { Findings } from './DiagnosisFindings';
+import { DiagnosisSummaryTree } from './DiagnosisSummaryTree';
 import { DiagnosisStatusIcon } from './DiagnosisStatusIcon';
-import { ClampedMarkdown, PlainFold, WholeMarkdown } from './DiagnosisText';
+import { ClampedMarkdown, WholeMarkdown } from './DiagnosisText';
 import type { DiagnosisSession } from './useDiagnosisSession';
 import css from './DiagnosisSubpage.module.css';
 
@@ -174,7 +174,7 @@ function RecordCards({
   const target = useMemo(() => diagnosisTarget(record), [record]);
   const labelOf = (subjectId: string) => subjectLabels.get(subjectId) ?? subjectId;
   const note = record.input.user_note?.trim() ?? '';
-  const trajectorySummary = truncateText(record.trajectory_summary ?? record.task_description ?? '', 500);
+  const trajectorySummary = record.trajectory_summary ?? record.task_description ?? '';
   const reward = asRewardPayload(record.reward);
   const skills = skillJudges(record);
   const experience = experienceJudge(record);
@@ -336,6 +336,7 @@ function RecordCards({
           {record.error === undefined ? null : (
             <p className={`${css.hint} ${css.errorText}`} role="alert">{record.error.message}</p>
           )}
+          <DiagnosisSummaryTree record={record} subjectLabels={subjectLabels} />
           {reward !== null ? <RewardSummary reward={reward} /> : null}
           {/* Findings stream in under the evaluation once scoring has landed. */}
           <Findings
@@ -344,18 +345,6 @@ function RecordCards({
             focusedFindingId={focusedFindingId}
             onFocusFinding={onFocusFinding}
           />
-          {trajectorySummary === '' ? null : (
-            <FoldableItem
-              title={t('trajectory.diagnosis.objectSummary')}
-              className={css.summaryBlock}
-              testId="trajectory-diagnosis-task"
-              toggleTestId="trajectory-diagnosis-summary-toggle"
-            >
-              <div className={css.itemBody}>
-                <PlainFold text={trajectorySummary} />
-              </div>
-            </FoldableItem>
-          )}
           {running && !showDetails ? (
             <p className={css.hint} data-testid="trajectory-diagnosis-details-pending">
               {t('trajectory.diagnosis.detailsPending')}

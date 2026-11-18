@@ -1,10 +1,11 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import contractTools from '@contract/tools.json';
+import contractTools from '@office/powerpoint/tools.json';
 
+import { type ClientToolResponse, png } from './clientToolDispatcher';
 import { isRecord, type JsonObject } from './gatewayClient';
+import type { PresentationToolName } from './powerPointApp';
 import { DEFAULT_RENDER_WIDTH, powerPointReadRuntime, type PowerPointRun } from './powerPointReadTools';
-import type { ClientToolResponse, PresentationToolName } from './presentationToolTypes';
 
 interface FakeShape {
   id: string;
@@ -227,7 +228,7 @@ describe('read_slide_image', () => {
     const { execute, calls } = fakePowerPoint(DECK);
     const response = await execute('read_slide_image', { slide_id: '257#2' });
     expect(calls.renders).toEqual([{ width: 960 }]);
-    expect(response).toMatchObject({ ok: true, result: { slide_id: '257#2', position: 2 }, imageBase64: 'PNG-257#2',
+    expect(response).toMatchObject({ ok: true, result: { slide_id: '257#2', position: 2 }, images: [png('PNG-257#2')],
       hostTimings: { render_ms: expect.any(Number) } });
   });
 
@@ -306,7 +307,7 @@ describe('verify_slide_visual', () => {
     const { execute, calls } = fakePowerPoint(deck);
     const response = await execute('verify_slide_visual', { slide_id: '256#1', expected_changes: 'Moved the title' });
     expect(calls.renders).toEqual([{ width: 960 }]);
-    expect(response).toMatchObject({ ok: true, imageBase64: 'PNG-256#1', result: { slide_id: '256#1', geometry: {
+    expect(response).toMatchObject({ ok: true, images: [png('PNG-256#1')], result: { slide_id: '256#1', geometry: {
       width: 720, height: 540,
       shapes: [
         { ref: '256#1:2', id: '2', name: 'Title', type: 'TextBox', left: 40, top: 30, width: 880, height: 80 },

@@ -44,7 +44,7 @@ from agent_gateway.common.cron_team_completion import (
 from agent_gateway.common.model_selection import ModelSelection as SwarmModelSelection
 from jiuwenswarm.agents.harness.team.bootstrap import configure_agent_teams_home
 from jiuwenswarm.common.log_preview import preview_text
-from jiuwenswarm.common.utils import get_user_workspace_dir
+from jiuwenswarm.common.utils import get_domain_data_dir
 
 configure_agent_teams_home()
 
@@ -52,6 +52,9 @@ from jiuwenswarm.agents.harness.observability_runtime import build_observability
 from jiuwenswarm.agents.harness.team.config_loader import (
     get_effective_team_model_entries,
     load_team_spec_dict,
+)
+from jiuwenswarm.agents.harness.team.rail_registry import (
+    WeakRegistry, WeakRegistryList, weak_mount, weak_pair, weak_value,
 )
 from jiuwenswarm.agents.harness.team.distributed_runtime import (
     ensure_postgresql_for_leader,
@@ -86,6 +89,11 @@ from jiuwenswarm.common.config import (
     get_evolution_auto_save_enabled,
     get_skill_evolution_enabled,
     get_symphony_evolution_enabled,
+)
+from jiuwenswarm.common.observability_config import (
+    is_observability_scope_enabled,
+    observability_export_settings,
+    resolve_observability_section,
 )
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.observability.config import load_trajectory_store_settings
@@ -143,7 +151,7 @@ def sync_team_observability() -> None:
     """Synchronize observability state with current config.
 
     Called before each ``Runner.run_agent_team_streaming`` so that
-    hot-reloading the ``team_observability.enabled`` flag takes
+    hot-reloading the ``observability.team.enabled`` flag takes
     effect immediately:
 
     * disabled → enabled : ``init_observability()``
@@ -159,7 +167,8 @@ def sync_team_observability() -> None:
     """
     global _observability_active
     config = get_config()
-    cfg = config.get("team_observability", {}) or {}
+    section = resolve_observability_section(config)
+    cfg = observability_export_settings(section)
     trajectory_settings = load_trajectory_store_settings(config)
     evolution_requested = get_skill_evolution_enabled(
         config
@@ -169,7 +178,7 @@ def sync_team_observability() -> None:
     # the SQLite sink. ``trajectory_ui.enabled`` therefore also pulls the
     # provider up, mirroring ``sync_agent_observability``.
     want_enabled = (
-        bool(cfg.get("enabled", False))
+        is_observability_scope_enabled(section, "team")
         or trajectory_settings.enabled
         or evolution_requested
     )
@@ -188,7 +197,7 @@ def sync_team_observability() -> None:
         return
 
     try:
-        traces_dir = str(cfg.get("traces_dir") or get_user_workspace_dir() / ".trace")
+        traces_dir = str(cfg.get("traces_dir") or get_domain_data_dir() / ".trace")
         obs_cfg = build_observability_config(
             cfg,
             service_name="jiuwenswarm",
@@ -239,14 +248,25 @@ def shutdown_team_observability() -> None:
         logger.warning("[TeamObservability] shutdown failed: %s", exc)
 
 
-@dataclass
+@dataclass(init=False)
 class TeamRailMountContext:
-    """Context needed to rebuild team rails after a hot config toggle."""
+    """Non-owning context used to rebuild a live harness's rails on hot reload."""
 
-    agent: Any
+    _agent_ref: Callable[[], Any] = field(repr=False)
     member_info: MemberInfo
     runtime: RuntimeInfo
     team_workspace: TeamWorkspaceInfo
+
+    def __init__(self, agent: Any, member_info: MemberInfo, runtime: RuntimeInfo,
+                 team_workspace: TeamWorkspaceInfo):
+        self._agent_ref = weak_value(agent)
+        self.member_info = member_info
+        self.runtime = runtime
+        self.team_workspace = team_workspace
+
+    @property
+    def agent(self) -> Any:
+        return self._agent_ref()
 
 
 @dataclass
@@ -404,22 +424,22 @@ class TeamManager:
         # misidentified as first requests.
         self._initialized_sessions: set[str] = set()
         # session_id → TeamSkillEvolutionRail instance (set by customizer, used for drain/approval)
-        self._team_skill_rails: dict[str, Any] = {}
+        self._team_skill_rails = WeakRegistry()
         # session_id → member SkillEvolutionRail instances
-        self._team_member_skill_evolution_rails: dict[str, list[Any]] = {}
+        self._team_member_skill_evolution_rails: dict[str, WeakRegistryList] = {}
         # session_id → TeamSkillCreateRail instance
-        self._team_skill_create_rails: dict[str, Any] = {}
+        self._team_skill_create_rails = WeakRegistry()
         # session_id → context used to rebuild team rails on config enable
-        self._team_rail_contexts: dict[str, TeamRailMountContext] = {}
+        self._team_rail_contexts = WeakRegistry(weak_mount)
         # session_id → latest in-memory canonical evolution switch.  Slash
         # handling and other request hot paths must consult this snapshot
         # instead of re-reading config.yaml.
         self._team_evolution_enabled: dict[str, bool] = {}
         # session_id → teammate contexts used to rebuild member rails after a
         # disabled → enabled hot toggle without recreating the team runtime.
-        self._team_member_rail_contexts: dict[str, list[TeamRailMountContext]] = {}
+        self._team_member_rail_contexts: dict[str, WeakRegistryList] = {}
         # session_id → live rails and owning DeepAgent, for hot-unregister
-        self._team_live_rails: dict[str, list[tuple[Any, Any]]] = {}
+        self._team_live_rails: dict[str, WeakRegistryList] = {}
         # session_id → evolution watcher task
         self._team_evolution_watchers: dict[str, asyncio.Task] = {}
         # session_id → runtime_ready requested a watcher before the rail registered
@@ -432,6 +452,7 @@ class TeamManager:
         self._session_inactive_reporter: (
             Callable[[str], Awaitable[None]] | None
         ) = None
+        self._teammate_quota_notice_emitted: dict[str, bool] = {}
 
     def bind_generation(self, session_id: str, generation: int) -> None:
         """Bind future process-local Team handles to one Session generation."""
@@ -686,6 +707,18 @@ class TeamManager:
             return input_waiters
         return waiters[:1]
 
+    def detach_other_interactive_waiters(self, session_id: str, keep_request_id: str) -> None:
+        """Drop other browser waiters so a stalled connection cannot block broadcast.
+
+        Exclusive automation waiters stay. The kept request is attached afterwards.
+        """
+        exclusive_request_id = self._exclusive_waiters.get(session_id)
+        waiters = list(self._pending_waiters.get(session_id, ()))
+        for request_id, _queue in waiters:
+            if request_id == keep_request_id or request_id == exclusive_request_id:
+                continue
+            self.remove_waiter(session_id, request_id)
+
     async def broadcast_event(
         self,
         session_id: str,
@@ -756,9 +789,7 @@ class TeamManager:
                     task_id = str(task["task_id"])
                     status = task.get("status")
                     task_type = str(task.get("type") or "")
-                    if status in {"completed", "cancelled", "failed"} or task_type.endswith(
-                        (".completed", ".cancelled", ".verified")
-                    ):
+                    if self._is_terminal_team_task(event):
                         current_round.open_archive_tasks.discard(task_id)
                     elif status or task_type.endswith((".created", ".started", ".claimed")):
                         current_round.open_archive_tasks.add(task_id)
@@ -786,6 +817,12 @@ class TeamManager:
                 # opens the workflows view. Fall back to the gateway server-push
                 # side channel, which delivers events without a chat stream.
                 await self._push_event_without_waiter(
+                    session_id, event, channel_id=channel_id
+                )
+            elif self._is_terminal_team_task(event):
+                # 队长流结束时直播等待者已经摘掉。之后才到终态的子任务
+                # 进了历史，打开着的团队页收不到这帧。沿直播用的 session_live 推出去。
+                self._publish_terminal_team_task_live(
                     session_id, event, channel_id=channel_id
                 )
             elif terminal:
@@ -885,6 +922,59 @@ class TeamManager:
         return bool(waiters)
 
     @staticmethod
+    def _is_terminal_team_task(event: dict[str, Any]) -> bool:
+        """team.task 是否把卡片收口。和回合里从进行中名单去掉任务用同一套状态。"""
+        if str(event.get("event_type") or "") != "team.task":
+            return False
+        task = event.get("event")
+        if not isinstance(task, dict):
+            return False
+        status = task.get("status")
+        task_type = str(task.get("type") or "")
+        return status in {"completed", "cancelled", "failed"} or task_type.endswith(
+            (".completed", ".cancelled", ".verified")
+        )
+
+    @staticmethod
+    def _publish_terminal_team_task_live(
+        session_id: str,
+        event: dict[str, Any],
+        *,
+        channel_id: str | None = None,
+    ) -> None:
+        """没有等待者时，把终态 team.task 推到企业版团队直播。"""
+        from jiuwenswarm.enterprise.team.push_fanout import publish
+        from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+        from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+            _build_team_event_chunk_meta,
+        )
+
+        payload = dict(event)
+        payload.setdefault("session_id", session_id)
+        try:
+            agent_ref, metadata = _build_team_event_chunk_meta(payload)
+            wire_metadata = dict(metadata or {})
+            wire_metadata["delivery_scope"] = "session_live"
+            publish(
+                build_server_push_wire(
+                    {
+                        "request_id": f"team-session-live:{session_id}",
+                        "channel_id": str(channel_id or ""),
+                        "session_id": session_id,
+                        "payload": payload,
+                        "is_complete": False,
+                        "agent_ref": agent_ref,
+                        "metadata": wire_metadata,
+                    }
+                )
+            )
+        except Exception:
+            logger.exception(
+                "[TeamManager] failed to publish terminal team.task session_id=%s",
+                session_id,
+            )
+
+    @staticmethod
     def _is_workflow_terminal_event(event: dict[str, Any]) -> bool:
         """Whether the event is a workflow.updated carrying a terminal status."""
         if not isinstance(event, dict) or event.get("event_type") != "workflow.updated":
@@ -961,7 +1051,21 @@ class TeamManager:
         event: dict[str, Any],
     ) -> None:
         """Synthesize a terminal for supported final-only Team runtimes."""
+        from jiuwenswarm.enterprise.edition import is_enterprise
+
         apply_cron_team_round_event(current_round.completion_state, event)
+        if is_enterprise():
+            kind = str(event.get("event_type") or "")
+            if kind == "chat.ask_user_question" or "permission" in kind:
+                current_round.completion_state["waiting_user"] = True
+            elif kind in {
+                "chat.delta",
+                "chat.reasoning",
+                "chat.tool_call",
+                "chat.tool_result",
+                "chat.final",
+            }:
+                current_round.completion_state["waiting_user"] = False
         should_end = cron_team_round_should_end(current_round.completion_state)
         pending_task = current_round.completion_task
         if not should_end:
@@ -973,7 +1077,10 @@ class TeamManager:
             return
         grace_seconds = (
             _TEAM_ROUND_FINAL_GRACE_SECONDS
-            if _cron_solo_harness_end_pending(current_round.completion_state)
+            if (
+                _cron_solo_harness_end_pending(current_round.completion_state)
+                or is_enterprise()
+            )
             else 0.0
         )
         current_round.completion_task = asyncio.create_task(
@@ -1002,22 +1109,47 @@ class TeamManager:
             return
         if not cron_team_round_should_end(current.completion_state):
             return
+        from jiuwenswarm.enterprise.edition import is_enterprise
+
         logger.info(
             "[TeamProcessingStatus] generated: original_event=chat.final source=interactive_round_grace_finished "
             "session_id=%s request_id=%s is_processing=False is_complete=True",
             session_id,
             request_id,
         )
-        await self.broadcast_event(
-            session_id,
-            {
-                "event_type": "chat.processing_status",
-                "session_id": session_id,
-                "request_id": request_id,
-                "is_processing": False,
-                "is_complete": True,
-            },
-        )
+        payload: dict[str, Any] = {
+            "event_type": "chat.processing_status",
+            "session_id": session_id,
+            "request_id": request_id,
+            "is_processing": False,
+            "is_complete": True,
+        }
+        if is_enterprise():
+            payload["idle"] = True
+        await self.broadcast_event(session_id, payload)
+
+    def note_new_user_content(self, session_id: str) -> None:
+        """Cancel a quiet-end timer when the user sends a new sentence.
+
+        Enterprise follow-ups call this. An empty answer or permission confirm
+        does not, so that reply stays on the current round.
+        """
+        current = self._active_rounds.get(session_id)
+        if current is None:
+            return
+        current.completion_state["waiting_user"] = False
+        current.completion_state["leader_final_seen"] = False
+        pending_task = current.completion_task
+        if pending_task is not None and not pending_task.done():
+            pending_task.cancel()
+        current.completion_task = None
+
+    def claim_teammate_quota_notice(self, session_id: str) -> bool:
+        """Emit at most one teammate-quota user notice per round."""
+        if self._teammate_quota_notice_emitted.get(session_id):
+            return False
+        self._teammate_quota_notice_emitted[session_id] = True
+        return True
 
     def begin_round(
         self,
@@ -1039,6 +1171,7 @@ class TeamManager:
                 f"team round already active for session {session_id}: "
                 f"{current.request_id}"
             )
+        self._teammate_quota_notice_emitted.pop(session_id, None)
         self._active_rounds[session_id] = _ActiveTeamRound(
             request_id=request_id,
             generation=generation or self._session_generations.get(session_id, 0),
@@ -1488,6 +1621,7 @@ class TeamManager:
     @staticmethod
     def _resolve_and_compile_team_selection(
         selection: SwarmModelSelection,
+        config_base: dict[str, Any] | None = None,
     ) -> CompiledModelSelection:
         """Resolve a stable Team selection through the server-side boundary."""
         from agent_gateway.common.model_selection import ResolvedModelGroup
@@ -1498,12 +1632,17 @@ class TeamManager:
         from jiuwenswarm.server.runtime.model_compiler_adapter import (
             compile_model_selection,
         )
+        from jiuwenswarm.common.model_catalog import ModelCatalog
         from jiuwenswarm.server.runtime.model_routing_registry import (
             ModelSelectionResolver,
         )
 
         try:
-            resolver = ModelSelectionResolver()
+            resolver = (
+                ModelSelectionResolver(ModelCatalog(config_base))
+                if config_base is not None
+                else ModelSelectionResolver()
+            )
             resolved = resolver.resolve(
                 SwarmModelSelection(
                     type=selection.type,
@@ -1804,8 +1943,14 @@ class TeamManager:
         template_snapshot: dict[str, Any] | None = None,
         strict_template: bool = False,
         model_selection: SwarmModelSelection | dict[str, Any] | None = None,
+        config_base: dict[str, Any] | None = None,
     ) -> TeamAgentSpec:
-        config_base = get_config()
+        # None means "read config.yaml here". An explicit snapshot is the
+        # request-resolved config (enterprise templates already applied) and
+        # must also drive model-selection lookup.
+        explicit_config = config_base is not None
+        if config_base is None:
+            config_base = get_config()
         # Keep dependency checks scoped to distributed mode to make the
         # control flow explicit at the call site (local mode bypasses checks).
         if TeamManager._is_distributed_mode(config_base):
@@ -1844,19 +1989,29 @@ class TeamManager:
                     if key in raw_selection
                 }
             )
+        selected_model_id = (
+            str(selection.id).strip()
+            if selection is not None and selection.type == "model"
+            else ""
+        )
         if selection is not None and selection.type == "model":
             # A single-model selection only names the page-selected model; the
             # pool keeps every configured model below so members can still be
             # assigned any of them. Resolving it also rejects a stale selection.
+            # ``model_id`` keeps a shared model_name on the chosen endpoint.
             requested_model_name = TeamManager._selected_model_name(
                 selection,
-                TeamManager._resolve_and_compile_team_selection(selection),
+                TeamManager._resolve_and_compile_team_selection(
+                    selection,
+                    config_base=config_base if explicit_config else None,
+                ),
             )
 
         spec_dict = load_team_spec_dict(
             config_base=config_base,
             requested_model_name=requested_model_name,
             login_model_entry=login_model_entry,
+            model_id=selected_model_id or None,
             template_id=template_id,
             template_snapshot=template_snapshot,
             strict_template=strict_template,
@@ -1866,7 +2021,10 @@ class TeamManager:
             spec_dict = TeamManager._normalize_distributed_transport_fields(config_base, spec_dict)
 
         if selection is not None and selection.type == "model_group":
-            compiled = TeamManager._resolve_and_compile_team_selection(selection)
+            compiled = TeamManager._resolve_and_compile_team_selection(
+                selection,
+                config_base=config_base if explicit_config else None,
+            )
             TeamManager._apply_compiled_team_selection(
                 spec_dict,
                 selection,
@@ -1881,6 +2039,7 @@ class TeamManager:
             config_base,
             requested_model_name=requested_model_name,
             login_model_entry=login_model_entry,
+            model_id=selected_model_id or None,
         )
         if effective_models:
             from openjiuwen.agent_teams.schema.team import ModelPoolEntry
@@ -1966,6 +2125,7 @@ class TeamManager:
         self,
         session_id: str,
         *,
+        config_base: dict[str, Any] | None = None,
         requested_model_name: str | None = None,
         login_model_entry: dict[str, Any] | None = None,
         model_selection: SwarmModelSelection | dict[str, Any] | None = None,
@@ -1994,6 +2154,8 @@ class TeamManager:
             if restored_selection:
                 model_selection = self._default_if_deleted(model_selection)
             load_kwargs["model_selection"] = model_selection
+        if config_base is not None:
+            load_kwargs["config_base"] = config_base
         spec = self._load_team_spec(session_id, **load_kwargs)
         if team_name:
             spec.team_name = team_name
@@ -2019,6 +2181,7 @@ class TeamManager:
         dispatch_mode: str | None = None,
         bootstrap_mode: str | None = None,
         model_selection: SwarmModelSelection | dict[str, Any] | None = None,
+        config_base: dict[str, Any] | None = None,
     ) -> TeamAgentSpec:
         """Build a team spec via provider-based assembly (no parent DeepAgent).
 
@@ -2055,11 +2218,17 @@ class TeamManager:
         """
         from jiuwenswarm.agents.swarm import enrich_team_spec_for_swarm
 
-        config_base = get_config()
+        # Callers pass the same snapshot single-agent chat already resolved
+        # (enterprise model templates included). Falling back to raw
+        # config.yaml leaves ${MODEL_PROVIDER} empty on AgentServer, and
+        # Team model validation then rejects the blank provider.
+        if config_base is None:
+            config_base = get_config()
         self._team_evolution_enabled[session_id] = get_skill_evolution_enabled(config_base)
         await self._ensure_postgresql_for_leader(config_base)
         spec, has_binding = self._load_session_team_spec(
             session_id,
+            config_base=config_base,
             requested_model_name=requested_model_name,
             login_model_entry=login_model_entry,
             model_selection=model_selection,
@@ -2480,9 +2649,6 @@ class TeamManager:
             ).strip()
             or None,
         )
-        from jiuwenswarm.agents.swarm.assembly import assign_shared_sandbox_sys_operation
-
-        assign_shared_sandbox_sys_operation(spec, deep_agent)
 
         logger.info("[TeamManager] TeamAgentSpec ready: team_name=%s", spec.team_name)
 
@@ -2681,7 +2847,7 @@ class TeamManager:
 
     def register_team_member_skill_evolution_rail(self, session_id: str, rail: Any) -> None:
         """Register a member SkillEvolutionRail instance for hot config updates."""
-        rails = self._team_member_skill_evolution_rails.setdefault(session_id, [])
+        rails = self._team_member_skill_evolution_rails.setdefault(session_id, WeakRegistryList())
         if rail not in rails:
             rails.append(rail)
 
@@ -2698,7 +2864,7 @@ class TeamManager:
         self, session_id: str, context: TeamRailMountContext
     ) -> None:
         """Remember a teammate mount context for evolution hot re-enable."""
-        contexts = self._team_member_rail_contexts.setdefault(session_id, [])
+        contexts = self._team_member_rail_contexts.setdefault(session_id, WeakRegistryList(reference=weak_mount))
         for existing in contexts:
             if existing.agent is context.agent:
                 return
@@ -2714,7 +2880,7 @@ class TeamManager:
 
     def register_team_live_rail(self, session_id: str, agent: Any, rail: Any) -> None:
         """Remember a live rail owner so hot reload can unregister mounted rails."""
-        rails = self._team_live_rails.setdefault(session_id, [])
+        rails = self._team_live_rails.setdefault(session_id, WeakRegistryList(reference=weak_pair))
         entry = (agent, rail)
         if entry not in rails:
             rails.append(entry)
@@ -2823,7 +2989,7 @@ class TeamManager:
                         exc,
                     )
         if remaining:
-            self._team_live_rails[session_id] = remaining
+            self._team_live_rails[session_id] = WeakRegistryList(remaining, reference=weak_pair)
         else:
             self._team_live_rails.pop(session_id, None)
 
@@ -2855,6 +3021,9 @@ class TeamManager:
         mount_skill_evolution_rail: bool,
     ) -> tuple[Any | None, Any | None]:
         """Rebuild team rails for a session using the stored mount context."""
+        agent = context.agent
+        if agent is None:
+            return None, None
         latest_config = get_config()
         context.team_workspace.config = latest_config
         member_rails = build_member_rails(
@@ -2866,21 +3035,21 @@ class TeamManager:
         team_skill_create_rail: Any | None = None
         for rail in member_rails:
             if isinstance(rail, TeamSkillEvolutionRail) and mount_team_skill_rail:
-                context.agent.add_rail(rail)
-                self.register_team_live_rail(session_id, context.agent, rail)
+                agent.add_rail(rail)
+                self.register_team_live_rail(session_id, agent, rail)
                 team_skill_rail = rail
             elif isinstance(rail, EvolutionInterruptRail) and (
                 mount_team_skill_rail or mount_skill_evolution_rail
             ):
-                context.agent.add_rail(rail)
-                self.register_team_live_rail(session_id, context.agent, rail)
+                agent.add_rail(rail)
+                self.register_team_live_rail(session_id, agent, rail)
             elif isinstance(rail, SkillEvolutionRail) and mount_skill_evolution_rail:
-                context.agent.add_rail(rail)
-                self.register_team_live_rail(session_id, context.agent, rail)
+                agent.add_rail(rail)
+                self.register_team_live_rail(session_id, agent, rail)
                 self.register_team_member_skill_evolution_rail(session_id, rail)
             elif isinstance(rail, TeamSkillCreateRail) and mount_team_skill_create_rail:
-                context.agent.add_rail(rail)
-                self.register_team_live_rail(session_id, context.agent, rail)
+                agent.add_rail(rail)
+                self.register_team_live_rail(session_id, agent, rail)
                 team_skill_create_rail = rail
 
         if team_skill_rail is not None:
@@ -4230,6 +4399,14 @@ def get_team_manager(channel_id: str | None = None) -> TeamManager:
     """Return the singleton TeamManager instance (channel_id is ignored)."""
     global _team_manager
     if _team_manager is None:
+        from jiuwenswarm.enterprise.edition import is_enterprise
+
+        if is_enterprise():
+            from jiuwenswarm.agents.harness.team.task_reassign_patch import (
+                apply_task_reassign_patch,
+            )
+
+            apply_task_reassign_patch()
         _team_manager = TeamManager()
     return _team_manager
 

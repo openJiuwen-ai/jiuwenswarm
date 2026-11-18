@@ -705,51 +705,6 @@ async def test_agent_reload_config_handler_skips_agent_manager_for_web_ui_scope(
 
 
 @pytest.mark.asyncio
-async def test_agent_reload_config_handler_applies_proactive_scope_without_agent_reload(monkeypatch):
-    server = agent_ws_server_module.AgentWebSocketServer()
-    reload_agents = AsyncMock()
-    proactive_engine = MagicMock()
-    server._proactive_engine = proactive_engine
-
-    monkeypatch.setattr(server._agent_manager, "reload_agents_config", reload_agents)
-    monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_config",
-        lambda: {"proactive_recommendation": {"enabled": True}},
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.transports.ws_sink.encode_agent_response_for_wire",
-        lambda resp, response_id: {
-            "response_id": response_id,
-            "ok": resp.ok,
-            "payload": resp.payload,
-        },
-    )
-
-    request = AgentRequest(
-        request_id="reload-proactive",
-        channel_id="web",
-        req_method=ReqMethod.AGENT_RELOAD_CONFIG,
-        params={
-            "config": {"proactive_recommendation": {"enabled": True}},
-            "env": {},
-            "reload_scopes": ["proactive"],
-        },
-    )
-
-    ws = FakeWebSocket()
-    from jiuwenswarm.server.context import build_ws_request_context
-    from jiuwenswarm.server.handlers.ops import handle_agent_reload_config
-
-    await handle_agent_reload_config(
-        build_ws_request_context(server, ws, request, asyncio.Lock())
-    )
-
-    reload_agents.assert_not_awaited()
-    proactive_engine.reload_config.assert_called_once_with({"enabled": True})
-    assert json.loads(ws.sent[-1])["ok"] is True
-
-
-@pytest.mark.asyncio
 async def test_agent_reload_config_handler_warms_zen_cache_on_model_scope(monkeypatch):
     """model scope（或全量 reload）须调度本进程 Zen 免费模型缓存 warm。
 
@@ -983,7 +938,9 @@ def _real_deep_reload_model(api_base: str, model_name: str):
     )
 
 
-async def _reload_deep_adapter_config_for_test(previous_config, deep_config_factory):
+async def _reload_deep_adapter_config_for_test(
+    previous_config, deep_config_factory, *, live_reload=None,
+):
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_module
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
         JiuWenSwarmDeepAdapter,
@@ -1064,10 +1021,30 @@ async def _reload_deep_adapter_config_for_test(previous_config, deep_config_fact
         ),
         patch.object(interface_module.JiuWenSwarmDeepAdapter, "_sync_mcp_servers_for_runtime", _async_noop),
     ):
-        await adapter.reload_agent_config(
-            {"react": {"agent_name": "main_agent"}, "browser": {"headless": True}},
-            {},
-        )
+        config = {"react": {"agent_name": "main_agent"}, "browser": {"headless": True}}
+        if live_reload is None:
+            await adapter.reload_agent_config(config, {})
+        else:
+            sid = "session-a"
+            adapter._is_session_scoped_adapter = True
+            adapter._parent_session_id = sid
+            adapter._active_request_model = previous_config.model
+            parent = JiuWenSwarmDeepAdapter()
+            parent._session_adapters[sid] = adapter
+            adapter._mark_session_active(sid)
+            try:
+                with patch.object(adapter, "_try_init_a2x_client", AsyncMock()):
+                    if live_reload == "targeted":
+                        await parent._reload_target_session_adapter(config, {}, target_session_id=sid)
+                    else:
+                        config["permissions"] = {"enabled": False}
+                        parent._mark_session_adapters_stale_for_reload(
+                            config, {"FREE_SEARCH_BING_ENABLED": "true"}
+                        )
+                        await parent._reload_session_adapter_if_stale(sid, adapter)
+            finally:
+                adapter._unmark_session_active(sid)
+
 
     adapter._instance.react_agent.register_callback.assert_awaited_once()
     return adapter, configured_fields
@@ -1275,6 +1252,30 @@ def test_deep_adapter_model_config_fingerprint_includes_legacy_react_model_field
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("live_reload", ["targeted", "mixed"])
+async def test_live_reload_preserves_selected_model(live_reload):
+    from openjiuwen.harness import DeepAgentConfig
+
+    active_model = _real_deep_reload_model("https://active.example.test/v1", "GLM-5.2")
+
+    def _new_config(model, agent_card, tool_cards, rails):
+        return DeepAgentConfig(
+            model=model, card=agent_card, system_prompt="updated", tools=tool_cards, rails=rails
+        )
+
+    adapter, configured_fields = await _reload_deep_adapter_config_for_test(
+        DeepAgentConfig(model=active_model, system_prompt="previous"),
+        _new_config,
+        live_reload=live_reload,
+    )
+
+    assert configured_fields == [(None, "updated")]
+    assert adapter._instance._deep_config.model is active_model
+    assert adapter._model_client_config is active_model.model_client_config
+    assert adapter._model_request_config is active_model.model_config
+
+
+@pytest.mark.asyncio
 async def test_deep_adapter_reload_omits_unchanged_model_and_system_prompt():
     from openjiuwen.harness import DeepAgentConfig
 
@@ -1384,6 +1385,88 @@ async def test_deep_adapter_existing_session_lazy_reload_once(monkeypatch):
     assert call["args"][0] == pending_config
     assert call["args"][1] == {"MODEL_NAME": "new-model"}
     assert call["kwargs"]["target_session_id"] == "session-a"
+    assert parent._session_adapter_versions["session-a"] == 1
+
+
+@pytest.mark.asyncio
+async def test_goal_get_does_not_apply_pending_session_reload(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+
+    parent = JiuWenSwarmDeepAdapter()
+    child = JiuWenSwarmDeepAdapter()
+    child._is_session_scoped_adapter = True
+    child._parent_session_id = "session-a"
+    child._instance = MagicMock()
+    goal_manager = MagicMock()
+    goal_manager.peek.return_value = None
+    monkeypatch.setattr(child, "_get_goal_manager", lambda: goal_manager)
+    monkeypatch.setattr(child, "reload_agent_config", AsyncMock())
+    monkeypatch.setattr(parent, "_evict_idle_session_adapters", AsyncMock())
+    parent._session_adapters["session-a"] = child
+    parent._mark_session_adapters_stale_for_reload({}, {"FREE_SEARCH_BING_ENABLED": "true"})
+
+    result = await parent.dispatch_goal_control(action="get", session_id="session-a")
+
+    assert result["result_type"] == "goal_control"
+    goal_manager.peek.assert_called_once_with()
+    child.reload_agent_config.assert_not_awaited()
+    assert parent._session_adapter_versions.get("session-a", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_goal_get_checks_cleanup_for_permission_isolated_session(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+
+    parent = JiuWenSwarmDeepAdapter()
+    child = JiuWenSwarmDeepAdapter()
+    child._is_session_scoped_adapter = True
+    child._parent_session_id = "session-a"
+    child._permission_state.permission_isolated = True
+    child._permission_state.permission_cleanup_complete = False
+    cleanup = AsyncMock()
+    get_goal_manager = MagicMock()
+    monkeypatch.setattr(child, "_isolate_permission_instance", cleanup)
+    monkeypatch.setattr(child, "_get_goal_manager", get_goal_manager)
+    parent._session_adapters["session-a"] = child
+
+    with pytest.raises(RuntimeError, match="permission_session_cleanup_pending"):
+        await parent.dispatch_goal_control(action="get", session_id="session-a")
+
+    cleanup.assert_awaited_once()
+    get_goal_manager.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_lazy_reload_waits_until_running_session_settles(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+
+    parent = JiuWenSwarmDeepAdapter()
+    child = JiuWenSwarmDeepAdapter()
+    child._is_session_scoped_adapter = True
+    child._parent_session_id = "session-a"
+    monkeypatch.setattr(child, "reload_agent_config", AsyncMock())
+    parent._session_adapters["session-a"] = child
+    env_delta = {"FREE_SEARCH_BING_ENABLED": "true"}
+    parent._mark_session_adapters_stale_for_reload({}, env_delta)
+
+    child._mark_session_active("session-a")
+    try:
+        assert await parent._get_or_create_session_adapter("session-a") is child
+        child.reload_agent_config.assert_not_awaited()
+        assert parent._session_adapter_versions.get("session-a", 0) == 0
+    finally:
+        child._unmark_session_active("session-a")
+
+    assert await parent._get_or_create_session_adapter("session-a") is child
+    child.reload_agent_config.assert_awaited_once_with(
+        {}, env_delta, target_session_id="session-a", reload_scopes=None
+    )
     assert parent._session_adapter_versions["session-a"] == 1
 
 
@@ -1519,3 +1602,152 @@ async def test_deep_adapter_new_session_skips_reload_when_no_pending(monkeypatch
     # short-circuits on ``0 >= 0``); the next global reload bumps the version and the
     # missing entry (defaulting to 0) will correctly trigger a lazy reload then.
     assert "session-fresh" not in parent._session_adapter_versions
+
+
+@pytest.mark.asyncio
+async def test_discovery_toggle_hot_reloads_tools_and_capture_without_resetting_direct_route(monkeypatch, caplog):
+    """Exercise the Host reload and real SDK registration, without model I/O."""
+    from copy import deepcopy
+
+    from openjiuwen.core.single_agent import AgentCard
+    from openjiuwen.core.single_agent.rail.base import AgentRail
+    from openjiuwen.harness import DeepAgent, DeepAgentConfig
+
+    from jiuwenswarm.agents.harness.common.rails.symphony.orchestration_rail import (
+        _InvokeScope,
+        _SymphonyInvokeState,
+    )
+    from jiuwenswarm.agents.harness.common.rails.symphony.skillpack_route import (
+        DirectRouteToken,
+        PackRoute,
+        direct_route_mode,
+    )
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+
+    class CaptureRail(AgentRail):
+        pass
+
+    adapter = interface_deep.JiuWenSwarmDeepAdapter()
+    config = {"symphony": {"enabled": True, "evolution": {"flow": {"enabled": False}}}}
+    monkeypatch.setattr(interface_deep, "get_config", lambda: deepcopy(config))
+    adapter._config_base_cache = deepcopy(config)
+    orchestration = adapter._build_symphony_orchestration_rail()
+    adapter._symphony_orchestration_rail = orchestration
+    instance = DeepAgent(AgentCard(id="skillpack-toggle-reload", name="skillpack-toggle-reload"))
+    instance.configure(DeepAgentConfig(
+        rails=[orchestration], auto_create_workspace=False, progressive_tool_enabled=False,
+    ))
+    await instance.ensure_initialized()
+    adapter._instance = instance
+    adapter._sync_symphony_tools_for_runtime(config)
+    existing_tools = {tool.card.name: tool for tool in adapter._symphony_tools}
+    assert "symphony_compose_graph" in existing_tools
+    assert "skillpack_distill" not in existing_tools
+
+    async def snapshot(candidate, _env):
+        adapter._config_base_cache = deepcopy(candidate)
+        adapter._config_cache = deepcopy(candidate.get("react", {}))
+        return candidate
+
+    monkeypatch.setattr(adapter, "_apply_reload_config_snapshot", snapshot)
+    monkeypatch.setattr(adapter, "_create_model", lambda _: None)
+    monkeypatch.setattr(adapter, "_get_current_agent_rails", lambda *_: [])
+    monkeypatch.setattr(adapter, "_make_deep_agent_config", lambda **kw: DeepAgentConfig(
+        rails=kw["rails"], tools=kw["tool_cards"], auto_create_workspace=False,
+        progressive_tool_enabled=False,
+    ))
+    capture = MagicMock(side_effect=CaptureRail)
+    monkeypatch.setattr(adapter, "_build_symphony_graph_evolution_rail", capture)
+    for name in (
+        "_cancel_skill_retrieval_build_after_reload", "_sync_skill_retrieval_prompt_rail_for_runtime",
+        "_sync_tool_retrieval_prompt_rail_for_runtime", "load_user_rails", "_sync_mcp_servers_for_runtime",
+        "_load_active_packages", "_load_rsi_active_harness", "_handle_memory_rail_by_config",
+        "_ensure_permission_rail_live_registered", "install_session_input_guard",
+        "_fan_out_reload_to_session_adapters",
+    ):
+        monkeypatch.setattr(adapter, name, AsyncMock())
+    for name in (
+        "_sync_multimodal_tools_for_runtime", "_sync_paid_search_tool_for_runtime",
+        "_sync_skill_retrieval_tools_for_runtime", "_sync_tool_retrieval_tools_for_runtime",
+        "_sync_active_evolution_review_agent_after_reload",
+    ):
+        monkeypatch.setattr(adapter, name, MagicMock())
+
+    try:
+        config["symphony"]["evolution"]["flow"]["enabled"] = True
+        assert direct_route_mode(adapter._config_base_cache) == "off"
+        assert orchestration._direct_route_mode() == "confirm"
+        await adapter.reload_agent_config(config, {})
+        discovered_tools = {tool.card.name: tool for tool in adapter._symphony_tools}
+        assert "skillpack_distill" in discovered_tools
+        assert all(discovered_tools[name] is tool for name, tool in existing_tools.items())
+        assert "skillpack_distill" in {card.name for card in instance.ability_manager.list()}
+        first_capture = adapter._symphony_graph_evolution_rail
+        assert instance.is_registered_rail(first_capture)
+        assert direct_route_mode(orchestration._resolve_config_base()) == "confirm"
+
+        token = DirectRouteToken("installed-pack", ("member-a", "member-b"), "revision-1", "explicit_picker")
+        scope = _InvokeScope("toggle-session", "agent", instance.card.id)
+        state = _SymphonyInvokeState(
+            scope, "run installed pack", route_token="request-1", pack_route_checked=True,
+            pack_route=PackRoute(token=token, root_loaded=True, member_started=True),
+        )
+        orchestration._active_states[scope] = state
+        orchestration._active_route_states[state.route_token] = state
+
+        await adapter.reload_agent_config(config, {})
+        assert adapter._symphony_graph_evolution_rail is first_capture
+        assert capture.call_count == 1
+        assert adapter._symphony_orchestration_rail is orchestration
+        assert orchestration._active_states[scope] is state
+
+        config["symphony"]["evolution"]["flow"]["enabled"] = False
+        assert direct_route_mode(adapter._config_base_cache) == "confirm"
+        assert orchestration._direct_route_mode() == "off"
+        await adapter.reload_agent_config(config, {})
+        assert adapter._symphony_graph_evolution_rail is None
+        assert not instance.is_registered_rail(first_capture)
+        assert "skillpack_distill" not in {tool.card.name for tool in adapter._symphony_tools}
+        assert "skillpack_distill" not in {card.name for card in instance.ability_manager.list()}
+        assert instance.is_registered_rail(orchestration)
+        assert orchestration._active_states[scope] is state
+        assert state.valid and state.pack_route.token is token and state.pack_route.member_started
+        assert direct_route_mode(orchestration._resolve_config_base()) == "off"
+
+        config["symphony"]["evolution"]["flow"]["enabled"] = True
+        await adapter.reload_agent_config(config, {})
+        assert capture.call_count == 2
+        assert instance.is_registered_rail(adapter._symphony_graph_evolution_rail)
+        names = [card.name for card in adapter._tool_cards]
+        assert names.count("skillpack_distill") == 1
+        assert names.count("symphony_compose_graph") == 1
+
+        active_capture = adapter._symphony_graph_evolution_rail
+        adapter._sync_mcp_servers_for_runtime.reset_mock()
+        adapter._load_active_packages.reset_mock()
+        adapter.install_session_input_guard.reset_mock()
+
+        def invalid_config(_config):
+            raise ValueError("invalid Symphony config")
+
+        monkeypatch.setattr(interface_deep, "load_symphony_config", invalid_config)
+        with caplog.at_level("WARNING", logger=interface_deep.logger.name):
+            await adapter.reload_agent_config(config, {})
+
+        assert adapter._symphony_graph_evolution_rail is None
+        assert not instance.is_registered_rail(active_capture)
+        assert capture.call_count == 2
+        assert orchestration._active_states[scope] is state
+        assert state.pack_route.token is token
+        adapter.install_session_input_guard.assert_awaited_once()
+        adapter._sync_mcp_servers_for_runtime.assert_awaited_once()
+        adapter._load_active_packages.assert_awaited_once()
+        assert any("SymphonyGraphEvolutionRail config reload failed" in record.message for record in caplog.records)
+    finally:
+        adapter._remove_registered_tools(adapter._symphony_tools)
+        for rail in list(instance.configured_rails()):
+            await instance.unregister_rail(rail)
+        await instance._agent_callback_manager.clear()
+        if instance.react_agent is not None:
+            await instance.react_agent.agent_callback_manager.clear()
+        instance.ability_manager.teardown_tools()

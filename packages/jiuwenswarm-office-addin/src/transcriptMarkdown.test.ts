@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { applyEvent, emptyConversation } from './conversationModel';
+import { applyEvent, emptyConversation, type Conversation } from './conversationModel';
 import type { GatewayEvent, JsonObject } from './gatewayClient';
+import { POWERPOINT } from './powerPointApp';
 import { transcriptFileName, transcriptMarkdown } from './transcriptMarkdown';
 
 const events: [string, JsonObject][] = [
@@ -17,7 +18,8 @@ const events: [string, JsonObject][] = [
 describe('the transcript file', () => {
   it('says who said what, with the steps between by name', () => {
     const conversation = events.map(([event, payload]): GatewayEvent => ({ event, payload }))
-      .reduce(applyEvent, { ...emptyConversation, entries: [{ kind: 'user', id: 'u1', text: '把标题改成蓝色' }] });
+      .reduce<Conversation>((shown, event) => applyEvent(shown, event, POWERPOINT.contract),
+        { ...emptyConversation, entries: [{ kind: 'user', id: 'u1', text: '把标题改成蓝色' }] });
     expect(transcriptMarkdown('季度汇报.pptx', conversation.entries, new Map())).toBe([
       '# 季度汇报.pptx', '**你**', '把标题改成蓝色', '> 过程：读取演示文稿、更新页面', '**WorkSwarm**', '标题改好了。',
     ].join('\n\n') + '\n');

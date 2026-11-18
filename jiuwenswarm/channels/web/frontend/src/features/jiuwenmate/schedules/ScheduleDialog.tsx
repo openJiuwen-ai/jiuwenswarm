@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
 import { buildCron, fromZonedInput, parseCron, toZonedInput, validateDraft, weekdayName } from './state';
@@ -97,6 +97,23 @@ function toDraft(form: FormState, timezone: string): ScheduleDraft {
   return { ...base, scheduleKind: 'cron', intervalSeconds: null, runAt: null, cronExpr: buildCron(form.frequency, form.time, day) };
 }
 
+function validateForm(form: FormState, draft: ScheduleDraft, executorId: string): string | null {
+  const reason = validateDraft(draft, executorId);
+  if (reason === 'executorRequired' || (reason === 'required' && (!draft.name || !draft.prompt))) return reason;
+  if (form.mode === 'period') {
+    if (form.frequency === 'monthly' && (!Number.isInteger(form.monthDay) || form.monthDay < 1 || form.monthDay > 31)) {
+      return 'monthDayInvalid';
+    }
+    if (!form.time) return 'timeRequired';
+  }
+  if (form.mode === 'interval' && !form.intervalValue.trim()) return 'intervalRequired';
+  if (form.mode === 'once') {
+    if (!form.onceDate) return 'onceDateRequired';
+    if (!form.onceTime) return 'timeRequired';
+  }
+  return reason;
+}
+
 export function ScheduleDialog({
   open,
   plan,
@@ -106,6 +123,7 @@ export function ScheduleDialog({
   timezone = 'Asia/Shanghai',
   onClose,
   onSubmit,
+  onSubmitAndEnable,
 }: {
   open: boolean;
   plan?: Schedule | null;
@@ -115,69 +133,169 @@ export function ScheduleDialog({
   timezone?: string;
   onClose: () => void;
   onSubmit: (executorId: string, draft: ScheduleDraft) => void | Promise<void>;
+  onSubmitAndEnable?: (executorId: string, draft: ScheduleDraft) => void | Promise<void>;
 }) {
   const { t } = useTranslation();
   const [form, setForm] = useState<FormState>(() => (plan ? formFromPlan(plan) : blankForm()));
   const executorRef = useRef<HTMLSelectElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const promptRef = useRef<HTMLTextAreaElement>(null);
+  const endsOnRef = useRef<HTMLInputElement>(null);
+  const timeRef = useRef<HTMLInputElement>(null);
+  const onceDateRef = useRef<HTMLInputElement>(null);
+  const monthDayRef = useRef<HTMLInputElement>(null);
+  const intervalRef = useRef<HTMLInputElement>(null);
   const [chosenExecutor, setChosenExecutor] = useState(executorId);
-  const [error, setError] = useState('');
+  const [submitError, setSubmitError] = useState('');
+  const [validationAttempted, setValidationAttempted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+  const errorId = useId();
+  const executorErrorId = `${errorId}-executor`;
+  const nameErrorId = `${errorId}-name`;
+  const promptErrorId = `${errorId}-prompt`;
+  const rangeErrorId = `${errorId}-range`;
+  const timeErrorId = `${errorId}-time`;
+  const onceDateErrorId = `${errorId}-once-date`;
+  const monthDayErrorId = `${errorId}-month-day`;
+  const intervalErrorId = `${errorId}-interval`;
+  const futureErrorId = `${errorId}-future`;
   if (!open) return null;
   const draft = toDraft(form, timezone);
-  const save = () => {
-    const reason = validateDraft(draft, chosenExecutor);
-    if (reason === 'executorRequired' && executorRef.current) {
-      setError('');
-      executorRef.current.focus();
-      executorRef.current.reportValidity();
-      return;
-    }
+  const validationReason = validationAttempted ? validateForm(form, draft, chosenExecutor) : null;
+  const executorInvalid = validationReason === 'executorRequired';
+  const nameInvalid = validationReason === 'required' && !draft.name;
+  const promptInvalid = validationReason === 'required' && !draft.prompt;
+  const rangeInvalid = validationReason === 'rangeInvalid';
+  const timeInvalid = validationReason === 'timeRequired';
+  const onceDateInvalid = validationReason === 'onceDateRequired';
+  const monthDayInvalid = validationReason === 'monthDayInvalid';
+  const intervalInvalid = validationReason === 'intervalRequired' || validationReason === 'intervalInvalid';
+  const futureInvalid = validationReason === 'futureRequired';
+  const hasFieldError = (executorInvalid && executors !== undefined) || nameInvalid || promptInvalid || rangeInvalid
+    || timeInvalid || onceDateInvalid || monthDayInvalid || intervalInvalid || futureInvalid;
+  const validationMessage = validationReason && !hasFieldError ? t(`jiuwenmate.schedule.error.${validationReason}`) : '';
+  const busy = saving || submitting;
+  const save = (enable = false) => {
+    if (busy || submittingRef.current) return;
+    const reason = validateForm(form, draft, chosenExecutor);
+    setValidationAttempted(true);
+    setSubmitError('');
     if (reason) {
-      setError(t(`jiuwenmate.schedule.error.${reason}`));
+      if (reason === 'executorRequired') executorRef.current?.focus();
+      else if (reason === 'required' && !draft.name) nameRef.current?.focus();
+      else if (reason === 'required' && !draft.prompt) promptRef.current?.focus();
+      else if (reason === 'rangeInvalid') endsOnRef.current?.focus();
+      else if (reason === 'timeRequired') timeRef.current?.focus();
+      else if (reason === 'onceDateRequired' || reason === 'futureRequired') onceDateRef.current?.focus();
+      else if (reason === 'monthDayInvalid') monthDayRef.current?.focus();
+      else if (reason === 'intervalRequired' || reason === 'intervalInvalid') intervalRef.current?.focus();
       return;
     }
-    setError('');
-    void Promise.resolve(onSubmit(chosenExecutor, draft))
+    if (enable && draft.endsAt && Date.parse(draft.endsAt) <= Date.now()) {
+      setSubmitError(t('jiuwenmate.schedule.error.enableExpired'));
+      return;
+    }
+    submittingRef.current = true;
+    setSubmitting(true);
+    void Promise.resolve().then(() => (enable && onSubmitAndEnable ? onSubmitAndEnable : onSubmit)(chosenExecutor, draft))
       .then(() => onClose())
       .catch((failure: unknown) => {
         const message = failure instanceof Error ? failure.message : '';
-        setError(message || t('jiuwenmate.schedule.error.required'));
-      });
+        setSubmitError(message || t('jiuwenmate.schedule.error.required'));
+      })
+      .finally(() => { submittingRef.current = false; setSubmitting(false); });
   };
-  const patch = (next: Partial<FormState>) => setForm((current) => ({ ...current, ...next }));
+  const patch = (next: Partial<FormState>) => {
+    setForm((current) => ({ ...current, ...next }));
+    setSubmitError('');
+  };
   return (
     <div className="jiuwenmate-dialog-backdrop" data-testid="jiuwenmate-schedule-dialog">
       <div className="jiuwenmate-dialog jiuwenmate-schedule-dialog" role="dialog" aria-modal="true" aria-labelledby="jiuwenmate-schedule-dialog-title">
-        <button type="button" className="jiuwenmate-dialog__close" aria-label={t('jiuwenmate.schedule.cancel')} onClick={onClose}>
+        <button type="button" className="jiuwenmate-dialog__close" aria-label={t('jiuwenmate.schedule.cancel')} onClick={onClose} disabled={busy}>
           <X aria-hidden />
         </button>
         <h2 id="jiuwenmate-schedule-dialog-title" className="jiuwenmate-dialog__title">
           {plan ? t('jiuwenmate.schedule.editTitle') : t('jiuwenmate.schedule.createTitle')}
         </h2>
         <div className="jiuwenmate-dialog__body">
+          {plan && !plan.enabled ? (
+            <p className="jiuwenmate-schedule-dialog__paused-hint" data-testid="jiuwenmate-schedule-paused-hint">
+              {t('jiuwenmate.schedule.pausedEditHint')}
+            </p>
+          ) : null}
           {executors ? (
             <label className="jiuwenmate-field">
               <span>{t('jiuwenmate.schedule.executor')}</span>
-              <select ref={executorRef} required value={chosenExecutor} onChange={(event) => setChosenExecutor(event.target.value)} data-testid="jiuwenmate-schedule-executor">
+              <select
+                ref={executorRef}
+                className="jiuwenmate-schedule-dialog__executor"
+                required
+                value={chosenExecutor}
+                aria-label={t('jiuwenmate.schedule.executor')}
+                aria-invalid={executorInvalid || undefined}
+                aria-describedby={executorInvalid ? executorErrorId : undefined}
+                onChange={(event) => {
+                  setChosenExecutor(event.target.value);
+                  setSubmitError('');
+                }}
+                data-testid="jiuwenmate-schedule-executor"
+              >
                 <option value="">{t('jiuwenmate.schedule.chooseExecutor')}</option>
                 {executors.map((item) => (
                   <option key={item.id} value={item.id}>{item.name}</option>
                 ))}
               </select>
+              {executorInvalid ? (
+                <span id={executorErrorId} role="alert" data-testid="jiuwenmate-schedule-executor-error">
+                  {t('jiuwenmate.schedule.error.executorRequired')}
+                </span>
+              ) : null}
             </label>
           ) : null}
           <label className="jiuwenmate-field">
             <span>{t('jiuwenmate.schedule.name')}</span>
-            <input value={form.name} placeholder={t('jiuwenmate.schedule.placeholder')} onChange={(event) => patch({ name: event.target.value })} data-testid="jiuwenmate-schedule-name" />
+            <input
+              ref={nameRef}
+              value={form.name}
+              placeholder={t('jiuwenmate.schedule.placeholder')}
+              aria-label={t('jiuwenmate.schedule.name')}
+              aria-invalid={nameInvalid || undefined}
+              aria-describedby={nameInvalid ? nameErrorId : undefined}
+              onChange={(event) => patch({ name: event.target.value })}
+              data-testid="jiuwenmate-schedule-name"
+            />
+            {nameInvalid ? (
+              <span id={nameErrorId} role="alert" data-testid="jiuwenmate-schedule-name-error">
+                {t('jiuwenmate.schedule.error.nameRequired')}
+              </span>
+            ) : null}
           </label>
           <label className="jiuwenmate-field">
             <span>{t('jiuwenmate.schedule.prompt')}</span>
-            <textarea value={form.prompt} placeholder={t('jiuwenmate.schedule.placeholder')} onChange={(event) => patch({ prompt: event.target.value })} data-testid="jiuwenmate-schedule-prompt" />
+            <textarea
+              ref={promptRef}
+              value={form.prompt}
+              placeholder={t('jiuwenmate.schedule.placeholder')}
+              aria-label={t('jiuwenmate.schedule.prompt')}
+              aria-invalid={promptInvalid || undefined}
+              aria-describedby={promptInvalid ? promptErrorId : undefined}
+              onChange={(event) => patch({ prompt: event.target.value })}
+              data-testid="jiuwenmate-schedule-prompt"
+            />
+            {promptInvalid ? (
+              <span id={promptErrorId} role="alert" data-testid="jiuwenmate-schedule-prompt-error">
+                {t('jiuwenmate.schedule.error.promptRequired')}
+              </span>
+            ) : null}
           </label>
           <div className="jiuwenmate-field">
             <span>{t('jiuwenmate.schedule.plan')}</span>
             <div className="jiuwenmate-schedule-modes" role="tablist">
               {(['period', 'interval', 'once'] as const).map((mode) => (
-                <button key={mode} type="button" role="tab" aria-selected={form.mode === mode} onClick={() => patch({ mode })}>
+                <button key={mode} type="button" role="tab" aria-selected={form.mode === mode} onClick={() => patch({ mode })}
+                  data-testid="jiuwenmate-schedule-mode" data-variant={mode}>
                   {t(`jiuwenmate.schedule.mode.${mode}`)}
                 </button>
               ))}
@@ -197,14 +315,41 @@ export function ScheduleDialog({
                   </select>
                 ) : null}
                 {form.frequency === 'monthly' ? (
-                  <input type="number" min={1} max={31} value={form.monthDay} aria-label={t('jiuwenmate.schedule.monthDay')} onChange={(event) => patch({ monthDay: Number(event.target.value) })} />
+                  <>
+                    <input ref={monthDayRef} type="number" min={1} max={31} value={form.monthDay || ''}
+                      aria-label={t('jiuwenmate.schedule.monthDay')} aria-invalid={monthDayInvalid || undefined}
+                      aria-describedby={monthDayInvalid ? monthDayErrorId : undefined}
+                      onChange={(event) => patch({ monthDay: Number(event.target.value) })}
+                      data-testid="jiuwenmate-schedule-month-day" />
+                    {monthDayInvalid ? (
+                      <span id={monthDayErrorId} role="alert" data-testid="jiuwenmate-schedule-month-day-error">
+                        {t('jiuwenmate.schedule.error.monthDayInvalid')}
+                      </span>
+                    ) : null}
+                  </>
                 ) : null}
-                <input type="time" value={form.time} aria-label={t('jiuwenmate.schedule.time')} onChange={(event) => patch({ time: event.target.value })} />
+                <input ref={timeRef} type="time" value={form.time} aria-label={t('jiuwenmate.schedule.time')}
+                  aria-invalid={timeInvalid || undefined} aria-describedby={timeInvalid ? timeErrorId : undefined}
+                  onChange={(event) => patch({ time: event.target.value })} data-testid="jiuwenmate-schedule-time" />
+                {timeInvalid ? (
+                  <span id={timeErrorId} role="alert" data-testid="jiuwenmate-schedule-time-error">
+                    {t('jiuwenmate.schedule.error.timeRequired')}
+                  </span>
+                ) : null}
               </div>
             ) : null}
             {form.mode === 'interval' ? (
               <div className="jiuwenmate-schedule-plan">
-                <input value={form.intervalValue} inputMode="numeric" aria-label={t('jiuwenmate.schedule.interval')} onChange={(event) => patch({ intervalValue: event.target.value.replace(/[^\d]/g, '') })} data-testid="jiuwenmate-schedule-interval" />
+                <input ref={intervalRef} value={form.intervalValue} inputMode="numeric"
+                  aria-label={t('jiuwenmate.schedule.interval')} aria-invalid={intervalInvalid || undefined}
+                  aria-describedby={intervalInvalid ? intervalErrorId : undefined}
+                  onChange={(event) => patch({ intervalValue: event.target.value.replace(/[^\d]/g, '') })}
+                  data-testid="jiuwenmate-schedule-interval" />
+                {intervalInvalid ? (
+                  <span id={intervalErrorId} role="alert" data-testid="jiuwenmate-schedule-interval-error">
+                    {t(`jiuwenmate.schedule.error.${validationReason}`)}
+                  </span>
+                ) : null}
                 <select value={form.intervalUnit} aria-label={t('jiuwenmate.schedule.intervalUnit')} onChange={(event) => patch({ intervalUnit: event.target.value as 'minutes' | 'hours' })}>
                   <option value="minutes">{t('jiuwenmate.schedule.minutes')}</option>
                   <option value="hours">{t('jiuwenmate.schedule.hours')}</option>
@@ -213,25 +358,73 @@ export function ScheduleDialog({
             ) : null}
             {form.mode === 'once' ? (
               <div className="jiuwenmate-schedule-plan">
-                <input type="date" value={form.onceDate} aria-label={t('jiuwenmate.schedule.onceDate')} onChange={(event) => patch({ onceDate: event.target.value })} />
-                <input type="time" value={form.onceTime} aria-label={t('jiuwenmate.schedule.time')} onChange={(event) => patch({ onceTime: event.target.value })} />
+                <input ref={onceDateRef} type="date" value={form.onceDate} aria-label={t('jiuwenmate.schedule.onceDate')}
+                  aria-invalid={onceDateInvalid || futureInvalid || undefined}
+                  aria-describedby={onceDateInvalid ? onceDateErrorId : futureInvalid ? futureErrorId : undefined}
+                  onChange={(event) => patch({ onceDate: event.target.value })} data-testid="jiuwenmate-schedule-once-date" />
+                {onceDateInvalid ? (
+                  <span id={onceDateErrorId} role="alert" data-testid="jiuwenmate-schedule-once-date-error">
+                    {t('jiuwenmate.schedule.error.onceDateRequired')}
+                  </span>
+                ) : null}
+                <input ref={timeRef} type="time" value={form.onceTime} aria-label={t('jiuwenmate.schedule.time')}
+                  aria-invalid={timeInvalid || futureInvalid || undefined}
+                  aria-describedby={timeInvalid ? timeErrorId : futureInvalid ? futureErrorId : undefined}
+                  onChange={(event) => patch({ onceTime: event.target.value })} data-testid="jiuwenmate-schedule-once-time" />
+                {timeInvalid ? (
+                  <span id={timeErrorId} role="alert" data-testid="jiuwenmate-schedule-time-error">
+                    {t('jiuwenmate.schedule.error.timeRequired')}
+                  </span>
+                ) : null}
+                {futureInvalid ? (
+                  <span id={futureErrorId} role="alert" data-testid="jiuwenmate-schedule-future-error">
+                    {t('jiuwenmate.schedule.error.futureRequired')}
+                  </span>
+                ) : null}
               </div>
             ) : null}
           </div>
           <div className="jiuwenmate-field">
             <span>{t('jiuwenmate.schedule.effective')}</span>
             <div className="jiuwenmate-schedule-plan">
-              <input type="date" value={form.startsOn} aria-label={t('jiuwenmate.schedule.startsOn')} onChange={(event) => patch({ startsOn: event.target.value })} />
-              <input type="date" value={form.endsOn} aria-label={t('jiuwenmate.schedule.endsOn')} onChange={(event) => patch({ endsOn: event.target.value })} />
+              <input
+                type="date"
+                value={form.startsOn}
+                aria-label={t('jiuwenmate.schedule.startsOn')}
+                aria-invalid={rangeInvalid || undefined}
+                aria-describedby={rangeInvalid ? rangeErrorId : undefined}
+                onChange={(event) => patch({ startsOn: event.target.value })}
+                data-testid="jiuwenmate-schedule-starts-on"
+              />
+              <input
+                ref={endsOnRef}
+                type="date"
+                value={form.endsOn}
+                aria-label={t('jiuwenmate.schedule.endsOn')}
+                aria-invalid={rangeInvalid || undefined}
+                aria-describedby={rangeInvalid ? rangeErrorId : undefined}
+                onChange={(event) => patch({ endsOn: event.target.value })}
+                data-testid="jiuwenmate-schedule-ends-on"
+              />
             </div>
+            {rangeInvalid ? (
+              <span id={rangeErrorId} role="alert" data-testid="jiuwenmate-schedule-range-error">
+                {t('jiuwenmate.schedule.error.rangeInvalid')}
+              </span>
+            ) : null}
           </div>
-          {error ? <p role="alert">{error}</p> : null}
+          {submitError || validationMessage ? <p role="alert">{submitError || validationMessage}</p> : null}
         </div>
         <div className="jiuwenmate-dialog__footer">
-          <button type="button" className="jiuwenmate-outline-button" onClick={onClose}>{t('jiuwenmate.schedule.cancel')}</button>
-          <button type="button" className="jiuwenmate-outline-button" onClick={save} disabled={saving} data-testid="jiuwenmate-schedule-save">
-            {t('jiuwenmate.schedule.confirm')}
+          <button type="button" className="jiuwenmate-outline-button" onClick={onClose} disabled={busy}>{t('jiuwenmate.schedule.cancel')}</button>
+          <button type="button" className="jiuwenmate-outline-button" onClick={() => save()} disabled={busy} data-testid="jiuwenmate-schedule-save">
+            {t(plan ? 'jiuwenmate.schedule.save' : 'jiuwenmate.schedule.confirm')}
           </button>
+          {plan && !plan.enabled && onSubmitAndEnable ? (
+            <button type="button" className="jiuwenmate-dark-button" onClick={() => save(true)} disabled={busy} data-testid="jiuwenmate-schedule-save-enable">
+              {t('jiuwenmate.schedule.saveAndEnable')}
+            </button>
+          ) : null}
         </div>
       </div>
     </div>

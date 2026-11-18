@@ -442,6 +442,61 @@ function scopeParams(request) {
   return scope;
 }
 
+test('enterprise skips topic UI, reads, subscriptions and foreground checks', async () => {
+  const previousEdition = window.__JIUWENSWARM_EDITION__;
+  const originalOn = webClient.on;
+  const subscriptions = [];
+  window.__JIUWENSWARM_EDITION__ = 'enterprise';
+  webClient.on = function (event, handler) {
+    subscriptions.push(event);
+    return originalOn.call(this, event, handler);
+  };
+  let panel;
+  try {
+    panel = await mountWelcome('enterprise-topic-disabled', { holdResponses: true });
+    await panel.rerender({ isConnected: false });
+    await panel.rerender({ isConnected: true });
+    await setPageVisibility('hidden');
+    await setPageVisibility('visible');
+    assert.equal(document.querySelector('[data-testid="chat-panel-welcome-suggestions"]'), null);
+    assert.deepEqual(subscriptions.filter((event) => event.startsWith('topic_starters.')), []);
+    assert.deepEqual(sent.filter((frame) => frame.method.startsWith('topic_starters.')), []);
+  } finally {
+    if (panel) await panel.unmount();
+    webClient.on = originalOn;
+    if (previousEdition === undefined) delete window.__JIUWENSWARM_EDITION__;
+    else window.__JIUWENSWARM_EDITION__ = previousEdition;
+  }
+});
+
+test('downward slash suggestions raise the input container above welcome topics', async () => {
+  const panel = await mountWelcome('new', { holdResponses: true });
+  try {
+    await react.act(async () => {
+      const input = editor();
+      input.focus();
+      input.textContent = '/';
+      const range = document.createRange();
+      range.selectNodeContents(input);
+      range.collapse(false);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    });
+    await react.act(settle);
+    const menu = document.querySelector('[data-testid="chat-panel-composer-suggestion"]');
+    assert.ok(menu?.classList.contains('chat-composer-suggestion--below'));
+    const container = document.querySelector('[data-testid="chat-panel-input-container"]');
+    assert.ok(container.classList.contains('chat-input-container--suggestion-open'));
+    await pressInComposer('Escape');
+    assert.equal(document.querySelector('[data-testid="chat-panel-composer-suggestion"]'), null);
+    assert.equal(container.classList.contains('chat-input-container--suggestion-open'), false);
+  } finally {
+    await panel.unmount();
+  }
+});
+
 test('a pool that answers at once is shown without a static entrance first', async () => {
   const panel = await mountWelcome('sess-no-flash', { holdResponses: true });
   try {
@@ -542,6 +597,19 @@ test('General renders and persists the topic switch through config while keeping
     await react.act(settle);
     assert.equal(storedValue, 'true', 'reenabling a saved model must save the switch directly');
     assert.equal(document.querySelector('[data-testid="settings-agent-media-config-dialog"]'), null);
+    const testBtn = document.querySelector('[data-testid="settings-topic-model-test-btn"]');
+    assert.ok(testBtn, 'saved topic model card must expose a test-connection button like chat models');
+    const validateBeforeCardTest = requests.filter(request => request.method === 'config.validate_model').length;
+    await react.act(async () => testBtn.click());
+    await react.act(settle);
+    const cardProbe = requests.findLast(request => request.method === 'config.validate_model');
+    assert.ok(cardProbe, 'card test must call config.validate_model');
+    assert.ok(requests.filter(request => request.method === 'config.validate_model').length > validateBeforeCardTest);
+    assert.equal(cardProbe.params.model, 'topic-chat');
+    assert.equal(cardProbe.params.api_key, 'saved-topic-key');
+    assert.equal(cardProbe.params.api_base, 'https://example.test/v1');
+    assert.ok(requests.some(request => request.method === 'topic_starters.status' && request.params?.include_api_key === true));
+    assert.ok(document.querySelector('[data-testid="settings-topic-model-toast"][data-variant="success"]'));
     await react.act(async () => document.querySelector('[data-testid="settings-topic-model-edit"]').click());
     await react.act(settle);
     assert.ok(document.querySelector('[data-testid="settings-agent-media-config-dialog"]'));
@@ -581,6 +649,8 @@ test('General renders and persists the topic switch through config while keeping
     assert.equal(storedValue, 'false', 'model deletion must persist the disabled switch on the backend');
     assert.equal(topicSwitch().getAttribute('aria-checked'), 'false', 'a fresh settings page must read the persisted disabled switch');
     assert.equal(document.querySelector('[data-testid="settings-topic-model-summary"]'), null);
+    const clearedSubSettings = topicSwitch().closest('.setting-row').querySelector('.setting-row__sub-settings');
+    assert.ok(clearedSubSettings.matches(':empty'), 'deleting the model must not leave a closed dialog in the spacing container');
   } finally {
     await react.act(async () => root.unmount());
   }
@@ -604,6 +674,9 @@ test('General ignores legacy chat models and opens the connection form without a
     })));
     await react.act(settle);
     assert.equal(document.querySelector('[data-testid="settings-topic-model-summary"]'), null);
+    const topicSwitch = document.querySelector('[data-testid="settings-switch"][data-variant="topic-recommendation-enabled"]');
+    const subSettings = topicSwitch.closest('.setting-row').querySelector('.setting-row__sub-settings');
+    assert.ok(subSettings.matches(':empty'), 'an unconfigured model must not leave hidden dialog content that adds padding');
     await react.act(async () => document.querySelector('[data-testid="settings-switch"][data-variant="topic-recommendation-enabled"]').click());
     await react.act(settle);
     const dialog = document.querySelector('[data-testid="settings-agent-media-config-dialog"]');
@@ -667,6 +740,53 @@ test('disabled homepage keeps preset cards and links to General; enabling refres
   }
 });
 
+test('a disabled recommendation bubble stays unchanged while switching projects', async () => {
+  const frames = [];
+  let capture = false;
+  const bubble = () => document.querySelector('[data-testid="chat-panel-welcome-banner-bubble"]');
+  const panel = await mountWelcome('sess-disabled-project-switch', {
+    holdResponses: true,
+    onRender: () => {
+      if (capture) frames.push({ text: bubble()?.textContent, className: bubble()?.className });
+    },
+  });
+  try {
+    await react.act(async () => liveSocket.reply(starterRequests().at(-1).id, {
+      ...dynamicSlateResponse('sess-disabled-project-switch', 'PRESET'), preparation_state: 'disabled',
+    }));
+    await react.act(settle);
+    await react.act(async () => document.querySelector('[data-testid="chat-panel-welcome-suggestion"]').dispatchEvent(
+      new window.MouseEvent('mouseover', { bubbles: true }),
+    ));
+    const hint = document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]');
+    assert.ok(hint);
+    const expected = { text: bubble().textContent, className: bubble().className };
+    capture = true;
+    await panel.rerender({ topicStarterProjectId: 'project-a' });
+    const staleRequest = starterRequests().at(-1);
+    await panel.rerender({ topicStarterProjectId: 'project-b' });
+    await react.act(async () => liveSocket.reply(staleRequest.id, {
+      ...dynamicSlateResponse('sess-disabled-project-switch', 'STALE', 4, 'project-a'), preparation_state: 'disabled',
+    }));
+    await react.act(settle);
+    await react.act(async () => liveSocket.reply(starterRequests().at(-1).id, {
+      ...dynamicSlateResponse('sess-disabled-project-switch', 'CURRENT', 4, 'project-b'), preparation_state: 'disabled',
+    }));
+    await react.act(settle);
+    assert.ok(frames.length > 0);
+    for (const frame of frames) assert.deepEqual(frame, expected, 'the bubble must keep its content and animation classes');
+    assert.equal(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'), hint);
+    capture = false;
+    await react.act(async () => liveSocket.onmessage({ data: JSON.stringify({
+      type: 'event', event: 'topic_starters.control_changed', payload: { enabled: true },
+    }) }));
+    await react.act(settle);
+    assert.equal(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'), null);
+  } finally {
+    await panel.unmount();
+  }
+});
+
 test('enabled recommendations show a shared unavailable hint without settings CTA', async () => {
   for (const state of ['missing_configuration', 'provider_unavailable']) {
     const panel = await mountWelcome(`sess-enabled-${state}`, {
@@ -711,6 +831,67 @@ test('project new-chat requests and accepts only its selected project pool', asy
     });
     await react.act(settle);
     assert.deepEqual(visibleSuggestionTitles(), ['PROJECT-title-0', 'PROJECT-title-1', 'PROJECT-title-2', 'PROJECT-title-3']);
+  } finally {
+    await panel.unmount();
+  }
+});
+
+test('project switches omit loading hints and ignore stale pool replies', async () => {
+  const panel = await mountWelcome('sess-project-loading', { holdResponses: true });
+  const loading = () => document.querySelector('[data-testid="chat-panel-topic-loading"]');
+  try {
+    assert.equal(loading(), null);
+    await react.act(async () => liveSocket.reply(starterRequests().at(-1).id,
+      dynamicSlateResponse('sess-project-loading', 'GLOBAL')));
+    await react.act(settle);
+    assert.equal(loading(), null);
+    for (const projectId of ['project-a', 'project-b', null]) {
+      await panel.rerender({ topicStarterProjectId: projectId });
+      assert.equal(loading(), null, 'scope changes must not show a loading hint');
+      assert.deepEqual(visibleSuggestionTitles(), [], 'previous project cards must not remain visible');
+      const request = starterRequests().at(-1);
+      if (projectId === 'project-a') {
+        await panel.rerender({ topicStarterProjectId: 'project-skipped' });
+        const current = starterRequests().at(-1);
+        await react.act(async () => liveSocket.reply(request.id,
+          dynamicSlateResponse('sess-project-loading', 'STALE', 4, projectId)));
+        await react.act(settle);
+        assert.equal(loading(), null);
+        assert.deepEqual(visibleSuggestionTitles(), []);
+        await react.act(async () => liveSocket.reply(current.id,
+          dynamicSlateResponse('sess-project-loading', 'CURRENT', 4, 'project-skipped')));
+      } else {
+        await react.act(async () => liveSocket.reply(request.id,
+          dynamicSlateResponse('sess-project-loading', 'CURRENT', 4, projectId)));
+      }
+      await react.act(settle);
+      assert.equal(loading(), null);
+      assert.equal(visibleSuggestionTitles().length, 4);
+    }
+  } finally {
+    await panel.unmount();
+  }
+});
+
+test('unavailable and failed pool reads do not introduce loading hints', async () => {
+  const panel = await mountWelcome('sess-project-loading-error', { holdResponses: true });
+  const loading = () => document.querySelector('[data-testid="chat-panel-topic-loading"]');
+  try {
+    await react.act(async () => liveSocket.reply(starterRequests().at(-1).id, {
+      available: false, preparation_state: 'preparing', reason: 'v6_pool_miss',
+    }));
+    await react.act(settle);
+    assert.equal(loading(), null);
+    assert.ok(document.querySelector('[data-testid="chat-panel-recommendation-preparation-state"]'));
+    await panel.rerender({ topicStarterProjectId: 'project-error' });
+    assert.equal(loading(), null);
+    await react.act(async () => liveSocket.onmessage({ data: JSON.stringify({
+      type: 'res', id: starterRequests().at(-1).id, ok: false,
+      error: { code: 'UNAVAILABLE', message: 'pool read failed' },
+    }) }));
+    await react.act(settle);
+    assert.equal(loading(), null);
+    assert.equal(visibleSuggestionTitles().length, 0);
   } finally {
     await panel.unmount();
   }

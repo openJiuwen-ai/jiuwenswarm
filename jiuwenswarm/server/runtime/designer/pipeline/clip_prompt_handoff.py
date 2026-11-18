@@ -176,7 +176,7 @@ def same_scene_prompt_gate_clause(
         + (f"; speech: {str(this_speech).strip()}" if str(this_speech or "").strip() else "")
         + ".",
         "2) The Wan prompt MUST agree with that row (blocking, who is on screen, what "
-        "happens in THIS window). Do not film another shot's beat.",
+        "happens in THIS window). Do not film another shot's action.",
     ]
     if has_prior:
         lines.append(
@@ -335,7 +335,7 @@ def previous_clip_had_clause(prior: list[dict[str, Any]] | None) -> str:
     beat = _short_action(str(latest.get("clip_action") or latest.get("wan_prompt") or ""))
     lines = [
         "PREVIOUS CLIP HAD THE FOLLOWING (context only — do NOT film / redo this):",
-        f"- Shot {latest.get('clip_index')} ({latest.get('node_id')}): {beat or '(prior beat)'}",
+        f"- Shot {latest.get('clip_index')} ({latest.get('node_id')}): {beat or '(prior shot)'}",
     ]
     if latest.get("speech_line"):
         lines.append(
@@ -417,7 +417,7 @@ def clip_continuity_note(
     if prior_action.strip():
         src = f"shot {prior_clip_index}" if prior_clip_index else "prior clip"
         parts.append(
-            "PREVIOUS CLIP HAD THE FOLLOWING (context only — do NOT redraw that beat):\n"
+            "PREVIOUS CLIP HAD THE FOLLOWING (context only — do NOT redraw that shot):\n"
             f"- {src}: {_short_action(prior_action)}\n"
             "Advance time; do not restart finished onsets unless storyboard asks."
         )

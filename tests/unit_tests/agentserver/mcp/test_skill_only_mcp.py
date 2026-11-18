@@ -87,13 +87,12 @@ def test_detect_skill_only_when_skills_only_no_schema(tmp_path: Path) -> None:
     assert _detect_integration_type(pkg) == "skill-only"
 
 
-def test_skill_only_manifest_without_skills_is_invalid(tmp_path: Path) -> None:
-    """A skill-only manifest without a declared SKILL.md is invalid."""
-    from jiuwenswarm.server.runtime.mcp.package_manifest import McpPackageError
+def test_skill_only_manifest_without_skills_still_loads(tmp_path: Path) -> None:
+    """A skill-only manifest without a declared SKILL.md loads with a warning;
+    the missing skill only surfaces when something tries to use it."""
     from jiuwenswarm.server.runtime.mcp.registry import _detect_integration_type
     pkg = _write_pkg(tmp_path)  # empty package
-    with pytest.raises(McpPackageError, match="SKILL.md"):
-        _detect_integration_type(pkg)
+    assert _detect_integration_type(pkg) == "skill-only"
 
 
 def test_connect_skill_only_credentialless_connects(tmp_path: Path, monkeypatch) -> None:
@@ -128,7 +127,7 @@ def test_connect_empty_package_raises(tmp_path: Path, monkeypatch) -> None:
     from jiuwenswarm.server.runtime.mcp import registry
     _write_pkg(tmp_path)  # truly empty
     monkeypatch.setattr(registry, "_packages_dir", lambda: tmp_path)
-    with pytest.raises(ValueError, match="SKILL.md"):
+    with pytest.raises(ValueError, match="no usable"):
         registry.connect_mcp("ctrip-wendao")
 
 

@@ -99,3 +99,19 @@ def test_login_models_always_come_after_configured_ones(patched):
     patched([_configured("my-gpt"), _configured("my-qwen")], [_login("kimi-k2.6"), _login("glm-5.2")])
     names = [e["model_client_config"]["model_name"] for e in get_available_models(None, "sess-1")]
     assert names == ["my-gpt", "my-qwen", "kimi-k2.6", "glm-5.2"]
+
+
+def test_env_fallback_carries_vendor_key(monkeypatch):
+    monkeypatch.setenv("VENDOR_KEY", "opencode-go")
+
+    entry = config_mod.get_default_models({"models": {}})[0]
+
+    assert entry["model_client_config"]["vendor_key"] == "opencode-go"
+
+
+def test_env_fallback_vendor_key_is_empty_when_unset(monkeypatch):
+    monkeypatch.delenv("VENDOR_KEY", raising=False)
+
+    entry = config_mod.get_default_models({"models": {}})[0]
+
+    assert entry["model_client_config"]["vendor_key"] == ""

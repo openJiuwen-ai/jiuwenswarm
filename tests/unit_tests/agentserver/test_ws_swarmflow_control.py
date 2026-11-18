@@ -81,7 +81,7 @@ def _make_request(
 
 def _decode_response(ws: _FakeWS) -> dict[str, Any]:
     """Decode the single recorded WS message back into an AgentResponse dict."""
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
+    from e2a.wire_codec import parse_agent_server_wire_unary
 
     assert len(ws.sent) == 1
     resp = parse_agent_server_wire_unary(__import__("json").loads(ws.sent[0]))

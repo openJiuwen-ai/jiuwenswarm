@@ -1,7 +1,7 @@
 """企业级配置路由上下文、加载结果与 ``template_ref`` 槽位定义。
 
 槽位枚举、槽位 → 实体表映射与 ``normalize_template_ref`` 的唯一实现在
-``openjiuwen_protocol.template_slots``；本模块 re-export 保持既有导入路径，
+``e2a.template_slots``；本模块 re-export 保持既有导入路径，
 只保留依赖本仓加载流程的数据快照。
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from openjiuwen_protocol.template_slots import (
+from e2a.template_slots import (
     DEFAULT_AGENT_LOAD_SLOTS,
     MODEL_SLOT_KEYS,
     SLOT_ENTITY_TABLE,
@@ -52,6 +52,8 @@ class EffectiveEnterpriseConfig:
     mcp: list[dict[str, Any]] | None = None
     permissions: list[dict[str, Any]] | None = None
     a2a_access_policy: list[dict[str, Any]] | None = None
+    # Gateway advanced_config 表行（按 agent_template_id）；含 a4p_enabled 等。
+    advanced_config: dict[str, Any] | None = None
     service_id: str | None = None
     send_file_allowed: bool = True
     debug: dict[str, Any] = field(default_factory=dict)
@@ -71,6 +73,7 @@ class EffectiveEnterpriseConfig:
             "mcp": self.mcp,
             "permissions": self.permissions,
             "a2a_access_policy": self.a2a_access_policy,
+            "advanced_config": self.advanced_config,
             "service_id": self.service_id,
             "send_file_allowed": self.send_file_allowed,
             "debug": dict(self.debug),

@@ -5,9 +5,12 @@ import {
   type Conversation, type Entry,
 } from './conversationModel';
 import type { JsonObject } from './gatewayClient';
+import { POWERPOINT } from './powerPointApp';
+
 
 function play(events: [string, JsonObject][], from: Conversation = emptyConversation): Conversation {
-  return events.reduce((conversation, [event, payload]) => applyEvent(conversation, { event, payload }), from);
+  return events.reduce(
+    (conversation, [event, payload]) => applyEvent(conversation, { event, payload }, POWERPOINT.contract), from);
 }
 
 /** The transcript without the ids the model hands out. */
@@ -102,6 +105,14 @@ describe('a live turn', () => {
     ]);
     expect(cancelled.turn).toBe('idle');
     expect(cancelled.prompt).toBeUndefined();
+  });
+
+  it('says when the model cannot see the images sent, and nothing for other notices', () => {
+    const notice = '当前模型不支持图片输入，已切换为图片理解工具处理。';
+    expect(shown(play([
+      ['chat.notice', { notice_type: 'image_tool_fallback', content: notice }],
+      ['chat.notice', { notice_type: 'model_retry', content: '正在重试' }],
+    ]))).toEqual([{ kind: 'notice', tone: 'info', text: notice }]);
   });
 
   it('leaves no step running once the turn has ended, nor a task still sending', () => {
@@ -205,7 +216,8 @@ describe('messages between documents', () => {
 describe('a conversation\'s history', () => {
   it('shows what was said and done, and the questions asked only as notes', () => {
     const conversation = replayHistory([
-      { role: 'user', content: '把标题改短', request_id: 'r1' },
+      { role: 'user', content: '把标题改短', request_id: 'r1',
+        files: { uploaded_images: { items: [{ filename: 'logo.png', path: '/u/logo.png' }], scope: 'current_turn' } } },
       { role: 'assistant', event_type: 'chat.tool_call', request_id: 'r1',
         tool_call: { id: 'c1', name: 'list_slide_shapes' } },
       { role: 'assistant', event_type: 'chat.ask_user_question', request_id: 'r1', ...PERMISSION },
@@ -217,7 +229,7 @@ describe('a conversation\'s history', () => {
         message_id: 'm1', source_session_id: 's9', source_title: '市场分析.pptx' } },
     ]);
     expect(shown(conversation)).toEqual([
-      { kind: 'user', text: '把标题改短' },
+      { kind: 'user', text: '把标题改短', images: [{ filename: 'logo.png' }] },
       { kind: 'tool', name: 'list_slide_shapes', status: 'failed' },
       { kind: 'notice', tone: 'info', text: '已询问：工具 `session_send_message` 需要授权才能执行' },
       { kind: 'notice', tone: 'info', text: '已回答：本次允许' },

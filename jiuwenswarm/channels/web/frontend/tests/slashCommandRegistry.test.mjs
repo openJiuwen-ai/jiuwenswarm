@@ -6,7 +6,8 @@ import {
   parseGoalSlashArgs,
   prepareGoalSetFromSlash,
   togglePlanFromSlash,
-} from '../node_modules/.cache/slash-command-registry/slashCommands/registry.js';
+} from '../node_modules/.cache/slash-command-registry/components/ChatPanel/slashCommands/registry.js';
+import { webClient } from '../node_modules/.cache/slash-command-registry/services/webClient.js';
 
 const NEW_CONVERSATION_ID = 'new';
 
@@ -76,6 +77,28 @@ test('/fork reports a command result when the App fork path fails', async () => 
   assert.equal(state.messages.length, 1);
   assert.equal(state.messages[0].commandName, 'fork');
   assert.match(state.messages[0].commandOutput, /分叉会话失败/);
+});
+
+test('/compact echoes the same one-decimal statistics as the compression push', async (t) => {
+  const cases = [
+    { before: 52190, after: 50178, expected: '50.2K / 52.2K tokens（节省 3.9%）' },
+    { before: 20000, after: 18750, expected: '18.8K / 20.0K tokens（节省 6.2%）' },
+    { before: 1250, after: 1000, expected: '1.0K / 1.2K tokens（节省 20.0%）' },
+    { before: 0, after: 0, expected: '0.0K / 0.0K tokens（节省 0.0%）' },
+  ];
+  for (const { before, after, expected } of cases) {
+    await t.test(`${after} / ${before} tokens`, async (subtest) => {
+      const request = subtest.mock.method(webClient, 'request', async () => ({
+        result: 'compressed',
+        stats: { raw_total_tokens: before, total_tokens: after },
+      }));
+      const state = createContext('existing-session', '/compact');
+      await findSlashCommand('compact').execute(state.context, '');
+
+      assert.equal(request.mock.calls[0].arguments[0], 'command.compact');
+      assert.equal(state.messages[0].commandOutput, `✓ 上下文已压缩：${expected}`);
+    });
+  }
 });
 
 test('/goal argument parsing matches the TUI command grammar', () => {

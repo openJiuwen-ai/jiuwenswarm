@@ -1,9 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
-"""转发别名（过渡形态）：实现已迁 ``openjiuwen_protocol.e2a.gateway_normalize``。
+"""转发别名（过渡形态）：实现已迁 ``e2a.gateway_normalize``。
 
 本模块保留 ``jiuwenswarm.common.e2a.gateway_normalize`` 旧 import 路径兼容；多数符号 re-export
-openjiuwen-protocol 同一对象。``e2a_response_from_agent_chunk`` / ``e2a_response_to_agent_chunk``
+e2a 协议包 同一对象。``e2a_response_from_agent_chunk`` / ``e2a_response_to_agent_chunk``
 在本仓包装以保留 Team/组织 delta 身份字段（enterprise）。
 """
 
@@ -11,10 +11,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from openjiuwen_protocol.e2a import gateway_normalize as protocol_normalize
-from openjiuwen_protocol.e2a.agent_models import AgentResponseChunk
-from openjiuwen_protocol.e2a.models import E2AResponse
-from openjiuwen_protocol.e2a.gateway_normalize import (  # noqa: F401
+from e2a import gateway_normalize as protocol_normalize
+from e2a.agent_models import AgentResponseChunk
+from e2a.models import E2AResponse
+from e2a.gateway_normalize import (  # noqa: F401
     E2AEnvelope,
     E2AProvenance,
     E2A_FALLBACK_FAILED_KEY,

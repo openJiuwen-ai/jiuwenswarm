@@ -149,6 +149,47 @@ test('manual cancellation receipt follows the same Todo synchronization', async 
   assert.deepEqual(statuses('s1'), ['completed', 'cancelled', 'cancelled']);
 });
 
+for (const [name, params] of [
+  ['same-reply resume', { query: '' }],
+  ['STEER', { query: 'supplement', input_mode: 'steer' }],
+]) {
+  test(`${name} preserves the parent stream and pending cancellation receipt`, async () => {
+    const client = new WebHttpClient();
+    client.state = 'ready';
+    const parentController = new AbortController();
+    client.sseInflight.set('parent', { controller: parentController, sessionId: 's1' });
+    const events = [];
+    client.on('chat.interrupt_result', event => { events.push(event); handler(event); });
+    let resolveCancel;
+    let replyStream;
+    globalThis.fetch = async url => {
+      if (url.endsWith('/actions/interrupt')) {
+        return new Promise(resolve => { resolveCancel = resolve; });
+      }
+      return new Response(new ReadableStream({ start(stream) { replyStream = stream; } }), {
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    };
+    const cancellation = client.request('chat.interrupt', { session_id: 's1', intent: 'cancel' });
+    try {
+      await new Promise(resolve => setImmediate(resolve));
+      await client.request('chat.send', { session_id: 's1', ...params });
+      assert.equal(parentController.signal.aborted, false);
+      resolveCancel(new Response(JSON.stringify({ ok: true, payload: {
+        event_type: 'chat.interrupt_result', session_id: 's1', intent: 'cancel',
+        success: true, todos: cancelledTodos,
+      } })));
+      await cancellation;
+      assert.equal(events.length, 1);
+      assert.deepEqual(statuses('s1'), ['completed', 'cancelled', 'cancelled']);
+    } finally {
+      await client.disconnect();
+      replyStream?.close();
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  });
+}
+
 for (const [source, nextSession] of [
   ['automatic', 's1'], ['automatic', 'unrelated'], ['manual', 's1'], ['manual', 'unrelated'],
 ]) {

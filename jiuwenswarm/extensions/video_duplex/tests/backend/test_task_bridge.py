@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+
+
 from agent_gateway.extensions.video_duplex.backend.tasks.bridge import GatewayTaskEndpoint
 from agent_gateway.message_handler.message_handler import MessageHandler
 
@@ -315,7 +317,7 @@ async def test_checkpoint_ack_can_finish_while_session_is_closing(routed_task, m
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.server.runtime.gateway_adapter.base import AdapterRegistry
     from jiuwenswarm.server.runtime.session import lifecycle
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
+    from e2a.wire_codec import parse_agent_server_wire_unary
 
     r = routed_task
     server = object.__new__(AgentWebSocketServer)
@@ -434,7 +436,6 @@ async def test_bound_task_worker_loss_preserves_unknown_stop_error(routed_task):
     assert not current["execution_settled"] and not current["execution_cancelled"]
 
 
-
 async def test_cancel_ack_waits_for_execution_receipt_and_keeps_target(routed_task):
     r = routed_task
     remote = bridge.RemoteTaskEndpoint(r.request)
@@ -470,7 +471,6 @@ async def test_cancel_ack_waits_for_execution_receipt_and_keeps_target(routed_ta
         await asyncio.gather(pending, return_exceptions=True)
 
 
-
 async def test_cancel_during_dispatch_finishes_and_releases_waiting_task(routed_task):
     r = routed_task
     r.store.update(r.task["id"], lambda t: t.update(status="queued"))
@@ -485,6 +485,7 @@ async def test_cancel_during_dispatch_finishes_and_releases_waiting_task(routed_
     executor.run = run
     service = TaskService(r.store, executor, concurrency=1)
     service.started = True
+    service.active_scopes.add((r.task["owner"], r.task["session"]))
     try:
         service.kick()
         assert await asyncio.wait_for(started.get(), 1) == r.task["id"]
@@ -500,19 +501,23 @@ async def test_cancel_during_dispatch_finishes_and_releases_waiting_task(routed_
         await service.close()
 
 
-
-async def test_missing_cancel_receipt_reports_timeout_without_claiming_stop(routed_task, monkeypatch):
+async def test_missing_cancel_receipt_waits_without_claiming_stop(routed_task):
     r = routed_task
     client = SimpleNamespace(send_request=AsyncMock(
         return_value=SimpleNamespace(ok=True, payload={"success": True})
     ))
     executor = task_adapter.AgentTaskExecutor(client, r.store, None)
-    monkeypatch.setattr(task_adapter, "STOP_SETTLEMENT_TIMEOUT", 0.02)
-    with pytest.raises(RuntimeError, match="cleanup was not confirmed"):
-        await executor.cancel(r.task)
-    assert not r.store.read(r.task["id"])["execution_settled"]
-    assert not r.store.read(r.task["id"])["execution_cancelled"]
-
+    pending = asyncio.create_task(executor.cancel(r.task))
+    try:
+        await asyncio.sleep(0.04)
+        assert not pending.done()
+        assert not r.store.read(r.task["id"])["execution_settled"]
+        assert not r.store.read(r.task["id"])["execution_cancelled"]
+        r.store.update(r.task["id"], lambda t: t.update(execution_settled=True))
+        await asyncio.wait_for(pending, 1)
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
 
 
 @pytest.mark.parametrize("bind_first", [False, True])

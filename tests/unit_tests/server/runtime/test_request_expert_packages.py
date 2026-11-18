@@ -199,22 +199,16 @@ def test_expert_group_catalog_and_launch_follow_request_packages(
     _mkdir(tmp_path / ".agent_teams" / "agent_groups" / "local" / "mine")
     granted = [{"kind": "agent_group", "id": "keep"}]
 
-    from jiuwenswarm.agents.harness.team.expert_org import catalog as catalog_mod
-    from jiuwenswarm.agents.harness.team.expert_org.catalog import (
-        ExpertGroupDescriptor,
-        JiuwenExpertGroupCatalog,
-    )
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from jiuwenswarm.agents.harness.team.experts import catalog as catalog_mod
+    from jiuwenswarm.agents.harness.team.experts import JiuwenExpertCatalog
     from jiuwenswarm.agents.harness.team.expert_org.launcher import JiuwenExpertTeamLauncher
 
     monkeypatch.setattr(
-        catalog_mod,
-        "_iter_agent_group_dirs",
-        lambda: [("keep", tmp_path), ("drop", tmp_path), ("mine", tmp_path)],
-    )
-    monkeypatch.setattr(
-        catalog_mod,
-        "descriptor_from_agent_group_dir",
-        lambda name, _path: ExpertGroupDescriptor(agent_group_name=name),
+        catalog_mod, "_list_installed",
+        AsyncMock(return_value=[SimpleNamespace(name=name) for name in ("keep", "drop", "mine")]),
     )
     launcher = JiuwenExpertTeamLauncher()
 
@@ -223,7 +217,7 @@ def test_expert_group_catalog_and_launch_follow_request_packages(
 
     monkeypatch.setattr(JiuwenExpertTeamLauncher, "ensure_turn_runner_installed", _passed)
     with _bind_packages(granted):
-        names = [item.agent_group_name for item in JiuwenExpertGroupCatalog.list()]
+        names = [item.name for item in asyncio.run(JiuwenExpertCatalog().list_group_packages())]
         assert names == ["keep"]
         with pytest.raises(ValueError, match="not allowed"):
             asyncio.run(

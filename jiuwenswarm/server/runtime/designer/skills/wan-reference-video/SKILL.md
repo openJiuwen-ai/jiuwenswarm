@@ -33,7 +33,7 @@ Character (character1 / character2 …)
 3. **Scene N** **scene_specs** **LAST** — empty of people.
 
 Authority:
-- **Identity / wardrobe** → **character_specs** (**character_consistency**)
+- **Identity / clothing** → **character_specs** (**character_consistency**)
 - **Geography / light** → **scene_specs** (**scene_consistency**)
 - **Start blocking** → newest prior last-frame (if any); else storyboard contact pose (**shot_consistency** across the clip chain)
 

@@ -51,7 +51,7 @@ export function shouldPollPublish(record: PublishRecord): boolean {
 
 export function canRetrySkillPack(record: PublishRecord): boolean {
   return ['reconcile_upload', 'reauth_required'].includes(record.stage || '') ||
-    (record.stage === 'blocked' && record.error?.code === 'SKILLPACK_HUB_CHECK_FAILED');
+    (record.stage === 'blocked' && ['SKILLPACK_HUB_CHECK_FAILED', 'SKILLPACK_DISABLED'].includes(record.error?.code || ''));
 }
 
 /** Terminal records, including an unverified outcome, can start a new submission. */
@@ -96,7 +96,7 @@ export function definitiveCommitRejection(error: unknown): 'expired' | 'rejected
   if (values.some((value) => /\bdraft_expired\b/i.test(value))) return 'expired';
   if (
     values.some((value) =>
-      /\b(?:invalid_draft|draft_not_found|publish_auth_required|auth_required|invalid_identifier|queue_full|target_conflict)\b/i.test(
+      /\b(?:invalid_draft|draft_not_found|publish_auth_required|auth_required|invalid_identifier|queue_full|target_conflict|skillpack_disabled)\b/i.test(
         value,
       ),
     )

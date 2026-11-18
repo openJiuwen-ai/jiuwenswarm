@@ -14,7 +14,10 @@ import {
 import { copy, reasonOf } from './copy';
 import type { DocumentId } from './documentIdentity';
 import type { ConnectionState, GatewayClient, GatewayEvent } from './gatewayClient';
-import type { PresentationSessionFacade, ResourceConversation } from './presentationSessionFacade';
+import type { ToolContract } from './appContract';
+import {
+  imageDataUrl, type OpenDocument, type OutgoingImageAttachment, type ResourceConversation, type SessionFacade,
+} from './sessionFacade';
 import type { SlideSnapshots } from './slideSnapshots';
 
 /** The turns the transcript offers to undo, by their ``changes`` entry. */
@@ -30,8 +33,8 @@ export interface PaneState {
   conversation: Conversation;
   /** The document's conversations, the most recently active first. */
   conversations: readonly ResourceConversation[];
-  /** The user's attached documents' names, by their conversation. */
-  documents: ReadonlyMap<string, string>;
+  /** The user's attached documents, by their conversation. */
+  documents: ReadonlyMap<string, OpenDocument>;
   /** The shown conversation's history is on its way; its live events wait for it. */
   loadingHistory: boolean;
   connection: ConnectionState;
@@ -46,7 +49,7 @@ export interface PaneState {
 type Attachment = Pick<
   ClientAttachment, 'current' | 'sessionId' | 'start' | 'attach' | 'onEvent' | 'onStateChange' | 'cancelToolCalls'>;
 type Sessions = Pick<
-  PresentationSessionFacade, 'create' | 'models' | 'conversations' | 'history' | 'openDocuments'
+  SessionFacade, 'create' | 'models' | 'conversations' | 'history' | 'openDocuments'
   | 'sendText' | 'interrupt' | 'answer'>;
 
 export class TaskPaneController {
@@ -63,12 +66,18 @@ export class TaskPaneController {
   private undoNote: string | undefined;
   /** An undo is under way; a second click waits for none. */
   private undoing = false;
+  /** A conversation nobody has written in: created by this pane, or its history read back with no messages. */
+  private unwritten: SessionId | undefined;
+  /** A new conversation being created; a click meanwhile waits for it instead of creating another. */
+  private creating: Promise<void> | undefined;
   private readonly listeners = new Set<(state: PaneState) => void>();
 
   constructor(private readonly options: {
     attachment: Attachment; sessions: Sessions; documentId: DocumentId;
     connection: Pick<GatewayClient, 'onConnectionChange'>;
-    snapshots: Pick<SlideSnapshots, 'closeTurn' | 'undoable' | 'undo'>;
+    contract: Pick<ToolContract, 'isMutating'>;
+    /** The turns' undo; PowerPoint's alone, so a pane without it offers none. */
+    snapshots?: Pick<SlideSnapshots, 'closeTurn' | 'undoable' | 'undo'>;
   }) {
     const { attachment } = options;
     this.value = {
@@ -101,8 +110,14 @@ export class TaskPaneController {
     await this.options.attachment.start(latest);
   }
 
-  /** A new conversation of this document; the one it leaves stays in the list. */
+  /** A new conversation of this document; the one it leaves stays in the list. One nobody has written in is kept. */
   async newConversation(): Promise<void> {
+    if (this.shown && this.shown === this.unwritten) return;
+    this.creating ??= this.createConversation().finally(() => { this.creating = undefined; });
+    await this.creating;
+  }
+
+  private async createConversation(): Promise<void> {
     const { sessions, attachment } = this.options;
     let fresh: SessionId;
     try {
@@ -111,6 +126,7 @@ export class TaskPaneController {
       this.update({ alert: { tone: 'error', text: copy.newConversationFailed(reasonOf(error)) } });
       return;
     }
+    this.unwritten = fresh;
     await attachment.attach(fresh);
   }
 
@@ -136,18 +152,21 @@ export class TaskPaneController {
   }
 
   /**
-   * Send a message; while the turn runs, it stops the turn and the next one takes it as a supplement. After an
+   * Send a message and its images; while the turn runs, it stops the turn and the next one takes the text as a
+   * supplement. A supplement carries no images, so a message with images is refused until the turn ends. After an
    * undo the message starts with a line saying so, as the agent's slide ids went stale.
    */
-  async send(text: string): Promise<boolean> {
+  async send(text: string, images: readonly OutgoingImageAttachment[] = []): Promise<boolean> {
     const content = text.trim();
     const { attachment } = this.value;
-    if (!content || attachment.kind !== 'attached' || this.value.conversation.prompt) return false;
-    const { sessionId } = attachment;
     const running = this.value.conversation.turn === 'running';
+    if ((!content && !images.length) || (running && images.length) || attachment.kind !== 'attached'
+        || this.value.conversation.prompt) return false;
+    const { sessionId } = attachment;
     const note = this.undoNote;
     const message = note ? `${note}\n${content}` : content;
-    const sent = addUserMessage(running ? this.value.conversation : startTurn(this.value.conversation), content);
+    const sent = addUserMessage(running ? this.value.conversation : startTurn(this.value.conversation), content,
+      images.map(image => ({ filename: image.filename, src: imageDataUrl(image) })));
     const messageId = sent.entries[sent.entries.length - 1].id;
     this.update({ conversation: sent, alert: undefined });
     try {
@@ -156,16 +175,17 @@ export class TaskPaneController {
         // The next turn starts over from the message; a write the stopped turn still had queued would surprise it.
         this.options.attachment.cancelToolCalls();
       } else {
-        await this.options.sessions.sendText(sessionId, message, [], this.value.model);
+        await this.options.sessions.sendText(sessionId, message, images, this.value.model);
       }
       if (this.undoNote === note) this.undoNote = undefined;
+      if (this.unwritten === sessionId) this.unwritten = undefined;
       return true;
     } catch (error) {
       if (sessionId !== this.shown) return false;
       // The message goes back to the composer, so the transcript does not keep it too.
       const kept = withoutEntry(this.value.conversation, messageId);
       this.update({
-        conversation: running ? kept : endTurn(kept),
+        conversation: running ? kept : endTurn(kept, this.options.contract),
         alert: { tone: 'error', text: copy.sendFailed(reasonOf(error)) },
       });
       return false;
@@ -183,7 +203,8 @@ export class TaskPaneController {
       return;
     }
     this.options.attachment.cancelToolCalls();
-    this.updateShown(sessionId, conversation => endTurn(addNotice(conversation, 'info', copy.stopped)));
+    this.updateShown(
+      sessionId, conversation => endTurn(addNotice(conversation, 'info', copy.stopped), this.options.contract));
   }
 
   /** Answer the question the turn waits on, one choice per question. */
@@ -207,12 +228,13 @@ export class TaskPaneController {
    */
   async undo(card: string, overwrite = false): Promise<void> {
     const entry = this.value.conversation.entries.find(item => item.id === card);
-    if (entry?.kind !== 'changes' || !this.value.undo.offers.has(card) || this.undoing) return;
+    const { snapshots } = this.options;
+    if (entry?.kind !== 'changes' || !snapshots || !this.value.undo.offers.has(card) || this.undoing) return;
     this.undoing = true;
     this.update({ undo: { ...this.value.undo, confirm: undefined } });
     let result;
     try {
-      result = await this.options.snapshots.undo(entry.callIds, overwrite);
+      result = await snapshots.undo(entry.callIds, overwrite);
     } catch (error) {
       this.update({ alert: { tone: 'error', text: copy.undoFailed(reasonOf(error)) } });
       return;
@@ -258,7 +280,9 @@ export class TaskPaneController {
     const load = this.loads;
     let conversation: Conversation;
     try {
-      conversation = replayHistory(await this.options.sessions.history(sessionId));
+      const messages = await this.options.sessions.history(sessionId);
+      conversation = replayHistory(messages);
+      if (!messages.length && load === this.loads) this.unwritten = sessionId;
     } catch (error) {
       conversation = emptyConversation;
       if (load === this.loads) this.update({ alert: { tone: 'error', text: copy.historyFailed(reasonOf(error)) } });
@@ -266,7 +290,10 @@ export class TaskPaneController {
     if (load !== this.loads) return;
     const held = this.held;
     this.held = [];
-    this.update({ conversation: held.reduce(applyEvent, conversation), loadingHistory: false });
+    this.update({
+      conversation: held.reduce((shown, event) => applyEvent(shown, event, this.options.contract), conversation),
+      loadingHistory: false,
+    });
   }
 
   private received(event: GatewayEvent): void {
@@ -283,7 +310,7 @@ export class TaskPaneController {
       return;
     }
     const before = this.value.conversation;
-    const conversation = applyEvent(before, event);
+    const conversation = applyEvent(before, event, this.options.contract);
     this.update({ conversation });
     // A turn that ended may have titled its conversation.
     if (before.turn === 'running' && conversation.turn === 'idle') void this.refreshConversations().catch(() => undefined);
@@ -326,15 +353,17 @@ export class TaskPaneController {
     this.value.undo = { ...this.value.undo, offers: this.undoOffers() };
     this.listeners.forEach(listener => listener(this.value));
     // A changes entry closes its turn: the turn's undo records what the turn left, then the entry offers it.
-    if (newCard(before, this.value.conversation)) void this.options.snapshots.closeTurn().then(() => this.update({}));
+    const { snapshots } = this.options;
+    if (snapshots && newCard(before, this.value.conversation)) void snapshots.closeTurn().then(() => this.update({}));
   }
 
   /** A turn's undo while no turn runs and the pane holds the document. */
   private undoOffers(): ReadonlySet<string> {
     const { conversation, attachment } = this.value;
-    if (conversation.turn === 'running' || attachment.kind !== 'attached') return new Set();
+    const { snapshots } = this.options;
+    if (!snapshots || conversation.turn === 'running' || attachment.kind !== 'attached') return new Set();
     return new Set(conversation.entries.flatMap(entry => (
-      entry.kind === 'changes' && this.options.snapshots.undoable(entry.callIds) ? [entry.id] : [])));
+      entry.kind === 'changes' && snapshots.undoable(entry.callIds) ? [entry.id] : [])));
   }
 }
 

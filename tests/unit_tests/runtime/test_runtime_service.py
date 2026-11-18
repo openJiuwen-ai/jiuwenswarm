@@ -29,7 +29,7 @@ from jiuwenswarm.runtime.context import (
     get_runtime_context,
 )
 from jiuwenswarm.runtime.events import RuntimeEvent
-from jiuwenswarm.runtime.plan import PlanStateResult
+from jiuwenswarm.runtime.plan import PlanModeController, PlanStateResult
 from jiuwenswarm.runtime.request import prepare_chat_turn
 from jiuwenswarm.runtime.session.model import (
     TEAM_ATTACH_ONLY_PARAM,
@@ -391,27 +391,6 @@ async def test_team_attach_only_registers_persistent_waiter_kind() -> None:
     assert details.session_message_id is None
 
 
-@pytest.mark.parametrize("browser_attached", [False, True])
-@pytest.mark.parametrize("managed_design", [False, True])
-def test_managed_design_request_keeps_its_own_result_waiter(monkeypatch, browser_attached, managed_design):
-    from jiuwenswarm.agents.harness import team
-
-    monkeypatch.setattr(team, "get_team_manager", lambda _: SimpleNamespace(
-        has_interactive_waiter=lambda _: browser_attached,
-    ))
-    runtime = AgentRuntime(agent_manager=FakeAgentManager())
-    request = AgentRequest(
-        request_id="voice-task", channel_id="video_tool", session_id="design-chat",
-        req_method=ReqMethod.CHAT_SEND,
-        params={"mode": "team.design", **({"managed_task_binding": {"endpoint": "gateway", "task_id": "task"}}
-                                         if managed_design else {})},
-    )
-    kind = runtime._team_waiter_kind(request, work_kind=SessionWorkKind.TEAM_REQUEST, background=False)
-    expected = (TeamWaiterKind.REQUEST if managed_design else
-                TeamWaiterKind.NONE if browser_attached else TeamWaiterKind.PERSISTENT)
-    assert kind is expected
-
-
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("work_mode", ["work", "code"])
 async def test_stale_team_attachment_does_not_execute_or_preempt_heartbeat(
@@ -770,6 +749,264 @@ class FakePlanController:
         self.reset_calls.append(session_id)
 
 
+class PlanApprovalAgent(FakeAgent):
+    def __init__(self) -> None:
+        self.answers: list[str] = []
+
+    @staticmethod
+    def question(request: AgentRequest, call_id: str) -> AgentResponseChunk:
+        return AgentResponseChunk(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            payload={
+                "event_type": "chat.ask_user_question",
+                "request_id": call_id,
+                "source": "confirm_interrupt",
+                "questions": [{"question": "Approve the plan"}],
+            },
+        )
+
+    @staticmethod
+    def final(request: AgentRequest) -> AgentResponseChunk:
+        return AgentResponseChunk(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            payload={"event_type": "chat.final", "content": "Plan turn finished"},
+            is_complete=True,
+        )
+
+    async def process_message_stream(self, request: AgentRequest):
+        yield self.question(request, "plan-approval-1")
+        # A final output segment ends the stream, but the approval is still pending.
+        yield self.final(request)
+
+    async def deliver_control_input(self, request: AgentRequest):
+        action = request.params["answers"][0]["selected_options"][0]
+        self.answers.append(action)
+        if action == "plan_revise":
+            yield self.question(request, "plan-approval-2")
+        elif action == "plan_execute":
+            profile = request.params["work_mode"]
+            yield AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={"event_type": "plan.mode_exited", "mode": f"agent.{profile}.normal"},
+            )
+        yield self.final(request)
+
+
+def _plan_turn_request(
+    session_id: str,
+    profile: str,
+    *,
+    action: str | None = None,
+    call_id: str = "plan-approval-1",
+    answer_state: str = "plan",
+) -> AgentRequest:
+    params: dict[str, object] = {
+        "query": "Make a plan" if action is None else "",
+        "mode": f"agent.{profile}.plan" if action is None else f"agent.{profile}.{answer_state}",
+        "work_mode": profile,
+    }
+    if action is not None:
+        params.update(
+            source="confirm_interrupt",
+            request_id=call_id,
+            answers=[{"question": "Approve the plan", "selected_options": [action]}],
+        )
+    return AgentRequest(
+        request_id="plan-query" if action is None else f"answer-{call_id}-{action}",
+        channel_id="web",
+        session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND,
+        params=params,
+        is_stream=True,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", ["work", "code"])
+@pytest.mark.parametrize("answer_state", ["plan", "normal"])
+@pytest.mark.parametrize("action", ["plan_execute", "plan_skip", "plan_revise"])
+async def test_plan_approval_survives_stream_completion(
+    profile: str,
+    answer_state: str,
+    action: str,
+) -> None:
+    manager = FakeAgentManager()
+    agent = PlanApprovalAgent()
+    manager.agent = agent
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=FakePlanController(),
+    )
+    session_id = f"plan-lifecycle-{profile}-{answer_state}-{action}"
+    coordinator = runtime._session_coordinator
+    try:
+        events = await _collect_events(runtime.stream(
+            _plan_turn_request(session_id, profile), trigger_hook=False,
+        ))
+        assert [event.event_type for event in events] == ["chat.ask_user_question", "chat.final"]
+        snapshot = coordinator.snapshot_session(session_id)
+        assert snapshot is not None
+        waiting = [
+            item for item in snapshot.executions
+            if item.state is SessionExecutionState.WAITING_FOR_CONTROL
+        ]
+        assert len(waiting) == 1
+        assert waiting[0].waiting_control_ids == frozenset({"plan-approval-1"})
+        assert coordinator.has_control_target(session_id, "plan-approval-1")
+
+        answer_events = await _collect_events(runtime.stream(
+            _plan_turn_request(session_id, profile, action=action, answer_state=answer_state),
+            trigger_hook=False,
+        ))
+        assert agent.answers == [action]
+        assert answer_events[-1].event_type == "chat.final"
+        assert not coordinator.has_control_target(session_id, "plan-approval-1")
+        exited = any(event.event_type == "plan.mode_exited" for event in answer_events)
+        assert exited is (action == "plan_execute")
+
+        if action == "plan_revise":
+            assert coordinator.has_control_target(session_id, "plan-approval-2")
+            revised_events = await _collect_events(runtime.stream(
+                _plan_turn_request(session_id, profile, action="plan_skip", call_id="plan-approval-2"),
+                trigger_hook=False,
+            ))
+            assert revised_events[-1].event_type == "chat.final"
+            assert agent.answers == ["plan_revise", "plan_skip"]
+            assert not coordinator.has_control_target(session_id, "plan-approval-2")
+        snapshot = coordinator.snapshot_session(session_id)
+        assert snapshot is not None
+        assert all(item.state.terminal for item in snapshot.executions)
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", ["work", "code"])
+@pytest.mark.parametrize("invalid_answer", ["wrong_id", "other_session", "already_answered"])
+async def test_plan_approval_rejects_unmatched_answers(profile: str, invalid_answer: str) -> None:
+    manager = FakeAgentManager()
+    agent = PlanApprovalAgent()
+    manager.agent = agent
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=FakePlanController(),
+    )
+    session_id = f"plan-answer-guard-{profile}-{invalid_answer}"
+    try:
+        await _collect_events(runtime.stream(_plan_turn_request(session_id, profile), trigger_hook=False))
+        if invalid_answer == "already_answered":
+            await _collect_events(runtime.stream(
+                _plan_turn_request(session_id, profile, action="plan_skip"), trigger_hook=False,
+            ))
+        answer = _plan_turn_request(
+            "unrelated-plan-session" if invalid_answer == "other_session" else session_id,
+            profile,
+            action="plan_execute",
+            call_id="wrong-plan-call" if invalid_answer == "wrong_id" else "plan-approval-1",
+        )
+        with pytest.raises(RuntimeError, match="session has no active execution"):
+            await _collect_events(runtime.stream(answer, trigger_hook=False))
+        assert agent.answers == (["plan_skip"] if invalid_answer == "already_answered" else [])
+        if invalid_answer != "already_answered":
+            assert runtime._session_coordinator.has_control_target(session_id, "plan-approval-1")
+            await _collect_events(runtime.stream(
+                _plan_turn_request(session_id, profile, action="plan_skip"), trigger_hook=False,
+            ))
+            assert agent.answers == ["plan_skip"]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", ["work", "code"])
+async def test_asset_query_during_plan_initialization_does_not_exit_plan(
+    profile: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    query_started, allow_plan = asyncio.Event(), asyncio.Event()
+
+    class DeferredPlanController(PlanModeController):
+        async def ensure_state(
+            self,
+            request: AgentRequest,
+            mode: str,
+            sub_mode: str | None,
+            agent: Any,
+        ) -> PlanStateResult:
+            if request.req_method is ReqMethod.CHAT_SEND:
+                query_started.set()
+                await allow_plan.wait()
+            return await super().ensure_state(request, mode, sub_mode, agent)
+
+    class AssetQueryAgent(PlanApprovalAgent):
+        async def process_message(self, request: AgentRequest) -> AgentResponse:
+            assert request.req_method is ReqMethod.SESSION_ASSETS_LIST
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={"assets": []},
+            )
+
+    manager = FakeAgentManager()
+    manager.agent = AssetQueryAgent()
+    controller = DeferredPlanController()
+    state = SimpleNamespace(plan_mode=SimpleNamespace(mode="normal", plan_slug=None))
+    deep_agent = MagicMock()
+    deep_agent.load_state.return_value = state
+
+    def switch_mode(*, session: object, mode: str) -> None:
+        state.plan_mode.mode = mode
+
+    deep_agent.switch_mode.side_effect = switch_mode
+    open_state = AsyncMock(return_value=(deep_agent, SimpleNamespace(commit=AsyncMock()), True))
+    monkeypatch.setattr(controller, "open_state_session", open_state)
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=controller,
+    )
+    session_id = f"plan-asset-race-{profile}"
+    query_task = asyncio.create_task(_collect_events(runtime.stream(
+        _plan_turn_request(session_id, profile), trigger_hook=False,
+    )))
+    try:
+        await _wait_for_runtime_entry(query_started, query_task)
+        control_events = AsyncMock()
+        assets = await runtime.invoke(
+            AgentRequest(
+                request_id="assets-read-during-plan-start",
+                channel_id="web",
+                session_id=session_id,
+                req_method=ReqMethod.SESSION_ASSETS_LIST,
+                params={"session_id": session_id},
+            ),
+            trigger_hook=False,
+            on_control_event=control_events,
+        )
+        assert any(event.payload.get("assets") == [] for event in assets)
+        assert all(event.event_type != "plan.mode_exited" for event in assets)
+        control_events.assert_not_awaited()
+        open_state.assert_not_awaited()
+        assert state.plan_mode.mode == "normal"
+
+        allow_plan.set()
+        events = await asyncio.wait_for(query_task, timeout=1)
+        assert [event.event_type for event in events] == ["chat.ask_user_question", "chat.final"]
+        assert state.plan_mode.mode == "plan"
+        assert runtime._session_coordinator.has_control_target(session_id, "plan-approval-1")
+    finally:
+        allow_plan.set()
+        if not query_task.done():
+            query_task.cancel()
+        await asyncio.gather(query_task, return_exceptions=True)
+        await runtime.close()
+
+
 @pytest.mark.asyncio
 async def test_runtime_kvc_tracking_uses_current_product_hook_contract(
     monkeypatch,
@@ -881,7 +1118,12 @@ async def test_create_or_resume_session_uses_runtime_manager() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mode", "owned"),
-    [("agent.work.normal", True), ("agent.work.plan", False)],
+    [
+        ("agent.work.normal", True),
+        ("agent.work.plan", True),
+        ("agent.code.normal", True),
+        ("agent.code.plan", True),
+    ],
 )
 async def test_session_switch_commit_registers_single_agent_runtime(
     mode: str,
@@ -914,7 +1156,12 @@ async def test_session_switch_commit_registers_single_agent_runtime(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mode", "owned"),
-    [("agent.work.normal", True), ("agent.work.plan", False)],
+    [
+        ("agent.work.normal", True),
+        ("agent.work.plan", True),
+        ("agent.code.normal", True),
+        ("agent.code.plan", True),
+    ],
 )
 async def test_session_create_commit_registers_single_agent_runtime(
     mode: str,
@@ -3731,16 +3978,17 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
     monkeypatch,
     tmp_path,
 ) -> None:
-    from openjiuwen.core.session.checkpointer import CheckpointerFactory
+    from openjiuwen.core.session.checkpointer import CheckpointerFactory, NoopCheckpointer
 
     from jiuwenswarm.runtime import checkpointer
+    from jiuwenswarm.runtime.context_checkpointer import ContextCheckpointer
 
     dispose_error = RuntimeError("dispose failed")
     dispose = AsyncMock(side_effect=dispose_error)
     stale_checkpointer = SimpleNamespace(
         _kv_store=SimpleNamespace(engine=SimpleNamespace(dispose=dispose))
     )
-    replacement_checkpointer = object()
+    replacement_checkpointer = NoopCheckpointer()
     monkeypatch.setattr(checkpointer, "_shared_checkpointer", None, raising=False)
     create_checkpointer = AsyncMock(return_value=replacement_checkpointer)
     installed: list[object | None] = []
@@ -3778,7 +4026,11 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
     await checkpointer.ensure_persistent_checkpointer()
 
     create_checkpointer.assert_awaited_once()
-    assert installed == [None, replacement_checkpointer]
+    assert len(installed) == 2
+    assert installed[0] is None
+    assert isinstance(installed[1], ContextCheckpointer)
+    assert installed[1].delegate is replacement_checkpointer
+    assert checkpointer._shared_checkpointer is installed[1]
     assert checkpointer._PERSISTENT_CHECKPOINTER_READY is True
 
 

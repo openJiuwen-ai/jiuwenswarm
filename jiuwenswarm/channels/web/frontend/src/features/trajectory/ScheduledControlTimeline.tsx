@@ -11,6 +11,7 @@ import type {
   ScheduledTask,
   TeamControlModel,
 } from './teamControlTimeline';
+import { noReviewMessageKey } from './scheduledTrajectoryLanes';
 import css from './ScheduledControlTimeline.module.css';
 
 export interface ScheduledControlTimelineProps {
@@ -177,7 +178,7 @@ function TaskDetail({
       <div className={css.detailScroll}>
         <div className={css.rounds}>
           {rounds.length === 0 ? (
-            <span className={css.muted}>{t('trajectory.team.schedule.noReviews')}</span>
+            <span className={css.muted}>{t(noReviewMessageKey(task.phase, task.reviews.length))}</span>
           ) : rounds.map(([round, reviews]) => (
             <div
               className={css.round}

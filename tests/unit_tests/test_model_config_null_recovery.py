@@ -58,6 +58,69 @@ async def _resource(operation, params):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("existing_default, referenced", [(False, False), (True, False), (False, True)])
+@pytest.mark.parametrize("missing_credentials", [False, True])
+async def test_add_model_removes_unreferenced_placeholder(
+    config_file, monkeypatch, existing_default, referenced, missing_credentials,
+):
+    if missing_credentials:
+        monkeypatch.setenv("MODEL_NAME", " your-model-name ")
+        monkeypatch.delenv("API_BASE", raising=False)
+        monkeypatch.delenv("API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("MODEL_NAME", "your-model-name")
+        monkeypatch.setenv("API_BASE", "https://example.com/compatible-mode/v1")
+        monkeypatch.setenv("API_KEY", "sk-xxxxxxxxx")
+    placeholder = {
+        "model_id": "mdl_default_primary",
+        "is_default": not existing_default,
+        "model_client_config": {
+            "model_name": "${MODEL_NAME}", "api_base": "${API_BASE}", "api_key": "${API_KEY}",
+        },
+    }
+    existing = _model()
+    existing["is_default"] = True
+    defaults = [placeholder, existing] if existing_default else [placeholder]
+    models = {"defaults": defaults}
+    if referenced:
+        models["groups"] = [{
+            "model_group_id": "mgp_example",
+            "name": "Example",
+            "routes": [{"route_id": "rte_example", "model_id": "mdl_default_primary"}],
+        }]
+    config_file.write_text(yaml.safe_dump({"models": models}), encoding="utf-8")
+
+    new = _model("mdl_glm", "GLM-5.3")
+    before = config_file.read_bytes()
+    invalid = deepcopy(new)
+    invalid["model_client_config"]["custom_headers"] = []
+    assert not (await _resource("models.upsert", {"model": invalid}))["ok"]
+    assert config_file.read_bytes() == before
+
+    assert (await _resource("models.upsert", {"model": new}))["ok"]
+    rows = await _list_models()
+    first_model = "your-model-name" if referenced else "existing" if existing_default else None
+    assert [row["model_name"] for row in rows] == ([first_model] if first_model else []) + ["GLM-5.3"]
+    persisted = yaml.safe_load(config_file.read_text(encoding="utf-8"))["models"]["defaults"]
+    default_ids = {"your-model-name": "mdl_default_primary", "existing": "mdl_existing", None: "mdl_glm"}
+    assert [model["model_id"] for model in persisted if model.get("is_default")] == [default_ids[first_model]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model_name", ["configured-in-env", "your-model-name"])
+async def test_add_model_preserves_initial_entry_configured_via_env(config_file, monkeypatch, model_name):
+    monkeypatch.setenv("MODEL_NAME", model_name)
+    monkeypatch.setenv("API_BASE", "https://model.test/v1")
+    monkeypatch.setenv("API_KEY", "test-secret")
+    existing = _model("mdl_default_primary", "${MODEL_NAME}")
+    existing["model_client_config"].update(api_base="${API_BASE}", api_key="${API_KEY}")
+    config_file.write_text(yaml.safe_dump({"models": {"defaults": [existing]}}), encoding="utf-8")
+
+    assert (await _resource("models.upsert", {"model": _model("mdl_glm", "GLM-5.3")}))["ok"]
+    assert [row["model_name"] for row in await _list_models()] == [model_name, "GLM-5.3"]
+
+
+@pytest.mark.asyncio
 async def test_list_preserves_origin_indices_and_agentos_identity(config_file):
     empty = {"model_id": "mdl_empty", "model_client_config": None, "model_config_obj": None}
     null_fields = _model("mdl_fields", "nullable")

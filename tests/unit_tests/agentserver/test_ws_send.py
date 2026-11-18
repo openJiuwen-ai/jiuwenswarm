@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
-from jiuwenswarm.common.e2a.wire_codec import (
+from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+from e2a.wire_codec import (
     encode_agent_chunk_for_wire,
     encode_agent_response_for_wire,
     parse_agent_server_wire_chunk,

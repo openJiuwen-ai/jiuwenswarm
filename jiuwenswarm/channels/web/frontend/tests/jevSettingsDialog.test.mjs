@@ -40,7 +40,8 @@ await build({
     name: 'settings-boundaries',
     setup(builder) {
       const ui = ['Button', 'Input', 'Switch', 'FieldError', 'Loading', 'Select', 'Dialog', 'HelpTips', 'RadioGroup', 'Textarea']
-        .map((name) => `export { ${name} } from './src/components/ui/${name}/${name}';`).join('\n');
+        .map((name) => `export { ${name} } from './src/components/ui/${name}/${name}';`).join('\n')
+        + '\nexport { toast } from "./src/components/ui/Toast/toastStore";';
       builder.onResolve({ filter: /(?:^|\/)ui$|SettingsServicesProvider$|^\.\.\/\.\.\/components$|^react-i18next$|^\.\/ExperimentalSettings$|^\.\/A4PSettings$|assets\/(?:settings|providers)$/ }, (args) => ({
         path: args.path, namespace: 'boundary',
       }));
@@ -51,11 +52,14 @@ await build({
             ? `import { createElement } from 'react';
                export const settingsActionIcons = { edit: () => createElement('svg'), delete: () => createElement('svg') };
                export const settingsNavigationIcons = { browser: () => null, experimental: () => null };
+               export const settingsCustomModelIcon = () => null;
                export const settingsEmptyBoxIllustration = 'empty.svg';`
           : path.endsWith('assets/providers')
-            ? `export const getModelLogoUrl = ({ vendor_key }) => 'provider-' + vendor_key + '.svg';`
+            ? `export const getModelLogoUrl = ({ vendor_key }) => 'provider-' + vendor_key + '.svg';
+               export const getProviderLogoUrl = provider => 'provider-' + provider + '.svg';
+               export const getVendorLogoUrl = vendor => 'vendor-' + vendor + '.svg';`
           : path === './ExperimentalSettings'
-            ? ['A2UISetting', 'ExternalCliCustomAgentsItem', 'ProactiveLimitsSetting', 'RSISetting', 'TaskAsrSetting', 'TaskFullDuplexSetting', 'TrajectoryDiagnosisSetting', 'TrajectoryUiSetting']
+            ? ['A2UISetting', 'ExternalCliCustomAgentsItem', 'RSISetting', 'TaskAsrSetting', 'TaskFullDuplexSetting', 'TrajectoryDiagnosisSetting', 'TrajectoryUiSetting']
               .map(name => `export const ${name} = () => null;`).join('\n')
           : path === './A4PSettings' ? 'export const A4PSettings = () => null;'
           : path.endsWith('SettingsServicesProvider')

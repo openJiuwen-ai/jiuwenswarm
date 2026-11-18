@@ -24,6 +24,8 @@ from openjiuwen.core.foundation.llm.schema.message_chunk import AssistantMessage
 from openjiuwen.core.foundation.tool import ToolCard
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.session import InteractiveInput
+from openjiuwen.core.session.checkpointer import CheckpointerFactory
+from openjiuwen.core.session.checkpointer.inmemory import InMemoryCheckpointer
 from openjiuwen.core.single_agent.agents.react_agent import ReActAgent
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, AgentRail, ModelCallInputs
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
@@ -218,6 +220,9 @@ async def _deep_host(client: _ModelClient, tmp_path, monkeypatch) -> AsyncIterat
 @pytest.fixture
 def product(tmp_path, monkeypatch):
     """AgentServer and gateway in one process, joined by the real server-push wire."""
+    # Real agent lifecycle hooks need a real, test-owned checkpoint store.
+    # Restore the process default at teardown rather than inheriting another test's stub.
+    monkeypatch.setattr(CheckpointerFactory, "_default_checkpointer", InMemoryCheckpointer())
     monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path / "sessions")
     monkeypatch.setattr(prompt_suggestion, "get_agent_workspace_dir", lambda: tmp_path)
     monkeypatch.setattr(prompt_suggestion, "forks", prompt_suggestion.PromptSuggestionForks())
@@ -772,7 +777,7 @@ async def test_agent_server_shutdown_cancels_the_suggestion_in_flight(product, m
 async def test_composer_event_cancels_only_its_sessions_in_flight_fork(product, monkeypatch, deny_tool) -> None:
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_to_agent_response
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-    from jiuwenswarm.common.e2a.models import E2AResponse
+    from e2a.models import E2AResponse
     from agent_gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 

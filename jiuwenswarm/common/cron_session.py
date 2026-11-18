@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 
 def is_cron_execution_session(session_id: str | None) -> bool:
     """Return True for scheduled-job execution sessions.
@@ -20,6 +23,63 @@ def is_cron_execution_session(session_id: str | None) -> bool:
     interrupts cannot be answered and must not be attached.
     """
     return str(session_id or "").strip().startswith(("cron", "__cron__"))
+
+
+def is_cron_execution_context(
+    session_id: str | None,
+    *,
+    channel_id: str | None = None,
+    request_metadata: Mapping[str, Any] | None = None,
+    session_metadata: Mapping[str, Any] | None = None,
+) -> bool:
+    """Whether a build/runtime context belongs to a cron execution session.
+
+    Union of every durable and per-request signal:
+
+    - ``request_metadata["cron"]``: the scheduler's marker on the request that
+      actually runs the job (single-agent and team stream paths);
+    - ``request_metadata["cron_session"]``: session-level cron ownership
+      forwarded across a process boundary where the target cannot read the
+      session's metadata. Deliberately distinct from ``cron`` so downstream
+      consumers keep treating ``cron`` as "this round was scheduler-triggered"
+      (interactive approvals, A4P scope, prompts) while tool gating still knows
+      the session belongs to a cron run;
+    - ``channel_id == "__cron__"``: the internal execution channel;
+    - the ``cron_*`` / ``__cron___*`` session-id conventions;
+    - the persisted ``cron_id`` in session metadata written by
+      ``session.create`` for every scheduled run.
+
+    The persisted ``cron_id`` is the only signal that survives outside the
+    scheduler request itself: Web jobs execute in an ordinary ``web_<ts>_<rand>``
+    session, so the id and channel checks cannot identify them. Without this
+    signal a Team rebuilt while serving a later turn of the same execution
+    session (user follow-up, cold recovery, idle teardown) re-exposes cron tools
+    and allows nested task creation, while the single-agent adapter already
+    stays gated through ``_is_cron_execution_session``.
+
+    Args:
+        session_id: Active session id.
+        channel_id: Raw channel id from the request.
+        request_metadata: Request metadata mapping (carries ``cron``).
+        session_metadata: Session metadata the caller already read. This module
+            is the ``common`` layer and must not import ``server`` (R1 layering
+            rule), so resolving metadata from disk stays in the upper layer and
+            is passed in as a mapping.
+
+    Returns:
+        True when the context is a cron execution and cron capabilities must
+        not be exposed.
+    """
+    metadata = request_metadata if isinstance(request_metadata, Mapping) else {}
+    if metadata.get("cron") or metadata.get("cron_session"):
+        return True
+    if str(channel_id or "").strip() == "__cron__":
+        return True
+    if is_cron_execution_session(session_id):
+        return True
+    if not isinstance(session_metadata, Mapping):
+        return False
+    return bool(str(session_metadata.get("cron_id") or "").strip())
 
 
 def cron_session_matches_job(session_id: str | None, cron_id: str) -> bool:

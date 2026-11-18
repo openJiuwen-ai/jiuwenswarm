@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import pytest
+from e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 
 from jiuwenswarm.common.auth import login_credentials
 from jiuwenswarm.common.auth.login_credentials import placeholder_api_key
-from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,

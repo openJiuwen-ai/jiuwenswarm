@@ -458,22 +458,6 @@ def test_oversized_structured_log_keeps_valid_json():
     assert "test-only-secret" not in masked
 
 
-class TestUserWorkspace:
-    """Test user workspace functions."""
-
-    @patch("jiuwenswarm.common.utils.get_user_workspace_dir")
-    @patch("jiuwenswarm.common.utils._find_package_root")
-    @patch("pathlib.Path.exists")
-    @patch("builtins.input")
-    def test_init_user_workspace_cancelled(
-        self, mock_input, mock_exists, mock_find_root, mock_get_workspace_dir, temp_workspace
-    ):
-        """Test user workspace initialization when user cancels."""
-        # This test requires more complex mocking due to file operations
-        # Simplified version
-        pass
-
-
 def test_prepare_workspace_does_not_copy_legacy_heartbeat_template(
     tmp_path: Path,
 ) -> None:
@@ -982,7 +966,7 @@ class TestCleanupStaleOpenjiuwenDescs:
         cleanup_call = source.index("cleanup_stale_openjiuwen_descs()")
 
         # 只约束 openjiuwen SDK 本体：清理针对的是 SDK 会读取的过期描述文件。
-        # ``openjiuwen_protocol`` 是独立的纯协议包，不读取 workspace 描述文件，
+        # ``e2a`` 是独立的纯协议包，不读取 workspace 描述文件，
         # 按导入分组规则可以排在清理调用之前。
         sdk_import_markers = (
             "from openjiuwen.",

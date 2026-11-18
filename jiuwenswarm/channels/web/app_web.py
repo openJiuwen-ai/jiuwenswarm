@@ -159,6 +159,41 @@ def _parse_single_byte_range(
     return start, min(end, file_size - 1)
 
 
+# Upper bound for `/file-api/file-content` reads.  The endpoint used to slurp
+# the whole file into memory (raw bytes + decoded str + re-encoded body) with
+# no size check, so previewing a large workspace artifact or polling a
+# long-running log peaked at several times the file size per request and
+# could OOM the backend.  Text preview beyond this bound has little
+# interactive value; download (`/file-api/download`, streamed) covers it.
+MAX_FILE_CONTENT_BYTES = 10 * 1024 * 1024
+
+
+def _decode_bytes_auto(raw_data: bytes, errors: str = "strict") -> tuple[str, str]:
+    """Decode raw bytes with charset detection plus CJK fallbacks.
+
+    Shared by the whole-file and tail reads of ``/file-api/file-content`` so
+    both paths get identical encoding behaviour.  ``errors`` is forwarded to
+    ``bytes.decode``; tail reads pass ``"replace"`` because the window may
+    start mid-character even after line alignment.
+    """
+    import charset_normalizer
+
+    detected = charset_normalizer.from_bytes(raw_data).best()
+    if detected is None:
+        detected_encoding = "utf-8"
+    else:
+        detected_encoding = detected.encoding or "utf-8"
+    try:
+        return raw_data.decode(detected_encoding, errors), detected_encoding
+    except (UnicodeDecodeError, LookupError) as decode_exc:
+        for try_encoding in ["gbk", "gb2312", "big5", "shift_jis", "euc_kr"]:
+            try:
+                return raw_data.decode(try_encoding, errors), try_encoding
+            except (UnicodeDecodeError, LookupError):
+                continue
+    raise OSError("Unable to decode file with any known encoding") from decode_exc
+
+
 def _get_agent_teams_root(project_root: Path) -> Path:
     """Return the team state root without importing the agent runtime.
 
@@ -634,12 +669,15 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(data)
 
-    def _proxy_http(self) -> None:
+    def _proxy_http(
+        self, *, target: str | None = None, path: str | None = None,
+        stream_sse: bool = False, login_surface: str | None = None,
+    ) -> None:
         outer_host = self._clean_outer_host()
         if outer_host is None:
             self._write_proxy_error(400, "invalid Host header")
             return
-        parsed = urlparse(self.api_target)
+        parsed = urlparse(target or self.api_target)
         if parsed.scheme == "https":
             ssl_ctx = None if _get_ssl_verify() else _get_insecure_ssl_context()
             conn: http.client.HTTPConnection = http.client.HTTPSConnection(
@@ -668,22 +706,43 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     continue
                 if normalized_key == "host":
                     continue
+                if login_surface and normalized_key == "x-jiuwen-web-surface":
+                    continue
                 if normalized_key in self._UNTRUSTED_FORWARDED_HOST_HEADERS:
                     continue
                 forward_headers[key] = value
             forward_headers["Host"] = outer_host
 
-            conn.request(self.command, self.path, body=body, headers=forward_headers)
+            if login_surface:
+                forward_headers["X-Jiuwen-Web-Surface"] = login_surface
+            conn.request(self.command, path or self.path, body=body, headers=forward_headers)
             resp = conn.getresponse()
-            resp_body = resp.read()
+            streaming = (
+                stream_sse
+                and self.command != "HEAD"
+                and resp.getheader("Content-Type", "").startswith("text/event-stream")
+            )
+            resp_body = b"" if streaming else resp.read()
 
             self.send_response(resp.status, resp.reason)
             for key, value in resp.getheaders():
                 if key.lower() in self._HOP_BY_HOP_HEADERS:
                     continue
                 self.send_header(key, value)
+            if streaming:
+                self.close_connection = True
+                self.send_header("Connection", "close")
             self.end_headers()
-            if self.command != "HEAD":
+            if streaming:
+                try:
+                    chunk = resp.read1(65536)
+                    while chunk:
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+                        chunk = resp.read1(65536)
+                except (OSError, http.client.HTTPException):
+                    return
+            elif self.command != "HEAD":
                 self.wfile.write(resp_body)
         except Exception as exc:  # noqa: BLE001
             self.log_error("proxy http error: %s", exc)
@@ -691,8 +750,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
-    def _proxy_websocket_tunnel(self) -> None:
-        parsed = urlparse(self.ws_target)
+    def _proxy_websocket_tunnel(self, *, target: str | None = None) -> None:
+        parsed = urlparse(target or self.ws_target)
         if parsed.scheme not in ("ws", "wss", "http", "https"):
             self.send_error(500, "ws proxy target must be ws/wss/http/https")
             return
@@ -996,6 +1055,89 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return False
 
         self._send_desktop_forbidden()
+        return True
+
+    def _resolve_enterprise_upstream(self) -> tuple[str, str] | None:
+        target = os.getenv("USER_WEB_MANAGER_TARGET", "").rstrip("/")
+        if not target:
+            self._write_proxy_error(503, "user authorization is unavailable")
+            return None
+        authorization = self.headers.get("Authorization")
+        if not authorization:
+            token = self._get_auth_cookie("openjiuwen_user_access_token")
+            if not token:
+                self._write_proxy_error(401, "not authenticated")
+                return None
+            authorization = f"Bearer {token}"
+
+        import httpx
+
+        try:
+            response = httpx.get(
+                f"{target}/api/v1/user-console/user-face-upstream",
+                headers={
+                    "Authorization": authorization,
+                    "Cookie": self.headers.get("Cookie", ""),
+                },
+                timeout=5,
+                trust_env=False,
+            )
+        except httpx.HTTPError:
+            self._write_proxy_error(503, "user authorization is unavailable")
+            return None
+        if response.status_code in (401, 403):
+            self._write_proxy_error(response.status_code, "user access denied")
+            return None
+        if response.status_code != 200:
+            self._write_proxy_error(503, "user authorization is unavailable")
+            return None
+        http_target = response.headers.get("X-Gateway-Http-Upstream")
+        ws_target = response.headers.get("X-Gateway-Ws-Upstream")
+        if not http_target or not ws_target:
+            self._write_proxy_error(502, "incomplete user upstream")
+            return None
+        return http_target, ws_target
+
+    def _dispatch_enterprise(self) -> bool:
+        from jiuwenswarm.enterprise import is_enterprise
+
+        if not is_enterprise():
+            return False
+        path = urlparse(self.path).path
+        if path.startswith("/idp/"):
+            target = os.getenv("USER_WEB_IDP_TARGET", "")
+            if target:
+                self._proxy_http(target=target, path=self.path.removeprefix("/idp"), login_surface="user")
+            else:
+                self._write_proxy_error(503, "identity service is unavailable")
+            return True
+        if path == "/manager-api" or path.startswith("/manager-api/"):
+            if not path.startswith("/manager-api/v1/user-console/"):
+                self._write_proxy_error(404, "not found")
+                return True
+            target = os.getenv("USER_WEB_MANAGER_TARGET", "")
+            if target:
+                self._proxy_http(target=target, path=self.path.replace("/manager-api", "/api", 1))
+            else:
+                self._write_proxy_error(503, "manager service is unavailable")
+            return True
+        gateway_api = path == "/gateway-api" or path.startswith("/gateway-api/")
+        ws = self._is_ws_route()
+        if not (gateway_api or ws or self._is_api_route() or self._is_file_api_route()
+                or self._is_share_api_route()):
+            return False
+        upstream = self._resolve_enterprise_upstream()
+        if upstream is None:
+            return True
+        http_target, ws_target = upstream
+        if ws:
+            if self._is_websocket_upgrade():
+                self._proxy_websocket_tunnel(target=ws_target)
+            else:
+                self.send_error(400, "expected websocket upgrade")
+        else:
+            forward_path = self.path.replace("/gateway-api", "/api", 1) if gateway_api else self.path
+            self._proxy_http(target=http_target, path=forward_path, stream_sse=True)
         return True
 
     def _dispatch_proxy(self) -> bool:
@@ -1548,6 +1690,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if path == "/file-api/file-content":
             file_arg = query.get("path", "")
             encoding_arg = query.get("encoding", "utf-8")
+            tail_arg = str(query.get("tail_bytes", "")).strip()
             if not file_arg:
                 self._write_json(400, {"error": "missing_file_path"})
                 return
@@ -1566,26 +1709,57 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     self._write_json(404, {"error": "file_not_found", "fullPath": str(full_path)})
                     return
 
+            # A length cap keeps int() away from the CPython digit-limit
+            # ValueError on absurdly long digit strings; anything longer is
+            # treated as "no tail" and lands in the 413 gate below.
+            tail_bytes = int(tail_arg) if tail_arg.isascii() and tail_arg.isdecimal() and len(tail_arg) <= 12 else 0
+            try:
+                file_size = full_path.stat().st_size
+            except OSError as exc:
+                self._write_json(500, {"error": str(exc)})
+                return
+            if file_size > MAX_FILE_CONTENT_BYTES and tail_bytes <= 0:
+                self._write_json(413, {
+                    "error": "file_too_large",
+                    "fileSize": file_size,
+                    "maxBytes": MAX_FILE_CONTENT_BYTES,
+                })
+                return
+            # Tail mode reads only the trailing bytes so callers like the
+            # logs panel can poll a growing log without transferring (or
+            # decoding) the whole file every interval.  The window is also
+            # clamped to MAX_FILE_CONTENT_BYTES: an unbounded tail_bytes
+            # would otherwise reopen the whole-file read this limit exists
+            # to prevent.
+            read_size = min(tail_bytes, file_size, MAX_FILE_CONTENT_BYTES) if tail_bytes > 0 else file_size
+            read_offset = file_size - read_size
+            truncated = file_size > read_size
+
             def read_file_with_encoding(file_path: Path, encoding: str) -> tuple[str, str]:
+                if read_size != file_size:
+                    with file_path.open("rb") as file_obj:
+                        file_obj.seek(read_offset)
+                        # Bound the read to the computed window: a growing
+                        # log could otherwise append bytes between the stat
+                        # above and this read, pushing the transfer (and
+                        # the memory peak) past MAX_FILE_CONTENT_BYTES.
+                        raw_data = file_obj.read(read_size)
+                    if truncated:
+                        # The seek lands on an arbitrary byte, possibly inside
+                        # a multi-byte character.  Align to the next newline
+                        # ('\n' never occurs inside UTF-8/GBK/Big5/Shift-JIS
+                        # sequences) so callers always get complete lines;
+                        # decode then uses "replace" as a last resort for
+                        # windows without any newline at all.
+                        newline_pos = raw_data.find(b"\n")
+                        if newline_pos >= 0:
+                            raw_data = raw_data[newline_pos + 1:]
+                    if encoding == "auto":
+                        return _decode_bytes_auto(raw_data, errors="replace")
+                    return raw_data.decode(encoding, errors="replace"), encoding
                 if encoding == "auto":
-                    import charset_normalizer
-                    raw_data = file_path.read_bytes()
-                    detected = charset_normalizer.from_bytes(raw_data).best()
-                    if detected is None:
-                        detected_encoding = "utf-8"
-                    else:
-                        detected_encoding = detected.encoding or "utf-8"
-                    try:
-                        return raw_data.decode(detected_encoding), detected_encoding
-                    except (UnicodeDecodeError, LookupError) as decode_exc:
-                        for try_encoding in ["gbk", "gb2312", "big5", "shift_jis", "euc_kr"]:
-                            try:
-                                return raw_data.decode(try_encoding), try_encoding
-                            except (UnicodeDecodeError, LookupError):
-                                continue
-                        raise OSError("Unable to decode file with any known encoding") from decode_exc
-                else:
-                    return file_path.read_text(encoding=encoding), encoding
+                    return _decode_bytes_auto(file_path.read_bytes())
+                return file_path.read_text(encoding=encoding), encoding
 
             try:
                 data, used_encoding = read_file_with_encoding(full_path, encoding_arg)
@@ -1600,6 +1774,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("X-Original-Encoding", used_encoding)
+            self.send_header("X-Truncated", "1" if truncated else "0")
             self.end_headers()
             if self.command != "HEAD":
                 self.wfile.write(body)
@@ -2314,6 +2489,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         self._write_json(status, payload)
 
     def do_GET(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         parsed = urlparse(self.path)
         if parsed.path == "/oauth/hub/callback":
             from jiuwenswarm.channels.web.hub_oauth import complete
@@ -2356,6 +2533,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         parsed = urlparse(self.path)
         if parsed.path in {"/marketplace-oauth/hub/start", "/marketplace-oauth/hub/result"}:
             from jiuwenswarm.channels.web.hub_oauth import result, start
@@ -2401,26 +2580,36 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         self.send_error(405, "method not allowed")
 
     def do_PUT(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         if self._dispatch_proxy():
             return
         self.send_error(405, "method not allowed")
 
     def do_PATCH(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         if self._dispatch_proxy():
             return
         self.send_error(405, "method not allowed")
 
     def do_DELETE(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         if self._dispatch_proxy():
             return
         self.send_error(405, "method not allowed")
 
     def do_OPTIONS(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         if self._dispatch_proxy():
             return
         self.send_error(405, "method not allowed")
 
     def do_HEAD(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         parsed = urlparse(self.path)
         if self._is_share_api_route():
             self._handle_share_api_get(parsed)

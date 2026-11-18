@@ -19,9 +19,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from jiuwenswarm.agents.harness.common.recommendation.proactive_actions import (
-    _extract_json_from_response,
-    _extract_output_text,
+from jiuwenswarm.agents.harness.common.recommendation.llm_helpers import (
+    extract_json_from_response,
+    extract_output_text,
 )
 from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
@@ -68,33 +68,55 @@ logger = logging.getLogger(__name__)
 # recommendation.db is written by several stores; wait for the write lock like they do.
 _SQLITE_BUSY_TIMEOUT_SECONDS = 5.0
 
-# Layered retention for caches and receipts. Clicks, session bindings,
-# dismissals and session summaries stay: a later history scan still has to
-# tell an injected card prompt from the user's own words, and a dismissal is
-# lifted by summaries written after it. Superseded summaries are capped
-# separately. Event types not listed here are never pruned by age.
-_RETENTION_DAYS = {
-    "dynamic_exposure": 30,
-    "starter_slate_manifest": 45,
-    "starter_card": 45,
-    "provider_invocation": 180,
-    "external_invocation_attempt": 180,
-    "rid_summary_pair_match_attempt": 180,
-    "rid_summary_pair_match_receipt": 180,
-    "rid_decision": 180,
-    "rid_abstention": 180,
-    "rid_user_context_snapshot": 180,
-    "session_summary_coverage": 90,
-    "state_maintenance_receipt": 90,
-    "prompt_suggestion_generation": 90,
-    "conversation_depth": 180,
-    "active_expression_observation": 180,
-    "store_pruned": 30,
+# Count-based retention: keep the newest N rows per event_type. Training /
+# offline-audit planes keep 0 — investigate those paths in process logs instead.
+# Types omitted here stay until a later pass adds a cap; session summaries are
+# capped per session below, not by a global newest-N.
+_EVENT_KEEP_NEWEST = {
+    "starter_slate_manifest": 24,
+    "dynamic_exposure": 40,
+    "v6_issued_slate": 40,
+    "page_left": 40,
+    "post_exposure_direct": 40,
+    "v6_input_revision_receipt": 40,
+    "state_maintenance_receipt": 20,
+    "background_generation_started": 12,
+    "background_generation_cancelled": 12,
+    "background_generation_deadline": 12,
+    "background_generation_failed": 12,
+    "background_generation_abstained": 12,
+    "v4_behavior_mapping": 20,
+    "v4_memory_curation": 20,
+    "provider_invocation": 40,
+    "external_invocation_attempt": 20,
+    "rid_decision": 12,
+    "rid_abstention": 12,
+    "rid_user_context_snapshot": 12,
+    "rid_summary_pair_match_attempt": 20,
+    "rid_summary_pair_match_receipt": 20,
+    "session_summary_coverage": 20,
+    "prompt_suggestion_generation": 40,
+    "prompt_suggestion_delivery": 40,
+    "prompt_suggestion_shown": 40,
+    "prompt_suggestion_ignored": 40,
+    "prompt_suggestion_accepted": 40,
+    "topic_click": 500,
+    "session_bound": 500,
+    "not_interested": 200,
+    "store_pruned": 10,
+    # Training / offline label plane — not used by live generation.
+    "rid_training_tuple": 0,
+    "utility_training_example": 0,
+    "training_slice_manifest": 0,
+    "pa_training_example": 0,
+    "training_exclusion": 0,
+    "conversation_depth": 0,
+    "active_expression_observation": 0,
 }
 _SUPERSEDED_SUMMARY_KEEP = 2
-_PROFILE_SNAPSHOT_RETENTION_DAYS = 90
-_SHORT_INTENT_RETENTION_DAYS = 90
-_PRUNE_MIN_INTERVAL_SECONDS = 20 * 60 * 60
+_PROFILE_SNAPSHOT_KEEP = 3
+_SHORT_INTENT_KEEP = 30
+_PRUNE_MIN_INTERVAL_SECONDS = 60 * 60
 _PRUNE_EVENT_TYPE = "store_pruned"
 
 
@@ -233,11 +255,12 @@ class TopicStarterStore:
             connection.execute("VACUUM")
 
     def prune(self, *, now: float) -> dict[str, int]:
-        """Drop aged cache and receipt rows once per retention interval.
+        """Drop surplus rows by newest-N caps once per retention interval.
 
-        Clicks, bindings, dismissals, session summaries, consent records and
-        the training data plane are left alone: their event types are not in
-        ``_RETENTION_DAYS``. Older summary revisions are still capped per session.
+        Live serving needs recent pools, feedback, and a short provider status
+        window. Training labels and long call receipts are not retained — use
+        process logs for investigation. Older session-summary revisions stay
+        capped per session.
         """
 
         recent = self.query_events(
@@ -251,21 +274,22 @@ class TopicStarterStore:
             return {}
         removed: dict[str, int] = {}
         with self._connect() as connection:
-            for event_type, days in _RETENTION_DAYS.items():
-                cursor = connection.execute(
-                    "DELETE FROM recommendation_event "
-                    "WHERE event_type = ? AND created_at < ?",
-                    (event_type, now - days * 24 * 60 * 60),
+            for event_type, keep in _EVENT_KEEP_NEWEST.items():
+                dropped = self._prune_event_type_to_newest(
+                    connection, event_type, keep,
                 )
-                if cursor.rowcount:
-                    removed[event_type] = cursor.rowcount
+                if dropped:
+                    removed[event_type] = dropped
+            orphan_cards = self._prune_orphan_starter_cards(connection)
+            if orphan_cards:
+                removed["starter_card_orphaned"] = orphan_cards
             superseded = self._prune_superseded_summaries(connection)
             if superseded:
                 removed["session_summary_superseded"] = superseded
-            snapshots = self._prune_profile_snapshots(connection, now)
+            snapshots = self._prune_profile_snapshots(connection)
             if snapshots:
                 removed["profile_snapshot"] = snapshots
-            short_intent = self._prune_short_intent(connection, now)
+            short_intent = self._prune_short_intent(connection)
             if short_intent:
                 removed["short_intent_state"] = short_intent
         if removed:
@@ -275,6 +299,7 @@ class TopicStarterStore:
                 connection.execute("VACUUM")
             finally:
                 connection.close()
+            logger.info("[Topic] store pruned: %s", removed)
         self.record_event({
             "session_id": "maintenance",
             "slate_id": "maintenance",
@@ -287,6 +312,52 @@ class TopicStarterStore:
             "created_at": now,
         })
         return removed
+
+    @staticmethod
+    def _prune_event_type_to_newest(
+        connection: sqlite3.Connection,
+        event_type: str,
+        keep: int,
+    ) -> int:
+        """Keep the newest ``keep`` rows of one type; ``keep=0`` deletes all."""
+
+        if keep < 0:
+            raise ValueError("keep must be non-negative")
+        if keep == 0:
+            cursor = connection.execute(
+                "DELETE FROM recommendation_event WHERE event_type = ?",
+                (event_type,),
+            )
+            return int(cursor.rowcount or 0)
+        cursor = connection.execute(
+            """
+            DELETE FROM recommendation_event
+            WHERE rowid IN (
+                SELECT rowid FROM recommendation_event
+                WHERE event_type = ?
+                ORDER BY created_at DESC, event_key DESC
+                LIMIT -1 OFFSET ?
+            )
+            """,
+            (event_type, keep),
+        )
+        return int(cursor.rowcount or 0)
+
+    @staticmethod
+    def _prune_orphan_starter_cards(connection: sqlite3.Connection) -> int:
+        """Drop cards whose manifest was removed by the newest-N pool cap."""
+
+        cursor = connection.execute(
+            """
+            DELETE FROM recommendation_event
+            WHERE event_type = 'starter_card'
+              AND slate_id NOT IN (
+                SELECT slate_id FROM recommendation_event
+                WHERE event_type = 'starter_slate_manifest'
+              )
+            """
+        )
+        return int(cursor.rowcount or 0)
 
     @staticmethod
     def _prune_superseded_summaries(connection: sqlite3.Connection) -> int:
@@ -315,20 +386,14 @@ class TopicStarterStore:
         return len(doomed)
 
     @staticmethod
-    def _prune_profile_snapshots(
-        connection: sqlite3.Connection,
-        now: float,
-    ) -> int:
-        cutoff = now - _PROFILE_SNAPSHOT_RETENTION_DAYS * 24 * 60 * 60
+    def _prune_profile_snapshots(connection: sqlite3.Connection) -> int:
         rows = connection.execute(
-            "SELECT version, created_at FROM profile_snapshot "
-            "ORDER BY version DESC"
+            "SELECT version FROM profile_snapshot ORDER BY version DESC"
         ).fetchall()
-        # The latest two stay even when old: reads start at the newest version.
         doomed = [
             (int(row["version"]),)
             for index, row in enumerate(rows)
-            if index >= 2 and float(row["created_at"]) < cutoff
+            if index >= _PROFILE_SNAPSHOT_KEEP
         ]
         if doomed:
             connection.executemany(
@@ -338,10 +403,7 @@ class TopicStarterStore:
         return len(doomed)
 
     @staticmethod
-    def _prune_short_intent(
-        connection: sqlite3.Connection,
-        now: float,
-    ) -> int:
+    def _prune_short_intent(connection: sqlite3.Connection) -> int:
         exists = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' "
             "AND name = 'short_intent_state'"
@@ -349,10 +411,17 @@ class TopicStarterStore:
         if exists is None:
             return 0
         cursor = connection.execute(
-            "DELETE FROM short_intent_state WHERE evaluated_at < ?",
-            (now - _SHORT_INTENT_RETENTION_DAYS * 24 * 60 * 60,),
+            """
+            DELETE FROM short_intent_state
+            WHERE sequence IN (
+                SELECT sequence FROM short_intent_state
+                ORDER BY sequence DESC
+                LIMIT -1 OFFSET ?
+            )
+            """,
+            (_SHORT_INTENT_KEEP,),
         )
-        return cursor.rowcount
+        return int(cursor.rowcount or 0)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=_SQLITE_BUSY_TIMEOUT_SECONDS)
@@ -748,7 +817,7 @@ async def _invoke_json(agent: Any, prompt: str, conversation_prefix: str) -> dic
             result = await agent.invoke({"query": prompt}, session=session)
         else:
             result = await agent.invoke({"query": prompt, "conversation_id": conversation_id})
-        candidate = _extract_json_from_response(_extract_output_text(result))
+        candidate = extract_json_from_response(extract_output_text(result))
         parsed = json.loads(candidate)
         return parsed if isinstance(parsed, dict) else None
     except Exception as exc:  # noqa: BLE001
@@ -1832,8 +1901,8 @@ def _build_topic_starter_agents() -> tuple[Any, Any, Any]:
     from openjiuwen.core.single_agent import AgentCard
     from openjiuwen.harness.factory import create_deep_agent
 
-    from jiuwenswarm.agents.harness.common.recommendation.proactive_actions import (
-        _get_model,
+    from jiuwenswarm.agents.harness.common.recommendation.llm_helpers import (
+        get_recommendation_model,
     )
     from jiuwenswarm.agents.harness.common.tools.mcp_toolkits import (
         mcp_free_search,
@@ -1855,7 +1924,7 @@ def _build_topic_starter_agents() -> tuple[Any, Any, Any]:
             timeout_seconds=timeout_seconds,
         )
 
-    model = _get_model(temperature=0.0)
+    model = get_recommendation_model(temperature=0.0)
     if model is None:
         return None, None, fetch_page
     curator = create_deep_agent(
@@ -1871,9 +1940,10 @@ def _build_topic_starter_agents() -> tuple[Any, Any, Any]:
     search_tools = []
     if any(os.environ.get(name) for name in ("BOCHA_API_KEY", "PERPLEXITY_API_KEY", "SERPER_API_KEY", "JINA_API_KEY")):
         search_tools.append(mcp_paid_search)
-    if str(os.environ.get("FREE_SEARCH_DDG_ENABLED") or "").lower() in {"1", "true", "yes", "on", "enabled"} or str(
-        os.environ.get("FREE_SEARCH_BING_ENABLED") or ""
-    ).lower() in {"1", "true", "yes", "on", "enabled"}:
+    if any(
+        str(os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
+        for name in ("FREE_SEARCH_DDG_ENABLED", "FREE_SEARCH_BING_ENABLED")
+    ):
         search_tools.append(mcp_free_search)
     if not search_tools:
         return curator, None, fetch_page

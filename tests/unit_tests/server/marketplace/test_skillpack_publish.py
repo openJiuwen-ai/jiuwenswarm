@@ -99,10 +99,16 @@ class Hub:
         raise AssertionError("Unknown artifact URL")
 
 
+@pytest.fixture
+def skillpack_settings(monkeypatch):
+    flow = {"enabled": True}
+    config = {"symphony": {"evolution": {"flow": flow}}}
+    monkeypatch.setattr("jiuwenswarm.common.config.get_config", lambda: config)
+    return flow
+
+
 @pytest_asyncio.fixture
-async def setup(tmp_path, monkeypatch):
-    monkeypatch.setenv("SKILLPACK_PRODUCTIZATION_ENABLED", "true")
-    monkeypatch.setenv("SKILLPACK_HUB_DEPLOYMENT_SCOPE", "isolated")
+async def setup(tmp_path, monkeypatch, skillpack_settings):
     root = tmp_path / "skills"
     for name in ("notes", "risk", "release-pack"):
         (root / name).mkdir(parents=True)
@@ -478,16 +484,12 @@ async def test_unknown_upload_is_reconciled_without_duplicate_post(setup):
 
 
 @pytest.mark.asyncio
-async def test_nonordinary_member_and_default_public_gate_block(setup, monkeypatch):
+async def test_nonordinary_member_is_still_blocked(setup):
     packs, _, _, hub, root = setup
     (root / "risk" / "SKILL.md").write_text("---\nname: risk\nkind: swarm-skill\ndescription: team\n---\n")
     draft = await prepare(packs)
     assert not draft["can_submit"]
     assert draft["members"][1]["action"] == "blocked"
-    monkeypatch.delenv("SKILLPACK_HUB_DEPLOYMENT_SCOPE")
-    with pytest.raises(PublishValidationError) as error:
-        await prepare(packs)
-    assert error.value.code == "SKILLPACK_MARKET_GATE_REQUIRED"
     assert not hub.calls
 
 
@@ -611,14 +613,215 @@ async def test_member_provenance_is_reused_only_for_same_hub_and_unchanged_conte
 
 
 @pytest.mark.asyncio
-async def test_transport_profile_cannot_drift_after_confirmation(setup, monkeypatch):
+async def test_deprecated_environment_does_not_change_confirmed_profile(setup, monkeypatch):
     packs, service, _, hub, _ = setup
     draft = await prepare(packs)
     await packs.commit("scope", draft["draft_id"], "first", auth=PublishAuth("test-token"))
     monkeypatch.setenv("SKILLPACK_HUB_TRANSPORT_PROFILE", "native_skillpack_v1")
+    monkeypatch.setenv("SKILLPACK_HUB_DEPLOYMENT_SCOPE", "")
+    monkeypatch.setenv("SKILLPACK_PRODUCTIZATION_ENABLED", "false")
     await advance(packs, service, draft["draft_id"])
+    assert len(hub.calls) == 2
+    assert packs.status("scope", draft["draft_id"])["error"] is None
+    assert packs._load("scope", draft["draft_id"])["transport_profile"] == "legacy_skill_v1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", ["native_skillpack_v1", "invalid", ""])
+async def test_new_publication_uses_skill_channel_without_deployment_settings(setup, monkeypatch, profile):
+    monkeypatch.setenv("SKILLPACK_HUB_TRANSPORT_PROFILE", profile)
+    monkeypatch.delenv("SKILLPACK_HUB_DEPLOYMENT_SCOPE", raising=False)
+    packs, _, _, hub, _ = setup
+    draft = await prepare(packs)
+    assert draft["transport_profile"] == "legacy_skill_v1"
+    assert draft["hub_plugin_type"] == "skill"
+    assert draft["can_submit"]
     assert not hub.calls
-    assert packs.status("scope", draft["draft_id"])["error"]["code"] == "SKILLPACK_TRANSPORT_CHANGED"
+
+
+@pytest.mark.asyncio
+async def test_disabled_setting_blocks_new_prepare_and_confirmation(setup, skillpack_settings, monkeypatch):
+    packs, _, _, hub, _ = setup
+    draft = await prepare(packs)
+    skillpack_settings["enabled"] = False
+    monkeypatch.setenv("SKILLPACK_PRODUCTIZATION_ENABLED", "true")
+    with pytest.raises(PublishValidationError) as error:
+        await prepare(packs)
+    assert error.value.code == "SKILLPACK_DISABLED"
+    with pytest.raises(PublishValidationError) as error:
+        await packs.commit("scope", draft["draft_id"], "confirm", auth=PublishAuth("test-token"))
+    assert error.value.code == "SKILLPACK_DISABLED"
+    assert packs._load("scope", draft["draft_id"])["confirmed"] is False
+    assert not hub.calls
+    skillpack_settings["enabled"] = True
+    await packs.commit("scope", draft["draft_id"], "confirm", auth=PublishAuth("test-token"))
+    assert packs._load("scope", draft["draft_id"])["confirmed"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("completed_steps", [0, 1, 2])
+async def test_confirmed_publication_completes_after_setting_disabled(setup, skillpack_settings, completed_steps):
+    packs, service, _, hub, _ = setup
+    draft = await prepare(packs)
+    operation_id = draft["draft_id"]
+    await packs.commit("scope", operation_id, "confirm", auth=PublishAuth("test-token"))
+    for _ in range(completed_steps):
+        for asset in hub.assets.values():
+            asset["publish_result"] = "published"
+        await advance(packs, service, operation_id)
+    skillpack_settings["enabled"] = False
+    await packs.commit("scope", operation_id, "confirm-again", auth=PublishAuth("test-token"))
+    for _ in range(4):
+        for asset in hub.assets.values():
+            asset["publish_result"] = "published"
+        await advance(packs, service, operation_id)
+    assert packs.status("scope", operation_id)["stage"] == "completed"
+    assert len(packs.records("scope", "release-pack")) == 1
+    assert [call[0].identity.package_name for call in hub.calls] == ["notes", "risk", "release-pack"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", [None, "unexpected"])
+async def test_confirmed_publication_still_rejects_invalid_stored_profile(setup, profile):
+    packs, service, _, hub, _ = setup
+    draft = await prepare(packs)
+    operation_id = draft["draft_id"]
+    await packs.commit("scope", operation_id, "confirm", auth=PublishAuth("test-token"))
+    stored = packs._load("scope", operation_id)
+    stored["transport_profile"] = profile
+    packs._save(stored)
+    await advance(packs, service, operation_id)
+    assert packs.status("scope", operation_id)["error"]["code"] == "INVALID_SKILLPACK_HUB_PROFILE"
+    assert not hub.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed_member", [False, True])
+async def test_old_disabled_publication_revalidates_before_recovery(setup, skillpack_settings, changed_member):
+    packs, service, _, hub, root = setup
+    draft = await prepare(packs)
+    operation_id = draft["draft_id"]
+    await packs.commit("scope", operation_id, "confirm", auth=PublishAuth("test-token"))
+    stored = packs._load("scope", operation_id)
+    stored["stage"], stored["error"] = "blocked", {"code": "SKILLPACK_DISABLED"}
+    packs._save(stored)
+    skillpack_settings["enabled"] = False
+    if changed_member:
+        (root / "risk" / "SKILL.md").write_text("changed member")
+    await advance(packs, service, operation_id)
+    if changed_member:
+        assert packs.status("scope", operation_id)["error"]["code"] == "SKILLPACK_CONTENT_CHANGED"
+        assert not hub.calls
+    else:
+        await advance(packs, service, operation_id)
+        assert packs.status("scope", operation_id)["stage"] == "waiting_member_review"
+        assert len(hub.calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", ["legacy_skill_v1", "native_skillpack_v1"])
+async def test_confirmed_record_keeps_its_historical_protocol(setup, skillpack_settings, monkeypatch, profile):
+    packs, service, _, hub, _ = setup
+    draft = await prepare(packs)
+    operation_id = draft["draft_id"]
+    await packs.commit("scope", operation_id, "confirm", auth=PublishAuth("test-token"))
+    stored = packs._load("scope", operation_id)
+    stored["transport_profile"] = profile
+    packs._save(stored)
+    skillpack_settings["enabled"] = False
+    publish = hub.publish
+
+    async def publish_with_stored_type(request, *, auth):
+        result = await publish(request, auth=auth)
+        if request.identity.kind == "skillpack" and request.transport_profile == "native_skillpack_v1":
+            hub.assets[result.asset_id]["plugin_type"] = "skillpack"
+        return result
+
+    monkeypatch.setattr(hub, "publish", publish_with_stored_type)
+    for _ in range(4):
+        for asset in hub.assets.values():
+            asset["publish_result"] = "published"
+        await advance(packs, service, operation_id)
+    assert packs.status("scope", operation_id)["stage"] == "completed"
+    assert hub.calls[-1][0].transport_profile == profile
+    assert packs._load("scope", operation_id)["transport_profile"] == profile
+
+
+@pytest.mark.asyncio
+async def test_api_cannot_forge_confirmation_after_setting_disabled(setup, tmp_path, skillpack_settings):
+    from jiuwenswarm.server.runtime.marketplace.asset_publish_api import AssetPublishAPI, PublishAPIError
+
+    _, _, _, hub, root = setup
+    api = AssetPublishAPI(
+        tmp_path / "api", publisher=hub, skillpack_hub=hub,
+        resolver=lambda kind, local_id: root / local_id, hub_url=hub.base_url,
+    )
+    auth = {"access_token": "test-token", "oauth_provider": "gitcode"}
+    reference = {"kind": "skillpack", "local_id": "release-pack", "auth": auth}
+    try:
+        description = await api.call("describe", reference, gateway_user="local-user")
+        draft = await api.call("prepare", dict(reference, metadata=description["defaults"]), gateway_user="local-user")
+        skillpack_settings["enabled"] = False
+        with pytest.raises(PublishAPIError, match="SKILLPACK_DISABLED"):
+            await api.call("commit", {
+                "draft_id": draft["draft_id"], "request_id": "forged", "auth": auth, "confirmed": True,
+            }, gateway_user="local-user")
+        await api.call("status", {"operation_id": draft["draft_id"], "auth": auth}, gateway_user="local-user")
+        assert not api.skillpacks._tasks
+        assert not hub.calls
+        records = await api.call("records", reference, gateway_user="local-user")
+        assert not records["records"]
+    finally:
+        await api.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("previously_blocked", [False, True])
+async def test_api_status_resumes_confirmed_publication_while_disabled(
+    setup, tmp_path, monkeypatch, skillpack_settings, previously_blocked,
+):
+    from jiuwenswarm.server.runtime.marketplace.asset_publish_api import AssetPublishAPI
+
+    _, _, _, hub, root = setup
+    api = AssetPublishAPI(
+        tmp_path / "api", publisher=hub, skillpack_hub=hub,
+        resolver=lambda kind, local_id: root / local_id, hub_url=hub.base_url,
+    )
+    api.skillpacks._poll_interval = 0
+    resume = api.skillpacks.resume
+    monkeypatch.setattr(api.skillpacks, "resume", lambda *args: None)
+    publish = hub.publish
+
+    async def publish_and_approve(request, *, auth):
+        result = await publish(request, auth=auth)
+        hub.assets[result.asset_id]["publish_result"] = "published"
+        return result
+
+    monkeypatch.setattr(hub, "publish", publish_and_approve)
+    auth = {"access_token": "test-token", "oauth_provider": "gitcode"}
+    reference = {"kind": "skillpack", "local_id": "release-pack", "auth": auth}
+    try:
+        description = await api.call("describe", reference, gateway_user="local-user")
+        draft = await api.call("prepare", dict(reference, metadata=description["defaults"]), gateway_user="local-user")
+        await api.call("commit", {
+            "draft_id": draft["draft_id"], "request_id": "confirm", "auth": auth,
+        }, gateway_user="local-user")
+        if previously_blocked:
+            row = api.skillpacks._db.execute(
+                "SELECT payload FROM pack_publications WHERE id=?", (draft["draft_id"],),
+            ).fetchone()
+            stored = json.loads(row["payload"])
+            stored["stage"], stored["error"] = "blocked", {"code": "SKILLPACK_DISABLED"}
+            api.skillpacks._save(stored)
+        skillpack_settings["enabled"] = False
+        monkeypatch.setattr(api.skillpacks, "resume", resume)
+        await api.call("status", {"operation_id": draft["draft_id"], "auth": auth}, gateway_user="local-user")
+        await asyncio.wait_for(api.skillpacks._tasks[draft["draft_id"]], timeout=10)
+        final = await api.call("status", {"operation_id": draft["draft_id"], "auth": auth}, gateway_user="local-user")
+        assert final["stage"] == "completed"
+        assert [call[0].identity.package_name for call in hub.calls] == ["notes", "risk", "release-pack"]
+    finally:
+        await api.close()
 
 
 @pytest.mark.asyncio

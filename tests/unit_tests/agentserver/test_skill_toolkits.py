@@ -6,9 +6,23 @@ from unittest.mock import patch
 
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 from jiuwenswarm.agents.harness.common.tools.skill_toolkits import SkillToolkit
-from jiuwenswarm.agents.harness.common.recommendation.situation_report import (
-    _format_skills_for_llm,
-)
+
+def _format_skills_for_llm(skills: list[dict]) -> str:
+    lines: list[str] = []
+    for s in skills:
+        name = s.get("name", "")
+        desc = (s.get("description", "") or "")[:80]
+        installed = s.get("installed", False)
+        source = s.get("source", "")
+        if installed:
+            status = "[已安装]"
+        elif source == "builtin":
+            status = "[未安装·内置技能]"
+        else:
+            status = "[未安装]"
+        lines.append(f"- {name} | {desc} {status}")
+    return "\n".join(lines) if lines else "（无候选 skill）"
+
 
 
 def test_agent_default_search_never_queries_skillnet(tmp_path, monkeypatch):

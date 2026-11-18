@@ -52,7 +52,7 @@ async def _invoke(
     helpers_result 是 query_team_human_members_for_join 的新返回值（list[dict]，
     未 role 过滤，由 server 过滤 human_agent）。
     """
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
+    from e2a.wire_codec import parse_agent_server_wire_unary
 
     ws = _FakeWS()
     lock = asyncio.Lock()

@@ -59,14 +59,15 @@ update-deps: ## Upgrade all locked dependencies to their latest allowed version
 	$(UV) sync
 
 # ----------------------------------------------------------------------
-# openjiuwen (agent-core) — pinned to the `develop` branch in pyproject.toml
+# Update the official Core revision in pyproject.toml before re-locking.
+# Gateway declares a compatible version range, not a competing Git revision.
 # ----------------------------------------------------------------------
 
-update-openjiuwen: ## Pin openjiuwen to the latest commit on the develop branch
-	@printf "$(C_INFO)Updating openjiuwen to latest on the develop branch...$(C_RESET)\n"
+update-openjiuwen: ## Re-lock after updating the official openjiuwen revision
+	@printf "$(C_INFO)Resolving the configured openjiuwen revision...$(C_RESET)\n"
 	$(UV) lock --upgrade-package openjiuwen
 	$(UV) sync
-	@printf "$(C_OK)openjiuwen now pinned to:$(C_RESET)\n"
+	@printf "$(C_OK)openjiuwen resolved revision:$(C_RESET)\n"
 	@awk '/^name = "openjiuwen"/{f=1} f && /^source = /{sub(/.*#/,""); sub(/".*/,""); print "  commit " $$0; f=0}' uv.lock
 
 # ----------------------------------------------------------------------

@@ -2,6 +2,7 @@ import { useTranslation } from 'react-i18next';
 
 import { useChatStore } from '../../../stores/chatStore';
 import { useSessionStore } from '../../../stores/sessionStore';
+import { useDesignerStore } from '../designerStore';
 import { designerModelLabel } from '../designerModelLabel';
 import './DesignerModelBadge.css';
 
@@ -22,8 +23,21 @@ export default function DesignerModelBadge({ sessionId }: { sessionId?: string }
   const selectedModelName = useSessionStore(
     (state) => state.runtimes[boundSessionId]?.selectedModelName ?? null,
   );
+  const selectedModelId = useSessionStore((state) => {
+    const selection = state.runtimes[boundSessionId]?.selectedModelSelection;
+    return selection?.type === 'model' ? selection.id : null;
+  });
+  const graphModelId = useDesignerStore((state) => {
+    const raw = state.domainGraph?.metadata?.model_id;
+    return typeof raw === 'string' ? raw : null;
+  });
   const defaultModelName = useSessionStore((state) => state.defaultModelName);
-  const label = designerModelLabel(models, selectedModelName, defaultModelName);
+  const label = designerModelLabel(
+    models,
+    selectedModelName,
+    defaultModelName,
+    selectedModelId || graphModelId,
+  );
   return (
     <span
       className="designer-model-badge"

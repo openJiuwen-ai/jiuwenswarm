@@ -306,7 +306,6 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
     removeSessionLocally,
     workMode,
   } = useWorkspaceStore();
-  const loadCronJobs = useCronStore((s) => s.loadJobs);
   const loadCronSessions = useCronStore((s) => s.loadCronSessions);
 
   const activeSessionId = options.type === 'session' ? options.activeSessionId : null;
@@ -334,6 +333,10 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
     archiveInFlightRef.current.add(opKey);
     try {
       await archiveSession(session.session_id);
+      // Archive stops a live turn in the backend without terminal wire frames.
+      // Settle the local turn before the Session leaves the workspace so an
+      // undo/restore cannot resurrect it as still running (GitCode #6533).
+      useChatStore.getState().settleLifecycleStoppedSession(session.session_id);
       flushSync(() => {
         removeSessionLocally(session.session_id);
         openArchiveSuccessToast(t, {
@@ -414,7 +417,6 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
       const projectId = deleteProjectTarget.project_id;
       if (projectAction === 'delete') {
         const removed = await removeProject(projectId);
-        await loadCronJobs();
         if (options.type === 'project') options.onRemoved?.(projectId);
         // 项目下没有定时任务时只提示“项目已移除”；字段缺失（旧网关）沿用原文案。
         toast.open({

@@ -447,11 +447,7 @@ def _ack(kind: str) -> RuntimeEvent:
     return event
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["runtime.accepted", "chat.answer_accepted", "null"])
-async def test_answer_ack_or_null_completion_waits_for_original_continuation(
-    kind: str, run_factory
-) -> None:
+async def _assert_waits_for_original_continuation(kind: str, run_factory) -> None:
     run = run_factory()
     run.client.original.emit(
         _event("chat.ask_user_question", request_id="regular-question", source="")
@@ -476,6 +472,14 @@ async def test_answer_ack_or_null_completion_waits_for_original_continuation(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["runtime.accepted", "chat.answer_accepted", "null"])
+async def test_answer_ack_or_null_completion_waits_for_original_continuation(
+    kind: str, run_factory
+) -> None:
+    await _assert_waits_for_original_continuation(kind, run_factory)
+
+
+@pytest.mark.asyncio
 async def test_fake_continuation_ignores_unrelated_persistence(monkeypatch, run_factory):
     from jiuwenswarm.channels.process_cli import persistence
 
@@ -483,7 +487,7 @@ async def test_fake_continuation_ignores_unrelated_persistence(monkeypatch, run_
         await asyncio.sleep(1.1)
 
     monkeypatch.setattr(persistence, "flush_session_writes", congested_real_writes)
-    await test_answer_ack_or_null_completion_waits_for_original_continuation(
+    await _assert_waits_for_original_continuation(
         "chat.answer_accepted", run_factory,
     )
 
@@ -1015,7 +1019,9 @@ async def test_full_output_queue_does_not_block_runtime_cancel_draining_producer
             else:
                 # Runtime cancellation can itself await the stream consumer
                 # draining a final burst; it need not cancel the adapter task.
-                for _ in range(1000):
+                # Exceed the output capacity so forwarding tail events would
+                # still deadlock, without making this a throughput benchmark.
+                for _ in range(2 * output_queues[0].maxsize + 1):
                     self.original.emit(_event("chat.delta", delta="shutdown tail"))
                 self.original.emit(_event("chat.final", content="shutdown tail"))
                 self.original.emit(None)
@@ -1057,3 +1063,25 @@ async def test_full_output_queue_does_not_block_runtime_cancel_draining_producer
     ]
     assert client.original.closed
     assert client.calls[-3:] == ["cancel", "cleanup_session", "close"]
+
+
+@pytest.mark.asyncio
+async def test_answer_close_failure_does_not_block_public_cancel_or_lose_cleanup_error(run_factory):
+    run = run_factory()
+    run.client.original.emit(_card())
+    run.start()
+    _, answer = await run.answer(await run.card())
+    answer.close_error = RuntimeError("answer close failed")
+    original_cancel = run.client.cancel
+
+    async def cancel(request):
+        assert answer.closed and answer.consumer.done()
+        assert not run.client.original.closed
+        return await original_cancel(request)
+
+    run.client.cancel = cancel
+    run.cancel()
+    result = await run.finish()
+    assert result.error.code == "CANCELLED" and result.exit_code == 130
+    assert result.error.details["cleanup_errors"] == ("control_streams",)
+    assert run.client.calls[-2:] == ["cleanup_session", "close"]

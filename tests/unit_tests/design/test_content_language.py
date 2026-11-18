@@ -34,7 +34,11 @@ def test_chinese_character_sheet_prompt() -> None:
     text = compose_character_sheet_prompt(
         cfg={"character_name": "沈妙（前世）", "costume_lock": "沈妙（前世）: outfit=破旧白色囚衣; footwear=赤脚"}
     )
-    assert text.startswith("画面中仅一人：沈妙（前世）")
+    assert text.startswith("只画一个人：沈妙（前世），三视图")
+    assert "从左到右排成一行，站在同一块连续的纯白背景上：正面头部特写" in text
+    assert "没有分格线和边框" in text
+    assert "侧面全身（脸朝画面左侧）" in text
+    assert "纯白背景" in text and "中性背景" not in text
     assert "身穿破旧白色囚衣，赤脚。" in text
     assert "Wearing" not in text and "outfit=" not in text
 
