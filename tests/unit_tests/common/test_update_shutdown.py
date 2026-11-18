@@ -72,11 +72,13 @@ def test_python_desktop_records_persistence_failure_after_worker_disappears(tmp_
     runtime_class = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "DesktopRuntime")
     method = next(node for node in runtime_class.body if isinstance(node, ast.FunctionDef) and node.name == "shutdown")
     namespace = {"time": time, "asyncio": asyncio, "logger": logging.getLogger(__name__),
+                 "DESKTOP_SHUTDOWN_TIMEOUT_SECONDS": 30.0,
                  "complete_shutdown_receipt": complete_shutdown_receipt,
                  "_terminate_process_tree": Mock(), "_kill_process_tree": Mock()}
     exec(compile(ast.Module(body=[method], type_ignores=[]), "desktop-shutdown", "exec"), namespace)
     receipt = create_shutdown_receipt(tmp_path)
     runtime = SimpleNamespace(_lock=threading.Lock(), _is_shutting_down=False, _startup_cancelled=threading.Event(),
+        _shutdown_complete=threading.Event(),
         _abort_all_blob_saves=Mock(), processes={"agent": SimpleNamespace(poll=lambda: 0)},
         _update_shutdown_receipt=receipt)
     if failure == "missing_receipt":
