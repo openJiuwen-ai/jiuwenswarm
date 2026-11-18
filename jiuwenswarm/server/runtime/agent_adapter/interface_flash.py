@@ -990,6 +990,12 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                 bool(section_order.get("enabled", True))
                 if isinstance(section_order, dict) else True
             ),
+            # 禁用 todo/task_tool/skill_acceleration_exec 会撤下对应 system 段
+            # （430/440/skill_turbo_guide），改静态 hash；把 disabled_tools 纳入指纹，
+            # 让这类合法配置变更触发基线重设，而不是被判成静态漂移。
+            "disabled_tools": sorted(
+                resolve_string_or_list_config((self._config_cache or {}).get("disabled_tools"))
+            ),
         }
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")

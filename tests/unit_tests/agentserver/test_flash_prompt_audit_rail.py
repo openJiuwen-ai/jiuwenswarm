@@ -325,6 +325,27 @@ class TestResolveCarrierNameAware:
         h_mem = _make_rail(with_mem).check_compliance().static_hash
         assert h_base == h_mem
 
+    def test_skill_turbo_guide_carrier_is_attachment(self) -> None:
+        """P2：技能加速通道（skill_turbo_guide@750）是半静态半动态段，归 attachment。"""
+        assert resolve_carrier(750, "skill_turbo_guide") == "attachment"
+
+    def test_skill_turbo_guide_not_in_static_hash(self) -> None:
+        """P2：skill_turbo_guide@750 两条复现路径都不得改静态 hash。
+
+        - 路径 1：禁用 skill_acceleration_exec → 撤段。
+        - 路径 2：技能清单刷新 → 正文变。
+        """
+        base = _FakeAgent(_CLEAN)
+        h_base = _make_rail(base).check_compliance().static_hash
+        with_turbo = _FakeAgent(
+            _CLEAN + [_sec("skill_turbo_guide", 750, "当前支持：pptx-craft")]
+        )
+        refreshed = _FakeAgent(
+            _CLEAN + [_sec("skill_turbo_guide", 750, "当前支持：xlsx-craft")]
+        )
+        assert _make_rail(with_turbo).check_compliance().static_hash == h_base
+        assert _make_rail(refreshed).check_compliance().static_hash == h_base
+
 
 class TestAdvisoryChecks:
     def test_unregistered_priority_reported_not_fatal(self) -> None:
@@ -414,6 +435,36 @@ class TestFailClosed:
 
         # 第 4 轮：指纹不变但内容异常变 → 抛 AuditViolation。
         agent.system_prompt_builder.add_section(_sec("异常段", 450, "异常新增。"))
+        with pytest.raises(AuditViolation):
+            await rail.before_model_call(SimpleNamespace(agent=agent))
+
+    @pytest.mark.asyncio
+    async def test_disabled_tools_fingerprint_resets_baseline(self) -> None:
+        """P2：禁用 todo/task_tool 会撤下 system 段（430/440）改静态 hash；只要
+        disabled_tools 纳入配置指纹，指纹变化即重置基线、不抛 AuditViolation。"""
+        state = {"fp": "[]"}
+        agent = _FakeAgent(_CLEAN + [
+            _sec("todo", 430, "# todo 纪律"),
+            _sec("task_tool", 440, "# 子代理委派"),
+        ])
+        rail = FlashPromptAuditRail(
+            fail_closed=True, config_fingerprint_provider=lambda: state["fp"]
+        )
+        rail.init(agent)
+
+        # 第 1 轮：todo/task_tool 都在，记基线。
+        await rail.before_model_call(SimpleNamespace(agent=agent))
+
+        # 第 2 轮：禁用 todo（撤段）+ 指纹变 → 重置基线，不抛。
+        state["fp"] = '["todo"]'
+        agent.system_prompt_builder.remove_section("todo")
+        await rail.before_model_call(SimpleNamespace(agent=agent))
+
+        # 第 3 轮：指纹不变、内容不变 → 不抛。
+        await rail.before_model_call(SimpleNamespace(agent=agent))
+
+        # 第 4 轮：指纹不变但再撤 task_tool → 异常漂移，抛。
+        agent.system_prompt_builder.remove_section("task_tool")
         with pytest.raises(AuditViolation):
             await rail.before_model_call(SimpleNamespace(agent=agent))
 

@@ -248,7 +248,7 @@ FLASH_SECTION_REGISTRY: dict[int, SectionSpec] = {
                            "（启用集 ~5k，非旧全量 10,772）"),
                      relay=("relay 技能仓 relay_claw/office-claw-skills/manifest.yaml"
                             "（部署侧 /opt/officeace/office-claw-skills/）——只读数据源，不改 relay")),
-    750: SectionSpec("技能加速通道（原 740 顺延）", "system", "merged",
+    750: SectionSpec("技能加速通道（原 740 顺延）", "attachment", "merged",
                      current=[("skill_turbo_guide", 45, "FlashTurboPromptRail / skill_acceleration_exec")],
                      plan="触发/排除/降级/暂停定型；终态归 750；shared skill_protocol 段在被 730 接管后剥除"),
 
