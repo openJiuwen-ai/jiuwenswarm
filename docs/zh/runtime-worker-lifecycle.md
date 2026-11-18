@@ -29,6 +29,7 @@ IPC 端点按安装位置、Python 环境、数据目录和运行配置隔离。
 WHL 的 `jiuwenswarm-start all/app/dev`、命名实例及独立 `jiuwenswarm-app` 在最终退出时先停止 Front，再关闭 Worker；`--stop <name>` 和完整实例 `--restart <name>` 也执行最终清理。命名实例在启动锁内按目标 workspace 的 bootstrap 和运行配置定位 Worker，确认退出后才删除 PID 记录，失败保留记录以便重试。Windows 服务进程树清理保留 Worker 分支，由后续 IPC 操作完成持久化和退出。仅运行 web 的启动器不接管外部后端。
 
 Python 桌面的正式退出即使发生在首个子服务注册之前，也会清理已有 Worker 和可验证的历史端点。最终关闭发现尚未建立 IPC 的 Worker 启动进程时，会在同一截止时间内等待 HELLO，再验证归属；进程命令行只能用于等待，不能代替部署归属校验。
+Python 解释器会等正在进行的关闭清理和升级回执写入结束后再退出。
 
 直接管理 `jiuwenswarm-agentserver` 的服务管理器仍需区分 Front 重启与应用最终停止；最终停止应先关闭 Front，再从相同安装环境执行：
 

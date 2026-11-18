@@ -1304,6 +1304,7 @@ class DesktopRuntime:
         self._blob_save_lock = threading.Lock()
         self._blob_save_transfers: dict[str, _BlobSaveTransfer] = {}
         self._is_shutting_down = False
+        self._shutdown_complete = threading.Event()
         self._update_shutdown_receipt: Path | None = None
         self._allow_window_close = False
         self._tray_icon = None
@@ -3293,53 +3294,67 @@ nohup {q_executable} >/dev/null 2>&1 &
             self._startup_cancelled.set()
             processes = list(self.processes.values())
 
-        self._abort_all_blob_saves()
-        shutdown_ok = True
-        deadline = time.monotonic() + 30.0
-        logger.info("[desktop] shutting down child processes")
-
-        for process in processes:
-            if process.poll() is None:
-                try:
-                    _terminate_process_tree(process)
-                except (OSError, RuntimeError):
-                    shutdown_ok = False
-                    logger.exception("[desktop] service tree cleanup incomplete")
-
-        # A previous launch may own a resident Worker even before this
-        # application's first service is registered. Final exit owns both.
-        from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
         try:
-            result = asyncio.run(shutdown_resident_worker(timeout=max(.001, deadline - time.monotonic()),
-                include_legacy=True))
-            if not isinstance(result, dict) or result.get("ok") is not True:
-                shutdown_ok = False
-                logger.error("[desktop] resident Worker final shutdown incomplete: %s", result)
-        except Exception:
-            shutdown_ok = False
-            logger.exception("[desktop] resident Worker final shutdown incomplete")
+            self._abort_all_blob_saves()
+            shutdown_ok = True
+            deadline = time.monotonic() + 30.0
+            logger.info("[desktop] shutting down child processes")
 
-        while time.monotonic() < deadline:
-            if all(process.poll() is not None for process in processes):
-                break
-            time.sleep(0.2)
+            for process in processes:
+                if process.poll() is None:
+                    try:
+                        _terminate_process_tree(process)
+                    except (OSError, RuntimeError):
+                        shutdown_ok = False
+                        logger.exception("[desktop] service tree cleanup incomplete")
 
-        for process in processes:
-            if process.poll() is None:
-                shutdown_ok = False
-                try:
-                    _kill_process_tree(process)
-                except (OSError, RuntimeError):
-                    logger.exception("[desktop] forced service tree cleanup incomplete")
-
-        with self._lock:
-            self.processes.clear()
-        receipt = getattr(self, "_update_shutdown_receipt", None)
-        if receipt is not None:
+            # A previous launch may own a resident Worker even before this
+            # application's first service is registered. Final exit owns both.
+            from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
             try:
-                complete_shutdown_receipt(receipt, ok=shutdown_ok)
-            except (OSError, RuntimeError):
-                logger.exception("[desktop] failed to record update shutdown receipt")
+                result = asyncio.run(
+                    shutdown_resident_worker(
+                        timeout=max(.001, deadline - time.monotonic()),
+                        include_legacy=True,
+                    )
+                )
+                if not isinstance(result, dict) or result.get("ok") is not True:
+                    shutdown_ok = False
+                    logger.error("[desktop] resident Worker final shutdown incomplete: %s", result)
+            except Exception:
+                shutdown_ok = False
+                logger.exception("[desktop] resident Worker final shutdown incomplete")
+
+            while time.monotonic() < deadline:
+                if all(process.poll() is not None for process in processes):
+                    break
+                time.sleep(0.2)
+
+            for process in processes:
+                if process.poll() is None:
+                    shutdown_ok = False
+                    try:
+                        _kill_process_tree(process)
+                    except (OSError, RuntimeError):
+                        logger.exception("[desktop] forced service tree cleanup incomplete")
+
+            with self._lock:
+                self.processes.clear()
+            receipt = getattr(self, "_update_shutdown_receipt", None)
+            if receipt is not None:
+                try:
+                    complete_shutdown_receipt(receipt, ok=shutdown_ok)
+                except (OSError, RuntimeError):
+                    logger.exception("[desktop] failed to record update shutdown receipt")
+        finally:
+            self._shutdown_complete.set()
+
+    def shutdown_and_wait(self) -> None:
+        """Finish desktop cleanup before the main thread exits."""
+        self.shutdown()
+        # A window or startup callback may already own shutdown. Keep the
+        # interpreter alive until that thread has finished, including the receipt.
+        self._shutdown_complete.wait()
 
     @staticmethod
     def _clear_wkwebview_system_cache() -> None:
@@ -3853,7 +3868,7 @@ def main() -> None:
             debug=args.debug,
         )
     finally:
-        runtime.shutdown()
+        runtime.shutdown_and_wait()
 
 
 if __name__ == "__main__":
