@@ -45,6 +45,12 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
   `headers` 别名）。
 - **N3 超时与缓存**：调用 / 发现超时默认 300s；schema 缓存 env
   `JIUWENSWARM_MCP_SCHEMA_CACHE`（bundle 指纹作 key）。
+  sse / streamable-http 传输共享一个 SSL 上下文：timeout 补丁的 connect 包装先在工作线程里
+  用 `httpx.create_ssl_context()` 构建一次，按 (`SSL_CERT_FILE`, `SSL_CERT_DIR`) 缓存。
+  SDK 工厂包装在调用方未指定 `httpx_client_factory`、未按位置传参、SDK 签名接受该参数，
+  且缓存已就绪时，才注入与 `create_mcp_http_client` 同口径、只多传 `verify` 的工厂。
+  任一条件不满足或构建失败，都回到 SDK 默认路径。事件循环上不得同步加载 CA：
+  Windows 上单次可达秒级，周期扫描会让整个 AgentServer 停摆。
 - **N4 OfficeClaw 身份 pin**：启动身份经 `OFFICE_CLAW_MCP_COMMAND / ARGS_JSON / CWD`
   + env key 白名单锁定；allowlist 经 ContextVar + 共享 ability_manager 双通道跨 task
   传递。
@@ -281,6 +287,10 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
 - 改 `_run_mcp_worker` / `shutdown_pooled_mcp_worker` 的取消分支 → 用真实 AnyIO task
   group 子任务崩溃（取消 owner 本身）回归：调用者拿到普通错误且 `cancelling()==0`，
   请求级工具重建一次后成功（N7）。只 mock 一个 CancelledError 不会取消 owner，覆盖不到。
+- 升级 mcp / httpx → 跑共享 SSL 工厂的防漂移测试（与 `create_mcp_http_client` 的 timeout /
+  headers / follow_redirects / trust_env / auth 一致）；SDK 工厂签名变了要核对注入条件（N3）。
+  用内存传输、预算很小的测试 fixture 需预置 `_mcp_ssl_contexts`，否则首个建连要在线程里真实
+  加载 CA。
 - 改扫描节奏 / 池 TTL → env 覆盖路径回归（N5/N6 的四个 env）。
 - 扩 stdio 白名单 → 安全评审（N2 是 fail-closed 边界，[[S_01]] 铁律 6）。
 - 改 OfficeClaw 启动身份 → pin 字段（N4）+ env 白名单同步；注册面多放行的键在

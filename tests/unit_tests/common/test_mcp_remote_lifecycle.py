@@ -150,6 +150,7 @@ async def transport(monkeypatch):
         Runner.callback_framework, "trigger", AsyncMock(return_value=[])
     )
     monkeypatch.setenv("JIUWENSWARM_ALLOW_LOOPBACK_MCP", "1")
+    monkeypatch.setattr(patch, "_mcp_ssl_contexts", {patch._mcp_ssl_context_key(): object()})
     monkeypatch.setattr(mcp_config, "_MCP_CONNECTOR_DISCOVERY_TIMEOUT_S", 0.05)
     monkeypatch.setattr(mcp_config, "_MCP_CALL_TOOL_TIMEOUT_S", 0.05)
     return state
