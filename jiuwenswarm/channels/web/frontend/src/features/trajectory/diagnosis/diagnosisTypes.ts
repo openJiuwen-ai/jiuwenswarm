@@ -14,9 +14,42 @@ export interface StepRef {
 }
 
 export type DiagnosisStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
-export type StageStatus = 'running' | 'completed' | 'failed' | 'skipped';
+export type StageStatus = 'running' | 'completed' | 'degraded' | 'failed' | 'skipped';
 export type ModeProfile = 'agent.work' | 'agent.code' | 'team';
 export type EvolutionCategory = 'skill' | 'experience';
+
+export type SummaryStatus = 'completed' | 'degraded' | 'failed';
+
+export interface SummarySegment {
+  segment_id: string;
+  start_node_id: string;
+  end_node_id: string;
+  start_ts_ns?: string | number;
+  end_ts_ns?: string | number;
+  start_time?: string | null;
+  end_time?: string | null;
+  narrative: string;
+  status: SummaryStatus;
+  problems: Array<{ problem_id: string; kind: string; summary: string; node_ids: string[] }>;
+}
+
+export interface SummaryTurn {
+  turn_id: string;
+  turn_number?: number | null;
+  narrative: string;
+  status: SummaryStatus;
+  segments: SummarySegment[];
+}
+
+export interface SummaryTree {
+  trajectory_summary: string;
+  display_summary?: string;
+  status: SummaryStatus;
+  turns: Record<string, SummaryTurn[]>;
+  agent_summaries: Record<string, { display_name: string; summary: string; status: SummaryStatus }>;
+  problems: Array<{ problem_id: string; kind: string; summary: string }>;
+  warnings: Array<{ code: string; message: string; segment_id?: string }>;
+}
 
 export interface SelectionRange {
   subject_id: string;
@@ -134,6 +167,7 @@ export interface DiagnosisInput {
 }
 
 export interface DiagnosisRecord extends DiagnosisSummary {
+  summary_tree?: SummaryTree | null;
   session_id: string;
   input: DiagnosisInput;
   seq: number;
@@ -271,6 +305,7 @@ export function asRewardPayload(value: unknown): RewardPayload | null {
 }
 
 export interface DiagnosisProgressEvent {
+  summary_tree?: SummaryTree;
   session_id: string;
   diagnosis_id: string;
   seq: number;
@@ -282,10 +317,11 @@ export interface DiagnosisProgressEvent {
     | 'reward'
     | 'reward_failure_causes'
     | 'evolution_judge'
+    | 'trajectory_summary'
     | 'root_causes';
   title?: string;
   text_delta?: string;
-  status?: 'completed' | 'failed' | 'skipped';
+  status?: 'completed' | 'degraded' | 'failed' | 'skipped';
   summary?: string;
   skip_reason?: string;
   elapsed_ms?: number;

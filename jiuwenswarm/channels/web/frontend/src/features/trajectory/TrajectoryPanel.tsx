@@ -97,6 +97,7 @@ import {
   groupTrajectorySubjects,
   MAIN_TRAJECTORY_SUBJECT_ID,
 } from './trajectorySubjects';
+import { swarmflowIdentitiesOfMembers } from './teamTrajectoryWorkflowGroups';
 import {
   buildTeamControlModel,
   shouldUseScheduledTeamControl,
@@ -364,6 +365,7 @@ const EMPTY_PUBLISHED_WINDOW: PublishedTrajectoryWindow = {
 };
 
 const EMPTY_WORKFLOW_RUNS: readonly never[] = [];
+const EMPTY_TEAM_MEMBERS: readonly never[] = [];
 
 /**
  * Tool-panel visibility and other App chrome state must not rebuild the
@@ -397,6 +399,15 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   // absent from the store fall back to the short run id inside the grouping.
   const workflowRuns = useSessionStore(
     (s) => s.runtimes[sessionId]?.workflowRuns ?? EMPTY_WORKFLOW_RUNS,
+  );
+  const teamMembers = useSessionStore(
+    (s) => s.runtimes[sessionId]?.teamMembers ?? EMPTY_TEAM_MEMBERS,
+  );
+  // Same-label swarmflow operators are told apart on hover by their engine
+  // member id (call key); see TeamTrajectoryWorkspace's swarmflowMembers prop.
+  const swarmflowMembers = useMemo(
+    () => swarmflowIdentitiesOfMembers(teamMembers),
+    [teamMembers],
   );
   const sessionTeamDispatchMode = useSessionStore(
     state => state.runtimes[sessionId]?.teamDispatchMode,
@@ -1931,6 +1942,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         groups={subjectGroups}
         messages={copy.toolbar}
         workflowRuns={workflowRuns}
+        swarmflowMembers={swarmflowMembers}
         selectedSubjectId={laneSelectedId}
         onSelectSubject={selectLane}
         hideToolbar={sharedTimeAxis}
@@ -1944,6 +1956,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                 ? {}
                 : { mapTime: timeAxis.mapSharedTime }),
               live: active && replayArchive === null && sessionIsProcessing,
+              ...(timeAxis.domain === null || timeAxis.toWall === undefined
+                ? {}
+                : { recordedWallEndMs: timeAxis.toWall(timeAxis.domain.endMs) }),
             },
           }
           : {})}

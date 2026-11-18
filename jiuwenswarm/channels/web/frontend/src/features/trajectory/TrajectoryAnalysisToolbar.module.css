@@ -5,6 +5,10 @@
   align-items: center;
   justify-content: flex-end;
   gap: 0.5rem;
+  /* Wrap instead of overflowing past a squeezed pane: the flex-none buttons
+     would otherwise clip out of sight behind the page's overflow:hidden. */
+  flex-wrap: wrap;
+  row-gap: 0.25rem;
   padding: 0.375rem 0;
 }
 
@@ -24,6 +28,7 @@
 .folds {
   position: relative;
   display: inline-flex;
+  flex: none;
   align-items: center;
 }
 
@@ -54,9 +59,11 @@
 
 .menuButton {
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: 0.25rem;
   padding: 0 0.375rem 0 0.625rem;
+  white-space: nowrap;
 }
 
 .menuButton:disabled,
@@ -110,6 +117,7 @@
 
 .icon {
   display: inline-flex;
+  flex: none;
   width: 1.75rem;
   align-items: center;
   justify-content: center;

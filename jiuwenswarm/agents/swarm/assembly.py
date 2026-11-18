@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from openjiuwen.agent_teams.experts import LoadedAgentGroupPackage
+    from openjiuwen.harness.schema.extension_spec import AgentTemplateSpec
 
 from openjiuwen.agent_teams.paths import (
     SKILL_VISIBILITY_FILENAME,
@@ -40,9 +41,10 @@ from openjiuwen.agent_teams.paths import (
     team_home,
 )
 from openjiuwen.agent_teams.experts import compose_template_member
-from openjiuwen.agent_teams.external import external_cli_agent_spec_from_template
-from openjiuwen.agent_teams.schema.blueprint import TransportSpec
+from openjiuwen.agent_teams.external import external_cli_agent_spec_from_template, merge_external_cli_config
+from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec, TransportSpec
 from openjiuwen.agent_teams.schema.team import (
+    ExternalCliAgentSpec,
     ExternalCliMemberSpec,
     TeamMemberSpec,
     TeamRole,
@@ -73,6 +75,21 @@ from jiuwenswarm.common.mcp_config import (
 from jiuwenswarm.common.utils import get_agent_skills_dir
 
 logger = logging.getLogger(__name__)
+
+
+def template_external_cli_config(
+    spec: TeamAgentSpec,
+    template: AgentTemplateSpec,
+) -> ExternalCliAgentSpec | None:
+    """Keep the team's deployment settings when assembling an external expert."""
+    external = external_cli_agent_spec_from_template(template)
+    if external is None:
+        return None
+    for declared in spec.external_cli_agents:
+        if declared.cli_agent == external.cli_agent:
+            return merge_external_cli_config(declared, external)
+    return external
+
 
 # Member roles enriched in place, in deterministic order.
 _MEMBER_ROLES: tuple[str, ...] = ("leader", "teammate")
@@ -200,7 +217,7 @@ def _apply_agent_group(
             continue
         assembled = compose_template_member(teammate_base.model_copy(deep=True), template)
         member_prompt = assembled.persona
-        external_config = external_cli_agent_spec_from_template(template)
+        external_config = template_external_cli_config(spec, template)
         if external_config is None:
             spec.agents[agent_name] = assembled.spec
             member = TeamMemberSpec(

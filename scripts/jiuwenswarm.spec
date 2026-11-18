@@ -217,6 +217,8 @@ for _relative in (
     ))
 datas += collect_data_files("jiuwenswarm.server.runtime.designer.skills", include_py_files=False)
 datas += collect_data_files("agent_gateway", include_py_files=False)
+# Gateway reads the product version from the frozen WorkSwarm distribution metadata.
+datas += copy_metadata("workswarm")
 datas += copy_metadata("agent-gateway", recursive=True)
 datas += copy_metadata("fastmcp", recursive=True)
 datas += copy_metadata("mcp", recursive=True)

@@ -48,7 +48,7 @@ const webResult = {
 };
 
 /** Renders the real page with a recording chat API and timers the test drives itself. */
-async function renderWorkspace({ withChannels = false, schedules = [], ...colleagueOverrides } = {}, initialWebConversations = []) {
+async function renderWorkspace({ withChannels = false, schedules = [], intent = null, channels = [], ...colleagueOverrides } = {}, initialWebConversations = []) {
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
   const previous = {
     window: globalThis.window,
@@ -67,7 +67,7 @@ async function renderWorkspace({ withChannels = false, schedules = [], ...collea
   };
   dom.window.clearInterval = (id) => ticks.delete(id);
   dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
-  const state = { webConversations: initialWebConversations, channels: [], channelCalls: [], channelFailure: false, schedules };
+  const state = { webConversations: initialWebConversations, channels, channelCalls: [], channelFailure: false, schedules };
   Object.defineProperty(dom.window.document, 'visibilityState', { configurable: true, get: () => state.hidden ? 'hidden' : 'visible' });
   const channelApi = {
     listChannels: async (agentId) => {
@@ -98,10 +98,12 @@ async function renderWorkspace({ withChannels = false, schedules = [], ...collea
     sendMessage: async (agentId, conversationId, text, messageId) => {
       calls.push(['send', agentId, conversationId, text]);
       if (state.sendError) throw state.sendError;
+      const ended = !state.keepRunning;
       return {
         request: {
           requestId: `request-${messageId}`, conversationId, messageId, text, receivedAt: '2026-10-26T03:00:00Z',
-          status: 'ended', outcome: 'completed', running: false, replies: [], files: [], reason: null, draft: null,
+          status: ended ? 'ended' : 'dispatched', outcome: ended ? 'completed' : null, running: !ended,
+          replies: [], files: [], reason: null, draft: null,
           control: null, recovery: null, approval: null,
         },
         conversation: { id: conversationId, title: text, updatedAt: '2026-10-26T03:00:00Z', lastMessage: text },
@@ -125,6 +127,7 @@ async function renderWorkspace({ withChannels = false, schedules = [], ...collea
     root.render(React.createElement(ColleagueWorkspacePage, {
       colleagues: [currentColleague],
       selectedColleagueId: colleague.id,
+      intent,
       chat,
       channelApi: withChannels ? channelApi : undefined,
       connectionEpoch,
@@ -270,6 +273,47 @@ test('an unconfigured employee guides model setup, keeps the draft and cannot su
   } finally {
     await page.close();
   }
+});
+
+test('hovering the send and stop buttons names the action like the personal chat', async () => {
+  const page = await renderWorkspace();
+  const hover = async (button) => {
+    await act(async () => button.dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true })));
+    return document.querySelector('[role="tooltip"]')?.textContent ?? null;
+  };
+  const leave = async (button) => {
+    await act(async () => button.dispatchEvent(new window.MouseEvent('mouseout', { bubbles: true })));
+  };
+  try {
+    const input = page.container.querySelector('[data-testid="jiuwenmate-composer-input"]');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(input, '草稿');
+      input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    });
+    const send = page.container.querySelector('[data-testid="jiuwenmate-composer-send"]');
+    assert.equal(send.disabled, false);
+    assert.equal(send.getAttribute('title'), null);
+    assert.equal(await hover(send), '发送');
+    await leave(send);
+    assert.equal(document.querySelector('[role="tooltip"]'), null);
+
+    page.state.keepRunning = true;
+    await page.send('跑一个长任务');
+    const stop = page.container.querySelector('[data-testid="jiuwenmate-composer-stop"]');
+    assert.ok(stop);
+    assert.equal(stop.getAttribute('title'), null);
+    assert.equal(await hover(stop), '停止');
+  } finally {
+    await page.close();
+  }
+});
+
+test('the composer send button keeps its dark fill and highlights on hover instead of taking the toolbar grey', () => {
+  const css = readFileSync(new URL('../src/features/jiuwenmate/jiuwenmate.css', import.meta.url), 'utf8');
+  const rule = css.match(/\.jiuwenmate-composer__toolbar \.jiuwenmate-composer__send:hover:not\(:disabled\) \{([^}]*)\}/);
+  assert.ok(rule, 'send button needs its own hover rule that outranks the generic toolbar hover');
+  assert.match(rule[1], /background: #404040;/);
+  assert.match(rule[1], /color: #fff;/);
 });
 
 test('the private chat welcome shows exactly the configured starter prompts and none when they were all removed', async () => {
@@ -420,6 +464,25 @@ test('joining a group updates an open channel directory without remounting the w
     await page.poll();
     const panel = page.container.querySelector('[data-testid="jiuwenmate-management-panel"]');
     assert.ok(panel.textContent.includes(joinedGroup.name));
+  } finally { await page.close(); }
+});
+
+test('a trace opened from the employee center shows in the management panel beside the private chat', async () => {
+  const page = await renderWorkspace({
+    withChannels: true,
+    channels: [joinedGroup],
+    intent: { recordTab: 'channels', channelId: joinedGroup.id, trace: true },
+  });
+  try {
+    const panel = page.container.querySelector('[data-testid="jiuwenmate-management-panel"]');
+    assert.ok(panel.querySelector('[data-testid="jiuwenmate-management-channel-detail"]'));
+    assert.ok(panel.querySelector('[data-testid="jiuwenmate-channel-trace-page"]'));
+    assert.equal(page.container.querySelector('[data-testid="jiuwenmate-channel-view"]'), null);
+
+    await act(async () => panel.querySelector('[data-testid="jiuwenmate-trace-back-button"]').click());
+    await page.flush();
+    assert.ok(page.container.querySelector('[data-testid="jiuwenmate-management-channel-detail"]'));
+    assert.equal(page.container.querySelector('[data-testid="jiuwenmate-channel-trace-page"]'), null);
   } finally { await page.close(); }
 });
 

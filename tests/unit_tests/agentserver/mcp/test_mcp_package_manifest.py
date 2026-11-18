@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -104,7 +105,7 @@ def test_cli_requires_declared_existing_cli_file(tmp_path: Path) -> None:
         load_mcp_package(package)
 
 
-def test_skill_only_requires_declared_skill_md(tmp_path: Path) -> None:
+def test_skill_only_without_skill_md_still_loads(tmp_path: Path) -> None:
     package = tmp_path / "example"
     _write_json(
         package / "manifest.json",
@@ -116,11 +117,13 @@ def test_skill_only_requires_declared_skill_md(tmp_path: Path) -> None:
     )
     (package / "skills").mkdir(parents=True)
 
-    with pytest.raises(McpPackageError, match="SKILL.md"):
-        load_mcp_package(package)
+    loaded = load_mcp_package(package)
+
+    assert loaded.integration_type == "skill-only"
+    assert loaded.skill_dirs == ()
 
 
-def test_every_declared_skill_directory_requires_skill_md(tmp_path: Path) -> None:
+def test_skill_dirs_without_skill_md_are_skipped(tmp_path: Path) -> None:
     package = tmp_path / "example"
     _write_json(
         package / "manifest.json",
@@ -133,8 +136,9 @@ def test_every_declared_skill_directory_requires_skill_md(tmp_path: Path) -> Non
     _write_json(package / "cli.json", {})
     (package / "skills").mkdir(parents=True)
 
-    with pytest.raises(McpPackageError, match="SKILL.md"):
-        load_mcp_package(package)
+    loaded = load_mcp_package(package)
+
+    assert loaded.skill_dirs == ()
 
 
 @pytest.mark.parametrize("unsafe_path", ["../secret.json", "/tmp/secret.json"])
@@ -149,39 +153,47 @@ def test_rejects_paths_outside_package(tmp_path: Path, unsafe_path: str) -> None
         load_mcp_package(package)
 
 
-@pytest.mark.parametrize(
-    ("directory", "package_id", "expected"),
-    [
-        ("example", "different", "directory name"),
-        ("example", "../example", "safe directory name"),
-    ],
-)
-def test_rejects_invalid_or_mismatched_package_id(
-    tmp_path: Path,
-    directory: str,
-    package_id: str,
-    expected: str,
+@pytest.mark.parametrize("package_id", ["different", "../example"])
+def test_manifest_id_mismatch_uses_directory_name(
+    tmp_path: Path, package_id: str
 ) -> None:
-    package = tmp_path / directory
+    package = tmp_path / "example"
     _write_json(
         package / "manifest.json",
         _manifest(package_id, {"type": "cli", "file": "cli.json"}),
     )
     _write_json(package / "cli.json", {})
 
-    with pytest.raises(McpPackageError, match=expected):
-        load_mcp_package(package)
+    loaded = load_mcp_package(package)
+
+    assert loaded.package_id == "example"
 
 
-def test_rejects_missing_required_manifest_fields(tmp_path: Path) -> None:
+def test_expected_id_is_still_enforced(tmp_path: Path) -> None:
+    package = tmp_path / "example"
+    _write_json(
+        package / "manifest.json",
+        _manifest("example", {"type": "cli", "file": "cli.json"}),
+    )
+    _write_json(package / "cli.json", {})
+
+    with pytest.raises(McpPackageError, match="expected package id"):
+        load_mcp_package(package, expected_id="other")
+
+
+def test_missing_metadata_fields_fall_back(tmp_path: Path) -> None:
     package = tmp_path / "example"
     _write_json(
         package / "manifest.json",
         {"package_type": "mcp", "id": "example", "integration": {"type": "skill-only"}},
     )
 
-    with pytest.raises(McpPackageError, match="version"):
-        load_mcp_package(package)
+    loaded = load_mcp_package(package)
+
+    assert loaded.package_id == "example"
+    assert loaded.name == "example"
+    assert loaded.version == ""
+    assert loaded.description == ""
 
 
 @pytest.mark.parametrize(
@@ -205,14 +217,14 @@ def test_rejects_missing_invalid_or_wrong_type_manifest(
 
 
 @pytest.mark.parametrize(
-    ("extra", "expected"),
+    ("extra", "attribute"),
     [
-        ({"credentials": {"type": "token", "file": "missing.json"}}, "credentials.file"),
-        ({"icon": "missing.png"}, "icon"),
+        ({"credentials": {"type": "token", "file": "missing.json"}}, "credentials_file"),
+        ({"icon": "missing.png"}, "icon_file"),
     ],
 )
-def test_rejects_missing_declared_component(
-    tmp_path: Path, extra: dict, expected: str
+def test_missing_declared_component_is_ignored(
+    tmp_path: Path, extra: dict, attribute: str
 ) -> None:
     package = tmp_path / "example"
     _write_json(
@@ -221,11 +233,12 @@ def test_rejects_missing_declared_component(
     )
     _write_json(package / "cli.json", {})
 
-    with pytest.raises(McpPackageError, match=expected):
-        load_mcp_package(package)
+    loaded = load_mcp_package(package)
+
+    assert getattr(loaded, attribute) is None
 
 
-def test_rejects_non_png_icon(tmp_path: Path) -> None:
+def test_non_png_icon_is_ignored(tmp_path: Path) -> None:
     package = tmp_path / "example"
     _write_json(
         package / "manifest.json",
@@ -238,24 +251,39 @@ def test_rejects_non_png_icon(tmp_path: Path) -> None:
     _write_json(package / "cli.json", {})
     (package / "icon.svg").write_text("<svg/>", encoding="utf-8")
 
-    with pytest.raises(McpPackageError, match="PNG"):
-        load_mcp_package(package)
+    loaded = load_mcp_package(package)
+
+    assert loaded.icon_file is None
 
 
-@pytest.mark.parametrize("field", ["display_name", "display_description"])
-def test_requires_bilingual_display_fields(tmp_path: Path, field: str) -> None:
+@pytest.mark.parametrize(
+    "display",
+    [None, "纯字符串展示名", {"zh": "仅中文"}],
+    ids=["absent", "plain-string", "zh-only"],
+)
+def test_display_fields_never_block_installation(
+    tmp_path: Path, display: object, caplog: pytest.LogCaptureFixture
+) -> None:
     package = tmp_path / "example"
     manifest = _manifest("example", {"type": "cli", "file": "cli.json"})
-    manifest[field] = {"zh": "中文"}
+    for field in ("display_name", "display_description"):
+        if display is None:
+            manifest.pop(field)
+        else:
+            manifest[field] = display
     _write_json(package / "manifest.json", manifest)
     _write_json(package / "cli.json", {})
 
-    with pytest.raises(McpPackageError, match=field):
-        load_mcp_package(package)
+    with caplog.at_level(logging.WARNING, logger="jiuwenswarm.common.mcp_package_manifest"):
+        loaded = load_mcp_package(package)
+
+    assert loaded.package_id == "example"
+    assert loaded.integration_type == "cli"
+    assert "display_name" in caplog.text
 
 
 @pytest.mark.parametrize("credential_type", ["none", "cli_oauth", "unknown"])
-def test_rejects_unsupported_declared_credential_type(
+def test_unsupported_declared_credential_type_degrades_to_none(
     tmp_path: Path, credential_type: str
 ) -> None:
     package = tmp_path / "example"
@@ -269,8 +297,9 @@ def test_rejects_unsupported_declared_credential_type(
     )
     _write_json(package / "cli.json", {})
 
-    with pytest.raises(McpPackageError, match="credentials.type"):
-        load_mcp_package(package)
+    loaded = load_mcp_package(package)
+
+    assert loaded.credentials_type == "none"
 
 
 def test_rejects_symlinked_declared_path(tmp_path: Path) -> None:

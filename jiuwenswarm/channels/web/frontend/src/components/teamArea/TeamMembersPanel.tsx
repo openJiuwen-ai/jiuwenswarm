@@ -854,7 +854,7 @@ function MemberTaskDetail({
   };
 
   return (
-    <section className="flex min-w-[320px] flex-1 flex-col bg-card" data-testid="team-area-member-task-detail">
+    <section className="flex min-w-0 flex-1 flex-col bg-card" data-testid="team-area-member-task-detail">
       <div className="flex shrink-0 items-center gap-2 bg-card pl-4 pt-6" data-testid="team-area-member-detail-section">
         {onBack && (
           <button

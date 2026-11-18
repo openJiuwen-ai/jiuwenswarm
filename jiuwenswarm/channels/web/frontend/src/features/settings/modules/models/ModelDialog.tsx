@@ -10,6 +10,7 @@ import { useSettingsServices } from '../../services/SettingsServicesProvider';
 import { OpenAIAccountSettings, useOpenAIAccountController } from './OpenAIAccountField';
 import { ModelNameField } from './ModelNameField';
 import { ModelProviderSelect } from './ModelProviderSelect';
+import { getPresetApiBasePlaceholder } from './modelVendorLabels';
 import {
   CUSTOM_VENDOR_SELECTION,
   OPENAI_ACCOUNT_SELECTION,
@@ -415,13 +416,15 @@ export function ModelDialog({
       options: protocolOptions,
       onChange: (value) => updateProtocol(value as ModelProtocol),
     });
-    if (custom) {
+    if (custom || !preset?.api_base) {
       formItems.push({
         name: 'api_base',
         label: t('settingsPanel.fields.api_base.title'),
         component: 'input',
         required: true,
-        placeholder: t('settingsPanel.fields.api_base.placeholder'),
+        placeholder: preset
+          ? getPresetApiBasePlaceholder(preset.vendor_key, t)
+          : t('settingsPanel.fields.api_base.placeholder'),
         onChange: () => {
           form.setFieldValue('kv_cache_affinity', false);
           connectionChanged.current = true;

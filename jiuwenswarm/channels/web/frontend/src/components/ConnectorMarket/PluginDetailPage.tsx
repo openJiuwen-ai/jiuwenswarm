@@ -233,7 +233,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
                   {uninstalling ? t('connectorMarket.card.uninstalling') : t('connectorMarket.card.uninstall')}
                 </button>
               )}
-              {(fromMy || installed) && (
+              {(fromMy || installed) && onUse && (
                 <button
                   type="button"
                   className="detail-action detail-action--use"

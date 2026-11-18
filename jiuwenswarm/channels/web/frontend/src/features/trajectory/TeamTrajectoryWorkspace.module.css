@@ -129,6 +129,30 @@
   outline-offset: 1px;
 }
 
+.taskReviewStatic {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  padding: 2px 4px 2px 0;
+  color: var(--dsw-alias-label-primary);
+}
+
+.taskReviewSpacer {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.taskReviewStatic .sectionMeta {
+  flex: none;
+  margin-left: 0;
+}
+
 .taskReviewToggle .taskName {
   flex: 0 1 auto;
 }
@@ -170,7 +194,6 @@
   padding-left: 0;
 }
 
-.memberSectionHeader,
 .sectionHeader,
 .roundHeader {
   display: flex;
@@ -179,14 +202,6 @@
   gap: 8px;
   color: var(--dsw-alias-label-secondary);
   font: var(--dsw-font-xxs-12);
-}
-
-.memberSectionHeader {
-  padding: 0 8px;
-}
-
-.memberSectionHeader strong {
-  color: var(--dsw-alias-label-primary);
 }
 
 .sectionHeader {
@@ -400,15 +415,24 @@
   gap: 8px;
 }
 
-.workflowGroupSelected {
-  height: 100%;
-  min-height: 0;
-  flex: 0 0 100%;
+/* An expanded lane inside a workflow group takes the scheduled rounds' clamped
+ * height so the group sizes to its content: a group pinned to the lanes area's
+ * full height clips nothing, letting the sibling operator lane spill out of the
+ * group box onto the next workflow group's header. */
+.workflowGroupSelected .laneRowExpanded {
+  height: clamp(360px, 52vh, 420px);
+  flex: 0 0 clamp(360px, 52vh, 420px);
 }
 
-.workflowGroupSelected .workflowGroupLanes {
-  min-height: 0;
-  flex: 1 1 0;
+/* An attached workflow group shares its task body with the review rounds.
+   Let it take its content height so an expanded operator cannot cover R1. */
+.taskBody .workflowGroupSelected {
+  height: auto;
+  flex: 0 0 auto;
+}
+
+.taskBody .workflowGroupSelected .workflowGroupLanes {
+  flex: 0 0 auto;
 }
 
 .workflowGroupHeader {

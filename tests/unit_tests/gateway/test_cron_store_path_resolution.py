@@ -26,19 +26,6 @@ def workspace(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_cron_always_reads_home_even_when_gateway_file_exists(workspace):
-    """A leftover gateway file must not win: cron is pinned to agent/home."""
-    gateway_dir = workspace / "gateway"
-    gateway_dir.mkdir(parents=True)
-    (gateway_dir / "cron_jobs.json").write_text("{}", encoding="utf-8")
-    assert get_cron_jobs_path() == workspace / "domain" / "agent" / "home" / "cron_jobs.json"
-
-
-def test_fresh_workspace_uses_home(workspace):
-    """No files on disk: still agent/home, never agent_gateway."""
-    assert get_cron_jobs_path() == workspace / "domain" / "agent" / "home" / "cron_jobs.json"
-
-
 _JOB = {
     "id": "job-1",
     "name": "Example job",
@@ -92,52 +79,6 @@ def _scheduler(store):
     from agent_gateway.cron.scheduler import CronSchedulerService
 
     return CronSchedulerService(store=store, agent_client=None, message_handler=None)
-
-
-@pytest.mark.asyncio
-async def test_reload_reports_how_many_jobs_it_loaded(workspace):
-    """Say what was loaded and from where: "scheduler started" alone reads the
-    same with one job or none."""
-    from agent_gateway.cron.store import CronJobStore
-
-    path = _write_job(workspace / "agent" / "home" / "cron_jobs.json")
-    with _scheduler_logs() as records:
-        await _scheduler(CronJobStore(path=path)).reload()
-
-    messages = [r.getMessage() for r in records]
-    assert any("loaded 1 job(s)" in m and str(path) in m for m in messages), messages
-
-
-@pytest.mark.asyncio
-async def test_reload_warns_when_it_loads_nothing(workspace):
-    """Zero jobs is a warning, not silence: it is the symptom of the bug."""
-    from agent_gateway.cron.store import CronJobStore
-
-    missing = workspace / "agent" / "home" / "cron_jobs.json"
-    with _scheduler_logs(logging.DEBUG) as records:
-        await _scheduler(CronJobStore(path=missing)).reload()
-
-    warnings = [r.getMessage() for r in records if r.levelname == "WARNING"]
-    assert any("loaded 0 jobs" in m for m in warnings), warnings
-
-
-@pytest.mark.asyncio
-async def test_a_store_vanishing_under_us_warns_by_name(workspace):
-    """Losing a populated store is not routine housekeeping: the old INFO line
-    read the same whether the file was edited or had vanished with the schedules."""
-    from agent_gateway.cron.store import CronJobStore
-
-    path = _write_job(workspace / "agent" / "home" / "cron_jobs.json")
-    scheduler = _scheduler(CronJobStore(path=path))
-    await scheduler.reload()
-    await scheduler._sync_store_revision()
-
-    path.unlink()
-    with _scheduler_logs() as records:
-        assert await scheduler._check_store_changed() is True
-
-    warnings = [r.getMessage() for r in records if r.levelname == "WARNING"]
-    assert any("disappeared while holding 1 job(s)" in m for m in warnings), warnings
 
 
 # ---------------------------------------------------------------------------

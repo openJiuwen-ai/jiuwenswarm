@@ -717,6 +717,19 @@ export interface SessionRuntime {
   teamBootstrapMode?: TeamBootstrapMode;
   /** SwarmFlow 工作流运行列表（树视图渲染） */
   workflowRuns: WorkflowRun[];
+  /** Cosmetic task estimates, scoped to this conversation and never persisted. */
+  taskProgressEstimates: Record<string, number>;
+}
+
+function retainTaskProgressEstimates(runtime: SessionRuntime, tasks: TeamTask[]): Record<string, number> {
+  const removed = new Set(runtime.teamTasks.map((task) => task.task_id));
+  for (const task of tasks) {
+    if (task.status === 'completed' || task.status === 'cancelled') removed.add(task.task_id);
+    else removed.delete(task.task_id);
+  }
+  const estimates = runtime.taskProgressEstimates ?? {};
+  if (!Object.keys(estimates).some((id) => removed.has(id))) return estimates;
+  return Object.fromEntries(Object.entries(estimates).filter(([id]) => !removed.has(id)));
 }
 
 function createEmptyRuntime(
@@ -770,6 +783,7 @@ function createEmptyRuntime(
     enableSwarmflow: false,
     swarmflowBudget: null,
     workflowRuns: [],
+    taskProgressEstimates: {},
   };
 }
 
@@ -828,6 +842,7 @@ interface SessionState {
   setTeamTaskTimeline: (sessionId: string, entries: TeamTaskTimelineEntry[]) => void;
   appendTeamTaskTimeline: (sessionId: string, entries: TeamTaskTimelineEntry[]) => void;
   setTeamTasks: (sessionId: string, tasks: TeamTask[]) => void;
+  setTaskProgressEstimates: (sessionId: string, estimates: Record<string, number>) => void;
   upsertTeamTask: (sessionId: string, task: TeamTaskUpsert) => void;
   updateTeamTask: (sessionId: string, taskId: string, patch: Partial<TeamTask>) => void;
   setTeamMembers: (sessionId: string, members: TeamMember[]) => void;
@@ -1328,6 +1343,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
+  setTaskProgressEstimates: (sessionId, estimates) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const previous = runtime.taskProgressEstimates ?? {};
+      if (Object.keys(previous).length === Object.keys(estimates).length &&
+        Object.entries(estimates).every(([id, value]) => previous[id] === value)) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, taskProgressEstimates: estimates },
+        },
+      };
+    });
+  },
+
   setTeamTasks: (sessionId, tasks) => {
     set((state) => {
       const runtime = state.runtimes[sessionId];
@@ -1338,6 +1369,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           [sessionId]: {
             ...runtime,
             teamTasks: tasks,
+            taskProgressEstimates: retainTaskProgressEstimates(runtime, tasks),
           },
         },
       };
@@ -1379,7 +1411,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         return {
           runtimes: {
             ...state.runtimes,
-            [sessionId]: { ...runtime, teamTasks: updatedTasks },
+            [sessionId]: {
+              ...runtime,
+              teamTasks: updatedTasks,
+              taskProgressEstimates: retainTaskProgressEstimates(runtime, updatedTasks),
+            },
           },
         };
       }
@@ -1387,15 +1423,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // leaving an empty title. Fall back to a placeholder built from the
       // task_id tail so the card is not rendered with a bare empty title
       // (matches the precedent in features/teamHistoryPanelRestore.ts upsertTask).
+      const tasks: TeamTask[] = [{
+        ...task,
+        status: task.status ?? 'pending',
+        title: task.title ?? `任务 ${String(task.task_id || '').slice(-6)}`,
+      }, ...runtime.teamTasks];
       return {
-       runtimes: {
+        runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, teamTasks: [{
-            ...task,
-            status: task.status ?? 'pending',
-            title: task.title ?? `任务 ${String(task.task_id || '').slice(-6)}`,
-          }, ...runtime.teamTasks],
-      },
+          [sessionId]: {
+            ...runtime,
+            teamTasks: tasks,
+            taskProgressEstimates: retainTaskProgressEstimates(runtime, tasks),
+          },
         },
       };
     });
@@ -1425,7 +1465,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, teamTasks: updatedTasks },
+          [sessionId]: {
+            ...runtime,
+            teamTasks: updatedTasks,
+            taskProgressEstimates: retainTaskProgressEstimates(runtime, updatedTasks),
+          },
         },
       };
     });

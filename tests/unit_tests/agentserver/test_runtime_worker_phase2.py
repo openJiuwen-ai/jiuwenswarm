@@ -229,7 +229,8 @@ async def test_supervisor_stub_dispatches_stream_and_cancel(monkeypatch, startup
         await original_spawn(process)
 
     monkeypatch.setattr(WorkerProcess, "spawn", spawn)
-    # Cold process startup has a different budget from dispatch after readiness.
+    # Admission forwards warming requests directly to the Supervisor, so its
+    # IPC wait and the outer startup wait must share the cold-start budget.
     startup_timeout = 30
     path = _socket_path()
     capture = _Capture()
@@ -242,7 +243,7 @@ async def test_supervisor_stub_dispatches_stream_and_cancel(monkeypatch, startup
         stub=True,
         stub_ready_delay=0.2,
         max_restarts=0,
-        connect_timeout=15,
+        connect_timeout=startup_timeout,
     )
     admission = ExecutionAdmission(
         readiness, forwarder=capture, wait_seconds=startup_timeout,  # type: ignore[arg-type]
@@ -254,19 +255,25 @@ async def test_supervisor_stub_dispatches_stream_and_cancel(monkeypatch, startup
     try:
         await asyncio.wait_for(boot, startup_timeout)
         await asyncio.wait_for(queued, 5)
-        assert readiness.state is ReadinessState.AGENT_READY
+        assert readiness.state is ReadinessState.AGENT_READY, capture.frames
         assert supervisor.worker_for_session(chat.session_id) == "primary"
         assert supervisor.registry.get("primary") is not None
         assert supervisor.registry.get("primary").ready is True
         joined = json.dumps(capture.frames)
         assert "runtime.warming" in joined
-        assert "chat.send" in joined
+        assert any(
+            frame.get("request_id") == chat.request_id and frame.get("echo") == ReqMethod.CHAT_SEND.value
+            for frame in capture.frames
+        ), capture.frames
 
         capture.frames.clear()
         cancel = _request(ReqMethod.CHAT_CANCEL)
         cancel.session_id = chat.session_id
         await supervisor.dispatch_parsed_request(object(), cancel, asyncio.Lock())
-        assert "chat.interrupt" in json.dumps(capture.frames)
+        assert any(
+            frame.get("request_id") == cancel.request_id and frame.get("echo") == ReqMethod.CHAT_CANCEL.value
+            for frame in capture.frames
+        ), capture.frames
     finally:
         await supervisor.stop(terminate_worker=True)
 
@@ -1135,6 +1142,8 @@ async def test_health_retirement_failure_marks_failed_and_wakes_waiters(monkeypa
     await asyncio.wait_for(supervisor._loop_task, 1)
     assert readiness.state is ReadinessState.FAILED
     assert supervisor._conn is None and supervisor._ipc_ready.is_set()
+    assert not supervisor._retryable_failure
+    assert supervisor._automatic_recovery_task is None
     with pytest.raises(RuntimeError, match="unhealthy Worker could not be retired"):
         await asyncio.wait_for(supervisor.run_until_ipc_ready(), 1)
 

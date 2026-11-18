@@ -4,6 +4,7 @@ import {
   ChartLine,
   ChartNoAxesColumn,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   CirclePause,
   CirclePlay,
@@ -15,8 +16,9 @@ import {
   UsersRound,
   type LucideIcon,
 } from 'lucide-react';
-import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import DatePicker from '../../../components/CronPanel/DatePicker';
 import { ActionMenu } from '../components/ActionMenu';
 import { ActivityHeatmap, HeatmapLegend } from '../components/ActivityHeatmap';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
@@ -27,14 +29,21 @@ import { ScheduleBoard } from '../schedules/ScheduleBoard';
 import type { Schedule, ScheduleDraft, ScheduleRun } from '../schedules/types';
 import {
   activeChannelCount,
+  activityRangeBounds,
   activitySummary,
+  carouselCardsPerView,
+  carouselEdges,
+  CAROUSEL_GAP,
+  colleagueJoinedBy,
   createOfficeState,
   formatMonthDay,
   formatSummaryTokens,
   formatTableTokens,
   groupsInPeriod,
   hourlyActivity,
+  joinedColleagueCount,
   hoverHeatmapCell,
+  memberRangeTotals,
   mergeDailyActivity,
   minutesSince,
   responseAge,
@@ -47,10 +56,12 @@ import {
   setActivityScope,
   setActivityYear,
   toIsoDate,
-  usageChange,
+  periodUsage,
+  weeklyUsageChange,
   yearHeatmap,
   MAX_PERIOD_DAYS,
-  exceedsActivityPeriod,
+  adjustedPeriodEdge,
+  type JiuwenMatePeriodEdge,
   type JiuwenMateActivityRange,
   type JiuwenMateActivityScope,
   type JiuwenMateOfficeState,
@@ -218,13 +229,14 @@ function memberCard(
   t: (key: string) => string,
   colleague: JiuwenMateColleague,
   handlers: OfficeDashboardHandlers,
-  options: { selected?: boolean; onSelect?: () => void } = {},
+  options: { selected?: boolean; onSelect?: () => void; revealClippedDescription?: boolean } = {},
 ) {
   return (
     <ColleagueCard
       colleague={colleague}
       selected={options.selected}
       onSelect={options.onSelect}
+      revealClippedDescription={options.revealClippedDescription}
       badge={memberBadge(t, colleague)}
       menu={memberMenu(t, colleague, handlers)}
       actions={[
@@ -247,7 +259,7 @@ function MembersTab({ colleagues, handlers }: { colleagues: readonly JiuwenMateC
       </button>
       {colleagues.map((colleague) => (
         <div key={colleague.id} className="jiuwenmate-office__member">
-          {memberCard(t, colleague, handlers)}
+          {memberCard(t, colleague, handlers, { revealClippedDescription: true })}
         </div>
       ))}
     </div>
@@ -336,11 +348,11 @@ function ActivityAllTab({
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
-  const [periodLimited, setPeriodLimited] = useState(false);
-  const changePeriod = (periodStart: string, periodEnd: string) => {
+  const [periodLimited, setPeriodLimited] = useState<JiuwenMatePeriodEdge | null>(null);
+  const changePeriod = (periodStart: string, periodEnd: string, edited: JiuwenMatePeriodEdge) => {
     if (!periodStart || !periodEnd) return;
-    setPeriodLimited(exceedsActivityPeriod(periodStart, periodEnd));
-    setState((current) => setActivityPeriod(current, periodStart, periodEnd));
+    setPeriodLimited(adjustedPeriodEdge(periodStart, periodEnd, edited));
+    setState((current) => setActivityPeriod(current, periodStart, periodEnd, edited, toIsoDate(today)));
   };
   const daily = useMemo(() => mergeDailyActivity(members), [members]);
   const heatmap = useMemo(() => yearHeatmap(state.year, today, daily), [state.year, today, daily]);
@@ -348,21 +360,32 @@ function ActivityAllTab({
     () => periodHeatmap(state.periodStart, state.periodEnd, today, hourlyActivity(members.flatMap((item) => item.hours), state.periodStart, today)),
     [state.periodStart, state.periodEnd, today, members],
   );
-  const summary = activitySummary(
-    heatmap,
-    colleagues.length,
-    members.map((member) => ({ tokens: member.tokens, companionDays: member.companionDays, chats: member.replies, lastResponseMinutes: 0 })),
-  );
+  const range = activityRangeBounds(state, today);
+  const totals = (member: JiuwenMateActivityMember | undefined) =>
+    member ? memberRangeTotals(member.days, range.start, range.end) : { tokens: 0, replies: 0 };
+  const summary = {
+    ...activitySummary(
+      daily.filter((day) => day.date >= range.start && day.date <= range.end),
+      colleagues.length,
+      members.map((member) => {
+        const inRange = totals(member);
+        return { tokens: inRange.tokens, companionDays: member.companionDays, chats: inRange.replies, lastResponseMinutes: 0 };
+      }),
+    ),
+    members: joinedColleagueCount(colleagues.map((colleague) => colleague.joinedAt), range.end),
+  };
   const keyword = query.trim();
   const ranked = colleagues
+    .filter((colleague) => colleagueJoinedBy(colleague.joinedAt, range.end))
     .map((colleague) => {
       const member = members.find((item) => item.agentId === colleague.id);
+      const inRange = totals(member);
       return {
         colleague,
         stats: {
-          tokens: member?.tokens ?? 0,
+          tokens: inRange.tokens,
           companionDays: member?.companionDays ?? 0,
-          chats: member?.replies ?? 0,
+          chats: inRange.replies,
           lastResponseMinutes: minutesSince(member?.lastResponseAt ?? null, today),
         },
       };
@@ -408,26 +431,28 @@ function ActivityAllTab({
             <span className="jiuwenmate-office__period">
               {periodLimited ? (
                 <small className="jiuwenmate-office__period-limit" role="status" data-testid="jiuwenmate-office-period-limit">
-                  {t('jiuwenmate.office.periodLimit', { count: MAX_PERIOD_DAYS })}
+                  {t(periodLimited === 'end' ? 'jiuwenmate.office.periodLimitEnd' : 'jiuwenmate.office.periodLimit', { count: MAX_PERIOD_DAYS })}
                 </small>
               ) : null}
-              <input
-                type="date"
-                value={state.periodStart}
-                max={toIsoDate(today)}
-                aria-label={t('jiuwenmate.office.periodStart')}
-                onChange={(event) => changePeriod(event.target.value, state.periodEnd)}
-                data-testid="jiuwenmate-office-period-start"
-              />
+              <span data-testid="jiuwenmate-office-period-start">
+                <DatePicker
+                  ariaLabel={t('jiuwenmate.office.periodStart')}
+                  value={state.periodStart}
+                  maxDate={toIsoDate(today)}
+                  onChange={(value) => changePeriod(value, state.periodEnd, 'start')}
+                  className="jiuwenmate-office__date"
+                />
+              </span>
               <span>{t('jiuwenmate.office.periodTo')}</span>
-              <input
-                type="date"
-                value={state.periodEnd}
-                max={toIsoDate(today)}
-                aria-label={t('jiuwenmate.office.periodEnd')}
-                onChange={(event) => changePeriod(state.periodStart, event.target.value)}
-                data-testid="jiuwenmate-office-period-end"
-              />
+              <span data-testid="jiuwenmate-office-period-end">
+                <DatePicker
+                  ariaLabel={t('jiuwenmate.office.periodEnd')}
+                  value={state.periodEnd}
+                  maxDate={toIsoDate(today)}
+                  onChange={(value) => changePeriod(state.periodStart, value, 'end')}
+                  className="jiuwenmate-office__date"
+                />
+              </span>
             </span>
           )}
         </div>
@@ -556,15 +581,45 @@ function ActivityIndividualTab({
   const [period, setPeriod] = useState<JiuwenMateWorkPeriod>('7d');
   const [query, setQuery] = useState('');
   const carouselRef = useRef<HTMLDivElement>(null);
+  const [cardsPerView, setCardsPerView] = useState(4);
+  const [edges, setEdges] = useState({ atStart: true, atEnd: true });
+  const syncEdges = useCallback(() => {
+    const el = carouselRef.current;
+    if (el) setEdges(carouselEdges(el.scrollLeft, el.clientWidth, el.scrollWidth));
+  }, []);
+  useEffect(() => {
+    const el = carouselRef.current;
+    if (!el) return undefined;
+    const measure = () => {
+      setCardsPerView(carouselCardsPerView(el.clientWidth));
+      syncEdges();
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [syncEdges]);
+  useEffect(syncEdges, [syncEdges, colleagues.length, cardsPerView]);
+  const page = (direction: 1 | -1) => {
+    const el = carouselRef.current;
+    el?.scrollBy({ left: direction * (el.clientWidth + CAROUSEL_GAP), behavior: 'smooth' });
+  };
   const keyword = query.trim();
-  const usage = usageChange(member?.days ?? [], period, today);
+  const tokens = periodUsage(member?.days ?? [], period, today);
+  const change = weeklyUsageChange(member?.days ?? [], today);
   const groups = (member?.groups ?? []).filter((group) => !keyword || group.name.includes(keyword));
-  const percent = usage.percent === null ? '—' : `${usage.percent}%`;
+  const percent = change === null ? '—' : `${change}%`;
 
   return (
     <div className="jiuwenmate-office__individual" data-testid="jiuwenmate-office-individual">
       <div className="jiuwenmate-office__carousel-frame">
-        <div className="jiuwenmate-office__carousel" ref={carouselRef}>
+        <div
+          className="jiuwenmate-office__carousel"
+          ref={carouselRef}
+          onScroll={syncEdges}
+          style={{ '--jm-carousel-cards': cardsPerView } as CSSProperties}
+        >
           {colleagues.map((colleague) => (
             <div key={colleague.id} className="jiuwenmate-office__member">
               {memberCard(t, colleague, handlers, {
@@ -574,14 +629,28 @@ function ActivityIndividualTab({
             </div>
           ))}
         </div>
-        <button
-          type="button"
-          className="jiuwenmate-office__carousel-next"
-          aria-label={t('jiuwenmate.office.next')}
-          onClick={() => carouselRef.current?.scrollBy({ left: 320, behavior: 'smooth' })}
-        >
-          <ChevronRight aria-hidden />
-        </button>
+        {!edges.atStart ? (
+          <button
+            type="button"
+            className="jiuwenmate-office__carousel-nav jiuwenmate-office__carousel-nav--prev"
+            aria-label={t('jiuwenmate.office.previous')}
+            onClick={() => page(-1)}
+            data-testid="jiuwenmate-office-carousel-prev"
+          >
+            <ChevronLeft aria-hidden />
+          </button>
+        ) : null}
+        {!edges.atEnd ? (
+          <button
+            type="button"
+            className="jiuwenmate-office__carousel-nav jiuwenmate-office__carousel-nav--next"
+            aria-label={t('jiuwenmate.office.next')}
+            onClick={() => page(1)}
+            data-testid="jiuwenmate-office-carousel-next"
+          >
+            <ChevronRight aria-hidden />
+          </button>
+        ) : null}
       </div>
       <div className="jiuwenmate-office__section-head">
         <h2>{t('jiuwenmate.office.workRecord')}</h2>
@@ -608,7 +677,7 @@ function ActivityIndividualTab({
             value: (
               <>
                 {percent}
-                {usage.percent !== null && usage.percent > 0 ? <ArrowUp aria-hidden className="jiuwenmate-trend-up" /> : null}
+                {change !== null && change > 0 ? <ArrowUp aria-hidden className="jiuwenmate-trend-up" /> : null}
               </>
             ),
             icon: ChartLine,
@@ -617,7 +686,7 @@ function ActivityIndividualTab({
             key: 'resources',
             value: (
               <>
-                {formatSummaryTokens(usage.tokens)}
+                {formatSummaryTokens(tokens)}
                 <small>tokens</small>
               </>
             ),
@@ -637,7 +706,12 @@ function ActivityIndividualTab({
         ))}
       </div>
       <div className="jiuwenmate-office__section-head">
-        <h2>{t('jiuwenmate.office.groupChats', { count: groups.length })}</h2>
+        <h2>
+          {t('jiuwenmate.office.groupChats')}
+          <small className="jiuwenmate-office__section-count" data-testid="jiuwenmate-office-group-count">
+            {t('jiuwenmate.office.groupChatsCount', { count: groups.length })}
+          </small>
+        </h2>
         <SearchField value={query} onChange={setQuery} placeholder={t('jiuwenmate.common.searchPlaceholder')} />
       </div>
       <table className="jiuwenmate-table" data-testid="jiuwenmate-channel-table">

@@ -17,6 +17,7 @@ import aiohttp
 from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
     ArkBackgroundConfig,
 )
+from .topic_primitives import plain_int as _plain_int
 
 OPENJIUWEN_NATIVE_SEARCH_PROVIDER_ID = "openjiuwen-native-free-search"
 # Serving identity while no web-search lane is usable. Host-evidence and hot-list
@@ -58,11 +59,6 @@ SearchRunner = Callable[
     Awaitable[tuple[str, list[dict[str, str]]]],
 ]
 NativeFactory = Callable[[Mapping[str, str]], Any]
-
-
-def _plain_int(value: Any) -> bool:
-    # bool is an int subclass; a JSON boolean is never a version or a count.
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _request_id() -> str:

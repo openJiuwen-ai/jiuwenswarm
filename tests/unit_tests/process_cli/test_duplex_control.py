@@ -1063,3 +1063,25 @@ async def test_full_output_queue_does_not_block_runtime_cancel_draining_producer
     ]
     assert client.original.closed
     assert client.calls[-3:] == ["cancel", "cleanup_session", "close"]
+
+
+@pytest.mark.asyncio
+async def test_answer_close_failure_does_not_block_public_cancel_or_lose_cleanup_error(run_factory):
+    run = run_factory()
+    run.client.original.emit(_card())
+    run.start()
+    _, answer = await run.answer(await run.card())
+    answer.close_error = RuntimeError("answer close failed")
+    original_cancel = run.client.cancel
+
+    async def cancel(request):
+        assert answer.closed and answer.consumer.done()
+        assert not run.client.original.closed
+        return await original_cancel(request)
+
+    run.client.cancel = cancel
+    run.cancel()
+    result = await run.finish()
+    assert result.error.code == "CANCELLED" and result.exit_code == 130
+    assert result.error.details["cleanup_errors"] == ("control_streams",)
+    assert run.client.calls[-2:] == ["cleanup_session", "close"]

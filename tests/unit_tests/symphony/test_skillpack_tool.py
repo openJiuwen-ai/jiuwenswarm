@@ -29,6 +29,7 @@ from jiuwenswarm.runtime.symphony.skillpack_candidates import (
     CandidateEvidenceScope, CandidateScopeStore, ScopedCandidateStore, annotate_member_types, member_snapshot,
 )
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+from jiuwenswarm.server.runtime.skill.skillpack import load_skillpack
 from jiuwenswarm.runtime.symphony.experience import _EdgeEvaluationModelAdapter
 from jiuwenswarm.common.host_services import install_runtime_push_handler, restore_runtime_push_handler
 
@@ -1105,6 +1106,56 @@ async def test_confirmed_candidate_installs_through_real_skill_manager(environme
         package_id=None, integrity=None, skill_manager=manager, session_id="session-a",
     )
     assert replay["installed"] and replay["replayed"] and not replay["newly_installed"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing_kind", ["skill", "skillpack"])
+async def test_name_conflict_preserves_existing_skill_and_allows_install_retry(
+    environment, allow_macos_pytest_temp_sources, existing_kind,
+):
+    service, source, skills = environment
+    await _collect(service)
+    candidate = (await service.prepare_skillpack_candidates(session_id="session-a"))["candidates"][0]
+    existing = skills / candidate["name"]
+    existing.mkdir()
+    if existing_kind == "skillpack":
+        # A different member order is a different combination with the same name.
+        document = candidate["root_document"].replace("search", "temporary-member")
+        document = document.replace("writer", "search").replace("temporary-member", "writer")
+        renamed = candidate["name"].replace("writer", "search")
+        document = document.replace(f"name: {renamed}", f"name: {candidate['name']}")
+    else:
+        document = f"---\nname: {candidate['name']}\ndescription: existing ordinary skill\n---\nKeep this skill.\n"
+    (existing / "SKILL.md").write_text(document, encoding="utf-8")
+    if existing_kind == "skillpack":
+        definition = load_skillpack(existing, expected_name=candidate["name"])
+        assert definition.members == ("writer", "search")
+    (existing / "user-notes.txt").write_text("Keep this content unchanged.", encoding="utf-8")
+    original = {path.name: path.read_bytes() for path in existing.iterdir()}
+    request = await service.request_skillpack_candidate(
+        recipe_id=candidate["recipe_id"], recipe_version=candidate["recipe_version"],
+        session_id="session-a", channel_id="web",
+    )
+    arguments = {
+        "request_id": request["request_id"], "recipe_id": candidate["recipe_id"],
+        "recipe_version": candidate["recipe_version"], "package_id": None, "integrity": None,
+        "skill_manager": SkillManager(workspace_dir=str(skills.parent)), "session_id": "session-a",
+    }
+    result = await service.install_candidate(**arguments)
+    assert result == {"installed": False, "reason": "skill_already_exists"}
+    assert {path.name: path.read_bytes() for path in existing.iterdir()} == original
+    assert request["request_id"] not in service._install_receipts
+    scoped = next(iter(service._skillpack_candidate_flows.values()))
+    assert not scoped.store.is_candidate_acknowledged(candidate["recipe_id"], candidate["recipe_version"])
+    assert CandidateScopeStore(source.store.root).approval(request["request_id"])
+
+    # Moving the conflicting directory away is an explicit user action; retry
+    # reuses the approval but still performs current member/evidence validation.
+    existing.rename(skills.parent / "preserved-existing-skill")
+    installed = await service.install_candidate(**arguments)
+    assert installed["installed"] and installed["newly_installed"]
+    assert (existing / "SKILL.md").is_file()
+    assert {path.name: path.read_bytes() for path in (skills.parent / "preserved-existing-skill").iterdir()} == original
 
 
 @pytest.mark.asyncio

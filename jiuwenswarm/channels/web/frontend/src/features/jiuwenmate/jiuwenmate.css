@@ -24,7 +24,7 @@
   --jm-radius: 12px;
 
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-columns: var(--mode-rail-width) minmax(0, 1fr);
   width: 100vw;
   height: 100vh;
   min-width: 0;
@@ -119,11 +119,10 @@
 /* Rail */
 .jiuwenmate-rail {
   display: flex;
-  width: 72px;
+  width: var(--mode-rail-width);
   min-height: 0;
   flex-direction: column;
   align-items: center;
-  padding-bottom: 12px;
   border-right: 1px solid var(--jm-border);
   background: var(--color-sidebar-surface, #f7f7f7);
 }
@@ -2466,6 +2465,21 @@
   border-radius: 50%;
   color: #fff;
   background: var(--jm-dark);
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+
+.jiuwenmate-composer__toolbar .jiuwenmate-composer__send:hover:not(:disabled) {
+  color: #fff;
+  background: #404040;
+}
+
+.jiuwenmate-composer__toolbar .jiuwenmate-composer__send:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(26, 26, 26, 0.25);
+}
+
+.jiuwenmate-composer__toolbar .jiuwenmate-composer__send:active:not(:disabled) {
+  transform: scale(0.92);
 }
 
 .jiuwenmate-composer__toolbar .jiuwenmate-composer__send:disabled {
@@ -4401,24 +4415,13 @@
   font-size: 12px;
 }
 
-.jiuwenmate-starter-prompts button {
-  display: grid;
+.jiuwenmate-starter-prompts .jiuwenmate-menu__trigger {
   width: 28px;
   height: 28px;
-  place-items: center;
   padding: 0;
-  border: 0;
-  border-radius: 6px;
-  color: var(--jm-text-2);
-  background: none;
-  cursor: pointer;
 }
 
-.jiuwenmate-starter-prompts button:hover {
-  background: var(--jm-muted);
-}
-
-.jiuwenmate-starter-prompts svg {
+.jiuwenmate-starter-prompts .jiuwenmate-menu__trigger svg {
   width: 14px;
   height: 14px;
 }
@@ -5287,6 +5290,13 @@
   font-weight: 600;
 }
 
+.jiuwenmate-office__section-count {
+  margin-left: 8px;
+  color: var(--jm-text-2);
+  font-size: 12px;
+  font-weight: 400;
+}
+
 .jiuwenmate-profile__content[data-section='persona'] .jiuwenmate-profile__block h2 {
   font-size: 16px;
 }
@@ -5802,13 +5812,33 @@
   font-size: 12px;
 }
 
-.jiuwenmate-office__period input {
+.jiuwenmate-office__date {
+  width: 136px;
+}
+
+.jiuwenmate-office__date > div:first-child {
   height: 30px;
   padding: 0 8px;
   border: 1px solid var(--jm-border-strong);
   border-radius: 8px;
   background: #fff;
+  color: var(--jm-text);
   font-size: 12px;
+}
+
+.jiuwenmate-office__date > div:first-child input {
+  font-size: 12px;
+}
+
+.jiuwenmate-office__date > div:first-child svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* The calendar opens toward the page body so the right edge cannot clip it. */
+.jiuwenmate-office__date > div + div {
+  right: 0;
+  left: auto;
 }
 
 .jiuwenmate-office__card {
@@ -5842,7 +5872,7 @@
 
 .jiuwenmate-office__carousel {
   display: grid;
-  grid-auto-columns: minmax(230px, calc((100% - 42px) / 4));
+  grid-auto-columns: calc((100% - (var(--jm-carousel-cards, 4) - 1) * 14px) / var(--jm-carousel-cards, 4));
   grid-auto-flow: column;
   min-width: 0;
   gap: 14px;
@@ -5855,10 +5885,9 @@
   scroll-snap-align: start;
 }
 
-.jiuwenmate-office__carousel-next {
+.jiuwenmate-office__carousel-nav {
   position: absolute;
   top: 50%;
-  right: -14px;
   display: grid;
   width: 28px;
   height: 28px;
@@ -5872,7 +5901,19 @@
   cursor: pointer;
 }
 
-.jiuwenmate-office__carousel-next svg {
+.jiuwenmate-office__carousel-nav--prev {
+  left: -14px;
+}
+
+.jiuwenmate-office__carousel-nav--next {
+  right: -14px;
+}
+
+.jiuwenmate-office__carousel-nav:hover {
+  background: #f5f5f5;
+}
+
+.jiuwenmate-office__carousel-nav svg {
   width: 14px;
   height: 14px;
 }
@@ -6119,14 +6160,6 @@
 }
 
 @media (max-width: 760px) {
-  .jiuwenmate-shell {
-    grid-template-columns: 56px minmax(0, 1fr);
-  }
-
-  .jiuwenmate-rail {
-    width: 56px;
-  }
-
   .jiuwenmate-workspace,
   .jiuwenmate-workspace--panel-open:not(.jiuwenmate-workspace--collapsed) {
     position: relative;

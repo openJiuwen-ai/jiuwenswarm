@@ -5,6 +5,7 @@ import {
   JIUWENMATE_PUBLIC_PAGES,
   openJiuwenMatePublicPage,
   reenterJiuwenMate,
+  visibleJiuwenMatePublicPages,
 } from '../node_modules/.cache/jiuwenmate-integration/publicNav.js';
 
 const EXISTING_PAGES = new Set(['agents', 'personalContext', 'skills', 'connectorMarket', 'settings']);
@@ -21,6 +22,17 @@ test('public rail entries open existing swarm pages and do not create jiuwenmate
   for (const item of JIUWENMATE_PUBLIC_PAGES) {
     assert.equal(EXISTING_PAGES.has(item.nav), true);
   }
+});
+
+test('assets leaves the rail while personal context is off and returns when it is on', () => {
+  const labels = (hidden) => visibleJiuwenMatePublicPages(hidden).map((item) => item.labelKey);
+  assert.deepEqual(labels(['personalContext']), [
+    'jiuwenmate.nav.plaza',
+    'jiuwenmate.nav.skills',
+    'jiuwenmate.nav.extensions',
+    'jiuwenmate.nav.settings',
+  ]);
+  assert.deepEqual(labels([]), JIUWENMATE_PUBLIC_PAGES.map((item) => item.labelKey));
 });
 
 test('opening a reused page stays inside jiuwenmate and preserves the personal page', () => {

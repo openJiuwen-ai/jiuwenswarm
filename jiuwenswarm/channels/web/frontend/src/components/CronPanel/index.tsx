@@ -13,6 +13,7 @@ import { CRON_TEMPLATES, KNOWN_TARGET_KEYS, SELECTABLE_TARGET_KEYS } from './con
 import { isTeamCronModeValue } from './cronMode';
 import { cronModelPayloadFields } from './cronModelSelection';
 import { normalizeWakeOffsetSeconds } from './cronWakeOffset';
+import { createSubmitGuard } from './drawerSubmitGuard';
 import { cronExprToSchedule, summarizeSchedule } from './scheduleConvert';
 import StatusBadge, { BoldRingIcon, RunningIcon } from './StatusBadge';
 import ConfirmDialog from './ConfirmDialog';
@@ -23,6 +24,7 @@ import SimpleSelect from './SimpleSelect';
 import { isCronTargetOptionDisabled } from './xiaoyiCronTarget';
 import emptyIllustration from '../../assets/cron-empty.svg';
 import { PageToolbarSearch, toast } from '../ui';
+import './CronPanel.css';
 
 // 任务列表分页：每页条数可选项（默认 20），纯前端本地分页——后端 cron.job.list 目前
 // 一次性返回全部任务、不支持 offset/limit，见 bug002 progress.md 的方案说明
@@ -468,6 +470,14 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     | null
   >(null);
 
+  // 抽屉提交中标记：cron.job.create/update 走 WebSocket（超时上限 15s），期间"确认"按钮必须
+  // 禁用，否则慢响应窗口内重复点击会发出第二个独立请求，创建出两个同名任务（对齐
+  // HeartbeatPanel 的 drawer.submitting 机制）。tryBegin 同步拦截兜底同一事件循环内的
+  // 双击（state 置位要等下一次渲染才反映到 disabled），state 驱动按钮禁用态；
+  // 拦截语义抽在 drawerSubmitGuard.ts，由 tests/cronDrawerSubmitGuard.test.mjs 锁定。
+  const [drawerSubmitting, setDrawerSubmitting] = useState(false);
+  const drawerSubmitGuard = useRef(createSubmitGuard()).current;
+
   const [confirmState, setConfirmState] = useState<{ type: 'delete' | 'stop' | 'runNow'; job: CronTaskUI } | null>(
     null,
   );
@@ -774,6 +784,17 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   const expiredCount = useMemo(() => jobs.filter((j) => jobStatusKey(j) === 'expired').length, [jobs]);
 
   async function handleCreateSubmit(value: CronTaskFormValue) {
+    if (!drawerSubmitGuard.tryBegin()) return;
+    setDrawerSubmitting(true);
+    try {
+      await submitCreate(value);
+    } finally {
+      drawerSubmitGuard.end();
+      setDrawerSubmitting(false);
+    }
+  }
+
+  async function submitCreate(value: CronTaskFormValue) {
     // 选中真实项目时以项目自身模式为准；未选项目时用当前定时任务有效模式（work/code）。
     const submittingWorkMode = value.workMode ?? activeWorkMode;
     try {
@@ -831,6 +852,17 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   }
 
   async function handleEditSubmit(jobId: string, value: CronTaskFormValue) {
+    if (!drawerSubmitGuard.tryBegin()) return;
+    setDrawerSubmitting(true);
+    try {
+      await submitEdit(jobId, value);
+    } finally {
+      drawerSubmitGuard.end();
+      setDrawerSubmitting(false);
+    }
+  }
+
+  async function submitEdit(jobId: string, value: CronTaskFormValue) {
     try {
       const patch = {
         name: value.name.trim(),
@@ -1278,7 +1310,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                   createPortal(
                     <div
                       ref={rowMenuPortalRef}
-                      className="w-28 rounded-lg border border-border bg-card py-1.5 shadow-lg"
+                      className="cron-popover-menu w-28 rounded-lg border border-border bg-card py-1.5 shadow-lg"
                       style={
                         rowMenuDirection === 'up'
                           ? {
@@ -1352,7 +1384,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
               createPortal(
                 <div
                   ref={sessionsPopoverPortalRef}
-                  className="w-64 rounded-lg border border-border bg-card py-1.5 shadow-lg"
+                  className="cron-popover-menu w-64 rounded-lg border border-border bg-card py-1.5 shadow-lg"
                   style={
                     sessionsPopoverDirection === 'up'
                       ? {
@@ -1438,7 +1470,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
               createPortal(
                 <div
                   ref={previewPopoverPortalRef}
-                  className="w-64 rounded-lg border border-border bg-card py-1.5 shadow-lg"
+                  className="cron-popover-menu w-64 rounded-lg border border-border bg-card py-1.5 shadow-lg"
                   style={
                     previewPopoverDirection === 'up'
                       ? {
@@ -1509,7 +1541,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     // 翻转 → 高度又变 → 在临界宽度附近来回抖动（x 滚动条快速切换闪烁的根源）
     <div
       ref={panelRef}
-      className="flex-1 min-h-0 relative overflow-y-auto [scrollbar-gutter:stable]"
+      className="cron-panel flex-1 min-h-0 relative overflow-y-auto [scrollbar-gutter:stable]"
       onScroll={closeRowPopovers}
       data-testid="cron-panel"
       data-session-id={sessionId}
@@ -1934,6 +1966,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
               if (drawer.mode === 'edit') void handleEditSubmit(drawer.jobId, value);
               else void handleCreateSubmit(value);
             }}
+            submitting={drawerSubmitting}
           />
         )}
 

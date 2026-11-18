@@ -24,7 +24,6 @@ from openjiuwen.agent_teams.schema.team import (
     TeamMemberSpec,
     TeamRole,
 )
-from openjiuwen.agent_teams.external import external_cli_agent_spec_from_template
 from openjiuwen.core.foundation.tool import Tool, ToolCard, ToolOutput
 from openjiuwen.core.runner import Runner
 from openjiuwen.harness.resources import load_agent_template_package
@@ -88,6 +87,7 @@ def assemble_group_members(spec, members: list[dict]) -> None:
     from jiuwenswarm.agents.swarm.assembly import (
         _apply_agent_group,
         _merge_team_prompt,
+        template_external_cli_config,
     )
     from openjiuwen.agent_teams.experts import compose_template_member, load_agent_group_package_bundle
     from jiuwenswarm.server.runtime.extension_package_manager import (
@@ -182,7 +182,7 @@ def assemble_group_members(spec, members: list[dict]) -> None:
             desc=template.agent_card.description or "",
             prompt=prompt,
         )
-        external = external_cli_agent_spec_from_template(template)
+        external = template_external_cli_config(spec, template)
         member = (
             ExternalCliMemberSpec(**member_params, external_cli=external)
             if external is not None

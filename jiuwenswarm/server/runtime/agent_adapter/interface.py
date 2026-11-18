@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 import inspect
 import json
 import logging
@@ -1011,22 +1012,15 @@ def _starter_interaction_context(params: Any, query: Any) -> str:
     if card is None or card.get("prompt") != query:
         return ""
     evidence = card.get("evidence_bundle") or {}
-    from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
-        recommendation_sources,
-    )
-    sources = recommendation_sources(TopicStarterStore(database), card.get("source_locators") or [])
+    # The clicked answer is scoped to the card's own evidence. Earlier source
+    # conversations are deliberately not read back: the click path must not pay
+    # for a history scan, and the user's earlier constraints are not inherited.
     return (
-        "Answer the clicked question using the stored topic context below. The user's "
-        "own messages supply facts about the user and continuing constraints for this "
-        "question. Earlier assistant replies, in this or another conversation, only show "
-        "what was already discussed: a claim taken from them needs support like any other, "
-        "and they are not documentation to quote. "
+        "Answer the clicked question using the stored topic context below. "
         "No modification forbids writes, not inspection or read-only checks. "
         "Explanation only asks for proposed steps rather than execution. It permits "
         "reading relevant files; running a disposable sample requires the user's explicit "
-        "request for execution or operational verification. Keep conditions attached to their own action, preserve "
-        "restrictions on changes, purchases and access, and follow the reply "
-        "preferences the sources state, such as length.\n"
+        "request for execution or operational verification.\n"
         "The clicked question is the answer scope; stored context must not add a request "
         "or premise. When the question takes an effect, cause or pattern for granted, that is the first "
         "claim to support: say whether it holds, holds only under stated conditions, or "
@@ -1073,7 +1067,6 @@ def _starter_interaction_context(params: Any, query: Any) -> str:
             "source_url": evidence.get("source_url"),
             "published_at": evidence.get("published_at"),
             "source_context": evidence.get("exact_spans") or evidence.get("content_boundary"),
-            "user_source_constraints": sources,
             "publication_date_provenance": evidence.get("publication_date_provenance"),
         }, ensure_ascii=False)
     )
@@ -1385,6 +1378,7 @@ _SKILL_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SKILLS_FILES_LIST: "handle_skills_files_list",
     ReqMethod.SKILLS_FILES_GET: "handle_skills_files_get",
     ReqMethod.SKILLS_REBUILD: "handle_skills_rebuild",
+    ReqMethod.SKILLS_REBUILD_STATUS: "handle_skills_rebuild_status",
     ReqMethod.SKILLS_TOGGLE: "handle_skills_toggle",
     ReqMethod.SKILLS_MARKETPLACE_LIST: "handle_skills_marketplace_list",
     ReqMethod.SKILLS_INSTALL: "handle_skills_install",
@@ -2736,22 +2730,16 @@ class JiuWenSwarm:
             elif handler_name == "handle_skills_rebuild" and self._is_skills_rebuild_followup(
                 payload
             ):
-                # 与 /evolve_rebuild 同 prompt+Agent，但 RPC 内同步静默跑完，不经 Gateway chat.send
-                try:
-                    await self._run_skills_rebuild_followup(request, payload)
-                except SkillRpcError:
-                    raise
-                except Exception as exc:
-                    logger.exception(
-                        "[JiuWenSwarm] skills.rebuild 静默 Agent 失败: request_id=%s skill=%s",
-                        request.request_id,
-                        payload.get("skill_name"),
-                    )
-                    raise SkillRpcError(
-                        "SKILL_REBUILD_FAILED",
-                        f"rebuild Agent 失败: {exc}",
-                    ) from exc
-                payload = {"success": True}
+                # 准备（归档、清空 evolutions、拼 prompt）在这次请求里做完。
+                # 静默 Agent 没有稳定上限，不能继续占着 Gateway 的 600 秒非流式请求。
+                rebuild_id = self._schedule_skills_rebuild_followup(request, payload)
+                payload = {
+                    "success": True,
+                    "pending": True,
+                    "rebuild_id": rebuild_id,
+                    "name": payload.get("skill_name"),
+                    "status": "running",
+                }
             elif handler_name == "handle_skills_create_from_knowledge":
                 if self._is_skills_create_from_knowledge_followup(payload):
                     payload = await self._run_skills_create_from_knowledge_silent(
@@ -2826,12 +2814,116 @@ class JiuWenSwarm:
             return False
         return payload.get("result_type") == "followup" and bool(payload.get("success"))
 
+    def _schedule_skills_rebuild_followup(
+        self,
+        request: AgentRequest,
+        payload: dict[str, Any],
+    ) -> str:
+        """登记重建任务并在后台跑静默 Agent。调用方立刻拿到 rebuild_id。"""
+        from jiuwenswarm.server.runtime.skill.skill_manager import (
+            note_rebuild_live,
+            rebuild_heartbeat_now,
+            remember_rebuild_task,
+            write_rebuild_job,
+        )
+
+        target = payload.get("rebuild_target") if isinstance(payload.get("rebuild_target"), dict) else {}
+        raw_dir = str(target.get("skill_dir") or "").strip()
+        skill_dir = Path(raw_dir) if raw_dir else None
+        if skill_dir is not None and not skill_dir.is_dir():
+            skill_dir = None
+        rebuild_id = uuid.uuid4().hex
+        note_rebuild_live(rebuild_id, True)
+        write_rebuild_job(
+            skill_dir,
+            {
+                "rebuild_id": rebuild_id,
+                "status": "running",
+                "name": str(payload.get("skill_name") or ""),
+                "code": "",
+                "detail": "",
+                "heartbeat_at": rebuild_heartbeat_now(),
+            },
+        )
+        task = asyncio.create_task(
+            self._finish_skills_rebuild_job(rebuild_id, skill_dir, request, payload),
+            name=f"skills-rebuild-{rebuild_id[:8]}",
+        )
+        remember_rebuild_task(rebuild_id, task)
+        return rebuild_id
+
+    async def _finish_skills_rebuild_job(
+        self,
+        rebuild_id: str,
+        skill_dir: Path | None,
+        request: AgentRequest,
+        payload: dict[str, Any],
+    ) -> None:
+        """后台跑完静默改写后才把任务写成 done。失败只记在任务上，不再回写原 RPC。"""
+        from jiuwenswarm.server.runtime.skill.skill_manager import (
+            note_rebuild_live,
+            pop_rebuild_task,
+            pulse_rebuild_heartbeat,
+            write_rebuild_job,
+        )
+
+        job = {
+            "rebuild_id": rebuild_id,
+            "name": str(payload.get("skill_name") or ""),
+            "code": "",
+            "detail": "",
+        }
+        stop_heartbeat = asyncio.Event()
+        heartbeat = asyncio.create_task(
+            pulse_rebuild_heartbeat(rebuild_id, skill_dir, stop_heartbeat),
+            name=f"skills-rebuild-heartbeat-{rebuild_id[:8]}",
+        )
+        try:
+            await self._run_skills_rebuild_followup(request, payload)
+            write_rebuild_job(skill_dir, {**job, "status": "done", "success": True})
+        except SkillRpcError as exc:
+            write_rebuild_job(
+                skill_dir,
+                {
+                    **job,
+                    "status": "failed",
+                    "success": False,
+                    "code": exc.code,
+                    "detail": exc.message,
+                },
+            )
+        except Exception as exc:
+            logger.exception(
+                "[JiuWenSwarm] skills.rebuild 静默 Agent 失败: request_id=%s skill=%s",
+                request.request_id,
+                payload.get("skill_name"),
+            )
+            write_rebuild_job(
+                skill_dir,
+                {
+                    **job,
+                    "status": "failed",
+                    "success": False,
+                    "code": "SKILL_REBUILD_FAILED",
+                    "detail": f"rebuild Agent 失败: {exc}",
+                },
+            )
+        finally:
+            stop_heartbeat.set()
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
+            note_rebuild_live(rebuild_id, False)
+            pop_rebuild_task(rebuild_id)
+
     async def _run_skills_rebuild_followup(
         self,
         request: AgentRequest,
         payload: dict[str, Any],
     ) -> None:
-        """同步静默执行 rebuild Agent follow-up，并按版本目标同步 workspace / 版本副本.
+        """静默执行 rebuild Agent follow-up，并按版本目标同步 workspace / 版本副本.
 
         不经外层 process_message_stream（避免写用户会话 history / 推 UI），
         直接走 adapter.process_message_stream_impl，并使用临时 session 隔离 checkpointer。

@@ -830,11 +830,15 @@
         "maas": "Maas Pangu",
         "minimax": "MiniMax",
         "mimo": "Xiaomi MiMo",
+        "opencode-go": "OpenCode Go",
         "openrouter": "OpenRouter",
         "vllm-omni": "vLLM-Omni",
         "volcengine": "Volcengine",
         "zhipu": "Zhipu GLM",
         "unrecognized": "Unrecognized provider ({{vendor}})"
+      },
+      "apiBasePlaceholders": {
+        "opencode-go": "e.g. https://opencode.ai/zen/go/v1"
       },
       "protocols": {
         "openai": "OpenAI",
@@ -1401,7 +1405,6 @@
     },
     "team": {
       "memberLanes": "Member trajectory lanes",
-      "members": "Members",
       "workflowGroupAria": "Workflow {{name}}, {{count}} operators",
       "workflowGroupOperators": "{{count}} operators",
       "schedule": {
@@ -1412,6 +1415,8 @@
         "anomalies": "{{count}} dispatch anomalies",
         "blockedLegend": "Light gray: waiting on dependencies",
         "blockedLegendHint": "A light gray segment means the task is waiting for prerequisite tasks and will continue when its dependencies clear.",
+        "subtaskWaitRange": "Waiting on subtasks {{start}} – {{end}}",
+        "subtaskWaitOngoing": "ongoing",
         "assignee": "Assignee",
         "assigneeValue": "Assignee: {{name}}",
         "unassigned": "Unassigned",
@@ -1421,11 +1426,13 @@
         "expandReviews": "Expand review records",
         "collapseReviews": "Collapse review records",
         "noReviews": "No reviews yet",
+        "directCompleted": "Completed directly without review",
         "reviewCount_one": "{{count}} Review",
         "reviewCount_other": "{{count}} Reviews",
         "phase": {
           "pending": "Pending",
           "blocked": "Waiting on dependencies",
+          "suspended": "Waiting on subtasks",
           "running": "Running",
           "in_review": "In review",
           "rework": "Rework",
@@ -1446,6 +1453,8 @@
           "updated": "Task updated",
           "unblocked": "Dependencies unblocked",
           "started": "Task started",
+          "suspended": "Split into subtasks, waiting",
+          "resumed": "Subtasks done, task resumed",
           "submitted": "Submitted for review",
           "vote": "Review vote",
           "revision": "Rework requested",
@@ -1534,6 +1543,7 @@
       "outletsPending": "Suggestions appear here once the diagnosis finishes",
       "detailsPending": "The evaluation and findings show up here",
       "stageStatus": {
+        "degraded": "Degraded",
         "pending": "Waiting",
         "running": "Running",
         "completed": "Done",
@@ -1567,6 +1577,7 @@
       "emptyHint": "No diagnosis yet. Select \"Diagnose trajectory\" at the top right to start.",
       "loadingRecord": "Loading diagnosis…",
       "plannedStage": {
+        "trajectory_summary": "Summarize trajectory",
         "task_parse": "Parse task",
         "diagnose": "Diagnose",
         "attribute": "Attribute causes"
@@ -1624,6 +1635,16 @@
       "objectExcludedRunning": "{{count}} steps were still running when the diagnosis started and are not included",
       "objectTask": "Task",
       "objectSummary": "Trajectory summary",
+      "summaryTree": {
+        "root": "Overall trajectory summary",
+        "agentsHint": "Agent summaries (team leader and members)",
+        "coverage": "Completed segments {{completed}} / {{total}}",
+        "download": "Download full summary JSON",
+        "warnings": "Warnings ({{count}})",
+        "unavailable": "Summary unavailable. See the downloaded file for trajectory details and evidence locations.",
+        "unmerged": "The overall summary could not be merged. Read the agent summaries below; the complete hierarchy remains in the download.",
+        "agentUnmerged": "This agent account could not be merged. All local turn summaries remain available in the full download."
+      },
       "sectionExpand": "Expand",
       "sectionCollapse": "Collapse",
       "findingCauses": "{{count}} artifact finding(s)",
@@ -1874,6 +1895,14 @@
     "planning": {
       "tab": "Task Planning",
       "progressTitle": "Task Progress",
+      "taskCompletion": "Tasks completed",
+      "executionProgress": "Execution progress",
+      "estimatedProgress": "Execution progress (estimated)",
+      "agentProgress": "Loaded workflow nodes: {{ended}} / {{total}} ended",
+      "phaseAgentProgress": "Phase nodes: {{ended}} / {{total}} ended",
+      "agentProgressUnavailable": "Loaded workflow nodes: some workflow node counts are unavailable",
+      "teamMetricScope": "Task counts include team tasks and workflow phases, excluding application tasks. Progress combines ordinary tasks and workflows, using workflow node counts when available.",
+      "teamBoardMetricScope": "Progress includes team tasks and workflows only. Status counts include all board tasks, including application tasks.",
       "token": "Token",
       "taskList": "Task List",
       "taskListAria": "{{task}} task list",
@@ -2005,6 +2034,7 @@
     "previewUnsupported": "This file type cannot be previewed yet. Download it to view it.",
     "previewMissingPath": "No downloadable resource is available for this artifact preview",
     "previewFailed": "Failed to load the file preview",
+    "previewTooLarge": "This file is too large to preview (over 10 MB). Please download it instead.",
     "docxPreviewFailed": "Failed to load the Word document preview",
     "presentationPreviewFailed": "Failed to load the PowerPoint presentation preview",
     "presentationLoadFailed": "Failed to download the PowerPoint presentation. Please try again.",
@@ -2116,7 +2146,6 @@
     "topicStarter": {
       "statusMissingConfiguration": "Topic recommendations are unavailable. Check Settings.",
       "recommendedForYou": "Recommended for you",
-      "statusLoading": "Loading…",
       "heading": "What would you like to explore today?",
       "notInterested": "Skip for now",
       "dateAndVersion": "See this day",
@@ -3453,9 +3482,10 @@
       "feishuPlaceholder": "Feishu fetch will be developed separately later",
       "localFiles": {
         "rootDirLabel": "Local folder path",
-        "rootDirPlaceholder": "D:/my-notes",
-        "rootDirHint": "Must be absolute",
-        "rootDirRequired": "Please enter the local folder path"
+        "rootDirPlaceholder": "/home/user/my-notes",
+        "rootDirHint": "Enter an absolute folder path on the machine running JiuwenSwarm.",
+        "rootDirRequired": "Please enter the local folder path",
+        "browse": "Choose a local folder"
       },
       "zhihu": {
         "columnUrlLabel": "Zhihu column URL",
@@ -4209,6 +4239,7 @@
       "published": "Skill {{name}} published successfully",
       "publishFailed": "Publishing failed",
       "rebuilding": "Rebuilding skill, please wait…",
+      "rebuildStillRunning": "Rebuild is still running in the background. Check the version list later.",
       "rebuildCompleted": "Skill rebuild completed",
       "rebuildFailed": "Rebuild failed: {{detail}}"
     },
@@ -4606,6 +4637,7 @@
     "edit": "Edit",
     "unknownError": "Unknown error",
     "saveFailedForPath": "Failed to save {{path}}: ",
+    "fileTooLarge": "This file is too large to preview (over 10 MB). Please download it instead.",
     "fileMissingPrefix": "This file does not exist. Create the file at",
     "fileMissingSuffix": "before editing.",
     "notPreviewable": "This file cannot be previewed. Only Markdown/JSON (.md/.mdx/.json) files are supported."
@@ -5268,7 +5300,10 @@
     "skippedSummary": "Skipped"
   },
   "skillPackagePrompt": {
-    "creating": "Creating…"
+    "creating": "Creating…",
+    "nameConflict": "Creation failed: a local skill or skill package has the same name. Its contents were not overwritten. Choose Later, or resolve the name conflict and retry.",
+    "createFailed": "Failed to create the skill package. The confirmation remains open. Retry later or choose Later.",
+    "resultUnavailable": "The skill package creation result is not yet confirmed. The confirmation remains open. Check My Skills before retrying, or choose Later."
   },
   "qaSummary": {
     "title": "Clarifications"
@@ -6788,6 +6823,7 @@
       "periodEnd": "End date",
       "periodTo": "to",
       "periodLimit": "Up to {{count}} days can be shown; the start date was adjusted",
+      "periodLimitEnd": "Up to {{count}} days can be shown; the end date was adjusted",
       "metrics": {
         "members": "Members",
         "activeDays": "Active days",
@@ -6821,9 +6857,11 @@
       "minutesAgo": "{{count}} min ago",
       "hoursAgo": "{{count}} hr ago",
       "daysAgo": "{{count}} day ago",
+      "previous": "Previous",
       "next": "Next",
       "workRecord": "Work record",
-      "groupChats": "Group chats {{count}}",
+      "groupChats": "Group chats",
+      "groupChatsCount": "{{count}} total",
       "channelColumns": {
         "group": "Group chat",
         "channel": "Channel",

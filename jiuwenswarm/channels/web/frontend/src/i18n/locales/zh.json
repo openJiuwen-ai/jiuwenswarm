@@ -830,11 +830,15 @@
         "maas": "Maas 盘古",
         "minimax": "MiniMax",
         "mimo": "小米 MiMo",
+        "opencode-go": "OpenCode Go",
         "openrouter": "OpenRouter",
         "vllm-omni": "vLLM-Omni",
         "volcengine": "火山引擎",
         "zhipu": "智谱 GLM",
         "unrecognized": "未识别提供商（{{vendor}}）"
+      },
+      "apiBasePlaceholders": {
+        "opencode-go": "例如：https://opencode.ai/zen/go/v1"
       },
       "protocols": {
         "openai": "OpenAI",
@@ -1401,7 +1405,6 @@
     },
     "team": {
       "memberLanes": "成员轨迹泳道",
-      "members": "成员",
       "workflowGroupAria": "工作流 {{name}}，{{count}} 个算子",
       "workflowGroupOperators": "{{count}} 个算子",
       "schedule": {
@@ -1412,6 +1415,8 @@
         "anomalies": "{{count}} 个调度异常",
         "blockedLegend": "浅灰段：等待依赖",
         "blockedLegendHint": "浅灰时间轴表示任务正在等待前置任务完成，依赖解除后会继续执行。",
+        "subtaskWaitRange": "等待子任务 {{start}} – {{end}}",
+        "subtaskWaitOngoing": "进行中",
         "assignee": "承担者",
         "assigneeValue": "承担者：{{name}}",
         "unassigned": "未指派",
@@ -1421,11 +1426,13 @@
         "expandReviews": "展开评审记录",
         "collapseReviews": "收起评审记录",
         "noReviews": "暂无 Review 记录",
+        "directCompleted": "无需验收，直接完成",
         "reviewCount_one": "{{count}} 次评审",
         "reviewCount_other": "{{count}} 次评审",
         "phase": {
           "pending": "待处理",
           "blocked": "等待依赖",
+          "suspended": "等待子任务",
           "running": "执行中",
           "in_review": "验收中",
           "rework": "返工中",
@@ -1446,6 +1453,8 @@
           "updated": "任务更新",
           "unblocked": "依赖解除",
           "started": "任务开工",
+          "suspended": "拆分子任务，等待子任务完成",
+          "resumed": "子任务完成，任务恢复",
           "submitted": "提交验收",
           "vote": "Review 投票",
           "revision": "要求返工",
@@ -1534,6 +1543,7 @@
       "outletsPending": "诊断完成后在这里给出优化建议",
       "detailsPending": "评估结果和诊断发现会显示在这里",
       "stageStatus": {
+        "degraded": "有降级项",
         "pending": "等待中",
         "running": "进行中",
         "completed": "完成",
@@ -1567,6 +1577,7 @@
       "emptyHint": "还没有诊断记录。点击右上角的“诊断轨迹”开始。",
       "loadingRecord": "正在加载诊断记录…",
       "plannedStage": {
+        "trajectory_summary": "轨迹摘要",
         "task_parse": "任务解析",
         "diagnose": "诊断分析",
         "attribute": "归因分析"
@@ -1624,6 +1635,16 @@
       "objectExcludedRunning": "诊断时有 {{count}} 个步骤仍在运行，未纳入诊断",
       "objectTask": "任务描述",
       "objectSummary": "轨迹摘要",
+      "summaryTree": {
+        "root": "整体轨迹摘要",
+        "agentsHint": "各 Agent 摘要（团队领导及成员）",
+        "coverage": "已完成分段 {{completed}} / {{total}}",
+        "download": "下载完整摘要 JSON",
+        "warnings": "告警 {{count}} 条",
+        "unavailable": "该摘要暂不可用，完整轨迹及定位信息可在下载文件中查看。",
+        "unmerged": "整体摘要尚未完成归并。请查看下方各 Agent 摘要，完整分层内容保留在下载文件中。",
+        "agentUnmerged": "该 Agent 的摘要尚未完成归并，已保留各轮执行记录，请下载完整摘要查看。"
+      },
       "sectionExpand": "展开",
       "sectionCollapse": "收起",
       "findingCauses": "{{count}} 条产物归因",
@@ -1874,6 +1895,14 @@
     "planning": {
       "tab": "任务",
       "progressTitle": "任务进度",
+      "taskCompletion": "任务完成",
+      "executionProgress": "执行进度",
+      "estimatedProgress": "执行进度（估算）",
+      "agentProgress": "已加载工作流的执行节点：{{ended}} / {{total}} 已结束",
+      "phaseAgentProgress": "阶段执行节点：{{ended}} / {{total}} 已结束",
+      "agentProgressUnavailable": "已加载工作流的执行节点：部分工作流节点状态不可用",
+      "teamMetricScope": "任务数包含团队任务和工作流阶段，不含应用任务；执行进度综合普通任务与工作流，工作流优先使用节点计数",
+      "teamBoardMetricScope": "执行进度仅统计团队任务和工作流；各状态数量包含看板中的全部任务（含应用任务）",
       "token": "Token",
       "taskList": "任务列表",
       "taskListAria": "{{task}} 任务列表",
@@ -2005,6 +2034,7 @@
     "previewUnsupported": "此文件类型暂不支持预览，请下载后查看",
     "previewMissingPath": "当前产物没有可用于预览的下载资源",
     "previewFailed": "文件预览加载失败",
+    "previewTooLarge": "文件过大，无法预览（超过 10 MB）。请下载后查看。",
     "docxPreviewFailed": "Word 文档预览加载失败",
     "presentationPreviewFailed": "PowerPoint 演示文稿预览加载失败",
     "presentationLoadFailed": "PowerPoint 演示文稿获取失败，请稍后重试",
@@ -2116,7 +2146,6 @@
     "topicStarter": {
       "statusMissingConfiguration": "话题推荐暂不可用，请前往设置检查。",
       "recommendedForYou": "为你推荐",
-      "statusLoading": "正在加载…",
       "heading": "今天想干点什么？",
       "notInterested": "先跳过",
       "dateAndVersion": "看看这一天",
@@ -3450,9 +3479,10 @@
       "feishuPlaceholder": "飞书采集下一步单独详细开发",
       "localFiles": {
         "rootDirLabel": "本地文件夹路径",
-        "rootDirPlaceholder": "D:/my-notes",
-        "rootDirHint": "须为绝对路径",
-        "rootDirRequired": "请选择本地文件夹路径"
+        "rootDirPlaceholder": "/home/user/my-notes",
+        "rootDirHint": "请输入运行 JiuwenSwarm 的机器上的文件夹绝对路径。",
+        "rootDirRequired": "请输入本地文件夹路径",
+        "browse": "选择本地文件夹"
       },
       "zhihu": {
         "columnUrlLabel": "知乎专栏地址",
@@ -4206,6 +4236,7 @@
       "published": "技能 {{name}} 发布成功",
       "publishFailed": "发布失败",
       "rebuilding": "正在重建技能，请耐心等待",
+      "rebuildStillRunning": "重建仍在后台进行，请稍后在版本列表查看。",
       "rebuildCompleted": "技能重建完成",
       "rebuildFailed": "重建失败: {{detail}}"
     },
@@ -4603,6 +4634,7 @@
     "edit": "编辑",
     "unknownError": "未知错误",
     "saveFailedForPath": "保存 {{path}} 失败：",
+    "fileTooLarge": "文件过大，无法预览（超过 10 MB）。请下载后查看。",
     "fileMissingPrefix": "文件不存在。请先在",
     "fileMissingSuffix": "创建该文件后再编辑。",
     "notPreviewable": "该文件无法预览，仅支持 Markdown/JSON（.md/.mdx/.json）文件"
@@ -5265,7 +5297,10 @@
     "skippedSummary": "已跳过"
   },
   "skillPackagePrompt": {
-    "creating": "正在创建…"
+    "creating": "正在创建…",
+    "nameConflict": "创建失败：本地已有同名技能或技能包，原内容未覆盖。可选择“暂不创建”，或处理同名冲突后重试。",
+    "createFailed": "创建技能包失败，确认卡已保留。请稍后重试，或选择“暂不创建”。",
+    "resultUnavailable": "暂未确认技能包创建结果，确认卡已保留。请检查技能列表后重试，或选择“暂不创建”。"
   },
   "qaSummary": {
     "title": "问题澄清"
@@ -6785,6 +6820,7 @@
       "periodEnd": "结束日期",
       "periodTo": "至",
       "periodLimit": "最多支持查看 {{count}} 天数据，已自动调整开始日期",
+      "periodLimitEnd": "最多支持查看 {{count}} 天数据，已自动调整结束日期",
       "metrics": {
         "members": "员工数量",
         "activeDays": "活跃天数",
@@ -6818,9 +6854,11 @@
       "minutesAgo": "{{count}} 分钟前",
       "hoursAgo": "{{count}} 小时前",
       "daysAgo": "{{count}} 天前",
+      "previous": "上一组",
       "next": "下一组",
       "workRecord": "工作记录",
-      "groupChats": "群聊 {{count}}",
+      "groupChats": "群聊列表",
+      "groupChatsCount": "共 {{count}} 个",
       "channelColumns": {
         "group": "群聊",
         "channel": "频道",

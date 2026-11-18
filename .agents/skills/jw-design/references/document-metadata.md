@@ -56,7 +56,9 @@ python .agents/skills/jw-design/scripts/sync_documents.py --document .agents/age
 示例路径需要换成实际文件。仅重新生成时省略 --document；工具可以从其他 cwd 启动，默认根目录按脚本所在仓库解析。
 自动维护 `.agents/agent-docs/INDEX.md`、`designs/INDEX.md`、`features/INDEX.md`、`bugfix/INDEX.md`、`specs/INDEX.md`。
 总索引与 F/B/S 索引按 modules 分组，提供模块导航；跨模块文档在各相关分组展示，未声明模块的放入未分类。所有索引不记录文档总数、各模块文档数量或全局生命周期数量汇总，避免新增文档时反复修改公共统计行。
-组内保留类型、作者、模块、代码文件和关联 D，目录不再承担唯一检索功能；已有 D 索引继续按模块和生命周期展示。
+组内保留类型、作者和关联 D；所有索引都不列代码文件，代码文件只在源文档 frontmatter 的 files 中维护。行内不再列模块，分组标题已经说明所属模块。目录不再承担唯一检索功能；已有 D 索引继续按模块和生命周期展示。
+索引输出只由源 frontmatter 决定，以减少合并冲突：模块锚点由模块名派生（如 `#module-agent_teams-workflow`、`#module-unclassified`），新增模块不会重排已有锚点；不写生成时间；索引 frontmatter 的作者固定为 `sync_documents.py`，不随执行者的 Git 身份变化。
+INDEX.md 合并冲突时不手工合并：任选一侧解决冲突，再重新执行同步，以源文档为准重新生成。
 模块名称展示沿用各仓 D 索引的规则：core 省略固定 openjiuwen/ 前缀，swarm 保留跨仓完整路径；不改写源文档的声明。
 索引是生成视图，事实只在源 frontmatter 维护。不启动常驻 watcher、不安装 Git hook，也不增加提交或外部操作权限。
 检视期间保持候选只读，只报告缺失元数据或索引，交由开发/文档修改阶段同步。

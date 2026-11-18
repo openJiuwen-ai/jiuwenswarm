@@ -395,6 +395,11 @@ def _kill_port(port: int) -> None:
         result = subprocess.run(
             ["/usr/sbin/lsof", "-ti", f":{port}"],
             capture_output=True, text=True, timeout=5,
+            # `lsof -ti` prints bare PIDs, so the codec cannot change the
+            # result here; it is pinned only so that every text-mode
+            # subprocess call in the skill names its codec instead of relying
+            # on whatever default the interpreter runs with.
+            encoding="utf-8", errors="replace",
         )
         for pid_str in result.stdout.strip().split("\n"):
             if pid_str.strip():
