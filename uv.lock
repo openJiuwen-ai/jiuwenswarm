@@ -2610,7 +2610,7 @@ wheels = [
 
 [[package]]
 name = "jiuwenmemory"
-version = "0.2.0"
+version = "0.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
@@ -2619,9 +2619,9 @@ dependencies = [
     { name = "openai" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f3/22/a53ee11a7d314df9d69f3a858c10d1e4d41f44244d939b71776cdefdb3e0/jiuwenmemory-0.2.0.tar.gz", hash = "sha256:02aaf0dbe9caa568798adb9db476a7acdc3f580e4f2a10323d95d56bb0efaf94", size = 679405, upload-time = "2026-09-21T08:51:22.881Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/65/f3/95971b6fcba13bf7cd7455b824dbf282db73c89168c47a148b961d1667c6/jiuwenmemory-0.2.1.tar.gz", hash = "sha256:fe102bf95b91ebe186e7972fd150295b72f50f717825e7f23b6544c207d32f96", size = 1149650, upload-time = "2026-11-13T09:55:51.256Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f9/9e/975798a8b54a768e11cdee742e7cb2ca6bb61905f88000240870111195b4/jiuwenmemory-0.2.0-py3-none-any.whl", hash = "sha256:2161549a3be99bf6b715314ebf25b7ed0caa454f0f20dc797d8a9ea182d9c1e5", size = 914175, upload-time = "2026-09-21T08:51:20.933Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/62/3547b3c06b4cb12f057d9d63074beed768cde0f6eeeedcbc82d76b404921/jiuwenmemory-0.2.1-py3-none-any.whl", hash = "sha256:ef322189002a6e5107dd5200ce95af29448ac22d0686b53a6f5d9747afcb2fb0", size = 1466823, upload-time = "2026-11-13T09:55:48.735Z" },
 ]
 
 [[package]]
@@ -7441,7 +7441,7 @@ requires-dist = [
     { name = "httpx", extras = ["http2", "socks"], specifier = ">=0.27,<1.0" },
     { name = "httpx", extras = ["socks"], marker = "extra == 'harmony'", specifier = ">=0.27" },
     { name = "imageio-ffmpeg", specifier = ">=0.5.1,<1" },
-    { name = "jiuwenmemory", specifier = ">=0.2.0" },
+    { name = "jiuwenmemory", specifier = ">=0.2.1" },
     { name = "json-repair", specifier = ">=0.30.0,<0.60" },
     { name = "json-repair", marker = "extra == 'harmony'", specifier = ">=0.30.0" },
     { name = "jsonschema", specifier = ">=4.20,<5" },

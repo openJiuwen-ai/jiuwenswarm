@@ -368,6 +368,12 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # Verify the actual frozen runtime, not only the PyInstaller source configuration.
 $FrozenDir = Join-Path $ProjectRoot "dist\$BuildDistDirName"
 $FrozenExe = Join-Path $FrozenDir $BuildExecutableNameWindows
+$MemoryVerifier = Join-Path $ProjectRoot "scripts\verify_memory_bundle.py"
+uv run --no-sync python $MemoryVerifier --executable $FrozenExe
+if ($LASTEXITCODE -ne 0) {
+    throw "Frozen JiuwenMemory SDK and video tool verification failed. See verifier output above."
+}
+
 $A2UIVerifier = Join-Path $ProjectRoot "scripts\verify_a2ui_bundle.py"
 $VerifyProcess = Start-Process `
     -FilePath $FrozenExe `
