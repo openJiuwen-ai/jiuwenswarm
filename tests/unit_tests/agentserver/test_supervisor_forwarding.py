@@ -13,6 +13,8 @@ from contextlib import asynccontextmanager
 
 import pytest
 
+from tests.unit_tests.agentserver.fixtures.front_process import receive_business_frame
+
 from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -377,7 +379,7 @@ async def test_real_worker_and_websocket_survive_gateway_stall(monkeypatch) -> N
                 finally:
                     lock.release()
                 await asyncio.wait_for(pending, 5)
-                wire = json.loads(await asyncio.wait_for(client.recv(), 5))
+                wire = json.loads(await asyncio.wait_for(receive_business_frame(client), 5))
                 assert wire["echo"] == "chat.send"
                 assert wire["session_id"] == "heartbeat-acceptance"
             attached.clear()
@@ -390,7 +392,7 @@ async def test_real_worker_and_websocket_survive_gateway_stall(monkeypatch) -> N
                     5,
                 )
                 assert (
-                    json.loads(await asyncio.wait_for(client.recv(), 5))["echo"]
+                    json.loads(await asyncio.wait_for(receive_business_frame(client), 5))["echo"]
                     == "chat.send"
                 )
                 assert supervisor.worker_pid == pid and supervisor._restart_count == 0

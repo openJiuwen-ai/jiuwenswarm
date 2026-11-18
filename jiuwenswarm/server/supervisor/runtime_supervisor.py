@@ -1458,9 +1458,11 @@ class RuntimeSupervisor:
     def _notify_models_when_ready(self) -> None:
         """Invalidate model reads once per ready IPC generation and Gateway."""
         ws, lock = self._gateway_ws, self._gateway_lock
-        if (self._stopping or self._closing or not self._readiness.snapshot()["agent_ready"]
-                or self._validated_conn is None
-                or self._forwarder is None or ws is None or lock is None):
+        if self._stopping or self._closing:
+            return
+        if not self._readiness.snapshot()["agent_ready"] or self._validated_conn is None:
+            return
+        if self._forwarder is None or ws is None or lock is None:
             return
         notification = (self._generation, ws)
         if self._models_ready_notification == notification:
