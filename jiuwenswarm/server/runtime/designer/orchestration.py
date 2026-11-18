@@ -984,110 +984,112 @@ class Director:
         Chat credentials are gated at Enter/chat/Play entry — never demote to
         handler when the model is missing.
         """
-        from jiuwenswarm.server.runtime.designer.smart_graph import (
-            find_non_contributing_node_ids,
-        )
+        from jiuwenswarm.server.runtime.designer.generation_selection import reuse_catalogue_snapshot
+        with reuse_catalogue_snapshot():
+            from jiuwenswarm.server.runtime.designer.smart_graph import (
+                find_non_contributing_node_ids,
+            )
 
-        notes: list[str] = []
-        onboarded: list[str] = []
-        notes.extend(note_user_canvas_edits(graph))
+            notes: list[str] = []
+            onboarded: list[str] = []
+            notes.extend(note_user_canvas_edits(graph))
 
-        from jiuwenswarm.server.runtime.designer.user_references import (
-            is_uploaded_media_node,
-        )
+            from jiuwenswarm.server.runtime.designer.user_references import (
+                is_uploaded_media_node,
+            )
 
-        for node in graph.get("nodes") or []:
-            if not isinstance(node, dict):
-                continue
-            cfg = dict(node.get("config") or {})
-            nid = str(node.get("id") or "")
-            # Uploaded references are routed by image classification, not by
-            # the "user drew this node, do not invent edges" rule.
-            if not nid or is_uploaded_media_node(node) or not cfg.get("user_added"):
-                continue
-            onboarded.append(nid)
-            if is_comfyui_node(node):
-                # Imported ComfyUI params go to vLLM-Omni verbatim; no agent rewrites them.
-                cfg["force_handler"] = True
-                cfg["skip_llm"] = True
-                cfg["delegate"] = "handler"
+            for node in graph.get("nodes") or []:
+                if not isinstance(node, dict):
+                    continue
+                cfg = dict(node.get("config") or {})
+                nid = str(node.get("id") or "")
+                # Uploaded references are routed by image classification, not by
+                # the "user drew this node, do not invent edges" rule.
+                if not nid or is_uploaded_media_node(node) or not cfg.get("user_added"):
+                    continue
+                onboarded.append(nid)
+                if is_comfyui_node(node):
+                    # Imported ComfyUI params go to vLLM-Omni verbatim; no agent rewrites them.
+                    cfg["force_handler"] = True
+                    cfg["skip_llm"] = True
+                    cfg["delegate"] = "handler"
+                    node["config"] = cfg
+                    notes.append(f"comfyui:{nid}")
+                    continue
+                role = _role_key(node)
+                tools = _tools_for_node(node)
+                cfg["kind"] = "agent"
+                cfg["tools"] = tools
+                cfg["user_added"] = True
+                cfg.pop("force_handler", None)
+                cfg.pop("skip_llm", None)
+                cfg["delegate"] = "agent"
+                if not str(cfg.get("director_task") or "").strip():
+                    cfg["director_task"] = (
+                        f"User-added {role or node.get('type') or 'node'} agent. "
+                        f"Use tools {', '.join(tools)}. "
+                        "Respect film-wide style_lock, spatial_lock, and "
+                        "costume/identity locks. Use only the edges the user connected. "
+                        "Do not invent upstream or downstream links."
+                    )[:800]
+                notes.append(f"agent:{nid}")
+                notes.append(f"unwired_until_user:{nid}")
+
                 node["config"] = cfg
-                notes.append(f"comfyui:{nid}")
-                continue
-            role = _role_key(node)
-            tools = _tools_for_node(node)
-            cfg["kind"] = "agent"
-            cfg["tools"] = tools
-            cfg["user_added"] = True
-            cfg.pop("force_handler", None)
-            cfg.pop("skip_llm", None)
-            cfg["delegate"] = "agent"
-            if not str(cfg.get("director_task") or "").strip():
-                cfg["director_task"] = (
-                    f"User-added {role or node.get('type') or 'node'} agent. "
-                    f"Use tools {', '.join(tools)}. "
-                    "Respect film-wide style_lock, spatial_lock, and "
-                    "costume/identity locks. Use only the edges the user connected. "
-                    "Do not invent upstream or downstream links."
-                )[:800]
-            notes.append(f"agent:{nid}")
-            notes.append(f"unwired_until_user:{nid}")
 
-            node["config"] = cfg
+            # Director lock-gates every user-added media leaf.
+            lock_notes: list[str] = []
+            for node in graph.get("nodes") or []:
+                if not isinstance(node, dict):
+                    continue
+                cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
+                if (
+                    not cfg.get("user_added")
+                    or is_uploaded_media_node(node)
+                    or is_comfyui_node(node)
+                ):
+                    continue
+                if _role_key(node) not in {
+                    "clip",
+                    "character",
+                    "scene",
+                    "image",
+                    "video",
+                }:
+                    continue
+                gate = self.review_leaf_media_prompt(graph, node)
+                if gate.get("patched"):
+                    lock_notes.append(f"locks:{node.get('id')}")
+                notes.extend(
+                    [f"mgr:{x}" for x in (gate.get("notes") or []) if isinstance(x, str)][:4]
+                )
 
-        # Director lock-gates every user-added media leaf.
-        lock_notes: list[str] = []
-        for node in graph.get("nodes") or []:
-            if not isinstance(node, dict):
-                continue
-            cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
-            if (
-                not cfg.get("user_added")
-                or is_uploaded_media_node(node)
-                or is_comfyui_node(node)
-            ):
-                continue
-            if _role_key(node) not in {
-                "clip",
-                "character",
-                "scene",
-                "image",
-                "video",
-            }:
-                continue
-            gate = self.review_leaf_media_prompt(graph, node)
-            if gate.get("patched"):
-                lock_notes.append(f"locks:{node.get('id')}")
-            notes.extend(
-                [f"mgr:{x}" for x in (gate.get("notes") or []) if isinstance(x, str)][:4]
-            )
-
-        user_added_ids: set[str] = set()
-        for n in graph.get("nodes") or []:
-            if isinstance(n, dict) and isinstance(n.get("config"), dict) and n["config"].get("user_added"):
-                user_added_ids.add(str(n.get("id") or ""))
-        orphans = [nid for nid in find_non_contributing_node_ids(graph) if nid in user_added_ids]
-        meta = dict(graph.get("metadata") or {})
-        if orphans:
-            meta["non_contributing_user_nodes"] = orphans
-            meta["contribution_warning"] = (
-                "User-added nodes do not feed the final shot/compose: "
-                + ", ".join(orphans)
-                + ". Connect them into the pipeline if you want them in the film."
-            )
-        elif onboarded:
-            meta.pop("non_contributing_user_nodes", None)
-            meta.pop("contribution_warning", None)
-        result = {
-            "ok": True,
-            "onboarded": onboarded,
-            "orphans": orphans,
-            "notes": notes[:80],
-            "lock_notes": lock_notes[:40],
-        }
-        meta["director_user_node_onboard"] = result
-        graph["metadata"] = meta
-        return result
+            user_added_ids: set[str] = set()
+            for n in graph.get("nodes") or []:
+                if isinstance(n, dict) and isinstance(n.get("config"), dict) and n["config"].get("user_added"):
+                    user_added_ids.add(str(n.get("id") or ""))
+            orphans = [nid for nid in find_non_contributing_node_ids(graph) if nid in user_added_ids]
+            meta = dict(graph.get("metadata") or {})
+            if orphans:
+                meta["non_contributing_user_nodes"] = orphans
+                meta["contribution_warning"] = (
+                    "User-added nodes do not feed the final shot/compose: "
+                    + ", ".join(orphans)
+                    + ". Connect them into the pipeline if you want them in the film."
+                )
+            elif onboarded:
+                meta.pop("non_contributing_user_nodes", None)
+                meta.pop("contribution_warning", None)
+            result = {
+                "ok": True,
+                "onboarded": onboarded,
+                "orphans": orphans,
+                "notes": notes[:80],
+                "lock_notes": lock_notes[:40],
+            }
+            meta["director_user_node_onboard"] = result
+            graph["metadata"] = meta
+            return result
 
     async def plan(
         self,
@@ -2903,90 +2905,92 @@ class Director:
         }
 
     def validate_plan_structure(self, graph: DesignerExecutionGraph) -> dict[str, Any]:
-        meta = dict(graph.get("metadata") or {})
-        modality = meta.get("modality_plan")
-        if not isinstance(modality, dict) or not modality.get("global_rating_modality"):
-            modality = self.decide_capabilities(graph)
+        from jiuwenswarm.server.runtime.designer.generation_selection import reuse_catalogue_snapshot
+        with reuse_catalogue_snapshot():
             meta = dict(graph.get("metadata") or {})
-        cast_notes = _cast_focus_alignment_patch(graph)
-        notes = _shot_distinctness_patch(graph)
-        consistency_notes = _spatial_continuity_patch(graph)
-        identity_notes = _identity_consistency_patch(graph)
-        spatial_notes = _spatial_geography_lock_patch(graph)
-        # Film-wide style/axis locks on every image + clip node.
-        try:
-            from jiuwenswarm.server.runtime.designer.pipeline.axis_locks import (
-                apply_axis_locks_to_graph,
-            )
-
-            axis_notes = apply_axis_locks_to_graph(graph)
-        except Exception:  # noqa: BLE001
-            axis_notes = []
-        # User-added canvas nodes → LLM agents + tools + contribution wiring.
-        try:
-            user_onboard = self.onboard_user_added_nodes(graph)
-            axis_notes.extend(
-                [f"user:{x}" for x in (user_onboard.get("notes") or []) if isinstance(x, str)][:20]
-            )
-        except Exception:  # noqa: BLE001
-            pass
-        # Prune unused nodes + keep graph coherent for compose; stamp agents.
-        prune_notes = _director_prune_and_cohere(graph)
-        agent_notes = self._enforce_leaf_agents(graph)
-        # Re-apply audio agent policy after modality (backends may clear force_handler).
-        audio_assign = assign_audio_node_agents(graph)
-        # Second prune after audio assign (speech/music may be omitted).
-        prune_notes.extend(_director_prune_and_cohere(graph))
-        ensure_notes = self.ensure_agents_and_prune(graph)
-        rating_mod = str(
-            (modality or {}).get("global_rating_modality")
-            or meta.get("rating_modality")
-            or "text_only"
-        )
-        ack = {
-            "ok": True,
-            "patched": notes
-            + cast_notes
-            + consistency_notes
-            + identity_notes
-            + spatial_notes
-            + axis_notes
-            + prune_notes
-            + agent_notes
-            + list(ensure_notes.get("notes") or []),
-            "cast_focus_fixes": cast_notes,
-            "consistency_fixes": consistency_notes,
-            "identity_fixes": identity_notes,
-            "spatial_lock_fixes": spatial_notes,
-            "axis_lock_fixes": axis_notes,
-            "pruned_nodes": list(
-                dict.fromkeys(
-                    [x.split(":", 1)[-1] for x in prune_notes if x.startswith("pruned:")]
-                    + list(ensure_notes.get("pruned") or [])
+            modality = meta.get("modality_plan")
+            if not isinstance(modality, dict) or not modality.get("global_rating_modality"):
+                modality = self.decide_capabilities(graph)
+                meta = dict(graph.get("metadata") or {})
+            cast_notes = _cast_focus_alignment_patch(graph)
+            notes = _shot_distinctness_patch(graph)
+            consistency_notes = _spatial_continuity_patch(graph)
+            identity_notes = _identity_consistency_patch(graph)
+            spatial_notes = _spatial_geography_lock_patch(graph)
+            # Film-wide style/axis locks on every image + clip node.
+            try:
+                from jiuwenswarm.server.runtime.designer.pipeline.axis_locks import (
+                    apply_axis_locks_to_graph,
                 )
-            ),
-            "agent_enforcement": agent_notes,
-            "ensure_agents": ensure_notes,
-            "audio_assignment": audio_assign,
-            "rating_modality": rating_mod,
-            "can_vision": bool((modality or {}).get("can_vision")),
-            "can_video": bool((modality or {}).get("can_video")),
-            "can_speech": bool((modality or {}).get("can_speech")),
-            "can_music": bool((modality or {}).get("can_music")),
-            "notes": (
-                f"Director start validation: rating_modality={rating_mod}. "
-                f"Cast-focus={len(cast_notes)}. Consistency={len(consistency_notes)}. "
-                f"Identity={len(identity_notes)}. Spatial={len(spatial_notes)}. "
-                f"Prune/cohere={len(prune_notes)}. Agents={len(agent_notes)}. "
-                f"Ensure={len(ensure_notes.get('notes') or [])}. "
-                f"{str((modality or {}).get('reason') or '')[:400]}"
-            ),
-            "source": "structural",
-        }
-        meta = dict(graph.get("metadata") or {})
-        meta["director_plan_ack"] = ack
-        graph["metadata"] = meta
-        return ack
+
+                axis_notes = apply_axis_locks_to_graph(graph)
+            except Exception:  # noqa: BLE001
+                axis_notes = []
+            # User-added canvas nodes → LLM agents + tools + contribution wiring.
+            try:
+                user_onboard = self.onboard_user_added_nodes(graph)
+                axis_notes.extend(
+                    [f"user:{x}" for x in (user_onboard.get("notes") or []) if isinstance(x, str)][:20]
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            # Prune unused nodes + keep graph coherent for compose; stamp agents.
+            prune_notes = _director_prune_and_cohere(graph)
+            agent_notes = self._enforce_leaf_agents(graph)
+            # Re-apply audio agent policy after modality (backends may clear force_handler).
+            audio_assign = assign_audio_node_agents(graph)
+            # Second prune after audio assign (speech/music may be omitted).
+            prune_notes.extend(_director_prune_and_cohere(graph))
+            ensure_notes = self.ensure_agents_and_prune(graph)
+            rating_mod = str(
+                (modality or {}).get("global_rating_modality")
+                or meta.get("rating_modality")
+                or "text_only"
+            )
+            ack = {
+                "ok": True,
+                "patched": notes
+                + cast_notes
+                + consistency_notes
+                + identity_notes
+                + spatial_notes
+                + axis_notes
+                + prune_notes
+                + agent_notes
+                + list(ensure_notes.get("notes") or []),
+                "cast_focus_fixes": cast_notes,
+                "consistency_fixes": consistency_notes,
+                "identity_fixes": identity_notes,
+                "spatial_lock_fixes": spatial_notes,
+                "axis_lock_fixes": axis_notes,
+                "pruned_nodes": list(
+                    dict.fromkeys(
+                        [x.split(":", 1)[-1] for x in prune_notes if x.startswith("pruned:")]
+                        + list(ensure_notes.get("pruned") or [])
+                    )
+                ),
+                "agent_enforcement": agent_notes,
+                "ensure_agents": ensure_notes,
+                "audio_assignment": audio_assign,
+                "rating_modality": rating_mod,
+                "can_vision": bool((modality or {}).get("can_vision")),
+                "can_video": bool((modality or {}).get("can_video")),
+                "can_speech": bool((modality or {}).get("can_speech")),
+                "can_music": bool((modality or {}).get("can_music")),
+                "notes": (
+                    f"Director start validation: rating_modality={rating_mod}. "
+                    f"Cast-focus={len(cast_notes)}. Consistency={len(consistency_notes)}. "
+                    f"Identity={len(identity_notes)}. Spatial={len(spatial_notes)}. "
+                    f"Prune/cohere={len(prune_notes)}. Agents={len(agent_notes)}. "
+                    f"Ensure={len(ensure_notes.get('notes') or [])}. "
+                    f"{str((modality or {}).get('reason') or '')[:400]}"
+                ),
+                "source": "structural",
+            }
+            meta = dict(graph.get("metadata") or {})
+            meta["director_plan_ack"] = ack
+            graph["metadata"] = meta
+            return ack
 
     @staticmethod
     def ensure_agents_and_prune(graph: DesignerExecutionGraph) -> dict[str, Any]:
@@ -3123,44 +3127,47 @@ class Director:
     @staticmethod
     def _enforce_leaf_agents(graph: DesignerExecutionGraph) -> list[str]:
         """Every leaf is an LLM agent with tools (uploads stay force_handler)."""
-        notes: list[str] = []
-        for node in graph.get("nodes") or []:
-            if not isinstance(node, dict):
-                continue
-            cfg = dict(node.get("config") or {})
-            nid = str(node.get("id") or "")
-            if not nid:
-                continue
-            cfg["kind"] = "agent"
-            tools = _tools_for_node(node)
-            if list(cfg.get("tools") or []) != tools:
-                notes.append(f"tools:{nid}")
-            cfg["tools"] = tools
-            if cfg.get("force_handler"):
-                cfg["delegate"] = "handler"
-                cfg["skip_llm"] = True
-                notes.append(f"force_handler:{nid}")
-            else:
-                cfg.pop("force_handler", None)
-                cfg.pop("skip_llm", None)
-                cfg["delegate"] = "agent"
-            try:
-                role_key = _role_key(node)
-                if role_key in {"clip", "video", "scene", "character"}:
-                    from jiuwenswarm.server.runtime.designer.pipeline.media_prompt_limits import (
-                        media_prompt_limit_packet,
-                        resolve_prompt_limit,
-                    )
+        from jiuwenswarm.server.runtime.designer.generation_selection import reuse_catalogue_snapshot
+        with reuse_catalogue_snapshot():
+            notes: list[str] = []
+            for node in graph.get("nodes") or []:
+                if not isinstance(node, dict):
+                    continue
+                cfg = dict(node.get("config") or {})
+                nid = str(node.get("id") or "")
+                if not nid:
+                    continue
+                cfg["kind"] = "agent"
+                tools = _tools_for_node(node)
+                if list(cfg.get("tools") or []) != tools:
+                    notes.append(f"tools:{nid}")
+                cfg["tools"] = tools
+                if cfg.get("force_handler"):
+                    cfg["delegate"] = "handler"
+                    cfg["skip_llm"] = True
+                    notes.append(f"force_handler:{nid}")
+                else:
+                    cfg.pop("force_handler", None)
+                    cfg.pop("skip_llm", None)
+                    cfg["delegate"] = "agent"
+                try:
+                    role_key = _role_key(node)
+                    if role_key in {"clip", "video", "scene", "character"}:
+                        from jiuwenswarm.server.runtime.designer.pipeline.media_prompt_limits import (
+                            media_prompt_limit_packet,
+                            resolve_prompt_limit,
+                        )
 
-                    kind = "video" if role_key in {"clip", "video"} else "image"
-                    lim = resolve_prompt_limit(kind)
-                    cfg["prompt_char_limit"] = lim.max_chars
-                    cfg["prompt_limit_guidance"] = lim.guidance()
-                    cfg.setdefault("media_prompt_limits", media_prompt_limit_packet())
-            except Exception:  # noqa: BLE001
-                pass
-            node["config"] = cfg
-        return notes
+                        kind = "video" if role_key in {"clip", "video"} else "image"
+                        lim = resolve_prompt_limit(kind)
+                        cfg["prompt_char_limit"] = lim.max_chars
+                        cfg["prompt_limit_guidance"] = lim.guidance()
+                        if "media_prompt_limits" not in cfg:
+                            cfg["media_prompt_limits"] = media_prompt_limit_packet()
+                except Exception:  # noqa: BLE001
+                    pass
+                node["config"] = cfg
+            return notes
 
     async def review_brief(
         self, graph: DesignerExecutionGraph

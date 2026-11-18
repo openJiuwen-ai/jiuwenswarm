@@ -13,7 +13,10 @@ the modality resolves to no model.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
+from typing import Iterator
 
 from jiuwenswarm.common.config import config_write_lock, dump_yaml_round_trip, load_yaml_round_trip
 from jiuwenswarm.common.multimodal_models import MultimodalError, valid_model_id
@@ -106,46 +109,97 @@ def resolve_model(state: dict, saved: dict[str, str], slot: str) -> dict | None:
     return models[0] if models else None
 
 
-def _catalogue_is_stored(path) -> bool:
+def _load_catalogue(path) -> tuple[str, dict | None, dict | None]:
+    """One locked read and validate. Status is absent, error, or present."""
+    if not path.is_file():
+        return "absent", None, None
     try:
-        raw = load_yaml_round_trip(path) or {}
+        with config_write_lock(config_path=path):
+            raw, state = MultimodalStore()._load(path)
+    except MultimodalError as exc:
+        if exc.code == "MM_NOT_CONFIGURED":
+            return "absent", None, None
+        return "error", None, None
     except Exception:
-        return False
-    return isinstance(raw, dict) and isinstance(raw.get("multimodal"), dict)
+        # Lock acquisition (recovery, timeout) must not fail the design operation.
+        return "error", None, None
+    return "present", raw, state
 
 
-def _load_locked(path) -> tuple[dict, dict]:
-    with config_write_lock(config_path=path):
-        return MultimodalStore()._load(path)
+@dataclass(frozen=True)
+class _CatalogueSnapshot:
+    """One catalogue read, reused until the current operation ends."""
+
+    status: str
+    raw: dict | None = None
+    state: dict | None = None
+
+
+_CATALOGUE_SNAPSHOT: ContextVar[_CatalogueSnapshot | None] = ContextVar(
+    "design_catalogue_snapshot",
+    default=None,
+)
+
+
+def _snapshot_from_disk() -> _CatalogueSnapshot:
+    status, raw, state = _load_catalogue(get_config_file())
+    return _CatalogueSnapshot(status, raw, state)
+
+
+def _current_snapshot() -> _CatalogueSnapshot:
+    snap = _CATALOGUE_SNAPSHOT.get()
+    if snap is not None:
+        return snap
+    return _snapshot_from_disk()
+
+
+def _refresh_snapshot(raw: dict, state: dict) -> None:
+    if _CATALOGUE_SNAPSHOT.get() is not None:
+        _CATALOGUE_SNAPSHOT.set(_CatalogueSnapshot("present", raw, state))
+
+
+@contextmanager
+def reuse_catalogue_snapshot() -> Iterator[None]:
+    """Load the multimodal catalogue once and reuse it for this operation.
+
+    Nested calls keep the outer snapshot. The next operation loads again, so a
+    model switch is visible afterwards. Node loops should enter this context
+    once instead of re-parsing the YAML for every node.
+    """
+    if _CATALOGUE_SNAPSHOT.get() is not None:
+        yield
+        return
+    token = _CATALOGUE_SNAPSHOT.set(_snapshot_from_disk())
+    try:
+        yield
+    finally:
+        _CATALOGUE_SNAPSHOT.reset(token)
+
+
+def _model_from_snapshot(snap: _CatalogueSnapshot, slot: str) -> CatalogueModel:
+    if snap.status == "absent":
+        return CatalogueModel(False)
+    if snap.status != "present" or snap.raw is None or snap.state is None:
+        return CatalogueModel(True)
+    return CatalogueModel(True, resolve_model(snap.state, _saved_ids(snap.raw), slot))
 
 
 def catalogue_generation_model(slot: str) -> CatalogueModel:
     """Resolve one design modality from the multimodal catalogue."""
     if slot not in DESIGN_GENERATION_SLOTS:
         raise DesignSelectionError("Unknown design generation slot.")
-    path = get_config_file()
-    if not path.is_file() or not _catalogue_is_stored(path):
-        return CatalogueModel(False)
-    try:
-        raw, state = _load_locked(path)
-    except MultimodalError:
-        return CatalogueModel(True)
-    return CatalogueModel(True, resolve_model(state, _saved_ids(raw), slot))
+    return _model_from_snapshot(_current_snapshot(), slot)
 
 
 def generation_selection_view() -> dict[str, str | None]:
     """Resolved model ids. Missing modalities are null, not the tool binding."""
-    path = get_config_file()
-    if not path.is_file() or not _catalogue_is_stored(path):
+    snap = _current_snapshot()
+    if snap.status != "present" or snap.raw is None or snap.state is None:
         return {slot: None for slot in DESIGN_GENERATION_SLOTS}
-    try:
-        raw, state = _load_locked(path)
-    except MultimodalError:
-        return {slot: None for slot in DESIGN_GENERATION_SLOTS}
-    saved = _saved_ids(raw)
+    saved = _saved_ids(snap.raw)
     view: dict[str, str | None] = {}
     for slot in DESIGN_GENERATION_SLOTS:
-        model = resolve_model(state, saved, slot)
+        model = resolve_model(snap.state, saved, slot)
         model_id = model.get("model_id") if model else None
         view[slot] = model_id if isinstance(model_id, str) and model_id else None
     return view
@@ -187,7 +241,7 @@ def set_generation_selection(slot: object, model_id: object) -> dict[str, str | 
     if not isinstance(model_id, str) or not valid_model_id(model_id):
         raise DesignSelectionError("model_id is invalid.")
     path = get_config_file()
-    if not path.is_file() or not _catalogue_is_stored(path):
+    if not path.is_file():
         raise DesignSelectionError("Multimodal models are not available.")
     with config_write_lock(config_path=path):
         try:
@@ -205,4 +259,5 @@ def set_generation_selection(slot: object, model_id: object) -> dict[str, str | 
             raw["design_generation"] = block
         block[slot] = model_id
         dump_yaml_round_trip(path, raw)
+    _refresh_snapshot(raw, state)
     return generation_selection_view()
