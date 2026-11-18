@@ -115,6 +115,7 @@ import {
   type MessageForkPoint,
   type ModelSelection,
   type Session,
+  type WebError,
 } from './types';
 import { parseModelGroups, parseModelSelection } from './features/settings/modules/models/modelGroupAdapters';
 import { isModelCatalogPending, resolveAvailableModelSelection } from './stores/sessionStore';
@@ -2213,7 +2214,7 @@ function AppContent({
       return session;
     } catch (error) {
       console.warn('Failed to fetch session metadata:', error);
-      if (sessionIdRef.current === targetSessionId) {
+      if (sessionIdRef.current === targetSessionId && (error as WebError | undefined)?.code === 'NOT_FOUND') {
         setMissingSessionId(targetSessionId);
       }
       return null;
@@ -3699,7 +3700,6 @@ function AppContent({
           toast.open({
             content: referenceError || (code && code !== 'empty' ? code : t('designer.chat.bootstrapError')),
             variant: 'error',
-            wide: true,
           });
         } finally {
           creatingSessionRef.current = false;
@@ -4567,7 +4567,6 @@ function AppContent({
           id: `share-export-stopped:${status.job_id}`,
           content: tRef.current('share.exportStopped', { sessionTitle: exportedSessionTitle }),
           duration: 5,
-          wide: true,
           testId: 'app-share-export-stopped-toast',
           dataVariant: targetSessionId,
         });

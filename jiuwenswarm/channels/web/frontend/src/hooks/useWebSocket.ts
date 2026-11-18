@@ -3083,7 +3083,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
                 ? 'skillPackagePrompt.nameConflict'
                 : 'skillPackagePrompt.createFailed'),
               variant: 'error',
-              wide: true,
               duration: 8,
               testId: 'interaction-slot-skill-package-error',
             });
@@ -3117,7 +3116,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             id: `skill-package-answer-${sessionId}-${requestId}`,
             content: t('skillPackagePrompt.resultUnavailable'),
             variant: 'error',
-            wide: true,
             duration: 8,
             testId: 'interaction-slot-skill-package-error',
           });
