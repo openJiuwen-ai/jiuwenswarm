@@ -13492,6 +13492,78 @@ class JiuWenSwarmDeepAdapter:
                 exc,
             )
 
+    async def stop_session_subagents(self, session_id: str | None) -> list[str]:
+        """Force-stop the live subagents spawned by one parent session (issue #6685 P-2).
+
+        轮级取消（rail.abort / cancel_round / scheduler cancel）不会触碰子代理 runtime：用户按下停止后，后台与异步子代理仍在消耗 token，且对用
+        户完全不可见。``control.cancel_all`` 强制关闭全部活体子代理，并唤醒排队
+        中的 subagent_wait 状态等待，使等待轮次立即收敛。best-effort：不抛异常。
+        """
+        sid = self._session_adapter_key(session_id)
+        # P3（atomgit 2026-11-18）：原 `if not sid` 短路不可达——_session_adapter_key
+        # 把空值归一为 "default"，永不返回 falsy；空值防护实际由 control 缺失路径承担。
+        try:
+            deep_agent = self.get_live_session_instance(sid)
+        except AttributeError as exc:
+            # Best-effort stop: partially-initialised adapters (bare test
+            # doubles lacking _permission_state) must not break the cascade;
+            # fall through to the shared instance below.
+            # NTH（AIReview）：降级显名记录，真实属性 typo 不再被静默吞没。
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] subagent cascade: live session instance "
+                "unavailable (%s); falling back to shared instance", exc,
+            )
+            deep_agent = None
+        if deep_agent is None:
+            # P3（atomgit 2026-11-18）：裸测试替身可能连 _instance 都没有，
+            # getattr 兜住以维持 never-raises 契约。
+            deep_agent = getattr(self, "_instance", None)
+        if deep_agent is None:
+            return []
+        control = (getattr(deep_agent, "_subagent_controls", None) or {}).get(sid)
+        if control is None:
+            return []
+        # P2（atomgit 2026-11-18）：触发面收敛——cancel_all 无视 RUNNING 状态强关
+        # 全部活体子代理，与 #3625「常驻直到显式 close」契约冲突；前端 send 前
+        # 必发 cancel，无条件级联会令纯 idle 常驻子代理（本就不消耗 token）被
+        # 每条消息误杀。收敛判据：存在 pending_init/running 忙碌活体才级联强停；
+        # 状态不可判定（最小 control/旧测试替身）保守级联，行为不回退。
+        try:
+            busy = False
+            for meta in control.list_live():
+                kind = getattr(getattr(control.get_status(meta.subagent_id), "kind", None),
+                               "value", None)
+                if kind in ("pending_init", "running"):
+                    busy = True
+                    break
+            if not busy:
+                return []
+        except (AttributeError, TypeError):
+            pass
+        try:
+            closed = await asyncio.wait_for(
+                control.cancel_all("user_cancel"), timeout=4.0
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort cascade
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] subagent stop cascade failed: session_id=%s error=%s",
+                sid, exc,
+            )
+            return []
+        try:
+            if closed:
+                self._clear_subagent_progress_batch(sid)
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] interrupt: force-stopped %d subagent(s) session=%s",
+                    len(closed), sid,
+                )
+        except Exception as exc:  # noqa: BLE001 - 簿记失败不得破坏 best-effort 契约
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] subagent stop bookkeeping failed: session_id=%s error=%s",
+                sid, exc,
+            )
+        return list(closed)
+
     async def ensure_live_session_instance(self, session_id: str | None) -> Any | None:
         """Start the session-scoped adapter if needed and return its DeepAgent.
 
@@ -17603,6 +17675,7 @@ class JiuWenSwarmDeepAdapter:
         success = True
         updated_todos = None
         cancelled_tool_results = []
+        stopped_subagents: list[str] = []
         cutover_handoff: RootPermissionDispatchHandoff | None = None
         continuation_discarded = True
 
@@ -17657,6 +17730,9 @@ class JiuWenSwarmDeepAdapter:
                 "[JiuWenSwarmDeepAdapter] interrupt(supplement): 已停止执行 request_id=%s",
                 request.request_id,
             )
+            # SF-1（检视意见，issue #6685 P-2 同型）：supplement 同样停止了当前
+            # 执行，级联强停本会话全部子代理，与 cancel 分支覆盖对齐。
+            stopped_subagents = await self.stop_session_subagents(request.session_id)
             message = "任务已切换"
 
         else:
@@ -17712,6 +17788,9 @@ class JiuWenSwarmDeepAdapter:
                 "[JiuWenSwarmDeepAdapter] interrupt(cancel): 已停止执行 request_id=%s",
                 request.request_id,
             )
+            # F-4 (issue #6685 P-2): 级联强停本会话全部子代理。
+            stopped_subagents = await self.stop_session_subagents(request.session_id)
+
             if new_input:
                 message = "已切换到新任务"
             else:
@@ -17730,6 +17809,9 @@ class JiuWenSwarmDeepAdapter:
         # cancel 后附带更新的 todo 列表，通知前端刷新
         if intent not in ("pause", "resume", "supplement") and updated_todos is not None:
             payload["todos"] = updated_todos
+
+        if stopped_subagents:
+            payload["stopped_subagents"] = stopped_subagents
 
         # cancel 后附带被中断的工具执行结果，通知前端更新状态
         if cancelled_tool_results:
@@ -17898,6 +17980,11 @@ class JiuWenSwarmDeepAdapter:
                 )
             except RootPermissionQueueError:
                 continuation_discarded = False
+        # F-4 (issue #6685 P-2): 停止必须级联到本会话的全部子代理，
+        # 否则后台子代理在用户停止后继续隐形消耗 token。
+        # P3（atomgit 2026-11-18）：级联置于 complete_cutover 收敛之后——
+        # best-effort 停止即便异常也绝不卡权限 cutover 的收敛。
+        stopped_subagents = await self.stop_session_subagents(root_session_id)
         if intent == "supplement" and isinstance(new_input, str) and new_input.strip():
             await self._clear_pending_ask_user_interrupt_for_supplement(request.session_id)
         message = "任务已切换" if intent == "supplement" else "任务已取消"
@@ -17910,6 +17997,8 @@ class JiuWenSwarmDeepAdapter:
         }
         if cua_cancel_requested:
             payload["cua_cancel_requested"] = True
+        if stopped_subagents:
+            payload["stopped_subagents"] = stopped_subagents
         if not continuation_discarded:
             payload["error"] = "permission_continuation_discard_failed"
         if new_input:
