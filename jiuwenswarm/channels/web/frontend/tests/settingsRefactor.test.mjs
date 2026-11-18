@@ -1100,6 +1100,7 @@ test('settings contract rejects unknown keys and normalizes supported values', (
       api_base: 'https://example.test',
       api_key: 'k',
       model_provider: 'OpenAI',
+      max_tokens: 32 * 1024,
       endpoint_profile: 'openrouter',
     }),
     {
@@ -1108,7 +1109,25 @@ test('settings contract rejects unknown keys and normalizes supported values', (
       model: 'm',
       model_provider: 'OpenAI',
       reasoning_level: undefined,
+      max_tokens: 32 * 1024,
       endpoint_profile: 'openrouter',
+    },
+  );
+  assert.deepEqual(
+    buildModelValidationPayload({
+      model_name: 'm',
+      api_base: 'https://example.test',
+      api_key: 'k',
+      model_provider: 'OpenAI',
+      max_tokens: null,
+    }),
+    {
+      api_base: 'https://example.test',
+      api_key: 'k',
+      model: 'm',
+      model_provider: 'OpenAI',
+      reasoning_level: undefined,
+      max_tokens: null,
     },
   );
   assert.equal(normalizePermissionLevel(' ASK '), 'ask');

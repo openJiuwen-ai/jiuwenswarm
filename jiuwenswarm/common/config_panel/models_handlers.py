@@ -152,7 +152,8 @@ def resolve_model_config_obj_for_validate(
     按 ``model_name`` 或 ``alias`` 匹配 ``models.defaults`` 中的条目，
     返回该条目的 ``model_config_obj``；找不到或读取失败时 fallback 到
     空字典（让模型使用自身默认参数，避免 ``temperature=0`` 对部分
-    模型不兼容）。前端传入的 ``reasoning_level`` 可覆盖配置值。
+    模型不兼容）。前端传入的 ``reasoning_level`` 和 ``max_tokens`` 可覆盖
+    配置值；显式 ``max_tokens=null`` 表示在探测时清除已保存的输出限制。
     """
     model_config_obj: dict[str, Any] = {}
     try:
@@ -204,6 +205,11 @@ def resolve_model_config_obj_for_validate(
         )
     if "reasoning_level" in params:
         model_config_obj["reasoning_level"] = params.get("reasoning_level")
+    if "max_tokens" in params:
+        if params.get("max_tokens") is None:
+            model_config_obj.pop("max_tokens", None)
+        else:
+            model_config_obj["max_tokens"] = params.get("max_tokens")
     return model_config_obj
 
 
@@ -753,6 +759,7 @@ async def config_validate_model_handler(
     # (effort-mapped or explicit), not a stale 1024 default: many wires
     # (qwen38_anthropic, dashscope_budget) no longer pin 1024, while
     # anthropic_manual maps high → 16384.
+    thinking_budget: int | None = None
     try:
         from openjiuwen.core.foundation.llm.reasoning import resolve_reasoning_plan
 
@@ -765,12 +772,38 @@ async def config_validate_model_handler(
         if isinstance(_thinking, dict):
             _budget = _thinking.get("budget_tokens")
             if isinstance(_budget, int) and _budget > 0:
+                thinking_budget = _budget
                 supremum_max_tokens = max(supremum_max_tokens, _budget + 16)
     except Exception:  # noqa: BLE001
         logger.debug(
             "[config.validate_model] skip budget floor from reasoning plan",
             exc_info=True,
         )
+    # Only a saved or draft value is a user-configured output limit. Core can
+    # derive max_tokens while constructing the request, and that inferred
+    # value must not turn a connection probe into a configuration error.
+    configured_max_tokens = model_config_obj.get("max_tokens")
+    is_anthropic_provider = model_provider.lower() == "anthropic"
+    has_configured_max_tokens = isinstance(configured_max_tokens, int) and not isinstance(
+        configured_max_tokens, bool
+    )
+    has_invalid_thinking_limit = (
+        has_configured_max_tokens
+        and thinking_budget is not None
+        and configured_max_tokens <= thinking_budget
+    )
+    if is_anthropic_provider and has_invalid_thinking_limit:
+        await channel.send_response(
+            ws,
+            req_id,
+            ok=False,
+            error=(
+                "Anthropic max_tokens must be greater than thinking.budget_tokens "
+                f"(max_tokens={configured_max_tokens}, thinking.budget_tokens={thinking_budget})."
+            ),
+            code="BAD_REQUEST",
+        )
+        return
     llm = Model(model_config=model_request_config, model_client_config=model_client_config)
 
     try:
@@ -872,6 +905,9 @@ async def models_list_handler(
                     parse_positive_int(mco.get("context_window"))
                     or DEFAULT_CONTEXT_WINDOW_TOKENS
                 )
+            max_tokens = parse_positive_int(mco.get("max_tokens"))
+            if max_tokens is not None:
+                result_entry["max_tokens"] = max_tokens
             if is_login_model(entry):
                 # 登录送的模型：前端据此置灰编辑
                 result_entry.update(source=entry.get("source"), read_only=True)

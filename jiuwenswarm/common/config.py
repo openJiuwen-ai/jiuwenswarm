@@ -2009,6 +2009,11 @@ def _remove_initial_model_placeholder(models: dict[str, Any], saved: dict[str, A
 
 def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
     saved = _normalize_model_entry(entry)
+    clear_max_tokens = (
+        isinstance(entry.get("model_config_obj"), dict)
+        and "max_tokens" in entry["model_config_obj"]
+        and entry["model_config_obj"]["max_tokens"] is None
+    )
     model_config = saved.get("model_config_obj")
     if isinstance(model_config, dict) and "reasoning_level" in model_config:
         from jiuwenswarm.common.reasoning_config import normalize_reasoning_level
@@ -2038,6 +2043,12 @@ def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
             defaults.append(saved)
             _remove_initial_model_placeholder(candidate, saved)
             _protect_model_key(saved, {})
+        if clear_max_tokens:
+            saved_model_config = saved.get("model_config_obj")
+            if isinstance(saved_model_config, dict):
+                # A null max_tokens is the resource API's explicit "unlimited"
+                # signal. Omission still preserves an existing user setting.
+                saved_model_config.pop("max_tokens", None)
         for key in ("vendor_key", "plan"):
             if key in client_update and client_update[key] in (None, ""):
                 saved.pop(key, None)
