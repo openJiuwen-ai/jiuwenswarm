@@ -2640,28 +2640,17 @@ async def test_execute_core_agent_extracts_generated_brief_protocol() -> None:
 
 
 @pytest.mark.asyncio
-async def test_execute_core_agent_prefers_chat_final_like_normal_chat() -> None:
-    class FakeAgentClient:
-        async def send_request_stream(self, envelope):
-            del envelope
-            yield SimpleNamespace(
-                payload={"event_type": "chat.delta", "content": "正在查询资料……"},
-            )
-            yield SimpleNamespace(
-                payload={
-                    "event_type": "chat.final",
-                    "content": "香港今天有骤雨，外出建议带伞。",
-                },
-            )
-
+@pytest.mark.parametrize("final", ["香港今天有骤雨，外出建议带伞。", ""])
+async def test_execute_core_agent_prefers_final_or_falls_back_to_deltas(final) -> None:
     result = await video_search.execute_core_agent(
-        FakeAgentClient(),
-        question="香港今天天气如何？",
-        query="香港今日天气",
-        visual_context="室内画面",
-        search_session_id="search-session",
+        make_agent_client(frames=[
+            {"event_type": "chat.delta", "content": "正在查询" if final else "香港今天有骤雨，"},
+            {"event_type": "chat.delta", "content": "资料……" if final else "外出建议带伞。"},
+            {"event_type": "chat.final", "content": final},
+        ]),
+        question="香港今天天气如何？", query="香港今日天气",
+        visual_context="室内画面", search_session_id="search-session",
     )
-
     assert result["answer"] == "香港今天有骤雨，外出建议带伞。"
 
 
@@ -2669,46 +2658,15 @@ async def test_execute_core_agent_prefers_chat_final_like_normal_chat() -> None:
 async def test_execute_core_agent_preserves_explicit_core_error() -> None:
     from jiuwenswarm.extensions.video_duplex.backend.tasks.errors import CoreExecutionError
 
-    class FailedAgentClient:
-        async def send_request_stream(self, envelope):
-            del envelope
-            yield SimpleNamespace(payload={
-                "event_type": "chat.error",
-                "error": "Insufficient Balance (request_id: provider-request-1)",
-            })
-
     with pytest.raises(CoreExecutionError, match="Insufficient Balance"):
         await video_search.execute_core_agent(
-            FailedAgentClient(),
-            question="香港今天天气如何？",
-            query="香港今日天气",
-            visual_context="",
-            search_session_id="search-session",
+            make_agent_client(frames=[{
+                "event_type": "chat.error",
+                "error": "Insufficient Balance (request_id: provider-request-1)",
+            }]),
+            question="香港今天天气如何？", query="香港今日天气",
+            visual_context="", search_session_id="search-session",
         )
-
-
-@pytest.mark.asyncio
-async def test_execute_core_agent_empty_final_keeps_streamed_answer() -> None:
-    class FakeAgentClient:
-        async def send_request_stream(self, envelope):
-            del envelope
-            yield SimpleNamespace(
-                payload={"event_type": "chat.delta", "content": "香港今天有骤雨，"},
-            )
-            yield SimpleNamespace(
-                payload={"event_type": "chat.delta", "content": "外出建议带伞。"},
-            )
-            yield SimpleNamespace(payload={"event_type": "chat.final", "content": ""})
-
-    result = await video_search.execute_core_agent(
-        FakeAgentClient(),
-        question="香港今天天气如何？",
-        query="香港今日天气",
-        visual_context="室内画面",
-        search_session_id="search-session",
-    )
-
-    assert result["answer"] == "香港今天有骤雨，外出建议带伞。"
 
 
 @pytest.mark.asyncio
@@ -2971,21 +2929,12 @@ async def test_execute_core_agent_streams_every_reasoning_delta() -> None:
     async def collect_progress(item):
         progress.append(item)
 
-    class FakeAgentClient:
-        async def send_request_stream(self, envelope):
-            del envelope
-            for content in ("先检查", "，再核实"):
-                yield SimpleNamespace(
-                    payload={"event_type": "chat.reasoning", "content": content},
-                    is_complete=False,
-                )
-            yield SimpleNamespace(
-                payload={"event_type": "chat.final", "content": "完成"},
-                is_complete=True,
-            )
-
     result = await video_search.execute_core_agent(
-        FakeAgentClient(),
+        make_agent_client(frames=[
+            {"event_type": "chat.reasoning", "content": "先检查"},
+            {"event_type": "chat.reasoning", "content": "，再核实"},
+            {"event_type": "chat.final", "content": "完成"},
+        ]),
         question="测试",
         query="测试",
         visual_context="",
