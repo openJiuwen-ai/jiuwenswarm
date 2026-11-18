@@ -48,10 +48,10 @@ const { ToastStack } = await import('../node_modules/.cache/permission-answer-tr
 const { toast } = await import('../node_modules/.cache/permission-answer-transport/components/ui/Toast/toastStore.js');
 const { ToolCallDisplay } = await import('../node_modules/.cache/permission-answer-transport/components/ChatPanel/ToolCallDisplay.js');
 const { ToolGroupDisplay } = await import('../node_modules/.cache/permission-answer-transport/components/ChatPanel/ToolGroupDisplay.js');
-const { useChatStore, useSessionStore } = await import('../node_modules/.cache/permission-answer-transport/stores/index.js');
+const { useChatStore, useSessionStore, usePlanStore } = await import('../node_modules/.cache/permission-answer-transport/stores/index.js');
 const { default: i18n } = await import('../node_modules/.cache/permission-answer-transport/i18n/index.js');
 const { webClient } = await import('../node_modules/.cache/permission-answer-transport/services/webClient.js');
-const { evaluatePlanToggle } = await import('../node_modules/.cache/permission-answer-transport/features/planMode/planModeGate.js');
+const { evaluatePlanToggle, resolveRestoredPlanActive, enforceSwarmflowPlanPrecedence } = await import('../node_modules/.cache/permission-answer-transport/features/planMode/planModeGate.js');
 const sessionId = 'permission-transport';
 
 test('only enterprise cards display literal matched rules in both languages', async () => {
@@ -523,3 +523,121 @@ for (const receipt of [
     });
   });
 }
+
+// ── #6361：集群会话建队后计划开关只读 ──────────────────────────────────────
+// 集群的计划能力由建队时的 mode 决定（config_specs.py 按 is_team_plan_mode 挂
+// leader 的 plan rails），且运行期 plan 状态同步显式跳过集群（plan.py 的
+// `if resolved.is_team: return`）。建队后拨动开关改不了队伍行为，只会绕过动态
+// 工作流的会话冻结锁，故建队后双向只读；单 agent 的 plan rails 常挂、每轮同步，
+// 行为不变。
+const teamLockSession = 'plan-gate-team-lock';
+const setupPlanSession = ({ sessionId: sid, mode, messageCount }) => {
+  const store = useSessionStore.getState();
+  store.ensureRuntime(sid);
+  store.setMode(sid, mode);
+  store.setSessions([{ session_id: sid, title: sid, message_count: messageCount }]);
+  useChatStore.getState().ensureRuntime(sid);
+};
+const cleanupPlanSession = (sid) => {
+  useSessionStore.getState().setSessions([]);
+  useSessionStore.getState().removeRuntime(sid);
+  useChatStore.getState().removeRuntime(sid);
+};
+const planReasons = (sid) => [true, false].map((next) => evaluatePlanToggle(sid, next));
+
+test('#6361 built team locks the plan toggle in both directions', () => {
+  try {
+    setupPlanSession({ sessionId: teamLockSession, mode: 'team', messageCount: 2 });
+    for (const decision of planReasons(teamLockSession)) {
+      assert.equal(decision.ok, false);
+      assert.equal(decision.reason, 'plan.toolbarUnavailableTeamLocked');
+    }
+  } finally {
+    cleanupPlanSession(teamLockSession);
+  }
+});
+
+test('#6361 loaded messages alone also lock a team session', () => {
+  try {
+    setupPlanSession({ sessionId: teamLockSession, mode: 'team', messageCount: 0 });
+    for (const decision of planReasons(teamLockSession)) assert.equal(decision.ok, true);
+    useChatStore.getState().addMessage(teamLockSession, { id: 'm1', role: 'user', content: 'hi' });
+    for (const decision of planReasons(teamLockSession)) {
+      assert.equal(decision.reason, 'plan.toolbarUnavailableTeamLocked');
+    }
+  } finally {
+    cleanupPlanSession(teamLockSession);
+  }
+});
+
+test('#6361 new-conversation team draft stays switchable', () => {
+  try {
+    setupPlanSession({ sessionId: 'new', mode: 'team', messageCount: 3 });
+    for (const decision of planReasons('new')) assert.equal(decision.ok, true);
+  } finally {
+    cleanupPlanSession('new');
+  }
+});
+
+test('#6361 single-agent sessions keep toggling plan across rounds', () => {
+  try {
+    setupPlanSession({ sessionId: teamLockSession, mode: 'agent', messageCount: 9 });
+    for (const decision of planReasons(teamLockSession)) assert.equal(decision.ok, true);
+  } finally {
+    cleanupPlanSession(teamLockSession);
+  }
+});
+
+test('#6361 the team lock outranks busy so the hint never promises a later retry', () => {
+  try {
+    setupPlanSession({ sessionId: teamLockSession, mode: 'team', messageCount: 2 });
+    useChatStore.getState().setProcessing(teamLockSession, true);
+    for (const decision of planReasons(teamLockSession)) {
+      assert.equal(decision.ok, false);
+      assert.equal(decision.reason, 'plan.toolbarUnavailableTeamLocked');
+    }
+  } finally {
+    cleanupPlanSession(teamLockSession);
+  }
+});
+
+test('#6361 busy still owns the hint on sessions the team lock does not cover', () => {
+  try {
+    setupPlanSession({ sessionId: teamLockSession, mode: 'agent', messageCount: 2 });
+    useChatStore.getState().setProcessing(teamLockSession, true);
+    assert.equal(evaluatePlanToggle(teamLockSession, true).reason, 'plan.toolbarUnavailableProcessing');
+    assert.equal(evaluatePlanToggle(teamLockSession, false).reason, 'plan.closeTagDisabled');
+  } finally {
+    cleanupPlanSession(teamLockSession);
+  }
+});
+
+test('#6361 restored plan toggle yields to swarmflow', () => {
+  // 恢复链路是 session.plan_status 的 in_plan；动态工作流是建队时冻结并落盘的
+  // 会话级配置，两者都声明时以它为准，修复前误开过计划的脏会话因此不再两个开关同亮。
+  assert.equal(resolveRestoredPlanActive(true, false), true);
+  assert.equal(resolveRestoredPlanActive(true, true), false);
+  assert.equal(resolveRestoredPlanActive(false, false), false);
+  assert.equal(resolveRestoredPlanActive(undefined, false), false);
+});
+
+test('#6361 enabling swarmflow on restore extinguishes an already-lit plan tag', () => {
+  // handleRestoreSession 先按 metadata.mode 点亮计划标签，swarmflow 配置要等
+  // loadSessionMetadata 回来才 hydrate——所以「不点亮」的守卫管不了这条链路，
+  // 必须在 swarmflow 置真的那一刻把计划灭掉，顺序才不影响结论。
+  try {
+    setupPlanSession({ sessionId: teamLockSession, mode: 'team', messageCount: 2 });
+    usePlanStore.getState().setActive(teamLockSession, true);
+    assert.equal(usePlanStore.getState().isActive(teamLockSession), true);
+
+    assert.equal(enforceSwarmflowPlanPrecedence(teamLockSession), false, '未开动态工作流时不插手');
+    assert.equal(usePlanStore.getState().isActive(teamLockSession), true);
+
+    useSessionStore.getState().setSwarmflowActive(teamLockSession, true);
+    assert.equal(enforceSwarmflowPlanPrecedence(teamLockSession), true);
+    assert.equal(usePlanStore.getState().isActive(teamLockSession), false, '动态工作流开 → 计划必须灭');
+  } finally {
+    usePlanStore.getState().removeRuntime(teamLockSession);
+    cleanupPlanSession(teamLockSession);
+  }
+});

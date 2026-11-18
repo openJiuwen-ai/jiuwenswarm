@@ -82,6 +82,7 @@ import {
   prefetchHistoryBatches,
 } from './features/historyPagination';
 import { isPlanWireMode, resolvePlanWireMode } from './features/planMode/wireMode';
+import { resolveRestoredPlanActive, enforceSwarmflowPlanPrecedence } from './features/planMode/planModeGate';
 import { queueOrAddGoalObjectiveMessage } from './features/goalPendingObjectiveBubble';
 import {
   normalizeToolCallPayload,
@@ -2183,6 +2184,10 @@ function AppContent({
               true,
               cfg.swarmflow_budget ?? undefined,
             );
+            // 动态工作流优先：handleRestoreSession 可能已按 metadata.mode 点亮了
+            // 计划标签（那一刻这份配置还没回来），这里把它灭掉，使两条恢复链路
+            // 不论先后都收敛到「动态工作流开 → 计划灭」。
+            enforceSwarmflowPlanPrecedence(targetSessionId);
           }
         }
         // 恢复会话时同步团队调度模式：团队建好后不可再改，前端只读展示。
@@ -3242,7 +3247,10 @@ function AppContent({
           // 只用 in_plan===true 开标签，false 不关：team 会话的 metadata.mode 有多方
           // 写入竞态（sync_team_identity_metadata 会盖回 team），in_plan:false 不可靠，
           // 不能拿它顶掉本地状态。关标签仍由 plan.mode_exited 推送和用户手动操作负责。
-          if (payload?.in_plan) {
+          if (resolveRestoredPlanActive(
+            payload?.in_plan,
+            useSessionStore.getState().getRuntime(targetSessionId)?.enableSwarmflow ?? false,
+          )) {
             // 不带 explicitEntry：刷新恢复的是「已经在计划里」，不是「用户刚打开开关」，
             // 不能触发 plan_entry_source 一次性标记。
             usePlanStore.getState().setActive(targetSessionId, true);
@@ -4130,9 +4138,13 @@ function AppContent({
         // 它归一成基础模式（normalizeAgentMode 折叠成 `agent` / `team`）。若不
         // 补一次 setActive，planStore 仍是空 runtime（active:false），后续
         // sendMessage 走 resolveOutgoingMode 时 isActive 为 false，出站 mode
-        // 退回基础模式，Plan 流程静默丢失。按 isPlanWireMode 判定，非 plan
-        // 会话不受影响。
-        if (isPlanWireMode(resolvedMode)) {
+        // 会话退回基础模式，Plan 流程静默丢失。按 isPlanWireMode 判定，非 plan
+        // 会话不受影响；动态工作流已在本地 runtime 里为真时不点亮（避免闪一下
+        // 又被 enforceSwarmflowPlanPrecedence 灭掉），冷开会话由那条不变量兜底。
+        if (resolveRestoredPlanActive(
+          isPlanWireMode(resolvedMode),
+          useSessionStore.getState().getRuntime(targetSessionId)?.enableSwarmflow ?? false,
+        )) {
           usePlanStore.getState().setActive(targetSessionId, true);
         }
       }
