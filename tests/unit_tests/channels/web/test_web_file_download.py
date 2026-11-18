@@ -64,6 +64,10 @@ class _DownloadHandlerStub:
 
     # 复用真实 Gateway 代理逻辑（stub 提供其依赖的 self 接口）
     _proxy_file_download = _SpaStaticHandler._proxy_file_download
+    _DOCUMENT_MIME_TYPES = _SpaStaticHandler._DOCUMENT_MIME_TYPES
+    _apply_raw_file_security_headers = (
+        _SpaStaticHandler._apply_raw_file_security_headers
+    )
 
 
 class _UploadHandlerStub:
