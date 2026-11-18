@@ -100,7 +100,9 @@ def test_stale_link_to_other_target_is_replaced(
 
         _winapi.CreateJunction(str(other), str(link))
     else:
-        os.symlink("elsewhere", link, target_is_directory=True)
+        # A symlink target is resolved against the link's parent
+        # (<root>/infra/), so the real sibling dir is one level up.
+        os.symlink("../elsewhere", link, target_is_directory=True)
     assert _link_kind(link) in {"symlink", "junction"}
 
     common_utils.prepare_runtime_workspace(cleanup_stale_descs=False)

@@ -1650,9 +1650,14 @@ def ensure_infra_config_dir_link(workspace_dir: Path) -> bool:
         if _resolves_to_real_config(link_path):
             return True
         # A stale link to somewhere else: detach it so the correct target can
-        # be installed. ``os.rmdir`` removes the link, never its target.
+        # be installed. POSIX symlinks must be unlinked — ``os.rmdir`` on a
+        # symlink raises NotADirectoryError. Windows junctions are removed
+        # with ``os.rmdir``, which never touches the target directory.
         try:
-            os.rmdir(link_path)
+            if link_path.is_symlink():
+                link_path.unlink()
+            else:
+                os.rmdir(link_path)
         except OSError as exc:
             logger.warning("无法替换失效的 %s 链接: %s", link_path, exc)
             return False
