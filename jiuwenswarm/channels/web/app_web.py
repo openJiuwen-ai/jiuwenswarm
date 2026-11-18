@@ -276,6 +276,22 @@ def _guess_text_charset(file_path: Path) -> str:
     return "utf-8"
 
 
+def _declared_mime_type(
+    mime_type: str, file_path: Path, file_name: str | None = None,
+) -> str:
+    """Return the MIME type a raw file response declares, before its charset.
+
+    ``mimetypes.guess_type`` follows the platform table (the Windows registry
+    can override it), while the extension table below is what the response
+    actually declares. Security headers must use this same result: otherwise a
+    platform guess that differs from the declared type would serve an
+    executable document without the sandboxing CSP.
+    """
+    return _TEXTUAL_EXTENSION_MIME_TYPES.get(
+        Path(file_name or file_path.name).suffix.lower(), mime_type
+    )
+
+
 def _text_content_type(
     mime_type: str, file_path: Path, file_name: str | None = None,
 ) -> str:
@@ -286,9 +302,7 @@ def _text_content_type(
     response without ``charset`` is decoded with the browser default instead of
     the artifact's own encoding, so Chinese artifacts render as mojibake.
     """
-    normalized_mime_type = _TEXTUAL_EXTENSION_MIME_TYPES.get(
-        Path(file_name or file_path.name).suffix.lower(), mime_type
-    )
+    normalized_mime_type = _declared_mime_type(mime_type, file_path, file_name)
     if not _is_textual_mime_type(normalized_mime_type):
         return mime_type
     return f"{normalized_mime_type}; charset={_guess_text_charset(file_path)}"
@@ -519,6 +533,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     # Loopback names are treated as one origin: the Vite dev proxy forwards
     # ``localhost:5173`` requests with ``changeOrigin`` to the Web server.
     _LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+    # Same environment key the gateway uses for its own handshake check, so a
+    # single deployment setting covers both hops. The "none" entry only matters
+    # to the gateway: this proxy already allows clients without an Origin.
+    _WS_ALLOWED_ORIGIN_HOSTS_ENV = "JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS"
     _WS_LOG_MAX_CHARS = 2000
     _HTTP_PROXY_TIMEOUT = 30
     _SHARE_IMAGE_UPLOAD_IDLE_TIMEOUT = 60 * 60
@@ -1376,13 +1394,29 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 "sandbox allow-scripts allow-popups",
             )
 
+    @classmethod
+    def _allowed_origin_hosts(cls) -> set[str]:
+        """Return Origin hostnames trusted in addition to the request Host.
+
+        A reverse proxy that rewrites ``Host`` to the upstream address (nginx
+        does this by default) would otherwise fail the Host comparison while
+        every other route keeps working. This list mirrors the gateway setting
+        so one env value covers both hops, and falls back to loopback when the
+        variable is unset or empty.
+        """
+        raw = os.getenv(cls._WS_ALLOWED_ORIGIN_HOSTS_ENV) or ""
+        hosts = {item.strip().lower() for item in raw.split(",") if item.strip()}
+        hosts.discard("none")
+        return hosts or set(cls._LOOPBACK_HOSTNAMES)
+
     def _ws_origin_allowed(self) -> bool:
         """Return whether a WebSocket handshake may reach the upstream gateway.
 
         Browsers always attach ``Origin`` to a WebSocket handshake, so a
         missing header means a non-browser client (TUI/SDK) and stays allowed.
         ``null`` and cross-origin values are rejected so a page from another
-        site cannot drive the local agent through its WebSocket.
+        site cannot drive the local agent through its WebSocket. An Origin host
+        on the shared allowlist is accepted even when a proxy rewrote ``Host``.
         """
         origin = str(self.headers.get("Origin") or "").strip()
         if not origin:
@@ -1397,6 +1431,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return False
         if parsed_origin.scheme not in ("http", "https") or not origin_hostname:
             return False
+        if origin_hostname.lower() in self._allowed_origin_hosts():
+            return True
         outer_host = self._clean_outer_host()
         if outer_host is None:
             return False
@@ -1834,6 +1870,12 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
             file_size = full_path.stat().st_size
             mime_type, _ = mimetypes.guess_type(full_path.name)
+            # The response declares the extension-table type, not necessarily
+            # the platform guess, so security headers must follow the same
+            # value or an executable document could lose its sandbox CSP.
+            declared_mime = _declared_mime_type(
+                mime_type or "application/octet-stream", full_path
+            )
             # Browsers cannot seek media (e.g. the designer video preview
             # timeline) unless the endpoint honors Range requests; answer
             # 206/416 like the gateway ``serve_file_chunks`` implementation.
@@ -1849,7 +1891,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self.send_header("Content-Length", "0")
                 self.send_header("Accept-Ranges", "bytes")
                 self.send_header("Cache-Control", "no-store")
-                self._apply_raw_file_security_headers(mime_type)
+                self._apply_raw_file_security_headers(declared_mime)
                 self.end_headers()
                 return
             start, end = byte_range or (0, max(file_size - 1, 0))
@@ -1862,7 +1904,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(content_length))
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Cache-Control", "no-store")
-            self._apply_raw_file_security_headers(mime_type)
+            self._apply_raw_file_security_headers(declared_mime)
             if byte_range is not None:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
             self.end_headers()
