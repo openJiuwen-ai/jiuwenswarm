@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -284,6 +285,95 @@ async def test_rebuild_status_marks_a_file_failed_when_the_task_is_gone(tmp_path
     result = await SkillManager.handle_skills_rebuild_status(
         manager,
         {"name": "local-doc", "rebuild_id": "job-stale"},
+    )
+    assert result["success"] is False
+    assert result["status"] == "failed"
+    assert "重试" in result["detail"]
+    stored = read_rebuild_job(tmp_path)
+    assert stored is not None
+    assert stored["status"] == "failed"
+
+
+def test_fresh_heartbeat_is_not_marked_failed_on_another_process(tmp_path) -> None:
+    """别的 pod 没有本进程任务，但心跳还新鲜时不能把 running 改成失败。"""
+    from datetime import datetime, timezone
+
+    from jiuwenswarm.server.runtime.skill.skill_manager import (
+        SkillManager,
+        read_rebuild_job,
+        rebuild_heartbeat_now,
+        take_active_rebuild,
+        write_rebuild_job,
+    )
+    import jiuwenswarm.server.runtime.skill.skill_manager as skills
+
+    write_rebuild_job(
+        tmp_path,
+        {
+            "rebuild_id": "job-remote",
+            "status": "running",
+            "name": "local-doc",
+            "code": "",
+            "detail": "",
+            "heartbeat_at": rebuild_heartbeat_now(),
+        },
+    )
+    skills._REBUILD_JOBS_BY_ID.pop("job-remote", None)
+    skills._LIVE_REBUILD_IDS.discard("job-remote")
+
+    active = take_active_rebuild(tmp_path, "local-doc")
+    assert active is not None
+    assert active["rebuild_id"] == "job-remote"
+    assert active["pending"] is True
+
+    manager = SkillManager.__new__(SkillManager)
+    manager._resolve_local_skill_dir = lambda _name: tmp_path  # type: ignore[method-assign]
+    result = asyncio.run(
+        SkillManager.handle_skills_rebuild_status(
+            manager,
+            {"name": "local-doc", "rebuild_id": "job-remote"},
+        )
+    )
+    assert result["success"] is True
+    assert result["status"] == "running"
+    stored = read_rebuild_job(tmp_path)
+    assert stored is not None
+    assert stored["status"] == "running"
+    assert datetime.now(timezone.utc).isoformat() >= str(stored["heartbeat_at"])
+
+
+def test_expired_heartbeat_marks_rebuild_failed(tmp_path) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from jiuwenswarm.server.runtime.skill.skill_manager import (
+        SkillManager,
+        read_rebuild_job,
+        write_rebuild_job,
+    )
+    import jiuwenswarm.server.runtime.skill.skill_manager as skills
+
+    expired = (datetime.now(timezone.utc) - timedelta(seconds=300)).isoformat()
+    write_rebuild_job(
+        tmp_path,
+        {
+            "rebuild_id": "job-expired",
+            "status": "running",
+            "name": "local-doc",
+            "code": "",
+            "detail": "",
+            "heartbeat_at": expired,
+        },
+    )
+    skills._REBUILD_JOBS_BY_ID.pop("job-expired", None)
+    skills._LIVE_REBUILD_IDS.discard("job-expired")
+
+    manager = SkillManager.__new__(SkillManager)
+    manager._resolve_local_skill_dir = lambda _name: tmp_path  # type: ignore[method-assign]
+    result = asyncio.run(
+        SkillManager.handle_skills_rebuild_status(
+            manager,
+            {"name": "local-doc", "rebuild_id": "job-expired"},
+        )
     )
     assert result["success"] is False
     assert result["status"] == "failed"
