@@ -198,10 +198,12 @@ async def test_mcp_no_keys_does_not_dispatch(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("register_unrelated_tool", [False, True])
 @pytest.mark.parametrize("free_search_enabled", [False, True])
 async def test_existing_mcp_agent_refreshes_model_tools_on_enable_change_and_disable(
     monkeypatch: pytest.MonkeyPatch,
     free_search_enabled: bool,
+    register_unrelated_tool: bool,
 ) -> None:
     from openjiuwen.core.single_agent.ability_manager import AbilityManager
 
@@ -214,6 +216,14 @@ async def test_existing_mcp_agent_refreshes_model_tools_on_enable_change_and_dis
         "Runner",
         SimpleNamespace(resource_mgr=SimpleNamespace(add_tool=resource_add)),
     )
+    if register_unrelated_tool:
+        list_tool_info = manager.list_tool_info
+
+        async def list_with_unrelated_registration():
+            mcp_toolkits.Runner.resource_mgr.add_tool(mcp_toolkits.mcp_free_search, skip_if_exists=True)
+            return await list_tool_info()
+
+        monkeypatch.setattr(manager, "list_tool_info", list_with_unrelated_registration)
     for provider in ("bocha", "serper"):
         monkeypatch.setenv("BOCHA_API_KEY", "")
         monkeypatch.setenv(f"{provider.upper()}_API_KEY", "test-key")
@@ -224,15 +234,16 @@ async def test_existing_mcp_agent_refreshes_model_tools_on_enable_change_and_dis
     mcp_toolkits.refresh_mcp_paid_search_tools()
     assert manager.get("mcp_paid_search") is None
     assert not any(item.name == "mcp_paid_search" for item in await manager.list_tool_info())
-    # Runner.resource_mgr.add_tool 是全局单例方法，todo/多会话/所有权注册等
-    # 无关后台路径也可能在同一进程窗口内调用它（CI 全量分片下实测出现
-    # 3 次串扰）；本用例只关心 paid_search 的重注册次数，按被测对象过滤。
-    paid_search_adds = [
-        c for c in resource_add.call_args_list
-        if c.args and c.args[0] is mcp_paid_search
+    # Other tools may register through the shared Runner during this test.
+    paid_search_registrations = [
+        registration
+        for registration in resource_add.call_args_list
+        if registration.args and registration.args[0] is mcp_paid_search
     ]
-    assert len(paid_search_adds) == 2
-    assert all(c.kwargs.get("skip_if_exists") is True for c in paid_search_adds)
+    assert paid_search_registrations == [
+        call(mcp_paid_search, skip_if_exists=True),
+        call(mcp_paid_search, skip_if_exists=True),
+    ]
     assert (manager.get("mcp_free_search") is not None) == free_search_enabled
     assert any(item.name == "mcp_free_search" for item in await manager.list_tool_info()) == free_search_enabled
 

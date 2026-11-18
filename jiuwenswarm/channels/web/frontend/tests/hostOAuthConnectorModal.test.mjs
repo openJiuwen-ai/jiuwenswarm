@@ -54,17 +54,17 @@ test('host OAuth 分支只认后端 hostOAuth 信号', () => {
 });
 
 test('拿到授权 URL 后会立即打开浏览器窗口', () => {
-  assert.match(sourceText, /window\.open\(response\.authUrl, ["']_blank["'], ["']noopener,noreferrer["']\)/);
+  assert.match(sourceText, /window\.open\(authUrl, ["']_blank["'], ["']noopener,noreferrer["']\)/);
 });
 
 test('host OAuth 分支不会把 startOAuth 的响应写回 step 触发二次开窗', () => {
-  const hostBranch = sourceText.match(/if \(isHostOAuth\) \{[\s\S]*?\n    \}\n    if \(step\.authUrl\)/);
+  const hostBranch = sourceText.match(/if \(isHostOAuth\) \{[\s\S]*?authUrl = response\.authUrl;[\s\S]*?\n      \}/);
   assert.ok(hostBranch);
   assert.doesNotMatch(hostBranch[0], /setStep\(response\);/);
 });
 
 test('host OAuth 分支有启动守卫，同一弹窗不会重复发起 mcp.oauth.start', () => {
-  assert.match(sourceText, /hostOAuthStartedRef\.current/);
+  assert.match(sourceText, /hostOAuthRequestRef\.current/);
 });
 
 test('startOAuth 只把 loopback origin 传给后端，不带路径', async () => {
@@ -149,9 +149,9 @@ test('host OAuth 会先 mcp.oauth.start，拿到 authUrl 后立即开窗并进�
     await act(async () => rootNode.render(createElement(Probe)));
     await act(async () => { resolveStart({ type: 'auth_required', flow: 'flow-1', authUrl: 'https://example.com/auth', stepIndex: 0 }); });
     await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
-    assert.ok(calls.startOAuth >= 1);
+    assert.equal(calls.startOAuth, 1);
     assert.deepEqual(openedUrls, ['https://example.com/auth']);
-    assert.ok(calls.waitAuth >= 1);
+    assert.equal(calls.waitAuth, 1);
   } finally {
     window.open = previousOpen;
     await act(async () => rootNode.unmount());

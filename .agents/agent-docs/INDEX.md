@@ -273,6 +273,7 @@ generated: true
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
 | [S_01_plugin-marketplace](specs/jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
+| [B_20261116_1652_cli-auth-effect-loop](bugfix/jiuwenswarm/channels/web/B_20261116_1652_cli-auth-effect-loop.md) | B | CLI MCP 授权因父级重渲染重复开窗和请求 | TwZhang | jiuwenswarm/channels/web/frontend | jiuwenswarm/channels/web/frontend/src/components/ConnectorMarket/CliAuthModal.tsx, jiuwenswarm/channels/web/frontend/tests/cliAuthModal.test.mjs, jiuwenswarm/channels/web/frontend/tests/hostOAuthConnectorModal.test.mjs, jiuwenswarm/channels/web/frontend/package.json, docs/zh/MCP配置.md, docs/en/MCPConfiguration.md | 无独立 D：用户明确授权修复现有 CLI 授权生命周期缺陷，无独立设计。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-features-rsi"></a>
 
@@ -488,6 +489,7 @@ generated: true
 | [B_20261031_1006_ttse-runtime-fixture](bugfix/tests/unit_tests/agentserver/B_20261031_1006_ttse-runtime-fixture.md) | B | TTSE runtime UT 使用版本化夹具修复整批 setup error | xinyang_bali | 无独立 D：修复用户报告的 CI 测试数据缺失，保持现有 plugin_runtime v1 与生产默认打包路径，无独立 D。 |
 | [B_20261031_1048_ttse-core-dependent-ut](bugfix/tests/unit_tests/agentserver/B_20261031_1048_ttse-core-dependent-ut.md) | B | 暂时移除依赖未合入 core 工厂能力的插件 UT | xinyang_bali | 无独立 D：用户明确要求暂时删除依赖 core 的相关 UT，不调整依赖或运行实现，无独立 D。 |
 | [B_20261116_1701_my-plugin-installed-only](bugfix/jiuwenswarm/server/runtime/B_20261116_1701_my-plugin-installed-only.md) | B | 未安装插件草稿混入我的扩展并显示安装按钮 | lizhiyuan | 无独立 D：用户在本次对话明确确认插件列表归属及按钮策略，属于现有市场行为的小范围修复，无独立设计文档。 |
+| [B_20261117_1050_adapter-ut-fixtures](bugfix/tests/unit_tests/agentserver/B_20261117_1050_adapter-ut-fixtures.md) | B | 图片降级提示与付费搜索 UT 的测试替身和断言漂移 | TwZhang | tests/unit_tests/agentserver | tests/unit_tests/agentserver/test_image_fallback_notice_nonstreaming.py, tests/unit_tests/agentserver/test_paid_search_configuration.py | 无独立 D：根据用户提供的 UT 报告修正测试替身及副作用断言，无独立设计。 |
 
 <a id="module-tests-unit_tests-gateway"></a>
 
