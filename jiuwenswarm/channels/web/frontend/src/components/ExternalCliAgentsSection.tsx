@@ -689,6 +689,17 @@ export function ExternalCliAgentsSection({
       if (probe?.path && isInstalledStatus(probe)) {
         return { enabled: true, useBuiltin: false, cliPath: probe.path };
       }
+      // 未配置路径且 PATH 无可执行文件：先试路径历史里最近可用的本地路径，
+      // 都没有才回退内置 CLI——关闭再打开不得静默改用内置（#6753 问题二）。
+      const historyPaths = parseExternalCliPathHistories(
+        draftValues[externalCliKey(cliAgent, 'path_histories')],
+      ).slice().reverse();
+      for (const candidate of historyPaths) {
+        const historyProbe = await onDetect?.(cliAgent, candidate, false);
+        if (historyProbe?.path && isInstalledStatus(historyProbe)) {
+          return { enabled: true, useBuiltin: false, cliPath: historyProbe.path };
+        }
+      }
       return { enabled: true, useBuiltin: true, cliPath: '' };
     },
     [onDetect],
