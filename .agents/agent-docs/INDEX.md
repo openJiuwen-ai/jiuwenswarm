@@ -271,6 +271,7 @@ generated: true
 | [B_20261113_1416_cron-drawer-double-submit](bugfix/jiuwenswarm/channels/web/frontend/B_20261113_1416_cron-drawer-double-submit.md) | B | 定时任务抽屉确认按钮无提交中防护，慢响应窗口内双击创建重复任务 | gunner_beat | 无独立 D：交互层缺陷修复，复用同仓库 HeartbeatPanel 既有 submitting 机制，无独立设计文档。社区 issue 与修复 PR 为事实源：GitCode issue |
 | [B_20261116_1652_cli-auth-effect-loop](bugfix/jiuwenswarm/channels/web/B_20261116_1652_cli-auth-effect-loop.md) | B | CLI MCP 授权因父级重渲染重复开窗和请求 | TwZhang | 无独立 D：用户明确授权修复现有 CLI 授权生命周期缺陷，无独立设计。 |
 | [B_20261116_1701_my-plugin-installed-only](bugfix/jiuwenswarm/server/runtime/B_20261116_1701_my-plugin-installed-only.md) | B | 未安装插件草稿混入我的扩展并显示安装按钮 | lizhiyuan | 无独立 D：用户在本次对话明确确认插件列表归属及按钮策略，属于现有市场行为的小范围修复，无独立设计文档。 |
+| [B_20261117_1522_team-plan-toggle-lock](bugfix/jiuwenswarm/B_20261117_1522_team-plan-toggle-lock.md) | B | 集群会话计划模式开关是假开关：建队后冻结并让位动态工作流 | chenchunzhou | 无独立 D：由 issue 6361 现象逆向定位，无独立设计文档；方案与取舍记录在 OpenSpec 变更 issue-6361-team-plan-toggle-lock 的 proposal/design/specs，修复范围限定 Web 前端开关闸门与提示文案。 |
 | [B_20261118_1527_session-delete-plan-runtime](bugfix/jiuwenswarm/channels/web/frontend/B_20261118_1527_session-delete-plan-runtime.md) | B | 侧边栏删除会话漏清 planStore runtime，Plan 模式状态在内存永久残留 | gunner_beat | 无独立 D：会话生命周期清理的一致性补齐，复用 usePlanStore 既有 removeRuntime，无独立设计文档。缺陷检视清单 |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
 | [S_01_plugin-marketplace](specs/jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
@@ -302,6 +303,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261116_1636_custom-model-reasoning-policy](bugfix/jiuwenswarm/channels/web/frontend/B_20261116_1636_custom-model-reasoning-policy.md) | B | 自定义模型误展示推理配置修复 | lizhiyuan | 无独立 D：用户已确认的既有设置页能力边界收敛；不新增模型发现或跨仓接口，属于局部回归修复。 |
+| [B_20261117_1727_model-output-token-limit](bugfix/jiuwenswarm/channels/web/frontend/B_20261117_1727_model-output-token-limit.md) | B | 模型单次最大输出配置修复 | lizhiyuan | 无独立 D：用户在本轮会话确认的模型设置范围调整，未形成独立设计文档。 |
 
 <a id="module-jiuwenswarm-common"></a>
 
@@ -324,6 +326,7 @@ generated: true
 |---|---|---|---|---|
 | [F_20261103_1124_sdk-web-retrieval](features/F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 | [F_20261110_1438_opencode-go-provider](features/F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
+| [B_20261117_1727_model-output-token-limit](bugfix/jiuwenswarm/channels/web/frontend/B_20261117_1727_model-output-token-limit.md) | B | 模型单次最大输出配置修复 | lizhiyuan | 无独立 D：用户在本轮会话确认的模型设置范围调整，未形成独立设计文档。 |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
 <a id="module-jiuwenswarm-extensions-sdk"></a>
