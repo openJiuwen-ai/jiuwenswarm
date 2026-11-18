@@ -5422,6 +5422,7 @@
     "upload": {
       "hint": "支持.zip和.tar文件，解压后的文件夹需要至少包含 manifest.json 文件和 README.md，.json 文件需包含 packageType 声明包类型。",
       "dropHint": "点击或拖动文件到此处",
+      "webHint": "点击上传文件",
       "invalidType": "仅支持 .zip / .tar 文件",
       "importSuccess": "插件导入成功",
       "missingManifest": "插件包缺少 manifest.json，或文件已损坏",
