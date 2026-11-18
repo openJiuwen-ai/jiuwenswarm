@@ -7646,11 +7646,44 @@ def test_request_config_uses_service_log_root_for_deepresearch_sdk(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["service_root", "fallback_root", "prepare"])
+async def test_stream_continues_when_diagnostics_setup_fails(failure, tmp_path, monkeypatch, caplog):
+    proc = _Proc()
+    patches = _stream_patches(proc)
+    monkeypatch.delenv("OFFICEACE_USER_DATA_ROOT", raising=False)
+    monkeypatch.delenv("OFFICE_CLAW_HOST_HOME", raising=False)
+    monkeypatch.setenv("OFFICE_CLAW_DATA_DIR", "~missing-deepresearch-test-user/data")
+    with ExitStack() as stack:
+        for index, item in enumerate(patches):
+            if index != 2:
+                stack.enter_context(item)
+        if failure == "service_root":
+            stack.enter_context(patch.object(dt, "get_logs_dir", side_effect=KeyError("private detail")))
+        else:
+            stack.enter_context(patch.object(dt, "get_logs_dir", return_value=tmp_path))
+        if failure == "fallback_root":
+            stack.enter_context(patch.object(dt, "trusted_fallback_log_config", side_effect=TypeError("private detail")))
+        if failure == "prepare":
+            stack.enter_context(patch.object(
+                dt, "prepare_runner_diagnostics", side_effect=RuntimeError("private detail"),
+            ))
+        stack.enter_context(patch.object(dt, "_build_deepresearch_config", return_value=_valid_config()))
+        stack.enter_context(patch.object(dt, "get_task_env_overlay", return_value={}))
+        stack.enter_context(patch.object(dt, "_consume_stream", AsyncMock(return_value={"status": "completed"})))
+        result = json.loads(await dt.deepresearch_stream._func(
+            action="resume", conversation_id="C-log", node="feedback_handler", feedback="continue",
+        ))
+
+    assert result["status"] == "completed"
+    assert "日志" in caplog.text or "诊断" in caplog.text
+    assert "private detail" not in caplog.text
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["error", "completed", "interrupted", "stopped"])
 async def test_stream_preserves_complete_stderr_in_unique_attempt_logs(status, tmp_path, caplog):
     sdk_logs = tmp_path / "service-logs" / "DeepResearch" / "output" / "logs"
     original_stderr = b"FIRST_CAUSE: invalid outline tool arguments\n" + b"x" * 30_000 + b"\nLAST_EVENT\xff"
-    spawn = AsyncMock()
     caplog.set_level(logging.INFO)
     for _attempt in range(2):
         proc = _Proc(stderr=original_stderr)

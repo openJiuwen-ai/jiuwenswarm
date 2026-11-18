@@ -19,6 +19,46 @@ def _capture(tmp_path: Path, conversation_id: str = "C-log") -> dd.RunnerDiagnos
     )
 
 
+def test_unresolvable_fallback_home_keeps_next_trusted_root(tmp_path, caplog):
+    roots = dd.trusted_fallback_log_config({
+        "OFFICEACE_USER_DATA_ROOT": "~missing-deepresearch-test-user/data",
+        "OFFICE_CLAW_HOST_HOME": str(tmp_path),
+    })
+
+    assert roots == {"OFFICE_CLAW_DATA_DIR": str(tmp_path.resolve() / ".office-claw")}
+    assert "RuntimeError" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_cancelled_preparation_closes_capture_even_if_prepare_raises(tmp_path, caplog):
+    preparing = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    prepare = dd.RunnerDiagnostics.prepare
+
+    def failing_prepare(capture):
+        prepare(capture)
+        loop.call_soon_threadsafe(preparing.set)
+        release.wait(timeout=5)
+        raise RuntimeError("private detail")
+
+    with patch.object(dd.RunnerDiagnostics, "prepare", failing_prepare):
+        task = asyncio.create_task(dd.prepare_runner_diagnostics(str(_capture(tmp_path).sdk_log_dir), "C", "R"))
+        try:
+            await asyncio.wait_for(preparing.wait(), timeout=5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            cleanup, = dd._PREPARE_CLEANUPS
+        finally:
+            release.set()
+        with caplog.at_level(logging.INFO):
+            await asyncio.wait_for(asyncio.shield(cleanup), timeout=5)
+
+    assert "closed=True" in caplog.text
+    assert "private detail" not in caplog.text
+
+
 def test_stderr_journal_rejects_relative_or_wrong_sdk_layout(tmp_path, caplog):
     for path in [Path("relative/output/logs"), tmp_path / "wrong-layout"]:
         capture = dd.RunnerDiagnostics(path, "C-log", "request-id")

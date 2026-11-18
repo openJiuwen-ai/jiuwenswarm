@@ -38,7 +38,7 @@ def trusted_fallback_log_config(environ: Mapping[str, str]) -> dict[str, str]:
             if not path.is_absolute():
                 raise ValueError("数据根必须是绝对路径")
             roots[key] = str(path.resolve())
-        except (OSError, ValueError) as exc:
+        except Exception as exc:  # 日志路径解析失败时继续检查其他可信路径。
             logger.warning("DeepResearch 备用日志数据根无效 key=%s type=%s", key, type(exc).__name__)
     host_home = str(environ.get("OFFICE_CLAW_HOST_HOME") or "").strip()
     if not roots and host_home:
@@ -47,7 +47,7 @@ def trusted_fallback_log_config(environ: Mapping[str, str]) -> dict[str, str]:
             if not path.is_absolute():
                 raise ValueError("宿主 home 必须是绝对路径")
             roots["OFFICE_CLAW_DATA_DIR"] = str((path / ".office-claw").resolve())
-        except (OSError, ValueError) as exc:
+        except Exception as exc:  # 日志路径解析失败时继续检查其他可信路径。
             logger.warning("DeepResearch 宿主备用日志 home 无效 type=%s", type(exc).__name__)
     return roots
 
@@ -196,12 +196,21 @@ async def prepare_runner_diagnostics(
         await asyncio.shield(prepare)
     except asyncio.CancelledError:
         async def close_abandoned_preparation():
-            await prepare
-            await close_runner_diagnostics(capture)
+            try:
+                await prepare
+            except Exception as exc:
+                capture.incomplete(f"journal_prepare_{type(exc).__name__}")
+            finally:
+                await close_runner_diagnostics(capture)
+
+        def finished(task: asyncio.Task) -> None:
+            _PREPARE_CLEANUPS.discard(task)
+            if not task.cancelled():
+                task.exception()
 
         cleanup = asyncio.create_task(close_abandoned_preparation())
         _PREPARE_CLEANUPS.add(cleanup)
-        cleanup.add_done_callback(_PREPARE_CLEANUPS.discard)
+        cleanup.add_done_callback(finished)
         raise
     return capture
 

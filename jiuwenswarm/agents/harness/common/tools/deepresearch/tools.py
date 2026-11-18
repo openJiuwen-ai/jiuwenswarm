@@ -816,13 +816,16 @@ def _build_deepresearch_request_config(
         config[LOG_DIR_CONFIG_KEY] = str(
             (get_logs_dir(service_id) / "DeepResearch" / "output" / "logs").resolve()
         )
-    except (OSError, ValueError) as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.warning(
             "DeepResearch 服务日志目录不可用 service_id=%s type=%s; "
             "runner 将沿用独立运行时的备用日志目录",
             _safe_log_correlation_id(service_id), type(exc).__name__,
         )
-    config.update(trusted_fallback_log_config(os.environ))
+    try:
+        config.update(trusted_fallback_log_config(os.environ))
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.warning("DeepResearch 备用日志数据根不可用 type=%s", type(exc).__name__)
     # 宿主会话归属标识:随 config frame 注入 runner,SDK StartNode 写入
     # 会话 config 随快照落盘;认领侧(probe/扫库)校验归属防跨会话误认领。
     host_session_id = str(_get_route().get("session_id") or "").strip()
@@ -3310,6 +3313,9 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
             conversation_id,
             str(route.get("request_id") or ""),
         )
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.warning("DeepResearch runner 诊断准备失败 type=%s", type(exc).__name__)
+        diagnostics = None
     except BaseException:
         _remove_progress_artifact(progress_artifact)
         raise
