@@ -2830,6 +2830,7 @@ class JiuWenSwarm:
         """登记重建任务并在后台跑静默 Agent。调用方立刻拿到 rebuild_id。"""
         from jiuwenswarm.server.runtime.skill.skill_manager import (
             note_rebuild_live,
+            rebuild_heartbeat_now,
             remember_rebuild_task,
             write_rebuild_job,
         )
@@ -2849,6 +2850,7 @@ class JiuWenSwarm:
                 "name": str(payload.get("skill_name") or ""),
                 "code": "",
                 "detail": "",
+                "heartbeat_at": rebuild_heartbeat_now(),
             },
         )
         task = asyncio.create_task(
@@ -2869,6 +2871,7 @@ class JiuWenSwarm:
         from jiuwenswarm.server.runtime.skill.skill_manager import (
             note_rebuild_live,
             pop_rebuild_task,
+            pulse_rebuild_heartbeat,
             write_rebuild_job,
         )
 
@@ -2878,6 +2881,11 @@ class JiuWenSwarm:
             "code": "",
             "detail": "",
         }
+        stop_heartbeat = asyncio.Event()
+        heartbeat = asyncio.create_task(
+            pulse_rebuild_heartbeat(rebuild_id, skill_dir, stop_heartbeat),
+            name=f"skills-rebuild-heartbeat-{rebuild_id[:8]}",
+        )
         try:
             await self._run_skills_rebuild_followup(request, payload)
             write_rebuild_job(skill_dir, {**job, "status": "done", "success": True})
@@ -2909,6 +2917,12 @@ class JiuWenSwarm:
                 },
             )
         finally:
+            stop_heartbeat.set()
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
             note_rebuild_live(rebuild_id, False)
             pop_rebuild_task(rebuild_id)
 

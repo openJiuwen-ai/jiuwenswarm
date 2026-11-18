@@ -7,6 +7,7 @@ from __future__ import annotations
 import errno
 import logging
 import asyncio
+import threading
 import hashlib
 import io
 import json
@@ -319,13 +320,17 @@ def _inventory_busy_result() -> dict[str, Any]:
 _SKILL_TOGGLE_LOCK_TIMEOUT_SECONDS = 5.0
 
 # skills.rebuild 的静默改写可能超过 Gateway 的 600 秒非流式上限。任务状态写在
-# 技能目录里，并在进程内登记正在跑的任务：SkillManager 会换实例，只放在
-# self 上的话，下一次查询会把仍在跑的重建看成已经中断。
+# 技能目录里。进程内集合只说明本进程还有任务；多 pod 共享 workspace 时，
+# 别的进程靠任务文件里的 heartbeat_at 判断是否仍在跑，避免把别人的 running
+# 改成失败。
 _REBUILD_JOB_FILENAME = "rebuild-job.json"
 _REBUILD_INTERRUPTED_DETAIL = "重建任务已中断，请重试。"
+_REBUILD_HEARTBEAT_INTERVAL_SECONDS = 20.0
+_REBUILD_STALE_AFTER_SECONDS = 90.0
 _LIVE_REBUILD_IDS: set[str] = set()
 _REBUILD_JOBS_BY_ID: dict[str, dict[str, Any]] = {}
 _REBUILD_TASKS: dict[str, asyncio.Task[None]] = {}
+_REBUILD_FILE_LOCK = threading.Lock()
 
 
 def note_rebuild_live(rebuild_id: str, live: bool) -> None:
@@ -373,7 +378,11 @@ def read_rebuild_job(skill_dir: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def write_rebuild_job(skill_dir: Path | None, job: dict[str, Any]) -> None:
+def rebuild_heartbeat_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _store_rebuild_job(skill_dir: Path | None, job: dict[str, Any]) -> None:
     stored = dict(job)
     if skill_dir is not None:
         stored["skill_dir"] = str(skill_dir)
@@ -389,19 +398,108 @@ def write_rebuild_job(skill_dir: Path | None, job: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def write_rebuild_job(skill_dir: Path | None, job: dict[str, Any]) -> None:
+    with _REBUILD_FILE_LOCK:
+        _store_rebuild_job(skill_dir, job)
+
+
+def _parse_rebuild_timestamp(raw: str) -> datetime | None:
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        seen = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if seen.tzinfo is None:
+        seen = seen.replace(tzinfo=timezone.utc)
+    return seen.astimezone(timezone.utc)
+
+
+def rebuild_heartbeat_fresh(job: dict[str, Any]) -> bool:
+    """心跳还在有效期内，说明持有任务的进程仍在刷新，不能当成中断。"""
+    seen = _parse_rebuild_timestamp(str(job.get("heartbeat_at") or ""))
+    if seen is None:
+        return False
+    age = (datetime.now(timezone.utc) - seen).total_seconds()
+    return age <= _REBUILD_STALE_AFTER_SECONDS
+
+
+def _latest_rebuild_job(job: dict[str, Any], skill_dir: Path | None) -> dict[str, Any]:
+    rebuild_id = str(job.get("rebuild_id") or "")
+    if skill_dir is not None and rebuild_id:
+        disk = read_rebuild_job(skill_dir)
+        if isinstance(disk, dict) and str(disk.get("rebuild_id") or "") == rebuild_id:
+            return disk
+    if rebuild_id:
+        cached = _REBUILD_JOBS_BY_ID.get(rebuild_id)
+        if isinstance(cached, dict):
+            return cached
+    return job
+
+
+def rebuild_job_is_active(job: dict[str, Any], skill_dir: Path | None) -> bool:
+    """本进程仍持有任务，或共享目录上的心跳还新鲜。"""
+    if job.get("status") != "running":
+        return False
+    rebuild_id = str(job.get("rebuild_id") or "")
+    if rebuild_id and rebuild_is_live(rebuild_id):
+        return True
+    latest = _latest_rebuild_job(job, skill_dir)
+    return latest.get("status") == "running" and rebuild_heartbeat_fresh(latest)
+
+
+def touch_rebuild_heartbeat(skill_dir: Path | None, rebuild_id: str) -> bool:
+    """只在任务仍是 running 时刷新心跳，避免盖掉已经写完的 done/failed。"""
+    with _REBUILD_FILE_LOCK:
+        current: dict[str, Any] | None = None
+        if skill_dir is not None:
+            disk = read_rebuild_job(skill_dir)
+            if isinstance(disk, dict):
+                current = disk
+        if current is None:
+            cached = _REBUILD_JOBS_BY_ID.get(rebuild_id)
+            if isinstance(cached, dict):
+                current = cached
+        if not isinstance(current, dict):
+            return False
+        if str(current.get("rebuild_id") or "") != rebuild_id:
+            return False
+        if current.get("status") != "running":
+            return False
+        updated = dict(current)
+        updated["heartbeat_at"] = rebuild_heartbeat_now()
+        _store_rebuild_job(skill_dir, updated)
+        return True
+
+
+async def pulse_rebuild_heartbeat(
+    rebuild_id: str,
+    skill_dir: Path | None,
+    stop: asyncio.Event,
+) -> None:
+    """后台改写期间定期刷新心跳，让其他 pod 看到任务还活着。"""
+    while True:
+        try:
+            await asyncio.wait_for(stop.wait(), _REBUILD_HEARTBEAT_INTERVAL_SECONDS)
+            return
+        except TimeoutError:
+            if not touch_rebuild_heartbeat(skill_dir, rebuild_id):
+                return
+
+
 def lookup_rebuild_job(
     rebuild_id: str,
     skill_dir: Path | None,
 ) -> dict[str, Any] | None:
+    if skill_dir is not None:
+        job = read_rebuild_job(skill_dir)
+        if isinstance(job, dict) and str(job.get("rebuild_id") or "") == rebuild_id:
+            _REBUILD_JOBS_BY_ID[rebuild_id] = job
+            return dict(job)
     cached = _REBUILD_JOBS_BY_ID.get(rebuild_id)
     if isinstance(cached, dict):
         return dict(cached)
-    if skill_dir is None:
-        return None
-    job = read_rebuild_job(skill_dir)
-    if isinstance(job, dict) and str(job.get("rebuild_id") or "") == rebuild_id:
-        _REBUILD_JOBS_BY_ID[rebuild_id] = job
-        return dict(job)
     return None
 
 
@@ -409,21 +507,21 @@ def reconcile_stale_rebuild(
     job: dict[str, Any],
     skill_dir: Path | None,
 ) -> dict[str, Any]:
-    """进程里已经没有对应任务时，把磁盘上的 running 改成失败。"""
+    """心跳过期且本进程没有任务时，把磁盘上的 running 改成失败。"""
     if job.get("status") != "running":
         return job
-    rebuild_id = str(job.get("rebuild_id") or "")
-    if rebuild_id and rebuild_is_live(rebuild_id):
-        return job
+    if rebuild_job_is_active(job, skill_dir):
+        return _latest_rebuild_job(job, skill_dir)
+    latest = _latest_rebuild_job(job, skill_dir)
     failed = {
-        **job,
+        **latest,
         "status": "failed",
         "success": False,
         "code": "SKILL_REBUILD_FAILED",
         "detail": _REBUILD_INTERRUPTED_DETAIL,
     }
     target = skill_dir
-    raw = str(job.get("skill_dir") or "")
+    raw = str(latest.get("skill_dir") or "")
     if target is None and raw:
         candidate = Path(raw)
         if candidate.is_dir():
@@ -466,7 +564,7 @@ def take_active_rebuild(skill_dir: Path, name: str) -> dict[str, Any] | None:
     if not isinstance(existing, dict) or existing.get("status") != "running":
         return None
     rebuild_id = str(existing.get("rebuild_id") or "")
-    if rebuild_id and rebuild_is_live(rebuild_id):
+    if rebuild_job_is_active(existing, skill_dir):
         return {
             "success": True,
             "pending": True,
