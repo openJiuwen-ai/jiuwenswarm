@@ -1,0 +1,232 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Declarative drop-in registry for built-in agent harness tools.
+
+Eliminates merge conflicts across parallel tool PRs by allowing each new tool
+module (`*_tools.py` or `specs/*.py`) to declare a top-level
+``BUILTIN_TOOL_SPECS`` constant without editing central registry tables.
+Discovery parses module ASTs statically so lazy tool imports remain untouched.
+"""
+
+from __future__ import annotations
+
+import ast
+import logging
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+VALID_PERMISSION_SCOPES: frozenset[str] = frozenset(
+    {"", "path_read", "path_write", "public_web_read", "internal_readonly"}
+)
+
+
+@dataclass(frozen=True)
+class BuiltinToolSpec:
+    """Declarative metadata for a single built-in tool."""
+
+    name: str
+    module: str
+    symbol: str = ""
+    display_en: str = ""
+    aliases_zh: tuple[str, ...] = ()
+    category_path: str = ""
+    category_description: str = ""
+    category_description_en: str = ""
+    permission_scope: str = "path_read"
+
+    def resolved_symbol(self) -> str:
+        """Return the export symbol name, defaulting to ``name``."""
+        return self.symbol or self.name
+
+
+_REGISTERED_SPECS: dict[str, BuiltinToolSpec] = {}
+_DISCOVERED_CACHE: dict[Path, tuple[BuiltinToolSpec, ...]] = {}
+
+
+def register_builtin_tool_spec(spec: BuiltinToolSpec) -> None:
+    """Register one ``BuiltinToolSpec`` programmatically."""
+    if not spec.name or not spec.module:
+        raise ValueError("BuiltinToolSpec requires non-empty name and module")
+    if spec.permission_scope not in VALID_PERMISSION_SCOPES:
+        raise ValueError(f"Unsupported permission_scope: {spec.permission_scope}")
+    _REGISTERED_SPECS[spec.name] = spec
+    _DISCOVERED_CACHE.clear()
+
+
+def clear_registered_tool_specs() -> None:
+    """Clear programmatically registered specs and discovery cache (for tests)."""
+    _REGISTERED_SPECS.clear()
+    _DISCOVERED_CACHE.clear()
+
+
+def _parse_aliases(raw: Any) -> tuple[str, ...]:
+    if isinstance(raw, str):
+        return tuple(raw.split())
+    if isinstance(raw, (list, tuple)):
+        return tuple(str(item).strip() for item in raw if str(item).strip())
+    return ()
+
+
+def _spec_from_dict(raw: dict[str, Any], default_module: str) -> BuiltinToolSpec | None:
+    name = str(raw.get("name") or "").strip()
+    if not name:
+        return None
+    module = str(raw.get("module") or default_module).strip()
+    scope = str(raw.get("permission_scope", "path_read") or "").strip()
+    if scope not in VALID_PERMISSION_SCOPES:
+        logger.warning("[builtin_tool_registry] Invalid permission_scope %r for %s", scope, name)
+        return None
+    return BuiltinToolSpec(
+        name=name,
+        module=module,
+        symbol=str(raw.get("symbol") or name).strip(),
+        display_en=str(raw.get("display_en") or "").strip(),
+        aliases_zh=_parse_aliases(raw.get("aliases_zh")),
+        category_path=str(raw.get("category_path") or "").strip(),
+        category_description=str(raw.get("category_description") or "").strip(),
+        category_description_en=str(raw.get("category_description_en") or "").strip(),
+        permission_scope=scope,
+    )
+
+
+def _eval_call_keywords(node: ast.Call) -> dict[str, Any] | None:
+    func_name = node.func.id if isinstance(node.func, ast.Name) else ""
+    if func_name != "BuiltinToolSpec":
+        return None
+    raw_kw: dict[str, Any] = {}
+    for kw in node.keywords:
+        if kw.arg is None:
+            return None
+        try:
+            raw_kw[kw.arg] = ast.literal_eval(kw.value)
+        except (ValueError, SyntaxError):
+            return None
+    return raw_kw
+
+
+def _eval_spec_node(node: ast.AST, default_module: str) -> BuiltinToolSpec | None:
+    if isinstance(node, ast.Dict):
+        try:
+            raw = ast.literal_eval(node)
+        except (ValueError, SyntaxError):
+            return None
+        return _spec_from_dict(raw, default_module) if isinstance(raw, dict) else None
+    if isinstance(node, ast.Call):
+        raw_kw = _eval_call_keywords(node)
+        return _spec_from_dict(raw_kw, default_module) if raw_kw is not None else None
+    return None
+
+
+def _extract_specs_from_file(py_file: Path, default_module: str) -> list[BuiltinToolSpec]:
+    try:
+        source = py_file.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(py_file))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return []
+    found: list[BuiltinToolSpec] = []
+    for stmt in tree.body:
+        value_node: ast.AST | None = None
+        if isinstance(stmt, ast.Assign):
+            if any(isinstance(t, ast.Name) and t.id == "BUILTIN_TOOL_SPECS" for t in stmt.targets):
+                value_node = stmt.value
+        elif isinstance(stmt, ast.AnnAssign):
+            if isinstance(stmt.target, ast.Name) and stmt.target.id == "BUILTIN_TOOL_SPECS":
+                value_node = stmt.value
+        if isinstance(value_node, (ast.Tuple, ast.List)):
+            for elt in value_node.elts:
+                spec = _eval_spec_node(elt, default_module)
+                if spec is not None:
+                    found.append(spec)
+    return found
+
+
+def _candidate_spec_files(base_dir: Path) -> list[tuple[Path, str]]:
+    candidates: list[tuple[Path, str]] = []
+    specs_dir = base_dir / "specs"
+    if specs_dir.is_dir():
+        for path in sorted(specs_dir.glob("*.py")):
+            if not path.name.startswith("_"):
+                candidates.append((path, f".{path.stem}"))
+    for path in sorted(base_dir.glob("*_tools.py")):
+        candidates.append((path, f".{path.stem}"))
+    return candidates
+
+
+def discover_builtin_tool_specs(tools_dir: Path | None = None) -> tuple[BuiltinToolSpec, ...]:
+    """Discover ``BUILTIN_TOOL_SPECS`` across tool modules without importing them."""
+    base_dir = (tools_dir or Path(__file__).resolve().parent).resolve()
+    cached = _DISCOVERED_CACHE.get(base_dir)
+    if cached is not None:
+        return cached
+
+    by_name: dict[str, BuiltinToolSpec] = {}
+    for py_file, default_mod in _candidate_spec_files(base_dir):
+        for spec in _extract_specs_from_file(py_file, default_mod):
+            by_name[spec.name] = spec
+    if tools_dir is None:
+        by_name.update(_REGISTERED_SPECS)
+
+    result = tuple(by_name.values())
+    _DISCOVERED_CACHE[base_dir] = result
+    return result
+
+
+def discover_lazy_exports(
+    existing: dict[str, tuple[str, str]],
+    tools_dir: Path | None = None,
+) -> dict[str, tuple[str, str]]:
+    """Return ``_EXPORTS`` entries for discovered tools not already in ``existing``."""
+    added: dict[str, tuple[str, str]] = {}
+    for spec in discover_builtin_tool_specs(tools_dir):
+        if spec.name not in existing:
+            added[spec.name] = (spec.module, spec.resolved_symbol())
+    return added
+
+
+def merge_discovered_categories(
+    base_categories: tuple[Any, ...],
+    category_cls: type,
+    tools_dir: Path | None = None,
+) -> tuple[Any, ...]:
+    """Merge discovered tool category memberships into ``base_categories``."""
+    specs = [s for s in discover_builtin_tool_specs(tools_dir) if s.category_path]
+    if not specs:
+        return base_categories
+
+    by_path: dict[str, Any] = {cat.path: cat for cat in base_categories}
+    order: list[str] = [cat.path for cat in base_categories]
+    for spec in specs:
+        existing = by_path.get(spec.category_path)
+        if existing is not None:
+            if spec.name not in existing.tools:
+                by_path[spec.category_path] = existing._replace(
+                    tools=(*existing.tools, spec.name),
+                )
+        else:
+            desc_zh = spec.category_description or spec.display_en or spec.category_path
+            desc_en = spec.category_description_en or spec.display_en or desc_zh
+            by_path[spec.category_path] = category_cls(
+                path=spec.category_path,
+                description=desc_zh,
+                tools=(spec.name,),
+                description_en=desc_en,
+            )
+            order.append(spec.category_path)
+    return tuple(by_path[path] for path in order)
+
+
+def discover_permission_sets(tools_dir: Path | None = None) -> dict[str, frozenset[str]]:
+    """Group discovered tool names by permission scope for ``tool_capabilities``."""
+    grouped: dict[str, list[str]] = {
+        "path_read": [],
+        "path_write": [],
+        "public_web_read": [],
+        "internal_readonly": [],
+    }
+    for spec in discover_builtin_tool_specs(tools_dir):
+        if spec.permission_scope in grouped:
+            grouped[spec.permission_scope].append(spec.name)
+    return {key: frozenset(names) for key, names in grouped.items()}

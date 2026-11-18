@@ -136,6 +136,23 @@ BUILTIN_TOOL_DISCOVERY: dict[str, ToolDiscoveryMetadata] = {
 }
 
 
+def _merge_discovered_metadata() -> None:
+    # pylint: disable-next=import-outside-toplevel
+    from jiuwenswarm.agents.harness.common.tools.builtin_tool_registry import (
+        discover_builtin_tool_specs,
+    )
+
+    for spec in discover_builtin_tool_specs():
+        if spec.name not in BUILTIN_TOOL_DISCOVERY and spec.display_en:
+            BUILTIN_TOOL_DISCOVERY[spec.name] = ToolDiscoveryMetadata(
+                spec.display_en,
+                spec.aliases_zh,
+            )
+
+
+_merge_discovered_metadata()
+
+
 def discovery_metadata(name: str) -> ToolDiscoveryMetadata | None:
     """Return maintained discovery metadata for one built-in name."""
     return BUILTIN_TOOL_DISCOVERY.get(str(name or ""))

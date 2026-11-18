@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Static in-code tool category catalogue for progressive ``tool_search``.
 
 The deferred-tool directory is a flat category table frozen into this
@@ -269,6 +271,20 @@ class ToolCatalogueSnapshot(NamedTuple):
 
     categories: tuple[ToolCategory, ...]
     flat_entries: tuple[_FlatToolEntry, ...]
+
+
+def _sync_discovered_categories() -> None:
+    """Merge declarative built-in tool specs into ``_TOOL_CATEGORIES``."""
+    global _TOOL_CATEGORIES  # pylint: disable=global-statement
+    # pylint: disable-next=import-outside-toplevel
+    from jiuwenswarm.agents.harness.common.tools.builtin_tool_registry import (
+        merge_discovered_categories,
+    )
+
+    _TOOL_CATEGORIES = merge_discovered_categories(_TOOL_CATEGORIES, ToolCategory)
+
+
+_sync_discovered_categories()
 
 
 def _tool_index_tool_id(session_scope: str) -> str:

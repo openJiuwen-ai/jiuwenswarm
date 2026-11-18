@@ -167,6 +167,24 @@ _DYNAMIC_REPRESENTATIVE_TOOLS = {
     "todo_create",
     "todo_list",
 }
+_DISCOVERED_WRITE_PATH_TOOLS: set[str] = set()
+
+
+def _sync_discovered_permission_sets() -> None:
+    """Merge declarative built-in tool permission scopes into static sets."""
+    # pylint: disable-next=import-outside-toplevel
+    from jiuwenswarm.agents.harness.common.tools.builtin_tool_registry import (
+        discover_permission_sets,
+    )
+
+    perms = discover_permission_sets()
+    _PATH_TOOLS.update(perms["path_read"] | perms["path_write"])
+    _DISCOVERED_WRITE_PATH_TOOLS.update(perms["path_write"])
+    _PUBLIC_WEB_READ_TOOLS.update(perms["public_web_read"])
+    _INTERNAL_READONLY_TOOLS.update(perms["internal_readonly"])
+
+
+_sync_discovered_permission_sets()
 _STATIC_CANONICAL_TOOL_NAMES = frozenset(
     set(PERMISSION_TOOL_ALIASES.values())
     | _SHELL_TOOLS
@@ -274,7 +292,8 @@ def classify_tool(tool_name: str) -> ToolCapability:
             True,
         )
     if lowered in _PATH_TOOLS:
-        side_effects = {"write_local"} if _is_path_write_tool(lowered) else set()
+        is_write = _is_path_write_tool(lowered) or lowered in _DISCOVERED_WRITE_PATH_TOOLS
+        side_effects = {"write_local"} if is_write else set()
         return _capability(
             resolution,
             "path",
