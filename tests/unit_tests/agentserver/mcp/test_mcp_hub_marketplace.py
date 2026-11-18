@@ -606,3 +606,46 @@ async def test_mcp_hub_pagination_is_bounded_to_100_pages() -> None:
     with pytest.raises(ValueError, match="100 pages"):
         await marketplace._all_remote(hub)
     assert hub.calls == 100
+
+
+def test_remote_card_serves_thumbnail_through_cached_url(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Hub thumbnails (small data URLs) become cacheable URLs, not list bloat."""
+    import base64
+    from types import SimpleNamespace
+
+    from jiuwenswarm.common.file_download_token import WebFileDownloadManager
+    from jiuwenswarm.server.runtime import package_avatars
+
+    monkeypatch.setattr(package_avatars, "get_agent_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        package_avatars,
+        "get_package_avatar_cache_dir",
+        lambda: tmp_path / ".cache" / "package-avatars",
+    )
+    monkeypatch.setattr(
+        WebFileDownloadManager,
+        "_instance",
+        WebFileDownloadManager(secret="hub-icon-test-secret"),
+    )
+    package_avatars._AVATAR_URL_CACHE.clear()
+
+    thumbnail = "data:image/png;base64," + base64.b64encode(
+        b"\x89PNG\r\n\x1a\nthumbnail"
+    ).decode("ascii")
+    card = marketplace._remote_card(
+        SimpleNamespace(
+            asset_id="mcp-asset-uuid",
+            package_name="hub-mcp",
+            display_name="Hub MCP",
+            short_description="Remote package",
+            category_name="",
+            icon_uri=thumbnail,
+            public_latest_version="1.2.0",
+            tags=(),
+        )
+    )
+
+    assert card["icon"].startswith("/file-api/download?token=")
+    assert card["icon"].endswith("&inline=1")

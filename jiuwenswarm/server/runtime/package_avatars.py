@@ -9,6 +9,7 @@ import hashlib
 import logging
 import os
 import tempfile
+import time
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
@@ -64,6 +65,39 @@ def _inline_svg(data: bytes) -> str:
     if not data or len(data) > _MAX_INLINE_SVG_BYTES:
         return ""
     return f"data:{_SVG_MIME};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+_AVATAR_URL_CACHE: dict[str, tuple[float, str]] = {}
+_AVATAR_URL_CACHE_TTL_SECONDS = 24 * 3600
+_AVATAR_URL_CACHE_LIMIT = 1024
+
+
+def cached_package_avatar_url(
+    raw: object,
+    *,
+    package_dir: Path | None = None,
+    cache_key: str | None = None,
+) -> str:
+    """Memoize signed URLs per content so catalog polls keep stable URLs.
+
+    A freshly minted URL carries a new expiry; reusing it for a day avoids
+    rewriting the content-addressed copy on every poll. Failures are not cached.
+    """
+    key = cache_key or str(raw)
+    now = time.monotonic()
+    cached = _AVATAR_URL_CACHE.get(key)
+    if cached is not None and now - cached[0] < _AVATAR_URL_CACHE_TTL_SECONDS:
+        return cached[1]
+    try:
+        url = resolve_package_avatar_url(raw, package_dir=package_dir)
+    except Exception:  # noqa: BLE001 - a broken icon must not break the catalog
+        logger.debug("Unable to resolve package avatar URL", exc_info=True)
+        return ""
+    if url:
+        if len(_AVATAR_URL_CACHE) >= _AVATAR_URL_CACHE_LIMIT:
+            _AVATAR_URL_CACHE.clear()
+        _AVATAR_URL_CACHE[key] = (now, url)
+    return url
 
 
 def resolve_package_avatar_url(raw: object, *, package_dir: Path | None = None) -> str:
