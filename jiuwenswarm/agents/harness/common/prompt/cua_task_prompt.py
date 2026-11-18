@@ -105,6 +105,23 @@ _CUA_BACKEND_UNAVAILABLE_PROMPT = {
 }
 
 
+_CUA_APP_LAUNCH_PROMPT = {
+    "cn": (
+        "永远不要使用 `subprocess`、`os.system`、`os.startfile`、Shell 命令或类似方式直接启动程序。"
+        "需要打开应用时，只使用当前可用的桌面操控工具。"
+    ),
+    "en": (
+        "Never use `subprocess`, `os.system`, `os.startfile`, shell commands, or similar methods to launch "
+        "programs directly. Open applications only through the available desktop tools."
+    ),
+}
+
+
+def build_cua_app_launch_prompt(language: str) -> str:
+    """Return the desktop subagent's application launch guidance."""
+    return _CUA_APP_LAUNCH_PROMPT.get(language, _CUA_APP_LAUNCH_PROMPT["cn"])
+
+
 def build_cua_unavailable_prompt(language: str = "cn", *, backend_available: bool = True) -> str:
     """Return guidance for the host or model capability that prevented desktop access."""
 
@@ -163,4 +180,9 @@ def build_cua_task_prompt(
     return text
 
 
-__all__ = ["build_cua_repl_prompt", "build_cua_task_prompt", "build_cua_unavailable_prompt"]
+__all__ = [
+    "build_cua_app_launch_prompt",
+    "build_cua_repl_prompt",
+    "build_cua_task_prompt",
+    "build_cua_unavailable_prompt",
+]

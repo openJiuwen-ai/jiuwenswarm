@@ -104,6 +104,7 @@ def test_single_agent_mounts_cua_agent_only_when_explicitly_enabled(
     spec = _cua_spec(subagents)
     assert spec.factory_name == CUA_AGENT_FACTORY_NAME
     assert spec.max_iterations == 7
+    assert "永远不要使用 `subprocess`" in spec.system_prompt
     # Shares the parent's filesystem boundary like every other built-in spec.
     assert spec.sys_operation is adapter._sys_operation
     assert spec.workspace == str(tmp_path)
@@ -712,6 +713,8 @@ def test_cua_factory_keeps_caller_rails_with_repl(monkeypatch, legacy_available,
     host_prompt = spec.system_prompt.removesuffix(sdk_instructions)
     assert ("get_window_state" in host_prompt) is legacy_available
     assert guidance in spec.system_prompt
+    launch_rule = "Never use `subprocess`" if language == "en" else "永远不要使用 `subprocess`"
+    assert host_prompt.count(launch_rule) == 1
     assert host_prompt.index("app = computer.app(") < host_prompt.index("app.read()")
     assert 'app.read(view="both")' in host_prompt
     assert ("无需打印或截取" if language == "cn" else "no need to print or slice") in host_prompt

@@ -11,7 +11,7 @@ from openjiuwen.harness.tools.cua.rails import CuaProgressRail
 
 from jiuwenswarm.common import cua_config
 
-from .prompt.cua_task_prompt import build_cua_repl_prompt
+from .prompt.cua_task_prompt import build_cua_app_launch_prompt, build_cua_repl_prompt
 
 _LOG = logging.getLogger(__name__)
 
@@ -45,12 +45,14 @@ def build_cua_agent_config(
         cua_pause_on_user_input=cua_pause_on_user_input,
         rails=rails,
     )
+    app_launch_prompt = build_cua_app_launch_prompt(language)
     if not repl_available:
+        spec.system_prompt = f"{app_launch_prompt}\n\n{spec.system_prompt}"
         return spec
 
     from .rails.cua_extension_rail import CuaExtensionRail
 
-    prompt = build_cua_repl_prompt(language, legacy_available=legacy_available)
+    prompt = f"{app_launch_prompt}\n\n{build_cua_repl_prompt(language, legacy_available=legacy_available)}"
     try:
         from computer_use_mcp.instructions import DESCRIPTION
     except ImportError as error:
