@@ -225,7 +225,7 @@ function Preserve-Prefix([string]$Source, [string]$RuntimeName = '') {
         if ($saved.source -eq $Source -and $saved.target -ne $active -and (Inside $saved.target $installed)) { [string]$saved.target }
     })
     if (Test-Path -LiteralPath $target) {
-        $manifest=Get-Content -LiteralPath (Join-Path $target 'manifest.json') -Raw | ConvertFrom-Json
+        $manifest=Get-Content -LiteralPath (Join-Path $target 'manifest.json') -Encoding UTF8 -Raw | ConvertFrom-Json
         if ($manifest.source -ne $Source -or $manifest.digest -ne $digest -or (Inventory $prefix) -ne $before) { throw "Existing preservation is incomplete or changed: $target" }
     } else {
         $stage=Join-Path $store ('.pending-'+[guid]::NewGuid().ToString('N'))
@@ -260,7 +260,7 @@ function Preserve-Prefix([string]$Source, [string]$RuntimeName = '') {
             }
         } finally { $agentLock.Dispose() }
     } elseif (Test-Path -LiteralPath $activeDirectory) {
-        $origin=Get-Content -LiteralPath (Join-Path $activeDirectory 'origin.json') -Raw | ConvertFrom-Json
+        $origin=Get-Content -LiteralPath (Join-Path $activeDirectory 'origin.json') -Encoding UTF8 -Raw | ConvertFrom-Json
         if ($origin.source -ne $Source -or $origin.initial_digest -ne $digest) { throw "Conflicting CLI destination: $activeDirectory" }
         if (-not [IO.Directory]::Exists((Long-Path $active)) -or
             ([IO.File]::Exists((Long-Path (Join-Path $Source 'node.exe'))) -and
