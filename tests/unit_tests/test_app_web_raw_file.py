@@ -121,6 +121,74 @@ def test_raw_file_serves_an_image_in_the_selected_project_directory(tmp_path):
         server.server_close()
 
 
+def test_raw_file_declares_charset_for_text_artifacts(tmp_path):
+    """A text artifact opened directly by a browser must declare its charset.
+
+    Without it Chromium decodes UTF-8 Chinese bytes with its default encoding
+    and shows mojibake (issue #5435).
+    """
+    agent_root = tmp_path / "agent"
+    docs_dir = agent_root / "sessions" / "session-1" / "artifacts"
+    docs_dir.mkdir(parents=True)
+    markdown = docs_dir / "快速排序算法介绍.md"
+    markdown.write_text("# 快速排序算法介绍\n\n分治排序，平均 O(n log n)。\n", encoding="utf-8")
+    legacy = docs_dir / "历史说明.txt"
+    legacy.write_bytes("历史产物正文\n".encode("gbk"))
+    long_legacy = docs_dir / "长篇历史说明.md"
+    long_legacy.write_bytes((b"A" * 65536) + "后半段中文正文\n".encode("gbk"))
+    jsonl = docs_dir / "事件.jsonl"
+    jsonl.write_text('{"message":"中文"}\n', encoding="utf-8")
+    csv = docs_dir / "数据.csv"
+    csv.write_text("列,值\n中文,1\n", encoding="utf-8")
+    split_utf8 = docs_dir / "分块边界.txt"
+    split_utf8.write_bytes((b"A" * 65535) + "中文".encode("utf-8"))
+    incomplete_utf8 = docs_dir / "不完整结尾.txt"
+    incomplete_utf8.write_bytes(b"text\xc2")
+    incomplete_chinese = docs_dir / "写入中.txt"
+    incomplete_chinese.write_bytes(
+        "中文正文\n".encode("utf-8") + (b"A" * 65536) + b"\xe4\xb8"
+    )
+
+    class Handler(_SpaStaticHandler):
+        project_root = tmp_path
+        workspace_root = agent_root
+        agent_teams_root = tmp_path / "agent-teams"
+        logs_root = tmp_path / "logs"
+        auto_harness_root = tmp_path / "auto-harness"
+        api_target = ""
+        ws_target = ""
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        def content_type(path: Path) -> str:
+            connection = HTTPConnection("127.0.0.1", server.server_port)
+            try:
+                connection.request("HEAD", f"/file-api/raw-file?path={quote(str(path))}")
+                response = connection.getresponse()
+                try:
+                    assert response.status == 200
+                    return response.headers["Content-Type"]
+                finally:
+                    response.read()
+            finally:
+                connection.close()
+
+        assert content_type(markdown) == "text/markdown; charset=utf-8"
+        assert content_type(legacy) == "text/plain; charset=gb18030"
+        assert content_type(long_legacy) == "text/markdown; charset=gb18030"
+        assert content_type(jsonl) == "application/x-ndjson; charset=utf-8"
+        assert content_type(csv) == "text/csv; charset=utf-8"
+        assert content_type(split_utf8) == "text/plain; charset=utf-8"
+        assert content_type(incomplete_utf8) == "text/plain; charset=utf-8"
+        assert content_type(incomplete_chinese) == "text/plain; charset=utf-8"
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
 def test_raw_file_serves_an_organization_summary(tmp_path):
     agent_root = tmp_path / "agent"
     agent_root.mkdir()
