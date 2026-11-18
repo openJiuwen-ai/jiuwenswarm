@@ -676,7 +676,14 @@ from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import 
     SkillRetrievalPromptRail,
 )
 from jiuwenswarm.common.symphony_config import load_symphony_config
+from jiuwenswarm.agents.harness.common.tools.archive_tools import (
+    extract_archive,
+    inspect_archive,
+)
+from jiuwenswarm.agents.harness.common.tools.docx_tools import read_docx
 from jiuwenswarm.agents.harness.common.tools.pdf_tools import read_pdf
+from jiuwenswarm.agents.harness.common.tools.pptx_tools import read_pptx
+from jiuwenswarm.agents.harness.common.tools.spreadsheet_tools import read_spreadsheet
 from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_tools as get_acp_output_tools
 from jiuwenswarm.agents.harness.common.tools.acp_chat import acp_chat
 from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
@@ -13278,7 +13285,14 @@ class JiuWenSwarmDeepAdapter:
         """Get tool cards."""
         tool_cards = []
 
-        for wtool in [read_pdf]:
+        for wtool in [
+            read_pdf,
+            read_docx,
+            read_spreadsheet,
+            read_pptx,
+            inspect_archive,
+            extract_archive,
+        ]:
             self._register_shared_tool(wtool)
             tool_cards.append(wtool.card)
 
