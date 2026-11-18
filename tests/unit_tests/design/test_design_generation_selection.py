@@ -17,7 +17,9 @@ from jiuwenswarm.common.utils import get_config_file
 from jiuwenswarm.server.runtime.designer import media_generation as mg
 from jiuwenswarm.server.runtime.designer.generation_selection import (
     DesignSelectionError,
+    catalogue_generation_model,
     generation_selection_view,
+    reuse_catalogue_snapshot,
     set_generation_selection,
 )
 
@@ -193,3 +195,69 @@ def test_vllm_omni_catalogue_model_needs_only_the_url(monkeypatch: pytest.Monkey
     assert mg.generation_problem("video") is None
     assert mg.slot_settings("video").backend == "vllm-omni"
     assert mg.slot_settings("video").api_key == ""
+
+
+def _count_catalogue_yaml_reads(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    """Count YAML reads performed by MultimodalStore catalogue loads."""
+    import jiuwenswarm.common.multimodal_store as multimodal_store
+
+    counts = {"n": 0}
+    original = multimodal_store.load_yaml_round_trip
+
+    def _counted(*args: object, **kwargs: object):
+        counts["n"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(multimodal_store, "load_yaml_round_trip", _counted)
+    return counts
+
+
+def test_catalogue_resolution_parses_the_file_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = _prepare(monkeypatch)
+    _create(store, _model("video_gen", "wan-once"))
+    counts = _count_catalogue_yaml_reads(monkeypatch)
+    found = catalogue_generation_model("video_gen")
+    assert found.present
+    assert found.model is not None
+    assert counts["n"] == 1
+
+
+def test_prompt_budget_wave_reuses_one_catalogue_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = _prepare(monkeypatch)
+    _create(store, _model("video_gen", "wan-wave"))
+    _create(store, _model("visual_gen", "qwen-wave"))
+    counts = _count_catalogue_yaml_reads(monkeypatch)
+    from jiuwenswarm.server.runtime.designer.pipeline.media_prompt_limits import (
+        media_prompt_limit_packet,
+        resolve_prompt_limit,
+    )
+
+    with reuse_catalogue_snapshot():
+        for _ in range(120):
+            resolve_prompt_limit("image")
+            resolve_prompt_limit("video")
+            media_prompt_limit_packet()
+    assert counts["n"] == 1
+
+    with reuse_catalogue_snapshot():
+        resolve_prompt_limit("video")
+    assert counts["n"] == 2
+
+
+def test_enforce_leaf_agents_loads_the_catalogue_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = _prepare(monkeypatch)
+    _create(store, _model("video_gen", "wan-leaf"))
+    _create(store, _model("visual_gen", "qwen-leaf"))
+    counts = _count_catalogue_yaml_reads(monkeypatch)
+    from jiuwenswarm.server.runtime.designer.orchestration import Director
+
+    graph = {
+        "nodes": [
+            {"id": f"clip_{index}", "config": {"role": "clip"}}
+            for index in range(120)
+        ]
+    }
+    Director._enforce_leaf_agents(graph)
+    assert counts["n"] == 1
+    assert "media_prompt_limits" in graph["nodes"][0]["config"]
+    assert graph["nodes"][0]["config"]["prompt_char_limit"]
