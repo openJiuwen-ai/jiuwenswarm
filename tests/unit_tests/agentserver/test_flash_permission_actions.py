@@ -401,6 +401,105 @@ async def test_todo_preserves_operation_denials(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("policy,normalize", [("allow", True), ("ask", False)])
+async def test_todo_missing_modify_action_fails_without_skipping_sibling(
+    permission_adapter, policy, normalize
+):
+    from flash_sdk import sdk_tools
+
+    from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
+    from jiuwenswarm.agents.harness.common.rails.tool_result_normalize_rail import (
+        ToolResultNormalizeRail,
+    )
+    from jiuwenswarm.agents.harness.flash.tools.flash_todo import UnifiedTodoTool
+
+    modify = AsyncMock()
+    list_tasks = AsyncMock(return_value={"tasks": []})
+    tool = UnifiedTodoTool(
+        {"modify": SimpleNamespace(invoke=modify), "list": SimpleNamespace(invoke=list_tasks)},
+        language="en",
+    )
+    _, rail = permission_adapter({"todo": policy})
+    confirm = AsyncMock()
+    rail._host.request_permission_confirmation = confirm
+    ctx = tool_context("todo", {
+        "action": "modify",
+        "todos": [{"id": "research", "status": "in_progress"}],
+        "call_goal": "Start research",
+    })
+    sibling = tool_context("todo", {"action": "list"}, call_id="list-sibling").inputs.tool_call
+    ctx.session.write_stream = AsyncMock()
+
+    async with sdk_tools(rail, ctx.session, [tool]) as (manager, native_ctx):
+        callbacks = native_ctx.agent.agent_callback_manager
+        await callbacks.register_rail(
+            ToolResultNormalizeRail(normalize_enabled=normalize), native_ctx.agent
+        )
+        await callbacks.register_rail(JiuSwarmStreamEventRail(), native_ctx.agent)
+        calls = [ctx.inputs.tool_call, sibling] if policy == "allow" else ctx.inputs.tool_call
+        results = await manager.execute(native_ctx, calls, ctx.session)
+
+    result, message = results[0]
+    assert result["success"] is False
+    assert "'modify_action' is required" in message.content
+    assert "PERMISSION_DENIED" not in message.content
+    modify.assert_not_awaited()
+    confirm.assert_not_awaited()
+    assert list_tasks.await_count == (1 if policy == "allow" else 0)
+    events = [
+        call.args[0].payload["tool_result"]
+        for call in ctx.session.write_stream.await_args_list
+        if call.args[0].type == "tool_result"
+    ]
+    event = next(event for event in events if event["tool_call_id"] == "call-1")
+    assert event["success"] is False
+    assert "'modify_action' is required" in event["result"]
+
+
+@pytest.mark.asyncio
+async def test_invalid_todo_preserves_outer_deny(permission_adapter):
+    _, rail = permission_adapter({"todo": "deny"})
+    ctx = tool_context("todo", {"action": "modify", "todos": [{"id": "a"}]})
+    await rail.before_tool_call(ctx)
+    assert ctx.extra.get("_skip_tool") is True
+    assert ctx.inputs.tool_result.startswith("[PERMISSION_DENIED]")
+    assert "Invalid Flash action" not in ctx.inputs.tool_result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("approved", [True, False])
+async def test_corrected_todo_checks_completion_approval(permission_adapter, approved):
+    from flash_sdk import sdk_tools
+    from openjiuwen.harness.security.models import PermissionConfirmResponse
+
+    from jiuwenswarm.agents.harness.flash.tools.flash_todo import UnifiedTodoTool
+
+    modify = AsyncMock(return_value={"updated": 1})
+    tool = UnifiedTodoTool({"modify": SimpleNamespace(invoke=modify)}, language="en")
+    _, rail = permission_adapter({"todo": "allow", "todo_complete": "ask"})
+    confirm = AsyncMock(return_value=PermissionConfirmResponse(approved=approved))
+    rail._host.request_permission_confirmation = confirm
+    todos = [{"id": "a", "status": "completed"}]
+    invalid = tool_context("todo", {"action": "modify", "todos": todos})
+    corrected = tool_context(
+        "todo", {"action": "modify", "modify_action": "update", "todos": todos},
+        call_id="corrected",
+    ).inputs.tool_call
+    async with sdk_tools(rail, invalid.session, [tool]) as (manager, native_ctx):
+        [(result, _)] = await manager.execute(native_ctx, invalid.inputs.tool_call, invalid.session)
+        assert result["success"] is False
+        confirm.assert_not_awaited()
+        modify.assert_not_awaited()
+        await manager.execute(native_ctx, corrected, invalid.session)
+    confirm.assert_awaited_once()
+    if approved:
+        modify.assert_awaited_once()
+        assert modify.await_args.args[0] == {"action": "update", "todos": todos}
+    else:
+        modify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_outer_deny_cannot_be_relaxed_by_legacy_allow(permission_adapter):
     _, rail = permission_adapter({"web_flash": "deny", "web_search": "allow"})
     ctx = tool_context("web_flash", {"search": {"query": "fixture"}})

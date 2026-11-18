@@ -98,6 +98,18 @@ def _todo_ctx(session: _FakeSession, action: str, call_id: str = "call-todo") ->
     )
 
 
+@pytest.mark.asyncio
+async def test_failed_modify_does_not_enroll_open_tasks_for_close_nudge():
+    rail, _ = _rail({"existing": TodoStatus.IN_PROGRESS})
+    ctx = _todo_ctx(_FakeSession(), "modify")
+    ctx.inputs.tool_result = {"status": "error", "success": False, "error": "Missing modify_action"}
+
+    await rail.after_tool_call(ctx)
+
+    assert not rail._open_todos
+    assert not rail._unfinished_todos
+
+
 def _refusal_usage(**overrides) -> UsageMetadata:
     usage = {
         "output_tokens": 47,

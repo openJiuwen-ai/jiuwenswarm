@@ -338,8 +338,10 @@ class FlashTodoRail(DeepAgentRail):
         if _todo_action(ctx.inputs.tool_args) not in ("create", "modify"):
             return
         result = ctx.inputs.tool_result
-        if (getattr(ctx, "exception", None) is not None or result is None
-                or getattr(result, "success", True) is False):
+        if getattr(ctx, "exception", None) is not None or result is None:
+            return
+        success = result.get("success") if isinstance(result, dict) else getattr(result, "success", None)
+        if success is False:
             return
         snapshot = snapshot_from_result(ctx.inputs.tool_result)
         if snapshot is not None:

@@ -4,10 +4,12 @@
 import asyncio
 import hashlib
 import json
+import logging
 from copy import deepcopy
 from dataclasses import replace
 from typing import Any
 
+from openjiuwen.core.foundation.llm.schema.message import ToolMessage
 from openjiuwen.core.runner import Runner
 from openjiuwen.harness.rails.interrupt.interrupt_base import (
     ApproveResult,
@@ -26,10 +28,13 @@ from jiuwenswarm.server.runtime.skill_turbo.rails.permission_rail import (
     SkillTurboPermissionRail,
 )
 
+from ..tools.todo_arguments import TodoArgumentError
 from .skill_install import FlashSkillSearchTool, save_state, state_for
 from .tool_policy_projection import is_projected, project_operations
 
 _PENDING = "__flash_permission_pending__"
+_INVALID_TODO_ARGUMENTS = "flash:invalid_todo_arguments"
+logger = logging.getLogger(__name__)
 
 
 def _requires_explicit_approval(operation, permission, matched_rule):
@@ -85,6 +90,10 @@ class FlashPermissionRail(SkillTurboPermissionRail):
         project_cfg = self.projection_config_for(ctx)
         try:
             operations = project_operations(tool_name, tool_args, project_cfg)
+        except TodoArgumentError as exc:
+            if outer.permission == PermissionLevel.DENY:
+                return outer
+            return PermissionResult(PermissionLevel.DENY, _INVALID_TODO_ARGUMENTS, str(exc))
         except (TypeError, ValueError, KeyError):
             return PermissionResult(
                 PermissionLevel.DENY,
@@ -127,6 +136,18 @@ class FlashPermissionRail(SkillTurboPermissionRail):
             # SDK sibling calls share extra; a rejected call must not skip a sibling.
             ctx.extra = dict(ctx.extra)
         return super()._apply_decision(ctx, tool_call, tool_name, decision)
+
+    def _reject_projected_call(self, ctx, tool_call, result, permission_message):
+        if tool_call.name == "todo" and result.matched_rule == _INVALID_TODO_ARGUMENTS:
+            logger.info(
+                "flash.todo.invalid_arguments session_id=%s tool_call_id=%s reason=%s",
+                self._resolve_session_id(ctx), tool_call.id, result.reason,
+            )
+            return RejectResult(
+                tool_result={"status": "error", "success": False, "error": result.reason},
+                tool_message=ToolMessage(content=result.reason, tool_call_id=tool_call.id),
+            )
+        return self.reject(tool_result=permission_message)
 
     async def resolve_interrupt(
         self, ctx, tool_call, user_input, auto_confirm_config=None
@@ -176,7 +197,10 @@ class FlashPermissionRail(SkillTurboPermissionRail):
             pending.pop(tool_call.id, None)
             if ctx.session:
                 ctx.session.update_state({_PENDING: pending})
-            return self.reject(tool_result=f"[PERMISSION_DENIED] {result.reason}")
+            return self._reject_projected_call(
+                ctx, tool_call, result,
+                f"[PERMISSION_DENIED] {result.reason}",
+            )
         if (
             payload is not None
             and payload.approved
@@ -206,8 +230,9 @@ class FlashPermissionRail(SkillTurboPermissionRail):
                     tool_result="[PERMISSION_DENIED] Permission recheck failed"
                 )
             if final.permission == PermissionLevel.DENY:
-                return self.reject(
-                    tool_result="[PERMISSION_DENIED] Permission revoked before execution"
+                return self._reject_projected_call(
+                    ctx, tool_call, final,
+                    "[PERMISSION_DENIED] Permission revoked before execution",
                 )
             if (
                 final.permission == PermissionLevel.ASK
