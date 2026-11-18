@@ -1107,9 +1107,10 @@ export function createJiuwenMateApi(request: JiuwenMateRequest, subscribe?: Jiuw
     /** Removes the IM app; its agent keeps its data and returns if the same app is bound again. */
     async unbindConnection(connection: JiuwenMateConnection): Promise<void> {
       if (connection.channel === 'web') return;
+      const idKey = connection.channel === 'dingtalk' ? 'client_id' : 'app_id';
       await request(
         `channel.${connection.channel}.unbind_agent`,
-        connection.channel === 'dingtalk' ? { client_id: connection.connectionKey } : { app_id: connection.connectionKey },
+        { [idKey]: connection.connectionKey, persistent_agent_id: connection.agentId },
       );
     },
     async listModels(): Promise<JiuwenMateModelCatalog> {

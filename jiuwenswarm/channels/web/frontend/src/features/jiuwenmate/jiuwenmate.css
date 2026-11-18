@@ -1256,10 +1256,12 @@
 
 .jiuwenmate-colleague-card__description {
   display: -webkit-box;
+  max-width: 100%;
   overflow: hidden;
   color: var(--jm-text-2);
   font-size: 12px;
   line-height: 1.7;
+  overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
 }

@@ -953,8 +953,8 @@ test('binding and unbinding an IM app name the colleague configuration and the a
       config_id: 'agent-1', client_id: 'ding-app', client_secret: 'test-secret', robot_code: 'robot',
     }],
     ['channel.feishu.bind_agent', { config_id: 'agent-1', app_id: 'cli-app', app_secret: 'test-secret' }],
-    ['channel.dingtalk.unbind_agent', { client_id: 'ding-app' }],
-    ['channel.feishu.unbind_agent', { app_id: 'cli-app' }],
+    ['channel.dingtalk.unbind_agent', { client_id: 'ding-app', persistent_agent_id: 'agent-ding' }],
+    ['channel.feishu.unbind_agent', { app_id: 'cli-app', persistent_agent_id: 'agent-feishu' }],
   ]);
 });
 
