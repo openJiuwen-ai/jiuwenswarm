@@ -1459,6 +1459,7 @@ async def test_repository_pat_first_authorization_creates_minimal_stopped_config
         "collection_enabled": False,
         "agent_use_enabled": False,
         "strategy_profile": "rules",
+        "max_context_size_mb": 50,
         "max_pages_per_directory": 20,
         "max_subdirectories_per_directory": 20,
         "fetch_services": [],

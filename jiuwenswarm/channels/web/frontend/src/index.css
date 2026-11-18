@@ -269,6 +269,16 @@ body.workspace-resize-active iframe {
    Component Layer
    =========================================== */
 
+:root {
+  --mode-rail-width: 72px;
+}
+
+@media (max-width: 760px) {
+  :root {
+    --mode-rail-width: 56px;
+  }
+}
+
 @layer components {
 
   /* Shell Layout */
@@ -292,13 +302,13 @@ body.workspace-resize-active iframe {
 
   /* Shell icon rail */
   .shell--icon-rail {
-    grid-template-columns: 72px minmax(0, 1fr);
+    grid-template-columns: var(--mode-rail-width) minmax(0, 1fr);
     grid-template-areas: 'nav content';
     --tool-panel-width: 300px;
   }
 
   .shell--icon-rail.shell--agent-management {
-    grid-template-columns: 72px minmax(0, 1fr);
+    grid-template-columns: var(--mode-rail-width) minmax(0, 1fr);
   }
 
   /* Topbar */
