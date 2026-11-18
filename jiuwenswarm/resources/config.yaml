@@ -723,6 +723,8 @@ react:
     enable_for_models:
       - glm
       - deepseek
+      - kimi
+      - openpangu
     subagents:                      # 子 agent 延迟加载配置
       enabled: false                # 子 agent 总开关，默认关闭
       inherit_parent_eager_tools: true  # 继承父 agent 的 eager 列表

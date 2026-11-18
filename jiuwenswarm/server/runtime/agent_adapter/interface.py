@@ -1868,6 +1868,7 @@ class JiuWenSwarm:
         mode: str,
         project_dir: str | None = None,
         adapter_mode: str | None = None,
+        request: AgentRequest | None = None,
     ) -> None:
         """Initialize and start the session-owned adapter without sending input.
 
@@ -1883,12 +1884,26 @@ class JiuWenSwarm:
         prepare = getattr(adapter, "prepare_session", None)
         if not callable(prepare):
             raise RuntimeError("active adapter does not support session prewarming")
-        await prepare(
-            session_id=session_id,
-            channel_id=channel_id,
-            mode=mode,
-            project_dir=project_dir,
-        )
+        if request is None:
+            await prepare(
+                session_id=session_id,
+                channel_id=channel_id,
+                mode=mode,
+                project_dir=project_dir,
+            )
+            return
+        # session.prepare：与对话轮同样的租户上下文和身份下构建。
+        tenant_tokens, mem_token = self._bind_tenant_request_context(request)
+        try:
+            await prepare(
+                session_id=session_id,
+                channel_id=channel_id,
+                mode=mode,
+                project_dir=project_dir,
+                request=request,
+            )
+        finally:
+            self._reset_tenant_request_context(tenant_tokens, mem_token)
 
     def build_inputs(self, request: AgentRequest) -> Tuple[dict[str, Any], str, str]:
         """构建 adapter 所需的 inputs 字典（公共接口）."""
