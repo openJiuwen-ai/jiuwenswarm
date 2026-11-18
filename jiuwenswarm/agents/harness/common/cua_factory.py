@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from importlib.resources import files
 import logging
 
 from openjiuwen.harness.rails.multimodal_context_summarizer_rail import MultimodalContextSummarizerRail
@@ -51,12 +50,13 @@ def build_cua_agent_config(
 
     from .rails.cua_extension_rail import CuaExtensionRail
 
+    prompt = build_cua_repl_prompt(language, legacy_available=legacy_available)
     try:
-        api = files("computer_use").joinpath("__init__.pyi").read_text(encoding="utf-8")
-    except (ImportError, OSError, TypeError, UnicodeError) as error:
-        _LOG.warning("Computer Use SDK interface is unavailable: %s", error)
-        api = None
-    prompt = build_cua_repl_prompt(language, legacy_available=legacy_available, api=api)
+        from computer_use_mcp.instructions import DESCRIPTION
+    except ImportError as error:
+        _LOG.warning("Computer Use SDK instructions are unavailable: %s", error)
+    else:
+        prompt += f"\n\n{DESCRIPTION}"
 
     spec.rails = list(spec.rails or [])
     if not legacy_available:

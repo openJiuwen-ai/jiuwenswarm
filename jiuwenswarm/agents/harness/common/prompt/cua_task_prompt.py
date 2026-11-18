@@ -112,8 +112,8 @@ def build_cua_unavailable_prompt(language: str = "cn", *, backend_available: boo
     return prompts.get(language, prompts["cn"])
 
 
-def build_cua_repl_prompt(language: str, *, legacy_available: bool, api: str | None) -> str:
-    """Return localized guidance for the desktop subagent's REPL."""
+def build_cua_repl_prompt(language: str, *, legacy_available: bool) -> str:
+    """Return host-specific guidance for the desktop subagent's REPL."""
     if language == "en":
         intro = (
             "Use single-step tools for simple actions and cua_repl for multi-step workflows. "
@@ -123,17 +123,13 @@ def build_cua_repl_prompt(language: str, *, legacy_available: bool, api: str | N
             "Leave web page automation to the browser agent. Verify the outcome by observing it."
         )
         instructions = (
-            "cua_repl executes Python. computer, print and print_image are preloaded. "
-            "Call SDK methods synchronously. Variables persist within this delegation. "
-            "The host closes the session afterwards. Inspect the interface with `app.read()`, or "
-            '`app.read(view="both")` for the tree and screenshot. The result is shown automatically. '
-            "There is no need to print or slice `obs.text` to see it. "
-            "On macOS, open a named app directly with `computer.app(name).read()` unless the user "
-            "specifies a method such as double-clicking in Finder. Read again to verify actions. "
-            "After a timeout or cancellation, actions may already have executed. Never replay them "
-            "automatically. This code runs with the host user's permissions."
+            "Call SDK methods synchronously in cua_repl. Python variables persist within this delegation. "
+            "The host closes the session afterwards. Code runs with the host user's permissions. "
+            "On macOS, open apps directly by name unless the user specifies a method such as double-clicking "
+            'in Finder. For example, to open Calendar, use `app = computer.app("Calendar")` then `app.read()`. '
+            'Use `app.read(view="both")` when you need the tree and screenshot together. '
+            "The tool displays the result automatically. There is no need to print or slice the text."
         )
-        api_heading = "Public Computer Use SDK interface"
     else:
         intro = (
             "简单动作使用单步工具，多步流程使用 cua_repl。两类工具的引用和截图坐标分别使用。"
@@ -142,19 +138,12 @@ def build_cua_repl_prompt(language: str, *, legacy_available: bool, api: str | N
             "网页自动化交给浏览器子代理。操作后观察结果以确认是否完成。"
         )
         instructions = (
-            "cua_repl 执行 Python，已预载 computer、print 和 print_image。"
-            "直接调用同步 SDK 方法。变量在本次委派期间保留，委派结束后由宿主关闭会话。"
-            '查看界面直接用 `app.read()`，需要界面树和截图时用 `app.read(view="both")`。'
-            "读取结果会自动显示，无需打印或截取 `obs.text`。"
-            "在 macOS 上，打开已知名称的应用时直接用 `computer.app(name).read()`。"
-            "用户明确指定从访达双击等方式时，按指定方式操作。操作后重新读取以验证结果。"
-            "超时或取消时，动作可能已执行，禁止自动重放。代码以宿主用户的权限运行。"
+            "在 cua_repl 中直接调用同步 SDK 方法。Python 变量在本次委派期间保留，委派结束后由宿主关闭会话。"
+            "代码以宿主用户的权限运行。在 macOS 上按名称直接打开应用，用户指定从访达双击等方式时按其要求操作。"
+            '例如，打开日历时，先用 `app = computer.app("日历")` 取得应用句柄，再调用 `app.read()`。'
+            '需要同时查看界面树和截图时用 `app.read(view="both")`。工具自动显示读取结果，无需打印或截取文本。'
         )
-        api_heading = "Computer Use SDK 公共接口"
-    prompt = f"{intro}\n{instructions}"
-    if api:
-        prompt += f"\n{api_heading}\n```python\n{api}\n```"
-    return prompt
+    return f"{intro}\n{instructions}"
 
 
 def build_cua_task_prompt(

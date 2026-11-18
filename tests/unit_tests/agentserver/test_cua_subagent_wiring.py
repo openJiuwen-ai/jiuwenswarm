@@ -12,6 +12,7 @@ because agent-core's TaskTool owns its explicit resume / ``cua_result`` handling
 from __future__ import annotations
 
 import inspect
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -691,12 +692,11 @@ def test_enabled_cua_is_skipped_when_the_host_has_no_backend(monkeypatch, tmp_pa
 
 @pytest.mark.parametrize("legacy_available", [False, True])
 @pytest.mark.parametrize(("language", "guidance"), [("cn", "直接调用同步 SDK 方法"), ("en", "Call SDK methods synchronously")])
-def test_cua_factory_keeps_caller_rails_with_repl(monkeypatch, tmp_path, legacy_available, language, guidance):
+def test_cua_factory_keeps_caller_rails_with_repl(monkeypatch, legacy_available, language, guidance):
     from openjiuwen.harness.tools.cua.rails import CuaProgressRail
     from jiuwenswarm.agents.harness.common.rails.cua_extension_rail import CuaExtensionRail
 
-    (tmp_path / "__init__.pyi").write_text("class Computer: ...", encoding="utf-8")
-    monkeypatch.setattr(cua_factory, "files", lambda package: tmp_path)
+    sdk_instructions = pytest.importorskip("computer_use_mcp.instructions").DESCRIPTION
     monkeypatch.setattr(cua_config, "is_cua_repl_available", lambda: True)
     monkeypatch.setattr(cua_config, "is_legacy_cua_available", lambda: legacy_available)
     caller_rail = object()
@@ -708,20 +708,21 @@ def test_cua_factory_keeps_caller_rails_with_repl(monkeypatch, tmp_path, legacy_
     assert spec.rails[0] is caller_rail
     assert any(isinstance(rail, CuaExtensionRail) for rail in spec.rails)
     assert spec.factory_name == (CUA_AGENT_FACTORY_NAME if legacy_available else None)
-    assert ("list_windows" in spec.system_prompt) is legacy_available
+    assert spec.system_prompt.count(sdk_instructions) == 1
+    host_prompt = spec.system_prompt.removesuffix(sdk_instructions)
+    assert ("get_window_state" in host_prompt) is legacy_available
     assert guidance in spec.system_prompt
-    assert "computer.app(name).read()" in spec.system_prompt
-    assert 'app.read(view="both")' in spec.system_prompt
-    assert ("无需打印或截取" if language == "cn" else "no need to print or slice") in spec.system_prompt
-    assert "class Computer: ..." in spec.system_prompt
+    assert host_prompt.index("app = computer.app(") < host_prompt.index("app.read()")
+    assert 'app.read(view="both")' in host_prompt
+    assert ("无需打印或截取" if language == "cn" else "no need to print or slice") in host_prompt
     assert any(isinstance(rail, CuaProgressRail) for rail in spec.rails) is not legacy_available
 
 
 @pytest.mark.asyncio
-async def test_repl_only_subagent_registers_repl_without_legacy_tools_or_sdk_stub(monkeypatch, tmp_path):
+async def test_repl_only_subagent_registers_repl_without_legacy_tools_or_sdk_instructions(monkeypatch, tmp_path):
     from openjiuwen.harness import create_deep_agent
 
-    monkeypatch.setattr(cua_factory, "files", lambda package: tmp_path)
+    monkeypatch.setitem(sys.modules, "computer_use_mcp.instructions", None)
     monkeypatch.setattr(cua_config, "is_cua_repl_available", lambda: True)
     monkeypatch.setattr(cua_config, "is_legacy_cua_available", lambda: False)
     model = MagicMock()
