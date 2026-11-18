@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check } from 'lucide-react';
+import { webClient } from '../../../../services/webClient';
 import { useTranslation } from 'react-i18next';
 import type { ModelEntry, ModelGroup, VendorPresetMap } from '../../../../types';
 import { Button, Tag } from '../../../../components/ui';
@@ -303,6 +304,11 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
     const timer = setTimeout(() => void loadModels(), delay);
     return () => clearTimeout(timer);
   }, [isConnected, loadModels, modelsError, modelsLoading, modelsRetryable, modelsRetryCount]);
+
+  useEffect(() => webClient.on('models.updated', () => {
+    void loadModels();
+    checkRefreshStatus();
+  }), [loadModels, checkRefreshStatus]);
 
   const closeModelDialog = useCallback(() => {
     catalogRequestId.current += 1;

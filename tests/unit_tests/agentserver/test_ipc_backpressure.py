@@ -20,6 +20,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from tests.unit_tests.agentserver.fixtures.front_process import receive_business_frame
+
 from jiuwenswarm.server.ipc.client import connect
 from jiuwenswarm.server.ipc.protocol import KIND_HEARTBEAT
 from jiuwenswarm.server.ipc.server import IpcServer
@@ -509,7 +511,7 @@ async def _traffic(supervisor, gateway, client, frames):
     async def receive():
         sequence = []
         while True:
-            wire = json.loads(await client.recv())
+            wire = json.loads(await receive_business_frame(client))
             if wire.get("phase") == "final":
                 return sequence
             assert wire.get("response_kind") != "e2a.error", wire
@@ -648,9 +650,9 @@ async def test_real_worker_survives_large_log_regex(tmp_path, monkeypatch, caplo
                 dispatch = asyncio.create_task(supervisor.dispatch_parsed_request(
                     gateway["ws"], _request(1), gateway["lock"],
                 ))
-                first = json.loads(await asyncio.wait_for(client.recv(), 5))
+                first = json.loads(await asyncio.wait_for(receive_business_frame(client), 5))
                 assert first["phase"] == "regex_starting"
-                final = json.loads(await asyncio.wait_for(client.recv(), 5))
+                final = json.loads(await asyncio.wait_for(receive_business_frame(client), 5))
                 await asyncio.wait_for(dispatch, 2)
                 assert final["phase"] == "final" and final["log_seconds"] < 2
                 assert supervisor.worker_pid == pid and supervisor._restart_count == 0
@@ -679,7 +681,7 @@ async def test_real_worker_survives_blocked_logging_and_exits_before_sink_recove
                 dispatch = asyncio.create_task(supervisor.dispatch_parsed_request(
                     gateway["ws"], _request(1), gateway["lock"],
                 ))
-                first = json.loads(await asyncio.wait_for(client.recv(), 5))
+                first = json.loads(await asyncio.wait_for(receive_business_frame(client), 5))
                 assert first["phase"] == "logging_pending"
                 assert first["first_seconds"] < 2
                 assert first["log_thread"] == "worker-log-writer"
@@ -687,7 +689,7 @@ async def test_real_worker_survives_blocked_logging_and_exits_before_sink_recove
                 assert supervisor._last_rx > began + 25
                 assert supervisor._restart_count == 0
                 assert supervisor.worker_pid == pid and process.returncode is None
-                final = json.loads(await asyncio.wait_for(client.recv(), 10))
+                final = json.loads(await asyncio.wait_for(receive_business_frame(client), 10))
                 await asyncio.wait_for(dispatch, 2)
                 assert final["phase"] == "final" and final["sink_pending"]
                 assert final["blocked_seconds"] >= 36
@@ -739,7 +741,7 @@ async def test_real_worker_survives_busy_pools_timeout_and_reconnect(
                     finally:
                         lock.release()
                     await asyncio.wait_for(dispatch, 3)
-                    wire = json.loads(await asyncio.wait_for(client.recv(), 3))
+                    wire = json.loads(await asyncio.wait_for(receive_business_frame(client), 3))
                     assert wire["response_kind"] == "e2a.error"
                     assert "GATEWAY_FORWARD_FAILED" in json.dumps(wire)
                     snapshot = json.loads(
@@ -802,7 +804,7 @@ async def test_real_worker_keeps_heartbeat_during_slow_shell_probe(
                         gateway["ws"], _request(1), gateway["lock"]
                     )
                 )
-                first = json.loads(await asyncio.wait_for(client.recv(), 5))
+                first = json.loads(await asyncio.wait_for(receive_business_frame(client), 5))
                 assert first["phase"] == "shell_pending"
                 assert first["unknown"] and first["probe_pending"]
                 assert first["first_round_seconds"] < 2
@@ -817,7 +819,7 @@ async def test_real_worker_keeps_heartbeat_during_slow_shell_probe(
                 assert supervisor._restart_count == 0
                 assert supervisor._readiness.state is ReadinessState.AGENT_READY
 
-                final = json.loads(await asyncio.wait_for(client.recv(), 10))
+                final = json.loads(await asyncio.wait_for(receive_business_frame(client), 10))
                 await asyncio.wait_for(dispatch, 3)
                 assert final["phase"] == "final"
                 assert final["unknown"] and final["probe_pending"]
@@ -878,7 +880,7 @@ async def test_real_missing_heartbeats_triggers_transport_watchdog(
                     )
                 )
                 assert (
-                    json.loads(await asyncio.wait_for(client.recv(), 3))["phase"]
+                    json.loads(await asyncio.wait_for(receive_business_frame(client), 3))["phase"]
                     == "heartbeats_muted"
                 )
                 assert process.returncode is None, (
@@ -891,7 +893,7 @@ async def test_real_missing_heartbeats_triggers_transport_watchdog(
                 assert await process.wait(timeout=10) is not None, (
                     "A confirmed unhealthy Worker must be retired even without a restart budget"
                 )
-                failure = json.loads(await asyncio.wait_for(client.recv(), 3))
+                failure = json.loads(await asyncio.wait_for(receive_business_frame(client), 3))
                 assert "WORKER_CLOSED" in json.dumps(failure)
                 stderr = process.stderr_path.read_text(encoding="utf-8")
                 assert "Timeout (0:00:25)" in stderr
@@ -943,7 +945,7 @@ async def test_real_worker_keeps_heartbeat_with_requests_queued_during_stall(
                 tasks = [asyncio.create_task(supervisor.dispatch_parsed_request(
                     gateway["ws"], first, gateway["lock"],
                 ))]
-                assert json.loads(await asyncio.wait_for(client.recv(), 3))["phase"] == "freezing"
+                assert json.loads(await asyncio.wait_for(receive_business_frame(client), 3))["phase"] == "freezing"
                 began = time.monotonic()
                 await asyncio.sleep(0.5)
                 for index in range(3):
@@ -1012,7 +1014,7 @@ async def test_real_freeze_worker_survives_loop_stall(tmp_path, monkeypatch, cap
                     )
                 )
                 assert (
-                    json.loads(await asyncio.wait_for(client.recv(), 3))["phase"]
+                    json.loads(await asyncio.wait_for(receive_business_frame(client), 3))["phase"]
                     == "freezing"
                 )
                 started = time.monotonic()
@@ -1065,7 +1067,7 @@ async def test_real_sustained_stall_replaces_worker(
                     )
                 )
                 assert (
-                    json.loads(await asyncio.wait_for(client.recv(), 3))["phase"]
+                    json.loads(await asyncio.wait_for(receive_business_frame(client), 3))["phase"]
                     == "freezing"
                 )
                 started = time.monotonic()
@@ -1073,7 +1075,7 @@ async def test_real_sustained_stall_replaces_worker(
                 assert time.monotonic() - started >= 35
                 assert "business loop stalled" in caplog.text
                 assert "heartbeat timed out" not in caplog.text
-                failure = json.loads(await asyncio.wait_for(client.recv(), 3))
+                failure = json.loads(await asyncio.wait_for(receive_business_frame(client), 3))
                 assert "WORKER_CLOSED" in json.dumps(failure)
                 if max_restarts:
                     assert await supervisor._readiness.wait_agent_ready(15)
@@ -1121,7 +1123,7 @@ async def test_real_loopback_180_second_stall_logs_business_before_replacing_wor
                 dispatch = asyncio.create_task(supervisor.dispatch_parsed_request(
                     gateway["ws"], request, gateway["lock"],
                 ))
-                assert json.loads(await asyncio.wait_for(client.recv(), 3))["phase"] == "freezing"
+                assert json.loads(await asyncio.wait_for(receive_business_frame(client), 3))["phase"] == "freezing"
                 began = time.monotonic()
                 await asyncio.wait_for(dispatch, 205)
                 elapsed = time.monotonic() - began
@@ -1139,7 +1141,7 @@ async def test_real_loopback_180_second_stall_logs_business_before_replacing_wor
                     assert business["session_id"] == request.session_id
                     assert business["method"] == ReqMethod.CHAT_SEND.value
                     assert any(frame["function"] == "dispatch_parsed_request" for frame in business["stack"])
-                failure = json.loads(await asyncio.wait_for(client.recv(), 3))
+                failure = json.loads(await asyncio.wait_for(receive_business_frame(client), 3))
                 assert "WORKER_CLOSED" in json.dumps(failure)
                 assert await supervisor._readiness.wait_agent_ready(20)
                 assert supervisor.worker_pid != pid
@@ -1175,7 +1177,7 @@ async def test_real_abnormal_exit_keeps_exception_traceback(
                     ),
                     5,
                 )
-                assert "WORKER_CLOSED" in await asyncio.wait_for(client.recv(), 3)
+                assert "WORKER_CLOSED" in await asyncio.wait_for(receive_business_frame(client), 3)
         assert await process.wait(timeout=3) == 1
         stderr = process.stderr_path.read_text(encoding="utf-8")
         assert "Traceback" in stderr and "WorkerForceExit" in stderr
@@ -1287,7 +1289,7 @@ async def test_real_websocket_send_backpressure_reports_send_timeout(
                 assert supervisor._readiness.state is ReadinessState.AGENT_READY
                 async with asyncio.timeout(10):
                     while True:
-                        wire = json.loads(await client.recv())
+                        wire = json.loads(await receive_business_frame(client))
                         if wire.get("response_kind") == "e2a.error":
                             assert "GATEWAY_FORWARD_FAILED" in json.dumps(wire)
                             break
