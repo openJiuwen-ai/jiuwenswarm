@@ -691,6 +691,9 @@ def load_team_spec_dict(
     spec_dict["enable_hitt"] = team_raw.get("enable_hitt", True)
     spec_dict["enable_permissions"] = _resolve_enable_permissions(config_base)
     # Experimental switch drives both frontend UI and backend org tools.
+    spec_dict["enable_message_delivery_modes"] = (
+        (config_base.get("experimental") or {}).get("team_message_delivery_enabled", False) is True
+    )
     spec_dict["enable_organization"] = bool(
         (config_base.get("experimental") or {}).get("team_organization_ui_enabled", False)
     )

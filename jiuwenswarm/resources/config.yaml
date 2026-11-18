@@ -666,6 +666,7 @@ trajectory_ui:
   discard_final_span_frames: true
 
 experimental:
+  team_message_delivery_enabled: false # Opt in to team message timing, Jev routing and context merging
   team_organization_ui_enabled: false # Team Organization 多团队视图；关闭后新建团队不挂载 org 工具
   comfyui_workflow_enabled: false
   task_full_duplex_enabled: false    # 在任务对话空输入框中显示全双工入口

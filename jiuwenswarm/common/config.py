@@ -1166,6 +1166,15 @@ def update_trajectory_diagnosis_in_config(enabled: bool) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def update_team_message_delivery_in_config(enabled: bool) -> None:
+    """Persist the opt-in team message delivery switch."""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if "experimental" not in data or data["experimental"] is None:
+        data["experimental"] = {}
+    data["experimental"]["team_message_delivery_enabled"] = bool(enabled)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
 def update_team_organization_ui_in_config(enabled: bool) -> None:
     """Persist the experimental Organization UI switch without changing runtime capabilities."""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)

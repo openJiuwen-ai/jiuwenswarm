@@ -76,6 +76,7 @@ from jiuwenswarm.common.config import (
     update_swarmflow_enabled_in_config,
     update_symphony_in_config,
     update_task_full_duplex_in_config,
+    update_team_message_delivery_in_config,
     update_team_organization_ui_in_config,
     update_comfyui_workflow_enabled_in_config,
     update_task_asr_in_config,
@@ -400,6 +401,7 @@ CONFIG_YAML_KEYS = frozenset({
     "cua_agent_enabled",
     "trajectory_ui_diagnosis_enabled",
     "task_full_duplex_enabled",
+    "team_message_delivery_enabled",
     "team_organization_ui_enabled",
     "comfyui_workflow_enabled",
     "task_asr_enabled",
@@ -432,6 +434,7 @@ TEAM_DISPATCH_CONFIG_KEYS = frozenset({
     "team_task_verification_enabled",
     "team_member_messaging_enabled",
     "team_member_subtasks_enabled",
+    "team_message_delivery_enabled",
 })
 # Settings toggles that only change YAML; AgentServer reads the file next turn.
 RECOMMENDATION_UI_CONFIG_KEYS = frozenset({
@@ -1659,6 +1662,8 @@ def apply_config_payload(
                 update_progressive_tool_optimize_in_config(parsed)
             elif param_key == "task_full_duplex_enabled":
                 update_task_full_duplex_in_config(parsed)
+            elif param_key == "team_message_delivery_enabled":
+                update_team_message_delivery_in_config(parsed)
             elif param_key == "team_organization_ui_enabled":
                 update_team_organization_ui_in_config(parsed)
             elif param_key == "comfyui_workflow_enabled":
@@ -1887,6 +1892,9 @@ async def config_get_handler(
             "true" if trajectory_cfg.get("diagnosis_enabled", False) else "false"
         )
         experimental_cfg = raw.get("experimental") or {}
+        payload["team_message_delivery_enabled"] = (
+            "true" if experimental_cfg.get("team_message_delivery_enabled", False) else "false"
+        )
         payload["team_organization_ui_enabled"] = (
             "true" if experimental_cfg.get("team_organization_ui_enabled", False) else "false"
         )
@@ -1947,6 +1955,7 @@ async def config_get_handler(
         payload.setdefault("trajectory_ui_enabled", "false")
         payload.setdefault("trajectory_ui_diagnosis_enabled", "false")
         payload.setdefault("task_full_duplex_enabled", "false")
+        payload.setdefault("team_message_delivery_enabled", "false")
         payload.setdefault("team_organization_ui_enabled", "false")
         payload.setdefault("comfyui_workflow_enabled", "false")
         payload.setdefault("progressive_tool_optimize", "false")

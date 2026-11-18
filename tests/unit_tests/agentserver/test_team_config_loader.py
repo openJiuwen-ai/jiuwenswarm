@@ -1831,3 +1831,13 @@ def test_leader_from_top_level_reference_is_unbounded():
     assert spec["agents"]["leader"]["max_iterations"] is None
     assert spec["agents"]["leader"]["completion_timeout"] == 6000.0
     assert config["agents"]["agent_leader"]["max_iterations"] == 200
+
+
+@pytest.mark.parametrize("enabled", [None, False, True])
+def test_team_delivery_switch_reaches_new_team_spec(monkeypatch, enabled):
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "agentos")
+    config = _agentos_test_config()
+    if enabled is not None:
+        config["experimental"] = {"team_message_delivery_enabled": enabled}
+    result = load_team_spec_dict(config_base=config)
+    assert result["enable_message_delivery_modes"] is (enabled is True)

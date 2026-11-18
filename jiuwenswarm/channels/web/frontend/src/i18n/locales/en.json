@@ -968,6 +968,7 @@
       "rsi": "RSI · Recursive self-improvement",
       "trajectoryUi": "Trajectory diagnosis",
       "kvCacheAffinity": "Compute affinity",
+      "teamMessageDelivery": "Team message interaction",
       "teamOrganization": "Team Organization",
       "teamScheduledDispatch": "Scheduled dispatch",
       "skillPack": "Skill Packs",
@@ -1291,6 +1292,10 @@
       "trajectory_ui_diagnosis_enabled": {
         "title": "Enable trajectory diagnosis",
         "description": "Show the Diagnosis and Attribution view in a session to find why a run failed and get optimization suggestions. Turning it on records trajectory data automatically; only data recorded after it is turned on can be diagnosed. When off, trajectory pages are hidden."
+      },
+      "team_message_delivery_enabled": {
+        "title": "Enable team message delivery modes",
+        "description": "Enable private steer / follow_up / abort, Jev routing for broadcasts and group mentions, and pending-message context merging on steer. Off by default; when off, use the original interaction rules. Applies to new team sessions."
       },
       "team_organization_ui_enabled": {
         "title": "Enable Team Organization UI",
