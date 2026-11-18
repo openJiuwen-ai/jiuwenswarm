@@ -2528,6 +2528,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/file-api/skills/upload-temp":
             self._handle_skills_upload_temp()
             return
+        if parsed.path == "/file-api/assets/upload-temp":
+            self._handle_assets_upload_temp()
+            return
         if parsed.path == "/file-api/external-cli/custom-agents":
             self._handle_custom_agent_upload()
             return
@@ -2639,6 +2642,28 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         )
 
         status, payload = handle_skills_upload_temp_http(
+            content_type=self.headers.get("Content-Type", ""),
+            body=self._read_request_body(),
+        )
+        self._write_json(status, payload)
+
+    def _handle_assets_upload_temp(self) -> None:
+        from jiuwenswarm.server.runtime.assets.upload_http import (
+            MAX_ASSETS_UPLOAD_BYTES,
+            handle_assets_upload_temp_http,
+        )
+
+        if self._parse_content_length() > MAX_ASSETS_UPLOAD_BYTES:
+            self._write_json(
+                413,
+                {
+                    "code": "ASSET_LIMIT_EXCEEDED",
+                    "message": "upload too large",
+                    "error": "upload too large",
+                },
+            )
+            return
+        status, payload = handle_assets_upload_temp_http(
             content_type=self.headers.get("Content-Type", ""),
             body=self._read_request_body(),
         )

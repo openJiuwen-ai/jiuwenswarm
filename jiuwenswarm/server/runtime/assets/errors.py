@@ -87,6 +87,30 @@ _PACKAGE_BUILD_CODE_MAP: dict[str, str] = {
 }
 
 
+# ASSET_* 契约码 → HTTP 状态码。供 /file-api/assets/* HTTP 面使用；
+# WS 入口不走该映射，直接以 ok=False + to_payload() 返回错误。
+_HTTP_STATUS: dict[str, int] = {
+    AssetErrorCode.NOT_FOUND: 404,
+    AssetErrorCode.EXPORT_FORBIDDEN: 403,
+    AssetErrorCode.INVALID_PACKAGE: 400,
+    AssetErrorCode.UNSAFE_PATH: 400,
+    AssetErrorCode.CREDENTIAL_DETECTED: 400,
+    AssetErrorCode.LIMIT_EXCEEDED: 413,
+    AssetErrorCode.ALREADY_EXISTS: 409,
+    AssetErrorCode.BUILTIN_READ_ONLY: 403,
+}
+
+
+def asset_http_error_status(code: str) -> int:
+    """契约错误码 → HTTP 状态码；未知码按 400 兜底。"""
+    return _HTTP_STATUS.get(code, 400)
+
+
+def asset_http_error_body(code: str, message: str) -> dict[str, str]:
+    """HTTP 错误响应体，与 /file-api/skills/* 的 {code, message, error} 形状一致。"""
+    return {"code": code, "message": message, "error": message}
+
+
 def map_internal_error(exc: BaseException) -> AssetError | None:
     """把带 ``.code`` 的内部异常映射为契约错误码；无法映射时返回 None。
 

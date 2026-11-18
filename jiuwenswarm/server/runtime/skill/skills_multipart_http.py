@@ -5,8 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-import email.parser
-import email.policy
 import json
 import logging
 import os
@@ -22,6 +20,10 @@ from e2a.models import E2AEnvelope
 from e2a.wire_codec import parse_agent_server_wire_unary
 
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+from jiuwenswarm.common.multipart_form import MultipartParseError
+from jiuwenswarm.common.multipart_form import (
+    parse_multipart_form as _parse_multipart_form_common,
+)
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front.protocol import CONNECTION_ROLE_HEADER, CONNECTION_ROLE_RPC
@@ -64,36 +66,15 @@ def skill_http_error_body(code: str, message: str) -> dict[str, str]:
 
 
 def parse_multipart_form(content_type: str, body: bytes) -> dict[str, Any]:
-    """解析 multipart/form-data，返回字段名 → str 或 {filename, content}."""
-    if "multipart/form-data" not in (content_type or "").lower():
-        raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "Content-Type 须为 multipart/form-data")
-    header = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8")
-    msg = email.parser.BytesParser(policy=email.policy.default).parsebytes(header + body)
-    if not msg.is_multipart():
-        raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "无法解析 multipart 表单")
+    """解析 multipart/form-data，返回字段名 → str 或 {filename, content}.
 
-    fields: dict[str, Any] = {}
-    for part in msg.iter_parts():
-        if part.get_content_disposition() != "form-data":
-            continue
-        name = part.get_param("name", header="content-disposition")
-        if not name:
-            continue
-        filename = part.get_filename()
-        payload = part.get_payload(decode=True)
-        if payload is None:
-            content = part.get_content()
-            if isinstance(content, str):
-                payload = content.encode("utf-8")
-            elif isinstance(content, bytes):
-                payload = content
-            else:
-                payload = b""
-        if filename is not None:
-            fields[name] = {"filename": filename, "content": payload}
-        else:
-            fields[name] = payload.decode("utf-8", errors="replace")
-    return fields
+    实现位于 :mod:`jiuwenswarm.common.multipart_form`（与统一资产上传共用）；
+    本包装保持技能侧既有错误行为：解析失败抛 ``SkillRpcError``。
+    """
+    try:
+        return _parse_multipart_form_common(content_type, body)
+    except MultipartParseError as exc:
+        raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, str(exc)) from exc
 
 
 def handle_skills_upload_temp_http(
