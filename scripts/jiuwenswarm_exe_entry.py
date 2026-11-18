@@ -8,6 +8,7 @@ import sys
 import ctypes
 import subprocess
 import traceback
+import types
 from pathlib import Path
 
 from jiuwenswarm.common._build_config import DISPLAY_NAME, ERROR_LOG_NAME
@@ -447,6 +448,23 @@ def _stop_bundled_email_mcp() -> int:
     return int(failed or bool(alive))
 
 
+def _restore_parent_cwd() -> str | None:
+    """恢复父进程设定的 cwd，返回恢复后的目录（未知时返回 None）。
+
+    模块级 chdir 到数据目录只服务于 GUI 主进程，子进程（-c/-m/.py）依赖
+    父进程指定的 cwd 解析相对路径。_ORIGINAL_CWD 仅在 frozen 模块级定义过，
+    非冻结加载（测试）时缺省。
+    """
+    original_cwd = globals().get("_ORIGINAL_CWD")
+    if not original_cwd:
+        return None
+    try:
+        os.chdir(original_cwd)
+    except OSError:
+        return None
+    return original_cwd
+
+
 def main() -> None:
     _acquire_windows_app_mutexes()
     try:
@@ -582,6 +600,53 @@ def _ensure_stdio() -> None:
             pass
 
 
+def _split_dash_c_invocation() -> tuple[str, list[str]] | None:
+    """Split ``exe [options] -c <code> [args...]`` following CPython rules.
+
+    Returns ``(code, code_args)``, or ``None`` when the invocation is not a
+    ``-c`` form. ``-c`` only counts as the code flag while scanning leading
+    interpreter options (tokens starting with ``-``); the first non-option
+    token is a script path, and arguments after it belong to that script.
+    """
+    args = sys.argv[1:]
+    for index, token in enumerate(args):
+        if not token.startswith("-"):
+            return None
+        if token == "-c" and index + 1 < len(args):
+            return args[index + 1], args[index + 2:]
+    return None
+
+
+def _run_dash_c_command(code: str, code_args: list[str]) -> None:
+    """Execute a frozen ``-c`` child command the way CPython would.
+
+    The frozen exe is not a real interpreter, so ``exe -c CODE args``
+    previously fell through to the catch-all branch and exited 0 without
+    running anything (fake success). Run the code inline with CPython's
+    ``-c`` argv contract: ``sys.argv[0] == "-c"`` and the remaining tokens
+    are visible to the code. Exceptions propagate to :func:`main`, which
+    records them and exits non-zero.
+
+    与 CPython ``-c`` 一致，代码在全新的 ``__main__`` 模块命名空间中执行，
+    并临时把该模块同步到 ``sys.modules["__main__"]``，让 pickle 等按
+    ``__main__`` 反查顶层对象的机制可用（否则代码内定义的类反查不到，
+    ``pickle.dumps`` 抛 PicklingError）；执行结束后恢复原模块。
+    """
+    original_argv = sys.argv
+    sys.argv = ["-c", *code_args]
+    main_module = types.ModuleType("__main__")
+    saved_main = sys.modules.get("__main__")
+    sys.modules["__main__"] = main_module
+    try:
+        exec(compile(code, "<string>", "exec"), main_module.__dict__)
+    finally:
+        sys.argv = original_argv
+        if saved_main is None:
+            sys.modules.pop("__main__", None)
+        else:
+            sys.modules["__main__"] = saved_main
+
+
 def _dispatch() -> int | None:
     """Resolve the requested entrypoint and return its process exit code.
 
@@ -606,6 +671,16 @@ def _dispatch() -> int | None:
             doctor_supervisor_main if sys.argv[1] == "--doctor" else doctor_main
         )
         return doctor_entry(sys.argv[1:])
+    # -c 分发必须先于应用参数消费（_pop_flag）与 .py 探测：CPython 语义下
+    # `exe -c CODE --desktop-reset-external-cli-config` 里的 flag 是 CODE 的
+    # 参数而不是子进程 flag，若先走 flag 分发，_pop_flag 会把 flag 提前消费
+    # 并因多出参数报错，CODE 永远不会执行。
+    if getattr(sys, "frozen", False):
+        dash_c = _split_dash_c_invocation()
+        if dash_c is not None:
+            _restore_parent_cwd()
+            _run_dash_c_command(dash_c[0], dash_c[1])
+            return 0
     if _pop_flag(_DESKTOP_INSTALL_EXTERNAL_CLI):
         if len(sys.argv) != 3:
             raise ValueError("external CLI installation requires an agent name and artifact directory")
@@ -695,14 +770,17 @@ def _dispatch() -> int | None:
         from jiuwenswarm.channels.desktop.desktop_app import main as desktop_main
         desktop_main()
         return None
-    # 子进程模式：argv 有任何参数（.py 脚本或 -m 等），不检查单实例锁
+    # 子进程模式：argv 有任何参数（.py 脚本、-m 等），不检查单实例锁
     if getattr(sys, "frozen", False) and len(sys.argv) >= 2:
+        # 恢复父进程设定的 cwd：相对路径按父进程 cwd 解析
+        original_cwd = _restore_parent_cwd()
+
         script_path = next((arg for arg in sys.argv[1:] if arg.endswith(".py") or arg.endswith(".pyw")), None)
         if script_path:
             import runpy
             script_abs = Path(script_path)
-            if not script_abs.is_absolute() and _ORIGINAL_CWD:
-                script_abs = (Path(_ORIGINAL_CWD) / script_path).resolve()
+            if not script_abs.is_absolute() and original_cwd:
+                script_abs = (Path(original_cwd) / script_path).resolve()
             else:
                 script_abs = script_abs.resolve()
             if script_abs.exists():
@@ -731,10 +809,13 @@ def _dispatch() -> int | None:
                 sys.argv = original_argv
             return 0
 
-        # 其他有参数的情况：直接执行，不检查单实例锁
-        # 例如 code 工具、browser tools 等
-        # 让子进程自己处理参数或报错
-        return 0
+        # 未知参数形态：显性失败。此前这里静默 return 0，导致冻结环境下
+        # 误用 sys.executable 构造的子进程命令呈现 exit_code=0 且无输出的
+        # 假成功，问题被完全掩盖。交由 main() 记录错误日志并以非零码退出
+        raise ValueError(
+            "frozen exe received unsupported child arguments "
+            f"{sys.argv!r}; nothing was executed"
+        )
 
     # 只有无参数时才检查单实例锁（双击启动桌面应用）
     if not _acquire_single_instance_lock():
