@@ -266,6 +266,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261112_2025_permission-profile-refresh](bugfix/jiuwenswarm/server/B_20261112_2025_permission-profile-refresh.md) | B | 刷新后智能审批档位错误回显为默认权限 | nypdmax | jiuwenswarm/common, jiuwenswarm/server/control | jiuwenswarm/common/permission_mode.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, tests/unit_tests/agentserver/test_front_permission_profile.py | 无独立 D：补齐既有 config.get/config.set 权限档位回显契约，无独立设计；审批决策与持久化格式不变。 |
+| [B_20261118_1607_issue6809-source-free-exception-logging](bugfix/jiuwenswarm/common/B_20261118_1607_issue6809-source-free-exception-logging.md) | B | Issue 6809 异常日志脱敏同步源码读取修复 | 刘瑜 | jiuwenswarm/common | jiuwenswarm/common/utils.py, jiuwenswarm/common/log_exception.py, tests/unit_tests/common/test_log_exception.py, tests/unit_tests/agentserver/test_exception_logging_worker.py, tests/unit_tests/agentserver/fixtures/diagnostic_worker.py | 无独立 D：针对现有源头脱敏与 Worker 日志隔离契约的小范围缺陷修复，无独立设计。 |
 
 <a id="module-23"></a>
 

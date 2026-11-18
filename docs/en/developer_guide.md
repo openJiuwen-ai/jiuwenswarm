@@ -168,6 +168,12 @@ Notes:
 - Log files are never rotated or removed automatically; delete `logs/swarm-*.log`
   manually when they pile up
 
+Runtime exception logs retain file names, line numbers, function names, exception chains/groups,
+and redacted messages and notes. Source lines and local variables are omitted. Redaction reads
+the traceback in memory without source lookup through `linecache`, keeping slow filesystem
+access off the business thread. Frames, exception count, nesting depth, and diagnostic text
+have limits; omitted content is marked explicitly.
+
 #### Backend Code Changes
 
 After modifying backend Python code, run the following commands to reinitialize and start the service:
