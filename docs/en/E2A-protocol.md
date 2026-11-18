@@ -500,6 +500,8 @@ enum registration is required.
 
 Large tool results retain a short preview and may include `payload_refs`. Each reference contains `sha256`, `bytes`, `media_type`, and a host path. Clients retrieve content by session and digest. Previously stored prompt references remain readable through the same interface.
 
+When `tool_call` dispatches a target that reports an explicit failure in its result object, the tool result event carries `success: false`, `status: "error"`, and `is_error: true`. Clients display the call as failed even if dispatch succeeded.
+
 `text/plain` identifies an original string; `application/json` identifies the complete structured value. `raw_output_truncated=true` means the inline preview was reduced; a corresponding `payload_refs` entry provides the complete artifact. If artifact storage fails, tool events still carry bounded previews without unavailable references, and the failure is logged. Existing small results and inline history keep their semantics.
 
 Use a unary `history.get` request with these `params`:
