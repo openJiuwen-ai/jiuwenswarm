@@ -21,6 +21,7 @@ import {
   normalizeModelOptions,
   rebaseModelDraft,
   reconcileModelReasoning,
+  reconcileModelOutputTokens,
   syncDisplayNameWithModelName,
   type ModelDraft,
   type ModelProtocol,
@@ -28,6 +29,8 @@ import {
 import { validateModelDraft } from './modelValidation';
 import { buildReasoningOptions, resolveModelReasoning } from './modelReasoning';
 import { ContextWindowField } from './ContextWindowField';
+import { OutputTokenField } from './OutputTokenField';
+import { getAnthropicOutputTokenCap } from './outputTokens';
 
 type ConnectionFailure = {
   error: string;
@@ -128,9 +131,12 @@ export function ModelDialog({
   const reasoning = values.vendor_selection && !custom
     ? resolveModelReasoning(catalog, preset, values.model_name, values.protocol)
     : null;
+  const outputTokenCap = values.protocol === 'anthropic'
+    ? getAnthropicOutputTokenCap(values.model_name)
+    : undefined;
   const applyModelDraft = useCallback(
     (draft: ModelDraft): void => {
-      form.setValues(reconcileModelReasoning(draft, catalog));
+      form.setValues(reconcileModelReasoning(reconcileModelOutputTokens(draft), catalog));
       form.clearValidate('reasoning_level');
     },
     [catalog, form],
@@ -542,6 +548,32 @@ export function ModelDialog({
       />
     ),
   });
+  formItems.push({
+    name: 'max_tokens',
+    label: t('settingsPanel.models.outputTokens'),
+    component: 'custom',
+    required: values.protocol === 'anthropic',
+    helpTips: t('settingsPanel.models.outputTokensHint'),
+    onChange: invalidateConnectionState,
+    render: ({ id, value, error, disabled, onChange, onBlur }) => (
+      <OutputTokenField
+        id={id}
+        value={value}
+        error={error}
+        disabled={disabled}
+        placeholder={t('settingsPanel.models.outputTokensPlaceholder')}
+        presetLabel={t('settingsPanel.models.outputTokensPresets')}
+        unlimitedLabel={t('settingsPanel.models.outputTokensUnlimited')}
+        showUnlimited={values.protocol === 'openai'}
+        maxTokens={outputTokenCap}
+        onChange={(nextValue) => {
+          form.setFieldValue('max_tokens_is_default', false);
+          onChange(nextValue);
+        }}
+        onBlur={onBlur}
+      />
+    ),
+  });
   if (reasoning && reasoning.options.length > 0) {
     formItems.push({
       name: 'reasoning_level',
@@ -635,6 +667,7 @@ export function ModelDialog({
             api_base: [{ validator: () => errors.api_base }],
             reasoning_level: [{ validator: () => errors.reasoning_level }],
             context_window_tokens: [{ validator: () => errors.context_window_tokens }],
+            max_tokens: [{ validator: () => errors.max_tokens }],
           }}
           items={formItems}
         />
