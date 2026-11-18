@@ -910,7 +910,7 @@
       "rsi": "RSI 递归自我改进",
       "trajectoryUi": "轨迹诊断",
       "kvCacheAffinity": "算力亲和",
-      "teamOrganization": "Team Organization",
+      "teamOrganization": "Swarm Organization",
       "teamScheduledDispatch": "调度模式",
       "skillPack": "技能包",
       "multiModelCollaboration": "多模型协同",
@@ -1242,8 +1242,8 @@
         "description": "在会话中显示「诊断与归因」视图，分析执行失败的原因并给出优化建议。开启后会自动记录轨迹数据；仅能诊断开启之后产生的记录。关闭后不再显示轨迹相关页面。"
       },
       "team_organization_ui_enabled": {
-        "title": "启用 Team Organization 界面",
-        "description": "显示实验性的多 Team 视图和组织任务池。此开关不关闭后端组织能力。"
+        "title": "启用 Swarm Organization 界面",
+        "description": "显示实验性的多 Team 视图和组织任务池。"
       },
       "comfyui_workflow_enabled": {
         "title": "ComfyUI 工作流集成",
@@ -2179,6 +2179,14 @@
     "skillsAdd": "添加到输入栏",
     "skillsRemove": "移除",
     "agent": "专家",
+    "expertBatchTitle": "专家团协作",
+    "expertBatchExisting": "已加入",
+    "expertBatchCreating": "正在拉起专家团…",
+    "expertBatchConfirm": "确定（{{count}}）",
+    "expertBatchError": "拉起失败：{{error}}。可重试，已创建的团队会复用。",
+    "expertBatchRequestFailed": "专家团拉起失败，点击查看",
+    "expertBatchSummary": "专家团：成功 {{success}}，失败 {{failed}}",
+    "expertBatchStatus": {"created": "已拉起", "existing": "已加入，复用现有团队", "failed": "拉起失败"},
     "agentGroup": "专家团",
     "agentToggle": "选择已安装专家",
     "agentSearchPlaceholder": "请输入关键词搜索",
