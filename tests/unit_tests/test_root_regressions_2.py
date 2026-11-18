@@ -245,7 +245,15 @@ def test_write_history_path_still_creates_session_dir(tmp_path, monkeypatch):
 # --- from test_skill_omni_environment_gate.py ---
 
 def _load_environment_gate() -> ModuleType:
-    path = get_builtin_skills_dir() / "skill-omni-creation" / "scripts" / "environment_gate.py"
+    path = (
+        get_builtin_skills_dir()
+        / "workswarm-builtin"
+        / "references"
+        / "capabilities"
+        / "skill-omni-creation"
+        / "scripts"
+        / "environment_gate.py"
+    )
     spec = importlib.util.spec_from_file_location("_skill_omni_environment_gate", path)
     assert spec is not None and spec.loader is not None, path
     module = importlib.util.module_from_spec(spec)
