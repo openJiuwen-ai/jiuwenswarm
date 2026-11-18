@@ -836,6 +836,45 @@ test('DIAG3: disable then re-enable keeps the local path (full cycle)', async ()
   }
 });
 
+test('re-enable restores the local path from histories written in the same session', async () => {
+  // 检视回归（!10548）：path_histories 由关闭开关的同会话写入，挂载快照里没有。
+  // resolveEnabledChoice 若缺 draftValues 依赖，会持挂载时快照跳过历史回退而
+  // 回退内置 CLI——本用例挂载不带历史、仅在关闭回显中携带历史，可暴露该问题。
+  const initial = {
+    external_cli_agent_claude_enabled: 'true',
+    external_cli_agent_claude_use_builtin: 'false',
+    external_cli_agent_claude_cli_path: '/local/claude',
+  };
+  const onDetect = async (agent, path) => ({
+    cli_agent: agent,
+    status: path === '/local/claude' ? 'ok' : 'missing',
+    path: path === '/local/claude' ? '/local/claude' : '',
+    message: path === '/local/claude' ? '' : 'not found',
+  });
+  const env = await mountCliSection(initial, onDetect);
+  try {
+    const toggle = '[data-testid="settings-panel-external-cli-agent-enable-switch"][data-variant="claude"]';
+    // 关闭开关：保留路径由上层写入 path_histories
+    await env.click(toggle);
+    assert.deepEqual(env.commits.at(-1), ['claude', { enabled: false, useBuiltin: false, cliPath: '/local/claude' }]);
+    // 配置回显：禁用态 cli_path 清空，同会话写入的 path_histories 随之到达（非挂载预置）
+    await env.render({
+      ...initial,
+      external_cli_agent_claude_enabled: 'false',
+      external_cli_agent_claude_use_builtin: 'false',
+      external_cli_agent_claude_cli_path: '',
+      external_cli_agent_claude_path_histories: JSON.stringify(['/local/claude']),
+    });
+    await env.click('[data-testid="settings-panel-external-cli-agent-install-btn"][data-variant="claude"]');
+    const last = env.commits.at(-1);
+    assert.equal(last[1].enabled, true, '重开应恢复启用');
+    assert.equal(last[1].useBuiltin, false, '过期闭包会把重开回退成内置 CLI');
+    assert.equal(last[1].cliPath, '/local/claude', '重开应恢复本地路径');
+  } finally {
+    env.cleanup();
+  }
+});
+
 test('uploaded custom agents are listed after Claude and Codex', async () => {
   const section = await import('../node_modules/.cache/external-cli-section/components/ExternalCliAgentsSection.mjs');
   const customAgents = section.parseExternalCliCustomAgents(

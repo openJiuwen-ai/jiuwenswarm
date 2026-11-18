@@ -701,8 +701,10 @@ export function ExternalCliAgentsSection({
         }
       }
       return { enabled: true, useBuiltin: true, cliPath: '' };
+      // draftValues 必须入依赖：path_histories 在关闭开关时才写入草稿，缺失会让
+      // 本回调持有挂载时快照，同会话内关闭→重开读到空历史而回退内置（#6753）。
     },
-    [onDetect],
+    [draftValues, onDetect],
   );
 
   // Force dependency repair even when the executable choice is unchanged.
