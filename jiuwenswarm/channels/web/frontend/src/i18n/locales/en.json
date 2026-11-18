@@ -864,6 +864,7 @@
       "missingCustomName": "Unnamed configuration",
       "reloadAfterFailure": "Reload and verify",
       "modelsResponseInvalid": "The model-list response is invalid. Please try again.",
+      "modelsTemporarilyUnavailable": "The model service is recovering. Please wait.",
       "catalogResponseInvalid": "The model-provider catalog response is invalid. Please try again.",
       "catalogLoadingCustomAvailable": "Loading built-in model providers. You can still choose Custom to continue.",
       "catalogLoadFailedCustomAvailable": "Built-in model providers failed to load. You can still choose Custom to continue.",

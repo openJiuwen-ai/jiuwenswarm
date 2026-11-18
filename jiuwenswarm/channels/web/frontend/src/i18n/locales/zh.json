@@ -864,6 +864,7 @@
       "missingCustomName": "未命名配置",
       "reloadAfterFailure": "重新加载核对",
       "modelsResponseInvalid": "模型列表响应格式不正确，请重试。",
+      "modelsTemporarilyUnavailable": "模型服务正在恢复，请稍候。",
       "catalogResponseInvalid": "模型提供商目录响应格式不正确，请重试。",
       "catalogLoadingCustomAvailable": "正在加载内置模型提供商；仍可选择“自定义”继续配置。",
       "catalogLoadFailedCustomAvailable": "内置模型提供商加载失败；仍可选择“自定义”继续配置。",
