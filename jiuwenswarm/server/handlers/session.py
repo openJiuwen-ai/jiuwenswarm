@@ -22,6 +22,7 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.todo_snapshot import FrontendTodos, project_todo_snapshot
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.handlers._shared import (
+    _SESSION_PREVIOUS_MODE_KEY,
     _background_session_kvc_tasks,
     _sessions_dir_for_request,
     _is_team_metadata_mode,
@@ -112,9 +113,10 @@ async def _todo_snapshot_for_history(ctx: RequestContext, session_id: str) -> Fr
                 resolved = resolve_request_runtime_mode(replace(
                     ctx.request, channel_id=channel, session_id=session_id,
                     req_method=ReqMethod.CHAT_SEND,
-                    params={"mode": stored_mode, "work_mode": work_mode},
+                    params={"mode": stored_mode, "work_mode": work_mode,
+                            _SESSION_PREVIOUS_MODE_KEY: metadata.get("mode")},
                 ))
-                mode = resolved.manager_mode
+                mode = "agent" if resolved.manager_mode == "auto_harness" else resolved.manager_mode
                 if (
                     adapter_mode == "flash"
                     and resolved.canonical_mode in {"agent", NEW_AGENT_WORK_NORMAL}

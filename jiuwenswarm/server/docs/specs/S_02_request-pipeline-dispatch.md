@@ -87,6 +87,8 @@ history.get 的 Todo 快照通过所属会话 adapter.read_todo_snapshot 读取�
 
 冷恢复在请求副本上复用 `resolve_request_runtime_mode`，兼容旧 `mode + work_mode` 与新 `adapter_mode` 记录；业务 mode 归一化后为空或 unknown 时回退 adapter_mode。副本仅为宿主解析使用 CHAT_SEND 方法身份，使 OfficeClaw 前台沿用聊天的显式选型策略，其他渠道及后台来源保持各自的默认规则；不发送聊天请求。普通办公会话保留已记录的 Flash 归属，显式 Code 不被旧 work_mode 改写。`get_agent` 传入与聊天一致的 manager mode、sub_mode、project_dir 和 session_id，避免无项目会话建立另一份宿主缓存；普通 Team 保留 manager mode=team，由既有工厂映射为 DeepAdapter，不降级为另一份 agent 缓存。解析不得改写历史原请求或触发聊天准备、元数据写回。
 
+解析副本同时用 metadata 中的业务 mode 填入既有 `_session_previous_mode`，让 OfficeClaw 已进入的 Plan 通过原恢复门控，不降级为普通 Flash；不由历史请求生成新的 Plan 准入标记。调用管理器前沿用聊天的 `auto_harness → agent` 映射，保留实际子模式和会话缓存参数。
+
 ### context.RequestContext（frozen dataclass）
 
 ```python
