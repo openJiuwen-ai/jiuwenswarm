@@ -77,6 +77,7 @@ def test_python_desktop_records_persistence_failure_after_worker_disappears(tmp_
     exec(compile(ast.Module(body=[method], type_ignores=[]), "desktop-shutdown", "exec"), namespace)
     receipt = create_shutdown_receipt(tmp_path)
     runtime = SimpleNamespace(_lock=threading.Lock(), _is_shutting_down=False, _startup_cancelled=threading.Event(),
+        _shutdown_complete=threading.Event(),
         _abort_all_blob_saves=Mock(), processes={"agent": SimpleNamespace(poll=lambda: 0)},
         _update_shutdown_receipt=receipt)
     if failure == "missing_receipt":

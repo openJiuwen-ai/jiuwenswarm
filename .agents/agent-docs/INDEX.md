@@ -32,6 +32,7 @@ generated: true
 | [jiuwenswarm/agents/harness/team](#module-jiuwenswarm-agents-harness-team) |
 | [jiuwenswarm/agents/harness/team/rails](#module-jiuwenswarm-agents-harness-team-rails) |
 | [jiuwenswarm/agents/swarm](#module-jiuwenswarm-agents-swarm) |
+| [jiuwenswarm/channels/desktop](#module-jiuwenswarm-channels-desktop) |
 | [jiuwenswarm/channels/tui](#module-jiuwenswarm-channels-tui) |
 | [jiuwenswarm/channels/tui/frontend](#module-jiuwenswarm-channels-tui-frontend) |
 | [jiuwenswarm/channels/web](#module-jiuwenswarm-channels-web) |
@@ -226,6 +227,14 @@ generated: true
 |---|---|---|---|---|
 | [F_20261110_1438_opencode-go-provider](features/F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 | [B_20261106_1132_organization-round-cleanup](bugfix/jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
+
+<a id="module-jiuwenswarm-channels-desktop"></a>
+
+## jiuwenswarm/channels/desktop
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261118_1017_issue6796-desktop-worker-shutdown](bugfix/jiuwenswarm/channels/desktop/B_20261118_1017_issue6796-desktop-worker-shutdown.md) | B | Python 桌面退出等待常驻 Worker 清理 | 刘瑜 | 无独立 D：对现有应用退出契约的时序修复，无独立设计。 |
 
 <a id="module-jiuwenswarm-channels-tui"></a>
 
