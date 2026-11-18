@@ -593,7 +593,7 @@ def test_no_runtime_does_not_change_path(tmp_path, preservation_runner):
 
 
 def test_initialize_prioritizes_global_commands_over_prior_layout_and_retries(tmp_path, preservation_runner):
-    app = tmp_path / "app"
+    app = tmp_path / "app 中文"
     source = _prefix(app)
     first, report, _, path_result = preservation_runner(app, original_path=f"before;{source};after")
     assert first.returncode == 0
