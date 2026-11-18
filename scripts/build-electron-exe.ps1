@@ -691,6 +691,17 @@ if ($FrontendOnly) {
     }
 }
 
+# Also check reused backends so an older bundle with missing Memory modules
+# cannot silently pass through -ReuseBackend into a new installer.
+if (-not $FrontendOnly) {
+    $FrozenExe = Join-Path $BackendDist $BuildExecutableNameWindows
+    $MemoryVerifier = Join-Path $ProjectRoot "scripts\verify_memory_bundle.py"
+    uv run --no-sync python $MemoryVerifier --executable $FrozenExe
+    if ($LASTEXITCODE -ne 0) {
+        throw "Frozen JiuwenMemory SDK and video tool verification failed. See verifier output above."
+    }
+}
+
 # ── 5. Assemble final Electron app ────────────────────────────────────────────
 Write-Host "`n[5/6] Assembling Electron desktop app..." -ForegroundColor Yellow
 

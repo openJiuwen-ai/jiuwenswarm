@@ -237,6 +237,9 @@ if [ "$FRONTEND_ONLY" = false ]; then
 
     # Verify the actual frozen runtime, not only the source configuration
     # (same self-check as the Python packaging build in build-macos.sh).
+    uv run --no-sync python "$PROJECT_ROOT/scripts/verify_memory_bundle.py" \
+        --executable "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME"
+
     "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_a2ui_bundle.py"
 
     # Same RSI Harness baseline self-check as build-macos.sh.

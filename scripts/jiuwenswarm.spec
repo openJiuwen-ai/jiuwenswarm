@@ -281,6 +281,11 @@ http2_submodules = [
 
 # 部分包需要显式声明隐藏导入
 lazy_runtime_submodules = []
+memory_bundle = runpy.run_path(os.path.join(project_root, "scripts", "memory_bundle.py"))
+lazy_runtime_submodules += list(memory_bundle["MEMORY_RUNTIME_MODULES"])
+for memory_package in memory_bundle["MEMORY_RUNTIME_PACKAGES"]:
+    lazy_runtime_submodules += collect_submodules(memory_package, on_error="raise")
+
 for lazy_package in (
     "agent_gateway",
     "jiuwenswarm.agents.harness.common.auto_harness",
