@@ -141,11 +141,15 @@ def _extract_element_markdown(element: Any, doc: Any) -> str:
 def _collect_docx_blocks(
     doc: Any,
     req: ReadDocxRequest,
-) -> tuple[list[str], int, bool]:
-    """Iterate body elements from ``start_element`` within ``max_chars`` budget."""
+) -> tuple[list[str], int, bool, bool]:
+    """Iterate body elements from ``start_element`` within ``max_chars`` budget.
+
+    The last flag is True when the first pending element alone exceeds the budget.
+    """
     blocks: list[str] = []
     current_chars = 0
     truncated = False
+    stalled = False
     last_processed_idx = req.start_element - 1
 
     for idx, element in enumerate(doc.element.body, 1):
@@ -162,13 +166,14 @@ def _collect_docx_blocks(
             if allowed_remaining > 50:
                 blocks.append(content[:allowed_remaining] + " ...")
             truncated = True
+            stalled = not blocks or current_chars == 0
             break
 
         blocks.append(content)
         current_chars += len(content) + 2
         last_processed_idx = idx
 
-    return blocks, last_processed_idx, truncated
+    return blocks, last_processed_idx, truncated, stalled
 
 
 def _read_docx_sync(req: ReadDocxRequest) -> str:
@@ -185,10 +190,18 @@ def _read_docx_sync(req: ReadDocxRequest) -> str:
     paragraph_count = len(doc.paragraphs)
     table_count = len(doc.tables)
     total_elements = len(doc.element.body)
-    blocks, last_processed_idx, truncated = _collect_docx_blocks(doc, req)
+    blocks, last_processed_idx, truncated, stalled = _collect_docx_blocks(doc, req)
 
     output_body = "\n\n".join(blocks)
-    if truncated:
+    if truncated and stalled:
+        output_body += (
+            f"\n\n[Document truncated at {req.max_chars} characters. "
+            f"Element {last_processed_idx + 1} of {total_elements} alone exceeds "
+            f"max_chars, so start_element cannot advance past it. "
+            f"Call read_docx again with a larger `max_chars` "
+            f"(keep `start_element={last_processed_idx + 1}`) to read it in full.]"
+        )
+    elif truncated:
         output_body += (
             f"\n\n[Document truncated at {req.max_chars} characters. "
             f"Read up to element {last_processed_idx} of {total_elements} "

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import posixpath
 import re
 import xml.etree.ElementTree as ET
 import zipfile
@@ -225,20 +226,41 @@ def _collect_element_texts(node: ET.Element) -> list[str]:
     return texts
 
 
-def _extract_slide_notes(zf: zipfile.ZipFile, slide_idx: int) -> str:
+def _resolve_notes_path(zf: zipfile.ZipFile, slide_path: str) -> str:
+    """Resolve the notesSlide archive path via the slide's relationships."""
+    slide_name = slide_path.rsplit("/", 1)[-1]
+    rels_path = f"ppt/slides/_rels/{slide_name}.rels"
+    try:
+        for rel in ET.fromstring(zf.read(rels_path)):
+            if not rel.attrib.get("Type", "").endswith("notesSlide"):
+                continue
+            target = rel.attrib.get("Target", "")
+            if target.startswith("/"):
+                return target.lstrip("/")
+            return posixpath.normpath(posixpath.join("ppt/slides", target))
+    except (KeyError, ET.ParseError) as exc:
+        logger.debug("No notes relationship for %s: %s", slide_path, exc)
+    match = re.search(r"slide(\d+)\.xml$", slide_name)
+    return f"ppt/notesSlides/notesSlide{match.group(1)}.xml" if match else ""
+
+
+def _extract_slide_notes(zf: zipfile.ZipFile, slide_path: str) -> str:
     """Attempt to extract speaker notes for a slide from OpenXML."""
-    npath = f"ppt/notesSlides/notesSlide{slide_idx}.xml"
-    if npath not in zf.namelist():
+    npath = _resolve_notes_path(zf, slide_path)
+    if not npath or npath not in zf.namelist():
         return ""
     try:
         root = ET.fromstring(zf.read(npath))
         notes: list[str] = []
-        for para in root.iter():
-            if not para.tag.endswith("p"):
+        for body in root.iter():
+            if not body.tag.endswith("}txBody"):
                 continue
-            line = "".join(_collect_element_texts(para)).strip()
-            if line and not line.isdigit():
-                notes.append(line)
+            for para in body:
+                if not para.tag.endswith("}p"):
+                    continue
+                line = "".join(_collect_element_texts(para)).strip()
+                if line and not line.isdigit():
+                    notes.append(line)
         return "\n".join(notes)
     except Exception as exc:  # pylint: disable=broad-exception-caught
         logger.debug("Failed to parse notes slide %s: %s", npath, exc)
@@ -290,7 +312,7 @@ def _render_openxml_slide(zf: zipfile.ZipFile, idx: int, slide_path: str) -> str
             if text_block:
                 slide_lines.append(text_block)
 
-    notes = _extract_slide_notes(zf, idx)
+    notes = _extract_slide_notes(zf, slide_path)
     if notes:
         slide_lines.append(f"> Notes: {notes}")
 

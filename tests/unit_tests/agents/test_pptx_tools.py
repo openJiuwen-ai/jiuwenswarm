@@ -11,6 +11,7 @@ import pytest
 
 from jiuwenswarm.agents.harness.common.tools.pptx_tools import (
     _format_markdown_table,
+    _extract_slide_notes,
     _parse_slide_ranges,
     read_pptx,
 )
@@ -163,6 +164,64 @@ async def test_read_pptx_notes_extraction(tmp_path: Path) -> None:
 
     result = await read_pptx.invoke({"file_path": str(pptx_path)})
     assert "> Notes: Remember to mention quarterly growth targets" in result
+
+
+def _notes_xml(lines: list[str]) -> str:
+    """Build a notes slide XML containing the given paragraphs."""
+    paras = "".join(f"<a:p><a:r><a:t>{ln}</a:t></a:r></a:p>" for ln in lines)
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<p:notes xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+        'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
+        f"<p:cSld><p:spTree><p:sp><p:txBody>{paras}</p:txBody></p:sp></p:spTree></p:cSld>"
+        "</p:notes>"
+    )
+
+
+def test_extract_slide_notes_no_duplicates(tmp_path: Path) -> None:
+    """Two note paragraphs must yield exactly two lines."""
+    pptx_path = tmp_path / "dup.pptx"
+    _create_mock_pptx(pptx_path, slide_count=1)
+    with zipfile.ZipFile(pptx_path, "a") as zf:
+        zf.writestr("ppt/notesSlides/notesSlide1.xml", _notes_xml(["First note", "Second note"]))
+    with zipfile.ZipFile(pptx_path) as zf:
+        notes = _extract_slide_notes(zf, "ppt/slides/slide1.xml")
+    assert notes.split("\n") == ["First note", "Second note"]
+
+
+def test_extract_slide_notes_follows_rels_after_reorder(tmp_path: Path) -> None:
+    """Notes are resolved through slide rels, not presentation order."""
+    pptx_path = tmp_path / "reorder.pptx"
+    _create_mock_pptx(pptx_path, slide_count=2)
+    rel_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
+    type_pre = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    pres_rels = (
+        f'<Relationships xmlns="{rel_ns}">'
+        f'<Relationship Id="rId1" Type="{type_pre}/slide" Target="slides/slide1.xml"/>'
+        f'<Relationship Id="rId2" Type="{type_pre}/slide" Target="slides/slide2.xml"/>'
+        "</Relationships>"
+    )
+    pres = (
+        f'<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+        f'xmlns:r="{type_pre}"><p:sldIdLst>'
+        '<p:sldId id="256" r:id="rId2"/><p:sldId id="257" r:id="rId1"/>'
+        "</p:sldIdLst></p:presentation>"
+    )
+    with zipfile.ZipFile(pptx_path, "a") as zf:
+        zf.writestr("ppt/_rels/presentation.xml.rels", pres_rels)
+        zf.writestr("ppt/presentation.xml", pres)
+        for num in (1, 2):
+            zf.writestr(
+                f"ppt/slides/_rels/slide{num}.xml.rels",
+                f'<Relationships xmlns="{rel_ns}"><Relationship Id="rId1" '
+                f'Type="{type_pre}/notesSlide" Target="../notesSlides/notesSlide{num}.xml"/>'
+                "</Relationships>",
+            )
+            note_xml = _notes_xml([f"Note for slide{num}"])
+            zf.writestr(f"ppt/notesSlides/notesSlide{num}.xml", note_xml)
+    with zipfile.ZipFile(pptx_path) as zf:
+        assert _extract_slide_notes(zf, "ppt/slides/slide2.xml") == "Note for slide2"
+        assert _extract_slide_notes(zf, "ppt/slides/slide1.xml") == "Note for slide1"
 
 
 @pytest.mark.asyncio

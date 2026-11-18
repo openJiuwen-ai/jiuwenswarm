@@ -102,6 +102,30 @@ async def test_read_docx_truncation(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_read_docx_oversized_first_element_hints_max_chars(tmp_path: Path) -> None:
+    """A first element larger than max_chars must advise raising max_chars."""
+    doc = docx.Document()
+    doc.add_paragraph("Intro")
+    table = doc.add_table(rows=200, cols=4)
+    for row in table.rows:
+        for cell in row.cells:
+            cell.text = "cell-content-value"
+    big_file = tmp_path / "big_table.docx"
+    doc.save(str(big_file))
+
+    result = await read_docx.invoke(
+        {"docx_path": str(big_file), "start_element": 2, "max_chars": 500}
+    )
+    assert "alone exceeds max_chars" in result
+    assert "larger `max_chars`" in result
+
+    full = await read_docx.invoke(
+        {"docx_path": str(big_file), "start_element": 2, "max_chars": 50000}
+    )
+    assert "alone exceeds" not in full
+
+
+@pytest.mark.asyncio
 async def test_read_docx_pagination(tmp_path: Path) -> None:
     """Verify start_element pagination behavior on a multi-paragraph document."""
     doc = docx.Document()
