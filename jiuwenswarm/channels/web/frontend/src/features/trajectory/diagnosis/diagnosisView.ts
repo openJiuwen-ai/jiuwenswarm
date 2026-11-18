@@ -20,7 +20,7 @@ import type {
 } from './diagnosisTypes';
 
 /** Stages the engine runs, in order. Shown as waiting until the engine starts them. */
-export const PLANNED_STAGE_IDS = ['task_parse', 'diagnose', 'attribute'] as const;
+export const PLANNED_STAGE_IDS = ['trajectory_summary', 'task_parse', 'diagnose', 'attribute'] as const;
 
 export type StageViewStatus = StageStatus | 'pending';
 
@@ -43,8 +43,11 @@ export function stageViews(stages: readonly DiagnosisStage[], running: boolean):
     return stages.map(stage => ({ stageId: stage.stage_id, status: stage.status, stage }));
   }
   const byId = new Map(stages.map(stage => [stage.stage_id, stage] as const));
-  const planned = new Set<string>(PLANNED_STAGE_IDS);
-  const views: StageView[] = PLANNED_STAGE_IDS.map((stageId) => {
+  // Older running records already starting with task_parse retain their original three-stage plan.
+  const ids = stages.length > 0 && !byId.has('trajectory_summary')
+    ? PLANNED_STAGE_IDS.filter(id => id !== 'trajectory_summary') : PLANNED_STAGE_IDS;
+  const planned = new Set<string>(ids);
+  const views: StageView[] = ids.map((stageId) => {
     const stage = byId.get(stageId);
     return stage === undefined
       ? { stageId, status: 'pending', stage: null }
@@ -110,6 +113,20 @@ export function truncateText(text: string, limit: number): string {
   if (limit <= 0) return '';
   if (trimmed.length <= limit) return trimmed;
   return `${trimmed.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
+}
+
+/** Hide transport-only headings in legacy fallback text, keeping the stored/exported narrative intact. */
+export function readableSummary(text: string, labels: ReadonlyMap<string, string>): string {
+  // Decode paragraph separators only in prose; preserve code, links and recognizable paths.
+  const protectedText = /(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|`+[^`\r\n]*`+|\[[^\]\r\n]*\]\([^\r\n)]*\)|"(?:[A-Za-z]:\\|\\\\)[^"\r\n]*"|'(?:[A-Za-z]:\\|\\\\)[^'\r\n]*'|(?:https?:\/\/|[A-Za-z]:[\\/]|\\\\|(?:(?<![\w.])|(?<=\\n))\.\.?[\\/])[^\s`<>]*)/g;
+  let visible = text.split(protectedText)
+    .map((part, index) => index % 2 === 0 ? part.replace(/(?:\\r\\n|\\n){2,}/g, '\n\n') : part)
+    .join('');
+  for (const [id, label] of labels) visible = visible.replaceAll(`[${id}]`, `${label}:`);
+  return visible
+    .replace(/^\s*\[(?:[a-f\d]{32}|(?:team-member|team-leader|subagent):[^\]\r\n]+)\]\s*$/gim, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 /** Second line of a record row: the trajectory summary, else the legacy headline, else the scope kind. */
