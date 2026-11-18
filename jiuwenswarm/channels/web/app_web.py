@@ -504,6 +504,21 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         "x-jiuwenswarm-original-host",
         "x-original-host",
     }
+    # Raw file responses may carry user or model generated documents. These
+    # types execute script when a browser opens them as a document in this
+    # origin, so they receive a sandboxing CSP in addition to ``nosniff``.
+    _DOCUMENT_MIME_TYPES = frozenset(
+        {
+            "text/html",
+            "application/xhtml+xml",
+            "image/svg+xml",
+            "text/xml",
+            "application/xml",
+        }
+    )
+    # Loopback names are treated as one origin: the Vite dev proxy forwards
+    # ``localhost:5173`` requests with ``changeOrigin`` to the Web server.
+    _LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
     _WS_LOG_MAX_CHARS = 2000
     _HTTP_PROXY_TIMEOUT = 30
     _SHARE_IMAGE_UPLOAD_IDLE_TIMEOUT = 60 * 60
@@ -851,6 +866,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             conn.close()
 
     def _proxy_websocket_tunnel(self, *, target: str | None = None) -> None:
+        if not self._ws_origin_allowed():
+            self.log_error("proxy ws rejected origin: %s", self.headers.get("Origin"))
+            self.send_error(403, "ws origin not allowed")
+            return
         parsed = urlparse(target or self.ws_target)
         if parsed.scheme not in ("ws", "wss", "http", "https"):
             self.send_error(500, "ws proxy target must be ws/wss/http/https")
@@ -1337,6 +1356,57 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(data)
 
+    def _apply_raw_file_security_headers(self, mime_type: str | None) -> None:
+        """Keep a raw file from running as a document in the application origin."""
+        base_type = (mime_type or "").split(";", 1)[0].strip().lower()
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if base_type in self._DOCUMENT_MIME_TYPES:
+            self.send_header(
+                "Content-Security-Policy",
+                "sandbox allow-scripts allow-popups",
+            )
+
+    def _ws_origin_allowed(self) -> bool:
+        """Return whether a WebSocket handshake may reach the upstream gateway.
+
+        Browsers always attach ``Origin`` to a WebSocket handshake, so a
+        missing header means a non-browser client (TUI/SDK) and stays allowed.
+        ``null`` and cross-origin values are rejected so a page from another
+        site cannot drive the local agent through its WebSocket.
+        """
+        origin = str(self.headers.get("Origin") or "").strip()
+        if not origin:
+            return True
+        if origin.lower() == "null":
+            return False
+        try:
+            parsed_origin = urlparse(origin)
+            origin_hostname = parsed_origin.hostname
+            origin_port = parsed_origin.port
+        except ValueError:
+            return False
+        if parsed_origin.scheme not in ("http", "https") or not origin_hostname:
+            return False
+        outer_host = self._clean_outer_host()
+        if outer_host is None:
+            return False
+        try:
+            parsed_host = urlparse(f"//{outer_host}")
+            host_hostname = parsed_host.hostname
+            host_port = parsed_host.port
+        except ValueError:
+            return False
+        if not host_hostname:
+            return False
+        origin_hostname = origin_hostname.lower().rstrip(".")
+        host_hostname = host_hostname.lower().rstrip(".")
+        if origin_hostname == host_hostname:
+            return origin_port is None or host_port is None or origin_port == host_port
+        return (
+            origin_hostname in self._LOOPBACK_HOSTNAMES
+            and host_hostname in self._LOOPBACK_HOSTNAMES
+        )
+
     @staticmethod
     def _parse_query(query: str) -> dict[str, str]:
         parsed: dict[str, str] = {}
@@ -1763,6 +1833,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self.send_header("Content-Length", "0")
                 self.send_header("Accept-Ranges", "bytes")
                 self.send_header("Cache-Control", "no-store")
+                self._apply_raw_file_security_headers(mime_type)
                 self.end_headers()
                 return
             start, end = byte_range or (0, max(file_size - 1, 0))
@@ -1775,6 +1846,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(content_length))
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Cache-Control", "no-store")
+            self._apply_raw_file_security_headers(mime_type)
             if byte_range is not None:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
             self.end_headers()

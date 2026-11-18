@@ -349,6 +349,136 @@ def test_verified_download_get_and_head_use_conventional_staged_file_handler(
         server.server_close()
 
 
+def test_raw_file_document_responses_are_sandboxed_and_never_sniffed(tmp_path):
+    agent_root = tmp_path / "agent"
+    uploads = agent_root / "sessions" / "session-1" / "uploads"
+    uploads.mkdir(parents=True)
+    html_path = uploads / "report.html"
+    html_path.write_text("<script>alert(1)</script>", encoding="utf-8")
+    svg_path = uploads / "chart.svg"
+    svg_path.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
+        encoding="utf-8",
+    )
+    png_path = uploads / "image.png"
+    png_path.write_bytes(b"\x89PNG\r\n\x1a\nimage-data")
+
+    class Handler(_SpaStaticHandler):
+        project_root = tmp_path
+        workspace_root = agent_root
+        agent_teams_root = tmp_path / "agent-teams"
+        logs_root = tmp_path / "logs"
+        auto_harness_root = tmp_path / "auto-harness"
+        api_target = ""
+        ws_target = ""
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+
+    def request(method: str, path: Path, headers: dict[str, str] | None = None):
+        connection = HTTPConnection("127.0.0.1", server.server_port)
+        try:
+            connection.request(
+                method,
+                f"/file-api/raw-file?path={quote(str(path))}",
+                headers=headers or {},
+            )
+            response = connection.getresponse()
+            return response.status, response.headers, response.read()
+        finally:
+            connection.close()
+
+    try:
+        status, headers, _ = request("GET", html_path)
+        assert status == 200
+        assert headers["Content-Type"] == "text/html"
+        assert headers["X-Content-Type-Options"] == "nosniff"
+        assert headers["Content-Security-Policy"] == "sandbox allow-scripts allow-popups"
+
+        status, headers, _ = request("HEAD", html_path)
+        assert status == 200
+        assert headers["X-Content-Type-Options"] == "nosniff"
+        assert headers["Content-Security-Policy"] == "sandbox allow-scripts allow-popups"
+
+        status, headers, _ = request("GET", html_path, {"Range": "bytes=0-5"})
+        assert status == 206
+        assert headers["X-Content-Type-Options"] == "nosniff"
+        assert headers["Content-Security-Policy"] == "sandbox allow-scripts allow-popups"
+
+        status, headers, _ = request("GET", html_path, {"Range": "bytes=999-1000"})
+        assert status == 416
+        assert headers["X-Content-Type-Options"] == "nosniff"
+        assert headers["Content-Security-Policy"] == "sandbox allow-scripts allow-popups"
+
+        status, headers, _ = request("GET", svg_path)
+        assert status == 200
+        assert headers["X-Content-Type-Options"] == "nosniff"
+        assert headers["Content-Security-Policy"] == "sandbox allow-scripts allow-popups"
+
+        status, headers, _ = request("GET", png_path)
+        assert status == 200
+        assert headers["X-Content-Type-Options"] == "nosniff"
+        assert "Content-Security-Policy" not in headers
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def test_ws_proxy_rejects_foreign_origin(tmp_path):
+    agent_root = tmp_path / "agent"
+    agent_root.mkdir()
+
+    class Handler(_SpaStaticHandler):
+        project_root = tmp_path
+        workspace_root = agent_root
+        agent_teams_root = tmp_path / "agent-teams"
+        logs_root = tmp_path / "logs"
+        auto_harness_root = tmp_path / "auto-harness"
+        api_target = ""
+        ws_target = ""
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    port = server.server_port
+    upgrade_headers = {
+        "Upgrade": "websocket",
+        "Connection": "Upgrade",
+        "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+        "Sec-WebSocket-Version": "13",
+    }
+
+    def handshake(origin: str | None) -> int:
+        headers = dict(upgrade_headers)
+        if origin is not None:
+            headers["Origin"] = origin
+        connection = HTTPConnection("127.0.0.1", port)
+        try:
+            connection.request("GET", "/ws", headers=headers)
+            response = connection.getresponse()
+            response.read()
+            return response.status
+        finally:
+            connection.close()
+
+    try:
+        # Rejected before any upstream dial: foreign, opaque, and file origins.
+        assert handshake("http://evil.example") == 403
+        assert handshake("null") == 403
+        assert handshake("file://") == 403
+        # Same-origin and non-browser clients pass the gate; the empty
+        # ``ws_target`` then fails with 500 instead of the 403 above.
+        assert handshake(f"http://127.0.0.1:{port}") == 500
+        assert handshake(f"http://localhost:{port}") == 500
+        assert handshake(None) == 500
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
 def test_parse_single_byte_range_rejects_invalid_variants():
     from jiuwenswarm.channels.web.app_web import _parse_single_byte_range
 
