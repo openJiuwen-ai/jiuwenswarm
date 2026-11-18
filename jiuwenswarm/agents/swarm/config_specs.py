@@ -662,12 +662,11 @@ def _team_context_engine_config(
         member_config = member_config.model_dump(exclude_unset=True)
     product_window = _positive_context_window_tokens(product_config.get("context_window_tokens"))
     member_window = _positive_context_window_tokens(member_config.get("context_window_tokens"))
-    merged_config = {
-        key: value
-        for source in (product_config, member_config)
-        for key, value in source.items()
-        if key in ContextEngineConfig.model_fields
-    }
+    merged_config: dict[str, Any] = {}
+    for source in (product_config, member_config):
+        for key, value in source.items():
+            if key in ContextEngineConfig.model_fields:
+                merged_config[key] = value
     # 窗口单独取各来源的最小正整数，非法值不进入 SDK 校验或掩盖更小上限。
     merged_config["context_window_tokens"] = None
     context_config = ContextEngineConfig.model_validate(merged_config).model_copy(deep=True)
