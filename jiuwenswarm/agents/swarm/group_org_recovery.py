@@ -204,6 +204,22 @@ async def recovery_loop(stop_event: asyncio.Event) -> None:
                     await reconcile_group(path.parent.name)
                 except Exception:
                     logger.warning("Organization recovery deferred session=%s", path.parent.name, exc_info=True)
+                # Reconcile ordinary swarm member execution cards too.  A worker
+                # killed mid-task leaves its execution rows non-terminal; without
+                # a background pass they stay spinning in the UI and cannot be
+                # stopped after the worker restarts (#6795).  GroupExecutions.reconcile
+                # only closes rows whose owner is confirmed dead, so live tasks are
+                # never disturbed.
+                try:
+                    from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+
+                    await GroupExecutions(path.parent.name).reconcile()
+                except Exception:
+                    logger.warning(
+                        "Member execution recovery deferred session=%s",
+                        path.parent.name,
+                        exc_info=True,
+                    )
                 await asyncio.sleep(0)
             try:
                 await asyncio.wait_for(stop_event.wait(), 30)
