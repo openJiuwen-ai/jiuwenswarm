@@ -12,6 +12,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import time
 from typing import Any
 
 from openjiuwen.core.foundation.tool import tool
@@ -37,6 +38,7 @@ _MIN_MAX_CHARS = 1_000
 _MAX_MAX_CHARS = 100_000
 
 _MAX_FILE_BYTES = 2 * 1024 * 1024
+_DIR_TIME_BUDGET_SECONDS = 15.0
 _BINARY_SNIFF_BYTES = 8192
 _DOCSTRING_SUMMARY_LIMIT = 120
 _ANNOTATION_LIMIT = 50
@@ -713,7 +715,7 @@ def _extract_jsts_outline(source: str, *, include_private: bool) -> list[str]:
                     lines.append(rendered)
                 if delta > 0:
                     class_stack.append((brace_depth + 1, hidden))
-                else:
+                elif line.count("{") == 0:
                     pending_class = hidden
             else:
                 top_item = _match_jsts_toplevel(
@@ -783,7 +785,8 @@ def _build_static_notes(
         )
     if skipped_external > 0:
         notes.append(
-            f"[Skipped {skipped_external} symlink(s) pointing outside workspace.]"
+            f"[Skipped {skipped_external} file(s): outside workspace, "
+            "unresolvable, or not a regular file.]"
         )
     return notes
 
@@ -804,6 +807,36 @@ def _fit_blocks_to_budget(blocks: list[str], body_budget: int) -> tuple[list[str
     return kept_blocks, False
 
 
+def _build_blocks(
+    selected_files: list[Path],
+    *,
+    display_base: Path,
+    include_private: bool,
+    max_chars: int,
+) -> tuple[list[str], str | None]:
+    """Outline files until the total time or character budget is exhausted."""
+    blocks: list[str] = []
+    used_chars = 0
+    started = time.monotonic()
+    for file_path in selected_files:
+        if blocks and used_chars >= max_chars:
+            return blocks, _budget_note(len(blocks), len(selected_files), "character")
+        if blocks and time.monotonic() - started > _DIR_TIME_BUDGET_SECONDS:
+            return blocks, _budget_note(len(blocks), len(selected_files), "time")
+        block = _extract_file_block(
+            file_path,
+            display_base=display_base,
+            include_private=include_private,
+        )
+        blocks.append(block)
+        used_chars += len(block) + 2
+    return blocks, None
+
+
+def _budget_note(done: int, total: int, kind: str) -> str:
+    return f"[Outline {kind} budget reached: {done} of {total} files outlined.]"
+
+
 def _render_output(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
     *,
     header: str,
@@ -814,6 +847,7 @@ def _render_output(  # pylint: disable=too-many-arguments,huawei-too-many-argume
     depth_truncated: bool,
     max_depth: int,
     skipped_external: int,
+    budget_note: str | None = None,
 ) -> str:
     static_notes = _build_static_notes(
         files_truncated=files_truncated,
@@ -822,6 +856,8 @@ def _render_output(  # pylint: disable=too-many-arguments,huawei-too-many-argume
         max_depth=max_depth,
         skipped_external=skipped_external,
     )
+    if budget_note:
+        static_notes.append(budget_note)
     if not blocks:
         return "\n\n".join([header, "(no supported source files found)", *static_notes])[:max_chars]
 
@@ -864,15 +900,12 @@ def _code_outline_sync(req: CodeOutlineRequest) -> str:
 
     display_root = _display_path(resolved, runtime_paths.current_cwd)
     header = f"Code Outline: {display_root} | files: {len(selected_files)} | mode: {mode}"
-    blocks: list[str] = []
-    for file_path in selected_files:
-        blocks.append(
-            _extract_file_block(
-                file_path,
-                display_base=display_base,
-                include_private=req.include_private,
-            )
-        )
+    blocks, budget_note = _build_blocks(
+        selected_files,
+        display_base=display_base,
+        include_private=req.include_private,
+        max_chars=req.max_chars,
+    )
     return _render_output(
         header=header,
         blocks=blocks,
@@ -882,6 +915,7 @@ def _code_outline_sync(req: CodeOutlineRequest) -> str:
         depth_truncated=depth_truncated,
         max_depth=req.max_depth,
         skipped_external=skipped_external,
+        budget_note=budget_note,
     )
 
 
@@ -894,7 +928,10 @@ def _code_outline_sync(req: CodeOutlineRequest) -> str:
         f"Defaults: path='.', max_depth={DEFAULT_MAX_DEPTH} (0-{_MAX_MAX_DEPTH}), "
         f"max_files={DEFAULT_MAX_FILES} (1-{_MAX_MAX_FILES}), "
         f"max_chars={DEFAULT_MAX_CHARS} ({_MIN_MAX_CHARS}-{_MAX_MAX_CHARS}), "
-        "include_private=False."
+        "include_private=False. JS/TS outlines use a lightweight line scanner "
+        "(not a full parser): class-field arrow functions, decorators, and "
+        "multi-line signatures may be missed or truncated. "
+        "Directory scans stop at a time/character budget with a note."
     ),
 )
 async def code_outline(

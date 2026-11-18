@@ -376,7 +376,7 @@ async def test_workspace_boundary_rejects_escape_and_external_symlinks(
     dir_link_out = await code_outline.invoke({"path": "."})
     assert "def safe()" in dir_link_out
     assert "secret" not in dir_link_out
-    assert "Skipped 1 symlink(s) pointing outside workspace" in dir_link_out
+    assert "Skipped 1 file(s): outside workspace" in dir_link_out
 
 
 @pytest.mark.asyncio
@@ -385,3 +385,27 @@ async def test_empty_call_defaults_to_current_workspace(workspace_cwd: Path) -> 
     out = await code_outline.invoke({})
     assert "Code Outline: . | files: 1 | mode: directory" in out
     assert "def main() -> None [L1-L2]" in out
+
+
+@pytest.mark.asyncio
+async def test_single_line_class_does_not_nest_following_symbols(
+    workspace_cwd: Path,
+) -> None:
+    src = "class Marker {}\nfunction after() {}\nclass Next {\n  run() {}\n}\n"
+    (workspace_cwd / "m.ts").write_text(src, encoding="utf-8")
+    out = await code_outline.invoke({"path": "m.ts"})
+    assert "class Marker" in out
+    assert "function after()" in out
+    assert "class Next" in out
+    assert "run()" in out
+
+
+@pytest.mark.asyncio
+async def test_directory_time_budget_returns_partial_result(
+    workspace_cwd: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in ("a.py", "b.py", "c.py"):
+        (workspace_cwd / name).write_text("def f(): pass\n", encoding="utf-8")
+    monkeypatch.setattr(code_outline_tools, "_DIR_TIME_BUDGET_SECONDS", -1.0)
+    out = await code_outline.invoke({"path": "."})
+    assert "time budget reached: 1 of 3 files outlined" in out
