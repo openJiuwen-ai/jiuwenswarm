@@ -1739,7 +1739,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 if read_size != file_size:
                     with file_path.open("rb") as file_obj:
                         file_obj.seek(read_offset)
-                        raw_data = file_obj.read()
+                        # Bound the read to the computed window: a growing
+                        # log could otherwise append bytes between the stat
+                        # above and this read, pushing the transfer (and
+                        # the memory peak) past MAX_FILE_CONTENT_BYTES.
+                        raw_data = file_obj.read(read_size)
                     if truncated:
                         # The seek lands on an arbitrary byte, possibly inside
                         # a multi-byte character.  Align to the next newline

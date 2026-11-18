@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -212,3 +213,32 @@ def test_auto_encoding_still_detected_for_small_file(harness) -> None:
     text = handler.wfile.getvalue().decode("utf-8")
     assert "中文内容, 自动探测。" in text
     assert handler.sent_headers["X-Original-Encoding"].lower().startswith("gb")
+
+
+def test_tail_read_is_bounded_when_file_grows_after_stat(harness, tmp_path, monkeypatch) -> None:
+    # TOCTOU: the log grows between the handler's stat() and the read.  stat
+    # must report the pre-growth size while the on-disk file is already
+    # larger; the read must still return exactly the computed window bytes
+    # instead of everything up to EOF.
+    payload = b"header\n" + b"z" * 4096
+    stale_size = 100
+    handler = harness("workspace/growing.log", payload, query="tail_bytes=64")
+    target = tmp_path / "workspace" / "growing.log"
+    real_stat = Path.stat
+
+    def lying_stat(self: Path, *args, **kwargs):
+        st = real_stat(self, *args, **kwargs)
+        if self == target:
+            # st_size sits at index 6 of the os.stat_result tuple.
+            fields = list(st[:6]) + [stale_size] + list(st[7:])
+            return os.stat_result(fields)
+        return st
+
+    monkeypatch.setattr(Path, "stat", lying_stat)
+    handler.call()
+    assert handler.sent_responses[-1][0] == 200
+    body = handler.wfile.getvalue()
+    # read_offset = stale_size - 64 = 36 lands inside the 'z' run, so no
+    # newline alignment cuts anything: the body must be exactly the window.
+    assert len(body) == 64
+    assert handler.sent_headers["X-Truncated"] == "1"
