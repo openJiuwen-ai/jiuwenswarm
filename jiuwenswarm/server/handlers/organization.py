@@ -319,7 +319,10 @@ async def _team_list_entries(session_id: str, channel_id: str) -> list[dict[str,
                 _upsert(
                     active.team_name,
                     state=getattr(getattr(active, "state", None), "value", None) or "running",
-                    display_name=getattr(getattr(active.agent, "card", None), "name", None),
+                    display_name=(
+                        spec_metadata.get("display_name")
+                        or getattr(getattr(active.agent, "card", None), "name", None)
+                    ),
                     leader_id=getattr(backend, "leader_member_name", None),
                     organization_id=organization_id,
                     agent_group_name=spec_metadata.get("agent_group_name"),
@@ -357,6 +360,25 @@ async def _team_list_entries(session_id: str, channel_id: str) -> list[dict[str,
                 agent_group_name=metadata.get("agent_group_name"),
                 source="metadata",
             )
+
+    from jiuwenswarm.server.runtime.team_organization_history import load_persisted_organization
+    from jiuwenswarm.server.runtime.team_organization_identity_store import load_organization_team_identity
+
+    try:
+        persisted = await load_persisted_organization(session_id) if session_id else None
+    except Exception:
+        logger.warning("team.list persisted organization read failed: session=%s", session_id, exc_info=True)
+        persisted = None
+    if persisted is not None:
+        _, organization = persisted
+        for leader in organization.leaders:
+            try:
+                identity = await asyncio.to_thread(load_organization_team_identity, leader.team_id)
+            except Exception:
+                logger.warning("team.list identity read failed: team=%s", leader.team_id, exc_info=True)
+                identity = {}
+            _upsert(leader.team_id, state="configured", organization_id=organization.organization_id,
+                    leader_id=leader.leader_id, **identity)
 
     for entry in entries.values():
         entry["is_owner"] = bool(metadata_team_name and entry["team_id"] == metadata_team_name)

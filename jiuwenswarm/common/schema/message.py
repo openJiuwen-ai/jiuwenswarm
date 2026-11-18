@@ -56,6 +56,9 @@ def _ensure_req_method(name: str, value: str) -> None:
     _ensure_protocol_member(ReqMethod, name, value)
 
 
+_ensure_req_method("ORG_EXPERT_TEAMS_ADD", "org.expert_teams.add")
+
+
 # Published release methods required by JiuwenMate and its existing callers.
 _ensure_req_method("JIUWENMATE_FEISHU_INBOUND", "jiuwenmate.feishu.inbound")
 _ensure_req_method("JIUWENMATE_DINGTALK_INBOUND", "jiuwenmate.dingtalk.inbound")

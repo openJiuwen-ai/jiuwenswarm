@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test:entity-header-tags": "esbuild src/components/ui/EntityHeader/EntityHeader.tsx --bundle --packages=external --platform=node --format=esm --jsx=automatic --loader:.css=empty --outfile=node_modules/.cache/entity-header/EntityHeader.mjs && node --test tests/entityHeaderTags.test.mjs",
+    "test:expert-team-batch": "node --test tests/expertTeamBatch.test.mjs",
     "test:video-duplex": "node ../../../extensions/video_duplex/tests/frontend/testSupport.mjs",
     "test:editable-combobox": "esbuild src/components/SessionSidebar/EditableCombobox.tsx --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/editable-combobox/EditableCombobox.mjs && node --test tests/editableCombobox.test.mjs",
     "test:ttse-work-mode": "node scripts/test-ttse-work-mode.mjs",
