@@ -141,7 +141,7 @@ for (const code of ['WORKER_CLOSED', 'WORKER_UNSTABLE', 'RUNTIME_WARMING', 'RUNT
     assert.equal(view.find('settings-models-retry-btn'), null);
     fail = false;
     await view.tick(1000);
-    assert.equal(view.find('settings-models-error'), null);
+    assert.equal(Boolean(view.find('settings-models-error')), false);
     assert.equal(view.find('settings-models-add-btn').disabled, false);
     assert.doesNotMatch(initialError, /ipc connection/);
     assert.equal(view.calls.filter(({ method }) => method === 'models.list').length, 2);
@@ -159,7 +159,7 @@ test('model retries keep waiting at a capped interval until the service recovers
   assert.equal(view.find('settings-models-retry-btn'), null);
   fail = false;
   await view.tick(10000);
-  assert.equal(view.find('settings-models-error'), null);
+  assert.equal(Boolean(view.find('settings-models-error')), false);
   assert.equal(view.find('settings-models-add-btn').disabled, false);
   await view.tick(10000);
   assert.equal(view.calls.filter(({ method }) => method === 'models.list').length, 8);
@@ -194,7 +194,7 @@ test('Web disconnect stops model retries and reconnect reloads automatically', a
   assert.equal(view.calls.filter(({ method }) => method === 'models.list').length, 1);
   fail = false;
   await view.render(true);
-  assert.equal(view.find('settings-models-error'), null);
+  assert.equal(Boolean(view.find('settings-models-error')), false);
   assert.equal(view.find('settings-models-add-btn').disabled, false);
 });
 
@@ -210,9 +210,9 @@ test('a stale retry response cannot replace a successful load after Web reconnec
   await view.tick(1000);
   await view.render(false);
   await view.render(true);
-  assert.equal(view.find('settings-models-error'), null);
+  assert.equal(Boolean(view.find('settings-models-error')), false);
   await act(async () => rejectStale(new Error('late error')));
-  assert.equal(view.find('settings-models-error'), null);
+  assert.equal(Boolean(view.find('settings-models-error')), false);
   assert.equal(view.find('settings-models-add-btn').disabled, false);
 });
 
