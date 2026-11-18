@@ -78,3 +78,39 @@ async def test_selected_pack_or_member_change_still_revokes_authorization(instal
     else:
         assert not await context.router.is_current(route)
         assert route.blocked
+
+
+@pytest.mark.asyncio
+async def test_snapshot_retries_transient_lock_contention(installed_route, monkeypatch):
+    """An unrelated skill operation briefly holding the inventory lock must not
+    stop a confirmed task (#6788): snapshot retries once before giving up."""
+    router = installed_route.router
+    real_snapshot = installed_route.manager.skillpack_inventory_snapshot
+    attempts = {"n": 0}
+
+    def flaky_snapshot(*args, **kwargs):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise TimeoutError("inventory lock held by unrelated skill uninstall")
+        return real_snapshot(*args, **kwargs)
+
+    monkeypatch.setattr(installed_route.manager, "skillpack_inventory_snapshot", flaky_snapshot)
+    result = await router.snapshot()
+    assert attempts["n"] == 2
+    assert isinstance(result, dict) and "inventory_revision" in result
+
+
+@pytest.mark.asyncio
+async def test_snapshot_gives_up_after_repeated_failure(installed_route, monkeypatch):
+    """A persistent failure still raises, so genuine validation errors are not hidden."""
+    router = installed_route.router
+    attempts = {"n": 0}
+
+    def always_fail(*args, **kwargs):
+        attempts["n"] += 1
+        raise TimeoutError("persistent lock failure")
+
+    monkeypatch.setattr(installed_route.manager, "skillpack_inventory_snapshot", always_fail)
+    with pytest.raises(TimeoutError):
+        await router.snapshot()
+    assert attempts["n"] == 2

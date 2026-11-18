@@ -100,7 +100,22 @@ class SkillPackRouter:
     async def snapshot(self) -> dict[str, Any]:
         # Keep the inventory lock and full content scan in the same worker.
         # A TTL/stat cache would miss changes made outside SkillManager.
-        return await asyncio.to_thread(self.manager().skillpack_inventory_snapshot, lock_timeout=5)
+        #
+        # An unrelated skill install/uninstall holds the shared inventory lock
+        # for a short while. If our scan loses that race it would otherwise be
+        # treated as a SkillPack state change and stop a confirmed task (#6788).
+        # Retry once after a brief wait: transient lock contention resolves,
+        # while a genuine pack/member change is still caught by the revision
+        # comparison in the callers.
+        try:
+            return await asyncio.to_thread(
+                self.manager().skillpack_inventory_snapshot, lock_timeout=5
+            )
+        except Exception:
+            await asyncio.sleep(0.3)
+            return await asyncio.to_thread(
+                self.manager().skillpack_inventory_snapshot, lock_timeout=5
+            )
 
     async def unconfirmed_pack_summary(
         self, identifier: str, *, session: Any = None,
