@@ -260,3 +260,25 @@ test('a pending close choice cannot recreate tray after Quit', async () => {
   assert.equal(f.context.tray, null);
   assert.equal(f.window.visible, false);
 });
+
+for (const failure of ['hide', 'destroyTray']) {
+  test(`UI teardown failure in ${failure} still starts cleanup and exits`, async () => {
+    const f = windowFixture();
+    f.context.ensureTray();
+    const tray = f.context.tray;
+    if (failure === 'hide') {
+      f.window.hide = () => { throw new Error('native hide failed'); };
+    } else {
+      tray.destroy = () => { throw new Error('native tray destruction failed'); };
+    }
+    let cleanups = 0;
+    f.context.stopServices = async () => { cleanups += 1; };
+    f.quit();
+    assert.notEqual(f.context.finalShutdownPromise, null);
+    await f.context.finalShutdownPromise;
+    assert.equal(cleanups, 1);
+    assert.equal(f.context.tray, null);
+    assert.equal(f.errors.length, 1);
+    assert.deepEqual(f.exits, [0]);
+  });
+}
