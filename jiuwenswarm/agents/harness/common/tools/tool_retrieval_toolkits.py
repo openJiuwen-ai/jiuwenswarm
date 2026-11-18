@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Static in-code tool category catalogue for progressive ``tool_search``.
 
 The deferred-tool directory is a flat category table frozen into this
@@ -136,6 +138,14 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
         description="通过语言服务器（LSP）获取代码智能：定义、引用、诊断等。",
         tools=("lsp",),
         description_en="Use language servers for code definitions, references and diagnostics.",
+    ),
+    ToolCategory(
+        path="code-analysis",
+        description="提取源码文件的类、函数、签名与文档注释大纲。",
+        tools=("code_outline",),
+        description_en=(
+            "Extract classes, functions, signatures, and docstrings from source files."
+        ),
     ),
     ToolCategory(
         path="modes",

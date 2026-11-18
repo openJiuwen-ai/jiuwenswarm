@@ -78,6 +78,7 @@ _PATH_TOOLS = {
     "list_files",
     "grep",
     "search_replace",
+    "code_outline",
 }
 _PUBLIC_SEARCH_TOOLS = {"mcp_free_search", "mcp_paid_search"}
 _PUBLIC_WEB_READ_TOOLS = {"mcp_fetch_webpage"}

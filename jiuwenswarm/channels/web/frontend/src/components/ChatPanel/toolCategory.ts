@@ -1,3 +1,5 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 import {
   getSymphonyCommandLabel,
   isSymphonyCommandTool,
@@ -84,6 +86,11 @@ register(['glob', 'list_files', 'list_dir', 'list_directories', 'search_file', '
   category: 'search',
   actionKey: 'chatUi.toolAction.glob',
   iconKey: 'search',
+});
+register(['code_outline'], {
+  category: 'file',
+  actionKey: 'chatUi.toolAction.read',
+  iconKey: 'read',
 });
 register(['free_search', 'paid_search', 'mcp_free_search', 'mcp_paid_search'], {
   category: 'search',
