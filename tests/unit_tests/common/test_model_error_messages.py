@@ -208,3 +208,35 @@ class TestValidateModelHandler:
         assert "platform.deepseek.com/top_up" in response["error"]
         assert "181001" not in response["error"]
         assert "APIStatusError" not in response["error"]
+
+
+# --- #6790: unknown long errors must keep a redacted cause summary ---
+
+
+def test_unknown_long_error_keeps_cause_summary() -> None:
+    err = (
+        "[181001] internal wrapper: upstream returned detail=SomethingWeird\n"
+        + "z" * 300
+    )
+    result = user_facing_model_error(err)
+    assert "SomethingWeird" in result
+    assert "请检查 API" in result
+    assert "\n" not in result
+
+
+def test_cause_excerpt_is_bounded() -> None:
+    err = "x" * 2000
+    result = user_facing_model_error(err)
+    assert len(result) < 400
+
+
+def test_credentials_are_redacted_even_for_short_errors() -> None:
+    result = user_facing_model_error(
+        "model failed api_key=sk-secret123456789 with Bearer abcdefghijkl"
+    )
+    assert "sk-secret123456789" not in result
+    assert "***" in result
+
+
+def test_short_error_unchanged_when_no_secret() -> None:
+    assert user_facing_model_error("simple failure") == "simple failure"

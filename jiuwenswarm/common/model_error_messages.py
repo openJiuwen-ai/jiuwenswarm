@@ -155,8 +155,40 @@ _SERVER_MESSAGE = (
     "模型服务商暂时不可用，请稍后重试；若持续失败，请查看服务商的状态页。"
 )
 _INTERNAL_MESSAGE = (
-    "模型调用失败，请检查 API 地址、API Key 与模型名称是否正确；详细原因已写入日志。"
+    "模型调用失败，请检查 API 地址、API Key 与模型名称是否正确"
 )
+
+# Patterns for credentials that some SDKs echo inside transport errors.  These
+# are stripped from any raw cause excerpt shown to the user (FR-003).
+_SECRET_PATTERNS = (
+    re.compile(r"sk-[A-Za-z0-9_-]{8,}"),
+    re.compile(r"Bearer\s+[A-Za-z0-9._~-]{6,}", re.IGNORECASE),
+    re.compile(r"(api[_-]?key\s*[=:]\s*)[^\s,;}\"']+", re.IGNORECASE),
+)
+
+
+def _redact_secrets(text: str) -> str:
+    """Replace credentials echoed by SDKs inside error text with ``***``."""
+    for pattern in _SECRET_PATTERNS:
+        text = pattern.sub("***", text)
+    return text
+
+
+def _error_cause_excerpt(error: Any, limit: int = _MAX_RAW_ERROR_CHARS) -> str:
+    """Return a single-line, length-bounded, credential-redacted cause summary.
+
+    Long/multiline provider errors used to be replaced entirely by a generic hint,
+    hiding the real reason (quota, 429, connection refused, wrong model name...).
+    This keeps the actionable hint while still surfacing the underlying cause.
+    """
+    raw = "" if error is None else str(error).strip()
+    if not raw:
+        return ""
+    flat = " ".join(raw.split())
+    flat = _redact_secrets(flat)
+    if len(flat) > limit:
+        flat = flat[:limit].rstrip() + "..."
+    return flat
 
 
 def _flatten_error(error: Any) -> str:
@@ -267,8 +299,11 @@ def user_facing_model_error(
     if not raw:
         return fallback
     if len(raw) > _MAX_RAW_ERROR_CHARS or "\n" in raw:
-        return _INTERNAL_MESSAGE
-    return raw
+        excerpt = _error_cause_excerpt(raw)
+        return f"{_INTERNAL_MESSAGE}：{excerpt}" if excerpt else _INTERNAL_MESSAGE
+    # Short errors keep their original wording, but credentials echoed by some
+    # SDKs must still be redacted before the text is shown to the user.
+    return _redact_secrets(raw)
 
 
 def is_non_retryable_model_error(error: Any) -> bool:
