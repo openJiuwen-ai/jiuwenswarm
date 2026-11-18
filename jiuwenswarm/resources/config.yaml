@@ -1598,6 +1598,9 @@ permissions:
         exec: ask
   external_directory:
     '*': ask
+  # Present in template so user yaml approval_overrides survive deep-merge
+  # (keys only in user config are dropped as "deprecated").
+  approval_overrides: []
 browser:
   # chrome_path can be a string or per-OS map.
   # Example:

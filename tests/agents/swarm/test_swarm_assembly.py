@@ -445,6 +445,64 @@ async def test_team_skill_library_reload_rail_builds_for_global_library(
     assert str(rail._global_skills_dir) == str(global_skills_dir)
 
 
+@pytest.mark.asyncio
+async def test_legacy_team_shared_skill_link_refresh_alias_builds(
+    tmp_path: Path,
+) -> None:
+    """Pre-1.8.1 checkpoint rail name still resolves after soft-link migration.
+
+    OfficeAce upgrades fail recover_from_session when persisted member specs
+    still reference ``swarm.team_shared_skill_link_refresh``. The alias must
+    build the modern library-reload rail from live context.
+    """
+    register_swarm_providers()
+    global_skills_dir = tmp_path / "agent" / "jiuwenclaw_workspace" / "skills"
+    global_skills_dir.mkdir(parents=True)
+    fake_ctx = SwarmBuildContext(
+        language="cn",
+        session_id="session-legacy-1",
+        channel="officeclaw",
+        global_skills_dir=str(global_skills_dir),
+    )
+
+    legacy = RailSpec(
+        type=registry.LEGACY_TEAM_SHARED_SKILL_LINK_REFRESH,
+        # Old Soft-link era params must be ignored without failing build.
+        params={"team_skills_dir": str(tmp_path / "team" / "skills")},
+    ).build(language="cn", context=fake_ctx)
+    modern = RailSpec(type=registry.TEAM_SKILL_LIBRARY_RELOAD).build(
+        language="cn",
+        context=fake_ctx,
+    )
+    assert legacy is not None
+    assert modern is not None
+    assert type(legacy) is type(modern)
+    assert str(legacy._global_skills_dir) == str(global_skills_dir)
+
+
+def test_deep_agent_spec_with_legacy_skill_link_refresh_resolves(
+    tmp_path: Path,
+) -> None:
+    """Persisted DeepAgentSpec.rails containing the legacy name still resolve."""
+    register_swarm_providers()
+    global_skills_dir = tmp_path / "skills"
+    global_skills_dir.mkdir(parents=True)
+    fake_ctx = SwarmBuildContext(
+        language="cn",
+        session_id="session-legacy-2",
+        channel="officeclaw",
+        global_skills_dir=str(global_skills_dir),
+    )
+    spec = DeepAgentSpec(
+        rails=[
+            RailSpec(type=registry.LEGACY_TEAM_SHARED_SKILL_LINK_REFRESH),
+            RailSpec(type=registry.TEAM_SKILL_LIBRARY_RELOAD),
+        ]
+    )
+    parts = spec.resolve_parts(context=fake_ctx)
+    assert parts is not None
+
+
 def test_unknown_swarm_rail_type_raises() -> None:
     """An unregistered ``swarm.*`` rail type surfaces a clear ``ValueError``."""
     register_swarm_providers()

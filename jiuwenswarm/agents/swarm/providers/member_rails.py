@@ -83,6 +83,9 @@ PERSONAL_CONTEXT = "swarm.personal_context"
 RUNTIME_PROMPT = "swarm.runtime_prompt"
 TEAM_SKILL_STORAGE_POLICY = "swarm.team_skill_storage_policy"
 TEAM_SKILL_LIBRARY_RELOAD = "swarm.team_skill_library_reload"
+# Pre-1.8.1 checkpoints persist this name; keep as alias of TEAM_SKILL_LIBRARY_RELOAD
+# so recover_from_session does not raise Unknown rail type after upgrade.
+LEGACY_TEAM_SHARED_SKILL_LINK_REFRESH = "swarm.team_shared_skill_link_refresh"
 TEAM_WORKSPACE_REPORT_PATH = "swarm.team_workspace_report_path"
 CONTEXT_PROCESSOR = "swarm.context_processor"
 CONTEXT_OVERFLOW_RECOVERY = "swarm.context_overflow_recovery"
@@ -500,6 +503,29 @@ def _build_team_skill_library_reload_rail(
     return TeamSkillLibraryReloadRail(global_skills_dir=Path(inp.global_skills_dir))
 
 
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=LEGACY_TEAM_SHARED_SKILL_LINK_REFRESH,
+    description="Deprecated alias of swarm.team_skill_library_reload for "
+    "checkpoints persisted before the soft-link→visibility migration.",
+    input_model=TeamSkillLibraryReloadInput,
+)
+def _build_legacy_team_shared_skill_link_refresh_rail(
+    params: dict[str, Any],
+    context: SwarmBuildContext,
+) -> TeamSkillLibraryReloadRail | None:
+    """Rebuild the modern library-reload rail under the legacy rail type name.
+
+    OfficeAce 1.7.x team sessions persist
+    ``swarm.team_shared_skill_link_refresh`` on each member DeepAgentSpec.
+    1.8.x renamed that provider to ``swarm.team_skill_library_reload`` without
+    an alias, so ``recover_from_session`` failed with ``Unknown rail type``.
+    Old constructor params (e.g. ``team_skills_dir``) are ignored; the new rail
+    reads ``global_skills_dir`` from the live build context.
+    """
+    return _build_team_skill_library_reload_rail(params, context)
+
+
 class TeamWorkspaceReportPathInput(ConstructionInput):
     """Construction inputs for the team workspace report-path rail."""
 
@@ -704,6 +730,7 @@ __all__ = [
     "RUNTIME_PROMPT",
     "TEAM_SKILL_STORAGE_POLICY",
     "TEAM_SKILL_LIBRARY_RELOAD",
+    "LEGACY_TEAM_SHARED_SKILL_LINK_REFRESH",
     "TEAM_WORKSPACE_REPORT_PATH",
     "CONTEXT_PROCESSOR",
     "CONTEXT_OVERFLOW_RECOVERY",

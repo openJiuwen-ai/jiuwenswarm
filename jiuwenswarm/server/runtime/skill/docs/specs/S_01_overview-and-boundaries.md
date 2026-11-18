@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_01 / overview-and-boundaries |
 | 关联模块 | jiuwenswarm/server/runtime/skill/ + jiuwenswarm/agents/harness/common/{rails,tools}/（skill 相关文件） |
-| 最近一次修订日期 | 2026-10-16 |
-| 关联 feature | 暂无（初版建档） |
+| 最近一次修订日期 | 2026-11-17 |
+| 关联 feature | 暂无（初版建档；N5 失败语义修订见 [[S_05]] N2 与 bugfix/B_02） |
 
 ## 范围 / 边界
 
@@ -66,7 +66,7 @@ jiuwenswarm/agents/harness/common/tools/  ← agent 侧工具（2 个文件，�
 - **N2（core 只认目录）**：agent-core 的技能原语（`SkillUseRail` / `SkillTool`）**只认文件系统上的 skills 目录**，不感知安装账本。swarm 侧对目录内容的每一次变更（安装 / 卸载 / 预置同步 / builtin 清理）都必须同步落账，并触发 `SkillUseRail` 刷新或 Agent 重载。
 - **N3（fail-closed 三处）**：① `SkillWorkspaceProvider.ensure` 不能安全承载技能状态时抛 `SkillWorkspaceUnavailable`，**无 fallback 路由**；② 下载 URL 不在白名单（管理面显式配置 > Provider 声明默认 > 空）即拒绝下载；③ `verify_skillhub_artifact` 任一校验失败抛 `ArtifactVerificationError` 拒绝安装。
 - **N4（文档跨目录不跨仓）**：本模块文档归档在 `server/runtime/skill/docs/`，但管辖范围包含 `agents/harness/common/` 下的 skill 文件；agent-core 侧技能代码**不建文档**，只在本体系内以协作边界方式描述。
-- **N5（rail 状态即文件）**：活跃技能状态与授权 Grant 共用会话文件（`FileSkillGrantStore`，portalocker + 原子替换），无进程内授权缓存；存储不可用时抛 `AbortError` 中止本轮，**不带旧状态继续跑**。
+- **N5（rail 状态即文件）**：活跃技能状态与授权 Grant 共用会话文件（`FileSkillGrantStore`，portalocker + 原子替换），无进程内授权缓存；存储不可用时**授权关键路径**抛 `AbortError` 中止本轮，**纯记账路径**降级放行（degraded 标记 + `get_session_active_skill` 读侧短路，凭据窗口关闭）——两条路径都不带旧凭据继续跑，语义细则见 [[S_05]] N2。
 
 ## 接口契约
 
