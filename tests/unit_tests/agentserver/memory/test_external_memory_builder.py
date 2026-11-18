@@ -552,3 +552,38 @@ def test_rail_import_failure_returns_none():
             sys.modules["openjiuwen.harness.rails.external_memory_rail"] = orig_rail_mod
         else:
             sys.modules.pop("openjiuwen.harness.rails.external_memory_rail", None)
+
+
+# ---------------------------------------------------------------------------
+# Plugin config passthrough (atomgit 2026-11-18 P2 continuation)
+# ---------------------------------------------------------------------------
+
+def test_external_config_carries_plugins_section():
+    from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
+        get_external_memory_config,
+    )
+    cfg = {"memory": {"external": {"provider": "honcho",
+                                   "plugins": {"honcho": {"threshold": 0.7}}}}}
+    ext = get_external_memory_config(cfg)
+    assert ext["plugins"]["honcho"]["threshold"] == 0.7
+    assert get_external_memory_config({})["plugins"] == {}
+
+
+def test_plugin_provider_config_passthrough(monkeypatch):
+    """P2 回归：插件工厂必须收到「身份打底＋plugins.<name> 覆盖」的 config，
+    而非生产路径旧行为的恒 {}。修复前：merged 缺字段/恒空=红。"""
+    from jiuwenswarm.agents.harness.common.memory import plugin_discovery as pd
+
+    seen = {}
+
+    def _fake(name, config=None, allowed_plugins=None):
+        seen.update(name=name, config=config, allowed=allowed_plugins)
+        return "provider-sentinel"
+
+    monkeypatch.setattr(pd, "load_memory_plugin", _fake)
+    got = emb._load_plugin_provider(
+        "honcho", ["honcho"],
+        {"threshold": 0.7}, {"user_id": "u-1", "scope_id": "s-1"})
+    assert got == "provider-sentinel"
+    assert seen["config"] == {"user_id": "u-1", "scope_id": "s-1", "threshold": 0.7}
+    assert seen["allowed"] == ["honcho"]
