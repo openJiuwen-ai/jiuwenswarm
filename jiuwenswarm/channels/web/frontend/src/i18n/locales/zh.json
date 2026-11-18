@@ -2017,6 +2017,8 @@
     "previewUnsupported": "此文件类型暂不支持预览，请下载后查看",
     "previewMissingPath": "当前产物没有可用于预览的下载资源",
     "previewFailed": "文件预览加载失败",
+    "textPreviewTruncated": "文件超过 {{size}}，当前仅显示前面的内容，完整文件请下载",
+    "textPreviewTooLarge": "超过 {{size}} 的 JSON 或 JSONL 无法在浏览器中预览，请下载后查看",
     "docxPreviewFailed": "Word 文档预览加载失败",
     "presentationPreviewFailed": "PowerPoint 演示文稿预览加载失败",
     "presentationLoadFailed": "PowerPoint 演示文稿获取失败，请稍后重试",
