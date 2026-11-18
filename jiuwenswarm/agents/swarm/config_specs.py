@@ -49,6 +49,7 @@ from jiuwenswarm.common.config import (
     get_evolution_review_trigger_enabled,
     get_passive_skill_evolution_triggers,
     get_skill_create_enabled,
+    get_team_evolution_signal_trigger_enabled,
     get_team_ttse_enabled,
     get_ttse_embedding_config,
     resolve_string_or_list_config,
@@ -484,6 +485,7 @@ def _permission_params(config: dict[str, Any]) -> dict[str, Any]:
 def _team_evolution_rail_params(config: dict[str, Any]) -> dict[str, Any]:
     """Attribute params for the leader team skill-evolution rail."""
     return {
+        "signal_trigger": get_team_evolution_signal_trigger_enabled(config),
         "evolution_model_config": _evolution_model_config(config),
         "review_trigger": get_evolution_review_trigger_enabled(config),
         "auto_save": get_evolution_auto_save_enabled(config),

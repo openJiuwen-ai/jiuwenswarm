@@ -37,6 +37,7 @@ from jiuwenswarm.agents.harness.team.swarmflow_btc import (
     stop_background_tasks,
 )
 from jiuwenswarm.agents.harness.team.team_session_scope import TeamBootstrapParams
+from jiuwenswarm.common.local_env_config import EnvNsKey, resolve_env_ns
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.utils import get_user_workspace_dir
 
@@ -71,6 +72,7 @@ from jiuwenswarm.common.config import (
     get_evolution_review_trigger_enabled,
     get_skill_create_enabled,
     get_skill_evolution_enabled,
+    get_team_evolution_signal_trigger_enabled,
 )
 from jiuwenswarm.agents.harness.observability_runtime import (
     bind_agentarts_tracer_provider,
@@ -263,6 +265,13 @@ def shutdown_team_observability() -> None:
 
 
 @dataclass
+class _TeamEvolutionSession:
+    owner: EnvNsKey
+    # A pooled harness may build a replacement rail from its original spec after a reload.
+    leader_triggers: tuple[bool, bool] | None = None
+
+
+@dataclass
 class TeamRailMountContext:
     """Context needed to rebuild team rails after a hot config toggle."""
 
@@ -354,6 +363,7 @@ class TeamManager:
         self._initialized_sessions: set[str] = set()
         # session_id → TeamSkillEvolutionRail instance (set by customizer, used for drain/approval)
         self._team_skill_rails: dict[str, Any] = {}
+        self._team_evolution_sessions: dict[str, _TeamEvolutionSession] = {}
         # session_id → member SkillEvolutionRail instances
         self._team_member_skill_evolution_rails: dict[str, list[Any]] = {}
         # session_id → TeamSkillCreateRail instance
@@ -1889,8 +1899,19 @@ class TeamManager:
             return []
         return await rail.drain_pending_approval_events()
 
+    def _track_evolution_session(self, session_id: str) -> _TeamEvolutionSession:
+        owner = resolve_env_ns()
+        state = self._team_evolution_sessions.get(session_id)
+        if state is None or state.owner != owner:
+            state = _TeamEvolutionSession(owner)
+            self._team_evolution_sessions[session_id] = state
+        return state
+
     def register_team_skill_rail(self, session_id: str, rail: Any) -> None:
         """Register a TeamSkillEvolutionRail instance for the given session."""
+        policy = self._track_evolution_session(session_id).leader_triggers
+        if policy is not None:
+            rail.signal_trigger, rail.review_trigger = policy
         self._team_skill_rails[session_id] = rail
 
     def register_team_member_skill_evolution_rail(self, session_id: str, rail: Any) -> None:
@@ -1901,11 +1922,13 @@ class TeamManager:
 
     def register_team_skill_create_rail(self, session_id: str, rail: Any) -> None:
         """Register a TeamSkillCreateRail instance for hot config updates."""
+        self._track_evolution_session(session_id)
         self._team_skill_create_rails[session_id] = rail
 
     def register_team_rail_context(self, session_id: str, context: TeamRailMountContext) -> None:
         """Register session context needed to rebuild missing team rails."""
         if getattr(context.member_info, "role", None) == "leader":
+            self._track_evolution_session(session_id)
             self._team_rail_contexts[session_id] = context
 
     def get_team_rail_context(self, session_id: str) -> TeamRailMountContext | None:
@@ -1920,6 +1943,7 @@ class TeamManager:
             rails.append(entry)
 
     def _clear_team_rail_registries(self, session_id: str) -> None:
+        self._team_evolution_sessions.pop(session_id, None)
         self._team_skill_rails.pop(session_id, None)
         self._team_member_skill_evolution_rails.pop(session_id, None)
         self._team_skill_create_rails.pop(session_id, None)
@@ -2004,28 +2028,48 @@ class TeamManager:
             self.register_team_skill_create_rail(session_id, team_skill_create_rail)
         return team_skill_rail, team_skill_create_rail
 
-    async def update_evolution_config(self, config: dict[str, Any] | None) -> None:
-        """Hot-update team evolution rails for existing team runtimes."""
-        review_trigger_enabled = get_evolution_review_trigger_enabled(config)
-        skill_create_enabled = get_skill_create_enabled(config)
+    def _evolution_sessions(self, session_id: str | None) -> dict[str, _TeamEvolutionSession]:
+        owner = resolve_env_ns()
+        return {
+            sid: state for sid, state in self._team_evolution_sessions.items()
+            if state.owner == owner and (session_id is None or sid == session_id)
+        }
 
-        for rail in self._team_skill_rails.values():
-            try:
-                rail.review_trigger = review_trigger_enabled
-            except Exception as exc:
-                logger.warning(
-                    "[TeamManager] TeamSkillEvolutionRail review_trigger update failed: %s",
-                    exc,
-                )
+    def update_leader_evolution_triggers(
+        self, config: dict[str, Any] | None, *, session_id: str | None = None, catalog_sync: bool = False,
+    ) -> None:
+        """Apply the active tenant's policy to its mounted leaders, including idle teams."""
+        signal_trigger = get_team_evolution_signal_trigger_enabled(config)
+        review_trigger = get_evolution_review_trigger_enabled(config)
+        for sid, state in self._evolution_sessions(session_id).items():
+            rail = self.get_team_skill_rail(sid)
+            if rail is None:
+                continue
+            # Catalog sync historically leaves personal leaders alone. Restore only a disabled leader.
+            if catalog_sync and signal_trigger and rail.signal_trigger:
+                continue
+            state.leader_triggers = signal_trigger, review_trigger
+            rail.signal_trigger = signal_trigger
+            rail.review_trigger = review_trigger
+
+    async def update_evolution_config(
+        self, config: dict[str, Any] | None, *, session_id: str | None = None,
+    ) -> None:
+        """Hot-update the requested session or the active tenant's teams."""
+        self.update_leader_evolution_triggers(config, session_id=session_id)
+        sessions = self._evolution_sessions(session_id)
+        skill_create_enabled = get_skill_create_enabled(config)
 
         if not skill_create_enabled:
             for session_id, rail in list(self._team_skill_create_rails.items()):
+                if session_id not in sessions:
+                    continue
                 await self._unregister_live_rail(session_id, rail)
                 self._team_skill_create_rails.pop(session_id, None)
             return
 
         for session_id, context in list(self._team_rail_contexts.items()):
-            if session_id in self._team_skill_create_rails:
+            if session_id not in sessions or session_id in self._team_skill_create_rails:
                 continue
             self._build_and_mount_member_rails_for_context(
                 session_id,

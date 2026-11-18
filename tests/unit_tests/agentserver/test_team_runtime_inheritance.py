@@ -346,7 +346,7 @@ def test_build_member_rails_wires_trajectory_span_processor_to_evolution_rails(
 
     assert leader_rail.kwargs["trajectory_span_processor"] is processor
     assert leader_rail.kwargs["member_role"] == "leader"
-    assert "signal_trigger" not in leader_rail.kwargs
+    assert leader_rail.kwargs["signal_trigger"] is True
     assert leader_rail.kwargs["review_trigger"] is True
     assert member_rail.kwargs["trajectory_span_processor"] is processor
     assert member_rail.kwargs["signal_trigger"] is True
@@ -364,13 +364,19 @@ def test_build_member_rails_wires_trajectory_span_processor_to_evolution_rails(
         ("false", {"evolution": {"enabled": True, "review_trigger": True}}, False),
     ],
 )
+@pytest.mark.parametrize("expected_signal_trigger", [False, True])
 def test_build_member_rails_creates_leader_team_skill_evolution_rail_with_completion_followup(
     tmp_path,
     monkeypatch,
     env_review_trigger,
     config,
     expected_review_trigger,
+    expected_signal_trigger,
 ):
+    if not expected_signal_trigger:
+        evolution = config.get("react", config).get("evolution", {})
+        config = {"react": {"evolution": {**evolution, "team_signal_trigger": False}}}
+
     class _FakeTeamSkillEvolutionRail:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -401,7 +407,7 @@ def test_build_member_rails_creates_leader_team_skill_evolution_rail_with_comple
 
     team_skill_rails = [rail for rail in rails if isinstance(rail, _FakeTeamSkillEvolutionRail)]
     assert len(team_skill_rails) == 1
-    assert "signal_trigger" not in team_skill_rails[0].kwargs
+    assert team_skill_rails[0].kwargs["signal_trigger"] is expected_signal_trigger
     assert team_skill_rails[0].kwargs["review_trigger"] is expected_review_trigger
 
 

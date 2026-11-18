@@ -88,7 +88,7 @@ class FakeTeamManager:
         self.channel_id = channel_id
         self.calls = calls
 
-    async def update_evolution_config(self, config):
+    async def update_evolution_config(self, config, *, session_id=None):
         self.calls.append((self.channel_id, config))
 
 
@@ -158,7 +158,7 @@ async def test_reload_agents_config_retries_same_reload_after_team_update_failur
         def __init__(self):
             self.calls = []
 
-        async def update_evolution_config(self, config):
+        async def update_evolution_config(self, config, *, session_id=None):
             self.calls.append(config)
             if len(self.calls) == 1:
                 raise RuntimeError("temporary team update failure")

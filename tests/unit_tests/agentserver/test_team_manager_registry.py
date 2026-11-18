@@ -135,6 +135,61 @@ async def test_update_evolution_config_updates_team_skill_review_trigger(
 
 
 @pytest.mark.asyncio
+async def test_catalog_and_scoped_reload_update_only_the_owning_mounted_leaders(monkeypatch):
+    from jiuwenswarm.common.local_env_config import bind_agent_env_ns, clear_agent_env_ns, reset_agent_env_ns
+    from jiuwenswarm.server.runtime import agent_manager as runtime
+
+    teams = TeamManager()
+    monkeypatch.setattr(runtime, "peek_team_manager", lambda: teams)
+    monkeypatch.setattr(runtime, "get_team_manager", lambda channel: teams)
+    service = "leader-policy-test"
+    owner = runtime.AgentManager(env_service_id=service, env_agent_id="a")
+    owner.agents = {"web": {}}
+    personal = {"react": {"evolution": {"signal_trigger": False, "review_trigger": True}}}
+    enterprise = {"react": {"evolution": {"team_signal_trigger": False, "review_trigger": False}}}
+    sessions = {"s1": "a", "s2": "a", "s3": "b"}
+    rails = {}
+    for sid, agent_id in sessions.items():
+        token = bind_agent_env_ns(service, agent_id)
+        try:
+            rail = _FakeTeamSkillEvolutionRail(review_trigger=True)
+            rail.signal_trigger = True
+            rails[sid] = rail
+            teams.register_team_skill_rail(sid, rail)
+        finally:
+            reset_agent_env_ns(token)
+
+    try:
+        await owner.apply_sync_config(enterprise, {"EVOLUTION_REVIEW_TRIGGER": "false"})
+        for sid in ("s1", "s2"):
+            assert teams.get_team_skill_rail(sid) is rails[sid]
+            assert (rails[sid].signal_trigger, rails[sid].review_trigger) == (False, False)
+        assert (rails["s3"].signal_trigger, rails["s3"].review_trigger) == (True, True)
+
+        # A cached harness can re-register a leader built from its pre-switch personal spec.
+        replacement = _FakeTeamSkillEvolutionRail(review_trigger=True)
+        replacement.signal_trigger = True
+        token = bind_agent_env_ns(service, "a")
+        try:
+            teams.register_team_skill_rail("s1", replacement)
+        finally:
+            reset_agent_env_ns(token)
+        rails["s1"] = replacement
+        assert (replacement.signal_trigger, replacement.review_trigger) == (False, False)
+
+        await owner.apply_sync_config(personal, {})
+        for rail in rails.values():
+            assert (rail.signal_trigger, rail.review_trigger) == (True, True)
+
+        await owner.reload_agents_config(enterprise, {}, target_channel_id="web", target_session_id="s1")
+        assert (rails["s1"].signal_trigger, rails["s1"].review_trigger) == (False, False)
+        for sid in ("s2", "s3"):
+            assert (rails[sid].signal_trigger, rails[sid].review_trigger) == (True, True)
+    finally:
+        clear_agent_env_ns(service, "a")
+
+
+@pytest.mark.asyncio
 async def test_update_evolution_config_enabled_false_keeps_team_skill_rail_and_watcher(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
