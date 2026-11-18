@@ -16,6 +16,7 @@ import asyncio
 from typing import Any, Callable
 
 from jiuwenswarm.common.schema.message import Message, Mode, ReqMethod
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.gateway.channel_manager.base import BaseChannel, ChannelMetadata, RobotMessageRouter
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
 
@@ -280,7 +281,7 @@ class WebChannel(BaseChannel):
         await self.ws.handle_connection(ws, path=path)
 
     async def start(self) -> None:
-        """Start WebSocket and Gateway Web HTTP; block until WS server closes."""
+        """Serve enterprise HTTP or personal WebSocket and HTTP."""
         if self._running:
             return
         self._running = True
@@ -290,19 +291,25 @@ class WebChannel(BaseChannel):
 
             trajectory_update_broker.register(self._trajectory_update_listener)
             self._trajectory_listener_registered = True
-        self.rpc.maybe_start_history_capture()
-        await self.ws.start_ws_server()
-        await self.http.start()
-        logger_info = (
-            f"WebChannel 已启动: ws://{self.config.host}:{self.config.ws_port}{self.config.path}"
-        )
-        if self.http.port:
-            logger_info += f" http://{self.config.host}:{self.http.port}"
-        import logging
-        logging.getLogger(__name__).info(logger_info)
         try:
-            await self.ws.wait_closed()
+            self.rpc.maybe_start_history_capture()
+            enterprise = is_enterprise()
+            if not enterprise:
+                await self.ws.start_ws_server()
+            http_started = await self.http.start()
+            if enterprise and not http_started:
+                raise RuntimeError("Enterprise Gateway Web HTTP failed to start")
+            import logging
+            logging.getLogger(__name__).info(
+                "WebChannel started: HTTP port=%s, WebSocket enabled=%s",
+                self.http.port, not enterprise,
+            )
+            if enterprise:
+                await self.http.wait_closed()
+            else:
+                await self.ws.wait_closed()
         finally:
+            self._running = False
             self._unregister_trajectory_listener()
 
     async def stop(self) -> None:
