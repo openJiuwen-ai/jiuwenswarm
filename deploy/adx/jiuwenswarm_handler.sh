@@ -64,7 +64,7 @@ port_is_listening() {
 # 输出目标机上已安装的发行包名；未安装时输出空串（返回 0，避免调用方在 set -e 下中断）。
 jiuwenswarm_dist_name() {
     local host="$1"
-    local python_version="${DEPLOY_VARS["YR_PYTHON_VERSION"]}"
+    local python_version="${DEPLOY_VARS["PYTHON_VERSION"]}"
     local name=""
     if exec_on_host "${host}" "python${python_version} -m pip show workswarm >/dev/null 2>&1"; then
         name="workswarm"
@@ -88,7 +88,7 @@ jiuwenswarm_check_ssh() {
 
 jiuwenswarm_install() {
     local host="$1"
-    local python_version="${DEPLOY_VARS["YR_PYTHON_VERSION"]}"
+    local python_version="${DEPLOY_VARS["PYTHON_VERSION"]}"
 
     info "Checking jiuwenswarm on ${host}..."
     local dist_name check_result=""
@@ -115,54 +115,7 @@ jiuwenswarm_install() {
     fi
 }
 
-jiuwenswarm_infer_func_code_dir() {
-    local host="$1"
-    local python_version="${DEPLOY_VARS["YR_PYTHON_VERSION"]}"
 
-    local dist_name jiuwenswarm_location=""
-    dist_name=$(jiuwenswarm_dist_name "${host}")
-    if [ -n "${dist_name}" ]; then
-        jiuwenswarm_location=$(exec_on_host "${host}" "python${python_version} -m pip show ${dist_name} 2>/dev/null | grep -i '^Location:' | awk '{print \$2}'" | tr -d '\r') || true
-    fi
-
-    if [ -z "${jiuwenswarm_location}" ]; then
-        error "Failed to infer YR_FUNC_CODE_DIR: jiuwenswarm/workswarm not found on ${host}. Please set YR_FUNC_CODE_DIR in .env.custom."
-    fi
-
-    local inferred_dir="${jiuwenswarm_location}/jiuwenswarm/extensions"
-
-    if [ -n "${DEPLOY_VARS["YR_FUNC_CODE_DIR"]:-}" ]; then
-        if [ "${DEPLOY_VARS["YR_FUNC_CODE_DIR"]}" != "${inferred_dir}" ]; then
-            warning "YR_FUNC_CODE_DIR on ${host} (${inferred_dir}) differs from configured value (${DEPLOY_VARS["YR_FUNC_CODE_DIR"]})"
-        else
-            success "YR_FUNC_CODE_DIR verified on ${host}: ${inferred_dir}"
-        fi
-    else
-        DEPLOY_VARS["YR_FUNC_CODE_DIR"]="${inferred_dir}"
-        info "YR_FUNC_CODE_DIR inferred from jiuwenswarm install on ${host}: ${DEPLOY_VARS["YR_FUNC_CODE_DIR"]}"
-    fi
-}
-
-jiuwenswarm_ensure_func_code() {
-    local host="$1"
-    local func_dir="${DEPLOY_VARS["YR_FUNC_CODE_DIR"]}"
-    local func_file="${func_dir}/clawee.py"
-
-    info "Checking function code on ${host}:${func_dir}..."
-
-    if exec_on_host "${host}" "test -f '${func_file}'" 2>/dev/null; then
-        success "Function code already exists on ${host}: ${func_file}, skip sync"
-        return 0
-    fi
-
-    info "Function code missing on ${host}, syncing from local..."
-    exec_on_host "${host}" "mkdir -p ${func_dir}"
-    if copy_to_host "${host}" "${REG_FUNC_FILE}" "${func_dir}/"; then
-        success "Function code synced to ${host}"
-    else
-        error "Failed to sync function code to ${host}"
-    fi
-}
 
 deploy_jiuwenswarm() {
     local hosts_str="${DEPLOY_VARS["CLUSTER_HOSTS"]}"
@@ -172,9 +125,9 @@ deploy_jiuwenswarm() {
     master_host="${JIUWENSWARM_HOST_LIST[0]}"
 
     info "Deploying jiuwenswarm"
-    info "Master host (yr master): ${master_host}"
+    info "Master host: ${master_host}"
     info "Total hosts: ${#JIUWENSWARM_HOST_LIST[@]}"
-    info "Assuming yuanrong is already deployed on all hosts"
+    info "ADX must already be deployed on all hosts"
 
     info "Checking connectivity to all hosts..."
     for host in "${JIUWENSWARM_HOST_LIST[@]}"; do
@@ -189,8 +142,6 @@ deploy_jiuwenswarm() {
 
     for host in "${JIUWENSWARM_HOST_LIST[@]}"; do
         jiuwenswarm_install "${host}"
-        jiuwenswarm_infer_func_code_dir "${host}"
-        jiuwenswarm_ensure_func_code "${host}"
     done
 
     success "jiuwenswarm deployment completed!"
@@ -198,8 +149,7 @@ deploy_jiuwenswarm() {
     echo "=========================================="
     success "Deployment Summary"
     echo "=========================================="
-    echo "  YR Master: ${master_host}"
-    echo "  Func Code Dir: ${DEPLOY_VARS["YR_FUNC_CODE_DIR"]}"
+    echo "  Master: ${master_host}"
     echo ""
     echo "  Next step: deploy gateway"
     echo "    ./$(basename "$0") up gateway --hosts ${hosts_str}"
@@ -218,12 +168,12 @@ uninstall_jiuwenswarm() {
     IFS=',' read -ra JIUWENSWARM_HOST_LIST <<< "${hosts_str}"
     local master_host="${JIUWENSWARM_HOST_LIST[0]}"
 
-    # 注意: down 仅停止服务，不注销 function（注册已不再需要）。
+    # down stops services; package removal belongs to AgentOS uninstall.
     # pip 包卸载由 agentos uninstall 流程（module.sh 的 jiuwenswarm_uninstall 钩子）负责。
     echo ""
     echo "=========================================="
     success "jiuwenswarm down completed!"
     echo "=========================================="
-    echo "  YR Master: ${master_host}"
+    echo "  Master: ${master_host}"
     echo "=========================================="
 }

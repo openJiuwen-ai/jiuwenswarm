@@ -22,7 +22,7 @@ from pathlib import Path
 from ruamel.yaml import YAML
 
 MODULE_PATH = (
-    Path(__file__).resolve().parents[3] / "deploy" / "yuanrong" / "refresh_user_config.py"
+    Path(__file__).resolve().parents[3] / "deploy" / "adx" / "refresh_user_config.py"
 )
 _SPEC = importlib.util.spec_from_file_location("refresh_user_config", MODULE_PATH)
 if _SPEC is None or _SPEC.loader is None:  # pragma: no cover - 防御

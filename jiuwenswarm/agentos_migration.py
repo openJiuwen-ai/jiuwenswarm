@@ -7,9 +7,9 @@
 本模块只处理 Gateway 侧：
 
 1. 用新部署值渲染好的 ``config.agentos.yaml`` 作为模板骨架；
-2. 从旧共享 ``<workspace>/config/config.yaml`` 投影用户配置；
+2. 优先从旧 Gateway 配置投影用户配置，其次使用旧共享 ``<workspace>/config/config.yaml``；
 3. 用新渲染值重新覆盖部署归属字段（VIP / etcd / function ID 等）；
-4. 备份旧配置后原子写入 ``<gateway_config_dir>/config.yaml``；
+4. 备份旧配置后原子写入 ``<gateway_config_dir>/config-gateway.yaml``；
 5. ``.env`` 不搬家：Gateway 和 AS 共用 ``<workspace>/config/.env``。
 
 AS 配置不在这里迁移：部署脚本用不带 ``-f`` 的 ``jiuwenswarm-init`` 保留
@@ -42,6 +42,11 @@ DEPLOY_OWNED_PATHS: tuple[str, ...] = (
     "gateway.agent_client.function_version_urn",
     "gateway.agent_client.agent_timeout_s",
     "gateway.agent_client.agent_namespace",
+    "gateway.adx.ingress_url",
+    "gateway.adx.tenant",
+    "gateway.adx.token_env",
+    "gateway.adx.builtin_image",
+    "gateway.adx.runtime_class",
     "gateway.agentos.registry.endpoint",
     "gateway.agentos.registry.node",
     "gateway.agentos.auth_service_url",
@@ -164,11 +169,14 @@ def migrate(
     workspace: Path,
     rendered_template: Path,
     gateway_dir: Path | None = None,
+    legacy_gateway_config: Path | None = None,
     force: bool = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     workspace = Path(workspace)
-    legacy_path = workspace / "config" / "config.yaml"
+    shared_config = workspace / "config" / "config.yaml"
+    previous_gateway = legacy_gateway_config or workspace / "infra" / "config" / "config.yaml"
+    legacy_path = previous_gateway if previous_gateway.is_file() else shared_config
     if not legacy_path.is_file():
         return {
             "status": "skipped",
@@ -178,7 +186,7 @@ def migrate(
 
     target_dir = Path(gateway_dir) if gateway_dir else get_gateway_config_dir(workspace)
     target_path = target_dir / "config-gateway.yaml"
-    if target_path.resolve() == legacy_path.resolve():
+    if target_path.resolve() in (shared_config.resolve(), legacy_path.resolve()):
         raise ValueError(
             "gateway config dir points at the legacy shared config: "
             f"{target_path}; refusing to rewrite the AgentServer config in place"
@@ -291,7 +299,12 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--gateway-dir",
         type=Path,
         default=None,
-        help="Gateway config directory; defaults to the data root (config-gateway.yaml)",
+        help="Gateway config directory; defaults to <workspace>/config",
+    )
+    parser.add_argument(
+        "--legacy-gateway-config",
+        type=Path,
+        help="path of the previous Gateway-only config if it used a custom directory",
     )
     parser.add_argument(
         "--force",
@@ -330,6 +343,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 workspace=workspace,
                 rendered_template=args.template,
                 gateway_dir=args.gateway_dir,
+                legacy_gateway_config=args.legacy_gateway_config,
                 force=args.force,
                 dry_run=args.dry_run,
             )
