@@ -555,6 +555,10 @@ async def test_jiuwen_provider_uses_default_project_across_operations(monkeypatc
     ("agent_memory_video_status", '{"status": "pending", "error": "waiting"}', None),
     ("agent_memory_search", '{"success": false, "error": "failed"}', None),
     ("agent_memory_search", "plain text", None),
+    ("agent_memory_search", None, None),
+    ("agent_memory_search", {"error": "SDK dictionary result"}, None),
+    ("agent_memory_search", object(), None),
+    ("agent_memory_search", '["empty"]', None),
 ])
 @pytest.mark.asyncio
 async def test_jiuwen_provider_normalizes_legacy_tool_errors(monkeypatch, mode, tool_name, result, expected):
@@ -571,9 +575,13 @@ async def test_jiuwen_provider_normalizes_legacy_tool_errors(monkeypatch, mode, 
 
 @pytest.mark.asyncio
 async def test_sdk_memory_failure_reaches_tool_result_event(monkeypatch):
-    from openjiuwen.core.foundation.tool.base import ToolExposure
-    from openjiuwen.harness.rails.memory.jiuwen_memory_rail import JiuwenMemoryRail
+    from openjiuwen.core.foundation.tool import ToolExposure
     from openjiuwen.harness.tools.tool_discovery.tool_call import ToolCallTool
+
+    rail_module = pytest.importorskip("openjiuwen.harness.rails.memory.jiuwen_memory_rail")
+    memory_rail_class = getattr(rail_module, "JiuwenMemoryRail", None)
+    if memory_rail_class is None:
+        pytest.skip("Installed Core does not provide JiuwenMemoryRail")
 
     from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
     from jiuwenswarm.agents.harness.common.rails.tool_retrieval_prompt_rail import ToolRetrievalPromptRail
@@ -584,7 +592,7 @@ async def test_sdk_memory_failure_reaches_tool_result_event(monkeypatch):
         "name": tool_name,
         "parameters": {"type": "object", "properties": {"conclusion": {"type": "string"}}},
     }
-    monkeypatch.setattr("openjiuwen.harness.rails.JiuwenMemoryRail", JiuwenMemoryRail)
+    monkeypatch.setattr("openjiuwen.harness.rails.JiuwenMemoryRail", memory_rail_class)
     monkeypatch.setattr(_FakeAgentMemoryProvider, "get_tool_schemas", lambda self: [schema], raising=False)
     monkeypatch.setattr(
         _FakeAgentMemoryProvider, "handle_tool_call",

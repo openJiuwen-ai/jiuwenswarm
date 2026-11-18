@@ -144,10 +144,15 @@ async def test_a_call_that_worked_is_emitted_as_a_call_that_worked() -> None:
         ({"status": "pending"}, True),
         ({"success": True, "result": "stored"}, True),
         ("ok", True),
+        ("[ERROR] add failed", False),
+        ("exit_code: 5", False),
+        ('{"success": false, "error": "failed"}', False),
+        ([{"success": True}, {"success": False, "error": "failed"}], False),
+        ([{"success": True}], True),
     ],
 )
 async def test_deferred_tool_event_reflects_target_failure(
-    target_result: dict[str, object] | str, expected_success: bool,
+    target_result: object, expected_success: bool,
 ) -> None:
     wrapper = ToolOutput(success=True, data={"name": "agent_memory_conclude", "result": target_result})
 

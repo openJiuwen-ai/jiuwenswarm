@@ -389,17 +389,19 @@ def build_jiuwen_memory_rail(
             if tool_name in _PROJECT_TOOLS and not project and not legacy_document:
                 args = {**args, "project": _DEFAULT_PROJECT}
             result = await super().handle_tool_call(tool_name, args)
+            if not isinstance(result, str):
+                return result
             try:
                 payload = json.loads(result)
             except json.JSONDecodeError:
                 return result
+            if not isinstance(payload, dict):
+                return result
+            if any(key in payload for key in ("success", "status", "ok", "is_error", "isError")):
+                return result
             # Legacy Memory errors have a message but no tool outcome.
-            if (
-                isinstance(payload, dict)
-                and isinstance(payload.get("error"), str)
-                and payload["error"].strip()
-                and not any(key in payload for key in ("success", "status", "ok", "is_error", "isError"))
-            ):
+            error = payload.get("error")
+            if isinstance(error, str) and error.strip():
                 payload["success"] = False
                 return json.dumps(payload, ensure_ascii=False)
             return result
