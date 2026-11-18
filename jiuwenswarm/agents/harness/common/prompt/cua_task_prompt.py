@@ -142,8 +142,6 @@ def build_cua_repl_prompt(language: str, *, legacy_available: bool) -> str:
         instructions = (
             "Call SDK methods synchronously in cua_repl. Python variables persist within this delegation. "
             "The host closes the session afterwards. Code runs with the host user's permissions. "
-            "On macOS, open apps directly by name unless the user specifies a method such as double-clicking "
-            'in Finder. For example, to open Calendar, use `app = computer.app("Calendar")` then `app.read()`. '
             'Use `app.read(view="both")` when you need the tree and screenshot together. '
             "The tool displays the result automatically. There is no need to print or slice the text."
         )
@@ -156,8 +154,7 @@ def build_cua_repl_prompt(language: str, *, legacy_available: bool) -> str:
         )
         instructions = (
             "在 cua_repl 中直接调用同步 SDK 方法。Python 变量在本次委派期间保留，委派结束后由宿主关闭会话。"
-            "代码以宿主用户的权限运行。在 macOS 上按名称直接打开应用，用户指定从访达双击等方式时按其要求操作。"
-            '例如，打开日历时，先用 `app = computer.app("日历")` 取得应用句柄，再调用 `app.read()`。'
+            "代码以宿主用户的权限运行。"
             '需要同时查看界面树和截图时用 `app.read(view="both")`。工具自动显示读取结果，无需打印或截取文本。'
         )
     return f"{intro}\n{instructions}"

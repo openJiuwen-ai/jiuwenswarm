@@ -715,7 +715,7 @@ def test_cua_factory_keeps_caller_rails_with_repl(monkeypatch, legacy_available,
     assert guidance in spec.system_prompt
     launch_rule = "Never use `subprocess`" if language == "en" else "永远不要使用 `subprocess`"
     assert host_prompt.count(launch_rule) == 1
-    assert host_prompt.index("app = computer.app(") < host_prompt.index("app.read()")
+    assert "macOS" not in host_prompt
     assert 'app.read(view="both")' in host_prompt
     assert ("无需打印或截取" if language == "cn" else "no need to print or slice") in host_prompt
     assert any(isinstance(rail, CuaProgressRail) for rail in spec.rails) is not legacy_available
