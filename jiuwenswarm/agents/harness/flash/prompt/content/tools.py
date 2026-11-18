@@ -44,9 +44,15 @@ _TOOLS_DEDUP_BULLETS_CN = (
     "只有当任务确实需要分步执行、状态已经变化、参数不同，或前一次结果明确要求继续获取下一部分信息时，才可以再次调用同一工具",
 )
 _TOOLS_DEDUP_BULLETS_EN = (
-    "Before calling a tool, check whether the same tool has already been called with the same arguments in this turn; if a result already exists, reason from that result instead of repeating the call",
-    "If the previous tool result was empty, had no matches, or added no new information, do not call again with identical arguments; adjust the query, use a better-suited tool, or explain that the current result is insufficient",
-    "Call the same tool again only when the task genuinely requires multiple steps, state has changed, arguments differ, or the previous result clearly asks you to fetch the next part of the information",
+    "Before calling a tool, check whether the same tool has already been called with the same "
+    "arguments in this turn; if a result already exists, reason from that result instead of "
+    "repeating the call",
+    "If the previous tool result was empty, had no matches, or added no new information, do "
+    "not call again with identical arguments; adjust the query, use a better-suited tool, or "
+    "explain that the current result is insufficient",
+    "Call the same tool again only when the task genuinely requires multiple steps, state has "
+    "changed, arguments differ, or the previous result clearly asks you to fetch the next part "
+    "of the information",
 )
 _TOOLS_BASH_BULLETS_CN = (
     "优先使用专用工具完成文件搜索、内容搜索、读取、编辑和写入，不要用 bash 替代 `glob` / `grep` / `read_file` / `edit_file` / `write_file`",
@@ -56,8 +62,11 @@ _TOOLS_BASH_BULLETS_CN = (
     "执行破坏性 Git 操作前先考虑更安全的替代方案",
 )
 _TOOLS_BASH_BULLETS_EN = (
-    "Prefer dedicated tools for file search, content search, reading, editing, and writing instead of using bash as a substitute for `glob` / `grep` / `read_file` / `edit_file` / `write_file`",
-    "Run independent commands in parallel; only chain dependent commands with `&&`, and use `;` only when earlier failures do not matter",
+    "Prefer dedicated tools for file search, content search, reading, editing, and writing "
+    "instead of using bash as a substitute for `glob` / `grep` / `read_file` / `edit_file` / "
+    "`write_file`",
+    "Run independent commands in parallel; only chain dependent commands with `&&`, and use "
+    "`;` only when earlier failures do not matter",
     "Use `background: true` for long-running commands instead of polling with `sleep`",
     "Prefer absolute paths and avoid frequent `cd`; quote paths with spaces using double quotes",
     "Consider safer alternatives before destructive Git operations",
