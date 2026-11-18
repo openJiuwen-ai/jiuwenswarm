@@ -66,11 +66,19 @@ async def test_phone_stop_with_top_level_task_id_reaches_gateway() -> None:
     assert stop.params["desktop_stop"] is True
     assert responses[0][0:2] == ("conversation-1", "task-1")
     assert responses[0][2]["result"]["status"]["state"] == "canceled"
-    terminal = responses[1][2]["result"]
+    # 取消即消费：先发「已停止」正文（canceled 终态会被上游自动重发该消息，
+    # 与后续轮次互相残杀；正文走 artifact 而非 status text，否则桌面镜像
+    # 渲染「本轮无响应」），再发 completed 终态。
+    close_text = responses[1][2]["result"]
     assert responses[1][0:2] == ("conversation-1", "task-1")
+    assert close_text["kind"] == "artifact-update"
+    assert close_text["final"] is True
+    assert close_text["artifact"]["parts"][0]["text"] == "已停止"
+    terminal = responses[2][2]["result"]
+    assert responses[2][0:2] == ("conversation-1", "task-1")
     assert terminal["kind"] == "status-update"
     assert terminal["final"] is True
-    assert terminal["status"]["state"] == "canceled"
+    assert terminal["status"]["state"] == "completed"
     assert ("conversation-1", "task-1") not in channel._active_tasks
 
 
@@ -192,7 +200,7 @@ async def test_phone_stop_during_keepalive_does_not_resurrect_old_task() -> None
         keepalive.cancel()
         await asyncio.gather(keepalive, return_exceptions=True)
 
-    assert states == ["working", "canceled"]
+    assert states == ["working", "completed"]
     assert "agent-1" not in channel._active_push_sessions
     assert any(r[2].get("result", {}).get("kind") == "status-update" for r in responses)
 

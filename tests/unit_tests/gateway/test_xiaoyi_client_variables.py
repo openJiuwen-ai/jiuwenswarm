@@ -104,6 +104,7 @@ def _make_channel(captured: list, sent: list) -> XiaoyiChannel:
     ch._push_flush_tasks = {}
     # 连发顶替收口路径引用（_cancel_superseded_platform_task）
     ch._canceled_platform_tasks = {}
+    ch._round_error_texts = {}
     ch._text_stream_prefix = {}
     ch._text_stream_pending = {}
     ch._data_event_handlers = {}

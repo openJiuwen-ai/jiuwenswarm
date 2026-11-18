@@ -786,6 +786,11 @@ class XiaoyiChannel(BaseChannel):
         # Keep recently stopped task IDs so queued outbound frames cannot
         # revive an A2A task after its canceled response has been sent.
         self._canceled_platform_tasks: dict[tuple[str, str], float] = {}
+        # 任务级轮末错误账本：(session_id, task_id) → 错误文案。非流式失败响应
+        # （如准入 BUSY）经 _send_legacy 记录后，轮末 fallback
+        # processing_status(false) 据此改判 failed，而不是伪装成
+        # completed「任务处理已完成~」（2026-11-16 案例）。
+        self._round_error_texts: dict[tuple[str, str], str] = {}
         self._task_timeout_tasks: dict[tuple[str, str], asyncio.Task] = {}
         self._session_timeout_tasks: dict[tuple[str, str], asyncio.Task] = {}
         # ask_user 应答收口账本：(session_id, 主投任务 id=应答帧链路) →
@@ -1304,6 +1309,20 @@ class XiaoyiChannel(BaseChannel):
         terminal_notice = bool(metadata.get("terminal_notice"))
         session_id, task_id = self._extract_platform_receive_info(msg)
         source_task_id = task_id
+        # 非流式失败响应（准入 BUSY 等）：无 event_type、payload 带 error，
+        # 正文随后照常下发。登记到任务级错误账本，轮末 fallback
+        # processing_status(false) 到达时改判 failed，不再伪装 completed。
+        if (
+            not event_name
+            and session_id
+            and task_id
+            and isinstance(payload, dict)
+            and str(payload.get("error") or "").strip()
+        ):
+            _round_err = str(payload.get("error")).strip()
+            self._round_error_texts[(session_id, task_id)] = _round_err
+            if len(self._round_error_texts) > 1024:
+                self._round_error_texts.pop(next(iter(self._round_error_texts)))
         from jiuwenswarm.common.mode_matrix import is_team_mode as _is_team_canonical
 
         is_team_mode = _is_team_canonical(mode)
@@ -1739,6 +1758,13 @@ class XiaoyiChannel(BaseChannel):
                 else get_status_text_for_event(msg.event_type, msg.payload)
             )
             status_state = get_status_state_for_event(msg.event_type, msg.payload)
+            # 本轮已下发过失败正文（准入 BUSY 等非流式失败响应，见 _send_legacy
+            # 的 _round_error_texts 登记）：轮末 fallback 收口改判 failed 并透传
+            # 错误原文，不伪装成 completed「任务处理已完成~」。
+            _round_error = self._round_error_texts.pop((session_id, task_id), None)
+            if status_state == "completed" and _round_error:
+                status_state = "failed"
+                status_text = _round_error
             # AskUser/权限审批挂起中（待答复审批已登记）：任务在等用户输入而非
             # 结束。AgentServer 流收尾的 is_processing=false 事件映射成
             # completed+final=true 会把手机任务气泡标成"已完成"并关闭等待态——
@@ -1854,6 +1880,30 @@ class XiaoyiChannel(BaseChannel):
                 error_detail = msg.payload.get("error", "")
                 if error_detail:
                     error_text = str(error_detail)
+
+            # 取消类 chat.error（code=cancelled，被顶替/手动停止后 AgentServer
+            # 的迟到终帧）：不是失败。正常路径已由渠道收口（completed+正文）
+            # 并登记 _canceled_platform_tasks 丢弃本帧；此处兜底漏网场景，同样
+            # 按已消费收口，避免 failed「任务已取消」再次点燃上游自动重发。
+            if (
+                isinstance(msg.payload, dict)
+                and str(msg.payload.get("code") or "").strip().lower() == "cancelled"
+            ):
+                await self._send_consumed_close(session_id, task_id, "已停止")
+                if session_id:
+                    await self._stop_session_heartbeat(session_id)
+                    self._clear_task_timeout(session_id)
+                    self._clear_session_timeout(session_id)
+                    self._mark_session_completed(session_id)
+                    self._accumulated_texts.pop(session_id, None)
+                logger.info(
+                    "[GUI_AGENT_DIAG] phase=XIAOYI_CANCELLED_ERROR_CONSUMED "
+                    "message_id=%s session_id=%s task_id=%s",
+                    msg.id,
+                    session_id,
+                    task_id,
+                )
+                return
 
             # 重试通知是过程性文案（LLMRetryRail 广播）：不能作为 failed 终态外发，
             # 否则一次自动重试就会把手机/镜像侧的任务判死。终态仍由后续真错误/真结束驱动。
@@ -4622,6 +4672,41 @@ class XiaoyiChannel(BaseChannel):
         )
         self._session_task_map.pop(task_id, None)
 
+    async def _send_consumed_close(
+        self, session_id: str, task_id: str, close_text: str
+    ) -> None:
+        """被顶替/被取消轮次的「已消费」收口：artifact 正文 + completed 终态。
+
+        canceled 终态会被手机/云端队列视为「未完成」并自动重发该消息，重发
+        又会取消当前在跑的轮次，形成两消息互相残杀的活锁（2026-11-16 案例）；
+        completed 才被上游判定为已消费、停止重发。收口文案必须走 artifact
+        正文而非 status text——桌面镜像不把状态文案当作正文，零产出 completed
+        会被渲染成「本轮无响应」。
+        """
+        for url_key, ws in self._ws_connections.items():
+            if ws:
+                try:
+                    await self._send_text_response(
+                        session_id,
+                        task_id,
+                        close_text,
+                        url_key,
+                        append=True,
+                        last_chunk=True,
+                        is_final=True,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "[XiaoyiChannel] 收口正文发送失败: session=%s task=%s: %s",
+                        session_id,
+                        task_id,
+                        e,
+                    )
+        for url_key in list(self._ws_connections.keys()):
+            await self._send_status_update_with_state(
+                task_id, session_id, close_text, "completed", url_key,
+            )
+
     async def _cancel_superseded_platform_task(
         self, session_id: str, task_id: str
     ) -> None:
@@ -4675,11 +4760,15 @@ class XiaoyiChannel(BaseChannel):
         self._text_stream_prefix.pop(session_id, None)
         self._text_stream_pending.pop(task_key, None)
         self._text_stream_pending.pop(session_id, None)
-        # 终态帧：手机气泡按 canceled 收口；桌面镜像转 assistant-done 关闭运行。
-        for url_key in list(self._ws_connections.keys()):
-            await self._send_status_update_with_state(
-                task_id, session_id, "", "canceled", url_key,
-            )
+        # 终态帧：被新消息顶替的轮次对上游按「已消费」收口（completed+正文）。
+        # canceled 会被手机/云端视为「未完成」而自动重发该消息，重发又取消
+        # 在跑的新轮次，两消息互相残杀成活锁（2026-11-16 案例：两条消息交替
+        # 重发 6 次、全部 canceled 终态、生图三轮全废）。正文必须走 artifact
+        # 文本——桌面镜像不把状态文案当正文，零产出 completed 会被渲染成
+        # 「本轮无响应」。
+        await self._send_consumed_close(
+            session_id, task_id, "已切换到新任务",
+        )
         if not self._is_session_active(session_id):
             if session_id:
                 await self._stop_session_heartbeat(session_id)
@@ -4939,13 +5028,13 @@ class XiaoyiChannel(BaseChannel):
             await self._send_agent_response(session_id, task_id, response, url_key)
 
         # 回执是 RPC 结果；桌面镜像按 A2A 终态帧收口运行状态。
-        # 因此还要为本次任务发送 final=true 的 canceled 状态。
+        # 取消即消费：canceled 终态会被手机/云端视为「未完成」而自动重发该
+        # 消息，与后续轮次互相残杀（2026-11-16 活锁案例）。改为 completed +
+        # 收口正文。tasks/cancel 同时承载用户手动停止与上游流程性停止（网关
+        # 无法区分），「已停止」文案对两种语义都成立。
         if not was_active:
             return
-        for url_key in list(self._ws_connections.keys()):
-            await self._send_status_update_with_state(
-                task_id, session_id, "", "canceled", url_key,
-            )
+        await self._send_consumed_close(session_id, task_id, "已停止")
         if not self._is_session_active(session_id):
             if session_id:
                 await self._stop_session_heartbeat(session_id)
