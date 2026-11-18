@@ -163,8 +163,8 @@ memory:
   # ------------------------------------------------------------
   # 内置记忆的 jiuwen 变体（engine ∈ {builtin, both} 且 provider=jiuwen 时生效）
   # 用 JiuwenMemoryRail + AgentMemoryMemoryProvider 替换原生 MemoryRail；
-  # modes.agent.memory.enabled 仍是总开关。模板缺省 ''（原生文件记忆）：
-  # jiuwen 变体依赖 site-packages 的 jiuwen_memory_adapter 包，按需显式开启。
+  # modes.agent.memory.enabled 仍是总开关。模板默认使用 jiuwen，
+  # 依赖 site-packages 的 jiuwen_memory_adapter 包。
   # 两种挂载模式（memory.builtin.jiuwen.mode）：
   #   http — 连远程 agent-memory HTTP 服务（需服务在跑）
   #   sdk  — 进程内装配 agent-memory 内核，内核配置统一由 provider 内置
@@ -172,7 +172,7 @@ memory:
   #          serve-doc 的代码化副本，随 adapter 部署）
   # ------------------------------------------------------------
   builtin:
-    provider: ""                  # '' / 缺省 = 原生 MemoryRail；jiuwen = AgentMemory 外接引擎
+    provider: jiuwen              # jiuwen = JiuwenMemoryRail；'' = 原生 MemoryRail
     jiuwen:
       mode: ${JIUWEN_MEMORY_MODE:-sdk}   # http = HTTP 服务；sdk = 进程内内核
       base_url: ${JIUWEN_MEMORY_BASE_URL:-http://127.0.0.1:8137}  # http：AgentMemory HTTP 服务
@@ -187,15 +187,17 @@ memory:
       session_end_extract: false   # uninit 时批量 EXTRACT（infer 模式下冗余，保持关）
 
       # ---- sdk 模式专用（mode=sdk）----
-      # 进程内装配 agent-memory 内核，直连后端。sdk 下只贴"上层必须显式覆盖"的
-      # 关键内核装配项：globals 里的凭证/维度 + markdown_store 落盘根目录；其余
-      # namespace（extractor/engine/dedup 等算子）由 provider 内置的 agent 场景
-      # 默认装配补齐（AssemblyContext 深合并），不必重复贴。凭证字段留空 = 由
-      # provider 从 jiuwenswarm 顶层 models.defaults[is_default=true] + embed.*
-      # 注入真值（空串会被内置默认覆盖成空，所以这里显式占位）。
+      # SDK 配置会与 provider 内置的 agent 场景默认装配深合并。
+      # 默认使用本地 hashing 生成文本向量，无需配置 embedding 服务。
+      # LLM 凭证留空时从 Swarm 的默认对话模型注入。
       sdk:
+        embedder:
+          default:
+            target: hashing
+            params:
+              tokenizer: default
         globals:
-          embedder_dim: 1024        # 与 embedding 模型维度绑定（bge-m3 → 1024），须与向量库 dim 一致
+          embedder_dim: 64          # 文本向量维度，须与向量索引一致
           llm_base_url: ""          # LLM base_url；留空由 provider 从 models.defaults 注入
           llm_api_key: ""           # LLM api_key；留空由 provider 从 models.defaults 注入
           llm_model: ""             # LLM 模型名（如 deepseek-v4-pro）；留空由 provider 注入
