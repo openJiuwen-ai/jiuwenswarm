@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Static in-code tool category catalogue for progressive ``tool_search``.
 
 The deferred-tool directory is a flat category table frozen into this
@@ -196,6 +198,15 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
         description_en=(
             "List and read other persistent sessions, send messages, inspect "
             "delivery and resume queued tasks."
+        ),
+    ),
+    ToolCategory(
+        path="testing",
+        description="结构化解析测试失败输出，提取失败用例、异常类型与精简堆栈。",
+        tools=("parse_test_failure",),
+        description_en=(
+            "Parse test runner failure output into failing tests, "
+            "exception types, and compacted tracebacks."
         ),
     ),
     ToolCategory(

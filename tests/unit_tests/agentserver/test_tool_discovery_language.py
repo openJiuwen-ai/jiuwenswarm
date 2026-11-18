@@ -293,6 +293,7 @@ async def test_bundled_search_finds_chinese_query_in_english_mode() -> None:
         ("search_skill", "找一个可以处理表格的技能"),
         ("enter_worktree", "创建隔离工作树"),
         ("session_read", "看看另一个会话的结果"),
+        ("parse_test_failure", "解析测试失败堆栈"),
     ],
 )
 async def test_optimized_search_finds_chinese_query_in_english_mode(

@@ -88,6 +88,10 @@ BUILTIN_TOOL_DISCOVERY: dict[str, ToolDiscoveryMetadata] = {
     "uninstall_skill": _entry("Uninstall a local skill.", "卸载 删除 技能"),
     "powershell": _entry("Run terminal commands and scripts with PowerShell.", "终端 命令行 执行命令 PowerShell 脚本"),
     "user_todos": _entry("Manage the user's personal tasks, meetings, reminders, and plans.", "待办 日程 会议 提醒 计划"),
+    "parse_test_failure": _entry(
+        "Parse pytest or unittest output into failing tests, exceptions, and tracebacks.",
+        "解析 测试失败 pytest unittest 报错 异常 堆栈 断言",
+    ),
     "enter_worktree": _entry(
         "Create or resume an isolated Git worktree and enter it.",
         "创建 进入 恢复 Git worktree 工作树 隔离分支",

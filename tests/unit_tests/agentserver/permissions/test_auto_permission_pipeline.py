@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Current end-to-end decision ordering for the root Auto Permission rail."""
 
 from __future__ import annotations
@@ -745,6 +747,8 @@ def test_subagent_runtime_binding_rejects_missing_callback_context() -> None:
     )
 
 
+_STATELESS_READONLY_TOOLS = frozenset({"convert_timestamp_to_utc8_time", "parse_test_failure"})
+
 _READONLY_CASES = [
     ("cron_list_jobs", {}), ("cron_get_job", {"job_id": "job-a"}),
     ("cron_preview_job", {"job_id": "job-a"}), ("heartbeat_list_jobs", {"scope": "current"}),
@@ -752,6 +756,7 @@ _READONLY_CASES = [
     ("read_terminal_output", {"terminal_id": "terminal-a"}),
     ("wait_for_terminal_exit", {"terminal_id": "terminal-a"}),
     ("convert_timestamp_to_utc8_time", {"timestamp": 1700000000}),
+    ("parse_test_failure", {"raw_output": "FAILED test_a.py::test_x"}),
 ]
 
 
@@ -775,6 +780,8 @@ def _readonly_resource(name, tmp_path, monkeypatch, session_id="session-a", *, n
         tools = bindings.HeartbeatRuntimeBridge(bindings.HeartbeatRailRuntime(SimpleNamespace())).build_tools(context=context)
     elif name == "convert_timestamp_to_utc8_time":
         tools = [bindings.convert_timestamp_to_utc8_time]
+    elif name == "parse_test_failure":
+        tools = [bindings.parse_test_failure]
     else:
         tools = bindings.acp.get_tools(session_id=session_id)
     return next(tool for tool in tools if tool.card.name == name)
@@ -790,7 +797,7 @@ async def test_readonly_real_binding_fast_path(tmp_path, monkeypatch, name, args
     tool = _readonly_resource(name, tmp_path, monkeypatch, "another-session" if variant == "cross_session" else "session-a")
     # SDK registration may rewrite the shared card. Restore both fields after this case.
     monkeypatch.setattr(tool.card, "id", tool.card.id)
-    monkeypatch.setattr(tool.card, "stateless", name == "convert_timestamp_to_utc8_time")
+    monkeypatch.setattr(tool.card, "stateless", name in _STATELESS_READONLY_TOOLS)
     if variant == "shadow":
         tool = LocalFunction(card=tool.card, func=lambda **kwargs: "not the builtin")
     if variant == "callable":
@@ -807,7 +814,12 @@ async def test_readonly_real_binding_fast_path(tmp_path, monkeypatch, name, args
             rail, policy, reviewer, _base = _rail(tmp_path, policy_result)
             ctx = _runtime_ctx(_Session(), tool_name=name, tool_args=args)
             ctx.agent.ability_manager = manager
-            expected = "allow" if variant == "valid" or (variant == "cross_session" and name.startswith("convert_")) else "interrupt"
+            expected = (
+                "allow"
+                if variant == "valid"
+                or (variant == "cross_session" and name in _STATELESS_READONLY_TOOLS)
+                else "interrupt"
+            )
             if variant == "deny":
                 expected = "denied"
             try:

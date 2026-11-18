@@ -85,6 +85,7 @@ def test_static_category_table_shape() -> None:
     assert "user_todos" in by_path["user-todos"].tools
     assert "prepare_skill_evolution" in by_path["skill-evolution"].tools
     assert "simplify_skill_experiences" in by_path["skill-evolution"].tools
+    assert "parse_test_failure" in by_path["testing"].tools
     # Descriptions are description-only routing text, never tool-name dumps.
     # (Bare words like "cron" may occur naturally; full underscore names
     # must not.)

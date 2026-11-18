@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Current contracts for compact deterministic routes."""
 
 from __future__ import annotations
@@ -82,6 +84,12 @@ def test_unknown_path_and_shell_are_never_promoted(tmp_path: Path) -> None:
     ("convert_timestamp_to_utc8_time", {"timestamp": True}, False),
     ("convert_timestamp_to_utc8_time", {"timestamp": float("inf")}, False),
     ("convert_timestamp_to_utc8_time", {"timestamp": float("nan")}, False),
+    ("parse_test_failure", {"raw_output": "FAILED test_a.py::test_x"}, True),
+    ("parse_test_failure", {"raw_output": "https://example.com/logs/1 FAILED"}, True),
+    ("parse_test_failure", {"raw_output": "ok", "framework": "pytest", "max_failures": 5}, True),
+    ("parse_test_failure", {"raw_output": "ok", "max_failures": True}, False),
+    ("parse_test_failure", {"raw_output": "ok", "max_chars": "1000"}, False),
+    ("parse_test_failure", {}, False),
 ] + [(name, {"job_id": "job-a", **extra}, valid)
      for name in ("cron_preview_job", "heartbeat_preview_job")
      for extra, valid in [({}, True), ({"count": 2}, True), ({"count": None}, False),

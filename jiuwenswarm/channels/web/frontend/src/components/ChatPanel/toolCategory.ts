@@ -1,3 +1,5 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 import {
   getSymphonyCommandLabel,
   isSymphonyCommandTool,
@@ -107,6 +109,11 @@ register(['execute_code', 'execute_code_stream'], {
   category: 'code',
   actionKey: 'chatUi.toolAction.runCode',
   iconKey: 'runCode',
+});
+register(['parse_test_failure'], {
+  category: 'code',
+  actionKey: 'chatUi.toolAction.read',
+  iconKey: 'wrench',
 });
 
 // 系统类：执行命令（sys_operation shell + 终端工具）
