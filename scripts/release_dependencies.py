@@ -1,4 +1,4 @@
-"""Keep temporary Core and Gateway forks out of distributable artifacts."""
+"""Pin release dependencies to official repositories and immutable commits."""
 
 from __future__ import annotations
 
@@ -19,6 +19,10 @@ _OFFICIAL_REPOSITORIES = {
     "agent-gateway": {
         "https://gitcode.com/openJiuwen/agent-gateway.git",
         "https://github.com/openJiuwen-ai/agent-gateway.git",
+    },
+    "openjiuwen-computeruse": {
+        "https://gitcode.com/openJiuwen/computer-use.git",
+        "https://github.com/openJiuwen-ai/computer-use.git",
     },
 }
 

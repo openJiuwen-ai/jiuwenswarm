@@ -187,10 +187,17 @@ fi
 if [ "$DO_SIGN" = "1" ]; then
   printf '\n[6/9] Code sign the .app (hardened runtime + entitlements, --deep)...\n'
   # Seal the embedded driver explicitly; --deep may skip code under Resources.
+  native_bundle_name="$(uv run --no-sync python "$PROJECT_ROOT/scripts/build_computer_use.py")"
+  native_bundle_found=0
   while IFS= read -r -d '' native_bundle; do
     codesign --force --options runtime --entitlements "$ENTITLEMENTS" \
       --sign "$SIGN_IDENTITY" "$native_bundle"
-  done < <(find "$APP_PATH/Contents" -depth -type d -name 'ComputerUseDriver.app' -print0)
+    native_bundle_found=1
+  done < <(find "$APP_PATH/Contents" -depth -type d -name "$native_bundle_name" -print0)
+  if [ "$native_bundle_found" != "1" ]; then
+    printf 'Embedded Computer Use app not found: %s\n' "$native_bundle_name" >&2
+    exit 1
+  fi
   codesign --force --deep --options runtime \
     --entitlements "$ENTITLEMENTS" \
     --sign "$SIGN_IDENTITY" \
