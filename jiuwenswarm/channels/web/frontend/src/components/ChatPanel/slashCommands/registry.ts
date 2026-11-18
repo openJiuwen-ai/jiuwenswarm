@@ -96,6 +96,10 @@ export function togglePlanFromSlash(
   // executeSlashCommand 守卫、输入框旁 Plan 开关、「计划」chip 关闭按钮共用
   // 同一套 planModeGate 判断（ask_user 待回答时 isProcessing 已回到 false，
   // 只看它的旧闸门会漏放）。默认参数便于单测注入。
+  //
+  // 这里只判忙态与 Goal 互锁、不判 planModeGate 的集群锁：本函数只对非集群会话
+  // 可达（集群在下面 planCommand.execute 的 `ctx.mode === 'team'` 处已整体拦下），
+  // 集群锁在此恒为假。真正的用户路径也都先过 InputArea 的守卫，这里是竞态兜底。
   sessionBusy: boolean = isSessionBusyForPlanToggle(sessionId),
 ): PlanSlashToggleResult {
   planStore.ensureRuntime(sessionId);
