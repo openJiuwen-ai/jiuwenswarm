@@ -157,3 +157,35 @@ JiuwenSwarm 候选为 `53774939acf274db2332d780f77ac77f0ad4d08c`，没有修改�
 后端执行 `python -m pytest jiuwenswarm/extensions/video_duplex/tests/backend --no-cov -q`，通过环境启用既有 live 用例，vLLM-Omni 仍为本日已验证的 main `16ad661a496c6466b09e85860b4c8647bce0c7da`。独立核对 SQLite、外部执行文件及协议记录，确认一次执行、completed、委托画面、结果接纳与模型回答 17；原始证据在 `pytest-develop-merge-20261118/`，核对摘要 merge-evidence-20261118.txt。测试范围继续使用受控 Core 写入器和 headless 音频 ACK，不宣称完整产品或物理设备验收。
 
 本轮没有新增实现或测试用例，未运行格式化、TypeScript 静态检查或 diff 静态检查。GPU 0、1 经 canhazgpu 预约，在测试后释放模型进程与预约；运行日志、数据库及同步脚本不入库。
+
+## 2026-11-18 范围恢复与双端点复验
+
+用户明确撤回后续 Qwen/JoyAI 工具路径重构，恢复本 PR 原有抽象工具端口、协调器和 vLLM-Omni WebSocket 接入范围。被撤回的重构从未提交或推送，工作区与测试服务器均恢复到 `4568416aea3dfe7fc682407fd7ee7370fdc346e9` 的产品实现；没有把 Qwen/JoyAI 接到新 adapter，也没有加入自架模型服务。自架端点工作按用户要求另开 PR。
+
+核对受测 vLLM-Omni main `16ad661a496c6466b09e85860b4c8647bce0c7da` 的 `vllm_omni/entrypoints/openai/api_server.py`：`/v1/duplex` 与 `/v1/realtime?duplex=1` 都调用相同 `handle_realtime_session`，前者明确声明为别名。现有 adapter 已保留配置 URL 的路径并设置 `model`、`duplex=1`、`autostart=0`，不需要增加第二套协议实现。本轮新增双路径参数化配置断言；live 证据只增加不含主机、查询或凭据的 `backend_route`。中英文使用文档明确两种地址。
+
+恢复候选 tree `0a47cf4d52ce226b20fc66be9e641da91534578f` 在测试服务器执行：全视频双工后端 **744 passed，零 skipped，155.73 秒**，其中启用 `/v1/realtime?duplex=1` 真实模型 E2E；再单独运行 `/v1/duplex` live 用例，**1 passed，零 skipped，7.66 秒**。独立读取两轮 SQLite、外部执行 JSONL 与协议记录，均为一次执行、completed、画面已委托、结果已接纳、模型回答 17；`backend_route` 分别为 `/v1/realtime` 与 `/v1/duplex`。证据目录为 `pytest-restored-realtime/`、`pytest-restored-duplex/`，日志为 restored-backend-realtime.log、restored-e2e-duplex.log。
+
+准备交付时上游 develop 更新至 `fdc28e35c`，导致 Settings 定义冲突。合并提交 `242942641` 保留本 PR 的 `duplex-backend` 分组，同时遵循上游移除重复 ASR/双工开关的变更。其余上游变更保留。相对恢复基线，runtime 工具端口、双工后端及媒体前端产品实现无变化；Core 依赖按上游更新至 `45d53dd1919a09e3801ce7bca3798f776ac72ca1`，因此合并候选另行复验，不将恢复候选结果直接认作新依赖通过。
+
+另外，已取消重构的探索验证曾运行 `npm run test:task-full-duplex`，原基线复现 **64 passed / 3 failed**，涉及旧结果提示文本及完成任务重连提示的断言。临时断言修改随范围恢复一并撤回，不作为本 PR 修复或通过证据；该较广测试入口不计入下述已通过的实时双工回归，不能据此声称全部前端测试通过。
+
+合并候选 `2429426413a5720774a01b1db3ed9fb779e8968a`，tree `6e05d4d5bb6a65c4b53392b4e551f754bba9a578` 的实际安装 Core SHA 已由 direct_url.json 核对；93 个本 PR 与本轮上游更新的源/依赖文件在本地和服务器指纹一致，仅归一化 CRLF/LF。vLLM-Omni main、模型和 Gateway/E2A pin 均保持上述固定版本。
+
+| 最终合并候选的测试服务器入口 | 结果 | 日志 |
+| --- | --- | --- |
+| 全视频双工后端，启用 `/v1/realtime?duplex=1` 真实模型 E2E | **744 passed，零 skipped，153.72 秒** | final-backend-realtime.log |
+| `/v1/duplex` 独立真实模型 E2E | **1 passed，零 skipped，7.60 秒** | final-e2e-duplex.log |
+| Settings | **72 passed** | final-settings-panel.log |
+| 多模态 Settings | **19 passed** | final-multimodal-settings.log |
+| 实时双工前端 | **150 passed** | final-qwen-barge-in.log |
+| 配置与国际化 | **11 passed** | final-i18n.log |
+| Vite 产品打包 | **passed，1 分钟** | final-vite.log |
+
+前端首轮运行器误用系统 Node 12，在进入 Node 测试时因不支持 `--test` 停止；恢复工作区已有 Node 22.16.0 后重新执行上述前端入口。没有为该环境问题修改产品或测试断言。
+
+两条最终端点证据位于 `pytest-final-realtime/`、`pytest-final-duplex/`，分别独立读取 SQLite、外部 JSONL 和协议记录，确认一次执行、completed、画面已委托、关联结果接纳、播放 ACK 和模型回答 17。仍采用生产 bridge/adapter/executor/TaskService 与真实模型，Core 外部动作是可计数写入器，音频是 headless PCM/ACK；未扩大为完整 Core/Gateway、真实 Core LLM 或物理音视频验收。
+
+此次通过 canhazgpu 仅预约 GPU 3，模型三 stage 共置于该 GPU；stage 0/1 的显存比例为 0.60/0.15，stage 2 为 0.06，TP=1、max_model_len=8192。所有测试环境及运行缓存位于任务工作区，HF_HOME 显式导出为共享模型目录。测试后 cancel 本次预约，父进程和三个 GPU 子进程均确认退出，未终止其他用户作业。
+
+复查范围为恢复基线到双路径测试的差异、上游 Settings 冲突解决、原有设计/spec 与双端点使用文档的一致性，以及新 Core 下的真实入口和独立副作用证据；没有发现此范围新增的待修复问题。原始运行产物仅留测试工作区与仓库外目录，不提交。
