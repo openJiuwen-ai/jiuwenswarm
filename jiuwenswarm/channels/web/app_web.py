@@ -8,6 +8,7 @@ Supports ``--dotenv <path>`` for multi-instance isolation.
 from __future__ import annotations
 
 import argparse
+import codecs
 import errno
 import hmac
 import http.client
@@ -192,6 +193,105 @@ def _decode_bytes_auto(raw_data: bytes, errors: str = "strict") -> tuple[str, st
             except (UnicodeDecodeError, LookupError):
                 continue
     raise OSError("Unable to decode file with any known encoding") from decode_exc
+
+
+_TEXTUAL_MIME_TYPES = frozenset(
+    {
+        "application/javascript",
+        "application/json",
+        "application/xhtml+xml",
+        "application/xml",
+        "application/x-ndjson",
+    }
+)
+_TEXTUAL_EXTENSION_MIME_TYPES = {
+    ".conf": "text/plain",
+    ".csv": "text/csv",
+    ".htm": "text/html",
+    ".html": "text/html",
+    ".ini": "text/plain",
+    ".js": "text/javascript",
+    ".json": "application/json",
+    ".jsonl": "application/x-ndjson",
+    ".log": "text/plain",
+    ".markdown": "text/markdown",
+    ".md": "text/markdown",
+    ".mdx": "text/markdown",
+    ".mjs": "text/javascript",
+    ".ndjson": "application/x-ndjson",
+    ".py": "text/plain",
+    ".text": "text/plain",
+    ".ts": "text/plain",
+    ".tsx": "text/plain",
+    ".txt": "text/plain",
+    ".yaml": "text/yaml",
+    ".yml": "text/yaml",
+}
+_TEXT_CHARSET_READ_BYTES = 65536
+
+
+def _is_textual_mime_type(mime_type: str) -> bool:
+    """Return whether a browser decodes this payload with a text charset."""
+    normalized = mime_type.split(";", 1)[0].strip().lower()
+    return (
+        normalized.startswith("text/")
+        or normalized in _TEXTUAL_MIME_TYPES
+        or normalized.endswith(("+json", "+xml"))
+    )
+
+
+def _guess_text_charset(file_path: Path) -> str:
+    """Sniff a text artifact's charset from its BOM or complete UTF-8 bytes.
+
+    Artifacts are written as UTF-8, but a workspace can still hold legacy GBK
+    files. ``gb18030`` is a superset of GBK/GB2312, so one fallback decodes
+    both. The UTF-8 check is incremental so large files stay bounded in memory;
+    scanning the complete file avoids treating an ASCII-only prefix as evidence
+    that the rest of a legacy file is UTF-8. An incomplete UTF-8 sequence at EOF
+    is tolerated because an artifact may still be in the process of being written.
+    """
+    try:
+        with file_path.open("rb") as file_obj:
+            prefix = file_obj.read(4)
+            if prefix.startswith(codecs.BOM_UTF8):
+                return "utf-8"
+            if prefix.startswith(codecs.BOM_UTF16_LE):
+                return "utf-16le"
+            if prefix.startswith(codecs.BOM_UTF16_BE):
+                return "utf-16be"
+
+            file_obj.seek(0)
+            decoder = codecs.getincrementaldecoder("utf-8")()
+            while True:
+                chunk = file_obj.read(_TEXT_CHARSET_READ_BYTES)
+                if not chunk:
+                    break
+                decoder.decode(chunk, final=False)
+            # Keep a partial trailing character buffered: it must not change
+            # the charset of an otherwise valid UTF-8 document.
+    except OSError:
+        return "utf-8"
+    except UnicodeDecodeError:
+        return "gb18030"
+    return "utf-8"
+
+
+def _text_content_type(
+    mime_type: str, file_path: Path, file_name: str | None = None,
+) -> str:
+    """Declare the charset of a text artifact served to a browser.
+
+    ``/file-api/download`` and ``/file-api/raw-file`` are navigated directly by
+    the desktop built-in browser and by artifact HTML preview iframes.  A text
+    response without ``charset`` is decoded with the browser default instead of
+    the artifact's own encoding, so Chinese artifacts render as mojibake.
+    """
+    normalized_mime_type = _TEXTUAL_EXTENSION_MIME_TYPES.get(
+        Path(file_name or file_path.name).suffix.lower(), mime_type
+    )
+    if not _is_textual_mime_type(normalized_mime_type):
+        return mime_type
+    return f"{normalized_mime_type}; charset={_guess_text_charset(file_path)}"
 
 
 def _get_agent_teams_root(project_root: Path) -> Path:
@@ -1668,7 +1768,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             start, end = byte_range or (0, max(file_size - 1, 0))
             content_length = 0 if file_size == 0 else end - start + 1
             self.send_response(206 if byte_range is not None else 200)
-            self.send_header("Content-Type", mime_type or "application/octet-stream")
+            self.send_header(
+                "Content-Type",
+                _text_content_type(mime_type or "application/octet-stream", full_path),
+            )
             self.send_header("Content-Length", str(content_length))
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Cache-Control", "no-store")
@@ -1957,7 +2060,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             start, end = byte_range or (0, max(0, file_size - 1))
             content_length = 0 if file_size == 0 else end - start + 1
             self.send_response(206 if byte_range is not None else 200)
-            self.send_header("Content-Type", mime_type)
+            self.send_header(
+                "Content-Type",
+                _text_content_type(mime_type, Path(file_path), file_name),
+            )
             self.send_header("Content-Length", str(content_length))
             self.send_header("Accept-Ranges", "bytes")
             self.send_header(
