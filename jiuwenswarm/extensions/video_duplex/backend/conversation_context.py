@@ -9,7 +9,6 @@ from openjiuwen.core.foundation.llm.schema.message import (
     OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA,
 )
 
-from jiuwenswarm.server.runtime.session import session_history
 from jiuwenswarm.server.runtime.session.history_replay import (
     HistoryReplayError,
     read_history_replay,
@@ -38,8 +37,6 @@ def _is_voice_input(record):
 
 
 async def _load_voice_batch(session_id, cursor=None):
-    if not await asyncio.to_thread(session_history.flush_pending_writes, timeout=5):
-        raise RuntimeError("Voice history is still saving; retry the request")
     return await asyncio.to_thread(read_history_replay, session_id, cursor=cursor,
                                    is_restorable=_is_voice_input, voice_only=True)
 

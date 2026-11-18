@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -7,6 +7,7 @@ from openjiuwen.core.foundation.llm import UserMessage
 
 from jiuwenswarm.extensions.video_duplex.backend import conversation_context as sync
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskService
+from jiuwenswarm.server.runtime.session import session_history
 
 
 @pytest.fixture(autouse=True)
@@ -15,7 +16,7 @@ def voice_history_reader(monkeypatch, tmp_path):
     from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayBatch, HistoryReplayCursor
 
     def read(sid, *, is_restorable, **_kwargs):
-        records = [row for row in sync.session_history.load_history_records(sid) if is_restorable(row)]
+        records = [row for row in session_history.load_history_records(sid) if is_restorable(row)]
         cursor = HistoryReplayCursor(tmp_path / "history.jsonl", 0, (0, 0, 0, 0, 0), 0)
         return HistoryReplayBatch(records, cursor, cursor, 0)
 
@@ -31,18 +32,43 @@ async def test_voice_history_filters_result_echoes_and_blank_or_non_text_records
         dict(id="object", channel_id="video_duplex", role="user", content={"text": "not speech"}),
         dict(id="typed", channel_id="web", role="user", content="Native history"),
     ]
-    monkeypatch.setattr(sync.session_history, "flush_pending_writes", lambda **_: True)
-    monkeypatch.setattr(sync.session_history, "load_history_records", lambda _: records)
+    monkeypatch.setattr(session_history, "load_history_records", lambda _: records)
     assert await sync.load_voice_history("chat") == [records[0]]
 
 
-async def test_voice_history_never_reads_unflushed_records(monkeypatch):
-    monkeypatch.setattr(sync.session_history, "flush_pending_writes", lambda **_: False)
-    read = AsyncMock()
-    monkeypatch.setattr(sync.session_history, "load_history_records", read)
-    with pytest.raises(RuntimeError, match="still saving"):
-        await sync.load_voice_history("chat")
-    read.assert_not_called()
+async def test_voice_history_read_does_not_wait_for_unrelated_writes(monkeypatch, tmp_path):
+    import json
+
+    from jiuwenswarm.server.runtime.session import history_replay, lifecycle
+
+    monkeypatch.setattr(lifecycle, "get_agent_sessions_dir", lambda: tmp_path / "sessions")
+    monkeypatch.setattr(lifecycle, "get_agent_root_dir", lambda: tmp_path)
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path / "sessions")
+    lifecycle.claim_runtime("chat")
+    path = session_history.get_write_history_path("chat")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
+    reader = Mock(wraps=history_replay.read_history_replay)
+    monkeypatch.setattr(sync, "read_history_replay", reader)
+    barrier = Mock(side_effect=AssertionError("No global history barrier in voice reads"))
+    monkeypatch.setattr(session_history, "flush_pending_writes", barrier)
+    messages = []
+    context = SimpleNamespace(get_messages=lambda: messages, add_messages=AsyncMock(side_effect=messages.append))
+    agent = SimpleNamespace(react_agent=SimpleNamespace(context_engine=SimpleNamespace(
+        get_context=lambda **_: context, save_contexts=AsyncMock())),
+        _interaction_session=SimpleNamespace(get_session_id=lambda: "chat"))
+    await sync.sync_conversation_context(agent, "chat")
+    assert messages == []
+    # A later durable append must remain visible after an empty import.
+    record = dict(id="voice", channel_id="video_duplex", role="user", content="My project is Cedar")
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(record) + "\n")
+    await sync.sync_conversation_context(agent, "chat")
+    assert [message.content for message in messages] == [record["content"]]
+    await sync.sync_conversation_context(agent, "chat")
+    context.add_messages.assert_awaited_once()
+    assert reader.call_count == 3
+    barrier.assert_not_called()
 
 
 def test_saved_chat_tasks_share_session_but_have_distinct_execution_ids():
@@ -83,8 +109,7 @@ async def test_live_context_imports_speech_once_and_skips_task_ui_duplicates(mon
             event_type="chat.final", presentation="tool_result", content="duplicate",
         ),
     ]
-    monkeypatch.setattr(sync.session_history, "flush_pending_writes", lambda **_: True)
-    monkeypatch.setattr(sync.session_history, "load_history_records", lambda _: records)
+    monkeypatch.setattr(session_history, "load_history_records", lambda _: records)
     await sync.sync_conversation_context(agent, "web-chat")
     await sync.sync_conversation_context(agent, "web-chat")
     assert [m.content for m in messages] == ["old text", "我叫小明", "你好，小明"]
@@ -116,8 +141,7 @@ async def test_imported_speech_survives_next_react_context_initialization(monkey
     await context.add_messages(UserMessage(content="Earlier typed question"))
     await engine.save_contexts(session)
     agent = SimpleNamespace(react_agent=SimpleNamespace(context_engine=engine), _interaction_session=session)
-    monkeypatch.setattr(sync.session_history, "flush_pending_writes", lambda **_: True)
-    monkeypatch.setattr(sync.session_history, "load_history_records", lambda _: [
+    monkeypatch.setattr(session_history, "load_history_records", lambda _: [
         dict(id="voice-name", channel_id="video_duplex", role="user", content="My project is Cedar"),
         dict(id="voice-reply", channel_id="video_duplex", role="assistant",
              event_type="chat.final", content="Cedar noted"),
