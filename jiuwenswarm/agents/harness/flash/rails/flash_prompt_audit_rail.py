@@ -135,6 +135,7 @@ class FlashPromptAuditRail(DeepAgentRail):
         self,
         fail_closed: bool = False,
         fail_closed_provider: Callable[[], bool] | None = None,
+        config_fingerprint_provider: Callable[[], Any] | None = None,
     ) -> None:
         super().__init__()
         self.system_prompt_builder = None
@@ -144,6 +145,11 @@ class FlashPromptAuditRail(DeepAgentRail):
         # 每轮从 provider 现读 fail_closed（热重载后下一轮即生效，评审 #6）；无 provider
         # 则用构造期值（离线/单测路径）。
         self._fail_closed_provider = fail_closed_provider
+        # 配置指纹 provider：返回影响静态提示词内容的配置指纹（可 hash）。指纹变化 = 已生效
+        # 的合法配置变更，应重置静态 hash 基线、re-seed 到新内容（评审 #2）；无 provider 则
+        # 退化为「首轮 seed、永不更新」的旧行为。
+        self._config_fingerprint_provider = config_fingerprint_provider
+        self._last_config_fingerprint: Any = None
         # 会话内静态区 hash 基线：首次 before_model_call 记为 seed，后续比对。
         self._static_hash_seed: str | None = None
 
@@ -174,6 +180,20 @@ class FlashPromptAuditRail(DeepAgentRail):
         ability_manager = getattr(getattr(ctx, "agent", None), "ability_manager", None)
         if ability_manager is not None:
             self._ability_manager = ability_manager
+        # 配置指纹变化 = 已生效的合法配置变更 → 重置静态 hash 基线（评审 #2）：否则
+        # persona 关/开等正常配置变更会改写静态区、被当漂移，fail_closed 持续中断后续轮次。
+        # 语言也算提示词配置（热重载改语言同样触发重基线）。
+        if self._config_fingerprint_provider is not None:
+            fingerprint = self._config_fingerprint_provider()
+            if fingerprint is not None:
+                lang = getattr(self.system_prompt_builder, "language", None) or "cn"
+                fingerprint = f"{fingerprint}\0{lang}"
+                if (
+                    self._last_config_fingerprint is not None
+                    and fingerprint != self._last_config_fingerprint
+                ):
+                    self._static_hash_seed = None
+                self._last_config_fingerprint = fingerprint
         report = self.check_compliance()
         if self._static_hash_seed is None and report.static_hash:
             self._static_hash_seed = report.static_hash

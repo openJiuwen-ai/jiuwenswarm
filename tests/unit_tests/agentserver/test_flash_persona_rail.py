@@ -181,6 +181,29 @@ class TestMaybeSplitIdentity:
         assert sec.priority == 10  # 原段未拆
         assert agent.system_prompt_builder.get_section("workspace_model") is None
 
+    def test_restore_does_not_clobber_different_builder(self) -> None:
+        """评审 #1：拆 builder A 后热重载重建 builder B，restore(B) 不能把 A 的旧快照写回 B。"""
+        agent_a, rail = self._run("cn")  # 拆 builder A（记快照 + _split_builder_id = id(A)）
+
+        # 热重载：同一 rail 实例、新 builder B（identity 内容不同）。
+        section_b = SimpleNamespace(
+            name="identity", content={"cn": "新的身份正文"}, priority=10
+        )
+        agent_b = _FakeAgent("cn", [section_b])
+        rail.init(agent_b)
+
+        rail.restore(agent_b.system_prompt_builder)
+
+        b = agent_b.system_prompt_builder
+        # B 的 identity 原样保留（未被 A 的旧快照覆盖），且未产生派生段。
+        assert b.get_section("identity") is not None
+        assert b.get_section("identity").content["cn"] == "新的身份正文"
+        assert b.get_section("identity").priority == 10
+        assert b.get_section("workspace_model") is None
+        # 旧快照已清空。
+        assert rail._original_identity is None
+        assert rail._split_builder_id is None
+
     @pytest.mark.asyncio
     async def test_splits_via_before_model_call(self) -> None:
         section = SimpleNamespace(name="identity", content={"cn": _IDENTITY_CN}, priority=10)

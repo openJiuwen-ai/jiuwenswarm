@@ -391,6 +391,33 @@ class TestFailClosed:
             await rail.before_model_call(SimpleNamespace(agent=agent))  # fc=True → 抛
 
     @pytest.mark.asyncio
+    async def test_config_fingerprint_resets_baseline(self) -> None:
+        """评审 #2：配置指纹变化（合法配置变更）重置静态 hash 基线；同版本内异常漂移仍拦截。"""
+        state = {"fp": "v1"}
+        agent = _FakeAgent(_CLEAN)
+        rail = FlashPromptAuditRail(
+            fail_closed=True,
+            config_fingerprint_provider=lambda: state["fp"],
+        )
+        rail.init(agent)
+
+        # 第 1 轮：记基线（干净）。
+        await rail.before_model_call(SimpleNamespace(agent=agent))
+
+        # 第 2 轮：指纹变（合法配置变更）+ 静态内容变 → 重置基线，不抛。
+        state["fp"] = "v2"
+        agent.system_prompt_builder.add_section(_sec("新准则", 460, "新增静态段。"))
+        await rail.before_model_call(SimpleNamespace(agent=agent))  # 指纹变化 → 不抛
+
+        # 第 3 轮：指纹和内容都不变 → 不抛。
+        await rail.before_model_call(SimpleNamespace(agent=agent))
+
+        # 第 4 轮：指纹不变但内容异常变 → 抛 AuditViolation。
+        agent.system_prompt_builder.add_section(_sec("异常段", 450, "异常新增。"))
+        with pytest.raises(AuditViolation):
+            await rail.before_model_call(SimpleNamespace(agent=agent))
+
+    @pytest.mark.asyncio
     async def test_fail_closed_abort_propagates_from_callback_manager(self) -> None:
         """从回调管理器入口验证：AbortError 从 trigger() 传播、不被记录后继续（评审 #7）。"""
         from uuid import uuid4

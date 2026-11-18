@@ -950,14 +950,18 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
     def _build_flash_prompt_audit_rail(self) -> Any | None:
         """最后审计器：运行期只告警，fail_closed 由 flash.audit.fail_closed 控制（默认关）。
 
-        fail_closed 经 provider 每轮现读，热重载后下一轮即生效（评审 #6）。
+        fail_closed 经 provider 每轮现读，热重载后下一轮即生效（评审 #6）；
+        配置指纹 provider 用于在合法配置变更后重置静态 hash 基线（评审 #2）。
         """
         try:
             from jiuwenswarm.agents.harness.flash.rails.flash_prompt_audit_rail import (
                 FlashPromptAuditRail,
             )
 
-            return FlashPromptAuditRail(fail_closed_provider=self._read_audit_fail_closed)
+            return FlashPromptAuditRail(
+                fail_closed_provider=self._read_audit_fail_closed,
+                config_fingerprint_provider=self._read_prompt_config_fingerprint,
+            )
         except Exception as exc:
             logger.warning("[FlashAdapter] FlashPromptAuditRail create failed: %s", exc, exc_info=True)
             return None
@@ -966,6 +970,32 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         """每轮现读 fail_closed（热重载同步，评审 #6）。"""
         audit_config = self._flash_config("audit", {})
         return bool(audit_config.get("fail_closed", False)) if isinstance(audit_config, dict) else False
+
+    def _read_prompt_config_fingerprint(self) -> str:
+        """提示词配置指纹（评审 #2）：覆盖影响静态区正文的 flash 开关。
+
+        指纹变化 = 已生效的合法配置变更，audit 据此重置静态 hash 基线；verify_only /
+        fail_closed 不影响提示词正文，不纳入。语言由 audit rail 拼入指纹（热重载改语言同触发）。
+        """
+        import hashlib
+        import json
+
+        composer = self._read_composer_config()
+        section_order = self._flash_config("section_order", {})
+        payload = {
+            "persona_enabled": composer.get("persona_enabled"),
+            "safety_enabled": composer.get("safety_enabled"),
+            "tool_guide_enabled": composer.get("tool_guide_enabled"),
+            "response_enabled": composer.get("response_enabled"),
+            "takeover_domains": sorted(composer.get("takeover_domains") or ()),
+            "section_order_enabled": (
+                bool(section_order.get("enabled", True))
+                if isinstance(section_order, dict) else True
+            ),
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
 
     def _build_flash_prompt_composer_rail(self) -> Any | None:
         """Build the single static text-composition entry for Flash.

@@ -148,8 +148,16 @@ class FlashPersonaRail(DeepAgentRail):
 
         幂等：原始快照为 None（从未拆分 / 守卫回退 / 已回滚）时是 no-op——尤其不能
         在「从未拆分」时把源 identity 段当成派生段误删（源段名与 intro 同名）。
+        快照与 builder 绑定（评审 #1）：热重载重建 builder 后，旧快照属于旧 builder，
+        不能把旧身份段写进新 builder、覆盖刚更新的身份/环境/自定义指令——此时清旧快照、
+        保留新原文。
         """
         if builder is None or self._original_identity is None:
+            return
+        if self._split_builder_id is not None and self._split_builder_id != id(builder):
+            # 快照来自旧 builder（热重载重建）：保留新 builder 原样，清掉旧快照。
+            self._split_builder_id = None
+            self._original_identity = None
             return
         for name in _PERSONA_PRODUCED_NAMES:
             if self._get_section(builder, name) is not None:
