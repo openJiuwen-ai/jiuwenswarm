@@ -13,7 +13,6 @@ from ..rails.flash_response_rail import FlashResponseRail
 from ..rails.flash_safety_rail import FlashSafetyRail
 from ..rails.flash_tool_guide_rail import FlashToolGuideRail
 from .content.safety import _SAFETY_PRODUCED_NAMES
-from .content.tools import _TOOLS_PRODUCED_NAMES
 from .registry import (
     FLASH_PROMPT_REGISTRY,
     PromptRenderContext,
@@ -23,17 +22,18 @@ from .registry import (
 
 logger = logging.getLogger(__name__)
 
-# 域禁用时需清理的派生段名（评审 A）：safety/tools 的派生段名与源段不同，禁用后上游
-# 每轮重注入源段、派生段残留（新旧同时进模型），需显式清理。response 段名与源段同名、
-# 上游覆盖即回退，无需清理。
+# 域禁用时需清理的派生段名（评审 A）：safety 的派生段名与源段不同，禁用后上游每轮重注入
+# 源段、派生段残留（新旧同时进模型），需显式清理。response 段名与源段同名、上游覆盖即回退，
+# 无需清理。tools 域有 FlashToolGuideRail.restore（源段剥离态无法靠上游重注入恢复，评审 #6）、
+# persona 域有 FlashPersonaRail.restore（快照/回滚），二者不走本表。
 _DOMAIN_PRODUCED_NAMES: dict[str, tuple[str, ...]] = {
     "safety": _SAFETY_PRODUCED_NAMES,
-    "tools": _TOOLS_PRODUCED_NAMES,
 }
 
-# verify-only 下工具门控域的段名：todo/subagent 的装配取决于工具是否在位，与默认上下文
-# 可能不一致，其 drift 属预期、记 debug（其余域 drift 记 warning）。
-_GATED_VERIFY_SECTIONS: frozenset[str] = frozenset({"todo", "task_tool"})
+# verify-only 下工具门控域的段名：todo/subagent/browser_routing 的装配取决于工具是否在位
+# （todo/task_tool 需对应工具；browser_routing 需 task_tool 且 browser_agent 子代理），与
+# 默认上下文可能不一致，其 drift 属预期、记 debug（其余域 drift 记 warning）。
+_GATED_VERIFY_SECTIONS: frozenset[str] = frozenset({"todo", "task_tool", "browser_routing"})
 
 
 # 可安全走声明式接管（declarative takeover）的域：必须同时满足
@@ -175,11 +175,12 @@ class FlashPromptComposerRail(DeepAgentRail):
 
         for key, rail in self._domain_rails:
             if not self._enabled.get(key, True) or key in self._takeover_domains:
-                # persona 关闭 → 撤销上一轮拆分（评审 #4）：恢复 identity、清派生段，
-                # 避免旧指令残留进模型。restore 幂等，未拆分时是 no-op。
-                if key == "persona":
+                # persona 关闭 → 撤销上一轮拆分（评审 #4）：恢复 identity、清派生段。
+                # tools 关闭 → 恢复源 tools 段原文（评审 #6）：源段剥离态无法靠上游重注入
+                # 自愈，须 restore。二者 restore 均幂等，未拆分/未剥离时是 no-op。
+                if key in ("persona", "tools") and not self._enabled.get(key, True):
                     rail.restore(builder)
-                # safety/tools 关闭 → 清理该域派生段（评审 A）：源段上游每轮重注入、
+                # safety 关闭 → 清理该域派生段（评审 A）：源段上游每轮重注入、
                 # 派生段名与源段不同会残留，新旧内容同时进模型，需显式清理。
                 elif key in _DOMAIN_PRODUCED_NAMES and not self._enabled.get(key, True):
                     for name in _DOMAIN_PRODUCED_NAMES[key]:
@@ -293,8 +294,10 @@ class FlashPromptComposerRail(DeepAgentRail):
         """Step 3 verify-only：按声明式注册表重建静态段，与 builder 现状比对。
 
         仅告警不裁决（不接管内容）。注：persona 域非确定性、不在注册表内，故只校验
-        safety/response/tools/todo/subagent/memory 六域；todo/subagent/memory 在运行时
-        由各自独立 rail 装配，其工具门控与默认上下文可能不一致，漂移记录 debug 级。
+        safety/response/tools/todo/subagent 五域（注册表 FLASH_PROMPT_REGISTRY 实际只有这
+        五个 block；memory 由独立 rail 装配、不出现在 reconcile 期望集里）。其中
+        todo/task_tool/browser_routing 是工具门控段，装配取决于工具是否在位，与默认上下文
+        可能不一致，漂移记录 debug 级。
         """
         language = self._resolve_language(builder)
         try:

@@ -441,6 +441,51 @@ async def test_tools_disable_cleans_stale_sections() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tools_disable_restores_source_section() -> None:
+    """评审 #6：tools 域禁用后恢复源段完整原文（去重/bash 子标题回来），派生段清空。"""
+    from jiuwenswarm.agents.harness.flash.prompt.content.tools import (
+        _TOOLS_BASH_BULLETS_CN,
+        _TOOLS_BASH_CN,
+        _TOOLS_DEDUP_BULLETS_CN,
+        _TOOLS_DEDUP_CN,
+    )
+
+    tools_full = (
+        "# 可用工具\n- read_file\n\n"
+        + _TOOLS_DEDUP_CN + "\n" + "\n".join("- " + b for b in _TOOLS_DEDUP_BULLETS_CN) + "\n\n"
+        + _TOOLS_BASH_CN + "\n" + "\n".join("- " + b for b in _TOOLS_BASH_BULLETS_CN) + "\n"
+    )
+    agent = _FakeAgent([
+        _sec("identity", 10, _IDENTITY),
+        _sec("tools", 30, tools_full),
+    ])
+    state = {
+        "persona_enabled": True,  # 需 execution_principles@400，340 才产出
+        "safety_enabled": False,
+        "tool_guide_enabled": True,
+        "response_enabled": False,
+        "verify_only": False,
+        "takeover_domains": frozenset(),
+    }
+    rail = FlashPromptComposerRail(config_provider=lambda: dict(state))
+    rail.init(agent)
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+    builder = agent.system_prompt_builder
+    # 第一轮：源段被剥离（去重/bash 子标题没了），派生段产出。
+    assert _TOOLS_DEDUP_CN not in builder.get_section("tools").content["cn"]
+    assert _TOOLS_BASH_CN not in builder.get_section("tools").content["cn"]
+    assert builder.get_section("tool_selection") is not None
+
+    state["tool_guide_enabled"] = False
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+    # 第二轮：源段恢复完整（去重/bash 子标题回来），派生段清空。
+    assert _TOOLS_DEDUP_CN in builder.get_section("tools").content["cn"]
+    assert _TOOLS_BASH_CN in builder.get_section("tools").content["cn"]
+    assert builder.get_section("tool_selection") is None
+    assert builder.get_section("tool_result") is None
+
+
+@pytest.mark.asyncio
 async def test_tool_guide_reads_subagents_from_outer_agent() -> None:
     """评审 #3：init 绑外层（有 deep_config.subagents）、回调派发内层（有工具面无 deep_config）。
 

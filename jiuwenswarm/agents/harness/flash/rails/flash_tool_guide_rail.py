@@ -36,6 +36,7 @@ from jiuwenswarm.agents.harness.flash.prompt.content.tools import (
     _TOOLS_DEDUP_EN,
     _TOOLS_DEDUP_BULLETS_CN,
     _TOOLS_DEDUP_BULLETS_EN,
+    _TOOLS_PRODUCED_NAMES,
     _TOOLS_TASKTOOL_CN,
     _TOOLS_TASKTOOL_EN,
     _strip_tools_guide,
@@ -60,6 +61,11 @@ class FlashToolGuideRail(DeepAgentRail):
         # init 时绑定的外层 DeepAgent（有 deep_config.subagents）；BEFORE_MODEL_CALL 会
         # 派发给内层 ReActAgent（无 deep_config），子代理类型须从外层读（评审 #3）。
         self._config_agent: Any = None
+        # 首次剥离前保存的源 tools 段快照（name, priority, content），供域禁用回退（评审 #6）。
+        # tools 源段剥离后上游 ContextAssembleRail 不重注入（段名恒在、fingerprint 不变），
+        # 必须靠快照恢复完整原文，否则去重/bash 纪律静默丢失。
+        self._original_tools: tuple[str, int, Any] | None = None
+        self._stripped_builder_id: int | None = None
 
     def init(self, agent: Any) -> None:
         self._system_prompt_builder = getattr(agent, "system_prompt_builder", None)
@@ -97,6 +103,40 @@ class FlashToolGuideRail(DeepAgentRail):
         # ② 400 → 340（340 自包含，不再从 400 剥离 bullet）
         self._extract_tool_result(builder, language, is_cn)
 
+    def restore(self, builder: Any) -> None:
+        """撤销 tools 域装配（评审 #6）：清派生段 + 恢复源 tools 段原文 + 重置快照。
+
+        派生段（300/330/340/345）域禁用时恒清，无论源段是否被剥离过；源段恢复仅在快照
+        存在时进行（源段未剥离则无需恢复）。快照与 builder 绑定：热重载重建 builder 后旧
+        快照属于旧 builder，不能写回。恢复前先判断当前源段是否已完整（含去重子标题，上游
+        重注入/漂移），若是则不覆盖、避免用旧快照覆盖带 drift 的完整原文。
+        """
+        if builder is None:
+            return
+        # 清派生段（300/330/340/345）。
+        for name in _TOOLS_PRODUCED_NAMES:
+            if self._get_section(builder, name) is not None:
+                builder.remove_section(name)
+        if self._original_tools is None:
+            return
+        if self._stripped_builder_id is not None and self._stripped_builder_id != id(builder):
+            self._stripped_builder_id = None
+            self._original_tools = None
+            return
+        # 当前源段已完整（含去重子标题）则不覆盖，否则恢复快照原文。
+        already_complete = False
+        current = self._get_section(builder, _SECTION_TOOLS)
+        if current is not None:
+            lang = self._resolve_language(builder)
+            dedup = _TOOLS_DEDUP_CN if lang == "cn" else _TOOLS_DEDUP_EN
+            if dedup in self._extract_content(current, lang):
+                already_complete = True
+        if not already_complete:
+            name, priority, content = self._original_tools
+            builder.add_section(PromptSection(name=name, content=content, priority=priority))
+        self._stripped_builder_id = None
+        self._original_tools = None
+
     # ── ① ───────────────────────────────────────────────
     def _restructure_tools(self, builder: Any, language: str, is_cn: bool) -> None:
         dedup = _TOOLS_DEDUP_CN if is_cn else _TOOLS_DEDUP_EN
@@ -116,6 +156,13 @@ class FlashToolGuideRail(DeepAgentRail):
             # 且行为都应是「不盲删」，故 debug 级记录、静默跳过。
             logger.debug("[FlashToolGuideRail] tools 段无「工具调用去重规则」子标题，跳过剥离（已剥或上游变更）")
         else:
+            # 首次剥离前保存源 tools 段快照（完整原文 + 原 priority），域禁用时 restore 恢复。
+            self._original_tools = (
+                str(section.name),
+                int(getattr(section, "priority", 0) or 0),
+                getattr(section, "content", None),
+            )
+            self._stripped_builder_id = id(builder)
             self._replace_section(builder, _SECTION_TOOLS, language, stripped)
 
         self._upsert(builder, _NAME_SELECTION, _PRIO_SELECTION, language,
