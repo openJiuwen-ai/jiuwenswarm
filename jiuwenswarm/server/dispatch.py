@@ -323,6 +323,8 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.SKILLS_SKILLNET_SEARCH: handle_skills_request,
     ReqMethod.SKILLS_SKILLNET_INSTALL: handle_skills_request,
     ReqMethod.SKILLS_SKILLNET_INSTALL_STATUS: handle_skills_request,
+    ReqMethod.SKILLS_REBUILD: handle_skills_request,
+    ReqMethod.SKILLS_REBUILD_STATUS: handle_skills_request,
     ReqMethod.SKILLS_SKILLNET_EVALUATE: handle_skills_request,
     ReqMethod.SKILLS_CLAWHUB_GET_TOKEN: handle_skills_request,
     ReqMethod.SKILLS_CLAWHUB_SET_TOKEN: handle_skills_request,
