@@ -22,6 +22,8 @@ import subprocess
 import sys
 import tempfile
 
+from _tool_paths import SOFFICE_FALLBACKS, resolve
+
 
 def main():
     ap = argparse.ArgumentParser(description="Recalculate workbook via LibreOffice")
@@ -29,7 +31,8 @@ def main():
     ap.add_argument("--out", help="output path (defaults to recalc in place)")
     args = ap.parse_args()
 
-    if shutil.which("soffice") is None:
+    soffice = resolve("soffice", SOFFICE_FALLBACKS)
+    if soffice is None:
         print("soffice (LibreOffice) not found; see doctor.py", file=sys.stderr)
         return 2
     src = os.path.abspath(args.file)
@@ -42,12 +45,13 @@ def main():
     ext = os.path.splitext(src)[1].lower().lstrip(".") or "xlsx"
     flt = "xlsm:Calc MS Excel 2007 VBA" if ext == "xlsm" else "xlsx:Calc MS Excel 2007 XML"
     cmd = [
-        "soffice", "--headless", "--norestore", "--calc",
+        soffice, "--headless", "--norestore", "--calc",
         "--convert-to", flt, "--outdir", tmp, src,
         "-env:UserInstallation=file://" + profile,
     ]
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=180)
+        subprocess.run(cmd, check=True, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=180)
     except subprocess.CalledProcessError as e:  # noqa: BLE001
         print("LibreOffice failed: " + (e.stderr or str(e)), file=sys.stderr)
         return 1
