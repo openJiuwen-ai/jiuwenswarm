@@ -56,6 +56,7 @@ from e2a.logging_config import (
     LOG_CONFIG_OP_FIELD,
 )
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
+from jiuwenswarm.common.log_exception import format_log_exception
 from jiuwenswarm.common.runtime_log_filter import install_runtime_log_filter
 from jiuwenswarm.enterprise import is_enterprise
 
@@ -3200,47 +3201,41 @@ def mask_sensitive(text: Any) -> str:
     return _sanitize_log_text(str(text))
 
 
+def _sanitize_log_record(record: logging.LogRecord) -> bool:
+    """Replace failed diagnostics with safe summaries and release raw inputs."""
+    successful = True
+    try:
+        record.msg = _sanitize_record_text(record.getMessage())
+    except Exception:
+        record.msg = "[log message omitted: redaction failed]"
+        successful = False
+    finally:
+        record.args = ()
+
+    try:
+        if record.exc_info or record.exc_text:
+            text = record.exc_text or format_log_exception(record.exc_info)
+            text = _sanitize_record_text(text)
+            if _record_text_exceeds_limit(text):
+                text = "[exception diagnostics omitted: redacted output exceeds UTF-8 byte limit]"
+            record.exc_text = text
+    except Exception:
+        record.exc_text = "[exception diagnostics omitted: formatting or redaction failed]"
+        successful = False
+    finally:
+        # A handler must never retry formatting a raw exception after failure,
+        # or retain its locals while a background sink is blocked.
+        record.exc_info = None
+    record.jiuwen_sensitive_sanitized = True
+    return successful
+
+
 class SensitiveDataFilter(logging.Filter):
     """Mask sensitive data in all log messages and tracebacks."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if getattr(record, "jiuwen_sensitive_sanitized", False):
-            return True
-
-        sanitized = True
-        try:
-            message = record.getMessage()
-            record.msg = _sanitize_record_text(message)
-            record.args = ()
-        except Exception:
-            # Never block logging because of desensitization failure.
-            sanitized = False
-
-        # Traceback 由 Formatter.formatException() 在 record.exc_text 中单独渲染，
-        # 不经过 record.getMessage()，因此 message 脱敏覆盖不到。这里提前把
-        # traceback 文本脱敏写入 record.exc_text 并清空 record.exc_info，
-        # 使 logger.exception()/exc_info=True 的异常栈也不会泄露 api_key 等。
-        try:
-            exc_info = record.exc_info
-            if exc_info and not record.exc_text:
-                import traceback as _traceback
-
-                # exc_info 是 (type, value, tb) 三元组。Python 3.10+ 的
-                # traceback.format_exception 新签名只接受单个异常实例：
-                # format_exception(exc, /, limit=None, chain=True)。
-                # 旧的 format_exception(*exc_info)（拆包成 3 个位置参数）依赖
-                # 兼容层，未来版本可能移除；改用 exc_info[1]（异常实例）是
-                # 官方推荐写法，面向未来且行为等价（None 时输出 "NoneType: None"）。
-                formatted = "".join(_traceback.format_exception(exc_info[1]))
-                record.exc_text = _sanitize_record_text(formatted)
-                record.exc_info = None
-            elif record.exc_text:
-                record.exc_text = _sanitize_record_text(record.exc_text)
-        except Exception:
-            # 同样不因脱敏失败而阻断日志输出。
-            sanitized = False
-        if sanitized:
-            record.jiuwen_sensitive_sanitized = True
+        if not getattr(record, "jiuwen_sensitive_sanitized", False):
+            _sanitize_log_record(record)
         return True
 
 
@@ -3266,6 +3261,9 @@ def install_source_record_masking() -> None:
     根 logger），在 LogRecord **创建瞬间**就被脱敏 message 与 traceback，
     保证任何来源的 api_key 都不明文落盘。
 
+    异常诊断只读取内存中的栈位置、异常链/组与备注，不查找源码行或捕获局部变量，
+    避免业务线程在 handler 接收日志前触发 linecache / 文件系统 IO。
+
     覆盖场景：
     - ``app_agentserver.py`` 用 ``logging.getLogger("openjiuwen.harness.security")``
       等 openjiuwen 命名空间 logger；
@@ -3284,37 +3282,11 @@ def install_source_record_masking() -> None:
 
     def _sanitizing_record_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
         record = old_factory(*args, **kwargs)
-        try:
-            # message 脱敏（含 %s/format 格式化后的最终文本）。
-            msg = record.getMessage()
-            record.msg = _sanitize_record_text(msg)
-            record.args = ()
-            # traceback 脱敏：traceback 由 Formatter.formatException 从
-            # record.exc_text 单独渲染，getMessage 覆盖不到。此处提前渲染并脱敏，
-            # 清空 exc_info 使 Formatter 复用已脱敏的 exc_text。
-            exc_info = record.exc_info
-            if exc_info and not record.exc_text:
-                import traceback as _tb
-
-                formatted = "".join(_tb.format_exception(exc_info[1]))
-                record.exc_text = _sanitize_record_text(formatted)
-                record.exc_info = None
-            elif record.exc_text:
-                record.exc_text = _sanitize_record_text(record.exc_text)
-            record.jiuwen_sensitive_sanitized = True
-        except Exception:
-            # 永不因脱敏失败而阻断日志输出。但记录失败（计数 + 首次 stderr 提示），
-            # 避免静默吞掉异常导致 api_key 在无感知下明文泄露。
+        if not _sanitize_log_record(record):
             global _source_masking_failures
             _source_masking_failures += 1
-            if _source_masking_failures == 1:
-                # 仅首次打 stderr（不用 logging，避免自循环），提示运维脱敏失效。
-                # 后续仅靠计数器累积，避免高频失败刷屏。
-                print(
-                    "[jiuwenswarm] source record masking failed — secrets may be "
-                    "exposed in logs; check _source_masking_failures counter",
-                    file=sys.stderr,
-                )
+            # The record already carries fixed safe summaries. Do not retry
+            # raw formatting or perform synchronous diagnostic IO here.
         return record
 
     logging.setLogRecordFactory(_sanitizing_record_factory)
@@ -3322,6 +3294,12 @@ def install_source_record_masking() -> None:
 
 
 _RECORD_BYTE_LIMIT = 64 * 1024
+
+
+def _record_text_exceeds_limit(text: str) -> bool:
+    return len(text) > _RECORD_BYTE_LIMIT or (
+        not text.isascii() and len(text.encode("utf-8", errors="replace")) > _RECORD_BYTE_LIMIT
+    )
 
 
 def _sanitize_record_text(text: str) -> str:
@@ -3333,9 +3311,7 @@ def _sanitize_record_text(text: str) -> str:
     its full-text behavior.
     """
     # Short-circuit on characters to avoid encoding unbounded input.
-    if len(text) > _RECORD_BYTE_LIMIT or (
-        not text.isascii() and len(text.encode("utf-8", errors="replace")) > _RECORD_BYTE_LIMIT
-    ):
+    if _record_text_exceeds_limit(text):
         if text.lstrip().startswith(("{", "[")):
             return json.dumps({
                 "log_payload_omitted": True,
