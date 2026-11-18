@@ -95,7 +95,7 @@ fi
 # macOS 冻结后端入口在 <.app>/Contents/Resources/node-runtime/bin 查找并前置
 # PATH（jiuwenswarm_exe_entry.py），Agent 技能（ppt-creation 等 node 脚本）
 # 因此不依赖用户机器的 Node.js。
-NODE_MINIMUM_VERSION=22.12.0
+NODE_MINIMUM_VERSION=22.13.0
 NODE_DEFAULT_VERSION=v22.13.0
 source "$PROJECT_ROOT/scripts/build-runtimes.sh"
 NODE_SRC="$(resolve_node_dir)"
