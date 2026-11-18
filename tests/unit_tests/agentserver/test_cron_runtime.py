@@ -18,7 +18,10 @@ from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import (
     CronRuntimeBridge,
     _extract_legacy_params,
 )
-from jiuwenswarm.agents.harness.common.tools.cron import cron_tools as cron_tools_module
+from jiuwenswarm.agents.harness.common.tools.cron import (
+    cron_runtime as cron_runtime_module,
+    cron_tools as cron_tools_module,
+)
 from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronToolRoute, CronTools
 
 
@@ -1118,7 +1121,14 @@ async def test_cron_tools_create_job_inherits_session_default_project_id(
 
 
 class TestExtractLegacyParamsKindAt:
-    def test_kind_at_converts_to_cron_expr(self) -> None:
+    def test_kind_at_converts_to_cron_expr(self, monkeypatch) -> None:
+        # Pin the instance default so the conversion is machine-independent:
+        # with no config/env the default is the process-local timezone.
+        monkeypatch.setattr(
+            cron_runtime_module,
+            "get_default_timezone",
+            lambda: ZoneInfo("Asia/Shanghai"),
+        )
         context = SimpleNamespace(
             channel_id="web",
             session_id="sess-1",
