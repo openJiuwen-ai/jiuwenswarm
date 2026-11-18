@@ -984,7 +984,7 @@
       "rsi": "RSI · Recursive self-improvement",
       "trajectoryUi": "Trajectory diagnosis",
       "kvCacheAffinity": "Compute affinity",
-      "teamOrganization": "Team Organization",
+      "teamOrganization": "Swarm Organization",
       "teamScheduledDispatch": "Scheduled dispatch",
       "skillPack": "Skill Packs",
       "multiModelCollaboration": "Multi-model collaboration",
@@ -1309,8 +1309,8 @@
         "description": "Show the Diagnosis and Attribution view in a session to find why a run failed and get optimization suggestions. Turning it on records trajectory data automatically; only data recorded after it is turned on can be diagnosed. When off, trajectory pages are hidden."
       },
       "team_organization_ui_enabled": {
-        "title": "Enable Team Organization UI",
-        "description": "Show experimental multi-Team views and the organization task pool. This switch does not disable backend organization capabilities."
+        "title": "Enable Swarm Organization UI",
+        "description": "Show experimental multi-Team views and the organization task pool."
       },
       "comfyui_workflow_enabled": {
         "title": "ComfyUI workflow integration",
