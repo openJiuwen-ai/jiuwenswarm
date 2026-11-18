@@ -10,8 +10,10 @@ from multiprocessing.connection import Pipe
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.server.front import router
+from jiuwenswarm.server.front.admission import ExecutionAdmission
 from jiuwenswarm.server.ipc.protocol import decode_frame
 from jiuwenswarm.server.ipc.stream import PipeConnection
 from jiuwenswarm.server.lifecycle import Readiness
@@ -95,6 +97,56 @@ async def test_observer_timeout_or_cancel_preserves_one_owned_write(monkeypatch,
         assert not supervisor._side_tasks
         assert await supervisor.get_runtime_snapshot(request("b")) == {"is_processing": False, "session": "b"}
     finally:
+        await supervisor._cancel_side_tasks()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("through_router", [False, True])
+async def test_owner_cancellation_returns_pending_to_observer(monkeypatch, through_router):
+    monkeypatch.setattr(runtime_supervisor, "_SNAPSHOT_WAIT_SECONDS", 1)
+    readiness = Readiness()
+    supervisor = RuntimeSupervisor(readiness)
+    conn = DelayedConnection(supervisor)
+    supervisor._conn = conn
+    supervisor._validated_conn = conn
+    replies = []
+    if through_router:
+        admission = ExecutionAdmission(readiness)
+        admission.attach_backend(supervisor)
+        method_router = router.MethodRouter(readiness, admission)
+
+        async def metadata(accepted):
+            return AgentResponse(request_id=accepted.request_id, channel_id="web", ok=True,
+                                 payload={"session_id": "a", "is_processing": True, "status": "processing"})
+
+        async def capture(_ws, _lock, payload):
+            replies.append(payload)
+
+        monkeypatch.setattr(router, "_load_session_service", lambda: None)
+        monkeypatch.setattr(router, "_HANDLE_SESSION", metadata)
+        monkeypatch.setattr(method_router, "_send", capture)
+        observing = asyncio.create_task(method_router.dispatch(None, request(), asyncio.Lock()))
+    else:
+        observing = asyncio.create_task(supervisor.get_runtime_snapshot(request()))
+    try:
+        await asyncio.wait_for(conn.started.wait(), 1)
+        await supervisor._cancel_side_tasks()
+        result = await asyncio.wait_for(observing, 1)
+        if through_router:
+            assert len(replies) == 1
+            result = replies[0]["body"]["result"]
+            assert result["is_processing"] is True
+            assert result["status"] == "processing"
+            result = result["runtime"]
+        assert result["recovery_pending"] is True
+        assert result["recovery_reason"] == "snapshot_transport_cancelled"
+        assert not observing.cancelled()
+        assert conn.cancelled and conn.closed
+        assert not supervisor._queries and not supervisor._side_tasks
+        assert supervisor._snapshot_send_task is None
+    finally:
+        observing.cancel()
+        await asyncio.gather(observing, return_exceptions=True)
         await supervisor._cancel_side_tasks()
 
 

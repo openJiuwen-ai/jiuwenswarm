@@ -236,13 +236,13 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
         const retryable = isRecord(error) && typeof error.code === 'string' && MODEL_LIST_RECOVERY_CODES.has(error.code);
         setModelsRetryable(retryable);
         setModelsRetryCount((count) => retryable ? count + 1 : 0);
-        setModelsError(
-          retryable
-            ? t('settingsPanel.models.modelsTemporarilyUnavailable')
-            : error instanceof Error && error.message !== 'INVALID_MODELS_LIST'
-            ? error.message
-            : t('settingsPanel.models.modelsResponseInvalid'),
-        );
+        if (retryable) {
+          setModelsError(t('settingsPanel.models.modelsTemporarilyUnavailable'));
+        } else if (error instanceof Error && error.message !== 'INVALID_MODELS_LIST') {
+          setModelsError(error.message);
+        } else {
+          setModelsError(t('settingsPanel.models.modelsResponseInvalid'));
+        }
       }
     } finally {
       if (currentRequestId === modelsRequestId.current) setModelsLoading(false);

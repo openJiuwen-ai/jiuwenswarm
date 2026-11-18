@@ -138,7 +138,7 @@ for (const code of ['WORKER_CLOSED', 'WORKER_UNSTABLE', 'RUNTIME_WARMING', 'RUNT
     } });
     assert.equal(view.find('settings-models-add-btn').disabled, true);
     const initialError = view.find('settings-models-error').textContent;
-    assert.equal(view.find('settings-models-retry-btn'), null);
+    assert.equal(view.find('settings-models-error').querySelectorAll('button').length, 0);
     fail = false;
     await view.tick(1000);
     assert.equal(Boolean(view.find('settings-models-error')), false);
@@ -148,22 +148,24 @@ for (const code of ['WORKER_CLOSED', 'WORKER_UNSTABLE', 'RUNTIME_WARMING', 'RUNT
   });
 }
 
-test('model retries keep waiting at a capped interval until the service recovers', async (t) => {
-  let fail = true;
-  const view = await mount(t, { listModels: () => {
-    if (fail) throw Object.assign(new Error('worker unavailable'), { code: 'WORKER_CLOSED' });
-    return { models: [], model_groups: [] };
-  } });
-  for (const delay of [1000, 2000, 4000, 10000, 10000, 10000]) await view.tick(delay);
-  assert.equal(view.calls.filter(({ method }) => method === 'models.list').length, 7);
-  assert.equal(view.find('settings-models-retry-btn'), null);
-  fail = false;
-  await view.tick(10000);
-  assert.equal(Boolean(view.find('settings-models-error')), false);
-  assert.equal(view.find('settings-models-add-btn').disabled, false);
-  await view.tick(10000);
-  assert.equal(view.calls.filter(({ method }) => method === 'models.list').length, 8);
-});
+for (const code of ['WORKER_CLOSED', 'RUNTIME_FAILED']) {
+  test(`model retries keep waiting at a capped interval until the service recovers: ${code}`, async (t) => {
+    let fail = true;
+    const view = await mount(t, { listModels: () => {
+      if (fail) throw Object.assign(new Error('worker unavailable'), { code });
+      return { models: [], model_groups: [] };
+    } });
+    for (const delay of [1000, 2000, 4000, 10000, 10000, 10000]) await view.tick(delay);
+    assert.equal(view.calls.filter(({ method }) => method === 'models.list').length, 7);
+    assert.equal(view.find('settings-models-error').querySelectorAll('button').length, 0);
+    fail = false;
+    await view.tick(10000);
+    assert.equal(Boolean(view.find('settings-models-error')), false);
+    assert.equal(view.find('settings-models-add-btn').disabled, false);
+    await view.tick(10000);
+    assert.equal(view.calls.filter(({ method }) => method === 'models.list').length, 8);
+  });
+}
 
 test('model validation errors remain visible without automatic requests', async (t) => {
   const view = await mount(t, { listModels: () => {
