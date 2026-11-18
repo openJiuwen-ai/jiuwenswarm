@@ -3240,7 +3240,9 @@ async def test_joyai_task_query_then_revision_uses_shared_service(monkeypatch):
 
 
 @pytest.mark.parametrize("native_multi_answer", [False, True])
-async def test_joyai_voice_form_answer_is_blocked_and_manual_form_resumes_original_task(monkeypatch, native_multi_answer):
+async def test_joyai_voice_form_answer_is_blocked_and_manual_form_resumes_original_task(
+    monkeypatch, native_multi_answer,
+):
     from unittest.mock import AsyncMock
     from jiuwenswarm.extensions.video_duplex.tests.backend.test_task_interactions import QuestionExecutor, until
 
@@ -3948,6 +3950,7 @@ TOOL_CALL = {**THINKING, "seq": 2, "kind": "tool_call", "summary": "screenshot()
 @pytest.mark.parametrize("source", ["ask_user_interrupt", "permission_interrupt", "confirm_interrupt"])
 async def test_recovered_task_card_follows_original_runtime(tmp_path, monkeypatch, source):
     from unittest.mock import AsyncMock
+    from jiuwenswarm.common.schema.message import ReqMethod
     from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import until
     from jiuwenswarm.extensions.video_duplex.backend import task_adapter
     from jiuwenswarm.extensions.video_duplex.backend.tasks import service as module
@@ -3996,6 +3999,27 @@ async def test_recovered_task_card_follows_original_runtime(tmp_path, monkeypatc
         await until(lambda: store.read(task["id"])["status"] == "waiting_user")
         assert store.read(task["id"])["interaction"]["card_binding"]["control_id"] == "native-card"
         assert coordinator.has_control_target("session-a", "native-card")
+        binding = store.read(task["id"])["interaction"]["card_binding"]
+        probe = SimpleNamespace(
+            req_method=ReqMethod.VOICE_TASK_PENDING_INTERRUPT, params={"card_binding": binding},
+            session_id="session-a", user_id="alice", request_id="probe", channel_id="video_tool", metadata={},
+        )
+        snapshot = coordinator.snapshot_session("session-a")
+        failed_delivery = SimpleNamespace(
+            parent_execution_id=binding["execution_id"], execution_id="failed-answer",
+            answered_control_ids={"native-card"}, state=SimpleNamespace(value="failed"),
+        )
+        for observed, expected in [
+            (None, "unknown"),
+            (SimpleNamespace(state=snapshot.state, generation=snapshot.generation,
+                             executions=[*snapshot.executions, failed_delivery]), "pending"),
+        ]:
+            observer = VoiceTaskServerAdapter(lambda _: True, lambda: SimpleNamespace(
+                get_session_snapshot=lambda _: observed,
+            ))
+            assert (await observer.handle(probe)).payload["card_state"] == expected
+        probe.params = {"card_binding": {"generation": 1}}
+        assert (await adapter.handle(probe)).payload["card_state"] == "unknown"
         # Reconnect/query refreshes the native snapshot without a separate card poll.
         await coordinator.close_session("session-a")
         await service.refresh("alice", "task-duplex:chat")

@@ -25,7 +25,15 @@ class VoiceTaskServerAdapter(GatewayAdapter):
         snapshot = self._runtime().get_session_snapshot(session) if self._runtime else None
         binding = params.get("card_binding")
         if snapshot is None:
-            return {"card_state": "ended" if binding else "unknown", "pending": False}
+            return {"card_state": "unknown", "pending": False}
+        if binding is not None:
+            if not isinstance(binding, dict):
+                return {"card_state": "unknown", "pending": False}
+            for field, value_type in (
+                ("generation", int), ("execution_id", str), ("control_id", str), ("deliveries", list),
+            ):
+                if not isinstance(binding.get(field), value_type):
+                    return {"card_state": "unknown", "pending": False}
         if snapshot.state.value == "closed" or (binding and binding["generation"] != snapshot.generation):
             return {"card_state": "ended", "pending": False}
         executions = snapshot.executions
@@ -42,10 +50,15 @@ class VoiceTaskServerAdapter(GatewayAdapter):
             }
         parent = next((e for e in executions if e.execution_id == binding["execution_id"]), None)
         if parent is None:
-            return {"card_state": "ended", "pending": False}
-        deliveries = [e for e in executions if e.parent_execution_id == parent.execution_id
-                      and e.execution_id not in binding["deliveries"]
-                      and binding["control_id"] in e.answered_control_ids]
+            return {"card_state": "unknown", "pending": False}
+        deliveries = []
+        for execution in executions:
+            if execution.parent_execution_id != parent.execution_id:
+                continue
+            if execution.execution_id in binding["deliveries"]:
+                continue
+            if binding["control_id"] in execution.answered_control_ids:
+                deliveries.append(execution)
         state = "pending"
         if parent.state.value in {"failed", "cancelled"}:
             state = "ended"
@@ -54,8 +67,6 @@ class VoiceTaskServerAdapter(GatewayAdapter):
                 state = "applied"
             else:
                 state = "ended" if parent.state.terminal else "unknown"
-        elif any(e.state.value in {"failed", "cancelled"} for e in deliveries):
-            state = "ended"
         return {"card_state": state, "card_binding": binding, "pending": state == "pending"}
 
     async def handle(self, request):
@@ -78,7 +89,7 @@ class VoiceTaskServerAdapter(GatewayAdapter):
                 return AgentResponse(
                     request_id=request.request_id, channel_id=request.channel_id,
                     ok=True, payload={"pending": False, "card_state": (
-                        "unknown" if exc.code == "OPERATION_IN_PROGRESS" else "ended"
+                        "ended" if exc.code == "SESSION_ARCHIVED" else "unknown"
                     )}, metadata=request.metadata,
                 )
             metadata = await asyncio.to_thread(

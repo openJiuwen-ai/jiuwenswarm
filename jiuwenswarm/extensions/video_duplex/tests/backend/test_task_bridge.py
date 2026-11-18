@@ -56,11 +56,7 @@ async def test_list_refresh_and_cancel_use_separate_front_runtime_paths(tmp_path
         "chat", "unrelated-request", SessionWorkKind.GOAL_CONTROL, release.wait,
     ))
     await until(lambda: len(coordinator.snapshot_session("chat").executions) == 2)
-    runtime = object.__new__(AgentRuntime)
-    runtime._closed = False
-    runtime._session_coordinator = coordinator
-    runtime.normalize_request = lambda request: request
-    runtime._request_targets_team = lambda request: False
+    runtime = AgentRuntime(session_coordinator=coordinator)
     readiness = Readiness()
     admission = ExecutionAdmission(readiness)
     methods = []
@@ -565,7 +561,10 @@ async def test_snapshot_requires_exact_settled_execution(routed_task, state):
     else:
         await executor.refresh_execution(r.task)
     assert not r.store.read(r.task["id"])["execution_settled"]
-    assert all(call.args[0].method == ReqMethod.SESSION_GET_METADATA.value for call in client.send_request.call_args_list)
+    assert all(
+        call.args[0].method == ReqMethod.SESSION_GET_METADATA.value
+        for call in client.send_request.call_args_list
+    )
 
 
 async def test_bound_task_worker_loss_preserves_unknown_stop_error(routed_task):

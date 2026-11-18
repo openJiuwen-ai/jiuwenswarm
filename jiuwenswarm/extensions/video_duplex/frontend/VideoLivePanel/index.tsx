@@ -1176,10 +1176,14 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   };
   restartRealtimeRef.current = startRealtime;
 
-  const stopRealtime = () => {
+  const stopRealtime = (preserveTasks = false) => {
+    const scope = searchSessionRef.current;
     stopModelTransport();
-    searchSessionRef.current = '';
-    searchJobsRef.current.clear();
+    if (preserveTasks) searchSessionRef.current = scope;
+    else {
+      searchSessionRef.current = '';
+      searchJobsRef.current.clear();
+    }
     setIsRecording(false);
     setIsRealtimeStarting(false);
     setRealtimeStatus('');
@@ -1193,13 +1197,45 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   }, [headless, isPlaying, screens, source]);
 
   useEffect(() => {
-    if (!isRecording && !isRealtimeStarting) return;
-    return webClient.onStateChange((state) => {
+    let stopped = false;
+    const unsubscribe = webClient.onStateChange((state) => {
+      if (state === 'ready' && !headless) {
+        const scope = searchSessionRef.current;
+        for (const job of searchJobsRef.current.values()) {
+          if (job.status !== 'running' && job.status !== 'waiting') continue;
+          void webRequest<SearchJobPayload>('video.search.status', {
+            job_id: job.id, search_session_id: scope,
+          }).then((payload) => {
+            if (stopped || scope !== searchSessionRef.current || payload.job_id !== job.id) return;
+            updateSearchProgress(payload);
+            if (payload.status === 'completed') {
+              onCoreAgentProgress?.('completed', payload);
+              acceptCompletedSearch(payload);
+            } else if (payload.status === 'failed') {
+              onCoreAgentProgress?.('failed', payload);
+              acceptFailedSearch(payload);
+            } else if (payload.status === 'cancelled') {
+              if (payload.tool_call_id) duplexRef.current?.cancelToolTask(job.id, payload.tool_call_id);
+              searchJobsRef.current.delete(job.id);
+            } else {
+              deliverTaskInteraction(payload);
+              onCoreAgentProgress?.('progress', payload);
+            }
+          }).catch((error) => {
+            if (!stopped) console.warn('Task reconnect lookup failed:', error);
+          });
+        }
+      }
+      if (!isRecording && !isRealtimeStarting) return;
       if (state !== 'closed' && state !== 'reconnecting') return;
       setError((previous) => previous || 'Jiuwen 服务连接已断开，未提供具体原因。请检查网络或本地服务后重新启动全双工。');
-      stopRealtime();
+      stopRealtime(true);
     });
-  }, [isRecording, isRealtimeStarting]);
+    return () => {
+      stopped = true;
+      unsubscribe();
+    };
+  }, [headless, isRecording, isRealtimeStarting, onCoreAgentProgress]);
 
   useEffect(() => {
     const running = isRealtimeStarting || isRecording;
@@ -1634,7 +1670,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
               type="button"
               className={`video-live__mic${isRecording ? ' is-recording' : ''}`}
               data-testid="video-live-session-toggle"
-              onClick={isRecording ? stopRealtime : () => void startRealtime()}
+              onClick={isRecording ? () => stopRealtime() : () => void startRealtime()}
               disabled={isRealtimeStarting && !isRecording}
               aria-label={
                 isRealtimeStarting

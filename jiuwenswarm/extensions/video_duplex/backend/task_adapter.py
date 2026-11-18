@@ -409,7 +409,9 @@ class AgentTaskExecutor:
         if state != "succeeded":
             return {"status": "cancelled" if state == "cancelled" else "failed", "settled": True,
                     "error": root.get("error") or ""}
-        result = task.get("observed_result") or task.get("result")
+        result = task.get("observed_result")
+        if result is None:
+            result = task.get("result")
         if result is None:
             page = 1
             while True:
@@ -417,9 +419,13 @@ class AgentTaskExecutor:
                     self.client, ReqMethod.HISTORY_GET, {"session_id": task["core_session_id"], "page_idx": page},
                     task["core_session_id"], task["owner"],
                 )
-                final = next((r for r in history.get("messages", [])
-                              if r.get("request_id") == task["request_id"]
-                              and r.get("event_type") == "chat.final" and r.get("content")), None)
+                final = None
+                for record in history.get("messages", []):
+                    if record.get("request_id") != task["request_id"]:
+                        continue
+                    if record.get("event_type") == "chat.final" and record.get("content"):
+                        final = record
+                        break
                 if final is not None:
                     result = {"answer": final["content"]}
                     break
@@ -495,6 +501,7 @@ class AgentTaskExecutor:
                 await self.refresh_execution(task)
                 return False
             # The original Runtime confirmed cancellation of this exact request.
+
             def settle(t):
                 if t["request_id"] == task["request_id"] and not t["execution_settled"]:
                     t.update(checkpoint_open=False, execution_settled=True,
