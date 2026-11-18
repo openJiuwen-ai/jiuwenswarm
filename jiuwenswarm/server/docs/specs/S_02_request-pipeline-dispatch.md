@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_02 / request-pipeline-dispatch |
 | 关联模块 | jiuwenswarm/server/{dispatch.py, pipeline.py, context.py, wire_parse.py, wire_truncate.py, ws_send.py, handlers/, transports/} |
-| 最近一次修订日期 | 2026-11-17 |
+| 最近一次修订日期 | 2026-11-18 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -84,7 +84,7 @@ Todo输出策略在进入此流水线前由宿主绑定：WS按连接身份，HT
 
 history.get 的 Todo 快照通过所属会话 adapter.read_todo_snapshot 读取，返回实际工具后端的快照和同会话 generation 标记，再按当前接入策略输出。管理器选择沿用聊天的 `_uses_tenant_pool` 判定：租户请求经 `services.tenant_pool()` 按请求身份取得管理器，其他请求使用 `services.agent_manager`；租户读取失败不回退默认管理器。冷会话依据既有 metadata 的 adapter_mode/channel/project 解析运行宿主；不执行用户任务，不新增请求字段。无法确定所属后端（包括没有运行宿主）或读取失败时不回退宿主旧副本、不发伪空表，历史消息仍返回。common.todo_snapshot 的本地文件读取接口保持原兼容能力，但不能替代运行会话的实际后端。
 
-冷恢复在请求副本上复用 `resolve_request_runtime_mode`，兼容旧 `mode + work_mode` 与新 `adapter_mode` 记录；普通办公会话保留已记录的 Flash 归属，显式 Code 不被旧 work_mode 改写。`get_agent` 传入与聊天一致的 manager mode、sub_mode、project_dir 和 session_id，避免无项目会话建立另一份宿主缓存。解析不得改写历史原请求或触发聊天准备、元数据写回。
+冷恢复在请求副本上复用 `resolve_request_runtime_mode`，兼容旧 `mode + work_mode` 与新 `adapter_mode` 记录；业务 mode 归一化后为空或 unknown 时回退 adapter_mode。副本仅为宿主解析使用 CHAT_SEND 方法身份，使 OfficeClaw 前台沿用聊天的显式选型策略，其他渠道及后台来源保持各自的默认规则；不发送聊天请求。普通办公会话保留已记录的 Flash 归属，显式 Code 不被旧 work_mode 改写。`get_agent` 传入与聊天一致的 manager mode、sub_mode、project_dir 和 session_id，避免无项目会话建立另一份宿主缓存；普通 Team 保留 manager mode=team，由既有工厂映射为 DeepAdapter，不降级为另一份 agent 缓存。解析不得改写历史原请求或触发聊天准备、元数据写回。
 
 ### context.RequestContext（frozen dataclass）
 

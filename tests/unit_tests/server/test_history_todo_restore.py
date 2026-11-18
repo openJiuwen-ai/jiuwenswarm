@@ -240,6 +240,17 @@ async def test_history_reads_owner_backend_without_falling_back_to_host(tmp_path
     ({"mode": "code.normal", "work_mode": "work"}, False, ("code", "normal")),
     ({"mode": "agent.code.normal", "work_mode": "code"}, True, ("code", "normal")),
     ({"mode": "agent.plan", "work_mode": "code", "channel_id": "web"}, True, ("code", "plan")),
+    ({"mode": "unknown", "adapter_mode": "flash", "work_mode": "work"}, False, ("flash", None)),
+    ({"mode": " UNKNOWN ", "adapter_mode": "code", "work_mode": "work"}, True, ("code", "normal")),
+    ({"mode": None, "adapter_mode": "flash"}, False, ("flash", None)),
+    ({"mode": "", "adapter_mode": "code"}, False, ("code", "normal")),
+    ({"mode": "   ", "adapter_mode": "flash"}, False, ("flash", None)),
+    ({"mode": "team", "adapter_mode": "agent", "work_mode": "work"}, True, ("team", None)),
+    ({"mode": "team.work.normal", "adapter_mode": "agent", "work_mode": "work"}, True, ("team", None)),
+    ({"mode": "code.team", "adapter_mode": "code", "work_mode": "code"}, True, ("code", "team")),
+    ({"mode": "agent", "adapter_mode": "agent", "work_mode": "work", "channel_id": "officeclaw"},
+     True, ("agent", None)),
+    ({"mode": "agent", "adapter_mode": "agent", "work_mode": "work"}, True, ("flash", None)),
     ({"mode": "unknown", "work_mode": "work"}, False, None),
 ])
 async def test_cold_history_resolves_persisted_owner_without_new_request_fields(
@@ -264,8 +275,10 @@ async def test_cold_history_resolves_persisted_owner_without_new_request_fields(
         agent_manager=manager, resolve_adapter=lambda agent: SimpleNamespace(read_todo_snapshot=reader),
     ))
     original_params = dict(ctx.request.params)
+    original_method = ctx.request.req_method
     await session_handlers.handle_history_get_stream(ctx)
     assert ctx.request.params == original_params
+    assert ctx.request.req_method == original_method
     assert ctx.request.resolved_adapter_mode is None
     if expected is None:
         create.assert_not_awaited()
@@ -280,20 +293,27 @@ async def test_cold_history_resolves_persisted_owner_without_new_request_fields(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode,sub_mode", [("agent", None), ("code", "normal"), ("flash", None)])
+@pytest.mark.parametrize("mode,sub_mode,channel,flash_enabled", [
+    ("agent", None, "web", False), ("code", "normal", "web", False),
+    ("flash", None, "web", False), ("team", None, "web", False),
+    ("agent", None, "officeclaw", True), ("flash", None, "officeclaw", True),
+])
 @pytest.mark.parametrize("project_dir", [None, "/owned/project"])
 async def test_cold_history_and_chat_share_owner_and_current_generation(
-    monkeypatch, _history, mode, sub_mode, project_dir,
+    monkeypatch, _history, mode, sub_mode, channel, flash_enabled, project_dir,
 ):
     import asyncio
+    from unittest.mock import AsyncMock
     from openjiuwen.harness.tools.todo_store import decode_snapshot
     from jiuwenswarm.server.handlers import _shared
     from jiuwenswarm.server.runtime.agent_manager import AgentManager
     from jiuwenswarm.server.runtime.session import session_metadata
 
-    monkeypatch.setattr(_shared, "get_config", lambda: {"flash": {"enabled": False}})
+    monkeypatch.setattr(_shared, "get_config", lambda: {"flash": {"enabled": flash_enabled}})
     monkeypatch.setattr(session_metadata, "get_session_metadata", lambda *_args, **_kwargs: {
-        "adapter_mode": mode, "channel_id": "web", "project_dir": project_dir,
+        "mode": mode, "adapter_mode": "agent" if mode == "team" else mode,
+        "work_mode": "code" if mode == "code" else "work",
+        "channel_id": channel, "project_dir": project_dir,
     })
     manager = object.__new__(AgentManager)
     manager.agents = {}
@@ -316,22 +336,24 @@ async def test_cold_history_and_chat_share_owner_and_current_generation(
 
     monkeypatch.setattr(manager, "_create_agent", create)
     ctx, sink = _context(1)
+    ctx.request.channel_id = channel
     ctx = RequestContext(ctx.request, sink, "test", SimpleNamespace(
         agent_manager=manager, resolve_adapter=lambda agent: agent._adapter,
+        tenant_pool=lambda: SimpleNamespace(get_agent_manager=AsyncMock(return_value=manager)),
     ))
     token = TODO_SNAPSHOT_MODE.set("legacy")
     try:
         await session_handlers.handle_history_get_stream(ctx)
-        first_owner = manager.get_agent_for_session_nowait(channel_id="web", session_id="web_todo_1")
+        first_owner = manager.get_agent_for_session_nowait(channel_id=channel, session_id="web_todo_1")
         chat_owner = await manager.get_agent(
-            channel_id="web", mode=mode, sub_mode=sub_mode, project_dir=project_dir, session_id="web_todo_1",
+            channel_id=channel, mode=mode, sub_mode=sub_mode, project_dir=project_dir, session_id="web_todo_1",
         )
         assert first_owner is chat_owner
         chat_owner._adapter.generation = "current"
         await session_handlers.handle_history_get_stream(ctx)
     finally:
         TODO_SNAPSHOT_MODE.reset(token)
-    assert len(manager.agents["web"]) == 1
+    assert len(manager.agents[channel]) == 1
     assert [row["id"] for row in sink.consumer_tasks] == ["A"]
 
 

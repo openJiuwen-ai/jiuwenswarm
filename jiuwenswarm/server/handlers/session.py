@@ -18,6 +18,7 @@ from jiuwenswarm.common.e2a.wire_codec import (
 )
 from jiuwenswarm.common.mode_matrix import NEW_AGENT_WORK_NORMAL
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.todo_snapshot import FrontendTodos, project_todo_snapshot
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.handlers._shared import (
@@ -99,15 +100,18 @@ async def _todo_snapshot_for_history(ctx: RequestContext, session_id: str) -> Fr
             agent = manager.get_agent_for_session_nowait(channel_id=channel, session_id=session_id)
             if agent is None:
                 adapter_mode = str(metadata.get("adapter_mode") or "").strip().lower()
-                stored_mode = str(metadata.get("mode") or adapter_mode).strip().lower()
+                stored_mode = str(metadata.get("mode") or "").strip().lower()
+                if stored_mode in {"", "unknown"}:
+                    stored_mode = adapter_mode
                 if not stored_mode:
                     return None
-                # 历史只解析路由，不执行聊天准备或改写原请求。
+                # 在副本上按聊天入口解析宿主策略，不执行聊天或改写历史请求。
                 work_mode = metadata.get("work_mode")
                 if stored_mode.startswith(("code.", "team")) or stored_mode == "code":
                     work_mode = None
                 resolved = resolve_request_runtime_mode(replace(
                     ctx.request, channel_id=channel, session_id=session_id,
+                    req_method=ReqMethod.CHAT_SEND,
                     params={"mode": stored_mode, "work_mode": work_mode},
                 ))
                 mode = resolved.manager_mode
@@ -117,7 +121,7 @@ async def _todo_snapshot_for_history(ctx: RequestContext, session_id: str) -> Fr
                     and resolved.work_mode == "work"
                 ):
                     mode = "flash"
-                if mode not in ("agent", "code", "flash"):
+                if mode not in ("agent", "code", "flash", "team"):
                     return None
                 agent = await manager.get_agent(
                     channel_id=channel, mode=mode, sub_mode=resolved.sub_mode,

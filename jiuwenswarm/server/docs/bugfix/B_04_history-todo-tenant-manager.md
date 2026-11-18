@@ -33,3 +33,11 @@ read_todo_snapshot 会为冷会话创建并缓存适配器，但此前读取结�
 历史入口改为在请求副本上复用聊天的模式解析，保留 Flash 亲和与显式 Code 规则，并传入完整会话缓存参数。不调用聊天准备函数，因为读取历史不应改请求、同步元数据或启动任务；不改 AgentManager 缓存算法，也不把读取失败降级为宿主旧副本。
 
 测试覆盖真实旧 metadata 文件、Flash 开关/亲和、Code/Plan、未知模式，以及受控实例创建下真实管理器的“历史→聊天→历史”和 generation 推进。相关 11 个测试文件共 357 项通过；首次测试误把非 Plan 渠道当成可恢复 Plan，已修正为 Web 渠道，未放宽产品 Plan 门控。该结果为本地定向回归，不代表浏览器、Windows 或远端验收。逐项改动与原始日志见工程根 `Debug/FEATBIND-flash-todo-update/iteration-2/`。
+
+## 2026-11-18：未知模式、Team 与 OfficeClaw 冷恢复
+
+业务 mode 的 unknown 是已有元数据占位值，不应遮蔽有效 adapter_mode；空白也先归一化再回退。普通 Team 的 manager mode=team 原本可由工厂映射为 DeepAdapter，历史入口允许列表遗漏 team 导致读取提前结束。现保留 team 模式及其缓存身份，不按建议降级为 agent，避免与聊天另建宿主。
+
+OfficeClaw 显式 agent 的聊天请求会关闭 Flash 默认注入，但 history.get 方法不在该策略的适用集合中。冷恢复现仅在请求副本上以 CHAT_SEND 身份调用已有纯路由解析器；原历史请求、元数据与执行流程均不变。相比对所有渠道永久锁定 adapter_mode=agent，此方式继续复用 Web/TUI 及后台来源原有默认规则。
+
+修复前定向用例10失败/28通过；修复后历史、OfficeClaw 路由、快照、事件及相关 Todo 回归12文件共422通过。测试包含真实 metadata 文件、真实管理器缓存路由和当前 generation 投影，实例创建/后端使用受控替身；未进行浏览器、远端沙箱或全量CI验收。新合并上游对应的 Core 与安全仓源码按本轮锁重新选择，未沿用前轮依赖环境结论；证据见 iteration-2/review/rnd1 的20261118日志及环境记录。
