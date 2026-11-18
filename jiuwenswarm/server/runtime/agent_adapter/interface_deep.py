@@ -166,7 +166,6 @@ from jiuwenswarm.server.runtime.agent_adapter.permission_rail_group import (
     PERMISSION_GROUP_TYPES, PERMISSION_RAIL_TYPES, PermissionRailGroup, build_permission_group,
 )
 from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import (
-    has_live_pending_interrupt,
     discard_pending_permission_interrupt_for_target,
     discard_permission_continuation, validate_client_tool_answers, validate_manual_resume,
     discard_restored_permission_batch, unanswered_permission_batch,
@@ -11849,6 +11848,27 @@ class JiuWenSwarmDeepAdapter:
             )
             return None
 
+    @staticmethod
+    def _build_cron_budget_rail():
+        """Build the cron budget rail (issue #5018, L3/L4).
+
+        Always constructed when the package is importable; the rail itself is a
+        no-op for interactive requests and when ``cron_guard.enabled`` is false
+        (config is re-read per call, so the switch is hot).  Registration goes
+        through the adapter rail build list -> ``register_rail`` (no bypass).
+        """
+        try:
+            from jiuwenswarm.common.cron_guard.budget_rail import (
+                CronBudgetRail,
+            )
+
+            rail = CronBudgetRail()
+            logger.info("[JiuWenSwarmDeepAdapter] CronBudgetRail create success")
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] CronBudgetRail create failed: %s", exc)
+            return None
+
     def _build_circuit_breaker_rail(self) -> CircuitBreakerRail | None:
         try:
             guard_cfg = (get_config() or {}).get("execution_guard") or {}
@@ -12361,6 +12381,7 @@ class JiuWenSwarmDeepAdapter:
                 self._build_session_messaging_route_rail,
             ),
             _RailBuildInfo("_circuit_breaker_rail", self._build_circuit_breaker_rail),
+            _RailBuildInfo("_cron_budget_rail", self._build_cron_budget_rail),
             _RailBuildInfo("_avatar_rail", self._build_avatar_rail),
             _RailBuildInfo("_memory_forbidden_rail", self._build_memory_forbidden_rail),
             *([] if self._leaves_out(Capability.SUBAGENTS) else [_RailBuildInfo(
