@@ -1,0 +1,12 @@
+<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" onLoad="OnAddinLoad">
+  <ribbon startFromScratch="false">
+    <tabs>
+      <tab id="WorkSwarm.Tab" label="WorkSwarm">
+        <group id="WorkSwarm.Group" label="WorkSwarm">
+          <button id="WorkSwarm.ShowTaskPane" label="打开 WorkSwarm" screentip="在当前演示文稿中打开 WorkSwarm"
+                  size="large" getEnabled="OnGetEnabled" getImage="GetImage" onAction="OnAction" />
+        </group>
+      </tab>
+    </tabs>
+  </ribbon>
+</customUI>

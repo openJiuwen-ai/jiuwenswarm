@@ -2560,7 +2560,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 language=resolved_language,
                 max_iterations=parse_int(
                     explore_agent_cfg.get("max_iterations") if isinstance(explore_agent_cfg, dict) else None,
-                    parse_int(react_cfg.get("max_iterations"), 100),
+                    parse_int(react_cfg.get("max_iterations"), 1000),
                 ),
             )
             explore_spec.factory_kwargs = {"auto_create_workspace": False}
@@ -2578,7 +2578,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 language=resolved_language,
                 max_iterations=parse_int(
                     plan_agent_cfg.get("max_iterations") if isinstance(plan_agent_cfg, dict) else None,
-                    parse_int(react_cfg.get("max_iterations"), 100),
+                    parse_int(react_cfg.get("max_iterations"), 1000),
                 ),
             )
             plan_spec.factory_kwargs = {"auto_create_workspace": False}
@@ -2605,7 +2605,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     rails=code_agent_rails,
                     max_iterations=parse_int(
                         code_agent_cfg.get("max_iterations"),
-                        parse_int(react_cfg.get("max_iterations"), 100),
+                        parse_int(react_cfg.get("max_iterations"), 1000),
                     ),
                     **self._code_agent_graph_kwargs(config_base),
                 )
@@ -2838,15 +2838,26 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             deep_config.cwd = task_cwd
             deep_config.project_root = str(runtime_paths.project_root)
         self._seed_runtime_cwd(task_cwd, workspace=project_workspace)
+        self._bind_jiuwen_memory_project_dir(runtime_config.project_dir or self._project_dir)
         resolved_language = self._resolve_runtime_language()
         resolved_channel = str(runtime_config.channel_id or
                                self._resolve_prompt_channel(runtime_config.session_id) or "web").strip() or "web"
+        a4p_config_base = (
+            self._config_base_cache
+            if isinstance(self._config_base_cache, dict)
+            else get_config()
+        )
         self._sync_a4p_tools_for_runtime(
-            get_config(),
+            a4p_config_base,
             resolved_channel,
             runtime_config.session_id,
+            request_id=runtime_config.request_id,
         )
         if self._runtime_prompt_rail:
+            from jiuwenswarm.agents.harness.common.a4p.runtime import (
+                is_a4p_preauthorization_active,
+            )
+
             execution_context = AUTHORIZATION_EXECUTION_CONTEXTS.get(
                 runtime_config.session_id
             )
@@ -2861,6 +2872,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     execution_context is not None
                     and execution_context.is_interactive_web
                 )
+            )
+            self._runtime_prompt_rail.set_a4p_preauthorization_active(
+                is_a4p_preauthorization_active(a4p_config_base)
             )
             self._runtime_prompt_rail.set_request_metadata(runtime_config.request_metadata)
             self._runtime_prompt_rail.set_model_name(self._resolve_model_name())

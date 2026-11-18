@@ -1952,6 +1952,27 @@ async def test_replayed_install_receipt_does_not_refresh(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["skill_already_exists", "install_failed", "members_changed_reconfirm"])
+async def test_failed_install_answer_keeps_confirmation_unresolved(monkeypatch, reason) -> None:
+    adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+    adapter._skill_manager = object()
+    adapter.refresh_skill_rails = AsyncMock()
+    service = SimpleNamespace(install_candidate=AsyncMock(return_value={"installed": False, "reason": reason}))
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.get_swarm_symphony_service", lambda: service)
+
+    result = await adapter._handle_symphony_experience_answer(
+        experience_request_id("recipe-1", 2),
+        [{"selected_options": ["安装"]}],
+        {"evolution_meta": {"recipe_id": "recipe-1", "recipe_version": 2}},
+        session_id="session-1",
+    )
+
+    assert result == {"accepted": False, "resolved": False, "installed": False, "reason": reason}
+    adapter.refresh_skill_rails.assert_not_awaited()
+    assert service.install_candidate.call_args.kwargs["session_id"] == "session-1"
+
+
+@pytest.mark.asyncio
 async def test_installed_receipt_survives_all_refresh_failures(monkeypatch) -> None:
     adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
     adapter._skill_manager = object()

@@ -942,10 +942,14 @@ def detect_external_cli_agent(
     cli_agent: str, cli_path: str = "", use_builtin: bool = False
 ) -> dict[str, Any]:
     normalized_agent = cli_agent.strip().lower()
+    # 每次探测都携带内置（托管安装）CLI 路径：配置本地可执行文件后探测结果与
+    # PATH 扫描都不再指向内置路径，前端路径下拉框需要它作为常驻选项，
+    # 否则内置路径会从下拉框消失且会被历史清理剪掉（#6647）。
+    builtin_path = external_cli_managed_cli_path(normalized_agent)
     if normalized_agent not in EXTERNAL_CLI_AGENT_KINDS and normalized_agent in external_cli_agent_kinds():
-        return _detect_custom_agent_cli(normalized_agent, cli_path)
-    if normalized_agent not in EXTERNAL_CLI_AGENT_KINDS:
-        return {
+        result = _detect_custom_agent_cli(normalized_agent, cli_path)
+    elif normalized_agent not in EXTERNAL_CLI_AGENT_KINDS:
+        result = {
             "cli_agent": normalized_agent,
             "status": "unavailable",
             "path": "",
@@ -953,8 +957,10 @@ def detect_external_cli_agent(
             "reference_version": "",
             "message": f"unsupported cli_agent: {cli_agent}",
         }
-
-    return _detect_cli_at(normalized_agent, cli_path, use_builtin)
+    else:
+        result = _detect_cli_at(normalized_agent, cli_path, use_builtin)
+    result["builtin_path"] = builtin_path
+    return result
 
 
 def _detect_custom_agent_cli(cli_agent: str, cli_path: str) -> dict[str, Any]:
@@ -1022,6 +1028,21 @@ def _detect_cli_at(normalized_agent: str, cli_path: str, use_builtin: bool = Fal
             "version": "",
             "reference_version": reference_version,
             "message": version_error or "version command failed",
+        }
+
+    identity_patterns = {
+        "claude": r"\bClaude Code\b",
+        "codex": r"\bcodex(?:-cli)?\s+\d",
+    }
+    identity_pattern = identity_patterns.get(normalized_agent)
+    if identity_pattern and not re.search(identity_pattern, version_output, re.IGNORECASE):
+        return {
+            "cli_agent": normalized_agent,
+            "status": "unavailable",
+            "path": resolved_path,
+            "version": version,
+            "reference_version": reference_version,
+            "message": f"version output does not identify the selected program as {normalized_agent}",
         }
 
     status = "ok"
@@ -1283,34 +1304,15 @@ def build_external_cli_publish_url() -> str:
 
 
 def persist_env_updates(updates: dict[str, str]) -> None:
-    """把已更新的环境变量写回 .env（仅覆盖或追加对应 KEY=value 行）。"""
-    env_path = ENV_FILE
+    """Persist settings atomically; callers must observe disk failures."""
     if not updates:
         return
-    try:
-        lines: list[str] = []
-        if env_path.is_file():
-            with open(env_path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-        new_lines: list[str] = []
-        for line in lines:
-            stripped = line.strip()
-            found = False
-            for env_key, value in updates.items():
-                if stripped.startswith(env_key + "="):
-                    new_lines.append(f'{env_key}="{value}"\n' if value else f"{env_key}=\n")
-                    found = True
-                    break
-            if not found:
-                new_lines.append(line)
-        for env_key, value in updates.items():
-            if not any(s.strip().startswith(env_key + "=") for s in new_lines):
-                new_lines.append(f'{env_key}="{value}"\n' if value else f"{env_key}=\n")
-        env_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(env_path, "w", encoding="utf-8") as f:
-            f.writelines(new_lines)
-    except OSError as e:
-        logger.warning("[config.set] 写回 .env 失败: %s", e)
+    from jiuwenswarm.common.config import config_write_lock
+    from jiuwenswarm.common.config_persistence import atomic_write, env_content
+
+    with config_write_lock(config_path=ENV_FILE.with_name("config.yaml")):
+        original = ENV_FILE.read_text(encoding="utf-8") if ENV_FILE.exists() else ""
+        atomic_write(ENV_FILE, env_content(original, updates).encode())
 
 
 def parse_config_bool(value: Any) -> bool:
@@ -1363,10 +1365,21 @@ def encrypt_config_params(params: dict[str, Any]) -> dict[str, Any]:
     if crypto is None:
         return dict(params)
     encrypted = dict(params)
+    from jiuwenswarm.common.credentials.resolver import is_reference
+
     for key, val in list(encrypted.items()):
         if key.endswith("_context_window_tokens"):
             continue
         if "api_key" in key.lower() or "token" in key.lower():
+            # exec: references are config declarations, not secrets — encrypting
+            # one corrupts it irreversibly; store verbatim.
+            if is_reference(str(val or "")):
+                continue
+            # An empty value means "clear the stored credential" (e.g. the Jev
+            # delete flow). Encrypting it would persist a non-empty ciphertext,
+            # so the credential would keep looking configured and never clear.
+            if val is None or str(val).strip() == "":
+                continue
             encrypted[key] = crypto.encrypt(val)
     return encrypted
 
@@ -1723,10 +1736,12 @@ def apply_config_payload(
             raise ConfigPanelBadRequest(str(exc)) from exc
         yaml_updated.append("kv_cache_affinity_enabled")
 
-    for env_key, value in env_updates.items():
-        os.environ[env_key] = value
     if env_updates:
-        persist_env_updates(env_updates)
+        try:
+            persist_env_updates(env_updates)
+        except OSError:
+            raise ConfigPanelInternalError("failed to save environment settings") from None
+        os.environ.update(env_updates)
         logger.info("[config.set] 已更新 .env: %s", list(env_updates.keys()))
     if yaml_updated:
         logger.info("[config.set] 已更新 config.yaml: %s", yaml_updated)

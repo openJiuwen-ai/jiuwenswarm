@@ -38,8 +38,11 @@ from jiuwenswarm.common.config import (
     get_config_raw,
     get_available_models,
     get_default_models,
+    public_api_key,
+    raw_api_keys_by_model_id,
     update_default_models_in_config,
 )
+from jiuwenswarm.common.credentials.resolver import is_reference, resolve_credential_ref
 from jiuwenswarm.common.context_window import (
     DEFAULT_CONTEXT_WINDOW_TOKENS,
     parse_positive_int,
@@ -52,6 +55,7 @@ from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.model_config_validation import probe_model_connection, raise_if_invalid
 from jiuwenswarm.common.model_error_messages import user_facing_model_error
 from jiuwenswarm.common.model_errors import ModelSelectionError
+from jiuwenswarm.common.opencode_go import SCOPE_PROBE, inject_session_header
 from jiuwenswarm.common.reasoning_config import (
     effective_endpoint_profile,
     validate_reasoning_level_for_model,
@@ -277,6 +281,26 @@ def resolve_validate_endpoint_profile(
     return str(persisted_mcc.get("endpoint_profile") or "") or None
 
 
+def _redact_probe_error(message: str, api_key: str) -> str:
+    """Remove the probe API key from a user-visible error message.
+
+    FR-003 forbids credentials in error messages; some SDKs echo the request
+    key inside transport errors, so the key is replaced before responding.
+
+    Args:
+        message: Raw exception text.
+        api_key: The probe credential to redact.
+
+    Returns:
+        The trimmed message with every key occurrence replaced by ``***``.
+    """
+    text = str(message or "").strip()
+    key = str(api_key or "").strip()
+    if not text or not key:
+        return text
+    return text.replace(key, "***")
+
+
 def build_probe_model_client_config(
     model_provider: str,
     api_key: str,
@@ -284,6 +308,7 @@ def build_probe_model_client_config(
     *,
     endpoint_profile: str = "",
     verify_ssl: bool | None = None,
+    vendor_key: str = "",
     persisted_mcc: dict[str, Any] | None = None,
 ) -> ModelClientConfig:
     """构造探测用 ``ModelClientConfig``：持久化条目为基线，表单草稿值覆盖。
@@ -304,6 +329,13 @@ def build_probe_model_client_config(
     def _assemble(persisted: dict[str, Any] | None) -> ModelClientConfig:
         probe_fields: dict[str, Any] = dict(persisted or {})
         probe_fields.pop("model_name", None)
+        effective_vendor = str(
+            vendor_key or probe_fields.get("vendor_key") or ""
+        ).strip()
+        if effective_vendor:
+            probe_fields["vendor_key"] = effective_vendor
+        else:
+            probe_fields.pop("vendor_key", None)
         probe_fields.update(
             {
                 "client_id": "config-validate",
@@ -322,6 +354,9 @@ def build_probe_model_client_config(
             probe_fields["verify_ssl"] = verify_ssl
         elif "verify_ssl" not in probe_fields:
             probe_fields["verify_ssl"] = False
+        # OpenCode Go needs a stable, dialog-independent session header; the
+        # probe always uses the fixed probe scope and never a conversation id.
+        inject_session_header(probe_fields, SCOPE_PROBE)
         return ModelClientConfig(**probe_fields)
 
     try:
@@ -433,9 +468,15 @@ def _merge_models_for_replace_all(
             ):
                 new_mcc.pop("endpoint_profile", None)
             new_entry["is_default"] = item["is_default"]
-            # api_key: resolved holds the decrypted plaintext shown to the frontend.
-            # Unchanged → keep raw (placeholder or ciphertext); changed → encrypt new value.
-            if item.get("api_key_provided", True) and not _values_match(item["api_key"], resolved_mcc.get("api_key")):
+            # api_key: resolved holds the value shown to the frontend.
+            # exec: references are stored verbatim: the
+            # panel echoes the reference back, and a reference is neither
+            # plaintext (would be encrypted, corrupting it) nor ciphertext.
+            # Unchanged → keep raw (placeholder/ciphertext/reference);
+            # changed → encrypt new plaintext value.
+            if is_reference(str(item["api_key"] or "")):
+                new_mcc["api_key"] = item["api_key"]
+            elif item.get("api_key_provided", True) and not _values_match(item["api_key"], resolved_mcc.get("api_key")):
                 new_mcc["api_key"] = (
                     crypto.encrypt(item["api_key"]) if (item["api_key"] and crypto) else item["api_key"]
                 )
@@ -445,7 +486,9 @@ def _merge_models_for_replace_all(
                 "model_client_config": {
                     "api_base": item["api_base"],
                     "api_key": (
-                        crypto.encrypt(item["api_key"]) if (item["api_key"] and crypto) else item["api_key"]
+                        item["api_key"]
+                        if is_reference(str(item["api_key"] or ""))
+                        else (crypto.encrypt(item["api_key"]) if (item["api_key"] and crypto) else item["api_key"])
                     ),
                     "model_name": item["model_name"],
                     "client_provider": item["model_provider"],
@@ -702,13 +745,37 @@ async def config_validate_model_handler(
         return
     api_base = str(params.get("api_base") or "").strip()
     api_key = str(params.get("api_key") or "").strip()
+    # An exec: reference echoed from the stored entry resolves before probing:
+    # the raw reference is not a usable key, so
+    # probing it would always 401 while runtime chat works. probe=True
+    # bypasses the failed backoff (explicit user retry intent); a failed
+    # resolve degrades to "" and the probe reports an auth error, matching
+    # what runtime chat would do with the same broken reference.
+    # to_thread: the resolve may run a subprocess for up to 30s — that must
+    # never sit on the event loop with every WebSocket connection waiting.
+    original_api_key = api_key
+    if is_reference(api_key):
+        api_key = await asyncio.to_thread(
+            resolve_credential_ref,
+            api_key, field_path="models.*.model_client_config.api_key", probe=True,
+        )
     model = str(params.get("model") or "").strip()
     model_provider = normalize_provider_value(str(params.get("model_provider") or ""))
     needs_api_key = not is_openai_account_provider(model_provider)
     if not all([api_base, model, model_provider]) or (needs_api_key and not api_key):
+        # A reference that resolved to empty is a *broken reference*, not a
+        # missing field — say so, or the user thinks their api_key vanished.
+        if is_reference(original_api_key) and not api_key:
+            error = (
+                f"the exec: reference in api_key failed to resolve "
+                f"(command: {original_api_key[len('exec:'):].strip() or '<empty>'}); "
+                f"check the secret-manager command"
+            )
+        else:
+            error = "api_base, model, model_provider, and api_key for non-OAuth providers are required"
         await channel.send_response(
             ws, req_id, ok=False,
-            error="api_base, model, model_provider, and api_key for non-OAuth providers are required",
+            error=error,
             code="BAD_REQUEST",
         )
         return
@@ -758,6 +825,7 @@ async def config_validate_model_handler(
         api_base,
         endpoint_profile=endpoint_profile,
         verify_ssl=verify_ssl,
+        vendor_key=str(params.get("vendor_key") or persisted_mcc.get("vendor_key") or ""),
         persisted_mcc=persisted_mcc,
     )
     # Anthropic-compatible endpoints that send thinking.budget_tokens
@@ -797,7 +865,7 @@ async def config_validate_model_handler(
         logger.warning("[config.validate_model] LLM probe failed: %s", exc)
         await channel.send_response(
             ws, req_id, ok=False,
-            error=user_facing_model_error(exc, api_base=api_base),
+            error=_redact_probe_error(user_facing_model_error(exc, api_base=api_base), api_key),
             code="LLM_ERROR",
         )
         return
@@ -840,6 +908,10 @@ async def models_list_handler(
             models = await asyncio.to_thread(get_default_models, config)
         else:
             models = await asyncio.to_thread(get_available_models, config, auth_session)
+        # 回显 api_key：raw map 仅收 exec: 引用条目（引用原文），其余形态
+        # （明文/${VAR}/密文）回落解析链路值——与现状显示一致；${VAR} 原样
+        # 下发会让 replace_all 把占位符判成"已修改"而加密损坏。
+        raw_keys = await asyncio.to_thread(raw_api_keys_by_model_id)
         result = []
         active_model = ""
         for idx, entry in enumerate(models):
@@ -859,7 +931,14 @@ async def models_list_handler(
                 "model_name": model_name,
                 "api_base": str(mcc.get("api_base") or ""),
                 # 保持旧设置页的编辑/测试/保存协议；登录模型凭据不可下发。
-                "api_key": "" if is_login_model(entry) else str(mcc.get("api_key") or ""),
+                # get_config() 已把 exec: 引用替换为解析后明文，引用条目回显
+                # raw 原文（否则明文进浏览器且一次保存就把引用改写成明文）；
+                # 其余形态回落解析值（与现状一致，见 raw_api_keys_by_model_id）。
+                "api_key": (
+                    ""
+                    if is_login_model(entry)
+                    else raw_keys.get(str(entry.get("model_id") or ""), str(mcc.get("api_key") or ""))
+                ),
                 "has_api_key": bool(mcc.get("api_key")),
                 "model_provider": str(mcc.get("client_provider") or ""),
                 "temperature": mco.get("temperature"),

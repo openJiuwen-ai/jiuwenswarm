@@ -37,6 +37,7 @@ from tests.unit_tests.agentserver.client_attachments_support import CLIENT_APP, 
 # The packages JiuwenSwarm ships for the apps, read before a test's ``isolated`` fixture replaces the apps.
 POWERPOINT_PACKAGE = registry.client_apps()[CLIENT_APP].package_dir
 WORD_PACKAGE = registry.client_apps()["office-word"].package_dir
+EXCEL_PACKAGE = registry.client_apps()["office-excel"].package_dir
 
 
 @pytest.fixture(autouse=True)
@@ -61,7 +62,7 @@ def attach_pane():
     def attach_pane(session_id: str, supported_tools: list[str], *, owner: str = "user-1",
                     name: str = "Deck.pptx", live: bool = True, client_app: str = CLIENT_APP) -> None:
         resource = {"key": f"deck-{session_id}", "display_name": name, "kind": "presentation",
-                    "host_vendor": "microsoft"}
+                    "host_vendor": "office"}
         attachment = get_attachment_directory().attach(
             channel_id="web", ws_id=f"pane-{session_id}", owner_id=owner, client_app=client_app,
             resource=resource, session_id=session_id)

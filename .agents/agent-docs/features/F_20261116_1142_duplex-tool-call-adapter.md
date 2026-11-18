@@ -138,3 +138,22 @@ JiuwenSwarm 候选为 `53774939acf274db2332d780f77ac77f0ad4d08c`，没有修改�
 独立读取正式复验的 TaskService SQLite、tool-executions.jsonl 和 e2e-evidence.json，确认任务 completed、外部执行一次、JPEG 已传至委托执行端、关联 output 接纳，以及模型回答 `The measured test value is 17 degrees.`；协议记录同时包含完整工具投影、音频完成及播放确认事件。证据位于任务目录 `pytest-main-workspace-20261118/test_real_duplex_model_execute0/`，独立核对摘要为 main-workspace-evidence-20261118.txt。原始日志及 SQLite 等仅存测试工作区和本地忽略/仓库外产物目录，不提交。
 
 两次 GPU 预约均使用 canhazgpu，只占用 GPU 0、1；正式复验后释放预约及模型父/子进程。没有发现本场景需要修复的适配器或上游协议问题。Core 外部执行仍为受控文件写入器，音频为 headless PCM 消费/ACK；不扩大为完整 Core/Gateway、真实 Core LLM、物理麦克风/扬声器、性能或跨平台验收。
+
+## 2026-11-18 develop 合并与回归
+
+用户要求合并 develop 并解决全部冲突。本轮抓取上游 `c18fd2924e7426f6a4658717da80eb9bda0705d3`，采用 merge 保留已有分支历史。8 个冲突文件中，4 个 Settings 文件同时保留 duplex 与上游新增的 multimodal 数据源、独立 provider、字段验证和 RPC 路由；4 个文档索引按新同步工具从源 frontmatter 重新生成，不手工拼接。自动合并的任务查询 metadata、经 AgentServer 路由的对话历史写入，以及已有登录凭据/画面传递均保留。
+
+受测代码对应合并候选 tree `57605f6a612fd2d4c44a7eae069f6452224d487f`；后续仅补充本验证记录。测试服务器从固定 SHA 的官方 develop 归档和已校验 SHA256 的本分支 Git blob 差异装配候选。按合并后 pyproject/lock 更新隔离环境的 E2A 至 `defa6d8d8904eb3272a58fa0ad13f94f7adb4a51`、Gateway 至 `703da5cec987acaaab3557e90007965ca2644c96`，安装 direct_url.json 已核对实际提交，Core pin 保持不变。
+
+| 入口 | 本轮结果 | 证据 |
+| --- | --- | --- |
+| 视频双工完整后端，启用真实 main 模型 E2E | **743 passed，零 skipped** | merge-backend-20261118.log |
+| Settings | **72 passed** | merge-settings-panel-20261118.log |
+| 新多模态设置 | **19 passed** | merge-multimodal-settings-20261118.log |
+| 实时双工前端 | **150 passed** | merge-qwen-barge-in-20261118.log |
+| 配置与国际化 | **11 passed** | merge-i18n-20261118.log |
+| Vite 打包 | **passed** | merge-vite-20261118.log |
+
+后端执行 `python -m pytest jiuwenswarm/extensions/video_duplex/tests/backend --no-cov -q`，通过环境启用既有 live 用例，vLLM-Omni 仍为本日已验证的 main `16ad661a496c6466b09e85860b4c8647bce0c7da`。独立核对 SQLite、外部执行文件及协议记录，确认一次执行、completed、委托画面、结果接纳与模型回答 17；原始证据在 `pytest-develop-merge-20261118/`，核对摘要 merge-evidence-20261118.txt。测试范围继续使用受控 Core 写入器和 headless 音频 ACK，不宣称完整产品或物理设备验收。
+
+本轮没有新增实现或测试用例，未运行格式化、TypeScript 静态检查或 diff 静态检查。GPU 0、1 经 canhazgpu 预约，在测试后释放模型进程与预约；运行日志、数据库及同步脚本不入库。

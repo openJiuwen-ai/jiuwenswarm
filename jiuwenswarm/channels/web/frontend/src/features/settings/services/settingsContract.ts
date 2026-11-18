@@ -269,6 +269,12 @@ export const OPENAI_ACCOUNT_RPC = {
 export const OPEN_SOURCE_SETTINGS_REQUEST_METHODS = [
   'video.duplex.settings.get',
   'video.duplex.settings.update',
+  'multimodal.models.list',
+  'multimodal.models.get',
+  'multimodal.models.upsert',
+  'multimodal.models.delete',
+  'multimodal.tools.update',
+  'multimodal.config.apply',
   'config.get',
   'config.save_all',
   'config.validate_model',

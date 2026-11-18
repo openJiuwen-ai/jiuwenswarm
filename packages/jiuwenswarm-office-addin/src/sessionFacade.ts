@@ -9,11 +9,34 @@ export interface OutgoingImageAttachment {
   base64Data: string;
 }
 
+/** The image as a ``data:`` URL, to show it in the pane. */
+export function imageDataUrl({ mimeType, base64Data }: OutgoingImageAttachment): string {
+  return `data:${mimeType};base64,${base64Data}`;
+}
+
+/** A document the user has open with its task pane attached. */
+export interface OpenDocument {
+  name: string;
+  /** What it is, as the attach's ``resource.kind`` gives it: ``presentation``, ``document``, ``workbook``. */
+  kind: string;
+  /** The document of the conversation that asked. */
+  current: boolean;
+}
+
 export interface ResourceConversation {
   sessionId: SessionId;
   title: string;
   /** Seconds since the epoch. */
   lastMessageAt: number;
+}
+
+/**
+ * The document's state a message carries (``text``), and ``sent``, which the app runs once ``chat.send`` took the
+ * message: what the state lists as new (the user's changes, their decisions) is then told and not listed again.
+ */
+export interface ClientState {
+  text: string;
+  sent(): void;
 }
 
 interface PersistedImageAttachment {
@@ -29,8 +52,16 @@ interface PersistedImageAttachment {
  * its context; which conversation the pane shows is the attachment's.
  */
 export class SessionFacade {
-  /** ``clientApp``: the app whose conversations these are, as the backend registers it. */
-  constructor(private readonly gateway: Pick<GatewayClient, 'request'>, private readonly clientApp: string) {}
+  /**
+   * ``clientApp``: the app whose conversations these are, as the backend registers it. ``clientState``: the
+   * document's state as the app's ``read_surface_context`` gives it, which each message carries
+   * (``chat.send`` ``client_state``) for the backend to show the model with the message.
+   */
+  constructor(
+    private readonly gateway: Pick<GatewayClient, 'request'>,
+    private readonly clientApp: string,
+    private readonly clientState?: (sessionId: SessionId) => Promise<ClientState>,
+  ) {}
 
   /** A new conversation of the app (``client_app``), which shows only in this client. */
   async create(modelName: string): Promise<SessionId> {
@@ -86,12 +117,13 @@ export class SessionFacade {
   }
 
   /** The user's attached documents (``client.list``), by the conversation each is attached to. */
-  async openDocuments(sessionId: SessionId): Promise<Map<string, string>> {
+  async openDocuments(sessionId: SessionId): Promise<Map<string, OpenDocument>> {
     const response = await this.gateway.request('client.list', { session_id: sessionId });
     const attachments = Array.isArray(response.attachments) ? response.attachments.filter(isRecord) : [];
     return new Map(attachments.flatMap(item => (
       typeof item.session_id === 'string' && typeof item.display_name === 'string'
-        ? [[item.session_id, item.display_name] as const] : [])));
+        ? [[item.session_id, { name: item.display_name, kind: typeof item.kind === 'string' ? item.kind : '',
+          current: item.is_current === true }] as const] : [])));
   }
 
   /** Answer the question a paused turn asks (``chat.ask_user_question``); the turn goes on. */
@@ -112,11 +144,12 @@ export class SessionFacade {
 
   /** A message, on ``modelName`` when given (``chat.send`` ``model_name``, as the web chat's model picker sends it). */
   async sendText(
-    sessionId: SessionId, content: string, images: OutgoingImageAttachment[] = [], modelName?: string,
+    sessionId: SessionId, content: string, images: readonly OutgoingImageAttachment[] = [], modelName?: string,
   ): Promise<void> {
     const mediaItems = images.length ? await this.persistImages(sessionId, images) : undefined;
     const uploadedImages = mediaItems?.map(({ filename, path, mime_type, size_bytes }) => (
       { filename, path, mime_type, size_bytes }));
+    const state = this.clientState ? await this.clientState(sessionId) : undefined;
     await this.gateway.request(
       'chat.send',
       {
@@ -126,9 +159,11 @@ export class SessionFacade {
         work_mode: 'work',
         ...(modelName ? { model_name: modelName } : {}),
         ...(mediaItems ? { media_items: mediaItems, files: { uploaded_images: uploadedImages } } : {}),
+        ...(state === undefined ? {} : { client_state: state.text }),
       },
       { stream: true, timeoutMs: 60_000 },
     );
+    state?.sent();
   }
 
   /** Stop the running turn; a supplement starts the next one on ``modelName``, as ``chat.send`` does. */
@@ -150,7 +185,7 @@ export class SessionFacade {
    * the multimodal rail) and ``files.uploaded_images`` (for the user turn).
    */
   private async persistImages(
-    sessionId: SessionId, images: OutgoingImageAttachment[],
+    sessionId: SessionId, images: readonly OutgoingImageAttachment[],
   ): Promise<PersistedImageAttachment[]> {
     const response = await this.gateway.request(
       'media.persist',

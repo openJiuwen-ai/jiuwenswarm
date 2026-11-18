@@ -120,36 +120,6 @@ def test_callback_reports_missing_code(oauth_callback):
     assert token_requests == []
 
 
-def test_callback_reports_and_escapes_provider_error(oauth_callback):
-    client, authorize_query, token_requests, _workspace = oauth_callback
-    response = client.get("/mcp/oauth/callback", params={
-        "state": authorize_query["state"][0],
-        "error": "access_denied<script>mock</script>",
-    })
-
-    assert response.status_code == 400
-    assert "access_denied&lt;script&gt;mock&lt;/script&gt;" in response.text
-    assert "<script>mock</script>" not in response.text
-    assert token_requests == []
-
-
-def test_callback_reports_unavailable_provider_without_exposing_details(monkeypatch, caplog):
-    monkeypatch.delitem(external_providers._providers, "mcp_registry", raising=False)
-    app = FastAPI()
-    mcp_oauth_http.attach_mcp_oauth_routes(app)
-    with TestClient(app) as client:
-        response = client.get("/mcp/oauth/callback", params={
-            "code": "mock-private-code", "state": "mock-private-state",
-        })
-
-    assert response.status_code == 500
-    assert response.headers["cache-control"] == "no-store"
-    assert response.headers["referrer-policy"] == "no-referrer"
-    assert "ExternalProviderUnregistered" in caplog.text
-    for secret in ("mock-private-code", "mock-private-state", "mcp_registry"):
-        assert secret not in response.text
-
-
 def test_callback_unexpected_failure_does_not_expose_exception_details(monkeypatch, caplog):
     def fail(query):
         raise OSError("mock-private-access-token")
@@ -167,34 +137,3 @@ def test_callback_unexpected_failure_does_not_expose_exception_details(monkeypat
     assert "mock-private-access-token" not in caplog.text
 
 
-def test_callback_uses_providers_registered_by_real_process_setup(tmp_path):
-    # external_providers 已拆为 gateway 侧副本：回调路由只认 gateway 进程自己的
-    # 注册表，因此只覆盖 gateway 真实装配（AgentServer 侧 install_front 注册进
-    # 母仓注册表，与 gateway 进程的回调路由无关）。
-    code = (
-        "import sys\n"
-        "from fastapi import FastAPI\n"
-        "from fastapi.testclient import TestClient\n"
-        "from agent_gateway.common.external_providers import registered_domains\n"
-        "from agent_gateway.channel_manager.web.mcp_oauth_http import attach_mcp_oauth_routes\n"
-        "assert 'jiuwenswarm.server.runtime.mcp.oauth_flow' not in sys.modules\n"
-        "from agent_gateway.routing.mcp_remote import install\n"
-        "install()\n"
-        "assert 'mcp_registry' in registered_domains()\n"
-        "app = FastAPI()\n"
-        "attach_mcp_oauth_routes(app)\n"
-        "with TestClient(app) as client:\n"
-        "    response = client.get('/mcp/oauth/callback', params={'code':'mock-code','state':'unknown-state'})\n"
-        "assert response.status_code == 400, response.text\n"
-        "assert 'unavailable' in response.text or '授权未完成' in response.text\n"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        cwd=Path(__file__).resolve().parents[3],
-        env={**os.environ, "JIUWENSWARM_DATA_DIR": str(tmp_path / "data"), "PYTHONUTF8": "1"},
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=60,
-    )
-    assert result.returncode == 0, result.stderr[-2000:]

@@ -615,3 +615,270 @@ async def test_skill_rpc_client_rejects_missing_ack(
         await server.wait_closed()
 
     assert "connection.ack" in excinfo.value.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name_line", ["", "name: ''\n", "name: '   '\n", "name: 42\n", "name: [foo]\n", "name: null\n"])
+async def test_import_upload_requires_explicit_string_name(manager: SkillManager, tmp_path: Path, name_line: str) -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as archive:
+        archive.writestr("pkg/SKILL.md", f"---\n{name_line}description: demo\n---\nBody")
+    path = tmp_path / "invalid.zip"
+    path.write_bytes(buf.getvalue())
+    before = set(manager._skills_dir.iterdir())
+    with pytest.raises(SkillRpcError) as error:
+        await manager.handle_skills_import_upload({"path": str(path)})
+    assert error.value.code == "SKILL_INVALID_METADATA"
+    assert set(manager._skills_dir.iterdir()) == before
+
+
+@pytest.mark.asyncio
+async def test_import_upload_allows_explicit_skill_filename_name(manager: SkillManager, tmp_path: Path) -> None:
+    path = tmp_path / "valid.zip"
+    path.write_bytes(_zip_bytes("SKILL"))
+    result = await manager.handle_skills_import_upload({"path": str(path)})
+    assert result["success"] is True
+    assert result["skill"]["name"] == "SKILL"
+
+
+@pytest.mark.asyncio
+async def test_import_upload_rejects_original_nul_filename(manager: SkillManager, tmp_path: Path) -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as archive:
+        archive.writestr("pkg/SKILL.md", _skill_md("nul-test"))
+        archive.writestr("pkg/evXool.md", "payload")
+    path = tmp_path / "nul.zip"
+    path.write_bytes(buf.getvalue().replace(b"evXool.md", b"ev\x00ool.md"))
+    with zipfile.ZipFile(path) as archive:
+        assert archive.infolist()[1].orig_filename == "pkg/ev\x00ool.md"
+        assert archive.infolist()[1].filename == "pkg/ev"
+        extraction = tmp_path / "extraction"
+        extraction.mkdir()
+        with pytest.raises(SkillRpcError) as error:
+            manager._safe_extract_zip_members_into(archive, extraction.resolve())
+        assert error.value.code == "SKILL_UNSAFE_PATH"
+        assert list(extraction.iterdir()) == []
+    with pytest.raises(SkillRpcError) as error:
+        await manager.handle_skills_import_upload({"path": str(path)})
+    assert error.value.code == "SKILL_UNSAFE_PATH"
+    assert not (manager._skills_dir / "nul-test").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("as_directory", [False, True])
+async def test_import_local_requires_declared_name(
+    manager: SkillManager, tmp_path: Path, as_directory: bool,
+) -> None:
+    source = tmp_path / "local-input"
+    source.mkdir()
+    md = source / "SKILL.md"
+    md.write_text("---\ndescription: demo\n---\nBody", encoding="utf-8")
+    result = await manager.handle_skills_import_local({"path": str(source if as_directory else md)})
+    assert result["success"] is False
+    assert result["code"] == "SKILL_INVALID_METADATA"
+    assert "非空字符串 name" in result["detail"]
+    assert not (manager._skills_dir / "SKILL").exists()
+
+
+@pytest.mark.asyncio
+async def test_import_upload_still_rejects_zip_slip(manager: SkillManager, tmp_path: Path) -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as archive:
+        archive.writestr("pkg/SKILL.md", _skill_md("unsafe-test"))
+        archive.writestr("../escape.md", "payload")
+    path = tmp_path / "unsafe.zip"
+    path.write_bytes(buf.getvalue())
+    with pytest.raises(SkillRpcError) as error:
+        await manager.handle_skills_import_upload({"path": str(path)})
+    assert error.value.code == "SKILL_UNSAFE_PATH"
+    assert not (manager._skills_dir / "unsafe-test").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("allow_macos_pytest_temp_sources")
+@pytest.mark.parametrize("entry", ["file", "directory", "upload", "trusted"])
+@pytest.mark.parametrize(
+    "frontmatter",
+    [
+        "description: demo",
+        "name: ''\ndescription: demo",
+        "name: '   '\ndescription: demo",
+        "name: 42\ndescription: demo",
+        "name: true\ndescription: demo",
+        "name: [demo]\ndescription: demo",
+        "name: {id: demo}\ndescription: demo",
+        "name: null\ndescription: demo",
+        "name: valid",
+        "name: valid\ndescription: '   '",
+        "name: valid\ndescription: 42",
+        "name: valid\ndescription: false",
+        "name: valid\ndescription: [demo]",
+        "name: valid\ndescription: null",
+        "name: ../escape\ndescription: demo",
+        "[name, description]",
+        "name: [unterminated\ndescription: demo",
+    ],
+)
+async def test_import_entries_reject_invalid_metadata_without_writes(
+    manager: SkillManager, tmp_path: Path, entry: str, frontmatter: str,
+) -> None:
+    source = tmp_path / "input-folder"
+    source.mkdir()
+    md = source / "SKILL.md"
+    md.write_text(f"---\n{frontmatter}\n---\nBody", encoding="utf-8")
+    before = {path.relative_to(manager.skills_dir): path.read_bytes()
+              for path in manager.skills_dir.rglob("*") if path.is_file()}
+    before_dirs = set(manager.skills_dir.rglob("*"))
+    if entry == "upload":
+        package = tmp_path / "input.zip"
+        with zipfile.ZipFile(package, "w") as archive:
+            archive.write(md, "input-folder/SKILL.md")
+        with pytest.raises(SkillRpcError) as error:
+            await manager.handle_skills_import_upload({"path": str(package)})
+        assert error.value.code == "SKILL_INVALID_METADATA"
+    else:
+        if entry == "trusted":
+            result = manager._import_local_from_path(
+                source, force=False, origin="https://allowed-host/input.zip", source_trusted=True,
+            )
+        else:
+            result = await manager.handle_skills_import_local(
+                {"path": str(md if entry == "file" else source)},
+            )
+        assert result["success"] is False
+        assert result["code"] == "SKILL_INVALID_METADATA"
+    assert set(manager.skills_dir.rglob("*")) == before_dirs
+    assert {path.relative_to(manager.skills_dir): path.read_bytes()
+            for path in manager.skills_dir.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("allow_macos_pytest_temp_sources")
+@pytest.mark.parametrize("entry", ["file", "directory", "upload", "trusted"])
+async def test_import_entries_accept_leading_blanks_and_normalize_metadata(
+    manager: SkillManager, tmp_path: Path, entry: str,
+) -> None:
+    source = tmp_path / "different-folder-name"
+    source.mkdir()
+    md = source / "SKILL.md"
+    md.write_text(
+        "\n  \n---\nname: ' SKILL '\ndescription: >-\n  Demo skill\n  with multiple lines\n---\nBody",
+        encoding="utf-8",
+    )
+    if entry == "upload":
+        package = tmp_path / "input.zip"
+        with zipfile.ZipFile(package, "w") as archive:
+            archive.write(md, "different-folder-name/SKILL.md")
+        result = await manager.handle_skills_import_upload({"path": str(package)})
+    elif entry == "trusted":
+        result = manager._import_local_from_path(
+            source, force=False, origin="https://allowed-host/input.zip", source_trusted=True,
+        )
+    else:
+        result = await manager.handle_skills_import_local(
+            {"path": str(md if entry == "file" else source)},
+        )
+    assert result["success"] is True
+    assert result["skill"]["name"] == "SKILL"
+    assert result["skill"]["description"] == "Demo skill with multiple lines"
+    assert (manager.skills_dir / "SKILL" / "SKILL.md").read_text(encoding="utf-8") == md.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("text", ["# Legacy skill", "---\ndescription: legacy\n---\nBody"])
+def test_display_parser_keeps_filename_fallback(tmp_path: Path, text: str) -> None:
+    md = tmp_path / "legacy-name.md"
+    md.write_text(text, encoding="utf-8")
+    assert SkillManager._parse_skill_md(md)["name"] == "legacy-name"
+
+
+@pytest.mark.parametrize("member", ["../escape.md", "pkg/../../escape.md", "/absolute.md", "C:/escape.md", r"pkg\..\escape.md"])
+def test_zip_rejects_unsafe_paths_before_extracting_any_member(
+    tmp_path: Path, member: str,
+) -> None:
+    package = io.BytesIO()
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("pkg/SKILL.md", _skill_md("valid"))
+        archive.writestr(member, "unsafe")
+    target = tmp_path / "extract"
+    target.mkdir()
+    with zipfile.ZipFile(package) as archive:
+        with pytest.raises(RuntimeError, match="非法路径"):
+            SkillManager._safe_extract_zip_members_into(archive, target.resolve())
+    assert list(target.iterdir()) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["remote", "hub", "clawhub", "skillnet"])
+@pytest.mark.parametrize(
+    ("frontmatter", "valid"),
+    [
+        ("name: remote-demo\ndescription: >-\n  Remote skill\n  description", True),
+        ("description: demo", False),
+        ("name: 42\ndescription: demo", False),
+        ("name: remote-demo", False),
+        ("name: remote-demo\ndescription: 42", False),
+        ("name: remote-demo\ndescription: [demo]", False),
+    ],
+)
+async def test_external_install_entries_share_metadata_rules(
+    manager: SkillManager, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    entry: str, frontmatter: str, valid: bool,
+) -> None:
+    source = tmp_path / "downloaded-source"
+    source.mkdir()
+    md = source / "SKILL.md"
+    md.write_text(f"\n---\n{frontmatter}\n---\nBody", encoding="utf-8")
+    package = io.BytesIO()
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.write(md, "downloaded-source/SKILL.md")
+    body = package.getvalue()
+    url = "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/plugins/demo.zip"
+    before = {path.relative_to(manager.skills_dir): path.read_bytes()
+              for path in manager.skills_dir.rglob("*") if path.is_file()}
+    before_dirs = set(manager.skills_dir.rglob("*"))
+    monkeypatch.setattr(manager, "_get_mirror_skills_dirs", lambda: [])
+    if entry == "remote":
+        response = MagicMock()
+        response.iter_content.return_value = [body]
+        response.__enter__.return_value = response
+        session = MagicMock()
+        session.get.return_value = response
+        session.__enter__.return_value = session
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.skill.skill_manager.requests.Session", lambda: session,
+        )
+        result = await manager.handle_skills_import_local({"path": url})
+    elif entry == "hub":
+        monkeypatch.setattr(manager, "_team_skills_hub_http_get_data", AsyncMock(return_value={
+            "download_url": url, "version": "1.0.0",
+        }))
+        monkeypatch.setattr(manager, "_download_zip_and_verify", AsyncMock(return_value=body))
+        try:
+            result = await manager.handle_skills_team_skills_hub_install({"asset_id": "remote-demo"})
+        except SkillRpcError as exc:
+            assert not valid
+            result = {"success": False, "code": exc.code}
+    elif entry == "clawhub":
+        response = MagicMock(content=body)
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get = AsyncMock(return_value=response)
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.skill.skill_manager.httpx.AsyncClient", lambda **kwargs: client,
+        )
+        monkeypatch.setattr(manager, "_get_clawhub_token", lambda: "test-token")
+        result = await manager.handle_skills_clawhub_download({"slug": "remote-demo"})
+    else:
+        monkeypatch.setattr(manager, "_skillnet_download_sync", lambda *args: str(source))
+        result = manager._skillnet_install_files_sync("https://github.com/example/skills/tree/main/demo", False)
+    assert result.get("success", result.get("ok")) is valid, result
+    if valid:
+        assert (manager.skills_dir / "remote-demo" / "SKILL.md").is_file()
+        meta = manager._parse_skill_md(manager.skills_dir / "remote-demo" / "SKILL.md")
+        assert meta["description"] == "Remote skill description"
+    else:
+        assert result["code"] == "SKILL_INVALID_METADATA", result
+        assert set(manager.skills_dir.rglob("*")) == before_dirs
+        assert {path.relative_to(manager.skills_dir): path.read_bytes()
+                for path in manager.skills_dir.rglob("*") if path.is_file()} == before

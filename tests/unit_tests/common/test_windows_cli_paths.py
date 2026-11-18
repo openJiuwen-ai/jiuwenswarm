@@ -386,7 +386,7 @@ def test_settings_detect_and_enable_a_migrated_explicit_cli(windows_environment,
 
     def version(_agent, executable_path):
         probes.append(executable_path)
-        return "2.1.999", ""
+        return "2.1.999 (Claude Code)", ""
 
     monkeypatch.setattr(handlers, "run_external_cli_version_command", version)
     flat = handlers.flatten_external_cli_agents_for_config_panel(raw)

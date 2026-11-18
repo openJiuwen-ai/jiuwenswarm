@@ -79,7 +79,7 @@ async def task_login_credential_ref(ws: Any, target: dict[str, Any]) -> str:
     return (params.get(E2A_MODEL_AUTH_PARAM_KEY) or {}).get("credential_ref", "")
 
 
-async def task_agent_query(client, method, params, session, owner):
+async def task_agent_query(client, method, params, session, owner, *, metadata=None):
     """Read from the routed AgentServer, never from Gateway's local session tree."""
     from e2a.gateway_normalize import e2a_from_agent_fields
 
@@ -91,6 +91,7 @@ async def task_agent_query(client, method, params, session, owner):
             request_id="task-query-" + str(time.time_ns()),
             req_method=method, params=params, session_id=session,
             user_id=owner or None, channel_id="video_tool", timestamp=time.time(),
+            metadata=metadata,
         ),
     )
     payload = response.payload or {}

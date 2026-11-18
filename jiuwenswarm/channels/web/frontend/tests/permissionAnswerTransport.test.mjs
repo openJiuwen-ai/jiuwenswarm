@@ -43,6 +43,9 @@ after(() => dom.window.close());
 
 const { useWebSocket } = await import('../node_modules/.cache/permission-answer-transport/hooks/useWebSocket.js');
 const { AuthorizationPrompt, AuthorizationQuestionDetails } = await import('../node_modules/.cache/permission-answer-transport/components/InteractionSlot/AuthorizationPrompt.js');
+const { InteractionPrompt } = await import('../node_modules/.cache/permission-answer-transport/components/InteractionSlot/InteractionPrompt.js');
+const { ToastStack } = await import('../node_modules/.cache/permission-answer-transport/components/ui/Toast/Toast.js');
+const { toast } = await import('../node_modules/.cache/permission-answer-transport/components/ui/Toast/toastStore.js');
 const { ToolCallDisplay } = await import('../node_modules/.cache/permission-answer-transport/components/ChatPanel/ToolCallDisplay.js');
 const { ToolGroupDisplay } = await import('../node_modules/.cache/permission-answer-transport/components/ChatPanel/ToolGroupDisplay.js');
 const { useChatStore, useSessionStore } = await import('../node_modules/.cache/permission-answer-transport/stores/index.js');
@@ -93,7 +96,8 @@ async function mounted(run, content = null) {
     observed.api = useWebSocket({ activeSessionId: sessionId, onError: (error) => observed.errors.push(error) });
     const pending = useChatStore((state) => state.runtimes[sessionId]?.pendingQuestions[0]);
     if (content) return content;
-    return pending ? createElement(AuthorizationPrompt, {
+    const Prompt = pending?.request_id?.startsWith('symphony_experience_') ? InteractionPrompt : AuthorizationPrompt;
+    return pending ? createElement(Prompt, {
       pending,
       onSubmit: async (...args) => {
         const result = await observed.api.sendUserAnswer(sessionId, ...args);
@@ -104,10 +108,12 @@ async function mounted(run, content = null) {
   }
   const root = createRoot(document.getElementById('root'));
   try {
-    await act(async () => root.render(createElement(I18nextProvider, { i18n }, createElement(Host))));
+    await act(async () => root.render(createElement(I18nextProvider, { i18n }, createElement('div', null,
+      createElement(Host), createElement(ToastStack)))));
     await run({ ...observed, observed, socket: MemoryWebSocket.instance });
   } finally {
     await act(async () => root.unmount());
+    toast.closeAll();
     await webClient.disconnect();
     useChatStore.getState().removeRuntime(sessionId);
     useSessionStore.getState().removeRuntime(sessionId);
@@ -378,3 +384,142 @@ test('a chat.user_answer echoes the event interrupt_id', async () => mounted(asy
   assert.equal(await result, true);
   assert.deepEqual(useChatStore.getState().getRuntime(sessionId).pendingQuestions, []);
 }, createElement('div')));
+
+const skillPackageQuestion = {
+  header: '发现可复用的技能包',
+  question: '**技能包名称**\nexcel-to-word-report',
+  options: [{ label: '创建技能包', value: 'install' }, { label: '暂不创建', value: 'defer' }],
+};
+const skillPackagePayload = {
+  session_id: sessionId, request_id: 'symphony_experience_tool_conflict',
+  source: 'skill_evolution_approval',
+  evolution_meta: { rail_kind: 'symphony_experience', recipe_id: 'recipe-conflict', recipe_version: 1 },
+  questions: [skillPackageQuestion],
+};
+const createPackageButton = () => document.querySelector('[data-testid="interaction-slot-skill-package-create-button"]');
+const deferPackageButton = () => document.querySelector('[data-testid="interaction-slot-skill-package-defer-button"]');
+const packageError = () => document.querySelector('[data-testid="interaction-slot-skill-package-error"]:not(.ui-toast--closing)');
+const packageReceipt = async (socket, receipt) => act(async () => socket.receive({
+  type: 'res', id: socket.requests.at(-1).id, ok: true, payload: receipt,
+}));
+
+for (const language of ['zh', 'en']) {
+  test(`a name conflict is visible in ${language}, preserves the card, and allows deferral`, async () => {
+    await i18n.changeLanguage(language);
+    await mounted(async ({ socket, observed }) => {
+      await deliver(socket, skillPackagePayload);
+      await act(async () => createPackageButton().click());
+      assert.equal(socket.requests.at(-1).method, 'chat.user_answer');
+      assert.equal(createPackageButton().disabled, true);
+      await packageReceipt(socket, { accepted: true, session_id: sessionId, request_id: skillPackagePayload.request_id });
+      assert.deepEqual(observed.results, [], 'the Gateway admission ACK is not an installation result');
+      assert.equal(createPackageButton().disabled, true);
+      await act(async () => socket.receive({
+        type: 'res', id: 'another-request', ok: true,
+        payload: { accepted: true, resolved: true, installed: true },
+      }));
+      assert.deepEqual(observed.results, [], 'only the same RPC can settle this submission');
+      await packageReceipt(socket, { accepted: false, resolved: false, installed: false, reason: 'skill_already_exists' });
+      assert.deepEqual(observed.results, [false]);
+      assert.equal(createPackageButton().disabled, false);
+      assert.equal(deferPackageButton().disabled, false);
+      assert.match(packageError().textContent, language === 'zh' ? /同名.*未覆盖/ : /same name.*not overwritten/);
+      assert.equal(useChatStore.getState().getRuntime(sessionId).pendingQuestions.length, 1);
+      await act(async () => deferPackageButton().click());
+      assert.deepEqual(socket.requests.at(-1).params.answers[0].selected_options, ['defer']);
+      await packageReceipt(socket, { accepted: true, resolved: true, installed: false, deferred: true });
+      assert.deepEqual(observed.results, [false, true]);
+      assert.equal(createPackageButton(), null);
+      assert.deepEqual(useChatStore.getState().getRuntime(sessionId).pendingQuestions, []);
+    });
+  });
+}
+
+test('a missing final installation receipt times out without dismissing the card', async () => mounted(async ({ socket, observed }) => {
+  const originalSetTimeout = window.setTimeout;
+  let expireRequest;
+  window.setTimeout = function (callback, delay, ...args) {
+    const timer = originalSetTimeout.call(this, callback, delay, ...args);
+    if (delay === 120000) expireRequest = () => { window.clearTimeout(timer); callback(...args); };
+    return timer;
+  };
+  try {
+    await i18n.changeLanguage('zh');
+    await deliver(socket, skillPackagePayload);
+    await act(async () => createPackageButton().click());
+    assert.equal(typeof expireRequest, 'function', 'installation review has its own bounded deadline');
+    await packageReceipt(socket, { accepted: true });
+    assert.deepEqual(observed.results, []);
+    await act(async () => expireRequest());
+    assert.deepEqual(observed.results, [false]);
+    assert.equal(createPackageButton().disabled, false);
+    assert.match(packageError().textContent, /暂未确认.*检查技能列表/);
+    assert.equal(useChatStore.getState().getRuntime(sessionId).pendingQuestions.length, 1);
+  } finally {
+    window.setTimeout = originalSetTimeout;
+  }
+}));
+
+test('disconnect while awaiting the installation receipt keeps the card actionable', async () => mounted(async ({ socket, observed }) => {
+  await i18n.changeLanguage('en');
+  await deliver(socket, skillPackagePayload);
+  await act(async () => createPackageButton().click());
+  await packageReceipt(socket, { accepted: true });
+  await act(async () => socket.close());
+  assert.deepEqual(observed.results, [false]);
+  assert.equal(createPackageButton().disabled, false);
+  assert.equal(deferPackageButton().disabled, false);
+  assert.match(packageError().textContent, /not yet confirmed.*Check My Skills/);
+  assert.equal(useChatStore.getState().getRuntime(sessionId).pendingQuestions.length, 1);
+}));
+
+test('a matching chat.error ends the installation wait without accepting the card', async () => mounted(async ({ socket, observed }) => {
+  await i18n.changeLanguage('zh');
+  await deliver(socket, skillPackagePayload);
+  await act(async () => createPackageButton().click());
+  const request = socket.requests.at(-1);
+  await packageReceipt(socket, { accepted: true });
+  await runtimeAck(socket, request.id);
+  await act(async () => socket.receive({
+    type: 'event', event: 'chat.error',
+    payload: { request_id: 'another-rpc', error: 'unrelated failure', code: 'INTERNAL_ERROR' },
+  }));
+  assert.deepEqual(observed.results, [], 'neither admission nor another request settles this answer');
+  assert.equal(createPackageButton().disabled, true);
+  await act(async () => socket.receive({
+    type: 'event', event: 'chat.error',
+    payload: { request_id: request.id, error: 'answer failed', code: 'INTERNAL_ERROR' },
+  }));
+  assert.deepEqual(observed.results, [false], 'the final error must not wait for the 120-second timeout');
+  assert.equal(createPackageButton().disabled, false);
+  assert.equal(deferPackageButton().disabled, false);
+  assert.ok(packageError());
+  assert.equal(useChatStore.getState().getRuntime(sessionId).pendingQuestions.length, 1);
+  await act(async () => createPackageButton().click());
+  await packageReceipt(socket, { accepted: true, resolved: true, installed: true });
+  assert.deepEqual(observed.results, [false, true]);
+  assert.equal(createPackageButton(), null);
+}));
+
+for (const receipt of [
+  { accepted: false, resolved: false, installed: false, reason: 'install_failed' },
+  { accepted: true, resolved: true, installed: false, reason: 'install_failed' },
+  { accepted: false, resolved: false, reason: 'members_changed_reconfirm' },
+]) {
+  test(`failed installation (${JSON.stringify(receipt)}) stays retryable`, async () => {
+    await i18n.changeLanguage('zh');
+    await mounted(async ({ socket, observed }) => {
+      await deliver(socket, skillPackagePayload);
+      await act(async () => createPackageButton().click());
+      await packageReceipt(socket, { ...receipt, details: ['sensitive internal path'] });
+      assert.deepEqual(observed.results, [false]);
+      assert.match(packageError().textContent, /创建技能包失败/);
+      assert.doesNotMatch(packageError().textContent, /sensitive internal path/);
+      await act(async () => createPackageButton().click());
+      assert.equal(socket.requests.at(-1).params.request_id, skillPackagePayload.request_id);
+      await packageReceipt(socket, { accepted: true, resolved: true, installed: true, newly_installed: true });
+      assert.deepEqual(observed.results, [false, true]);
+      assert.equal(createPackageButton(), null);
+    });
+  });
+}

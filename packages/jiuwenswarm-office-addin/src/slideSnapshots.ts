@@ -13,7 +13,8 @@
  * host write queue, so no tool write lands half way through. A call the host
  * failed part way is rolled back on its own, from exports taken before it. The snapshots live
  * in the pane's memory only: a reload loses them, and the pane keeps the last
- * ``turns`` turns or ``bytes`` of exports, whichever is less.
+ * ``turns`` turns or ``bytes`` of exports, whichever is less. With ``turns`` 0 it keeps none, for a host
+ * with an undo of its own: a call's journal still rolls the call back.
  */
 import { strToU8, unzipSync } from 'fflate';
 
@@ -191,7 +192,7 @@ export class SlideSnapshots {
     let turn = this.turns.at(-1);
     if (!turn || turn.after || this.forgotten) {
       turn = { callIds: new Set(), order: [...order], exports: new Map(), moved: new Set(), created: new Set() };
-      if (!this.forgotten) this.turns.push(turn);
+      if (!this.forgotten && this.limits.turns > 0) this.turns.push(turn);
     }
     turn.callIds.add(callId);
     return turn;

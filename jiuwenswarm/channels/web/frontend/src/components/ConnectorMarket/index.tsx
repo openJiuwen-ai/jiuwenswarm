@@ -62,6 +62,11 @@ interface ConnectorMarketPanelProps {
    */
   onUseExtension?: (payload: { kind: 'plugin' | 'mcp'; id: string }) => void;
   /**
+   * 是否提供「使用 / 试试这样用」这类跳到个人会话的入口。个人版保持开启；团队版没有
+   * 对应的个人会话页面，关掉后卡片和详情页都不渲染这些按钮。
+   */
+  sessionUse?: boolean;
+  /**
    * "创建"下拉菜单里的"通过聊天创建"——跳新会话，自动预填"帮我创建一个xxx插件，擅长xxx"提示词
    * 并把 plugin-creator 选中为技能 chip（2026-08-25，取代此前"不带预填"的决定）。跟
    * SkillPanel.handleCreateViaChat（"通过聊天创建技能"）走同一条 jiuwen:new-conversation
@@ -77,6 +82,7 @@ export function ConnectorMarketPanel({
   onUsePluginExample,
   onUseExtension,
   onCreateViaChat,
+  sessionUse = true,
 }: ConnectorMarketPanelProps = {}) {
   const { t } = useTranslation();
   const [view, setView] = useState<View>({ name: 'market' });
@@ -213,7 +219,7 @@ export function ConnectorMarketPanel({
           onMyKindChange={setMyKind}
           onOpenConnectorDetail={(name) => setView({ name: 'mcp-detail', connectorName: name })}
           onOpenPluginDetail={(id) => setView({ name: 'plugin-detail', id, fromMy: topTab === 'my' })}
-          onUse={onUseExtension ?? handleUseNotWired}
+          onUse={sessionUse ? (onUseExtension ?? handleUseNotWired) : undefined}
           onCreateManual={() => setView({ name: 'create-manual' })}
           // 2026-08-25：onCreateViaChat 改为跳新会话并预填"帮我创建一个xxx插件，擅长xxx"提示词，
           // 同时把 plugin-creator 作为技能 chip 自动选中（App.tsx 派发 jiuwen:new-conversation，
@@ -241,11 +247,13 @@ export function ConnectorMarketPanel({
             setView({ name: 'market' });
           }}
           onUse={
-            onUseExtension
-              ? (runtimePackageName) => onUseExtension({ kind: 'plugin', id: runtimePackageName })
-              : handleUseNotWired
+            !sessionUse
+              ? undefined
+              : onUseExtension
+                ? (runtimePackageName) => onUseExtension({ kind: 'plugin', id: runtimePackageName })
+                : handleUseNotWired
           }
-          onUseExample={onUsePluginExample}
+          onUseExample={sessionUse ? onUsePluginExample : undefined}
         />
       )}
 
@@ -254,18 +262,20 @@ export function ConnectorMarketPanel({
           name={view.connectorName}
           onBack={() => setView({ name: 'market' })}
           onUse={
-            onUseExtension
-              ? () => {
-                  const connector = useConnectorStore
-                    .getState()
-                    .connectors.find(
-                      (item) => item.id === view.connectorName || item.runtimePackageName === view.connectorName,
-                    );
-                  onUseExtension({ kind: 'mcp', id: connector?.runtimePackageName ?? view.connectorName });
-                }
-              : handleUseNotWired
+            !sessionUse
+              ? undefined
+              : onUseExtension
+                ? () => {
+                    const connector = useConnectorStore
+                      .getState()
+                      .connectors.find(
+                        (item) => item.id === view.connectorName || item.runtimePackageName === view.connectorName,
+                      );
+                    onUseExtension({ kind: 'mcp', id: connector?.runtimePackageName ?? view.connectorName });
+                  }
+                : handleUseNotWired
           }
-          onUseExample={onUseExample}
+          onUseExample={sessionUse ? onUseExample : undefined}
           onEdit={() => setView({ name: 'register-mcp', editName: view.connectorName })}
         />
       )}

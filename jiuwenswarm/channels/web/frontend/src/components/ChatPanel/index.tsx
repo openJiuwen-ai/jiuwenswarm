@@ -1923,7 +1923,9 @@ export const ChatPanel = React.memo(function ChatPanel({
     if (!keepSlateOnRefreshRef.current) setDynamicSlate(null);
     keepSlateOnRefreshRef.current = false;
     setTopicStarterErrorKey(null);
-    setRecommendationState(heldSwitchState ?? "");
+    // Disabling recommendations is global, not a project-specific loading state.
+    // Preserve it while the new scope is read so the bee hint does not change content/style.
+    setRecommendationState(current => heldSwitchState ?? (current === 'disabled' ? current : ""));
     // This read also serves a pool that became ready while the page was in the background.
     readyWhileHiddenRef.current = false;
     void webRequest<TopicStarterResponse>('topic_starters.get', {

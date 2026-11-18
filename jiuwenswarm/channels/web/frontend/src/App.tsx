@@ -8,7 +8,8 @@ import {
 import { ApplicationConversationRuntimes } from './applicationPlugins/ApplicationConversationRuntimes';
 import { AssetPublishHost } from './components/AssetPublishDrawer';
 import { PluginReplacementDialog } from './components/ConnectorMarket/PluginReplacementDialog';
-import { isEnterprise, ENTERPRISE_HIDDEN_NAV_ITEMS } from './edition';
+import { isEnterprise, ENTERPRISE_HIDDEN_NAV_ITEMS, PERSONAL_HIDDEN_NAV_ITEMS } from './edition';
+import { isTeamSessionLive, retainBubblesArrivedDuringHistory } from './services/sessionLive';
 // Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 /**
@@ -27,6 +28,7 @@ import { reenterJiuwenMate } from './features/jiuwenmate/publicNav';
 import type { JiuwenMateExistingPage } from './features/jiuwenmate/types';
 import { SkillPanel } from './components/SkillPanel';
 import { AgentManagementPanel } from './components/AgentManagementPanel';
+import { TeamPanel } from './components/TeamPanel';
 import { RsiPage } from './features/rsi/RsiPage';
 import { RsiRailPeek } from './features/rsi/components/RsiRailPeek';
 import { useRsiStore } from './features/rsi/rsiStore';
@@ -59,6 +61,7 @@ import {
   SETTINGS_MODULE_NAVIGATION_EVENT,
   requestSettingsModule,
   type SettingsModuleTarget,
+  type SettingsNavigationTarget,
 } from './features/settings/settingsNavigation';
 import { ConnectorMarketPanel } from './components/ConnectorMarket';
 import { LoginDialog } from './components/LoginDialog';
@@ -144,6 +147,7 @@ import {
   useCronStore,
   useSubagentStore,
   usePersonalContextStore,
+  useTeamSelectorStore,
 } from './stores';
 import { useChatRoute } from './multi-session/routing/useChatRoute';
 import { chatRoutePath } from './multi-session/routing/route';
@@ -153,6 +157,7 @@ import {
   createConversationTitle,
   isConversationMissing,
   registerCreatedConversation,
+  forgetCreatedConversation,
   resolveNewConversationEntrySettings,
   resetNewConversationRuntime,
 } from './multi-session/state/newConversationLifecycle';
@@ -592,7 +597,7 @@ function AppContent({
     useState<Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>>({});
   const [hasVisitedSkills, setHasVisitedSkills] = useState(false);
   const [hasVisitedPersonalContext, setHasVisitedPersonalContext] = useState(false);
-  const [requestedSettingsModuleId, setRequestedSettingsModuleId] = useState<SettingsModuleTarget | null>(null);
+  const [requestedSettingsNavigation, setRequestedSettingsNavigation] = useState<SettingsNavigationTarget | null>(null);
   const {
     isMobile,
     isToolPanelAutoHideViewport,
@@ -668,8 +673,8 @@ function AppContent({
   useEffect(() => {
     if (isJiuwenMate) return;
     const handler = (event: Event) => {
-      const moduleId = (event as CustomEvent<SettingsModuleTarget>).detail;
-      setRequestedSettingsModuleId(moduleId);
+      const target = (event as CustomEvent<SettingsModuleTarget | SettingsNavigationTarget>).detail;
+      setRequestedSettingsNavigation(typeof target === 'string' ? { moduleId: target } : target);
       setActiveNav('settings');
     };
     window.addEventListener(SETTINGS_MODULE_NAVIGATION_EVENT, handler);
@@ -689,20 +694,14 @@ function AppContent({
   const [historyBootstrapKey, setHistoryBootstrapKey] = useState(0);
   const historyRefreshQueueRef = useRef(new HistoryRefreshQueue());
   const forcedHistoryRefreshRef = useRef(new Set<string>());
+  const recoveryHistoryRefreshRef = useRef(new Set<string>());
   const [historyRecoveryRevision, setHistoryRecoveryRevision] = useState(0);
-  // 延迟绑定到后文定义的 loadSessionMetadata，供 runtime.history_required 回查权威运行态。
-  const loadSessionMetadataRef = useRef<((id: string) => Promise<Session | null>) | null>(null);
   const sessionIdRef = useRef(sessionId);
   useEffect(() => webClient.on('runtime.history_required', (event) => {
     const targetSessionId = event.payload.session_id;
     if (typeof targetSessionId !== 'string' || !targetSessionId) return;
     historyRefreshQueueRef.current.request(targetSessionId);
     setHistoryRecoveryRevision((revision) => revision + 1);
-    // 该恢复 turn 的终态被当孤儿丢弃，本地 isProcessing 可能停在刷新前的 true
-    // （不会再有 processing_status(false) 到达），从而阻塞下方 effect 的 take()。
-    // 回查网关权威运行态，用实时 is_processing 覆盖本地状态解除阻塞；若确有新 turn
-    // 在跑则保持 busy、延后刷新，不会清掉新轮的流式缓冲。
-    void loadSessionMetadataRef.current?.(targetSessionId);
   }), []);
   const sessionRestoreQueueRef = useRef<Promise<void>>(Promise.resolve());
   const sessionMetadataRequestsRef = useRef(new Map<string, Promise<Session | null>>());
@@ -1185,7 +1184,7 @@ function AppContent({
   const hiddenNavItems = useMemo<MainNavKey[]>(() => {
     const base: MainNavKey[] = [
       ...getHiddenNavItemsForPlatform(frontendPlatform),
-      ...(isEnterprise() ? ENTERPRISE_HIDDEN_NAV_ITEMS : []),
+      ...(isEnterprise() ? ENTERPRISE_HIDDEN_NAV_ITEMS : PERSONAL_HIDDEN_NAV_ITEMS),
     ];
     const rsiFiltered: MainNavKey[] = rsiFeatureEnabled
       ? base
@@ -1198,9 +1197,14 @@ function AppContent({
     if (!masterEnabled) return [...rsiFiltered, 'personalContext'];
     return rsiFiltered;
   }, [frontendPlatform, masterEnabled, rsiFeatureEnabled]);
+  const jiuwenMateHiddenPages = useMemo<JiuwenMateExistingPage[]>(
+    () => (FEATURE_PERSONAL_CONTEXT_UI && masterEnabled ? [] : ['personalContext']),
+    [masterEnabled],
+  );
 
   useEffect(() => {
-    if (isEnterprise() && (ENTERPRISE_HIDDEN_NAV_ITEMS as readonly string[]).includes(activeNav)) {
+    const hidden = isEnterprise() ? ENTERPRISE_HIDDEN_NAV_ITEMS : PERSONAL_HIDDEN_NAV_ITEMS;
+    if ((hidden as readonly string[]).includes(activeNav)) {
       setActiveNav('chat');
     }
   }, [activeNav]);
@@ -2026,11 +2030,13 @@ function AppContent({
 
   const fetchSessionMetadata = useCallback(async (targetSessionId: string): Promise<Session | null> => {
     const ownerStateRevision = organizationOwnerStateRevision(targetSessionId);
+    const snapshotTurnRevision = useChatStore.getState().getRuntime(targetSessionId)?.turnRevision ?? 0;
     const queueSnapshot = useChatStore.getState().beginQueuedSessionMessageSnapshot(targetSessionId);
     try {
-      const response = await request<Session>('session.get_metadata', {
-        session_id: targetSessionId,
-      });
+      const response = await request<Session & { runtime?: { recovery_pending?: boolean } }>(
+        'session.get_metadata',
+        { session_id: targetSessionId },
+      );
       const { queued_session_messages: queuedMessages, can_continue_queued_session_messages: canContinueQueuedMessages, ...session } = response;
       if ((session as unknown as Record<string, unknown>).archived === true) {
         if (sessionIdRef.current === targetSessionId) {
@@ -2077,30 +2083,22 @@ function AppContent({
       //
       // 企业版 cron 执行态走 /sessions/{id}/live，不写进 web channel 的 busy 表，
       // metadata 常误报 false。乐观宽限期内挡住误报；权威 idle / 宽限过期必须放行。
-      if (typeof session.is_processing === 'boolean') {
-        const localProcessing = Boolean(
-          useChatStore.getState().getRuntime(targetSessionId)?.isProcessing,
-        );
-        // A pause/cancel ack just settled this turn; the worker snapshot can
-        // lag the teardown (bug1112: pause ack + stale snapshot re-lit the
-        // stop button in a loop). Ignore a busy snapshot until a new round
-        // starts (user send / processing_status(true) clears the marker).
-        const interruptSettled = useChatStore.getState()
-          .getRuntime(targetSessionId)?.interruptSettledEpoch != null;
+      if (typeof session.is_processing === 'boolean' && response.runtime?.recovery_pending !== true) {
+        const runtime = useChatStore.getState().getRuntime(targetSessionId);
+        const localProcessing = runtime?.isProcessing ?? false;
+        const locallyBusy = runtime?.foregroundIsProcessing === true;
+        const interruptSettled = runtime?.interruptSettledEpoch != null;
         const trackedLastRun = Object.values(useCronStore.getState().lastRunSessionId).includes(
           targetSessionId,
         );
         const allowDowngrade = metadataDowngradeAllowedRef.current.delete(targetSessionId);
-        const locallyBusy = Boolean(
-          useChatStore.getState().getRuntime(targetSessionId)?.foregroundIsProcessing,
-        );
-        // 快照只能把运行态拉起来，把运行态打回空闲只认终态事件
-        // （processing_status(false) / chat.final / interrupt），或断线重连后的首次
-        // 快照（断线期间终态事件可能丢失）。worker 运行态快照会滞后于事件流，
-        // 用它回落会让新建会话首条消息和切回会话的运行态闪回空闲。
-        const metadataMaySettleProcessing = session.is_processing || allowDowngrade || !locallyBusy;
+        // The cursor recovery owns settlement while it can still replay the terminal output.
+        const recoveringExecution =
+          'isRecoveringExecution' in webClient && webClient.isRecoveringExecution(targetSessionId);
+        const mayDowngrade = allowDowngrade && !recoveringExecution &&
+          (runtime?.turnRevision ?? 0) === snapshotTurnRevision;
         if (
-          metadataMaySettleProcessing
+          (session.is_processing || mayDowngrade || !locallyBusy)
           && maySnapshotRelightProcessing(session.is_processing, interruptSettled, allowDowngrade)
           && !shouldKeepLocalCronProcessing(targetSessionId, session.is_processing, localProcessing, {
             // 统一会话未必 cron_ 前缀，靠 cron_id / lastRun 放行
@@ -2223,10 +2221,6 @@ function AppContent({
     sessionMetadataRequestsRef.current.set(targetSessionId, pending);
     return pending;
   }, [fetchSessionMetadata]);
-
-  useEffect(() => {
-    loadSessionMetadataRef.current = loadSessionMetadata;
-  }, [loadSessionMetadata]);
 
   // 获取服务端配置（通过 WS 方法）
   const fetchConfig = useCallback(async () => {
@@ -2392,6 +2386,7 @@ function AppContent({
       cli_agent: ExternalCliAgentKind;
       status: "ok" | "warning" | "missing" | "unsupported" | "unavailable";
       path?: string;
+      builtin_path?: string;
       version?: string;
       reference_version?: string;
       message?: string;
@@ -2600,15 +2595,22 @@ function AppContent({
     };
   }, [clearRestartAutoCloseTimer, clearSaveToastTimer]);
 
+  const fetchConfigRef = useRef(fetchConfig);
+  fetchConfigRef.current = fetchConfig;
+
   useEffect(() => {
-    if (!isConnected || initialDataLoaded) {
+    if (!isConnected) {
       return;
     }
+    let cancelled = false;
     void (async () => {
-      await fetchConfig();
-      setInitialDataLoaded(true);
+      await fetchConfigRef.current();
+      if (!cancelled) setInitialDataLoaded(true);
     })();
-  }, [fetchConfig, initialDataLoaded, isConnected]);
+    return () => {
+      cancelled = true;
+    };
+  }, [isConnected]);
 
   const initialProjectsLoadedRef = useRef(false);
 
@@ -2670,7 +2672,9 @@ function AppContent({
   useEffect(() => {
     if (!isConnected || !sessionId) return;
     // A recovered old request must not clear a newer turn's stream buffers.
-    if (!historyRefreshQueueRef.current.take(sessionId, isProcessing || isLoadingHistory)) return;
+    const currentRuntime = useChatStore.getState().getRuntime(sessionId);
+    if (!historyRefreshQueueRef.current.take(sessionId, (currentRuntime?.isProcessing ?? false) || isLoadingHistory)) return;
+    recoveryHistoryRefreshRef.current.add(sessionId);
     disposeInFlightHistoryHandles(sessionId);
     setHistoryPagerMeta(sessionId, null);
     forcedHistoryRefreshRef.current.add(sessionId);
@@ -2734,6 +2738,7 @@ function AppContent({
     if (route.kind === 'design-project') return;
     if (!isConnected || !sessionId || sessionId === NEW_CONVERSATION_ID) return;
     const forceRefresh = forcedHistoryRefreshRef.current.delete(sessionId);
+    const recoveryRefresh = recoveryHistoryRefreshRef.current.delete(sessionId);
     
     if (!forceRefresh && sessionIdsCreatedInThisPageRef.current.has(sessionId)) {
       releasePendingSessionEvents(sessionId);
@@ -2825,9 +2830,29 @@ function AppContent({
       })();
     };
 
+    const recoveryTurnRevision = existingRuntime?.turnRevision;
+    const discardRecoveryHistory = () => {
+      if (historyRestoreHandlesRef.current.get(sessionId) !== restoreHandle) return;
+      historyRestoreHandlesRef.current.delete(sessionId);
+      historyRefreshQueueRef.current.request(sessionId);
+      setLoadingHistory(sessionId, false);
+      setHistoryRecoveryRevision((revision) => revision + 1);
+    };
+
     // 开始历史会话加载
+    const idsAtHistoryStart = isEnterprise()
+      ? new Set(
+          (useChatStore.getState().getRuntime(sessionId)?.messages ?? []).map((message) => message.id),
+        )
+      : null;
+
     const restoreHandle = beginHistoryRestore({
       sessionId: sessionId,
+      shouldApply: recoveryRefresh ? () => {
+        const runtime = useChatStore.getState().getRuntime(sessionId);
+        return runtime?.turnRevision === recoveryTurnRevision && !runtime?.isProcessing;
+      } : undefined,
+      onDiscard: recoveryRefresh ? discardRecoveryHistory : undefined,
       requestNextBatch: (cursor) => request(HISTORY_GET_METHOD, {
         session_id: sessionId,
         cursor,
@@ -2842,15 +2867,21 @@ function AppContent({
         // hooks/useWebSocket.ts 的 applyIncomingGoal/mergePersistedGoalCompletionMessages。
         // 同时给命中"曾经设置过目标"的 user 消息回填 isGoalObjectiveMessage 徽章标记，
         // 见 stampGoalObjectiveMessages。
+        const restored = stampGoalObjectiveMessages(
+          sessionId,
+          mergePersistedGoalCompletionMessages(
+            sessionId,
+            mergeCronRunUserSeed(messages, sessionId, seed).map((message) => ({ ...message, historyBatchSeq: 1 })),
+          ),
+        );
         replaceHistoryMessages(
           sessionId,
-          stampGoalObjectiveMessages(
-            sessionId,
-            mergePersistedGoalCompletionMessages(
-              sessionId,
-              mergeCronRunUserSeed(messages, sessionId, seed).map((message) => ({ ...message, historyBatchSeq: 1 })),
-            ),
-          )
+          retainBubblesArrivedDuringHistory(
+            restored,
+            idsAtHistoryStart,
+            useChatStore.getState().getRuntime(sessionId)?.messages ?? [],
+            isTeamSessionLive(sessionId),
+          ),
         );
         setHistoryPagerMeta(sessionId, {
           nextCursor: cursorMeta.nextCursor,
@@ -2879,9 +2910,17 @@ function AppContent({
       onEmpty: (cursorMeta) => {
         const seed = pendingCronUserSeedsRef.current.get(sessionId);
         pendingCronUserSeedsRef.current.delete(sessionId);
-        replaceHistoryMessages(sessionId, mergePersistedGoalCompletionMessages(
-          sessionId, mergeCronRunUserSeed([], sessionId, seed),
-        ));
+        replaceHistoryMessages(
+          sessionId,
+          retainBubblesArrivedDuringHistory(
+            mergePersistedGoalCompletionMessages(
+              sessionId, mergeCronRunUserSeed([], sessionId, seed),
+            ),
+            idsAtHistoryStart,
+            useChatStore.getState().getRuntime(sessionId)?.messages ?? [],
+            isTeamSessionLive(sessionId),
+          ),
+        );
         setHistoryPagerMeta(sessionId, {
           nextCursor: cursorMeta.nextCursor,
           hasMore: cursorMeta.hasMore,
@@ -3022,11 +3061,6 @@ function AppContent({
         });
       },
       onPendingQuestionReplay: (items) => {
-        // 防御性兜底：当前 materializeHistoryTimeline 把未答问题也渲染成只读
-        // qa.summary 卡片（不弹实时交互框——web 重连后后端不重发挂起中断，弹框 +
-        // resume 会报 "session has no active execution"），所以 pendingQuestionReplay
-        // 恒为空、本回调不会被触发。保留此钩子是为了将来后端支持重发挂起中断时
-        // 可直接重新启用，无需改接口。
         const chatStore = useChatStore.getState();
         chatStore.ensureRuntime(sessionId);
         const sorted = [...items].sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0));
@@ -3050,7 +3084,7 @@ function AppContent({
         }
         setHistoryPagerMeta(sessionId, null);
         setLoadingHistory(sessionId, false);
-        if (sessionIdRef.current === sessionId) {
+        if (!recoveryRefresh && sessionIdRef.current === sessionId) {
           clearMessages(sessionId);
           addMessage(sessionId, {
             id: `history-load-failed-${Date.now()}`,
@@ -3075,6 +3109,7 @@ function AppContent({
           limit: 50,
         });
       } catch (error) {
+        if (recoveryRefresh && historyRestoreHandlesRef.current.get(sessionId) !== restoreHandle) return;
         historyRestoreFromPanelHintRef.current = false;
         restoreHandle.dispose();
         if (historyRestoreHandlesRef.current.get(sessionId) === restoreHandle) {
@@ -3084,7 +3119,7 @@ function AppContent({
         setHistoryPagerMeta(sessionId, null);
         console.error('Failed to load history:', error);
         setLoadingHistory(sessionId, false);
-        if (sessionIdRef.current === sessionId) {
+        if (!recoveryRefresh && sessionIdRef.current === sessionId) {
           clearMessages(sessionId);
           addMessage(sessionId, {
             id: `history-load-failed-${Date.now()}`,
@@ -3906,7 +3941,7 @@ function AppContent({
 
   /**
    * 删除目标：active 时除了清目标，还要顺带结束当前会话输出——复用停止按钮同一套中断调用
-   * （team 走 pause、其余走 cancel）。先清目标再补发中断，避免目标还没清掉那个空档被
+   * （个人版团队走 pause，企业版团队和其余模式走 cancel）。先清目标再补发中断，避免目标还没清掉那个空档被
    * "ACTIVE 目标保持交互打开"的后端逻辑又续上一轮。非 active 状态下只清目标，不打断当前
    * 会话（如果还有一轮在自然跑完，让它继续）。
    */
@@ -3915,7 +3950,7 @@ function AppContent({
       const isGoalActive = useGoalStore.getState().runtimes[sessionId]?.goal?.status === 'active';
       void clearGoal(sessionId);
       if (!isGoalActive) return;
-      if (mode === 'team') {
+      if (mode === 'team' && !isEnterprise()) {
         void pause(sessionId);
       } else {
         void cancel(sessionId);
@@ -4294,6 +4329,27 @@ function AppContent({
     ],
   );
 
+  const handleTeamSessionsDeleted = useCallback(async (sessionIds: string[]) => {
+    const deleted = new Set(sessionIds.filter(Boolean));
+    for (const id of deleted) {
+      forgetCreatedConversation(id);
+      useSessionStore.getState().removeSession(id);
+      useSessionStore.getState().removeRuntime(id);
+      useTeamSelectorStore.getState().removeRuntime(id);
+      useChatStore.getState().removeRuntime(id);
+      useSubagentStore.getState().removeRuntime(id);
+      useTodoStore.getState().removeRuntime(id);
+      useHarnessStore.getState().removeRuntime(id);
+      useGoalStore.getState().removeRuntime(id);
+      usePlanStore.getState().removeRuntime(id);
+    }
+    useWorkspaceStore.getState().removeSessions([...deleted]);
+    if (routeSessionId && deleted.has(routeSessionId)) {
+      setMissingSessionId(routeSessionId);
+    }
+    await useWorkspaceStore.getState().refreshWorkspaceAndCron();
+  }, [routeSessionId]);
+
   const handleNavigate = useCallback(
     (nav: MainNavKey, peekTarget: SecondarySidebar | null = null): boolean => {
       if (nav !== 'settings' && !confirmLeaveSettings()) {
@@ -4303,7 +4359,7 @@ function AppContent({
       else closeSidebarPeek();
       // 创建对话框信号一次性消费：归零避免携带旧 nonce 重进实验页时误开对话框
       setRsiOpenCreateNonce(0);
-      if (nav !== 'settings') setRequestedSettingsModuleId(null);
+      if (nav !== 'settings') setRequestedSettingsNavigation(null);
       setActiveNav(nav);
       if (nav === 'chat') {
         if (route.kind === 'group-chat') navigate({ kind: 'chat-new' });
@@ -4314,7 +4370,7 @@ function AppContent({
         }
       }
       if (modelSetupGuideStep === 1 && nav === 'settings') {
-        setRequestedSettingsModuleId('models');
+        setRequestedSettingsNavigation({ moduleId: 'models' });
         setModelSetupGuideStep(2);
       }
       if (nav === 'agents') setHasVisitedAgents(true);
@@ -4336,7 +4392,7 @@ function AppContent({
       modelSetupGuideStep,
       setSingleAgentPanelExpanded,
       setHasVisitedPersonalContext,
-      setRequestedSettingsModuleId,
+      setRequestedSettingsNavigation,
       setTeamAreaExpanded,
       setToolPanelHidden,
     ],
@@ -4687,7 +4743,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
   useEffect(() => {
     promptSuggestionBox.setEnabled(normalizeConfigBoolean(serverConfig?.prompt_suggestion_enabled));
   }, [promptSuggestionBox.setEnabled, serverConfig?.prompt_suggestion_enabled]);
-  const renderJiuwenMateExistingPage = (nav: JiuwenMateExistingPage, initialSettingsModuleId?: SettingsModuleTarget) => {
+  const renderJiuwenMateExistingPage = (nav: JiuwenMateExistingPage, settingsNavigation?: SettingsNavigationTarget) => {
     if (nav === 'agents') {
       return (
         <div className="app-section min-h-0">
@@ -4750,6 +4806,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         <div className="app-page-body">
           <div className="page-content">
             <ConnectorMarketPanel
+              sessionUse={false}
               onCreateViaChat={() => window.dispatchEvent(new CustomEvent('jiuwen:new-conversation', {
                 detail: {
                   skillName: 'plugin-creator',
@@ -4757,25 +4814,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                   metadata: { scene: 'create_plugin' },
                 },
               }))}
-              onUseExample={(initialInputValue, mcpName, displayName) =>
-                requestSessionNavigation('new', {
-                  initialInputValue,
-                  initialEnabledMcps: [mcpName],
-                  forceMode: 'agent',
-                  metadata: { prefer_mcp: { id: mcpName, display_name: displayName ?? mcpName } },
-                })
-              }
-              onUsePluginExample={(initialInputValue, pluginId) =>
-                requestSessionNavigation('new', { initialInputValue, initialEnabledPlugins: [pluginId], forceMode: 'agent' })
-              }
-              onUseExtension={({ kind, id }) =>
-                requestSessionNavigation(
-                  'new',
-                  kind === 'plugin'
-                    ? { initialEnabledPlugins: [id], forceMode: 'agent' }
-                    : { initialEnabledMcps: [id], forceMode: 'agent' },
-                )
-              }
             />
           </div>
         </div>
@@ -4799,7 +4837,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           onExternalCliPendingChoicesChange={setExternalCliPendingChoices}
           externalCliDetectResults={externalCliDetectResults}
           onExternalCliDetectResultsChange={setExternalCliDetectResults}
-          initialModuleId={initialSettingsModuleId}
+          initialModuleId={settingsNavigation?.moduleId}
+          navigationTarget={settingsNavigation}
         />
       </div>
     );
@@ -4816,6 +4855,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           groupId={route.kind === 'group-chat' ? route.groupId : undefined}
           onSelectGroup={(groupId) => navigate(groupId ? { kind: 'group-chat', groupId } : { kind: 'chat-new' })}
           renderExistingPage={renderJiuwenMateExistingPage}
+          hiddenExistingPages={jiuwenMateHiddenPages}
           useInstalledExpertRef={openInstalledExpertRef}
           confirmDiscardSettings={confirmDiscardSettings}
         />
@@ -5160,12 +5200,18 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
             />
           </div>
         )}
+        {isEnterprise() && activeNav === 'teams' && (
+          <div className="app-section min-h-0">
+            <TeamPanel onSessionsDeleted={handleTeamSessionsDeleted} />
+          </div>
+        )}
         {activeNav === 'sessions' && (
           <div className="app-section">
             <SessionsPanel
                 currentSessionId={sessionId}
                 isConnected={isConnected}
                 isProcessing={isProcessing}
+                mode={mode}
                 onRestoreSession={handleRestoreSession}
             />
           </div>
@@ -5221,7 +5267,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               onExternalCliPendingChoicesChange={setExternalCliPendingChoices}
               externalCliDetectResults={externalCliDetectResults}
               onExternalCliDetectResultsChange={setExternalCliDetectResults}
-              initialModuleId={requestedSettingsModuleId ?? undefined}
+              initialModuleId={requestedSettingsNavigation?.moduleId}
+              navigationTarget={requestedSettingsNavigation ?? undefined}
               sidebar={{
                 isActive: activeNav === 'settings',
                 collapsed: isSettingsNarrowViewport,

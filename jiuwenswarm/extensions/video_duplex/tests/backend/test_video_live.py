@@ -269,7 +269,13 @@ async def test_video_runtime_remains_available_when_plugin_page_is_disabled(monk
 async def test_full_duplex_conversation_events_append_visible_session_history(monkeypatch) -> None:
     channel = _video_channel()
     records = []
-    monkeypatch.setattr(video_live, "append_history_record", lambda **record: records.append(record))
+
+    async def capture(_client, method, params, session_id, _owner, **_kwargs):
+        assert method.value == "video.conversation.append"
+        records.append({"session_id": session_id, **params})
+        return {}
+
+    monkeypatch.setattr(video_live, "task_agent_query", capture)
 
     await channel.handlers["video.conversation.append"](
         object(),
@@ -290,14 +296,12 @@ async def test_full_duplex_conversation_events_append_visible_session_history(mo
     }
     assert records == [{
         "session_id": "visible-session",
-        "request_id": "video-duplex-event-1",
-        "channel_id": "video_duplex",
+        "event_id": "event-1",
         "role": "assistant",
         "content": "这是全双工回答。",
         "timestamp": 1_700_000_000.25,
         "event_type": "chat.final",
         "extra": None,
-        "mode": "agent",
     }]
 
 
@@ -306,8 +310,8 @@ async def test_full_duplex_history_rejects_new_session_placeholder(monkeypatch) 
     channel = _video_channel()
     monkeypatch.setattr(
         video_live,
-        "append_history_record",
-        lambda **_record: pytest.fail("placeholder session must not be persisted"),
+        "task_agent_query",
+        lambda *_args, **_kwargs: pytest.fail("placeholder session must not be persisted"),
     )
 
     await channel.handlers["video.conversation.append"](
@@ -330,7 +334,13 @@ async def test_full_duplex_history_rejects_new_session_placeholder(monkeypatch) 
 async def test_full_duplex_tool_answer_persists_its_presentation(monkeypatch) -> None:
     channel = _video_channel()
     records = []
-    monkeypatch.setattr(video_live, "append_history_record", lambda **record: records.append(record))
+
+    async def capture(_client, method, params, session_id, _owner, **_kwargs):
+        assert method.value == "video.conversation.append"
+        records.append({"session_id": session_id, **params})
+        return {}
+
+    monkeypatch.setattr(video_live, "task_agent_query", capture)
     for presentation in ("tool_result", "unknown", None):
         await channel.handlers["video.conversation.append"](
             object(), "history-request",

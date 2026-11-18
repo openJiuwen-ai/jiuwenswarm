@@ -147,6 +147,90 @@ async def test_owner_no_tool_turn_ends_candidate_without_card(env, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_owner_plain_answer_is_posted_without_an_organization_card(env, monkeypatch):
+    group, backend, context = env
+    await record()
+    posted = SimpleNamespace(model_dump=lambda mode="json": {"message": {"message_id": "public-reply"}})
+    backend.append_group_message = AsyncMock(return_value=posted)
+    monkeypatch.setattr(policy, "get_team_backend", lambda _: backend)
+    rail = policy.GroupTaskPolicyRail(context)
+    ctx = SimpleNamespace(
+        extra={group_turn.TURN_KEY: group_turn.GroupTurn(SESSION, "business", "one", "organization")},
+        inputs=SimpleNamespace(response=SimpleNamespace(content="群里目前只有你刚发的这一条。", tool_calls=None)),
+        exception=None,
+    )
+    await rail.after_model_call(ctx)
+    backend.append_group_message.assert_awaited_once()
+    assert route.candidate(SESSION, "one")["status"] == "completed"
+    assert route.candidate(SESSION, "one")["reply_message_id"] == "public-reply"
+    assert not group.state.get("organization_plans")
+
+
+@pytest.mark.asyncio
+async def test_owner_plain_answer_after_read_file_is_still_posted(env, monkeypatch):
+    group, backend, context = env
+    await record()
+    backend.append_group_message = AsyncMock(return_value=SimpleNamespace(
+        model_dump=lambda mode="json": {"message": {"message_id": "public-reply"}},
+    ))
+    monkeypatch.setattr(policy, "get_team_backend", lambda _: backend)
+    rail = policy.GroupTaskPolicyRail(context)
+    ctx = SimpleNamespace(
+        extra={group_turn.TURN_KEY: group_turn.GroupTurn(SESSION, "business", "one", "organization")},
+        inputs=SimpleNamespace(tool_name="read_file", tool_result=ToolOutput(success=True, data={})),
+    )
+    await rail.after_tool_call(ctx)
+    ctx.inputs = SimpleNamespace(response=SimpleNamespace(content="历史里只有一条用户消息。", tool_calls=[]))
+    await rail.after_model_call(ctx)
+    backend.append_group_message.assert_awaited_once()
+    assert route.candidate(SESSION, "one")["status"] == "completed"
+    assert not group.state.get("organization_plans")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["group_send_message", "ask_user", "run_team"])
+async def test_owner_plain_answer_after_route_decision_is_not_posted(env, monkeypatch, tool_name):
+    _, backend, context = env
+    await record()
+    backend.append_group_message = AsyncMock()
+    monkeypatch.setattr(policy, "get_team_backend", lambda _: backend)
+    rail = policy.GroupTaskPolicyRail(context)
+    ctx = SimpleNamespace(
+        extra={group_turn.TURN_KEY: group_turn.GroupTurn(SESSION, "business", "one", "organization")},
+        inputs=SimpleNamespace(tool_name=tool_name, tool_result=ToolOutput(success=True, data={"posted": False})),
+    )
+    await rail.after_tool_call(ctx)
+    ctx.inputs = SimpleNamespace(response=SimpleNamespace(content="名册已更新。", tool_calls=None))
+    await rail.after_model_call(ctx)
+    backend.append_group_message.assert_not_awaited()
+    assert route.candidate(SESSION, "one")["status"] == "pending"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["empty", "nonowner", "direct", "clarification"])
+async def test_plain_answer_outside_pending_owner_route_is_not_posted(env, monkeypatch, case):
+    _, backend, context = env
+    await record()
+    if case == "clarification":
+        await route.set_status(SESSION, "one", "clarification", expected={"pending"})
+    backend.append_group_message = AsyncMock()
+    monkeypatch.setattr(policy, "get_team_backend", lambda _: backend)
+    member = "insight" if case == "nonowner" else "business"
+    route_name = "direct" if case == "direct" else "organization"
+    context.member_name = member
+    rail = policy.GroupTaskPolicyRail(context)
+    ctx = SimpleNamespace(
+        extra={group_turn.TURN_KEY: group_turn.GroupTurn(SESSION, member, "one", route_name)},
+        inputs=SimpleNamespace(response=SimpleNamespace(
+            content="" if case == "empty" else "一条不会发出的文本", tool_calls=None,
+        )),
+        exception=None,
+    )
+    await rail.after_model_call(ctx)
+    backend.append_group_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_nonowner_model_turn_stops_without_classification_call(env):
     _, _, context = env
     await record()

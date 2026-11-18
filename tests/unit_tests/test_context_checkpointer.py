@@ -101,21 +101,52 @@ async def test_large_native_offloads_fail_before_checkpoint_publication(stored, 
 
 @pytest.mark.asyncio
 async def test_consumed_inputs_need_no_new_core_metadata_field(stored, monkeypatch):
-    from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
+    from jiuwenswarm.server.runtime.agent_adapter.session_input import SessionInputGuard
 
     _, delegate = await native_session(stored, monkeypatch)
     stored.write([user("old"), user("pending")])
     engine = await save(stored, [UserMessage(content="old")])
     context = engine.get_context(session_id=stored.sid)
-    rail = JiuSwarmStreamEventRail()
-    callback = SimpleNamespace(inputs=SimpleNamespace(source="query", parts=[]), context=context,
-                               extra={"_history_incoming_request": "pending"})
-    await rail.on_user_message(callback)
-    # Empty parts can be a deliberate admission filter. They have still been
-    # drained by Core and must not become a newly replayed request on restart.
+    agent = object()
+    owner = SimpleNamespace(react_agent=agent, loop_session=stored.session,
+        active_round=SimpleNamespace(work=SimpleNamespace(kind="user", request_id="pending")))
+    callback = SimpleNamespace(agent=agent, session=stored.session,
+        inputs=SimpleNamespace(source="query", parts=["admitted input"]), context=context, extra={})
+    await SessionInputGuard(owner).on_user_message(callback)
     await stored.session.commit()
     loaded = snapshots.load_checkpoint_snapshot(stored.sid, delegate.disk[snapshots.SNAPSHOT_KEY])
     assert loaded.cursor.offset == stored.path.stat().st_size
+
+
+@pytest.mark.asyncio
+async def test_effective_saves_do_not_reinsert_completed_consumption(stored, monkeypatch):
+    from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
+    from jiuwenswarm.common.schema.message import SESSION_REQUEST_COMPLETED_EVENT
+    from jiuwenswarm.server.runtime.agent_adapter.session_input import SessionInputGuard
+
+    _, delegate = await native_session(stored, monkeypatch)
+    stored.write([user("old"),
+        {"role": "assistant", "request_id": "old", "event_type": SESSION_REQUEST_COMPLETED_EVENT}, user("pending"),
+        {"role": "assistant", "request_id": "pending", "event_type": SESSION_REQUEST_COMPLETED_EVENT}])
+    engine = await save(stored, [UserMessage(content="old")])
+    context = engine.get_context(session_id=stored.sid)
+    agent = object()
+    owner = SimpleNamespace(react_agent=agent, loop_session=stored.session,
+        active_round=SimpleNamespace(work=SimpleNamespace(kind="user", request_id="pending")))
+    callback = SimpleNamespace(agent=agent, session=stored.session, context=context,
+        inputs=SimpleNamespace(source="query", parts=["admitted input"]), extra={})
+    await SessionInputGuard(owner).on_user_message(callback)
+    rail = JiuSwarmStreamEventRail()
+    rail._main_sessions[stored.sid] = stored.session
+    rail._deep_agent = SimpleNamespace(react_agent=SimpleNamespace(context_engine=engine))
+    # Even a stale callback extra must not be another source of consumption.
+    callback.extra = {rail._SID_KEY: stored.sid, "_history_consumed_requests": {"pending"}}
+    for _ in range(3):
+        await rail._save_effective_context(callback)
+        loaded = snapshots.load_checkpoint_snapshot(stored.sid, delegate.disk[snapshots.SNAPSHOT_KEY])
+        assert loaded.cursor.offset == stored.path.stat().st_size
+        assert not loaded.covered_requests
+        assert not context.history_recovery_covered
 
 
 @pytest.mark.asyncio

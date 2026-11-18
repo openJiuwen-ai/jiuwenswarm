@@ -86,7 +86,42 @@ model: Qwen/Qwen2.5-72B-Instruct
 model_provider: SiliconFlow
 ```
 
+**OpenCode Go** (the vendor dialect is identified by `vendor_key`)
+
+```
+api_base: https://opencode.ai/zen/go/v1
+api_key: sk-your-opencode-go-api-key
+model: <model ID, fill in manually>
+model_provider: OpenAI
+vendor_key: opencode-go
+```
+
+> 💡 **OpenCode Go notes**:
+> - `model_provider` must be `OpenAI`, and `vendor_key` must be `opencode-go`;
+> - `api_base` has no default and must be `https://opencode.ai/zen/go/v1`; fill in a model name your account can actually use;
+> - The session-identifying request header (`x-opencode-session`) is derived and injected per session/member automatically, so no manual `custom_headers` is needed;
+> - The TUI shows the provider as `OpenCode Go`, but saving still writes `client_provider: OpenAI` + `vendor_key: opencode-go`.
+
 > 💡 **Tip**: Most model providers offer OpenAI-compatible APIs. You can adjust `api_base` and `model` parameters based on your actual provider.
+
+#### Reference-style key declaration (exec:)
+
+To keep plaintext keys out of `config.yaml`, `api_key` may reference a secret-manager read command: the command runs once at process startup and its stdout becomes the key value. Only the command itself appears in the config file:
+
+```
+api_key: exec:op read "op://Engineering/OpenAI/apiKey"       # 1Password
+api_key: exec:vault kv get -field=key secret/openai          # HashiCorp Vault
+api_key: exec:pass show openai/api-key                       # pass
+```
+
+**Constraints and semantics**:
+
+- **Command requirements**: a single call, no side effects, stdout is the key. No shell interpretation (pipes `|` and redirects `>` do not work); on Windows, wrap backslash paths in quotes or use forward slashes (e.g., `exec:"C:/tools/op.exe" read ...`).
+- **Effect timing and rotation**: resolution happens at process startup and the value stays in process memory. After rotating the key in your secret manager, **restart the service** to pick up the new value.
+- **Failure behavior**: a failing command (timeout, non-zero exit, empty output) degrades the field to an empty key with a warning — model calls report auth errors while everything else keeps working. After the failure the reference enters a 5-minute backoff window during which the command is not re-executed; once the window passes, the next config read triggers a fresh resolve. In practice, once the secret manager is fixed, the reference recovers automatically by the next model call — no restart needed. Clicking "Test" on the settings page retries immediately.
+- **Settings page interaction**: the edit dialog echoes the reference itself (`exec:...`), never the resolved plaintext; saving without edits preserves the reference. You may also type a new reference command and save — the new command runs immediately on save.
+- **Supported scope**: only `models.*.model_client_config.api_key` and `custom_headers` values in `config.yaml` support references; enterprise templates and `${VAR}` env placeholders do not. The dict form of `custom_headers` is supported (the JSON-string form is not).
+- **Gateway forwarding constraint (transitional)**: the Gateway process does not yet resolve `exec:` references (copy sync is planned as a separate change). During the transition, some Gateway-forwarded paths cannot use reference-style keys — verify with an actual Worker session call after configuring a reference `api_key`.
 
 ### 2.3 Multi-Model Management and Aliases
 
