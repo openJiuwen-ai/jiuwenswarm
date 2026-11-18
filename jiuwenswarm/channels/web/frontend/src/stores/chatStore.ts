@@ -44,6 +44,7 @@ import {
   dropAnsweredAskUserQuestions,
   enqueuePendingQuestions,
   isAnsweredAskUserQuestion,
+  isQuestionAnswered,
   markQuestionsAnswered as markQueuedQuestionsAnswered,
 } from './pendingQuestionQueue';
 
@@ -61,11 +62,7 @@ function omitLiveQuestionHistory(
   const filtered = messages.filter((message) => {
     const question = message.unansweredQuestion;
     if (!question) return true;
-    return !pendingIds.has(question.requestId) && !isAnsweredAskUserQuestion(sessionId, {
-      request_id: question.requestId,
-      source: question.source,
-      questions: [],
-    });
+    return !pendingIds.has(question.requestId) && !isQuestionAnswered(sessionId, question.requestId);
   });
   return filtered.length === messages.length ? messages : filtered;
 }

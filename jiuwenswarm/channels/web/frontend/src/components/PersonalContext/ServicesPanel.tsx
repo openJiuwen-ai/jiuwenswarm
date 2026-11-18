@@ -247,7 +247,11 @@ export function PersonalContextServicesPanel({
     <div className="pc-services" data-testid="personal-context-services">
       {notice && (
         <div
-          className={`pc-services__error${notice.kind === 'success' ? ' pc-services__notice--success' : ' pc-services__error--dismissible'}`}
+          className={notice.kind === 'success'
+            ? 'pc-services__notice--success'
+            : 'pc-services__error pc-services__error--dismissible'}
+          data-testid="personal-context-services-notice"
+          data-variant={notice.kind}
           role={notice.kind === 'success' ? 'status' : 'alert'}
         >
           {notice.kind === 'success' && (
