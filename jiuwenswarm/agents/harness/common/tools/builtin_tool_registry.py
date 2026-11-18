@@ -75,24 +75,29 @@ def _parse_aliases(raw: Any) -> tuple[str, ...]:
     return ()
 
 
+def _clean_str(val: Any, default: str = "") -> str:
+    text = str(val or "").strip()
+    return text if text else default
+
+
 def _spec_from_dict(raw: dict[str, Any], default_module: str) -> BuiltinToolSpec | None:
-    name = str(raw.get("name") or "").strip()
+    name = _clean_str(raw.get("name"))
     if not name:
         return None
-    module = str(raw.get("module") or default_module).strip()
-    scope = str(raw.get("permission_scope", "path_read") or "").strip()
+    module = _clean_str(raw.get("module"), default_module)
+    scope = _clean_str(raw.get("permission_scope"), "path_read")
     if scope not in VALID_PERMISSION_SCOPES:
         logger.warning("[builtin_tool_registry] Invalid permission_scope %r for %s", scope, name)
         return None
     return BuiltinToolSpec(
         name=name,
         module=module,
-        symbol=str(raw.get("symbol") or name).strip(),
-        display_en=str(raw.get("display_en") or "").strip(),
+        symbol=_clean_str(raw.get("symbol"), name),
+        display_en=_clean_str(raw.get("display_en")),
         aliases_zh=_parse_aliases(raw.get("aliases_zh")),
-        category_path=str(raw.get("category_path") or "").strip(),
-        category_description=str(raw.get("category_description") or "").strip(),
-        category_description_en=str(raw.get("category_description_en") or "").strip(),
+        category_path=_clean_str(raw.get("category_path")),
+        category_description=_clean_str(raw.get("category_description")),
+        category_description_en=_clean_str(raw.get("category_description_en")),
         permission_scope=scope,
     )
 
@@ -122,6 +127,7 @@ def _eval_call_keywords(node: ast.Call) -> dict[str, Any] | None:
             return None
     return raw_kw
 
+
 def _eval_spec_node(node: ast.AST, default_module: str) -> BuiltinToolSpec | None:
     if isinstance(node, ast.Dict):
         try:
@@ -135,6 +141,28 @@ def _eval_spec_node(node: ast.AST, default_module: str) -> BuiltinToolSpec | Non
     return None
 
 
+def _find_specs_value_node(stmt: ast.stmt) -> ast.AST | None:
+    if isinstance(stmt, ast.Assign):
+        for target in stmt.targets:
+            if isinstance(target, ast.Name) and target.id == "BUILTIN_TOOL_SPECS":
+                return stmt.value
+    elif isinstance(stmt, ast.AnnAssign):
+        if isinstance(stmt.target, ast.Name) and stmt.target.id == "BUILTIN_TOOL_SPECS":
+            return stmt.value
+    return None
+
+
+def _collect_specs_from_node(value_node: ast.AST | None, default_module: str) -> list[BuiltinToolSpec]:
+    if not isinstance(value_node, (ast.Tuple, ast.List)):
+        return []
+    found: list[BuiltinToolSpec] = []
+    for elt in value_node.elts:
+        spec = _eval_spec_node(elt, default_module)
+        if spec is not None:
+            found.append(spec)
+    return found
+
+
 def _extract_specs_from_file(py_file: Path, default_module: str) -> list[BuiltinToolSpec]:
     try:
         source = py_file.read_text(encoding="utf-8")
@@ -145,18 +173,9 @@ def _extract_specs_from_file(py_file: Path, default_module: str) -> list[Builtin
         return []
     found: list[BuiltinToolSpec] = []
     for stmt in tree.body:
-        value_node: ast.AST | None = None
-        if isinstance(stmt, ast.Assign):
-            if any(isinstance(t, ast.Name) and t.id == "BUILTIN_TOOL_SPECS" for t in stmt.targets):
-                value_node = stmt.value
-        elif isinstance(stmt, ast.AnnAssign):
-            if isinstance(stmt.target, ast.Name) and stmt.target.id == "BUILTIN_TOOL_SPECS":
-                value_node = stmt.value
-        if isinstance(value_node, (ast.Tuple, ast.List)):
-            for elt in value_node.elts:
-                spec = _eval_spec_node(elt, default_module)
-                if spec is not None:
-                    found.append(spec)
+        val_node = _find_specs_value_node(stmt)
+        if val_node is not None:
+            found.extend(_collect_specs_from_node(val_node, default_module))
     return found
 
 
@@ -203,41 +222,48 @@ def discover_lazy_exports(
     return added
 
 
+def _build_new_category(category_cls: type, spec: BuiltinToolSpec) -> Any:
+    if not (spec.category_description or spec.display_en):
+        logger.warning(
+            "[builtin_tool_registry] Category %r declared without description",
+            spec.category_path,
+        )
+    desc_zh = spec.category_description or spec.display_en or spec.category_path
+    desc_en = spec.category_description_en or spec.display_en or desc_zh
+    return category_cls(
+        path=spec.category_path,
+        description=desc_zh,
+        tools=(spec.name,),
+        description_en=desc_en,
+    )
+
+
+def _specs_with_categories(tools_dir: Path | None) -> list[BuiltinToolSpec]:
+    return [s for s in discover_builtin_tool_specs(tools_dir) if s.category_path]
+
+
 def merge_discovered_categories(
     base_categories: tuple[Any, ...],
     category_cls: type,
     tools_dir: Path | None = None,
 ) -> tuple[Any, ...]:
     """Merge discovered tool category memberships into ``base_categories``."""
-    specs = [s for s in discover_builtin_tool_specs(tools_dir) if s.category_path]
+    specs = _specs_with_categories(tools_dir)
     if not specs:
         return base_categories
 
-    by_path: dict[str, Any] = {cat.path: cat for cat in base_categories}
-    order: list[str] = [cat.path for cat in base_categories]
+    by_path: dict[str, Any] = {c.path: c for c in base_categories}
+    order: list[str] = list(by_path.keys())
     for spec in specs:
         existing = by_path.get(spec.category_path)
-        if existing is not None:
-            if spec.name not in existing.tools:
-                by_path[spec.category_path] = existing._replace(
-                    tools=(*existing.tools, spec.name),
-                )
-        else:
-            if not (spec.category_description or spec.display_en):
-                logger.warning(
-                    "[builtin_tool_registry] Category %r declared without description",
-                    spec.category_path,
-                )
-            desc_zh = spec.category_description or spec.display_en or spec.category_path
-            desc_en = spec.category_description_en or spec.display_en or desc_zh
-            by_path[spec.category_path] = category_cls(
-                path=spec.category_path,
-                description=desc_zh,
-                tools=(spec.name,),
-                description_en=desc_en,
-            )
+        if existing is None:
+            by_path[spec.category_path] = _build_new_category(category_cls, spec)
             order.append(spec.category_path)
-    return tuple(by_path[path] for path in order)
+        elif spec.name not in existing.tools:
+            by_path[spec.category_path] = existing._replace(
+                tools=(*existing.tools, spec.name),
+            )
+    return tuple(by_path[p] for p in order)
 
 
 def discover_permission_sets(
