@@ -29,6 +29,7 @@ IPC 端点按安装位置、Python 环境、数据目录和运行配置隔离。
 WHL 的 `jiuwenswarm-start all/app/dev`、命名实例及独立 `jiuwenswarm-app` 在最终退出时先停止 Front，再关闭 Worker；`--stop <name>` 和完整实例 `--restart <name>` 也执行最终清理。命名实例在启动锁内按目标 workspace 的 bootstrap 和运行配置定位 Worker，确认退出后才删除 PID 记录，失败保留记录以便重试。Windows 服务进程树清理保留 Worker 分支，由后续 IPC 操作完成持久化和退出。仅运行 web 的启动器不接管外部后端。
 
 Python 桌面的正式退出即使发生在首个子服务注册之前，也会清理已有 Worker 和可验证的历史端点。最终关闭发现尚未建立 IPC 的 Worker 启动进程时，会在同一截止时间内等待 HELLO，再验证归属；进程命令行只能用于等待，不能代替部署归属校验。
+后台线程正在清理时，桌面主线程等待到 30 秒关闭期限，另留 5 秒回收进程和写入升级回执。等待超时会记录关闭未完成，安装器仍要求成功回执。
 
 直接管理 `jiuwenswarm-agentserver` 的服务管理器仍需区分 Front 重启与应用最终停止；最终停止应先关闭 Front，再从相同安装环境执行：
 
@@ -58,3 +59,9 @@ resident Worker 的 IPC 暂时断开时，Front 保留已提交流式请求的�
 90 秒仅限制传输恢复，不限制正常执行时长。原 Worker 已退出、被替换或被判不健康，重试额度耗尽，原 dispatch 不再保留，未投递输出已超过有界回放窗口，或服务停止时，原等待请求仍明确失败；不把缺失输出当成成功。普通非流式 RPC 保留原有投递确认和失败语义，`front_loopback` 仍按其 Worker 生命周期处理断连。
 
 IPC 发送和关闭同时失败时，Front 仍保留原恢复等待；恢复订阅失败后退役该连接，再续接所有保留的请求。服务停止时，即使 IPC 关闭抛错，等待者和后台任务也会清理。
+
+## Worker 输出日志
+
+resident 与 `front_loopback` 均沿用原始输出路由：stdout 继承启动进程的输出，stderr 直接追加写入 `worker-logs/runtime-worker-*.stderr.log`。Supervisor 启动日志和运行诊断提供 stderr 文件路径，异常退出的堆栈保留在该文件中。
+
+Supervisor 不再逐行读取并重标 Worker 输出，也不创建独立的 stdout 日志文件。stderr 可以包含正常 INFO 日志，不能据此判定 Worker 发生错误；排障时结合文件中的原始日志级别、异常堆栈与进程退出码。

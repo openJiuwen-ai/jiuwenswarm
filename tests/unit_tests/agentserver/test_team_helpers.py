@@ -24,6 +24,7 @@ from jiuwenswarm.agents.harness.team.handlers.workflow_state import (
 )
 
 from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter import evolution_helpers
 from jiuwenswarm.server.runtime.agent_adapter import team_helpers
 
@@ -3251,6 +3252,75 @@ async def test_interactive_team_followup_uses_round_only_for_lifecycle(
 
 
 @pytest.mark.anyio
+async def test_enterprise_followup_submits_without_taking_the_session_waiter(monkeypatch):
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+    from jiuwenswarm.enterprise.team.session_live import (
+        stop_team_session_live,
+    )
+
+    class _FakeManager(TeamManager):
+        def __init__(self) -> None:
+            super().__init__()
+            self.stream_alive = True
+            self.waiter_ids: list[str] = []
+
+        def has_stream_task(self, session_id: str) -> bool:
+            return self.stream_alive
+
+        async def get_swarm_enriched_team_spec(self, **kwargs):
+            return SimpleNamespace(team_name="unit-team")
+
+        async def interact(self, session_id: str, query: str):
+            self.waiter_ids = [
+                request_id
+                for request_id, _queue in self._pending_waiters.get(session_id, ())
+            ]
+            await self.broadcast_event(
+                session_id,
+                {"event_type": "chat.delta", "content": "四人团队"},
+            )
+            self.stream_alive = False
+            return True, None
+
+    manager = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: manager)
+    monkeypatch.setattr(team_helpers, "_persist_team_file_monitor_roots", lambda *args: None)
+    monkeypatch.setattr("jiuwenswarm.enterprise.edition.is_enterprise", lambda: True)
+    request = AgentRequest(
+        session_id="sess-enterprise-followup",
+        request_id="req-user-followup",
+        channel_id="web",
+        metadata={},
+        params={"mode": "team"},
+        req_method=ReqMethod.CHAT_SEND,
+        user_id="owner",
+    )
+
+    try:
+        chunks = [
+            chunk
+            async for chunk in team_helpers.process_team_message_stream(
+                request,
+                {"query": "帮我创建一个4人团队"},
+                object(),
+            )
+        ]
+    finally:
+        await stop_team_session_live("sess-enterprise-followup")
+
+    assert manager.waiter_ids == ["team-session-live:sess-enterprise-followup"]
+    assert any(
+        isinstance(chunk.payload, dict)
+        and chunk.payload.get("event_type") == "chat.processing_status_deferred"
+        for chunk in chunks
+    )
+    assert all(
+        not (isinstance(chunk.payload, dict) and chunk.payload.get("content") == "四人团队")
+        for chunk in chunks
+    )
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("first_outcome", ["success", "error", "cancel"])
 async def test_concurrent_team_cold_start_delivers_output_once(monkeypatch, first_outcome):
     from jiuwenswarm.agents.harness.team.team_manager import TeamManager
@@ -5044,7 +5114,32 @@ async def test_process_team_message_stream_does_not_emit_evolution_status_for_no
 
 
 @pytest.mark.anyio
-async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(monkeypatch, tmp_path):
+async def test_npc_team_stream_only_exposes_final_speech_and_turn_status(monkeypatch):
+    events = (
+        {"event_type": "chat.delta", "content": "partial"},
+        {"event_type": "chat.reasoning", "content": "private reasoning"},
+        {"event_type": "team.message", "content": "internal coordination"},
+        {"event_type": "chat.final", "member_name": "analyst", "content": "My own answer"},
+        {"event_type": "chat.processing_status", "is_processing": False},
+    )
+
+    async def stream(*_args):
+        for event in events:
+            yield SimpleNamespace(payload=event, request_id="", channel_id="")
+
+    monkeypatch.setattr(team_helpers, "_process_team_message_stream_locked", stream)
+    request = SimpleNamespace(
+        session_id="sess-npc-stream",
+        params={},
+        trusted_runtime_binding={"app_role_team": True},
+    )
+    chunks = [chunk.payload async for chunk in team_helpers.process_team_message_stream(request, {}, None)]
+    assert chunks == list(events[-2:])
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("npc_team", [False, True])
+async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(monkeypatch, tmp_path, npc_team):
     from jiuwenswarm.server.runtime.session import session_history
     from jiuwenswarm.server.runtime.session.session_token_usage import SessionTokenUsageLedger
 
@@ -5153,7 +5248,12 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
     await _TeamHelpersTestApi.consume_stream_with_query(
         "web",
         "sess-leader-only",
-        SimpleNamespace(team_name="demo-team"),
+        SimpleNamespace(
+            team_name="demo-team",
+            metadata={"app_role_team": npc_team},
+            leader=SimpleNamespace(member_name="team_leader", display_name="Chief"),
+            predefined_members=[SimpleNamespace(member_name="analyst", display_name="Analyst")],
+        ),
         "hello",
     )
 
@@ -5171,11 +5271,18 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
     assert [event["event_type"] for event in broadcasted] == [
         "chat.processing_status",
         "team.runtime_ready",
-        'chat.final',
-        'chat.final',
-        'chat.final',
+        *(["chat.final"] * (2 if npc_team else 3)),
         "chat.processing_status",
     ]
+    if npc_team:
+        assert [
+            (event["member_name"], event["display_name"], event["content"])
+            for event in broadcasted if event["event_type"] == "chat.final"
+        ] == [
+            ("team_leader", "Chief", "leader answer"),
+            ("analyst", "Analyst", "teammate answer"),
+        ]
+        assert broadcasted[-1]["npc_missing_members"] == []
     # Round-start processing_status
     assert broadcasted[0]["is_processing"] is True
     assert broadcasted[0]["is_complete"] is False
@@ -5187,7 +5294,7 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
             event.get("event_type") == "chat.processing_status"
             and event.get("is_processing") is False
         )
-        for event in broadcasted[2:5]
+        for event in broadcasted[2:-1]
     )
 
 
@@ -5258,6 +5365,67 @@ def _patch_resume_env(monkeypatch, fake_runner, fake_mgr, broadcasted: list) -> 
     monkeypatch.setattr(team_helpers, "ensure_team_evolution_watcher", lambda *args, **kwargs: None)
     monkeypatch.setattr(team_helpers, "get_session_metadata", lambda session_id: {})
     monkeypatch.setattr(team_helpers, "update_session_metadata", lambda **kwargs: None)
+
+
+@pytest.mark.anyio
+async def test_hide_teammate_still_forwards_permission_card(monkeypatch):
+    broadcasted: list[dict] = []
+    ready_calls: list[tuple[str, str]] = []
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(
+            type="answer",
+            payload={"output": {"output": "teammate answer"}, "result_type": "answer"},
+            role=TeamRole.TEAMMATE,
+            source_member="analyst",
+        )
+        yield SimpleNamespace(
+            type="chat.ask_user_question",
+            payload={
+                "source": "ask_user_interrupt",
+                "request_id": "ask-1",
+                "questions": [{"question": "ordinary"}],
+            },
+            role=TeamRole.TEAMMATE,
+            source_member="analyst",
+        )
+        yield SimpleNamespace(
+            type="chat.ask_user_question",
+            payload={
+                "source": "permission_interrupt",
+                "request_id": "perm-1",
+                "questions": [{"question": "allow bash?"}],
+            },
+            role=TeamRole.TEAMMATE,
+            source_member="analyst",
+        )
+        yield SimpleNamespace(
+            type="team.completed",
+            payload={"event_type": "team.completed"},
+            role=TeamRole.LEADER,
+        )
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+        @staticmethod
+        async def get_agent_team_monitor(team_name: str, session_id: str, hide_dm: bool = False):
+            return None
+
+    monkeypatch.setenv("JIUWENSWARM_TEAM_HIDE_TEAMMATE", "true")
+    _patch_resume_env(monkeypatch, _FakeRunner, _resume_fake_manager(ready_calls), broadcasted)
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-hide-teammate",
+        SimpleNamespace(team_name="demo-team"),
+        "hello",
+    )
+
+    questions = [event for event in broadcasted if event.get("event_type") == "chat.ask_user_question"]
+    assert [event.get("source") for event in questions] == ["permission_interrupt"]
+    assert questions[0].get("member_name") == "analyst"
+    assert not any(event.get("content") == "teammate answer" for event in broadcasted)
 
 
 @pytest.mark.anyio
@@ -5391,6 +5559,75 @@ async def test_consume_stream_with_query_reports_rejected_interrupt_resume_deliv
     # The terminal processing status still closes the round for the frontend.
     assert broadcasted[-1]["event_type"] == "chat.processing_status"
     assert broadcasted[-1]["is_complete"] is True
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "reason",
+    ["interrupt_resume_busy", "interrupt_resume_unavailable"],
+)
+async def test_consume_stream_with_query_busy_resume_still_reports_retryable_error(
+    monkeypatch,
+    reason,
+):
+    broadcasted: list[dict] = []
+    ready_calls: list[tuple[str, str]] = []
+    interact_calls: list[tuple] = []
+
+    async def _fake_start_stream(**kwargs):
+        yield SimpleNamespace(
+            type="message",
+            payload={"event_type": "team.recovered"},
+            role=TeamRole.LEADER,
+        )
+        yield SimpleNamespace(
+            type="team.completed",
+            payload={"event_type": "team.completed"},
+            role=TeamRole.LEADER,
+        )
+
+    class _Busy:
+        ok = False
+
+        def __bool__(self) -> bool:
+            return False
+
+    receipt = _Busy()
+    receipt.reason = reason
+
+    class _FakeRunner:
+        start_agent_team_streaming = staticmethod(_fake_start_stream)
+
+        @staticmethod
+        async def interact_agent_team(payload, *, team_name=None, session_id=None, run_context=None):
+            interact_calls.append((payload, team_name, session_id, run_context))
+            return receipt
+
+        @staticmethod
+        async def get_agent_team_monitor(team_name: str, session_id: str, hide_dm: bool = False):
+            return None
+
+    fake_mgr = _resume_fake_manager(ready_calls)
+    _patch_resume_env(monkeypatch, _FakeRunner, fake_mgr, broadcasted)
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-resume-busy",
+        SimpleNamespace(team_name="demo-team"),
+        "",
+        interrupt_input=object(),
+    )
+
+    assert len(interact_calls) == 1
+    error_events = [event for event in broadcasted if event.get("event_type") == "chat.error"]
+    assert len(error_events) == 1
+    assert error_events[0].get("reason") == reason
+    assert error_events[0].get("error") == "Failed to resume the pending question"
+    complete = [
+        event for event in broadcasted
+        if event.get("event_type") == "chat.processing_status" and event.get("is_complete") is True
+    ]
+    assert complete
 
 
 @pytest.mark.anyio
@@ -6551,6 +6788,74 @@ async def test_consume_stream_with_query_deduplicates_ask_user_questions(monkeyp
     assert len(ask_events) == 1
     assert ask_events[0]["request_id"] == "tool-ask-1"
 
+
+@pytest.mark.anyio
+async def test_held_permission_card_is_delivered_again_after_the_sibling_runs(monkeypatch):
+    broadcasted: list[dict] = []
+    permission_ask = {
+        "request_id": "call-held",
+        "source": "permission_interrupt",
+        "interrupt_id": "intr-held",
+        "questions": [{"question": "bash: curl", "header": "确认", "options": []}],
+    }
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(
+            type="chat.ask_user_question",
+            payload=permission_ask,
+            role=TeamRole.LEADER,
+        )
+        yield SimpleNamespace(
+            type="chat.ask_user_question",
+            payload=permission_ask,
+            role=TeamRole.LEADER,
+        )
+        yield SimpleNamespace(
+            type="tool_result",
+            payload={"tool_call_id": "call-approved", "tool_name": "bash", "result": "ok"},
+            role=TeamRole.LEADER,
+        )
+        yield SimpleNamespace(
+            type="chat.ask_user_question",
+            payload=permission_ask,
+            role=TeamRole.LEADER,
+        )
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str, *, generation: int | None = None) -> None:
+            pass
+
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    fake_mgr = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: fake_mgr)
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        _broadcast_recorder(broadcasted, fake_mgr),
+    )
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-held-permission",
+        SimpleNamespace(team_name="demo-team"),
+        "hello",
+    )
+
+    ask_events = [
+        event
+        for event in broadcasted
+        if event.get("event_type") == "chat.ask_user_question"
+    ]
+    assert [event["request_id"] for event in ask_events] == ["call-held", "call-held"]
+    assert all(event["interrupt_id"] == "intr-held" for event in ask_events)
 
 
 @pytest.mark.anyio

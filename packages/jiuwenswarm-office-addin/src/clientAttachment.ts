@@ -40,11 +40,19 @@ export interface ClientToolRequest {
   input: JsonObject;
   /** Signed download links of the assets the call's input names, by asset handle. */
   downloads: Readonly<Record<string, string>>;
+  /** The conversation that made the call. */
+  sessionId?: SessionId;
 }
 
 export type ContentBlock =
   | { type: 'text'; text: string }
-  | { type: 'image'; source: { type: 'base64'; media_type: 'image/png'; data: string } };
+  | { type: 'image'; source: { type: 'base64' } & ToolImage };
+
+/** An image a tool returns. */
+export interface ToolImage {
+  media_type: 'image/png' | 'image/jpeg';
+  data: string;
+}
 
 /** A call's result as agent-core's ``ClientToolResult`` reads it; any other key would make it one JSON value. */
 export interface ClientToolResult {
@@ -302,7 +310,7 @@ export class ClientAttachment {
     if (!request || this.calls.has(request.requestId)) return;
     const running: Call = { sessionId, kind: 'running' };
     this.calls.set(request.requestId, running);
-    void this.options.executor.execute(request).then(result => {
+    void this.options.executor.execute({ ...request, sessionId }).then(result => {
       if (this.calls.get(request.requestId) !== running) return;
       this.calls.set(request.requestId, { sessionId, kind: 'done', answer: answerOf(request, result) });
       this.flush();

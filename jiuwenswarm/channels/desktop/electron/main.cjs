@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, net, session, shell, Tray, WebContentsView } = require('electron');
+const { app, BaseWindow, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, net, session, shell, Tray, WebContentsView } = require('electron');
 const { spawn, execFile } = require('node:child_process');
 const { randomBytes, randomUUID } = require('node:crypto');
 const { inspect } = require('node:util');
@@ -17,6 +17,8 @@ const { SHARED_BROWSER_PARTITION, panelIdentity, hasLiveLease, evictionCandidate
 const { createBrowserDownloadService } = require('./browser_downloads.cjs');
 const { createDownloadBubbleController } = require('./browser_download_bubble.cjs');
 const { createShutdownReceipt, completeShutdownReceipt, recordShutdownOutcome } = require('./update_shutdown.cjs');
+const { createAppMarketWindows } = require('./app_market_windows.cjs');
+const appMarketWindows = createAppMarketWindows(BaseWindow, WebContentsView, () => mainWindow, resolveIconPath, () => app.getAppMetrics(), () => app.getLocale());
 let macUpdateInProgress = false;
 let updateShutdownReceipt = null;
 
@@ -99,7 +101,7 @@ async function findAvailablePorts(scanRange = 10) {
 let hasCdp = false;
 
 function mainLogPath() {
-  return path.join(app.getPath('home'), '.jiuwenswarm', 'logs', 'electron-main.log');
+  return path.join(userWorkspaceDir(), 'logs', 'electron-main.log');
 }
 
 function installMainConsoleTee() {
@@ -212,7 +214,7 @@ const logStreams = new Map();
 function logStreamFor(name) {
   if (!app.isPackaged) return 'inherit';
   if (logStreams.has(name)) return logStreams.get(name);
-  const logDir = path.join(app.getPath('home'), '.jiuwenswarm', 'logs');
+  const logDir = path.join(userWorkspaceDir(), 'logs');
   const logFile = path.join(logDir, `electron-${name}.log`);
   let fd;
   try {
@@ -510,11 +512,12 @@ const GATEWAY_LOCK_FILENAME = '.gateway.lock';
 const GATEWAY_PREFLIGHT_WAIT_MS = 15_000;
 
 function userWorkspaceDir() {
-  return path.join(app.getPath('home'), '.jiuwenswarm');
+  const home = process.env.JIUWENSWARM_HOME || app.getPath('home');
+  return process.env.JIUWENSWARM_DATA_DIR || path.join(home, '.jiuwenswarm');
 }
 
 function desktopWindowPreferencesPath() {
-  const workspaceDir = process.env.JIUWENSWARM_DATA_DIR || userWorkspaceDir();
+  const workspaceDir = userWorkspaceDir();
   return path.join(workspaceDir, 'config', DESKTOP_WINDOW_PREFERENCES_FILENAME);
 }
 
@@ -938,6 +941,7 @@ function resolveIconPath() {
 }
 
 function showAndMaximizeMainWindow() {
+  if (quitRequested) return false;
   if (!mainWindow || mainWindow.isDestroyed()) return false;
   mainWindow.show();
   if (mainWindow.isMinimized()) mainWindow.restore();
@@ -968,8 +972,13 @@ function ensureTray() {
 }
 
 function destroyTray() {
-  if (tray && !tray.isDestroyed()) tray.destroy();
-  tray = null;
+  try {
+    if (tray && !tray.isDestroyed()) tray.destroy();
+  } catch (error) {
+    console.error('[electron] failed to destroy tray', error);
+  } finally {
+    tray = null;
+  }
 }
 
 async function promptCloseAction() {
@@ -1033,7 +1042,7 @@ async function handleMainWindowCloseRequest() {
     action = choice.action;
     if (choice.remember) saveCloseAction(action);
   }
-  if (action === null) return;
+  if (quitRequested || action === null) return;
   if (action === CLOSE_ACTION_QUIT) {
     requestShutdown(0);
     return;
@@ -1814,6 +1823,7 @@ async function showStartupFailure(error) {
     if (shouldRunStartupDoctor(error, childFailure)) {
       try {
         await mainWindow.loadURL(diagnosingHtml());
+        if (quitRequested) return;
         mainWindow.show();
         mainWindow.focus();
       } catch (loadError) {
@@ -1835,6 +1845,7 @@ async function showStartupFailure(error) {
   }
   try {
     await mainWindow.loadURL(failureHtml(status));
+    if (quitRequested) return;
     mainWindow.show();
     mainWindow.focus();
   } catch (loadError) {
@@ -2534,6 +2545,11 @@ async function fetchImplicitAuthorizeUrl(docPage, successOrigin) {
 }
 
 function registerIpcHandlers() {
+  registerHandler('desktop:open-market-app', appMarketWindows.open);
+  registerHandler('desktop:close-market-app', appMarketWindows.close);
+  registerHandler('desktop:set-market-app-viewport', appMarketWindows.setViewport);
+  registerHandler('desktop:reload-market-app', appMarketWindows.reload);
+  registerHandler('desktop:market-app-resources', appMarketWindows.getResources);
   ipcMain.on('desktop:is-frontend-only', event => {
     if (mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents) {
       event.returnValue = isFrontendOnly;
@@ -3077,7 +3093,9 @@ async function createMainWindow() {
       sandbox: true,
     },
   });
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  mainWindow.once('ready-to-show', () => {
+    if (!quitRequested) mainWindow.show();
+  });
   registerDisplayMediaHandler({
     session: mainWindow.webContents.session,
     desktopCapturer,
@@ -3138,6 +3156,7 @@ async function createMainWindow() {
     void mainWindow
       .loadURL(earlyUrl)
       .then(() => {
+        if (quitRequested) return;
         mainWindow.show();
         mainWindow.focus();
         if (process.platform === 'darwin') app.focus({ steal: true });
@@ -3186,6 +3205,7 @@ async function createMainWindow() {
     currentFrontendUrl = frontendUrl;
     console.log('[electron] loading frontend:', frontendUrl);
     await mainWindow.loadURL(frontendUrl);
+    if (quitRequested) return;
     mainWindow.show();
     mainWindow.focus();
     if (process.platform === 'darwin') app.focus({ steal: true });
@@ -3201,6 +3221,7 @@ async function createMainWindow() {
     const entryUrl = VITE_DEV_MODE ? frontendBase : desktopEntryUrl(frontendBase);
     console.log('[electron] loading frontend:', frontendBase);
     await mainWindow.loadURL(entryUrl);
+    if (quitRequested) return;
     mainWindow.show();
     mainWindow.focus();
     if (process.platform === 'darwin') app.focus({ steal: true });
@@ -3211,6 +3232,7 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', () => {
+    if (quitRequested) return;
     if (!mainWindow) return;
     if (process.platform === 'win32') {
       showAndMaximizeMainWindow();
@@ -3257,6 +3279,13 @@ app.on('before-quit', event => {
   if (shutdownComplete) return;
   event.preventDefault();
   if (finalShutdownPromise) return;
+  // Hide before stopping services so intentional disconnects are never shown.
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+  } catch (error) {
+    console.error('[electron] failed to hide main window before shutdown', error);
+  }
+  destroyTray();
   // 冲刷待写的会话页面 URL（取消防抖定时器），保证重启还原不丢最后一次导航。
   saveSessionLastUrls();
   // 冲刷下载历史，保证重启后下载记录完整。
@@ -3272,6 +3301,7 @@ app.on('before-quit', event => {
     });
 });
 app.on('activate', () => {
+  if (quitRequested) return;
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();

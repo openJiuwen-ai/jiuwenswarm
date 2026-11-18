@@ -22,7 +22,7 @@ async def test_a_conversation_sees_its_own_document_and_the_user_s_others(attach
 
     assert await _list("deck-a") == {
         "current_document": "Roadmap.pptx",
-        "other_documents": [{"display_name": "budget.pptx", "kind": "presentation", "host_vendor": "microsoft",
+        "other_documents": [{"display_name": "budget.pptx", "kind": "presentation", "host_vendor": "office",
                              "session_id": "deck-b"}],
     }
     assert (await _list("deck-c"))["other_documents"] == []

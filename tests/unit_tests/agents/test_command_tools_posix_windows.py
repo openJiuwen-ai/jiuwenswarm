@@ -37,21 +37,22 @@ _LARGE_SINGLE_LINE_OUTPUT = "head -c 200000 /dev/zero | tr '\\0' 'x'"
 
 
 class TestDecodeSubprocessOutput:
-    def test_prefers_utf8_over_windows_locale(self, monkeypatch) -> None:
+    @pytest.mark.parametrize(
+        "data_encoding",
+        [
+            # UTF-8 bytes win over the Windows locale encoding.
+            pytest.param("utf-8", id="utf8-preferred-over-locale"),
+            # Non-UTF-8 bytes fall back to the system locale encoding.
+            pytest.param("gbk", id="system-encoding-fallback"),
+        ],
+    )
+    def test_decodes_utf8_and_system_encoded_output(self, monkeypatch, data_encoding) -> None:
         monkeypatch.setattr(
             "jiuwenswarm.agents.harness.common.tools.command_tools.locale.getpreferredencoding",
             lambda _do_setlocale: "gbk",
         )
 
-        assert _decode_subprocess_output("中文 output".encode()) == "中文 output"
-
-    def test_falls_back_to_system_encoding(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "jiuwenswarm.agents.harness.common.tools.command_tools.locale.getpreferredencoding",
-            lambda _do_setlocale: "gbk",
-        )
-
-        assert _decode_subprocess_output("中文 output".encode("gbk")) == "中文 output"
+        assert _decode_subprocess_output("中文 output".encode(data_encoding)) == "中文 output"
 
     def test_sync_command_decodes_stdout_and_stderr_from_bytes(self, monkeypatch) -> None:
         popen_kwargs = {}

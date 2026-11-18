@@ -49,7 +49,7 @@ def _sync_enqueue_write():
     """Return a replacement for _enqueue_write that writes synchronously."""
     from jiuwenswarm.server.runtime.session.session_metadata import _write_metadata_sync
 
-    def _replacement(session_id: str, metadata: dict, *, sync_write: bool = False) -> None:
+    def _replacement(session_id: str, metadata: dict, *, sync_write: bool = False, **_kwargs) -> None:
         _write_metadata_sync(session_id, metadata)
 
     return _replacement
@@ -449,3 +449,115 @@ class TestForkSessionChannelMetadata:
         assert target_meta["message_count"] == 3
         assert target_meta["last_message_at"] == 102.0
         assert target_meta["forked_at"]["message_id"] == "request-1:assistant"
+
+
+class TestForkSessionNpcTeam:
+    """Verify NPC roster fork semantics: leader cascades, member detaches."""
+
+    @staticmethod
+    def _setup(monkeypatch, tmp_path):
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        monkeypatch.setattr(
+            "jiuwenswarm.agents.harness.common.session_ops_service.get_agent_sessions_dir",
+            lambda: sessions_dir,
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
+            lambda: sessions_dir,
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_metadata._enqueue_write",
+            _sync_enqueue_write(),
+        )
+        return sessions_dir
+
+    @staticmethod
+    def _fork(sessions_dir, source_id, target_id, source_meta):
+        _write_source_meta(sessions_dir, source_id, source_meta)
+        (sessions_dir / source_id / "history.jsonl").write_text("", encoding="utf-8")
+        with patch(
+            "jiuwenswarm.agents.harness.common.session_ops_service.load_history_records",
+            return_value=[],
+        ), patch(
+            "jiuwenswarm.server.runtime.session.session_metadata.collect_all_sessions_metadata",
+            return_value=[],
+        ):
+            from jiuwenswarm.agents.harness.common.session_ops_service import fork_session
+
+            return fork_session(
+                source_session_id=source_id,
+                target_session_id=target_id,
+                title="",
+                channel_id="web",
+            )
+
+    def test_leader_fork_cascades_fresh_member_sessions(self, tmp_path, monkeypatch):
+        sessions_dir = self._setup(monkeypatch, tmp_path)
+        source_id, target_id = "npc_leader_src", "npc_leader_dst"
+        source_meta = {
+            "session_id": source_id,
+            "channel_id": "web",
+            "user_id": "app",
+            "created_at": 1700000000.0,
+            "last_message_at": 1700000100.0,
+            "title": "Village Office",
+            "message_count": 2,
+            "mode": "agent",
+            "project_id": "proj-1",
+            "project_dir": "/work/proj",
+            "work_mode": "code",
+            "execution_profile": "app_role",
+            "role_instructions": "You are the village chief.",
+            "role_tools": ["web_search"],
+            "npc_team": {
+                "members": [
+                    {"name": "fisherman", "role_instructions": "Old fisherman rules.",
+                     "title": "", "desc": "Knows the sea."},
+                ]
+            },
+            "npc_member_sessions": {"fisherman": "old-member-session"},
+        }
+        result = self._fork(sessions_dir, source_id, target_id, source_meta)
+        assert result["session_id"] == target_id
+
+        target_meta = _read_target_meta(sessions_dir, target_id)
+        assert target_meta["npc_team"]["members"][0]["name"] == "fisherman"
+        assert "role_tools" not in target_meta
+        new_binding = target_meta["npc_member_sessions"]["fisherman"]
+        assert new_binding != "old-member-session"
+        member_meta = _read_target_meta(sessions_dir, new_binding)
+        assert member_meta["execution_profile"] == "app_role"
+        assert member_meta["role_instructions"] == "Old fisherman rules."
+        assert member_meta["npc_member"] == {"leader_session_id": target_id, "name": "fisherman"}
+        assert member_meta["project_id"] == "proj-1"
+        assert "role_tools" not in member_meta
+        assert member_meta["title"].endswith("· fisherman")
+
+    def test_member_fork_detaches_from_leader(self, tmp_path, monkeypatch):
+        sessions_dir = self._setup(monkeypatch, tmp_path)
+        source_id, target_id = "npc_member_src", "npc_member_dst"
+        source_meta = {
+            "session_id": source_id,
+            "channel_id": "web",
+            "user_id": "app",
+            "created_at": 1700000000.0,
+            "last_message_at": 1700000100.0,
+            "title": "Island · Fisherman",
+            "message_count": 1,
+            "mode": "agent",
+            "project_id": "proj-1",
+            "work_mode": "code",
+            "execution_profile": "app_role",
+            "role_instructions": "Old fisherman rules.",
+            "role_tools": ["web_search"],
+            "npc_member": {"leader_session_id": "npc_leader", "name": "fisherman"},
+        }
+        result = self._fork(sessions_dir, source_id, target_id, source_meta)
+        assert result["session_id"] == target_id
+        target_meta = _read_target_meta(sessions_dir, target_id)
+        assert target_meta["execution_profile"] == "app_role"
+        assert "npc_member" not in target_meta
+        assert "npc_team" not in target_meta
+        assert "npc_member_sessions" not in target_meta
+        assert "role_tools" not in target_meta

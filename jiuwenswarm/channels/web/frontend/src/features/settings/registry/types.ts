@@ -5,7 +5,7 @@ export type SettingsModuleId =
   'general' | 'models' | 'agent' | 'browser' | 'channels' | 'personalContext' | 'archivedTasks' | 'security' | 'experimental' | (string & {});
 export type SettingsAccessLevel = 'hidden' | 'readOnly' | 'editable';
 export type SettingsCompositionMode = 'base' | 'extended';
-export type SettingsSource = 'config' | 'browser' | 'locale';
+export type SettingsSource = 'config' | 'browser' | 'locale' | 'multimodal';
 export type SettingValue = string | number | boolean;
 export type SettingsAccessNode =
   | { kind: 'module'; moduleId: string }
@@ -56,7 +56,9 @@ export type SettingItemDefinition =
       availableWhen?: string;
       /** Read-only reason code for the unavailable tooltip. */
       unavailableReasonKey?: string;
-      errorDisplay?: 'inline';
+      errorDisplay?: 'inline' | 'toast';
+      /** Set false when backend validation must succeed before changing the visible value. */
+      optimistic?: boolean;
       subItems?: SettingSubItems;
       configure?: ComponentType<{ onSave: () => Promise<void>; onClose: () => void }>;
     })
@@ -64,6 +66,8 @@ export type SettingItemDefinition =
       component: 'select';
       key: string;
       options: readonly SettingSelectOption[];
+      optionsFromSource?: boolean;
+      configure?: ComponentType<{ onClose: () => void }>;
     })
   | (SettingItemBase & {
       component: 'input';

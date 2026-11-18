@@ -726,18 +726,19 @@ def _read_history(path: Path) -> list[dict[str, Any]]:
     return []
 
 
-def _read_history_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
+def iter_history_jsonl_rows(path: Path) -> Iterator[dict[str, Any]]:
+    """Yield one parsed, file-content-collapsed row per JSONL line.
 
-    records: list[dict[str, Any]] = []
-    try:
-        # JSONL records are delimited by "\n" only. Do NOT use str.splitlines():
-        # inlined file bodies may contain Unicode line separators (U+2028 etc.)
-        # that splitlines() treats as breaks, corrupting a single JSON object
-        # into fragments and dropping the user turn on refresh.
-        text = path.read_text(encoding="utf-8")
-        for lineno, raw_line in enumerate(text.split("\n"), start=1):
+    Iterating the file keeps a transcript out of memory. JSONL records are
+    delimited by "\\n" only — do NOT use str.splitlines(): inlined file bodies
+    may contain Unicode line separators (U+2028 etc.) that splitlines() treats
+    as breaks, corrupting one JSON object into fragments and dropping the user
+    turn on refresh.
+    """
+    if not path.exists():
+        return
+    with path.open("r", encoding="utf-8") as source:
+        for lineno, raw_line in enumerate(source, start=1):
             line = raw_line.rstrip("\r").strip()
             if not line:
                 continue
@@ -748,26 +749,30 @@ def _read_history_jsonl(path: Path) -> list[dict[str, Any]]:
                     "读取 history.jsonl 第 %d 行失败，已跳过: %s", lineno, exc
                 )
                 continue
-            if isinstance(item, dict):
-                content = item.get("content")
-                if (
-                    item.get("role") in {"user", "human"}
-                    and isinstance(content, str)
-                    and "<file-content" in content
-                ):
-                    item = dict(item)
-                    item["content"] = collapse_file_content_blocks(content)
-                records.append(item)
-            else:
+            if not isinstance(item, dict):
                 logger.warning(
                     "读取 history.jsonl 第 %d 行不是对象记录，已跳过: %s",
                     lineno,
                     type(item).__name__,
                 )
+                continue
+            content = item.get("content")
+            if (
+                item.get("role") in {"user", "human"}
+                and isinstance(content, str)
+                and "<file-content" in content
+            ):
+                item = dict(item)
+                item["content"] = collapse_file_content_blocks(content)
+            yield item
+
+
+def _read_history_jsonl(path: Path) -> list[dict[str, Any]]:
+    try:
+        return list(iter_history_jsonl_rows(path))
     except Exception as exc:  # noqa: BLE001
         logger.warning("读取 history.jsonl 失败，已忽略: %s", exc)
         return []
-    return records
 
 
 def load_history_records(session_id: str, *, subagent_id: str | None = None) -> list[dict[str, Any]]:
@@ -1237,37 +1242,43 @@ def _is_team_relevant(item: dict[str, Any]) -> bool:
     return False
 
 
-def read_team_history_records(session_id: str) -> list[dict[str, Any]]:
-    """读取指定会话的历史记录，仅返回 team 模式相关的记录。"""
+def _load_history_records_with_retry(
+    session_id: str,
+    *,
+    label: str,
+) -> list[dict[str, Any]]:
+    """Read all records, retrying the non-atomic write window.
+
+    ``write_text`` truncates before writing, so a read landing in that window
+    sees an empty file; retry with increasing waits instead of mistaking a
+    rewrite for a deleted session.
+    """
     fpath = get_read_history_path(session_id)
     all_records = load_history_records(session_id)
-    # write_text 非原子写入（先截断再写入），读取可能命中截断窗口，
-    # 用递增间隔重试最多 5 次等待写入完成
-    if not all_records and fpath.exists():
-        for attempt in range(1, 6):
-            time.sleep(0.2 * attempt)
-            all_records = load_history_records(session_id)
-            if all_records:
-                logger.info("read_team_history_records: recovered on retry %d", attempt)
-                break
-        if not all_records:
-            logger.warning(
-                "read_team_history_records: all retries exhausted, file_size=%d",
-                fpath.stat().st_size,
-            )
+    if all_records or not fpath.exists():
+        return all_records
+    for attempt in range(1, 6):
+        time.sleep(0.2 * attempt)
+        all_records = load_history_records(session_id)
+        if all_records:
+            logger.info("%s: recovered on retry %d", label, attempt)
+            break
+    if not all_records:
+        logger.warning(
+            "%s: all retries exhausted, file_size=%d", label, fpath.stat().st_size
+        )
+    return all_records
 
+
+def read_team_history_records(session_id: str) -> list[dict[str, Any]]:
+    """读取指定会话的历史记录，仅返回 team 模式相关的记录。"""
+    records = _load_history_records_with_retry(
+        session_id, label="read_team_history_records"
+    )
     return [
-        item
-        for item in all_records
+        item for item in records
         if isinstance(item, dict) and _is_team_relevant(item)
     ]
-
-
-def _read_history_by_path(path: Path) -> list[dict[str, Any]]:
-    """根据文件扩展名选择正确的读取函数。"""
-    if path.suffix.lower() == ".jsonl":
-        return _read_history_jsonl(path)
-    return _read_history(path)
 
 
 def _is_member_relevant(item: dict[str, Any], member_name: str) -> bool:
@@ -1341,26 +1352,10 @@ def read_session_history_records(session_id: str) -> list[dict[str, Any]]:
 
     用于 auto memory 功能提取对话消息。
     """
-    fpath = get_read_history_path(session_id)
-    all_records = _read_history_by_path(fpath)
-    # write_text 非原子写入（先截断再写入），读取可能命中截断窗口，
-    # 用递增间隔重试最多 5 次等待写入完成
-    if not all_records and fpath.exists():
-        for attempt in range(1, 6):
-            time.sleep(0.2 * attempt)
-            all_records = _read_history_by_path(fpath)
-            if all_records:
-                logger.info(
-                    "read_session_history_records: recovered on retry %d", attempt
-                )
-                break
-        if not all_records:
-            logger.warning(
-                "read_session_history_records: all retries exhausted, file_size=%d",
-                fpath.stat().st_size,
-            )
-
-    return [item for item in all_records if isinstance(item, dict)]
+    records = _load_history_records_with_retry(
+        session_id, label="read_session_history_records"
+    )
+    return [item for item in records if isinstance(item, dict)]
 
 
 def _write_item(
@@ -1696,6 +1691,32 @@ def append_history_record(
             )
     except Exception as exc:
         logger.warning("更新会话元数据失败: %s", exc)
+
+
+def enqueue_ask_user_stop(
+    *,
+    session_id: str,
+    request_id: str,
+    timestamp: float,
+    question_ids: set[str] | None = None,
+) -> Future[None] | None:
+    """Persist a confirmed stop boundary in the session history."""
+    if question_ids == set() or not history_exists(session_id):
+        return None
+    record = {
+        "id": f"{request_id}:ask_user_closed",
+        "role": "assistant",
+        "request_id": request_id,
+        "channel_id": "web",
+        "timestamp": timestamp,
+        "content": "",
+        "event_type": "chat.ask_user_closed",
+    }
+    if question_ids is not None:
+        record["question_request_ids"] = sorted(question_ids)
+    receipt: Future[None] = Future()
+    _enqueue_history_item(session_id, record, receipt=receipt)
+    return receipt
 
 
 def enqueue_history_request_completion(

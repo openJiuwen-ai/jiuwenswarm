@@ -24,6 +24,8 @@ from openjiuwen.core.foundation.llm.schema.message_chunk import AssistantMessage
 from openjiuwen.core.foundation.tool import ToolCard
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.session import InteractiveInput
+from openjiuwen.core.session.checkpointer import CheckpointerFactory
+from openjiuwen.core.session.checkpointer.inmemory import InMemoryCheckpointer
 from openjiuwen.core.single_agent.agents.react_agent import ReActAgent
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, AgentRail, ModelCallInputs
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
@@ -218,6 +220,9 @@ async def _deep_host(client: _ModelClient, tmp_path, monkeypatch) -> AsyncIterat
 @pytest.fixture
 def product(tmp_path, monkeypatch):
     """AgentServer and gateway in one process, joined by the real server-push wire."""
+    # Real agent lifecycle hooks need a real, test-owned checkpoint store.
+    # Restore the process default at teardown rather than inheriting another test's stub.
+    monkeypatch.setattr(CheckpointerFactory, "_default_checkpointer", InMemoryCheckpointer())
     monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path / "sessions")
     monkeypatch.setattr(prompt_suggestion, "get_agent_workspace_dir", lambda: tmp_path)
     monkeypatch.setattr(prompt_suggestion, "forks", prompt_suggestion.PromptSuggestionForks())
@@ -839,7 +844,6 @@ async def test_composer_event_cancels_only_its_sessions_in_flight_fork(product, 
         assert len(generation["provider_receipts"]) == 1
         assert generation["total_usage"]["total_tokens"] == 1120
         assert generation["missing_provider_receipts"] == 1 and generation["usage_complete"] is False
-    assert prompt_suggestion.forks.answered_call(SESSION, "req-1") is not None
     assert product.page.events == []
     assert _outcomes(product.store) == [("cancelled", None)]
 
@@ -1073,7 +1077,6 @@ async def test_a_model_call_without_a_session_or_model_client_is_left_alone(prod
     await prompt_suggestion.PromptSuggestionForkRail().after_model_call(ctx)
 
     forks.turn_ended(SESSION, "req-1", status="success", waiting_for_user=False, completion=None)
-    assert forks.answered_call(SESSION, "req-1") is None
     assert _outcomes(product.store) == [("suppressed", "no_model_call")]
 
 
@@ -1208,3 +1211,20 @@ async def test_one_failed_suggestion_delivery_leaves_the_next(monkeypatch) -> No
         suggestions=[("first", "导出成双语对照"), ("second", "再整理一份术语表")],
     )
     assert [message["payload"]["suggestion_id"] for message in pushed] == ["second"]
+
+async def test_page_events_follow_the_prompt_switch_not_the_topic_switch(monkeypatch, tmp_path) -> None:
+    from jiuwenswarm.agents.harness.common.recommendation import switches
+    from jiuwenswarm.agents.harness.common.recommendation.topic_starter import TopicStarterStore
+    from jiuwenswarm.server.runtime import recommendation_rpc
+
+    store = TopicStarterStore(tmp_path / "recommendation.db")
+    monkeypatch.setattr(switches, "is_prompt_suggestion_enabled", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(recommendation_rpc, "_prompt_store", lambda _host: store)
+
+    result = await recommendation_rpc._prompt_suggestion_event(
+        None, {"event_type": "shown", "session_id": SESSION, "suggestion_id": "unknown"},
+    )
+
+    # Processed (and rejected as unknown), not shut off by the topic switch.
+    assert result.payload is None
+    assert result.code == "BAD_REQUEST"

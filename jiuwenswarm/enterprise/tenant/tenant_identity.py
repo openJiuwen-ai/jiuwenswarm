@@ -67,6 +67,8 @@ def extract_tenant_key(request: Any) -> str:
 
     优先委托企业平面 TenantStrategy；无平面（个人版）固定默认键。
     """
+    if not is_enterprise():
+        return build_tenant_key()
     try:
         from jiuwenswarm.enterprise import get_enterprise_plane
 
@@ -78,8 +80,6 @@ def extract_tenant_key(request: Any) -> str:
             "[tenant_identity] enterprise plane extract_tenant_key failed",
             exc_info=True,
         )
-    if not is_enterprise():
-        return build_tenant_key()
     group_id, bot_id, user_id = extract_triple(request)
     return build_tenant_key(group_id, bot_id, user_id)
 

@@ -56,6 +56,26 @@ const connectorMarketNavIcon = (
   </svg>
 );
 
+const teamNavIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      d="M18 18.72a8.96 8.96 0 01-12 0m12 0a3.75 3.75 0 00-6 0m6 0A8.96 8.96 0 0012 15.75a8.96 8.96 0 00-6 2.97m12 0A9 9 0 1012 21a8.96 8.96 0 006-2.28zM15 9.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z"
+    />
+  </svg>
+);
+
+// "应用市场"导航图标——店面/雨棚隐喻，和"扩展"的网格图标、plugin.svg 区分开。
+const appMarketNavIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 10.5V19a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5v-8.5" />
+    <path strokeLinecap="round" strokeLinejoin="round" d="M3 7.5h18v1.75a2.25 2.25 0 0 1-4.5 0 2.25 2.25 0 0 1-4.5 0 2.25 2.25 0 0 1-4.5 0 2.25 2.25 0 0 1-4.5 0Z" />
+    <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 20.5v-4a1.5 1.5 0 0 1 1.5-1.5h1.5a1.5 1.5 0 0 1 1.5 1.5v4" />
+    <path strokeLinecap="round" strokeLinejoin="round" d="M5 7.5 6.7 4.9a2 2 0 0 1 1.68-.9h7.24a2 2 0 0 1 1.68.9L19 7.5" />
+  </svg>
+);
+
 const experimentsNavIcon = (
   <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" width="16.000000" height="16.000000" fill="none">
     <rect id="rsi" width="16.000000" height="16.000000" x="0.000000" y="0.000000" />
@@ -92,8 +112,10 @@ const personalContextNavIcon = (
 const mainNavItems: NavItem[] = [
   { key: 'chat', labelKey: 'nav.work', icon: <WorkIcon aria-hidden /> },
   { key: 'agents', labelKey: 'nav.agent', icon: <AgentDesignIcon aria-hidden /> },
+  { key: 'teams', labelKey: 'nav.teams', icon: teamNavIcon },
   { key: 'skills', labelKey: 'nav.skills', icon: <SkillDesignIcon aria-hidden /> },
   { key: 'connectorMarket', labelKey: 'nav.connectorMarket', icon: connectorMarketNavIcon },
+  { key: 'appMarket', labelKey: 'nav.appMarket', icon: appMarketNavIcon },
   { key: 'experiments', labelKey: 'nav.experiments', icon: experimentsNavIcon },
   { key: 'personalContext', labelKey: 'nav.personalContext', icon: personalContextNavIcon },
   { key: 'settings', labelKey: 'nav.settings', icon: <SettingsIcon aria-hidden /> },

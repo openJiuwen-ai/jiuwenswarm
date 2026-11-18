@@ -21,6 +21,7 @@ from jiuwenswarm.server.jiuwenmate.sqlite_store import SQLiteStore
 
 TITLE_CHARS = 20
 MAX_TITLE_CHARS = 50
+APPROVAL_CONVERSATION = "sharing-approvals"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS web_conversations (

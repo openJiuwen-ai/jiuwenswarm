@@ -62,7 +62,7 @@ await build({
           'Textarea',
         ]
           .map((name) => `export { ${name} } from "./src/components/ui/${name}/${name}";`)
-          .join('\n');
+          .join('\n') + '\nexport { toast } from "./src/components/ui/Toast/toastStore";';
         const mocks = {
           '../../../../components/ui': ui,
           '../../../components/ui': ui,
@@ -315,8 +315,6 @@ test('feature flag defaults off and accepts backend booleans', () => {
 
 test('experimental sections retain their order with a single computer control section', () => {
   assert.deepEqual(experimentalSectionIds, [
-    'asr',
-    'task-full-duplex',
     'external-cli-custom-agents',
     'rsi',
     'a2ui',

@@ -5,6 +5,7 @@ import {
   buildScheduledTeamLaneSections,
   groupScheduledTaskRuns,
   reviewerIdentity,
+  noReviewMessageKey,
   scheduledMemberDisplayName,
   scheduledTaskMember,
 } from '../node_modules/.cache/trajectory-lanes/scheduledTrajectoryLanes.mjs';
@@ -118,6 +119,8 @@ test('a running assigned task is grouped before its review lanes exist', () => {
     scheduledTaskMember(sections.tasks[0], sections.members)?.subjectId,
     'team-member:sess:team:step-b-executor',
   );
+  assert.equal(sections.tasks[0].reviewRecordCount, 0);
+  assert.equal(sections.tasks[0].runCount, 0);
 });
 
 test('a cancelled task without review evidence is omitted from detailed lanes', () => {
@@ -213,6 +216,7 @@ test('scheduled lanes group by task and round while preserving physical ids', ()
 
   assert.deepEqual(sections.members.map(lane => lane.subjectId), [leaderId]);
   assert.equal(sections.reviewRunCount, 3);
+  assert.equal(sections.tasks[0].reviewRecordCount, 1);
   assert.deepEqual(sections.tasks[0].rounds.map(round => round.round), [2, 3]);
   assert.deepEqual(
     sections.tasks[0].rounds[1].lanes.map(lane => lane.subjectId),
@@ -335,4 +339,14 @@ test('scheduled grouping preserves every physical lane exactly once', () => {
     scheduledIds,
     groups.map(candidate => candidate.subject.id).sort(),
   );
+});
+
+test('the direct-completed claim needs no review records; live phases stay neutral', () => {
+  assert.equal(noReviewMessageKey('completed', 0), 'trajectory.team.schedule.directCompleted');
+  // Reviewer lanes can be missing while records survive (parse failure,
+  // pruned spans); the claim must not contradict the detail panel then.
+  assert.equal(noReviewMessageKey('completed', 2), 'trajectory.team.schedule.noReviews');
+  assert.equal(noReviewMessageKey('running', 0), 'trajectory.team.schedule.noReviews');
+  assert.equal(noReviewMessageKey('in_review', 1), 'trajectory.team.schedule.noReviews');
+  assert.equal(noReviewMessageKey(undefined, 0), 'trajectory.team.schedule.noReviews');
 });

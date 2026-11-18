@@ -24,6 +24,8 @@ block_cipher = None
 
 SPEC_DIR = os.path.abspath(globals().get("SPECPATH", os.getcwd()))
 project_root = os.path.abspath(os.path.join(SPEC_DIR, os.pardir))
+release_dependencies = runpy.run_path(os.path.join(project_root, "scripts", "release_dependencies.py"))
+release_dependencies["validate_release_dependencies"](Path(project_root))
 build_config_module = runpy.run_path(os.path.join(project_root, "scripts", "build_config.py"))
 build_config = build_config_module["load_build_config"](Path(project_root))
 computer_use_build = runpy.run_path(os.path.join(project_root, "scripts", "build_computer_use.py"))
@@ -215,6 +217,8 @@ for _relative in (
     ))
 datas += collect_data_files("jiuwenswarm.server.runtime.designer.skills", include_py_files=False)
 datas += collect_data_files("agent_gateway", include_py_files=False)
+# Gateway reads the product version from the frozen WorkSwarm distribution metadata.
+datas += copy_metadata("workswarm")
 datas += copy_metadata("agent-gateway", recursive=True)
 datas += copy_metadata("fastmcp", recursive=True)
 datas += copy_metadata("mcp", recursive=True)
@@ -241,7 +245,7 @@ datas += collect_data_files(
 datas += collect_data_files(
     "jiuwenswarm.office",
     include_py_files=True,
-    includes=["powerpoint/**/*"],
+    includes=["powerpoint/**/*", "word/**/*", "excel/**/*"],
 )
 # DesignRail 的 config.yaml + skills/ 树（SKILL.md / workflows / references / scripts）
 # 含 .mjs 脚本和 _templates/ 模板（脚本运行时读取），需额外 pattern
@@ -281,6 +285,11 @@ http2_submodules = [
 
 # 部分包需要显式声明隐藏导入
 lazy_runtime_submodules = []
+memory_bundle = runpy.run_path(os.path.join(project_root, "scripts", "memory_bundle.py"))
+lazy_runtime_submodules += list(memory_bundle["MEMORY_RUNTIME_MODULES"])
+for memory_package in memory_bundle["MEMORY_RUNTIME_PACKAGES"]:
+    lazy_runtime_submodules += collect_submodules(memory_package, on_error="raise")
+
 for lazy_package in (
     "agent_gateway",
     "jiuwenswarm.agents.harness.common.auto_harness",
@@ -325,6 +334,8 @@ hiddenimports = lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdo
     "aiosqlite",
     "croniter",
     "websockets",
+    # The extension loader opens extension.py from disk in frozen builds.
+    *collect_submodules("jiuwenswarm.extensions.app_market"),
     "loguru",
     "dotenv",
     "webview",

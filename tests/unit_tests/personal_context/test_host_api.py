@@ -4,6 +4,7 @@ import ast
 import asyncio
 import contextlib
 import inspect
+import sys
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,6 +33,7 @@ HOST_API_PATH = (
 # 需要默认值的用例一律用下面两个 helper 把模型列表钉死。
 UNCONFIGURED_PROJECTION = {
     "configured": False,
+    "host_platform": sys.platform,
     "master_enabled": False,
     "collection_enabled": False,
     "agent_use_enabled": False,
@@ -669,6 +671,42 @@ async def test_agent_use_projection_reads_loaded_configuration(
     await host.configure(_config(fetching_enabled=agent_use_enabled, root_dir=tmp_path))
 
     assert await host.is_runtime_enabled() is agent_use_enabled
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("host_platform", ["win32", "linux", "darwin"])
+async def test_host_platform_is_read_only_metadata_in_configuration_responses(
+    fake_host: tuple[PersonalContextHostAPI, FakeCore],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    host_platform: str,
+) -> None:
+    host, _core = fake_host
+    monkeypatch.setattr(host_module, "sys", SimpleNamespace(platform=host_platform), raising=False)
+    _pin_models(monkeypatch, [_model_entry("model-a")])
+    _core.snapshot_result = _FakeStatus()
+
+    assert (await host.get_runtime_config())["host_platform"] == host_platform
+    assert (await host.set_collection_enabled(False))["host_platform"] == host_platform
+    assert not host._home.exists()
+
+    await host.configure(_config(enabled=False, fetching_enabled=False, root_dir=tmp_path))
+    responses = [
+        await host.get_runtime_config(),
+        (await host.get_overview())["config"],
+        await host.patch_runtime_config({"strategy_profile": "rules"}),
+        await host.select_model(0),
+        await host.set_master_enabled(True),
+        await host.set_agent_use_enabled(False),
+        await host.set_collection_enabled(False),
+    ]
+    assert all(response["host_platform"] == host_platform for response in responses)
+    assert "host_platform" not in host._stored_config
+    saved = host._config_path.read_bytes()
+    assert "host_platform" not in yaml.safe_load(saved)
+    with pytest.raises(PersonalContext.Error):
+        await host.patch_runtime_config({"host_platform": "win32"})
+    assert host._config_path.read_bytes() == saved
 
 
 @pytest.mark.asyncio
@@ -1421,6 +1459,7 @@ async def test_repository_pat_first_authorization_creates_minimal_stopped_config
         "collection_enabled": False,
         "agent_use_enabled": False,
         "strategy_profile": "rules",
+        "max_context_size_mb": 50,
         "max_pages_per_directory": 20,
         "max_subdirectories_per_directory": 20,
         "fetch_services": [],

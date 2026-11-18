@@ -162,16 +162,6 @@ def _gateway_preflight_wait_seconds() -> float:
     return float(default.value)
 
 
-def _python_shutdown_budget_seconds() -> float:
-    """DesktopRuntime.shutdown 内 SIGTERM→强杀的统一预算(desktop_app.py 字面量)。"""
-    fn = _function_def(_desktop_app_module(), "shutdown")
-    segment = ast.get_source_segment(_read(DESKTOP_APP_PY), fn)
-    assert segment is not None
-    match = re.search(r"time\.monotonic\(\) \+ (\d+(?:\.\d+)?)", segment)
-    assert match, "shutdown 预算字面量未找到, 请同步更新本测试"
-    return float(match.group(1))
-
-
 def _data_url_export_specs() -> dict[str, dict[str, frozenset]]:
     value = _desktop_app_assignments()["DATA_URL_EXPORT_SPECS"]
     assert isinstance(value, ast.Dict)
@@ -413,7 +403,7 @@ def test_shutdown_budget_is_the_documented_divergence() -> None:
     Electron 单个传输进程 SIGTERM 等待 5s + 强杀等待 1.5s。
     钉住当前值: 任一侧改动都会红灯, 迫使重新评审该分歧。
     """
-    assert _python_shutdown_budget_seconds() == 30.0
+    assert _py_assignment_value(DESKTOP_APP_PY, "DESKTOP_SHUTDOWN_TIMEOUT_SECONDS") == 30.0
     assert _js_number_const(_read(MAIN_CJS), "RUNTIME_SHUTDOWN_TIMEOUT_MS") == 30_000
     assert _js_number_const(_read(MAIN_CJS), "SERVICE_SHUTDOWN_TIMEOUT_MS") == 5_000
     assert _js_number_const(_read(MAIN_CJS), "SERVICE_KILL_TIMEOUT_MS") == 1_500
@@ -613,15 +603,18 @@ def test_windows_electron_sets_amd64_before_any_preflight() -> None:
     assert "--extra codex" not in source
 
 
-def test_windows_electron_enforces_its_node_minimum_without_changing_python_default() -> None:
-    """Electron 43 需要 Node >=22.12；Python 打包仍沿用共享的 22.11 默认值。"""
+def test_electron_builds_enforce_node_minimum_without_changing_python_default() -> None:
+    """Electron 出包要求 Node >=22.13；Python 打包沿用共享的 22.11 默认值。"""
     module_source = _read(BUILD_RUNTIMES_PSM1)
     electron_source = _read(BUILD_ELECTRON_PS1)
+    macos_source = _read(BUILD_ELECTRON_SH)
     python_source = _read(BUILD_EXE_PS1)
-    assert '$ElectronMinimumNodeVersion = [version]"22.12.0"' in electron_source
-    assert 'Get-RuntimeBundleSettings -DefaultNodeVersion "v22.12.0"' in electron_source
+    assert '$ElectronMinimumNodeVersion = [version]"22.13.0"' in electron_source
+    assert 'Get-RuntimeBundleSettings -DefaultNodeVersion "v22.13.0"' in electron_source
     assert "-MinimumVersion $ElectronMinimumNodeVersion" in electron_source
-    assert "22.12.0" not in python_source
+    assert "NODE_MINIMUM_VERSION=22.13.0" in macos_source
+    assert "NODE_DEFAULT_VERSION=v22.13.0" in macos_source
+    assert "22.13.0" not in python_source
     assert "Get-NodeRuntimeVersion -RuntimeDir $RuntimeDir" in module_source
     assert "$actualVersion -lt $MinimumVersion" in module_source
     assert "$requestedVersion -lt $MinimumVersion" in module_source

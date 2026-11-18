@@ -42,7 +42,7 @@ import { ActivityHeatmap, HeatmapLegend } from '../components/ActivityHeatmap';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import { GroupSharingPermissions } from '../components/GroupSharingPermissions';
 import {
-  StarterPromptsAddButton, StarterPromptsEditor, normalizeStarterPrompts,
+  StarterPromptsAddButton, StarterPromptsEditor, hasDuplicateStarterPrompts, normalizeStarterPrompts,
 } from '../components/StarterPromptsEditor';
 import { EmptyState } from '../../../components/ui/EmptyState/EmptyState';
 import { errorMessage } from '../jiuwenmateApi';
@@ -57,6 +57,7 @@ import type {
 import type { ScheduleDraft, ScheduleRun } from '../schedules/types';
 import { ScheduleSection } from '../schedules/ScheduleSection';
 import { JIUWENMATE_WORK_DOMAINS } from '../mockData';
+import { COLLEAGUE_DESCRIPTION_LIMIT } from '../colleagueLimits';
 import {
   activeChannelCount,
   formatSummaryTokens,
@@ -65,7 +66,8 @@ import {
   mergeDailyActivity,
   minutesSince,
   responseAge,
-  usageChange,
+  periodUsage,
+  weeklyUsageChange,
 } from '../officeState';
 import type {
   JiuwenMateActivityHistoryItem,
@@ -1033,8 +1035,9 @@ function ProfileOverview({
   const [hoveredCellId, setHoveredCellId] = useState<string | null>(null);
   const year = today.getFullYear();
   const days = activity?.days ?? [];
-  const usage = usageChange(days, period, today);
-  const percent = usage.percent === null ? '—' : `${usage.percent}%`;
+  const tokens = periodUsage(days, period, today);
+  const change = weeklyUsageChange(days, today);
+  const percent = change === null ? '—' : `${change}%`;
   const daily = useMemo(() => mergeDailyActivity(activity ? [activity] : []), [activity]);
   const heatmap = useMemo(() => halfYearHeatmap(year, half, daily), [year, half, daily]);
   const taskKinds = tasksInHalf(activity?.kinds ?? [], year, half);
@@ -1054,7 +1057,7 @@ function ProfileOverview({
       value: (
         <>
           {percent}
-          {usage.percent !== null && usage.percent > 0 ? <ArrowUp aria-hidden className="jiuwenmate-trend-up" /> : null}
+          {change !== null && change > 0 ? <ArrowUp aria-hidden className="jiuwenmate-trend-up" /> : null}
         </>
       ),
       icon: ChartLine,
@@ -1063,7 +1066,7 @@ function ProfileOverview({
       key: 'resources',
       value: (
         <>
-          {formatSummaryTokens(usage.tokens)}
+          {formatSummaryTokens(tokens)}
           <small>tokens</small>
         </>
       ),
@@ -1340,6 +1343,8 @@ function IdentityEditor({
 }) {
   const { t } = useTranslation();
   const domains = [...new Set([...JIUWENMATE_WORK_DOMAINS, ...tags])];
+  const descriptionLength = description.trim().length;
+  const descriptionTooLong = descriptionLength > COLLEAGUE_DESCRIPTION_LIMIT;
   return (
     <section className="jiuwenmate-profile__block" data-testid="jiuwenmate-profile-identity-editor">
       <label className="jiuwenmate-field">
@@ -1348,7 +1353,23 @@ function IdentityEditor({
       </label>
       <label className="jiuwenmate-field">
         <span>{t('jiuwenmate.create.description')}</span>
-        <textarea value={description} rows={3} onChange={(event) => onDescriptionChange(event.target.value)} />
+        <span className="jiuwenmate-field__textarea">
+          <textarea
+            value={description}
+            aria-invalid={descriptionTooLong}
+            rows={3}
+            onChange={(event) => onDescriptionChange(event.target.value)}
+            data-testid="jiuwenmate-profile-description-input"
+          />
+          <small data-testid="jiuwenmate-profile-description-count">
+            {`${descriptionLength}/${COLLEAGUE_DESCRIPTION_LIMIT}`}
+          </small>
+        </span>
+        {descriptionTooLong ? (
+          <span className="jiuwenmate-field__error" role="alert" data-testid="jiuwenmate-profile-description-limit-error">
+            {t('jiuwenmate.create.descriptionTooLong', { limit: COLLEAGUE_DESCRIPTION_LIMIT })}
+          </span>
+        ) : null}
       </label>
       <div className="jiuwenmate-field">
         <span>{t('jiuwenmate.create.role')}</span>
@@ -1367,7 +1388,13 @@ function IdentityEditor({
         </div>
       </div>
       <div className="jiuwenmate-profile__resource-actions">
-        <button type="button" className="jiuwenmate-dark-button" disabled={saving || name.trim().length === 0} onClick={onSave}>
+        <button
+          type="button"
+          className="jiuwenmate-dark-button"
+          disabled={saving || name.trim().length === 0 || descriptionTooLong}
+          onClick={onSave}
+          data-testid="jiuwenmate-profile-identity-save"
+        >
           {saving ? t('jiuwenmate.profile.savingResources') : t('jiuwenmate.profile.saveResources')}
         </button>
       </div>
@@ -1541,7 +1568,7 @@ function ProfileSectionDetail({
           <button
             type="button"
             className="jiuwenmate-dark-button jiuwenmate-profile__save-button"
-            disabled={!dirty || savingResources}
+            disabled={!dirty || savingResources || hasDuplicateStarterPrompts(starterPrompts)}
             onClick={() => onSaveSettings?.({
               persona: persona.trim(),
               ...(promptsDirty ? { starterPrompts: normalizedPrompts } : {}),
@@ -1697,14 +1724,16 @@ function ProfileSectionDetail({
                         {imNotice.text}
                       </small>
                     ) : null}
-                    <button
-                      type="button"
-                      className="jiuwenmate-link-button jiuwenmate-link-button--blue"
-                      onClick={() => onConfigureIm(undefined, platform)}
-                      data-testid={platformConnections.length ? 'jiuwenmate-profile-im-add' : 'jiuwenmate-profile-im-authorize'}
-                    >
-                      {t(platformConnections.length ? 'jiuwenmate.profile.addConnection' : 'jiuwenmate.profile.authorize')}
-                    </button>
+                    {platformConnections.length === 0 ? (
+                      <button
+                        type="button"
+                        className="jiuwenmate-link-button jiuwenmate-link-button--blue"
+                        onClick={() => onConfigureIm(undefined, platform)}
+                        data-testid="jiuwenmate-profile-im-authorize"
+                      >
+                        {t('jiuwenmate.profile.authorize')}
+                      </button>
+                    ) : null}
                   </div>
                 </header>
                 {platformConnections.length > 0 ? (

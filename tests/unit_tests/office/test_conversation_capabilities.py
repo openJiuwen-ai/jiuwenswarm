@@ -68,6 +68,11 @@ class PromptModel(ScriptedModel):
 @pytest.fixture
 async def server(sessions, tmp_path, monkeypatch):
     """The root adapter of AgentServer's agent; its session children use one model that remembers prompts."""
+    # These assertions cover the native MemoryRail's prompt section and tools.
+    # Select it explicitly so the fixture is independent of the shipped provider.
+    config = copy.deepcopy(get_config())
+    config["memory"]["builtin"]["provider"] = ""
+    update_config(lambda _config: config)
     monkeypatch.setattr(session_metadata, "get_agent_sessions_dir", lambda: sessions)
     # Each test owns a different workspace, so its checkpoint store must match it.
     monkeypatch.setattr(checkpointer, "_PERSISTENT_CHECKPOINTER_READY", False)
@@ -185,8 +190,9 @@ def _task_pane_requests(events: list[dict]) -> list[tuple[str, str]]:
 async def test_a_powerpoint_tool_call_passes_the_permission_rules_before_the_task_pane_gets_it(
         server, attach_pane, monkeypatch, rule) -> None:
     update_config(lambda config: {**config, "permissions": {**config["permissions"], "enabled": True}})
-    monkeypatch.setattr(permissions_layers, "load_user_permissions",
-                        lambda: {f"{rule}_tools": ["read_presentation_context"]})
+    assert permissions_layers.save_user_permissions(
+        {f"{rule}_tools": ["read_presentation_context"]}
+    )
     attach_pane("deck-a", sorted(OFFICE_TOOLS))
     server.create("deck-a", CLIENT_APP)
     await server.turn("deck-a")  # the first turn also checks what the model can see

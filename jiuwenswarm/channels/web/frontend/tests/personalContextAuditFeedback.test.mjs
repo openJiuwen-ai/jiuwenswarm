@@ -31,7 +31,7 @@ await build({
         ['../../stores', 'export const usePersonalContextStore = () => globalThis.__pcAuditStore;'],
         ['react-i18next', 'export const useTranslation = () => ({ t: (key) => key });'],
         ['../../features/settings/settingsNavigation', 'export const requestSettingsModule = () => {};'],
-        ['../../features/workspace/projectDirectoryPicker', 'export const selectProjectDirectory = async () => ({ ok: false });'],
+        ['../../features/workspace/projectDirectoryPicker', 'export const isProjectDirectoryPickerSupported = () => true; export const selectProjectDirectory = async () => ({ ok: false });'],
         ['../../features/workspace/localFilePicker', 'export const selectLocalFiles = async () => ({ ok: false });'],
         ['../../components/ui/Toast/toastStore', 'export const toast = { open() {} };'],
       ]);

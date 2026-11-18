@@ -10,6 +10,9 @@ export interface WorkflowRunLaneSummary {
   id: string;
   name?: string;
   status?: string;
+  /** Member currently hosting the run (leader included); null/absent = no
+   * team context (legacy events) — the group header renders no badge. */
+  executor?: string | null;
 }
 
 export interface TeamTrajectoryWorkflowGroup {
@@ -17,6 +20,7 @@ export interface TeamTrajectoryWorkflowGroup {
   name: string;
   shortId: string;
   status: TeamMemberLaneStatus;
+  executor?: string | null;
   lanes: TeamMemberLaneModel[];
 }
 
@@ -61,6 +65,74 @@ export function memberNameOfSubjectId(subjectId: string): string | null {
   if (teamColon === -1) return null;
   const memberName = rest.slice(teamColon + 1);
   return memberName === '' ? null : memberName;
+}
+
+/** Swarmflow worker identity as the team member events carry it. */
+export interface SwarmflowWorkerIdentity {
+  /** Engine member id: `wf_<runid>:<call key JSON>`. */
+  memberId: string;
+  /** The engine label the worker's member name was minted from. */
+  name: string;
+}
+
+/**
+ * Swarmflow worker identities among session team members: entries whose
+ * member id carries the engine's `wf_<runid>:<call key>` shape.
+ */
+export function swarmflowIdentitiesOfMembers(
+  members: readonly { member_id: string; name?: string }[],
+): SwarmflowWorkerIdentity[] {
+  const identities: SwarmflowWorkerIdentity[] = [];
+  for (const member of members) {
+    if (parseEngineSwarmflowMemberId(member.member_id) === null) continue;
+    identities.push({ memberId: member.member_id, name: member.name ?? '' });
+  }
+  return identities;
+}
+
+/** Split a `wf_<runid>:<call key>` member id into its two parts. */
+export function parseEngineSwarmflowMemberId(
+  memberId: string,
+): { runId: string; callKey: string } | null {
+  if (!memberId.startsWith('wf_')) return null;
+  const colon = memberId.indexOf(':');
+  if (colon === -1) return null;
+  const runId = memberId.slice(0, colon);
+  const callKey = memberId.slice(colon + 1);
+  if (runId === '' || callKey === '') return null;
+  return { runId, callKey };
+}
+
+/**
+ * The worker member name the backend mints for an engine identity:
+ * ``{slug(run_id)}-{slug(label)}-{ident}`` (TeamWorkerBackend._next_member_name,
+ * where ``ident = sha256(call_key)[:12]``). The label slug mirrors the backend's
+ * `_SLUG_RE` rules, which `slugifyRunId` already implements.
+ */
+export function swarmflowWorkerMemberName(
+  runId: string,
+  label: string,
+  ident: string,
+): string {
+  const labelSlug = slugifyRunId(label) || 'worker';
+  return `${slugifyRunId(runId)}-${labelSlug}-${ident}`;
+}
+
+/**
+ * The hover "full name" of a lane: the worker's engine member id
+ * (``wf_<runid>:[["par", 0, 0], ["call", 0]]`` — which branch and call the
+ * operator is) once its worker member name is known, else the plain worker
+ * member name; `null` for non-worker subjects so the caller keeps the label.
+ */
+export function swarmflowLaneFullName(
+  lane: TeamMemberLaneModel,
+  memberIdByWorkerName: ReadonlyMap<string, string>,
+): string | null {
+  const memberName = memberNameOfSubjectId(lane.subjectId);
+  if (memberName === null) return null;
+  const engineMemberId = memberIdByWorkerName.get(memberName);
+  if (engineMemberId !== undefined) return engineMemberId;
+  return UNTRACKED_RUN_PATTERN.test(memberName) ? memberName : null;
 }
 
 /** Map one `WorkflowStatus` onto the lane status dot vocabulary. */
@@ -110,6 +182,13 @@ export function groupTeamMemberLanesByWorkflowRun(
       name,
       shortId,
       status: workflowRunLaneStatus(run?.status),
+      // Run attribution rides the store's run summary: a known run carries its
+      // executor (empty string / null normalize to undefined so the header
+      // badge hides); an untracked run (archive replay, pattern match only)
+      // has no summary and therefore no attribution.
+      executor: typeof run?.executor === 'string' && run.executor.trim() !== ''
+        ? run.executor
+        : undefined,
       lanes: [],
     };
     groupByRunId.set(runId, group);
@@ -142,4 +221,48 @@ export function groupTeamMemberLanesByWorkflowRun(
   }
 
   return { ungrouped, groups };
+}
+
+export interface WorkflowGroupHostPlan {
+  /** Groups keyed by the host lane object they matched (issue #6381). */
+  attached: Map<TeamMemberLaneModel, TeamTrajectoryWorkflowGroup[]>;
+  /** Groups whose executor matched no host lane. */
+  trailing: TeamTrajectoryWorkflowGroup[];
+}
+
+/**
+ * Attach each workflow run group under the lane of the member who executed it.
+ *
+ * Host lanes are the standalone member lanes plus the member lanes nested
+ * inside scheduled task-run rows — a task assignee's lane lives there, not in
+ * `ungrouped`. The map is keyed by the host lane object, not its subjectId: a
+ * scheduled member can own several interleaved (non-adjacent) task runs whose
+ * member lanes share one subjectId, and the group must render in the one lane
+ * it attached to, never in every lane with that subjectId (AI review CR-001
+ * on !10269/!10271). Consumers therefore look the map up with the very lane
+ * object they render.
+ */
+export function attachWorkflowGroupsToHostLanes(
+  workflowGroups: readonly TeamTrajectoryWorkflowGroup[],
+  hostLanes: readonly TeamMemberLaneModel[],
+): WorkflowGroupHostPlan {
+  const attached = new Map<TeamMemberLaneModel, TeamTrajectoryWorkflowGroup[]>();
+  const trailing: TeamTrajectoryWorkflowGroup[] = [];
+  for (const group of workflowGroups) {
+    const executor = group.executor;
+    const host = executor === undefined
+      ? undefined
+      : hostLanes.find(lane => (
+        memberNameOfSubjectId(lane.subjectId) === executor
+        || lane.label === executor
+      ));
+    if (host === undefined) {
+      trailing.push(group);
+      continue;
+    }
+    const hosted = attached.get(host);
+    if (hosted === undefined) attached.set(host, [group]);
+    else hosted.push(group);
+  }
+  return { attached, trailing };
 }

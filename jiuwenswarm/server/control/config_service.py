@@ -28,6 +28,7 @@ from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_config_file, get_env_file
 from jiuwenswarm.common.version import get_runtime_version
+from jiuwenswarm.common.kv_cache_affinity_config import get_affinity_status
 from jiuwenswarm.server.control.a2ui_config import get_a2ui_config
 from jiuwenswarm.server.control.responses import build_error_response
 from jiuwenswarm.common.symphony_config import (
@@ -411,6 +412,29 @@ def _browser_credential_environment() -> dict[str, str]:
     return environment
 
 
+def _design_generation_panel(raw: dict[str, Any]) -> dict[str, str]:
+    """Flat design choices stored under ``design_generation``.
+
+    Web ``config.get`` is this panel. The design model menu reads these two
+    keys; a missing key is treated as no saved model and checks the first
+    supported row. Empty string means that modality has no saved id yet.
+    """
+    block = raw.get("design_generation") if isinstance(raw, dict) else None
+    saved: dict[str, str] = {}
+    if isinstance(block, dict):
+        for slot, key in (
+            ("video_gen", "design_generation_video_gen"),
+            ("visual_gen", "design_generation_visual_gen"),
+        ):
+            value = block.get(slot)
+            if isinstance(value, str) and value.strip():
+                saved[key] = value.strip()
+    return {
+        "design_generation_video_gen": saved.get("design_generation_video_gen", ""),
+        "design_generation_visual_gen": saved.get("design_generation_visual_gen", ""),
+    }
+
+
 def get_panel() -> dict[str, Any]:
     """Return the Web/TUI config panel payload without Gateway handlers."""
     # 保存过的 .env 优先于本进程的 os.environ。生成类配置槽是由另一个进程写入的，
@@ -457,9 +481,10 @@ def get_panel() -> dict[str, Any]:
         )
         ctx_cfg = react_cfg.get("context_engine_config") or {}
         payload["context_engine_enabled"] = _bool_text(ctx_cfg.get("enabled"), False)
-        payload["kv_cache_affinity_enabled"] = (
-            "true" if _affinity_enabled(raw) else "false"
-        )
+        affinity = get_affinity_status(_resolve_env_vars(raw))
+        payload["kv_cache_affinity_enabled"] = _bool_text(affinity["enabled"])
+        payload["kv_cache_affinity_can_enable"] = affinity["can_enable"]
+        payload["kv_cache_affinity_status"] = affinity
         perm_cfg = raw.get("permissions") or {}
         payload.update(canonical_permission_facade(permission_profile(perm_cfg)))
         evolution_cfg = (raw.get("react") or {}).get("evolution") or {}
@@ -528,6 +553,9 @@ def get_panel() -> dict[str, Any]:
         payload["enable_free_models"] = _bool_text(
             models_cfg.get("enable_free_models", True), True
         )
+        # Runtime config_get_handler appends the same keys. This Front panel
+        # is the payload the browser actually receives, so they have to be here too.
+        payload.update(_design_generation_panel(raw))
     except Exception as exc:  # noqa: BLE001
         logger.warning("[config_service] panel yaml merge failed: %s", exc)
         for key, value in flatten_moa_for_config_panel({}).items():
@@ -560,6 +588,8 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("topic_recommendation_enabled", "false")
         payload.setdefault("prompt_suggestion_enabled", "false")
         payload.setdefault("enable_free_models", "true")
+        payload.setdefault("design_generation_video_gen", "")
+        payload.setdefault("design_generation_visual_gen", "")
     return payload
 
 

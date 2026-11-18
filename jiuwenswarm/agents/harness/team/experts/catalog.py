@@ -12,6 +12,7 @@ through ``aiofiles`` so the leader's tools never block the event loop.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -48,9 +49,18 @@ class JiuwenExpertCatalog:
         return await _locate_installed("agent_template", name)
 
     async def list_group_packages(self) -> list["PackageLocation"]:
-        return await _list_installed("agent_group")
+        from jiuwenswarm.enterprise.capabilities.experts.request_packages import allows
+
+        locations = []
+        for location in await _list_installed("agent_group"):
+            if await asyncio.to_thread(allows, "agent_group", location.name):
+                locations.append(location)
+        return locations
 
     async def locate_group(self, name: str) -> "PackageLocation":
+        from jiuwenswarm.enterprise.capabilities.experts.request_packages import require_allowed
+
+        await asyncio.to_thread(require_allowed, "agent_group", name)
         return await _locate_installed("agent_group", name)
 
 
@@ -121,13 +131,27 @@ async def _locate_installed(package_type: PackageType, name: str) -> "PackageLoc
 def install_expert_catalog() -> None:
     """Inject the catalog into openjiuwen's Team runtime (leaders get the expert tools).
 
-    Skipped silently when the installed openjiuwen predates the expert catalog.
+    Warn when the installed openjiuwen cannot register the process catalog.
     """
     from openjiuwen.agent_teams.runtime import TeamRuntimeManager
 
     set_catalog = getattr(TeamRuntimeManager, "set_expert_catalog", None)
-    if callable(set_catalog):
-        set_catalog(JiuwenExpertCatalog())
+    if not callable(set_catalog):
+        logger.warning(
+            "[AGENT_GROUP_CATALOG_NOT_CONFIGURED] openjiuwen does not support expert catalog "
+            "registration; install the pinned openjiuwen version before launching expert teams"
+        )
+        return
+
+    from openjiuwen.agent_teams.experts import get_process_expert_catalog
+
+    catalog = JiuwenExpertCatalog()
+    set_catalog(catalog)
+    if get_process_expert_catalog() is not catalog:
+        logger.error(
+            "[AGENT_GROUP_CATALOG_NOT_CONFIGURED] expert catalog registration did not take effect "
+            "in this process; expert team launch and restore are unavailable"
+        )
 
 
 __all__ = ["JiuwenExpertCatalog", "install_expert_catalog"]

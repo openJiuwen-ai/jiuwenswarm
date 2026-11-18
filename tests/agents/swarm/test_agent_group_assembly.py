@@ -81,3 +81,43 @@ def test_agent_group_assembly_output_is_unchanged(tmp_path: Path, language: str 
     assert spec.agents["teammate"].skills == ["base-a", "write"]
     assert spec.agent_group_name == "mlgroup"
     assert spec.metadata["agent_group_name"] == "mlgroup", "the legacy metadata key stays for existing readers"
+
+
+@pytest.mark.parametrize("cli_agent,provider", [("claude", "claudecode"), ("codex", "codex")])
+@pytest.mark.parametrize("entry", ["expert_team", "group_member", "designer"])
+def test_external_expert_inherits_team_launch_path(tmp_path, monkeypatch, cli_agent, provider, entry):
+    from openjiuwen.agent_teams.schema.team import ExternalCliAgentSpec
+    from openjiuwen.agent_teams.spawn.external_cli_spawn import _external_cli_config_for_member
+    from jiuwenswarm.agents.swarm import group_chat
+    from jiuwenswarm.server.runtime import extension_package_manager as packages
+
+    group = _multilingual_group(tmp_path)
+    manifest_path = group / "agents" / "reviewer" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["runtime"] = {"provider_name": provider, "config": {"system_prompt_mode": "replace"}}
+    manifest_path.write_text(json.dumps(manifest))
+    declared = ExternalCliAgentSpec(cli_agent=cli_agent, cli_path="/configured/custom-cli", cwd="/deployment")
+    spec = TeamAgentSpec(
+        agents={"leader": _base("en"), "teammate": _base("en")},
+        team_name="t",
+        external_cli_agents=[declared],
+    )
+    if entry == "expert_team":
+        assembly._apply_agent_group(spec, "mlgroup", load_agent_group_package_bundle(group))
+    elif entry == "designer":
+        from jiuwenswarm.server.runtime.design.team_worker import _design_member_roster
+
+        monkeypatch.setattr(packages, "resolve_agent_group_dir", lambda _: group)
+        spec.predefined_members = _design_member_roster(spec)
+    else:
+        monkeypatch.setattr(packages, "resolve_agent_template_dir", lambda _: manifest_path.parent)
+        group_chat.assemble_group_members(
+            spec, [{"kind": "agent_template", "id": "reviewer", "member_name": "reviewer"}]
+        )
+    selected = _external_cli_config_for_member(spec, "reviewer", cli_agent)
+    assert selected.cli_path == "/configured/custom-cli"
+    assert selected.cwd == "/deployment"
+    assert selected.system_prompt_mode == "replace"
+    assert declared.system_prompt_mode != "replace"
+    restored = TeamAgentSpec.model_validate_json(spec.model_dump_json(exclude={"build_context"}))
+    assert _external_cli_config_for_member(restored, "reviewer", cli_agent).cli_path == selected.cli_path

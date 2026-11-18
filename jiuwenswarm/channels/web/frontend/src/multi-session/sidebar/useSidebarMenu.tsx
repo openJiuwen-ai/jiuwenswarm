@@ -17,6 +17,7 @@ import {
   useCronStore,
   useGoalStore,
   useHarnessStore,
+  usePlanStore,
   useSessionStore,
   useSubagentStore,
   useTodoStore,
@@ -325,6 +326,10 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
     useTodoStore.getState().removeRuntime(sessionId);
     useHarnessStore.getState().removeRuntime(sessionId);
     useGoalStore.getState().removeRuntime(sessionId);
+    // Plan 模式的 runtime（active、pendingExplicitEntry）也按 session 挂在内存里，
+    // 侧边栏删除漏掉它会让已删会话的 plan 状态永久残留；App.tsx 的
+    // handleTeamSessionsDeleted 删除路径已包含这条，这里对齐补齐。
+    usePlanStore.getState().removeRuntime(sessionId);
   }
 
   async function archiveSessionAction(session: Session) {
@@ -333,6 +338,10 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
     archiveInFlightRef.current.add(opKey);
     try {
       await archiveSession(session.session_id);
+      // Archive stops a live turn in the backend without terminal wire frames.
+      // Settle the local turn before the Session leaves the workspace so an
+      // undo/restore cannot resurrect it as still running (GitCode #6533).
+      useChatStore.getState().settleLifecycleStoppedSession(session.session_id);
       flushSync(() => {
         removeSessionLocally(session.session_id);
         openArchiveSuccessToast(t, {

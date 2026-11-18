@@ -250,6 +250,7 @@ _TEAM_SHARED_RAIL_NAMES: frozenset[str] = frozenset(
         registry.SYMPHONY_ORCHESTRATION_PROMPT,
         registry.MEMBER_SKILL_TOOLKIT,
         TEAM_SKILL_USE,
+        registry.OPENCODE_SESSION,
     }
 )
 
@@ -641,7 +642,7 @@ def test_build_member_capability_specs_rail_names(
 
     assert _TEAM_SHARED_RAIL_NAMES <= rail_names
     assert extra_rails <= rail_names
-    assert len(_TEAM_SHARED_RAIL_NAMES) == 20
+    assert len(_TEAM_SHARED_RAIL_NAMES) == 21
     assert rail_names == expected
     # No DeepAgent is involved; every entry is a plain declarative RailSpec.
     assert all(isinstance(spec, RailSpec) for spec in rails_specs)
@@ -1193,12 +1194,14 @@ def test_enrich_team_spec_for_swarm_builds_a_narrow_reviewer_spec(
         registry.MEMBER_SKILL_TOOLKIT,
         registry.MEMBER_SKILL_EVOLUTION,
         registry.TEAM_PERMISSION,
+        registry.PERMISSION_INTERRUPT,
         registry.PLUGIN_RAILS,
     ):
         assert dropped not in rail_types
-    # The teammate keeps what the reviewer drops.
+    # The teammate keeps the user permission rail the reviewer drops.
     teammate_rail_types = {rail.type for rail in teammate.rails or []}
-    assert registry.TEAM_PERMISSION in teammate_rail_types
+    assert registry.PERMISSION_INTERRUPT in teammate_rail_types
+    assert registry.TEAM_PERMISSION not in teammate_rail_types
     assert registry.HEARTBEAT in teammate_rail_types
 
     tool_types = {tool.type for tool in reviewer.tools or [] if isinstance(tool, BuiltinToolSpec)}

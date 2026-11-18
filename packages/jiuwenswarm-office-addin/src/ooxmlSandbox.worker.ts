@@ -22,6 +22,13 @@ export interface SandboxRequest { code: string; base64: string }
  */
 export type SandboxReply = { base64: string; dirty: boolean; result?: unknown } | { error: string };
 
+// WPS's embedded Chromium replaces TextEncoder and TextDecoder with script functions that carry a non-configurable
+// own ``arguments``, which lockdown cannot remove. Nothing here needs them after the imports (fflate took its codec
+// on import), so those host versions go before the hardening; native ones have no own ``arguments`` and stay.
+for (const name of ['TextEncoder', 'TextDecoder'] as const) {
+  const host = globalThis as Record<string, unknown>;
+  if (Object.getOwnPropertyDescriptor(host[name], 'arguments')) delete host[name];
+}
 lockdown();
 
 const escapeXml = (text: unknown) => String(text).replace(/[&<>"']/g, char => (

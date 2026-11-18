@@ -259,4 +259,15 @@ describe('what the pane keeps', () => {
     await snapshots.closeTurn();
     expect(snapshots.undoable(['c2'])).toEqual({ slides: 1 });
   });
+
+  it('keeps no turn when told to keep none, and still rolls back a failed call', async () => {
+    const { deck, snapshots, write } = setUp(3, { turns: 0, bytes: 0 });
+    const [a, b] = deck.ids();
+    await write('c1', { edit: [a] });
+    await snapshots.closeTurn();
+    expect(snapshots.undoable(['c1'])).toBeUndefined();
+    const before = deck.content();
+    await (await write('c2', { replace: [a, b] })).rollback();
+    expect(deck.content()).toEqual(before);
+  });
 });

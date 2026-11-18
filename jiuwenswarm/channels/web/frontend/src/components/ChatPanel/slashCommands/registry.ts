@@ -96,6 +96,10 @@ export function togglePlanFromSlash(
   // executeSlashCommand 守卫、输入框旁 Plan 开关、「计划」chip 关闭按钮共用
   // 同一套 planModeGate 判断（ask_user 待回答时 isProcessing 已回到 false，
   // 只看它的旧闸门会漏放）。默认参数便于单测注入。
+  //
+  // 这里只判忙态与 Goal 互锁、不判 planModeGate 的集群锁：本函数只对非集群会话
+  // 可达（集群在下面 planCommand.execute 的 `ctx.mode === 'team'` 处已整体拦下），
+  // 集群锁在此恒为假。真正的用户路径也都先过 InputArea 的守卫，这里是竞态兜底。
   sessionBusy: boolean = isSessionBusyForPlanToggle(sessionId),
 ): PlanSlashToggleResult {
   planStore.ensureRuntime(sessionId);
@@ -211,6 +215,15 @@ const forkCommand: SlashCommand = {
   },
 };
 
+/** Match the server's one-decimal, ties-to-even formatting. */
+function formatCompactDecimal(value: number): string {
+  // Among exact binary midpoints at this precision, .25 rounds down to .2.
+  if (Math.abs(value % 1) === 0.25) {
+    return value.toFixed(2).slice(0, -1);
+  }
+  return value.toFixed(1);
+}
+
 /** /compact —— 压缩对话历史为摘要；token 计数刷新由 context.* 事件监听处理。 */
 const compactCommand: SlashCommand = {
   name: 'compact',
@@ -232,9 +245,10 @@ const compactCommand: SlashCommand = {
       } else if (res.result === 'compressed') {
         const before = res.stats?.raw_total_tokens ?? 0;
         const after = res.stats?.total_tokens ?? 0;
-        const rate = (before > 0 ? ((before - after) / before) * 100 : 0).toFixed(1);
-        const fmt = (n: number) => (n / 1000).toFixed(1);
-        output = `✓ 上下文已压缩：${fmt(after)}K / ${fmt(before)}K tokens（节省 ${rate}%）`;
+        const rate = before > 0 ? ((before - after) / before) * 100 : 0;
+        const beforeText = formatCompactDecimal(before / 1000);
+        const afterText = formatCompactDecimal(after / 1000);
+        output = `✓ 上下文已压缩：${afterText}K / ${beforeText}K tokens（节省 ${formatCompactDecimal(rate)}%）`;
       } else {
         output = '压缩未完成，请稍后再试。';
       }

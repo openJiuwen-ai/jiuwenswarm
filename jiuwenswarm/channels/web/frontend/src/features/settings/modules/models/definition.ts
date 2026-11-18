@@ -8,6 +8,7 @@ export const modelSettingsTabs = [
   { id: 'models', labelKey: 'settingsPanel.models.modelsTab' },
   { id: 'groups', labelKey: 'settingsPanel.models.modelGroups' },
   { id: 'jev', labelKey: 'settingsPanel.models.jevTab', helpKey: 'settingsPanel.models.jevTabHelp' },
+  { id: 'multimodal', labelKey: 'settingsPanel.multimodal.tab', helpKey: 'settingsPanel.multimodal.tabHelp' },
 ] as const satisfies readonly SettingsTabDefinition<ModelSettingsTabId>[];
 
 export const defaultModelSettingsTab: ModelSettingsTabId = 'models';

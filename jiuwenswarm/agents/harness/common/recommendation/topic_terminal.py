@@ -13,6 +13,7 @@ from typing import Any, Awaitable, Callable, Iterable
 from jiuwenswarm.server.runtime.session.session_history import (
     SessionCompletionBoundary,
 )
+from .topic_primitives import plain_int as _plain_int
 
 logger = logging.getLogger(__name__)
 
@@ -98,11 +99,6 @@ _COMPONENT_IDS = frozenset(
 )
 _SCORE_SEMANTICS = frozenset({"uncalibrated_api_proxy", "not_scored"})
 _OUTPUT_STATUSES = frozenset({"success", "fallback", "failed"})
-
-
-def _plain_int(value: Any) -> bool:
-    # bool is an int subclass; a JSON boolean is never a version or a count.
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _is_nonempty(value: Any) -> bool:

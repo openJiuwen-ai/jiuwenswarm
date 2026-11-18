@@ -1328,6 +1328,7 @@ async def test_skill_mutations_run_off_event_loop_and_report_lock_contention(
     import threading
 
     monkeypatch.setattr(manager_module, "is_enterprise", lambda: enterprise)
+    monkeypatch.setattr(manager_module, "_SKILL_TOGGLE_LOCK_TIMEOUT_SECONDS", 0)
     loop_thread = threading.get_ident()
     worker_threads = []
     target = "_toggle_skills_locked" if operation == "toggle" else "_handle_enterprise_skills_uninstall"
@@ -1350,6 +1351,38 @@ async def test_skill_mutations_run_off_event_loop_and_report_lock_contention(
     assert result["detail_key"] == "skills.inventoryBusy"
     assert "inventory.lock" not in result["detail"]
     assert (inventory_commit_manager._skills_dir / "first-skill/SKILL.md").read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_skill_toggle_waits_out_a_short_inventory_lock(inventory_commit_manager, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(manager_module, "_SKILL_TOGGLE_LOCK_TIMEOUT_SECONDS", 2)
+    _write_skill(inventory_commit_manager._skills_dir / "first-skill", "first-skill")
+    held, release = threading.Event(), threading.Event()
+
+    def hold_lock():
+        with inventory_mutex(inventory_commit_manager._skills_dir):
+            held.set()
+            assert release.wait(2)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    try:
+        assert held.wait(2)
+        task = asyncio.create_task(
+            inventory_commit_manager.handle_skills_toggle({"name": "first-skill", "enabled": False})
+        )
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        release.set()
+        result = await task
+    finally:
+        release.set()
+        holder.join(timeout=2)
+
+    assert result["success"] is True
+    assert result["enabled"] is False
 
 
 @pytest.mark.asyncio

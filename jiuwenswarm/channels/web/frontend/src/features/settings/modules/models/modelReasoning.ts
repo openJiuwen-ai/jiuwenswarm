@@ -106,7 +106,7 @@ export function resolveModelReasoning(
   const modelRule = catalog.reasoning.model_fallbacks.find((rule) =>
     rule.patterns.some((pattern) => matchesPattern(model, pattern) || matchesPattern(shortName, pattern)),
   );
-  return modelRule?.capabilities[protocol] ?? catalog.reasoning.protocol_defaults[protocol];
+  return modelRule?.capabilities[protocol] ?? null;
 }
 
 export function buildReasoningOptions(

@@ -26,6 +26,7 @@ Desktop process-tree cleanup continues for proven service branches when another 
 Wheel launchers `jiuwenswarm-start all/app/dev`, named instances, and standalone `jiuwenswarm-app` stop Fronts and then retire their Worker on final exit. `--stop <name>` and a full instance `--restart <name>` also complete final shutdown. Named-instance shutdown loads the selected workspace's bootstrap and runtime environment in a separate lifecycle process. It holds the startup lock through Worker exit confirmation, deleting the PID record only after success and retaining it on failure. Windows service-tree cleanup preserves Worker branches for the final IPC operation. A web-only launcher leaves its external backend running.
 
 Python desktop final exit checks existing Workers and verifiable historical endpoints even before registering its first service. When a Worker process is still booting before IPC exists, final shutdown waits for HELLO within the same deadline and then validates ownership. Command-line observations authorize waiting, never retirement.
+When a background thread owns cleanup, the desktop entry point waits for it to finish. The wait ends at the 30-second shutdown deadline plus five seconds for final process cleanup and writing the update receipt. If the wait expires, the desktop logs incomplete shutdown. The installer still requires a successful receipt.
 
 A service manager controlling `jiuwenswarm-agentserver` directly must still distinguish Front restart from application final stop. For final stop, stop its Front first, then use the same installation environment:
 
@@ -57,3 +58,9 @@ On a transient resident IPC disconnect, Front retains submitted streaming waiter
 The 90-second budget applies to transport recovery, not normal execution time. Confirmed Worker exit, replacement or unhealthy retirement, exhausted reconnect attempts, an unavailable dispatch, expired undelivered replay, and service stop still fail the original waiter explicitly. Missing output cannot imply success. Non-streaming RPCs retain their delivery acknowledgement and failure semantics; `front_loopback` retains its existing Worker lifetime behavior.
 
 If both IPC send and close fail, Front retains the original recovery waiters. A failed recovery subscription retires that connection before all preserved streams resume. Service stop cleans up waiters and background tasks even when IPC close raises.
+
+## Worker output logs
+
+Both resident and `front_loopback` Workers use the original output routing: stdout inherits the launching process's output, while stderr is appended directly to `worker-logs/runtime-worker-*.stderr.log`. Supervisor startup logs and runtime diagnostics expose the stderr file path. Exception tracebacks remain in that file.
+
+The Supervisor does not read and relabel individual Worker output lines or create a separate stdout log file. Stderr can contain ordinary INFO records. Diagnose failures using the original log levels, exception tracebacks, and process exit code.
