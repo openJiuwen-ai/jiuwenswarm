@@ -468,8 +468,8 @@ async def _handle_sandbox_files_set(
             bucket, path, canonical,
         )
         path = canonical
-    # 拒绝把"自动配置且不可变"的路径 (intrinsic AGENT.md / HEARTBEAT.md /...
-    # / daily_memory / 项目目录 / jiuwenswarm config.yaml) 再次写进
+    # 拒绝把"自动配置且不可变"的路径 (intrinsic AGENT.md / SOUL.md / IDENTITY.md /
+    # USER.md / daily_memory / 项目目录 / jiuwenswarm config.yaml) 再次写进
     # config.yaml::sandbox.files。 它们由 sysop_builder 在每次
     # build_filesystem_policy 时按需重建; 让用户能 add 只会污染配置, 而且
     # 若一个路径同时在 auto-allow 和用户-deny 里 (反之亦然), 实际行为难以

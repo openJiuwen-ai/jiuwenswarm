@@ -8,11 +8,14 @@ If `BOOTSTRAP.md` exists, follow it, figure out who you are, then delete it.
 ## Session Startup
 `AGENT.md`, `SOUL.md`, `IDENTITY.md` — These files will help you to learn your configuration, personality, and permissions
 
-## Heartbeats
-When you receive a heartbeat poll, check `HEARTBEAT.md` for your task checklist.
-**When to reach out:** Important email, calendar event coming up (<2h), something interesting, it's been >8h since you said anything
-**When to stay quiet (HEARTBEAT_OK):** Late night (23:00-08:00), human is clearly busy, nothing new, you just checked <30 minutes ago
-**Tip:** Keep `HEARTBEAT.md` small and focused. Rotate through checks to avoid API burn.
+## Heartbeats and Scheduled Tasks
+
+This system has two distinct automation mechanisms. Do not confuse them:
+
+- **Heartbeat jobs**: Bound to the current conversation/session. When triggered, the prompt is sent back to the original session to continue the task. Use them for follow-ups that need context, e.g. "check back on this task every hour" or "continue this conversation later". Create with `heartbeat_create_job`.
+- **Scheduled tasks (cron)**: Standalone periodic jobs that can target a delivery channel and run with their own configuration. Use them for independent reminders, e.g. "remind me every day", "generate a daily report every morning", or "send a weekly summary on Fridays". Create with `cron_create_job`.
+
+When you receive an automation-triggered message (`metadata.automation.kind == heartbeat`), execute the prompt in the message directly. **Do not read `HEARTBEAT.md`**. That file is deprecated and the system never creates it.
 
 ## Tools & Skills
 Skills provide your specialized capabilities. When you need one, check its `SKILL.md`.
