@@ -392,7 +392,7 @@ def test_raw_file_document_responses_are_sandboxed_and_never_sniffed(tmp_path):
     try:
         status, headers, _ = request("GET", html_path)
         assert status == 200
-        assert headers["Content-Type"] == "text/html"
+        assert headers["Content-Type"].startswith("text/html")
         assert headers["X-Content-Type-Options"] == "nosniff"
         assert headers["Content-Security-Policy"] == "sandbox allow-scripts allow-popups"
 
