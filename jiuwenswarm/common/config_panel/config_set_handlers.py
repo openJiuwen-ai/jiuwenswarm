@@ -443,6 +443,8 @@ WEB_UI_YAML_KEYS = frozenset({
     "team_organization_ui_enabled",
     "comfyui_workflow_enabled",
     "setup_guide_enabled",
+    "design_generation_video_gen",
+    "design_generation_visual_gen",
     *RECOMMENDATION_UI_CONFIG_KEYS,
 })
 # Scopes that must reach AgentServer before config.save_all returns.
@@ -1533,6 +1535,16 @@ def apply_config_payload(
             raise ConfigPanelInternalError("failed to update modes.team") from exc
 
     external_cli_agents_updated = False
+    try:
+        from jiuwenswarm.common.design_generation_selection import (
+            DesignSelectionError,
+            apply_design_generation_config,
+        )
+
+        yaml_updated.extend(apply_design_generation_config(params))
+    except DesignSelectionError as exc:
+        raise ConfigPanelBadRequest(str(exc)) from exc
+
     for param_key in (*CONFIG_YAML_KEYS, *custom_external_cli_config_keys()):
         if param_key not in params:
             continue
@@ -1917,6 +1929,9 @@ async def config_get_handler(
         resolved = get_config()
         models_cfg = resolved.get("models") or {}
         payload["enable_free_models"] = "true" if models_cfg.get("enable_free_models", False) else "false"
+        from jiuwenswarm.common.design_generation_selection import saved_generation_config
+
+        payload.update(saved_generation_config())
     except Exception:  # noqa: BLE001
         for key, value in flatten_moa_for_config_panel({}).items():
             payload.setdefault(key, value)
@@ -1965,6 +1980,8 @@ async def config_get_handler(
         payload.setdefault("topic_recommendation_enabled", "false")
         payload.setdefault("prompt_suggestion_enabled", "false")
         payload.setdefault("enable_free_models", "false")
+        payload.setdefault("design_generation_video_gen", "")
+        payload.setdefault("design_generation_visual_gen", "")
     await channel.send_response(ws, req_id, ok=True, payload=payload)
 
 

@@ -57,6 +57,7 @@ import ChatModelSelector from './ChatModelSelector';
 import DesignerModelSelector from '../../features/designer/components/DesignerModelSelector';
 import { getTeamSessionLive, subscribeTeamSessionLive, teamFollowUpLiveReady } from '../../services/sessionLive';
 import { getTeamQuota } from '../../services/teamApi';
+import { designLandingModelProblem } from '../../features/designer/designLandingDraft';
 import { FileIcon } from '../FileIcon';
 import { getEvolutionPillLabel } from './evolution-status';
 import { webRequest } from '../../services/webClient';
@@ -953,6 +954,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const composerFrameRef = useRef<HTMLDivElement>(null);
   const composerSuggestionMenuRef = useRef<HTMLDivElement>(null);
   const compactingSessionIdsRef = useRef<Set<string>>(new Set());
+  const designLandingGateRef = useRef(false);
   const compactStartedAtRef = useRef<Map<string, number>>(new Map());
   const skillPanelRef = useRef<HTMLDivElement>(null);
   const swarmflowConfigBtnRef = useRef<HTMLButtonElement>(null);
@@ -2874,7 +2876,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     [activeSessionId, planActive, pushAttachmentAlert, t],
   );
 
-  const handleSubmit = useCallback(() => {
+  const handleSubmit = useCallback(async () => {
     if (composerDisabled || isListening || isTranscribing || modelGroupSendBlocked) return;
     if (
       enterprise &&
@@ -2955,6 +2957,20 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     // Other non-team modes still go through the text-only onInterrupt channel where
     // attachments would be lost, so keep blocking there.
     if (isInterruptible && !isTeamMode && !isAgentMode && hasReadyMedia) return;
+
+    // Design landing validates models after the click. The composer used to
+    // clear before that check finished, so a missing model wiped the prompt.
+    if (isDesignLanding) {
+      if (designLandingGateRef.current) return;
+      designLandingGateRef.current = true;
+      let modelProblem: string | null = null;
+      try {
+        modelProblem = await designLandingModelProblem();
+      } finally {
+        designLandingGateRef.current = false;
+      }
+      if (modelProblem) return;
+    }
 
     const sid = useChatStore.getState().activeSessionId;
     let sentViaTaskQueue = false;
@@ -3045,6 +3061,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     hasAttachmentErrors,
     isPreparingFiles,
     composerDisabled,
+    isDesignLanding,
     isListening,
     isTranscribing,
     modelGroupSendBlocked,
