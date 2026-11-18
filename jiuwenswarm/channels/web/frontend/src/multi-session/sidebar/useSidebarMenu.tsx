@@ -112,7 +112,6 @@ export async function toggleSessionPin(session: Session, translate: Translate): 
     toast.open({
       content: `${translate('multiSession.project.pinFailed')}: ${error instanceof Error ? error.message : String(error)}`,
       variant: 'error',
-      wide: true,
     });
   } finally {
     refreshExpandedCronSessions();
@@ -124,7 +123,6 @@ function openArchiveFailureToast(content: string) {
     content,
     variant: 'error',
     duration: 5,
-    wide: true,
   });
 }
 
@@ -158,7 +156,6 @@ function openArchiveSuccessToast(
     content: options.content,
     icon: createElement(Archive, { 'aria-hidden': true, size: 16, strokeWidth: 1.8 }),
     duration: 5,
-    wide: true,
     actions: [
       {
         label: translate('multiSession.project.archiveView'),

@@ -3700,7 +3700,6 @@ function AppContent({
           toast.open({
             content: referenceError || (code && code !== 'empty' ? code : t('designer.chat.bootstrapError')),
             variant: 'error',
-            wide: true,
           });
         } finally {
           creatingSessionRef.current = false;
@@ -4568,7 +4567,6 @@ function AppContent({
           id: `share-export-stopped:${status.job_id}`,
           content: tRef.current('share.exportStopped', { sessionTitle: exportedSessionTitle }),
           duration: 5,
-          wide: true,
           testId: 'app-share-export-stopped-toast',
           dataVariant: targetSessionId,
         });
