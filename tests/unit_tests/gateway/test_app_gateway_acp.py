@@ -21,6 +21,26 @@ class DummyBus:
         return None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["off", "observe", "enforce"])
+@pytest.mark.parametrize("edition", ["enterprise", "personal"])
+async def test_gateway_listener_depends_on_edition(monkeypatch, unused_tcp_port, mode, edition):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", edition)
+    monkeypatch.setenv("JIUWENSWARM_LINK_MTLS_MODE", mode)
+    server = GatewayServer(
+        GatewayServerConfig(
+            host="127.0.0.1", port=unused_tcp_port, path="/acp", channel_id="acp",
+        ),
+        DummyBus(),
+    )
+    try:
+        await server.start()
+        assert server._running is (edition == "personal")
+        assert (server._server is None) is (edition == "enterprise")
+    finally:
+        await server.stop()
+
+
 class _FakeRequestHeaders:
     def __init__(self, mapping: dict[str, str]) -> None:
         self._mapping = {k.lower(): v for k, v in mapping.items()}
