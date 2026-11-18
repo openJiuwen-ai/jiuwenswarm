@@ -1639,6 +1639,11 @@ def extract_question_from_interaction(payload: Any) -> dict | None:
                 question = _rewrite_option_label_hint(question)
             elif is_enterprise():
                 question = _strip_permanent_remember_hint(question)
+            from jiuwenswarm.gateway.channel_manager.web.sensitive_mask import (
+                mask_permission_question,
+            )
+
+            question = mask_permission_question(question)
 
     return {
         "question": question,

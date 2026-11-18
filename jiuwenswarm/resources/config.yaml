@@ -9,8 +9,9 @@ config:
 # 前端显示语言：zh（中文）/ en（英文），与 Web 界面语言切换同步
 preferred_language: zh
 
-# 网页回答脱敏。enabled 默认关闭，关闭时 rules 不生效，原文直出。
-# 只替换网页上看到的回答、思考、工具结果和历史回放，不改历史文件。
+# 敏感信息脱敏。enabled 默认关闭，关闭时 rules 不生效，原文直出。
+# 开启后对各通道展示副本生效（网页回答/思考/工具结果/历史回放，以及权限审批文案等），
+# 不改历史文件，也不改送给模型的上下文。
 # pattern 要能匹配敏感内容本身。命中的那一段换成等长星号。
 sensitive_mask:
   enabled: false
@@ -25,6 +26,9 @@ sensitive_mask:
       pattern: '(?:sk|rk|pk|ak)-[A-Za-z0-9]{8,}'
     - title: Token
       pattern: 'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
+    # http(s)://user:password@host，掩 password（HTTP_PROXY / HTTPS_PROXY 等）
+    - title: URL 密码
+      pattern: '(?<=:)[^:@/\s]+(?=@)'
 
 # Web 首次模型配置引导；用户确认完成后会自动关闭，可通过侧栏问号再次打开
 setup_guide:
